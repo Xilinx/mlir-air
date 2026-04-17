@@ -19,124 +19,6 @@ include "mlir/Interfaces/TilingInterface.td"
 class air_Op<string mnemonic, list<Trait> traits = []> :
     Op<air_Dialect, mnemonic, traits>;
 
-def air_UniverseAllocOp : air_Op<"universe.alloc", [Pure]>,
-    Arguments<(ins Index:$capacity)>,
-    Results<(outs air_Universe:$universe)> {
-  let summary = "Allocate a universe of devices";
-  let description = [{
-    Creates an `!air.universe` value representing a bounded pool of
-    `capacity` devices or hosts. The universe value is consumed by
-    `air.rank` to constrain the physical pool from which rank instances
-    are scheduled.
-  }];
-  let assemblyFormat = "`(` $capacity `)` attr-dict";
-}
-
-def air_RankOp : air_Op<"rank", [air_AsyncOpInterface,
-                                  air_HierarchyInterface,
-                                  AttrSizedOperandSegments,
-                                  IsolatedFromAbove,
-                                  AffineScope,
-                                  SingleBlockImplicitTerminator<"RankTerminatorOp">]>,
-                         Arguments<(ins OptionalAttr<SymbolNameAttr>:$sym_name,
-                                        Variadic<air_AsyncToken>:$async_dependencies,
-                                        Optional<air_Universe>:$universe,
-                                        Variadic<Index>:$sizes,
-                                        Variadic<AnyType>:$rank_operands)>,
-                         Results<(outs Optional<air_AsyncToken>:$async_token)> {
-  let summary = "Multi-device rank";
-  let description = [{
-    Represents a communicating world of rank instances, where each instance
-    corresponds to a complete GPU device or a CPU host process. `air.rank`
-    is the outermost hierarchy level, sitting above `air.launch`.
-
-    The operation defines an N-dimensional iteration space. Each point is a
-    rank instance. The body is `IsolatedFromAbove`; values are passed via
-    explicit kernel operands.
-
-    An optional `universe` operand of type `!air.universe` constrains the
-    physical pool from which rank instances are scheduled.
-  }];
-
-  let regions = (region SizedRegion<1>:$body);
-
-  let skipDefaultBuilders = 1;
-  let builders = [
-    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$rankOperands)>,
-    OpBuilder<(ins "ValueRange":$async_dependencies,
-      "ValueRange":$sizes,"ValueRange":$rankOperands,
-      CArg<"bool", "false">:$is_async,
-      CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>,
-    OpBuilder<(ins "ValueRange":$async_dependencies,
-      "Value":$universe,
-      "ValueRange":$sizes,"ValueRange":$rankOperands,
-      CArg<"bool", "false">:$is_async,
-      CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
-  ];
-  let hasCustomAssemblyFormat = 1;
-  let extraClassDeclaration = [{
-    ArrayRef<BlockArgument> getIds();
-    ArrayRef<BlockArgument> getSize();
-    OperandRange getSizeOperands();
-    unsigned getNumKernelOperands();
-    OperandRange getKernelOperands();
-    Value getKernelOperand(unsigned i);
-    ArrayRef<BlockArgument> getKernelArguments();
-    BlockArgument getKernelArgument(unsigned i);
-    unsigned getNumDims();
-    int32_t getId() {
-      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
-        return id_attr.getInt();
-      }
-      return -1;
-    }
-
-    /// Return the kernel argument that corresponds to the given operand.
-    /// Return an "empty" block argument if the given value is not a kernel
-    /// operand.
-    BlockArgument getTiedKernelArgument(Value Oper) {
-      auto kernelOperands = getKernelOperands();
-      auto it = llvm::find(kernelOperands, Oper);
-      if (it == kernelOperands.end())
-        return {};
-      return getKernelArgument(std::distance(kernelOperands.begin(), it));
-    }
-    /// Return the operand that corresponds to the given kernel argument.
-    /// Return "nullptr" if the given block argument is not a kernel argument
-    /// of this op.
-    Value getTiedKernelOperand(BlockArgument bbArg) {
-      auto args = getKernelArguments();
-      auto it = llvm::find(args, bbArg);
-      if (it == args.end())
-        return {};
-      return getKernelOperand(std::distance(args.begin(), it));
-    }
-
-    /// Append the given values to kernel operands.
-    void appendKernelOperands(ValueRange operands){
-      getRankOperandsMutable().append(operands);
-      for (auto oper : operands){
-        getBody().addArgument(oper.getType(), getLoc());
-      }
-    }
-  }];
-  let hasCanonicalizer = 1;
-  let hasVerifier = 1;
-}
-
-def air_RankTerminatorOp : air_Op<"rank_terminator", [HasParent<"RankOp">,
-                                                       Pure,
-                                                       Terminator]>,
-                                   Arguments<(ins)>, Results<(outs)> {
-  let summary = "Terminator for `air.rank`.";
-  let description = [{
-    A terminator operation for the body of `air.rank` operations.
-    `air.rank` operations are not expected to return any value so the
-    terminator takes no operands.
-  }];
-  let assemblyFormat = "attr-dict";
-}
-
 def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
                                      air_HierarchyInterface,
                                      AttrSizedOperandSegments,
@@ -529,8 +411,7 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
 def air_ChannelOp : air_Op<"channel", [Symbol]>,
     Arguments<(ins SymbolNameAttr:$sym_name,
                    DefaultValuedAttr<I64ArrayAttr, "{}">:$size,
-                   DefaultValuedAttr<StrAttr, "\"dma_stream\"">:$channel_type,
-                   OptionalAttr<StrAttr>:$fusion_group)> {
+                   DefaultValuedAttr<StrAttr, "\"dma_stream\"">:$channel_type)> {
   let assemblyFormat = [{
     $sym_name $size attr-dict
   }];

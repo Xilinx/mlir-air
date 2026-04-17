@@ -39,12 +39,6 @@ public:
   static constexpr StringLiteral name = "xilinx.air.async_token";
 };
 
-class UniverseType : public Type::TypeBase<UniverseType, Type, TypeStorage> {
-public:
-  using Base::Base;
-  static constexpr StringLiteral name = "xilinx.air.universe";
-};
-
 // Adds a `air.async.token` to the front of the argument list.
 void addAsyncDependency(Operation *op, Value token);
 // Erases a `air.async.token` at position index of the argument list.

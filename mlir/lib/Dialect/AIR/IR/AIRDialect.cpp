@@ -34,7 +34,7 @@ using namespace mlir;
 namespace xilinx {
 
 void air::airDialect::initialize() {
-  addTypes<AsyncTokenType, UniverseType>();
+  addTypes<AsyncTokenType>();
   addOperations<
 #define GET_OP_LIST
 #include "air/Dialect/AIR/AIR.cpp.inc"
@@ -52,10 +52,6 @@ Type air::airDialect::parseType(DialectAsmParser &parser) const {
   if (keyword == "async.token")
     return AsyncTokenType::get(context);
 
-  // Handle 'universe' types.
-  if (keyword == "universe")
-    return UniverseType::get(context);
-
   parser.emitError(parser.getNameLoc(), "unknown air type: " + keyword);
   return Type();
 }
@@ -63,7 +59,6 @@ Type air::airDialect::parseType(DialectAsmParser &parser) const {
 void air::airDialect::printType(Type type, DialectAsmPrinter &os) const {
   TypeSwitch<Type>(type)
       .Case<AsyncTokenType>([&](Type) { os << "async.token"; })
-      .Case<UniverseType>([&](Type) { os << "universe"; })
       .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
@@ -790,395 +785,6 @@ unsigned air::LaunchOp::getNumDims() {
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
-}
-
-//
-// RankOp
-//
-
-// Specialized canonicalizer for RankOp that threads the universe operand.
-static LogicalResult canonicalizeRankOpArgs(air::RankOp op,
-                                            PatternRewriter &rewriter) {
-  SmallVector<Value> newOperands;
-  SmallVector<int> newOperandsIdx;
-  for (int i = 0, e = op.getNumKernelOperands(); i < e; i++) {
-    auto arg = op.getKernelArgument(i);
-    if (arg.getUsers().empty())
-      continue;
-    newOperands.push_back(op.getKernelOperand(i));
-    newOperandsIdx.push_back(i);
-  }
-
-  if (newOperands.size() == op.getNumKernelOperands())
-    return failure();
-
-  IRMapping remap;
-  air::RankOp newOp;
-  if (op.getUniverse()) {
-    newOp =
-        air::RankOp::create(rewriter, op.getLoc(), op.getAsyncDependencies(),
-                            op.getUniverse(), op.getSizeOperands(), newOperands,
-                            op->getNumResults() > 0, op->getAttrs());
-  } else {
-    newOp = air::RankOp::create(
-        rewriter, op.getLoc(), op.getAsyncDependencies(), op.getSizeOperands(),
-        newOperands, op->getNumResults() > 0, op->getAttrs());
-  }
-
-  rewriter.setInsertionPointToStart(&newOp.getBody().front());
-  for (auto p : llvm::zip(op.getSize(), newOp.getSize()))
-    remap.map(std::get<0>(p), std::get<1>(p));
-  for (auto p : llvm::zip(op.getIds(), newOp.getIds()))
-    remap.map(std::get<0>(p), std::get<1>(p));
-
-  int newIdx = 0;
-  for (int i : newOperandsIdx)
-    remap.map(op.getKernelArgument(i), newOp.getKernelArgument(newIdx++));
-
-  auto &ops = op.getBody().front().getOperations();
-  for (auto oi = ops.begin(), oe = --ops.end(); oi != oe; ++oi)
-    rewriter.clone(*oi, remap);
-
-  rewriter.replaceOp(op, newOp->getResults());
-  return success();
-}
-
-void air::RankOp::build(OpBuilder &builder, OperationState &result,
-                        ValueRange asyncDependencies, ValueRange sizes,
-                        ValueRange rankOperands, bool isAsync,
-                        ArrayRef<NamedAttribute> attrs) {
-
-  result.addOperands(asyncDependencies);
-  if (isAsync)
-    result.addTypes(AsyncTokenType::get(builder.getContext()));
-  result.addOperands(sizes);
-  result.addOperands(rankOperands);
-
-  SmallVector<int32_t, 8> segmentSizes(4, 0);
-  segmentSizes[0] = asyncDependencies.size();
-  segmentSizes[1] = 0; // no universe
-  segmentSizes[2] = sizes.size();
-  segmentSizes[3] = static_cast<int32_t>(rankOperands.size());
-  result.addAttribute(getOperandSegmentSizeAttr(),
-                      builder.getDenseI32ArrayAttr(segmentSizes));
-
-  for (auto attr : attrs)
-    if (attr.getName() == getOperandSegmentSizeAttr())
-      continue;
-    else
-      result.addAttribute(attr.getName(), attr.getValue());
-
-  Region *r = result.addRegion();
-  Block *body = new Block();
-  for (Value v : sizes) {
-    body->addArgument(v.getType(), builder.getUnknownLoc());
-    body->addArgument(v.getType(), builder.getUnknownLoc());
-  }
-  for (Value v : rankOperands) {
-    body->addArgument(v.getType(), builder.getUnknownLoc());
-  }
-  r->push_back(body);
-  RankOp::ensureTerminator(*r, builder, result.location);
-}
-
-void air::RankOp::build(OpBuilder &builder, OperationState &result,
-                        ValueRange asyncDependencies, Value universe,
-                        ValueRange sizes, ValueRange rankOperands, bool isAsync,
-                        ArrayRef<NamedAttribute> attrs) {
-
-  result.addOperands(asyncDependencies);
-  if (isAsync)
-    result.addTypes(AsyncTokenType::get(builder.getContext()));
-  if (universe)
-    result.addOperands(universe);
-  result.addOperands(sizes);
-  result.addOperands(rankOperands);
-
-  SmallVector<int32_t, 8> segmentSizes(4, 0);
-  segmentSizes[0] = asyncDependencies.size();
-  segmentSizes[1] = universe ? 1 : 0;
-  segmentSizes[2] = sizes.size();
-  segmentSizes[3] = static_cast<int32_t>(rankOperands.size());
-  result.addAttribute(getOperandSegmentSizeAttr(),
-                      builder.getDenseI32ArrayAttr(segmentSizes));
-
-  for (auto attr : attrs)
-    if (attr.getName() == getOperandSegmentSizeAttr())
-      continue;
-    else
-      result.addAttribute(attr.getName(), attr.getValue());
-
-  Region *r = result.addRegion();
-  Block *body = new Block();
-  for (Value v : sizes) {
-    body->addArgument(v.getType(), builder.getUnknownLoc());
-    body->addArgument(v.getType(), builder.getUnknownLoc());
-  }
-  for (Value v : rankOperands) {
-    body->addArgument(v.getType(), builder.getUnknownLoc());
-  }
-  r->push_back(body);
-  RankOp::ensureTerminator(*r, builder, result.location);
-}
-
-void air::RankOp::build(OpBuilder &builder, OperationState &result,
-                        ValueRange sizes, ValueRange rankOperands) {
-  build(builder, result, {}, sizes, rankOperands, false);
-}
-
-void air::RankOp::print(OpAsmPrinter &p) {
-
-  p << ' ';
-
-  auto nameAttr = (*this)->getAttrOfType<StringAttr>(
-      mlir::SymbolTable::getSymbolAttrName());
-  if (nameAttr) {
-    p.printSymbolName(nameAttr);
-    p << ' ';
-  }
-
-  printAsyncDependencies(p, *this,
-                         (getAsyncToken() ? getAsyncToken().getType() : Type()),
-                         getAsyncDependencies());
-
-  if (getUniverse()) {
-    p << "universe(";
-    p.printOperand(getUniverse());
-    p << ") ";
-  }
-
-  p << "(";
-  p.printOperands(getIds());
-  p << ") in (";
-  auto sizeArgs = getSize();
-  auto sizeOpers = getSizeOperands();
-  for (int i = 0, e = getNumDims(); i < e; i++) {
-    if (i)
-      p << ", ";
-    p << sizeArgs[i] << "=";
-    p << sizeOpers[i];
-  }
-  p << ")";
-
-  if (getNumKernelOperands()) {
-    auto args = getKernelArguments();
-    p << " args(";
-    for (int i = 0, e = getNumKernelOperands(); i < e; i++) {
-      if (i)
-        p << ", ";
-      p << args[i] << "=";
-      p << getKernelOperand(i);
-    }
-    p << ") : ";
-    for (int i = 0, e = getNumKernelOperands(); i < e; i++) {
-      if (i)
-        p << ", ";
-      p << getKernelOperand(i).getType();
-    }
-  }
-
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
-  if (nameAttr && getBody().front().getOperations().size() == 1)
-    return;
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
-                /*printBlockTerminators=*/false);
-}
-
-ParseResult air::RankOp::parse(OpAsmParser &parser, OperationState &result) {
-
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
-  SmallVector<OpAsmParser::Argument, 4> tileArgs;
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> tileSize;
-  SmallVector<OpAsmParser::Argument, 4> tileSizeRef;
-
-  StringAttr nameAttr;
-  (void)parser.parseOptionalSymbolName(
-      nameAttr, mlir::SymbolTable::getSymbolAttrName(), result.attributes);
-
-  Type asyncTokenType = nullptr;
-  if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
-    return failure();
-  if (asyncTokenType)
-    result.addTypes(asyncTokenType);
-
-  // Parse optional universe operand
-  bool hasUniverse = false;
-  OpAsmParser::UnresolvedOperand universeOperand;
-  if (succeeded(parser.parseOptionalKeyword("universe"))) {
-    if (parser.parseLParen() || parser.parseOperand(universeOperand) ||
-        parser.parseRParen())
-      return failure();
-    hasUniverse = true;
-  }
-
-  if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
-      parser.parseKeyword("in") || parser.parseLParen())
-    return failure();
-
-  tileSize.resize(tileArgs.size());
-  tileSizeRef.resize(tileArgs.size());
-  for (unsigned i = 0; i < tileArgs.size(); ++i) {
-    if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
-        parser.parseOperand(tileSize[i]))
-      return failure();
-    (void)parser.parseOptionalComma();
-  }
-
-  if (parser.parseRParen())
-    return failure();
-
-  Type indexType = parser.getBuilder().getIndexType();
-
-  tileArgs.append(tileSizeRef);
-  for (auto &a : tileArgs)
-    a.type = indexType;
-
-  auto tokenType = AsyncTokenType::get(parser.getBuilder().getContext());
-  if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
-    return failure();
-
-  // Resolve universe operand
-  if (hasUniverse) {
-    auto univType = UniverseType::get(parser.getBuilder().getContext());
-    if (parser.resolveOperand(universeOperand, univType, result.operands))
-      return failure();
-  }
-
-  if (parser.resolveOperands(tileSize, indexType, result.operands))
-    return failure();
-
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
-  SmallVector<OpAsmParser::Argument, 4> kernelArguments;
-  SmallVector<Type, 4> types;
-  if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseLParen())
-      return failure();
-    if (parser.parseOptionalRParen()) {
-      do {
-        OpAsmParser::Argument argument;
-        OpAsmParser::UnresolvedOperand operand;
-        if (parser.parseArgument(argument) || parser.parseEqual() ||
-            parser.parseOperand(operand))
-          return failure();
-        kernelArguments.push_back(argument);
-        kernelOperands.push_back(operand);
-      } while (succeeded(parser.parseOptionalComma()));
-      if (parser.parseRParen())
-        return failure();
-      if (parser.parseColonTypeList(types))
-        return failure();
-    }
-  }
-
-  for (int i = 0, e = kernelOperands.size(); i < e; i++) {
-    kernelArguments[i].type = types[i];
-    tileArgs.push_back(kernelArguments[i]);
-    if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
-      return failure();
-  }
-
-  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
-    return failure();
-
-  Region *body = result.addRegion();
-
-  auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  RankOp::ensureTerminator(*body, parser.getBuilder(), result.location);
-
-  if (!regionResult.has_value()) {
-    if (!nameAttr)
-      return failure();
-    for (auto ta : tileArgs)
-      body->addArgument(ta.type, result.location);
-  }
-
-  SmallVector<int32_t, 8> segmentSizes(4, 0);
-  segmentSizes[0] = asyncDependencies.size();
-  segmentSizes[1] = hasUniverse ? 1 : 0;
-  segmentSizes[2] = tileSize.size();
-  segmentSizes[3] = kernelOperands.size();
-  result.addAttribute(getOperandSegmentSizeAttr(),
-                      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
-  return success();
-}
-
-void air::RankOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                              MLIRContext *context) {
-  patterns.add(canonicalizeRankOpArgs);
-  patterns.add(CanonicalizeAsyncOpDeps<RankOp>);
-  patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<RankOp>);
-}
-
-ArrayRef<BlockArgument> air::RankOp::getIds() {
-  auto s = getBody().front().getArguments();
-  auto n = getNumDims();
-  return s.take_front(n);
-}
-
-ArrayRef<BlockArgument> air::RankOp::getSize() {
-  auto s = getBody().front().getArguments();
-  auto n = getNumDims();
-  return s.slice(n, n);
-}
-
-OperandRange air::RankOp::getSizeOperands() {
-  auto start = getAsyncDependencies().size() + (getUniverse() ? 1 : 0);
-  auto n = getNumDims();
-  return getOperands().slice(start, n);
-}
-
-unsigned air::RankOp::getNumKernelOperands() {
-  return getNumOperands() - getAsyncDependencies().size() -
-         (getUniverse() ? 1 : 0) - getNumDims();
-}
-
-OperandRange air::RankOp::getKernelOperands() {
-  return getOperands().drop_front(getAsyncDependencies().size() +
-                                  (getUniverse() ? 1 : 0) + getNumDims());
-}
-
-Value air::RankOp::getKernelOperand(unsigned i) {
-  return getOperand(getAsyncDependencies().size() + (getUniverse() ? 1 : 0) +
-                    getNumDims() + i);
-}
-
-ArrayRef<BlockArgument> air::RankOp::getKernelArguments() {
-  return getBody().front().getArguments().drop_front(getNumDims() * 2);
-}
-
-BlockArgument air::RankOp::getKernelArgument(unsigned i) {
-  return getKernelArguments()[i];
-}
-
-unsigned air::RankOp::getNumDims() {
-  auto size_attr_name = getOperandSegmentSizeAttr();
-  auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
-  auto segment_sizes = size_attr.asArrayRef();
-  return segment_sizes[2];
-}
-
-LogicalResult air::RankOp::verify() {
-  // RankOp may be nested inside air.launch (for multi-GPU parallelism),
-  // but not inside air.segment, air.herd, or another air.rank.
-  if ((*this)->getParentOfType<air::SegmentOp>() ||
-      (*this)->getParentOfType<air::HerdOp>() ||
-      (*this)->getParentOfType<air::RankOp>())
-    return emitOpError("cannot be nested inside air.segment, air.herd, "
-                       "or another air.rank");
-  return success();
 }
 
 //
@@ -2563,29 +2169,7 @@ static LogicalResult EraseSelfCopyDma(air::DmaMemcpyNdOp op,
   return success();
 }
 
-/// Verify that sizes and strides operand lists have the same number of
-/// elements. Offsets may have fewer dimensions (implying leading zeros).
-/// All three being empty is valid.
-static LogicalResult verifySizesStridesRank(Operation *op, OperandRange sizes,
-                                            OperandRange strides,
-                                            StringRef label) {
-  if (sizes.size() != strides.size())
-    return op->emitOpError()
-           << label
-           << " sizes and strides must have the same number of dimensions, "
-              "but got "
-           << sizes.size() << " and " << strides.size();
-  return success();
-}
-
 LogicalResult air::DmaMemcpyNdOp::verify() {
-  if (failed(verifySizesStridesRank(getOperation(), getSrcSizes(),
-                                    getSrcStrides(), "src")))
-    return failure();
-  if (failed(verifySizesStridesRank(getOperation(), getDstSizes(),
-                                    getDstStrides(), "dst")))
-    return failure();
-
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -2944,19 +2528,6 @@ LogicalResult air::ChannelPutOp::getResultTilePosition(
 }
 
 LogicalResult air::ChannelPutOp::verify() {
-  if (failed(verifySizesStridesRank(getOperation(), getSrcSizes(),
-                                    getSrcStrides(), "src")))
-    return failure();
-
-  // Channel bundle indices must not be temporal loop induction variables.
-  for (auto [i, idx] : llvm::enumerate(getIndices())) {
-    if (scf::getForInductionVarOwner(idx))
-      return emitOpError()
-             << "channel index " << i
-             << " is an scf.for induction variable; channel bundle indices "
-                "must not be temporal scf.for induction variables";
-  }
-
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -3019,19 +2590,6 @@ LogicalResult air::ChannelGetOp::getResultTilePosition(
 }
 
 LogicalResult air::ChannelGetOp::verify() {
-  if (failed(verifySizesStridesRank(getOperation(), getDstSizes(),
-                                    getDstStrides(), "dst")))
-    return failure();
-
-  // Channel bundle indices must not be temporal loop induction variables.
-  for (auto [i, idx] : llvm::enumerate(getIndices())) {
-    if (scf::getForInductionVarOwner(idx))
-      return emitOpError()
-             << "channel index " << i
-             << " is an scf.for induction variable; channel bundle indices "
-                "must not be temporal scf.for induction variables";
-  }
-
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -3067,31 +2625,6 @@ LogicalResult air::ChannelOp::verify() {
     auto broadcast_shape = getBroadcastShape();
     if (bundle_size.size() != broadcast_shape.size())
       return emitOpError("bundle rank should match broadcast_shape rank");
-
-    // Validate NumPy-style broadcasting rules for each dimension.
-    for (unsigned i = 0; i < bundle_size.size(); i++) {
-      auto sizeAttr = dyn_cast_if_present<IntegerAttr>(bundle_size[i]);
-      if (!sizeAttr)
-        return emitOpError() << "expected integer attribute for size[" << i
-                             << "], but found " << bundle_size[i];
-      auto bcastAttr = dyn_cast_if_present<IntegerAttr>(broadcast_shape[i]);
-      if (!bcastAttr)
-        return emitOpError()
-               << "expected integer attribute for broadcast_shape[" << i
-               << "], but found " << broadcast_shape[i];
-      int64_t sizeVal = sizeAttr.getInt();
-      int64_t bcastVal = bcastAttr.getInt();
-      if (bcastVal < sizeVal)
-        return emitOpError() << "broadcast_shape[" << i << "] (" << bcastVal
-                             << ") must be >= size[" << i << "] (" << sizeVal
-                             << "): broadcasting cannot shrink a dimension";
-      if (sizeVal != bcastVal && sizeVal != 1)
-        return emitOpError()
-               << "size[" << i << "] (" << sizeVal
-               << ") is not compatible with broadcast_shape[" << i << "] ("
-               << bcastVal << "): size must be 1 or equal to broadcast_shape "
-               << "(NumPy broadcasting rules)";
-    }
   }
   return success();
 }

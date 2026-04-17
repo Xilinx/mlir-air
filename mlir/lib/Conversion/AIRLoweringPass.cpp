@@ -197,6 +197,66 @@ public:
     for (auto bi = launchOps.begin(), be = --launchOps.end(); bi != be; ++bi)
       rewriter.clone(*bi, remap);
 
+    // Fix affine.apply ops that use scf.parallel induction variables as symbol
+    // operands. Inside air.launch, the launch IVs could be used as symbols in
+    // affine maps. After lowering to scf.parallel, those IVs become loop
+    // induction variables which are dimensional — not valid as symbols. Move
+    // any such operands from the symbol position to the dimension position.
+    llvm::SmallDenseSet<Value> ivSet(scfPar.getInductionVars().begin(),
+                                     scfPar.getInductionVars().end());
+    SmallVector<affine::AffineApplyOp> applyOps;
+    scfPar.walk([&](affine::AffineApplyOp applyOp) {
+      AffineMap map = applyOp.getAffineMap();
+      auto allOps = applyOp.getMapOperands();
+      // Check if any symbol operand is a parallel IV.
+      for (unsigned i = map.getNumDims(), e = allOps.size(); i < e; ++i)
+        if (ivSet.contains(allOps[i])) {
+          applyOps.push_back(applyOp);
+          break;
+        }
+    });
+    for (auto applyOp : applyOps) {
+      AffineMap oldMap = applyOp.getAffineMap();
+      unsigned numOldDims = oldMap.getNumDims();
+      auto allOps = applyOp.getMapOperands();
+      auto *ctx = rewriter.getContext();
+
+      SmallVector<Value> newDimOps(allOps.begin(),
+                                   allOps.begin() + numOldDims);
+      SmallVector<Value> newSymOps;
+      // Build replacement expressions for old symbols.
+      SmallVector<AffineExpr> symRepl;
+      unsigned newSymIdx = 0;
+      for (unsigned i = numOldDims, e = allOps.size(); i < e; ++i) {
+        if (ivSet.contains(allOps[i])) {
+          symRepl.push_back(getAffineDimExpr(newDimOps.size(), ctx));
+          newDimOps.push_back(allOps[i]);
+        } else {
+          symRepl.push_back(getAffineSymbolExpr(newSymIdx++, ctx));
+          newSymOps.push_back(allOps[i]);
+        }
+      }
+      // Identity replacements for old dims.
+      SmallVector<AffineExpr> dimRepl;
+      for (unsigned i = 0; i < numOldDims; ++i)
+        dimRepl.push_back(getAffineDimExpr(i, ctx));
+
+      AffineExpr newExpr =
+          oldMap.getResult(0).replaceDimsAndSymbols(dimRepl, symRepl);
+      AffineMap newMap =
+          AffineMap::get(newDimOps.size(), newSymOps.size(), newExpr, ctx);
+
+      SmallVector<Value> newOperands;
+      newOperands.append(newDimOps);
+      newOperands.append(newSymOps);
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(applyOp);
+      auto newApply = affine::AffineApplyOp::create(
+          rewriter, applyOp.getLoc(), newMap, newOperands);
+      rewriter.replaceOp(applyOp, newApply.getResult());
+    }
+
     // replace output events with airrt.wait_all
     if (op->getNumResults()) {
       SmallVector<Value> deps;

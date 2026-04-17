@@ -538,19 +538,6 @@ def InsertEmptyLaunchOverHerd : Pass<"air-insert-launch-around-herd", "ModuleOp"
   ];
 }
 
-def AIRRankToLaunch : Pass<"air-rank-to-launch", "ModuleOp"> {
-  let summary = "Serialize air.rank into scf.for loops";
-  let constructor = "xilinx::air::createAIRRankToLaunchPass()";
-  let description = [{
-    This pass lowers `air.rank` operations by serializing them into
-    `scf.for` loops. Each iteration of the loop corresponds to one
-    rank (device) executing the body sequentially. The rank index
-    is threaded into the enclosed operations as loop induction variables.
-
-    After this pass, no `air.rank` operations remain in the IR.
-  }];
-}
-
 def AIRWrapFuncWithParallelPass : Pass<"air-wrap-func-with-parallel", "func::FuncOp"> {
   let summary = "Wraps the body of a given func.func operation inside an scf.parallel loop.";
   let constructor = "xilinx::air::createAIRWrapFuncWithParallelPass()";

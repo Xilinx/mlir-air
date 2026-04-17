@@ -15,7 +15,6 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
-#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -52,83 +51,101 @@ namespace air {
 
 static std::atomic<uint64_t> DmaMemcpyOpID;
 
-static LogicalResult
-extractOperandsFromSubview(memref::SubViewOp subview, OpBuilder &builder,
-                           SmallVector<Value, 4> &offsets,
-                           SmallVector<Value, 4> &sizes,
-                           SmallVector<Value, 4> &strides) {
-  auto loc = subview.getLoc();
-
-  // Strides: the DMA needs the result type's memory layout strides
-  // (= source_stride * subview_stride), not the subview's own strides.
+static void extractOperandsFromSubview(memref::SubViewOp subview,
+                                       OpBuilder &builder,
+                                       SmallVector<Value, 4> &offsets,
+                                       SmallVector<Value, 4> &sizes,
+                                       SmallVector<Value, 4> &strides) {
+  auto subview_offsets = subview.getOffsets().begin();
   auto static_offsets = subview.getStaticOffsets();
   auto static_sizes = subview.getStaticSizes();
   auto static_strides = subview.getStaticStrides();
+  auto loc = subview.getLoc();
+
+  // get the strides and offsets from the memref type
   auto inferredType = llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
       subview.getSourceType(), static_offsets, static_sizes, static_strides));
   int64_t offset;
   SmallVector<int64_t, 4> layout_strides;
-  if (failed(inferredType.getStridesAndOffset(layout_strides, offset)))
-    return failure();
-
-  for (auto ls : layout_strides) {
-    if (ShapedType::isDynamic(ls))
-      return failure();
-    strides.push_back(arith::ConstantIndexOp::create(builder, loc, ls));
+  auto successStrides =
+      inferredType.getStridesAndOffset(layout_strides, offset);
+  if (failed(successStrides)) {
+    llvm::outs() << "Failed to get strides\n";
+    return; // failure();
   }
 
-  // Offsets and sizes: use getMixed* APIs to handle static/dynamic uniformly.
-  for (auto ofr : subview.getMixedOffsets())
-    offsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
-  for (auto ofr : subview.getMixedSizes())
-    sizes.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
-
-  return success();
+  for (auto o : static_offsets) {
+    if (o >= 0)
+      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, o));
+    else
+      offsets.push_back(*subview_offsets++);
+  }
+  for (auto s : static_sizes)
+    sizes.push_back(arith::ConstantIndexOp::create(builder, loc, s));
+  for (auto s : layout_strides)
+    strides.push_back(arith::ConstantIndexOp::create(builder, loc, s));
 }
 
 static void extractOperandsFromReinterpretCast(
     memref::ReinterpretCastOp reinterpretCast, OpBuilder &builder,
     SmallVector<Value, 4> &offsets, SmallVector<Value, 4> &sizes,
     SmallVector<Value, 4> &strides) {
+  auto reinterpretCast_offsets = reinterpretCast.getOffsets().begin();
+  auto static_offsets = reinterpretCast.getStaticOffsets();
+  auto static_sizes = reinterpretCast.getStaticSizes();
   auto loc = reinterpretCast.getLoc();
 
-  // Use getMixed* APIs to handle static/dynamic values uniformly.
-  for (auto ofr : reinterpretCast.getMixedOffsets())
-    offsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
-  for (auto ofr : reinterpretCast.getMixedSizes())
-    sizes.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
-  for (auto ofr : reinterpretCast.getMixedStrides())
-    strides.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
-  // When the reinterpret_cast has fewer offset dimensions than the memref
-  // rank (e.g., a single flat offset for a 2D memref), we need to place
-  // the flat offset in the correct dimension. For transposed memrefs
-  // (stride-1 in the first dimension), the flat offset corresponds to the
-  // stride-1 dimension, not the last dimension. Find the stride-1
-  // dimension and place the offset there; pad others with zero.
-  // Search backward so that ambiguous cases (e.g., strides=[1,1]) default
-  // to the last dimension, matching the original prepend-zeros behavior.
-  if (offsets.size() < sizes.size()) {
-    int strideOneIdx = static_cast<int>(strides.size()) - 1;
-    for (int i = static_cast<int>(strides.size()) - 1; i >= 0; --i) {
-      if (auto cst =
-              getConstantIntValue(reinterpretCast.getMixedStrides()[i])) {
-        if (*cst == 1) {
-          strideOneIdx = i;
-          break;
+  // Fixup an issue in the reinterpretCast output memref's strided layout giving
+  // false dynamic strides
+  auto constifyStridesInStridedLayout =
+      [](MemRefType rankedMemRefType,
+         memref::ReinterpretCastOp reinterpretCast) {
+        StridedLayoutAttr stridedLayout =
+            dyn_cast_if_present<StridedLayoutAttr>(
+                rankedMemRefType.getLayout());
+        SmallVector<int64_t> correctedStaticStrides(
+            stridedLayout.getStrides().size(), 0);
+        for (auto [index, stride] :
+             llvm::enumerate(reinterpretCast.getMixedStrides())) {
+          if (auto constStride = getConstantIntValue(stride))
+            correctedStaticStrides[index] = *constStride;
+          else
+            correctedStaticStrides[index] = stridedLayout.getStrides()[index];
         }
-      }
-    }
-    // Save existing offsets (typically just one flat offset).
-    SmallVector<Value, 4> existingOffsets(offsets);
-    offsets.clear();
-    for (size_t i = 0; i < sizes.size(); ++i) {
-      if (static_cast<int>(i) == strideOneIdx && !existingOffsets.empty()) {
-        offsets.push_back(existingOffsets[0]);
-      } else {
-        offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
-      }
-    }
+        auto correctedStridedLayout = StridedLayoutAttr::get(
+            reinterpretCast->getContext(), stridedLayout.getOffset(),
+            ArrayRef(correctedStaticStrides));
+        return MemRefType::Builder(rankedMemRefType)
+            .setShape(rankedMemRefType.getShape())
+            .setLayout(correctedStridedLayout);
+      };
+
+  MemRefType reinterpretCastType = constifyStridesInStridedLayout(
+      reinterpretCast.getType(), reinterpretCast);
+
+  // get the strides and offsets from the memref type
+  int64_t offset;
+  SmallVector<int64_t, 4> layout_strides;
+  auto successStrides =
+      reinterpretCastType.getStridesAndOffset(layout_strides, offset);
+  if (failed(successStrides)) {
+    llvm::outs() << "Failed to get strides\n";
+    return; // failure();
   }
+
+  for (auto o : static_offsets) {
+    if (o >= 0)
+      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, o));
+    else
+      offsets.push_back(*reinterpretCast_offsets++);
+  }
+  for (auto s : static_sizes)
+    sizes.push_back(arith::ConstantIndexOp::create(builder, loc, s));
+  for (auto s : layout_strides)
+    strides.push_back(arith::ConstantIndexOp::create(builder, loc, s));
+  while (offsets.size() < sizes.size())
+    offsets.insert(offsets.begin(),
+                   arith::ConstantIndexOp::create(builder, loc, 0));
 }
 
 // Detect self-copies that would produce invalid self-DMAs. After unwrapping
@@ -189,47 +206,17 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   if (air::isL3(src_type) && air::isL3(dst_type))
     return failure();
 
+  if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
+    return failure();
+
   SmallVector<Value, 4> src_offsets, dst_offsets;
   SmallVector<Value, 4> src_strides, dst_strides;
   SmallVector<Value, 4> src_sizes, dst_sizes;
 
   if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-    if (failed(extractOperandsFromSubview(subview, rewriter, src_offsets,
-                                          src_sizes, src_strides)))
-      return failure();
+    extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
+                               src_strides);
     src = subview.getSource();
-    // Also peel a reinterpret_cast if the subview's source is one.
-    // For transposed memrefs (stride-1 in the first dimension, i.e. the
-    // outer stride is > 1), the reinterpret_cast has a flat offset into
-    // the buffer corresponding to the launch's induction variable offset
-    // in that dimension. We find the dimension with stride 1 and add the
-    // reinterpret_cast offset there; all other offset slots retain the
-    // subview offsets which are expressed relative to the cast's base.
-    if (auto reinterpretCast = src.getDefiningOp<memref::ReinterpretCastOp>()) {
-      auto rcOffsets = reinterpretCast.getOffsets();
-      if (!rcOffsets.empty() && !src_offsets.empty()) {
-        // Determine which subview dimension has stride == 1 (innermost).
-        // The reinterpret_cast flat offset belongs to that dimension.
-        int strideOneIdx = static_cast<int>(src_strides.size()) - 1;
-        for (int i = 0; i < static_cast<int>(src_strides.size()); ++i) {
-          if (auto cst = getConstantIntValue(src_strides[i])) {
-            if (*cst == 1) {
-              strideOneIdx = i;
-              break;
-            }
-          }
-        }
-        // Add the reinterpret_cast flat offset to the stride-1 dimension's
-        // subview offset. This is the only dimension where the flat offset
-        // adds without a stride multiplier.
-        Value rcOff = rcOffsets[0];
-        Value combined =
-            arith::AddIOp::create(rewriter, reinterpretCast.getLoc(),
-                                  src_offsets[strideOneIdx], rcOff);
-        src_offsets[strideOneIdx] = combined;
-      }
-      src = reinterpretCast.getSource();
-    }
   } else if (auto reinterpretCast =
                  src.getDefiningOp<memref::ReinterpretCastOp>()) {
     extractOperandsFromReinterpretCast(reinterpretCast, rewriter, src_offsets,
@@ -238,30 +225,9 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   }
 
   if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-    if (failed(extractOperandsFromSubview(subview, rewriter, dst_offsets,
-                                          dst_sizes, dst_strides)))
-      return failure();
+    extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
+                               dst_strides);
     dst = subview.getSource();
-    if (auto reinterpretCast = dst.getDefiningOp<memref::ReinterpretCastOp>()) {
-      auto rcOffsets = reinterpretCast.getOffsets();
-      if (!rcOffsets.empty() && !dst_offsets.empty()) {
-        int strideOneIdx = static_cast<int>(dst_strides.size()) - 1;
-        for (int i = 0; i < static_cast<int>(dst_strides.size()); ++i) {
-          if (auto cst = getConstantIntValue(dst_strides[i])) {
-            if (*cst == 1) {
-              strideOneIdx = i;
-              break;
-            }
-          }
-        }
-        Value rcOff = rcOffsets[0];
-        Value combined =
-            arith::AddIOp::create(rewriter, reinterpretCast.getLoc(),
-                                  dst_offsets[strideOneIdx], rcOff);
-        dst_offsets[strideOneIdx] = combined;
-      }
-      dst = reinterpretCast.getSource();
-    }
   } else if (auto reinterpretCast =
                  dst.getDefiningOp<memref::ReinterpretCastOp>()) {
     extractOperandsFromReinterpretCast(reinterpretCast, rewriter, dst_offsets,
@@ -425,54 +391,6 @@ class LinalgPackToAIRDma : public OpRewritePattern<linalg::PackOp> {
     } else {
       tile = op.getSource();
       transpPerm = getPackUnpackNormalizedPerm(srcType.getRank(), innerDimsPos);
-    }
-
-    auto transposeOp = memref::TransposeOp::create(
-        rewriter, loc, tile,
-        AffineMapAttr::get(
-            AffineMap::getPermutationMap(transpPerm, op->getContext())));
-    SmallVector<Value, 2> empty;
-    xilinx::air::DmaMemcpyNdOp::create(
-        rewriter, loc, SmallVector<Type, 1>{}, empty, op.getDest(), empty,
-        empty, empty, transposeOp.getResult(), empty, empty, empty,
-        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-// Pattern to lower `linalg.unpack` on memrefs into transpose +
-// dma_memcpy_nd. Mirrors LinalgPackToAIRDma for the inverse direction.
-class LinalgUnPackToAIRDma : public OpRewritePattern<linalg::UnPackOp> {
-  using OpRewritePattern<linalg::UnPackOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(linalg::UnPackOp op,
-                                PatternRewriter &rewriter) const override {
-    auto srcType = dyn_cast_if_present<MemRefType>(op.getSource().getType());
-    auto dstType = dyn_cast_if_present<MemRefType>(op.getDest().getType());
-    if (!srcType || !dstType)
-      return failure();
-    if (llvm::any_of(op.getStaticInnerTiles(),
-                     [](int64_t s) { return ShapedType::isDynamic(s); }))
-      return failure();
-
-    Location loc = op->getLoc();
-    auto innerDimsPos = op.getInnerDimsPos();
-    auto srcShape = srcType.getShape();
-    SmallVector<int64_t> transpPerm;
-    Value tile = nullptr;
-
-    if (llvm::any_of(innerDimsPos,
-                     [srcShape](int64_t i) { return srcShape[i] != 1; })) {
-      // Non-degenerate case: transpose from packed layout to strip-mined.
-      auto perm = getPackUnpackStripMinedPerm(srcShape, innerDimsPos,
-                                              op.getOuterDimsPerm());
-      tile = op.getSource();
-      transpPerm = perm;
-    } else {
-      // Degenerate inner dims: use normalized permutation (inverted).
-      tile = op.getSource();
-      transpPerm = getPackUnpackNormalizedPerm(srcType.getRank(), innerDimsPos);
-      transpPerm = invertPermutationVector(transpPerm);
     }
 
     auto transposeOp = memref::TransposeOp::create(
@@ -800,8 +718,7 @@ createCascadeChannelOp(OpBuilder &builder, ModuleOp module, Location loc,
   // Create the channel op with the given bundle sizes and "cascade" tag.
   auto channel_op = air::ChannelOp::create(
       builder, loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
-      builder.getStringAttr("cascade"),
-      /*fusion_group=*/mlir::StringAttr{});
+      builder.getStringAttr("cascade"));
 
   return channel_op;
 }
@@ -1439,15 +1356,15 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
 
     // Simplify all the subviews so we can rewrite them easily.
     // Mostly this is propagating constant sizes into dimensioned memref types.
-    RewritePatternSet stage1Patterns(context);
-    linalg::populateLinalgTilingCanonicalizationPatterns(stage1Patterns);
+    RewritePatternSet stage1Patterns =
+        linalg::getLinalgTilingCanonicalizationPatterns(context);
     memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, context);
     memref::populateComposeSubViewPatterns(stage1Patterns, context);
     (void)applyPatternsGreedily(module, std::move(stage1Patterns));
 
     RewritePatternSet stage2Patterns(context);
     stage2Patterns.insert<LinalgCopyToMemRefCopy, MemrefCopyToAIRDmaConversion,
-                          LinalgPackToAIRDma, LinalgUnPackToAIRDma>(context);
+                          LinalgPackToAIRDma>(context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(stage2Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
@@ -1975,76 +1892,6 @@ struct InsertEmptyLaunchOverHerdPass
   }
 };
 
-struct AIRRankToLaunchPass
-    : public air::impl::AIRRankToLaunchBase<AIRRankToLaunchPass> {
-
-  AIRRankToLaunchPass() = default;
-  AIRRankToLaunchPass(const AIRRankToLaunchPass &pass) {}
-
-  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<air::airDialect>();
-    registry.insert<scf::SCFDialect>();
-    registry.insert<arith::ArithDialect>();
-  }
-
-  void runOnOperation() override {
-    auto module = getOperation();
-
-    SmallVector<air::RankOp> rankOps;
-    module.walk([&](air::RankOp op) { rankOps.push_back(op); });
-
-    for (auto rankOp : rankOps) {
-      OpBuilder builder(rankOp);
-      auto loc = rankOp.getLoc();
-
-      // If the rank has async dependencies, insert a blocking wait before
-      // the serialized loops so that execution respects the dependency order.
-      if (!rankOp.getAsyncDependencies().empty()) {
-        air::WaitAllOp::create(builder, loc, Type{},
-                               rankOp.getAsyncDependencies());
-      }
-
-      auto c0 = arith::ConstantIndexOp::create(builder, loc, 0);
-      auto c1 = arith::ConstantIndexOp::create(builder, loc, 1);
-
-      // Build nested scf.for loops for each rank dimension.
-      SmallVector<scf::ForOp> loops;
-      auto sizeOpers = rankOp.getSizeOperands();
-      for (unsigned d = 0; d < rankOp.getNumDims(); ++d) {
-        auto loop = scf::ForOp::create(builder, loc, c0, sizeOpers[d], c1);
-        loops.push_back(loop);
-        builder.setInsertionPointToStart(loop.getBody());
-      }
-
-      // Clone the body of rank into the innermost loop.
-      IRMapping remap;
-      for (unsigned d = 0; d < rankOp.getNumDims(); ++d) {
-        remap.map(rankOp.getIds()[d], loops[d].getInductionVar());
-        remap.map(rankOp.getSize()[d], sizeOpers[d]);
-      }
-      for (unsigned i = 0; i < rankOp.getNumKernelOperands(); ++i)
-        remap.map(rankOp.getKernelArgument(i), rankOp.getKernelOperand(i));
-
-      auto &ops = rankOp.getBody().front().getOperations();
-      for (auto oi = ops.begin(), oe = --ops.end(); oi != oe; ++oi)
-        builder.clone(*oi, remap);
-
-      // Handle async token replacement. The scf.for loops are synchronous,
-      // so all iterations complete before execution proceeds past the
-      // outermost loop. The wait_all simply produces a completion token.
-      if (rankOp.getAsyncToken()) {
-        builder.setInsertionPointAfter(loops.front());
-        auto waitAll = air::WaitAllOp::create(
-            builder, loc, air::AsyncTokenType::get(builder.getContext()),
-            ValueRange{});
-        rankOp.getAsyncToken().replaceAllUsesWith(waitAll.getAsyncToken());
-      }
-
-      rankOp.erase();
-    }
-  }
-};
-
 // Identifies arith operations where all operands are either constants, or
 // produced by IndexCastOp casting from IndexType. If detected, canonicalize
 // IndexCast ops by changing the arith op's input/output types to IndexType.
@@ -2233,11 +2080,6 @@ public:
   AIRWrapFuncWithParallelPass(
       const ::xilinx::air::AIRWrapFuncWithParallelPassOptions &options)
       : AIRWrapFuncWithParallelPassBase(options) {}
-
-  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<scf::SCFDialect>();
-    registry.insert<arith::ArithDialect>();
-  }
 
   void runOnOperation() override;
 
@@ -2711,10 +2553,6 @@ std::unique_ptr<mlir::Pass> createCopyToDmaPass() {
 
 std::unique_ptr<mlir::Pass> createInsertEmptyLaunchOverHerdPass() {
   return std::make_unique<InsertEmptyLaunchOverHerdPass>();
-}
-
-std::unique_ptr<mlir::Pass> createAIRRankToLaunchPass() {
-  return std::make_unique<AIRRankToLaunchPass>();
 }
 
 std::unique_ptr<Pass> createAIRWrapFuncWithParallelPass() {

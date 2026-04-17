@@ -1522,6 +1522,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // DMAConfigureTaskForOp result.
     generateAwaitsFromWaitAllOps(module);
 
+    // Safety net: generate DMAAwaitTaskOp for any S2MM DMAConfigureTaskForOp
+    // with issue_token=true that has no corresponding await. This handles cases
+    // where air.channel.get ops don't produce async tokens (void return) and
+    // consequently no airrt.wait_all is generated for the output channels.
+    generateMissingOutputAwaits(module);
+
     // Renumber npu dma ops
     renumberNpuDmaOps(module.getBody());
 
@@ -1987,6 +1993,55 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         waitOp->erase();
       }
     }
+  }
+
+  // Generate DMAAwaitTaskOp for S2MM output channels that have
+  // DMAConfigureTaskForOp with issue_token=true but no corresponding
+  // DMAAwaitTaskOp. This is a safety net for designs where air.channel.get
+  // ops have void return type and no air.wait_all is generated for them.
+  void generateMissingOutputAwaits(ModuleOp module) {
+    module.walk([&](func::FuncOp f) {
+      auto device = f->getParentOfType<AIE::DeviceOp>();
+      if (!device || f.getBody().empty())
+        return;
+
+      // Collect all DMAConfigureTaskForOp with issue_token=true
+      SmallVector<AIEX::DMAConfigureTaskForOp> tokenTasks;
+      f.walk([&](AIEX::DMAConfigureTaskForOp configTask) {
+        if (configTask.getIssueToken())
+          tokenTasks.push_back(configTask);
+      });
+      if (tokenTasks.empty())
+        return;
+
+      // Collect all existing DMAAwaitTaskOp targets
+      llvm::DenseSet<Value> awaitedValues;
+      f.walk([&](AIEX::DMAAwaitTaskOp awaitOp) {
+        awaitedValues.insert(awaitOp.getTask());
+      });
+
+      // For each issue_token task not yet awaited, check if it's S2MM and
+      // generate an await at the end of the function body.
+      auto &lastBlock = f.getBody().back();
+      for (auto configTask : tokenTasks) {
+        if (awaitedValues.contains(configTask.getResult()))
+          continue;
+
+        // Verify this is an S2MM (output) channel
+        auto allocSymbol = configTask.getAlloc();
+        StringRef metadata = allocSymbol.getLeafReference().getValue();
+        auto allocOp =
+            AIE::ShimDMAAllocationOp::getForSymbol(device, metadata);
+        if (!allocOp ||
+            allocOp.getChannelDir() != AIE::DMAChannelDir::S2MM)
+          continue;
+
+        // Insert await before the terminator
+        OpBuilder builder(&lastBlock, std::prev(lastBlock.end()));
+        AIEX::DMAAwaitTaskOp::create(builder, configTask.getLoc(),
+                                     configTask.getResult());
+      }
+    });
   }
 
   // Purge DMA async tokens - they are no longer needed after WaitAllOp

@@ -611,12 +611,7 @@ private:
         args.push_back(v);
     }
     Operation *new_op = nullptr;
-    if (auto rank = dyn_cast_if_present<air::RankOp>(op.getOperation())) {
-      auto new_rank =
-          createAsyncHierarchyRank(rewriter, rank, deps, args, constants);
-      new_op = new_rank.getOperation();
-      updateAsyncExecuteGraphWithNewNode(new_rank, asyncExecuteGraph);
-    } else if (auto launch =
+    if (auto launch =
                    dyn_cast_if_present<air::LaunchOp>(op.getOperation())) {
       auto new_launch = createAsyncHierarchy<air::LaunchOp>(
           rewriter, launch, deps, args, constants);
@@ -656,50 +651,6 @@ private:
     auto loc = op->getLoc();
     T new_op = T::create(rewriter, loc, deps, op.getSizeOperands(), args, true,
                          op->getAttrs());
-    assignOpId(new_op);
-
-    auto &bb = new_op.getBody().front();
-    for (unsigned i = 0; i < op.getIds().size(); i++) {
-      auto ivs = op.getIds()[i];
-      ivs.replaceAllUsesWith(new_op.getIds()[i]);
-    }
-    for (unsigned i = 0; i < op.getSize().size(); i++) {
-      auto s = op.getSize()[i];
-      s.replaceAllUsesWith(new_op.getSize()[i]);
-    }
-    auto &body = op.getBody().front().getOperations();
-    bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    rewriter.setInsertionPointToStart(&new_op.getRegion().front());
-    for (auto c : constants) {
-      replaceAllUsesInRegionWith(
-          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
-          new_op.getRegion());
-    }
-
-    int i = 0;
-    auto old_kernel_args = op.getKernelArguments();
-    auto new_kernel_args = new_op.getKernelArguments();
-    for (Value v : old_kernel_args)
-      replaceAllUsesInRegionWith(v, new_kernel_args[i++], new_op.getRegion());
-
-    return new_op;
-  }
-
-  // Specialized version for RankOp that threads the universe operand.
-  air::RankOp createAsyncHierarchyRank(RewriterBase &rewriter, air::RankOp op,
-                                       SmallVector<Value, 1> deps,
-                                       SmallVector<Value, 4> args,
-                                       SmallVector<Value, 4> constants) {
-    auto loc = op->getLoc();
-    air::RankOp new_op;
-    if (op.getUniverse()) {
-      new_op =
-          air::RankOp::create(rewriter, loc, deps, op.getUniverse(),
-                              op.getSizeOperands(), args, true, op->getAttrs());
-    } else {
-      new_op = air::RankOp::create(rewriter, loc, deps, op.getSizeOperands(),
-                                   args, true, op->getAttrs());
-    }
     assignOpId(new_op);
 
     auto &bb = new_op.getBody().front();

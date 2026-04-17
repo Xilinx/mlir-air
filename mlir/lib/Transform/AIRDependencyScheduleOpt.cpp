@@ -2533,8 +2533,7 @@ public:
     sizes[chanDim] *= factor;
     air::ChannelOp::create(builder, op->getLoc(), chan_op.getSymName().str(),
                            builder.getI64ArrayAttr(sizes),
-                           chan_op.getChannelType(),
-                           /*fusion_group=*/mlir::StringAttr{});
+                           chan_op.getChannelType());
 
     // Add scf.parallel to unroll channel puts and gets
     auto puts = air::getChannelPutOpThroughSymbol(chan_op);
@@ -6246,7 +6245,7 @@ public:
     func.walk([&shimFors](scf::ForOp forOp) {
       // Get for loop band outside of any segment or herd region, and directly
       // nested in a launch or func op.
-      if (isa<air::LaunchOp, air::RankOp, func::FuncOp>(forOp->getParentOp())) {
+      if (isa<air::LaunchOp, func::FuncOp>(forOp->getParentOp())) {
         shimFors.push_back(forOp);
       }
     });
