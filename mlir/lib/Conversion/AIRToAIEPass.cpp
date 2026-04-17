@@ -227,12 +227,26 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
     h->setAttr(row_name,
                IntegerAttr::get(IntegerType::get(ctx, 32), row_offset));
 
+  // Get the number of columns in the device for wrapping collapsed herds.
+  // After air-collapse-herd, a 2D herd (e.g. 4x4) becomes 1D (16x1), but the
+  // physical device may have fewer columns (e.g. 4 for npu2_4col). We wrap
+  // the linear herd index back into a 2D physical layout.
+  auto &targetModel = aie_device.getTargetModel();
+  int64_t num_device_cols = targetModel.columns();
+
   for (auto y = 0; y < herd_size_y; y++) {
     for (auto x = 0; x < herd_size_x; x++) {
       auto hloc = h.getLoc();
       IRMapping remap;
-      auto phys_x = x + col_offset;
-      auto phys_y = y + row_offset;
+      int64_t phys_x, phys_y;
+      if (herd_size_y == 1 && herd_size_x > num_device_cols) {
+        // Collapsed herd exceeds device columns: wrap into 2D layout
+        phys_x = (x % num_device_cols) + col_offset;
+        phys_y = (x / num_device_cols) + row_offset;
+      } else {
+        phys_x = x + col_offset;
+        phys_y = y + row_offset;
+      }
 
       // make the aie.tile
       auto tile = air::getPhysTileOp(aie_device, phys_x, phys_y);
