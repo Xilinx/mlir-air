@@ -3,6 +3,7 @@
 
 #include "fd_passing.h"
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
