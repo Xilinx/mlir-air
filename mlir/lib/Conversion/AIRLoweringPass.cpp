@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
@@ -47,6 +48,99 @@ using namespace mlir;
 
 namespace xilinx {
 namespace air {
+
+/// Return true if \p ifOp's condition is an arith.cmpi comparing a
+/// scf.parallel induction variable — the segment-unroll index check pattern.
+static bool isSegmentUnrollCondition(scf::IfOp ifOp) {
+  auto cmpOp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+  if (!cmpOp)
+    return false;
+  for (auto operand : cmpOp->getOperands())
+    if (auto blockArg = dyn_cast<BlockArgument>(operand))
+      if (isa<scf::ParallelOp>(blockArg.getOwner()->getParentOp()))
+        return true;
+  return false;
+}
+
+/// Return true if two blocks are structurally equivalent: same number of ops,
+/// same op types in order, and same operands (values defined outside the
+/// blocks, such as dependencies, must match).
+static bool blocksAreEquivalent(Block *a, Block *b) {
+  auto &opsA = a->getOperations();
+  auto &opsB = b->getOperations();
+  if (opsA.size() != opsB.size())
+    return false;
+  // Build a mapping from block-a values to block-b values for results
+  // defined within the blocks.
+  DenseMap<Value, Value> valueMap;
+  auto itA = opsA.begin(), itB = opsB.begin();
+  for (; itA != opsA.end(); ++itA, ++itB) {
+    if (itA->getName() != itB->getName())
+      return false;
+    if (itA->getNumOperands() != itB->getNumOperands())
+      return false;
+    if (itA->getNumResults() != itB->getNumResults())
+      return false;
+    // Check operands are equivalent (same external value, or mapped internal).
+    for (auto [opA, opB] : llvm::zip(itA->getOperands(), itB->getOperands())) {
+      auto it = valueMap.find(opA);
+      if (it != valueMap.end()) {
+        if (it->second != opB)
+          return false;
+      } else if (opA != opB) {
+        return false;
+      }
+    }
+    // Map results from A to B for subsequent operand checks.
+    for (auto [resA, resB] : llvm::zip(itA->getResults(), itB->getResults()))
+      valueMap[resA] = resB;
+  }
+  return true;
+}
+
+/// Fold scf.if ops whose both branches contain only trivial ops (as determined
+/// by \p isEligibleOp) and are structurally equivalent, by inlining the
+/// then-branch before the scf.if. When segment-unroll channel specialization
+/// replaces L2 channel ops with wait_all, both branches become semantically
+/// identical and the scf.if is dead.
+/// If \p requireSegmentUnrollCond is true, only fold scf.if ops whose
+/// condition matches the segment-unroll index check pattern.
+static void foldTrivialScfIfs(Operation *rootOp,
+                              function_ref<bool(Operation &)> isEligibleOp,
+                              bool requireSegmentUnrollCond = false,
+                              PatternRewriter *rewriter = nullptr) {
+  SmallVector<scf::IfOp> ifsToFold;
+  rootOp->walk([&](scf::IfOp ifOp) {
+    if (!ifOp.elseBlock())
+      return;
+    if (requireSegmentUnrollCond && !isSegmentUnrollCondition(ifOp))
+      return;
+    auto allEligible = [&](Block *block) {
+      return llvm::all_of(block->getOperations(),
+                          [&](Operation &op) { return isEligibleOp(op); });
+    };
+    if (!allEligible(ifOp.thenBlock()) || !allEligible(ifOp.elseBlock()))
+      return;
+    // Verify both branches are structurally equivalent to avoid dropping
+    // dependencies that only exist in the else-branch.
+    if (blocksAreEquivalent(ifOp.thenBlock(), ifOp.elseBlock()))
+      ifsToFold.push_back(ifOp);
+  });
+  for (auto ifOp : ifsToFold) {
+    Block *thenBlock = ifOp.thenBlock();
+    auto thenYield = cast<scf::YieldOp>(thenBlock->getTerminator());
+    auto &ops = thenBlock->getOperations();
+    ifOp->getBlock()->getOperations().splice(Block::iterator(ifOp), ops,
+                                             ops.begin(), --ops.end());
+    for (auto [res, yieldVal] :
+         llvm::zip(ifOp.getResults(), thenYield.getOperands()))
+      res.replaceAllUsesWith(yieldVal);
+    if (rewriter)
+      rewriter->eraseOp(ifOp);
+    else
+      ifOp->erase();
+  }
+}
 
 class AIRLaunchConversion : public ConversionPattern {
 public:
@@ -171,7 +265,7 @@ public:
         segment->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
     rewriter.setInsertionPointToStart(scfPar.getBody());
     for (auto &o : segment.getBody().front().getOperations()) {
-      if (auto herdOp = dyn_cast<air::HerdOp>(o)) {
+      if (auto herdOp = dyn_cast_if_present<air::HerdOp>(o)) {
         if (segmentName) {
           herdOp->setAttr("segment_name", segmentName);
         }
@@ -179,11 +273,11 @@ public:
       if (!isa<air::ChannelGetOp, air::ChannelPutOp, air::SegmentTerminatorOp>(
               o)) {
         rewriter.clone(o, remap);
-      } else if (auto chanOp = dyn_cast<air::ChannelInterface>(o)) {
+      } else if (auto chanOp = dyn_cast_if_present<air::ChannelInterface>(o)) {
         // clone L3 get/put
         BaseMemRefType memrefTy =
             llvm::cast<BaseMemRefType>(chanOp.getMemref().getType());
-        if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
+        if (air::isL3(memrefTy)) {
           rewriter.clone(o, remap);
           continue;
         }
@@ -199,6 +293,45 @@ public:
         }
       }
     }
+
+    // Replace any remaining non-L3 channel ops nested inside scf.if/scf.for
+    // within the segment body. The top-level loop above only processes
+    // direct children; channel ops inside conditionals (e.g., scf.if on
+    // segment unroll index) are missed. Replace them with wait_all (or
+    // erase if non-async) to eliminate data movement already handled by
+    // air-to-aie. Both L1 and L2 channel ops are replaced; only L3
+    // (shim DMA) channel ops are preserved.
+    SmallVector<air::ChannelInterface> nestedChanOps;
+    scfPar.walk([&](air::ChannelInterface chanOp) {
+      auto memrefTy = llvm::cast<BaseMemRefType>(chanOp.getMemref().getType());
+      if (!air::isL3(memrefTy))
+        nestedChanOps.push_back(chanOp);
+    });
+    for (auto chanOp : nestedChanOps) {
+      Operation *o = chanOp.getOperation();
+      if (o->getNumResults()) {
+        auto tok = o->getResult(0);
+        auto async = cast<air::AsyncOpInterface>(o);
+        SmallVector<Value> deps;
+        for (auto d : async.getAsyncDependencies())
+          deps.push_back(d);
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(o);
+        auto w =
+            air::WaitAllOp::create(rewriter, o->getLoc(), tok.getType(), deps);
+        tok.replaceAllUsesWith(w.getResult(0));
+      }
+      rewriter.eraseOp(o);
+    }
+
+    // After replacing nested L2 channel ops, scf.if ops on segment unroll
+    // indices may have both branches containing only wait_all + yield.
+    // Fold these by inlining the then branch, since both branches are
+    // semantically identical.
+    foldTrivialScfIfs(
+        scfPar,
+        [](Operation &op) { return isa<air::WaitAllOp, scf::YieldOp>(op); },
+        /*requireSegmentUnrollCond=*/false, &rewriter);
 
     if (op->getNumResults()) {
       SmallVector<Value> deps;
@@ -360,23 +493,17 @@ public:
         llvm::cast<BaseMemRefType>(op.getDstMemref().getType());
     bool isFromTile = false;
     bool isFullMemcpy = false;
-    if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
-        dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
+    if (air::isL1(src) && air::isL3(dst)) {
       isFromTile = true;
-    } else if (dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
-               src.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
+    } else if (air::isL1(dst) && air::isL3(src)) {
       isFromTile = false;
-    } else if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
-               dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    } else if (air::isL1(src) && air::isL2(dst)) {
       isFromTile = true;
-    } else if (dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
-               src.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    } else if (air::isL1(dst) && air::isL2(src)) {
       isFromTile = false;
-    } else if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
-               dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    } else if (air::isL3(src) && air::isL2(dst)) {
       isFullMemcpy = true;
-    } else if (dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
-               src.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    } else if (air::isL3(dst) && air::isL2(src)) {
       isFromTile = true;
       isFullMemcpy = true;
     } else
@@ -438,18 +565,24 @@ public:
 
     SmallVector<Value, 4> offsets(4, zero);
     SmallVector<Value, 4> lengths(4, one);
-    SmallVector<Value, 3> strides(3, zero);
+    SmallVector<Value, 4> strides(4, zero);
 
     int idx = 4 - src.getRank();
     for (auto o : isFromTile ? op.getDstOffsets() : op.getSrcOffsets())
       offsets[idx++] = arith::IndexCastOp::create(rewriter, op->getLoc(),
                                                   IntegerType::get(ctx, 64), o);
-    idx = 4 - dst.getRank();
     auto op_strides = isFromTile ? op.getDstStrides() : op.getSrcStrides();
-    if (op_strides.size())
-      for (auto o : op_strides.drop_back())
+    if (op_strides.size()) {
+      // Take last min(4, N) strides, drop leading strides if N > 4.
+      // The innermost stride (last element) is now preserved.
+      auto strides_to_use = op_strides;
+      if (strides_to_use.size() > 4)
+        strides_to_use = strides_to_use.drop_front(strides_to_use.size() - 4);
+      idx = 4 - strides_to_use.size();
+      for (auto o : strides_to_use)
         strides[idx++] = arith::IndexCastOp::create(
             rewriter, op->getLoc(), IntegerType::get(ctx, 64), o);
+    }
     idx = 4 - src.getRank();
     for (auto o : isFromTile ? op.getDstSizes() : op.getSrcSizes())
       lengths[idx++] = arith::IndexCastOp::create(rewriter, op->getLoc(),
@@ -488,8 +621,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   BaseMemRefType thisMemrefType =
       llvm::cast<BaseMemRefType>(thisOp.getMemref().getType());
 
-  bool thisOpIsInShim =
-      thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3;
+  bool thisOpIsInShim = xilinx::air::isL3(thisMemrefType);
   if (!thisOpIsInShim)
     return nullptr;
 
@@ -567,14 +699,23 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     return failure();
   }
 
-  strides.pop_back();
+  while (offsets.size() > 4) {
+    offsets.erase(offsets.begin());
+  }
   while (offsets.size() < 4) {
     offsets.insert(offsets.begin(), zero_idx);
+  }
+  while (wraps.size() > 4) {
+    wraps.erase(wraps.begin());
   }
   while (wraps.size() < 4) {
     wraps.insert(wraps.begin(), one_idx);
   }
-  while (strides.size() < 3) {
+  // Truncate to last 4 elements if more than 4 strides.
+  while (strides.size() > 4) {
+    strides.erase(strides.begin());
+  }
+  while (strides.size() < 4) {
     strides.insert(strides.begin(), zero_idx);
   }
 
@@ -603,6 +744,9 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   thisOp->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id
                             // has been assigned.
   airrtOp->setAttrs(thisOp->getDiscardableAttrDictionary());
+  // Preserve channel name for downstream ordering decisions.
+  if (auto chanName = thisOp->getAttrOfType<FlatSymbolRefAttr>("chan_name"))
+    airrtOp->setDiscardableAttr("chan_name", chanName);
 
   if (airrtOp->hasAttr("metadata") || !airrtOp->hasAttr("metadataArray")) {
     return airrtOp;
@@ -612,7 +756,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   auto iter = air::getIndexToMetadataArrayFromChannelIndices(thisOp);
   if (!iter) {
     thisOp->emitOpError(
-        "channel indices failed to convert to convert to metadataArray index.");
+        "channel indices failed to convert to metadataArray index.");
     return failure();
   }
 
@@ -621,7 +765,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     if (!metadataArray || i >= metadataArray.size())
       return false;
 
-    if (auto dictAttr = dyn_cast<DictionaryAttr>(metadataArray[i])) {
+    if (auto dictAttr = dyn_cast_if_present<DictionaryAttr>(metadataArray[i])) {
       if (auto shimNameAttr = dictAttr.getAs<StringAttr>("base")) {
         op->setAttr("metadata",
                     FlatSymbolRefAttr::get(op->getContext(), shimNameAttr));
@@ -636,11 +780,36 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   return airrtOp;
 }
 
+// Cache for channel name → first counterpart op lookups, avoiding O(n)
+// module walks per channel op during conversion.
+struct ChannelCounterpartCache {
+  llvm::DenseMap<StringAttr, air::ChannelGetOp> firstGet;
+  llvm::DenseMap<StringAttr, air::ChannelPutOp> firstPut;
+
+  void build(ModuleOp module) {
+    module.walk([&](air::ChannelGetOp get) {
+      auto name = get->getAttrOfType<FlatSymbolRefAttr>("chan_name").getAttr();
+      if (!firstGet.count(name))
+        firstGet[name] = get;
+    });
+    module.walk([&](air::ChannelPutOp put) {
+      auto name = put->getAttrOfType<FlatSymbolRefAttr>("chan_name").getAttr();
+      if (!firstPut.count(name))
+        firstPut[name] = put;
+    });
+  }
+};
+
 template <typename OpT>
 class AIRChannelGetPutToAIRRtConversion : public OpConversionPattern<OpT> {
 public:
   using OpConversionPattern<OpT>::OpConversionPattern;
   using OpAdaptor = typename OpT::Adaptor;
+
+  AIRChannelGetPutToAIRRtConversion(const TypeConverter &typeConverter,
+                                    MLIRContext *context,
+                                    ChannelCounterpartCache &cache)
+      : OpConversionPattern<OpT>(typeConverter, context), cache(cache) {}
 
   LogicalResult
   matchAndRewrite(OpT op, OpAdaptor adaptor,
@@ -652,10 +821,22 @@ public:
     if (llvm::isa<AIE::CoreOp>(op->getParentOp()))
       return failure();
 
-    auto otherOps = getTheOtherChannelOpThroughSymbol(op);
-    if (otherOps.empty())
-      return op->emitOpError("failed to find the other side of air.channel");
-    auto otherOp = otherOps[0];
+    // Use cached lookup instead of module-wide walk per op.
+    auto name = op->template getAttrOfType<FlatSymbolRefAttr>("chan_name");
+    if (!name)
+      return op->emitOpError("missing chan_name attribute");
+    air::ChannelInterface otherOp;
+    if constexpr (std::is_same_v<OpT, air::ChannelPutOp>) {
+      auto it = cache.firstGet.find(name.getAttr());
+      if (it == cache.firstGet.end())
+        return op->emitOpError("failed to find the other side of air.channel");
+      otherOp = cast<air::ChannelInterface>(it->second.getOperation());
+    } else {
+      auto it = cache.firstPut.find(name.getAttr());
+      if (it == cache.firstPut.end())
+        return op->emitOpError("failed to find the other side of air.channel");
+      otherOp = cast<air::ChannelInterface>(it->second.getOperation());
+    }
 
     auto airrtOp =
         AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, otherOp);
@@ -698,6 +879,9 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  ChannelCounterpartCache &cache;
 };
 
 class L2AllocToAIRRtConversion : public ConversionPattern {
@@ -710,7 +894,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto alloc = cast<memref::AllocOp>(op);
     auto type = alloc.getType();
-    if (type.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    if (air::isL2(type)) {
       rewriter.replaceOpWithNewOp<airrt::AllocOp>(op, type);
       return success();
     }
@@ -728,7 +912,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto dealloc = cast<memref::DeallocOp>(op);
     auto type = llvm::cast<BaseMemRefType>(dealloc.getMemref().getType());
-    if (type.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    if (air::isL2(type)) {
       rewriter.replaceOpWithNewOp<airrt::DeallocOp>(op, SmallVector<Type>{},
                                                     op->getOperands());
       return success();
@@ -738,7 +922,7 @@ public:
 };
 
 LogicalResult lowerAirExecute(Operation *op) {
-  ModuleOp module = dyn_cast<ModuleOp>(op);
+  ModuleOp module = dyn_cast_if_present<ModuleOp>(op);
   if (!module)
     return failure();
 
@@ -792,7 +976,7 @@ LogicalResult lowerAirExecute(Operation *op) {
 
 template <typename hierTy, typename loadTy>
 LogicalResult generateLoadForHierarchy(Operation *op) {
-  ModuleOp module = dyn_cast<ModuleOp>(op);
+  ModuleOp module = dyn_cast_if_present<ModuleOp>(op);
   if (!module)
     return failure();
 
@@ -940,8 +1124,8 @@ public:
   LogicalResult
   matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    scf::ForOp newOp =
-        dyn_cast<scf::ForOp>(rewriter.cloneWithoutRegions(*op.getOperation()));
+    scf::ForOp newOp = dyn_cast_if_present<scf::ForOp>(
+        rewriter.cloneWithoutRegions(*op.getOperation()));
     rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(),
                                 newOp.getRegion().end());
 
@@ -964,7 +1148,7 @@ public:
   LogicalResult
   matchAndRewrite(scf::ParallelOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    scf::ParallelOp newOp = dyn_cast<scf::ParallelOp>(
+    scf::ParallelOp newOp = dyn_cast_if_present<scf::ParallelOp>(
         rewriter.cloneWithoutRegions(*op.getOperation()));
     rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(),
                                 newOp.getRegion().end());
@@ -982,7 +1166,7 @@ public:
 };
 
 LogicalResult ScfParToAffineForConversion(Operation *op) {
-  func::FuncOp f = dyn_cast<func::FuncOp>(op);
+  func::FuncOp f = dyn_cast_if_present<func::FuncOp>(op);
   if (!f)
     return failure();
 
@@ -1015,7 +1199,8 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
     std::vector<int> par_sizes = {};
     for (auto v : scf_par.getUpperBound())
       par_sizes.push_back(
-          dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value());
+          dyn_cast_if_present<arith::ConstantIndexOp>(v.getDefiningOp())
+              .value());
 
     OpBuilder builder(scf_par);
     SmallVector<affine::AffineForOp> loops;
@@ -1073,7 +1258,7 @@ public:
     TypeConverter converter;
     converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert !air.async.token to !airrt.event
-      if (auto t = llvm::dyn_cast<air::AsyncTokenType>(type))
+      if (auto t = llvm::dyn_cast_if_present<air::AsyncTokenType>(type))
         return airrt::EventType::get(context);
       else
         return type;
@@ -1112,13 +1297,11 @@ public:
     // DMA and HerdOp conversion
     RewritePatternSet air_patterns(context);
 
-    target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-      return (op.getType().getMemorySpaceAsInt() != (int)air::MemorySpace::L2);
-    });
+    target.addDynamicallyLegalOp<memref::AllocOp>(
+        [&](memref::AllocOp op) { return !air::isL2(op.getType()); });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
-                  .getMemorySpaceAsInt() != (int)air::MemorySpace::L2);
+      return !air::isL2(llvm::cast<BaseMemRefType>(op.getMemref().getType()));
     });
 
     target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
@@ -1181,16 +1364,33 @@ public:
     air_patterns.add<
         ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
         ScfParOpConversion, ScfReduceReturnOpConversion, ScfReduceOpConversion,
-        AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion,
-        AIRChannelGetPutToAIRRtConversion<air::ChannelGetOp>,
-        AIRChannelGetPutToAIRRtConversion<air::ChannelPutOp>>(converter,
-                                                              context);
+        AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion>(converter,
+                                                                      context);
+
+    // Build channel counterpart cache to avoid O(n) module walks per channel
+    // op during conversion. Without this cache, each of the N channel ops
+    // performs a module-wide walk, resulting in O(N^2) total work.
+    ChannelCounterpartCache channelCache;
+    channelCache.build(module);
+    air_patterns.add<AIRChannelGetPutToAIRRtConversion<air::ChannelGetOp>,
+                     AIRChannelGetPutToAIRRtConversion<air::ChannelPutOp>>(
+        converter, context, channelCache);
 
     if (failed(
             applyPartialConversion(module, target, std::move(air_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air dialect\n");
       signalPassFailure();
     }
+
+    // Fold scf.if ops that became trivially redundant after segment-unroll
+    // channel specialization. Both branches contain only airrt.wait_all +
+    // scf.yield after L2 channel ops were replaced. Only fold when the
+    // condition is a segment-unroll index check (cmpi on scf.parallel IV)
+    // to avoid folding general scf.if ops with runtime conditions.
+    foldTrivialScfIfs(
+        module,
+        [](Operation &op) { return isa<airrt::WaitAllOp, scf::YieldOp>(op); },
+        /*requireSegmentUnrollCond=*/true);
 
     // If scf parallel loops containing memcpy ops exist in the same scope as
     // herd load, then attempt to serialize the asynchronous control programs.
@@ -1254,15 +1454,15 @@ private:
                                 IRMapping &remap) const {
     for (auto operand : op->getOperands()) {
       if (operand.getDefiningOp()) {
-        if (auto index_cast =
-                dyn_cast<arith::IndexCastOp>(operand.getDefiningOp())) {
+        if (auto index_cast = dyn_cast_if_present<arith::IndexCastOp>(
+                operand.getDefiningOp())) {
           remapOpAndOperands(builder, operand.getDefiningOp(), remap);
           builder.clone(*index_cast, remap);
-        } else if (auto const_op =
-                       dyn_cast<arith::ConstantOp>(operand.getDefiningOp())) {
+        } else if (auto const_op = dyn_cast_if_present<arith::ConstantOp>(
+                       operand.getDefiningOp())) {
           builder.clone(*const_op, remap);
-        } else if (auto muli_op =
-                       dyn_cast<arith::MulIOp>(operand.getDefiningOp())) {
+        } else if (auto muli_op = dyn_cast_if_present<arith::MulIOp>(
+                       operand.getDefiningOp())) {
           remapOpAndOperands(builder, operand.getDefiningOp(), remap);
           builder.clone(*muli_op, remap);
         }
@@ -1289,10 +1489,10 @@ private:
     }
   }
   void remapLoop(Operation *src, Operation *dst, IRMapping &remap) const {
-    auto src_for = dyn_cast<scf::ForOp>(src);
-    auto dst_for = dyn_cast<scf::ForOp>(dst);
-    auto src_par = dyn_cast<scf::ParallelOp>(src);
-    auto dst_par = dyn_cast<scf::ParallelOp>(dst);
+    auto src_for = dyn_cast_if_present<scf::ForOp>(src);
+    auto dst_for = dyn_cast_if_present<scf::ForOp>(dst);
+    auto src_par = dyn_cast_if_present<scf::ParallelOp>(src);
+    auto dst_par = dyn_cast_if_present<scf::ParallelOp>(dst);
     if (src_for && dst_for) {
       remapLoop(src_for, dst_for, remap);
     } else if (src_par && dst_par) {
@@ -1316,9 +1516,9 @@ private:
 
   // Get (the first) memcpy op from loop nest
   Operation *getInnerMostMemcpyFromLoopNest(Operation *op) const {
-    if (auto scf_par = dyn_cast<scf::ParallelOp>(op))
+    if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(op))
       return getInnerMostMemcpyFromLoopNest(scf_par);
-    else if (auto scf_for = dyn_cast<scf::ForOp>(op))
+    else if (auto scf_for = dyn_cast_if_present<scf::ForOp>(op))
       return getInnerMostMemcpyFromLoopNest(scf_for);
     // else return nullptr;
     else {
@@ -1362,7 +1562,7 @@ private:
       bool merge_candidate_loop = false;
       if (isa<scf::ForOp>(scf_loop))
         merge_candidate_loop = true;
-      else if (auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop)) {
+      else if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(scf_loop)) {
         merge_candidate_loop = false;
         for (auto child_scf_for_loop :
              scf_par.getBody()->getOps<scf::ForOp>()) {
@@ -1414,11 +1614,11 @@ private:
           if (i == bucket.size() - 1) {
             SmallVector<Value, 8> operands{};
             if (auto new_ctrl_loop_par =
-                    dyn_cast<scf::ParallelOp>(dst_loop_nest[0])) {
+                    dyn_cast_if_present<scf::ParallelOp>(dst_loop_nest[0])) {
               if (!new_ctrl_loop_par.getInitVals().empty())
                 operands.push_back(new_ctrl_loop_par.getInitVals()[0]);
             } else if (auto new_ctrl_loop_for =
-                           dyn_cast<scf::ForOp>(dst_loop_nest[0])) {
+                           dyn_cast_if_present<scf::ForOp>(dst_loop_nest[0])) {
               if (!new_ctrl_loop_for.getRegionIterArgs().empty())
                 operands.push_back(new_ctrl_loop_for.getRegionIterArgs()[0]);
             }

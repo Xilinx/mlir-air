@@ -19,33 +19,39 @@ from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import (
 from .abc import AirBackend
 
 import air.compiler.util
-import air.compiler.aircc.main as aircc
 
 # Used to get the paths used to configure aircc
 from air.compiler.aircc.configure import *
 
+import shutil
+import subprocess
+
 import ctypes
+import sys
 from pathlib import Path
 from typing import List
 
-# First need to load the libhsa-runtime64.so.1 so we can load libairhost_shared
-try:
-    ctypes.CDLL(f"{rocm_path}/../../libhsa-runtime64.so.1", mode=ctypes.RTLD_GLOBAL)
-except Exception as e:
-    print("[WARNING] We were not able to load .so for libhsa-runtime64.so.1")
-    print(e)
-    pass
+# Runtime libraries (libhsa-runtime64, libairhost_shared) use POSIX APIs
+# (dlopen, mmap, ioctl) and are not available on Windows.
+if sys.platform != "win32":
+    # First need to load the libhsa-runtime64.so.1 so we can load libairhost_shared
+    try:
+        ctypes.CDLL(f"{rocm_path}/../../libhsa-runtime64.so.1", mode=ctypes.RTLD_GLOBAL)
+    except Exception as e:
+        print("[WARNING] We were not able to load .so for libhsa-runtime64.so.1")
+        print(e)
+        pass
 
-# After loading libhsa-runtime64.so we can load the AIR runtime functions
-try:
-    ctypes.CDLL(
-        f"{install_path()}/runtime_lib/x86_64/airhost/libairhost_shared.so",
-        mode=ctypes.RTLD_GLOBAL,
-    )
-except Exception as e:
-    print("[WARNING] We were not able to load .so for libairhost_shared.so")
-    print(e)
-    pass
+    # After loading libhsa-runtime64.so we can load the AIR runtime functions
+    try:
+        ctypes.CDLL(
+            f"{install_path()}/runtime_lib/x86_64/airhost/libairhost_shared.so",
+            mode=ctypes.RTLD_GLOBAL,
+        )
+    except Exception as e:
+        print("[WARNING] We were not able to load .so for libairhost_shared.so")
+        print(e)
+        pass
 try:
     import air._mlir_libs._airRt as airrt
 except Exception as e:
@@ -177,7 +183,21 @@ class LinalgOnTensorsAirBackend(AirBackend):
             if verbose:
                 aircc_options = aircc_options + ["-v"]
 
-            aircc.run(air_module, aircc_options)
+            # Write module to file and invoke C++ aircc binary
+            with open("torch.mlir", "w") as f:
+                f.write(str(air_module))
+
+            aircc_exe = shutil.which("aircc")
+            if not aircc_exe:
+                raise RuntimeError("aircc binary not found in PATH")
+            result = subprocess.run(
+                [aircc_exe] + aircc_options,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                error_msg = result.stderr if result.stderr else result.stdout
+                raise RuntimeError(f"aircc compilation failed:\n{error_msg}")
 
             with open("air_project/refback.torch.mlir") as f:
                 imported_module = torch_mlir.ir.Module.parse(

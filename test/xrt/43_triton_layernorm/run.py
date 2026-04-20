@@ -45,6 +45,28 @@ parser.add_argument(
     choices=["elf", "xclbin"],
     help="Output format: 'xclbin' (default) or 'elf'",
 )
+parser.add_argument(
+    "--bf16-emulation",
+    dest="bf16_emulation",
+    default=False,
+    action="store_true",
+    help="Use bf16-emulation mode: compute f32 ops using bf16 hardware intrinsics",
+)
+parser.add_argument(
+    "-v",
+    "--verbose",
+    dest="verbose",
+    default=False,
+    action="store_true",
+    help="Enable verbose output from aircc/aiecc",
+)
+parser.add_argument(
+    "--debug-ir",
+    dest="debug_ir",
+    default=False,
+    action="store_true",
+    help="Dump intermediate IR after each pass for debugging",
+)
 args = parser.parse_args()
 
 
@@ -277,13 +299,17 @@ with air.ir.Context() as ctx, Location.unknown():
         omit_while_true_loop=False,
         output_format=args.output_format,
         instance_name="_layer_norm_fwd_fused",
+        bf16_emulation=args.bf16_emulation,
+        verbose=args.verbose,
+        debug_ir=args.debug_ir,
+        runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
         runner.run_test(
             air_module,
             inputs=[x_arg],
             expected_outputs=[y_expected],
-            rtol=1e-2,
-            atol=1e-1,
+            rtol=5e-2 if args.bf16_emulation else 1e-2,
+            atol=5e-1 if args.bf16_emulation else 1e-1,
         )
     )

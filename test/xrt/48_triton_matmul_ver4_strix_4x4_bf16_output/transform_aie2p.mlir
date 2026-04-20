@@ -290,41 +290,31 @@ module attributes {transform.with_named_sequence} {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
-            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
             transform.apply_patterns.memref.fold_memref_alias_ops
         } : !transform.any_op
-                
+        %func_fold_1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func_folded_1 = transform.air.fold_unit_extent_dims %func_fold_1 : (!transform.any_op) -> !transform.any_op
+
     // Step 28: Eliminate redundant vector.transfer_read operations.
-        %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func7 : (!transform.any_op) -> !transform.any_op
+        %func7_rematch = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func7_rematch : (!transform.any_op) -> !transform.any_op
 
     //==========================================================================
     // PHASE 11: HOIST LOOP-INVARIANT VECTOR TRANSFERS
     // Move vector reads/writes out of innermost loops for register reuse.
     //==========================================================================
 
-    // Step 29: Identify the matmul compute herd for hoisting.
-    // Use annotation-based matching instead of fragile split_handle.
+    // Step 29: Identify the matmul compute herd and innermost K-loop.
         %herd2_1 = transform.structured.match ops{["air.herd"]} attributes{compute_herd} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %all_reads_in_herd2 = transform.structured.match ops{["vector.transfer_read"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-        %all_writes_in_herd2 = transform.structured.match ops{["vector.transfer_write"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-
-    // Step 30: Identify the innermost K-loop for hoisting.
         %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
         %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
-    // Step 31: Split handles to get individual read/write operations.
-        %read0, %read1, %read2, %read3, %read4, %read5, %read6, %read7 = transform.split_handle %all_reads_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-        %write0, %write1, %write2, %write3 = transform.split_handle %all_writes_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-
-    // Step 32: Cast vector types for correct accumulation precision.
+    // Step 30: Cast vector types for correct accumulation precision.
         %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = f32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
 
-    // Step 33: Hoist accumulator read/write pairs from innermost K-loop.
-        %innermost_for_updated = transform.air.hoist_loop_invariant_transfers %read2, %write0, %innermost_for : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-        %innermost_for_updated_1 = transform.air.hoist_loop_invariant_transfers %read4, %write1, %innermost_for_updated : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-        %innermost_for_updated_2 = transform.air.hoist_loop_invariant_transfers %read6, %write2, %innermost_for_updated_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-        %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %read7, %write3, %innermost_for_updated_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
+    // Step 33: Hoist all accumulator transfer pairs from innermost K-loop.
+        %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
 
     //==========================================================================
     // PHASE 12: HOIST EXTF/TRUNCF CAST PAIRS FOR BF16 OUTPUT
@@ -370,9 +360,10 @@ module attributes {transform.with_named_sequence} {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
-            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
             transform.apply_patterns.memref.fold_memref_alias_ops
         } : !transform.any_op
+        %func_fold_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func_folded_2 = transform.air.fold_unit_extent_dims %func_fold_2 : (!transform.any_op) -> !transform.any_op
 
     transform.yield
   }

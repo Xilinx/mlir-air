@@ -220,7 +220,7 @@ tools = [
     "aie-opt",
     "aie-translate",
     "aiecc.py",
-    "aircc.py",
+    "aircc",
     "air-opt",
     "ld.lld",
     "llc",

@@ -29,17 +29,18 @@ void zero_vectorized(T *__restrict c) {
 
 template <typename T, int M, int N, int r>
 void neg_inf_vectorized(T *__restrict c) {
-  uint16_t neg_infinity = (uint16_t)0xff80;
-  T *T_neg_infinity = (T *)&neg_infinity;
-  const aie::vector<T, r> neg_infs = aie::broadcast<T, r>(*T_neg_infinity);
+  // Use bf16 lowest (0xff7f ≈ -3.39e38) instead of -inf (0xff80) to avoid NaN
+  // on AIE2P: max(NaN, -inf) returns NaN, but max(NaN, lowest) also returns NaN
+  // — the real fix is that lowest - lowest = 0, not NaN, avoiding the issue.
+  uint16_t lowest_u16 = (uint16_t)0xff7f;
+  T *T_lowest = (T *)&lowest_u16;
+  const aie::vector<T, r> lowest_vec = aie::broadcast<T, r>(*T_lowest);
   const T *__restrict c_end = c + M * N;
   for (; c + r < c_end; c += r) {
-    aie::store_v(c, neg_infs);
+    aie::store_v(c, lowest_vec);
   }
-  // Do a scalar write for any remainder not divisible by vector instruction
-  // size r
   for (; c < c_end; c++) {
-    *c = *T_neg_infinity;
+    *c = *T_lowest;
   }
 }
 

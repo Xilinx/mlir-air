@@ -1,13 +1,27 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+
+"""Vectorized Element-Wise Add
+
+Implements element-wise addition on a 1D input [N]:
+  c = a + b
+
+Uses a 1xnum_tiles AIE herd with DMA transfers between L3 and L1 memory.
+Computation is vectorized using vector.transfer_read/write with
+configurable VECTOR_SIZE (default 16 for BF16, 8 for F32).
+"""
+
 import argparse
+
 from ml_dtypes import bfloat16
 
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
+from air.dialects import arith
 from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
+from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
+from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
@@ -21,13 +35,21 @@ range_ = for_
 
 
 @module_builder
-def build_module(n, tile_n, np_dtype_in):
+def build_module(
+    n, tile_n, np_dtype_in, vector_size=0, num_tiles=2, herd_x=1, herd_y=None
+):
     a_size = [n]
     b_size = a_size
     out_size = a_size
     xrt_dtype_in = type_mapper(np_dtype_in)
-    num_tiles = 2
-    assert n % (tile_n * num_tiles) == 0
+
+    # Determine herd shape
+    if herd_y is None:
+        herd_y = num_tiles
+    total_tiles = herd_x * herd_y
+    assert (
+        n % (tile_n * total_tiles) == 0
+    ), f"n ({n}) must be divisible by tile_n*total_tiles ({tile_n}*{total_tiles}={tile_n*total_tiles})"
 
     # L3 MemRefTypes
     l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
@@ -39,11 +61,21 @@ def build_module(n, tile_n, np_dtype_in):
         memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
     )
 
+    # Vectorization setup
+    vectorize = vector_size > 0
+    if vectorize:
+        assert (
+            tile_n % vector_size == 0
+        ), f"tile_n ({tile_n}) must be divisible by vector_size ({vector_size})"
+        vecTy = VectorType.get([vector_size], xrt_dtype_in)
+        identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+        index_type = IndexType.get()
+
     @FuncOp.from_py_func(l3memrefTy, l3memrefTy, l3memrefTy)
     def eltwise_add(arg0, arg1, arg2):
         @herd(
             name="herd_0",
-            sizes=[1, num_tiles],
+            sizes=[herd_x, herd_y],
             operands=[arg0, arg1, arg2],
         )
         def herd_body(
@@ -59,22 +91,31 @@ def build_module(n, tile_n, np_dtype_in):
             l1_b_data = AllocOp(l1MemrefTy, [], [])
             l1_out_data = AllocOp(l1MemrefTy, [], [])
 
-            for _l_ivx in range_(0, n, tile_n * num_tiles):
+            chunk_size = n // total_tiles
+            for _l_ivx in range_(0, chunk_size, tile_n):
 
+                # Contiguous partitioning: each tile gets a contiguous block.
+                # offset = linear_tile_idx * chunk_size + loop_var
                 offset_map = AffineMap.get(
                     0,
-                    2,
+                    3,
                     [
                         AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
                             AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
+                                AffineExpr.get_add(
+                                    AffineExpr.get_mul(
+                                        AffineSymbolExpr.get(1),
+                                        AffineConstantExpr.get(herd_y),
+                                    ),
+                                    AffineSymbolExpr.get(2),
+                                ),
+                                AffineConstantExpr.get(chunk_size),
                             ),
+                            AffineSymbolExpr.get(0),
                         )
                     ],
                 )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+                offset = affine_apply(offset_map, [_l_ivx, _tx, _ty])
 
                 dma_memcpy_nd(
                     l1_a_data,
@@ -94,12 +135,36 @@ def build_module(n, tile_n, np_dtype_in):
                     src_sizes=[tile_n],
                     src_strides=[1],
                 )
-                for i in range_(tile_n):
-                    val_a = load(l1_a_data, [i])
-                    val_b = load(l1_b_data, [i])
-                    val_out = arith.addf(val_a, val_b)
-                    store(val_out, l1_out_data, [i])
-                    yield_([])
+
+                if vectorize:
+                    # Vectorized compute loop
+                    c0 = ConstantOp(index_type, 0)
+                    cVecSize = ConstantOp(index_type, vector_size)
+                    cTileN = ConstantOp(index_type, tile_n)
+                    cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
+
+                    for j in range_(c0, cTileN, cVecSize):
+                        sub_a = subview(l1_a_data.result, [j], [vector_size], [1])
+                        sub_b = subview(l1_b_data.result, [j], [vector_size], [1])
+                        sub_c = subview(l1_out_data.result, [j], [vector_size], [1])
+                        v_a = transfer_read(
+                            vecTy, sub_a, [c0], identity_map, cst0, [True]
+                        )
+                        v_b = transfer_read(
+                            vecTy, sub_b, [c0], identity_map, cst0, [True]
+                        )
+                        v_c = arith.AddFOp(v_a, v_b)
+                        transfer_write(None, v_c, sub_c, [c0], identity_map, [True])
+                        yield_([])
+                else:
+                    # Scalar compute loop (original)
+                    for i in range_(tile_n):
+                        val_a = load(l1_a_data, [i])
+                        val_b = load(l1_b_data, [i])
+                        val_out = arith.addf(val_a, val_b)
+                        store(val_out, l1_out_data, [i])
+                        yield_([])
+
                 dma_memcpy_nd(
                     _l3_c,
                     l1_out_data,
@@ -117,14 +182,17 @@ def build_module(n, tile_n, np_dtype_in):
 
 
 if __name__ == "__main__":
-    # Default values.
+    # Default values — optimized BF16 vectorized config for NPU2.
+    # For NPU1 (F32 scalar): --dtype f32 --vector-size 0 --herd-x 1 --herd-y 2
     N = 65536
     TILE_N = 1024
-    INPUT_DATATYPE = np.float32
+    INPUT_DATATYPE = bfloat16
+    VECTOR_SIZE = 16
+    NUM_TILES = 2
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the eltwise_add example",
     )
     parser.add_argument(
         "-v",
@@ -144,6 +212,37 @@ if __name__ == "__main__":
     )
     parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
     parser.add_argument(
+        "--vector-size",
+        type=int,
+        default=VECTOR_SIZE,
+        help="Vector width (0 for scalar, 16 for BF16, 8 for F32)",
+    )
+    parser.add_argument(
+        "--num-tiles",
+        type=int,
+        default=NUM_TILES,
+        help="Number of herd tiles (parallel cores), used as herd_y when herd-x/herd-y not set",
+    )
+    parser.add_argument(
+        "--herd-x",
+        type=int,
+        default=1,
+        help="Herd x dimension (default: 1)",
+    )
+    parser.add_argument(
+        "--herd-y",
+        type=int,
+        default=None,
+        help="Herd y dimension (default: num-tiles)",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        choices=["bf16", "f32"],
+        default="bf16",
+        help="Data type (default: bf16)",
+    )
+    parser.add_argument(
         "--compile-mode",
         type=str,
         choices=["compile-only", "compile-and-run"],
@@ -161,19 +260,26 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    if args.dtype == "bf16":
+        INPUT_DATATYPE = bfloat16
+    else:
+        INPUT_DATATYPE = np.float32
+
     mlir_module = build_module(
         args.n,
         args.tile_n,
         INPUT_DATATYPE,
+        vector_size=args.vector_size,
+        num_tiles=args.num_tiles,
+        herd_x=args.herd_x,
+        herd_y=args.herd_y,
     )
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
-    input_a = input_a.astype(INPUT_DATATYPE)
-    input_b = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
-    input_b = input_b.astype(INPUT_DATATYPE)
+    input_a = np.random.uniform(0, 4, args.n).astype(INPUT_DATATYPE)
+    input_b = np.random.uniform(0, 4, args.n).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
 
@@ -204,13 +310,16 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="eltwise_add",
+            runtime_loop_tiling_sizes=[4, 4],
         )
+        # BF16 has ~0.8% relative precision; use looser tolerance
+        rtol = 0.01 if INPUT_DATATYPE == bfloat16 else 1e-3
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e-3,
+                rtol=rtol,
             )
         )
 
@@ -221,6 +330,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             omit_auto_broadcast=True,
             output_format=args.output_format,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
 

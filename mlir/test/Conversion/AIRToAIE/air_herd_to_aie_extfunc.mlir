@@ -18,6 +18,7 @@ func.func @foo(%arg0: i32) {
   // CHECK:   call @beefmaker_kernel(%[[VAL_1]]) : (memref<1024xi32, 2>) -> ()
   // CHECK:   aie.end
   // CHECK: } {link_with = "beefmaker.o"}
+  // CHECK: func.func private @beefmaker_kernel(memref<1024xi32, 2>) attributes {link_with = "beefmaker.o", llvm.emit_c_interface}
   air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) attributes {link_with="beefmaker.o"} {
     %src0 = memref.alloc() : memref<1024xi32, 2>
     func.call @beefmaker_kernel(%src0) : (memref<1024xi32, 2>) -> ()

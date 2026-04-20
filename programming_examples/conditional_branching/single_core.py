@@ -99,7 +99,7 @@ def build_module(n, np_dtype_in, np_dtype_out, param):
                     # condition
                     bool = IntegerType.get_signless(1)
                     param_arg = arith.index_cast(bool, _param_arg)
-                    if_op = scf.IfOp(param_arg, hasElse=True)
+                    if_op = scf.IfOp(param_arg, has_else=True)
                     with InsertionPoint(if_op.then_block):
                         for i in range_(0, n):
                             inval = load(l1_in_data, [i])
@@ -192,6 +192,7 @@ if __name__ == "__main__":
         verbose=args.verbose,
         output_format=args.output_format,
         instance_name="conditional_branch",
+        runtime_loop_tiling_sizes=[4, 4],
     )
     res0 = runner.run_test(
         mlir_module,

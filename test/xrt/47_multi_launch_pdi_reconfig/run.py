@@ -163,6 +163,7 @@ def main():
             output_format="elf",
             instance_name="reconfigure_example",  # matches func.func @reconfigure_example
             omit_while_true_loop=False,
+            runtime_loop_tiling_sizes=[4, 4],
         )
 
         # Run the test

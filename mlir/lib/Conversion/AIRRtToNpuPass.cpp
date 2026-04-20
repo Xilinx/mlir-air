@@ -20,6 +20,7 @@
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
@@ -58,15 +59,15 @@ namespace {
 
 // Helper function to check if a value is a memref on host memory (space 0)
 static bool isHostMemory(Value val) {
-  if (auto memrefType = dyn_cast<BaseMemRefType>(val.getType()))
-    return memrefType.getMemorySpaceAsInt() == 0;
+  if (auto memrefType = dyn_cast_if_present<BaseMemRefType>(val.getType()))
+    return xilinx::air::isL3(memrefType);
   return false;
 }
 
 // Helper function to check if an op has memory effects on host memory
 static bool hasMemoryEffectsOnHostMemory(Operation *op) {
   // Check if this op has memory effects interface
-  auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+  auto effects = dyn_cast_if_present<MemoryEffectOpInterface>(op);
   if (!effects)
     return false;
 
@@ -242,7 +243,8 @@ struct RelocateAssumeAlignmentOp
 
     auto castConsumerOp = [&]() -> mlir::Operation * {
       for (auto u : producerOp->getUsers()) {
-        if (auto castOp = dyn_cast<mlir::UnrealizedConversionCastOp>(u)) {
+        if (auto castOp =
+                dyn_cast_if_present<mlir::UnrealizedConversionCastOp>(u)) {
           return castOp;
         }
       }
@@ -328,24 +330,34 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         return failure();
     }
 
-    // Get static offsets
+    // Get static offsets. Non-constant offsets indicate an unresolved loop
+    // induction variable (e.g., from an unhandled scf.forall). Warn so that
+    // such bugs are caught early instead of silently producing wrong results.
     SmallVector<int64_t> staticOffsets;
     if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 3) defaulting to 0");
       staticOffsets.push_back(0);
+    }
     if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 2) defaulting to 0");
       staticOffsets.push_back(0);
+    }
     if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 1) defaulting to 0");
       staticOffsets.push_back(0);
+    }
     if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 0) defaulting to 0");
       staticOffsets.push_back(0);
+    }
 
     // Get static sizes
     SmallVector<int64_t> staticSizes;
@@ -380,7 +392,10 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       staticStrides.push_back(*const_int);
     else
       staticStrides.push_back(0);
-    staticStrides.push_back(1); // Last stride is always 1
+    if (auto const_int = getConstantIntValue(adaptor.getStride0()))
+      staticStrides.push_back(*const_int);
+    else
+      staticStrides.push_back(0);
 
     // Calculate total offset in elements
     // For npu.dma_memcpy_nd, the offset is computed as:
@@ -414,8 +429,20 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     for (int i = startDim; i < 4; i++) {
       int64_t size = staticSizes[i];
       int64_t stride = staticStrides[i];
-      // Include dimension if size > 1, or if it's the innermost dimension
-      if (size > 1 || i == 3) {
+      // stride=0 with size>1 at dims 1-2 means "repeat at same address"
+      // (broadcast pattern). Fold into repeat_count instead of passing to
+      // BD dimensions, since aie.dma_bd rejects stride=0. Dim 3 (innermost)
+      // is excluded because stride=0 there is the trivial/degenerate case.
+      if (i > 0 && i < 3 && stride == 0 && size > 1) {
+        repeatCount = (repeatCount + 1) * size - 1;
+        // Adjust transfer length to exclude the folded dimension.
+        transferLen /= size;
+        continue;
+      }
+      // Include dimension if size > 1, if it's the innermost dimension,
+      // or if the 4th dim is in use and this is a middle dim (retain size-1
+      // dims to preserve the 4-entry layout needed for iteration_stride).
+      if (size > 1 || i == 3 || (use4thDimInBd && i > 0)) {
         auto dimLayout = AIE::BDDimLayoutAttr::get(ctx, size, stride);
         dimLayouts.push_back(dimLayout);
       }
@@ -442,15 +469,28 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     Block *bodyBlock = rewriter.createBlock(&configTaskOp.getBody());
     rewriter.setInsertionPointToStart(bodyBlock);
 
-    // Create aie.dma_bd inside the task body
-    if (dimLayouts.empty()) {
+    // Check for packet attribute on the source DMA op. This is needed for
+    // direct L3→L1 packet-switched flows where the shim DMA BD must include
+    // the packet header for correct routing.
+    auto pktAttr = op->getAttrOfType<AIE::PacketInfoAttr>("packet");
+
+    // Create aie.dma_bd inside the task body, passing packet info if present.
+    if (dimLayouts.empty() && !pktAttr) {
       AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
                            static_cast<int>(totalOffset),
                            static_cast<int>(transferLen));
-    } else {
+    } else if (dimLayouts.empty() && pktAttr) {
+      AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
+                           static_cast<int>(totalOffset),
+                           static_cast<int>(transferLen), pktAttr);
+    } else if (!dimLayouts.empty() && !pktAttr) {
       AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
                            static_cast<int>(totalOffset),
                            static_cast<int>(transferLen), dimsAttr);
+    } else {
+      AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
+                           static_cast<int>(totalOffset),
+                           static_cast<int>(transferLen), dimsAttr, pktAttr);
     }
 
     // Create aie.end to terminate the block
@@ -571,6 +611,7 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
         }
 
         if (rtpBufferExists) {
+          unsigned rtp_slot = 0;
           for (int i = 0, e = op.getNumOperands(); i < e; i++) {
             Value oper = adaptor.getOperands()[i];
             if (!llvm::isa<IntegerType, IndexType, FloatType>(oper.getType()))
@@ -578,10 +619,12 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
 
             auto constOp =
                 dyn_cast_if_present<arith::ConstantOp>(oper.getDefiningOp());
-            if (!constOp)
-              continue;
-            uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
-            AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(), name, i, v);
+            if (constOp) {
+              uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
+              AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(), name, rtp_slot,
+                                          v);
+            }
+            rtp_slot++;
           }
         }
         // FIXME: this should depend on the metadata to enable and to get the id
@@ -653,7 +696,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+    if (!xilinx::air::isL1(memrefTy))
       return failure();
 
     rewriter.eraseOp(op);
@@ -670,7 +713,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+    if (!xilinx::air::isL1(memrefTy))
       return failure();
 
     rewriter.eraseOp(op);
@@ -728,20 +771,29 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          // Insert aiex.npu.load_pdi to reset DMA engine state if:
-          // 1. output-elf mode is enabled, AND
-          // 2. The device has core/memtile DMAs with repeat_count > 0
           if (outputElf && deviceHasRepeatCountDMAs(device)) {
+            // Insert aiex.npu.load_pdi to reset DMA engine state when
+            // core/memtile DMAs have repeat_count > 0.
             rewriter.setInsertionPoint(op);
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
+          } else if (outputElf) {
+            // No PDI reload needed (no repeat_count DMAs), but still need
+            // between-iteration synchronization to prevent the next
+            // iteration's shim DMA configuration from racing with the
+            // current iteration's compute (issue #1373).
+            rewriter.setInsertionPoint(op);
+            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
+              AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                         alloc.getSymName());
+            }
           }
         }
       }
     }
 
-    // Erase the op - synchronization is handled by NpuDmaWaitOp
+    // Erase the op - synchronization is handled by NpuDmaWaitOp/load_pdi
     rewriter.eraseOp(op);
     return success();
   }
@@ -847,6 +899,7 @@ public:
         }))
       return failure();
 
+    llvm::SmallDenseSet<StringRef> waitedChannels;
     for (auto oper : op->getOperands()) {
       auto airrtDmaOp = oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
       if (!airrtDmaOp)
@@ -861,22 +914,29 @@ public:
       // based on channel direction
       StringRef metadata = metadataAttr.getValue();
       AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
+      waitedChannels.insert(metadata);
     }
 
-    // Check if this is a launch_end wait_all and needs load_pdi
+    // Check if this is a launch_end wait_all and needs between-iteration sync
     if (op->hasAttr("air.launch_end")) {
       auto device = op->getParentOfType<AIE::DeviceOp>();
       if (device) {
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          // Insert aiex.npu.load_pdi to reset DMA engine state if:
-          // 1. output-elf mode is enabled, AND
-          // 2. The device has core/memtile DMAs with repeat_count > 0
           if (outputElf && deviceHasRepeatCountDMAs(device)) {
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
+          } else if (outputElf) {
+            // No PDI reload needed, but emit NpuDmaWaitOp for any shim
+            // channels not already waited on to synchronize before the
+            // next iteration (issue #1373).
+            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
+              if (!waitedChannels.contains(alloc.getSymName()))
+                AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                           alloc.getSymName());
+            }
           }
         }
       }
@@ -946,7 +1006,7 @@ bool isLaunchBoundaryLoop(affine::AffineForOp forOp) {
 // Identify launch regions within a function.
 // Launch regions are delimited by affine.for %arg = 0 to 1 loops
 // with "affine_opt_label" attribute, and contain airrt.segment_load
-// operations that link to device ops.
+// or airrt.herd_load operations that link to device ops.
 SmallVector<LaunchRegion> identifyLaunchRegions(func::FuncOp funcOp,
                                                 ModuleOp module) {
   SmallVector<LaunchRegion> regions;
@@ -956,9 +1016,15 @@ SmallVector<LaunchRegion> identifyLaunchRegions(func::FuncOp funcOp,
     if (!isLaunchBoundaryLoop(forOp))
       return;
 
-    // Look for airrt.segment_load inside this loop
-    forOp.walk([&](airrt::SegmentLoadOp segLoadOp) {
-      StringRef deviceName = segLoadOp.getSymName();
+    // Look for airrt.segment_load or airrt.herd_load inside this loop
+    forOp.walk([&](Operation *op) {
+      StringRef deviceName;
+      if (auto segLoad = dyn_cast<airrt::SegmentLoadOp>(op))
+        deviceName = segLoad.getSymName();
+      else if (auto herdLoad = dyn_cast<airrt::HerdLoadOp>(op))
+        deviceName = herdLoad.getSymName();
+      else
+        return;
       AIE::DeviceOp device = getDeviceByName(module, deviceName);
       if (device) {
         regions.push_back({forOp, deviceName, device});
@@ -1152,12 +1218,8 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto oper_begin = memcpy_op.getOperands().begin();
   SmallVector<Value> offsets(oper_begin + 4, oper_begin + 8);
   SmallVector<Value> wraps(oper_begin + 8, oper_begin + 12);
-  SmallVector<Value> strides(oper_begin + 12, oper_begin + 15);
-  // Stride field implicit last element one
+  SmallVector<Value> strides(oper_begin + 12, oper_begin + 16);
   OpBuilder builder(memcpy_op);
-  strides.push_back(
-      arith::ConstantOp::create(builder, loc, builder.getI64Type(),
-                                IntegerAttr::get(builder.getI64Type(), 1)));
 
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
@@ -1267,8 +1329,7 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       inner_affine_for_iv = inner_affine_for.getInductionVar();
   }
 
-  // Stride field implicit last element one, pop.
-  strides.pop_back();
+  // Keep all strides including the innermost (stride0).
 
   // Create new airrt.dma_memcpy_nd op.
   SmallVector<Value> new_opers;
@@ -1346,12 +1407,44 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Remove any duplicate shim dma allocations
     purgeDuplicateShimDmaAllocs(module);
 
-    // Simplify affine apply ops
     auto ctx = &getContext();
+
+    // Convert any surviving scf.forall ops to scf.for before unrolling.
+    // scf.forall is not handled by the loop unrolling passes below and would
+    // leave dynamic induction variables that DmaToNpuPattern silently zeros.
+    {
+      SmallVector<scf::ForallOp> forallOps;
+      module.walk([&](scf::ForallOp op) { forallOps.push_back(op); });
+      if (!forallOps.empty()) {
+        IRRewriter rewriter(ctx);
+        for (auto forallOp : forallOps) {
+          if (failed(scf::forallToForLoop(rewriter, forallOp))) {
+            forallOp->emitOpError("failed to convert forall to for loop");
+            signalPassFailure();
+            return;
+          }
+        }
+      }
+    }
 
     // Unroll for loops
     unrollAffineFors(module);
     unrollSCFFors(module);
+
+    // Fold affine.apply ops with constant operands after loop unrolling.
+    // After unrolling, induction variables become constants, but
+    // affine.apply(constant) is not automatically folded. Without this,
+    // DmaToNpuPattern's getConstantIntValue() fails and defaults offsets to 0.
+    {
+      RewritePatternSet affinePatterns(ctx);
+      affine::AffineApplyOp::getCanonicalizationPatterns(affinePatterns, ctx);
+      if (failed(applyPatternsGreedily(module, std::move(affinePatterns)))) {
+        module.emitError("failed to canonicalize affine.apply ops after loop "
+                         "unrolling");
+        signalPassFailure();
+        return;
+      }
+    }
 
     // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
     // This must happen BEFORE DMA conversion because:
@@ -1378,15 +1471,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         [&](affine::AffineStoreOp op) {
           if (op->getParentOfType<AIE::CoreOp>())
             return true;
-          return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
-                      .getMemorySpaceAsInt() !=
-                  (int)xilinx::air::MemorySpace::L1);
+          return !xilinx::air::isL1(
+              llvm::cast<BaseMemRefType>(op.getMemref().getType()));
         });
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
       if (op->getParentOfType<AIE::CoreOp>())
         return true;
-      return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
-                  .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
+      return !xilinx::air::isL1(
+          llvm::cast<BaseMemRefType>(op.getMemref().getType()));
     });
     target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {
       auto f = op->getParentOfType<func::FuncOp>();
@@ -1474,7 +1566,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     for (auto funcOp : funcOps) {
       // Identify launch regions (affine.for with affine_opt_label containing
-      // segment_load)
+      // segment_load/herd_load)
       SmallVector<LaunchRegion> regions = identifyLaunchRegions(funcOp, module);
 
       if (regions.empty()) {
@@ -1773,9 +1865,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (!runtimeSeq)
         continue;
       auto resetRef = FlatSymbolRefAttr::get(module.getContext(), resetName);
-      runtimeSeq.walk([&](AIEX::NpuLoadPdiOp op) {
+      auto &origNameRef = origName;
+      runtimeSeq.walk([&origNameRef, &resetRef](AIEX::NpuLoadPdiOp op) {
         if (auto ref = op.getDeviceRefAttr()) {
-          if (ref.getValue() == origName)
+          if (ref.getValue() == origNameRef)
             op.setDeviceRefAttr(resetRef);
         }
       });
@@ -2139,7 +2232,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       OpBuilder &builder, std::vector<std::pair<uint8_t, uint8_t>> &ports,
       uint32_t offset, IntegerAttr col, IntegerAttr row) {
     uint32_t v0 = 0;
-    for (unsigned i = 0; i < std::min(ports.size(), 4UL); i++) {
+    for (unsigned i = 0; i < std::min(ports.size(), (size_t)4); i++) {
       v0 |= (ports[i].second << (i * 8));
       v0 |= (ports[i].first << ((i * 8) + 5));
     }
@@ -2147,7 +2240,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                nullptr, col, row);
     uint32_t v1 = 0;
     if (ports.size() > 4)
-      for (unsigned i = 4; i < std::min(ports.size(), 8UL); i++) {
+      for (unsigned i = 4; i < std::min(ports.size(), (size_t)8); i++) {
         v1 |= (ports[i].second << ((i - 4) * 8));
         v1 |= (ports[i].first << (((i - 4) * 8) + 5));
       }
@@ -2162,11 +2255,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                  uint32_t offset, IntegerAttr col,
                                  IntegerAttr row) {
     uint32_t v0 = 0;
-    for (unsigned i = 0; i < std::min(events.size(), 4UL); i++)
+    for (unsigned i = 0; i < std::min(events.size(), (size_t)4); i++)
       v0 |= ((events[i] & 0xff) << (i * 8));
     uint32_t v1 = 0;
     if (events.size() > 4)
-      for (unsigned i = 4; i < std::min(events.size(), 8UL); i++)
+      for (unsigned i = 4; i < std::min(events.size(), (size_t)8); i++)
         v1 |= ((events[i] & 0xff) << ((i - 4) * 8));
 
     AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset, v0,
@@ -2201,11 +2294,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
         // find all packet flow with trace port as source
         for (Operation &Op : b.getOperations()) {
-          if (auto pktSrc = dyn_cast<AIE::PacketSourceOp>(Op)) {
-            srcTile = dyn_cast<AIE::TileOp>(pktSrc.getTile().getDefiningOp());
+          if (auto pktSrc = dyn_cast_if_present<AIE::PacketSourceOp>(Op)) {
+            srcTile = dyn_cast_if_present<AIE::TileOp>(
+                pktSrc.getTile().getDefiningOp());
             sourcePort = pktSrc.port();
-          } else if (auto pktDest = dyn_cast<AIE::PacketDestOp>(Op)) {
-            destTile = dyn_cast<AIE::TileOp>(pktDest.getTile().getDefiningOp());
+          } else if (auto pktDest =
+                         dyn_cast_if_present<AIE::PacketDestOp>(Op)) {
+            destTile = dyn_cast_if_present<AIE::TileOp>(
+                pktDest.getTile().getDefiningOp());
             destPort = pktDest.port();
           }
         }
@@ -2382,9 +2478,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       });
     OpBuilder builder(blk->getParentOp());
     blk->walk([&](Operation *op) {
-      auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op);
-      auto sync = dyn_cast<AIEX::NpuSyncOp>(op);
-      auto wait = dyn_cast<AIEX::NpuDmaWaitOp>(op);
+      auto dma = dyn_cast_if_present<AIEX::NpuDmaMemcpyNdOp>(op);
+      auto sync = dyn_cast_if_present<AIEX::NpuSyncOp>(op);
+      auto wait = dyn_cast_if_present<AIEX::NpuDmaWaitOp>(op);
       if (sync || wait) {
         chanToIdMap.clear();
         return;

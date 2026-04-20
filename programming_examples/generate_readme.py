@@ -145,6 +145,24 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Aggregation",
+        "name": "Reduction (Add)",
+        "path": "primitives/vector_examples/vector_reduce_add",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Pooling",
+        "name": "MaxPool",
+        "path": "primitives/vector_examples/vector_reduce_max",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Pooling",
+        "name": "AveragePool",
+        "path": "average_pool",
+        "datatypes": "bf16",
+    },
+    {
         "category": "LLM Kernels",
         "name": "Multi-Head Attention (LLaMA2)",
         "path": "llama2_mha",
@@ -160,6 +178,12 @@ EXAMPLES = [
         "category": "LLM Kernels",
         "name": "FFN SwiGLU (Decode)",
         "path": "ffn_swiglu/decode",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "LLM Kernels",
+        "name": "FFN SwiGLU (Prefill)",
+        "path": "ffn_swiglu/prefill",
         "datatypes": "bf16",
     },
     {
@@ -187,10 +211,16 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Attention",
+        "name": "Grouped Query Attention (GQA)",
+        "path": "flash_attention/kernel_fusion_based",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Data Movement",
         "name": "Passthrough (DMA)",
         "path": "passthrough/passthrough_dma",
-        "datatypes": "u8",
+        "datatypes": "u8, i8, i16, u16, f32, bf16",
     },
     {
         "category": "Data Movement",
@@ -218,6 +248,12 @@ EXAMPLES = [
     },
     {
         "category": "Data Movement",
+        "name": "Transpose (bf16)",
+        "path": "data_transfer_transpose/dma_bf16",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Data Movement",
         "name": "Matrix Scalar Add",
         "path": "matrix_scalar_add",
         "datatypes": "i32",
@@ -227,6 +263,24 @@ EXAMPLES = [
         "name": "Channel Examples",
         "path": "channel_examples",
         "datatypes": "i32",
+    },
+    {
+        "category": "Communication",
+        "name": "3D Channel with Segment Unroll",
+        "path": "channel_examples/channel_3d_segment_unroll",
+        "datatypes": "i32",
+    },
+    {
+        "category": "Communication",
+        "name": "Broadcast Selective Capture",
+        "path": "channel_examples/broadcast_selective_capture",
+        "datatypes": "i32",
+    },
+    {
+        "category": "Communication",
+        "name": "Dual-Herd Packet Switch",
+        "path": "channel_examples/dual_herd_packet_switch",
+        "datatypes": "bf16",
     },
     {
         "category": "Communication",
@@ -277,10 +331,40 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "ML Pipeline",
+        "name": "MNIST-FC (Broadcast Bias Add)",
+        "path": "mnist_fc/broadcast_bias_add",
+        "datatypes": "f32",
+    },
+    {
+        "category": "ML Pipeline",
+        "name": "MNIST-FC (ReLU 2D)",
+        "path": "mnist_fc/relu",
+        "datatypes": "f32/bf16",
+    },
+    {
+        "category": "ML Pipeline",
+        "name": "MNIST-FC (Argmax)",
+        "path": "mnist_fc/argmax",
+        "datatypes": "f32\u2192i32",
+    },
+    {
+        "category": "ML Pipeline",
+        "name": "MNIST-FC (Integration)",
+        "path": "mnist_fc/integration",
+        "datatypes": "f32",
+    },
+    {
         "category": "Memory",
         "name": "Shared L1 Buffer",
         "path": "shared_l1",
         "datatypes": "bf16",
+    },
+    {
+        "category": "Quantization",
+        "name": "Dequant (AWQ int4\u2192bf16)",
+        "path": "dequant_awq",
+        "datatypes": "int4/bf16",
     },
     {
         "category": "Primitives",
@@ -436,8 +520,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output",
         type=Path,
-        default=SCRIPT_DIR / "README.md",
-        help="Output file path (default: programming_examples/README.md)",
+        default=SCRIPT_DIR / "dashboard.md",
+        help="Output file path (default: programming_examples/dashboard.md). CI uses --output for GitHub Pages.",
     )
     parser.add_argument(
         "--base-url",

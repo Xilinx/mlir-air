@@ -142,3 +142,79 @@ func.func @test_layernorm_with_memref(%arg0: memref<1xf32, 2>, %arg1: memref<1xf
   vector.transfer_write %broadcast, %arg2[%c0, %c0] {in_bounds = [true]} : vector<16xf32>, memref<1x16xf32, 2>
   return
 }
+
+// -----
+
+// Test scalar math.rsqrt followed by broadcast
+// CHECK-LABEL: @test_scalar_broadcast_before_rsqrt
+// CHECK: %[[BROADCAST:.*]] = vector.broadcast %arg0 : f32 to vector<16xf32>
+// CHECK-NEXT: %[[RSQRT:.*]] = math.rsqrt %[[BROADCAST]] : vector<16xf32>
+// CHECK-NEXT: return %[[RSQRT]]
+func.func @test_scalar_broadcast_before_rsqrt(%arg0: f32) -> vector<16xf32> {
+  %rsqrt = math.rsqrt %arg0 : f32
+  %result = vector.broadcast %rsqrt : f32 to vector<16xf32>
+  return %result : vector<16xf32>
+}
+
+// -----
+
+// Test scalar layernorm pattern (RMS norm: scalar reduction -> scalar rsqrt -> broadcast)
+// CHECK-LABEL: @test_scalar_layernorm_pattern
+// CHECK: %[[VAR_EPS:.*]] = arith.addf
+// CHECK: %[[BROADCAST:.*]] = vector.broadcast %[[VAR_EPS]] : f32 to vector<16xf32>
+// CHECK-NEXT: %[[RSQRT:.*]] = math.rsqrt %[[BROADCAST]] : vector<16xf32>
+// CHECK: return %[[RSQRT]]
+func.func @test_scalar_layernorm_pattern(%arg0: f32, %arg1: f32) -> vector<16xf32> {
+  %cst_eps = arith.constant 9.99999974E-6 : f32
+  %cst_n = arith.constant 1.024000e+03 : f32
+
+  %mean = arith.divf %arg0, %cst_n : f32
+  %mean_sq = arith.mulf %mean, %mean : f32
+  %mean_sq_full = arith.divf %arg1, %cst_n : f32
+  %var = arith.subf %mean_sq_full, %mean_sq : f32
+  %var_eps = arith.addf %var, %cst_eps : f32
+
+  %rsqrt = math.rsqrt %var_eps : f32
+  %broadcast = vector.broadcast %rsqrt : f32 to vector<16xf32>
+
+  return %broadcast : vector<16xf32>
+}
+
+// -----
+
+// Test that scalar rsqrt with multiple uses is not transformed
+// CHECK-LABEL: @test_scalar_no_transform_multiple_uses
+// CHECK: %[[RSQRT:.*]] = math.rsqrt %arg0 : f32
+// CHECK: %[[BROADCAST:.*]] = vector.broadcast %[[RSQRT]] : f32 to vector<16xf32>
+// CHECK: return %[[BROADCAST]], %[[RSQRT]]
+func.func @test_scalar_no_transform_multiple_uses(%arg0: f32) -> (vector<16xf32>, f32) {
+  %rsqrt = math.rsqrt %arg0 : f32
+  %broadcast = vector.broadcast %rsqrt : f32 to vector<16xf32>
+  return %broadcast, %rsqrt : vector<16xf32>, f32
+}
+
+// -----
+
+// Test scalar arith.negf followed by broadcast (trait-based matching)
+// CHECK-LABEL: @test_scalar_broadcast_before_negf
+// CHECK: %[[BROADCAST:.*]] = vector.broadcast %arg0 : f32 to vector<16xf32>
+// CHECK-NEXT: %[[NEGF:.*]] = arith.negf %[[BROADCAST]] : vector<16xf32>
+// CHECK-NEXT: return %[[NEGF]]
+func.func @test_scalar_broadcast_before_negf(%arg0: f32) -> vector<16xf32> {
+  %neg = arith.negf %arg0 : f32
+  %result = vector.broadcast %neg : f32 to vector<16xf32>
+  return %result : vector<16xf32>
+}
+
+// -----
+
+// Test scalar broadcast to 2D vector
+// CHECK-LABEL: @test_scalar_2d_broadcast
+// CHECK: %[[BROADCAST:.*]] = vector.broadcast %arg0 : f32 to vector<1x16xf32>
+// CHECK-NEXT: %[[RSQRT:.*]] = math.rsqrt %[[BROADCAST]] : vector<1x16xf32>
+// CHECK-NEXT: return %[[RSQRT]]
+func.func @test_scalar_2d_broadcast(%arg0: f32) -> vector<1x16xf32> {
+  %rsqrt = math.rsqrt %arg0 : f32
+  %result = vector.broadcast %rsqrt : f32 to vector<1x16xf32>
+  return %result : vector<1x16xf32>
+}

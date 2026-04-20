@@ -3,6 +3,9 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
+import os
+import tempfile
+
 import numpy as np
 from .xrt import XRTBackend
 from air.dialects.air import *
@@ -62,7 +65,7 @@ class XRTRunner:
         omit_pingpong: str = "",
         lower_linalg_to_func: bool = False,
         air_loop_fusion: bool = False,
-        runtime_loop_tiling_sizes: list[int] = [4, 4],
+        runtime_loop_tiling_sizes: list[int] = [],
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
@@ -76,6 +79,8 @@ class XRTRunner:
         trace_file: str = "trace_data.txt",
         num_device_cols: int = 0,
         debug_ir: bool = False,
+        bf16_emulation: bool = False,
+        target_device: str = None,
     ):
         """
         Args:
@@ -101,6 +106,8 @@ class XRTRunner:
                 For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
             debug_ir: enable debug mode to emit IR after each individual pass for fine-grained inspection.
                 IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
+            bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
+            target_device: specify target device explicitly ("npu1", "npu2", etc.). If None, will attempt auto-detection.
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -125,6 +132,8 @@ class XRTRunner:
         self.trace_file = trace_file
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
+        self.bf16_emulation = bf16_emulation
+        self.target_device = target_device
 
     def run_test(
         self,
@@ -134,6 +143,8 @@ class XRTRunner:
         stochastic_expected_outputs: List[np.ndarray] = [],
         rtol: float = 1e-3,
         atol: float = 1e-8,
+        max_mismatch_percentage: float = 0,
+        min_correlation: float = None,
         trace_file: str = None,
     ):
         """
@@ -144,6 +155,8 @@ class XRTRunner:
             stochastic_expected_outputs: expected output matrices stored in sparse coordinates. Expect each matrix to be a dictionary containing "shape", "indices" and "values" fields.
             rtol: relative error tolerance.
             atol: absolute error tolerance.
+            max_mismatch_percentage: max percentage (0-100) of elements allowed to exceed tolerance (0 = all must pass, 20 = 20% can fail).
+            min_correlation: minimum Pearson correlation coefficient (0-1) between actual and expected outputs for floating-point data. None disables this check.
             trace_file: optional override for trace data filename. If None, uses instance default.
         """
         if self.verbose:
@@ -169,6 +182,8 @@ class XRTRunner:
             xclbin_input=self.xclbin_input,
             num_device_cols=self.num_device_cols,
             debug_ir=self.debug_ir,
+            bf16_emulation=self.bf16_emulation,
+            target_device=self.target_device,
         )
 
         # Use per-test trace file if provided, otherwise use instance default
@@ -243,7 +258,7 @@ class XRTRunner:
         expanded_inputs = inputs + output_placeholders
 
         compiled_module = backend.compile(mlir_module)
-        with filelock.FileLock("/tmp/npu.lock"):
+        with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
             module_function = backend.load(compiled_module)
             actual_outputs = module_function(*expanded_inputs)
 
@@ -284,6 +299,8 @@ class XRTRunner:
                 expected_outputs=expected_outputs,
                 rtol=rtol,
                 atol=atol,
+                max_mismatch_percentage=max_mismatch_percentage,
+                min_correlation=min_correlation,
             ):
                 print("PASS!")
                 return_code = 0
@@ -296,6 +313,7 @@ class XRTRunner:
                 stochastic_expected_outputs=stochastic_expected_outputs,
                 rtol=rtol,
                 atol=atol,
+                max_mismatch_percentage=max_mismatch_percentage,
             ):
                 print("PASS!")
                 return_code = 0
@@ -320,6 +338,8 @@ class XRTRunner:
         expected_outputs: List[np.ndarray],
         rtol: float = 1e-3,
         atol: float = 1e-8,
+        max_mismatch_percentage: float = 0,
+        min_correlation: float = None,
     ):
         assert len(actual_outputs) == len(
             expected_outputs
@@ -345,13 +365,17 @@ class XRTRunner:
                 if expected.dtype == bfloat16:
                     expected = expected.astype(np.float64)
                     actual = actual.astype(np.float64)
-                if not np.allclose(actual, expected, rtol=rtol, atol=atol):
+
+                # Element-wise tolerance check
+                elementwise_ok = True
+                close_mask = np.isclose(actual, expected, rtol=rtol, atol=atol)
+                mismatch_indices = np.where(~close_mask)
+                num_mismatches = len(mismatch_indices[0])
+                total_elements = expected.size
+                max_acceptable = int(total_elements * max_mismatch_percentage / 100)
+                if num_mismatches > max_acceptable:
+                    elementwise_ok = False
                     print(f"ERROR: Output {i} does not meet expected output.")
-                    # Find mismatched elements
-                    close_mask = np.isclose(actual, expected, rtol=rtol, atol=atol)
-                    mismatch_indices = np.where(~close_mask)
-                    num_mismatches = len(mismatch_indices[0])
-                    total_elements = expected.size
                     print(f"Shape: {expected.shape}")
                     if total_elements > 0:
                         print(
@@ -360,6 +384,10 @@ class XRTRunner:
                     else:
                         print(
                             f"Mismatches: {num_mismatches} / {total_elements} elements (empty array)"
+                        )
+                    if max_acceptable > 0:
+                        print(
+                            f"Max acceptable: {max_acceptable} ({max_mismatch_percentage}%)"
                         )
                     # Show first N mismatches
                     max_display = 20
@@ -375,6 +403,25 @@ class XRTRunner:
                         print(
                             f"  ... and {num_mismatches - max_display} more mismatches"
                         )
+
+                # Correlation check (parallel with element-wise)
+                corr_ok = True
+                if min_correlation is not None and total_elements > 0:
+                    corr = float(
+                        np.corrcoef(actual.flatten(), expected.flatten())[0, 1]
+                    )
+                    print(
+                        f"Output {i} correlation: {corr:.6f} "
+                        f"(threshold: {min_correlation})"
+                    )
+                    if not np.isfinite(corr) or corr < min_correlation:
+                        corr_ok = False
+                        print(
+                            f"ERROR: Output {i} correlation {corr:.6f} "
+                            f"below threshold {min_correlation}"
+                        )
+
+                if not elementwise_ok or not corr_ok:
                     return False
             else:
                 if not np.array_equal(actual, expected):
@@ -417,6 +464,7 @@ class XRTRunner:
         stochastic_expected_outputs: List[np.ndarray],
         rtol: float = 1e-3,
         atol: float = 1e-8,
+        max_mismatch_percentage: float = 0,
     ):
         assert len(actual_outputs) == len(
             stochastic_expected_outputs
@@ -452,26 +500,23 @@ class XRTRunner:
                     expected["values"] = expected["values"].astype(np.float64)
                     actual = actual.astype(np.float64)
                 actual_stochastic = actual[tuple(expected["indices"])]
-                if not np.allclose(
+                close_mask = np.isclose(
                     actual_stochastic, expected["values"], rtol=rtol, atol=atol
-                ):
+                )
+                mismatch_positions = np.where(~close_mask)[0]
+                num_mismatches = len(mismatch_positions)
+                total_elements = len(expected["values"])
+                max_acceptable = int(total_elements * max_mismatch_percentage / 100)
+                if num_mismatches > max_acceptable:
                     print(f"ERROR: Output {i} does not meet expected output.")
-                    # Find mismatched elements
-                    close_mask = np.isclose(
-                        actual_stochastic, expected["values"], rtol=rtol, atol=atol
-                    )
-                    mismatch_positions = np.where(~close_mask)[0]
-                    num_mismatches = len(mismatch_positions)
-                    total_elements = len(expected["values"])
                     print(f"Shape: {expected['shape']}")
                     print(f"Stochastic check: {total_elements} sampled elements")
-                    if total_elements > 0:
+                    print(
+                        f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
+                    )
+                    if max_acceptable > 0:
                         print(
-                            f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
-                        )
-                    else:
-                        print(
-                            f"Mismatches: {num_mismatches} / {total_elements} elements (empty array)"
+                            f"Max acceptable: {max_acceptable} ({max_mismatch_percentage}%)"
                         )
                     # Show first N mismatches
                     max_display = 20

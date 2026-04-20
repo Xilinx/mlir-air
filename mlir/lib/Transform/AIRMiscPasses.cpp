@@ -14,6 +14,7 @@
 
 #include "air/Transform/AIRMiscPasses.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRTilingUtils.h"
@@ -129,7 +130,7 @@ public:
   // vector
   static bool getIntArrayAttr(ArrayAttr arr, SmallVectorImpl<int64_t> &out) {
     for (Attribute a : arr) {
-      if (auto intAttr = dyn_cast<IntegerAttr>(a))
+      if (auto intAttr = dyn_cast_if_present<IntegerAttr>(a))
         out.push_back(intAttr.getInt());
       else
         return false;
@@ -141,7 +142,7 @@ public:
   // vector<Attribute>
   static bool getAttrArrayAttr(ArrayAttr arr, SmallVectorImpl<Attribute> &out) {
     for (Attribute a : arr) {
-      if (auto intAttr = dyn_cast<IntegerAttr>(a))
+      if (auto intAttr = dyn_cast_if_present<IntegerAttr>(a))
         out.push_back(intAttr);
       else
         return false;
@@ -153,7 +154,7 @@ public:
   static IntegerAttr getIntegerAttrAt(ArrayAttr arr, size_t idx) {
     if (idx >= arr.size())
       return nullptr;
-    return dyn_cast<IntegerAttr>(arr[idx]);
+    return dyn_cast_if_present<IntegerAttr>(arr[idx]);
   }
 
   // Helper: Find first dimension with size > 1, with type check
@@ -161,7 +162,7 @@ public:
   findSpecializeDim(ArrayAttr sizeAttr,
                     const SmallVector<int64_t, 4> &bcastShape) {
     for (size_t d = 0; d < sizeAttr.size(); ++d) {
-      if (auto chanSizeAttr = dyn_cast<IntegerAttr>(sizeAttr[d])) {
+      if (auto chanSizeAttr = dyn_cast_if_present<IntegerAttr>(sizeAttr[d])) {
         int64_t chanSize = chanSizeAttr.getInt();
         if (chanSize > 1) {
           return std::make_pair(d, bcastShape[d]);
@@ -184,15 +185,65 @@ public:
         continue;
       auto idxVal = put.getIndices()[specializeDim];
       auto idxOpt = getConstantIntValue(idxVal);
-      if (!idxOpt || *idxOpt < 0 ||
-          *idxOpt >= (int64_t)specializedChannels.size())
-        continue;
-      int64_t idx = *idxOpt;
-      put.setChanName(specializedChannels[idx].getSymName());
-      if ((int64_t)put.getIndices().size() > specializeDim)
-        put->setOperand(put.getAsyncDependencies().size() + specializeDim,
-                        getValueOrCreateConstantIndexOp(
-                            rewriter, loc, rewriter.getIndexAttr(0)));
+      if (idxOpt && *idxOpt >= 0 &&
+          *idxOpt < (int64_t)specializedChannels.size()) {
+        // Static index: directly rewrite to specialized channel
+        int64_t idx = *idxOpt;
+        put.setChanName(specializedChannels[idx].getSymName());
+        if ((int64_t)put.getIndices().size() > specializeDim)
+          put->setOperand(put.getAsyncDependencies().size() + specializeDim,
+                          getValueOrCreateConstantIndexOp(
+                              rewriter, loc, rewriter.getIndexAttr(0)));
+      } else if (!idxOpt) {
+        // Dynamic index: generate scf.if dispatch to specialized channels.
+        // Puts must be async (produce a token) for result forwarding through
+        // the scf.if chain.
+        assert(!put.getResultTypes().empty() &&
+               "dynamic-index channel.put dispatch requires async put");
+        auto numSegments = (int64_t)specializedChannels.size();
+        auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+        Value result;
+        for (int64_t i = numSegments - 1; i >= 0; --i) {
+          SmallVector<Value> newIndices(put.getIndices().begin(),
+                                        put.getIndices().end());
+          newIndices[specializeDim] = zeroIdx;
+          if (i == numSegments - 1) {
+            // Default case (last segment)
+            auto newPut = air::ChannelPutOp::create(
+                rewriter, loc, put.getResultTypes(), put.getAsyncDependencies(),
+                specializedChannels[i].getSymName(), newIndices,
+                put.getMemref(), put.getOffsets(), put.getSizes(),
+                put.getStrides(),
+                /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+            newPut->setAttrs(put->getDiscardableAttrDictionary());
+            result = newPut.getAsyncToken();
+          } else {
+            auto cmpVal = arith::ConstantIndexOp::create(rewriter, loc, i);
+            auto cond = arith::CmpIOp::create(
+                rewriter, loc, arith::CmpIPredicate::eq, idxVal, cmpVal);
+            auto ifOp = scf::IfOp::create(rewriter, loc, put.getResultTypes(),
+                                          cond, /*withElse=*/true);
+            rewriter.setInsertionPointToStart(ifOp.thenBlock());
+            auto newPut = air::ChannelPutOp::create(
+                rewriter, loc, put.getResultTypes(), put.getAsyncDependencies(),
+                specializedChannels[i].getSymName(), newIndices,
+                put.getMemref(), put.getOffsets(), put.getSizes(),
+                put.getStrides(),
+                /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+            newPut->setAttrs(put->getDiscardableAttrDictionary());
+            scf::YieldOp::create(rewriter, loc, newPut->getResults());
+            rewriter.setInsertionPointToStart(ifOp.elseBlock());
+            assert(result.getDefiningOp() &&
+                   "expected result to have a defining op");
+            result.getDefiningOp()->moveBefore(ifOp.elseBlock(),
+                                               ifOp.elseBlock()->begin());
+            scf::YieldOp::create(rewriter, loc, ValueRange{result});
+            rewriter.setInsertionPoint(put);
+            result = ifOp.getResult(0);
+          }
+        }
+        rewriter.replaceOp(put, result);
+      }
     }
   }
 
@@ -231,49 +282,160 @@ public:
       OpBuilder::InsertionGuard g(rewriter);
       rewriter.setInsertionPoint(get);
 
+      // Check if the get has enough indices for the specialized dimension.
+      if (get.getIndices().size() <= (size_t)specializeDim)
+        return get->emitOpError(
+            "air.channel.get has fewer indices than the specialized "
+            "dimension requires");
+      auto idxVal = get.getIndices()[specializeDim];
+      auto idxOpt = getConstantIntValue(idxVal);
+
+      // Case 1: Static index — directly rewrite to the specialized channel.
+      if (idxOpt && *idxOpt >= 0 && *idxOpt < numSegments) {
+        int64_t idx = *idxOpt;
+        get.setChanName(specializedChannels[idx].getSymName());
+        get->setOperand(get.getAsyncDependencies().size() + specializeDim,
+                        getValueOrCreateConstantIndexOp(
+                            rewriter, loc, rewriter.getIndexAttr(0)));
+        continue;
+      }
+
+      // Collect herd IDs.
       SmallVector<Value, 4> herdIds;
       for (BlockArgument arg : herd.getIds())
         herdIds.push_back(Value(arg));
-      // Helper lambda to create and yield a ChannelGetOp
-      auto createAndYieldChannelGet = [&](int idx) -> Value {
-        auto newGet = air::ChannelGetOp::create(
-            rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
-            rewriter.getStringAttr(specializedChannels[idx].getSymName()),
-            get.getIndices(), get.getMemref(), get.getOffsets(), get.getSizes(),
-            get.getStrides());
-        affine::AffineYieldOp::create(rewriter, loc, newGet.getAsyncToken());
-        return newGet.getAsyncToken();
-      };
 
-      for (int64_t i = 0; i < numSegments; ++i) {
-        SmallVector<AffineExpr, 4> exprs;
-        SmallVector<bool, 4> eqFlags;
-        makeBroadcastAffineSetConstraints(herdIds.size(), specializeDim, i,
-                                          herd.getNumCols(), ctx, exprs,
-                                          eqFlags);
-        auto intSet = IntegerSet::get(0, herdIds.size(), exprs, eqFlags);
-        SmallVector<Value, 4> setArgs = herdIds;
-        if (i == 0) {
-          auto aif = affine::AffineIfOp::create(
-              rewriter, loc, get.getResultTypes(), intSet, setArgs, true);
-          rewriter.setInsertionPointToStart(aif.getThenBlock());
-          createAndYieldChannelGet(i);
-          rewriter.replaceAllUsesWith(get.getAsyncToken(), aif.getResult(0));
-          rewriter.setInsertionPointToStart(aif.getElseBlock());
-        } else if (i < numSegments - 1) {
-          auto aif = affine::AffineIfOp::create(
-              rewriter, loc, get.getResultTypes(), intSet, setArgs, true);
-          rewriter.setInsertionPointToStart(aif.getThenBlock());
-          createAndYieldChannelGet(i);
-          rewriter.setInsertionPointAfter(aif);
-          SmallVector<Value, 1> parentBlockYieldToken{aif.getResult(0)};
-          affine::AffineYieldOp::create(rewriter, loc, parentBlockYieldToken);
-          rewriter.setInsertionPointToStart(aif.getElseBlock());
-        } else {
-          createAndYieldChannelGet(i);
+      // Find which herd dimension (if any) this channel index corresponds to.
+      int64_t herdDimIdx = -1;
+      for (size_t d = 0; d < herdIds.size(); ++d) {
+        if (idxVal == herdIds[d]) {
+          herdDimIdx = d;
+          break;
         }
       }
-      rewriter.eraseOp(get);
+
+      bool isAsync = !get.getResultTypes().empty();
+
+      if (herdDimIdx >= 0) {
+        // Case 2: Herd ID dimension — use affine.if dispatch.
+        // Build specialized indices with the specialized dim set to 0.
+        SmallVector<Value, 4> specializedIndices(get.getIndices().begin(),
+                                                 get.getIndices().end());
+        specializedIndices[specializeDim] = getValueOrCreateConstantIndexOp(
+            rewriter, loc, rewriter.getIndexAttr(0));
+        auto createChannelGet = [&](int idx) {
+          auto newGet = air::ChannelGetOp::create(
+              rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
+              rewriter.getStringAttr(specializedChannels[idx].getSymName()),
+              specializedIndices, get.getMemref(), get.getOffsets(),
+              get.getSizes(), get.getStrides(),
+              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+          air::copyPaddingAttributes(get, newGet);
+          if (isAsync)
+            affine::AffineYieldOp::create(rewriter, loc,
+                                          newGet.getAsyncToken());
+          return newGet;
+        };
+
+        for (int64_t i = 0; i < numSegments; ++i) {
+          SmallVector<AffineExpr, 4> exprs;
+          SmallVector<bool, 4> eqFlags;
+          makeBroadcastAffineSetConstraints(herdIds.size(), herdDimIdx, i,
+                                            herd.getNumCols(), ctx, exprs,
+                                            eqFlags);
+          auto intSet = IntegerSet::get(0, herdIds.size(), exprs, eqFlags);
+          SmallVector<Value, 4> setArgs = herdIds;
+          if (i == 0) {
+            auto aif = affine::AffineIfOp::create(
+                rewriter, loc, get.getResultTypes(), intSet, setArgs, true);
+            rewriter.setInsertionPointToStart(aif.getThenBlock());
+            createChannelGet(i);
+            if (isAsync)
+              rewriter.replaceAllUsesWith(get.getAsyncToken(),
+                                          aif.getResult(0));
+            rewriter.setInsertionPointToStart(aif.getElseBlock());
+          } else if (i < numSegments - 1) {
+            auto aif = affine::AffineIfOp::create(
+                rewriter, loc, get.getResultTypes(), intSet, setArgs, true);
+            rewriter.setInsertionPointToStart(aif.getThenBlock());
+            createChannelGet(i);
+            if (isAsync) {
+              rewriter.setInsertionPointAfter(aif);
+              SmallVector<Value, 1> parentBlockYieldToken{aif.getResult(0)};
+              affine::AffineYieldOp::create(rewriter, loc,
+                                            parentBlockYieldToken);
+            }
+            rewriter.setInsertionPointToStart(aif.getElseBlock());
+          } else {
+            createChannelGet(i);
+          }
+        }
+        rewriter.eraseOp(get);
+      } else {
+        // Case 3: Non-herd dimension (e.g. segment unroll index) — use scf.if
+        // dispatch, mirroring the put-side logic.
+        auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+        Value result;
+        for (int64_t i = numSegments - 1; i >= 0; --i) {
+          SmallVector<Value> newIndices(get.getIndices().begin(),
+                                        get.getIndices().end());
+          newIndices[specializeDim] = zeroIdx;
+          if (i == numSegments - 1) {
+            // Default case (last segment).
+            auto newGet = air::ChannelGetOp::create(
+                rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
+                rewriter.getStringAttr(specializedChannels[i].getSymName()),
+                newIndices, get.getMemref(), get.getOffsets(), get.getSizes(),
+                get.getStrides(),
+                /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+            air::copyPaddingAttributes(get, newGet);
+            newGet->setAttrs(get->getDiscardableAttrDictionary());
+            if (isAsync) {
+              result = newGet.getAsyncToken();
+            } else {
+              // Synchronous: no result to thread through.
+              result = nullptr;
+            }
+          } else {
+            auto cmpVal = arith::ConstantIndexOp::create(rewriter, loc, i);
+            auto cond = arith::CmpIOp::create(
+                rewriter, loc, arith::CmpIPredicate::eq, idxVal, cmpVal);
+            auto ifOp = scf::IfOp::create(rewriter, loc, get.getResultTypes(),
+                                          cond, /*withElse=*/true);
+            rewriter.setInsertionPointToStart(ifOp.thenBlock());
+            auto newGet = air::ChannelGetOp::create(
+                rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
+                rewriter.getStringAttr(specializedChannels[i].getSymName()),
+                newIndices, get.getMemref(), get.getOffsets(), get.getSizes(),
+                get.getStrides(),
+                /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+            air::copyPaddingAttributes(get, newGet);
+            newGet->setAttrs(get->getDiscardableAttrDictionary());
+            if (isAsync)
+              scf::YieldOp::create(rewriter, loc, newGet->getResults());
+            else
+              scf::YieldOp::create(rewriter, loc);
+            rewriter.setInsertionPointToStart(ifOp.elseBlock());
+            if (isAsync) {
+              result.getDefiningOp()->moveBefore(ifOp.elseBlock(),
+                                                 ifOp.elseBlock()->begin());
+              scf::YieldOp::create(rewriter, loc, ValueRange{result});
+            } else {
+              // Move the previous default get into the else block.
+              if (auto *defOp = result.getDefiningOp())
+                defOp->moveBefore(ifOp.elseBlock(), ifOp.elseBlock()->begin());
+              scf::YieldOp::create(rewriter, loc);
+            }
+            rewriter.setInsertionPoint(get);
+            if (isAsync)
+              result = ifOp.getResult(0);
+          }
+        }
+        if (isAsync)
+          rewriter.replaceOp(get, result);
+        else
+          rewriter.eraseOp(get);
+      }
     }
     return success();
   }
@@ -420,14 +582,15 @@ public:
     auto propagateAdd = [&](arith::AddIOp arithOp, unsigned j) {
       arith::ConstantIndexOp addOperand = nullptr;
       if (arithOp.getLhs().getDefiningOp() &&
-          dyn_cast<arith::ConstantIndexOp>(arithOp.getLhs().getDefiningOp())) {
-        addOperand =
-            dyn_cast<arith::ConstantIndexOp>(arithOp.getLhs().getDefiningOp());
+          dyn_cast_if_present<arith::ConstantIndexOp>(
+              arithOp.getLhs().getDefiningOp())) {
+        addOperand = dyn_cast_if_present<arith::ConstantIndexOp>(
+            arithOp.getLhs().getDefiningOp());
       } else if (arithOp.getRhs().getDefiningOp() &&
-                 dyn_cast<arith::ConstantIndexOp>(
+                 dyn_cast_if_present<arith::ConstantIndexOp>(
                      arithOp.getRhs().getDefiningOp())) {
-        addOperand =
-            dyn_cast<arith::ConstantIndexOp>(arithOp.getRhs().getDefiningOp());
+        addOperand = dyn_cast_if_present<arith::ConstantIndexOp>(
+            arithOp.getRhs().getDefiningOp());
       } else {
         herdDimConstExpr[j] = nullptr;
         return;
@@ -438,20 +601,22 @@ public:
         herdDimConstExpr[j] = nullptr;
         return;
       }
-      acc += dyn_cast<AffineConstantExpr>(herdDimConstExpr[j]).getValue();
+      acc += dyn_cast_if_present<AffineConstantExpr>(herdDimConstExpr[j])
+                 .getValue();
       herdDimConstExpr[j] = getAffineConstantExpr(acc, ctx);
     };
     auto propagateMul = [&](arith::MulIOp arithOp, unsigned j) {
       arith::ConstantIndexOp mulOperand = nullptr;
       if (arithOp.getLhs().getDefiningOp() &&
-          dyn_cast<arith::ConstantIndexOp>(arithOp.getLhs().getDefiningOp())) {
-        mulOperand =
-            dyn_cast<arith::ConstantIndexOp>(arithOp.getLhs().getDefiningOp());
+          dyn_cast_if_present<arith::ConstantIndexOp>(
+              arithOp.getLhs().getDefiningOp())) {
+        mulOperand = dyn_cast_if_present<arith::ConstantIndexOp>(
+            arithOp.getLhs().getDefiningOp());
       } else if (arithOp.getRhs().getDefiningOp() &&
-                 dyn_cast<arith::ConstantIndexOp>(
+                 dyn_cast_if_present<arith::ConstantIndexOp>(
                      arithOp.getRhs().getDefiningOp())) {
-        mulOperand =
-            dyn_cast<arith::ConstantIndexOp>(arithOp.getRhs().getDefiningOp());
+        mulOperand = dyn_cast_if_present<arith::ConstantIndexOp>(
+            arithOp.getRhs().getDefiningOp());
       } else {
         herdDimConstExpr[j] = nullptr;
         return;
@@ -462,15 +627,16 @@ public:
         herdDimConstExpr[j] = nullptr;
         return;
       }
-      mul *= dyn_cast<AffineConstantExpr>(herdDimConstExpr[j]).getValue();
+      mul *= dyn_cast_if_present<AffineConstantExpr>(herdDimConstExpr[j])
+                 .getValue();
       herdDimConstExpr[j] = getAffineConstantExpr(mul, ctx);
     };
 
     // Propagate constants through dependency op history (reverse order)
     for (auto it = depOpHistory.rbegin(); it != depOpHistory.rend(); ++it) {
-      if (auto execOp = dyn_cast<air::ExecuteOp>(*it)) {
+      if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(*it)) {
         Operation *op = &execOp.getChildOps().front();
-        if (auto applyOp = dyn_cast<affine::AffineApplyOp>(op)) {
+        if (auto applyOp = dyn_cast_if_present<affine::AffineApplyOp>(op)) {
           if (applyOp.getNumOperands() != 1)
             return failure();
           auto map = applyOp.getAffineMap();
@@ -481,28 +647,28 @@ public:
               int constInt =
                   simplifyAffineMap(newMap).getSingleConstantResult();
               herdDimConstExpr[j] = getAffineConstantExpr(constInt, ctx);
-              auto asyncMemcpyOp =
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+              auto asyncMemcpyOp = dyn_cast_if_present<air::AsyncOpInterface>(
+                  memcpyOp.getOperation());
               eraseAsyncDependencyFromAsyncOp(asyncMemcpyOp,
                                               execOp.getAsyncToken());
             }
           }
-        } else if (auto addOp = dyn_cast<arith::AddIOp>(op)) {
+        } else if (auto addOp = dyn_cast_if_present<arith::AddIOp>(op)) {
           for (unsigned j = 0; j < herdDimConstExpr.size(); ++j) {
             if (herdDimConstExpr[j]) {
               propagateAdd(addOp, j);
-              auto asyncMemcpyOp =
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+              auto asyncMemcpyOp = dyn_cast_if_present<air::AsyncOpInterface>(
+                  memcpyOp.getOperation());
               eraseAsyncDependencyFromAsyncOp(asyncMemcpyOp,
                                               execOp.getAsyncToken());
             }
           }
-        } else if (auto mulOp = dyn_cast<arith::MulIOp>(op)) {
+        } else if (auto mulOp = dyn_cast_if_present<arith::MulIOp>(op)) {
           for (unsigned j = 0; j < herdDimConstExpr.size(); ++j) {
             if (herdDimConstExpr[j]) {
               propagateMul(mulOp, j);
-              auto asyncMemcpyOp =
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+              auto asyncMemcpyOp = dyn_cast_if_present<air::AsyncOpInterface>(
+                  memcpyOp.getOperation());
               eraseAsyncDependencyFromAsyncOp(asyncMemcpyOp,
                                               execOp.getAsyncToken());
             }
@@ -524,7 +690,8 @@ public:
           opOperandId = j;
       if (opOperandId < 0)
         continue;
-      auto val = dyn_cast<AffineConstantExpr>(herdDimConstExpr[i]).getValue();
+      auto val = dyn_cast_if_present<AffineConstantExpr>(herdDimConstExpr[i])
+                     .getValue();
       auto cop = arith::ConstantIndexOp::create(builder, loc, val);
       memcpyOp->getOpOperand(opOperandId).assign(cop);
       opIsUpdated = true;
@@ -562,8 +729,8 @@ public:
     for (const AffineExpr &c : constraints) {
       if (c.isSymbolicOrConstant()) {
         auto newC = c.replaceSymbols(zeroSyms);
-        if (auto expr =
-                dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1))) {
+        if (auto expr = dyn_cast_if_present<AffineConstantExpr>(
+                simplifyAffineExpr(newC, 0, 1))) {
           if (expr.getValue() != 0)
             numSegments = expr.getValue() + 1;
         }
@@ -576,7 +743,7 @@ public:
       auto cloned = rewriter.clone(*origOp);
       cloned->removeAttr("broadcast_pattern");
       cloned->setAttr("broadcast_set", mlir::IntegerSetAttr::get(intSet));
-      auto asyncIface = dyn_cast<air::AsyncOpInterface>(cloned);
+      auto asyncIface = dyn_cast_if_present<air::AsyncOpInterface>(cloned);
       SmallVector<Value, 1> yieldToken{asyncIface.getAsyncToken()};
       affine::AffineYieldOp::create(rewriter, cloned->getLoc(), yieldToken);
       return asyncIface.getAsyncToken();
@@ -608,7 +775,7 @@ public:
       cloneAndYield(rewriter, memcpyOp.getOperation(), intSet);
       // Reconnect dependency graph
       auto asyncMemcpyOp =
-          dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+          dyn_cast_if_present<air::AsyncOpInterface>(memcpyOp.getOperation());
       asyncMemcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
       rewriter.setInsertionPointToStart(aif.getElseBlock());
       auto waitAllOp =
@@ -645,7 +812,7 @@ public:
         rewriter.setInsertionPointToStart(aif.getThenBlock());
         cloneAndYield(rewriter, memcpyOp.getOperation(), intSet);
         auto asyncMemcpyOp =
-            dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+            dyn_cast_if_present<air::AsyncOpInterface>(memcpyOp.getOperation());
         asyncMemcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
         rewriter.setInsertionPointToStart(aif.getElseBlock());
       } else if (i < numSegments - 1) {
@@ -1149,7 +1316,7 @@ struct NestedHerdCollapsePattern : public OpRewritePattern<air::HerdOp> {
     auto &outerBody = outer.getBody().front();
     air::HerdOp inner = nullptr;
     for (Operation &op : outerBody.without_terminator()) {
-      if (auto h = dyn_cast<air::HerdOp>(&op)) {
+      if (auto h = dyn_cast_if_present<air::HerdOp>(&op)) {
         if (inner)
           return rewriter.notifyMatchFailure(
               outer, "multiple inner herds, not perfect");
@@ -1533,9 +1700,8 @@ FailureOr<Value> tileChannelOpByFactor(
   Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
   // Create and apply affine map onto the split channel ops.
   SmallVector<Value> tokens;
-  int memorySpace =
-      dyn_cast<BaseMemRefType>(originalChanOp.getMemref().getType())
-          .getMemorySpaceAsInt();
+  auto memorySpace = air::getMemorySpace(dyn_cast_if_present<BaseMemRefType>(
+      originalChanOp.getMemref().getType()));
   for (int i = 0; i < factor; i++) {
     // Get affine map and split size from splitInfo.
     auto &[splitInfoDimOnOffsets, splitInfoAffineMap, splitInfoSplitOffset,
@@ -1584,10 +1750,10 @@ FailureOr<Value> tileChannelOpByFactor(
         originalExpr = applyOp.getAffineMap().getResult(0);
       } else if (auto execOp =
                      dyn_cast_if_present<air::ExecuteOp>(affineApplyOp)) {
-        originalExpr =
-            dyn_cast<affine::AffineApplyOp>(execOp.getChildOps().front())
-                .getAffineMap()
-                .getResult(0);
+        originalExpr = dyn_cast_if_present<affine::AffineApplyOp>(
+                           execOp.getChildOps().front())
+                           .getAffineMap()
+                           .getResult(0);
       } else {
         originalExpr = rewriter.getAffineSymbolExpr(0);
       }
@@ -1681,8 +1847,7 @@ FailureOr<Value> tileChannelOpByFactor(
     // Strategy: add one dimension to wrap-and-stride list. Rationale: (1) the
     // stride factor should apply on existing size, (2) original offset must
     // continue with the original stride.
-    if (splitInfoSplitStrideFactor &&
-        memorySpace == (int)air::MemorySpace::L3) {
+    if (splitInfoSplitStrideFactor && memorySpace == air::MemorySpace::L3) {
       newStrides.insert(newStrides.begin() + splitDimOnOffsets,
                         newStrides[splitDimOnOffsets]);
       newStrides[splitDimOnOffsets + 1] = arith::ConstantIndexOp::create(
@@ -1696,21 +1861,26 @@ FailureOr<Value> tileChannelOpByFactor(
       newOffsets[splitDimOnOffsets + 1] =
           arith::ConstantIndexOp::create(rewriter, loc, 0);
     }
-    auto deps = dyn_cast<air::AsyncOpInterface>(originalChanOp.getOperation())
+    auto deps = dyn_cast_if_present<air::AsyncOpInterface>(
+                    originalChanOp.getOperation())
                     .getAsyncDependencies();
     SmallVector<Type, 4> tys = {air::AsyncTokenType::get(ctx)};
     if (isa<air::ChannelGetOp>(originalChanOp)) {
       auto newGetOp = air::ChannelGetOp::create(
           rewriter, loc, tys, deps, newChanOp.getSymName(), newIndices,
-          originalChanOp.getMemref(), newOffsets, newWraps, newStrides);
+          originalChanOp.getMemref(), newOffsets, newWraps, newStrides,
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
       newGetOp->setAttrs(originalChanOp->getDiscardableAttrDictionary());
+      air::copyPaddingAttributes(originalChanOp, newGetOp);
       tokens.push_back(newGetOp.getAsyncToken());
       opToSplitInfoMap[newGetOp] = splitInfoVec[i];
     } else {
       auto newPutOp = air::ChannelPutOp::create(
           rewriter, loc, tys, deps, newChanOp.getSymName(), newIndices,
-          originalChanOp.getMemref(), newOffsets, newWraps, newStrides);
+          originalChanOp.getMemref(), newOffsets, newWraps, newStrides,
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
       newPutOp->setAttrs(originalChanOp->getDiscardableAttrDictionary());
+      air::copyPaddingAttributes(originalChanOp, newPutOp);
       tokens.push_back(newPutOp.getAsyncToken());
       opToSplitInfoMap[newPutOp] = splitInfoVec[i];
     }
@@ -1730,7 +1900,7 @@ scf::ForOp getScfForFromVal(Value val) {
   if (!defOp)
     return scf::ForOp();
   SetVector<Value> opers;
-  if (auto exec = dyn_cast<air::ExecuteOp>(defOp)) {
+  if (auto exec = dyn_cast_if_present<air::ExecuteOp>(defOp)) {
     getUsedValuesDefinedAbove(exec.getRegion(), opers);
   } else {
     opers.insert(defOp->getOperands().begin(), defOp->getOperands().end());
@@ -1755,7 +1925,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
   auto ctx = allocOp->getContext();
   Operation *deallocOp = nullptr;
   for (auto user : memref.getUsers()) {
-    if (auto execOp = dyn_cast<air::ExecuteOp>(user->getParentOp())) {
+    if (auto execOp =
+            dyn_cast_if_present<air::ExecuteOp>(user->getParentOp())) {
       if (llvm::any_of(execOp.getChildOps(), [](Operation &child_op) {
             return isa<memref::DeallocOp>(child_op);
           })) {
@@ -1795,8 +1966,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
             apply = applyOp;
           } else if (auto execOp =
                          dyn_cast_if_present<air::ExecuteOp>(offsetDefOp)) {
-            apply =
-                dyn_cast<affine::AffineApplyOp>(execOp.getChildOps().front());
+            apply = dyn_cast_if_present<affine::AffineApplyOp>(
+                execOp.getChildOps().front());
           }
           if (apply) {
             SmallVector<std::optional<int64_t>> sym_ints;
@@ -1900,7 +2071,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
     // Create new dealloc ops.
     if (deallocOp) {
       builder.setInsertionPoint(deallocOp);
-      if (auto execDeallocOp = dyn_cast<air::ExecuteOp>(deallocOp)) {
+      if (auto execDeallocOp = dyn_cast_if_present<air::ExecuteOp>(deallocOp)) {
         auto execOp =
             air::ExecuteOp::create(builder, loc, air::AsyncTokenType::get(ctx),
                                    execDeallocOp.getAsyncDependencies());
@@ -1918,7 +2089,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
              splitStride] = opToSplitInfoMap[op];
       int offsetDim = splitInfoDimOnOffsets;
       int memrefOperandOffset =
-          dyn_cast<air::AsyncOpInterface>(op.getOperation())
+          dyn_cast_if_present<air::AsyncOpInterface>(op.getOperation())
               .getAsyncDependencies()
               .size() +
           op.getIndices().size();
@@ -1945,7 +2116,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
           if (exec)
             for (auto &child_op : exec.getChildOps())
               if (auto apply_child_op =
-                      dyn_cast<affine::AffineApplyOp>(child_op))
+                      dyn_cast_if_present<affine::AffineApplyOp>(child_op))
                 apply = apply_child_op;
           if (!apply) {
             defOp->emitOpError("Apply op not found. NYI.");
@@ -1991,7 +2162,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         continue;
       if (!isa<scf::ForOp>(op->getParentOp()))
         continue;
-      auto parentForOp = dyn_cast<scf::ForOp>(op->getParentOp());
+      auto parentForOp = dyn_cast_if_present<scf::ForOp>(op->getParentOp());
       push_back_if_unique<scf::ForOp>(mutatedScfForOps, parentForOp);
     }
   }
@@ -2052,8 +2223,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   SmallVector<memref::AllocOp> allocOps;
   func.walk([&](memref::AllocOp allocOp) {
     if (allocOp->getParentOfType<air::SegmentOp>() &&
-        llvm::cast<MemRefType>(allocOp.getMemref().getType())
-                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+        air::isL2(llvm::cast<MemRefType>(allocOp.getMemref().getType()))) {
       allocOps.push_back(allocOp);
     }
   });
@@ -2072,25 +2242,26 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
         dyn_cast_if_present<affine::AffineApplyOp>(offsetDefOp);
     if (auto exec = dyn_cast_if_present<air::ExecuteOp>(offsetDefOp))
       for (auto &child_op : exec.getChildOps())
-        if (auto apply_child_op = dyn_cast<affine::AffineApplyOp>(child_op))
+        if (auto apply_child_op =
+                dyn_cast_if_present<affine::AffineApplyOp>(child_op))
           apply = apply_child_op;
     return apply;
   };
 
   for (auto allocOp : allocOps) {
     Value memref = allocOp.getMemref();
-    if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
+    if (auto exec = dyn_cast_if_present<air::ExecuteOp>(allocOp->getParentOp()))
       memref = exec->getResult(1);
     // Maps of MM2S and S2MM channels and their sub-channels.
     llvm::MapVector<air::ChannelOp, SmallVector<SmallVector<Value>>>
         MM2SChannels, S2MMChannels;
     for (auto user : memref.getUsers()) {
-      if (auto put = dyn_cast<air::ChannelPutOp>(user)) {
+      if (auto put = dyn_cast_if_present<air::ChannelPutOp>(user)) {
         // Condition 2: accessed by multiple puts with unique names.
         push_back_if_unique<SmallVector<Value>>(
             MM2SChannels[air::getChannelDeclarationThroughSymbol(put)],
             put.getIndices());
-      } else if (auto get = dyn_cast<air::ChannelGetOp>(user)) {
+      } else if (auto get = dyn_cast_if_present<air::ChannelGetOp>(user)) {
         // Condition 3: accessed by multiple gets with unique names.
         push_back_if_unique<SmallVector<Value>>(
             S2MMChannels[air::getChannelDeclarationThroughSymbol(get)],
@@ -2312,8 +2483,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   func.walk([&](memref::AllocOp allocOp) {
     auto parentSeg = allocOp->getParentOfType<air::SegmentOp>();
     if (parentSeg && segmentsNeedingSplit.contains(parentSeg) &&
-        llvm::cast<MemRefType>(allocOp.getMemref().getType())
-                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+        air::isL2(llvm::cast<MemRefType>(allocOp.getMemref().getType()))) {
       allocOps.push_back(allocOp);
     }
   });
@@ -2396,7 +2566,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
                                             targetColTilingFactor));
     Value memref = isa<air::ExecuteOp>(allocOp->getParentOp())
                        ? allocOp->getParentOp()->getResult(1)
-                       : dyn_cast<Value>(allocOp.getMemref());
+                       : dyn_cast_if_present<Value>(allocOp.getMemref());
     for (auto user : memref.getUsers()) {
       if (!isa<air::ChannelInterface>(user))
         continue;
@@ -2410,7 +2580,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
 
       // Single-channel side found. Perform tiling on put/get ops operating on
       // the channel.
-      auto chanUserOp = dyn_cast<air::ChannelInterface>(user);
+      auto chanUserOp = dyn_cast_if_present<air::ChannelInterface>(user);
       auto loc = chanUserOp->getLoc();
       auto ctx = chanUserOp->getContext();
 
@@ -2427,7 +2597,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       auto new_chan_op = mlir::SymbolTable::lookupSymbolIn(
           chanUserOp->getParentOfType<ModuleOp>(), cname);
       if (new_chan_op) {
-        new_chan = dyn_cast<air::ChannelOp>(new_chan_op);
+        new_chan = dyn_cast_if_present<air::ChannelOp>(new_chan_op);
       } else {
         // Get original channel shape and prepend split dimension
         auto origChanOp = air::getChannelDeclarationThroughSymbol(chanUserOp);
@@ -2452,7 +2622,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         }
         new_chan = air::ChannelOp::create(
             rewriter, loc, cname, rewriter.getI64ArrayAttr(channel_sizes),
-            rewriter.getStringAttr("dma_stream"));
+            origChanOp.getChannelType());
       }
 
       // Perform tiling on these channel put/get ops which are using the memref.
@@ -2541,26 +2711,30 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
           }
         }
         air::ChannelInterface updatedChanOp = theOtherChanOp;
-        if (auto put =
-                dyn_cast<air::ChannelPutOp>(theOtherChanOp.getOperation())) {
+        if (auto put = dyn_cast_if_present<air::ChannelPutOp>(
+                theOtherChanOp.getOperation())) {
           auto attrs = put->getDiscardableAttrDictionary();
           erased.insert(put);
           auto newPut = air::ChannelPutOp::create(
               rewriter, loc, put.getResultTypes(), put.getAsyncDependencies(),
               put.getChanName(), put.getIndices(), put.getMemref(), offsets,
-              wraps, strides);
+              wraps, strides,
+              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
           newPut->setAttrs(attrs);
+          air::copyPaddingAttributes(put, newPut);
           rewriter.replaceAllUsesWith(put->getResults(), newPut->getResults());
           updatedChanOp = newPut;
-        } else if (auto get = dyn_cast<air::ChannelGetOp>(
+        } else if (auto get = dyn_cast_if_present<air::ChannelGetOp>(
                        theOtherChanOp.getOperation())) {
           auto attrs = get->getDiscardableAttrDictionary();
           erased.insert(get);
           auto newGet = air::ChannelGetOp::create(
               rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
               get.getChanName(), get.getIndices(), get.getMemref(), offsets,
-              wraps, strides);
+              wraps, strides,
+              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
           newGet->setAttrs(attrs);
+          air::copyPaddingAttributes(get, newGet);
           rewriter.replaceAllUsesWith(get->getResults(), newGet->getResults());
           updatedChanOp = newGet;
         }
@@ -2642,20 +2816,21 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
                               // splitting for now.
     Value memref = isa<air::ExecuteOp>(allocOp->getParentOp())
                        ? allocOp->getParentOp()->getResult(1)
-                       : dyn_cast<Value>(allocOp.getMemref());
+                       : dyn_cast_if_present<Value>(allocOp.getMemref());
     SmallVector<air::ChannelPutOp> puts;
     SmallVector<air::ChannelGetOp> gets;
     for (auto user : memref.getUsers()) {
-      if (auto put = dyn_cast<air::ChannelPutOp>(user))
+      if (auto put = dyn_cast_if_present<air::ChannelPutOp>(user))
         puts.push_back(put);
-      else if (auto get = dyn_cast<air::ChannelGetOp>(user))
+      else if (auto get = dyn_cast_if_present<air::ChannelGetOp>(user))
         gets.push_back(get);
     }
     int dim = splitDim;
     partitionMemref(puts, gets, dim, allocOp, opToSplitInfoMap);
   }
   for (auto allocOp : allocOps) {
-    if (auto execOp = dyn_cast<air::ExecuteOp>(allocOp->getParentOp())) {
+    if (auto execOp =
+            dyn_cast_if_present<air::ExecuteOp>(allocOp->getParentOp())) {
       erased.insert(execOp);
     } else {
       erased.insert(allocOp);
@@ -2706,31 +2881,55 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
                                 PatternRewriter &rewriter) const override {
     Operation *parent = nullptr;
 
-    if (clScope == "herd")
+    // Scope matching is exclusive: each scope only matches allocs at that
+    // level of the AIR hierarchy, not allocs nested in deeper scopes.
+    // This allows assigning different memory spaces at different levels
+    // (e.g., L1 for herd, L2 for segment) via sequential pass invocations.
+    if (clScope == "herd") {
       parent = alloc->getParentOfType<air::HerdOp>();
-    else if (clScope == "segment")
+    } else if (clScope == "segment") {
       parent = alloc->getParentOfType<air::SegmentOp>();
-    else if (clScope == "launch")
+      if (alloc->getParentOfType<air::HerdOp>())
+        return failure();
+    } else if (clScope == "launch") {
       parent = alloc->getParentOfType<air::LaunchOp>();
-    else if (clScope == "func")
+      if (alloc->getParentOfType<air::SegmentOp>() ||
+          alloc->getParentOfType<air::HerdOp>())
+        return failure();
+    } else if (clScope == "func") {
       parent = alloc->getParentOfType<func::FuncOp>();
-    else
+      if (alloc->getParentOfType<air::LaunchOp>() ||
+          alloc->getParentOfType<air::SegmentOp>() ||
+          alloc->getParentOfType<air::HerdOp>())
+        return failure();
+    } else
       return alloc->emitOpError(
           "Invalid clScope value: expected one of herd/segment/launch/func");
 
     if (!parent)
       return failure();
 
-    auto memrefTy = dyn_cast<MemRefType>(alloc.getMemref().getType());
+    auto memrefTy =
+        dyn_cast_if_present<MemRefType>(alloc.getMemref().getType());
     if (!memrefTy)
       return failure();
-    if ((int)memrefTy.getMemorySpaceAsInt() == clMemorySpace)
+    auto targetMS =
+        air::symbolizeMemorySpace(static_cast<uint32_t>(clMemorySpace));
+    if (!targetMS)
+      return failure();
+    if (air::getMemorySpace(memrefTy) == *targetMS)
+      return failure();
+    // Skip allocs that already have a recognized non-default memory space
+    // (e.g., L1=2 when target is L2=1). Only override allocs with default
+    // memory space (L3=0) or unrecognized raw integer memory spaces.
+    auto currentMS = air::getMemorySpace(memrefTy);
+    if (currentMS && *currentMS != air::MemorySpace::L3)
       return failure();
 
-    auto newMemrefType =
-        MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
-                        memrefTy.getLayout().getAffineMap(),
-                        rewriter.getI32IntegerAttr(clMemorySpace));
+    auto newMemrefType = MemRefType::get(
+        memrefTy.getShape(), memrefTy.getElementType(),
+        memrefTy.getLayout().getAffineMap(),
+        air::MemorySpaceAttr::get(rewriter.getContext(), *targetMS));
 
     rewriter.replaceOpWithNewOp<memref::AllocOp>(alloc, newMemrefType);
 
@@ -2755,27 +2954,31 @@ struct correctViewLikeOpIOMemorySpacesInScope : public OpRewritePattern<OpTy> {
       return failure();
     llvm::DenseMap<ViewLikeOpInterface, SmallVector<OpResult>> viewLikeOpsToRes;
     IFAOp->walk([&](ViewLikeOpInterface viewLike) {
-      auto srcTy = dyn_cast<MemRefType>(viewLike.getViewSource().getType());
+      auto srcTy =
+          dyn_cast_if_present<MemRefType>(viewLike.getViewSource().getType());
       if (!srcTy)
         return;
       for (auto res : viewLike->getResults()) {
-        auto destTy = dyn_cast<MemRefType>(res.getType());
+        auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
         if (!destTy)
           return;
-        if (srcTy.getMemorySpaceAsInt() == destTy.getMemorySpaceAsInt())
+        if (air::getMemorySpace(srcTy) == air::getMemorySpace(destTy))
           continue;
         viewLikeOpsToRes[viewLike].push_back(res);
       }
     });
     for (auto [viewLike, results] : viewLikeOpsToRes) {
       for (OpResult res : results) {
-        auto srcTy = dyn_cast<MemRefType>(viewLike.getViewSource().getType());
-        auto destTy = dyn_cast<MemRefType>(res.getType());
+        auto srcTy =
+            dyn_cast_if_present<MemRefType>(viewLike.getViewSource().getType());
+        auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
         MemRefType::Builder builder(destTy);
         builder.setMemorySpace(srcTy.getMemorySpace());
         rewriter.modifyOpInPlace(viewLike, [&]() { res.setType(builder); });
       }
     }
+    if (viewLikeOpsToRes.empty())
+      return failure();
     return success();
   }
 };
@@ -2806,6 +3009,29 @@ void AIROverrideMemRefMemorySpacePass::runOnOperation() {
   RewritePatternSet patterns(context);
   patterns.add<OverrideMemorySpacePattern>(context, clScope, clMemorySpace);
   (void)applyPatternsGreedily(moduleOp, std::move(patterns));
+
+  // After alloc types change, propagate types through AIR hierarchy block
+  // arguments. When an alloc outside a herd/segment/launch changes type,
+  // the hierarchy op's operand updates but the body block argument retains
+  // the old type (issue #1384).
+  auto updateBlockArgTypes = [](auto hierarchyOp) {
+    auto kernelOperands = hierarchyOp.getKernelOperands();
+    auto kernelArgs = hierarchyOp.getKernelArguments();
+    for (unsigned i = 0; i < kernelArgs.size(); i++) {
+      if (kernelArgs[i].getType() != kernelOperands[i].getType()) {
+        // Get a mutable reference via the block directly.
+        auto &block = hierarchyOp.getBody().front();
+        block.getArgument(kernelArgs[i].getArgNumber())
+            .setType(kernelOperands[i].getType());
+      }
+    }
+  };
+  // Propagate types from outermost to innermost hierarchy ops so that
+  // updated alloc types are visible when updating inner block arguments.
+  moduleOp.walk([&](air::LaunchOp op) { updateBlockArgTypes(op); });
+  moduleOp.walk([&](air::SegmentOp op) { updateBlockArgTypes(op); });
+  moduleOp.walk([&](air::HerdOp op) { updateBlockArgTypes(op); });
+
   RewritePatternSet fixResTypePatterns(context);
   if (clScope == "herd") {
     fixResTypePatterns.add<correctViewLikeOpIOMemorySpacesInScope<air::HerdOp>>(
@@ -2824,6 +3050,121 @@ void AIROverrideMemRefMemorySpacePass::runOnOperation() {
 }
 
 } // namespace xilinx
+
+//===----------------------------------------------------------------------===//
+// OverrideMemRefMemorySpaceOp (transform dialect op)
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::OverrideMemRefMemorySpaceOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  int memSpace = getMemorySpace();
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    // Infer scope from target op type.
+    StringRef scope;
+    if (isa<xilinx::air::HerdOp>(target))
+      scope = "herd";
+    else if (isa<xilinx::air::SegmentOp>(target))
+      scope = "segment";
+    else if (isa<xilinx::air::LaunchOp>(target))
+      scope = "launch";
+    else if (isa<func::FuncOp>(target))
+      scope = "func";
+    else
+      return emitDefiniteFailure()
+             << "target must be one of: air.herd, air.segment, air.launch, "
+                "func.func; got "
+             << target->getName();
+
+    MLIRContext *ctx = target->getContext();
+
+    // Step 1: Override alloc memory spaces within the target scope.
+    RewritePatternSet patterns(ctx);
+    patterns.add<xilinx::OverrideMemorySpacePattern>(ctx, scope, memSpace);
+    (void)applyPatternsGreedily(target, std::move(patterns));
+
+    // Step 2: Propagate updated types through AIR hierarchy block arguments.
+    // Use rewriter.modifyOpInPlace so transform state tracking is notified.
+    auto updateBlockArgTypes = [&rewriter](auto hierarchyOp) {
+      auto kernelOperands = hierarchyOp.getKernelOperands();
+      auto kernelArgs = hierarchyOp.getKernelArguments();
+      bool needsUpdate = false;
+      for (unsigned i = 0; i < kernelArgs.size(); i++) {
+        if (kernelArgs[i].getType() != kernelOperands[i].getType()) {
+          needsUpdate = true;
+          break;
+        }
+      }
+      if (!needsUpdate)
+        return;
+      rewriter.modifyOpInPlace(hierarchyOp, [&]() {
+        for (unsigned i = 0; i < kernelArgs.size(); i++) {
+          if (kernelArgs[i].getType() != kernelOperands[i].getType()) {
+            auto &block = hierarchyOp.getBody().front();
+            block.getArgument(kernelArgs[i].getArgNumber())
+                .setType(kernelOperands[i].getType());
+          }
+        }
+      });
+    };
+    target->walk([&](xilinx::air::LaunchOp op) { updateBlockArgTypes(op); });
+    target->walk([&](xilinx::air::SegmentOp op) { updateBlockArgTypes(op); });
+    target->walk([&](xilinx::air::HerdOp op) { updateBlockArgTypes(op); });
+
+    // Step 3: Fix view-like op result types to match source memory spaces.
+    // Walk the target directly rather than using the pattern-based approach,
+    // since applyPatternsGreedily on a target doesn't match the target itself.
+    // Use rewriter.modifyOpInPlace for proper transform state notification.
+    target->walk([&](ViewLikeOpInterface viewLike) {
+      auto srcTy =
+          dyn_cast_if_present<MemRefType>(viewLike.getViewSource().getType());
+      if (!srcTy)
+        return;
+      bool needsUpdate = false;
+      for (auto res : viewLike->getResults()) {
+        auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
+        if (!destTy)
+          continue;
+        if (xilinx::air::getMemorySpace(srcTy) !=
+            xilinx::air::getMemorySpace(destTy)) {
+          needsUpdate = true;
+          break;
+        }
+      }
+      if (!needsUpdate)
+        return;
+      rewriter.modifyOpInPlace(viewLike, [&]() {
+        for (auto res : viewLike->getResults()) {
+          auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
+          if (!destTy)
+            continue;
+          if (xilinx::air::getMemorySpace(srcTy) ==
+              xilinx::air::getMemorySpace(destTy))
+            continue;
+          MemRefType::Builder builder(destTy);
+          builder.setMemorySpace(srcTy.getMemorySpace());
+          res.setType(MemRefType(builder));
+        }
+      });
+    });
+
+    transformedOps.push_back(target);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
 
 namespace xilinx {
 namespace air {

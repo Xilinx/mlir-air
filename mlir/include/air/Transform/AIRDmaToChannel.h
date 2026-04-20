@@ -12,6 +12,7 @@
 #include "air/Transform/PassDetail.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
@@ -25,6 +26,8 @@ SmallVector<Operation *> cloneOpsInBlock(Block *blk, OpBuilder &builder,
 SmallVector<Operation *> cloneAffineIfUsingRemap(OpBuilder builder,
                                                  IRMapping &remap,
                                                  affine::AffineIfOp aif_op);
+SmallVector<Operation *>
+cloneScfIfUsingRemap(OpBuilder builder, IRMapping &remap, scf::IfOp scf_if_op);
 
 template <typename T>
 SmallVector<Operation *>

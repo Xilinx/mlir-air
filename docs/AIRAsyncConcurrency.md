@@ -72,9 +72,67 @@ MLIR-AIR provides a graph canonicalization pass `-air-dependency-canonicalize` w
 
 ### Optional: visualize CDFG using `-air-dependency-parse-graph`
 
-The CDFG which represents the MLIR-AIR program's asynchronous concurrency can be visualized as a `.dot` file using `-air-dependency-parse-graph` pass.
-The generated dot file can be rendered using Graphviz.
-The rendered CDFG below is generated from the matrix multiplication example in previous section.
+The CDFG which represents the MLIR-AIR program's asynchronous concurrency can be visualized as `.dot` files using the `-air-dependency-parse-graph` pass.
+
+#### Dumping dependency graphs
+
+Use the `output-dir` option to specify where DOT files are written:
+
+```bash
+air-opt input.mlir -air-dependency \
+    -air-dependency-parse-graph='output-dir=/tmp/my_graphs'
+```
+
+This generates one DOT file per hierarchy level, plus a `combined.dot` that nests all levels using GraphViz subgraph clusters:
+
+```
+/tmp/my_graphs/
+├── host.dot                                          # Top-level function graph
+├── host_air_launch_1.dot                             # air.launch level
+├── host_air_launch_1_air_segment_1.dot               # air.segment level
+├── host_air_launch_1_air_segment_1_air_herd_1.dot    # air.herd level
+└── combined.dot                                      # All levels nested
+```
+
+To visualize the post-canonicalization (transitive-reduced) graph instead, use `dump-graph` on `-air-dependency-canonicalize`:
+
+```bash
+air-opt input.mlir -air-dependency \
+    -air-dependency-canonicalize='dump-graph=true output-dir=/tmp/canon_graphs'
+```
+
+To show per-core graphs within each herd (instead of a single herd-level graph), use the `show-cores` option:
+
+```bash
+air-opt input.mlir -air-dependency \
+    -air-dependency-parse-graph='output-dir=/tmp/core_graphs show-cores=true'
+```
+
+#### Rendering DOT files
+
+The generated DOT files can be rendered using [Graphviz](https://graphviz.org/):
+
+```bash
+# Render to PNG
+dot -Tpng /tmp/my_graphs/combined.dot -o combined.png
+
+# Render to SVG
+dot -Tsvg /tmp/my_graphs/host.dot -o host.svg
+
+# Interactive viewer
+xdot /tmp/my_graphs/combined.dot
+```
+
+#### Node color legend
+
+| Color | Shape | Meaning |
+|-------|-------|---------|
+| Yellow | Box | Hierarchy ops (start, LaunchOp, SegmentOp, HerdOp, terminators) |
+| Chartreuse | Oval | Compute ops (AllocOp, DeallocOp, LinalgOp, ExecuteTerminatorOp) |
+| Cyan | Oval | Data movement ops (DmaMemcpyNdOp, ChannelPutOp, ChannelGetOp, CopyOp) |
+| Crimson | Box | Synchronization ops (WaitAllOp, ScfForOp, ScfForYieldOp) |
+
+The rendered CDFG below is generated from the matrix multiplication example in the previous section.
 
 <img src="assets/images/air_cdfg_example.svg">
 

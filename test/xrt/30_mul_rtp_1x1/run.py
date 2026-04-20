@@ -4,7 +4,6 @@
 # RUN: %PYTHON %s | FileCheck %s
 
 import air.backend.xrt as xrt_backend
-import air.compiler.aircc.main as aircc
 from air.dialects.air import *
 from air.dialects.func import FuncOp, ReturnOp
 import air.dialects.linalg.opdsl.lang as linalg_lang
@@ -120,6 +119,7 @@ def run_test(size, idtype, odtype):
         omit_pingpong=True,
         verbose=verbose,
         use_lock_race_condition_fix=True,
+        runtime_loop_tiling_sizes=[4, 4],
     )
 
     # run the module

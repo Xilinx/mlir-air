@@ -7,10 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
-// CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
-// CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
-// CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
-// CHECK: call @__airrt_nd_memcpy_2d0i32_2d1i32({{.*}}) : (!llvm.ptr, memref<?x?xi32>, memref<?x?xi32, 1>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @__airrt_nd_memcpy_2d0i32_2d1i32({{.*}}) : (!llvm.ptr, memref<?x?xi32>, memref<?x?xi32, 1>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
 module attributes {torch.debug_module_name = "mmult"}  {
   func.func @forward(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>, %arg2: memref<?x?xi32>) {
     %c7_i32 = arith.constant 7 : i32
@@ -41,9 +41,9 @@ module attributes {torch.debug_module_name = "mmult"}  {
     %2 = airrt.alloc : memref<64x64xi32, 1>
     %3 = airrt.alloc : memref<64x64xi32, 1>
     %4 = airrt.alloc : memref<64x64xi32, 1>
-    airrt.memcpy_nd(%2, %arg0, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64]) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-    airrt.memcpy_nd(%3, %arg1, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64]) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-    airrt.memcpy_nd(%4, %1, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64]) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    airrt.memcpy_nd(%2, %arg0, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+    airrt.memcpy_nd(%3, %arg1, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+    airrt.memcpy_nd(%4, %1, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
     %5 = airrt.herd_load "herd_0" () : () -> i64
     affine.for %arg3 = 0 to 2 {
       affine.for %arg4 = 0 to 2 {
@@ -57,10 +57,10 @@ module attributes {torch.debug_module_name = "mmult"}  {
           %12 = arith.index_cast %arg3 : index to i64
           %13 = arith.index_cast %6 : index to i64
           %14 = arith.index_cast %arg5 : index to i64
-          airrt.dma_memcpy_nd(%c4_i32, %11, %12, %2[%c0_i64, %c0_i64, %13, %14], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+          airrt.dma_memcpy_nd(%c4_i32, %11, %12, %2[%c0_i64, %c0_i64, %13, %14], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
           %15 = arith.index_cast %7 : index to i64
-          airrt.dma_memcpy_nd(%c5_i32, %11, %12, %3[%c0_i64, %c0_i64, %14, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-          airrt.dma_memcpy_nd(%c6_i32, %11, %12, %4[%c0_i64, %c0_i64, %13, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+          airrt.dma_memcpy_nd(%c5_i32, %11, %12, %3[%c0_i64, %c0_i64, %14, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+          airrt.dma_memcpy_nd(%c6_i32, %11, %12, %4[%c0_i64, %c0_i64, %13, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
           affine.for %arg6 = 0 to 32 {
             affine.for %arg7 = 0 to 32 {
               affine.for %arg8 = 0 to 32 {
@@ -73,14 +73,14 @@ module attributes {torch.debug_module_name = "mmult"}  {
               }
             }
           }
-          airrt.dma_memcpy_nd(%c7_i32, %11, %12, %4[%c0_i64, %c0_i64, %13, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+          airrt.dma_memcpy_nd(%c7_i32, %11, %12, %4[%c0_i64, %c0_i64, %13, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
           memref.dealloc %8 : memref<32x32xi32, 2>
           memref.dealloc %9 : memref<32x32xi32, 2>
           memref.dealloc %10 : memref<32x32xi32, 2>
         }
       } {air.herd_launch = "inner"}
     } {air.herd_launch = "outer"}
-    airrt.memcpy_nd(%1, %4, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64]) : (memref<64x64xi32>, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    airrt.memcpy_nd(%1, %4, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (memref<64x64xi32>, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
     airrt.dealloc %2 : memref<64x64xi32, 1>
     airrt.dealloc %3 : memref<64x64xi32, 1>
     airrt.dealloc %4 : memref<64x64xi32, 1>

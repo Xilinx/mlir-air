@@ -91,6 +91,10 @@ def air_AsyncToken : DialectType<
   air_Dialect, CPred<"llvm::isa<xilinx::air::AsyncTokenType>($_self)">, "async token type">,
              BuildableType<"xilinx::air::AsyncTokenType::get($_builder.getContext())">;
 
+def air_Universe : DialectType<
+  air_Dialect, CPred<"llvm::isa<xilinx::air::UniverseType>($_self)">, "universe type">,
+             BuildableType<"xilinx::air::UniverseType::get($_builder.getContext())">;
+
 def air_AsyncOpInterface : OpInterface<"AsyncOpInterface"> {
   let description = [{
     Interface for AIR operations that execute asynchronously.
@@ -222,6 +226,24 @@ def air_ChannelInterface : OpInterface<"ChannelInterface"> {
     >,
     InterfaceMethod<"",
     "Value", "getMemref"
+    >,
+    InterfaceMethod<"Get optional padding-before attribute",
+    "std::optional<DenseI32ArrayAttr>", "getPadBeforeAttr", (ins),
+    [{}], [{
+      if (auto attr = this->getOperation()->template
+              getAttrOfType<DenseI32ArrayAttr>("pad_before"))
+        return attr;
+      return std::nullopt;
+    }]
+    >,
+    InterfaceMethod<"Get optional padding-after attribute",
+    "std::optional<DenseI32ArrayAttr>", "getPadAfterAttr", (ins),
+    [{}], [{
+      if (auto attr = this->getOperation()->template
+              getAttrOfType<DenseI32ArrayAttr>("pad_after"))
+        return attr;
+      return std::nullopt;
+    }]
     >,
   ];
 }

@@ -37,7 +37,7 @@ $(BUILD_DIR)/air.mlir: ${srcdir}/${targetname}.py
 
 $(BUILD_DIR)/final.xclbin: $(BUILD_DIR)/air.mlir
 	mkdir -p ${@D}
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && aircc.py $(AIRCC_FLAGS) -o final.xclbin -i final.insts.bin --tmpdir tmp --device $(DEVICE) --host-target x86_64 air.mlir
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && aircc $(AIRCC_FLAGS) -o final.xclbin -i final.insts.bin --tmpdir tmp --device $(DEVICE) --host-target x86_64 air.mlir
 
 $(BUILD_DIR)/final.py.xclbin: $(BUILD_DIR)/air.mlir
 	mkdir -p ${@D}

@@ -1,9 +1,8 @@
-//===- zero.cc --------------------------------------------000---*- C++ -*-===//
+//===- zero.cc --------------------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the MIT License.
 // SPDX-License-Identifier: MIT
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc.
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,17 +21,18 @@ void zero_scalar(T *__restrict c) {
   }
 }
 
-template <typename T, int M, int N>
+template <typename T, int M, int N, int r>
 void zero_vectorized(T *__restrict c) {
-  constexpr int r = 256 / (sizeof(T) * 8); // one 256 bit store unit
-  static_assert((M * N) % r == 0);
   const aie::vector<T, r> zeros = aie::zeros<T, r>();
   const T *__restrict c_end = c + M * N;
-  event0();
-  for (; c < c_end; c += r) {
+  for (; c + r < c_end; c += r) {
     aie::store_v(c, zeros);
   }
-  event1();
+  // Do a scalar write for any remainder not divisible by vector instruction
+  // size r
+  for (; c < c_end; c++) {
+    *c = 0;
+  }
 }
 
 #endif

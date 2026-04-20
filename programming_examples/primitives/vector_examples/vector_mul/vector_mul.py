@@ -219,8 +219,19 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--bf16-emulation",
+        dest="bf16_emulation",
+        default=False,
+        action="store_true",
+        help="Use f32 input data type and emulate f32 vector arithmetic using bf16 operations.",
+    )
 
     args = parser.parse_args()
+
+    if args.bf16_emulation:
+        INPUT_DATATYPE = np.float32
+    bf16_emulation = args.bf16_emulation
 
     mlir_module = build_module(
         args.n,
@@ -266,13 +277,15 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="vector_mul",
+            bf16_emulation=bf16_emulation,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e-2,
+                rtol=5e-2 if bf16_emulation else 1e-2,
             )
         )
 
@@ -282,6 +295,8 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            bf16_emulation=bf16_emulation,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
 

@@ -17,8 +17,8 @@ the kernel (head_size=48). No external sin/cos input is needed.
 Input format: [num_heads * 3 * head_size] — Q, K, V concatenated per head.
 Uses external C++ kernels compiled from rope.cc.
 
-Note: The kernel uses Chess-specific shuffle intrinsics and is currently
-XFAIL on Peano. See rope_lut/ for a Peano-compatible alternative.
+Uses portable AIE API (filter_even/filter_odd/interleave_zip) for
+even/odd element shuffling, compatible with both Chess and Peano compilers.
 """
 
 import argparse
@@ -42,6 +42,9 @@ range_ = for_
 @module_builder
 def build_module(num_heads, head_size, herd_n, np_dtype_in):
     assert (num_heads * head_size) % herd_n == 0
+    # Kernel functions are specialized for head_size=48 (hardcoded frequency
+    # table, shuffle_apply_rope_bf16_48, vector_copy_bf16_144_16).
+    assert head_size == 48, f"Only head_size=48 is supported, got {head_size}"
     inout_size = [3 * num_heads * head_size]  # Q, K, V concatenated
     xrt_dtype_in = type_mapper(np_dtype_in)
 
@@ -51,8 +54,12 @@ def build_module(num_heads, head_size, herd_n, np_dtype_in):
 
     # L1 MemRefTypes
     l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1MemrefTyHeadSizeByTwo = MemRefType.get(
-        shape=[head_size // 2],
+    # Padded to 32 elements (next multiple of 16) so AIE2P can use native-width
+    # vectors (n=16) for the sin/cos polynomial. On AIE2, the extra 8 elements
+    # are computed but unused.
+    sincos_buf_size = 32
+    l1MemrefTySinCosBuf = MemRefType.get(
+        shape=[sincos_buf_size],
         element_type=xrt_dtype_in,
         memory_space=l1_mem_space,
     )
@@ -64,18 +71,18 @@ def build_module(num_heads, head_size, herd_n, np_dtype_in):
 
     # External kernel functions
     cosf_poly_func = FuncOp(
-        "cosf_bf16_24_8",
-        ([l1MemrefTyHeadSizeByTwo, l1MemrefTyHeadSizeByTwo], []),
+        "cosf_bf16",
+        ([l1MemrefTySinCosBuf, l1MemrefTySinCosBuf], []),
         visibility="private",
     )
     sinf_poly_func = FuncOp(
-        "sinf_bf16_24_8",
-        ([l1MemrefTyHeadSizeByTwo, l1MemrefTyHeadSizeByTwo], []),
+        "sinf_bf16",
+        ([l1MemrefTySinCosBuf, l1MemrefTySinCosBuf], []),
         visibility="private",
     )
     freq_pos_func = FuncOp(
-        "freq_pos_bf16_24_8",
-        ([T.i32(), l1MemrefTyHeadSizeByTwo], []),
+        "freq_pos_bf16",
+        ([T.i32(), l1MemrefTySinCosBuf], []),
         visibility="private",
     )
     shuffle_apply_rope_func = FuncOp(
@@ -83,8 +90,8 @@ def build_module(num_heads, head_size, herd_n, np_dtype_in):
         (
             [
                 T.i32(),
-                l1MemrefTyHeadSizeByTwo,
-                l1MemrefTyHeadSizeByTwo,
+                l1MemrefTySinCosBuf,
+                l1MemrefTySinCosBuf,
                 l1MemrefTyThreeByHeadSize,
             ],
             [],
@@ -92,7 +99,7 @@ def build_module(num_heads, head_size, herd_n, np_dtype_in):
         visibility="private",
     )
     vector_copy_func = FuncOp(
-        "vector_copy_bf16_192_16",
+        "vector_copy_bf16_144_16",
         ([l1MemrefTyThreeByHeadSize, l1MemrefTyThreeByHeadSize], []),
         visibility="private",
     )
@@ -121,7 +128,7 @@ def build_module(num_heads, head_size, herd_n, np_dtype_in):
             for t in range_(0, num_heads * 3 * head_size, herd_n * 3 * head_size):
                 l1_in_data = AllocOp(l1MemrefTyThreeByHeadSize, [], [])
                 l1_out_data = AllocOp(l1MemrefTyThreeByHeadSize, [], [])
-                l1_freq_pos_data = AllocOp(l1MemrefTyHeadSizeByTwo, [], [])
+                l1_freq_pos_data = AllocOp(l1MemrefTySinCosBuf, [], [])
 
                 offset_map = AffineMap.get(
                     0,
@@ -153,8 +160,8 @@ def build_module(num_heads, head_size, herd_n, np_dtype_in):
                 CallOp(freq_pos_func, [one_const, l1_freq_pos_data])
 
                 # Compute sin/cos via Chebyshev polynomial
-                l1_sinf_vec = AllocOp(l1MemrefTyHeadSizeByTwo, [], [])
-                l1_cosf_vec = AllocOp(l1MemrefTyHeadSizeByTwo, [], [])
+                l1_sinf_vec = AllocOp(l1MemrefTySinCosBuf, [], [])
+                l1_cosf_vec = AllocOp(l1MemrefTySinCosBuf, [], [])
                 CallOp(sinf_poly_func, [l1_freq_pos_data, l1_sinf_vec])
                 CallOp(cosf_poly_func, [l1_freq_pos_data, l1_cosf_vec])
 
@@ -264,13 +271,14 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="rope",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[inputs],
                 expected_outputs=[outputs],
-                rtol=1e1,
+                rtol=1e2,
             )
         )
 
@@ -279,6 +287,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

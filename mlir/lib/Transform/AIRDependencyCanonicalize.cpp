@@ -9,6 +9,7 @@
 #include "air/Transform/AIRDependencyCanonicalize.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/DependencyDot.h"
 
 using namespace mlir;
 
@@ -43,11 +44,22 @@ public:
 
       // Parse dependency graphs
       hostGraph = dependencyGraph(func, true);
-      canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx);
+      if (failed(canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx)))
+        return signalPassFailure();
 
       // Transitive reduction
       xilinx::air::dependencyGraph trHostGraph;
       canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph);
+
+      // Dump DOT files if requested
+      if (clDumpGraph) {
+        std::string dumpDir = clDumpDir;
+        dumpDotGraphFiles(trHostGraph, dumpDir);
+        std::string combinedDir = dumpDir;
+        if (!combinedDir.empty() && combinedDir.back() != '/')
+          combinedDir += '/';
+        dumpCombinedDotGraph(trHostGraph, combinedDir + "combined.dot");
+      }
 
       // Post processing
       // Update dependency list

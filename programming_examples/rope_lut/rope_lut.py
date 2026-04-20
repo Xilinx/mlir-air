@@ -13,7 +13,8 @@ The cos/sin values are precomputed on the host and streamed in as a
 look-up table (LUT) with interleaved [cos, sin, cos, sin, ...] layout.
 Uses the external rope.cc kernel from mlir-aie (aie_kernels/aie2p).
 
-Uses a single AIE tile with DMA transfers between L3 and L1 memory.
+Supports multi-tile herd (herd_x > 1) for row-parallel execution.
+Each row's RoPE is independent — no cross-row dependencies.
 """
 
 import argparse
@@ -21,6 +22,7 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from air.ir import *
+from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
 from air.dialects import arith
 from air.dialects.arith import ConstantOp
@@ -34,13 +36,12 @@ range_ = for_
 
 
 @module_builder
-def build_module(seq_len, embed_dim, np_dtype_in):
+def build_module(seq_len, embed_dim, np_dtype_in, herd_x=1):
     xrt_dtype = type_mapper(np_dtype_in)
     total = seq_len * embed_dim
     assert (
         embed_dim % 16 == 0
     ), "embed_dim must be divisible by 16 (kernel vector width)"
-    index_type = IndexType.get()
 
     # L3 types
     l3DataTy = MemRefType.get([total], xrt_dtype)
@@ -58,11 +59,34 @@ def build_module(seq_len, embed_dim, np_dtype_in):
     rope_func.attributes["link_with"] = StringAttr.get("rope.o")
     rope_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
 
+    assert (
+        seq_len % herd_x == 0
+    ), f"seq_len ({seq_len}) must be divisible by herd_x ({herd_x})"
+    rows_per_tile = seq_len // herd_x
+
+    # Affine map: row_offset = (local_row + _tx * rows_per_tile) * embed_dim
+    row_offset_map = AffineMap.get(
+        0,
+        2,
+        [
+            AffineExpr.get_mul(
+                AffineExpr.get_add(
+                    AffineSymbolExpr.get(0),
+                    AffineExpr.get_mul(
+                        AffineSymbolExpr.get(1),
+                        AffineConstantExpr.get(rows_per_tile),
+                    ),
+                ),
+                AffineConstantExpr.get(embed_dim),
+            )
+        ],
+    )
+
     @FuncOp.from_py_func(l3DataTy, l3DataTy, l3DataTy)
     def rope_lut(arg0, arg1, arg2):
         # arg0 = input [total], arg1 = lut [total], arg2 = output [total]
 
-        @herd(name="herd_0", sizes=[1, 1], operands=[arg0, arg1, arg2])
+        @herd(name="herd_0", sizes=[herd_x, 1], operands=[arg0, arg1, arg2])
         def herd_body(_tx, _ty, _sx, _sy, l3_in, l3_lut, l3_out):
             l1_in = AllocOp(l1RowTy, [], [])
             l1_lut = AllocOp(l1RowTy, [], [])
@@ -70,7 +94,9 @@ def build_module(seq_len, embed_dim, np_dtype_in):
 
             dim_i32 = ConstantOp(T.i32(), embed_dim)
 
-            for row_offset in range_(0, total, embed_dim):
+            for local_row in range_(rows_per_tile):
+                row_offset = affine_apply(row_offset_map, [local_row, _tx])
+
                 dma_memcpy_nd(
                     l1_in,
                     l3_in,
@@ -104,21 +130,47 @@ def build_module(seq_len, embed_dim, np_dtype_in):
         herd_body.attributes["link_with"] = StringAttr.get("rope.o")
 
 
+def rope_reference(input_data, lut, embed_dim):
+    """CPU F32 reference for RoPE with precomputed LUT (vectorized)."""
+    x = input_data.astype(np.float32).reshape(-1, embed_dim)
+    l = lut.astype(np.float32).reshape(-1, embed_dim)
+    x_even = x[:, 0::2]
+    x_odd = x[:, 1::2]
+    cos_v = l[:, 0::2]
+    sin_v = l[:, 1::2]
+    out = np.empty_like(x)
+    out[:, 0::2] = x_even * cos_v - x_odd * sin_v
+    out[:, 1::2] = x_even * sin_v + x_odd * cos_v
+    return out.astype(input_data.dtype)
+
+
+def generate_lut(seq_len, embed_dim, dtype=bfloat16, theta=10000.0):
+    """Generate interleaved [cos, sin, cos, sin, ...] RoPE LUT (vectorized)."""
+    i_vals = np.arange(embed_dim // 2, dtype=np.float64)
+    freqs = 1.0 / (theta ** (2.0 * i_vals / embed_dim))
+    rows = np.arange(seq_len, dtype=np.float64)
+    angles = np.outer(rows, freqs)  # (seq_len, embed_dim//2)
+    lut = np.empty((seq_len, embed_dim), dtype=np.float32)
+    lut[:, 0::2] = np.cos(angles)
+    lut[:, 1::2] = np.sin(angles)
+    return lut.astype(dtype)
+
+
 if __name__ == "__main__":
-    SEQ_LEN = 64
-    EMBED_DIM = 64
-    INPUT_DATATYPE = bfloat16
     THETA = 10000.0
 
     parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the RoPE (LUT-based) example",
+        description="RoPE (LUT-based) — build, run, profile",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("-p", "--print-module-only", action="store_true")
-    parser.add_argument("--seq-len", type=int, default=SEQ_LEN, help="Sequence length")
+    parser.add_argument("--seq-len", type=int, default=64, help="Number of rows")
+    parser.add_argument("--embed-dim", type=int, default=64, help="Embedding dimension")
     parser.add_argument(
-        "--embed-dim", type=int, default=EMBED_DIM, help="Embedding dimension"
+        "--herd-x",
+        type=int,
+        default=1,
+        help="Number of tiles (1=single, 8=multi-tile)",
     )
     parser.add_argument(
         "--compile-mode",
@@ -136,56 +188,34 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    mlir_module = build_module(args.seq_len, args.embed_dim, INPUT_DATATYPE)
+    seq_len = args.seq_len
+    embed_dim = args.embed_dim
+    herd_x = args.herd_x
+    print(f"RoPE LUT: seq_len={seq_len}, embed_dim={embed_dim}, herd=[{herd_x},1]")
+
+    mlir_module = build_module(seq_len, embed_dim, bfloat16, herd_x=herd_x)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
-    np.random.seed(0)
-    seq_len = args.seq_len
-    embed_dim = args.embed_dim
-
-    # Generate random input
-    input_data = np.random.uniform(-4.0, 4.0, (seq_len, embed_dim)).astype(
-        INPUT_DATATYPE
-    )
-
-    # Generate LUT: interleaved [cos, sin, cos, sin, ...] per row
-    lut = np.zeros((seq_len, embed_dim), dtype=np.float32)
-    for r in range(seq_len):
-        for i in range(embed_dim // 2):
-            freq = 1.0 / (THETA ** (2.0 * i / embed_dim))
-            angle = r * freq
-            lut[r, 2 * i] = np.cos(angle)
-            lut[r, 2 * i + 1] = np.sin(angle)
-    lut = lut.astype(INPUT_DATATYPE)
-
     if args.compile_mode == "compile-and-run":
-        # Compute reference output
-        ref = np.copy(input_data).astype(np.float32)
-        input_f32 = input_data.astype(np.float32)
-        lut_f32 = lut.astype(np.float32)
-        for r in range(seq_len):
-            for i in range(embed_dim // 2):
-                cos_v = lut_f32[r, 2 * i]
-                sin_v = lut_f32[r, 2 * i + 1]
-                x0 = input_f32[r, 2 * i]
-                x1 = input_f32[r, 2 * i + 1]
-                ref[r, 2 * i] = x0 * cos_v - x1 * sin_v
-                ref[r, 2 * i + 1] = x0 * sin_v + x1 * cos_v
-        ref_flat = ref.flatten().astype(INPUT_DATATYPE)
+        np.random.seed(0)
+        input_data = np.random.uniform(-4.0, 4.0, (seq_len, embed_dim)).astype(bfloat16)
+        lut = generate_lut(seq_len, embed_dim, bfloat16, THETA)
+        y_expected = rope_reference(input_data, lut, embed_dim)
 
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="rope",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_data.flatten(), lut.flatten()],
-                expected_outputs=[ref_flat],
+                expected_outputs=[y_expected.flatten()],
                 rtol=5e-2,
                 atol=5e-2,
             )
@@ -196,6 +226,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

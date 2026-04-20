@@ -193,7 +193,10 @@ public:
   }
 
   memory(std::string ms, double b) {
-    this->set_memory_space(lookUpMemorySpaceIntFromString(ms));
+    if (auto memSpace = symbolizeMemorySpace(llvm::StringRef(ms)))
+      this->set_memory_space(static_cast<unsigned>(*memSpace));
+    else
+      this->set_memory_space(0);
     this->set_bytes(b);
     this->reset_reservation();
     this->reset_usage();

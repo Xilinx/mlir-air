@@ -35,3 +35,22 @@ def test_herd():
             def herd_body(x, y, sx, sy):
                 AddIOp(x, y)
                 AddIOp(sx, sy)
+
+
+# CHECK-LABEL: TEST: test_rank
+# CHECK: air.rank @r (%[[RX:.*]]) in (%[[RSX:.*]]=%{{.*}})
+# CHECK:   air.launch
+# CHECK:     air.segment @seg
+# CHECK:       air.herd @hrd
+@constructAndPrintInFunc
+@module_builder
+def test_rank():
+    @rank(name="r", sizes=[2])
+    def rank_body(rx, sx):
+        @launch
+        def launch_body():
+            @segment(name="seg")
+            def segment_body():
+                @herd(name="hrd", sizes=[2, 2])
+                def herd_body(x, y, sx, sy):
+                    AddIOp(x, y)

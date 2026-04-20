@@ -15,9 +15,51 @@ import numpy as np
 
 np.random.seed(42)
 
+# Dtype configuration table:
+#   mlir_type: MLIR type string used in the IR
+#   np_type: numpy dtype for host data
+#   add_op: arith add operation name
+#   pad_val: padding value literal in MLIR
+#   default_vector_size: default vector lane count (i8 uses 32 due to backend limitation)
+#   rtol: relative tolerance for output comparison
+DTYPE_CONFIG = {
+    "bf16": {
+        "mlir_type": "bf16",
+        "np_type": bfloat16,
+        "add_op": "arith.addf",
+        "pad_val": "0.0 : bf16",
+        "default_vector_size": 16,
+        "rtol": 1e-2,
+    },
+    "f32": {
+        "mlir_type": "f32",
+        "np_type": np.float32,
+        "add_op": "arith.addf",
+        "pad_val": "0.0 : f32",
+        "default_vector_size": 16,
+        "rtol": 5e-2,
+    },
+    "i8": {
+        "mlir_type": "i8",
+        "np_type": np.int8,
+        "add_op": "arith.addi",
+        "pad_val": "0 : i8",
+        "default_vector_size": 32,
+        "rtol": 0,
+    },
+    "i16": {
+        "mlir_type": "i16",
+        "np_type": np.int16,
+        "add_op": "arith.addi",
+        "pad_val": "0 : i16",
+        "default_vector_size": 32,
+        "rtol": 0,
+    },
+}
+
 parser = argparse.ArgumentParser(
     prog="run.py",
-    description="Builds, runs, and tests the matmul example",
+    description="Builds, runs, and tests the vecadd example",
 )
 parser.add_argument(
     "--transform-script",
@@ -26,7 +68,55 @@ parser.add_argument(
     default="transform.mlir",
     help="Transform script path",
 )
+parser.add_argument(
+    "--dtype",
+    type=str,
+    choices=list(DTYPE_CONFIG.keys()),
+    default="bf16",
+    help="Element data type (default: bf16)",
+)
+parser.add_argument(
+    "--vector-size",
+    type=int,
+    dest="vector_size",
+    default=None,
+    help="Vector size for SIMD operations (default: auto based on dtype)",
+)
+parser.add_argument(
+    "--num-tiles",
+    type=int,
+    dest="num_tiles",
+    default=4,
+    help="Number of AIE compute tiles (herd size). NPU1 has 4 columns, NPU2 has 8 (default: 4).",
+)
+parser.add_argument(
+    "--bf16-emulation",
+    dest="bf16_emulation",
+    default=False,
+    action="store_true",
+    help="Use f32 input data type and emulate f32 vector arithmetic using bf16 operations.",
+)
 args = parser.parse_args()
+
+# --bf16-emulation is shorthand for --dtype f32 with bf16_emulation enabled
+if args.bf16_emulation:
+    args.dtype = "f32"
+
+cfg = DTYPE_CONFIG[args.dtype]
+dtype_str = cfg["mlir_type"]
+input_type = cfg["np_type"]
+output_type = cfg["np_type"]
+add_op = cfg["add_op"]
+pad_val = cfg["pad_val"]
+vector_size = (
+    args.vector_size if args.vector_size is not None else cfg["default_vector_size"]
+)
+rtol = cfg["rtol"]
+num_tiles = args.num_tiles
+herd_tile_size = 256 // num_tiles
+
+# bf16_emulation only applies to f32 dtype
+bf16_emulation = args.bf16_emulation and args.dtype == "f32"
 
 with air.ir.Context() as ctx, Location.unknown():
 
@@ -34,31 +124,31 @@ with air.ir.Context() as ctx, Location.unknown():
     ## Input SCF and Linalg IR
     ################################################
 
-    air_tiled_ir_string = """
+    air_tiled_ir_string = f"""
     #map = affine_map<(d0, d1) -> (d0, d1)>
-    module {
-      func.func @vecadd(%arg0: memref<*xbf16> {tt.divisibility = 16 : i32}, %arg1: memref<*xbf16> {tt.divisibility = 16 : i32}, %arg2: memref<*xbf16> {tt.divisibility = 16 : i32}, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32) {
+    module {{
+      func.func @vecadd(%arg0: memref<*x{dtype_str}> {{tt.divisibility = 16 : i32}}, %arg1: memref<*x{dtype_str}> {{tt.divisibility = 16 : i32}}, %arg2: memref<*x{dtype_str}> {{tt.divisibility = 16 : i32}}, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32) {{
         %c256_i32 = arith.constant 256 : i32
         %0 = arith.muli %arg6, %c256_i32 : i32
         %1 = arith.index_cast %0 : i32 to index
-        %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%1], sizes: [256, 1], strides: [1, 1] : memref<*xbf16> to memref<256x1xbf16, strided<[1, 1], offset: ?>>
-        %alloc = memref.alloc() : memref<256x1xbf16>
-        memref.copy %reinterpret_cast, %alloc : memref<256x1xbf16, strided<[1, 1], offset: ?>> to memref<256x1xbf16>
-        %2 = bufferization.to_tensor %alloc restrict writable : memref<256x1xbf16> to tensor<256x1xbf16>
-        %reinterpret_cast_0 = memref.reinterpret_cast %arg1 to offset: [%1], sizes: [256, 1], strides: [1, 1] : memref<*xbf16> to memref<256x1xbf16, strided<[1, 1], offset: ?>>
-        %alloc_1 = memref.alloc() : memref<256x1xbf16>
-        memref.copy %reinterpret_cast_0, %alloc_1 : memref<256x1xbf16, strided<[1, 1], offset: ?>> to memref<256x1xbf16>
-        %3 = bufferization.to_tensor %alloc_1 restrict writable : memref<256x1xbf16> to tensor<256x1xbf16>
-        %4 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%2, %3 : tensor<256x1xbf16>, tensor<256x1xbf16>) outs(%2 : tensor<256x1xbf16>) {
-        ^bb0(%in: bf16, %in_3: bf16, %out: bf16):
-          %5 = arith.addf %in, %in_3 : bf16
-          linalg.yield %5 : bf16
-        } -> tensor<256x1xbf16>
-        %reinterpret_cast_2 = memref.reinterpret_cast %arg2 to offset: [%1], sizes: [256, 1], strides: [1, 1] : memref<*xbf16> to memref<256x1xbf16, strided<[1, 1], offset: ?>>
-        bufferization.materialize_in_destination %4 in writable %reinterpret_cast_2 : (tensor<256x1xbf16>, memref<256x1xbf16, strided<[1, 1], offset: ?>>) -> ()
+        %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%1], sizes: [256, 1], strides: [1, 1] : memref<*x{dtype_str}> to memref<256x1x{dtype_str}, strided<[1, 1], offset: ?>>
+        %alloc = memref.alloc() : memref<256x1x{dtype_str}>
+        memref.copy %reinterpret_cast, %alloc : memref<256x1x{dtype_str}, strided<[1, 1], offset: ?>> to memref<256x1x{dtype_str}>
+        %2 = bufferization.to_tensor %alloc restrict writable : memref<256x1x{dtype_str}> to tensor<256x1x{dtype_str}>
+        %reinterpret_cast_0 = memref.reinterpret_cast %arg1 to offset: [%1], sizes: [256, 1], strides: [1, 1] : memref<*x{dtype_str}> to memref<256x1x{dtype_str}, strided<[1, 1], offset: ?>>
+        %alloc_1 = memref.alloc() : memref<256x1x{dtype_str}>
+        memref.copy %reinterpret_cast_0, %alloc_1 : memref<256x1x{dtype_str}, strided<[1, 1], offset: ?>> to memref<256x1x{dtype_str}>
+        %3 = bufferization.to_tensor %alloc_1 restrict writable : memref<256x1x{dtype_str}> to tensor<256x1x{dtype_str}>
+        %4 = linalg.generic {{indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]}} ins(%2, %3 : tensor<256x1x{dtype_str}>, tensor<256x1x{dtype_str}>) outs(%2 : tensor<256x1x{dtype_str}>) {{
+        ^bb0(%in: {dtype_str}, %in_3: {dtype_str}, %out: {dtype_str}):
+          %5 = {add_op} %in, %in_3 : {dtype_str}
+          linalg.yield %5 : {dtype_str}
+        }} -> tensor<256x1x{dtype_str}>
+        %reinterpret_cast_2 = memref.reinterpret_cast %arg2 to offset: [%1], sizes: [256, 1], strides: [1, 1] : memref<*x{dtype_str}> to memref<256x1x{dtype_str}, strided<[1, 1], offset: ?>>
+        bufferization.materialize_in_destination %4 in writable %reinterpret_cast_2 : (tensor<256x1x{dtype_str}>, memref<256x1x{dtype_str}, strided<[1, 1], offset: ?>>) -> ()
         return
-      }
-    }
+      }}
+    }}
     """
     air_module = Module.parse(air_tiled_ir_string)
 
@@ -71,7 +161,6 @@ with air.ir.Context() as ctx, Location.unknown():
         + ",".join(
             [
                 "air-resolve-tensor-opoperand-conflicts",
-                "air-override-memref-memory-space{scope=func memory-space=1}",
             ]
         )
         + ")"
@@ -82,6 +171,11 @@ with air.ir.Context() as ctx, Location.unknown():
     # Load the MLIR transform IR from an external file
     with open(args.transform_script, "r") as f:
         transform_ir_string = f.read()
+    transform_ir_string = transform_ir_string.replace("@PAD_VAL@", pad_val)
+    transform_ir_string = transform_ir_string.replace("@VECTOR_SIZE@", str(vector_size))
+    transform_ir_string = transform_ir_string.replace(
+        "@HERD_TILE_SIZE@", str(herd_tile_size)
+    )
     transform_ir = Module.parse(transform_ir_string)
     run_transform(transform_ir, air_module)
 
@@ -116,30 +210,28 @@ with air.ir.Context() as ctx, Location.unknown():
     # Run compile and load
     ###############################################
 
-    input_type = bfloat16
-    output_type = bfloat16
-    A = np.random.rand(
-        M,
-    ).astype(
-        input_type
-    )  # Shape [M]
-    B = np.random.rand(
-        M,
-    ).astype(
-        input_type
-    )  # Shape [M]
-    C = np.add(A, B).astype(output_type)  # Shape [M]
+    if np.issubdtype(input_type, np.integer):
+        iinfo = np.iinfo(input_type)
+        half_max = iinfo.max // 2
+        A = np.random.randint(0, half_max, size=(M,), dtype=input_type)
+        B = np.random.randint(0, half_max, size=(M,), dtype=input_type)
+    else:
+        A = np.random.rand(M).astype(input_type)
+        B = np.random.rand(M).astype(input_type)
+    C = np.add(A, B).astype(output_type)
 
     ###### Compile and test
     runner = XRTRunner(
         omit_while_true_loop=False,
         use_lock_race_condition_fix=True,
+        runtime_loop_tiling_sizes=[4, 4],
+        bf16_emulation=bf16_emulation,
     )
     exit(
         runner.run_test(
             air_module,
             inputs=[A, B],
             expected_outputs=[C],
-            rtol=1e-2,
+            rtol=rtol,
         )
     )

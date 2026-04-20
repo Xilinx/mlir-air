@@ -24,6 +24,14 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
     ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
   )
 
+  # Register AIR dialects into MLIR Python contexts via _site_initialize.
+  declare_mlir_python_sources(AirPythonSources.SiteInit
+    ADD_TO_PARENT AirPythonSources
+    ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
+    SOURCES
+      _mlir_libs/_site_initialize_0.py
+  )
+
   declare_mlir_python_sources(AirPythonExtensions)
 
   declare_mlir_python_sources(AirPythonSources.Dialects
@@ -64,8 +72,6 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
       AIRCAPI
     PRIVATE_LINK_LIBS
       LLVMSupport
-    PYTHON_BINDINGS_LIBRARY
-      nanobind
   )
 
   # Only building this if we are building the hsa runtime, as it requires hsa.h
@@ -81,8 +87,6 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
         AIRCAPI
       PRIVATE_LINK_LIBS
         LLVMSupport
-      PYTHON_BINDINGS_LIBRARY
-        nanobind
     )
   endif()
 
@@ -99,6 +103,12 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
       AirPythonSources
       AirPythonExtensions
   )
+
+  # Remove -Wl,-z,defs from shared linker flags for nanobind targets.
+  # Nanobind shared libraries have undefined Python symbols that are resolved
+  # at import time, not link time. LLVM's HandleLLVMOptions.cmake sets
+  # -Wl,-z,defs globally which prevents this.
+  string(REPLACE "-Wl,-z,defs" "" CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS}")
 
   # Set NB_DOMAIN for nanobind, to avoid domain conflict with other llvm projects.
   set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "_air")

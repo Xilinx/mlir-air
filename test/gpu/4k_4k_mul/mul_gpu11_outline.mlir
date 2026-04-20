@@ -66,14 +66,14 @@ module attributes {gpu.container_module} {
     return
   }
   func.func @forward(%arg0: memref<4096x4096xf32>, %arg1: memref<4096x4096xf32>, %arg2: memref<4096x4096xf32>) {
-    %cst = arith.constant 0.000000e+00 : f32
+    %c1024 = arith.constant 1024 : index
     %c16 = arith.constant 16 : index
-    %c8 = arith.constant 8 : index
+    %cst = arith.constant 0.000000e+00 : f32
     %c4096 = arith.constant 4096 : index
-    %c0 = arith.constant 0 : index
     %c128 = arith.constant 128 : index
-    %c4 = arith.constant 4 : index
     %c64 = arith.constant 64 : index
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
     %c32 = arith.constant 32 : index
     %c1 = arith.constant 1 : index
     %c256 = arith.constant 256 : index
@@ -84,77 +84,83 @@ module attributes {gpu.container_module} {
     gpu.func @forward_module(%arg0: memref<4096x4096xf32>, %arg1: memref<4096x4096xf32>, %arg2: memref<4096x4096xf32>) workgroup(%arg3 : memref<128x8xf32, 3>, %arg4 : memref<8x128xf32, 3>) private(%arg5 : memref<8xf32, 5>, %arg6 : memref<8xf32, 5>, %arg7 : memref<64xf32, 5>) kernel attributes {known_block_size = array<i32: 256, 1, 1>, known_grid_size = array<i32: 32, 32, 1>} {
       %c8 = arith.constant 8 : index
       %c16 = arith.constant 16 : index
-      %c4096 = arith.constant 4096 : index
-      %c4 = arith.constant 4 : index
+      %c1024 = arith.constant 1024 : index
       %cst = arith.constant 0.000000e+00 : f32
-      %c128 = arith.constant 128 : index
-      %c1 = arith.constant 1 : index
       %c64 = arith.constant 64 : index
+      %c4096 = arith.constant 4096 : index
       %c0 = arith.constant 0 : index
-      %block_id_x = gpu.block_id  x
-      %block_id_y = gpu.block_id  y
-      %block_id_z = gpu.block_id  z
-      %thread_id_x = gpu.thread_id  x
-      %thread_id_y = gpu.thread_id  y
-      %thread_id_z = gpu.thread_id  z
-      %grid_dim_x = gpu.grid_dim  x
-      %grid_dim_y = gpu.grid_dim  y
-      %grid_dim_z = gpu.grid_dim  z
-      %block_dim_x = gpu.block_dim  x
-      %block_dim_y = gpu.block_dim  y
-      %block_dim_z = gpu.block_dim  z
-      %thread_id_x_0 = gpu.thread_id  x
-      %0 = arith.remsi %thread_id_x_0, %c128 : index
-      %1 = arith.divsi %thread_id_x_0, %c128 : index
-      %2 = arith.muli %block_id_y, %c128 overflow<nsw> : index
-      %3 = arith.muli %block_id_x, %c128 overflow<nsw> : index
+      %c1 = arith.constant 1 : index
+      %c128 = arith.constant 128 : index
+      %block_id_x = gpu.block_id x
+      %block_id_y = gpu.block_id y
+      %block_id_z = gpu.block_id z
+      %thread_id_x = gpu.thread_id x
+      %thread_id_y = gpu.thread_id y
+      %thread_id_z = gpu.thread_id z
+      %grid_dim_x = gpu.grid_dim x
+      %grid_dim_y = gpu.grid_dim y
+      %grid_dim_z = gpu.grid_dim z
+      %block_dim_x = gpu.block_dim x
+      %block_dim_y = gpu.block_dim y
+      %block_dim_z = gpu.block_dim z
+      %0 = arith.muli %block_id_y, %c128 overflow<nsw> : index
+      %1 = arith.muli %block_id_x, %c128 overflow<nsw> : index
       cf.br ^bb1(%c0 : index)
-    ^bb1(%4: index):  // 2 preds: ^bb0, ^bb2
-      %5 = arith.cmpi slt, %4, %c64 : index
-      cf.cond_br %5, ^bb2, ^bb3
+    ^bb1(%2: index):  // 2 preds: ^bb0, ^bb2
+      %3 = arith.cmpi slt, %2, %c64 : index
+      cf.cond_br %3, ^bb2, ^bb3
     ^bb2:  // pred: ^bb1
-      memref.store %cst, %arg7[%4] : memref<64xf32, 5>
-      %6 = arith.addi %4, %c1 : index
-      cf.br ^bb1(%6 : index)
+      memref.store %cst, %arg7[%2] : memref<64xf32, 5>
+      %4 = arith.addi %2, %c1 : index
+      cf.br ^bb1(%4 : index)
     ^bb3:  // pred: ^bb1
       cf.br ^bb4(%c0 : index)
-    ^bb4(%7: index):  // 2 preds: ^bb3, ^bb32
-      %8 = arith.cmpi slt, %7, %c4096 : index
-      cf.cond_br %8, ^bb5, ^bb33
+    ^bb4(%5: index):  // 2 preds: ^bb3, ^bb26
+      %6 = arith.cmpi slt, %5, %c4096 : index
+      cf.cond_br %6, ^bb5, ^bb27
     ^bb5:  // pred: ^bb4
-      cf.br ^bb6(%c0 : index)
-    ^bb6(%9: index):  // 2 preds: ^bb5, ^bb7
-      %10 = arith.cmpi slt, %9, %c4 : index
-      cf.cond_br %10, ^bb7, ^bb8
+      %thread_id_x_0 = gpu.thread_id x
+      %block_dim_x_1 = gpu.block_dim x
+      cf.br ^bb6(%thread_id_x_0 : index)
+    ^bb6(%7: index):  // 2 preds: ^bb5, ^bb7
+      %8 = arith.cmpi slt, %7, %c1024 : index
+      cf.cond_br %8, ^bb7, ^bb8
     ^bb7:  // pred: ^bb6
-      %11 = arith.addi %2, %0 : index
-      %12 = arith.muli %1, %c4 : index
-      %13 = arith.addi %12, %9 : index
-      %14 = arith.addi %13, %7 : index
-      %15 = arith.remsi %11, %c128 : index
-      %16 = arith.remsi %14, %c8 : index
-      %17 = memref.load %arg0[%11, %14] : memref<4096x4096xf32>
-      memref.store %17, %arg3[%15, %16] : memref<128x8xf32, 3>
-      %18 = arith.addi %9, %c1 : index
-      cf.br ^bb6(%18 : index)
+      %9 = arith.remsi %7, %c8 : index
+      %10 = arith.divsi %7, %c8 : index
+      %11 = arith.remsi %10, %c128 : index
+      %12 = arith.addi %0, %11 : index
+      %13 = arith.addi %5, %9 : index
+      %14 = memref.load %arg0[%12, %13] : memref<4096x4096xf32>
+      memref.store %14, %arg3[%11, %9] : memref<128x8xf32, 3>
+      %15 = arith.addi %7, %block_dim_x_1 : index
+      cf.br ^bb6(%15 : index)
     ^bb8:  // pred: ^bb6
-      cf.br ^bb9(%c0 : index)
-    ^bb9(%19: index):  // 2 preds: ^bb8, ^bb10
-      %20 = arith.cmpi slt, %19, %c4 : index
-      cf.cond_br %20, ^bb10, ^bb11
+      gpu.barrier
+      %thread_id_x_2 = gpu.thread_id x
+      %block_dim_x_3 = gpu.block_dim x
+      cf.br ^bb9(%thread_id_x_2 : index)
+    ^bb9(%16: index):  // 2 preds: ^bb8, ^bb10
+      %17 = arith.cmpi slt, %16, %c1024 : index
+      cf.cond_br %17, ^bb10, ^bb11
     ^bb10:  // pred: ^bb9
-      %21 = arith.addi %3, %0 : index
-      %22 = arith.muli %1, %c4 : index
-      %23 = arith.addi %22, %19 : index
-      %24 = arith.addi %23, %7 : index
-      %25 = arith.remsi %21, %c128 : index
-      %26 = arith.remsi %24, %c8 : index
-      %27 = memref.load %arg1[%24, %21] : memref<4096x4096xf32>
-      memref.store %27, %arg4[%26, %25] : memref<8x128xf32, 3>
-      %28 = arith.addi %19, %c1 : index
-      cf.br ^bb9(%28 : index)
+      %18 = arith.remsi %16, %c128 : index
+      %19 = arith.divsi %16, %c128 : index
+      %20 = arith.remsi %19, %c8 : index
+      %21 = arith.addi %5, %20 : index
+      %22 = arith.addi %1, %18 : index
+      %23 = memref.load %arg1[%21, %22] : memref<4096x4096xf32>
+      memref.store %23, %arg4[%20, %18] : memref<8x128xf32, 3>
+      %24 = arith.addi %16, %block_dim_x_3 : index
+      cf.br ^bb9(%24 : index)
     ^bb11:  // pred: ^bb9
       gpu.barrier
+      gpu.barrier
+      %thread_id_x_4 = gpu.thread_id x
+      %25 = arith.remsi %thread_id_x_4, %c16 : index
+      %26 = arith.divsi %thread_id_x_4, %c16 : index
+      %27 = arith.muli %25, %c8 : index
+      %28 = arith.muli %26, %c8 : index
       cf.br ^bb12(%c0 : index)
     ^bb12(%29: index):  // 2 preds: ^bb11, ^bb25
       %30 = arith.cmpi slt, %29, %c8 : index
@@ -165,86 +171,95 @@ module attributes {gpu.container_module} {
       %32 = arith.cmpi slt, %31, %c8 : index
       cf.cond_br %32, ^bb15, ^bb16
     ^bb15:  // pred: ^bb14
-      %33 = arith.remsi %thread_id_x, %c16 : index
-      %34 = arith.muli %33, %c8 : index
-      %35 = arith.addi %34, %31 : index
-      %36 = memref.load %arg3[%35, %29] : memref<128x8xf32, 3>
-      memref.store %36, %arg5[%31] : memref<8xf32, 5>
-      %37 = arith.addi %31, %c1 : index
-      cf.br ^bb14(%37 : index)
+      %33 = arith.muli %27, %c8 : index
+      %34 = arith.addi %33, %29 : index
+      %35 = arith.muli %31, %c8 : index
+      %36 = arith.addi %34, %35 : index
+      %37 = arith.remsi %36, %c8 : index
+      %38 = arith.divsi %36, %c8 : index
+      %39 = arith.remsi %38, %c128 : index
+      %40 = memref.load %arg3[%39, %37] : memref<128x8xf32, 3>
+      memref.store %40, %arg5[%31] : memref<8xf32, 5>
+      %41 = arith.addi %31, %c1 : index
+      cf.br ^bb14(%41 : index)
     ^bb16:  // pred: ^bb14
       cf.br ^bb17(%c0 : index)
-    ^bb17(%38: index):  // 2 preds: ^bb16, ^bb18
-      %39 = arith.cmpi slt, %38, %c8 : index
-      cf.cond_br %39, ^bb18, ^bb19
+    ^bb17(%42: index):  // 2 preds: ^bb16, ^bb18
+      %43 = arith.cmpi slt, %42, %c8 : index
+      cf.cond_br %43, ^bb18, ^bb19
     ^bb18:  // pred: ^bb17
-      %40 = arith.divsi %thread_id_x, %c16 : index
-      %41 = arith.muli %40, %c8 : index
-      %42 = arith.addi %41, %38 : index
-      %43 = memref.load %arg4[%29, %42] : memref<8x128xf32, 3>
-      memref.store %43, %arg6[%38] : memref<8xf32, 5>
-      %44 = arith.addi %38, %c1 : index
-      cf.br ^bb17(%44 : index)
+      %44 = arith.muli %29, %c128 : index
+      %45 = arith.addi %44, %28 : index
+      %46 = arith.addi %45, %42 : index
+      %47 = arith.remsi %46, %c128 : index
+      %48 = arith.divsi %46, %c128 : index
+      %49 = arith.remsi %48, %c8 : index
+      %50 = memref.load %arg4[%49, %47] : memref<8x128xf32, 3>
+      memref.store %50, %arg6[%42] : memref<8xf32, 5>
+      %51 = arith.addi %42, %c1 : index
+      cf.br ^bb17(%51 : index)
     ^bb19:  // pred: ^bb17
       cf.br ^bb20(%c0 : index)
-    ^bb20(%45: index):  // 2 preds: ^bb19, ^bb24
-      %46 = arith.cmpi slt, %45, %c8 : index
-      cf.cond_br %46, ^bb21, ^bb25
+    ^bb20(%52: index):  // 2 preds: ^bb19, ^bb24
+      %53 = arith.cmpi slt, %52, %c8 : index
+      cf.cond_br %53, ^bb21, ^bb25
     ^bb21:  // pred: ^bb20
       cf.br ^bb22(%c0 : index)
-    ^bb22(%47: index):  // 2 preds: ^bb21, ^bb23
-      %48 = arith.cmpi slt, %47, %c8 : index
-      cf.cond_br %48, ^bb23, ^bb24
+    ^bb22(%54: index):  // 2 preds: ^bb21, ^bb23
+      %55 = arith.cmpi slt, %54, %c8 : index
+      cf.cond_br %55, ^bb23, ^bb24
     ^bb23:  // pred: ^bb22
-      %49 = arith.muli %45, %c8 : index
-      %50 = arith.addi %49, %47 : index
-      %51 = memref.load %arg5[%45] : memref<8xf32, 5>
-      %52 = memref.load %arg6[%47] : memref<8xf32, 5>
-      %53 = memref.load %arg7[%50] : memref<64xf32, 5>
-      %54 = arith.mulf %51, %52 : f32
-      %55 = arith.addf %53, %54 : f32
-      memref.store %55, %arg7[%50] : memref<64xf32, 5>
-      %56 = arith.addi %47, %c1 : index
-      cf.br ^bb22(%56 : index)
+      %56 = arith.muli %52, %c8 : index
+      %57 = arith.addi %56, %54 : index
+      %58 = memref.load %arg5[%52] : memref<8xf32, 5>
+      %59 = memref.load %arg6[%54] : memref<8xf32, 5>
+      %60 = memref.load %arg7[%57] : memref<64xf32, 5>
+      %61 = arith.mulf %58, %59 : f32
+      %62 = arith.addf %60, %61 : f32
+      memref.store %62, %arg7[%57] : memref<64xf32, 5>
+      %63 = arith.addi %54, %c1 : index
+      cf.br ^bb22(%63 : index)
     ^bb24:  // pred: ^bb22
-      %57 = arith.addi %45, %c1 : index
-      cf.br ^bb20(%57 : index)
+      %64 = arith.addi %52, %c1 : index
+      cf.br ^bb20(%64 : index)
     ^bb25:  // pred: ^bb20
-      %58 = arith.addi %29, %c1 : index
-      cf.br ^bb12(%58 : index)
+      %65 = arith.addi %29, %c1 : index
+      cf.br ^bb12(%65 : index)
     ^bb26:  // pred: ^bb12
       gpu.barrier
-      cf.br ^bb27(%c0 : index)
-    ^bb27(%59: index):  // 2 preds: ^bb26, ^bb31
-      %60 = arith.cmpi slt, %59, %c8 : index
-      cf.cond_br %60, ^bb28, ^bb32
-    ^bb28:  // pred: ^bb27
-      cf.br ^bb29(%c0 : index)
-    ^bb29(%61: index):  // 2 preds: ^bb28, ^bb30
-      %62 = arith.cmpi slt, %61, %c8 : index
-      cf.cond_br %62, ^bb30, ^bb31
-    ^bb30:  // pred: ^bb29
-      %63 = arith.muli %59, %c8 : index
-      %64 = arith.addi %61, %63 : index
-      %65 = memref.load %arg7[%64] : memref<64xf32, 5>
-      %66 = arith.remsi %thread_id_x_0, %c16 : index
-      %67 = arith.muli %66, %c8 : index
-      %68 = arith.addi %2, %67 : index
-      %69 = arith.addi %68, %59 : index
-      %70 = arith.divsi %thread_id_x_0, %c16 : index
-      %71 = arith.muli %70, %c8 : index
-      %72 = arith.addi %3, %71 : index
-      %73 = arith.addi %72, %61 : index
-      memref.store %65, %arg2[%69, %73] : memref<4096x4096xf32>
-      %74 = arith.addi %61, %c1 : index
-      cf.br ^bb29(%74 : index)
-    ^bb31:  // pred: ^bb29
-      %75 = arith.addi %59, %c1 : index
-      cf.br ^bb27(%75 : index)
-    ^bb32:  // pred: ^bb27
-      %76 = arith.addi %7, %c8 : index
-      cf.br ^bb4(%76 : index)
-    ^bb33:  // pred: ^bb4
+      %66 = arith.addi %5, %c8 : index
+      cf.br ^bb4(%66 : index)
+    ^bb27:  // pred: ^bb4
+      %thread_id_x_5 = gpu.thread_id x
+      %67 = arith.remsi %thread_id_x_5, %c16 : index
+      %68 = arith.divsi %thread_id_x_5, %c16 : index
+      %69 = arith.muli %67, %c8 : index
+      %70 = arith.muli %68, %c8 : index
+      %71 = arith.addi %0, %69 : index
+      %72 = arith.addi %1, %70 : index
+      cf.br ^bb28(%c0 : index)
+    ^bb28(%73: index):  // 2 preds: ^bb27, ^bb32
+      %74 = arith.cmpi slt, %73, %c8 : index
+      cf.cond_br %74, ^bb29, ^bb33
+    ^bb29:  // pred: ^bb28
+      cf.br ^bb30(%c0 : index)
+    ^bb30(%75: index):  // 2 preds: ^bb29, ^bb31
+      %76 = arith.cmpi slt, %75, %c8 : index
+      cf.cond_br %76, ^bb31, ^bb32
+    ^bb31:  // pred: ^bb30
+      %77 = arith.muli %73, %c8 : index
+      %78 = arith.addi %77, %75 : index
+      %79 = arith.remsi %78, %c64 : index
+      %80 = arith.addi %71, %73 : index
+      %81 = arith.addi %72, %75 : index
+      %82 = memref.load %arg7[%79] : memref<64xf32, 5>
+      memref.store %82, %arg2[%80, %81] : memref<4096x4096xf32>
+      %83 = arith.addi %75, %c1 : index
+      cf.br ^bb30(%83 : index)
+    ^bb32:  // pred: ^bb30
+      %84 = arith.addi %73, %c1 : index
+      cf.br ^bb28(%84 : index)
+    ^bb33:  // pred: ^bb28
       gpu.return
     }
   }

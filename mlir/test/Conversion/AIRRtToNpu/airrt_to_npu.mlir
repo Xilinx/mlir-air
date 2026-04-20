@@ -37,10 +37,10 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %c2_i32 = arith.constant 2 : i32
     %c64_i64 = arith.constant 64 : i64
-    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
     %p = airrt.segment_load "segment0" : i64
     %c7_i32 = arith.constant 7 : i32
-    airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
     return
   }
 }
@@ -81,11 +81,11 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %c2_i32 = arith.constant 2 : i32
     %c64_i64 = arith.constant 64 : i64
-    %0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     %p = airrt.segment_load "segment0" : i64
     %1 = airrt.wait_all : !airrt.event
     %c7_i32 = arith.constant 7 : i32
-    %2 = airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %2 = airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     airrt.wait_all %0, %2
     return
   }
@@ -143,10 +143,10 @@ module {
         %3 = arith.index_cast %arg4 : index to i64
         %4 = arith.index_cast %0 : index to i64
         %5 = arith.index_cast %1 : index to i64
-        %6 = airrt.dma_memcpy_nd(%c5_i32, %2, %3, %arg2[%c0_i64, %c0_i64, %4, %5], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c32_i64]) {metadata = @airMemcpyId5} : (i32, i64, i64, memref<32x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-        %7 = airrt.dma_memcpy_nd(%c6_i32, %2, %3, %arg0[%c0_i64, %c0_i64, %4, %c0_i64], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c32_i64]) {metadata = @airMemcpyId6} : (i32, i64, i64, memref<32x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-        %8 = airrt.dma_memcpy_nd(%c7_i32, %2, %3, %arg1[%c0_i64, %c0_i64, %c0_i64, %5], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c32_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<32x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-        %9 = airrt.dma_memcpy_nd(%c16_i32, %2, %3, %arg2[%c0_i64, %c0_i64, %4, %5], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c32_i64]) {metadata = @airMemcpyId16} : (i32, i64, i64, memref<32x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %6 = airrt.dma_memcpy_nd(%c5_i32, %2, %3, %arg2[%c0_i64, %c0_i64, %4, %5], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c32_i64, %c1_i64]) {metadata = @airMemcpyId5} : (i32, i64, i64, memref<32x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+        %7 = airrt.dma_memcpy_nd(%c6_i32, %2, %3, %arg0[%c0_i64, %c0_i64, %4, %c0_i64], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c32_i64, %c1_i64]) {metadata = @airMemcpyId6} : (i32, i64, i64, memref<32x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+        %8 = airrt.dma_memcpy_nd(%c7_i32, %2, %3, %arg1[%c0_i64, %c0_i64, %c0_i64, %5], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c32_i64, %c1_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<32x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+        %9 = airrt.dma_memcpy_nd(%c16_i32, %2, %3, %arg2[%c0_i64, %c0_i64, %4, %5], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c32_i64, %c1_i64]) {metadata = @airMemcpyId16} : (i32, i64, i64, memref<32x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
         airrt.wait_all %6, %7, %8, %9
         %p = airrt.segment_load "segment_0" : i64
       }
@@ -209,7 +209,7 @@ module {
             %3 = arith.index_cast %arg4 : index to i64
             %4 = arith.index_cast %0 : index to i64
             %5 = arith.index_cast %1 : index to i64
-            %6 = airrt.dma_memcpy_nd(%c14_i32, %2, %3, %arg0[%c0_i64, %c0_i64, %4, %5], [%c1_i64, %c1_i64, %c4_i64, %c4_i64], [%c0_i64, %c0_i64, %c8_i64]) {metadata = @airMemcpyId14} : (i32, i64, i64, memref<8x8xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+            %6 = airrt.dma_memcpy_nd(%c14_i32, %2, %3, %arg0[%c0_i64, %c0_i64, %4, %5], [%c1_i64, %c1_i64, %c4_i64, %c4_i64], [%c0_i64, %c0_i64, %c8_i64, %c1_i64]) {metadata = @airMemcpyId14} : (i32, i64, i64, memref<8x8xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
             airrt.wait_all %6
           }
         }
@@ -275,7 +275,7 @@ module {
             %3 = arith.index_cast %arg4 : index to i64
             %4 = arith.index_cast %0 : index to i64
             %5 = arith.index_cast %1 : index to i64
-            %6 = airrt.dma_memcpy_nd(%c14_i32, %2, %3, %arg0[%c0_i64, %c0_i64, %4, %5], [%c1_i64, %c1_i64, %c4_i64, %c4_i64], [%c0_i64, %c0_i64, %c8_i64]) {metadata = @air_channel_1} : (i32, i64, i64, memref<8x8xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+            %6 = airrt.dma_memcpy_nd(%c14_i32, %2, %3, %arg0[%c0_i64, %c0_i64, %4, %5], [%c1_i64, %c1_i64, %c4_i64, %c4_i64], [%c0_i64, %c0_i64, %c8_i64, %c1_i64]) {metadata = @air_channel_1} : (i32, i64, i64, memref<8x8xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
             airrt.wait_all %6
           }
         }
@@ -310,7 +310,7 @@ module {
     %c7_i32 = arith.constant 7 : i32
     %c64_i64 = arith.constant 64 : i64
     %p = airrt.herd_load "herd" () : () -> i64
-    airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
     return
   }
 }
@@ -336,7 +336,8 @@ module {
       %c32_i64 = arith.constant 32 : i64
       %c128_i64 = arith.constant 128 : i64
       %c4096_i64 = arith.constant 4096 : i64
-      airrt.dma_memcpy_nd(%c0_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c4_i64, %c4_i64, %c32_i64, %c32_i64], [%c4096_i64, %c32_i64, %c128_i64]) {metadata = @md0} : (i32, i64, i64, memref<128x128xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+      %c1_i64 = arith.constant 1 : i64
+      airrt.dma_memcpy_nd(%c0_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c4_i64, %c4_i64, %c32_i64, %c32_i64], [%c4096_i64, %c32_i64, %c128_i64, %c1_i64]) {metadata = @md0} : (i32, i64, i64, memref<128x128xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
       return
     }
   }
@@ -362,7 +363,7 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %c32_i64 = arith.constant 32 : i64
     %alloc = memref.alloc() : memref<32xbf16>
-    airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %alloc[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c32_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @md0} : (i32, i64, i64, memref<32xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %alloc[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c32_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @md0} : (i32, i64, i64, memref<32xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
     %p = airrt.segment_load "segment_0" : i64
     return
   }
@@ -411,7 +412,7 @@ module {
     %alloc = memref.alloc() : memref<32xbf16>
     // assert that the alignment of %alloc is 64 bits:
     memref.assume_alignment %alloc, 64 : memref<32xbf16>
-    airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %alloc[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c32_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @md0} : (i32, i64, i64, memref<32xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %alloc[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c32_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @md0} : (i32, i64, i64, memref<32xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
     %p = airrt.segment_load "segment_0" : i64
     return
   }
@@ -551,7 +552,7 @@ module {
         %13 = arith.index_cast %arg4 : index to i64
         %14 = arith.index_cast %10 : index to i64
         %15 = arith.index_cast %11 : index to i64
-        %16 = airrt.dma_memcpy_nd(%c26_i32, %12, %13, %alloc[%c0_i64, %c0_i64, %14, %15], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c32768_i64]) {metadata = @airMemcpyId26} : (i32, i64, i64, memref<8192x32768xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %16 = airrt.dma_memcpy_nd(%c26_i32, %12, %13, %alloc[%c0_i64, %c0_i64, %14, %15], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c32768_i64, %c1_i64]) {metadata = @airMemcpyId26} : (i32, i64, i64, memref<8192x32768xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
         %p = airrt.segment_load "segment_0" : i64
       }
     }
@@ -623,6 +624,7 @@ module {
   airrt.module_metadata{
   }
   func.func @func21(%arg0: memref<9728x2432xbf16>) {
+    %c1_i64 = arith.constant 1 : i64
     %c2_i64 = arith.constant 2 : i64
     %c2432_i64 = arith.constant 2432 : i64
     %c155648_i64 = arith.constant 155648 : i64
@@ -636,7 +638,7 @@ module {
         %1 = arith.index_cast %arg3 : index to i64
         %2 = arith.index_cast %arg4 : index to i64
         %3 = arith.index_cast %0 : index to i64
-        %4 = airrt.dma_memcpy_nd(%c10_i32, %1, %2, %arg0[%c0_i64, %c0_i64, %c0_i64, %3], [%c152_i64, %c2_i64, %c64_i64, %c64_i64], [%c155648_i64, %c64_i64, %c2432_i64]) {metadata = @airMemcpyId10} : (i32, i64, i64, memref<9728x2432xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %4 = airrt.dma_memcpy_nd(%c10_i32, %1, %2, %arg0[%c0_i64, %c0_i64, %c0_i64, %3], [%c152_i64, %c2_i64, %c64_i64, %c64_i64], [%c155648_i64, %c64_i64, %c2432_i64, %c1_i64]) {metadata = @airMemcpyId10} : (i32, i64, i64, memref<9728x2432xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
         %p = airrt.segment_load "segment_0" : i64
       }
     }
@@ -683,13 +685,13 @@ module {
     %c1_i32 = arith.constant 1 : i32
     %c2_i32 = arith.constant 2 : i32
     // First batch: input DMA (MM2S) and output DMA (S2MM)
-    %0 = airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @input_channel} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-    %1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @output_channel} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @input_channel} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @output_channel} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     // First synchronization point
     airrt.wait_all %0, %1
     // Second batch: another pair of DMAs
-    %2 = airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @input_channel} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-    %3 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @output_channel} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %2 = airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @input_channel} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %3 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @output_channel} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     // Second synchronization point
     airrt.wait_all %2, %3
     %p = airrt.segment_load "segment_0" : i64
@@ -729,9 +731,9 @@ module {
     %c1_i32 = arith.constant 1 : i32
     %c2_i32 = arith.constant 2 : i32
     // MM2S (host to device, input) - should get dma_free_task
-    %0 = airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @mm2s_input} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @mm2s_input} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     // S2MM (device to host, output) - should get dma_await_task
-    %1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @s2mm_output} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @s2mm_output} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     airrt.wait_all %0, %1
     %p = airrt.segment_load "segment_0" : i64
     return
@@ -772,12 +774,234 @@ module {
     %c2_i32 = arith.constant 2 : i32
     %c3_i32 = arith.constant 3 : i32
     // Two MM2S inputs
-    %0 = airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @input_a} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-    %1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @input_b} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @input_a} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @input_b} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     // One S2MM output
-    %2 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @output_c} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %2 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @output_c} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     airrt.wait_all %0, %1, %2
     %p = airrt.segment_load "segment_0" : i64
     return
+  }
+}
+
+// -----
+
+// Packet attribute transfer from airrt.dma_memcpy_nd to aie.dma_bd.
+// The MM2S DMA with a packet attribute should produce a dma_bd with the packet
+// field set. The S2MM DMA without a packet attribute should not.
+
+// CHECK-LABEL: aie.device(npu1_1col) @segment0
+// CHECK: aie.runtime_sequence @packet_attr_transfer(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
+// CHECK:   aiex.dma_configure_task_for @airMemcpyId2 {
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<64xi32>, 0, 64,{{.*}}) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>}
+// CHECK:   }
+// CHECK:   aiex.dma_start_task
+// CHECK:   %[[T1:.*]] = aiex.dma_configure_task_for @airMemcpyId7 {
+// CHECK-NOT: packet
+// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<64xi32>, 0, 64
+// CHECK:   } {issue_token = true}
+// CHECK:   aiex.dma_start_task(%[[T1]])
+// CHECK: }
+
+module {
+  aie.device(npu1_1col) {
+    %tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId7(%tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%tile_0_0, MM2S, 0)
+  } {sym_name = "segment0"}
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1]
+  func.func @packet_attr_transfer(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c7_i32 = arith.constant 7 : i32
+    // MM2S DMA with packet attribute (direct L3->L1 packet-switched flow)
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId2, packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+    %p = airrt.segment_load "segment0" : i64
+    // S2MM DMA without packet attribute
+    airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+    return
+  }
+}
+
+// -----
+
+// Packet attribute transfer with multi-dimensional DMA (dims + packet).
+
+// CHECK-LABEL: aie.device(npu1_1col) @segment0
+// CHECK: aie.runtime_sequence @packet_attr_with_dims(%[[VAL_0:.*]]: memref<32x64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
+// CHECK:   aiex.dma_configure_task_for @airMemcpyId2 {
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<32x64xi32>, 0, 128, [<size = 2, stride = 64>{{.*}}]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>}
+// CHECK:   }
+// CHECK:   aiex.dma_start_task
+
+module {
+  aie.device(npu1_1col) {
+    %tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId7(%tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%tile_0_0, MM2S, 0)
+  } {sym_name = "segment0"}
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1]
+  func.func @packet_attr_with_dims(%arg0: memref<32x64xi32>, %arg1: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c7_i32 = arith.constant 7 : i32
+    // MM2S DMA with packet attribute and non-trivial dimensions
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c2_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64, %c0_i64]) {metadata = @airMemcpyId2, packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>} : (i32, i64, i64, memref<32x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+    %p = airrt.segment_load "segment0" : i64
+    airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+    return
+  }
+}
+
+// -----
+
+// stride=0 at dim 1 (broadcast pattern) should be folded into repeat_count
+// and NOT passed to aie.dma_bd dimensions. Regression test for issue #1484.
+
+// CHECK-LABEL: aie.runtime_sequence @broadcast_stride_zero
+// CHECK-SAME: %[[ARG0:.*]]: memref<64xbf16>
+// CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId2 {
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<64xbf16>, 0, 64, [<size = 64, stride = 1>])
+// CHECK: } {repeat_count = 3 : i32}
+// CHECK: aiex.dma_start_task
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
+    func.func @broadcast_stride_zero(%arg0: memref<64xbf16>) {
+      %c0_i64 = arith.constant 0 : i64
+      %c1_i64 = arith.constant 1 : i64
+      %c2_i64 = arith.constant 2 : i64
+      %c64_i64 = arith.constant 64 : i64
+      %c2_i32 = arith.constant 2 : i32
+      // sizes=[2, 2, 1, 64] strides=[0, 0, 0, 1]
+      // dim 0: stride=0 size=2 -> repeat_count=1
+      // dim 1: stride=0 size=2 -> should fold into repeat_count, NOT pass to BD
+      // Expected: repeat_count = (1+1)*2 - 1 = 3, BD dims = [<size=64, stride=1>]
+      airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c2_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<64xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+      return
+    }
+  }
+}
+
+// -----
+
+// stride=0 at dim 2 only (broadcast pattern with non-zero stride at dim 1).
+// Regression test for issue #1484.
+
+// CHECK-LABEL: aie.runtime_sequence @broadcast_stride_zero_dim2
+// CHECK-SAME: %[[ARG0:.*]]: memref<256xbf16>
+// CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId3 {
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<256xbf16>, 0, 128, [<size = 2, stride = 128>, <size = 64, stride = 1>])
+// CHECK: } {repeat_count = 2 : i32}
+// CHECK: aiex.dma_start_task
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId3(%shim_noc_tile_0_0, MM2S, 0)
+    func.func @broadcast_stride_zero_dim2(%arg0: memref<256xbf16>) {
+      %c0_i64 = arith.constant 0 : i64
+      %c1_i64 = arith.constant 1 : i64
+      %c2_i64 = arith.constant 2 : i64
+      %c3_i64 = arith.constant 3 : i64
+      %c64_i64 = arith.constant 64 : i64
+      %c128_i64 = arith.constant 128 : i64
+      %c3_i32 = arith.constant 3 : i32
+      // sizes=[1, 2, 3, 64] strides=[0, 128, 0, 1]
+      // dim 0: size=1 -> repeat_count=0 (no repeat)
+      // dim 1: stride=128 size=2 -> BD dim (non-zero stride)
+      // dim 2: stride=0 size=3 -> fold into repeat_count: (0+1)*3-1=2
+      // dim 3: stride=1 size=64 -> BD dim
+      // Expected: repeat_count=2, BD dims=[<size=2, stride=128>, <size=64, stride=1>]
+      // transferLen = 2*3*64=384 -> 384/3=128 per BD execution (after folding dim 2)
+      airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c2_i64, %c3_i64, %c64_i64], [%c0_i64, %c128_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId3} : (i32, i64, i64, memref<256xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+      return
+    }
+  }
+}
+
+// -----
+
+// stride=0 at both dim 1 and dim 2 (nested broadcast). Tests that nested
+// repeat folding produces correct repeat_count. Regression test for issue #1484.
+
+// CHECK-LABEL: aie.runtime_sequence @broadcast_stride_zero_nested
+// CHECK-SAME: %[[ARG0:.*]]: memref<64xbf16>
+// CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId4 {
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<64xbf16>, 0, 64, [<size = 64, stride = 1>])
+// CHECK: } {repeat_count = 11 : i32}
+// CHECK: aiex.dma_start_task
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+    func.func @broadcast_stride_zero_nested(%arg0: memref<64xbf16>) {
+      %c0_i64 = arith.constant 0 : i64
+      %c1_i64 = arith.constant 1 : i64
+      %c2_i64 = arith.constant 2 : i64
+      %c3_i64 = arith.constant 3 : i64
+      %c4_i64 = arith.constant 4 : i64
+      %c64_i64 = arith.constant 64 : i64
+      %c4_i32 = arith.constant 4 : i32
+      // sizes=[2, 3, 2, 64] strides=[0, 0, 0, 1]
+      // dim 0: stride=0 size=2 -> repeat_count=1
+      // dim 1: stride=0 size=3 -> fold: repeat_count=(1+1)*3-1=5
+      // dim 2: stride=0 size=2 -> fold: repeat_count=(5+1)*2-1=11
+      // dim 3: stride=1 size=64 -> BD dim
+      // Expected: repeat_count=11, BD dims=[<size=64, stride=1>]
+      // Total transfers: 64 * 12 = 768 = 2*3*2*64. Correct.
+      airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c3_i64, %c2_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<64xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+      return
+    }
+  }
+}
+
+// -----
+
+// 4D BD pattern with size-1 gap: sizes=[4, 1, 128, 64] strides=[65536, 64, 512, 1].
+// The size-1 dim must be retained when use4thDimInBd is true, so that the 4th BD
+// dimension provides iteration_stride to the hardware. Without the fix, the size-1
+// dim is skipped, collapsing to 3 entries where the repeat dim appears in both
+// repeat_count AND dimLayouts, causing validator rejection (4*128*64 != 8192).
+// The fix retains size-1 middle dims when use4thDimInBd is true.
+
+// CHECK-LABEL: aie.runtime_sequence @bd_repeat_dim_size1_gap
+// CHECK-SAME: %[[ARG0:.*]]: memref<512x512xbf16>
+// CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId5 {
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<512x512xbf16>, 64, 8192, [<size = 4, stride = 65536>, <size = 1, stride = 64>, <size = 128, stride = 512>, <size = 64, stride = 1>])
+// CHECK: } {repeat_count = 3 : i32}
+// CHECK: aiex.dma_start_task
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId5(%shim_noc_tile_0_0, MM2S, 0)
+    func.func @bd_repeat_dim_size1_gap(%arg0: memref<512x512xbf16>) {
+      %c0_i64 = arith.constant 0 : i64
+      %c1_i64 = arith.constant 1 : i64
+      %c4_i64 = arith.constant 4 : i64
+      %c64_i64 = arith.constant 64 : i64
+      %c128_i64 = arith.constant 128 : i64
+      %c512_i64 = arith.constant 512 : i64
+      %c65536_i64 = arith.constant 65536 : i64
+      %c5_i32 = arith.constant 5 : i32
+      // sizes=[4, 1, 128, 64] strides=[65536, 64, 512, 1]
+      // use4thDimInBd=true (strides[0]=65536 != 0), repeat_count=3
+      // dim 0: size=4 stride=65536 -> iteration dim (4th BD dim)
+      // dim 1: size=1 stride=64 -> retained (degenerate, preserves 4D layout)
+      // dim 2: size=128 stride=512 -> BD dim
+      // dim 3: size=64 stride=1 -> BD dim (innermost)
+      // transferLen = 1*128*64 = 8192
+      // Without fix: dim 1 skipped -> 3 entries -> validator: 4*128*64=32768 != 8192 FAIL
+      // With fix: dim 1 retained -> 4 entries -> validator checks lowest 3: 1*128*64=8192 PASS
+      airrt.dma_memcpy_nd(%c5_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c64_i64], [%c4_i64, %c1_i64, %c128_i64, %c64_i64], [%c65536_i64, %c64_i64, %c512_i64, %c1_i64]) {metadata = @airMemcpyId5} : (i32, i64, i64, memref<512x512xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+      return
+    }
   }
 }

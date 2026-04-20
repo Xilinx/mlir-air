@@ -1054,6 +1054,59 @@ def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "Modul
   ];
 }
 
+def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
+  let summary = "Split air.launch into partitions for device-side DMA padding";
+  let constructor = "xilinx::air::createAIRSplitLaunchForPadding()";
+  let description = [{
+    For non-tile-aligned dimensions, partitions the air.launch to apply
+    DMA padding on boundary tiles.
+
+    Reads the `air.actual_sizes` attribute from air.launch to determine
+    actual data dimensions. If absent, the launch is left unchanged.
+    Tile sizes are inferred from arith.muli offset computations in the
+    launch body.
+
+    Three orthogonal axes control behavior:
+
+    **Split mode** (`split-mode` option):
+    - `multi-launch` (default): Create up to 4 separate launches (interior,
+      M-boundary, N-boundary, corner), each with a specialized grid size.
+      Each partition gets unique channel/segment names.
+    - `single-launch`: Keep a single launch with the original grid size and
+      use scf.if on block indices to dispatch between interior and boundary
+      partition bodies. Suitable for GPU targets where multiple launches
+      don't map to a single kernel dispatch.
+
+    **Padding location** (`pad-location` option):
+    - `memtile` (default): Apply padding at L2 MM2S DMAs in a 3-level
+      memory hierarchy (L3->L2->L1). Only available with
+      split-mode=multi-launch.
+    - `source`: Apply padding directly on the op reading from L3.
+      Source sizes reduced, pad_after set on the source-level op.
+
+    **IR representation** (auto-detected):
+    The pass detects whether the launch contains air.channel.put/get or
+    air.dma_memcpy_nd ops and handles each correctly in multi-launch mode.
+    Single-launch mode currently only supports air.dma_memcpy_nd; using
+    it with channel-based IR will produce an error.
+
+    Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.
+  }];
+  let options = [
+    Option<"clSplitMode", "split-mode", "std::string",
+           /*default=*/"\"multi-launch\"",
+           "How to partition the launch grid: 'multi-launch' (separate launches "
+           "per partition) or 'single-launch' (single launch with scf.if on "
+           "block indices).">,
+    Option<"clPadLocation", "pad-location", "std::string",
+           /*default=*/"\"memtile\"",
+           "Where to apply DMA padding: 'memtile' (L2 MM2S, 3-level hierarchy) "
+           "or 'source' (pad at L3 read, direct source-level padding).">,
+    Option<"clUseDmaMemcpy", "use-dma-memcpy", "bool", /*default=*/"false",
+           "DEPRECATED: Use pad-location='source' instead.">
+  ];
+}
+
 def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
   let summary = "Hoist dma ops into perfectly nested loop";
   let constructor = "xilinx::air::createAIRLoopFusion()";
@@ -1156,10 +1209,15 @@ def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp">
   let summary = "Specialize dma operations for broadcast pattern";
   let constructor = "xilinx::air::createAIRSpecializeDmaBroadcast()";
   let description = [{
-    Specializes `air.dma_memcpy_nd` operations for broadcast patterns within a 
-    computation. This specialization involves transforming data movement operations 
+    Specializes `air.dma_memcpy_nd` operations for broadcast patterns within a
+    computation. This specialization involves transforming data movement operations
     into more optimized versions that are aware of the broadcast semantics.
   }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+    "scf::SCFDialect"
+  ];
 }
 
 def AIRLinalgNamePass : Pass<"air-linalg-name", "ModuleOp"> {
@@ -1537,13 +1595,27 @@ def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
     }
     ```
   }];
+  let options = [
+    Option<"clShimDmaChannelsPerCol", "shim-dma-channels-per-col", "int",
+           /*default=*/"2",
+           "Number of physical DMA channels per direction per shim tile "
+           "column. Used by auto-packet-switching detection to determine "
+           "when channel count exceeds physical capacity.">,
+    Option<"clForceShimPacketFlow", "force-shim-packet-flow", "bool",
+           /*default=*/"false",
+           "Unconditionally mark all shim-bound channels (both input and "
+           "output) as dma_packet, to enable time-multiplexed sharing with "
+           "control packet flows.">,
+  ];
 }
 
 def AIROverrideMemRefMemorySpace : Pass<"air-override-memref-memory-space", "ModuleOp"> {
   let summary = "Force all memrefs allocated within code region to have the specified memory space.";
   let constructor = "xilinx::air::createAIROverrideMemRefMemorySpacePass()";
   let description = [{
-    Experimental pass. Force all memrefs allocated within a specified code region to have the specified memory space.
+    Experimental pass. Force all memrefs allocated within a specified code region
+    to have the specified memory space. Allocs that already have an explicitly set
+    non-default memory space (i.e., not L3/0) are preserved and not overridden.
   }];
   let options = [
     Option<"clMemorySpace", "memory-space", "unsigned", /*default=*/"0",

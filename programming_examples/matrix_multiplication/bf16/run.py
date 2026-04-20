@@ -404,19 +404,6 @@ def build_module(
                     _l2_b,
                     _l2_c,
                 ):
-                    l1_c_subview = subview(
-                        _l1_c,
-                        offsets=[_tx, _ty, 0, 0, 0, 0],
-                        sizes=[
-                            1,
-                            1,
-                            tile_n // mmul_mkn[2],
-                            tile_m // mmul_mkn[0],
-                            mmul_mkn[0],
-                            mmul_mkn[2],
-                        ],
-                        strides=[1, 1, 1, 1, 1, 1],
-                    )
                     dma_memcpy_nd(
                         _l2_c,
                         _l1_c,
@@ -478,7 +465,7 @@ if __name__ == "__main__":
     HERD_M = 4
     HERD_N = 4
     INPUT_DATATYPE = bfloat16
-    OUTPUT_DATATYPE = bfloat16  # also supports np.float32
+    OUTPUT_DATATYPE = bfloat16
 
     parser = argparse.ArgumentParser(
         prog="run.py",
@@ -558,6 +545,12 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # aie2p uses f32 accumulation output for better precision (both direct-codegen
+    # and external kernel paths). This avoids bf16 truncation between K-tile
+    # iterations and eliminates sensitivity to rounding mode.
+    if args.arch == "aie2p":
+        OUTPUT_DATATYPE = np.float32
+
     # Check for PEANO_INSTALL_DIR if direct codegen is enabled
     if args.direct_codegen:
         if not os.environ.get("PEANO_INSTALL_DIR"):
@@ -595,8 +588,9 @@ if __name__ == "__main__":
                     transform.apply_patterns.linalg.tiling_canonicalization
                     transform.apply_patterns.scf.for_loop_canonicalization
                     transform.apply_patterns.canonicalization
-                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
                 } : !transform.any_op
+                %func_fold_1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                %func_folded_1 = transform.air.fold_unit_extent_dims %func_fold_1 : (!transform.any_op) -> !transform.any_op
 
 
                 %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
@@ -626,73 +620,62 @@ if __name__ == "__main__":
                     transform.apply_patterns.linalg.tiling_canonicalization
                     transform.apply_patterns.scf.for_loop_canonicalization
                     transform.apply_patterns.canonicalization
-                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
                     transform.apply_patterns.memref.fold_memref_alias_ops
                 } : !transform.any_op
-                
+                %func_fold_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                %func_folded_2 = transform.air.fold_unit_extent_dims %func_fold_2 : (!transform.any_op) -> !transform.any_op
+
                 // Eliminate redundant vector.transfer_read operations
-                %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1 : (!transform.any_op) -> !transform.any_op
+                %func1_rematch = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1_rematch : (!transform.any_op) -> !transform.any_op
                 
                 // Hoist loop-invariant vector transfers out of innermost loop
                 %herds_1 = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %vectorized_herds_1 = transform.air.herd_vectorize %herds_1 : (!transform.any_op) -> !transform.any_op
                 %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %vectorized_herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                %all_reads_in_herd2 = transform.structured.match ops{["vector.transfer_read"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-                %all_writes_in_herd2 = transform.structured.match ops{["vector.transfer_write"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 
-                // Split handles to get individual read/write operations
                 %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-                // The innermost loop has 4 read-write pairs accessing arg22
-                %read0, %read1, %read2, %read3, %read4, %read5, %read6, %read7 = transform.split_handle %all_reads_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                %write0, %write1, %write2, %write3 = transform.split_handle %all_writes_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
                 
                 %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = f32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
-                
-                // Hoist each read/write pair from the innermost loop (%innermost_for)
-                // Pair 1: reads[2] (%8) and writes[0] (%13) - accessing [arg27, arg26]
-                %innermost_for_updated = transform.air.hoist_loop_invariant_transfers %read2, %write0, %innermost_for : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                // // Pair 2: reads[4] (%17) and writes[1] (%22) - accessing [arg27+1, arg26]
-                %innermost_for_updated_1 = transform.air.hoist_loop_invariant_transfers %read4, %write1, %innermost_for_updated : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                // Pair 3: reads[6] (%27) and writes[2] (%32) - accessing [arg27, arg26+1]
-                %innermost_for_updated_2 = transform.air.hoist_loop_invariant_transfers %read6, %write2, %innermost_for_updated_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                // Pair 4: reads[7] (%38) and writes[3] (%43) - accessing [arg27+1, arg26+1]
-                %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %read7, %write3, %innermost_for_updated_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
+
+                // Hoist all accumulator transfer pairs from the innermost loop
+                %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
 
                 %innermost_for_updated_4 = transform.air.flatten_for_iter_args %innermost_for_updated_3 : (!transform.any_op) -> !transform.any_op
                 %innermost_for_updated_5 = transform.air.hoist_vector_transfer_pointers %innermost_for_updated_4 : (!transform.any_op) -> !transform.any_op
 
                 %fors_to_hoist_ptrs = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
- 
+
                 // Hoist the 4 extf/truncf pairs from the innermost loop
                 %all_extf_loop = transform.structured.match ops{["arith.extf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop = transform.structured.match ops{["arith.truncf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
-                
+
                 // Split to get individual operations (4 extf total)
                 %extf_bf16_1, %extf_bf16_2, %extf_bf16_3, %extf_bf16_4 = transform.split_handle %all_extf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                
+
                 // The 4 truncf ops correspond to the 4 vector.contract results
                 %truncf_1, %truncf_2, %truncf_3, %truncf_4 = transform.split_handle %all_truncf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                
+
                 // Hoist first pair
                 %for1_1_hoisted_1 = transform.air.hoist_cast_pair %extf_bf16_1, %truncf_1, %innermost_for1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
+
                 // Re-match and hoist second pair
                 %all_extf_loop_2 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop_2 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
                 %extf_bf16_2_new, %e2_5, %e2_6 = transform.split_handle %all_extf_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
                 %truncf_2_1, %truncf_2_2, %truncf_2_3 = transform.split_handle %all_truncf_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
                 %for1_1_hoisted_2 = transform.air.hoist_cast_pair %extf_bf16_2_new, %truncf_2_1, %for1_1_hoisted_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
+
                 // Re-match and hoist third pair
                 %all_extf_loop_3 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop_3 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
                 %extf_bf16_3_new, %e3_7 = transform.split_handle %all_extf_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
                 %truncf_3_1, %truncf_3_2 = transform.split_handle %all_truncf_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
                 %for1_1_hoisted_3 = transform.air.hoist_cast_pair %extf_bf16_3_new, %truncf_3_1, %for1_1_hoisted_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
+
                 // Re-match and hoist fourth pair
                 %all_extf_loop_4 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop_4 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
@@ -703,9 +686,10 @@ if __name__ == "__main__":
                     transform.apply_patterns.linalg.tiling_canonicalization
                     transform.apply_patterns.scf.for_loop_canonicalization
                     transform.apply_patterns.canonicalization
-                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
                     transform.apply_patterns.memref.fold_memref_alias_ops
                 } : !transform.any_op
+                %func_fold_3 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                %func_folded_3 = transform.air.fold_unit_extent_dims %func_fold_3 : (!transform.any_op) -> !transform.any_op
               transform.yield
             }
             }
@@ -716,12 +700,8 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, args.m * args.k, dtype=INPUT_DATATYPE).reshape(
-        args.m, args.k
-    )
-    input_b = np.arange(0, args.k * args.n, dtype=INPUT_DATATYPE).reshape(
-        args.k, args.n
-    )
+    input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
+    input_b = (np.random.rand(args.k, args.n) * 4).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
         # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
@@ -733,15 +713,14 @@ if __name__ == "__main__":
             ]
         )
 
-        # Compute reference results for sampled indices
+        # Compute reference results for sampled indices.
+        # Accumulate in F32 to match hardware behavior (AIE mmul accumulates in F32),
+        # then cast the final result to the output type.
         sampled_values = np.array(
             [
                 np.sum(
-                    (
-                        input_a[i, :].astype(OUTPUT_DATATYPE)
-                        * input_b[:, j].astype(OUTPUT_DATATYPE)
-                    ),
-                    dtype=OUTPUT_DATATYPE,
+                    input_a[i, :].astype(np.float32) * input_b[:, j].astype(np.float32),
+                    dtype=np.float32,
                 )
                 for i, j in zip(*sampled_indices)
             ],
@@ -771,7 +750,9 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e0,
+                rtol=0.05,
+                atol=4,
+                max_mismatch_percentage=5,
             )
         )
 

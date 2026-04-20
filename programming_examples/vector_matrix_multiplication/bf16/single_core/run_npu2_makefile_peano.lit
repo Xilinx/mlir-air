@@ -6,5 +6,5 @@
 // RUN: mkdir -p test_npu2_peano
 // RUN: cd test_npu2_peano
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: make -f %S/Makefile run AIE_TARGET=aie2p PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: PASS!

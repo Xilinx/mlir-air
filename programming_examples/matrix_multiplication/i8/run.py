@@ -400,19 +400,6 @@ def build_module(
                     _l2_b,
                     _l2_c,
                 ):
-                    l1_c_subview = subview(
-                        _l1_c,
-                        offsets=[_tx, _ty, 0, 0, 0, 0],
-                        sizes=[
-                            1,
-                            1,
-                            tile_n // mmul_mkn[2],
-                            tile_m // mmul_mkn[0],
-                            mmul_mkn[0],
-                            mmul_mkn[2],
-                        ],
-                        strides=[1, 1, 1, 1, 1, 1],
-                    )
                     dma_memcpy_nd(
                         _l2_c,
                         _l1_c,
@@ -590,8 +577,9 @@ if __name__ == "__main__":
                     transform.apply_patterns.linalg.tiling_canonicalization
                     transform.apply_patterns.scf.for_loop_canonicalization
                     transform.apply_patterns.canonicalization
-                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
                 } : !transform.any_op
+                %func_fold_1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                %func_folded_1 = transform.air.fold_unit_extent_dims %func_fold_1 : (!transform.any_op) -> !transform.any_op
 
 
                 %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
@@ -621,38 +609,27 @@ if __name__ == "__main__":
                     transform.apply_patterns.linalg.tiling_canonicalization
                     transform.apply_patterns.scf.for_loop_canonicalization
                     transform.apply_patterns.canonicalization
-                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
                     transform.apply_patterns.memref.fold_memref_alias_ops
                 } : !transform.any_op
-                
+                %func_fold_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                %func_folded_2 = transform.air.fold_unit_extent_dims %func_fold_2 : (!transform.any_op) -> !transform.any_op
+
                 // Eliminate redundant vector.transfer_read operations
-                %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1 : (!transform.any_op) -> !transform.any_op
+                %func1_rematch = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1_rematch : (!transform.any_op) -> !transform.any_op
                 
                 // Hoist loop-invariant vector transfers out of innermost loop
                 %herds_1 = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                %all_reads_in_herd2 = transform.structured.match ops{["vector.transfer_read"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-                %all_writes_in_herd2 = transform.structured.match ops{["vector.transfer_write"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 
-                // Split handles to get individual read/write operations
                 %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-                // The innermost loop has 4 read-write pairs accessing arg22
-                %read0, %read1, %read2, %read3, %read4, %read5, %read6, %read7 = transform.split_handle %all_reads_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                %write0, %write1, %write2, %write3 = transform.split_handle %all_writes_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
                 
                 %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = i32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
                 
-                // Hoist each read/write pair from the innermost loop (%innermost_for)
-                // Pair 1: reads[2] (%8) and writes[0] (%13) - accessing [arg27, arg26]
-                %innermost_for_updated = transform.air.hoist_loop_invariant_transfers %read2, %write0, %innermost_for : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                // // Pair 2: reads[4] (%17) and writes[1] (%22) - accessing [arg27+1, arg26]
-                %innermost_for_updated_1 = transform.air.hoist_loop_invariant_transfers %read4, %write1, %innermost_for_updated : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                // Pair 3: reads[6] (%27) and writes[2] (%32) - accessing [arg27, arg26+1]
-                %innermost_for_updated_2 = transform.air.hoist_loop_invariant_transfers %read6, %write2, %innermost_for_updated_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                // Pair 4: reads[7] (%38) and writes[3] (%43) - accessing [arg27+1, arg26+1]
-                %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %read7, %write3, %innermost_for_updated_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
+                // Hoist all accumulator transfer pairs from the innermost loop
+                %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
 
                 %innermost_for_updated_4 = transform.air.flatten_for_iter_args %innermost_for_updated_3 : (!transform.any_op) -> !transform.any_op
                 %innermost_for_updated_5 = transform.air.hoist_vector_transfer_pointers %innermost_for_updated_4 : (!transform.any_op) -> !transform.any_op
@@ -701,9 +678,10 @@ if __name__ == "__main__":
                     transform.apply_patterns.linalg.tiling_canonicalization
                     transform.apply_patterns.scf.for_loop_canonicalization
                     transform.apply_patterns.canonicalization
-                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
                     transform.apply_patterns.memref.fold_memref_alias_ops
                 } : !transform.any_op
+                %func_fold_3 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                %func_folded_3 = transform.air.fold_unit_extent_dims %func_fold_3 : (!transform.any_op) -> !transform.any_op
               transform.yield
             }
             }
@@ -768,7 +746,6 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e0,
             )
         )
 

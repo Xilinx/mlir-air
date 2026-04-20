@@ -118,10 +118,10 @@ struct LowerPackUnPackResult {
 FailureOr<LowerPackUnPackResult> lowerPack(RewriterBase &rewriter, Value source,
                                            Value dest, linalg::PackOp packOp) {
   // 1. Filter out unsupported cases.
-  MemRefType inputMemRef = dyn_cast<MemRefType>(source.getType());
+  MemRefType inputMemRef = dyn_cast_if_present<MemRefType>(source.getType());
   if (!inputMemRef)
     return rewriter.notifyMatchFailure(packOp, "source isn't of MemRefType");
-  MemRefType outputMemRef = dyn_cast<MemRefType>(dest.getType());
+  MemRefType outputMemRef = dyn_cast_if_present<MemRefType>(dest.getType());
   if (!outputMemRef)
     return rewriter.notifyMatchFailure(packOp, "dest isn't of MemRefType");
 
@@ -184,7 +184,8 @@ FailureOr<LowerPackUnPackResult> lowerPack(RewriterBase &rewriter, Value source,
   SmallVector<Value, 2> emptyVec;
   xilinx::air::DmaMemcpyNdOp dmaOp = xilinx::air::DmaMemcpyNdOp::create(
       rewriter, loc, SmallVector<Type, 1>{}, emptyVec, dest, emptyVec, emptyVec,
-      emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec);
+      emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec,
+      /*pad_before=*/nullptr, /*pad_after=*/nullptr);
 
   return LowerPackUnPackResult{transposeOp, dmaOp};
 }
@@ -205,10 +206,10 @@ FailureOr<LowerPackUnPackResult> lowerUnPack(RewriterBase &rewriter,
   rewriter.setInsertionPoint(unPackOp);
 
   // Validate source/dest types.
-  MemRefType inputMemRef = dyn_cast<MemRefType>(source.getType());
+  MemRefType inputMemRef = dyn_cast_if_present<MemRefType>(source.getType());
   if (!inputMemRef)
     return rewriter.notifyMatchFailure(unPackOp, "source isn't of MemRefType");
-  MemRefType outputMemRef = dyn_cast<MemRefType>(dest.getType());
+  MemRefType outputMemRef = dyn_cast_if_present<MemRefType>(dest.getType());
   if (!outputMemRef)
     return rewriter.notifyMatchFailure(unPackOp, "dest isn't of MemRefType");
 
@@ -308,7 +309,8 @@ FailureOr<LowerPackUnPackResult> lowerUnPack(RewriterBase &rewriter,
   SmallVector<Value, 2> emptyVec;
   xilinx::air::DmaMemcpyNdOp dmaOp = xilinx::air::DmaMemcpyNdOp::create(
       rewriter, loc, SmallVector<Type, 1>{}, emptyVec, dest, emptyVec, emptyVec,
-      emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec);
+      emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec,
+      /*pad_before=*/nullptr, /*pad_after=*/nullptr);
 
   return LowerPackUnPackResult{transposeOp, dmaOp};
 }

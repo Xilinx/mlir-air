@@ -33,15 +33,25 @@ module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
 
         //===================================================================
+        // PHASE 0: Override Memory Spaces
+        //===================================================================
+        // PURPOSE: Ensure any allocs created by prior bufferization passes
+        // (e.g., air-resolve-tensor-opoperand-conflicts) have the correct
+        // memory space. Func-level allocs get L2 (memory_space 1).
+        %func_ms = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func_ms_updated = transform.air.override_memref_memory_space %func_ms {memory_space = 1 : i32}
+          : (!transform.any_op) -> !transform.any_op
+
+        //===================================================================
         // PHASE 1: Initial Canonicalization and Cleanup
         //===================================================================
         // PURPOSE: Prepare the IR for subsequent transformations by applying
         // standard optimization patterns that simplify operations and remove
         // redundancies. This creates a clean foundation for tiling and fusion.
-        
+
         // Match the function containing all softmax operations
         %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        
+
         // Apply comprehensive canonicalization patterns:
         transform.apply_patterns to %func0 {
             // Simplify tiling-related patterns (e.g., empty tensor operations)
@@ -60,22 +70,17 @@ module attributes {transform.with_named_sequence} {
         transform.apply_cse to %func0 : !transform.any_op
 
         //===================================================================
-        // PHASE 2: Operation Preparation and Handle Splitting
+        // PHASE 2: Operation Preparation via Data-Flow Navigation
         //===================================================================
-        // PURPOSE: Split operation handles to enable individual manipulation of each
-        // softmax computation stage.
+        // PURPOSE: Identify each softmax computation stage by its semantic
+        // identity rather than by fragile positional indexing. We use
+        // linalg.reduce as natural anchor ops and navigate the data-flow
+        // graph to find each operation by its role in the computation.
         //
-        // SOFTMAX OPERATION MAPPING:
-        // - fill1, fill2: Initialize accumulator buffers (for max and sum reductions)
-        // - generic1: Type extension (bf16 -> f32 for computation precision)
-        // - reduce1: Maximum reduction across softmax dimension
-        // - generic2: Broadcast maximum value
-        // - generic3: Subtract maximum from input (x - max)
-        // - generic4: Exponential computation (exp(x - max))
-        // - reduce2: Sum reduction of exponentials
-        // - generic5: Broadcast sum value
-        // - generic6: Division (exp_vals / sum_exp)
-        // - generic7: Type truncation (f32 -> bf16 for output)
+        // SOFTMAX DATA-FLOW CHAIN:
+        // input -> extf -> reduce_max -> broadcast_max -> sub -> exp
+        //                                                        |
+        //       output <- truncf <- div <- broadcast_sum <- reduce_sum
         
         // Transpose linalg.reduce operations to ensure reduction at innermost dimension, 
         // mappable to vectorized AIE intrinsics.
@@ -91,39 +96,68 @@ module attributes {transform.with_named_sequence} {
         } : !transform.any_op
         transform.apply_cse to %func1 : !transform.any_op
 
-        // Split operation handles for individual manipulation
-        %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-        %fill1, %fill2 = transform.split_handle %fill : (!transform.any_op<"linalg.fill">) -> (!transform.any_op<"linalg.fill">, !transform.any_op<"linalg.fill">)
-        %generic = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-        %generic1, %generic2, %generic3, %generic4, %generic5, %generic6, %generic7 = transform.split_handle %generic : (!transform.any_op<"linalg.generic">) -> (!transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">)
-        %transposed_reduces = transform.structured.match ops{["linalg.reduce"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-        %reduce1, %reduce2 = transform.split_handle %transposed_reduces : (!transform.any_op<"linalg.reduce">) -> (!transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">)
-        
+        // Data-flow navigation from linalg.reduce anchors (already named ops,
+        // no specialize needed). Navigate the softmax data-flow graph to identify
+        // each operation by its role rather than by fragile positional indexing.
+        //
+        // The two linalg.reduce ops are the natural anchors: reduce_max and
+        // reduce_sum. From these, we walk the producer/consumer chain:
+        //   extf -> reduce_max -> broadcast_max -> sub -> exp
+        //                                                  |
+        //         truncf <- div <- broadcast_sum <- reduce_sum
+
+        // Match the two linalg.reduce ops
+        %transposed_reduces = transform.structured.match ops{["linalg.reduce"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %reduce_max, %reduce_sum = transform.split_handle %transposed_reduces : (!transform.any_op<"linalg.reduce">) -> (!transform.any_op, !transform.any_op)
+
+        // Data-flow navigation from reduce_max: walk upstream to find extf,
+        // and downstream to find broadcast_max -> sub -> exp.
+        // Note: after transpose_reduce + canonicalization, the reduce results
+        // feed directly into broadcast generics (no tensor.expand_shape in between).
+        %extf_op = transform.get_producer_of_operand %reduce_max[0]
+            : (!transform.any_op) -> !transform.any_op
+        %broadcast_max = transform.get_consumers_of_result %reduce_max[0]
+            : (!transform.any_op) -> !transform.any_op
+        %sub_op = transform.get_consumers_of_result %broadcast_max[0]
+            : (!transform.any_op) -> !transform.any_op
+        %exp_op = transform.get_consumers_of_result %sub_op[0]
+            : (!transform.any_op) -> !transform.any_op
+
+        // Data-flow navigation from reduce_sum: walk downstream to find
+        // broadcast_sum -> div -> truncf
+        %broadcast_sum = transform.get_consumers_of_result %reduce_sum[0]
+            : (!transform.any_op) -> !transform.any_op
+        %div_op = transform.get_consumers_of_result %broadcast_sum[0]
+            : (!transform.any_op) -> !transform.any_op
+        %truncf_op = transform.get_consumers_of_result %div_op[0]
+            : (!transform.any_op) -> !transform.any_op
+
+        // Match fill operations
+        %fill = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+
         //===================================================================
         // PHASE 3: Initial Tiling and Fusion Strategy
         //===================================================================
-        // Assumption: generic7 is the final output operation that should drive
-        // the tiling strategy. Memory space 1 represents L2 memory.
+        // truncf_op is the final output operation that drives the tiling strategy.
 
         // Bufferize the final operation to L2 memory (memory_space = 1)
-        %generic7_output_buf, %new_generic7 = transform.structured.bufferize_to_allocation %generic7
+        %truncf_output_buf, %new_truncf = transform.structured.bufferize_to_allocation %truncf_op
           {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
 
-        // Tile the final operation with tile size [1] - assumes batch dimension tiling
-        %tiled_generic_7, %forall_7 =
-        transform.structured.tile_using_forall %generic7 tile_sizes [1]  : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        // Tile the final operation with tile size [1] - batch dimension tiling
+        %tiled_truncf, %forall_7 =
+        transform.structured.tile_using_forall %truncf_op tile_sizes [1]  : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
         // Fuse all preceding operations into the tiled loop nest
-        // Assumption: Operations can be fused in reverse order (generic6 -> generic1, reduce2 -> reduce1)
-        // to create a producer-consumer fusion chain
-        %tiled_generic_6, %4 = transform.structured.fuse_into_containing_op %generic6 into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %tiled_generic_5, %5 = transform.structured.fuse_into_containing_op %generic5 into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %tiled_reduce_2, %7 = transform.structured.fuse_into_containing_op %reduce2 into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %tiled_generic_4, %6 = transform.structured.fuse_into_containing_op %generic4 into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %tiled_generic_3, %8 = transform.structured.fuse_into_containing_op %generic3 into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %tiled_generic_2, %9 = transform.structured.fuse_into_containing_op %generic2 into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %tiled_reduce_1, %10 = transform.structured.fuse_into_containing_op %reduce1 into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %tiled_generic_1, %11 = transform.structured.fuse_into_containing_op %generic1 into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        // in reverse data-flow order (semantic, not positional)
+        %tiled_div, %4 = transform.structured.fuse_into_containing_op %div_op into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %tiled_bcast_sum, %5 = transform.structured.fuse_into_containing_op %broadcast_sum into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %tiled_reduce_sum, %7 = transform.structured.fuse_into_containing_op %reduce_sum into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %tiled_exp, %6 = transform.structured.fuse_into_containing_op %exp_op into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %tiled_sub, %8 = transform.structured.fuse_into_containing_op %sub_op into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %tiled_bcast_max, %9 = transform.structured.fuse_into_containing_op %broadcast_max into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %tiled_reduce_max, %10 = transform.structured.fuse_into_containing_op %reduce_max into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %tiled_extf, %11 = transform.structured.fuse_into_containing_op %extf_op into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
         %fused_fills, %12 = transform.structured.fuse_into_containing_op %fill into %forall_7 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
 
         //===================================================================
@@ -324,7 +358,9 @@ module attributes {transform.with_named_sequence} {
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
             transform.apply_patterns.vector.cast_away_vector_leading_one_dim
-            transform.apply_patterns.vector.lower_multi_reduction lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.reorder_multi_reduction_dims lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.multi_reduction_flattening lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.multi_reduction_unrolling lowering_strategy = "innerreduction"
         } : !transform.any_op
         transform.apply_cse to %func7_transformed : !transform.any_op
     transform.yield

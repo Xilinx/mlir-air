@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -28,11 +29,12 @@
 using namespace mlir;
 
 #include "air/Dialect/AIR/AIRDialect.cpp.inc"
+#include "air/Dialect/AIR/AIREnums.cpp.inc"
 
 namespace xilinx {
 
 void air::airDialect::initialize() {
-  addTypes<AsyncTokenType>();
+  addTypes<AsyncTokenType, UniverseType>();
   addOperations<
 #define GET_OP_LIST
 #include "air/Dialect/AIR/AIR.cpp.inc"
@@ -50,6 +52,10 @@ Type air::airDialect::parseType(DialectAsmParser &parser) const {
   if (keyword == "async.token")
     return AsyncTokenType::get(context);
 
+  // Handle 'universe' types.
+  if (keyword == "universe")
+    return UniverseType::get(context);
+
   parser.emitError(parser.getNameLoc(), "unknown air type: " + keyword);
   return Type();
 }
@@ -57,6 +63,7 @@ Type air::airDialect::parseType(DialectAsmParser &parser) const {
 void air::airDialect::printType(Type type, DialectAsmPrinter &os) const {
   TypeSwitch<Type>(type)
       .Case<AsyncTokenType>([&](Type) { os << "async.token"; })
+      .Case<UniverseType>([&](Type) { os << "universe"; })
       .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
@@ -200,12 +207,14 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                              PatternRewriter &rewriter) {
   auto getAllReadAccess = [](Operation *op) {
     SmallVector<Value> operands;
-    if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
+    if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(op)) {
       for (auto oper : linalgop.getDpsInputs())
         operands.push_back(oper);
-    } else if (auto memref_copy = dyn_cast<memref::CopyOp>(op)) {
+    } else if (auto memref_copy = dyn_cast_if_present<memref::CopyOp>(op)) {
       operands.push_back(memref_copy.getSource());
-    } else if (auto memcpy = mlir::dyn_cast<xilinx::air::MemcpyInterface>(op)) {
+    } else if (auto memcpy =
+                   mlir::dyn_cast_if_present<xilinx::air::MemcpyInterface>(
+                       op)) {
       if (memcpy.getSrcMemref())
         operands.push_back(memcpy.getSrcMemref());
     } else { // If unknown op, then assume all operands are read.
@@ -246,13 +255,15 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
   };
   auto getAllWriteAccess = [](Operation *op) {
     SmallVector<Value> operands;
-    if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
+    if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(op)) {
       for (auto oper :
            llvm::concat<Value>(linalgop.getDpsInits(), linalgop->getResults()))
         operands.push_back(oper);
-    } else if (auto memref_copy = dyn_cast<memref::CopyOp>(op)) {
+    } else if (auto memref_copy = dyn_cast_if_present<memref::CopyOp>(op)) {
       operands.push_back(memref_copy.getTarget());
-    } else if (auto memcpy = mlir::dyn_cast<xilinx::air::MemcpyInterface>(op)) {
+    } else if (auto memcpy =
+                   mlir::dyn_cast_if_present<xilinx::air::MemcpyInterface>(
+                       op)) {
       if (memcpy.getDstMemref())
         operands.push_back(memcpy.getDstMemref());
     } else { // If unknown op, then assume all operands and results are written
@@ -299,13 +310,14 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
       // Skip attributes that define a symbol name
       if (attr.getName() == "sym_name")
         continue;
-      if (auto symRef = dyn_cast<SymbolRefAttr>(attr.getValue())) {
+      if (auto symRef = dyn_cast_if_present<SymbolRefAttr>(attr.getValue())) {
         result.push_back(symRef);
       }
       // Also check for ArrayAttr containing SymbolRefAttrs
-      else if (auto arrayAttr = dyn_cast<ArrayAttr>(attr.getValue())) {
+      else if (auto arrayAttr =
+                   dyn_cast_if_present<ArrayAttr>(attr.getValue())) {
         for (Attribute elem : arrayAttr) {
-          if (auto symRef = dyn_cast<SymbolRefAttr>(elem)) {
+          if (auto symRef = dyn_cast_if_present<SymbolRefAttr>(elem)) {
             result.push_back(symRef);
           }
         }
@@ -319,12 +331,12 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
       for (NamedAttribute attr : op->getAttrs()) {
         Attribute value = attr.getValue();
         // Direct SymbolRefAttr
-        if (auto sym = llvm::dyn_cast<SymbolRefAttr>(value))
+        if (auto sym = llvm::dyn_cast_if_present<SymbolRefAttr>(value))
           result.push_back(sym);
         // Array of SymbolRefAttr
-        else if (auto arr = llvm::dyn_cast<ArrayAttr>(value)) {
+        else if (auto arr = llvm::dyn_cast_if_present<ArrayAttr>(value)) {
           for (Attribute elem : arr) {
-            if (auto sym = llvm::dyn_cast<SymbolRefAttr>(elem))
+            if (auto sym = llvm::dyn_cast_if_present<SymbolRefAttr>(elem))
               result.push_back(sym);
           }
         }
@@ -444,6 +456,7 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
 template <class OpT>
 static LogicalResult
 CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
+  // Bail out for large regions to avoid O(N²) analysis cost.
   // Get async tokens used by ops within region.getOps(), which are defined
   // above this region.
   auto getUsedAsyncTokensDefinedAbove = [](Region *region,
@@ -460,13 +473,13 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
     return;
   };
   // Get all scf.for ops which might require loop-carried token
-  // canonicalization.
+  // canonicalization. Limit walk to avoid O(N²) for large container ops.
   SetVector<scf::ForOp> candidateForOps;
   op.getBody().template walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
       [&](Operation *o) {
         if (o->hasTrait<OpTrait::IsIsolatedFromAbove>())
           return WalkResult::skip();
-        if (auto forOp = dyn_cast<scf::ForOp>(o)) {
+        if (auto forOp = dyn_cast_if_present<scf::ForOp>(o)) {
           SetVector<Value> regionTokens;
           getUsedAsyncTokensDefinedAbove(&forOp.getRegion(), regionTokens);
           if (regionTokens.empty())
@@ -482,13 +495,24 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
   if (candidateForOps.empty())
     return failure();
   // Enforce that all loop-carried tokens must be passed in from the iter_args.
+  bool modified = false;
   for (auto forOp : candidateForOps) {
     SetVector<Value> regionTokens;
     getUsedAsyncTokensDefinedAbove(&forOp.getRegion(), regionTokens);
+    // Skip if no external tokens need consolidation
+    if (regionTokens.empty())
+      continue;
     BlockArgument loopCarriedTokenArg =
         *llvm::find_if(forOp.getRegionIterArgs(), [](BlockArgument arg) {
           return isa<air::AsyncTokenType>(arg.getType());
         });
+    // Check if tokens are already the loop-carried arg's init value
+    // (already consolidated by a previous pattern application).
+    auto initArgIdx =
+        loopCarriedTokenArg.getArgNumber() - forOp.getNumInductionVars();
+    Value currentInit = forOp.getInitArgs()[initArgIdx];
+    if (regionTokens.size() == 1 && regionTokens[0] == currentInit)
+      continue;
     for (auto tok : regionTokens)
       replaceAllUsesInRegionWith(tok, loopCarriedTokenArg, forOp.getRegion());
     rewriter.setInsertionPoint(forOp);
@@ -500,12 +524,10 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
         air::WaitAllOp::create(rewriter, forOp->getLoc(),
                                air::AsyncTokenType::get(forOp->getContext()),
                                regionTokens.takeVector());
-    forOp
-        .getInitsMutable()[loopCarriedTokenArg.getArgNumber() -
-                           forOp.getNumInductionVars()]
-        .assign(newWaitAll.getAsyncToken());
+    forOp.getInitsMutable()[initArgIdx].assign(newWaitAll.getAsyncToken());
+    modified = true;
   }
-  return success();
+  return modified ? success() : failure();
 }
 
 //
@@ -768,6 +790,395 @@ unsigned air::LaunchOp::getNumDims() {
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
+}
+
+//
+// RankOp
+//
+
+// Specialized canonicalizer for RankOp that threads the universe operand.
+static LogicalResult canonicalizeRankOpArgs(air::RankOp op,
+                                            PatternRewriter &rewriter) {
+  SmallVector<Value> newOperands;
+  SmallVector<int> newOperandsIdx;
+  for (int i = 0, e = op.getNumKernelOperands(); i < e; i++) {
+    auto arg = op.getKernelArgument(i);
+    if (arg.getUsers().empty())
+      continue;
+    newOperands.push_back(op.getKernelOperand(i));
+    newOperandsIdx.push_back(i);
+  }
+
+  if (newOperands.size() == op.getNumKernelOperands())
+    return failure();
+
+  IRMapping remap;
+  air::RankOp newOp;
+  if (op.getUniverse()) {
+    newOp =
+        air::RankOp::create(rewriter, op.getLoc(), op.getAsyncDependencies(),
+                            op.getUniverse(), op.getSizeOperands(), newOperands,
+                            op->getNumResults() > 0, op->getAttrs());
+  } else {
+    newOp = air::RankOp::create(
+        rewriter, op.getLoc(), op.getAsyncDependencies(), op.getSizeOperands(),
+        newOperands, op->getNumResults() > 0, op->getAttrs());
+  }
+
+  rewriter.setInsertionPointToStart(&newOp.getBody().front());
+  for (auto p : llvm::zip(op.getSize(), newOp.getSize()))
+    remap.map(std::get<0>(p), std::get<1>(p));
+  for (auto p : llvm::zip(op.getIds(), newOp.getIds()))
+    remap.map(std::get<0>(p), std::get<1>(p));
+
+  int newIdx = 0;
+  for (int i : newOperandsIdx)
+    remap.map(op.getKernelArgument(i), newOp.getKernelArgument(newIdx++));
+
+  auto &ops = op.getBody().front().getOperations();
+  for (auto oi = ops.begin(), oe = --ops.end(); oi != oe; ++oi)
+    rewriter.clone(*oi, remap);
+
+  rewriter.replaceOp(op, newOp->getResults());
+  return success();
+}
+
+void air::RankOp::build(OpBuilder &builder, OperationState &result,
+                        ValueRange asyncDependencies, ValueRange sizes,
+                        ValueRange rankOperands, bool isAsync,
+                        ArrayRef<NamedAttribute> attrs) {
+
+  result.addOperands(asyncDependencies);
+  if (isAsync)
+    result.addTypes(AsyncTokenType::get(builder.getContext()));
+  result.addOperands(sizes);
+  result.addOperands(rankOperands);
+
+  SmallVector<int32_t, 8> segmentSizes(4, 0);
+  segmentSizes[0] = asyncDependencies.size();
+  segmentSizes[1] = 0; // no universe
+  segmentSizes[2] = sizes.size();
+  segmentSizes[3] = static_cast<int32_t>(rankOperands.size());
+  result.addAttribute(getOperandSegmentSizeAttr(),
+                      builder.getDenseI32ArrayAttr(segmentSizes));
+
+  for (auto attr : attrs)
+    if (attr.getName() == getOperandSegmentSizeAttr())
+      continue;
+    else
+      result.addAttribute(attr.getName(), attr.getValue());
+
+  Region *r = result.addRegion();
+  Block *body = new Block();
+  for (Value v : sizes) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
+  for (Value v : rankOperands) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
+  r->push_back(body);
+  RankOp::ensureTerminator(*r, builder, result.location);
+}
+
+void air::RankOp::build(OpBuilder &builder, OperationState &result,
+                        ValueRange asyncDependencies, Value universe,
+                        ValueRange sizes, ValueRange rankOperands, bool isAsync,
+                        ArrayRef<NamedAttribute> attrs) {
+
+  result.addOperands(asyncDependencies);
+  if (isAsync)
+    result.addTypes(AsyncTokenType::get(builder.getContext()));
+  if (universe)
+    result.addOperands(universe);
+  result.addOperands(sizes);
+  result.addOperands(rankOperands);
+
+  SmallVector<int32_t, 8> segmentSizes(4, 0);
+  segmentSizes[0] = asyncDependencies.size();
+  segmentSizes[1] = universe ? 1 : 0;
+  segmentSizes[2] = sizes.size();
+  segmentSizes[3] = static_cast<int32_t>(rankOperands.size());
+  result.addAttribute(getOperandSegmentSizeAttr(),
+                      builder.getDenseI32ArrayAttr(segmentSizes));
+
+  for (auto attr : attrs)
+    if (attr.getName() == getOperandSegmentSizeAttr())
+      continue;
+    else
+      result.addAttribute(attr.getName(), attr.getValue());
+
+  Region *r = result.addRegion();
+  Block *body = new Block();
+  for (Value v : sizes) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
+  for (Value v : rankOperands) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
+  r->push_back(body);
+  RankOp::ensureTerminator(*r, builder, result.location);
+}
+
+void air::RankOp::build(OpBuilder &builder, OperationState &result,
+                        ValueRange sizes, ValueRange rankOperands) {
+  build(builder, result, {}, sizes, rankOperands, false);
+}
+
+void air::RankOp::print(OpAsmPrinter &p) {
+
+  p << ' ';
+
+  auto nameAttr = (*this)->getAttrOfType<StringAttr>(
+      mlir::SymbolTable::getSymbolAttrName());
+  if (nameAttr) {
+    p.printSymbolName(nameAttr);
+    p << ' ';
+  }
+
+  printAsyncDependencies(p, *this,
+                         (getAsyncToken() ? getAsyncToken().getType() : Type()),
+                         getAsyncDependencies());
+
+  if (getUniverse()) {
+    p << "universe(";
+    p.printOperand(getUniverse());
+    p << ") ";
+  }
+
+  p << "(";
+  p.printOperands(getIds());
+  p << ") in (";
+  auto sizeArgs = getSize();
+  auto sizeOpers = getSizeOperands();
+  for (int i = 0, e = getNumDims(); i < e; i++) {
+    if (i)
+      p << ", ";
+    p << sizeArgs[i] << "=";
+    p << sizeOpers[i];
+  }
+  p << ")";
+
+  if (getNumKernelOperands()) {
+    auto args = getKernelArguments();
+    p << " args(";
+    for (int i = 0, e = getNumKernelOperands(); i < e; i++) {
+      if (i)
+        p << ", ";
+      p << args[i] << "=";
+      p << getKernelOperand(i);
+    }
+    p << ") : ";
+    for (int i = 0, e = getNumKernelOperands(); i < e; i++) {
+      if (i)
+        p << ", ";
+      p << getKernelOperand(i).getType();
+    }
+  }
+
+  SmallVector<NamedAttribute, 8> filteredAttrs(
+      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
+        if (attr.getName() == getOperandSegmentSizeAttr())
+          return false;
+        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
+          return false;
+        return true;
+      }));
+  p << " ";
+  if (filteredAttrs.size()) {
+    p << "attributes";
+    p.printOptionalAttrDict(filteredAttrs);
+    p << " ";
+  }
+  if (nameAttr && getBody().front().getOperations().size() == 1)
+    return;
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/false);
+}
+
+ParseResult air::RankOp::parse(OpAsmParser &parser, OperationState &result) {
+
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
+  SmallVector<OpAsmParser::Argument, 4> tileArgs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> tileSize;
+  SmallVector<OpAsmParser::Argument, 4> tileSizeRef;
+
+  StringAttr nameAttr;
+  (void)parser.parseOptionalSymbolName(
+      nameAttr, mlir::SymbolTable::getSymbolAttrName(), result.attributes);
+
+  Type asyncTokenType = nullptr;
+  if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
+    return failure();
+  if (asyncTokenType)
+    result.addTypes(asyncTokenType);
+
+  // Parse optional universe operand
+  bool hasUniverse = false;
+  OpAsmParser::UnresolvedOperand universeOperand;
+  if (succeeded(parser.parseOptionalKeyword("universe"))) {
+    if (parser.parseLParen() || parser.parseOperand(universeOperand) ||
+        parser.parseRParen())
+      return failure();
+    hasUniverse = true;
+  }
+
+  if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
+      parser.parseKeyword("in") || parser.parseLParen())
+    return failure();
+
+  tileSize.resize(tileArgs.size());
+  tileSizeRef.resize(tileArgs.size());
+  for (unsigned i = 0; i < tileArgs.size(); ++i) {
+    if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
+        parser.parseOperand(tileSize[i]))
+      return failure();
+    (void)parser.parseOptionalComma();
+  }
+
+  if (parser.parseRParen())
+    return failure();
+
+  Type indexType = parser.getBuilder().getIndexType();
+
+  tileArgs.append(tileSizeRef);
+  for (auto &a : tileArgs)
+    a.type = indexType;
+
+  auto tokenType = AsyncTokenType::get(parser.getBuilder().getContext());
+  if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
+    return failure();
+
+  // Resolve universe operand
+  if (hasUniverse) {
+    auto univType = UniverseType::get(parser.getBuilder().getContext());
+    if (parser.resolveOperand(universeOperand, univType, result.operands))
+      return failure();
+  }
+
+  if (parser.resolveOperands(tileSize, indexType, result.operands))
+    return failure();
+
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
+  SmallVector<OpAsmParser::Argument, 4> kernelArguments;
+  SmallVector<Type, 4> types;
+  if (succeeded(parser.parseOptionalKeyword("args"))) {
+    if (parser.parseLParen())
+      return failure();
+    if (parser.parseOptionalRParen()) {
+      do {
+        OpAsmParser::Argument argument;
+        OpAsmParser::UnresolvedOperand operand;
+        if (parser.parseArgument(argument) || parser.parseEqual() ||
+            parser.parseOperand(operand))
+          return failure();
+        kernelArguments.push_back(argument);
+        kernelOperands.push_back(operand);
+      } while (succeeded(parser.parseOptionalComma()));
+      if (parser.parseRParen())
+        return failure();
+      if (parser.parseColonTypeList(types))
+        return failure();
+    }
+  }
+
+  for (int i = 0, e = kernelOperands.size(); i < e; i++) {
+    kernelArguments[i].type = types[i];
+    tileArgs.push_back(kernelArguments[i]);
+    if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
+      return failure();
+  }
+
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  Region *body = result.addRegion();
+
+  auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
+  RankOp::ensureTerminator(*body, parser.getBuilder(), result.location);
+
+  if (!regionResult.has_value()) {
+    if (!nameAttr)
+      return failure();
+    for (auto ta : tileArgs)
+      body->addArgument(ta.type, result.location);
+  }
+
+  SmallVector<int32_t, 8> segmentSizes(4, 0);
+  segmentSizes[0] = asyncDependencies.size();
+  segmentSizes[1] = hasUniverse ? 1 : 0;
+  segmentSizes[2] = tileSize.size();
+  segmentSizes[3] = kernelOperands.size();
+  result.addAttribute(getOperandSegmentSizeAttr(),
+                      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
+  return success();
+}
+
+void air::RankOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                              MLIRContext *context) {
+  patterns.add(canonicalizeRankOpArgs);
+  patterns.add(CanonicalizeAsyncOpDeps<RankOp>);
+  patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<RankOp>);
+}
+
+ArrayRef<BlockArgument> air::RankOp::getIds() {
+  auto s = getBody().front().getArguments();
+  auto n = getNumDims();
+  return s.take_front(n);
+}
+
+ArrayRef<BlockArgument> air::RankOp::getSize() {
+  auto s = getBody().front().getArguments();
+  auto n = getNumDims();
+  return s.slice(n, n);
+}
+
+OperandRange air::RankOp::getSizeOperands() {
+  auto start = getAsyncDependencies().size() + (getUniverse() ? 1 : 0);
+  auto n = getNumDims();
+  return getOperands().slice(start, n);
+}
+
+unsigned air::RankOp::getNumKernelOperands() {
+  return getNumOperands() - getAsyncDependencies().size() -
+         (getUniverse() ? 1 : 0) - getNumDims();
+}
+
+OperandRange air::RankOp::getKernelOperands() {
+  return getOperands().drop_front(getAsyncDependencies().size() +
+                                  (getUniverse() ? 1 : 0) + getNumDims());
+}
+
+Value air::RankOp::getKernelOperand(unsigned i) {
+  return getOperand(getAsyncDependencies().size() + (getUniverse() ? 1 : 0) +
+                    getNumDims() + i);
+}
+
+ArrayRef<BlockArgument> air::RankOp::getKernelArguments() {
+  return getBody().front().getArguments().drop_front(getNumDims() * 2);
+}
+
+BlockArgument air::RankOp::getKernelArgument(unsigned i) {
+  return getKernelArguments()[i];
+}
+
+unsigned air::RankOp::getNumDims() {
+  auto size_attr_name = getOperandSegmentSizeAttr();
+  auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
+  auto segment_sizes = size_attr.asArrayRef();
+  return segment_sizes[2];
+}
+
+LogicalResult air::RankOp::verify() {
+  // RankOp may be nested inside air.launch (for multi-GPU parallelism),
+  // but not inside air.segment, air.herd, or another air.rank.
+  if ((*this)->getParentOfType<air::SegmentOp>() ||
+      (*this)->getParentOfType<air::HerdOp>() ||
+      (*this)->getParentOfType<air::RankOp>())
+    return emitOpError("cannot be nested inside air.segment, air.herd, "
+                       "or another air.rank");
+  return success();
 }
 
 //
@@ -1037,22 +1448,36 @@ unsigned air::SegmentOp::getNumDims() {
 }
 
 /// Utility function to verify that all memref.alloc operations within a region
-/// have a memory space greater than or equal to the specified minimum.
+/// have a memory space at least as local as the specified minimum.
+/// For example, minMemorySpace=L2 means allocations must be L2 or L1;
+/// minMemorySpace=L1 means allocations must be L1.
 /// Returns failure if any alloc violates the constraint.
 template <typename OpT>
-static LogicalResult verifyAllocMemorySpace(OpT op, unsigned minMemorySpace,
+static LogicalResult verifyAllocMemorySpace(OpT op,
+                                            air::MemorySpace minMemorySpace,
                                             StringRef opName) {
+  auto minVal = static_cast<uint32_t>(minMemorySpace);
   WalkResult result =
       op.getBody().walk([&](memref::AllocOp allocOp) -> WalkResult {
         auto memrefType = allocOp.getType();
-        // Get memory space (defaults to 0 if not specified)
         unsigned memorySpace = memrefType.getMemorySpaceAsInt();
 
-        if (memorySpace < minMemorySpace) {
-          allocOp.emitOpError()
-              << "memref.alloc inside " << opName
-              << " must have memory space >= " << minMemorySpace
-              << ", but found memory space " << memorySpace;
+        // Verify that the memory space is at least as local as the minimum.
+        // Higher numeric value = more local (L1=2 > L2=1 > L3=0).
+        if (memorySpace < minVal) {
+          if (auto actualEnum = air::symbolizeMemorySpace(memorySpace)) {
+            allocOp.emitOpError() << "memref.alloc inside " << opName
+                                  << " must have memory space >= "
+                                  << stringifyMemorySpace(minMemorySpace)
+                                  << ", but found memory space "
+                                  << stringifyMemorySpace(*actualEnum);
+          } else {
+            allocOp.emitOpError()
+                << "memref.alloc inside " << opName
+                << " must have memory space >= "
+                << stringifyMemorySpace(minMemorySpace)
+                << ", but found numeric memory space " << memorySpace;
+          }
           return WalkResult::interrupt();
         }
         return WalkResult::advance();
@@ -1064,8 +1489,67 @@ static LogicalResult verifyAllocMemorySpace(OpT op, unsigned minMemorySpace,
   return success();
 }
 
+/// Return the memref value accessed by a direct memory access operation (load,
+/// store, vector transfer), or an empty Value if the op is not a direct memory
+/// access.
+/// This only covers low-level ops that become actual core load/store
+/// instructions, not higher-level ops (linalg, DMA) that are lowered later.
+static Value getDirectlyAccessedMemref(Operation *op) {
+  return llvm::TypeSwitch<Operation *, Value>(op)
+      .Case<memref::LoadOp>([](auto op) { return op.getMemRef(); })
+      .Case<memref::StoreOp>([](auto op) { return op.getMemRef(); })
+      .Case<affine::AffineLoadOp>([](auto op) { return op.getMemRef(); })
+      .Case<affine::AffineStoreOp>([](auto op) { return op.getMemRef(); })
+      .Case<vector::TransferReadOp>([](auto op) -> Value {
+        return dyn_cast<MemRefType>(op.getBase().getType()) ? op.getBase()
+                                                            : Value();
+      })
+      .Case<vector::TransferWriteOp>([](auto op) -> Value {
+        return dyn_cast<MemRefType>(op.getBase().getType()) ? op.getBase()
+                                                            : Value();
+      })
+      .Case<vector::LoadOp>([](auto op) { return op.getBase(); })
+      .Case<vector::StoreOp>([](auto op) { return op.getBase(); })
+      .Default([](Operation *) { return Value(); });
+}
+
+/// Verify that direct memory access operations inside an air.herd body only
+/// reference memrefs with memory space >= minMemorySpace (L1). AIE core tiles
+/// can only access their local L1 memory directly; non-local memory must be
+/// staged via DMA. This checks low-level load/store and vector transfer ops
+/// but not higher-level ops (linalg, memref.copy) that are lowered later.
+static LogicalResult
+verifyComputeMemoryAccess(air::HerdOp op, air::MemorySpace minMemorySpace) {
+  auto minVal = static_cast<uint32_t>(minMemorySpace);
+  WalkResult result = op.getBody().walk([&](Operation *innerOp) -> WalkResult {
+    Value memref = getDirectlyAccessedMemref(innerOp);
+    if (!memref)
+      return WalkResult::advance();
+    auto memrefType = dyn_cast<MemRefType>(memref.getType());
+    if (!memrefType)
+      return WalkResult::advance();
+    unsigned memorySpace = memrefType.getMemorySpaceAsInt();
+    if (memorySpace < minVal) {
+      auto msStr = air::symbolizeMemorySpace(memorySpace)
+                       ? std::string(stringifyMemorySpace(
+                             *air::symbolizeMemorySpace(memorySpace)))
+                       : std::to_string(memorySpace);
+      innerOp->emitOpError()
+          << "inside 'air.herd' accesses memref with memory_space " << msStr
+          << "; AIE core tiles can only access "
+          << stringifyMemorySpace(minMemorySpace)
+          << " or more local memory directly. "
+             "Use air.dma_memcpy_nd to stage data first.";
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+
+  return failure(result.wasInterrupted());
+}
+
 LogicalResult air::SegmentOp::verify() {
-  return verifyAllocMemorySpace(*this, /*minMemorySpace=*/1, "air.segment");
+  return verifyAllocMemorySpace(*this, air::MemorySpace::L2, "air.segment");
 }
 
 //
@@ -1344,7 +1828,9 @@ uint64_t air::HerdOp::getNumRows() {
 }
 
 LogicalResult air::HerdOp::verify() {
-  return verifyAllocMemorySpace(*this, /*minMemorySpace=*/2, "air.herd");
+  if (failed(verifyAllocMemorySpace(*this, air::MemorySpace::L1, "air.herd")))
+    return failure();
+  return verifyComputeMemoryAccess(*this, air::MemorySpace::L1);
 }
 
 //
@@ -1403,7 +1889,8 @@ static LogicalResult FoldExecute(air::ExecuteOp op, PatternRewriter &rewriter) {
   // (e.g., memref.store). These ops must be preserved even if the
   // execute's async token becomes unused due to wait_all folding.
   for (auto &bodyOp : body.without_terminator()) {
-    if (auto memEffects = dyn_cast<MemoryEffectOpInterface>(bodyOp)) {
+    if (auto memEffects =
+            dyn_cast_if_present<MemoryEffectOpInterface>(bodyOp)) {
       SmallVector<MemoryEffects::EffectInstance> effects;
       memEffects.getEffects(effects);
       for (auto &effect : effects)
@@ -1808,7 +2295,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
                                      SmallVector<Value> &sizes,
                                      SmallVector<Value> &strides) {
 
-  auto memref_type = llvm::dyn_cast<BaseMemRefType>(memref.getType());
+  auto memref_type =
+      llvm::dyn_cast_if_present<BaseMemRefType>(memref.getType());
   if (!memref_type)
     return rewriter.notifyMatchFailure(rewriter.getUnknownLoc(),
                                        "not operating on MemRef");
@@ -1822,13 +2310,14 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   std::vector<Operation *> memrefOpVec;
   bool exit = false;
   while (defop && !exit) {
-    if (auto transposeOp = dyn_cast<memref::TransposeOp>(defop)) {
+    if (auto transposeOp = dyn_cast_if_present<memref::TransposeOp>(defop)) {
       memrefOpVec.push_back(defop);
       defop = transposeOp.getIn().getDefiningOp();
-    } else if (auto castOp = dyn_cast<memref::CastOp>(defop)) {
+    } else if (auto castOp = dyn_cast_if_present<memref::CastOp>(defop)) {
       memrefOpVec.push_back(defop);
       defop = castOp.getSource().getDefiningOp();
-    } else if (auto viewLikeOp = dyn_cast<ViewLikeOpInterface>(defop)) {
+    } else if (auto viewLikeOp =
+                   dyn_cast_if_present<ViewLikeOpInterface>(defop)) {
       memrefOpVec.push_back(defop);
       defop = viewLikeOp.getViewSource().getDefiningOp();
     } else
@@ -1848,12 +2337,14 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   SmallVector<Value> initialOffsets, initialStrides;
   if (isa<ViewLikeOpInterface>(memrefOpVec[0]) &&
       isa<OffsetSizeAndStrideOpInterface>(memrefOpVec[0])) {
-    auto viewLikeOp = dyn_cast<ViewLikeOpInterface>(memrefOpVec[0]);
-    auto offSizStrOp = dyn_cast<OffsetSizeAndStrideOpInterface>(memrefOpVec[0]);
+    auto viewLikeOp = dyn_cast_if_present<ViewLikeOpInterface>(memrefOpVec[0]);
+    auto offSizStrOp =
+        dyn_cast_if_present<OffsetSizeAndStrideOpInterface>(memrefOpVec[0]);
     input_memref = viewLikeOp.getViewSource();
     extractOffsetsFromOp(offSizStrOp, rewriter, initialOffsets);
     extractStridesFromOp(offSizStrOp, rewriter, initialStrides);
-  } else if (auto transposeOp = dyn_cast<memref::TransposeOp>(memrefOpVec[0])) {
+  } else if (auto transposeOp =
+                 dyn_cast_if_present<memref::TransposeOp>(memrefOpVec[0])) {
     input_memref = transposeOp.getIn();
     initialOffsets.clear();
     initialStrides.clear();
@@ -1862,7 +2353,7 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       initialStrides.push_back(constOne);
     }
   } else if (auto expandShapeOp =
-                 dyn_cast<memref::ExpandShapeOp>(memrefOpVec[0])) {
+                 dyn_cast_if_present<memref::ExpandShapeOp>(memrefOpVec[0])) {
     input_memref = expandShapeOp.getSrc();
     initialOffsets.clear();
     initialStrides.clear();
@@ -1872,7 +2363,7 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       initialStrides.push_back(constOne);
     }
   } else if (auto collapseShapeOp =
-                 dyn_cast<memref::CollapseShapeOp>(memrefOpVec[0])) {
+                 dyn_cast_if_present<memref::CollapseShapeOp>(memrefOpVec[0])) {
     input_memref = collapseShapeOp.getSrc();
     initialOffsets.clear();
     initialStrides.clear();
@@ -1881,7 +2372,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       initialOffsets.push_back(constZero);
       initialStrides.push_back(constOne);
     }
-  } else if (auto castOp = dyn_cast<memref::CastOp>(memrefOpVec[0])) {
+  } else if (auto castOp =
+                 dyn_cast_if_present<memref::CastOp>(memrefOpVec[0])) {
     input_memref = castOp.getSource();
     initialOffsets.clear();
     initialStrides.clear();
@@ -1896,19 +2388,19 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   // Compose offsets as the memref type propagates through the chain of memref
   // ops.
   for (auto memrefOp : memrefOpVec) {
-    if (auto transposeOp = dyn_cast<memref::TransposeOp>(memrefOp)) {
+    if (auto transposeOp = dyn_cast_if_present<memref::TransposeOp>(memrefOp)) {
       if (transposeOp.getPermutation().getNumInputs() != initialOffsets.size())
         continue;
       initialOffsets = applyPermutationMap<Value>(transposeOp.getPermutation(),
                                                   initialOffsets);
       initialStrides = applyPermutationMap<Value>(transposeOp.getPermutation(),
                                                   initialStrides);
-    } else if (auto castOp = dyn_cast<memref::CastOp>(memrefOp)) {
+    } else if (auto castOp = dyn_cast_if_present<memref::CastOp>(memrefOp)) {
       // memref.cast doesn't change data layout, so no offset/stride adjustments
       // needed
       continue;
     } else if (auto reinterpretCastOp =
-                   dyn_cast<memref::ReinterpretCastOp>(memrefOp)) {
+                   dyn_cast_if_present<memref::ReinterpretCastOp>(memrefOp)) {
       // For reinterpret_cast operations that aren't the first in the chain,
       // we need to combine their offset with existing offsets
       if (reinterpretCastOp != memrefOpVec.front() &&
@@ -1916,7 +2408,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
         combineReinterpretCastOffsetInPlace(rewriter, reinterpretCastOp,
                                             initialOffsets, initialStrides);
       }
-    } else if (auto expandShapeOp = dyn_cast<memref::ExpandShapeOp>(memrefOp)) {
+    } else if (auto expandShapeOp =
+                   dyn_cast_if_present<memref::ExpandShapeOp>(memrefOp)) {
       for (int i = (int)expandShapeOp.getReassociationIndices().size() - 1;
            i >= 0; i--) {
         if (expandShapeOp.getReassociationIndices()[i].size() <= 1)
@@ -1928,7 +2421,7 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
         }
       }
     } else if (auto collapseShapeOp =
-                   dyn_cast<memref::CollapseShapeOp>(memrefOp)) {
+                   dyn_cast_if_present<memref::CollapseShapeOp>(memrefOp)) {
       // For each collapsed dimension, keep the offset/stride of the first
       // source dim in the group.
       SmallVector<Value> newOffsets, newStrides;
@@ -1944,7 +2437,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       }
       initialOffsets = newOffsets;
       initialStrides = newStrides;
-    } else if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOp)) {
+    } else if (auto subviewOp =
+                   dyn_cast_if_present<memref::SubViewOp>(memrefOp)) {
       if (subviewOp != memrefOpVec.front() && !subviewOp.hasZeroOffset()) {
         combineSubviewOffsetsInPlace(rewriter, subviewOp, initialOffsets,
                                      initialStrides);
@@ -2002,9 +2496,9 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(air::DmaMemcpyNdOp op,
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
-  auto canonicalizeListsRes =
-      canonicalizeEmptyLists(offsets, sizes, strides,
-                             dyn_cast<BaseMemRefType>(input_memref.getType()));
+  auto canonicalizeListsRes = canonicalizeEmptyLists(
+      offsets, sizes, strides,
+      dyn_cast_if_present<BaseMemRefType>(input_memref.getType()));
 
   if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
@@ -2012,7 +2506,7 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(air::DmaMemcpyNdOp op,
   rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getDstMemref(),
       op.getDstOffsets(), op.getDstSizes(), op.getDstStrides(), input_memref,
-      offsets, sizes, strides);
+      offsets, sizes, strides, op.getPadBeforeAttr(), op.getPadAfterAttr());
 
   return success();
 }
@@ -2032,22 +2526,88 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
-  auto canonicalizeListsRes =
-      canonicalizeEmptyLists(offsets, sizes, strides,
-                             dyn_cast<BaseMemRefType>(input_memref.getType()));
+  auto canonicalizeListsRes = canonicalizeEmptyLists(
+      offsets, sizes, strides,
+      dyn_cast_if_present<BaseMemRefType>(input_memref.getType()));
 
   if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
   rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
       op, op->getResultTypes(), op.getAsyncDependencies(), input_memref,
       offsets, sizes, strides, op.getSrcMemref(), op.getSrcOffsets(),
-      op.getSrcSizes(), op.getSrcStrides());
+      op.getSrcSizes(), op.getSrcStrides(), op.getPadBeforeAttr(),
+      op.getPadAfterAttr());
 
+  return success();
+}
+
+// Erase self-copy DMAs where src and dst are the same buffer with identical
+// offsets/sizes/strides. If the DMA produces an async token, replace it with a
+// wait_all to preserve the dependency chain.
+static LogicalResult EraseSelfCopyDma(air::DmaMemcpyNdOp op,
+                                      PatternRewriter &rewriter) {
+  if (op.getSrcMemref() != op.getDstMemref())
+    return failure();
+  if (op.getSrcOffsets() != op.getDstOffsets() ||
+      op.getSrcSizes() != op.getDstSizes() ||
+      op.getSrcStrides() != op.getDstStrides())
+    return failure();
+
+  if (auto token = op.getAsyncToken()) {
+    auto waitAll = air::WaitAllOp::create(
+        rewriter, op.getLoc(), air::AsyncTokenType::get(op->getContext()),
+        op.getAsyncDependencies());
+    token.replaceAllUsesWith(waitAll.getAsyncToken());
+  }
+  rewriter.eraseOp(op);
+  return success();
+}
+
+/// Verify that sizes and strides operand lists have the same number of
+/// elements. Offsets may have fewer dimensions (implying leading zeros).
+/// All three being empty is valid.
+static LogicalResult verifySizesStridesRank(Operation *op, OperandRange sizes,
+                                            OperandRange strides,
+                                            StringRef label) {
+  if (sizes.size() != strides.size())
+    return op->emitOpError()
+           << label
+           << " sizes and strides must have the same number of dimensions, "
+              "but got "
+           << sizes.size() << " and " << strides.size();
+  return success();
+}
+
+LogicalResult air::DmaMemcpyNdOp::verify() {
+  if (failed(verifySizesStridesRank(getOperation(), getSrcSizes(),
+                                    getSrcStrides(), "src")))
+    return failure();
+  if (failed(verifySizesStridesRank(getOperation(), getDstSizes(),
+                                    getDstStrides(), "dst")))
+    return failure();
+
+  auto padBefore = getPadBefore();
+  auto padAfter = getPadAfter();
+  if (padBefore.has_value() != padAfter.has_value())
+    return emitOpError(
+        "pad_before and pad_after must both be present or both absent");
+  if (padBefore.has_value()) {
+    if (padBefore->size() != padAfter->size())
+      return emitOpError(
+          "pad_before and pad_after must have the same number of dimensions");
+    for (size_t i = 0; i < padBefore->size(); i++) {
+      if ((*padBefore)[i] < 0 || (*padAfter)[i] < 0)
+        return emitOpError("padding values must be non-negative");
+      if ((*padBefore)[i] > 65535 || (*padAfter)[i] > 65535)
+        return emitOpError("padding values must be <= 65535");
+    }
+  }
   return success();
 }
 
 void air::DmaMemcpyNdOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *context) {
+  patterns.add(EraseSelfCopyDma);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdSrc);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdDst);
   patterns.add(CanonicalizeAsyncOpDeps<air::DmaMemcpyNdOp>);
@@ -2098,9 +2658,9 @@ SmallVector<Value> materializeOpFoldResultAsValues(ArrayRef<OpFoldResult> ofrs,
                                                    OpBuilder &builder) {
   SmallVector<Value> values;
   for (OpFoldResult ofr : ofrs) {
-    if (auto val = dyn_cast<Value>(ofr)) {
+    if (auto val = dyn_cast_if_present<Value>(ofr)) {
       values.push_back(val);
-    } else if (auto attr = dyn_cast<Attribute>(ofr)) {
+    } else if (auto attr = dyn_cast_if_present<Attribute>(ofr)) {
       // Create an arith.constant if the OpFoldResult is an Attribute.
       auto constAttr = cast<IntegerAttr>(attr);
       values.push_back(
@@ -2127,7 +2687,7 @@ SmallVector<Range> getIterationDomainFromChanIf(OpBuilder &builder,
   if (op.getSizes().empty()) {
     // Case 1: Sizes are not explicitly provided: use full shape of the memref.
     int64_t operandRank =
-        dyn_cast<MemRefType>(op.getMemref().getType()).getRank();
+        dyn_cast_if_present<MemRefType>(op.getMemref().getType()).getRank();
     SmallVector<Range> loopBounds(operandRank);
     Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
     Value one = arith::ConstantIndexOp::create(builder, loc, 1);
@@ -2162,7 +2722,8 @@ getLoopIteratorTypesFromChanIf(air::ChannelInterface op) {
 
   // If sizes are not provided, infer rank from the memref type.
   if (op.getSizes().empty())
-    operandRank = dyn_cast<MemRefType>(op.getMemref().getType()).getRank();
+    operandRank =
+        dyn_cast_if_present<MemRefType>(op.getMemref().getType()).getRank();
   else
     operandRank = op.getSizes().size();
 
@@ -2191,7 +2752,7 @@ FailureOr<TilingResult> getTiledImplementationFromChanIf(
 
   // Determine the rank from memref or explicit sizes.
   if (op.getSizes().empty())
-    rank = dyn_cast<MemRefType>(op.getMemref().getType()).getRank();
+    rank = dyn_cast_if_present<MemRefType>(op.getMemref().getType()).getRank();
   else
     rank = op.getSizes().size();
 
@@ -2223,14 +2784,17 @@ FailureOr<TilingResult> getTiledImplementationFromChanIf(
   // Clone a new tiled op with the sliced subview and same async/channel
   // attributes.
   air::AsyncOpInterface asyncIf =
-      dyn_cast<air::AsyncOpInterface>(op.getOperation());
+      dyn_cast_if_present<air::AsyncOpInterface>(op.getOperation());
+  auto padBefore = op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+  auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
   PutGetTy tiledOp = PutGetTy::create(
       builder, op.getLoc(), op->getResultTypes(),
       asyncIf.getAsyncDependencies(), op.getChanName(), op.getIndices(),
       inputSlice->getResult(0),
       materializeOpFoldResultAsValues(offsets, op.getLoc(), builder),
       materializeOpFoldResultAsValues(sizes, op.getLoc(), builder),
-      materializeOpFoldResultAsValues(strides, op.getLoc(), builder));
+      materializeOpFoldResultAsValues(strides, op.getLoc(), builder),
+      /*pad_before=*/padBefore, /*pad_after=*/padAfter);
 
   // Return the tiling result, including the new op and the sliced input.
   return TilingResult{{tiledOp},
@@ -2261,11 +2825,15 @@ static LogicalResult FoldMemrefCastOnChannelOp(OpT op,
       !op.getStrides().empty())
     return failure();
 
+  // Extract padding attributes before replacing (old op will be erased).
+  auto padBefore = op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+  auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
   // Replace the channel op with a new one using the cast's source
   rewriter.replaceOpWithNewOp<OpT>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
       op.getIndices(), castOp.getSource(), op.getOffsets(), op.getSizes(),
-      op.getStrides());
+      op.getStrides(),
+      /*pad_before=*/padBefore, /*pad_after=*/padAfter);
 
   return success();
 }
@@ -2321,28 +2889,38 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
-  auto canonicalizeListsRes =
-      canonicalizeEmptyLists(offsets, sizes, strides,
-                             dyn_cast<BaseMemRefType>(input_memref.getType()));
+  // Extract padding attributes before replacing (old op will be erased).
+  auto padBefore = op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+  auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
+  // Don't canonicalize sizes/strides to empty when padding is present;
+  // padding requires explicit wraps/strides in the generated DMA BD.
+  LogicalResult canonicalizeListsRes = failure();
+  if (!padBefore && !padAfter) {
+    canonicalizeListsRes = canonicalizeEmptyLists(
+        offsets, sizes, strides,
+        dyn_cast_if_present<BaseMemRefType>(input_memref.getType()));
+  }
 
   if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
-
   rewriter.replaceOpWithNewOp<OpT>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
-      op.getIndices(), input_memref, offsets, sizes, strides);
+      op.getIndices(), input_memref, offsets, sizes, strides,
+      /*pad_before=*/padBefore, /*pad_after=*/padAfter);
 
   return success();
 }
 
 // The following methods are required by TilingInterface.
 SmallVector<Range> air::ChannelPutOp::getIterationDomain(OpBuilder &builder) {
-  air::ChannelInterface put = dyn_cast<air::ChannelInterface>(getOperation());
+  air::ChannelInterface put =
+      dyn_cast_if_present<air::ChannelInterface>(getOperation());
   return getIterationDomainFromChanIf(builder, put);
 }
 
 SmallVector<utils::IteratorType> air::ChannelPutOp::getLoopIteratorTypes() {
-  air::ChannelInterface put = dyn_cast<air::ChannelInterface>(getOperation());
+  air::ChannelInterface put =
+      dyn_cast_if_present<air::ChannelInterface>(getOperation());
   return getLoopIteratorTypesFromChanIf(put);
 }
 
@@ -2350,7 +2928,8 @@ FailureOr<TilingResult>
 air::ChannelPutOp::getTiledImplementation(OpBuilder &builder,
                                           ArrayRef<OpFoldResult> offsets,
                                           ArrayRef<OpFoldResult> sizes) {
-  air::ChannelInterface put = dyn_cast<air::ChannelInterface>(getOperation());
+  air::ChannelInterface put =
+      dyn_cast_if_present<air::ChannelInterface>(getOperation());
   return getTiledImplementationFromChanIf<air::ChannelPutOp>(builder, offsets,
                                                              sizes, put);
 }
@@ -2361,6 +2940,39 @@ LogicalResult air::ChannelPutOp::getResultTilePosition(
     SmallVector<OpFoldResult> &resultSizes) {
   // An optional result (air::AsyncTokenType) may be returned, but it doesn't
   // represent any tile.
+  return success();
+}
+
+LogicalResult air::ChannelPutOp::verify() {
+  if (failed(verifySizesStridesRank(getOperation(), getSrcSizes(),
+                                    getSrcStrides(), "src")))
+    return failure();
+
+  // Channel bundle indices must not be temporal loop induction variables.
+  for (auto [i, idx] : llvm::enumerate(getIndices())) {
+    if (scf::getForInductionVarOwner(idx))
+      return emitOpError()
+             << "channel index " << i
+             << " is an scf.for induction variable; channel bundle indices "
+                "must not be temporal scf.for induction variables";
+  }
+
+  auto padBefore = getPadBefore();
+  auto padAfter = getPadAfter();
+  if (padBefore.has_value() != padAfter.has_value())
+    return emitOpError(
+        "pad_before and pad_after must both be present or both absent");
+  if (padBefore.has_value()) {
+    if (padBefore->size() != padAfter->size())
+      return emitOpError(
+          "pad_before and pad_after must have the same number of dimensions");
+    for (size_t i = 0; i < padBefore->size(); i++) {
+      if ((*padBefore)[i] < 0 || (*padAfter)[i] < 0)
+        return emitOpError("padding values must be non-negative");
+      if ((*padBefore)[i] > 65535 || (*padAfter)[i] > 65535)
+        return emitOpError("padding values must be <= 65535");
+    }
+  }
   return success();
 }
 
@@ -2376,12 +2988,14 @@ void air::ChannelPutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 
 // The following methods are required by TilingInterface.
 SmallVector<Range> air::ChannelGetOp::getIterationDomain(OpBuilder &builder) {
-  air::ChannelInterface get = dyn_cast<air::ChannelInterface>(getOperation());
+  air::ChannelInterface get =
+      dyn_cast_if_present<air::ChannelInterface>(getOperation());
   return getIterationDomainFromChanIf(builder, get);
 }
 
 SmallVector<utils::IteratorType> air::ChannelGetOp::getLoopIteratorTypes() {
-  air::ChannelInterface get = dyn_cast<air::ChannelInterface>(getOperation());
+  air::ChannelInterface get =
+      dyn_cast_if_present<air::ChannelInterface>(getOperation());
   return getLoopIteratorTypesFromChanIf(get);
 }
 
@@ -2389,7 +3003,8 @@ FailureOr<TilingResult>
 air::ChannelGetOp::getTiledImplementation(OpBuilder &builder,
                                           ArrayRef<OpFoldResult> offsets,
                                           ArrayRef<OpFoldResult> sizes) {
-  air::ChannelInterface get = dyn_cast<air::ChannelInterface>(getOperation());
+  air::ChannelInterface get =
+      dyn_cast_if_present<air::ChannelInterface>(getOperation());
   return getTiledImplementationFromChanIf<air::ChannelGetOp>(builder, offsets,
                                                              sizes, get);
 }
@@ -2400,6 +3015,39 @@ LogicalResult air::ChannelGetOp::getResultTilePosition(
     SmallVector<OpFoldResult> &resultSizes) {
   // An optional result (air::AsyncTokenType) may be returned, but it doesn't
   // represent any tile.
+  return success();
+}
+
+LogicalResult air::ChannelGetOp::verify() {
+  if (failed(verifySizesStridesRank(getOperation(), getDstSizes(),
+                                    getDstStrides(), "dst")))
+    return failure();
+
+  // Channel bundle indices must not be temporal loop induction variables.
+  for (auto [i, idx] : llvm::enumerate(getIndices())) {
+    if (scf::getForInductionVarOwner(idx))
+      return emitOpError()
+             << "channel index " << i
+             << " is an scf.for induction variable; channel bundle indices "
+                "must not be temporal scf.for induction variables";
+  }
+
+  auto padBefore = getPadBefore();
+  auto padAfter = getPadAfter();
+  if (padBefore.has_value() != padAfter.has_value())
+    return emitOpError(
+        "pad_before and pad_after must both be present or both absent");
+  if (padBefore.has_value()) {
+    if (padBefore->size() != padAfter->size())
+      return emitOpError(
+          "pad_before and pad_after must have the same number of dimensions");
+    for (size_t i = 0; i < padBefore->size(); i++) {
+      if ((*padBefore)[i] < 0 || (*padAfter)[i] < 0)
+        return emitOpError("padding values must be non-negative");
+      if ((*padBefore)[i] > 65535 || (*padAfter)[i] > 65535)
+        return emitOpError("padding values must be <= 65535");
+    }
+  }
   return success();
 }
 
@@ -2419,6 +3067,31 @@ LogicalResult air::ChannelOp::verify() {
     auto broadcast_shape = getBroadcastShape();
     if (bundle_size.size() != broadcast_shape.size())
       return emitOpError("bundle rank should match broadcast_shape rank");
+
+    // Validate NumPy-style broadcasting rules for each dimension.
+    for (unsigned i = 0; i < bundle_size.size(); i++) {
+      auto sizeAttr = dyn_cast_if_present<IntegerAttr>(bundle_size[i]);
+      if (!sizeAttr)
+        return emitOpError() << "expected integer attribute for size[" << i
+                             << "], but found " << bundle_size[i];
+      auto bcastAttr = dyn_cast_if_present<IntegerAttr>(broadcast_shape[i]);
+      if (!bcastAttr)
+        return emitOpError()
+               << "expected integer attribute for broadcast_shape[" << i
+               << "], but found " << broadcast_shape[i];
+      int64_t sizeVal = sizeAttr.getInt();
+      int64_t bcastVal = bcastAttr.getInt();
+      if (bcastVal < sizeVal)
+        return emitOpError() << "broadcast_shape[" << i << "] (" << bcastVal
+                             << ") must be >= size[" << i << "] (" << sizeVal
+                             << "): broadcasting cannot shrink a dimension";
+      if (sizeVal != bcastVal && sizeVal != 1)
+        return emitOpError()
+               << "size[" << i << "] (" << sizeVal
+               << ") is not compatible with broadcast_shape[" << i << "] ("
+               << bcastVal << "): size must be 1 or equal to broadcast_shape "
+               << "(NumPy broadcasting rules)";
+    }
   }
   return success();
 }
@@ -2429,8 +3102,8 @@ int air::ChannelOp::getBroadcastDimension() {
   auto broadcast_shape = getBroadcastShape();
   if (isBroadcast()) {
     for (int i = 0; i < (int)bundle_size.size(); i++) {
-      if (dyn_cast<IntegerAttr>(bundle_size[i]).getInt() !=
-          dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt()) {
+      if (dyn_cast_if_present<IntegerAttr>(bundle_size[i]).getInt() !=
+          dyn_cast_if_present<IntegerAttr>(broadcast_shape[i]).getInt()) {
         broadcastDim = i;
         break;
       }
@@ -2459,11 +3132,11 @@ static LogicalResult FoldChannel(air::ChannelOp op, PatternRewriter &rewriter) {
       std::vector<air::ChannelPutOp> puts;
       std::vector<air::ChannelGetOp> gets;
       st->walk([&](Operation *o) {
-        if (auto put = dyn_cast<air::ChannelPutOp>(o)) {
+        if (auto put = dyn_cast_if_present<air::ChannelPutOp>(o)) {
           if (put.getChanName() == attr) {
             puts.push_back(put);
           }
-        } else if (auto get = dyn_cast<air::ChannelGetOp>(o)) {
+        } else if (auto get = dyn_cast_if_present<air::ChannelGetOp>(o)) {
           if (get.getChanName() == attr) {
             gets.push_back(get);
           }

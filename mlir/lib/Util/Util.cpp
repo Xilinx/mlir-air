@@ -35,13 +35,46 @@ using namespace mlir;
 
 namespace xilinx {
 
+// ===----------------------------------------------------------------------===//
+// Memory space helpers
+// ===----------------------------------------------------------------------===//
+
+std::optional<air::MemorySpace> air::getMemorySpace(BaseMemRefType memrefTy) {
+  return symbolizeMemorySpace(memrefTy.getMemorySpaceAsInt());
+}
+
+bool air::isL1(BaseMemRefType memrefTy) {
+  return memrefTy.getMemorySpaceAsInt() ==
+         static_cast<unsigned>(MemorySpace::L1);
+}
+
+bool air::isL2(BaseMemRefType memrefTy) {
+  return memrefTy.getMemorySpaceAsInt() ==
+         static_cast<unsigned>(MemorySpace::L2);
+}
+
+bool air::isL3(BaseMemRefType memrefTy) {
+  return memrefTy.getMemorySpaceAsInt() ==
+         static_cast<unsigned>(MemorySpace::L3);
+}
+
+bool air::isMoreLocal(air::MemorySpace a, air::MemorySpace b) {
+  return static_cast<uint32_t>(a) > static_cast<uint32_t>(b);
+}
+
+air::MemorySpace air::moreLocal(air::MemorySpace a, air::MemorySpace b) {
+  return static_cast<uint32_t>(a) > static_cast<uint32_t>(b) ? a : b;
+}
+
+// ===----------------------------------------------------------------------===//
+
 const StringLiteral air::LinalgTransforms::kLinalgTransformMarker =
     "__internal_linalg_transform__";
 
 static std::string getMangledType(const Type ty) {
   std::stringstream ret;
 
-  if (const MemRefType mrt = llvm::dyn_cast<const MemRefType>(ty)) {
+  if (const MemRefType mrt = llvm::dyn_cast_if_present<const MemRefType>(ty)) {
     ret << "M";
     ret << mrt.getMemorySpaceAsInt();
     if (mrt.hasStaticShape()) {
@@ -53,13 +86,15 @@ static std::string getMangledType(const Type ty) {
     }
     const Type elem = mrt.getElementType();
     ret << getMangledType(elem);
-  } else if (FloatType ft = llvm::dyn_cast<FloatType>(ty)) {
+  } else if (FloatType ft = llvm::dyn_cast_if_present<FloatType>(ty)) {
     ret << "F" << ft.getWidth();
-  } else if (const IntegerType it = llvm::dyn_cast<const IntegerType>(ty)) {
+  } else if (const IntegerType it =
+                 llvm::dyn_cast_if_present<const IntegerType>(ty)) {
     ret << "I" << it.getWidth();
-  } else if (const IndexType it = llvm::dyn_cast<const IndexType>(ty)) {
+  } else if (const IndexType it =
+                 llvm::dyn_cast_if_present<const IndexType>(ty)) {
     ret << "I64";
-  } else if (llvm::dyn_cast<air::AsyncTokenType>(ty)) {
+  } else if (llvm::dyn_cast_if_present<air::AsyncTokenType>(ty)) {
     ret << "E";
   } else {
     Type t = ty;
@@ -149,7 +184,7 @@ uint64_t air::getTensorVolume(const ShapedType ty) {
 }
 
 uint64_t air::getTensorVolume(const Type ty) {
-  if (auto t = llvm::dyn_cast<ShapedType>(ty)) {
+  if (auto t = llvm::dyn_cast_if_present<ShapedType>(ty)) {
     return getTensorVolume(t);
   } else {
     return 1;
@@ -166,7 +201,7 @@ SmallVector<int> air::getTensorShape(const ShapedType ty) {
 }
 
 SmallVector<int> air::getTensorShape(const Type ty) {
-  if (auto t = llvm::dyn_cast<ShapedType>(ty)) {
+  if (auto t = llvm::dyn_cast_if_present<ShapedType>(ty)) {
     return getTensorShape(t);
   } else {
     return SmallVector<int>(1);
@@ -174,7 +209,7 @@ SmallVector<int> air::getTensorShape(const Type ty) {
 }
 
 std::string air::getElementTypeAsString(const mlir::Type ty) {
-  if (auto st = llvm::dyn_cast<mlir::ShapedType>(ty)) {
+  if (auto st = llvm::dyn_cast_if_present<mlir::ShapedType>(ty)) {
     return to_string(st.getElementType());
   } else {
     return to_string(ty);
@@ -205,7 +240,7 @@ uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
 
 // Get the parent scf.for op of an iter_arg
 scf::ForOp air::getForRegionIterArgsOwner(Value val) {
-  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
+  auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
   if (!ivArg)
     return scf::ForOp();
   if (!ivArg.getOwner()) {
@@ -213,7 +248,7 @@ scf::ForOp air::getForRegionIterArgsOwner(Value val) {
     return scf::ForOp();
   }
   auto *containingOp = ivArg.getOwner()->getParentOp();
-  return dyn_cast<scf::ForOp>(containingOp);
+  return dyn_cast_if_present<scf::ForOp>(containingOp);
 }
 
 // Get the parent scf.parallel op of an init_val
@@ -229,7 +264,7 @@ scf::ParallelOp air::getParallelRegionInitValsOwner(Operation *op, Value val) {
 
 // Get the parent air.launch_herd op of a tile id
 air::HerdOp air::getHerdArgOwner(Value val) {
-  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
+  auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
   if (!ivArg)
     return air::HerdOp();
   if (!ivArg.getOwner()) {
@@ -237,12 +272,12 @@ air::HerdOp air::getHerdArgOwner(Value val) {
     return air::HerdOp();
   }
   auto *containingOp = ivArg.getOwner()->getParentOp();
-  return dyn_cast<air::HerdOp>(containingOp);
+  return dyn_cast_if_present<air::HerdOp>(containingOp);
 }
 
 // Get the parent air.hierarchy op of a tile id
 air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
-  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
+  auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
   if (!ivArg)
     return air::HierarchyInterface();
   if (!ivArg.getOwner()) {
@@ -250,7 +285,7 @@ air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
     return air::HierarchyInterface();
   }
   auto *containingOp = ivArg.getOwner()->getParentOp();
-  return dyn_cast<air::HierarchyInterface>(containingOp);
+  return dyn_cast_if_present<air::HierarchyInterface>(containingOp);
 }
 
 // Get a static scf.for trip count as int
@@ -346,20 +381,13 @@ std::string air::getMemorySpaceAsString(Value memref) {
     memref.getDefiningOp()->emitOpError("value returned is not a memref");
     return "";
   }
-  auto memory_space_as_int =
-      llvm::dyn_cast<BaseMemRefType>(memref.getType()).getMemorySpaceAsInt();
-  std::string memorySpaceStr = "";
-  if (memory_space_as_int == (int)air::MemorySpace::L1) {
-    memorySpaceStr = "L1";
-  } else if (memory_space_as_int == (int)air::MemorySpace::L2) {
-    memorySpaceStr = "L2";
-  } else if (memory_space_as_int == (int)air::MemorySpace::L3) {
-    memorySpaceStr = "L3";
-  } else {
+  auto ms = getMemorySpace(llvm::cast<BaseMemRefType>(memref.getType()));
+  if (!ms) {
     memref.getDefiningOp()->emitOpError(
         "value returned has an unexpected memory space");
+    return "";
   }
-  return memorySpaceStr;
+  return std::string(stringifyMemorySpace(*ms));
 }
 
 // Returns the first affine if op in block; nullptr otherwise
@@ -384,9 +412,10 @@ void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
     op->emitOpError("index out of range");
     return;
   }
-  auto numAsyncDeps = dyn_cast<air::AsyncOpInterface>(op.getOperation())
-                          .getAsyncDependencies()
-                          .size();
+  auto numAsyncDeps =
+      dyn_cast_if_present<air::AsyncOpInterface>(op.getOperation())
+          .getAsyncDependencies()
+          .size();
   auto removed_operand_index = index + numAsyncDeps + op.getNumDims();
   op->eraseOperands(removed_operand_index);
   if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
@@ -434,6 +463,8 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
 std::vector<air::ChannelPutOp>
 air::getChannelPutOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
 
+  if (!channel)
+    return {};
   if (!scope)
     scope = channel->getParentOfType<ModuleOp>();
 
@@ -456,6 +487,8 @@ air::getChannelPutOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
 std::vector<air::ChannelGetOp>
 air::getChannelGetOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
 
+  if (!channel)
+    return {};
   if (!scope)
     scope = channel->getParentOfType<ModuleOp>();
 
@@ -478,7 +511,7 @@ air::getChannelGetOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
 std::vector<air::ChannelGetOp>
 air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
   auto channel_op = getChannelDeclarationThroughSymbol(
-      dyn_cast<air::ChannelInterface>(put.getOperation()));
+      dyn_cast_if_present<air::ChannelInterface>(put.getOperation()));
   return getChannelGetOpThroughSymbol(channel_op);
 }
 
@@ -486,7 +519,8 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
 FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {
   if (!memcpyIfOp)
     return failure();
-  auto chanIfOp = dyn_cast<air::ChannelInterface>(memcpyIfOp.getOperation());
+  auto chanIfOp =
+      dyn_cast_if_present<air::ChannelInterface>(memcpyIfOp.getOperation());
   if (!chanIfOp)
     return StringRef("dma_stream");
   auto chanOp = getChannelDeclarationThroughSymbol(chanIfOp);
@@ -500,23 +534,26 @@ FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {
 std::vector<air::ChannelPutOp>
 air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
   auto channel_op = getChannelDeclarationThroughSymbol(
-      dyn_cast<air::ChannelInterface>(get.getOperation()));
+      dyn_cast_if_present<air::ChannelInterface>(get.getOperation()));
   return getChannelPutOpThroughSymbol(channel_op);
 }
 
 std::vector<air::ChannelInterface>
 air::getTheOtherChannelOpThroughSymbol(air::ChannelInterface op) {
-  if (auto put = dyn_cast<air::ChannelPutOp>(op.getOperation())) {
+  if (auto put = dyn_cast_if_present<air::ChannelPutOp>(op.getOperation())) {
     auto vec = getTheOtherChannelOpThroughSymbol(put);
     std::vector<air::ChannelInterface> output;
     for (auto v : vec)
-      output.push_back(dyn_cast<air::ChannelInterface>(v.getOperation()));
+      output.push_back(
+          dyn_cast_if_present<air::ChannelInterface>(v.getOperation()));
     return output;
-  } else if (auto get = dyn_cast<air::ChannelGetOp>(op.getOperation())) {
+  } else if (auto get =
+                 dyn_cast_if_present<air::ChannelGetOp>(op.getOperation())) {
     auto vec = getTheOtherChannelOpThroughSymbol(get);
     std::vector<air::ChannelInterface> output;
     for (auto v : vec)
-      output.push_back(dyn_cast<air::ChannelInterface>(v.getOperation()));
+      output.push_back(
+          dyn_cast_if_present<air::ChannelInterface>(v.getOperation()));
     return output;
   } else
     return std::vector<air::ChannelInterface>();
@@ -535,7 +572,7 @@ air::getIndexToMetadataArrayFromChannelIndices(air::ChannelInterface op) {
       [](mlir::ArrayAttr attr) -> std::vector<unsigned int> {
     std::vector<unsigned int> vec;
     for (mlir::Attribute a : attr) {
-      if (auto intAttr = dyn_cast<mlir::IntegerAttr>(a))
+      if (auto intAttr = dyn_cast_if_present<mlir::IntegerAttr>(a))
         vec.push_back(static_cast<unsigned int>(intAttr.getInt()));
       else
         llvm::errs() << "Warning: Non-integer attribute in ArrayAttr\n";
@@ -568,8 +605,8 @@ void air::getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
     for (auto c : constraints) {
       if (c.isSymbolicOrConstant()) {
         auto newC = c.replaceSymbols(zero_syms);
-        auto expr =
-            dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
+        auto expr = dyn_cast_if_present<AffineConstantExpr>(
+            simplifyAffineExpr(newC, 0, 1));
         int v = expr.getValue();
         if (c.isFunctionOfSymbol(i)) {
           if (eqFlags[c_iter]) {
@@ -595,7 +632,7 @@ void air::getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
 void air::getSizesFromSpatialLoop(Operation *spatial_loop,
                                   SmallVector<int, 2> &lbs_spatial,
                                   SmallVector<int, 2> &ubs_spatial) {
-  if (auto scf_par = dyn_cast<scf::ParallelOp>(spatial_loop)) {
+  if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(spatial_loop)) {
     for (unsigned i = 0; i < scf_par.getLowerBound().size(); i++) {
       auto lbCstOp =
           scf_par.getLowerBound()[i].getDefiningOp<arith::ConstantIndexOp>();
@@ -608,7 +645,8 @@ void air::getSizesFromSpatialLoop(Operation *spatial_loop,
       ubs_spatial.push_back(
           llvm::divideCeilSigned(ubCstOp.value(), stepCstOp.value()) - 1);
     }
-  } else if (auto hier = dyn_cast<air::HierarchyInterface>(spatial_loop)) {
+  } else if (auto hier =
+                 dyn_cast_if_present<air::HierarchyInterface>(spatial_loop)) {
     for (unsigned i = 0; i < hier.getSizeOperands().size(); i++) {
       lbs_spatial.push_back(0);
       ubs_spatial.push_back(hier.getSizeOperands()[i]
@@ -659,7 +697,7 @@ bool air::positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
 
   // Walk through affine.if nest (in reverse order through vector)
   for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
-    auto affine_if = dyn_cast<affine::AffineIfOp>(*it);
+    auto affine_if = dyn_cast_if_present<affine::AffineIfOp>(*it);
     // Get then integerset sizes
     SmallVector<int, 2> lbs_int = {0, 0};
     SmallVector<int, 2> ubs_int = {0, 0};
@@ -728,7 +766,7 @@ air::getRectangularConditionBoundsThroughAffineIfs(
 
   // Walk through affine.if nest (in reverse order through vector)
   for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
-    auto affine_if = dyn_cast<affine::AffineIfOp>(*it);
+    auto affine_if = dyn_cast_if_present<affine::AffineIfOp>(*it);
     // Get then integerset sizes
     SmallVector<int, 2> lbs_int = {0, 0};
     SmallVector<int, 2> ubs_int = {0, 0};
@@ -765,7 +803,8 @@ int air::evaluateSymbolEqualityInSet(AffineExpr c, MLIRContext *ctx) {
       getAffineConstantExpr(0, ctx),
   };
   auto newC = c.replaceSymbols(zero_syms);
-  auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
+  auto expr =
+      dyn_cast_if_present<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
   if (!expr)
     return 0;
   int result = expr.getValue();
@@ -786,7 +825,7 @@ char air::checkOpOperandReadOrWrite(Value v, Operation *owner) {
 char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
   auto owner = op_operand.getOwner();
   // If used in DmaMemcpy Op
-  if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(owner)) {
+  if (auto dma = dyn_cast_if_present<xilinx::air::DmaMemcpyNdOp>(owner)) {
     if (op_operand.is(dma.getSrcMemref())) {
       return 'r';
     } else if (op_operand.is(dma.getDstMemref())) {
@@ -796,7 +835,8 @@ char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
     }
   }
   // If used in Channel Put Op
-  else if (auto channel_put = dyn_cast<xilinx::air::ChannelPutOp>(owner)) {
+  else if (auto channel_put =
+               dyn_cast_if_present<xilinx::air::ChannelPutOp>(owner)) {
     if (op_operand.is(channel_put.getSrc())) {
       return 'r';
     } else {
@@ -804,7 +844,8 @@ char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
     }
   }
   // If used in Channel Get Op
-  else if (auto channel_get = dyn_cast<xilinx::air::ChannelGetOp>(owner)) {
+  else if (auto channel_get =
+               dyn_cast_if_present<xilinx::air::ChannelGetOp>(owner)) {
     if (op_operand.is(channel_get.getDst())) {
       return 'w';
     } else {
@@ -812,7 +853,7 @@ char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
     }
   }
   // If used in a linalg op
-  else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(owner)) {
+  else if (auto linalgop = mlir::dyn_cast_if_present<linalg::LinalgOp>(owner)) {
     if (op_operand.getOperandNumber() <
         linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
       return 'r';
@@ -843,41 +884,42 @@ air::convertVecOfConstIndexToVecOfUInt(SmallVector<Value> svec) {
   return output;
 }
 
-// Get iterator corresponding to a position in a multi-dimensional vector
+// Get iterator corresponding to a position in a multi-dimensional vector.
+// Row-major linearization: position[0] is slowest-varying, position[N-1] is
+// fastest-varying.
+//
+// Note: If dims.size() != position.size(), returns 0 as a sentinel value.
+// Callers must not treat the return value as a valid linearized index in that
+// case.
 unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
                                       std::vector<unsigned> position) {
   if (dims.size() != position.size())
     return 0;
 
-  std::reverse(position.begin(), position.end());
   unsigned output = 0;
-  for (int i = dims.size() - 1; i >= 0; i--) { // In reversed order
-    unsigned scale_factor = 1;
-    for (int j = 0; j < i; j++) {
-      scale_factor *= dims[i];
-    }
-    output += scale_factor * position[i];
+  for (unsigned i = 0; i < dims.size(); i++) {
+    unsigned stride = 1;
+    for (unsigned j = i + 1; j < dims.size(); j++)
+      stride *= dims[j];
+    output += position[i] * stride;
   }
   return output;
 }
 
 // Get coordinates corresponding to a position in a multi-dimensional vector
-// from an iterator
+// from an iterator. Row-major delinearization: output[0] is slowest-varying,
+// output[N-1] is fastest-varying. This is the inverse of
+// getIteratorFromMDVector when all dims[i] > 0 and
+// 0 <= iter < product(dims).
 std::vector<unsigned> air::getMDVectorFromIterator(std::vector<unsigned> dims,
                                                    unsigned iter) {
   std::vector<unsigned> output;
-  if (dims.size() > 1) {
-    for (int i = dims.size() - 1; i >= 0; i--) { // reversed order
-      unsigned denominator = 1;
-      for (int j = 0; j < i; j++) {
-        denominator *= dims[j];
-      }
-      output.push_back((iter / (denominator)) % dims[i]);
-    }
-    // Reverse to original order
-    std::reverse(output.begin(), output.end());
-  } else if (dims.size() == 1)
-    output.push_back(iter);
+  for (unsigned i = 0; i < dims.size(); i++) {
+    unsigned stride = 1;
+    for (unsigned j = i + 1; j < dims.size(); j++)
+      stride *= dims[j];
+    output.push_back((iter / stride) % dims[i]);
+  }
   return output;
 }
 
@@ -1008,52 +1050,37 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
         offset_producer = affine::AffineApplyOp::create(
             builder, builder.getUnknownLoc(), iv_map, offsets[i]);
       }
-      if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(offset_producer))
         offset_producer = &exec.getChildOps().front();
-      auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
+      auto affine_apply =
+          dyn_cast_if_present<affine::AffineApplyOp>(offset_producer);
       if (!affine_apply) {
         offset_producer->emitOpError("unknown ssa offset producer, NYI.");
         return failure();
       }
-      if (affine_apply->getNumOperands() > 1)
+      // Compose affine map: new_expr = original_expr * stride / next_stride +
+      // next_offset. This handles both single-operand and multi-operand
+      // affine.apply ops (e.g., head_idx * lq + tile_offset).
+      AffineMap originalMap = affine_apply.getAffineMap();
+      if (originalMap.getNumResults() != 1)
         continue;
-      // Compose affine map
-      SmallVector<AffineExpr, 8> exprReplacements(
-          affine_apply.getAffineMap().getResults().begin(),
-          affine_apply.getAffineMap().getResults().end());
-      if (exprReplacements.size() > 1)
-        continue;
-      bool affineApplyOnDim = exprReplacements.front().isFunctionOfDim(0);
-      bool affineApplyOnSymbol = exprReplacements.front().isFunctionOfSymbol(0);
-      AffineExpr offset_expr = AffineExpr();
-      if (affineApplyOnDim)
-        offset_expr = builder.getAffineDimExpr(0);
-      else if (affineApplyOnSymbol)
-        offset_expr = builder.getAffineSymbolExpr(0);
-      else
-        continue;
+      AffineExpr originalExpr = originalMap.getResult(0);
       auto stride_expr = builder.getAffineConstantExpr(*const_stride);
       auto next_stride_expr = builder.getAffineConstantExpr(*const_stride_next);
-      offset_expr = offset_expr * stride_expr;
-      offset_expr = offset_expr.ceilDiv(next_stride_expr);
-      offset_expr =
-          offset_expr + builder.getAffineConstantExpr(*const_offset_next);
-      AffineMap next_offset_map = AffineMap();
-      if (affineApplyOnDim) {
-        offset_expr = offset_expr.replaceDims(exprReplacements);
-        next_offset_map = AffineMap::get(1, 0, offset_expr);
-      } else if (affineApplyOnSymbol) {
-        offset_expr = offset_expr.replaceSymbols(exprReplacements);
-        next_offset_map = AffineMap::get(0, 1, offset_expr);
-      }
-      // Apply affine map
+      AffineExpr composedExpr = originalExpr * stride_expr;
+      composedExpr = composedExpr.ceilDiv(next_stride_expr);
+      composedExpr =
+          composedExpr + builder.getAffineConstantExpr(*const_offset_next);
+      AffineMap composedMap = AffineMap::get(
+          originalMap.getNumDims(), originalMap.getNumSymbols(), composedExpr);
+      // Apply composed affine map
       builder.setInsertionPoint(affine_apply);
       if (auto exec =
               dyn_cast_if_present<air::ExecuteOp>(affine_apply->getParentOp()))
         builder.setInsertionPoint(exec);
-      auto newAffineApply =
-          dyn_cast<affine::AffineApplyOp>(builder.clone(*affine_apply));
-      newAffineApply.setMap(next_offset_map);
+      auto newAffineApply = affine::AffineApplyOp::create(
+          builder, affine_apply.getLoc(), composedMap,
+          affine_apply.getOperands());
       offsets[i] = newAffineApply->getResult(0);
       offsets[*j] = offsets[i];
     }
@@ -1227,7 +1254,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(
 LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
-    SmallVector<Value> &strides, Value memref) {
+    SmallVector<Value> &strides, Value memref, bool skipZeroStride) {
   auto loc = for_op->getLoc();
 
   // Fold for loops into channel op's wrap and stride fields
@@ -1235,9 +1262,9 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
   Operation *parent = channel_op;
   while (parent != for_op) {
     parent = parent->getParentOp();
-    if (auto sfo = dyn_cast<scf::ForOp>(parent)) {
+    if (auto sfo = dyn_cast_if_present<scf::ForOp>(parent)) {
       for_loops.push_back(parent);
-    } else if (auto afo = dyn_cast<affine::AffineForOp>(parent)) {
+    } else if (auto afo = dyn_cast_if_present<affine::AffineForOp>(parent)) {
       for_loops.push_back(parent);
     }
   }
@@ -1254,11 +1281,11 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     int64_t stepSize = -1;
     int loop_lower_bound = 0;
     Value iv = nullptr;
-    if (auto afo = dyn_cast<affine::AffineForOp>(o)) {
+    if (auto afo = dyn_cast_if_present<affine::AffineForOp>(o)) {
       iv = afo.getInductionVar();
       loop_lower_bound = afo.getConstantLowerBound();
       stepSize = afo.getStepAsInt();
-    } else if (auto sfo = dyn_cast<scf::ForOp>(o)) {
+    } else if (auto sfo = dyn_cast_if_present<scf::ForOp>(o)) {
       iv = sfo.getInductionVar();
       if (auto cst_lower_bound = mlir::getConstantIntValue(sfo.getLowerBound()))
         loop_lower_bound = *cst_lower_bound;
@@ -1279,9 +1306,10 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
         break;
       } else if (iv && offsetVal.getDefiningOp()) {
         Operation *iv_consumer = offsetVal.getDefiningOp();
-        if (auto exec = dyn_cast<air::ExecuteOp>(iv_consumer))
+        if (auto exec = dyn_cast_if_present<air::ExecuteOp>(iv_consumer))
           iv_consumer = &exec.getChildOps().front();
-        if (auto affop = dyn_cast<affine::AffineApplyOp>(iv_consumer)) {
+        if (auto affop =
+                dyn_cast_if_present<affine::AffineApplyOp>(iv_consumer)) {
           auto idx = llvm::find_if(affop.getOperands(),
                                    [iv](Value oper) { return oper == iv; });
           if (idx == affop.getOperands().end())
@@ -1305,15 +1333,21 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
                   .value() -
               map_offset;
           ind_var_factor *= map_gradient;
-        } else if (auto arithop = dyn_cast<arith::AddIOp>(iv_consumer)) {
+        } else if (auto arithop =
+                       dyn_cast_if_present<arith::AddIOp>(iv_consumer)) {
           ind_var_factor = stepSize;
         }
       }
     }
+    // Skip loops that don't affect the channel offset (stride=0).
+    // LLVM 23's canonicalize no longer hoists loop-invariant channel ops,
+    // so we skip them here when requested to avoid stride=0 DMA dimensions.
+    if (skipZeroStride && ind_var_factor == 0)
+      continue;
     int trip_count = -1;
-    if (auto afo = dyn_cast<affine::AffineForOp>(o))
+    if (auto afo = dyn_cast_if_present<affine::AffineForOp>(o))
       trip_count = *getStaticAffineForTripCountAsInt(afo);
-    else if (auto sfo = dyn_cast<scf::ForOp>(o))
+    else if (auto sfo = dyn_cast_if_present<scf::ForOp>(o))
       trip_count = *getStaticScfForTripCountAsInt(sfo);
     Value new_wrap = arith::ConstantIndexOp::create(builder, loc, trip_count);
     // Skip stride modulo if memref is unranked.
@@ -1336,6 +1370,25 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     }
 
     // Insert new dimension into the wraps and strides list.
+    // Validate that the new dimension doesn't cause out-of-bounds access.
+    // This check is only for skipZeroStride mode (memtile/tile DMAs that
+    // don't support wrap-around addressing).
+    if (skipZeroStride) {
+      int64_t bufferVolume = getTensorVolume(memref.getType());
+      if (bufferVolume > 1) {
+        int64_t maxIndex = 0;
+        for (unsigned i = 0; i < wraps.size(); ++i) {
+          auto w = getConstantIntValue(wraps[i]);
+          auto s = getConstantIntValue(strides[i]);
+          if (w && s)
+            maxIndex += (*w - 1) * (*s);
+        }
+        maxIndex += (trip_count - 1) * new_stride_value;
+        if (maxIndex >= bufferVolume)
+          continue;
+      }
+    }
+
     offsets.insert(offsets.begin(),
                    arith::ConstantIndexOp::create(builder, loc, 0));
     wraps.insert(wraps.begin(), new_wrap);
@@ -1363,6 +1416,15 @@ void air::populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
           arith::ConstantIndexOp::create(builder, loc, current_stride));
     }
   }
+}
+
+// Copy padding attributes (pad_before, pad_after) from one operation to
+// another.
+void air::copyPaddingAttributes(Operation *src, Operation *dst) {
+  if (auto padBefore = src->getAttrOfType<DenseI32ArrayAttr>("pad_before"))
+    dst->setAttr("pad_before", padBefore);
+  if (auto padAfter = src->getAttrOfType<DenseI32ArrayAttr>("pad_after"))
+    dst->setAttr("pad_after", padAfter);
 }
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data
@@ -1489,8 +1551,9 @@ static void updateAccessPatternByScfForNest(
                                  Value index) {
     int scfForTripCount = *air::getStaticScfForTripCountAsInt(scfForOp);
     // If scf.for's iv applies affine::DelinerizeIndexOp
-    if (auto delinearizeOp = dyn_cast<affine::AffineDelinearizeIndexOp>(
-            &execOp.getChildOps().front())) {
+    if (auto delinearizeOp =
+            dyn_cast_if_present<affine::AffineDelinearizeIndexOp>(
+                &execOp.getChildOps().front())) {
       int resIdx =
           llvm::find(execOp.getResults(), index) - execOp.getResults().begin();
       auto constBasis =
@@ -1515,7 +1578,8 @@ static void updateAccessPatternByScfForNest(
     }
     if (!index.getDefiningOp())
       continue;
-    if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
+    if (auto execOp =
+            dyn_cast_if_present<air::ExecuteOp>(index.getDefiningOp())) {
       for (auto &childOp : execOp.getChildOps())
         for (auto oper : childOp.getOperands())
           if (auto scfForOp = scf::getForInductionVarOwner(oper)) {
@@ -1553,7 +1617,7 @@ air::writeAccessPattern(memref::SubViewOp subview, Region *commonReg) {
   auto static_sizes = subview.getStaticSizes();
   auto static_strides = subview.getStaticStrides();
   // Get strided layout from subview op's output MemRefType
-  if (auto strided = llvm::dyn_cast<StridedLayoutAttr>(
+  if (auto strided = llvm::dyn_cast_if_present<StridedLayoutAttr>(
           llvm::cast<MemRefType>(subview.getResult().getType()).getLayout()))
     static_strides = strided.getStrides();
 
@@ -1607,7 +1671,7 @@ static bool dependsOnHerdTileIndex(Value index) {
     return false;
 
   // Check air.execute wrapping
-  if (auto exec = dyn_cast<air::ExecuteOp>(defOp)) {
+  if (auto exec = dyn_cast_if_present<air::ExecuteOp>(defOp)) {
     for (auto &childOp : exec.getChildOps()) {
       for (auto oper : childOp.getOperands()) {
         if (air::getHerdArgOwner(oper))
@@ -1738,13 +1802,15 @@ air::getDataAccessShapeFromMemcpyOp(Value memref,
       users, users.front()->getParentWithTrait<OpTrait::IsIsolatedFromAbove>());
 
   for (auto user : users) {
-    if (auto chanUser = dyn_cast<air::ChannelInterface>(user))
+    if (auto chanUser = dyn_cast_if_present<air::ChannelInterface>(user))
       accessPatterns.push_back(writeAccessPattern(chanUser));
-    else if (auto svUser = dyn_cast<memref::SubViewOp>(user))
+    else if (auto svUser = dyn_cast_if_present<memref::SubViewOp>(user))
       accessPatterns.push_back(writeAccessPattern(svUser, commonAncestorReg));
-    else if (auto vecReadUser = dyn_cast<mlir::vector::TransferReadOp>(user))
+    else if (auto vecReadUser =
+                 dyn_cast_if_present<mlir::vector::TransferReadOp>(user))
       accessPatterns.push_back(writeAccessPattern(vecReadUser));
-    else if (auto vecWriteUser = dyn_cast<mlir::vector::TransferWriteOp>(user))
+    else if (auto vecWriteUser =
+                 dyn_cast_if_present<mlir::vector::TransferWriteOp>(user))
       accessPatterns.push_back(writeAccessPattern(vecWriteUser));
   }
   return getDataAccessShapeFromMemcpyOp(memref, accessPatterns);
@@ -1791,7 +1857,8 @@ air::getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
       // variant wrt a parent spatial iteration space (e.g. air.herd,
       // scf.parallel).
       if (offsets[i].getDefiningOp()) {
-        if (auto exec = dyn_cast<air::ExecuteOp>(offsets[i].getDefiningOp())) {
+        if (auto exec = dyn_cast_if_present<air::ExecuteOp>(
+                offsets[i].getDefiningOp())) {
           for (auto &childOp : exec.getChildOps())
             for (auto oper : childOp.getOperands())
               if (getHerdArgOwner(oper))
@@ -1961,7 +2028,7 @@ SmallVector<Value> air::lookupOrDefaultRange(OperandRange vec,
 // Extend isPure method to operate on air.execute.
 bool air::isPure(Operation *op) {
   bool result = mlir::isPure(op);
-  if (auto execOp = dyn_cast<air::ExecuteOp>(op))
+  if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(op))
     result = llvm::all_of(execOp.getChildOps(), [](Operation &childOp) {
       return mlir::isPure(&childOp);
     });
@@ -2029,10 +2096,11 @@ struct BufferMemrefToFuncArgsPattern : public OpRewritePattern<func::FuncOp> {
       if (!isa<memref::AllocOp, memref::AssumeAlignmentOp>(op))
         continue;
       for (auto res : op.getResults()) {
-        BaseMemRefType resType = dyn_cast<BaseMemRefType>(res.getType());
+        BaseMemRefType resType =
+            dyn_cast_if_present<BaseMemRefType>(res.getType());
         if (!resType)
           continue;
-        if (resType.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+        if (air::isL3(resType))
           memrefs.insert(res);
       }
     }

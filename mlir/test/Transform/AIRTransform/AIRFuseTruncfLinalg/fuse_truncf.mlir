@@ -80,16 +80,12 @@ func.func @fuse_truncf_into_matmul(%a: tensor<8x16xf32>, %b: tensor<16x8xf32>, %
 }
 
 // CHECK-NOT: linalg.generic {{.*}} attributes {truncf_matmul}
-// Producer's init (tensor.empty for matmul) is type-converted to bf16
+// For 2D+ inputs, fuse_truncf_linalg directly produces a linalg.matmul
+// with bf16 output type (LLVM 23 compatibility — bypass specialize).
 // CHECK: %[[EMPTY:.*]] = tensor.empty() : tensor<8x8xbf16>
-// CHECK: %[[RESULT:.*]] = linalg.generic
+// CHECK: %[[RESULT:.*]] = linalg.matmul
 // CHECK-SAME: ins(%arg0, %arg1 : tensor<8x16xf32>, tensor<16x8xf32>)
 // CHECK-SAME: outs(%[[EMPTY]] : tensor<8x8xbf16>)
-// CHECK: ^bb0(%[[LHS:.*]]: f32, %[[RHS:.*]]: f32, %[[ACC:.*]]: bf16):
-// CHECK:   %[[MUL:.*]] = arith.mulf %[[LHS]], %[[RHS]] : f32
-// CHECK:   arith.extf %[[ACC]] : bf16 to f32
-// CHECK:   %[[TRUNC:.*]] = arith.truncf %{{.*}} : f32 to bf16
-// CHECK:   linalg.yield %[[TRUNC]] : bf16
 // CHECK: return %[[RESULT]] : tensor<8x8xbf16>
 
 // Test 3: Fuse truncf (f32->bf16) into mul producer
@@ -172,12 +168,9 @@ func.func @fuse_truncf_into_mixed_precision_matmul(%a: tensor<8x16xbf16>, %b: te
 // CHECK: %[[EMPTY:.*]] = tensor.empty() : tensor<8x8xbf16>
 // CHECK: %[[TRUNC_CST:.*]] = arith.truncf %{{.*}} : f32 to bf16
 // CHECK: %[[FILL:.*]] = linalg.fill ins(%[[TRUNC_CST]] : bf16) outs(%[[EMPTY]] : tensor<8x8xbf16>)
-// CHECK: %[[RESULT:.*]] = linalg.generic
+// CHECK: %[[RESULT:.*]] = linalg.matmul
 // CHECK-SAME: ins(%arg0, %arg1 : tensor<8x16xbf16>, tensor<16x8xbf16>)
 // CHECK-SAME: outs(%[[FILL]] : tensor<8x8xbf16>)
-// CHECK: ^bb0(%[[LHS:.*]]: bf16, %[[RHS:.*]]: bf16, %[[ACC:.*]]: bf16):
-// CHECK:   %[[TRUNC:.*]] = arith.truncf %{{.*}} : f32 to bf16
-// CHECK:   linalg.yield %[[TRUNC]] : bf16
 // CHECK: return %[[RESULT]] : tensor<8x8xbf16>
 
 // Test 5: Fuse truncf into a bufferized matmul with bf16 inputs and f32 accumulator
@@ -217,10 +210,7 @@ func.func @fuse_truncf_bufferized(%a: tensor<256x256xbf16>, %b: tensor<256x256xb
 // CHECK: %[[EMPTY2:.*]] = tensor.empty() : tensor<256x256xbf16>
 // CHECK: %[[TRUNC_CST:.*]] = arith.truncf %{{.*}} : f32 to bf16
 // CHECK: %[[FILL:.*]] = linalg.fill ins(%[[TRUNC_CST]] : bf16) outs(%[[EMPTY2]] : tensor<256x256xbf16>)
-// CHECK: %[[RESULT:.*]] = linalg.generic
+// CHECK: %[[RESULT:.*]] = linalg.matmul
 // CHECK-SAME: ins(%arg0, %arg1 : tensor<256x256xbf16>, tensor<256x256xbf16>)
 // CHECK-SAME: outs(%[[FILL]] : tensor<256x256xbf16>)
-// CHECK: ^bb0(%[[LHS:.*]]: bf16, %[[RHS:.*]]: bf16, %[[ACC:.*]]: bf16):
-// CHECK:   %[[TRUNC:.*]] = arith.truncf %{{.*}} : f32 to bf16
-// CHECK:   linalg.yield %[[TRUNC]] : bf16
 // CHECK: return %[[RESULT]] : tensor<256x256xbf16>

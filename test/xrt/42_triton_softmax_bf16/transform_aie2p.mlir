@@ -33,15 +33,25 @@ module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
 
         //===================================================================
+        // PHASE 0: Override Memory Spaces
+        //===================================================================
+        // PURPOSE: Ensure any allocs created by prior bufferization passes
+        // (e.g., air-resolve-tensor-opoperand-conflicts) have the correct
+        // memory space. Func-level allocs get L2 (memory_space 1).
+        %func_ms = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func_ms_updated = transform.air.override_memref_memory_space %func_ms {memory_space = 1 : i32}
+          : (!transform.any_op) -> !transform.any_op
+
+        //===================================================================
         // PHASE 1: Initial Canonicalization and Cleanup
         //===================================================================
         // PURPOSE: Prepare the IR for subsequent transformations by applying
         // standard optimization patterns that simplify operations and remove
         // redundancies. This creates a clean foundation for tiling and fusion.
-        
+
         // Match the function containing all softmax operations
         %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        
+
         // Apply comprehensive canonicalization patterns:
         transform.apply_patterns to %func0 {
             // Simplify tiling-related patterns (e.g., empty tensor operations)
@@ -78,14 +88,15 @@ module attributes {transform.with_named_sequence} {
         %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %fused_func = transform.air.fuse_elementwise_linalg %func1 : (!transform.any_op) -> !transform.any_op
         
-        // Transpose linalg.reduce operations to ensure reduction at innermost dimension, 
-        // mappable to vectorized AIE intrinsics
+        // Transpose linalg.reduce operations to ensure reduction at innermost
+        // dimension, mappable to vectorized AIE intrinsics.
+        // NOTE: linalg.reduce ops are preserved here as data-flow anchors.
+        // They are later explicitly generalized on a per-handle basis before
+        // calling fuse_multi_op_linalg (which requires linalg.generic inputs).
         %reduces = transform.structured.match ops{["linalg.reduce"]} in %fused_func  : (!transform.any_op) -> !transform.any_op
         %transformed_reduces = transform.air.transpose_reduce %reduces : (!transform.any_op) -> !transform.any_op
-        %generalized_reduces = transform.structured.generalize %transformed_reduces  : (!transform.any_op) -> !transform.any_op
-        
-        // Clean up IR after reduction transformation to prepare for fusion
-        // %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+
+        // Clean up IR after reduction transformation
         transform.apply_patterns to %fused_func {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
@@ -93,32 +104,59 @@ module attributes {transform.with_named_sequence} {
         } : !transform.any_op
         transform.apply_cse to %fused_func : !transform.any_op
 
-        // Split operation handles for individual manipulation
-        // After fusion, we have 5 linalg.generic operations representing the
-        // fused softmax computation stages
-        %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-        %fill1, %fill2 = transform.split_handle %fill : (!transform.any_op<"linalg.fill">) -> (!transform.any_op<"linalg.fill">, !transform.any_op<"linalg.fill">)
-        %generic = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-        %generic1, %generic2, %generic3, %generic4, %generic5 = transform.split_handle %generic : (!transform.any_op<"linalg.generic">) -> (!transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">)
-        
-        // Further fuse pairs of generic operations to optimize data locality
-        %fused_generic1 = transform.air.fuse_multi_op_linalg %generic1, %generic2 : (!transform.any_op, !transform.any_op) -> !transform.any_op
-        %fused_generic2 = transform.air.fuse_multi_op_linalg %generic3, %generic4 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+        // Data-flow navigation from linalg.reduce anchors.
+        // After fuse_elementwise_linalg (without generalize), the IR has:
+        //   3 linalg.generic ops + 2 linalg.reduce ops
+        // Data-flow chain:
+        //   generic1 (extf) -> reduce_max -> generic2 (sub+exp fused)
+        //                                        -> reduce_sum -> generic3 (output)
+        %transposed_reduces = transform.structured.match ops{["linalg.reduce"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %reduce_max, %reduce_sum = transform.split_handle %transposed_reduces : (!transform.any_op<"linalg.reduce">) -> (!transform.any_op, !transform.any_op)
+
+        // Navigate upstream from reduce_max to find extf generic
+        %generic1 = transform.get_producer_of_operand %reduce_max[0]
+            : (!transform.any_op) -> !transform.any_op
+        // Navigate upstream from reduce_sum to find sub+exp generic
+        // (use get_producer_of_operand instead of get_consumers_of_result
+        //  to avoid multi-consumer handles from broadcast ops)
+        %generic2 = transform.get_producer_of_operand %reduce_sum[0]
+            : (!transform.any_op) -> !transform.any_op
+
+        // Match fill operations
+        %fill = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+
+        // Generalize the reduce ops just-in-time (per-handle) right before fusion.
+        // The data-flow navigation above already captured handles using linalg.reduce
+        // as typed anchors. Now generalize each reduce individually so
+        // fuse_multi_op_linalg can process them (requires linalg.generic body).
+        %reduce_max_gen = transform.structured.generalize %reduce_max : (!transform.any_op) -> !transform.any_op
+        %reduce_sum_gen = transform.structured.generalize %reduce_sum : (!transform.any_op) -> !transform.any_op
+
+        // Fuse adjacent pairs: (extf generic, max reduce) and (sub+exp generic, sum reduce)
+        %fused_generic1 = transform.air.fuse_multi_op_linalg %generic1, %reduce_max_gen : (!transform.any_op, !transform.any_op) -> !transform.any_op
+        %fused_generic2 = transform.air.fuse_multi_op_linalg %generic2, %reduce_sum_gen : (!transform.any_op, !transform.any_op) -> !transform.any_op
+
+        // Find output generic by navigating upstream from the function output.
+        // bufferization.materialize_in_destination marks the function return;
+        // its operand[0] is the output tensor produced by the output generic.
+        %materialize = transform.structured.match ops{["bufferization.materialize_in_destination"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %generic3 = transform.get_producer_of_operand %materialize[0]
+            : (!transform.any_op) -> !transform.any_op
 
         //===================================================================
         // PHASE 3: Tiling and Producer-Consumer Fusion
         //===================================================================
-        // STRATEGY: Use the final output operation (generic5) to drive tiling,
+        // STRATEGY: Use the final output operation (generic3) to drive tiling,
         // then fuse all producer operations into the tiled loop.
         // Memory space 1 represents L2 memory.
 
         // Bufferize the final operation to L2 memory (memory_space = 1)
-        %generic5_output_buf, %new_generic5 = transform.structured.bufferize_to_allocation %generic5
+        %generic3_output_buf, %new_generic3 = transform.structured.bufferize_to_allocation %generic3
           {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
 
         // Tile the final operation with tile size [1] for batch dimension
-        %tiled_generic_5, %forall_5 =
-        transform.structured.tile_using_forall %generic5 tile_sizes [1]  : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %tiled_generic_3, %forall_5 =
+        transform.structured.tile_using_forall %generic3 tile_sizes [1]  : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
         // Fuse producer operations into the tiled loop in reverse dependency order
         // This creates a producer-consumer fusion chain where each operation is
@@ -273,7 +311,9 @@ module attributes {transform.with_named_sequence} {
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
             transform.apply_patterns.vector.cast_away_vector_leading_one_dim
-            transform.apply_patterns.vector.lower_multi_reduction lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.reorder_multi_reduction_dims lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.multi_reduction_flattening lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.multi_reduction_unrolling lowering_strategy = "innerreduction"
         } : !transform.any_op
         transform.apply_cse to %func7_transformed : !transform.any_op
     transform.yield

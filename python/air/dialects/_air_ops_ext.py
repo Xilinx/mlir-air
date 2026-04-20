@@ -130,6 +130,34 @@ class Herd(HerdOp):
         self.regions[0].blocks.append(*operand_types)
 
 
+class Rank(RankOp):
+    """Specialization for RankOp class."""
+
+    def __init__(
+        self,
+        name=None,
+        sizes=[],
+        async_token=None,
+        async_dependencies=[],
+        operands=[],
+        universe=None,
+        attributes={},
+        loc=None,
+        ip=None,
+    ):
+        sizes = list(map(pyint_to_index, sizes))
+        super().__init__(
+            async_token=async_token,
+            async_dependencies=async_dependencies,
+            universe=universe,
+            sizes=sizes,
+            rank_operands=operands,
+            sym_name=name,
+        )
+        operand_types = [s.type for s in sizes] * 2 + get_region_operand_types(operands)
+        self.regions[0].blocks.append(*operand_types)
+
+
 class Channel(ChannelOp):
     def __init__(
         self,
@@ -173,9 +201,15 @@ class ChannelGet(ChannelGetOp):
         indices=[],
         async_token=None,
         async_dependencies=[],
+        pad_before=None,
+        pad_after=None,
         loc=None,
         ip=None,
     ):
+        if (pad_before is None) != (pad_after is None):
+            raise ValueError(
+                "pad_before and pad_after must both be specified or both omitted"
+            )
         indices_typed = list(map(pyint_to_index, indices))
         dst_offsets_typed = list(map(pyint_to_index, offsets))
         dst_sizes_typed = list(map(pyint_to_index, sizes))
@@ -192,6 +226,12 @@ class ChannelGet(ChannelGetOp):
             loc=loc,
             ip=ip,
         )
+        # Set optional pad_before/pad_after attributes after construction,
+        # since the generated __init__ doesn't accept them as kwargs.
+        if pad_before is not None:
+            self.operation.attributes["pad_before"] = DenseI32ArrayAttr.get(pad_before)
+        if pad_after is not None:
+            self.operation.attributes["pad_after"] = DenseI32ArrayAttr.get(pad_after)
 
 
 class ChannelPut(ChannelPutOp):
@@ -205,9 +245,15 @@ class ChannelPut(ChannelPutOp):
         indices=[],
         async_token=None,
         async_dependencies=[],
+        pad_before=None,
+        pad_after=None,
         loc=None,
         ip=None,
     ):
+        if (pad_before is None) != (pad_after is None):
+            raise ValueError(
+                "pad_before and pad_after must both be specified or both omitted"
+            )
         indices_typed = list(map(pyint_to_index, indices))
         offsets_typed = list(map(pyint_to_index, offsets))
         sizes_typed = list(map(pyint_to_index, sizes))
@@ -224,6 +270,12 @@ class ChannelPut(ChannelPutOp):
             loc=loc,
             ip=ip,
         )
+        # Set optional pad_before/pad_after attributes after construction,
+        # since the generated __init__ doesn't accept them as kwargs.
+        if pad_before is not None:
+            self.operation.attributes["pad_before"] = DenseI32ArrayAttr.get(pad_before)
+        if pad_after is not None:
+            self.operation.attributes["pad_after"] = DenseI32ArrayAttr.get(pad_after)
 
 
 class DmaMemcpyNd(DmaMemcpyNdOp):
@@ -241,7 +293,13 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         src_offsets=[],
         src_sizes=[],
         src_strides=[],
+        pad_before=None,
+        pad_after=None,
     ):
+        if (pad_before is None) != (pad_after is None):
+            raise ValueError(
+                "pad_before and pad_after must both be specified or both omitted"
+            )
         dst_offsets_typed = list(map(pyint_to_index, dst_offsets))
         dst_sizes_typed = list(map(pyint_to_index, dst_sizes))
         dst_strides_typed = list(map(pyint_to_index, dst_strides))
@@ -262,6 +320,12 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             src_sizes=src_sizes_typed,
             src_strides=src_strides_typed,
         )
+        # Set optional pad_before/pad_after attributes after construction,
+        # since the generated __init__ doesn't accept them as kwargs.
+        if pad_before is not None:
+            self.operation.attributes["pad_before"] = DenseI32ArrayAttr.get(pad_before)
+        if pad_after is not None:
+            self.operation.attributes["pad_after"] = DenseI32ArrayAttr.get(pad_after)
 
 
 dma_memcpy_nd = DmaMemcpyNd
@@ -282,6 +346,7 @@ def module_builder(module_function):
 herd = region_op(Herd, terminator=lambda *_args: HerdTerminatorOp())
 launch = region_op(Launch, terminator=lambda *_args: LaunchTerminatorOp())
 segment = region_op(Segment, terminator=lambda *_args: SegmentTerminatorOp())
+rank = region_op(Rank, terminator=lambda *_args: RankTerminatorOp())
 
 
 def external_func(name, inputs, outputs=None, visibility="private"):

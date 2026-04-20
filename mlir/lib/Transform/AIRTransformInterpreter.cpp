@@ -104,12 +104,17 @@ static transform::NamedSequenceOp findEntryPoint(ModuleOp transformModule) {
 
 LogicalResult xilinx::air::runAIRTransform(ModuleOp transformModule,
                                            ModuleOp payloadModule) {
+  // Expensive checks are disabled because the handle invalidation tracker
+  // segfaults with transform.include: it accesses erased payload operations
+  // via dangling pointers when validating handles across region scopes.
+  // See https://github.com/Xilinx/mlir-air/issues/1464.
+  transform::TransformOptions options;
+  options.enableExpensiveChecks(false);
+
   // Try named_sequence entry point first (modern transform dialect style).
   if (auto namedSeq = findEntryPoint(transformModule)) {
-    return transform::applyTransforms(
-        payloadModule, namedSeq, {},
-        transform::TransformOptions().enableExpensiveChecks(true),
-        /*enforceToplevelTransformOp=*/false);
+    return transform::applyTransforms(payloadModule, namedSeq, {}, options,
+                                      /*enforceToplevelTransformOp=*/false);
   }
 
   // Fallback: iterate top-level TransformOpInterface ops (legacy style).
@@ -117,10 +122,7 @@ LogicalResult xilinx::air::runAIRTransform(ModuleOp transformModule,
        transformModule.getBody()->getOps<transform::TransformOpInterface>()) {
     if (isa<transform::NamedSequenceOp>(op))
       continue;
-    if (failed(transform::applyTransforms(
-            payloadModule, op, {},
-            transform::TransformOptions().enableExpensiveChecks(
-                /*enableExpensiveChecks=*/true))))
+    if (failed(transform::applyTransforms(payloadModule, op, {}, options)))
       return failure();
   }
   return success();

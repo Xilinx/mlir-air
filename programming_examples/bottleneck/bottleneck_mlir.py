@@ -832,14 +832,14 @@ def build_module():
                             arith.cmpi(arith.CmpIPredicate.sge, out_row, c1_idx),
                             arith.cmpi(arith.CmpIPredicate.sle, out_row, c30_idx),
                         )
-                        if_load = scf.IfOp(should_load, hasElse=True)
+                        if_load = scf.IfOp(should_load, has_else=True)
                         with InsertionPoint(if_load.then_block):
                             next_slot = arith.remui(load_row, c4_idx)
                             # ChannelGet into correct buffer based on slot
                             is_s0 = arith.cmpi(
                                 arith.CmpIPredicate.eq, next_slot, c0_idx
                             )
-                            if_s0 = scf.IfOp(is_s0, hasElse=True)
+                            if_s0 = scf.IfOp(is_s0, has_else=True)
                             with InsertionPoint(if_s0.then_block):
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
@@ -853,7 +853,7 @@ def build_module():
                             is_s1 = arith.cmpi(
                                 arith.CmpIPredicate.eq, next_slot, c1_idx
                             )
-                            if_s1 = scf.IfOp(is_s1, hasElse=True)
+                            if_s1 = scf.IfOp(is_s1, has_else=True)
                             with InsertionPoint(if_s1.then_block):
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
@@ -867,7 +867,7 @@ def build_module():
                             is_s2 = arith.cmpi(
                                 arith.CmpIPredicate.eq, next_slot, c2_idx
                             )
-                            if_s2 = scf.IfOp(is_s2, hasElse=True)
+                            if_s2 = scf.IfOp(is_s2, has_else=True)
                             with InsertionPoint(if_s2.then_block):
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
@@ -881,7 +881,7 @@ def build_module():
                             is_s3 = arith.cmpi(
                                 arith.CmpIPredicate.eq, next_slot, c3_idx
                             )
-                            if_s3 = scf.IfOp(is_s3, hasElse=True)
+                            if_s3 = scf.IfOp(is_s3, has_else=True)
                             with InsertionPoint(if_s3.then_block):
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
@@ -1551,6 +1551,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             debug_ir=args.debug_ir,
             omit_pingpong="all",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         output_placeholder = np.zeros(expected_out.shape, expected_out.dtype)
         expanded_inputs = [input_act_flat, total_wts, output_placeholder]
@@ -1575,7 +1576,8 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             debug_ir=args.debug_ir,
-            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues
+            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

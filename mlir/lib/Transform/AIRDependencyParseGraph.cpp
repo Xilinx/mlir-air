@@ -8,6 +8,7 @@
 #include "air/Transform/AIRDependencyParseGraph.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/DependencyDot.h"
 
 using namespace mlir;
 
@@ -37,8 +38,19 @@ public:
       // Parse dependency graphs
       std::string graphGranularity = (clShowCores) ? ("core") : ("herd");
       hostGraph = dependencyGraph(func, true);
-      canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx,
-                                       graphGranularity);
+      if (failed(canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx,
+                                                  graphGranularity)))
+        return signalPassFailure();
+
+      // Dump DOT files
+      std::string dumpDir = clDumpDir;
+      dumpDotGraphFiles(hostGraph, dumpDir);
+      // Also generate combined hierarchical view
+      std::string combinedDir = dumpDir;
+      if (!combinedDir.empty() && combinedDir.back() != '/')
+        combinedDir += '/';
+      dumpCombinedDotGraph(hostGraph, combinedDir + "combined.dot");
+
       // Purge id attribute
       func.walk([&](Operation *op) { op->removeAttr("id"); });
     }

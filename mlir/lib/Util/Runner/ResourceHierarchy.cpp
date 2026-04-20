@@ -369,12 +369,15 @@ public:
 
   double getDataRateFromMemorySpace(unsigned memory_space,
                                     std::string port_direction) {
-    if (lookUpMemorySpaceFromInt(memory_space) == "L3") {
+    auto ms = symbolizeMemorySpace(memory_space);
+    if (!ms)
+      return 0;
+    if (*ms == air::MemorySpace::L3) {
       if (this->ports.count(port_direction))
         return this->ports[port_direction][0]->data_rate;
       else
         return 0;
-    } else if (lookUpMemorySpaceFromInt(memory_space) == "L2") {
+    } else if (*ms == air::MemorySpace::L2) {
       if (this->dus.size()) {
         if (this->dus[0]->ports.count(port_direction))
           return this->dus[0]->ports[port_direction][0]->data_rate;
@@ -382,7 +385,7 @@ public:
           return 0;
       } else
         return 0;
-    } else if (lookUpMemorySpaceFromInt(memory_space) == "L1") {
+    } else if (*ms == air::MemorySpace::L1) {
       if (this->dus.size()) {
         if (this->dus[0]->tiles.size()) {
           if (this->dus[0]->tiles[0]->ports.count(port_direction))

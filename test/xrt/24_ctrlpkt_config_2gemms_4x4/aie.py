@@ -172,7 +172,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 "air-hoist-dma-in-accum-pattern",
                 "air-broadcast-detection",
                 "air-specialize-dma-broadcast",
-                "air-dma-to-channel",
+                "air-dma-to-channel{force-shim-packet-flow=true}",
                 "canonicalize",
                 "cse",
                 "air-dependency-canonicalize",
@@ -242,7 +242,7 @@ with air.ir.Context() as ctx, Location.unknown():
             [
                 "canonicalize",
                 "cse",
-                "air-to-aie{row-offset=2 col-offset=0 device=npu1 emit-while-loop=true use-pkt-flow-at-shim-dma=true use-lock-race-condition-fix=true}",
+                "air-to-aie{row-offset=2 col-offset=0 device=npu1 emit-while-loop=true use-lock-race-condition-fix=true}",
                 "canonicalize",
             ]
         )

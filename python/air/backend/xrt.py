@@ -9,12 +9,24 @@ import air.passmanager
 from .abc import AirBackend, AirBackendError
 
 import air.compiler.util
-import air.compiler.aircc.main as aircc
+
+# Register the AIR dialect so air.ir.Context() can parse AIR ops.
+# This was previously done as a side effect of importing aircc.main.
+from air.dialects import air as _air_dialect  # noqa: F401
 
 import numpy as np
 import os
+import shutil
+import subprocess
 
 from ml_dtypes import bfloat16
+
+# Device name mappings aligned with mlir-aie (hostruntime.py, lit_config_helpers.py)
+# Maps generation name to list of model strings that may appear in xrt-smi
+NPU_MODELS = {
+    "npu1": ["npu1", "Phoenix"],
+    "npu2": ["npu4", "Strix", "npu5", "Strix Halo", "npu6", "Krackan"],
+}
 
 
 class XRTCompileArtifact:
@@ -50,7 +62,7 @@ class XRTBackend(AirBackend):
         omit_pingpong: str = "",
         lower_linalg_to_func: str = None,
         air_loop_fusion: bool = False,
-        runtime_loop_tiling_sizes: list[int] = [4, 4],
+        runtime_loop_tiling_sizes: list[int] = [],
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
@@ -63,6 +75,7 @@ class XRTBackend(AirBackend):
         xclbin_input: str = "",
         num_device_cols: int = 0,
         debug_ir: bool = False,
+        bf16_emulation: bool = False,
     ):
         """Constructor for XRTBackend
 
@@ -89,6 +102,7 @@ class XRTBackend(AirBackend):
                 For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
             debug_ir: enable debug mode to emit IR after each individual pass for fine-grained inspection.
                 IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
+            bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
         """
         super().__init__()
         self.verbose = verbose
@@ -115,6 +129,7 @@ class XRTBackend(AirBackend):
         self.xclbin_input = xclbin_input
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
+        self.bf16_emulation = bf16_emulation
 
     def __del__(self):
         self.unload()
@@ -153,39 +168,40 @@ class XRTBackend(AirBackend):
             # Try to auto-detect device via xrt-smi
             target_device = "npu1"  # Default fallback
             try:
-                import subprocess
-                import re
-
-                xrtsmi = "/opt/xilinx/xrt/bin/xrt-smi"
+                xrtsmi = shutil.which("xrt-smi") or "/opt/xilinx/xrt/bin/xrt-smi"
                 result = subprocess.run(
-                    [xrtsmi, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    [xrtsmi, "examine"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=10,
                 )
-                result = result.stdout.decode("utf-8").split("\n")
-                # Older format is "|[0000:41:00.1]  ||RyzenAI-npu1  |"
-                # Newer format is "|[0000:41:00.1]  |NPU Phoenix  |"
-                p = re.compile(
-                    r"[\|]?(\[.+:.+:.+\]).+\|(RyzenAI-(npu\d)|NPU (\w+))\W*\|"
-                )
-                for l in result:
-                    m = p.match(l)
-                    if not m:
-                        continue
+                if result.returncode != 0:
                     if self.verbose:
-                        print("Found Ryzen AI device:", m.group(1))
-                    model = "unknown"
-                    if m.group(3):
-                        model = str(m.group(3))
-                    if m.group(4):
-                        model = str(m.group(4))
-                    if self.verbose:
-                        print(f"\tmodel: '{model}'")
-                    if model in ["npu1", "Phoenix"]:
-                        target_device = "npu1"
-                    elif model in ["npu4", "Strix"]:
-                        target_device = "npu2"
-                    else:
-                        print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
-                    break
+                        print(
+                            f"xrt-smi exited with code {result.returncode}, "
+                            f"using default target device"
+                        )
+                        stderr = result.stderr.decode("utf-8").strip()
+                        if stderr:
+                            print(f"xrt-smi stderr: {stderr}")
+                else:
+                    output_lc = result.stdout.decode("utf-8").lower()
+                    # Use case-insensitive substring matching against NPU_MODELS,
+                    # aligned with mlir-aie's hostruntime.py approach.
+                    detected = False
+                    for version, keywords in NPU_MODELS.items():
+                        if any(kw.lower() in output_lc for kw in keywords):
+                            target_device = version
+                            detected = True
+                            if self.verbose:
+                                print(f"Detected NPU device: {version}")
+                            break
+                    if not detected:
+                        print(
+                            f"WARNING: xrt-smi did not report a recognized NPU model. "
+                            f"Supported: {dict(NPU_MODELS)}. "
+                            f"Falling back to '{target_device}'."
+                        )
             except Exception as e:
                 if self.verbose:
                     print("Failed to run xrt-smi, using default target device")
@@ -254,9 +270,8 @@ class XRTBackend(AirBackend):
                 aircc_options += ["-o", output_binary]
                 aircc_options += ["-i", insts]
 
-            aircc_options += ["--air-runtime-loop-tiling-sizes"]
             for s in self.runtime_loop_tiling_sizes:
-                aircc_options += [str(s)]
+                aircc_options += [f"--air-runtime-loop-tiling-sizes={s}"]
 
             if self.verbose:
                 aircc_options = aircc_options + ["-v"]
@@ -265,7 +280,11 @@ class XRTBackend(AirBackend):
                 aircc_options += ["--omit-while-true-loop"]
 
             if self.omit_pingpong:
-                aircc_options += ["--omit-ping-pong-transform", self.omit_pingpong]
+                # Handle both bool (True -> "all") and string ("L1", "L2", "all")
+                pp_val = (
+                    "all" if self.omit_pingpong is True else str(self.omit_pingpong)
+                )
+                aircc_options += [f"--omit-ping-pong-transform={pp_val}"]
 
             if self.lower_linalg_to_func:
                 aircc_options += ["--lower-linalg-to-func"]
@@ -278,8 +297,8 @@ class XRTBackend(AirBackend):
                 aircc_options += ["--omit-auto-broadcast"]
 
             if len(self.channel_multiplexing) != 0:
-                aircc_options += ["--air-channel-multiplexing"]
-                aircc_options += self.channel_multiplexing
+                for ch in self.channel_multiplexing:
+                    aircc_options += [f"--air-channel-multiplexing={ch}"]
 
             if self.use_lock_race_condition_fix:
                 aircc_options += ["--use-lock-race-condition-fix"]
@@ -317,9 +336,31 @@ class XRTBackend(AirBackend):
             if self.debug_ir:
                 aircc_options += ["--debug-ir"]
 
+            if self.bf16_emulation:
+                aircc_options += ["--bf16-emulation"]
+
             if self.verbose:
-                print("Running aircc.py with options:", " ".join(aircc_options))
-            aircc.run(air_module, aircc_options)
+                print("Running aircc with options:", " ".join(aircc_options))
+
+            # Write the in-memory module to the input file expected by aircc
+            with open("air.mlir", "w") as f:
+                f.write(str(air_module))
+
+            # Invoke the C++ aircc binary
+            aircc_exe = shutil.which("aircc")
+            if not aircc_exe:
+                raise AirBackendError(
+                    "aircc binary not found in PATH. "
+                    "Ensure mlir-air is installed and aircc is on PATH."
+                )
+            result = subprocess.run(
+                [aircc_exe] + aircc_options,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                error_msg = result.stderr if result.stderr else result.stdout
+                raise AirBackendError(f"aircc compilation failed:\n{error_msg}")
 
         # For ELF mode, the kernel identifier is "main:instance_name"
         # This is used when loading the ELF via xrt.ext.kernel()

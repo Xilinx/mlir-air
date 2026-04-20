@@ -8,6 +8,10 @@ authors = [
   { name="AMD Inc." },
 ]
 
+[project.optional-dependencies]
+# Keep this list in sync with utils/requirements_dev.txt.
+dev = ["cmake>=3.30", "pybind11", "nanobind>=2.9", "lit", "psutil"]
+
 [project.urls]
 "Homepage" = "https://github.com/Xilinx/mlir-air"
 

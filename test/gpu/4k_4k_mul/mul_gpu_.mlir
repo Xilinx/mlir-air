@@ -83,93 +83,161 @@ module {
     %c256 = arith.constant 256 : index
     %c1_1 = arith.constant 1 : index
     gpu.launch blocks(%arg3, %arg4, %arg5) in (%arg9 = %c32, %arg10 = %c32, %arg11 = %c1) threads(%arg6, %arg7, %arg8) in (%arg12 = %c256, %arg13 = %c1_1, %arg14 = %c1_0) workgroup(%arg15 : memref<128x8xf32, 3>, %arg16 : memref<8x128xf32, 3>) private(%arg17 : memref<8xf32, 5>, %arg18 : memref<8xf32, 5>, %arg19 : memref<64xf32, 5>) {
-      %c1_2 = arith.constant 1 : index
-      %c64 = arith.constant 64 : index
-      %c4 = arith.constant 4 : index
-      %c128 = arith.constant 128 : index
       %c0 = arith.constant 0 : index
-      %c4096 = arith.constant 4096 : index
       %c8 = arith.constant 8 : index
-      %c16 = arith.constant 16 : index
+      %c64 = arith.constant 64 : index
+      %c128 = arith.constant 128 : index
+      %c4096 = arith.constant 4096 : index
       %cst = arith.constant 0.000000e+00 : f32
-      %thread_id_x = gpu.thread_id  x
-      %0 = arith.remsi %thread_id_x, %c128 : index
-      %1 = arith.divsi %thread_id_x, %c128 : index
-      %2 = affine.apply #map()[%arg4]
-      %3 = affine.apply #map()[%arg3]
+      %0 = affine.apply #map()[%arg4]
+      %1 = affine.apply #map()[%arg3]
       scf.for %arg20 = %c0 to %c64 step %c1_1 {
         memref.store %cst, %arg19[%arg20] : memref<64xf32, 5>
       }
       scf.for %arg20 = %c0 to %c4096 step %c8 {
-        scf.for %arg21 = %c0 to %c4 step %c1_2 {
-          %4 = arith.addi %2, %0 : index
-          %5 = arith.muli %1, %c4 : index
-          %6 = arith.addi %5, %arg21 : index
-          %7 = arith.addi %6, %arg20 : index
-          %8 = arith.remsi %4, %c128 : index
-          %9 = arith.remsi %7, %c8 : index
-          %10 = memref.load %arg0[%4, %7] : memref<4096x4096xf32>
-          memref.store %10, %arg15[%8, %9] : memref<128x8xf32, 3>
-        }
-        scf.for %arg21 = %c0 to %c4 step %c1_2 {
-          %4 = arith.addi %3, %0 : index
-          %5 = arith.muli %1, %c4 : index
-          %6 = arith.addi %5, %arg21 : index
-          %7 = arith.addi %6, %arg20 : index
-          %8 = arith.remsi %4, %c128 : index
-          %9 = arith.remsi %7, %c8 : index
-          %10 = memref.load %arg1[%7, %4] : memref<4096x4096xf32>
-          memref.store %10, %arg16[%9, %8] : memref<8x128xf32, 3>
+        %c0_7 = arith.constant 0 : index
+        %c1_8 = arith.constant 1 : index
+        %8 = arith.muli %c128, %c8 : index
+        %thread_id_x_9 = gpu.thread_id x
+        %block_dim_x_10 = gpu.block_dim x
+        scf.for %arg21 = %thread_id_x_9 to %8 step %block_dim_x_10 {
+          %c8_23 = arith.constant 8 : index
+          %14 = arith.remsi %arg21, %c8_23 : index
+          %15 = arith.divsi %arg21, %c8_23 : index
+          %c128_24 = arith.constant 128 : index
+          %16 = arith.remsi %15, %c128_24 : index
+          %17 = arith.divsi %15, %c128_24 : index
+          %18 = arith.addi %0, %16 : index
+          %19 = arith.addi %arg20, %14 : index
+          %20 = memref.load %arg0[%18, %19] : memref<4096x4096xf32>
+          memref.store %20, %arg15[%16, %14] : memref<128x8xf32, 3>
         }
         gpu.barrier
-        %c0_3 = arith.constant 0 : index
-        %c1_4 = arith.constant 1 : index
-        %c16_5 = arith.constant 16 : index
-        %c8_6 = arith.constant 8 : index
-        scf.for %arg21 = %c0_3 to %c8_6 step %c1_4 {
-          scf.for %arg22 = %c0_3 to %c8_6 step %c1_4 {
-            %4 = arith.remsi %arg6, %c16_5 : index
-            %5 = arith.muli %4, %c8_6 : index
-            %6 = arith.addi %5, %arg22 : index
-            %7 = memref.load %arg15[%6, %arg21] : memref<128x8xf32, 3>
-            memref.store %7, %arg17[%arg22] : memref<8xf32, 5>
+        %c0_11 = arith.constant 0 : index
+        %c1_12 = arith.constant 1 : index
+        %9 = arith.muli %c8, %c128 : index
+        %thread_id_x_13 = gpu.thread_id x
+        %block_dim_x_14 = gpu.block_dim x
+        scf.for %arg21 = %thread_id_x_13 to %9 step %block_dim_x_14 {
+          %c128_23 = arith.constant 128 : index
+          %14 = arith.remsi %arg21, %c128_23 : index
+          %15 = arith.divsi %arg21, %c128_23 : index
+          %c8_24 = arith.constant 8 : index
+          %16 = arith.remsi %15, %c8_24 : index
+          %17 = arith.divsi %15, %c8_24 : index
+          %18 = arith.addi %arg20, %16 : index
+          %19 = arith.addi %1, %14 : index
+          %20 = memref.load %arg1[%18, %19] : memref<4096x4096xf32>
+          memref.store %20, %arg16[%16, %14] : memref<8x128xf32, 3>
+        }
+        gpu.barrier
+        gpu.barrier
+        %thread_id_x_15 = gpu.thread_id x
+        %thread_id_y_16 = gpu.thread_id y
+        %block_dim_x_17 = gpu.block_dim x
+        %block_dim_y_18 = gpu.block_dim y
+        %c0_19 = arith.constant 0 : index
+        %c1_20 = arith.constant 1 : index
+        %c8_21 = arith.constant 8 : index
+        %c16_22 = arith.constant 16 : index
+        %10 = arith.remsi %thread_id_x_15, %c16_22 : index
+        %11 = arith.divsi %thread_id_x_15, %c16_22 : index
+        %12 = arith.muli %10, %c8_21 : index
+        %13 = arith.muli %11, %c8_21 : index
+        scf.for %arg21 = %c0_19 to %c8_21 step %c1_20 {
+          %c0_23 = arith.constant 0 : index
+          %c1_24 = arith.constant 1 : index
+          scf.for %arg22 = %c0_23 to %c8_21 step %c1_24 {
+            %c0_27 = arith.constant 0 : index
+            %c8_28 = arith.constant 8 : index
+            %14 = arith.muli %12, %c8_28 : index
+            %15 = arith.addi %c0_27, %14 : index
+            %c1_29 = arith.constant 1 : index
+            %16 = arith.muli %arg21, %c1_29 : index
+            %17 = arith.addi %15, %16 : index
+            %c0_30 = arith.constant 0 : index
+            %18 = arith.muli %arg22, %c8_21 : index
+            %19 = arith.addi %c0_30, %18 : index
+            %20 = arith.addi %17, %19 : index
+            %c8_31 = arith.constant 8 : index
+            %21 = arith.remsi %20, %c8_31 : index
+            %22 = arith.divsi %20, %c8_31 : index
+            %c128_32 = arith.constant 128 : index
+            %23 = arith.remsi %22, %c128_32 : index
+            %24 = arith.divsi %22, %c128_32 : index
+            %25 = memref.load %arg15[%23, %21] : memref<128x8xf32, 3>
+            memref.store %25, %arg17[%arg22] : memref<8xf32, 5>
           }
-          scf.for %arg22 = %c0_3 to %c8_6 step %c1_4 {
-            %4 = arith.divsi %arg6, %c16_5 : index
-            %5 = arith.muli %4, %c8_6 : index
-            %6 = arith.addi %5, %arg22 : index
-            %7 = memref.load %arg16[%arg21, %6] : memref<8x128xf32, 3>
-            memref.store %7, %arg18[%arg22] : memref<8xf32, 5>
+          %c0_25 = arith.constant 0 : index
+          %c1_26 = arith.constant 1 : index
+          scf.for %arg22 = %c0_25 to %c8_21 step %c1_26 {
+            %c0_27 = arith.constant 0 : index
+            %c128_28 = arith.constant 128 : index
+            %14 = arith.muli %arg21, %c128_28 : index
+            %15 = arith.addi %c0_27, %14 : index
+            %c1_29 = arith.constant 1 : index
+            %16 = arith.muli %13, %c1_29 : index
+            %17 = arith.addi %15, %16 : index
+            %c0_30 = arith.constant 0 : index
+            %18 = arith.muli %arg22, %c1_20 : index
+            %19 = arith.addi %c0_30, %18 : index
+            %20 = arith.addi %17, %19 : index
+            %c128_31 = arith.constant 128 : index
+            %21 = arith.remsi %20, %c128_31 : index
+            %22 = arith.divsi %20, %c128_31 : index
+            %c8_32 = arith.constant 8 : index
+            %23 = arith.remsi %22, %c8_32 : index
+            %24 = arith.divsi %22, %c8_32 : index
+            %25 = memref.load %arg16[%23, %21] : memref<8x128xf32, 3>
+            memref.store %25, %arg18[%arg22] : memref<8xf32, 5>
           }
-          scf.for %arg22 = %c0_3 to %c8_6 step %c1_4 {
-            scf.for %arg23 = %c0_3 to %c8_6 step %c1_4 {
-              %4 = arith.muli %arg22, %c8_6 : index
-              %5 = arith.addi %4, %arg23 : index
-              %6 = memref.load %arg17[%arg22] : memref<8xf32, 5>
-              %7 = memref.load %arg18[%arg23] : memref<8xf32, 5>
-              %8 = memref.load %arg19[%5] : memref<64xf32, 5>
-              %9 = arith.mulf %6, %7 : f32
-              %10 = arith.addf %8, %9 : f32
-              memref.store %10, %arg19[%5] : memref<64xf32, 5>
+          scf.for %arg22 = %c0_19 to %c8_21 step %c1_20 {
+            scf.for %arg23 = %c0_19 to %c8_21 step %c1_20 {
+              %14 = arith.muli %arg22, %c8_21 : index
+              %15 = arith.addi %14, %arg23 : index
+              %16 = memref.load %arg17[%arg22] : memref<8xf32, 5>
+              %17 = memref.load %arg18[%arg23] : memref<8xf32, 5>
+              %18 = memref.load %arg19[%15] : memref<64xf32, 5>
+              %19 = arith.mulf %16, %17 : f32
+              %20 = arith.addf %18, %19 : f32
+              memref.store %20, %arg19[%15] : memref<64xf32, 5>
             }
           }
         }
         gpu.barrier
-        scf.for %arg21 = %c0 to %c8 step %c1_1 {
-          scf.for %arg22 = %c0 to %c8 step %c1_1 {
-            %4 = arith.muli %arg21, %c8 : index
-            %5 = arith.addi %arg22, %4 : index
-            %6 = memref.load %arg19[%5] : memref<64xf32, 5>
-            %7 = arith.remsi %thread_id_x, %c16 : index
-            %8 = arith.muli %7, %c8 : index
-            %9 = arith.addi %2, %8 : index
-            %10 = arith.addi %9, %arg21 : index
-            %11 = arith.divsi %thread_id_x, %c16 : index
-            %12 = arith.muli %11, %c8 : index
-            %13 = arith.addi %3, %12 : index
-            %14 = arith.addi %13, %arg22 : index
-            memref.store %6, %arg2[%10, %14] : memref<4096x4096xf32>
-          }
+      }
+      %thread_id_x = gpu.thread_id x
+      %thread_id_y = gpu.thread_id y
+      %block_dim_x = gpu.block_dim x
+      %block_dim_y = gpu.block_dim y
+      %c8_2 = arith.constant 8 : index
+      %c16 = arith.constant 16 : index
+      %c4096_3 = arith.constant 4096 : index
+      %c1_4 = arith.constant 1 : index
+      %2 = arith.remsi %thread_id_x, %c16 : index
+      %3 = arith.divsi %thread_id_x, %c16 : index
+      %4 = arith.muli %2, %c8_2 : index
+      %5 = arith.muli %3, %c8_2 : index
+      %6 = arith.addi %0, %4 : index
+      %7 = arith.addi %1, %5 : index
+      %c0_5 = arith.constant 0 : index
+      %c1_6 = arith.constant 1 : index
+      scf.for %arg20 = %c0_5 to %c8_2 step %c1_6 {
+        scf.for %arg21 = %c0_5 to %c8_2 step %c1_6 {
+          %c0_7 = arith.constant 0 : index
+          %c8_8 = arith.constant 8 : index
+          %8 = arith.muli %arg20, %c8_8 : index
+          %9 = arith.addi %c0_7, %8 : index
+          %c1_9 = arith.constant 1 : index
+          %10 = arith.muli %arg21, %c1_9 : index
+          %11 = arith.addi %9, %10 : index
+          %c64_10 = arith.constant 64 : index
+          %12 = arith.remsi %11, %c64_10 : index
+          %13 = arith.divsi %11, %c64_10 : index
+          %14 = arith.addi %6, %arg20 : index
+          %15 = arith.addi %7, %arg21 : index
+          %16 = memref.load %arg19[%12] : memref<64xf32, 5>
+          memref.store %16, %arg2[%14, %15] : memref<4096x4096xf32>
         }
       }
       gpu.terminator

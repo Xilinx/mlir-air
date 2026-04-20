@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1_1col use-pkt-flow-at-shim-dma=true})' --split-input-file -verify-diagnostics | FileCheck %s
+// RUN: air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1_1col})' --split-input-file -verify-diagnostics | FileCheck %s
 
 // CHECK: %[[VAL0:.*]] = aie.tile(0, 1)
 // CHECK: %[[VAL1:.*]] = aie.tile(0, 2)
@@ -23,7 +23,7 @@
 // CHECK: @func0
 // CHECK: air.channel.put  @channel_0[] {{.*}} metadataArray = [{base = "air_channel_0", index = 0 : i32}], packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
 #map2 = affine_map<(d0) -> (d0)>
-air.channel @channel_0 [1, 1]
+air.channel @channel_0 [1, 1] {channel_type = "dma_packet"}
 air.channel @channel_1 [1, 1]
 air.channel @channel_2 [1, 1]
 air.channel @channel_3 [1, 1]
@@ -83,7 +83,7 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK: air.channel.put async @channel_0[] {{.*}} metadataArray = [{base = "air_channel_0", index = 0 : i32}], packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
 #map = affine_map<(d0) -> (d0)>
 module {
-  air.channel @channel_0 [1, 1]
+  air.channel @channel_0 [1, 1] {channel_type = "dma_packet"}
   air.channel @channel_1 [1, 1]
   air.channel @channel_2 [1, 1]
   air.channel @channel_3 [1, 1]

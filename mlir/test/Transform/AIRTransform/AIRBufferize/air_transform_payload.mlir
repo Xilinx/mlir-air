@@ -13,17 +13,12 @@
 // CHECK: %[[subview_3:.*]] = memref.subview %{{.*}}[0, %[[apply1]]] [1024, 256] [1, 1]
 // CHECK: %[[subview_4:.*]] = memref.subview %{{.*}}[%[[apply0]], %[[apply1]]] [256, 256] [1, 1]
 // CHECK: %[[subview_5:.*]] = memref.subview %[[subview]][0, 0] [256, 32] [1, 1]
-// CHECK: %[[expand_shape:.*]] = memref.expand_shape %[[subview_5]] [{{.*}}[0, 1], [2, 3]{{.*}}] output_shape [4, 64, 1, 32]
-// CHECK: %[[transpose:.*]] = memref.transpose %[[expand_shape]] (d0, d1, d2, d3) -> (d0, d2, d1, d3)
-// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %[[transpose]][] [] [])
+// CHECK: linalg.pack %[[subview_5]] outer_dims_perm = [0, 1] inner_dims_pos = [0, 1] inner_tiles = [64, 32] into %{{.*}}
 // CHECK: %[[subview_6:.*]] = memref.subview %[[subview_3]][0, 0] [32, 256] [1, 1]
-// CHECK: %[[expand_shape_7:.*]] = memref.expand_shape %[[subview_6]] [{{.*}}[0, 1], [2, 3]{{.*}}] output_shape [1, 32, 4, 64]
-// CHECK: %[[transpose_8:.*]] = memref.transpose %[[expand_shape_7]] (d0, d1, d2, d3) -> (d2, d0, d1, d3)
-// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %[[transpose_8]][] [] [])
-// CHECK: %[[transpose_9:.*]] = memref.transpose %{{.*}} (d0, d1, d2, d3) -> (d0, d2, d1, d3)
-// CHECK: air.dma_memcpy_nd (%[[subview_4]][] [] [], %[[transpose_9]][] [] [])
-// CHECK: %[[subview_10:.*]] = memref.subview %{{.*}}[%[[apply0]], %[[apply1]]] [256, 256] [1, 1]
-// CHECK: memref.copy %[[subview_4]], %[[subview_10]]
+// CHECK: linalg.pack %[[subview_6]] outer_dims_perm = [1, 0] inner_dims_pos = [0, 1] inner_tiles = [32, 64] into %{{.*}}
+// CHECK: linalg.unpack %{{.*}} inner_dims_pos = [0, 1] inner_tiles = [64, 64] into %[[subview_4]]
+// CHECK: %[[subview_7:.*]] = memref.subview %{{.*}}[%[[apply0]], %[[apply1]]] [256, 256] [1, 1]
+// CHECK: memref.copy %[[subview_4]], %[[subview_7]]
 
 #map = affine_map<(d0) -> (d0 * 256)>
 module {

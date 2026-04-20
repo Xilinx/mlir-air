@@ -15,6 +15,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -25,6 +26,7 @@
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IntegerSet.h"
@@ -50,100 +52,124 @@ namespace air {
 
 static std::atomic<uint64_t> DmaMemcpyOpID;
 
-static void extractOperandsFromSubview(memref::SubViewOp subview,
-                                       OpBuilder &builder,
-                                       SmallVector<Value, 4> &offsets,
-                                       SmallVector<Value, 4> &sizes,
-                                       SmallVector<Value, 4> &strides) {
-  auto subview_offsets = subview.getOffsets().begin();
+static LogicalResult
+extractOperandsFromSubview(memref::SubViewOp subview, OpBuilder &builder,
+                           SmallVector<Value, 4> &offsets,
+                           SmallVector<Value, 4> &sizes,
+                           SmallVector<Value, 4> &strides) {
+  auto loc = subview.getLoc();
+
+  // Strides: the DMA needs the result type's memory layout strides
+  // (= source_stride * subview_stride), not the subview's own strides.
   auto static_offsets = subview.getStaticOffsets();
   auto static_sizes = subview.getStaticSizes();
   auto static_strides = subview.getStaticStrides();
-  auto loc = subview.getLoc();
-
-  // get the strides and offsets from the memref type
   auto inferredType = llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
       subview.getSourceType(), static_offsets, static_sizes, static_strides));
   int64_t offset;
   SmallVector<int64_t, 4> layout_strides;
-  auto successStrides =
-      inferredType.getStridesAndOffset(layout_strides, offset);
-  if (failed(successStrides)) {
-    llvm::outs() << "Failed to get strides\n";
-    return; // failure();
+  if (failed(inferredType.getStridesAndOffset(layout_strides, offset)))
+    return failure();
+
+  for (auto ls : layout_strides) {
+    if (ShapedType::isDynamic(ls))
+      return failure();
+    strides.push_back(arith::ConstantIndexOp::create(builder, loc, ls));
   }
 
-  for (auto o : static_offsets) {
-    if (o >= 0)
-      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, o));
-    else
-      offsets.push_back(*subview_offsets++);
-  }
-  for (auto s : static_sizes)
-    sizes.push_back(arith::ConstantIndexOp::create(builder, loc, s));
-  for (auto s : layout_strides)
-    strides.push_back(arith::ConstantIndexOp::create(builder, loc, s));
+  // Offsets and sizes: use getMixed* APIs to handle static/dynamic uniformly.
+  for (auto ofr : subview.getMixedOffsets())
+    offsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+  for (auto ofr : subview.getMixedSizes())
+    sizes.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+
+  return success();
 }
 
 static void extractOperandsFromReinterpretCast(
     memref::ReinterpretCastOp reinterpretCast, OpBuilder &builder,
     SmallVector<Value, 4> &offsets, SmallVector<Value, 4> &sizes,
     SmallVector<Value, 4> &strides) {
-  auto reinterpretCast_offsets = reinterpretCast.getOffsets().begin();
-  auto static_offsets = reinterpretCast.getStaticOffsets();
-  auto static_sizes = reinterpretCast.getStaticSizes();
   auto loc = reinterpretCast.getLoc();
 
-  // Fixup an issue in the reinterpretCast output memref's strided layout giving
-  // false dynamic strides
-  auto constifyStridesInStridedLayout =
-      [](MemRefType rankedMemRefType,
-         memref::ReinterpretCastOp reinterpretCast) {
-        StridedLayoutAttr stridedLayout =
-            dyn_cast<StridedLayoutAttr>(rankedMemRefType.getLayout());
-        SmallVector<int64_t> correctedStaticStrides(
-            stridedLayout.getStrides().size(), 0);
-        for (auto [index, stride] :
-             llvm::enumerate(reinterpretCast.getMixedStrides())) {
-          if (auto constStride = getConstantIntValue(stride))
-            correctedStaticStrides[index] = *constStride;
-          else
-            correctedStaticStrides[index] = stridedLayout.getStrides()[index];
+  // Use getMixed* APIs to handle static/dynamic values uniformly.
+  for (auto ofr : reinterpretCast.getMixedOffsets())
+    offsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+  for (auto ofr : reinterpretCast.getMixedSizes())
+    sizes.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+  for (auto ofr : reinterpretCast.getMixedStrides())
+    strides.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+  // When the reinterpret_cast has fewer offset dimensions than the memref
+  // rank (e.g., a single flat offset for a 2D memref), we need to place
+  // the flat offset in the correct dimension. For transposed memrefs
+  // (stride-1 in the first dimension), the flat offset corresponds to the
+  // stride-1 dimension, not the last dimension. Find the stride-1
+  // dimension and place the offset there; pad others with zero.
+  // Search backward so that ambiguous cases (e.g., strides=[1,1]) default
+  // to the last dimension, matching the original prepend-zeros behavior.
+  if (offsets.size() < sizes.size()) {
+    int strideOneIdx = static_cast<int>(strides.size()) - 1;
+    for (int i = static_cast<int>(strides.size()) - 1; i >= 0; --i) {
+      if (auto cst =
+              getConstantIntValue(reinterpretCast.getMixedStrides()[i])) {
+        if (*cst == 1) {
+          strideOneIdx = i;
+          break;
         }
-        auto correctedStridedLayout = StridedLayoutAttr::get(
-            reinterpretCast->getContext(), stridedLayout.getOffset(),
-            ArrayRef(correctedStaticStrides));
-        return MemRefType::Builder(rankedMemRefType)
-            .setShape(rankedMemRefType.getShape())
-            .setLayout(correctedStridedLayout);
-      };
+      }
+    }
+    // Save existing offsets (typically just one flat offset).
+    SmallVector<Value, 4> existingOffsets(offsets);
+    offsets.clear();
+    for (size_t i = 0; i < sizes.size(); ++i) {
+      if (static_cast<int>(i) == strideOneIdx && !existingOffsets.empty()) {
+        offsets.push_back(existingOffsets[0]);
+      } else {
+        offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
+      }
+    }
+  }
+}
 
-  MemRefType reinterpretCastType = constifyStridesInStridedLayout(
-      reinterpretCast.getType(), reinterpretCast);
+// Detect self-copies that would produce invalid self-DMAs. After unwrapping
+// subview ops, check if src and dst resolve to the same base buffer with
+// identical offsets/sizes/strides (including dynamic operands). This can happen
+// when structured.pad with copy_back_op creates a redundant copy-back.
+static bool isSelfCopy(memref::CopyOp op) {
+  Value src = op.getSource();
+  Value dst = op.getTarget();
 
-  // get the strides and offsets from the memref type
-  int64_t offset;
-  SmallVector<int64_t, 4> layout_strides;
-  auto successStrides =
-      reinterpretCastType.getStridesAndOffset(layout_strides, offset);
-  if (failed(successStrides)) {
-    llvm::outs() << "Failed to get strides\n";
-    return; // failure();
+  // Quick check: same SSA value means trivially a self-copy.
+  if (src == dst)
+    return true;
+
+  // Unwrap subviews to find base buffers and access parameters.
+  // Uses getMixedOffsets/Sizes/Strides to correctly handle both static and
+  // dynamic operands (avoids false positives from dynamic sentinel values).
+  SmallVector<OpFoldResult> srcOffsets, srcSizes, srcStrides;
+  SmallVector<OpFoldResult> dstOffsets, dstSizes, dstStrides;
+
+  if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
+    srcOffsets = subview.getMixedOffsets();
+    srcSizes = subview.getMixedSizes();
+    srcStrides = subview.getMixedStrides();
+    src = subview.getSource();
   }
 
-  for (auto o : static_offsets) {
-    if (o >= 0)
-      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, o));
-    else
-      offsets.push_back(*reinterpretCast_offsets++);
+  if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
+    dstOffsets = subview.getMixedOffsets();
+    dstSizes = subview.getMixedSizes();
+    dstStrides = subview.getMixedStrides();
+    dst = subview.getSource();
   }
-  for (auto s : static_sizes)
-    sizes.push_back(arith::ConstantIndexOp::create(builder, loc, s));
-  for (auto s : layout_strides)
-    strides.push_back(arith::ConstantIndexOp::create(builder, loc, s));
-  while (offsets.size() < sizes.size())
-    offsets.insert(offsets.begin(),
-                   arith::ConstantIndexOp::create(builder, loc, 0));
+
+  // Different base buffers means not a self-copy.
+  if (src != dst)
+    return false;
+
+  // Same base buffer: self-copy if no subviews or identical parameters.
+  return srcOffsets == dstOffsets && srcSizes == dstSizes &&
+         srcStrides == dstStrides;
 }
 
 static FailureOr<air::DmaMemcpyNdOp>
@@ -155,16 +181,12 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   rewriter.setInsertionPoint(op);
 
   // It must already be a memref
-  auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-  auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
+  auto src_type = llvm::dyn_cast_if_present<MemRefType>(src.getType());
+  auto dst_type = llvm::dyn_cast_if_present<MemRefType>(dst.getType());
   if (!src_type)
     return failure();
 
-  if ((src_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) &&
-      (dst_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3))
-    return failure();
-
-  if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
+  if (air::isL3(src_type) && air::isL3(dst_type))
     return failure();
 
   SmallVector<Value, 4> src_offsets, dst_offsets;
@@ -172,9 +194,42 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   SmallVector<Value, 4> src_sizes, dst_sizes;
 
   if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-    extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
-                               src_strides);
+    if (failed(extractOperandsFromSubview(subview, rewriter, src_offsets,
+                                          src_sizes, src_strides)))
+      return failure();
     src = subview.getSource();
+    // Also peel a reinterpret_cast if the subview's source is one.
+    // For transposed memrefs (stride-1 in the first dimension, i.e. the
+    // outer stride is > 1), the reinterpret_cast has a flat offset into
+    // the buffer corresponding to the launch's induction variable offset
+    // in that dimension. We find the dimension with stride 1 and add the
+    // reinterpret_cast offset there; all other offset slots retain the
+    // subview offsets which are expressed relative to the cast's base.
+    if (auto reinterpretCast = src.getDefiningOp<memref::ReinterpretCastOp>()) {
+      auto rcOffsets = reinterpretCast.getOffsets();
+      if (!rcOffsets.empty() && !src_offsets.empty()) {
+        // Determine which subview dimension has stride == 1 (innermost).
+        // The reinterpret_cast flat offset belongs to that dimension.
+        int strideOneIdx = static_cast<int>(src_strides.size()) - 1;
+        for (int i = 0; i < static_cast<int>(src_strides.size()); ++i) {
+          if (auto cst = getConstantIntValue(src_strides[i])) {
+            if (*cst == 1) {
+              strideOneIdx = i;
+              break;
+            }
+          }
+        }
+        // Add the reinterpret_cast flat offset to the stride-1 dimension's
+        // subview offset. This is the only dimension where the flat offset
+        // adds without a stride multiplier.
+        Value rcOff = rcOffsets[0];
+        Value combined =
+            arith::AddIOp::create(rewriter, reinterpretCast.getLoc(),
+                                  src_offsets[strideOneIdx], rcOff);
+        src_offsets[strideOneIdx] = combined;
+      }
+      src = reinterpretCast.getSource();
+    }
   } else if (auto reinterpretCast =
                  src.getDefiningOp<memref::ReinterpretCastOp>()) {
     extractOperandsFromReinterpretCast(reinterpretCast, rewriter, src_offsets,
@@ -183,9 +238,30 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   }
 
   if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-    extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
-                               dst_strides);
+    if (failed(extractOperandsFromSubview(subview, rewriter, dst_offsets,
+                                          dst_sizes, dst_strides)))
+      return failure();
     dst = subview.getSource();
+    if (auto reinterpretCast = dst.getDefiningOp<memref::ReinterpretCastOp>()) {
+      auto rcOffsets = reinterpretCast.getOffsets();
+      if (!rcOffsets.empty() && !dst_offsets.empty()) {
+        int strideOneIdx = static_cast<int>(dst_strides.size()) - 1;
+        for (int i = 0; i < static_cast<int>(dst_strides.size()); ++i) {
+          if (auto cst = getConstantIntValue(dst_strides[i])) {
+            if (*cst == 1) {
+              strideOneIdx = i;
+              break;
+            }
+          }
+        }
+        Value rcOff = rcOffsets[0];
+        Value combined =
+            arith::AddIOp::create(rewriter, reinterpretCast.getLoc(),
+                                  dst_offsets[strideOneIdx], rcOff);
+        dst_offsets[strideOneIdx] = combined;
+      }
+      dst = reinterpretCast.getSource();
+    }
   } else if (auto reinterpretCast =
                  dst.getDefiningOp<memref::ReinterpretCastOp>()) {
     extractOperandsFromReinterpretCast(reinterpretCast, rewriter, dst_offsets,
@@ -197,7 +273,8 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   SmallVector<Type, 4> tys;
   auto dma = air::DmaMemcpyNdOp::create(
       rewriter, loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
-      src_offsets, src_sizes, src_strides);
+      src_offsets, src_sizes, src_strides, /*pad_before=*/nullptr,
+      /*pad_after=*/nullptr);
   dma->setAttr(
       "id", mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
                                    ++DmaMemcpyOpID));
@@ -246,6 +323,10 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
   using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(memref::CopyOp op,
                                 PatternRewriter &rewriter) const override {
+    if (isSelfCopy(op)) {
+      rewriter.eraseOp(op);
+      return success();
+    }
     if (failed(matchAndRewriteCopyOp(op, rewriter)))
       return failure();
     return success();
@@ -263,6 +344,147 @@ class LinalgCopyToMemRefCopy : public OpRewritePattern<linalg::CopyOp> {
     }
     rewriter.replaceOpWithNewOp<memref::CopyOp>(
         copyOp, copyOp.getInputs().front(), copyOp.getDpsInits().front());
+    return success();
+  }
+};
+
+// Helpers for linalg.pack → DMA lowering (copied from
+// AIRBufferizationInterfaces.cpp for standalone use in ConvertToAIRPass).
+static SmallVector<int64_t>
+getPackUnpackNormalizedPerm(int rank, ArrayRef<int64_t> perm) {
+  if (rank == (int)perm.size()) {
+    SmallVector<int64_t> vec;
+    for (auto [index, value] : llvm::enumerate(perm))
+      vec.push_back(index);
+    return vec;
+  }
+  SmallVector<int64_t> vec;
+  for (auto i : llvm::seq<unsigned>(0, rank)) {
+    if (llvm::any_of(perm, [i](int64_t elem) { return elem == i; }))
+      continue;
+    vec.push_back(i);
+  }
+  vec.insert(vec.end(), perm.begin(), perm.end());
+  return vec;
+}
+
+static SmallVector<int64_t>
+getPackUnpackStripMinedPerm(ArrayRef<int64_t> shape,
+                            ArrayRef<int64_t> innerDimsPos,
+                            ArrayRef<int64_t> outerDimsPerm) {
+  int64_t numPackedDims = innerDimsPos.size();
+  int64_t packedRank = shape.size();
+  auto lastDims = llvm::to_vector(
+      llvm::seq<int64_t>(packedRank - numPackedDims, packedRank));
+  PackingMetadata packingMetadata =
+      computePackingMetadata(packedRank, innerDimsPos);
+  SmallVector<int64_t> innerPositionsPerm = computePermutationVector(
+      packedRank, lastDims, packingMetadata.insertPositions);
+  SmallVector<int64_t> outerPos = packingMetadata.outerPositions;
+  if (!outerDimsPerm.empty())
+    applyPermutationToVector(outerPos, outerDimsPerm);
+  SmallVector<int64_t> outerPositionPerm = computePermutationVector(
+      packedRank, packingMetadata.outerPositions, outerPos);
+  SmallVector<int64_t> result = innerPositionsPerm;
+  applyPermutationToVector(result, outerPositionPerm);
+  return result;
+}
+
+// Pattern to lower `linalg.pack` on memrefs into expand_shape + transpose +
+// dma_memcpy_nd. LLVM 23 no longer decomposes linalg.pack during
+// one-shot-bufferize, so we handle it explicitly in the copy-to-dma pass.
+class LinalgPackToAIRDma : public OpRewritePattern<linalg::PackOp> {
+  using OpRewritePattern<linalg::PackOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(linalg::PackOp op,
+                                PatternRewriter &rewriter) const override {
+    auto srcType = dyn_cast_if_present<MemRefType>(op.getSource().getType());
+    auto dstType = dyn_cast_if_present<MemRefType>(op.getDest().getType());
+    if (!srcType || !dstType)
+      return failure();
+    if (llvm::any_of(op.getStaticInnerTiles(),
+                     [](int64_t s) { return ShapedType::isDynamic(s); }))
+      return failure();
+
+    Location loc = op->getLoc();
+    auto innerDimsPos = op.getInnerDimsPos();
+    auto destShape = dstType.getShape();
+    SmallVector<int64_t> transpPerm;
+    Value tile = nullptr;
+
+    if (llvm::any_of(innerDimsPos,
+                     [destShape](int64_t i) { return destShape[i] != 1; })) {
+      auto packMeta = computePackingMetadata(dstType.getRank(), innerDimsPos);
+      auto perm = getPackUnpackStripMinedPerm(destShape, innerDimsPos,
+                                              op.getOuterDimsPerm());
+      SmallVector<int64_t> stripMinedShape(destShape);
+      applyPermutationToVector(stripMinedShape, perm);
+      tile = memref::ExpandShapeOp::create(rewriter, loc, stripMinedShape,
+                                           op.getSource(),
+                                           packMeta.reassociations);
+      transpPerm = invertPermutationVector(perm);
+    } else {
+      tile = op.getSource();
+      transpPerm = getPackUnpackNormalizedPerm(srcType.getRank(), innerDimsPos);
+    }
+
+    auto transposeOp = memref::TransposeOp::create(
+        rewriter, loc, tile,
+        AffineMapAttr::get(
+            AffineMap::getPermutationMap(transpPerm, op->getContext())));
+    SmallVector<Value, 2> empty;
+    xilinx::air::DmaMemcpyNdOp::create(
+        rewriter, loc, SmallVector<Type, 1>{}, empty, op.getDest(), empty,
+        empty, empty, transposeOp.getResult(), empty, empty, empty,
+        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// Pattern to lower `linalg.unpack` on memrefs into transpose +
+// dma_memcpy_nd. Mirrors LinalgPackToAIRDma for the inverse direction.
+class LinalgUnPackToAIRDma : public OpRewritePattern<linalg::UnPackOp> {
+  using OpRewritePattern<linalg::UnPackOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(linalg::UnPackOp op,
+                                PatternRewriter &rewriter) const override {
+    auto srcType = dyn_cast_if_present<MemRefType>(op.getSource().getType());
+    auto dstType = dyn_cast_if_present<MemRefType>(op.getDest().getType());
+    if (!srcType || !dstType)
+      return failure();
+    if (llvm::any_of(op.getStaticInnerTiles(),
+                     [](int64_t s) { return ShapedType::isDynamic(s); }))
+      return failure();
+
+    Location loc = op->getLoc();
+    auto innerDimsPos = op.getInnerDimsPos();
+    auto srcShape = srcType.getShape();
+    SmallVector<int64_t> transpPerm;
+    Value tile = nullptr;
+
+    if (llvm::any_of(innerDimsPos,
+                     [srcShape](int64_t i) { return srcShape[i] != 1; })) {
+      // Non-degenerate case: transpose from packed layout to strip-mined.
+      auto perm = getPackUnpackStripMinedPerm(srcShape, innerDimsPos,
+                                              op.getOuterDimsPerm());
+      tile = op.getSource();
+      transpPerm = perm;
+    } else {
+      // Degenerate inner dims: use normalized permutation (inverted).
+      tile = op.getSource();
+      transpPerm = getPackUnpackNormalizedPerm(srcType.getRank(), innerDimsPos);
+      transpPerm = invertPermutationVector(transpPerm);
+    }
+
+    auto transposeOp = memref::TransposeOp::create(
+        rewriter, loc, tile,
+        AffineMapAttr::get(
+            AffineMap::getPermutationMap(transpPerm, op->getContext())));
+    SmallVector<Value, 2> empty;
+    xilinx::air::DmaMemcpyNdOp::create(
+        rewriter, loc, SmallVector<Type, 1>{}, empty, op.getDest(), empty,
+        empty, empty, transposeOp.getResult(), empty, empty, empty,
+        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -287,10 +509,10 @@ public:
     normalizeAffineParallel(op);
 
     auto loc = op.getLoc();
-    auto ub0 =
-        dyn_cast<AffineConstantExpr>(op.getUpperBoundsMap().getResult(0));
-    auto ub1 =
-        dyn_cast<AffineConstantExpr>(op.getUpperBoundsMap().getResult(1));
+    auto ub0 = dyn_cast_if_present<AffineConstantExpr>(
+        op.getUpperBoundsMap().getResult(0));
+    auto ub1 = dyn_cast_if_present<AffineConstantExpr>(
+        op.getUpperBoundsMap().getResult(1));
 
     if (!ub0 || !ub1) {
       return op->emitOpError("failed conversion to 'air.herd': only constant "
@@ -661,7 +883,8 @@ LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
                               /*async_deps*/ ValueRange{}, ch, idx, val,
                               /*offsets*/ ValueRange{},
                               /*sizes*/ ValueRange{},
-                              /*strides*/ ValueRange{});
+                              /*strides*/ ValueRange{},
+                              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
   };
 
   // Emit a ChannelGetOp with given channel name, indices, and value.
@@ -670,7 +893,8 @@ LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
                               /*async_deps*/ ValueRange{}, ch, idx, val,
                               /*offsets*/ ValueRange{},
                               /*sizes*/ ValueRange{},
-                              /*strides*/ ValueRange{});
+                              /*strides*/ ValueRange{},
+                              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
   };
 
   // Clone a list of ops into the current insertion point using a remap.
@@ -865,8 +1089,12 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
   for (auto id : ids)
     dims.push_back(arith::ConstantIndexOp::create(rewriter, loc, bounds[id]));
   auto hierOp = hierTy::create(rewriter, op.getLoc(), dims, args);
+  // Transfer air.actual_sizes attribute from scf.parallel to air hierarchy op.
+  if (auto actualSizes =
+          op->getAttrOfType<DenseI64ArrayAttr>("air.actual_sizes"))
+    hierOp->setAttr("air.actual_sizes", actualSizes);
   auto &body = op.getBody()->getOperations();
-  if (auto herdOp = dyn_cast<air::HerdOp>(hierOp.getOperation()))
+  if (auto herdOp = dyn_cast_if_present<air::HerdOp>(hierOp.getOperation()))
     propagateLinkWith(op, herdOp);
   auto &bb = hierOp.getBody().front();
   auto ivs = op.getInductionVars();
@@ -877,7 +1105,8 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
 
   // If scf.parallel has scf.reduce with non-empty region, then convert to
   // affine.if.
-  auto reduceOp = dyn_cast<scf::ReduceOp>(op.getBody()->getTerminator());
+  auto reduceOp =
+      dyn_cast_if_present<scf::ReduceOp>(op.getBody()->getTerminator());
   if (!reduceOp.getReductions().empty()) {
     rewriter.setInsertionPoint(bb.getTerminator());
     if (failed(ScfReduceToAffineIf(reduceOp, hierOp, rewriter)))
@@ -956,7 +1185,7 @@ getMemrefBackwardSlices(Value &memref, Operation *&memrefAlloc,
     if (!memrefAlloc)
       return failure();
   }
-  memref = dyn_cast<memref::AllocOp>(memrefAlloc).getMemref();
+  memref = dyn_cast_if_present<memref::AllocOp>(memrefAlloc).getMemref();
   return success();
 }
 
@@ -983,7 +1212,7 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   memref::SubViewOp tilingHintSubview = nullptr;
   scf::ParallelOp previousTilingScfPar = nullptr;
   for (auto user : L1Memref.getUsers()) {
-    if (auto subViewUser = dyn_cast<memref::SubViewOp>(user))
+    if (auto subViewUser = dyn_cast_if_present<memref::SubViewOp>(user))
       tilingHintSubview = subViewUser;
     else
       continue;
@@ -1009,11 +1238,11 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
               newTilingPar.getInductionVars()[i]);
   // Generate memref subview op leading the tiling of the L1 memref
   builder.setInsertionPointToStart(newTilingPar.getBody());
-  auto newL1Subview =
-      dyn_cast<memref::SubViewOp>(builder.clone(*tilingHintSubview, remap));
+  auto newL1Subview = dyn_cast_if_present<memref::SubViewOp>(
+      builder.clone(*tilingHintSubview, remap));
   remap.map(L1Memref, newL1Subview.getResult());
   for (auto o : L1MemrefOpLog) {
-    if (auto tr = dyn_cast<memref::TransposeOp>(o)) {
+    if (auto tr = dyn_cast_if_present<memref::TransposeOp>(o)) {
       memref::TransposeOp transposeOp =
           memref::TransposeOp::create(builder, loc, newL1Subview.getResult(),
                                       AffineMapAttr::get(tr.getPermutation()));
@@ -1069,7 +1298,7 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
       builder, loc, subviewOutputType, L2Memref, L2Offsets, L2Sizes, L2Strides);
   remap.map(L2Memref, newL2Subview.getResult());
   for (auto o : L2MemrefOpLog) {
-    if (auto tr = dyn_cast<memref::TransposeOp>(o)) {
+    if (auto tr = dyn_cast_if_present<memref::TransposeOp>(o)) {
       memref::TransposeOp transposeOp =
           memref::TransposeOp::create(builder, loc, newL2Subview.getResult(),
                                       AffineMapAttr::get(tr.getPermutation()));
@@ -1198,24 +1427,26 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
                       affine::AffineYieldOp>();
 
     target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
-      auto src_type = llvm::dyn_cast<MemRefType>(co.getSource().getType());
-      auto dst_type = llvm::dyn_cast<MemRefType>(co.getTarget().getType());
-      return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
+      auto src_type =
+          llvm::dyn_cast_if_present<MemRefType>(co.getSource().getType());
+      auto dst_type =
+          llvm::dyn_cast_if_present<MemRefType>(co.getTarget().getType());
+      return air::getMemorySpace(src_type) == air::getMemorySpace(dst_type);
     });
 
     DmaMemcpyOpID = 0;
 
     // Simplify all the subviews so we can rewrite them easily.
     // Mostly this is propagating constant sizes into dimensioned memref types.
-    RewritePatternSet stage1Patterns =
-        linalg::getLinalgTilingCanonicalizationPatterns(context);
+    RewritePatternSet stage1Patterns(context);
+    linalg::populateLinalgTilingCanonicalizationPatterns(stage1Patterns);
     memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, context);
     memref::populateComposeSubViewPatterns(stage1Patterns, context);
     (void)applyPatternsGreedily(module, std::move(stage1Patterns));
 
     RewritePatternSet stage2Patterns(context);
-    stage2Patterns.insert<LinalgCopyToMemRefCopy, MemrefCopyToAIRDmaConversion>(
-        context);
+    stage2Patterns.insert<LinalgCopyToMemRefCopy, MemrefCopyToAIRDmaConversion,
+                          LinalgPackToAIRDma, LinalgUnPackToAIRDma>(context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(stage2Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
@@ -1226,7 +1457,7 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
     std::vector<Operation *> waits;
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
-        if (auto wo = dyn_cast<affine::AffineDmaWaitOp>(op)) {
+        if (auto wo = dyn_cast_if_present<affine::AffineDmaWaitOp>(op)) {
           auto memref = wo.getTagMemRef();
           for (auto u : memref.getUsers()) {
             waits.push_back(u);
@@ -1275,11 +1506,9 @@ static void getHerdNames(ModuleOp module) {
                 continue;
               if (!isa<MemRefType>(operJ.getType()))
                 continue;
-              if (llvm::cast<MemRefType>(operI.getType())
-                      .getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+              if (!air::isL1(llvm::cast<MemRefType>(operI.getType())))
                 continue;
-              if (llvm::cast<MemRefType>(operJ.getType())
-                      .getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+              if (!air::isL1(llvm::cast<MemRefType>(operJ.getType())))
                 continue;
               if (operI != operJ)
                 continue;
@@ -1377,7 +1606,7 @@ ConvertForallToParallelInFilteredOps(SmallPtrSet<Operation *, 8> &filteredOps,
   IRRewriter rewriter(context);
   SmallVector<Operation *> fErased, fAdded;
   for (auto op : filteredOps) {
-    auto forall = dyn_cast<scf::ForallOp>(op);
+    auto forall = dyn_cast_if_present<scf::ForallOp>(op);
     if (!forall)
       continue;
     scf::ParallelOp newPar;
@@ -1421,15 +1650,11 @@ struct ParallelToHerdPass
       Value L1Memref = nullptr;
       Value L2Memref = nullptr;
       bool SrcIsL1 = false;
-      if ((srcMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L1) &&
-          (dstMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L2)) {
+      if (air::isL1(srcMemrefTy) && air::isL2(dstMemrefTy)) {
         L1Memref = op.getSrcMemref();
         L2Memref = op.getDstMemref();
         SrcIsL1 = true;
-      } else if ((srcMemrefTy.getMemorySpaceAsInt() ==
-                  (int)air::MemorySpace::L2) &&
-                 (dstMemrefTy.getMemorySpaceAsInt() ==
-                  (int)air::MemorySpace::L1)) {
+      } else if (air::isL2(srcMemrefTy) && air::isL1(dstMemrefTy)) {
         L1Memref = op.getDstMemref();
         L2Memref = op.getSrcMemref();
         SrcIsL1 = false;
@@ -1608,11 +1833,9 @@ struct ParallelToLaunchPass
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           air::airDialect, arith::ArithDialect>();
-
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
-                      affine::AffineLoadOp, affine::AffineStoreOp,
-                      affine::AffineYieldOp, scf::YieldOp>();
+                           air::airDialect, arith::ArithDialect, ub::UBDialect,
+                           affine::AffineDialect, memref::MemRefDialect,
+                           scf::SCFDialect, linalg::LinalgDialect>();
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
@@ -1704,11 +1927,9 @@ struct ParallelToSegmentPass
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           air::airDialect, arith::ArithDialect>();
-
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
-                      affine::AffineLoadOp, affine::AffineStoreOp,
-                      affine::AffineYieldOp, scf::YieldOp>();
+                           air::airDialect, arith::ArithDialect, ub::UBDialect,
+                           affine::AffineDialect, memref::MemRefDialect,
+                           scf::SCFDialect, linalg::LinalgDialect>();
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
@@ -1750,6 +1971,76 @@ struct InsertEmptyLaunchOverHerdPass
         InsertEmptyLaunchOverHerd(op, /*insertSegment=*/clInsertSegment);
     });
     getSegmentNames(module);
+  }
+};
+
+struct AIRRankToLaunchPass
+    : public air::impl::AIRRankToLaunchBase<AIRRankToLaunchPass> {
+
+  AIRRankToLaunchPass() = default;
+  AIRRankToLaunchPass(const AIRRankToLaunchPass &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<air::airDialect>();
+    registry.insert<scf::SCFDialect>();
+    registry.insert<arith::ArithDialect>();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+
+    SmallVector<air::RankOp> rankOps;
+    module.walk([&](air::RankOp op) { rankOps.push_back(op); });
+
+    for (auto rankOp : rankOps) {
+      OpBuilder builder(rankOp);
+      auto loc = rankOp.getLoc();
+
+      // If the rank has async dependencies, insert a blocking wait before
+      // the serialized loops so that execution respects the dependency order.
+      if (!rankOp.getAsyncDependencies().empty()) {
+        air::WaitAllOp::create(builder, loc, Type{},
+                               rankOp.getAsyncDependencies());
+      }
+
+      auto c0 = arith::ConstantIndexOp::create(builder, loc, 0);
+      auto c1 = arith::ConstantIndexOp::create(builder, loc, 1);
+
+      // Build nested scf.for loops for each rank dimension.
+      SmallVector<scf::ForOp> loops;
+      auto sizeOpers = rankOp.getSizeOperands();
+      for (unsigned d = 0; d < rankOp.getNumDims(); ++d) {
+        auto loop = scf::ForOp::create(builder, loc, c0, sizeOpers[d], c1);
+        loops.push_back(loop);
+        builder.setInsertionPointToStart(loop.getBody());
+      }
+
+      // Clone the body of rank into the innermost loop.
+      IRMapping remap;
+      for (unsigned d = 0; d < rankOp.getNumDims(); ++d) {
+        remap.map(rankOp.getIds()[d], loops[d].getInductionVar());
+        remap.map(rankOp.getSize()[d], sizeOpers[d]);
+      }
+      for (unsigned i = 0; i < rankOp.getNumKernelOperands(); ++i)
+        remap.map(rankOp.getKernelArgument(i), rankOp.getKernelOperand(i));
+
+      auto &ops = rankOp.getBody().front().getOperations();
+      for (auto oi = ops.begin(), oe = --ops.end(); oi != oe; ++oi)
+        builder.clone(*oi, remap);
+
+      // Handle async token replacement. The scf.for loops are synchronous,
+      // so all iterations complete before execution proceeds past the
+      // outermost loop. The wait_all simply produces a completion token.
+      if (rankOp.getAsyncToken()) {
+        builder.setInsertionPointAfter(loops.front());
+        auto waitAll = air::WaitAllOp::create(
+            builder, loc, air::AsyncTokenType::get(builder.getContext()),
+            ValueRange{});
+        rankOp.getAsyncToken().replaceAllUsesWith(waitAll.getAsyncToken());
+      }
+
+      rankOp.erase();
+    }
   }
 };
 
@@ -1898,26 +2189,31 @@ struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
     auto parallelOp = scf::ParallelOp::create(rewriter, loc, lowerBounds,
                                               upperBoundsVals, steps);
 
-    // Redirect arguments properly inside the loop
+    // Create index_cast ops for induction variable type remapping.
     Block &loopBlock = parallelOp.getRegion().front();
     rewriter.setInsertionPointToStart(&loopBlock);
-    IRMapping remap;
+    SmallVector<Value> remappedIVs;
     for (unsigned i = 0; i < N; i++) {
       Value loopBlockArg = loopBlock.getArgument(i);
       if (inductionVars[i].getType() != loopBlockArg.getType())
         loopBlockArg = arith::IndexCastOp::create(
             rewriter, loc, inductionVars[i].getType(), loopBlockArg);
-      remap.map(inductionVars[i], loopBlockArg);
+      remappedIVs.push_back(loopBlockArg);
     }
 
-    // Move function body into the loop
+    // Move function body ops into the loop body instead of clone+erase.
+    // This preserves all SSA use-def chains and avoids issues with
+    // IRMapping not fully remapping scalar SSA chains between linalg ops
+    // (see https://github.com/Xilinx/mlir-air/issues/1367).
+    Operation *yield = loopBlock.getTerminator();
     for (auto op : originalFuncBodyOps) {
-      rewriter.clone(*op, remap);
+      rewriter.moveOpBefore(op, yield);
     }
 
-    // Erase original function body ops
-    for (auto o : llvm::reverse(originalFuncBodyOps))
-      rewriter.eraseOp(o);
+    // Replace induction variable uses with parallel block arguments.
+    for (unsigned i = 0; i < N; i++) {
+      rewriter.replaceAllUsesWith(inductionVars[i], remappedIVs[i]);
+    }
 
     return success();
   }
@@ -1937,6 +2233,11 @@ public:
       const ::xilinx::air::AIRWrapFuncWithParallelPassOptions &options)
       : AIRWrapFuncWithParallelPassBase(options) {}
 
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect>();
+    registry.insert<arith::ArithDialect>();
+  }
+
   void runOnOperation() override;
 
 private:
@@ -1953,6 +2254,16 @@ void AIRWrapFuncWithParallelPass::runOnOperation() {
   wrapParPatterns.add<WrapFuncWithParallelPattern>(context, loopBoundsVec);
   (void)applyOpPatternsGreedily(SmallVector<Operation *>{funcOp.getOperation()},
                                 std::move(wrapParPatterns));
+
+  // Attach actual-sizes attribute on the created scf.parallel if specified.
+  if (!clActualSizes.empty()) {
+    SmallVector<int64_t> actualSizesVec(clActualSizes.begin(),
+                                        clActualSizes.end());
+    funcOp.walk([&](scf::ParallelOp parOp) {
+      parOp->setAttr("air.actual_sizes",
+                     DenseI64ArrayAttr::get(context, actualSizesVec));
+    });
+  }
 
   RewritePatternSet patterns(context);
   patterns.add<CanonicalizeArithAddIOpToIndexTypePattern,
@@ -2046,6 +2357,10 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
                                    memref::CopyOp op,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
+  if (xilinx::air::isSelfCopy(op)) {
+    rewriter.eraseOp(op);
+    return DiagnosedSilenceableFailure::success();
+  }
   auto res = xilinx::air::matchAndRewriteCopyOp(op, rewriter);
   if (failed(res))
     return emitDefaultDefiniteFailure(op);
@@ -2076,7 +2391,7 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
   // Find the linalg.reduce operation that uses the forall result
   linalg::ReduceOp linalgReduceOp = nullptr;
   for (auto user : forallOp->getUsers()) {
-    auto reduceOp = dyn_cast<linalg::ReduceOp>(user);
+    auto reduceOp = dyn_cast_if_present<linalg::ReduceOp>(user);
     if (!reduceOp)
       continue;
     // Check if this reduce uses the forall result as input
@@ -2096,10 +2411,11 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
   if (linalgReduceOp && !sharedOuts.empty()) {
     for (unsigned i = 0; i < forallOp.getRank(); i++) {
       Type expectedOutputType = linalgReduceOp.getDpsInits()[i].getType();
-      if (auto tensorType = dyn_cast<RankedTensorType>(expectedOutputType)) {
-        auto newInitMemrefTy =
-            MemRefType::get(tensorType.getShape(), tensorType.getElementType(),
-                            AffineMap(), (int)xilinx::air::MemorySpace::L1);
+      if (auto tensorType =
+              dyn_cast_if_present<RankedTensorType>(expectedOutputType)) {
+        auto newInitMemrefTy = MemRefType::get(
+            tensorType.getShape(), tensorType.getElementType(), AffineMap(),
+            static_cast<unsigned>(xilinx::air::MemorySpace::L1));
         Value bufferInitVal = bufferization::ToBufferOp::create(
             rewriter, loc, newInitMemrefTy, linalgReduceOp.getDpsInits()[i]);
         modifiedInitVals.push_back(bufferInitVal);
@@ -2143,7 +2459,8 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
   SmallVector<Value> reduceValues;
   for (const auto &[i, yieldingOp] :
        llvm::enumerate(forallTerminator.getYieldingOps())) {
-    if (auto insertOp = dyn_cast<tensor::ParallelInsertSliceOp>(yieldingOp)) {
+    if (auto insertOp =
+            dyn_cast_if_present<tensor::ParallelInsertSliceOp>(yieldingOp)) {
       Value sourceValue = mapping.lookupOrDefault(insertOp.getSource());
       Value sourceBufferValue = bufferization::ToBufferOp::create(
           rewriter, insertOp.getLoc(), modifiedInitVals[i].getType(),
@@ -2247,7 +2564,7 @@ DiagnosedSilenceableFailure transform::ForallWithReduceToParallelOp::apply(
   if (!llvm::hasSingleElement(payload))
     return emitSilenceableError() << "expected a single payload op";
 
-  auto target = dyn_cast<scf::ForallOp>(*payload.begin());
+  auto target = dyn_cast_if_present<scf::ForallOp>(*payload.begin());
   if (!target) {
     DiagnosedSilenceableFailure diag =
         emitSilenceableError() << "expected the payload to be scf.forall";
@@ -2285,7 +2602,7 @@ DiagnosedSilenceableFailure transform::LinalgToLibraryCallOp::applyToOne(
   using namespace mlir;
   using namespace mlir::linalg;
 
-  auto linalgOp = dyn_cast<LinalgOp>(target);
+  auto linalgOp = dyn_cast_if_present<LinalgOp>(target);
   if (!linalgOp)
     return emitSilenceableError() << "expected linalg op as target";
 
@@ -2393,6 +2710,10 @@ std::unique_ptr<mlir::Pass> createCopyToDmaPass() {
 
 std::unique_ptr<mlir::Pass> createInsertEmptyLaunchOverHerdPass() {
   return std::make_unique<InsertEmptyLaunchOverHerdPass>();
+}
+
+std::unique_ptr<mlir::Pass> createAIRRankToLaunchPass() {
+  return std::make_unique<AIRRankToLaunchPass>();
 }
 
 std::unique_ptr<Pass> createAIRWrapFuncWithParallelPass() {

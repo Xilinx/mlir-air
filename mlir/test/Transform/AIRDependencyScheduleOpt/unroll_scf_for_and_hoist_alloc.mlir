@@ -18,10 +18,9 @@
 // CHECK: {unrolled_iteration = 0 : i32}
 // CHECK: %[[EVENT2:.*]] = scf.for {{.*}} iter_args(%[[EVENT1:.*]] =
 // CHECK: %[[EVENT3:.*]] = air.wait_all async [{{.*}}%[[EVENT1]]{{.*}}]{{.*}}{unrolled_iteration = 0 : i32}
-// CHECK: %[[EVENT4:.*]] = air.wait_all async [{{.*}}%[[EVENT3]]{{.*}}]
-// CHECK: %[[EVENT5:.*]] = air.wait_all async [{{.*}}%[[EVENT4]]{{.*}}]{{.*}}{unrolled_iteration = 1 : i32}
-// CHECK: %[[EVENT6:.*]] = air.wait_all async [{{.*}}%[[EVENT5]]{{.*}}]
-// CHECK: scf.yield %[[EVENT6]]
+// CHECK: %[[EVENT4:.*]] = air.wait_all async [{{.*}}%[[EVENT3]]{{.*}}]{{.*}}{unrolled_iteration = 1 : i32}
+// CHECK: %[[EVENT5:.*]] = air.wait_all async [{{.*}}%[[EVENT3]]{{.*}}, {{.*}}%[[EVENT4]]{{.*}}]
+// CHECK: scf.yield %[[EVENT5]]
 // CHECK: %[[EVENT7:.*]] = air.execute [{{.*}}%[[EVENT2]]{{.*}}]
 // CHECK: memref.dealloc
 // CHECK: {unrolled_iteration = 0 : i32}

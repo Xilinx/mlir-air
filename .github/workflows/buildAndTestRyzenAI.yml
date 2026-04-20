@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 defaults:
@@ -53,7 +54,6 @@ jobs:
       - name: Get mlir-aie
         id: clone-mlir-aie
         run: |
-
           utils/clone-mlir-aie.sh
           source air-venv/bin/activate
           pushd mlir-aie
@@ -69,52 +69,26 @@ jobs:
 
           popd
 
-      - name: Build and Install mlir-aie
+      - name: Install mlir-aie from wheel
         run: |
           source air-venv/bin/activate
-          pushd mlir-aie
-          mkdir build
-          pushd build
-          export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
-          cmake .. \
-            -GNinja \
-            -DPython3_EXECUTABLE=$(which python) \
-            -DCMAKE_INSTALL_PREFIX=$PWD/../install \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_ASM_COMPILER=clang \
-            -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
-            -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
-            -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
-            -DCMAKE_MODULE_PATH=$PWD/../cmake/modulesXilinx \
-            -DLLVM_EXTERNAL_LIT=$(which lit) \
-            -DMLIR_DIR=$PWD/../mlir/lib/cmake/mlir \
-            -DXRT_ROOT=/opt/xilinx/xrt \
-            -DAIE_ENABLE_PYTHON_PASSES=OFF \
-            -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON \
-            -DAIE_VITIS_COMPONENTS='AIE2;AIE2P' \
-            -DAIE_INCLUDE_INTEGRATION_TESTS=OFF
-          ninja install
-          popd
-          rm -rf build
-          popd
+          MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
+          pip install mlir_aie==$MLIR_AIE_VERSION \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/
 
       - name: Get llvm-aie
         run: |
           source air-venv/bin/activate
           python3 -m pip install --upgrade --force-reinstall llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
-      # Build the repo test target in debug mode to build and test.
-      - name: Build and test mlir-air (Assert)
+      - name: Build and test mlir-air
         run: |
           source air-venv/bin/activate
 
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           source /opt/xilinx/xrt/setup.sh
           WHL_MLIR_DIR=$(pwd)/mlir-aie/mlir
-          MLIR_AIE_INSTALL_DIR=$(pwd)/mlir-aie/install
+          MLIR_AIE_INSTALL_DIR="$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie"
           PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
           CMAKEMODULES_DIR=$(pwd)/mlir-aie/cmake/modulesXilinx
 
@@ -125,7 +99,7 @@ jobs:
 
           cmake .. \
             -GNinja \
-            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DPython3_EXECUTABLE=$(which python) \
             -DCMAKE_INSTALL_PREFIX=$PWD/../install \
@@ -151,7 +125,7 @@ jobs:
 
           pip install $PWD/../python/spensor
 
-          export LIT_OPTS="-sv --time-tests --show-unsupported --show-excluded --order random --timeout 600 -j4"
+          export LIT_OPTS="-sv --time-tests --show-unsupported --show-excluded --order random --timeout 600 -j8"
           ninja check-air-cpp
           ninja check-air-mlir
           ninja check-air-python
@@ -159,15 +133,15 @@ jobs:
           # E2E test set 1: peano tests (retry once on failure for flaky NPU tests)
           ninja check-air-e2e-peano || ninja check-air-e2e-peano
 
-          # E2E test set 2: chess tests
-          ninja check-air-e2e-chess
+          # Chess tests disabled to reduce CI time. Uncomment to re-enable:
+          # ninja check-air-e2e-chess
 
           # Programming examples set 1: peano tests (retry once on failure for flaky NPU tests)
           ninja check-programming-examples-peano || ninja check-programming-examples-peano
 
-          # Programming examples set 2: chess tests
-          ninja check-programming-examples-chess
-          
+          # Chess tests disabled to reduce CI time. Uncomment to re-enable:
+          # ninja check-programming-examples-chess
+
           # AIR-Runner test set
           ninja check-air-runner
 

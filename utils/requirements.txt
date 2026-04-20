@@ -1,13 +1,3 @@
-PyYAML>=6.0.2
-aiofiles
-filelock==3.13.1
-lit
-joblib
-ipykernel
-psutil
-rich
-pybind11
-nanobind>=2.9
 numpy>=1.19.5, <2.0
-cmake>=3.30
 ml_dtypes
+filelock==3.13.1

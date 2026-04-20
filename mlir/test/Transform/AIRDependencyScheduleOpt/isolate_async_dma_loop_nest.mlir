@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-isolate-async-dma-loop-nests="scope=func" --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-isolate-async-dma-loop-nests="scope=launch" --split-input-file | FileCheck %s --check-prefix=LAUNCH
 
 // Isolate scf for loops containing dma ops into perfectly nested loop.
 
@@ -1329,6 +1330,123 @@ module {
           scf.yield %12 : !air.async.token
         }
       }
+    }
+    return
+  }
+}
+
+// -----
+
+// Same-channel, same-direction puts at different loop depths should NOT be
+// split into independent loops (they share a channel resource).  The outer
+// channel.put and the inner scf.for containing another channel.put on the
+// same @channel_0 must remain in one loop.
+
+// CHECK-LABEL: func_same_chan_diff_depth
+// CHECK: scf.for
+// CHECK:   air.channel.put{{.*}}@channel_0
+// CHECK:   scf.for
+// CHECK:     air.channel.put{{.*}}@channel_0
+
+module {
+  air.channel @channel_0 [1, 1]
+  func.func @func_same_chan_diff_depth(%arg0: memref<512xbf16>, %arg1: memref<512xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c4 = arith.constant 4 : index
+    %c64 = arith.constant 64 : index
+    %0 = scf.for %i = %c0 to %c2 step %c1 iter_args(%t0 = %c0) -> (index) {
+      %1 = air.channel.put async @channel_0[%c0, %c0] (%arg0[%c0] [%c64] [%c1]) {id = 1 : i32} : (memref<512xbf16>)
+      %2 = scf.for %j = %c0 to %c4 step %c1 iter_args(%t1 = %c0) -> (index) {
+        %3 = air.channel.put async @channel_0[%c0, %c0] (%arg1[%c0] [%c64] [%c1]) {id = 2 : i32} : (memref<512xbf16>)
+        scf.yield %c0 : index
+      }
+      scf.yield %c0 : index
+    }
+    return
+  }
+}
+
+// -----
+
+// A channel.get followed by an scf.if containing channel.put ops that depend
+// on the channel.get's async token must not be split into independent loops.
+// The scf.if implicitly depends on the channel.get through the async token
+// consumed by the channel.put ops in its branches.
+
+// CHECK-LABEL: func_scf_if_with_async_dep
+// CHECK: scf.for
+// CHECK:   air.channel.get
+// CHECK:   scf.if
+// CHECK:     air.channel.put
+// CHECK-NOT: scf.for
+// CHECK:   return
+
+module {
+  air.channel @chan_get [2]
+  air.channel @chan_put_0 [1, 1, 1]
+  air.channel @chan_put_1 [1, 1, 1]
+  func.func @func_scf_if_with_async_dep(%arg0: memref<64x64xbf16, 1 : i32>, %arg1: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c8 = arith.constant 8 : index
+    %c64 = arith.constant 64 : index
+    %c512 = arith.constant 512 : index
+    %async_token = air.wait_all async
+    %0 = scf.for %i = %c0 to %c2 step %c1 iter_args(%t = %async_token) -> (!air.async.token) {
+      %1 = air.channel.get async [%t] @chan_get[%arg1] (%arg0[] [] []) {id = 1 : i32} : (memref<64x64xbf16, 1 : i32>)
+      %cmp = arith.cmpi eq, %arg1, %c0 : index
+      %2 = scf.if %cmp -> (!air.async.token) {
+        %3 = air.channel.put async [%1] @chan_put_0[%c0, %c0, %c0] (%arg0[%c0, %c0, %c0, %c0] [%c8, %c8, %c8, %c8] [%c8, %c512, %c64, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1 : i32>)
+        scf.yield %3 : !air.async.token
+      } else {
+        %3 = air.channel.put async [%1] @chan_put_1[%c0, %c0, %c0] (%arg0[%c0, %c0, %c0, %c0] [%c8, %c8, %c8, %c8] [%c8, %c512, %c64, %c1]) {id = 3 : i32} : (memref<64x64xbf16, 1 : i32>)
+        scf.yield %3 : !air.async.token
+      }
+      scf.yield %2 : !air.async.token
+    }
+    return
+  }
+}
+
+// -----
+
+// Loops with channel.put ops to different channels directly inside air.launch
+// (outside air.segment) should be split into separate perfectly nested loops.
+
+// LAUNCH-LABEL: func_launch_level_dma_loop_split
+// LAUNCH: air.launch
+// LAUNCH: scf.for
+// LAUNCH:   air.channel.put{{.*}}@A_chan
+// LAUNCH-NOT: air.channel.put{{.*}}@B_chan
+// LAUNCH:   scf.yield
+// LAUNCH: scf.for
+// LAUNCH:   air.channel.put{{.*}}@B_chan
+// LAUNCH-NOT: air.channel.put{{.*}}@A_chan
+// LAUNCH:   scf.yield
+
+module {
+  air.channel @A_chan []
+  air.channel @B_chan []
+  func.func @func_launch_level_dma_loop_split(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>) {
+    %c2 = arith.constant 2 : index
+    %0 = air.launch async (%arg4, %arg5) in (%arg6=%c2, %arg7=%c2) args(%arg8=%arg0, %arg9=%arg1) : memref<512x512xbf16>, memref<512x512xbf16> attributes {id = 1 : i32} {
+      %c512 = arith.constant 512 : index
+      %c64 = arith.constant 64 : index
+      %c256 = arith.constant 256 : index
+      %c1 = arith.constant 1 : index
+      %c8 = arith.constant 8 : index
+      %c0 = arith.constant 0 : index
+      %1 = air.wait_all async
+      %2 = scf.for %arg12 = %c0 to %c8 step %c1 iter_args(%arg13 = %1) -> (!air.async.token) {
+        %3 = air.channel.put async [%arg13] @A_chan[] (%arg8[%c0, %c0] [%c256, %c64] [%c512, %c1]) {id = 1 : i32} : (memref<512x512xbf16>)
+        %4 = air.channel.put async [%arg13] @B_chan[] (%arg9[%c0, %c0] [%c64, %c256] [%c512, %c1]) {id = 2 : i32} : (memref<512x512xbf16>)
+        %5 = air.wait_all async [%3, %4]
+        scf.yield %5 : !air.async.token
+      }
+      air.launch_terminator
     }
     return
   }

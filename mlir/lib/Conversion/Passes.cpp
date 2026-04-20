@@ -8,9 +8,40 @@
 
 #include "air/Conversion/Passes.h"
 
-namespace {
+#if AIR_ENABLE_GPU
+#include "air/Conversion/AIRToROCDLPass.h"
+#include "air/Conversion/GPUKernelOutlinePass.h"
+#endif
+
+namespace air_conv_passes {
 #define GEN_PASS_REGISTRATION
 #include "air/Conversion/Passes.h.inc"
-} // namespace
+} // namespace air_conv_passes
 
-void xilinx::air::registerConversionPasses() { ::registerPasses(); }
+#if AIR_ENABLE_GPU
+namespace air_gpu_passes {
+#define GEN_PASS_REGISTRATION
+#include "air/Conversion/GPUPasses.h.inc"
+} // namespace air_gpu_passes
+#endif
+
+void xilinx::air::registerConversionPasses() {
+#if AIR_ENABLE_AIE
+  air_conv_passes::registerPasses();
+#else
+  // Register only non-AIE conversion passes.
+  // TODO: Split Passes.td into AIE-independent and AIE-dependent .td files
+  // so that registerPasses() can remain the single source of truth.
+  air_conv_passes::registerParallelToHerd();
+  air_conv_passes::registerParallelToLaunch();
+  air_conv_passes::registerParallelToSegment();
+  air_conv_passes::registerCopyToDma();
+  air_conv_passes::registerAIRToAsync();
+  air_conv_passes::registerInsertEmptyLaunchOverHerd();
+  air_conv_passes::registerAIRRankToLaunch();
+  air_conv_passes::registerAIRWrapFuncWithParallelPass();
+#endif
+#if AIR_ENABLE_GPU
+  air_gpu_passes::registerPasses();
+#endif
+}

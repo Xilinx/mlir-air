@@ -52,15 +52,12 @@ module attributes {transform.with_named_sequence} {
         // Step 2: Transform and generalize linalg.reduce operations
         // The layernorm computation contains reduction operations (e.g., sum, mean)
         // that need special handling:
-        // 1. transpose_reduce: Optimizes the reduction pattern for AIE hardware
-        // 2. generalize: Converts to linalg.generic form for uniform handling with other ops
+        // Transpose linalg.reduce operations. linalg.reduce ops preserved as
+        // data-flow anchors (generalize deferred to before vectorization).
         %reduces = transform.structured.match ops{["linalg.reduce"]} in %arg1  : (!transform.any_op) -> !transform.any_op
         %transformed_reduces = transform.air.transpose_reduce %reduces : (!transform.any_op) -> !transform.any_op
-        %generalized_reduces = transform.structured.generalize %transformed_reduces  : (!transform.any_op) -> !transform.any_op
-        
-        // Step 3: Canonicalization after fusion and transformation
-        // Clean up the IR to remove redundancies introduced by fusion and transformation,
-        // and to simplify patterns before subsequent tiling operations
+
+        // Canonicalization after fusion and transformation
         transform.apply_patterns to %fused_func {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
@@ -68,42 +65,37 @@ module attributes {transform.with_named_sequence} {
         } : !transform.any_op
         transform.apply_cse to %fused_func : !transform.any_op
 
-        // Step 4: Split operation handles for individual control
-        // After fusion and transformation, extract handles to individual operations
-        // for fine-grained manipulation in subsequent phases. The layernorm typically
-        // contains: fill (initialization), and multiple generic operations (compute steps)
+        // Data-flow navigation from linalg.reduce anchors.
+        // Chain: generic1 -> reduce1 -> generic2 -> reduce2 -> output_generic
+        %transposed_reduces = transform.structured.match ops{["linalg.reduce"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %reduce1, %reduce2 = transform.split_handle %transposed_reduces : (!transform.any_op<"linalg.reduce">) -> (!transform.any_op, !transform.any_op)
+
+        %generic1 = transform.get_producer_of_operand %reduce1[0]
+            : (!transform.any_op) -> !transform.any_op
+        %generic2 = transform.get_producer_of_operand %reduce2[0]
+            : (!transform.any_op) -> !transform.any_op
+
+        // Find output generic via function output anchor
+        %materialize = transform.structured.match ops{["bufferization.materialize_in_destination"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %output_generic = transform.get_producer_of_operand %materialize[0]
+            : (!transform.any_op) -> !transform.any_op
+
         %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-        %generic = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-        %generic1, %generic2, %generic3, %generic4 = transform.split_handle %generic : (!transform.any_op<"linalg.generic">) -> (!transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">)
-        
+
         //===================================================================
         // PHASE 3: Batch-Level Tiling and Producer-Consumer Fusion
         //===================================================================
-        // This phase implements the core tiling strategy using the final output
-        // operation (generic4) as the driver, followed by backward fusion of all
-        // producer operations to enable efficient execution within tiled iterations.
-        
-        // Step 1: Allocate output buffer in L1 memory (memory_space = 1)
-        // The final operation's output is placed in L1 memory for fast access by
-        // downstream operations. Only the destination tensor is bufferized here.
-        %generic4_output_buf, %new_generic4 = transform.structured.bufferize_to_allocation %generic4
+        %output_buf, %new_output = transform.structured.bufferize_to_allocation %output_generic
           {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
 
-        // Step 2: Tile the final operation along the batch dimension
-        // Tile size [1] creates per-batch iterations using scf.forall, enabling
-        // parallel execution across multiple batches. This creates the outer loop
-        // structure into which all producers will be fused.
-        %tiled_generic_4, %forall_4 =
-        transform.structured.tile_using_forall %generic4 tile_sizes [1]  : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %tiled_output, %forall_4 =
+        transform.structured.tile_using_forall %output_generic tile_sizes [1]  : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
-        // Step 3: Backward fusion of producer operations
-        // Fuse all producer operations (generic3, generic2, generic1, fill) into the
-        // tiled loop nest in reverse dependency order. This creates a fused computation
-        // kernel where all operations execute together within each batch iteration,
-        // minimizing intermediate memory traffic and enabling better data locality.
-        %tiled_generic_3, %4 = transform.structured.fuse_into_containing_op %generic3 into %forall_4 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %tiled_generic_2, %5 = transform.structured.fuse_into_containing_op %generic2 into %forall_4 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %tiled_generic_1, %6 = transform.structured.fuse_into_containing_op %generic1 into %forall_4 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        // Backward fusion in reverse data-flow order
+        %fused_reduce2, %4 = transform.structured.fuse_into_containing_op %reduce2 into %forall_4 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %fused_generic2, %5 = transform.structured.fuse_into_containing_op %generic2 into %forall_4 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %fused_reduce1, %8 = transform.structured.fuse_into_containing_op %reduce1 into %forall_4 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %fused_generic1, %6 = transform.structured.fuse_into_containing_op %generic1 into %forall_4 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
         %fused_fill, %7 = transform.structured.fuse_into_containing_op %fill into %forall_4 : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
         
         // //===================================================================
@@ -134,34 +126,28 @@ module attributes {transform.with_named_sequence} {
         %fill1_buffer, %fill1_new = transform.structured.bufferize_to_allocation %fills_2
           {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
 
-        // Step 2: Re-split fused generic operations for individual allocation
-        // After fusion in PHASE 3, we need separate handles to each generic operation
-        // to allocate their intermediate results in L2 memory individually.
+        // Step 2: Re-match operations for individual L2 allocation.
         %generics2 = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-        %tiled_generic1, %tiled_generic2, %tiled_generic3, %tiled_generic4 = transform.split_handle %generics2 : (!transform.any_op<"linalg.generic">) -> (!transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">)
+        %tiled_generic1, %tiled_generic2 = transform.split_handle %generics2 : (!transform.any_op<"linalg.generic">) -> (!transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">)
+        %reduces2 = transform.structured.match ops{["linalg.reduce"]} in %arg1  : (!transform.any_op) -> !transform.any_op
+        %tiled_reduce_a, %tiled_reduce_b = transform.split_handle %reduces2 : (!transform.any_op<"linalg.reduce">) -> (!transform.any_op<"linalg.reduce">, !transform.any_op<"linalg.reduce">)
 
         // Step 3: Promote input tensor to L2 memory
-        // Promote the first operand (input tensor) of the first generic operation to L2.
-        // This ensures the input data is staged in L2 for efficient access by all operations
-        // in the fused kernel, reducing main memory traffic.
         %op0 = transform.get_operand %tiled_generic1[0]
             : (!transform.any_op) -> !transform.any_value
-        transform.structured.promote_tensor to 2 %op0 : !transform.any_value        
-        
+        transform.structured.promote_tensor to 2 %op0 : !transform.any_value
+
         // Step 4: Allocate intermediate outputs to L2 memory
-        // Each generic operation's output is allocated in L2 to enable efficient
-        // producer-consumer data flow within the fused kernel. This creates a staged
-        // computation pipeline: input (L2) -> intermediate results (L2) -> final output (L1).
         %gen1_in_buffer, %gen1_in_new = transform.structured.bufferize_to_allocation %tiled_generic1
             {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
-        
+
+        %red1_in_buffer, %red1_in_new = transform.structured.bufferize_to_allocation %tiled_reduce_a
+            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+
         %gen2_in_buffer, %gen2_in_new = transform.structured.bufferize_to_allocation %tiled_generic2
             {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
-        
-        %gen3_in_buffer, %gen3_in_new = transform.structured.bufferize_to_allocation %tiled_generic3
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
-        
-        %gen4_in_buffer, %gen4_in_new = transform.structured.bufferize_to_allocation %tiled_generic4
+
+        %red2_in_buffer, %red2_in_new = transform.structured.bufferize_to_allocation %tiled_reduce_b
             {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
 
 
@@ -219,10 +205,12 @@ module attributes {transform.with_named_sequence} {
         // This phase prepares operations for vectorization by tiling to match
         // AIE vector lane widths and optimizing mathematical operations.
         
+        // Delayed generalize: convert remaining linalg.reduce ops to linalg.generic
+        // BEFORE vectorization. Deferred from Phase 2 to preserve data-flow anchors.
+        %remaining_reduces = transform.structured.match ops{["linalg.reduce"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %generalized_reduces = transform.structured.generalize %remaining_reduces : (!transform.any_op) -> !transform.any_op
+
         // Step 1: Tile for 16-lane vector operations
-        // AIE supports 16-lane vector operations. Tile the innermost dimension with
-        // size 16 to match this hardware capability, creating vector-friendly loops
-        // that can be efficiently mapped to AIE vector instructions.
         %linalg_generics = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %inner_most_generics, %vec_loops:1 =
           transform.structured.tile_using_for %linalg_generics tile_sizes [0, 16]
@@ -310,7 +298,9 @@ module attributes {transform.with_named_sequence} {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
-            transform.apply_patterns.vector.lower_multi_reduction lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.reorder_multi_reduction_dims lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.multi_reduction_flattening lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.multi_reduction_unrolling lowering_strategy = "innerreduction"
         } : !transform.any_op
         transform.apply_cse to %func7_transformed : !transform.any_op
     transform.yield

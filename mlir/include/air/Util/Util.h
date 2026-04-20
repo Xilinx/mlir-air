@@ -23,6 +23,33 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
+// ===----------------------------------------------------------------------===//
+// Memory space helpers
+// ===----------------------------------------------------------------------===//
+
+// Get the memory space of a memref type as an air::MemorySpace enum.
+// If the memref has no memory space attribute, this function defaults to the
+// L3 memory space. Returns std::nullopt only if the memref has an
+// unrecognized/unsupported memory space value.
+std::optional<MemorySpace> getMemorySpace(BaseMemRefType memrefTy);
+
+// Check if a memref type belongs to a specific memory space.
+bool isL1(BaseMemRefType memrefTy);
+bool isL2(BaseMemRefType memrefTy);
+bool isL3(BaseMemRefType memrefTy);
+
+// Compare memory space hierarchy levels. Higher numeric value = more local.
+// L3(0) < L2(1) < L1(2).
+// Returns true if space 'a' is strictly more local (closer to compute) than
+// 'b'.
+bool isMoreLocal(MemorySpace a, MemorySpace b);
+
+// Return the more local of two memory spaces.
+// E.g., moreLocal(L3, L1) returns L1.
+MemorySpace moreLocal(MemorySpace a, MemorySpace b);
+
+// ===----------------------------------------------------------------------===//
+
 LogicalResult normalizeLoop(affine::AffineForOp afo);
 
 func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
@@ -160,7 +187,7 @@ void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
 LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
-    SmallVector<Value> &strides, Value memref);
+    SmallVector<Value> &strides, Value memref, bool skipZeroStride = false);
 
 // Find the largest factor of 'num' which is not larger than 'max'.
 int findLargestFactor(int num, int max);
@@ -176,6 +203,11 @@ void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
                                     SmallVector<Value> &offsets,
                                     SmallVector<Value> &wraps,
                                     SmallVector<Value> &strides);
+
+// Copy padding attributes (pad_before, pad_after) from one operation to
+// another. These are inherent ODS attributes and are not included in the
+// discardable attr dictionary, so they must be copied explicitly.
+void copyPaddingAttributes(Operation *src, Operation *dst);
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
