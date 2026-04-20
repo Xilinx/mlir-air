@@ -88,121 +88,97 @@ module {
     %c32 = arith.constant 32 : index
     air.launch (%arg3, %arg4) in (%arg5=%c32, %arg6=%c32) args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg2) : memref<4096x4096xf32>, memref<4096x4096xf32>, memref<4096x4096xf32> {
       air.segment @forward_0  args(%arg10=%arg3, %arg11=%arg4, %arg12=%arg7, %arg13=%arg8, %arg14=%arg9) : index, index, memref<4096x4096xf32>, memref<4096x4096xf32>, memref<4096x4096xf32> {
-        %c1 = arith.constant 1 : index
-        %c4 = arith.constant 4 : index
-        %c128 = arith.constant 128 : index
-        %c32_0 = arith.constant 32 : index
         %c0 = arith.constant 0 : index
-        %c4096 = arith.constant 4096 : index
-        %c256 = arith.constant 256 : index
+        %c1 = arith.constant 1 : index
         %c8 = arith.constant 8 : index
-        %c16_0 = arith.constant 16 : index
-        %cst = arith.constant 0.000000e+00 : f32
-        %tidx = gpu.thread_id  x
-        %rBIdx = arith.remsi %tidx, %c128 : index
-        %rBIdy = arith.divsi %tidx, %c128 : index
-        %0 = affine.apply #map()[%arg11]
-        %1 = affine.apply #map()[%arg10]
+        %c16 = arith.constant 16 : index
         %c64 = arith.constant 64 : index
-        %arg118 = memref.alloc() : memref<8xf32, 2>
-        %arg119 = memref.alloc() : memref<8xf32, 2>
-        %arg120 = memref.alloc() : memref<64xf32, 2>
+        %c128 = arith.constant 128 : index
+        %c256 = arith.constant 256 : index
+        %c4096 = arith.constant 4096 : index
+        %cst = arith.constant 0.000000e+00 : f32
+
+        %row_off = affine.apply #map()[%arg11]
+        %col_off = affine.apply #map()[%arg10]
+
+        %a_reg = memref.alloc() : memref<8xf32, 2>
+        %b_reg = memref.alloc() : memref<8xf32, 2>
+        %acc = memref.alloc() : memref<64xf32, 2>
+
         scf.for %i = %c0 to %c64 step %c1 {
-           memref.store %cst, %arg120[%i] : memref<64xf32, 2>
+          memref.store %cst, %acc[%i] : memref<64xf32, 2>
         }
-        scf.for %arg15 = %c0 to %c4096 step %c8 {
-          %alloc = memref.alloc() : memref<128x128xf32, 1>
-          %alloc_1 = memref.alloc() : memref<128x8xf32, 1>
-          %alloc_2 = memref.alloc() : memref<8x128xf32, 1>
-          %c0_2 = arith.constant 0 : index
-          %c1_3 = arith.constant 1 : index
-          %c31 = arith.constant 31 : index
-          //index_x = blk_x*128 + tid % 128
-          //index_y = (tid / 128) * 4 + arg15 + arg23
-          scf.for %arg23 = %c0 to %c4 step %c1_3 {
-              %index_x = arith.addi %0, %rBIdx : index
-              %2 = arith.muli %rBIdy, %c4 : index
-              %4 = arith.addi %2, %arg23 : index
-              %index_y = arith.addi %4, %arg15 : index
-              %idx = arith.remsi %index_x, %c128 : index
-              %idy = arith.remsi %index_y, %c8 : index
-              %6 = memref.load %arg12[%index_x, %index_y] : memref<4096x4096xf32>
-              memref.store %6, %alloc_1[%idx, %idy] : memref<128x8xf32, 1>
-          }
-          //index_y = (tid / 128) * 4 + arg15 + arg23
-          //index_x = blk_y*128 + tid % 128
-          scf.for %arg23 = %c0_2 to %c4 step %c1_3 {
-              %index_x = arith.addi %1, %rBIdx : index
-              %2 = arith.muli %rBIdy, %c4 : index
-              %4 = arith.addi %2, %arg23 : index
-              %index_y = arith.addi %4, %arg15 : index
-              %idx = arith.remsi %index_x, %c128 : index
-              %idy = arith.remsi %index_y, %c8 : index
-              %6 = memref.load %arg13[%index_y, %index_x] : memref<4096x4096xf32>
-              memref.store %6, %alloc_2[%idy, %idx] : memref<8x128xf32, 1>
-          }
+
+        scf.for %k = %c0 to %c4096 step %c8 {
+          %As = memref.alloc() : memref<128x8xf32, 1>
+          %Bs = memref.alloc() : memref<8x128xf32, 1>
+
+          // Phase 1: L3 -> L2 (global -> shared)
+          air.dma_memcpy_nd (%As[] [] [], %arg12[%row_off, %k] [%c128, %c8] [%c4096, %c1]) : (memref<128x8xf32, 1>, memref<4096x4096xf32>)
+          air.dma_memcpy_nd (%Bs[] [] [], %arg13[%k, %col_off] [%c8, %c128] [%c4096, %c1]) : (memref<8x128xf32, 1>, memref<4096x4096xf32>)
+
           gpu.barrier
-          air.herd @herd_0  tile (%arg31, %arg32) in (%arg33=%c256, %arg34=%c1) args(%arg16=%alloc_1, %arg17=%alloc_2, %arg18=%arg118, %arg19=%arg119, %arg20=%arg120) : memref<128x8xf32, 1>, memref<8x128xf32, 1>, memref<8xf32, 2>, memref<8xf32, 2>, memref<64xf32, 2> {
-            %c128_4 = arith.constant 128 : index
-            %c0_5 = arith.constant 0 : index
-            %c1_10 = arith.constant 1 : index
-            %c16 = arith.constant 16 : index
-            %c8_6 = arith.constant 8 : index
-            %2 = affine.apply #map1()[%arg31]
-            %3 = affine.apply #map1()[%arg32]
-            scf.for %arg22 = %c0_5 to %c8_6 step %c1_10 {
-              %c0_13 = arith.constant 0 : index
-              %c1_14 = arith.constant 1 : index
-              scf.for %arg23 = %c0_13 to %c8_6 step %c1_14 {
-                  %6 = arith.remsi %arg31, %c16 : index
-                  %8 = arith.muli %6, %c8_6 : index
-                  %idx = arith.addi %8, %arg23 : index
-                  %13 = memref.load %arg16[%idx, %arg22] : memref<128x8xf32, 1>
-                  memref.store %13, %arg18[%arg23] : memref<8xf32, 2>
-              }
-              scf.for %arg23 = %c0_13 to %c8_6 step %c1_14 {
-                %6 = arith.remsi %arg31, %c16 : index
-                %7 = arith.divsi %arg31, %c16 : index
-                %8 = arith.muli %7, %c8_6 : index
-                %idx = arith.addi %8, %arg23 : index
-                %13 = memref.load %arg17[%arg22, %idx] : memref<8x128xf32, 1>
-                memref.store %13, %arg19[%arg23] : memref<8xf32, 2>
-              }
-              scf.for %yt = %c0_5 to %c8_6 step %c1_10 {
-                scf.for %xt = %c0_5 to %c8_6 step %c1_10 {
-                  %8 = arith.muli  %yt, %c8_6 : index
-                  %idx = arith.addi %8, %xt : index
-                  %10 = memref.load %arg18[%yt] : memref<8xf32, 2>
-                  %11 = memref.load %arg19[%xt] : memref<8xf32, 2>
-                  %12 = memref.load %arg20[%idx] : memref<64xf32, 2>
-                  %13 = arith.mulf %10, %11 : f32
-                  %14 = arith.addf %12, %13 : f32
-                  memref.store %14, %arg20[%idx] : memref<64xf32, 2>
+
+          // Phase 2 + Compute
+          air.herd @herd_0 tile (%tx, %ty) in (%ntx=%c256, %nty=%c1) args(%hAs=%As, %hBs=%Bs, %ha=%a_reg, %hb=%b_reg, %hacc=%acc) : memref<128x8xf32, 1>, memref<8x128xf32, 1>, memref<8xf32, 2>, memref<8xf32, 2>, memref<64xf32, 2> {
+            %c0_h = arith.constant 0 : index
+            %c1_h = arith.constant 1 : index
+            %c8_h = arith.constant 8 : index
+            %c16_h = arith.constant 16 : index
+
+            // This thread's 8x8 sub-tile within the 128x128 output tile
+            // tx in [0..255] -> 16x16 grid of 8x8 tiles
+            %tile_row_idx = arith.remsi %tx, %c16_h : index
+            %tile_col_idx = arith.divsi %tx, %c16_h : index
+            %row_start = arith.muli %tile_row_idx, %c8_h : index
+            %col_start = arith.muli %tile_col_idx, %c8_h : index
+
+            scf.for %kk = %c0_h to %c8_h step %c1_h {
+              // Phase 2a: L2 -> L1: load column kk from As
+              air.dma_memcpy_nd (%ha[] [] [], %hAs[%row_start, %kk] [%c8_h] [%c8_h]) : (memref<8xf32, 2>, memref<128x8xf32, 1>)
+
+              // Phase 2b: L2 -> L1: load row kk from Bs
+              air.dma_memcpy_nd (%hb[] [] [], %hBs[%kk, %col_start] [%c8_h] [%c1_h]) : (memref<8xf32, 2>, memref<8x128xf32, 1>)
+
+              // Outer product accumulate (all L1 only)
+              scf.for %yt = %c0_h to %c8_h step %c1_h {
+                scf.for %xt = %c0_h to %c8_h step %c1_h {
+                  %flat = arith.muli %yt, %c8_h : index
+                  %idx = arith.addi %flat, %xt : index
+                  %av = memref.load %ha[%yt] : memref<8xf32, 2>
+                  %bv = memref.load %hb[%xt] : memref<8xf32, 2>
+                  %cv = memref.load %hacc[%idx] : memref<64xf32, 2>
+                  %prod = arith.mulf %av, %bv : f32
+                  %sum = arith.addf %cv, %prod : f32
+                  memref.store %sum, %hacc[%idx] : memref<64xf32, 2>
                 }
               }
-
             }
             gpu.barrier
-          }
-          scf.for %yt = %c0 to %c8 step %c1 {
-            scf.for %xt = %c0 to %c8 step %c1 {
-              %8 = arith.muli %yt, %c8: index
-              %x = arith.addi %xt, %8: index
-              %12 = memref.load %arg120[%x] : memref<64xf32, 2>
-              %18 = arith.remsi %tidx, %c16_0 : index
-              %20 = arith.muli %18, %c8 : index
-              %22 = arith.addi %0, %20 : index
-              %index_x = arith.addi %22, %yt : index
-              %19 = arith.divsi %tidx, %c16_0 : index
-
-              %21 = arith.muli %19, %c8 : index
-              %24 = arith.addi %1, %21 : index
-              %index_y = arith.addi %24, %xt : index
-              memref.store %12, %arg14[%index_x, %index_y] : memref<4096x4096xf32>
-            }
+            air.herd_terminator
           }
         }
+
+        // Phase 3: L1 -> L3 writeback
+        // Each thread writes its 8x8 sub-tile from acc back to global C
+        air.herd @writeback tile (%tx, %ty) in (%ntx=%c256, %nty=%c1) args(%wacc=%acc, %wC=%arg14, %wrow=%row_off, %wcol=%col_off) : memref<64xf32, 2>, memref<4096x4096xf32>, index, index {
+          %c0_w = arith.constant 0 : index
+          %c8_w = arith.constant 8 : index
+          %c16_w = arith.constant 16 : index
+          %c4096_w = arith.constant 4096 : index
+          %c1_w = arith.constant 1 : index
+          %tr = arith.remsi %tx, %c16_w : index
+          %tc = arith.divsi %tx, %c16_w : index
+          %dr = arith.muli %tr, %c8_w : index
+          %dc = arith.muli %tc, %c8_w : index
+          %dst_r = arith.addi %wrow, %dr : index
+          %dst_c = arith.addi %wcol, %dc : index
+          air.dma_memcpy_nd (%wC[%dst_r, %dst_c] [%c8_w, %c8_w] [%c4096_w, %c1_w], %wacc[] [] []) : (memref<4096x4096xf32>, memref<64xf32, 2>)
+          air.herd_terminator
+        }
+        air.segment_terminator
       }
+      air.launch_terminator
     }
     return
   }
