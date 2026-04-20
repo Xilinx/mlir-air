@@ -26,7 +26,19 @@ namespace air_gpu_passes {
 #endif
 
 void xilinx::air::registerConversionPasses() {
+#if AIR_ENABLE_AIE
   air_conv_passes::registerPasses();
+#else
+  // Register only non-AIE conversion passes.
+  air_conv_passes::registerParallelToHerd();
+  air_conv_passes::registerParallelToLaunch();
+  air_conv_passes::registerParallelToSegment();
+  air_conv_passes::registerCopyToDma();
+  air_conv_passes::registerAIRToAsync();
+  air_conv_passes::registerInsertEmptyLaunchOverHerd();
+  air_conv_passes::registerAIRRankToLaunch();
+  air_conv_passes::registerAIRWrapFuncWithParallelPass();
+#endif
 #if AIR_ENABLE_GPU
   air_gpu_passes::registerPasses();
 #endif
