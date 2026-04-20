@@ -496,16 +496,21 @@ struct ConvertAIRToROCDLPass
       if (auto segmentOp =
               dyn_cast_if_present<xilinx::air::SegmentOp>(childOp)) {
         if (!segmentOp.getRegion().empty()) {
-          Block &segmentBlock =
-              segmentOp.getRegion()
-                  .front(); // Get the first block (body) of the herd operation
+          Block &segmentBlock = segmentOp.getRegion().front();
+
+          // Remap segment block arguments to kernel operands.
+          unsigned numKernelArgs = segmentOp.getNumKernelOperands();
+          for (unsigned i = 0; i < numKernelArgs; ++i) {
+            Value outerVal = segmentOp.getKernelOperand(i);
+            segmentBlock.getArgument(i).replaceAllUsesWith(outerVal);
+          }
 
           for (auto &operation :
                llvm::make_early_inc_range(segmentBlock.without_terminator())) {
             operation.moveBefore(segmentOp);
           }
-          segmentBlock.getTerminator()->erase(); // Erase the terminator
-          segmentOp.erase();                     // Erase the herd operation
+          segmentBlock.getTerminator()->erase();
+          segmentOp.erase();
         }
       }
     });
@@ -513,14 +518,39 @@ struct ConvertAIRToROCDLPass
 
   void deleteAirHerd(xilinx::air::SegmentOp segmentOp, OpBuilder &builder,
                      gpu::LaunchOp gpuLaunchOp) {
-    // Traverse the children of the segment to find the air.herd
     segmentOp.walk([&](Operation *childOp) {
       if (auto herdOp = dyn_cast_if_present<xilinx::air::HerdOp>(childOp)) {
-        // Check if the herd operation has a region (body)
         if (!herdOp.getRegion().empty()) {
-          Block &herdBlock =
-              herdOp.getRegion()
-                  .front(); // Get the first block (body) of the herd operation
+          Block &herdBlock = herdOp.getRegion().front();
+          Location loc = herdOp.getLoc();
+
+          // Remap herd block arguments before moving ops out.
+          // Block args layout: [tile_x, tile_y, size_x, size_y, kernel_args...]
+          builder.setInsertionPoint(herdOp);
+          Value tidx = gpu::ThreadIdOp::create(builder, loc,
+                                                builder.getIndexType(),
+                                                gpu::Dimension::x);
+          Value tidy = gpu::ThreadIdOp::create(builder, loc,
+                                                builder.getIndexType(),
+                                                gpu::Dimension::y);
+          Value bdimx = gpu::BlockDimOp::create(builder, loc,
+                                                 builder.getIndexType(),
+                                                 gpu::Dimension::x);
+          Value bdimy = gpu::BlockDimOp::create(builder, loc,
+                                                 builder.getIndexType(),
+                                                 gpu::Dimension::y);
+
+          herdBlock.getArgument(0).replaceAllUsesWith(tidx);
+          herdBlock.getArgument(1).replaceAllUsesWith(tidy);
+          herdBlock.getArgument(2).replaceAllUsesWith(bdimx);
+          herdBlock.getArgument(3).replaceAllUsesWith(bdimy);
+
+          // Remap kernel operands to the values passed from enclosing scope.
+          unsigned numKernelArgs = herdOp.getNumKernelOperands();
+          for (unsigned i = 0; i < numKernelArgs; ++i) {
+            Value outerVal = herdOp.getKernelOperand(i);
+            herdBlock.getArgument(4 + i).replaceAllUsesWith(outerVal);
+          }
 
           for (auto &operation :
                llvm::make_early_inc_range(herdBlock.without_terminator())) {
@@ -600,136 +630,201 @@ struct ConvertAIRToROCDLPass
     launchOp.walk([&](memref::DeallocOp deallocOp) { deallocOp.erase(); });
   }
 
-  // Convert air.dma_memcpy_nd -> llvm.memcpy or gpu.global_to_shared for memory
-  // operations
-  void convertDMAToGPUMemcpy(xilinx::air::DmaMemcpyNdOp dmaMemcpyOp,
+  // Delinearize a flat index into multi-dimensional indices for a given shape.
+  static SmallVector<Value> delinearizeIndex(OpBuilder &b, Location loc,
+                                             Value linear,
+                                             ArrayRef<int64_t> shape) {
+    int rank = shape.size();
+    SmallVector<Value> indices(rank);
+    Value remaining = linear;
+    for (int i = rank - 1; i >= 0; --i) {
+      Value dimSize =
+          arith::ConstantIndexOp::create(b, loc, shape[i]);
+      indices[i] = arith::RemSIOp::create(b, loc, remaining, dimSize);
+      remaining = arith::DivSIOp::create(b, loc, remaining, dimSize);
+    }
+    return indices;
+  }
+
+  // Linearize multi-dimensional indices into a flat index for a given shape.
+  static Value linearizeIndices(OpBuilder &b, Location loc,
+                                ArrayRef<Value> indices,
+                                ArrayRef<int64_t> shape) {
+    int rank = indices.size();
+    assert(rank == (int)shape.size());
+    Value flat = arith::ConstantIndexOp::create(b, loc, 0);
+    for (int i = 0; i < rank; ++i) {
+      int64_t stride = 1;
+      for (int j = i + 1; j < rank; ++j)
+        stride *= shape[j];
+      Value strideVal = arith::ConstantIndexOp::create(b, loc, stride);
+      Value term = arith::MulIOp::create(b, loc, indices[i], strideVal);
+      flat = arith::AddIOp::create(b, loc, flat, term);
+    }
+    return flat;
+  }
+
+  // Compute memref indices from transfer indices, offsets, and strides.
+  // Handles rank mismatches between transfer descriptor and memref.
+  SmallVector<Value> computeMemrefIndices(
+      OpBuilder &b, Location loc, ArrayRef<Value> transferIndices,
+      ArrayRef<Value> offsets, ArrayRef<Value> strides,
+      MemRefType memrefType, ArrayRef<Value> transferSizes) {
+    int memrefRank = memrefType.getRank();
+    int transferRank = transferIndices.size();
+
+    if (offsets.empty()) {
+      // Entire memref addressed.
+      if (memrefRank == transferRank)
+        return SmallVector<Value>(transferIndices);
+      // Rank mismatch: linearize transfer indices, delinearize into memref.
+      SmallVector<int64_t> transferShape;
+      for (auto sz : transferSizes) {
+        APInt val;
+        if (matchPattern(sz, m_ConstantInt(&val)))
+          transferShape.push_back(val.getSExtValue());
+        else
+          transferShape.push_back(1);
+      }
+      Value flat = linearizeIndices(b, loc, transferIndices, transferShape);
+      return delinearizeIndex(b, loc, flat, memrefType.getShape());
+    }
+
+    if (memrefRank == transferRank) {
+      // Same rank: idx[i] = offset[i] + transferIdx[i]
+      SmallVector<Value> result(memrefRank);
+      for (int i = 0; i < memrefRank; ++i)
+        result[i] = arith::AddIOp::create(b, loc, offsets[i],
+                                           transferIndices[i]);
+      return result;
+    }
+
+    // Rank-reducing: offsets are in memref dimensions, transfer is lower rank.
+    // Linearize: base_flat = linearize(offsets, memref_shape)
+    //            flat = base_flat + iv[0] * strides[0] (+ iv[1]*strides[1]...)
+    // Then delinearize flat back into memref shape.
+    Value baseFlat = linearizeIndices(b, loc,
+        SmallVector<Value>(offsets.begin(), offsets.end()),
+        memrefType.getShape());
+    Value transferFlat = arith::ConstantIndexOp::create(b, loc, 0);
+    for (int i = 0; i < transferRank; ++i) {
+      Value s = (i < (int)strides.size())
+                    ? strides[i]
+                    : arith::ConstantIndexOp::create(b, loc, 1);
+      Value term = arith::MulIOp::create(b, loc, transferIndices[i], s);
+      transferFlat = arith::AddIOp::create(b, loc, transferFlat, term);
+    }
+    Value flat = arith::AddIOp::create(b, loc, baseFlat, transferFlat);
+    return delinearizeIndex(b, loc, flat, memrefType.getShape());
+  }
+
+  // Lower air.dma_memcpy_nd to SCF loops with memref.load/store.
+  // L3→L2 transfers use thread-cooperative loading with gpu.barrier.
+  // All other transfers use per-thread nested loops.
+  void convertDMAToGPUMemcpy(xilinx::air::DmaMemcpyNdOp dmaOp,
                              OpBuilder &builder) {
-    builder.setInsertionPointAfter(dmaMemcpyOp);
+    builder.setInsertionPointAfter(dmaOp);
+    Location loc = dmaOp.getLoc();
 
-    // Extract the operands (memrefs)
-    Value destMemref = dmaMemcpyOp.getDstMemref(); // Destination memref
-    Value srcMemref = dmaMemcpyOp.getSrcMemref();  // Source memref
-    SmallVector<Value, 4> src_offsets = dmaMemcpyOp.getSrcOffsets();
-    SmallVector<Value, 4> dst_offsets = dmaMemcpyOp.getDstOffsets();
-    SmallVector<Value, 4> src_sizes = dmaMemcpyOp.getSrcSizes();
-    SmallVector<Value, 4> dst_sizes = dmaMemcpyOp.getDstSizes();
-    SmallVector<Value, 4> src_strides = dmaMemcpyOp.getSrcStrides();
-    SmallVector<Value, 4> dst_strides = dmaMemcpyOp.getDstStrides();
+    Value srcMemref = dmaOp.getSrcMemref();
+    Value dstMemref = dmaOp.getDstMemref();
+    auto srcType = cast<MemRefType>(srcMemref.getType());
+    auto dstType = cast<MemRefType>(dstMemref.getType());
+    SmallVector<Value> srcOffsets(dmaOp.getSrcOffsets());
+    SmallVector<Value> dstOffsets(dmaOp.getDstOffsets());
+    SmallVector<Value> srcSizes(dmaOp.getSrcSizes());
+    SmallVector<Value> dstSizes(dmaOp.getDstSizes());
+    SmallVector<Value> srcStrides(dmaOp.getSrcStrides());
+    SmallVector<Value> dstStrides(dmaOp.getDstStrides());
 
-    // Create SCF loops to simulate the memory copy
-    // We'll assume a 2D memory region and use sizes for both dimensions
+    // Determine transfer sizes from whichever side has explicit sizes,
+    // or fall back to the smaller memref's static shape.
+    SmallVector<Value> transferSizes;
+    if (!srcSizes.empty()) {
+      transferSizes = srcSizes;
+    } else if (!dstSizes.empty()) {
+      transferSizes = dstSizes;
+    } else {
+      ArrayRef<int64_t> shape = (srcType.getRank() <= dstType.getRank())
+                                    ? srcType.getShape()
+                                    : dstType.getShape();
+      for (int64_t s : shape)
+        transferSizes.push_back(
+            arith::ConstantIndexOp::create(builder, loc, s));
+    }
+    int transferRank = transferSizes.size();
 
-    // Extract the precomputed indices from the dma_memcpy_nd operation (i.e.,
-    // %1 and %0) Constants for SCF loop bounds and steps
-    Value c0 = arith::ConstantIndexOp::create(builder, dmaMemcpyOp.getLoc(), 0);
-    Value c1 = arith::ConstantIndexOp::create(builder, dmaMemcpyOp.getLoc(), 1);
-    // Extract the number of dimensions from the memref type
-    auto srcMemrefType =
-        mlir::dyn_cast_or_null<MemRefType>(srcMemref.getType());
-    auto destMemrefType =
-        mlir::dyn_cast_or_null<MemRefType>(destMemref.getType());
-    int64_t destRank = destMemrefType.getRank();
+    Value c0 = arith::ConstantIndexOp::create(builder, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(builder, loc, 1);
 
-    // Generate SCF loops for the destination memref (64x64xi32)
-    SmallVector<scf::ForOp, 4> loops;
-    // Generate loops for each dimension of the destination
-    for (int i = 0; i < destRank; ++i) {
-      Value loopStart = c0; // Start of loop (e.g., 0)
-      Value loopEnd =
-          (src_sizes.size() > 0)
-              ? src_sizes[i]
-              : dst_sizes[i]; // Determine the loop end based on the dimensions
-      Value loopStep = c1;    // Step size (e.g., 1)
+    unsigned srcSpace = srcType.getMemorySpaceAsInt();
+    unsigned dstSpace = dstType.getMemorySpaceAsInt();
+    bool isGlobalToShared = (srcSpace == 0 && dstSpace >= 1) ||
+                            (air::isL3(srcType) && air::isL2(dstType));
 
-      // Create a loop for each dimension
-      auto loop = scf::ForOp::create(builder, dmaMemcpyOp.getLoc(), loopStart,
-                                     loopEnd, loopStep);
-      loops.push_back(loop);
+    if (isGlobalToShared) {
+      // Thread-cooperative loading: distribute total elements across threads.
+      Value total = transferSizes[0];
+      for (int i = 1; i < transferRank; ++i)
+        total = arith::MulIOp::create(builder, loc, total, transferSizes[i]);
 
-      // Set insertion point to inside the loop body
+      Value tidx = gpu::ThreadIdOp::create(builder, loc,
+                                            builder.getIndexType(),
+                                            gpu::Dimension::x);
+      Value bdim = gpu::BlockDimOp::create(builder, loc,
+                                            builder.getIndexType(),
+                                            gpu::Dimension::x);
+
+      auto loop = scf::ForOp::create(builder, loc, tidx, total, bdim);
       builder.setInsertionPointToStart(loop.getBody());
+      Value linear = loop.getInductionVar();
+
+      // Delinearize into transfer-dimension indices.
+      SmallVector<int64_t> transferShape;
+      for (auto sz : transferSizes) {
+        APInt val;
+        if (matchPattern(sz, m_ConstantInt(&val)))
+          transferShape.push_back(val.getSExtValue());
+        else
+          transferShape.push_back(1);
+      }
+      SmallVector<Value> tIdx = delinearizeIndex(builder, loc, linear,
+                                                  transferShape);
+
+      SmallVector<Value> sIdx = computeMemrefIndices(
+          builder, loc, tIdx, srcOffsets, srcStrides, srcType, transferSizes);
+      SmallVector<Value> dIdx = computeMemrefIndices(
+          builder, loc, tIdx, dstOffsets, dstStrides, dstType, transferSizes);
+
+      Value val = memref::LoadOp::create(builder, loc, srcMemref, sIdx);
+      memref::StoreOp::create(builder, loc, val, dstMemref, dIdx);
+
+      builder.setInsertionPointAfter(loop);
+      gpu::BarrierOp::create(builder, loc);
+    } else {
+      // Per-thread path: nested loops over transfer dimensions.
+      SmallVector<scf::ForOp> loops;
+      for (int i = 0; i < transferRank; ++i) {
+        auto loop = scf::ForOp::create(builder, loc, c0,
+                                        transferSizes[i], c1);
+        loops.push_back(loop);
+        builder.setInsertionPointToStart(loop.getBody());
+      }
+
+      SmallVector<Value> tIdx;
+      for (auto &loop : loops)
+        tIdx.push_back(loop.getInductionVar());
+
+      SmallVector<Value> sIdx = computeMemrefIndices(
+          builder, loc, tIdx, srcOffsets, srcStrides, srcType, transferSizes);
+      SmallVector<Value> dIdx = computeMemrefIndices(
+          builder, loc, tIdx, dstOffsets, dstStrides, dstType, transferSizes);
+
+      Value val = memref::LoadOp::create(builder, loc, srcMemref, sIdx);
+      memref::StoreOp::create(builder, loc, val, dstMemref, dIdx);
     }
 
-    // Generate load/store operations inside the innermost loop
-    builder.setInsertionPointToStart(loops.back().getBody());
-    SmallVector<Value, 4> indices;
-
-    // Collect the loop induction variables to create indices
-    for (int i = 0; i < destRank; ++i) {
-      indices.push_back(loops[i].getInductionVar());
-    }
-
-    // Check for dimension mismatch and adjust indices accordingly
-    // Handle the case where the destination is larger than the source
-    if (destMemrefType.getShape()[0] > srcMemrefType.getShape()[0] &&
-        destMemrefType.getShape()[1] > srcMemrefType.getShape()[1]) {
-      // Both x and y dimensions are larger in the destination, need to adjust
-      // for chunks
-      Value idxRow = arith::AddIOp::create(
-          builder, dmaMemcpyOp.getLoc(), dst_offsets[0],
-          indices[0]); // Adjust row index for source access
-      Value idxCol = arith::AddIOp::create(
-          builder, dmaMemcpyOp.getLoc(), dst_offsets[1],
-          indices[1]); // Adjust column index for source access
-
-      // Load from the source memref (e.g., memref<64x64xi32>)
-      Value loadSrc = memref::LoadOp::create(builder, dmaMemcpyOp.getLoc(),
-                                             srcMemref, indices);
-
-      // Store to the destination memref (e.g., memref<32x32xi32>)
-      memref::StoreOp::create(builder, dmaMemcpyOp.getLoc(), loadSrc,
-                              destMemref, ValueRange{idxRow, idxCol});
-    } else if (srcMemrefType.getShape()[0] > destMemrefType.getShape()[0] &&
-               srcMemrefType.getShape()[1] > destMemrefType.getShape()[1]) {
-      // Both x and y dimensions are larger in the source matrix, need to adjust
-      // for chunks
-      Value idxRow =
-          arith::AddIOp::create(builder, dmaMemcpyOp.getLoc(), src_offsets[0],
-                                indices[0]); // Adjust row index
-      Value idxCol =
-          arith::AddIOp::create(builder, dmaMemcpyOp.getLoc(), src_offsets[1],
-                                indices[1]); // Adjust column index
-
-      // Load from the source memref (e.g., memref<64x64xi32>)
-      Value loadSrc = memref::LoadOp::create(
-          builder, dmaMemcpyOp.getLoc(), srcMemref, ValueRange{idxRow, idxCol});
-
-      // Store to the destination memref (e.g., memref<32x32xi32>)
-      memref::StoreOp::create(builder, dmaMemcpyOp.getLoc(), loadSrc,
-                              destMemref, indices);
-
-    } else if (srcMemrefType.getShape()[0] > destMemrefType.getShape()[0]) {
-      // Only the x dimension differs, adjust only the x index
-      Value idxRow =
-          arith::AddIOp::create(builder, dmaMemcpyOp.getLoc(), src_offsets[0],
-                                indices[0]); // Adjust row index for larger x
-
-      // Load from the source memref (e.g., memref<64x64xi32>)
-      Value loadSrc =
-          memref::LoadOp::create(builder, dmaMemcpyOp.getLoc(), srcMemref,
-                                 ValueRange{idxRow, indices[1]});
-
-      // Store to the destination memref (e.g., memref<32x32xi32>)
-      memref::StoreOp::create(builder, dmaMemcpyOp.getLoc(), loadSrc,
-                              destMemref, indices);
-
-    } else if (srcMemrefType.getShape()[1] > destMemrefType.getShape()[1]) {
-      // Only the y dimension differs, adjust only the y index
-      Value idxCol =
-          arith::AddIOp::create(builder, dmaMemcpyOp.getLoc(), src_offsets[1],
-                                indices[1]); // Adjust column index for larger y
-
-      // Load from the source memref (e.g., memref<64x64xi32>)
-      Value loadSrc =
-          memref::LoadOp::create(builder, dmaMemcpyOp.getLoc(), srcMemref,
-                                 ValueRange{indices[0], idxCol});
-
-      // Store to the destination memref (e.g., memref<32x32xi32>)
-      memref::StoreOp::create(builder, dmaMemcpyOp.getLoc(), loadSrc,
-                              destMemref, indices);
-    }
-    // Remove the air.dma_memcpy_nd operation
-    dmaMemcpyOp.erase();
+    dmaOp.erase();
   }
 };
 } // namespace
