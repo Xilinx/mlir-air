@@ -688,12 +688,26 @@ struct ConvertAIRToROCDLPass
     }
 
     if (memrefRank == transferRank) {
-      // Same rank: idx[i] = offset[i] + transferIdx[i]
-      SmallVector<Value> result(memrefRank);
-      for (int i = 0; i < memrefRank; ++i)
-        result[i] =
-            arith::AddIOp::create(b, loc, offsets[i], transferIndices[i]);
-      return result;
+      if (strides.empty()) {
+        // Unit strides: idx[i] = offset[i] + transferIdx[i]
+        SmallVector<Value> result(memrefRank);
+        for (int i = 0; i < memrefRank; ++i)
+          result[i] =
+              arith::AddIOp::create(b, loc, offsets[i], transferIndices[i]);
+        return result;
+      }
+      // Non-unit strides: linearize via offsets + iv*strides, then delinearize.
+      Value baseFlat = linearizeIndices(
+          b, loc, SmallVector<Value>(offsets.begin(), offsets.end()),
+          memrefType.getShape());
+      Value transferFlat = arith::ConstantIndexOp::create(b, loc, 0);
+      for (int i = 0; i < transferRank; ++i) {
+        Value term =
+            arith::MulIOp::create(b, loc, transferIndices[i], strides[i]);
+        transferFlat = arith::AddIOp::create(b, loc, transferFlat, term);
+      }
+      Value flat = arith::AddIOp::create(b, loc, baseFlat, transferFlat);
+      return delinearizeIndex(b, loc, flat, memrefType.getShape());
     }
 
     // Rank-reducing: offsets are in memref dimensions, transfer is lower rank.
@@ -811,7 +825,8 @@ struct ConvertAIRToROCDLPass
       memref::StoreOp::create(builder, loc, val, dstMemref, dIdx);
 
       builder.setInsertionPointAfter(loop);
-      gpu::BarrierOp::create(builder, loc);
+      if (!isa_and_nonnull<gpu::BarrierOp>(dmaOp->getNextNode()))
+        gpu::BarrierOp::create(builder, loc);
     } else {
       // Per-thread path: nested loops over transfer dimensions.
       SmallVector<scf::ForOp> loops;
