@@ -221,8 +221,10 @@ extern "C" void mgpuSetDefaultDevice(int32_t device) {
   HIP_REPORT_IF_ERROR(hipSetDevice(device));
 }
 
+#ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wreturn-type-c-linkage"
+#endif
 extern "C" StridedMemRefType<float, 1>
 mgpuMemGetDeviceMemRef1dFloat(float *allocated, float *aligned, int64_t offset,
                               int64_t size, int64_t stride) {
@@ -246,7 +248,9 @@ mgpuMemGetDeviceMemRef1dInt32(int32_t *allocated, int32_t *aligned,
   result.strides[0] = stride;
   return result;
 }
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 
 // ===========================================================================
 // Symmetric Heap — multi-GPU memory sharing

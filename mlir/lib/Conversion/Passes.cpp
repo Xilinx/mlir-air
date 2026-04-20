@@ -30,6 +30,8 @@ void xilinx::air::registerConversionPasses() {
   air_conv_passes::registerPasses();
 #else
   // Register only non-AIE conversion passes.
+  // TODO: Split Passes.td into AIE-independent and AIE-dependent .td files
+  // so that registerPasses() can remain the single source of truth.
   air_conv_passes::registerParallelToHerd();
   air_conv_passes::registerParallelToLaunch();
   air_conv_passes::registerParallelToSegment();

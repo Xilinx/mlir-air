@@ -16,8 +16,10 @@ namespace {
 
 void xilinx::air::registerTransformPasses() { registerPasses(); }
 #else
-// When AIE is disabled, only register passes whose implementations are
+// When AIE is disabled, register only passes whose implementations are
 // compiled (i.e., those that don't depend on AIE headers).
+// TODO: Split Passes.td into AIE-independent and AIE-dependent .td files
+// so that registerPasses() can remain the single source of truth.
 namespace {
 #define GEN_PASS_REGISTRATION
 #include "air/Transform/Passes.h.inc"
