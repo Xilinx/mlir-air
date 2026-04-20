@@ -118,10 +118,10 @@ module {
         %tile_l2 = memref.alloc() : memref<32x32xf32, 1>
 
         // Phase 1: L3 -> L2  (cooperative DMA)
+        // The lowering inserts gpu.barrier after cooperative copies automatically.
         air.dma_memcpy_nd (%tile_l2[] [] [],
                            %sin[%row_off, %col_off] [%c32, %c32] [%c64, %c1])
             : (memref<32x32xf32, 1>, memref<64x64xf32>)
-        gpu.barrier
 
         // Phase 2+3: L2 -> L1 -> L3 inside herd
         // 32 threads, each handles one row of the 32x32 tile

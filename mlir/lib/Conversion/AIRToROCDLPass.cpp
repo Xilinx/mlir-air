@@ -527,18 +527,14 @@ struct ConvertAIRToROCDLPass
           // Remap herd block arguments before moving ops out.
           // Block args layout: [tile_x, tile_y, size_x, size_y, kernel_args...]
           builder.setInsertionPoint(herdOp);
-          Value tidx = gpu::ThreadIdOp::create(builder, loc,
-                                                builder.getIndexType(),
-                                                gpu::Dimension::x);
-          Value tidy = gpu::ThreadIdOp::create(builder, loc,
-                                                builder.getIndexType(),
-                                                gpu::Dimension::y);
-          Value bdimx = gpu::BlockDimOp::create(builder, loc,
-                                                 builder.getIndexType(),
-                                                 gpu::Dimension::x);
-          Value bdimy = gpu::BlockDimOp::create(builder, loc,
-                                                 builder.getIndexType(),
-                                                 gpu::Dimension::y);
+          Value tidx = gpu::ThreadIdOp::create(
+              builder, loc, builder.getIndexType(), gpu::Dimension::x);
+          Value tidy = gpu::ThreadIdOp::create(
+              builder, loc, builder.getIndexType(), gpu::Dimension::y);
+          Value bdimx = gpu::BlockDimOp::create(
+              builder, loc, builder.getIndexType(), gpu::Dimension::x);
+          Value bdimy = gpu::BlockDimOp::create(
+              builder, loc, builder.getIndexType(), gpu::Dimension::y);
 
           herdBlock.getArgument(0).replaceAllUsesWith(tidx);
           herdBlock.getArgument(1).replaceAllUsesWith(tidy);
@@ -638,8 +634,7 @@ struct ConvertAIRToROCDLPass
     SmallVector<Value> indices(rank);
     Value remaining = linear;
     for (int i = rank - 1; i >= 0; --i) {
-      Value dimSize =
-          arith::ConstantIndexOp::create(b, loc, shape[i]);
+      Value dimSize = arith::ConstantIndexOp::create(b, loc, shape[i]);
       indices[i] = arith::RemSIOp::create(b, loc, remaining, dimSize);
       remaining = arith::DivSIOp::create(b, loc, remaining, dimSize);
     }
@@ -666,10 +661,12 @@ struct ConvertAIRToROCDLPass
 
   // Compute memref indices from transfer indices, offsets, and strides.
   // Handles rank mismatches between transfer descriptor and memref.
-  SmallVector<Value> computeMemrefIndices(
-      OpBuilder &b, Location loc, ArrayRef<Value> transferIndices,
-      ArrayRef<Value> offsets, ArrayRef<Value> strides,
-      MemRefType memrefType, ArrayRef<Value> transferSizes) {
+  SmallVector<Value> computeMemrefIndices(OpBuilder &b, Location loc,
+                                          ArrayRef<Value> transferIndices,
+                                          ArrayRef<Value> offsets,
+                                          ArrayRef<Value> strides,
+                                          MemRefType memrefType,
+                                          ArrayRef<Value> transferSizes) {
     int memrefRank = memrefType.getRank();
     int transferRank = transferIndices.size();
 
@@ -694,8 +691,8 @@ struct ConvertAIRToROCDLPass
       // Same rank: idx[i] = offset[i] + transferIdx[i]
       SmallVector<Value> result(memrefRank);
       for (int i = 0; i < memrefRank; ++i)
-        result[i] = arith::AddIOp::create(b, loc, offsets[i],
-                                           transferIndices[i]);
+        result[i] =
+            arith::AddIOp::create(b, loc, offsets[i], transferIndices[i]);
       return result;
     }
 
@@ -703,8 +700,8 @@ struct ConvertAIRToROCDLPass
     // Linearize: base_flat = linearize(offsets, memref_shape)
     //            flat = base_flat + iv[0] * strides[0] (+ iv[1]*strides[1]...)
     // Then delinearize flat back into memref shape.
-    Value baseFlat = linearizeIndices(b, loc,
-        SmallVector<Value>(offsets.begin(), offsets.end()),
+    Value baseFlat = linearizeIndices(
+        b, loc, SmallVector<Value>(offsets.begin(), offsets.end()),
         memrefType.getShape());
     Value transferFlat = arith::ConstantIndexOp::create(b, loc, 0);
     for (int i = 0; i < transferRank; ++i) {
@@ -721,6 +718,8 @@ struct ConvertAIRToROCDLPass
   // Lower air.dma_memcpy_nd to SCF loops with memref.load/store.
   // L3→L2 transfers use thread-cooperative loading with gpu.barrier.
   // All other transfers use per-thread nested loops.
+  // TODO: Handle async form (async_dependencies and async_token result).
+  // Currently only synchronous DMAs are supported on the GPU path.
   void convertDMAToGPUMemcpy(xilinx::air::DmaMemcpyNdOp dmaOp,
                              OpBuilder &builder) {
     builder.setInsertionPointAfter(dmaOp);
@@ -757,10 +756,7 @@ struct ConvertAIRToROCDLPass
     Value c0 = arith::ConstantIndexOp::create(builder, loc, 0);
     Value c1 = arith::ConstantIndexOp::create(builder, loc, 1);
 
-    unsigned srcSpace = srcType.getMemorySpaceAsInt();
-    unsigned dstSpace = dstType.getMemorySpaceAsInt();
-    bool isGlobalToShared = (srcSpace == 0 && dstSpace >= 1) ||
-                            (air::isL3(srcType) && air::isL2(dstType));
+    bool isGlobalToShared = air::isL3(srcType) && air::isL2(dstType);
 
     if (isGlobalToShared) {
       // Thread-cooperative loading: distribute total elements across threads.
@@ -768,12 +764,27 @@ struct ConvertAIRToROCDLPass
       for (int i = 1; i < transferRank; ++i)
         total = arith::MulIOp::create(builder, loc, total, transferSizes[i]);
 
-      Value tidx = gpu::ThreadIdOp::create(builder, loc,
-                                            builder.getIndexType(),
-                                            gpu::Dimension::x);
-      Value bdim = gpu::BlockDimOp::create(builder, loc,
-                                            builder.getIndexType(),
-                                            gpu::Dimension::x);
+      // Linearize 3D thread index to handle multi-dimensional blocks.
+      Value tx = gpu::ThreadIdOp::create(builder, loc, builder.getIndexType(),
+                                         gpu::Dimension::x);
+      Value ty = gpu::ThreadIdOp::create(builder, loc, builder.getIndexType(),
+                                         gpu::Dimension::y);
+      Value tz = gpu::ThreadIdOp::create(builder, loc, builder.getIndexType(),
+                                         gpu::Dimension::z);
+      Value bx = gpu::BlockDimOp::create(builder, loc, builder.getIndexType(),
+                                         gpu::Dimension::x);
+      Value by = gpu::BlockDimOp::create(builder, loc, builder.getIndexType(),
+                                         gpu::Dimension::y);
+      Value bz = gpu::BlockDimOp::create(builder, loc, builder.getIndexType(),
+                                         gpu::Dimension::z);
+      // tidx = tx + ty * bx + tz * bx * by
+      Value tyBx = arith::MulIOp::create(builder, loc, ty, bx);
+      Value bxBy = arith::MulIOp::create(builder, loc, bx, by);
+      Value tzBxBy = arith::MulIOp::create(builder, loc, tz, bxBy);
+      Value tidx = arith::AddIOp::create(builder, loc, tx, tyBx);
+      tidx = arith::AddIOp::create(builder, loc, tidx, tzBxBy);
+      // bdim = bx * by * bz
+      Value bdim = arith::MulIOp::create(builder, loc, bxBy, bz);
 
       auto loop = scf::ForOp::create(builder, loc, tidx, total, bdim);
       builder.setInsertionPointToStart(loop.getBody());
@@ -788,8 +799,8 @@ struct ConvertAIRToROCDLPass
         else
           transferShape.push_back(1);
       }
-      SmallVector<Value> tIdx = delinearizeIndex(builder, loc, linear,
-                                                  transferShape);
+      SmallVector<Value> tIdx =
+          delinearizeIndex(builder, loc, linear, transferShape);
 
       SmallVector<Value> sIdx = computeMemrefIndices(
           builder, loc, tIdx, srcOffsets, srcStrides, srcType, transferSizes);
@@ -805,8 +816,7 @@ struct ConvertAIRToROCDLPass
       // Per-thread path: nested loops over transfer dimensions.
       SmallVector<scf::ForOp> loops;
       for (int i = 0; i < transferRank; ++i) {
-        auto loop = scf::ForOp::create(builder, loc, c0,
-                                        transferSizes[i], c1);
+        auto loop = scf::ForOp::create(builder, loc, c0, transferSizes[i], c1);
         loops.push_back(loop);
         builder.setInsertionPointToStart(loop.getBody());
       }
