@@ -272,6 +272,12 @@ static cl::opt<bool>
                   cl::desc("Emulate f32 vector arithmetic using bf16"),
                   cl::init(false), cl::cat(airCompilerOptions));
 
+static cl::opt<int> stackSize(
+    "stack-size",
+    cl::desc("Stack size in bytes per AIE core (default: 1024). Increase when "
+             "kernels have deep call chains (e.g., scalar fdiv)."),
+    cl::init(1024), cl::cat(airCompilerOptions));
+
 //===----------------------------------------------------------------------===//
 // Debug IR Support
 //===----------------------------------------------------------------------===//
@@ -1038,6 +1044,7 @@ static LogicalResult runAieCompilation() {
       os << " insert-trace-packet-flow=true";
     os << " use-lock-race-condition-fix="
        << (useLockRaceConditionFix ? "true" : "false");
+    os << " stack-size=" << stackSize.getValue();
     os << "}";
     os << ",air-merge-unrolled-devices";
     os << ")";

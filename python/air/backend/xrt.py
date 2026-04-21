@@ -76,6 +76,7 @@ class XRTBackend(AirBackend):
         num_device_cols: int = 0,
         debug_ir: bool = False,
         bf16_emulation: bool = False,
+        stack_size: int = 1024,
     ):
         """Constructor for XRTBackend
 
@@ -103,6 +104,8 @@ class XRTBackend(AirBackend):
             debug_ir: enable debug mode to emit IR after each individual pass for fine-grained inspection.
                 IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
             bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
+            stack_size: stack size in bytes per AIE core (default: 1024). Increase when
+                kernels have deep call chains (e.g., scalar fdiv needs ~1152 bytes).
         """
         super().__init__()
         self.verbose = verbose
@@ -130,6 +133,7 @@ class XRTBackend(AirBackend):
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
         self.bf16_emulation = bf16_emulation
+        self.stack_size = stack_size
 
     def __del__(self):
         self.unload()
@@ -338,6 +342,9 @@ class XRTBackend(AirBackend):
 
             if self.bf16_emulation:
                 aircc_options += ["--bf16-emulation"]
+
+            if self.stack_size != 1024:
+                aircc_options += ["--stack-size", str(self.stack_size)]
 
             if self.verbose:
                 print("Running aircc with options:", " ".join(aircc_options))

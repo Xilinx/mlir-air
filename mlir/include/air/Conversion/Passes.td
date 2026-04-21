@@ -202,6 +202,10 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
           "Switch to enable a fix for lock race condition, which protects "
           "against the risk of race condition, at the cost of inserting extra "
           "dummy DMA BDs">,
+    Option<"clStackSize", "stack-size", "int", /*default=*/"1024",
+          "Stack size in bytes to allocate per AIE core. Must be large enough "
+          "to hold the full call chain stack depth including callee frames. "
+          "Default is 1024 bytes.">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE

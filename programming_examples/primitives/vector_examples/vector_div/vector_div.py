@@ -265,6 +265,7 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="vector_div",
             runtime_loop_tiling_sizes=[4, 4],
+            stack_size=2048,
         )
         exit(
             runner.run_test(
