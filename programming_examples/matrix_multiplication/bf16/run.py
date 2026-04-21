@@ -196,8 +196,8 @@ def build_module(
                 l2_b_data = AllocOp(l2MemrefTyB, [], [])
                 l2_c_data = AllocOp(l2MemrefTyC, [], [])
                 # L1 memref allocs
-                l1_a_data = AllocOp(l1MemrefTyA, [], [])
-                l1_b_data = AllocOp(l1MemrefTyB, [], [])
+                # l1_a and l1_b are allocated inside herd 2 (the only herd
+                # that uses them) so they have unambiguous per-PE semantics.
                 l1_c_data = AllocOp(l1MemrefTyCHerd, [], [])
 
                 # Affine map for launch iv
@@ -227,18 +227,14 @@ def build_module(
                 @herd(
                     name="herd_0",
                     sizes=[herd_m, herd_n],
-                    operands=[l1_a_data, l1_b_data, l1_c_data, l2_a_data, l2_b_data],
+                    operands=[l1_c_data],
                 )
                 def herd_body(
                     _tx,
                     _ty,
                     _sx,
                     _sy,
-                    _l1_a,
-                    _l1_b,
                     _l1_c,
-                    _l2_a,
-                    _l2_b,
                 ):
 
                     l1_c_subview = subview(
@@ -289,8 +285,6 @@ def build_module(
                         name="herd_0",
                         sizes=[herd_m, herd_n],
                         operands=[
-                            l1_a_data,
-                            l1_b_data,
                             l1_c_data,
                             l2_a_data,
                             l2_b_data,
@@ -301,12 +295,13 @@ def build_module(
                         _ty,
                         _sx,
                         _sy,
-                        _l1_a,
-                        _l1_b,
                         _l1_c,
                         _l2_a,
                         _l2_b,
                     ):
+                        # L1 A/B allocated inside herd: unambiguous per-PE buffers
+                        _l1_a = AllocOp(l1MemrefTyA, [], [])
+                        _l1_b = AllocOp(l1MemrefTyB, [], [])
                         for j in range_(0, tile_k_l2 // tile_k_l1):
                             # Affine map for k (l1) loop iv
                             reduction_l1_iv_map = AffineMap.get(
@@ -378,14 +373,15 @@ def build_module(
                             matmul = block_matmul(_l1_a, _l1_b, outs=[l1_c_subview])
                             yield_([])
 
+                        DeallocOp(_l1_a)
+                        DeallocOp(_l1_b)
+
                     yield_([])
 
                 @herd(
                     name="herd_0",
                     sizes=[herd_m, herd_n],
                     operands=[
-                        l1_a_data,
-                        l1_b_data,
                         l1_c_data,
                         l2_a_data,
                         l2_b_data,
@@ -397,8 +393,6 @@ def build_module(
                     _ty,
                     _sx,
                     _sy,
-                    _l1_a,
-                    _l1_b,
                     _l1_c,
                     _l2_a,
                     _l2_b,
@@ -448,8 +442,6 @@ def build_module(
                 DeallocOp(l2_a_data)
                 DeallocOp(l2_b_data)
                 DeallocOp(l2_c_data)
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_b_data)
                 DeallocOp(l1_c_data)
 
 
