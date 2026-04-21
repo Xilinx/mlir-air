@@ -221,6 +221,7 @@ airrt.module_metadata{
 -generate-shim-dma           : Choose whether to schedule shim data movement via generating AIE shim DMA program, or AIR runtime.
 -insert-trace-packet-flow    : Create packet routed traces for cores and memtiles
 -use-lock-race-condition-fix : Switch to enable a fix for lock race condition, which protects against the risk of race condition, at the cost of inserting extra dummy DMA BDs
+-stack-size                  : Stack size in bytes to allocate per AIE core. Must be large enough to hold the full call chain stack depth including callee frames. Default is 1024 bytes.
 ```
 
 ### `-air-to-async`
