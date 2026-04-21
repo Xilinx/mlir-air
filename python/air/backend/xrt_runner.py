@@ -81,6 +81,7 @@ class XRTRunner:
         debug_ir: bool = False,
         bf16_emulation: bool = False,
         target_device: str = None,
+        stack_size: int = 1024,
     ):
         """
         Args:
@@ -108,6 +109,8 @@ class XRTRunner:
                 IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
             bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
             target_device: specify target device explicitly ("npu1", "npu2", etc.). If None, will attempt auto-detection.
+            stack_size: stack size in bytes per AIE core (default: 1024). Increase when
+                kernels have deep call chains (e.g., scalar fdiv needs ~1152 bytes).
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -134,6 +137,7 @@ class XRTRunner:
         self.debug_ir = debug_ir
         self.bf16_emulation = bf16_emulation
         self.target_device = target_device
+        self.stack_size = stack_size
 
     def run_test(
         self,
@@ -184,6 +188,7 @@ class XRTRunner:
             debug_ir=self.debug_ir,
             bf16_emulation=self.bf16_emulation,
             target_device=self.target_device,
+            stack_size=self.stack_size,
         )
 
         # Use per-test trace file if provided, otherwise use instance default

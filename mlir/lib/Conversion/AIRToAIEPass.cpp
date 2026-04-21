@@ -69,6 +69,7 @@ struct AIRToAIEConversionOptions {
   bool insert_trace_packet_flow;
   bool use_lock_race_condition_fix;
   AIE::AIEDevice device;
+  unsigned stack_size;
 };
 
 // Breakpoint stages for debugging with --test-patterns
@@ -259,6 +260,8 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       auto core = tile.getCoreOp();
       if (!core) {
         core = AIE::CoreOp::create(builder, hloc, tile);
+        if (options.stack_size != 1024)
+          core.setStackSize(options.stack_size);
         tileToHerdMap[tile] = h;
         if (auto a = h->getAttrOfType<StringAttr>("link_with"))
           core->setAttr("link_with", a);
@@ -6008,7 +6011,8 @@ public:
           /*.generate_shim_dma = */ clGenerateShimDMA,
           /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
           /*.use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
-          /*.device = */ *device};
+          /*.device = */ *device,
+          /*.stack_size = */ clStackSize};
 
       // Pre-pipeline: renumber memcpy ops at module level
       air::renumberMemcpyIfOps(&m.getRegion());
@@ -6120,7 +6124,8 @@ public:
         /* .generate_shim_dma = */ clGenerateShimDMA,
         /* .insert_trace_packet_flow = */ clInsertTracePacketFlow,
         /* .use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
-        /* .device = */ *device};
+        /* .device = */ *device,
+        /* .stack_size = */ clStackSize};
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
 
