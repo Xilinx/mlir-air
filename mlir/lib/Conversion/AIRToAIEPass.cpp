@@ -69,7 +69,7 @@ struct AIRToAIEConversionOptions {
   bool insert_trace_packet_flow;
   bool use_lock_race_condition_fix;
   AIE::AIEDevice device;
-  int stack_size;
+  unsigned stack_size;
 };
 
 // Breakpoint stages for debugging with --test-patterns
@@ -260,7 +260,8 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       auto core = tile.getCoreOp();
       if (!core) {
         core = AIE::CoreOp::create(builder, hloc, tile);
-        core.setStackSize(options.stack_size);
+        if (options.stack_size != 1024)
+          core.setStackSize(options.stack_size);
         tileToHerdMap[tile] = h;
         if (auto a = h->getAttrOfType<StringAttr>("link_with"))
           core->setAttr("link_with", a);

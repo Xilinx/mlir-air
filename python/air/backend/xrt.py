@@ -133,6 +133,8 @@ class XRTBackend(AirBackend):
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
         self.bf16_emulation = bf16_emulation
+        if not isinstance(stack_size, int) or stack_size <= 0:
+            raise ValueError("`stack_size` must be a positive integer")
         self.stack_size = stack_size
 
     def __del__(self):
