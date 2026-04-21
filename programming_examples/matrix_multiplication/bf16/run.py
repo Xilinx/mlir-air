@@ -196,8 +196,9 @@ def build_module(
                 l2_b_data = AllocOp(l2MemrefTyB, [], [])
                 l2_c_data = AllocOp(l2MemrefTyC, [], [])
                 # L1 memref allocs
-                # l1_a and l1_b are allocated inside herd 2 (the only herd
-                # that uses them) so they have unambiguous per-PE semantics.
+                # l1_a and l1_b are allocated inside the compute herd (the
+                # only herd that uses them) so they have unambiguous per-PE
+                # semantics.
                 l1_c_data = AllocOp(l1MemrefTyCHerd, [], [])
 
                 # Affine map for launch iv
@@ -299,7 +300,7 @@ def build_module(
                         _l2_a,
                         _l2_b,
                     ):
-                        # L1 A/B allocated inside herd: unambiguous per-PE buffers
+                        # L1 A/B allocated inside compute herd: unambiguous per-PE buffers
                         _l1_a = AllocOp(l1MemrefTyA, [], [])
                         _l1_b = AllocOp(l1MemrefTyB, [], [])
                         for j in range_(0, tile_k_l2 // tile_k_l1):
