@@ -17,12 +17,6 @@ OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
-WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
-PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
-
-# AIE_TARGET: aie2p (default for NPU2/Strix)
-AIE_TARGET ?= aie2p
-PEANO_FLAGS = ${PEANOWRAP2P_FLAGS}
 
 # GEMV dimensions: C[M] = A[M,K] @ B[K]
 # tile_m=2 with 8 cols and K=8192: A_L2 = 8*2*8192*2 = 256KB < 512KB
@@ -38,7 +32,8 @@ all: run
 print:
 	${powershell} python3 ${srcdir}/matvec_cascade.py $(OUTPUT_FORMAT_FLAG) -p --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
 
-run: compile-kernel
+run:
+	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/matvec_cascade.py $(OUTPUT_FORMAT_FLAG) --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE) $(if $(DEBUG_IR),--debug-ir) || \
 	  (echo "=== npu.air.mlir (packet_flow and aie.flow lines) ===" >&2 && \
 	   grep -n "packet_flow\|aie.flow" air_project/npu.air.mlir >&2 2>/dev/null; \
@@ -48,27 +43,24 @@ run: compile-kernel
 	   head -100 air_project/aiecc_failure_*.mlir >&2 2>/dev/null; \
 	   false)
 
-profile: compile-kernel build-test-exe
+profile: build-test-exe
+	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/matvec_cascade.py $(OUTPUT_FORMAT_FLAG) --compile-mode compile-and-xclbin --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && LD_LIBRARY_PATH=$$XILINX_XRT/lib:$$LD_LIBRARY_PATH ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M $(M) -K $(K)
 
-# Default: 8 columns x 4 cascade tiles, M=2048, K=8192, tile_m=2
-run1:
+# 8 columns x 4 cascade tiles (full device, tile_m=2 fits L2)
+run_8col:
 	$(MAKE) run M=2048 K=8192 TILE_M=2 M_INPUT=1 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf
 
-profile1:
+profile_8col:
 	$(MAKE) profile M=2048 K=8192 TILE_M=2 M_INPUT=1 HERD_COLS=8 N_CASCADE=4
 
-# 4 columns x 4 cascade tiles (half-device, tile_m=4 fits L2)
+# 4 columns x 4 cascade tiles (half device, tile_m=4 fits L2)
 run_4col:
 	$(MAKE) run M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_COLS=4 N_CASCADE=4 OUTPUT_FORMAT=elf
 
 profile_4col:
 	$(MAKE) profile M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_COLS=4 N_CASCADE=4
-
-# Smaller test: 2 columns x 4 cascade tiles
-run_small:
-	$(MAKE) run M=256 K=512 TILE_M=4 M_INPUT=1 HERD_COLS=2 N_CASCADE=4
 
 build-test-exe:
 	@GPP=$$( \
@@ -98,43 +90,6 @@ build-test-exe:
 		-I$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/include \
 		-L$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/lib \
 		-luuid -lxrt_coreutil -lrt -lstdc++ -ltest_utils
-
-compile-kernel:
-	mkdir -p $(BUILD_DIR)
-	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
-		echo "Detected PEANO_INSTALL_DIR from environment: $(PEANO_INSTALL_DIR)"; \
-		if [ -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
-			echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET)"; \
-			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DDIM_M_OUTPUT=$(TILE_M) -c ${srcdir}/mv_cascade.cc -o $(BUILD_DIR)/mv_cascade.o; \
-		else \
-			echo "Error: invalid PEANO_INSTALL_DIR, clang++ not found."; \
-			exit 1; \
-		fi; \
-	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
-		echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET)"; \
-		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -DDIM_M_OUTPUT=$(TILE_M) -c ${srcdir}/mv_cascade.cc -o mv_cascade.o; \
-	else \
-		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
-		exit 1; \
-	fi
-
-compile-transform-kernel:
-	mkdir -p $(BUILD_DIR)
-	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
-		echo "Compiling transform kernel with PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)"; \
-		$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -c ${srcdir}/mv_transform.cc -o $(BUILD_DIR)/mv_transform.o; \
-	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
-		echo "Compiling transform kernel with xchesscc_wrapper"; \
-		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mv_transform.cc -o mv_transform.o; \
-	else \
-		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
-		exit 1; \
-	fi
-
-run-transform: compile-transform-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/matvec_cascade_transform.py $(OUTPUT_FORMAT_FLAG) --m $(M) --k $(K) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE) --k-tile $(K_TILE)
-
-K_TILE ?= 32
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

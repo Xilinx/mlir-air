@@ -7,6 +7,14 @@
 // RUN: cd test_npu2_peano
 // RUN: make -f %S/Makefile clean
 //
+// Correctness: M=256, K=512, 2 columns x 4 cascade tiles (quick sanity)
+// RUN: make -f %S/Makefile run M=256 K=512 TILE_M=4 M_INPUT=1 HERD_COLS=2 N_CASCADE=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PASS!
+//
+// Correctness: M=256, K=512, 2 columns x 2 cascade tiles (n_cascade=2 boundary)
+// RUN: make -f %S/Makefile run M=256 K=512 TILE_M=4 M_INPUT=1 HERD_COLS=2 N_CASCADE=2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PASS!
+//
 // Correctness: M=2048, K=8192, 8 columns x 4 cascade tiles (tile_m=2 for L2 fit)
 // RUN: make -f %S/Makefile run M=2048 K=8192 TILE_M=2 M_INPUT=1 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR DEBUG_IR=1 | FileCheck %s
 // CHECK: PASS!
