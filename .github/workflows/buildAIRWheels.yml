@@ -45,33 +45,42 @@ jobs:
           CURRENT_SHORT=$(git rev-parse --short=7 HEAD)
           echo "Current HEAD: $CURRENT_SHORT"
 
-          # Get the most recently uploaded wheel from the latest release to extract the commit hash
-          LAST_WHEEL=$(gh api repos/${{ github.repository }}/releases/tags/latest-air-wheels \
-            --jq '.assets | sort_by(.created_at) | reverse | map(select(.name | startswith("mlir_air")) | .name) | .[0]' \
-            2>/dev/null || echo "")
+          # Returns "true" if the given release tag is stale (hash mismatch or missing).
+          check_tag() {
+            local TAG="$1"
+            local LAST_WHEEL
+            LAST_WHEEL=$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}" \
+              --jq '.assets | sort_by(.created_at) | reverse | map(select(.name | startswith("mlir_air")) | .name) | .[0]' \
+              2>/dev/null || echo "")
 
-          if [ -z "$LAST_WHEEL" ]; then
-            echo "No previous release found, building."
+            if [ -z "$LAST_WHEEL" ]; then
+              echo "  No wheel found for ${TAG}, needs build." >&2
+              echo "true"
+              return
+            fi
+
+            # Extract short hash from wheel name: mlir_air-0.0.1.DATETIME+HASH-...
+            local LAST_HASH
+            LAST_HASH=$(echo "$LAST_WHEEL" | sed -n 's/.*+\([a-f0-9]\{7\}\)-.*/\1/p')
+            echo "  ${TAG}: latest wheel hash=${LAST_HASH:-<none>}" >&2
+
+            if [ -z "$LAST_HASH" ] || [ "$CURRENT_SHORT" != "$LAST_HASH" ]; then
+              echo "true"
+            else
+              echo "false"
+            fi
+          }
+
+          # Check both RTTI and no-RTTI release tags; build if either is stale.
+          RTTI_STALE=$(check_tag "latest-air-wheels")
+          NO_RTTI_STALE=$(check_tag "latest-air-wheels-no-rtti")
+
+          if [ "$RTTI_STALE" = "true" ] || [ "$NO_RTTI_STALE" = "true" ]; then
+            echo "One or both releases are stale. Building."
             echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Extract short hash from wheel name: mlir_air-0.0.1.DATETIME+HASH-...
-          LAST_HASH=$(echo "$LAST_WHEEL" | sed -n 's/.*+\([a-f0-9]\{7\}\)-.*/\1/p')
-          echo "Last released hash: $LAST_HASH"
-
-          if [ -z "$LAST_HASH" ]; then
-            echo "Could not extract hash from wheel name, building."
-            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ "$CURRENT_SHORT" = "$LAST_HASH" ]; then
-            echo "No new commits since last release. Skipping build."
-            echo "has_new_commits=false" >> "$GITHUB_OUTPUT"
           else
-            echo "New commits detected. Building."
-            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            echo "Both releases are up to date. Skipping build."
+            echo "has_new_commits=false" >> "$GITHUB_OUTPUT"
           fi
 
   get-air-project-commit:
