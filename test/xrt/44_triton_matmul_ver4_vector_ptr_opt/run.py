@@ -138,6 +138,7 @@ with air.ir.Context() as ctx, Location.unknown():
         runtime_loop_tiling_sizes=[4, 4],
         output_format=args.output_format,
         instance_name="bare_matmul",
+        stack_size=2048,
     )
     exit(
         runner.run_test(
