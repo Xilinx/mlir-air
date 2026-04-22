@@ -642,7 +642,9 @@ if __name__ == "__main__":
                 %fors_to_hoist_ptrs = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
+                """ + ("""
                 // Hoist the 4 extf/truncf pairs from the innermost loop
+                // (only applicable when output is bf16, producing paired extf/truncf ops)
                 %all_extf_loop = transform.structured.match ops{["arith.extf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop = transform.structured.match ops{["arith.truncf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
 
@@ -673,6 +675,7 @@ if __name__ == "__main__":
                 %all_extf_loop_4 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop_4 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
                 %for1_1_hoisted_final = transform.air.hoist_cast_pair %all_extf_loop_4, %all_truncf_loop_4, %for1_1_hoisted_3 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
+                """ if OUTPUT_DATATYPE == bfloat16 else "") + """
 
                 %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
                 transform.apply_patterns to %func2 {
@@ -732,6 +735,7 @@ if __name__ == "__main__":
             "verbose": args.verbose,
             "omit_while_true_loop": False,
             "runtime_loop_tiling_sizes": [2, 2],
+            "stack_size": 2048,
         }
         # Only use external kernel library if NOT in direct codegen mode
         if not args.direct_codegen:
@@ -755,6 +759,7 @@ if __name__ == "__main__":
             "verbose": args.verbose,
             "omit_while_true_loop": False,
             "runtime_loop_tiling_sizes": [2, 2],
+            "stack_size": 2048,
         }
         # Only use external kernel library if NOT in direct codegen mode
         if not args.direct_codegen:
@@ -776,6 +781,7 @@ if __name__ == "__main__":
             "output_format": "none",  # Skip xclbin generation (no xrt dependencies)
             "omit_while_true_loop": False,
             "runtime_loop_tiling_sizes": [2, 2],
+            "stack_size": 2048,
         }
         # Only use external kernel library if NOT in direct codegen mode
         if not args.direct_codegen:

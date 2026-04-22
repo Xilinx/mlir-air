@@ -121,17 +121,21 @@ LLAMA_TILE_K_L1 = 32
 compile-kernel-llama:
 	$(MAKE) -f $(srcdir)/Makefile compile-kernel TILE_M=$(LLAMA_TILE_M) TILE_N=$(LLAMA_TILE_N) TILE_K_L1=$(LLAMA_TILE_K_L1)
 
-run_llama_8x4: compile-kernel-llama
-	@echo "=== Q/O projection 128x2048x2048 ==="
+run_llama_8x4: run_llama_8x4_qo run_llama_8x4_kv run_llama_8x4_gate_up run_llama_8x4_down
+
+run_llama_8x4_qo: compile-kernel-llama
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 128 --k 2048 --n 2048 \
 		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
-	@echo "=== K/V projection 128x2048x512 ==="
+
+run_llama_8x4_kv: compile-kernel-llama
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 128 --k 2048 --n 512 \
 		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
-	@echo "=== Gate/Up FFN 128x2048x8192 ==="
+
+run_llama_8x4_gate_up: compile-kernel-llama
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 128 --k 2048 --n 8192 \
 		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
-	@echo "=== Down FFN 128x8192x2048 ==="
+
+run_llama_8x4_down: compile-kernel-llama
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 128 --k 8192 --n 2048 \
 		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
