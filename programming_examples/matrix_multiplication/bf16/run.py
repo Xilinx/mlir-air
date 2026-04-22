@@ -572,7 +572,8 @@ if __name__ == "__main__":
 
     # Vectorization - only run if direct codegen mode is enabled
     if args.direct_codegen:
-        transform_ir_string = """
+        transform_ir_string = (
+            """
             module attributes {transform.with_named_sequence} {
               transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
 
@@ -642,7 +643,9 @@ if __name__ == "__main__":
                 %fors_to_hoist_ptrs = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
-                """ + ("""
+                """
+            + (
+                """
                 // Hoist the 4 extf/truncf pairs from the innermost loop
                 // (only applicable when output is bf16, producing paired extf/truncf ops)
                 %all_extf_loop = transform.structured.match ops{["arith.extf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
@@ -675,7 +678,11 @@ if __name__ == "__main__":
                 %all_extf_loop_4 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop_4 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
                 %for1_1_hoisted_final = transform.air.hoist_cast_pair %all_extf_loop_4, %all_truncf_loop_4, %for1_1_hoisted_3 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                """ if OUTPUT_DATATYPE == bfloat16 else "") + """
+                """
+                if OUTPUT_DATATYPE == bfloat16
+                else ""
+            )
+            + """
 
                 %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
                 transform.apply_patterns to %func2 {
@@ -690,6 +697,7 @@ if __name__ == "__main__":
             }
             }
         """
+        )
         transform_ir = Module.parse(transform_ir_string, context=mlir_module.context)
         run_transform(transform_ir, mlir_module)
     if args.print_module_only:
