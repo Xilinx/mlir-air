@@ -47,7 +47,7 @@ jobs:
 
           # Get the most recently uploaded wheel from the latest release to extract the commit hash
           LAST_WHEEL=$(gh api repos/${{ github.repository }}/releases/tags/latest-air-wheels \
-            --jq '[.assets | sort_by(.created_at) | reverse | .[].name | select(startswith("mlir_air"))] | first' \
+            --jq '.assets | sort_by(.created_at) | reverse | map(select(.name | startswith("mlir_air")) | .name) | .[0]' \
             2>/dev/null || echo "")
 
           if [ -z "$LAST_WHEEL" ]; then
