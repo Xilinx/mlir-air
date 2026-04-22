@@ -45,9 +45,10 @@ jobs:
           CURRENT_SHORT=$(git rev-parse --short=7 HEAD)
           echo "Current HEAD: $CURRENT_SHORT"
 
-          # Get any wheel filename from the latest release to extract the commit hash
+          # Get the most recently uploaded wheel from the latest release to extract the commit hash
           LAST_WHEEL=$(gh api repos/${{ github.repository }}/releases/tags/latest-air-wheels \
-            --jq '.assets[0].name' 2>/dev/null || echo "")
+            --jq '[.assets | sort_by(.created_at) | reverse | .[].name | select(startswith("mlir_air"))] | first' \
+            2>/dev/null || echo "")
 
           if [ -z "$LAST_WHEEL" ]; then
             echo "No previous release found, building."
@@ -73,9 +74,33 @@ jobs:
             echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
           fi
 
+  get-air-project-commit:
+    name: Get canonical AIR project commit and timestamp
+    runs-on: ubuntu-latest
+    needs: check-new-commits
+    if: always() && (github.event_name != 'schedule' || needs.check-new-commits.outputs.has_new_commits == 'true')
+    outputs:
+      AIR_PROJECT_COMMIT: ${{ steps.get_commit.outputs.AIR_PROJECT_COMMIT }}
+      DATETIME: ${{ steps.get_commit.outputs.DATETIME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get AIR project commit and timestamp
+        id: get_commit
+        run: |
+          if [ x"${{ inputs.AIR_COMMIT }}" == x"" ]; then
+            AIR_PROJECT_COMMIT=$(git rev-parse --short=7 HEAD)
+          else
+            AIR_PROJECT_COMMIT="${{ inputs.AIR_COMMIT }}"
+            AIR_PROJECT_COMMIT="${AIR_PROJECT_COMMIT:0:7}"
+          fi
+          echo "AIR_PROJECT_COMMIT=${AIR_PROJECT_COMMIT}" | tee -a "$GITHUB_OUTPUT"
+          DATETIME=$(date +"%Y%m%d%H")
+          echo "DATETIME=${DATETIME}" | tee -a "$GITHUB_OUTPUT"
+
   build-repo:
     name: Build and upload mlir_air wheels
-    needs: check-new-commits
+    needs: [check-new-commits, get-air-project-commit]
     if: always() && (github.event_name != 'schedule' || needs.check-new-commits.outputs.has_new_commits == 'true')
 
     runs-on: ubuntu-latest
@@ -193,13 +218,8 @@ jobs:
 
             export MLIR_AIR_SOURCE_DIR=$PWD
             export WHEELHOUSE_DIR=$PWD/wheelhouse
-            if [ x"${{ inputs.AIR_COMMIT }}" == x"" ]; then
-              export AIR_PROJECT_COMMIT=$AIR_VERSION
-            else
-              AIR_VERSION="${{ inputs.AIR_COMMIT }}"
-              export AIR_PROJECT_COMMIT=${AIR_VERSION:0:7}
-            fi
-            export DATETIME=$(date +"%Y%m%d%H")
+            export AIR_PROJECT_COMMIT=${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}
+            export DATETIME=${{ needs.get-air-project-commit.outputs.DATETIME }}
             
             rm -rf $WHEELHOUSE_DIR/mlir_air*.whl
             rm -rf $WHEELHOUSE_DIR/repaired_wheel/*
@@ -231,12 +251,12 @@ jobs:
           tag: ${{ github.event_name == 'push' && github.ref_name || (matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti') }}
           name: ${{ github.event_name == 'push' && github.ref_name || (matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti') }}
           allowUpdates: true
-          replacesArtifacts: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+          replacesArtifacts: true
           makeLatest: ${{ github.event_name == 'push' }}
 
   build-windows:
     name: Build and upload mlir_air wheels (Windows)
-    needs: check-new-commits
+    needs: [check-new-commits, get-air-project-commit]
     if: always() && (github.event_name != 'schedule' || needs.check-new-commits.outputs.has_new_commits == 'true')
 
     runs-on: windows-2022
@@ -347,13 +367,8 @@ jobs:
           export ENABLE_RTTI=${{ matrix.ENABLE_RTTI }}
           export CIBW_ARCHS=AMD64
 
-          if [ x"${{ inputs.AIR_COMMIT }}" == x"" ]; then
-            export AIR_PROJECT_COMMIT=$(git rev-parse --short HEAD)
-          else
-            export AIR_PROJECT_COMMIT="${{ inputs.AIR_COMMIT }}"
-            export AIR_PROJECT_COMMIT="${AIR_PROJECT_COMMIT:0:7}"
-          fi
-          export DATETIME=$(date +"%Y%m%d%H")
+          export AIR_PROJECT_COMMIT=${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}
+          export DATETIME=${{ needs.get-air-project-commit.outputs.DATETIME }}
 
           export WHEELHOUSE_DIR="${ROOT}/wheelhouse"
           mkdir -p "$WHEELHOUSE_DIR"
@@ -392,5 +407,5 @@ jobs:
           tag: ${{ github.event_name == 'push' && github.ref_name || (matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti') }}
           name: ${{ github.event_name == 'push' && github.ref_name || (matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti') }}
           allowUpdates: true
-          replacesArtifacts: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+          replacesArtifacts: true
           makeLatest: ${{ github.event_name == 'push' }}
