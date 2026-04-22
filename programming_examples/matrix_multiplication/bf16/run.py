@@ -536,12 +536,23 @@ if __name__ == "__main__":
         default="aie2",
         help="Target AIE architecture (aie2 or aie2p)",
     )
+    parser.add_argument(
+        "--output-dtype",
+        type=str,
+        choices=["bf16", "f32"],
+        default=None,
+        dest="output_dtype",
+        help="Override output data type (default: bf16 for aie2, f32 for aie2p)",
+    )
     args = parser.parse_args()
 
-    # aie2p uses f32 accumulation output for better precision (both direct-codegen
-    # and external kernel paths). This avoids bf16 truncation between K-tile
-    # iterations and eliminates sensitivity to rounding mode.
-    if args.arch == "aie2p":
+    # aie2p defaults to f32 accumulation output for better precision.
+    # Can be overridden with --output-dtype.
+    if args.output_dtype == "bf16":
+        pass  # keep default bfloat16
+    elif args.output_dtype == "f32":
+        OUTPUT_DATATYPE = np.float32
+    elif args.arch == "aie2p":
         OUTPUT_DATATYPE = np.float32
 
     # Check for PEANO_INSTALL_DIR if direct codegen is enabled

@@ -45,6 +45,12 @@ PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLA
 #   make run4x4 AIE_TARGET=aie2p COMPILE_MODE=compile-only   # aie2p, no xclbin (no XRT needed)
 AIE_TARGET ?= aie2
 COMPILE_MODE ?= compile-and-run
+OUTPUT_DTYPE ?=
+ifneq ($(OUTPUT_DTYPE),)
+  OUTPUT_DTYPE_FLAG = --output-dtype $(OUTPUT_DTYPE)
+else
+  OUTPUT_DTYPE_FLAG =
+endif
 
 # Select compiler flags based on AIE_TARGET
 ifeq ($(AIE_TARGET),aie2p)
@@ -67,22 +73,22 @@ print:
 
 run8x4: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 1024 --n 512 --k 512 -v \
-		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG) $(OUTPUT_DTYPE_FLAG)
 
 run4x4: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 4 --herd-n 4 --m 512 --n 512 --k 512 \
-		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG) $(OUTPUT_DTYPE_FLAG)
 
 run2x4: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 4 --m 512 --n 512 --k 512 \
-		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG) $(OUTPUT_DTYPE_FLAG)
 
 run2x2: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 \
-		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG) $(OUTPUT_DTYPE_FLAG)
 
 run1x1: compile-kernel-1x1
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 1 --herd-n 1 --m 64 --n 64 --k 64 --tile-m 32 --tile-k-l2 32 --tile-k-l1 16 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 1 --herd-n 1 --m 64 --n 64 --k 64 --tile-m 32 --tile-k-l2 32 --tile-k-l1 16 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG) $(OUTPUT_DTYPE_FLAG)
 
 compile-kernel-1x1:
 	mkdir -p $(BUILD_DIR)
@@ -110,7 +116,7 @@ compile-kernel-1x1:
 
 run3x3: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 \
-		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG) $(OUTPUT_DTYPE_FLAG)
 	
 # LLAMA-3.2-1B GEMM shapes (M=128, herd 8x4, tile_m=16)
 # Q/O: 128x2048x2048, K/V: 128x2048x512, Gate/Up: 128x2048x8192, Down: 128x8192x2048
@@ -125,19 +131,19 @@ run_llama_8x4: run_llama_8x4_qo run_llama_8x4_kv run_llama_8x4_gate_up run_llama
 
 run_llama_8x4_qo: compile-kernel-llama
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 128 --k 2048 --n 2048 \
-		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG) $(OUTPUT_DTYPE_FLAG)
 
 run_llama_8x4_kv: compile-kernel-llama
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 128 --k 2048 --n 512 \
-		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG) $(OUTPUT_DTYPE_FLAG)
 
 run_llama_8x4_gate_up: compile-kernel-llama
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 128 --k 2048 --n 8192 \
-		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG) $(OUTPUT_DTYPE_FLAG)
 
 run_llama_8x4_down: compile-kernel-llama
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 128 --k 8192 --n 2048 \
-		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+		--tile-m 16 --tile-k-l2 64 --tile-k-l1 32 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG) $(OUTPUT_DTYPE_FLAG)
 
 profile: compile-kernel build-test-exe
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python ../run.py --m 1024 --k 1024 --n 1024 \
