@@ -193,7 +193,11 @@ extern "C" {
 #define DIM_N_DIV_8 8
 #endif
 
-#ifndef combos
+#ifdef bf16_f32_ONLY
+#define combos(X) X(bfloat16, bf16, float, f32, 8, 8, 8)
+#elif defined(bf16_bf16_ONLY)
+#define combos(X) X(bfloat16, bf16, bfloat16, bf16, 8, 8, 8)
+#else
 #define combos(X) X(bfloat16, bf16, float, f32, 8, 8, 8)
 #endif
 

@@ -1,6 +1,7 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 import argparse
+import math
 import os
 import sys
 from ml_dtypes import bfloat16
@@ -715,11 +716,16 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
-    input_b = (np.random.rand(args.k, args.n) * 4).astype(INPUT_DATATYPE)
+    # Variance-normalized inputs following PyTorch's
+    # random_matrix_with_scaled_reduction_dim: randn / sqrt(K).
+    # This keeps output variance ~1 regardless of K, so relative
+    # tolerance behaves consistently across matrix sizes.
+    scale = 1.0 / math.sqrt(args.k)
+    input_a = (np.random.randn(args.m, args.k) * scale).astype(INPUT_DATATYPE)
+    input_b = (np.random.randn(args.k, args.n) * scale).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
-        # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
+        # Stochastically sample results and pass to XRTRunner for verification.
         num_samples = 100
         sampled_indices = np.vstack(
             [
@@ -728,9 +734,10 @@ if __name__ == "__main__":
             ]
         )
 
-        # Compute reference results for sampled indices.
-        # Accumulate in F32 to match hardware behavior (AIE mmul accumulates in F32),
-        # then cast the final result to the output type.
+        # Reference: f32 dot product, cast to output dtype. This matches
+        # PyTorch's approach of computing the reference in f32, then casting
+        # to the output type before comparison. For bf16 output, this avoids
+        # spurious mismatches from f32-vs-bf16 quantization noise.
         sampled_values = np.array(
             [
                 np.sum(
@@ -742,12 +749,21 @@ if __name__ == "__main__":
             dtype=OUTPUT_DATATYPE,
         )
 
-        # Store as a dictionary
         sampled_data = {
             "shape": (args.m, args.n),
             "indices": sampled_indices,
             "values": sampled_values,
         }
+
+        # Tolerances following PyTorch's BF16 matmul test suite:
+        # - f32 output: rtol=2e-3, atol=2e-3 (PyTorch reduced_precision level,
+        #   closest analog to BFP16 emulation's per-tile truncation)
+        # - bf16 output: rtol=1.6e-2, atol=2e-3 (PyTorch's default BF16 rtol
+        #   to account for bf16 output truncation)
+        if OUTPUT_DATATYPE == np.float32:
+            test_rtol, test_atol = 2e-3, 2e-3
+        else:
+            test_rtol, test_atol = 1.6e-2, 2e-3
 
         ###### Compile and test
         runner_kwargs = {
@@ -766,9 +782,8 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=0.05,
-                atol=4,
-                max_mismatch_percentage=5,
+                rtol=test_rtol,
+                atol=test_atol,
             )
         )
 
