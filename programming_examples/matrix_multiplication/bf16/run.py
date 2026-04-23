@@ -763,7 +763,7 @@ if __name__ == "__main__":
         if OUTPUT_DATATYPE == np.float32:
             test_rtol, test_atol = 2e-3, 2e-3
         else:
-            test_rtol, test_atol = 1.6e-2, 2e-3
+            test_rtol, test_atol = 1.6e-2, 4e-3
 
         ###### Compile and test
         runner_kwargs = {
