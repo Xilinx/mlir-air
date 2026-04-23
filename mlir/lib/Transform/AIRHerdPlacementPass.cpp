@@ -885,6 +885,18 @@ private:
         bool hasL1Neighbors =
             l1It != herdToL1Neighbors.end() && !l1It->second.empty();
 
+        // Cascade producers with multi-column consumers need room south
+        // so that per-tile cascade adjacency is maintained. Check if any
+        // consumer is multi-column.
+        bool needsRoomSouth = false;
+        if (hasConsumers && herd->getNumCols() > 1) {
+          for (const auto &consumerName : consIt->second) {
+            int consIdx = findHerdIdxByName(unplacedHerds, consumerName);
+            if (consIdx >= 0 && unplacedHerds[consIdx]->getNumCols() > 1)
+              needsRoomSouth = true;
+          }
+        }
+
         for (int64_t i = 0; i < segment->getNumRows() && !placed; i++) {
           for (int64_t j = 0; j < segment->getNumCols() && !placed; j++) {
             if (segment->grid[segment->getNumRows() - i - 1][j] == -1) {
@@ -898,7 +910,11 @@ private:
                   bool roomSouth = (i > 0);
                   bool roomNorth =
                       (i + herd->getNumRows() < segment->getNumRows());
-                  goodPosition = roomEast || roomWest || roomSouth || roomNorth;
+                  if (needsRoomSouth)
+                    goodPosition = roomSouth;
+                  else
+                    goodPosition =
+                        roomEast || roomWest || roomSouth || roomNorth;
                 }
                 if (goodPosition) {
                   segment->placeHerd(herd, i, j);
@@ -938,15 +954,11 @@ private:
     return nullptr;
   }
 
-  // Place a herd adjacent to its producer (east or south)
-  bool placeAdjacentToProducer(std::unique_ptr<Segment> &segment,
-                               std::unique_ptr<Herd> &herd, Herd *producer) {
-    int32_t prodX = producer->getLocX();
-    int32_t prodY = producer->getLocY();
-
-    // Try east (west-to-east cascade)
-    int32_t candidateX = prodX + producer->getNumCols();
-    int32_t candidateY = prodY;
+  // Try placing a herd to the east of the producer.
+  bool tryPlaceEast(std::unique_ptr<Segment> &segment,
+                    std::unique_ptr<Herd> &herd, Herd *producer) {
+    int32_t candidateX = producer->getLocX() + producer->getNumCols();
+    int32_t candidateY = producer->getLocY();
     if (segment->isLegalPlacement(herd, candidateY, candidateX)) {
       segment->placeHerd(herd, candidateY, candidateX);
       herd->setLocX(candidateX);
@@ -956,10 +968,14 @@ private:
                               << ", " << candidateY << ")\n");
       return true;
     }
+    return false;
+  }
 
-    // Try south (north-to-south cascade)
-    candidateX = prodX;
-    candidateY = prodY - herd->getNumRows();
+  // Try placing a herd to the south of the producer.
+  bool tryPlaceSouth(std::unique_ptr<Segment> &segment,
+                     std::unique_ptr<Herd> &herd, Herd *producer) {
+    int32_t candidateX = producer->getLocX();
+    int32_t candidateY = producer->getLocY() - herd->getNumRows();
     if (candidateY >= 0 &&
         segment->isLegalPlacement(herd, candidateY, candidateX)) {
       segment->placeHerd(herd, candidateY, candidateX);
@@ -970,8 +986,26 @@ private:
                               << ", " << candidateY << ")\n");
       return true;
     }
-
     return false;
+  }
+
+  // Place a herd adjacent to its cascade producer. Cascade requires
+  // per-tile adjacency at matching indices, so multi-column herds must
+  // be stacked vertically (south) and multi-row herds side-by-side (east).
+  bool placeAdjacentToProducer(std::unique_ptr<Segment> &segment,
+                               std::unique_ptr<Herd> &herd, Herd *producer) {
+    // When both herds span multiple columns, stacking south keeps
+    // corresponding column indices adjacent (north-to-south cascade).
+    // Otherwise default to east-first (west-to-east cascade).
+    bool preferSouth = producer->getNumCols() > 1 && herd->getNumCols() > 1;
+    if (preferSouth) {
+      if (tryPlaceSouth(segment, herd, producer))
+        return true;
+      return tryPlaceEast(segment, herd, producer);
+    }
+    if (tryPlaceEast(segment, herd, producer))
+      return true;
+    return tryPlaceSouth(segment, herd, producer);
   }
 
   // Place a consumer that has multiple producers
