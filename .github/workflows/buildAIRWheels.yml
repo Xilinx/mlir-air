@@ -50,7 +50,7 @@ jobs:
             local TAG="$1"
             local LAST_WHEEL
             LAST_WHEEL=$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}" \
-              --jq '.assets | sort_by(.created_at) | reverse | map(select(.name | startswith("mlir_air")) | .name) | .[0]' \
+              --jq '.assets | sort_by(.created_at) | reverse | map(select(.name | startswith("mlir_air")) | .name) | .[0] // empty' \
               2>/dev/null || echo "")
 
             if [ -z "$LAST_WHEEL" ]; then
@@ -60,8 +60,9 @@ jobs:
             fi
 
             # Extract short hash from wheel name: mlir_air-0.0.1.DATETIME+HASH-...
+            # No-RTTI wheels have _no_rtti after the hash, so match any char after the 7 hex digits.
             local LAST_HASH
-            LAST_HASH=$(echo "$LAST_WHEEL" | sed -n 's/.*+\([a-f0-9]\{7\}\)-.*/\1/p')
+            LAST_HASH=$(echo "$LAST_WHEEL" | sed -n 's/.*+\([a-f0-9]\{7\}\)[^a-f0-9].*/\1/p')
             echo "  ${TAG}: latest wheel hash=${LAST_HASH:-<none>}" >&2
 
             if [ -z "$LAST_HASH" ] || [ "$CURRENT_SHORT" != "$LAST_HASH" ]; then
