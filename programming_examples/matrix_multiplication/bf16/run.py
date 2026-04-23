@@ -1,6 +1,7 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 import argparse
+import math
 import os
 import sys
 from ml_dtypes import bfloat16
@@ -536,12 +537,23 @@ if __name__ == "__main__":
         default="aie2",
         help="Target AIE architecture (aie2 or aie2p)",
     )
+    parser.add_argument(
+        "--output-dtype",
+        type=str,
+        choices=["bf16", "f32"],
+        default=None,
+        dest="output_dtype",
+        help="Override output data type (default: bf16 for aie2, f32 for aie2p)",
+    )
     args = parser.parse_args()
 
-    # aie2p uses f32 accumulation output for better precision (both direct-codegen
-    # and external kernel paths). This avoids bf16 truncation between K-tile
-    # iterations and eliminates sensitivity to rounding mode.
-    if args.arch == "aie2p":
+    # aie2p defaults to f32 accumulation output for better precision.
+    # Can be overridden with --output-dtype.
+    if args.output_dtype == "bf16":
+        pass  # keep default bfloat16
+    elif args.output_dtype == "f32":
+        OUTPUT_DATATYPE = np.float32
+    elif args.arch == "aie2p":
         OUTPUT_DATATYPE = np.float32
 
     # Check for PEANO_INSTALL_DIR if direct codegen is enabled
@@ -572,7 +584,8 @@ if __name__ == "__main__":
 
     # Vectorization - only run if direct codegen mode is enabled
     if args.direct_codegen:
-        transform_ir_string = """
+        transform_ir_string = (
+            """
             module attributes {transform.with_named_sequence} {
               transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
 
@@ -642,7 +655,11 @@ if __name__ == "__main__":
                 %fors_to_hoist_ptrs = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
+                """
+            + (
+                """
                 // Hoist the 4 extf/truncf pairs from the innermost loop
+                // (only applicable when output is bf16, producing paired extf/truncf ops)
                 %all_extf_loop = transform.structured.match ops{["arith.extf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop = transform.structured.match ops{["arith.truncf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
 
@@ -673,6 +690,11 @@ if __name__ == "__main__":
                 %all_extf_loop_4 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop_4 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
                 %for1_1_hoisted_final = transform.air.hoist_cast_pair %all_extf_loop_4, %all_truncf_loop_4, %for1_1_hoisted_3 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
+                """
+                if OUTPUT_DATATYPE == bfloat16
+                else ""
+            )
+            + """
 
                 %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
                 transform.apply_patterns to %func2 {
@@ -687,17 +709,23 @@ if __name__ == "__main__":
             }
             }
         """
+        )
         transform_ir = Module.parse(transform_ir_string, context=mlir_module.context)
         run_transform(transform_ir, mlir_module)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
-    input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
-    input_b = (np.random.rand(args.k, args.n) * 4).astype(INPUT_DATATYPE)
+    # Variance-normalized inputs following PyTorch's
+    # random_matrix_with_scaled_reduction_dim: randn / sqrt(K).
+    # This keeps output variance ~1 regardless of K, so relative
+    # tolerance behaves consistently across matrix sizes.
+    scale = 1.0 / math.sqrt(args.k)
+    input_a = (np.random.randn(args.m, args.k) * scale).astype(INPUT_DATATYPE)
+    input_b = (np.random.randn(args.k, args.n) * scale).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
-        # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
+        # Stochastically sample results and pass to XRTRunner for verification.
         num_samples = 100
         sampled_indices = np.vstack(
             [
@@ -706,9 +734,10 @@ if __name__ == "__main__":
             ]
         )
 
-        # Compute reference results for sampled indices.
-        # Accumulate in F32 to match hardware behavior (AIE mmul accumulates in F32),
-        # then cast the final result to the output type.
+        # Reference: f32 dot product, cast to output dtype. This matches
+        # PyTorch's approach of computing the reference in f32, then casting
+        # to the output type before comparison. For bf16 output, this avoids
+        # spurious mismatches from f32-vs-bf16 quantization noise.
         sampled_values = np.array(
             [
                 np.sum(
@@ -720,18 +749,28 @@ if __name__ == "__main__":
             dtype=OUTPUT_DATATYPE,
         )
 
-        # Store as a dictionary
         sampled_data = {
             "shape": (args.m, args.n),
             "indices": sampled_indices,
             "values": sampled_values,
         }
 
+        # Tolerances following PyTorch's BF16 matmul test suite:
+        # - f32 output: rtol=2e-3, atol=2e-3 (PyTorch reduced_precision level,
+        #   closest analog to BFP16 emulation's per-tile truncation)
+        # - bf16 output: rtol=1.6e-2, atol=2e-3 (PyTorch's default BF16 rtol
+        #   to account for bf16 output truncation)
+        if OUTPUT_DATATYPE == np.float32:
+            test_rtol, test_atol = 2e-3, 2e-3
+        else:
+            test_rtol, test_atol = 1.6e-2, 4e-3
+
         ###### Compile and test
         runner_kwargs = {
             "verbose": args.verbose,
             "omit_while_true_loop": False,
             "runtime_loop_tiling_sizes": [2, 2],
+            "stack_size": 2048,
         }
         # Only use external kernel library if NOT in direct codegen mode
         if not args.direct_codegen:
@@ -743,9 +782,8 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=0.05,
-                atol=4,
-                max_mismatch_percentage=5,
+                rtol=test_rtol,
+                atol=test_atol,
             )
         )
 
@@ -755,6 +793,7 @@ if __name__ == "__main__":
             "verbose": args.verbose,
             "omit_while_true_loop": False,
             "runtime_loop_tiling_sizes": [2, 2],
+            "stack_size": 2048,
         }
         # Only use external kernel library if NOT in direct codegen mode
         if not args.direct_codegen:
@@ -776,6 +815,7 @@ if __name__ == "__main__":
             "output_format": "none",  # Skip xclbin generation (no xrt dependencies)
             "omit_while_true_loop": False,
             "runtime_loop_tiling_sizes": [2, 2],
+            "stack_size": 2048,
         }
         # Only use external kernel library if NOT in direct codegen mode
         if not args.direct_codegen:
