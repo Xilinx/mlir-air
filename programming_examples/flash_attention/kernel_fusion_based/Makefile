@@ -16,6 +16,11 @@ NUM_KV_HEADS ?= $(NUM_HEADS)
 NUM_Q_TILES ?= 4
 LQP_TILE := $(shell echo $$(($(LQP) / $(NUM_Q_TILES))))
 
+# Decode-specific parameters
+GROUP_SIZE ?= 4
+NUM_KV_PARALLEL ?= 4
+NUM_CASCADE_STAGES ?= 4
+
 
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
@@ -159,6 +164,79 @@ compile-kernel-npu1:
 	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
 		echo "Using xchesscc_wrapper from PATH for AIE2 (NPU1)"; \
 		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/attn_npu1.cc -o attn_npu1.o -I${srcdir}/../dataflow_based -Dlqp=$(LQP_TILE) -Dlkp=$(LKP) -Ddk=$(LKP) -Ddk_full=$(DK) -Ddv=$(LKP) -Ddv_full=$(DV); \
+	else \
+		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
+		exit 1; \
+	fi
+
+# ============================================================================
+# Decode targets (NPU2 / AIE2P)
+# ============================================================================
+
+# Decode requires kv_head_groups=1 to stay within the 16-BD-per-shim-column
+# budget (2 MM2S x 4 BDs + 1 S2MM output = 9 <= 16).
+NUM_KV_HEADS_DECODE ?= $(NUM_KV_PARALLEL)
+
+print-decode:
+	${powershell} python3 ${srcdir}/attn_decode_npu2.py -p --lk $(LK) --lkp $(LKP) --dk $(DK) --dv $(DV) --group-size $(GROUP_SIZE) --num-kv-heads $(NUM_KV_HEADS_DECODE) --num-kv-parallel $(NUM_KV_PARALLEL) --num-cascade-stages $(NUM_CASCADE_STAGES)
+
+run-decode: compile-kernel-decode
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py --lk $(LK) --lkp $(LKP) --dk $(DK) --dv $(DV) --group-size $(GROUP_SIZE) --num-kv-heads $(NUM_KV_HEADS_DECODE) --num-kv-parallel $(NUM_KV_PARALLEL) --num-cascade-stages $(NUM_CASCADE_STAGES) $(EXTRA_PY_FLAGS)
+
+profile-decode: compile-kernel-decode build-test-exe-decode
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py \
+		--lk $(LK) --lkp $(LKP) --dk $(DK) --dv $(DV) --group-size $(GROUP_SIZE) \
+		--num-kv-heads $(NUM_KV_HEADS_DECODE) --num-kv-parallel $(NUM_KV_PARALLEL) --num-cascade-stages $(NUM_CASCADE_STAGES) \
+		--compile-mode compile-only
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_decode_elf_npu2.exe -e air.elf -k "main:decode_attention_bf16" \
+		--lk $(LK) --dk $(DK) --dv $(DV) \
+		--num-heads $(shell echo $$(($(GROUP_SIZE) * $(NUM_KV_HEADS_DECODE)))) \
+		--num-kv-heads $(NUM_KV_HEADS_DECODE)
+
+build-test-exe-decode:
+	@GPP=$$( \
+		for bin in /usr/bin/g++-*; do \
+			ver=$$(echo $$bin | grep -oE '[0-9]+$$'); \
+			if [ "$$ver" -ge 13 ] 2>/dev/null; then \
+				echo "$$ver $$bin"; \
+			fi; \
+		done | sort -nr | head -n1 | awk '{print $$2}' \
+	); \
+	if [ -z "$$GPP" ]; then \
+		echo "Error: No g++ version >= 13 found in /usr/bin."; \
+		exit 1; \
+	fi; \
+	if [ -z "$$XILINX_XRT" ]; then \
+		echo "Error: XILINX_XRT environment variable not set. Please make sure to have sourced xrt/setup.sh."; \
+		exit 1; \
+	fi; \
+	if [ -z "$(AIEOPT_DIR)" ]; then \
+		echo "Error: AIEOPT_DIR environment variable not set. Please make sure to have sourced utils/env_setup.sh."; \
+		exit 1; \
+	fi; \
+	echo "Using compiler: $$GPP"; \
+	mkdir -p $(BUILD_DIR); \
+	cd $(BUILD_DIR) && $$GPP ${srcdir}/test_decode_elf_npu2.cpp -o test_decode_elf_npu2.exe -std=c++23 -Wall \
+		-I$$XILINX_XRT/include -L$$XILINX_XRT/lib \
+		-I$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/include \
+		-L$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/lib \
+		-luuid -lxrt_coreutil -lrt -lstdc++ -ltest_utils
+
+compile-kernel-decode:
+	mkdir -p $(BUILD_DIR)
+	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
+		echo "Detected PEANO_INSTALL_DIR from environment: $(PEANO_INSTALL_DIR)"; \
+		if [ -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
+			echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)"; \
+			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -c ${srcdir}/attn_decode_npu2.cc -o $(BUILD_DIR)/attn_decode_npu2.o -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV) -Dgroup_size=$(GROUP_SIZE) -Dmax_sum_buf_size=32 -DROUND_CONV_EVEN $(EXTRA_KERNEL_FLAGS); \
+		else \
+			echo "Error: invalid PEANO_INSTALL_DIR, clang++ not found."; \
+			exit 1; \
+		fi; \
+	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
+		echo "Using xchesscc_wrapper from PATH"; \
+		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper aie2p -c ${srcdir}/attn_decode_npu2.cc -o attn_decode_npu2.o -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV) -Dgroup_size=$(GROUP_SIZE) -Dmax_sum_buf_size=32 -DROUND_CONV_EVEN; \
 	else \
 		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
 		exit 1; \

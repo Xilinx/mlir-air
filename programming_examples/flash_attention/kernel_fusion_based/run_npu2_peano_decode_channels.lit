@@ -1,0 +1,13 @@
+// (c) Copyright 2025 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Lightweight FileCheck test: verify decode attention MLIR uses a single
+// QKV_dec channel (not separate QK_dec + V_dec channels) to avoid the
+// S2MM-1 infinite-BD-loop deadlock.  Runs without hardware or Peano.
+//
+// RUN: python3 %S/attn_decode_npu2.py -p --lk 512 --lkp 64 --dk 64 --dv 64 \
+// RUN:   --group-size 4 --num-kv-heads 4 --num-kv-parallel 4 \
+// RUN:   --num-cascade-stages 4 | FileCheck %s
+// CHECK: air.channel @QKV_dec
+// CHECK-NOT: air.channel @V_dec
+// CHECK-NOT: air.channel @QK_dec
