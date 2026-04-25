@@ -1026,8 +1026,15 @@ static void cloneRegionLightweight(Region &srcRegion, Region &destRegion,
                                  clonedFor.getRegion().front().begin());
             cloneRegionLightweight(forOp.getRegion(), clonedFor.getRegion(),
                                    mapper, forBuilder, true);
+          } else if (auto parallelOp = dyn_cast<scf::ParallelOp>(&op)) {
+            op.emitWarning("scf.parallel inside herd body is not handled by "
+                           "lightweight cloning - channel ops inside may be "
+                           "skipped");
+          } else if (auto ifOp = dyn_cast<scf::IfOp>(&op)) {
+            op.emitWarning("scf.if inside herd body is not handled by "
+                           "lightweight cloning - channel ops inside may be "
+                           "skipped");
           }
-          // TODO: Handle scf.parallel and scf.if if needed
         }
         // Skip all other ops (compute, arith, vector, etc.)
         continue;
@@ -1113,7 +1120,6 @@ static LogicalResult loopUnrollFullLightweight(
         "cannot lightweight-unroll loop with dynamic bounds");
   }
 
-  Block *parentBlock = forOp->getBlock();
   OpBuilder builder(forOp->getContext());
   builder.setInsertionPoint(forOp);
 
@@ -1180,6 +1186,13 @@ static LogicalResult loopUnrollFullLightweight(
             mapper.map(origRes, clonedRes);
           }
 
+          // Map segment block arguments before cloning body
+          for (auto [origArg, clonedArg] :
+               llvm::zip(segmentOp.getBody().getArguments(),
+                         clonedSegment.getBody().getArguments())) {
+            mapper.map(origArg, clonedArg);
+          }
+
           // Clone segment body lightweight
           cloneRegionLightweight(segmentOp.getRegion(),
                                  clonedSegment.getRegion(), mapper, builder,
@@ -1202,6 +1215,13 @@ static LogicalResult loopUnrollFullLightweight(
           for (auto [origRes, clonedRes] :
                llvm::zip(op.getResults(), clonedHerd.getResults())) {
             mapper.map(origRes, clonedRes);
+          }
+
+          // Map herd block arguments (tile IDs) before cloning body
+          for (auto [origArg, clonedArg] :
+               llvm::zip(herdOp.getBody().getArguments(),
+                         clonedHerd.getBody().getArguments())) {
+            mapper.map(origArg, clonedArg);
           }
 
           // Clone herd body lightweight
