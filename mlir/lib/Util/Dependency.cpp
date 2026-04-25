@@ -965,6 +965,286 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
   }
 }
 
+// Recursively clone a region's operations with lightweight handling of herd
+// bodies. This skips deep cloning of herd body internals while preserving
+// channel ops.
+static void cloneRegionLightweight(Region &srcRegion, Region &destRegion,
+                                   IRMapping &mapper, OpBuilder &builder,
+                                   bool insideHerd = false) {
+  // Ensure destination region has a block
+  if (destRegion.empty()) {
+    destRegion.push_back(new Block());
+  }
+
+  for (Block &srcBlock : srcRegion) {
+    Block *destBlock = &destRegion.front();
+    builder.setInsertionPointToEnd(destBlock);
+
+    for (Operation &op : srcBlock) {
+      // Inside herds, only clone essential ops (channel ops, alloc/dealloc,
+      // terminators, control flow)
+      if (insideHerd) {
+        if (isa<air::ChannelInterface, memref::AllocOp, memref::DeallocOp,
+                air::WaitAllOp, scf::YieldOp, air::HerdTerminatorOp,
+                air::SegmentTerminatorOp>(&op)) {
+          // Clone this op (without deeply cloning its regions if it has any)
+          builder.clone(op, mapper);
+        } else if (isa<scf::ForOp, scf::ParallelOp, scf::IfOp>(&op)) {
+          // For control flow inside herds, we need special handling to clone
+          // structure but continue lightweight cloning of their bodies
+          if (auto forOp = dyn_cast<scf::ForOp>(&op)) {
+            SmallVector<Value> mappedOperands;
+            mappedOperands.push_back(
+                mapper.lookupOrDefault(forOp.getLowerBound()));
+            mappedOperands.push_back(
+                mapper.lookupOrDefault(forOp.getUpperBound()));
+            mappedOperands.push_back(mapper.lookupOrDefault(forOp.getStep()));
+            for (Value init : forOp.getInitArgs()) {
+              mappedOperands.push_back(mapper.lookupOrDefault(init));
+            }
+
+            auto clonedFor = builder.create<scf::ForOp>(
+                forOp.getLoc(), mappedOperands[0], mappedOperands[1],
+                mappedOperands[2], ValueRange(mappedOperands).drop_front(3));
+
+            // Map induction var and iter args
+            mapper.map(forOp.getInductionVar(), clonedFor.getInductionVar());
+            for (auto [origArg, clonedArg] :
+                 llvm::zip(forOp.getRegionIterArgs(),
+                           clonedFor.getRegionIterArgs())) {
+              mapper.map(origArg, clonedArg);
+            }
+
+            // Map results
+            for (auto [origRes, clonedRes] :
+                 llvm::zip(forOp.getResults(), clonedFor.getResults())) {
+              mapper.map(origRes, clonedRes);
+            }
+
+            // Recursively clone body
+            OpBuilder forBuilder(&clonedFor.getRegion().front(),
+                                 clonedFor.getRegion().front().begin());
+            cloneRegionLightweight(forOp.getRegion(), clonedFor.getRegion(),
+                                   mapper, forBuilder, true);
+          }
+          // TODO: Handle scf.parallel and scf.if if needed
+        }
+        // Skip all other ops (compute, arith, vector, etc.)
+        continue;
+      }
+
+      // Not inside herd - clone normally but check if this is a herd
+      if (auto herdOp = dyn_cast<air::HerdOp>(&op)) {
+        // Manually create herd op to avoid deep cloning its body
+        SmallVector<Value> mappedOperands;
+        for (Value operand : op.getOperands()) {
+          mappedOperands.push_back(mapper.lookupOrDefault(operand));
+        }
+
+        auto clonedHerd = builder.create<air::HerdOp>(
+            herdOp.getLoc(), herdOp.getResultTypes(), mappedOperands,
+            herdOp->getAttrs());
+
+        // Map results
+        for (auto [origRes, clonedRes] :
+             llvm::zip(op.getResults(), clonedHerd.getResults())) {
+          mapper.map(origRes, clonedRes);
+        }
+
+        // Clone herd arguments (tile IDs)
+        for (auto [origArg, clonedArg] :
+             llvm::zip(herdOp.getBody().getArguments(),
+                       clonedHerd.getBody().getArguments())) {
+          mapper.map(origArg, clonedArg);
+        }
+
+        // Clone herd body lightweight (only channel ops + essentials)
+        OpBuilder herdBuilder(&clonedHerd.getRegion().front(),
+                              clonedHerd.getRegion().front().begin());
+        cloneRegionLightweight(herdOp.getRegion(), clonedHerd.getRegion(),
+                               mapper, herdBuilder, /*insideHerd=*/true);
+      } else if (auto segmentOp = dyn_cast<air::SegmentOp>(&op)) {
+        // For segments, clone with lightweight herd handling
+        SmallVector<Value> mappedOperands;
+        for (Value operand : op.getOperands()) {
+          mappedOperands.push_back(mapper.lookupOrDefault(operand));
+        }
+
+        auto clonedSegment = builder.create<air::SegmentOp>(
+            segmentOp.getLoc(), segmentOp.getResultTypes(), mappedOperands,
+            segmentOp->getAttrs());
+
+        // Map results
+        for (auto [origRes, clonedRes] :
+             llvm::zip(op.getResults(), clonedSegment.getResults())) {
+          mapper.map(origRes, clonedRes);
+        }
+
+        // Map segment arguments
+        for (auto [origArg, clonedArg] :
+             llvm::zip(segmentOp.getBody().getArguments(),
+                       clonedSegment.getBody().getArguments())) {
+          mapper.map(origArg, clonedArg);
+        }
+
+        // Clone segment body (which may contain herds)
+        OpBuilder segBuilder(&clonedSegment.getRegion().front(),
+                             clonedSegment.getRegion().front().begin());
+        cloneRegionLightweight(segmentOp.getRegion(), clonedSegment.getRegion(),
+                               mapper, segBuilder, /*insideHerd=*/false);
+      } else {
+        // Normal clone for all other ops
+        builder.clone(op, mapper);
+      }
+    }
+  }
+}
+
+// Lightweight version of loop unrolling that creates shallow clones of
+// segment/herd bodies. This avoids O(N*body_size) IR explosion while
+// preserving segment/herd shells for air-to-std channel matching.
+static LogicalResult loopUnrollFullLightweight(
+    scf::ForOp forOp,
+    function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn = nullptr) {
+
+  auto tripCount = air::getStaticScfForTripCountAsInt(forOp);
+  if (!tripCount) {
+    return forOp->emitOpError(
+        "cannot lightweight-unroll loop with dynamic bounds");
+  }
+
+  Block *parentBlock = forOp->getBlock();
+  OpBuilder builder(forOp->getContext());
+  builder.setInsertionPoint(forOp);
+
+  // Get loop bounds
+  auto lowerBound = forOp.getLowerBound();
+  auto upperBound = forOp.getUpperBound();
+  auto step = forOp.getStep();
+
+  auto lbCst = getConstantIntValue(lowerBound);
+  auto ubCst = getConstantIntValue(upperBound);
+  auto stepCst = getConstantIntValue(step);
+
+  if (!lbCst || !ubCst || !stepCst) {
+    return forOp->emitOpError(
+        "lightweight unroll requires constant loop bounds");
+  }
+
+  // Results from each iteration (for loop-carried values)
+  SmallVector<SmallVector<Value>> iterResults(*tripCount);
+
+  // Clone the loop body for each iteration
+  for (int64_t i = 0; i < *tripCount; ++i) {
+    IRMapping mapper;
+
+    // Map induction variable to constant for this iteration
+    int64_t ivValue = *lbCst + i * (*stepCst);
+    Value ivConst =
+        builder.create<arith::ConstantIndexOp>(forOp.getLoc(), ivValue);
+    mapper.map(forOp.getInductionVar(), ivConst);
+
+    // Map iter_args from previous iteration
+    if (i == 0) {
+      // First iteration uses the forOp's init args
+      for (auto [iterArg, initVal] :
+           llvm::zip(forOp.getRegionIterArgs(), forOp.getInitArgs())) {
+        mapper.map(iterArg, initVal);
+      }
+    } else {
+      // Subsequent iterations use results from previous iteration
+      for (auto [iterArg, prevResult] :
+           llvm::zip(forOp.getRegionIterArgs(), iterResults[i - 1])) {
+        mapper.map(iterArg, prevResult);
+      }
+    }
+
+    // Clone operations from loop body using lightweight cloning for
+    // segment/herd
+    for (Operation &op : forOp.getBody()->without_terminator()) {
+      // Handle segment/herd ops with lightweight cloning
+      if (isa<air::SegmentOp, air::HerdOp>(&op)) {
+        if (auto segmentOp = dyn_cast<air::SegmentOp>(&op)) {
+          SmallVector<Value> mappedOperands;
+          for (Value operand : op.getOperands()) {
+            mappedOperands.push_back(mapper.lookupOrDefault(operand));
+          }
+
+          auto clonedSegment = builder.create<air::SegmentOp>(
+              segmentOp.getLoc(), segmentOp.getResultTypes(), mappedOperands,
+              segmentOp->getAttrs());
+
+          // Map results
+          for (auto [origRes, clonedRes] :
+               llvm::zip(op.getResults(), clonedSegment.getResults())) {
+            mapper.map(origRes, clonedRes);
+          }
+
+          // Clone segment body lightweight
+          cloneRegionLightweight(segmentOp.getRegion(),
+                                 clonedSegment.getRegion(), mapper, builder,
+                                 /*insideHerd=*/false);
+
+          if (annotateFn) {
+            annotateFn(i, clonedSegment, builder);
+          }
+        } else if (auto herdOp = dyn_cast<air::HerdOp>(&op)) {
+          SmallVector<Value> mappedOperands;
+          for (Value operand : op.getOperands()) {
+            mappedOperands.push_back(mapper.lookupOrDefault(operand));
+          }
+
+          auto clonedHerd = builder.create<air::HerdOp>(
+              herdOp.getLoc(), herdOp.getResultTypes(), mappedOperands,
+              herdOp->getAttrs());
+
+          // Map results
+          for (auto [origRes, clonedRes] :
+               llvm::zip(op.getResults(), clonedHerd.getResults())) {
+            mapper.map(origRes, clonedRes);
+          }
+
+          // Clone herd body lightweight
+          cloneRegionLightweight(herdOp.getRegion(), clonedHerd.getRegion(),
+                                 mapper, builder, /*insideHerd=*/true);
+
+          if (annotateFn) {
+            annotateFn(i, clonedHerd, builder);
+          }
+        }
+      } else {
+        // Normal clone for non-segment/herd ops
+        Operation *clonedOp = builder.clone(op, mapper);
+
+        // Apply annotation if provided
+        if (annotateFn) {
+          annotateFn(i, clonedOp, builder);
+        }
+      }
+    }
+
+    // Handle scf.yield - map results for next iteration
+    auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    for (Value yieldedVal : yieldOp.getOperands()) {
+      Value mappedVal = mapper.lookupOrDefault(yieldedVal);
+      iterResults[i].push_back(mappedVal);
+    }
+  }
+
+  // Replace the loop's results with the final iteration's results
+  if (!iterResults.empty() && !iterResults.back().empty()) {
+    for (auto [forResult, finalResult] :
+         llvm::zip(forOp.getResults(), iterResults.back())) {
+      forResult.replaceAllUsesWith(finalResult);
+    }
+  }
+
+  // Erase the original loop
+  forOp.erase();
+
+  return success();
+}
+
 // Fully unrolls an `scf.for` loop while preserving async token dependencies.
 //
 // This function labels the operations that define the values yielded by
@@ -976,6 +1256,10 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
 //
 // If `annotateFn` is provided, it is passed to `loopUnrollByFactor` for result
 // tagging.
+//
+// This function uses lightweight cloning for segment/herd operations to avoid
+// O(N*body_size) IR explosion when unrolling shim-level loops that contain
+// large herd bodies.
 LogicalResult loopUnrollFullWithAsyncTokenPreserved(
     scf::ForOp forOp,
     function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn) {
@@ -984,21 +1268,34 @@ LogicalResult loopUnrollFullWithAsyncTokenPreserved(
 
   Block *parentBlock = forOp->getBlock();
 
-  // Fully unroll the loop
-  if (annotateFn) {
-    auto unroll_factor = air::getStaticScfForTripCountAsInt(forOp);
-    if (!unroll_factor) {
-      forOp->emitOpError("failed to fully unroll: dynamic loop bound.");
-      return failure();
-    }
-    if (failed(loopUnrollByFactor(forOp, *unroll_factor, annotateFn))) {
-      forOp->emitOpError("failed to fully unroll.");
+  // Check if this is a shim-level loop (contains segments) that would benefit
+  // from lightweight unrolling
+  bool containsSegment = false;
+  forOp.walk([&](air::SegmentOp) { containsSegment = true; });
+
+  if (containsSegment) {
+    // Use lightweight unrolling to avoid O(N*body_size) IR explosion
+    if (failed(loopUnrollFullLightweight(forOp, annotateFn))) {
+      forOp->emitOpError("failed to lightweight unroll.");
       return failure();
     }
   } else {
-    if (failed(loopUnrollFull(forOp))) {
-      forOp->emitOpError("failed to fully unroll.");
-      return failure();
+    // Use standard unrolling for non-shim loops
+    if (annotateFn) {
+      auto unroll_factor = air::getStaticScfForTripCountAsInt(forOp);
+      if (!unroll_factor) {
+        forOp->emitOpError("failed to fully unroll: dynamic loop bound.");
+        return failure();
+      }
+      if (failed(loopUnrollByFactor(forOp, *unroll_factor, annotateFn))) {
+        forOp->emitOpError("failed to fully unroll.");
+        return failure();
+      }
+    } else {
+      if (failed(loopUnrollFull(forOp))) {
+        forOp->emitOpError("failed to fully unroll.");
+        return failure();
+      }
     }
   }
 
