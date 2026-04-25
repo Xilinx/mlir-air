@@ -1,10 +1,10 @@
-//===- test_xclbin_npu2.cpp -----------------------------------*- C++ -*-===//
+//===- test_xclbin.cpp ----------------------------------------*- C++ -*-===//
 //
 // SPDX-License-Identifier: MIT
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
-// Flash attention benchmark for NPU2 (xclbin format).
+// Flash attention benchmark (xclbin format). Works on both NPU1 and NPU2.
 //
 //===----------------------------------------------------------------------===//
 
@@ -54,7 +54,7 @@ int main(int argc, const char *argv[]) {
       "dk", "Key dimension", cxxopts::value<int>()->default_value("64"))(
       "dv", "Value dimension", cxxopts::value<int>()->default_value("64"))(
       "num-heads", "Number of attention heads",
-      cxxopts::value<int>()->default_value("12"))(
+      cxxopts::value<int>()->default_value("2"))(
       "warmup,w", "Number of warmup iterations",
       cxxopts::value<int>()->default_value("10"))(
       "iterations,n", "Number of iterations",
@@ -193,7 +193,7 @@ int main(int argc, const char *argv[]) {
   float macs =
       (float)num_heads * ((float)lq * lk * dk * 2 + (float)lk * lq * dv * 2);
 
-  std::cout << "Flash Attention Benchmark (xclbin format, NPU2)" << std::endl;
+  std::cout << "Flash Attention Benchmark (xclbin format)" << std::endl;
   std::cout << "  num_heads=" << num_heads << ", lq=" << lq << ", lk=" << lk
             << ", dk=" << dk << ", dv=" << dv << std::endl;
   std::cout << "  Q: [" << num_heads << "x" << lq << "x" << dk << "] ("
