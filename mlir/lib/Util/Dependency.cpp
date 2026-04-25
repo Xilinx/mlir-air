@@ -1006,6 +1006,130 @@ LogicalResult loopUnrollFullWithAsyncTokenPreserved(
   return success();
 }
 
+// Lightweight loop unroll that, for ops where shouldStripBody returns true,
+// replaces region bodies with just the terminator in cloned iterations 1..N.
+// This avoids the O(N * body_size) IR explosion from deep-cloning hierarchy
+// bodies that the caller knows are unnecessary.
+LogicalResult
+loopUnrollFullLightweight(scf::ForOp forOp,
+                          function_ref<bool(Operation *)> shouldStripBody) {
+  auto tripCount = air::getStaticScfForTripCountAsInt(forOp);
+  if (!tripCount) {
+    // Dynamic loop bound — fall back to standard unroll.
+    return loopUnrollFullWithAsyncTokenPreserved(forOp);
+  }
+
+  // Pre-processing: label yield-defining ops for async token fixup.
+  labelYieldDefiningOpsOfForLoop(forOp, "scf.for_result_id");
+  Block *parentBlock = forOp->getBlock();
+
+  // Trivial case: single iteration — just promote.
+  if (*tripCount == 1) {
+    IRRewriter rewriter(forOp.getContext());
+    (void)forOp.promoteIfSingleIteration(rewriter);
+    preserveAsyncDependenciesAfterUnroll(*parentBlock);
+    return success();
+  }
+
+  Block *body = forOp.getBody();
+  OpBuilder builder(forOp.getContext());
+  builder.setInsertionPoint(body->getTerminator());
+
+  // Identify the last op before the yield (the "end" of the body to clone).
+  Block::iterator srcBlockEnd = std::prev(body->end(), 2);
+
+  Value iv = forOp.getInductionVar();
+  Value lb = forOp.getLowerBound();
+  Value step = forOp.getStep();
+  auto loc = forOp.getLoc();
+
+  // Track yielded values for iter_arg remapping across iterations.
+  SmallVector<Value> lastYielded(
+      forOp.getBody()->getTerminator()->getOperands());
+
+  // Clone iterations 1..N-1 into the body (iteration 0 is the original).
+  for (unsigned i = 1; i < *tripCount; i++) {
+    IRMapping operandMap;
+
+    // Map iter_args to the previous iteration's yielded values.
+    for (auto [iterArg, yielded] :
+         llvm::zip(forOp.getRegionIterArgs(), lastYielded))
+      operandMap.map(iterArg, yielded);
+
+    // Map IV to lb + i * step.
+    if (!iv.use_empty()) {
+      Value iterConst = arith::ConstantIndexOp::create(builder, loc, i);
+      Value offset = arith::MulIOp::create(builder, loc, step, iterConst);
+      Value newIV = arith::AddIOp::create(builder, loc, lb, offset);
+      operandMap.map(iv, newIV);
+    }
+
+    // Clone each op in the body. After cloning, strip region bodies of ops
+    // matching the caller's predicate — these are deep hierarchy bodies that
+    // the caller knows are unnecessary in cloned iterations.
+    for (auto it = body->begin(); it != std::next(srcBlockEnd); it++) {
+      Operation *clonedOp = builder.clone(*it, operandMap);
+
+      if (shouldStripBody) {
+        clonedOp->walk([&](Operation *nested) {
+          if (!shouldStripBody(nested))
+            return;
+          for (Region &region : nested->getRegions()) {
+            if (region.empty())
+              continue;
+            Block &blk = region.front();
+            // Erase all ops except the terminator.
+            while (blk.getOperations().size() > 1) {
+              Operation &op = *std::prev(blk.end(), 2);
+              op.dropAllUses();
+              op.erase();
+            }
+          }
+        });
+      }
+    }
+
+    // Update yielded values for the next iteration.
+    auto *yield = forOp.getBody()->getTerminator();
+    for (unsigned j = 0; j < lastYielded.size(); j++)
+      lastYielded[j] = operandMap.lookupOrDefault(yield->getOperand(j));
+  }
+
+  // Replace the loop's results with the last iteration's yielded values,
+  // then inline the body into the parent block and erase the loop.
+  {
+    IRRewriter rewriter(forOp.getContext());
+
+    // Replace IV uses in iteration 0 with lb (the first iteration's IV value).
+    if (!iv.use_empty())
+      rewriter.replaceAllUsesWith(iv, lb);
+
+    // Replace iter_arg uses in iteration 0 with init values.
+    for (auto [iterArg, initVal] :
+         llvm::zip(forOp.getRegionIterArgs(), forOp.getInitArgs()))
+      rewriter.replaceAllUsesWith(iterArg, initVal);
+
+    // Replace loop results with the last iteration's yielded values.
+    for (auto [loopResult, yielded] :
+         llvm::zip(forOp.getResults(), lastYielded))
+      rewriter.replaceAllUsesWith(loopResult, yielded);
+
+    // Move all body ops (except the yield) before the loop in the parent.
+    Block *parentBlock2 = forOp->getBlock();
+    auto &bodyOps = body->getOperations();
+    auto yieldIt = std::prev(bodyOps.end()); // the yield terminator
+    parentBlock2->getOperations().splice(Block::iterator(forOp), bodyOps,
+                                         bodyOps.begin(), yieldIt);
+
+    // Erase the now-empty loop.
+    rewriter.eraseOp(forOp);
+  }
+
+  // Post-processing: reconnect async token dependencies.
+  preserveAsyncDependenciesAfterUnroll(*parentBlock);
+  return success();
+}
+
 // Unrolls an `scf.for` loop by a given factor while preserving async token
 // dependencies.
 //
