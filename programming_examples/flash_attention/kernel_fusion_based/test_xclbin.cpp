@@ -1,21 +1,25 @@
-//===- test_xclbin_npu1.cpp -----------------------------------*- C++ -*-===//
+//===- test_xclbin.cpp ----------------------------------------*- C++ -*-===//
 //
 // SPDX-License-Identifier: MIT
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
-// Flash attention benchmark for NPU1 (xclbin format).
+// Flash attention benchmark (xclbin format). Works on both NPU1 and NPU2.
 //
 //===----------------------------------------------------------------------===//
 
 #include "cxxopts.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <stdfloat>
 #include <string>
 #include <vector>
 
@@ -72,12 +76,24 @@ int main(int argc, const char *argv[]) {
   }
 
   int trace_size = vm["trace-size"].as<int>();
+  if (trace_size < 0) {
+    std::cerr << "Error: --trace-size must be >= 0\n";
+    return 1;
+  }
+
   int lq = vm["lq"].as<int>();
   int lk = vm["lk"].as<int>();
   int dk = vm["dk"].as<int>();
   int dv = vm["dv"].as<int>();
   int num_heads = vm["num-heads"].as<int>();
   int verbosity = vm["verbosity"].as<int>();
+
+  unsigned int n_iterations = vm["iterations"].as<int>();
+  unsigned int n_warmup_iterations = vm["warmup"].as<int>();
+  if (n_iterations == 0) {
+    std::cerr << "Error: --iterations must be > 0\n";
+    return 1;
+  }
 
   size_t Q_VOLUME = (size_t)num_heads * lq * dk;
   size_t K_VOLUME = (size_t)num_heads * lk * dk;
@@ -106,15 +122,19 @@ int main(int argc, const char *argv[]) {
   // Find kernel in xclbin
   std::string Node = vm["kernel"].as<std::string>();
   auto xkernels = xclbin.get_kernels();
-  auto xkernel = *std::find_if(xkernels.begin(), xkernels.end(),
-                               [Node, verbosity](xrt::xclbin::kernel &k) {
-                                 auto name = k.get_name();
-                                 if (verbosity >= 1)
-                                   std::cout << "Found kernel: " << name
-                                             << std::endl;
-                                 return name.rfind(Node, 0) == 0;
-                               });
-  auto kernelName = xkernel.get_name();
+  auto xkernel_it = std::find_if(xkernels.begin(), xkernels.end(),
+                                 [Node, verbosity](xrt::xclbin::kernel &k) {
+                                   auto name = k.get_name();
+                                   if (verbosity >= 1)
+                                     std::cout << "Found kernel: " << name
+                                               << std::endl;
+                                   return name.rfind(Node, 0) == 0;
+                                 });
+  if (xkernel_it == xkernels.end()) {
+    std::cerr << "Error: Kernel '" << Node << "' not found in xclbin\n";
+    return 1;
+  }
+  auto kernelName = xkernel_it->get_name();
 
   if (verbosity >= 1)
     std::cout << "Using kernel: " << kernelName << "\n";
@@ -125,7 +145,7 @@ int main(int argc, const char *argv[]) {
   auto kernel = xrt::kernel(context, kernelName);
 
   // Allocate buffer objects
-  auto bo_instr = xrt::bo(device, instr_v.size() * sizeof(int),
+  auto bo_instr = xrt::bo(device, instr_v.size() * sizeof(uint32_t),
                           XCL_BO_FLAGS_CACHEABLE, kernel.group_id(1));
 
   auto bo_q =
@@ -137,31 +157,25 @@ int main(int argc, const char *argv[]) {
   auto bo_out = xrt::bo(device, OUTPUT_SIZE + static_cast<size_t>(trace_size),
                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(6));
 
-  // Fill input data
+  // Fill input data directly into mapped BO buffers
   DATATYPE *bufQ = bo_q.map<DATATYPE *>();
-  std::vector<DATATYPE> QVec;
   for (size_t i = 0; i < Q_VOLUME; i++)
-    QVec.push_back(random_bfloat16_t());
-  memcpy(bufQ, QVec.data(), Q_SIZE);
+    bufQ[i] = random_bfloat16_t();
 
   DATATYPE *bufK = bo_k.map<DATATYPE *>();
-  std::vector<DATATYPE> KVec;
   for (size_t i = 0; i < K_VOLUME; i++)
-    KVec.push_back(random_bfloat16_t());
-  memcpy(bufK, KVec.data(), K_SIZE);
+    bufK[i] = random_bfloat16_t();
 
   DATATYPE *bufV = bo_v.map<DATATYPE *>();
-  std::vector<DATATYPE> VVec;
   for (size_t i = 0; i < V_VOLUME; i++)
-    VVec.push_back(random_bfloat16_t());
-  memcpy(bufV, VVec.data(), V_SIZE);
+    bufV[i] = random_bfloat16_t();
 
   DATATYPE *bufOut = bo_out.map<DATATYPE *>();
   memset(bufOut, 0, OUTPUT_SIZE + trace_size);
 
   // Copy instructions
   void *bufInstr = bo_instr.map<void *>();
-  memcpy(bufInstr, instr_v.data(), instr_v.size() * sizeof(int));
+  memcpy(bufInstr, instr_v.data(), instr_v.size() * sizeof(uint32_t));
 
   // Sync to device
   bo_instr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -170,8 +184,6 @@ int main(int argc, const char *argv[]) {
   bo_v.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_out.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-  unsigned int n_iterations = vm["iterations"].as<int>();
-  unsigned int n_warmup_iterations = vm["warmup"].as<int>();
   unsigned int num_iter = n_iterations + n_warmup_iterations;
   float npu_time_total = 0;
   float npu_time_min = std::numeric_limits<float>::max();
@@ -181,7 +193,7 @@ int main(int argc, const char *argv[]) {
   float macs =
       (float)num_heads * ((float)lq * lk * dk * 2 + (float)lk * lq * dv * 2);
 
-  std::cout << "Flash Attention Benchmark (xclbin format, NPU1)" << std::endl;
+  std::cout << "Flash Attention Benchmark (xclbin format)" << std::endl;
   std::cout << "  num_heads=" << num_heads << ", lq=" << lq << ", lk=" << lk
             << ", dk=" << dk << ", dv=" << dv << std::endl;
   std::cout << "  Q: [" << num_heads << "x" << lq << "x" << dk << "] ("
@@ -195,6 +207,7 @@ int main(int argc, const char *argv[]) {
   std::cout << "  Warmup: " << n_warmup_iterations
             << ", Iterations: " << n_iterations << std::endl;
 
+  // Opcode 3 = execute NPU instructions from instruction buffer
   unsigned int opcode = 3;
 
   for (unsigned iter = 0; iter < num_iter; iter++) {
