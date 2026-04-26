@@ -983,16 +983,14 @@ static SmallPtrSet<Operation *, 16> collectHerdBodyOpsToKeep(Block &herdBody) {
       toKeep.insert(&op);
   }
   // Expand: add ops whose results are consumed by any kept op (within block).
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    for (Operation *op :
-         SmallVector<Operation *>(toKeep.begin(), toKeep.end())) {
-      for (Value operand : op->getOperands()) {
-        if (Operation *defOp = operand.getDefiningOp()) {
-          if (defOp->getBlock() == &herdBody && toKeep.insert(defOp).second)
-            changed = true;
-        }
+  // Use a worklist to avoid redundant re-processing of already-kept ops.
+  SmallVector<Operation *> worklist(toKeep.begin(), toKeep.end());
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    for (Value operand : op->getOperands()) {
+      if (Operation *defOp = operand.getDefiningOp()) {
+        if (defOp->getBlock() == &herdBody && toKeep.insert(defOp).second)
+          worklist.push_back(defOp);
       }
     }
   }
@@ -1200,9 +1198,13 @@ LogicalResult loopUnrollFullWithAsyncTokenPreserved(
   // For shim-level loops containing segments or herds, use lightweight
   // unrolling to avoid O(N * herd_body_size) deep-clone cost.
   bool containsSegmentOrHerd = false;
-  forOp.walk([&](air::SegmentOp) { containsSegmentOrHerd = true; });
-  if (!containsSegmentOrHerd)
-    forOp.walk([&](air::HerdOp) { containsSegmentOrHerd = true; });
+  forOp->walk([&](Operation *op) -> WalkResult {
+    if (isa<air::SegmentOp, air::HerdOp>(op)) {
+      containsSegmentOrHerd = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
 
   if (!annotateFn && containsSegmentOrHerd) {
     if (failed(manuallyUnrollForOpLightweight(forOp)))
