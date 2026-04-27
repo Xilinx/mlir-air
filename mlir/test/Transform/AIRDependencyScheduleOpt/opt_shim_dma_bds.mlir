@@ -8,6 +8,7 @@
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1" | FileCheck %s
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 shim-dma-tile-sizes=2,2" | FileCheck %s --check-prefix=NPUTILED
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=xcvc1902" | FileCheck %s --check-prefix=AIE1
+// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 shim-dma-tile-sizes=2,2" | FileCheck %s --check-prefix=LIGHTWEIGHT
 
 // Optimize logical air.channel.put/get op into efficient shim dma block descriptor (BD).
 
@@ -951,6 +952,49 @@ module {
         %7 = air.channel.get async [%tok2]  @channel_1[%c0, %c0] (%buf2[%c0, %j] [%c256, %c64] [%c512, %c1_0]) {id = 2 : i32} : (memref<512x512xbf16>)
         scf.yield %7 : !air.async.token
       }
+    }
+    return
+  }
+
+  // Lightweight unrolling: verify that after unrolling a shim-level scf.for
+  // containing air.segment > air.herd, channel ops in herd bodies are
+  // preserved while compute ops with dead results are NOT cloned into the
+  // lightweight herd copies. The launch has trip count 2; after the pass
+  // converts it to a scf.for and unrolls with shim-dma-tile-sizes=2,2, two
+  // lightweight herd copies should appear, each missing the arith.muli.
+
+  // LIGHTWEIGHT-LABEL: func_lightweight_unroll
+  // LIGHTWEIGHT: air.segment
+  // LIGHTWEIGHT: air.channel.get
+  // LIGHTWEIGHT-NOT: arith.muli
+
+  air.channel @ch_lite [2, 1]
+
+  func.func @func_lightweight_unroll(%arg0: memref<256xi32>) {
+    %c2 = arith.constant 2 : index
+    %0 = air.launch async (%arg1) in (%arg2=%c2) args(%arg3=%arg0) : memref<256xi32> {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c128 = arith.constant 128 : index
+      %1 = air.wait_all async
+      %2 = air.segment async [%1] {
+        %c0_0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c64_0 = arith.constant 64 : index
+        %3 = air.herd async tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %c64_1 = arith.constant 64 : index
+          %l1buf = memref.alloc() : memref<64xi32, 2>
+          %dead = arith.muli %tx, %ty : index
+          %4 = air.channel.get async @ch_lite[%tx, %ty] (%l1buf[%c0_1] [%c64_1] [%c1_1]) : (memref<64xi32, 2>)
+          memref.dealloc %l1buf : memref<64xi32, 2>
+          air.herd_terminator
+        }
+        air.segment_terminator
+      }
+      %5 = air.channel.put async [%1] @ch_lite[%arg1, %c0] (%arg3[%arg1, %c0] [%c1, %c64] [%c128, %c1]) : (memref<256xi32>)
     }
     return
   }
