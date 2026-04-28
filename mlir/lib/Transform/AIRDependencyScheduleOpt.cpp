@@ -820,15 +820,52 @@ struct MergeAIRHerdsPattern : public OpRewritePattern<air::HerdOp> {
     for (auto h : herdsWithSameName)
       kernelOperands.insert(h.getKernelOperands().begin(),
                             h.getKernelOperands().end());
+
+    // Collect the set of herd tokens being merged so we can identify
+    // inter-herd deps vs external deps.
+    llvm::DenseSet<Value> herdTokens;
+    for (auto h : herdsWithSameName)
+      if (h.getAsyncToken())
+        herdTokens.insert(h.getAsyncToken());
+
+    // Build the merged herd's async deps as the union of all herds' external
+    // deps (excluding inter-herd deps that will become intra-herd ordering).
+    SmallVector<Value> mergedExternalDeps;
+    llvm::SetVector<Value> seenDeps;
+    for (auto h : herdsWithSameName) {
+      for (auto dep : h.getAsyncDependencies()) {
+        if (!herdTokens.contains(dep) && seenDeps.insert(dep))
+          mergedExternalDeps.push_back(dep);
+      }
+    }
+
     rewriter.setInsertionPointAfter(herdsWithSameName.back());
     auto newMergedHerd = air::HerdOp::create(
-        rewriter, herdOp->getLoc(),
-        herdsWithSameName.back().getAsyncDependencies(),
+        rewriter, herdOp->getLoc(), mergedExternalDeps,
         herdOp.getSizeOperands(), kernelOperands.takeVector(),
         (bool)herdOp.getAsyncToken(), herdOp->getAttrs());
     rewriter.setInsertionPointToStart(&newMergedHerd.getBody().front());
     IRMapping remap;
-    for (auto h : herdsWithSameName) {
+
+    // For each herd, record which predecessor herds it depends on, so we
+    // can insert intra-herd dependency edges after cloning.
+    // Key: index of the dependent herd, Value: indices of predecessor herds.
+    llvm::DenseMap<unsigned, SmallVector<unsigned>> interHerdDeps;
+    for (unsigned i = 0; i < herdsWithSameName.size(); i++) {
+      for (auto dep : herdsWithSameName[i].getAsyncDependencies()) {
+        for (unsigned j = 0; j < i; j++) {
+          if (herdsWithSameName[j].getAsyncToken() == dep) {
+            interHerdDeps[i].push_back(j);
+          }
+        }
+      }
+    }
+
+    // Clone ops from each herd into the merged body, tracking the last
+    // async token produced by each herd's group for inter-herd barriers.
+    SmallVector<Value> lastAsyncTokenPerHerd(herdsWithSameName.size());
+    for (unsigned herdIdx = 0; herdIdx < herdsWithSameName.size(); herdIdx++) {
+      auto h = herdsWithSameName[herdIdx];
       // Update "link_with" attr
       if (h.getLinkWith())
         newMergedHerd.setLinkWith(h.getLinkWith());
@@ -840,9 +877,75 @@ struct MergeAIRHerdsPattern : public OpRewritePattern<air::HerdOp> {
         remap.map(h.getKernelArgument(i),
                   newMergedHerd.getTiedKernelArgument(
                       h.getTiedKernelOperand(h.getKernelArgument(i))));
-      // Clone ops
-      for (auto &o : h.getBody().front().without_terminator())
-        rewriter.clone(o, remap);
+
+      // If this herd depends on a predecessor herd, insert a wait_all
+      // barrier that collects the predecessor's last async tokens.
+      Value barrierToken;
+      if (interHerdDeps.count(herdIdx)) {
+        SmallVector<Value> barrierDeps;
+        for (unsigned predIdx : interHerdDeps[herdIdx]) {
+          if (lastAsyncTokenPerHerd[predIdx])
+            barrierDeps.push_back(lastAsyncTokenPerHerd[predIdx]);
+        }
+        if (!barrierDeps.empty()) {
+          auto barrierWaitAll = xilinx::air::WaitAllOp::create(
+              rewriter, h->getLoc(), air::AsyncTokenType::get(h->getContext()),
+              barrierDeps);
+          barrierToken = barrierWaitAll.getAsyncToken();
+        }
+      }
+
+      // Clone ops, injecting the barrier dependency where needed.
+      Value lastToken;
+      for (auto &o : h.getBody().front().without_terminator()) {
+        auto *cloned = rewriter.clone(o, remap);
+        // Add the barrier as a dependency to all async ops from dependent
+        // herds. Every async op in the group must wait for the predecessor
+        // herd's ops to complete, since any of them could access shared
+        // buffers.
+        if (barrierToken) {
+          if (auto asyncOp =
+                  dyn_cast_if_present<air::AsyncOpInterface>(cloned)) {
+            asyncOp.addAsyncDependency(barrierToken);
+          } else if (dyn_cast_if_present<air::ChannelInterface>(cloned)) {
+            air::addAsyncDependency(cloned, barrierToken);
+          }
+        }
+        // Track the last async token produced by this herd's ops.
+        // Skip dealloc ops — their tokens reference freed memory and
+        // canonicalize will remove deps to ops accessing different memory.
+        bool isDealloc = false;
+        if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(cloned)) {
+          execOp.getBody().walk([&](memref::DeallocOp) { isDealloc = true; });
+        }
+        if (!isDealloc) {
+          if (auto forOp = dyn_cast_if_present<scf::ForOp>(cloned)) {
+            // Collect all async token results from the loop.
+            SmallVector<Value> asyncResults;
+            for (auto res : forOp->getResults()) {
+              if (isa<air::AsyncTokenType>(res.getType()))
+                asyncResults.push_back(res);
+            }
+            if (asyncResults.size() == 1) {
+              lastToken = asyncResults.front();
+            } else if (!asyncResults.empty()) {
+              auto waitAll = xilinx::air::WaitAllOp::create(
+                  rewriter, cloned->getLoc(),
+                  air::AsyncTokenType::get(cloned->getContext()), asyncResults);
+              lastToken = waitAll.getAsyncToken();
+            }
+          } else if (auto asyncOp =
+                         dyn_cast_if_present<air::AsyncOpInterface>(cloned)) {
+            if (asyncOp.getAsyncToken())
+              lastToken = asyncOp.getAsyncToken();
+          } else if (dyn_cast_if_present<air::ChannelInterface>(cloned)) {
+            auto tok = air::getAsyncTokenFromOp(cloned);
+            if (tok)
+              lastToken = tok;
+          }
+        }
+      }
+      lastAsyncTokenPerHerd[herdIdx] = lastToken;
     }
 
     // Erase original herds; replace async token uses if async.
