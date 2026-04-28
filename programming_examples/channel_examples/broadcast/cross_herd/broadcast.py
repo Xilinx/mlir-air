@@ -22,7 +22,7 @@ from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
 from air.dialects import arith
 from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp
+from air.dialects.memref import AllocOp, DeallocOp, subview
 from air.dialects.func import FuncOp
 from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
 from air.dialects.scf import for_, yield_
@@ -30,16 +30,18 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
-VECTOR_LEN = 64       # Length of vector to broadcast (like head_dim or K)
-HERD_N = 4            # Number of consumer tiles (like HERD_M in GEMV)
-VEC_SIZE = 16         # SIMD width for bf16
+VECTOR_LEN = 64  # Length of vector to broadcast (like head_dim or K)
+HERD_N = 4  # Number of consumer tiles (like HERD_M in GEMV)
+VEC_SIZE = 16  # SIMD width for bf16
 DTYPE = bfloat16
 
 
 def _make_mul_map(factor):
-    return AffineMap.get(0, 1, [
-        AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(factor))
-    ])
+    return AffineMap.get(
+        0,
+        1,
+        [AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(factor))],
+    )
 
 
 @module_builder
@@ -85,10 +87,11 @@ def build_module():
                     one_scalar = ConstantOp(xrt, 1.0)
                     v_one = BroadcastOp(vecTy, one_scalar)
                     for j in range_(0, VECTOR_LEN, VEC_SIZE):
-                        from air.dialects.memref import subview
                         sv_in = subview(l1_in.result, [j], [VEC_SIZE], [1])
                         sv_out = subview(l1_out.result, [j], [VEC_SIZE], [1])
-                        v = transfer_read(vecTy, sv_in, [c0], identity_map, cst0, [True])
+                        v = transfer_read(
+                            vecTy, sv_in, [c0], identity_map, cst0, [True]
+                        )
                         v_plus = arith.addf(v, v_one)
                         transfer_write(None, v_plus, sv_out, [c0], identity_map, [True])
                         yield_([])
@@ -110,10 +113,13 @@ def build_module():
                     # Write to output at tile-specific offset
                     mul_map = _make_mul_map(VECTOR_LEN)
                     out_off = affine_apply(mul_map, [_tx])
-                    dma_memcpy_nd(h_out, l1_buf,
+                    dma_memcpy_nd(
+                        h_out,
+                        l1_buf,
                         dst_offsets=[out_off],
                         dst_sizes=[VECTOR_LEN],
-                        dst_strides=[1])
+                        dst_strides=[1],
+                    )
 
                     DeallocOp(l1_buf)
 
@@ -126,8 +132,11 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("-p", "--print-module-only", action="store_true")
     parser.add_argument(
-        "--output-format", type=str, choices=["xclbin", "elf"],
-        default="xclbin", dest="output_format",
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
     )
     args = parser.parse_args()
 
