@@ -1,3 +1,10 @@
+//===- herd_dep_retrace.mlir ------------------------------------*- MLIR -*-===//
+//
+// Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: air-opt %s -air-dependency-canonicalize | FileCheck %s
 
 // Verify that air-dependency-canonicalize correctly establishes deps between
