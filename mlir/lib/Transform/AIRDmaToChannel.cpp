@@ -131,11 +131,18 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
                        clonedScfLoopOps.end());
     } else if (auto channel_op =
                    dyn_cast_if_present<air::ChannelInterface>(o)) {
-      if (o.hasAttr("loop-carried-dep") &&
-          o.getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() ==
-              "internalGetPut") {
-        // Found channel op labelled as "internalGetPut", which
-        // shouldn't be hoisted
+      auto depAttr = o.getAttrOfType<StringAttr>("loop-carried-dep");
+      bool isInternalGetPut =
+          depAttr && depAttr.getValue().str() == "internalGetPut";
+      // A user-written channel op pulled into the backward slice by the
+      // herd-to-segment hoisting pass: has "hoist" attribute (from backward
+      // slice labeling) but no "loop-carried-dep" (not DMA-derived).
+      // Must not be cloned to segment level — replace with wait_all.
+      bool isHoistedUserChannel = o.hasAttr("hoist") && !depAttr;
+      if (isInternalGetPut || isHoistedUserChannel) {
+        // Don't hoist: either "internalGetPut" (DMA-derived internal half) or
+        // a user-written channel op that ended up in the backward slice as a
+        // dependency. Replace with wait_all to preserve async token chain.
         if (air::isAsyncOp(&o)) {
           auto wa_op =
               air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
