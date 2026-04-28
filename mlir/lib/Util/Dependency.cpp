@@ -2470,7 +2470,8 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
         if (for_op) {
           if (for_op->isAncestor(op)) {
             // Destination is inside the loop: use iter_arg (block argument).
-            auto value = getLoopCarriedTokenFromScfOp(for_op, "argument");
+            auto value =
+                getLoopCarriedTokenFromScfOp(for_op, "argument");
             if (value)
               async_op.addAsyncDependency(value);
           } else {
@@ -2601,11 +2602,17 @@ dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     for (auto dep : dep_list) {
       if (dep.getDefiningOp() &&
           isa<air::HierarchyInterface>(dep.getDefiningOp())) {
-        eraseAsyncDependencyFromAsyncOp(exec_op, dep);
         hasDepToHier = true;
       }
     }
     if (hasDepToHier) {
+      // Snapshot before erasing to avoid mutating OperandRange while iterating.
+      for (auto dep : llvm::to_vector(dep_list)) {
+        if (dep.getDefiningOp() &&
+            isa<air::HierarchyInterface>(dep.getDefiningOp())) {
+          eraseAsyncDependencyFromAsyncOp(exec_op, dep);
+        }
+      }
       // Trace dependency of op again
       if (failed(
               depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
@@ -2641,41 +2648,15 @@ dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     if (!hasDepToHier)
       continue;
 
-    // Split kernel operands into read vs write sets by analyzing how each
-    // memref is accessed inside the herd body.
-    SmallVector<air::partialMemref, 1> herd_memref_reads;
-    SmallVector<air::partialMemref, 1> herd_memref_writes;
+    // Build partial memref list from herd's kernel operands.
+    SmallVector<air::partialMemref, 1> herd_memref_accesses;
     for (unsigned i = 0; i < herd_op.getNumKernelOperands(); i++) {
       auto operand = herd_op.getKernelOperand(i);
-      if (!isa<BaseMemRefType>(operand.getType()))
-        continue;
-      // Check if the kernel operand is read or written inside the herd.
-      auto readResult =
-          air::getAllReadAccessedMemrefOperandsFromOp(herd_op.getOperation());
-      auto writeResult =
-          air::getAllWriteAccessedMemrefOperandsFromOp(herd_op.getOperation());
-      bool isRead = false, isWritten = false;
-      if (succeeded(readResult)) {
-        for (auto &entry : *readResult)
-          if (entry.first == operand)
-            isRead = true;
+      if (isa<BaseMemRefType>(operand.getType())) {
+        herd_memref_accesses.push_back(air::partialMemref(operand));
       }
-      if (succeeded(writeResult)) {
-        for (auto &entry : *writeResult)
-          if (entry.first == operand)
-            isWritten = true;
-      }
-      // If we can't determine access, conservatively assume both.
-      if (!isRead && !isWritten) {
-        isRead = true;
-        isWritten = true;
-      }
-      if (isRead)
-        herd_memref_reads.push_back(air::partialMemref(operand));
-      if (isWritten)
-        herd_memref_writes.push_back(air::partialMemref(operand));
     }
-    if (herd_memref_reads.empty() && herd_memref_writes.empty())
+    if (herd_memref_accesses.empty())
       continue;
 
     // Erase hierarchy deps and re-trace.
@@ -2685,11 +2666,13 @@ dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
         eraseAsyncDependencyFromAsyncOp(herd_op, dep);
       }
     }
-    if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-            herd_memref_reads, herd_op, "RAW")))
+    if (failed(
+            depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+                herd_memref_accesses, herd_op, "RAW")))
       return failure();
-    if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-            herd_memref_writes, herd_op, "WAW/WAR")))
+    if (failed(
+            depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+                herd_memref_accesses, herd_op, "WAW/WAR")))
       return failure();
   }
 
