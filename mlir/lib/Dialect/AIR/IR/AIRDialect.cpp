@@ -395,17 +395,42 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           llvm::range_size(llvm::concat<Value>(memrefsReadBySinkOp,
                                                memrefsWrittenBySinkOp)) != 0;
       if (sourceOpTouchesMemref && sinkOpTouchesMemref) {
-        bool RAWNotFound = llvm::none_of(
-            memrefsWrittenBySourceOp, [&memrefsReadBySinkOp](Value v) {
-              return llvm::is_contained(memrefsReadBySinkOp, v);
+        // Check if two memref values may alias through view-like op chains.
+        // Walks through memref.subview, memref.cast, and other
+        // ViewLikeOpInterface ops to find the root memref, then checks if
+        // they share the same root.
+        auto mayAlias = [](Value a, Value b) {
+          auto getRoot = [](Value v) -> Value {
+            bool changed = true;
+            while (changed) {
+              changed = false;
+              if (auto viewOp = v.getDefiningOp<ViewLikeOpInterface>()) {
+                v = viewOp.getViewSource();
+                changed = true;
+              } else if (auto castOp = v.getDefiningOp<memref::CastOp>()) {
+                v = castOp.getSource();
+                changed = true;
+              }
+            }
+            return v;
+          };
+          return getRoot(a) == getRoot(b);
+        };
+        auto containsOrAliases = [&mayAlias](const llvm::SetVector<Value> &set,
+                                             Value v) {
+          return llvm::any_of(
+              set, [&](Value s) { return s == v || mayAlias(s, v); });
+        };
+        bool RAWNotFound =
+            llvm::none_of(memrefsWrittenBySourceOp, [&](Value v) {
+              return containsOrAliases(memrefsReadBySinkOp, v);
             });
-        bool WARNotFound = llvm::none_of(
-            memrefsReadBySourceOp, [&memrefsWrittenBySinkOp](Value v) {
-              return llvm::is_contained(memrefsWrittenBySinkOp, v);
-            });
-        bool WAWNotFound = llvm::none_of(
-            memrefsWrittenBySourceOp, [&memrefsWrittenBySinkOp](Value v) {
-              return llvm::is_contained(memrefsWrittenBySinkOp, v);
+        bool WARNotFound = llvm::none_of(memrefsReadBySourceOp, [&](Value v) {
+          return containsOrAliases(memrefsWrittenBySinkOp, v);
+        });
+        bool WAWNotFound =
+            llvm::none_of(memrefsWrittenBySourceOp, [&](Value v) {
+              return containsOrAliases(memrefsWrittenBySinkOp, v);
             });
         bool noSharedResource = llvm::none_of(
             resourcesUsedBySourceOp, [&resourcesUsedBySinkOp](SymbolRefAttr r) {
