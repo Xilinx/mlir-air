@@ -2470,8 +2470,7 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
         if (for_op) {
           if (for_op->isAncestor(op)) {
             // Destination is inside the loop: use iter_arg (block argument).
-            auto value =
-                getLoopCarriedTokenFromScfOp(for_op, "argument");
+            auto value = getLoopCarriedTokenFromScfOp(for_op, "argument");
             if (value)
               async_op.addAsyncDependency(value);
           } else {
@@ -2666,13 +2665,11 @@ dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
         eraseAsyncDependencyFromAsyncOp(herd_op, dep);
       }
     }
-    if (failed(
-            depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-                herd_memref_accesses, herd_op, "RAW")))
+    if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+            herd_memref_accesses, herd_op, "RAW")))
       return failure();
-    if (failed(
-            depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-                herd_memref_accesses, herd_op, "WAW/WAR")))
+    if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+            herd_memref_accesses, herd_op, "WAW/WAR")))
       return failure();
   }
 
