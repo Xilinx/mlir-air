@@ -352,8 +352,9 @@ class XRTBackend(AirBackend):
                 print("Running aircc with options:", " ".join(aircc_options))
 
             # Write the in-memory module to the input file expected by aircc
+            module_str = str(air_module)
             with open("air.mlir", "w") as f:
-                f.write(str(air_module))
+                f.write(module_str)
 
             # Invoke the C++ aircc binary
             aircc_exe = shutil.which("aircc")
@@ -379,7 +380,7 @@ class XRTBackend(AirBackend):
             # @FuncOp.from_py_func function name.
             import re
 
-            func_names = re.findall(r"func\.func @(\w+)\(", str(air_module))
+            func_names = re.findall(r"func\.func @(\w+)\(", module_str)
             if func_names and self.instance_name not in func_names:
                 import warnings
 
@@ -388,7 +389,7 @@ class XRTBackend(AirBackend):
                     f"function in the module (available: {func_names}). "
                     f"For ELF output, instance_name must match the "
                     f"@FuncOp.from_py_func function name. "
-                    f"Using the wrong name will cause a runtime deadlock.",
+                    f"Using the wrong name may cause ERT_CMD_STATE_TIMEOUT or a runtime deadlock.",
                     stacklevel=2,
                 )
             elf_kernel = f"main:{self.instance_name}"
