@@ -374,6 +374,25 @@ class XRTBackend(AirBackend):
         # For ELF mode, the kernel identifier is "main:instance_name"
         # This is used when loading the ELF via xrt.ext.kernel()
         if self.output_format == "elf" and self.instance_name != "":
+            # Validate that instance_name matches a function in the module.
+            # For ELF output, instance_name must match the
+            # @FuncOp.from_py_func function name.
+            import re
+
+            func_names = re.findall(
+                r"func\.func @(\w+)\(", str(air_module)
+            )
+            if func_names and self.instance_name not in func_names:
+                import warnings
+
+                warnings.warn(
+                    f"instance_name='{self.instance_name}' does not match any "
+                    f"function in the module (available: {func_names}). "
+                    f"For ELF output, instance_name must match the "
+                    f"@FuncOp.from_py_func function name. "
+                    f"Using the wrong name will cause a runtime deadlock.",
+                    stacklevel=2,
+                )
             elf_kernel = f"main:{self.instance_name}"
         else:
             elf_kernel = kernel
