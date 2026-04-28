@@ -131,11 +131,17 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
                        clonedScfLoopOps.end());
     } else if (auto channel_op =
                    dyn_cast_if_present<air::ChannelInterface>(o)) {
-      if (o.hasAttr("loop-carried-dep") &&
-          o.getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() ==
-              "internalGetPut") {
-        // Found channel op labelled as "internalGetPut", which
-        // shouldn't be hoisted
+      auto depAttr = o.getAttrOfType<StringAttr>("loop-carried-dep");
+      bool isInternalGetPut =
+          depAttr && depAttr.getValue().str() == "internalGetPut";
+      // A user-written channel op pulled into the backward slice as a
+      // transitive dependency of a DMA being hoisted. It has "hoist"
+      // (guaranteed true here — line 119 filters non-hoist ops) but no
+      // "loop-carried-dep" (only DMA-derived channel ops receive that
+      // attribute; see labelBackwardSlice below). Must not be cloned to
+      // segment level — replace with wait_all to preserve async token chain.
+      bool isUserWrittenChannel = !depAttr;
+      if (isInternalGetPut || isUserWrittenChannel) {
         if (air::isAsyncOp(&o)) {
           auto wa_op =
               air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
@@ -839,6 +845,13 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // Label backward slices with attribute; ops not labelled with "hoist" flag
     // shall either not get hoisted, if IR is not async, or become air.wait_all
     // (null op) after being hoisted.
+    //
+    // Note: user-written channel ops may end up in backwardSlice as transitive
+    // dependencies (e.g., a broadcast ChannelGet whose token feeds a wait_all
+    // gating the DMA's loop). These ops receive "hoist" here but intentionally
+    // do NOT receive "loop-carried-dep" — cloneOpsInBlock uses the absence of
+    // "loop-carried-dep" to distinguish them from DMA-derived channel ops and
+    // replaces them with wait_all instead of cloning to segment level.
     backwardSlice.insert(externalGetPuts.begin(), externalGetPuts.end());
     for (auto b : backwardSlice) {
       b->setAttr("hoist", StringAttr::get(ctx, "dep"));
