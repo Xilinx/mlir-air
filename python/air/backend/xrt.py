@@ -379,9 +379,7 @@ class XRTBackend(AirBackend):
             # @FuncOp.from_py_func function name.
             import re
 
-            func_names = re.findall(
-                r"func\.func @(\w+)\(", str(air_module)
-            )
+            func_names = re.findall(r"func\.func @(\w+)\(", str(air_module))
             if func_names and self.instance_name not in func_names:
                 import warnings
 
