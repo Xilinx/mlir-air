@@ -5969,7 +5969,7 @@ public:
               memref::GlobalOp::create(
                   b, moduleGlobal.getLoc(), cloneName.getValue(),
                   rewriter.getStringAttr("private"), cloneMemTy, repackedInit,
-                  moduleGlobal.getConstant(), /*alignment=*/IntegerAttr{});
+                  moduleGlobal.getConstant(), moduleGlobal.getAlignmentAttr());
             }
           }
 
@@ -5985,7 +5985,7 @@ public:
               inDevGlobal = memref::GlobalOp::create(
                   b, moduleGlobal.getLoc(), cloneName.getValue(),
                   /*sym_visibility=*/StringAttr{}, cloneMemTy, repackedInit,
-                  moduleGlobal.getConstant(), /*alignment=*/IntegerAttr{});
+                  moduleGlobal.getConstant(), moduleGlobal.getAlignmentAttr());
             } else {
               auto cloned = cast<memref::GlobalOp>(moduleGlobal->clone());
               cloned->removeAttr(SymbolTable::getVisibilityAttrName());

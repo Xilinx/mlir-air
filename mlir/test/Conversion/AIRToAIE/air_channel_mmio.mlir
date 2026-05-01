@@ -209,15 +209,16 @@ func.func @indexed() {
 // into the device as a 1-D `memref<Nxi32>` with the same raw bytes
 // (suffixed `_mmio_i32`). Splat bf16(1.5) = 0x3FC0 packs to i32
 // 0x3FC03FC0 = 1069563840, and the resulting payload remains splat.
+// The source alignment also propagates to the i32 mirror.
 //
 // CHECK-BF16-LABEL: aie.device(npu1)
-// CHECK-BF16:         memref.global @qbf16_mmio_i32 : memref<2xi32> = dense<1069563840> {air.mmio_global}
+// CHECK-BF16:         memref.global @qbf16_mmio_i32 : memref<2xi32> = dense<1069563840> {air.mmio_global, alignment = 64 : i64}
 //
 // CHECK-BF16-LABEL: func.func @bf16_payload
 // CHECK-BF16:         memref.get_global @qbf16_mmio_i32 : memref<2xi32>
 // CHECK-BF16:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @{{.+}}} : memref<2xi32>
 
-memref.global "private" @qbf16 : memref<2x2xbf16> = dense<1.5>
+memref.global "private" @qbf16 : memref<2x2xbf16> = dense<1.5> {alignment = 64 : i64}
 air.channel @qbf16_chan [] {channel_type = "mmio"}
 func.func @bf16_payload() {
   %src = memref.get_global @qbf16 : memref<2x2xbf16>
