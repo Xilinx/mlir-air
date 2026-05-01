@@ -40,6 +40,17 @@ AIE::TileOp createTileViaPlacer(AIE::DeviceOp aie_device,
                                 std::optional<int> col_hint,
                                 std::optional<int> row_hint);
 
+// Batched variant: emits N aie.logical_tile<tileType> ops (one per hint),
+// runs the placer ONCE, and resolves each into a physical aie.tile. The
+// returned vector parallels `hints`. Use this when multiple unconstrained
+// or partially-constrained logical tiles must be placed together — e.g.,
+// a herd of cores all asking (col, ?), which a per-tile placer would all
+// map to the same row because state doesn't persist across place() calls.
+mlir::LogicalResult createTilesViaPlacer(
+    AIE::DeviceOp aie_device, AIE::AIETileType tileType,
+    llvm::ArrayRef<std::pair<std::optional<int>, std::optional<int>>> hints,
+    llvm::SmallVectorImpl<AIE::TileOp> &outTiles);
+
 AIE::LockOp allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
                            int init = 0, int id = -1,
                            StringAttr name = nullptr);

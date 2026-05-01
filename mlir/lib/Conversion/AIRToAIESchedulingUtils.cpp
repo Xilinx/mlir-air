@@ -67,37 +67,65 @@ AIE::TileOp air::createTileViaPlacer(AIE::DeviceOp aie_device,
                                      AIE::AIETileType tileType,
                                      std::optional<int> col_hint,
                                      std::optional<int> row_hint) {
+  SmallVector<AIE::TileOp> out;
+  std::pair<std::optional<int>, std::optional<int>> hint{col_hint, row_hint};
+  if (failed(createTilesViaPlacer(aie_device, tileType, {hint}, out)))
+    return nullptr;
+  return out.front();
+}
+
+LogicalResult air::createTilesViaPlacer(
+    AIE::DeviceOp aie_device, AIE::AIETileType tileType,
+    ArrayRef<std::pair<std::optional<int>, std::optional<int>>> hints,
+    SmallVectorImpl<AIE::TileOp> &outTiles) {
+  outTiles.clear();
+  if (hints.empty())
+    return success();
+
   OpBuilder builder(aie_device);
   builder.setInsertionPointToStart(aie_device.getBody());
   auto *ctx = builder.getContext();
-  IntegerAttr colAttr =
-      col_hint ? IntegerAttr::get(IntegerType::get(ctx, 32), *col_hint)
-               : IntegerAttr();
-  IntegerAttr rowAttr =
-      row_hint ? IntegerAttr::get(IntegerType::get(ctx, 32), *row_hint)
-               : IntegerAttr();
-  auto logical = AIE::LogicalTileOp::create(builder, aie_device.getLoc(),
-                                            tileType, colAttr, rowAttr,
-                                            /*allocation_scheme=*/StringAttr());
 
+  // Phase 1: emit all aie.logical_tile ops up-front so the placer sees them
+  // together. Per-tile placement (one place() call per logical tile) would
+  // re-pick the same row for every (col, ?) request because the placer's
+  // nextCompIdx state doesn't persist across calls.
+  SmallVector<AIE::LogicalTileOp> logicals;
+  logicals.reserve(hints.size());
+  for (auto &[col_hint, row_hint] : hints) {
+    IntegerAttr colAttr =
+        col_hint ? IntegerAttr::get(IntegerType::get(ctx, 32), *col_hint)
+                 : IntegerAttr();
+    IntegerAttr rowAttr =
+        row_hint ? IntegerAttr::get(IntegerType::get(ctx, 32), *row_hint)
+                 : IntegerAttr();
+    logicals.push_back(AIE::LogicalTileOp::create(
+        builder, aie_device.getLoc(), tileType, colAttr, rowAttr,
+        /*allocation_scheme=*/StringAttr()));
+  }
+
+  // Phase 2: place all in a single placer invocation.
   AIE::SequentialPlacer placer;
   placer.initialize(aie_device.getTargetModel());
   if (failed(placer.place(aie_device))) {
-    aie_device.emitError("failed to place logical tile");
-    logical.erase();
-    return nullptr;
+    for (auto l : logicals)
+      l.erase();
+    return aie_device.emitError("failed to place logical tiles");
   }
-  auto placement = placer.getPlacement(logical.getOperation());
-  if (!placement) {
-    logical.emitError("placer returned no placement for logical tile");
+
+  // Phase 3: resolve each logical to a physical tile in input order.
+  outTiles.reserve(hints.size());
+  for (auto logical : logicals) {
+    auto placement = placer.getPlacement(logical.getOperation());
+    if (!placement)
+      return logical.emitError("placer returned no placement for logical tile");
+    auto physTile =
+        air::getPhysTileOp(aie_device, placement->col, placement->row);
+    logical.getResult().replaceAllUsesWith(physTile.getResult());
     logical.erase();
-    return nullptr;
+    outTiles.push_back(physTile);
   }
-  auto physTile =
-      air::getPhysTileOp(aie_device, placement->col, placement->row);
-  logical.getResult().replaceAllUsesWith(physTile.getResult());
-  logical.erase();
-  return physTile;
+  return success();
 }
 
 // get tileop using physical coordinates
