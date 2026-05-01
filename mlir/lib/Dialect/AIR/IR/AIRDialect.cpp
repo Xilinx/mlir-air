@@ -206,11 +206,24 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 template <class OpT>
 static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                              PatternRewriter &rewriter) {
-  // Walk view-like ops, hierarchy body args, and loop iter_args back to a
-  // root memref. Conservative: disjoint views of the same root are reported
-  // as aliasing (safe — only suppresses dead-edge removal). The collectors
-  // below resolve every memref through this walk before inserting, so the
-  // RAW/WAR/WAW comparisons can be plain set-membership.
+  // Walk view-like ops, air.hierarchy body args, and loop iter_args back
+  // to a root memref. The collectors below resolve every memref through
+  // this walk before inserting, so the RAW/WAR/WAW comparisons reduce to
+  // set-membership.
+  //
+  // Intentionally conservative — DO NOT TIGHTEN without a strong reason:
+  //   * Two disjoint views of the same root return the same root and
+  //     are reported as aliasing. Modeling subview offsets/sizes to
+  //     prove disjointness was the bug behind #1559: the original code
+  //     compared SSA identity (the strictest possible "alias" predicate)
+  //     and dropped real RAW edges between fill and channel.put.
+  //   * iter_args resolve to the loop init; a body that conditionally
+  //     yields a different memref will under-approximate roots seen
+  //     across iterations, but still over-approximates aliasing.
+  //
+  // Over-approximating aliasing is the safe direction here: this
+  // predicate gates dead-edge *removal*, so false positives only
+  // suppress an optimization, never invent a race.
   auto getRoot = [](Value v) -> Value {
     while (true) {
       if (auto view = v.getDefiningOp<ViewLikeOpInterface>()) {
