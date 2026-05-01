@@ -309,6 +309,15 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                        op)) {
       if (memcpy.getDstMemref())
         operands.push_back(memcpy.getDstMemref());
+    } else if (isa<air::ExecuteOp>(op)) {
+      // air.execute writes are determined by what its body writes (collected
+      // separately via region walk). The execute's results are values yielded
+      // out of the body — they are not "written to" by the execute itself.
+      // A memref result of an air.execute is typically a freshly-allocated
+      // memref (memref.alloc inside the body); treating it as "written" would
+      // make every alloc execute spuriously conflict with itself and cause
+      // CanonicalizeAsyncOpDeps to drop legitimate ordering deps that don't
+      // express memref-level RAW/WAR/WAW.
     } else { // If unknown op, then assume all operands and results are written
              // to.
       for (auto oper :
