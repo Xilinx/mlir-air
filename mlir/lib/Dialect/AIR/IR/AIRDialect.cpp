@@ -309,13 +309,13 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                        op)) {
       if (memcpy.getDstMemref())
         operands.push_back(memcpy.getDstMemref());
-    } else { // If unknown op, then assume all operands and results are written
-             // to.
-      for (auto oper :
-           llvm::concat<Value>(op->getOperands(), op->getResults())) {
-        if (!isa<MemRefType>(oper.getType()))
-          continue;
-        operands.push_back(oper);
+    } else {
+      // Operands only — results are fresh SSA values, not writes through
+      // pre-existing storage. Body writes are picked up by the region walk
+      // in getAllMemrefsWrittenByOp.
+      for (auto oper : op->getOperands()) {
+        if (isa<MemRefType>(oper.getType()))
+          operands.push_back(oper);
       }
     }
     return operands;
