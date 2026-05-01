@@ -5621,8 +5621,10 @@ public:
   //     directly in the instruction stream;
   //   * the get's destination must resolve to an `aie.buffer` (it must be
   //     an L1 allocation, already converted by air-to-aie);
-  //   * each (put, get) pair is matched by equal constant indices; non-
-  //     matching pairs are silently skipped.
+  //   * non-broadcast pairs match by equal constant indices; non-constant
+  //     indices and host-side puts with no matching get are hard errors.
+  //   * the source `memref.global` must have no users outside the put's
+  //     enclosing func (V1 limitation; see Comment 2 in PR #1568).
   LogicalResult lowerAIRMMIOChannelOps(AIE::DeviceOp device) {
     IRRewriter rewriter(device->getContext());
 
@@ -5640,16 +5642,12 @@ public:
       collectMMIO(module);
 
     // Helper to compare two ValueRange of indices for constant equality.
-    auto sameConstIndices = [](ValueRange a, ValueRange b) -> bool {
-      if (a.size() != b.size())
-        return false;
-      for (size_t i = 0; i < a.size(); i++) {
-        auto va = getConstantIntValue(a[i]);
-        auto vb = getConstantIntValue(b[i]);
-        if (!va || !vb || *va != *vb)
-          return false;
-      }
-      return true;
+    auto constIndices = [](ValueRange v) {
+      return getConstantIntValues(getAsOpFoldResult(v));
+    };
+    auto sameConstIndices = [&](ValueRange a, ValueRange b) {
+      auto av = constIndices(a), bv = constIndices(b);
+      return av && bv && *av == *bv;
     };
 
     // Helper: trace a memref Value back through launch/segment/herd block
@@ -5792,6 +5790,25 @@ public:
       // write at LLaMA-3.2-1B Q sizes.
       bool isBcast = chan.isBroadcast();
 
+      // Non-broadcast pairs match by constant-index equality. A non-
+      // constant index would silently fail every match and the put would
+      // be erased below with no blockwrite emitted — reject up front.
+      if (!isBcast) {
+        auto rejectIfNonConst = [&](Operation *op, ValueRange indices,
+                                    StringRef kind) -> LogicalResult {
+          if (constIndices(indices))
+            return success();
+          return op->emitOpError("channel_type=\"mmio\" non-broadcast ")
+                 << kind << " requires compile-time constant indices";
+        };
+        for (auto put : hostPuts)
+          if (failed(rejectIfNonConst(put, put.getIndices(), "put")))
+            return failure();
+        for (auto get : deviceGets)
+          if (failed(rejectIfNonConst(get, get.getIndices(), "get")))
+            return failure();
+      }
+
       // For each L3-side put, find every matching get and emit one
       // blockwrite per destination buffer. Match rule:
       //   * non-broadcast: indices must be constant-equal between put/get;
@@ -5805,6 +5822,7 @@ public:
               "channel_type=\"mmio\" put requires source memref defined by "
               "memref.get_global of a constant memref.global");
 
+        unsigned matchCount = 0;
         for (auto get : deviceGets) {
           if (!isBcast && !sameConstIndices(put.getIndices(), get.getIndices()))
             continue;
@@ -5856,6 +5874,21 @@ public:
                 "channel_type=\"mmio\" lowering: cannot find memref.global "
                 "for the put source at module scope");
 
+          // V1 limitation: the in-device mirror is cloned under the same
+          // sym_name, so a later symbol-dce of the module-level original
+          // is required to avoid a duplicate-symbol collision in LLVM
+          // lowering. That requires no users to survive outside the
+          // func that becomes the runtime_sequence and moves into the
+          // device. Reject other module-scope users loudly.
+          auto putFunc = put->getParentOfType<func::FuncOp>();
+          auto uses = SymbolTable::getSymbolUses(origName, moduleOp);
+          if (uses && llvm::any_of(*uses, [&](SymbolTable::SymbolUse u) {
+                return u.getUser()->getParentOfType<func::FuncOp>() != putFunc;
+              }))
+            return getGlobalOp.emitOpError(
+                "channel_type=\"mmio\" V1 requires the source memref.global "
+                "to be used only inside the func containing the put");
+
           memref::GlobalOp inDevGlobal;
           device.walk([&](memref::GlobalOp g) {
             if (g.getSymName() == origName.getValue())
@@ -5895,7 +5928,12 @@ public:
               FlatSymbolRefAttr::get(rewriter.getContext(), *bufSymOpt),
               /*column=*/IntegerAttr{},
               /*row=*/IntegerAttr{});
+          ++matchCount;
         }
+        // The put would otherwise be erased below with no replacement.
+        if (matchCount == 0)
+          return put.emitOpError("channel_type=\"mmio\" put has no matching "
+                                 "device-side air.channel.get");
       }
 
       // Erase all mmio puts (host-side ones have been replaced with
