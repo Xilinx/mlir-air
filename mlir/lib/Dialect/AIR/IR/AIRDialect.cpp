@@ -2882,40 +2882,31 @@ static LogicalResult FoldMemrefCastOnChannelOp(OpT op,
   return success();
 }
 
+// Resolve the air.channel declaration referenced by a channel interface op.
+// Wraps `SymbolTable::lookupNearestSymbolFrom`, which walks up to the
+// nearest enclosing SymbolTable and queries it. This dialect file cannot
+// depend on Util/Util.cpp (the dependency points the other way), so the
+// `air::getChannelDeclarationThroughSymbol` helper there can't be used —
+// but the MLIR core utility serves the same role for the verifier /
+// canonicalizer call sites in this file (channels are visible from the
+// nearest SymbolTable above the put/get).
+static air::ChannelOp resolveChannelDecl(air::ChannelInterface op) {
+  if (!op)
+    return air::ChannelOp();
+  return SymbolTable::lookupNearestSymbolFrom<air::ChannelOp>(
+      op.getOperation(), StringAttr::get(op->getContext(), op.getChanName()));
+}
+
 template <typename OpT>
 static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
                                                 PatternRewriter &rewriter) {
-
-  // Lambda version of `getChannelDeclarationThroughSymbol` method defined in
-  // `Util/Utils.cpp`. It is duplicated here because `Util/Utils.cpp` depends on
-  // this file, so direct inclusion is not possible.
-  auto getChannelDeclarationThroughSymbol = [](air::ChannelInterface op) {
-    if (!op)
-      // Return an empty ChannelOp if the input operation is invalid.
-      return air::ChannelOp();
-
-    // Traverse up through the operation's parents until a symbol table is
-    // found.
-    Operation *parent = op;
-    while ((parent = parent->getParentOp())) {
-      if (parent->hasTrait<OpTrait::SymbolTable>()) {
-        auto st = mlir::SymbolTable::lookupSymbolIn(parent, op.getChanName());
-        if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(st))
-          return chanOp;
-      }
-    }
-
-    // No matching channel declaration found in any enclosing symbol tables.
-    return air::ChannelOp();
-  };
-
   // Extract the memref operand from the operation.
   Value memref = op.getMemref();
   if (!memref)
     // If there is no associated memref, signal a failure.
     return failure();
   // Resolve the channel declaration for the given channel interface operation.
-  air::ChannelOp chan = getChannelDeclarationThroughSymbol(op);
+  air::ChannelOp chan = resolveChannelDecl(op);
   if (!chan)
     // If the channel declaration cannot be resolved, signal a failure.
     return failure();
@@ -3001,6 +2992,20 @@ LogicalResult air::ChannelPutOp::verify() {
                 "must not be temporal scf.for induction variables";
   }
 
+  // For channel_type="mmio", the put runs from the host runtime sequence
+  // and writes into a tile-local L1 buffer. Its source memref must
+  // therefore live in L3 (host memory). Allow lookup-failure to silently
+  // pass — that's a separate diagnostic surface.
+  if (auto chan = resolveChannelDecl(*this)) {
+    if (chan.getChannelType() == "mmio") {
+      auto memrefTy = dyn_cast<MemRefType>(getMemref().getType());
+      if (memrefTy && memrefTy.getMemorySpaceAsInt() != 0)
+        return emitOpError() << "channel_type=\"mmio\" put source must be "
+                                "in L3 (memory_space=0), got memory_space="
+                             << memrefTy.getMemorySpaceAsInt();
+    }
+  }
+
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -3076,6 +3081,20 @@ LogicalResult air::ChannelGetOp::verify() {
                 "must not be temporal scf.for induction variables";
   }
 
+  // For channel_type="mmio", the destination must be a tile-local L1 buffer
+  // (memory_space=2): the host writes into it via runtime-sequence
+  // blockwrites before the consuming core starts. L2/L3 destinations have
+  // no representation in the lowered IR.
+  if (auto chan = resolveChannelDecl(*this)) {
+    if (chan.getChannelType() == "mmio") {
+      auto memrefTy = dyn_cast<MemRefType>(getMemref().getType());
+      if (memrefTy && memrefTy.getMemorySpaceAsInt() != 2)
+        return emitOpError() << "channel_type=\"mmio\" get destination must be "
+                                "in L1 (memory_space=2), got memory_space="
+                             << memrefTy.getMemorySpaceAsInt();
+    }
+  }
+
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -3106,6 +3125,15 @@ void air::ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 //
 
 LogicalResult air::ChannelOp::verify() {
+  // Allow-list of supported channel_type values. Adding a new transport
+  // requires both an enum entry here and a lowering branch in air-to-aie.
+  StringRef chanType = getChannelType();
+  if (chanType != "dma_stream" && chanType != "dma_packet" &&
+      chanType != "cascade" && chanType != "mmio")
+    return emitOpError() << "unsupported channel_type \"" << chanType
+                         << "\"; expected one of \"dma_stream\", "
+                            "\"dma_packet\", \"cascade\", or \"mmio\"";
+
   if (isBroadcast()) {
     auto bundle_size = getSize();
     auto broadcast_shape = getBroadcastShape();
