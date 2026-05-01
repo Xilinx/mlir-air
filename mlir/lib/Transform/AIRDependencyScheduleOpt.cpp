@@ -32,6 +32,7 @@
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -765,6 +766,35 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   return newHerdOp;
 }
 
+// Returns true iff the op's only memory effects (recursively through nested
+// regions) are `Free` effects — i.e. it does pure cleanup. Used by
+// MergeAIRHerdsPattern to exclude such ops from a herd group's "live-out"
+// async tokens, since downstream memref-flow-aware canonicalisation may
+// drop dependency edges that point to freed memory.
+//
+// `air.execute` and other container ops without the MemoryEffectOpInterface
+// or HasRecursiveMemoryEffects trait are opaque to MLIR's standard helpers,
+// so we walk into nested regions ourselves. Ops with no interface contribute
+// nothing to the tally; the walk descends into their bodies and inspects the
+// leaf ops there.
+//
+// Returns false for ops whose body mixes `Free` with any
+// `Read`/`Write`/`Allocate` (the non-Free effects are real work) and for ops
+// whose effects are entirely empty (a pure compute op, not cleanup).
+static bool isFreeOnlyOp(Operation *op) {
+  bool sawFree = false;
+  bool sawNonFree = false;
+  op->walk([&](Operation *child) {
+    if (mlir::hasEffect<MemoryEffects::Free>(child))
+      sawFree = true;
+    if (mlir::hasEffect<MemoryEffects::Read>(child) ||
+        mlir::hasEffect<MemoryEffects::Write>(child) ||
+        mlir::hasEffect<MemoryEffects::Allocate>(child))
+      sawNonFree = true;
+  });
+  return sawFree && !sawNonFree;
+}
+
 // Merge all herds which are (1) sharing one common parent region and (2) using
 // the same symname into one herd.
 struct MergeAIRHerdsPattern : public OpRewritePattern<air::HerdOp> {
@@ -815,26 +845,37 @@ struct MergeAIRHerdsPattern : public OpRewritePattern<air::HerdOp> {
         }))
       return failure();
 
-    // Merge all herds with the same herd name into one.
+    // Single pass over the herds to collect the merged-herd inputs:
+    //   * kernelOperands  — union of all kernel operands.
+    //   * tokenToHerdIdx  — map from each herd's async token to its index;
+    //                       used both to identify inter-herd vs external
+    //                       deps and (later) to look up the predecessor
+    //                       index without an O(N) scan.
     llvm::SetVector<Value> kernelOperands;
-    for (auto h : herdsWithSameName)
+    llvm::DenseMap<Value, unsigned> tokenToHerdIdx;
+    for (unsigned i = 0; i < herdsWithSameName.size(); i++) {
+      auto h = herdsWithSameName[i];
       kernelOperands.insert(h.getKernelOperands().begin(),
                             h.getKernelOperands().end());
-
-    // Collect the set of herd tokens being merged so we can identify
-    // inter-herd deps vs external deps.
-    llvm::DenseSet<Value> herdTokens;
-    for (auto h : herdsWithSameName)
       if (h.getAsyncToken())
-        herdTokens.insert(h.getAsyncToken());
+        tokenToHerdIdx[h.getAsyncToken()] = i;
+    }
 
-    // Build the merged herd's async deps as the union of all herds' external
-    // deps (excluding inter-herd deps that will become intra-herd ordering).
+    // Classify each herd's async deps:
+    //   * External deps become the merged herd's async dep list (deduped).
+    //   * Inter-herd deps (a dep token is another merged herd's async
+    //     token) are recorded for later barrier insertion. The walk visits
+    //     herds in ForwardDominance order so any inter-herd dep target
+    //     necessarily has a smaller index than the dependent herd.
     SmallVector<Value> mergedExternalDeps;
     llvm::SetVector<Value> seenDeps;
-    for (auto h : herdsWithSameName) {
-      for (auto dep : h.getAsyncDependencies()) {
-        if (!herdTokens.contains(dep) && seenDeps.insert(dep))
+    llvm::DenseMap<unsigned, SmallVector<unsigned>> interHerdDeps;
+    for (unsigned i = 0; i < herdsWithSameName.size(); i++) {
+      for (auto dep : herdsWithSameName[i].getAsyncDependencies()) {
+        auto it = tokenToHerdIdx.find(dep);
+        if (it != tokenToHerdIdx.end())
+          interHerdDeps[i].push_back(it->second);
+        else if (seenDeps.insert(dep))
           mergedExternalDeps.push_back(dep);
       }
     }
@@ -846,20 +887,6 @@ struct MergeAIRHerdsPattern : public OpRewritePattern<air::HerdOp> {
         (bool)herdOp.getAsyncToken(), herdOp->getAttrs());
     rewriter.setInsertionPointToStart(&newMergedHerd.getBody().front());
     IRMapping remap;
-
-    // For each herd, record which predecessor herds it depends on, so we
-    // can insert intra-herd dependency edges after cloning.
-    // Key: index of the dependent herd, Value: indices of predecessor herds.
-    llvm::DenseMap<unsigned, SmallVector<unsigned>> interHerdDeps;
-    for (unsigned i = 0; i < herdsWithSameName.size(); i++) {
-      for (auto dep : herdsWithSameName[i].getAsyncDependencies()) {
-        for (unsigned j = 0; j < i; j++) {
-          if (herdsWithSameName[j].getAsyncToken() == dep) {
-            interHerdDeps[i].push_back(j);
-          }
-        }
-      }
-    }
 
     // Clone ops from each herd into the merged body, tracking the last
     // async token produced by each herd's group for inter-herd barriers.
@@ -896,54 +923,65 @@ struct MergeAIRHerdsPattern : public OpRewritePattern<air::HerdOp> {
       }
 
       // Clone ops, injecting the barrier dependency where needed.
-      Value lastToken;
+      // addAsyncDependencyIfNew dispatches over AsyncOpInterface, scf.for,
+      // scf.parallel and affine.if — covering all op shapes that may appear
+      // at the top of a herd body.
+      SmallVector<Operation *> clonedOps;
       for (auto &o : h.getBody().front().without_terminator()) {
         auto *cloned = rewriter.clone(o, remap);
-        // Add the barrier as a dependency to all async ops from dependent
-        // herds. Every async op in the group must wait for the predecessor
-        // herd's ops to complete, since any of them could access shared
-        // buffers.
-        if (barrierToken) {
-          if (auto asyncOp =
-                  dyn_cast_if_present<air::AsyncOpInterface>(cloned)) {
-            asyncOp.addAsyncDependency(barrierToken);
-          } else if (dyn_cast_if_present<air::ChannelInterface>(cloned)) {
-            air::addAsyncDependency(cloned, barrierToken);
-          }
-        }
-        // Track the last async token produced by this herd's ops.
-        // Skip dealloc ops — their tokens reference freed memory and
-        // canonicalize will remove deps to ops accessing different memory.
-        bool isDealloc = false;
-        if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(cloned)) {
-          execOp.getBody().walk([&](memref::DeallocOp) { isDealloc = true; });
-        }
-        if (!isDealloc) {
-          if (auto forOp = dyn_cast_if_present<scf::ForOp>(cloned)) {
-            // Collect all async token results from the loop.
-            SmallVector<Value> asyncResults;
-            for (auto res : forOp->getResults()) {
-              if (isa<air::AsyncTokenType>(res.getType()))
-                asyncResults.push_back(res);
-            }
-            if (asyncResults.size() == 1) {
-              lastToken = asyncResults.front();
-            } else if (!asyncResults.empty()) {
-              auto waitAll = xilinx::air::WaitAllOp::create(
-                  rewriter, cloned->getLoc(),
-                  air::AsyncTokenType::get(cloned->getContext()), asyncResults);
-              lastToken = waitAll.getAsyncToken();
-            }
-          } else if (auto asyncOp =
-                         dyn_cast_if_present<air::AsyncOpInterface>(cloned)) {
-            if (asyncOp.getAsyncToken())
-              lastToken = asyncOp.getAsyncToken();
-          } else if (dyn_cast_if_present<air::ChannelInterface>(cloned)) {
-            auto tok = air::getAsyncTokenFromOp(cloned);
-            if (tok)
-              lastToken = tok;
-          }
-        }
+        if (barrierToken)
+          air::addAsyncDependencyIfNew(cloned, barrierToken);
+        clonedOps.push_back(cloned);
+      }
+
+      // Compute this group's live-out async tokens — tokens produced by
+      // cloned ops that no other op in the group consumes. A single
+      // overwriting `lastToken` would miss parallel fan-out at the end of
+      // a herd body (e.g. two independent channel.puts), causing the next
+      // herd's barrier to wait on only one branch.
+      //
+      // Skip dealloc executes: their tokens reference freed memory, and
+      // downstream memref-flow-aware canonicalisation may drop dependency
+      // edges to ops that access different memory, weakening the barrier.
+      llvm::SmallPtrSet<Operation *, 16> clonedSet(clonedOps.begin(),
+                                                   clonedOps.end());
+      SmallVector<Value> liveOuts;
+      for (Operation *cloned : clonedOps) {
+        // Skip ops whose only memory effect is `Free` — their tokens
+        // reference freed memory and downstream canonicalisation may drop
+        // edges to ops accessing different memory. Generalises over a bare
+        // `memref.dealloc` and any container that wraps one (air.execute,
+        // scf.for, etc.).
+        if (isFreeOnlyOp(cloned))
+          continue;
+        Value tok = air::getAsyncTokenFromOp(cloned);
+        if (!tok)
+          continue;
+        // A user nested inside another cloned top-level op (e.g. inside an
+        // scf.for body) still counts as in-group: walk up to the top-level
+        // ancestor to test membership. Free-only users are ignored — if a
+        // real-work token's only consumer is a dealloc-only op, the
+        // real-work token is still a live-out (the dealloc consumer is
+        // skipped above and its "freed memory" token shouldn't anchor the
+        // group's completion signal either).
+        bool hasInGroupUser = llvm::any_of(tok.getUsers(), [&](Operation *u) {
+          Operation *top = u;
+          while (top && !clonedSet.contains(top))
+            top = top->getParentOp();
+          return top != nullptr && !isFreeOnlyOp(top);
+        });
+        if (!hasInGroupUser)
+          liveOuts.push_back(tok);
+      }
+
+      Value lastToken;
+      if (liveOuts.size() == 1) {
+        lastToken = liveOuts.front();
+      } else if (liveOuts.size() > 1) {
+        auto joinWaitAll = xilinx::air::WaitAllOp::create(
+            rewriter, clonedOps.back()->getLoc(),
+            air::AsyncTokenType::get(rewriter.getContext()), liveOuts);
+        lastToken = joinWaitAll.getAsyncToken();
       }
       lastAsyncTokenPerHerd[herdIdx] = lastToken;
     }
