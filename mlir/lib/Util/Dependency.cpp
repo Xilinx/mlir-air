@@ -2628,26 +2628,19 @@ dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     }
   }
 
-  // Also re-trace dependencies for air.herd ops that depend on hierarchy ops.
-  // When a herd depends on another herd, the dependency may have been
-  // established via a loop that was later folded by canonicalize, losing the
-  // intermediate dependency. Re-tracing memory deps through kernel operands
-  // recovers the correct ordering.
+  // Re-trace dependencies for every air.herd op that has memref kernel
+  // operands. Earlier passes (e.g. air-dma-to-channel) and the regular
+  // -canonicalize can both leave a herd's async dep list out of sync with
+  // the data flow on its kernel operands: dma-to-channel may rewrite the
+  // dep onto a freshly hoisted scf.parallel that does not actually write
+  // the herd's input memref, and -canonicalize then strips that stale dep
+  // because no RAW/WAR/WAW with the herd's accesses exists. We don't gate
+  // on `hasDepToHier` here — by the time we reach this pass the herd may
+  // have lost all hierarchy deps already, and that's exactly the case we
+  // need to repair.
   SmallVector<air::HerdOp> herd_ops;
   func.walk([&](air::HerdOp herd_op) { herd_ops.push_back(herd_op); });
   for (auto herd_op : herd_ops) {
-    bool hasDepToHier = false;
-    auto dep_list = herd_op.getAsyncDependencies();
-    for (auto dep : dep_list) {
-      if (dep.getDefiningOp() &&
-          isa<air::HierarchyInterface>(dep.getDefiningOp())) {
-        hasDepToHier = true;
-      }
-    }
-    if (!hasDepToHier)
-      continue;
-
-    // Build partial memref list from herd's kernel operands.
     SmallVector<air::partialMemref, 1> herd_memref_accesses;
     for (unsigned i = 0; i < herd_op.getNumKernelOperands(); i++) {
       auto operand = herd_op.getKernelOperand(i);
@@ -2658,8 +2651,9 @@ dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     if (herd_memref_accesses.empty())
       continue;
 
-    // Erase hierarchy deps and re-trace.
-    for (auto dep : llvm::to_vector(dep_list)) {
+    // Erase any existing hierarchy deps before re-tracing so we don't
+    // leave stale edges behind.
+    for (auto dep : llvm::to_vector(herd_op.getAsyncDependencies())) {
       if (dep.getDefiningOp() &&
           isa<air::HierarchyInterface>(dep.getDefiningOp())) {
         eraseAsyncDependencyFromAsyncOp(herd_op, dep);
