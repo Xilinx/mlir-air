@@ -27,7 +27,6 @@ from air.dialects.memref import AllocOp, DeallocOp, GlobalOp, get_global, load, 
 from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner
 
-
 N = 64  # vector length
 CONST_VALUE = 42
 
