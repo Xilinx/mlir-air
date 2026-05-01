@@ -2838,40 +2838,35 @@ static LogicalResult FoldMemrefCastOnChannelOp(OpT op,
   return success();
 }
 
+// Resolve the air.channel declaration referenced by a channel interface op
+// by walking up through enclosing symbol tables. Duplicated from
+// `air::getChannelDeclarationThroughSymbol` in Util/Util.cpp because
+// AIRDialect.cpp cannot depend on Util/Util.cpp (the dependency points the
+// other way).
+static air::ChannelOp resolveChannelDecl(air::ChannelInterface op) {
+  if (!op)
+    return air::ChannelOp();
+  Operation *parent = op;
+  while ((parent = parent->getParentOp())) {
+    if (parent->hasTrait<OpTrait::SymbolTable>()) {
+      auto st = SymbolTable::lookupSymbolIn(parent, op.getChanName());
+      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(st))
+        return chanOp;
+    }
+  }
+  return air::ChannelOp();
+}
+
 template <typename OpT>
 static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
                                                 PatternRewriter &rewriter) {
-
-  // Lambda version of `getChannelDeclarationThroughSymbol` method defined in
-  // `Util/Utils.cpp`. It is duplicated here because `Util/Utils.cpp` depends on
-  // this file, so direct inclusion is not possible.
-  auto getChannelDeclarationThroughSymbol = [](air::ChannelInterface op) {
-    if (!op)
-      // Return an empty ChannelOp if the input operation is invalid.
-      return air::ChannelOp();
-
-    // Traverse up through the operation's parents until a symbol table is
-    // found.
-    Operation *parent = op;
-    while ((parent = parent->getParentOp())) {
-      if (parent->hasTrait<OpTrait::SymbolTable>()) {
-        auto st = mlir::SymbolTable::lookupSymbolIn(parent, op.getChanName());
-        if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(st))
-          return chanOp;
-      }
-    }
-
-    // No matching channel declaration found in any enclosing symbol tables.
-    return air::ChannelOp();
-  };
-
   // Extract the memref operand from the operation.
   Value memref = op.getMemref();
   if (!memref)
     // If there is no associated memref, signal a failure.
     return failure();
   // Resolve the channel declaration for the given channel interface operation.
-  air::ChannelOp chan = getChannelDeclarationThroughSymbol(op);
+  air::ChannelOp chan = resolveChannelDecl(op);
   if (!chan)
     // If the channel declaration cannot be resolved, signal a failure.
     return failure();
@@ -2941,24 +2936,6 @@ LogicalResult air::ChannelPutOp::getResultTilePosition(
   // An optional result (air::AsyncTokenType) may be returned, but it doesn't
   // represent any tile.
   return success();
-}
-
-// Resolve the air.channel declaration referenced by a channel interface op
-// by walking up through enclosing symbol tables. Duplicated locally because
-// AIRDialect.cpp must not depend on Util/Util.cpp (the dependency points the
-// other way).
-static air::ChannelOp resolveChannelDecl(air::ChannelInterface op) {
-  if (!op)
-    return air::ChannelOp();
-  Operation *parent = op;
-  while ((parent = parent->getParentOp())) {
-    if (parent->hasTrait<OpTrait::SymbolTable>()) {
-      auto st = SymbolTable::lookupSymbolIn(parent, op.getChanName());
-      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(st))
-        return chanOp;
-    }
-  }
-  return air::ChannelOp();
 }
 
 LogicalResult air::ChannelPutOp::verify() {
