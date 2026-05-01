@@ -269,6 +269,30 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
+  auto getAllWriteAccess = [](Operation *op) {
+    SmallVector<Value> operands;
+    if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(op)) {
+      for (auto oper :
+           llvm::concat<Value>(linalgop.getDpsInits(), linalgop->getResults()))
+        operands.push_back(oper);
+    } else if (auto memref_copy = dyn_cast_if_present<memref::CopyOp>(op)) {
+      operands.push_back(memref_copy.getTarget());
+    } else if (auto memcpy =
+                   mlir::dyn_cast_if_present<xilinx::air::MemcpyInterface>(
+                       op)) {
+      if (memcpy.getDstMemref())
+        operands.push_back(memcpy.getDstMemref());
+    } else {
+      // Operands only — results are fresh SSA values, not writes through
+      // pre-existing storage. Body writes are picked up by the region walk
+      // in getAllMemrefsAccessedByOp.
+      for (auto oper : op->getOperands()) {
+        if (isa<MemRefType>(oper.getType()))
+          operands.push_back(oper);
+      }
+    }
+    return operands;
+  };
   // Walk forward through async-token consumers transitively, collecting all
   // ops reachable via async-token use chains. Token flow follows two edges:
   //   1. op-result → use: a token result of op A is used as an operand of op B,
@@ -308,104 +332,53 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
       }
     }
   };
-  // `walkConsumers` controls whether to also include memref accesses from the
+  // Collect the set of root memrefs accessed by `o` under `accessFn` (which
+  // selects either reads or writes).
+  //
+  // `walkConsumers` controls whether to also include accesses from the
   // transitive forward async-token consumers of `o`. Use `true` for sink-side
   // analysis (where `o` acts as a scheduling barrier for its consumers) and
   // `false` for source-side analysis (where we want only `o`'s own accesses).
   // Mixing these would corrupt source-side analysis: a synchronization
   // primitive used as a source would otherwise be credited with downstream
   // accesses it doesn't actually perform.
-  auto getAllMemrefsReadByOp = [getAllReadAccess, getRoot,
-                                walkAsyncTokenConsumers](Operation *o,
-                                                         bool walkConsumers) {
-    llvm::SetVector<Value> memrefs;
-    auto insertRoot = [&](Value v) { memrefs.insert(getRoot(v)); };
-    for (Value v : getAllReadAccess(o))
-      insertRoot(v);
-    SmallVector<Region *> regions;
-    for (auto &region : o->getRegions())
-      regions.push_back(&region);
-    // Generalize the existing wait_all "barrier" semantics to all async ops:
-    // any air::AsyncOpInterface op acts as a scheduling anchor for its
-    // transitive consumers, so its sink-side memref access set is the union
-    // of its own accesses and all its consumers'. Without this, a memref-flow
-    // dep injected as a scheduling barrier on a synchronization primitive
-    // (e.g. air.channel.get/put or an air.execute wrapping an alloc) gets
-    // silently pruned by the RAW/WAR/WAW step because the primitive itself
-    // doesn't touch the memref the source wrote — even though a downstream
-    // consumer reachable via the token chain does (issue #1559 race #2/#3).
-    if (walkConsumers && isa<air::AsyncOpInterface>(o)) {
-      llvm::SetVector<Operation *> consumers;
-      walkAsyncTokenConsumers(o, consumers);
-      for (auto user : consumers) {
-        for (Value v : getAllReadAccess(user))
+  //
+  // The sink-side path generalizes the historical wait_all "barrier"
+  // semantics to all air::AsyncOpInterface ops. Without it, a memref-flow
+  // dep injected as a scheduling barrier on a synchronization primitive
+  // (e.g. air.channel.get/put or an air.execute wrapping an alloc) gets
+  // silently pruned by the RAW/WAR/WAW step because the primitive itself
+  // doesn't touch the memref the source wrote — even though a downstream
+  // consumer reachable via the token chain does (issue #1559 race #2/#3).
+  auto getAllMemrefsAccessedByOp =
+      [getRoot, walkAsyncTokenConsumers](
+          Operation *o, bool walkConsumers,
+          llvm::function_ref<SmallVector<Value>(Operation *)> accessFn) {
+        llvm::SetVector<Value> memrefs;
+        auto insertRoot = [&](Value v) { memrefs.insert(getRoot(v)); };
+        for (Value v : accessFn(o))
           insertRoot(v);
-        for (auto &region : user->getRegions())
+        SmallVector<Region *> regions;
+        for (auto &region : o->getRegions())
           regions.push_back(&region);
-      }
-    }
-    for (auto region : regions) {
-      visitUsedValuesDefinedAbove(*region, [&](OpOperand *use) {
-        if (llvm::is_contained(getAllReadAccess(use->getOwner()), use->get()))
-          insertRoot(use->get());
-      });
-    }
-    return memrefs;
-  };
-  auto getAllWriteAccess = [](Operation *op) {
-    SmallVector<Value> operands;
-    if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(op)) {
-      for (auto oper :
-           llvm::concat<Value>(linalgop.getDpsInits(), linalgop->getResults()))
-        operands.push_back(oper);
-    } else if (auto memref_copy = dyn_cast_if_present<memref::CopyOp>(op)) {
-      operands.push_back(memref_copy.getTarget());
-    } else if (auto memcpy =
-                   mlir::dyn_cast_if_present<xilinx::air::MemcpyInterface>(
-                       op)) {
-      if (memcpy.getDstMemref())
-        operands.push_back(memcpy.getDstMemref());
-    } else {
-      // Operands only — results are fresh SSA values, not writes through
-      // pre-existing storage. Body writes are picked up by the region walk
-      // in getAllMemrefsWrittenByOp.
-      for (auto oper : op->getOperands()) {
-        if (isa<MemRefType>(oper.getType()))
-          operands.push_back(oper);
-      }
-    }
-    return operands;
-  };
-  auto getAllMemrefsWrittenByOp = [getAllWriteAccess, getRoot,
-                                   walkAsyncTokenConsumers](
-                                      Operation *o, bool walkConsumers) {
-    llvm::SetVector<Value> memrefs;
-    auto insertRoot = [&](Value v) { memrefs.insert(getRoot(v)); };
-    for (Value v : getAllWriteAccess(o))
-      insertRoot(v);
-    SmallVector<Region *> regions;
-    for (auto &region : o->getRegions())
-      regions.push_back(&region);
-    // See sibling getAllMemrefsReadByOp comment — generalized wait_all
-    // consumer-walk to all air::AsyncOpInterface ops on the sink side.
-    if (walkConsumers && isa<air::AsyncOpInterface>(o)) {
-      llvm::SetVector<Operation *> consumers;
-      walkAsyncTokenConsumers(o, consumers);
-      for (auto user : consumers) {
-        for (Value v : getAllWriteAccess(user))
-          insertRoot(v);
-        for (auto &region : user->getRegions())
-          regions.push_back(&region);
-      }
-    }
-    for (auto region : regions) {
-      visitUsedValuesDefinedAbove(*region, [&](OpOperand *use) {
-        if (llvm::is_contained(getAllWriteAccess(use->getOwner()), use->get()))
-          insertRoot(use->get());
-      });
-    }
-    return memrefs;
-  };
+        if (walkConsumers && isa<air::AsyncOpInterface>(o)) {
+          llvm::SetVector<Operation *> consumers;
+          walkAsyncTokenConsumers(o, consumers);
+          for (auto user : consumers) {
+            for (Value v : accessFn(user))
+              insertRoot(v);
+            for (auto &region : user->getRegions())
+              regions.push_back(&region);
+          }
+        }
+        for (auto region : regions) {
+          visitUsedValuesDefinedAbove(*region, [&](OpOperand *use) {
+            if (llvm::is_contained(accessFn(use->getOwner()), use->get()))
+              insertRoot(use->get());
+          });
+        }
+        return memrefs;
+      };
   auto getAllSymbolRefAccess = [](Operation *o) {
     SmallVector<SymbolRefAttr> result;
     for (NamedAttribute attr : o->getAttrs()) {
@@ -463,10 +436,10 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
         }
         return result;
       };
-  auto memrefsReadBySinkOp =
-      getAllMemrefsReadByOp(op.getOperation(), /*walkConsumers=*/true);
-  auto memrefsWrittenBySinkOp =
-      getAllMemrefsWrittenByOp(op.getOperation(), /*walkConsumers=*/true);
+  auto memrefsReadBySinkOp = getAllMemrefsAccessedByOp(
+      op.getOperation(), /*walkConsumers=*/true, getAllReadAccess);
+  auto memrefsWrittenBySinkOp = getAllMemrefsAccessedByOp(
+      op.getOperation(), /*walkConsumers=*/true, getAllWriteAccess);
   auto resourcesUsedBySinkOp = getSymbolRefsUsedByOp(op.getOperation());
   // make a list of new async token operands
   std::function<void(SmallVector<Value>, SmallVector<Value> &)>
@@ -488,10 +461,10 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
   for (auto v : directDeps) {
     // don't include any false (RAR) dependencies
     if (v.getDefiningOp()) {
-      auto memrefsReadBySourceOp =
-          getAllMemrefsReadByOp(v.getDefiningOp(), /*walkConsumers=*/false);
-      auto memrefsWrittenBySourceOp =
-          getAllMemrefsWrittenByOp(v.getDefiningOp(), /*walkConsumers=*/false);
+      auto memrefsReadBySourceOp = getAllMemrefsAccessedByOp(
+          v.getDefiningOp(), /*walkConsumers=*/false, getAllReadAccess);
+      auto memrefsWrittenBySourceOp = getAllMemrefsAccessedByOp(
+          v.getDefiningOp(), /*walkConsumers=*/false, getAllWriteAccess);
       auto resourcesUsedBySourceOp = getSymbolRefsUsedByOp(v.getDefiningOp());
       bool sourceOpTouchesMemref =
           llvm::range_size(llvm::concat<Value>(memrefsReadBySourceOp,
