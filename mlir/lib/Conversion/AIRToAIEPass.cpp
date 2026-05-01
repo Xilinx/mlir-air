@@ -5949,6 +5949,16 @@ public:
                          "channel_type=\"mmio\" source size must be a multiple "
                          "of 4 bytes (got ")
                      << totalBytes << ")";
+            // Repack needs concrete bytes — reject pure declarations and
+            // uninitialized definitions (UnitAttr) up front; either would
+            // crash the dereference / cast below.
+            auto initOpt = moduleGlobal.getInitialValue();
+            auto initDense =
+                initOpt ? dyn_cast<DenseElementsAttr>(*initOpt) : nullptr;
+            if (!initDense)
+              return put.emitOpError(
+                  "channel_type=\"mmio\" non-i32 source requires a "
+                  "DenseElementsAttr initializer on the memref.global");
             cloneMemTy =
                 MemRefType::get({totalBytes / 4}, rewriter.getI32Type());
             cloneName = StringAttr::get(
@@ -5963,9 +5973,7 @@ public:
                        << "` already exists at module scope";
             auto i32TensorTy = RankedTensorType::get(
                 cloneMemTy.getShape(), cloneMemTy.getElementType());
-            repackedInit = repackAsI32Bytes(
-                cast<DenseElementsAttr>(*moduleGlobal.getInitialValue()),
-                i32TensorTy);
+            repackedInit = repackAsI32Bytes(initDense, i32TensorTy);
 
             // Synthesize a module-scope mirror so the func-level get_global
             // we're about to insert resolves before airrt-to-npu moves the

@@ -163,3 +163,29 @@ func.func @mmio_unaligned_payload() {
   }
   return
 }
+
+// -----
+
+// Repack needs concrete bytes from the source memref.global. A pure
+// declaration (no `= dense<...>` initializer) has none, and previously
+// crashed via `std::optional::operator*` on getInitialValue(). Reject
+// with a clean diagnostic.
+// CHECK: channel_type="mmio" non-i32 source requires a DenseElementsAttr initializer on the memref.global
+memref.global "private" @uninit_bf16 : memref<2x2xbf16>
+air.channel @uninit_chan [] {channel_type = "mmio"}
+func.func @mmio_uninitialized_global() {
+  %src = memref.get_global @uninit_bf16 : memref<2x2xbf16>
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<2x2xbf16> {
+    air.channel.put @uninit_chan[] (%a[] [] []) : (memref<2x2xbf16>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
+        %alloc = memref.alloc() : memref<2x2xbf16, 2>
+        air.channel.get @uninit_chan[] (%alloc[] [] []) : (memref<2x2xbf16, 2>)
+        memref.dealloc %alloc : memref<2x2xbf16, 2>
+      }
+    }
+  }
+  return
+}
