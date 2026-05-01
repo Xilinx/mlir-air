@@ -270,26 +270,42 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     return operands;
   };
   // Walk forward through async-token consumers transitively, collecting all
-  // ops reachable via async-token use chains. Bounded by a worklist over
-  // already-visited ops to ensure termination.
+  // ops reachable via async-token use chains. Token flow follows two edges:
+  //   1. op-result → use: a token result of op A is used as an operand of op B,
+  //      so B is a consumer of A.
+  //   2. loop init → region iter_arg: when a token enters a LoopLikeOpInterface
+  //      op as an init operand, the corresponding region iter_arg block
+  //      argument carries the token into the loop body — body ops that use
+  //      the iter_arg are also consumers. Without this descent, body-side
+  //      consumers would be missed and the helper's contract would be a
+  //      shallower "downstream-of-op consumers" rather than truly transitive.
+  // Termination: each Value (op result or block arg) is enqueued at most once,
+  // tracked by the `expanded` set.
   auto walkAsyncTokenConsumers = [](Operation *root,
                                     llvm::SetVector<Operation *> &consumers) {
-    SmallVector<Operation *> worklist;
-    auto pushTokenUsers = [&worklist, &consumers](Value tok) {
-      if (!tok || !isa<air::AsyncTokenType>(tok.getType()))
+    llvm::SmallPtrSet<Value, 16> expanded;
+    SmallVector<Value> tokenWorklist;
+    auto enqueue = [&](Value v) {
+      if (!v || !isa<air::AsyncTokenType>(v.getType()))
         return;
-      for (auto user : tok.getUsers())
-        if (consumers.insert(user))
-          worklist.push_back(user);
+      if (expanded.insert(v).second)
+        tokenWorklist.push_back(v);
     };
-    auto pushOpAsyncTokens = [&pushTokenUsers](Operation *o) {
-      for (auto res : o->getResults())
-        pushTokenUsers(res);
-    };
-    pushOpAsyncTokens(root);
-    while (!worklist.empty()) {
-      auto *o = worklist.pop_back_val();
-      pushOpAsyncTokens(o);
+    for (Value res : root->getResults())
+      enqueue(res);
+    while (!tokenWorklist.empty()) {
+      Value tok = tokenWorklist.pop_back_val();
+      for (OpOperand &use : tok.getUses()) {
+        Operation *user = use.getOwner();
+        consumers.insert(user);
+        for (Value res : user->getResults())
+          enqueue(res);
+        // If the use is a loop init operand, the token continues into the
+        // body via the tied region iter_arg.
+        if (auto loop = dyn_cast<LoopLikeOpInterface>(user))
+          if (BlockArgument iterArg = loop.getTiedLoopRegionIterArg(&use))
+            enqueue(iterArg);
+      }
     }
   };
   // `walkConsumers` controls whether to also include memref accesses from the
