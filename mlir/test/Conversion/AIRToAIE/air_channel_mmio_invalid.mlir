@@ -138,3 +138,28 @@ func.func @mmio_subbyte_elt() {
   }
   return
 }
+
+// -----
+
+// blockwrite is i32-granular on the wire. A byte-aligned element type
+// whose total payload size isn't a multiple of 4 bytes (here 3 bf16 = 6
+// bytes) cannot be safely repacked to memref<Nxi32>; reject up front.
+// CHECK: channel_type="mmio" source size must be a multiple of 4 bytes (got 6)
+memref.global "private" @bf16_unaligned : memref<3xbf16> = dense<1.5>
+air.channel @bf16u_chan [] {channel_type = "mmio"}
+func.func @mmio_unaligned_payload() {
+  %src = memref.get_global @bf16_unaligned : memref<3xbf16>
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<3xbf16> {
+    air.channel.put @bf16u_chan[] (%a[] [] []) : (memref<3xbf16>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
+        %alloc = memref.alloc() : memref<3xbf16, 2>
+        air.channel.get @bf16u_chan[] (%alloc[] [] []) : (memref<3xbf16, 2>)
+        memref.dealloc %alloc : memref<3xbf16, 2>
+      }
+    }
+  }
+  return
+}

@@ -18,7 +18,7 @@
 // `air_channel_mmio_invalid.mlir`. Each split here uses its own check
 // prefix so directives don't leak across split boundaries.
 
-// RUN: air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" | FileCheck %s --check-prefixes=CHECK-SIMPLE,CHECK-MIXED,CHECK-BCAST,CHECK-INDEXED,CHECK-BF16
+// RUN: air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" | FileCheck %s --check-prefixes=CHECK-SIMPLE,CHECK-MIXED,CHECK-BCAST,CHECK-INDEXED,CHECK-BF16,CHECK-BF16NS
 
 // -----
 
@@ -204,15 +204,14 @@ func.func @indexed() {
 
 // -----
 
-// Non-i32 element type (here bf16): the `aiex.npu.blockwrite` translator
-// only handles i32 so the lowering mirrors the bf16 global into the
-// device as a 1-D `memref<Nxi32>` with the same raw bytes (suffixed
-// `_mmio_i32` to keep the original undisturbed). Blockwrite carries the
-// i32 view; the destination buffer keeps its natural bf16 type since
-// `buffer = @sym` is just a symbol ref.
+// Non-i32 element type (here splat bf16): the `aiex.npu.blockwrite`
+// translator only handles i32, so the lowering mirrors the bf16 global
+// into the device as a 1-D `memref<Nxi32>` with the same raw bytes
+// (suffixed `_mmio_i32`). Splat bf16(1.5) = 0x3FC0 packs to i32
+// 0x3FC03FC0 = 1069563840, and the resulting payload remains splat.
 //
 // CHECK-BF16-LABEL: aie.device(npu1)
-// CHECK-BF16:         memref.global @qbf16_mmio_i32 : memref<2xi32>{{.*}}{air.mmio_global}
+// CHECK-BF16:         memref.global @qbf16_mmio_i32 : memref<2xi32> = dense<1069563840> {air.mmio_global}
 //
 // CHECK-BF16-LABEL: func.func @bf16_payload
 // CHECK-BF16:         memref.get_global @qbf16_mmio_i32 : memref<2xi32>
@@ -230,6 +229,40 @@ func.func @bf16_payload() {
       air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
         %alloc = memref.alloc() : memref<2x2xbf16, 2>
         air.channel.get @qbf16_chan[] (%alloc[] [] []) : (memref<2x2xbf16, 2>)
+        memref.dealloc %alloc : memref<2x2xbf16, 2>
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// Non-splat bf16: exercises the non-splat branch of repackAsI32Bytes,
+// which copies the raw byte buffer wholesale. With elements
+// {1.5, 2.5, 3.5, 4.5} the bf16 hex bytes are
+// {3FC0, 4020, 4060, 4090}; LE-packed into two i32s this gives
+// 0x40203FC0 = 1075855296 and 0x40904060 = 1083195488.
+//
+// CHECK-BF16NS-LABEL: aie.device(npu1)
+// CHECK-BF16NS:         memref.global @qbf16ns_mmio_i32 : memref<2xi32> = dense<[1075855296, 1083195488]> {air.mmio_global}
+//
+// CHECK-BF16NS-LABEL: func.func @bf16_nonsplat
+// CHECK-BF16NS:         memref.get_global @qbf16ns_mmio_i32 : memref<2xi32>
+// CHECK-BF16NS:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @{{.+}}} : memref<2xi32>
+
+memref.global "private" @qbf16ns : memref<2x2xbf16> = dense<[[1.5, 2.5], [3.5, 4.5]]>
+air.channel @qbf16ns_chan [] {channel_type = "mmio"}
+func.func @bf16_nonsplat() {
+  %src = memref.get_global @qbf16ns : memref<2x2xbf16>
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<2x2xbf16> {
+    air.channel.put @qbf16ns_chan[] (%a[] [] []) : (memref<2x2xbf16>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
+        %alloc = memref.alloc() : memref<2x2xbf16, 2>
+        air.channel.get @qbf16ns_chan[] (%alloc[] [] []) : (memref<2x2xbf16, 2>)
         memref.dealloc %alloc : memref<2x2xbf16, 2>
       }
     }

@@ -2940,6 +2940,27 @@ void lowerMemRefCopyToLoops(AIE::DeviceOp d) {
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
+/// Repack a non-i32 DenseElementsAttr as an i32-typed tensor with identical
+/// raw bytes. Splat attributes carry one element's worth of bytes; expand
+/// to the full size before reinterpretation. Caller must have validated
+/// that the source element bitwidth is a positive multiple of 8 and the
+/// total byte size is a multiple of 4.
+static DenseElementsAttr repackAsI32Bytes(DenseElementsAttr orig,
+                                          RankedTensorType i32TensorTy) {
+  unsigned bits = orig.getType().getElementType().getIntOrFloatBitWidth();
+  size_t bytesPerElt = bits / 8;
+  int64_t totalBytes = orig.getType().getNumElements() * bytesPerElt;
+  SmallVector<char> raw(totalBytes);
+  ArrayRef<char> src = orig.getRawData();
+  if (orig.isSplat()) {
+    for (int64_t i = 0; i < totalBytes; i += bytesPerElt)
+      std::copy_n(src.begin(), bytesPerElt, raw.begin() + i);
+  } else {
+    std::copy(src.begin(), src.end(), raw.begin());
+  }
+  return DenseElementsAttr::getFromRawBuffer(i32TensorTy, raw);
+}
+
 /// Remove dead memref.get_global ops and their corresponding memref.global
 /// declarations. outlineAIECores creates these for ALL L2/L3 herd memref
 /// args, but DMA/channel lowering erases the ops that referenced them,
@@ -5899,130 +5920,80 @@ public:
                 "to be used only inside the func containing the put");
 
           // The aiex.npu.blockwrite translator only handles i32 element
-          // types ("Only 32-bit data type is supported for now"). When
-          // the original memref.global isn't already i32-typed, mirror
-          // it into the device as a 1-D memref<Nxi32> with the same
-          // bytes — blockwrite encodes raw bytes, so the type label is
-          // irrelevant on the wire. The destination buffer keeps its
-          // natural type since `buffer = @sym` is just a symbol ref.
+          // types. Mirror non-i32 globals as memref<Nxi32> with identical
+          // raw bytes (suffixed `_mmio_i32`); the destination buffer keeps
+          // its natural type since `buffer = @sym` is just a symbol ref.
           auto origMemTy = cast<MemRefType>(getGlobalOp.getType());
           bool needsRepack = !origMemTy.getElementType().isInteger(32);
           MemRefType cloneMemTy = origMemTy;
+          StringAttr cloneName = origName;
+          DenseElementsAttr repackedInit;
+
           if (needsRepack) {
             unsigned elemBits = origMemTy.getElementTypeBitWidth();
-            // Sub-byte (e.g. i1) and other non-byte-aligned element
-            // types have no portable raw-byte representation and would
-            // make the (elts*bits)/8 byte-size computation lossy.
-            // blockwrite is byte-granular, so reject up front.
             if (elemBits == 0 || elemBits % 8 != 0)
               return put.emitOpError(
                          "channel_type=\"mmio\" source element bitwidth must "
                          "be a positive multiple of 8 (got ")
                      << elemBits << ")";
-            int64_t totalElts = 1;
-            for (int64_t d : origMemTy.getShape())
-              totalElts *= d;
-            int64_t totalBytes = totalElts * (elemBits / 8);
+            int64_t totalBytes = origMemTy.getNumElements() * (elemBits / 8);
             if (totalBytes % 4 != 0)
               return put.emitOpError(
                          "channel_type=\"mmio\" source size must be a multiple "
                          "of 4 bytes (got ")
                      << totalBytes << ")";
-            cloneMemTy = MemRefType::get(
-                {totalBytes / 4}, IntegerType::get(rewriter.getContext(), 32));
-          }
-
-          // Synthesize an in-device clone name. For repacked globals
-          // we suffix with `_i32` so the original (which may still be
-          // referenced by other ops) is undisturbed.
-          std::string cloneNameStr =
-              needsRepack ? (origName.getValue().str() + "_mmio_i32")
-                          : origName.getValue().str();
-          StringAttr cloneName =
-              StringAttr::get(rewriter.getContext(), cloneNameStr);
-
-          // For the repack case, also synthesize a module-scope i32
-          // global so that the get_global we're about to insert at
-          // func.func level resolves correctly until airrt-to-npu moves
-          // the func into the device.
-          // Helper: re-encode the bf16 (or other non-i32) DenseElementsAttr
-          // as i32 with the same bytes. Splat attributes only carry one
-          // element's worth of bytes, so expand them explicitly. The
-          // sub-byte / non-byte-aligned check above guarantees
-          // origElemBits is a positive multiple of 8 here.
-          auto repackAsI32 = [&](DenseElementsAttr orig,
-                                 RankedTensorType i32TensorTy) {
-            unsigned origElemBits =
-                orig.getType().getElementType().getIntOrFloatBitWidth();
-            assert(origElemBits >= 8 && origElemBits % 8 == 0 &&
-                   "non-byte-aligned element type should have been rejected");
-            size_t bytesPerElt = origElemBits / 8;
-            int64_t totalBytes = orig.getType().getNumElements() * bytesPerElt;
-            SmallVector<char> raw(totalBytes);
-            ArrayRef<char> src = orig.getRawData();
-            if (orig.isSplat()) {
-              for (int64_t i = 0; i < totalBytes; i += bytesPerElt)
-                std::copy_n(src.begin(), bytesPerElt, raw.begin() + i);
-            } else {
-              std::copy(src.begin(), src.end(), raw.begin());
-            }
-            return DenseElementsAttr::getFromRawBuffer(i32TensorTy, raw);
-          };
-
-          if (needsRepack &&
-              !SymbolTable::lookupSymbolIn(moduleOp, cloneName)) {
-            auto orig =
-                cast<DenseElementsAttr>(*moduleGlobal.getInitialValue());
+            cloneMemTy =
+                MemRefType::get({totalBytes / 4}, rewriter.getI32Type());
+            cloneName = StringAttr::get(
+                rewriter.getContext(), origName.getValue().str() + "_mmio_i32");
+            // Reject collision with an unrelated pre-existing symbol; only
+            // a previously-synthesized mirror is allowed to share the name.
+            if (auto *exist = SymbolTable::lookupSymbolIn(moduleOp, cloneName))
+              if (!exist->hasAttr("air.mmio_global"))
+                return put.emitOpError(
+                           "channel_type=\"mmio\" repack target name `")
+                       << cloneName.getValue()
+                       << "` already exists at module scope";
             auto i32TensorTy = RankedTensorType::get(
                 cloneMemTy.getShape(), cloneMemTy.getElementType());
-            auto repacked = repackAsI32(orig, i32TensorTy);
-            OpBuilder modBuilder(moduleOp->getRegion(0));
-            modBuilder.setInsertionPointAfter(moduleGlobal);
-            auto modI32 = memref::GlobalOp::create(
-                modBuilder, moduleGlobal.getLoc(),
-                /*sym_name=*/cloneNameStr,
-                /*sym_visibility=*/
-                StringAttr::get(modBuilder.getContext(), "private"),
-                /*type=*/cloneMemTy,
-                /*initial_value=*/repacked,
-                /*constant=*/moduleGlobal.getConstant(),
-                /*alignment=*/IntegerAttr{});
-            (void)modI32;
+            repackedInit = repackAsI32Bytes(
+                cast<DenseElementsAttr>(*moduleGlobal.getInitialValue()),
+                i32TensorTy);
+
+            // Synthesize a module-scope mirror so the func-level get_global
+            // we're about to insert resolves before airrt-to-npu moves the
+            // func into the device.
+            if (!SymbolTable::lookupSymbolIn(moduleOp, cloneName)) {
+              OpBuilder b(moduleOp->getRegion(0));
+              b.setInsertionPointAfter(moduleGlobal);
+              memref::GlobalOp::create(
+                  b, moduleGlobal.getLoc(), cloneName.getValue(),
+                  rewriter.getStringAttr("private"), cloneMemTy, repackedInit,
+                  moduleGlobal.getConstant(), /*alignment=*/IntegerAttr{});
+            }
           }
 
           memref::GlobalOp inDevGlobal;
           device.walk([&](memref::GlobalOp g) {
-            if (g.getSymName() == cloneName.getValue())
+            if (g.getSymNameAttr() == cloneName)
               inDevGlobal = g;
           });
           if (!inDevGlobal) {
-            memref::GlobalOp cloned;
-            if (!needsRepack) {
-              cloned = cast<memref::GlobalOp>(moduleGlobal->clone());
+            if (needsRepack) {
+              // push_front so the global dominates the runtime_sequence.
+              OpBuilder b(device.getBody(), device.getBody()->begin());
+              inDevGlobal = memref::GlobalOp::create(
+                  b, moduleGlobal.getLoc(), cloneName.getValue(),
+                  /*sym_visibility=*/StringAttr{}, cloneMemTy, repackedInit,
+                  moduleGlobal.getConstant(), /*alignment=*/IntegerAttr{});
             } else {
-              auto orig =
-                  cast<DenseElementsAttr>(*moduleGlobal.getInitialValue());
-              auto i32TensorTy = RankedTensorType::get(
-                  cloneMemTy.getShape(), cloneMemTy.getElementType());
-              auto repacked = repackAsI32(orig, i32TensorTy);
-              cloned = memref::GlobalOp::create(
-                  rewriter, moduleGlobal.getLoc(),
-                  /*sym_name=*/cloneNameStr,
-                  /*sym_visibility=*/StringAttr{},
-                  /*type=*/cloneMemTy,
-                  /*initial_value=*/repacked,
-                  /*constant=*/moduleGlobal.getConstant(),
-                  /*alignment=*/IntegerAttr{});
-              cloned->remove(); // detach from the rewriter insertion point
+              auto cloned = cast<memref::GlobalOp>(moduleGlobal->clone());
+              cloned->removeAttr(SymbolTable::getVisibilityAttrName());
+              device.getBody()->getOperations().push_front(cloned);
+              inDevGlobal = cloned;
             }
-            cloned->removeAttr(SymbolTable::getVisibilityAttrName());
-            cloned->setAttr("air.mmio_global",
-                            UnitAttr::get(rewriter.getContext()));
-            // Place at the very top of the device body so it dominates
-            // the runtime_sequence created later. push_front bypasses
-            // SymbolTable::insert renaming logic.
-            device.getBody()->getOperations().push_front(cloned);
-            inDevGlobal = cloned;
+            inDevGlobal->setAttr("air.mmio_global",
+                                 UnitAttr::get(rewriter.getContext()));
           }
 
           auto hoistedGG = memref::GetGlobalOp::create(
@@ -6031,12 +6002,9 @@ public:
                                      inDevGlobal.getSymNameAttr()));
           Value dataOperand = hoistedGG.getResult();
 
-          // After this point the hoisted get_global at module scope
-          // resolves to the module-level original; once airrt-to-npu
-          // moves the surrounding func into the device, lookup will
-          // pick up the in-device copy first. The module-level original
-          // is not removed here because there may be a brief window
-          // where the func still references it.
+          // The module-scope original (or repacked mirror) is removed
+          // later by symbol-DCE once airrt-to-npu moves the func into
+          // the device and the in-device copy becomes the unique source.
 
           AIEX::NpuBlockWriteOp::create(
               rewriter, put.getLoc(),
