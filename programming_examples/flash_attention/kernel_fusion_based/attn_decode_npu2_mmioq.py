@@ -16,28 +16,27 @@ Differences from attn_decode_npu2.py:
   * pos is also a compile-time MMIO constant (per-col globals).
     Baking it in keeps shim input pressure at 2 channels/col
     (K + V) and avoids the dma_packet auto-upgrade.
-  * K and V are interleaved on a single shim channel (KV_dec) on
-    S2MM 0, with per-chunk Python-unrolled puts (the original
-    attn_decode_npu2.py's pattern). Multi-dim K/V BDs break
-    correctness at NKV>1 (scf_range/multi-dim pairing); split
-    K/V channels hit the AIE2P S2MM-1 BD-chain ordering bug.
+  * K and V each take an L3->L2->L1 memtile relay path:
+    one multi-dim shim BD per col covers ALL chunks (KIn/VIn),
+    then the memtile DMA chain doles them out chunk-by-chunk to L1
+    (K2L1/V2L1). Per-col shim BD count is 2 (K + V) — constant in
+    `chunks` — so this scales to arbitrary lk.
+    K lands on tile S2MM 0, V on S2MM 1: split channels through
+    memtile sidestep the AIE2P S2MM-1 shim BD-chain ordering bug
+    that prevents the same split L3->L1-direct.
   * No cascade channels, no _cascade_merge.
 
 DMA channel budget per col (2 S2MM + 2 MM2S):
-  S2MM 0: K chunks then V chunks interleaved (single KV_dec channel)
-  MM2S 0: output L1->L2
+  Shim S2MM 0: KIn (1 BD)
+  Shim S2MM 1: VIn (1 BD)
+  Memtile DMAs: 2 in + 2 out (K + V relay)
+  Tile S2MM 0: K2L1, S2MM 1: V2L1
+  Tile MM2S 0: output L1->L2
   Q + pos: MMIO (no shim channel allocated)
 
 Q and pos values must be supplied to build_module() at compile time.
 To test different values at runtime requires re-compilation (V1 MMIO
 limitation).
-
-Verified on NPU2 hardware: NKV=8 LK=128 group_size=4 produces
-correlation 0.999655 against the NumPy reference.
-
-Scaling to LK >= 512 hits the shim BD allocator (per-chunk puts run
-out of BDs at ~16 chunks per col) and needs L2 memtile staging
-(L3->L2 bulk DMA in 1 BD, L2->L1 chunked) — a separate refactor.
 """
 
 import argparse
@@ -122,6 +121,12 @@ def build_module(
     pos_l1_t = MemRefType.get([1], i32, memory_space=l1_space)
 
     out_l2_t = MemRefType.get([NKV, group_size, dv], bf16, memory_space=l2_space)
+    # L2 staging buffers for K and V — one chunk's worth each, per col.
+    # The L3->L2 transfer is multi-dim covering all chunks (one shim BD
+    # per col), the memtile reuses the buffer chunk-by-chunk on the
+    # L2->L1 path.
+    k_l2_t = MemRefType.get([lkp, dk], bf16, memory_space=l2_space)
+    v_l2_t = MemRefType.get([lkp, dv], bf16, memory_space=l2_space)
 
     # L3 memref types for runtime args (Q is NOT a runtime arg).
     k_l3_t = MemRefType.get([num_kv_heads, lk, dk], bf16)
@@ -205,19 +210,23 @@ def build_module(
     )
     external_func("decode_div_output", [ms_l1_t, out_l1_t], link_with=kobj)
 
-    # Channels. Q and pos via MMIO (no shim); K and V interleaved on a
-    # single shim channel (S2MM 0); output on MM2S 0.
-    # Routing V on a separate S2MM 1 channel triggers an AIE2P S2MM-1
-    # BD-chain ordering bug that produces ~30% output mismatch (see
-    # original attn_decode_npu2.py). Multi-dim BDs on either single
-    # or split channels break correctness at NKV > 1 due to the
-    # `scf_range`/multi-dim pairing. Per-chunk Python-unrolled puts
-    # on a single channel are the only known correct pattern, and
-    # they hit shim BD allocator exhaustion at LK >= 512 — proper
-    # scaling needs L2 memtile staging (separate work).
+    # Channels. Q and pos via MMIO (no shim).
+    # K and V each take an L3->L2->L1 memtile relay path:
+    #   * KIn (L3->L2): one multi-dim shim BD per col covering all
+    #     chunks. Per-col shim BD count is constant in `chunks` -> 1.
+    #   * K2L1 (L2->L1): per-chunk transfers from memtile to tile;
+    #     the memtile DMA chain handles the chunk iteration.
+    # Same shape for V. With memtile in the middle, K and V can sit
+    # on separate tile S2MM channels without hitting the shim-side
+    # AIE2P S2MM-1 BD-chain ordering bug (that bug is shim-only;
+    # memtile DMAs aren't affected, as confirmed by attn_npu2.py
+    # prefill which uses the same split-channel + memtile pattern).
     channel("Q_mmio", size=[NKV], channel_type="mmio")
     channel("pos_mmio", size=[NKV], channel_type="mmio")
-    channel("KV_dec", size=[NKV])
+    channel("KIn", size=[NKV])
+    channel("K2L1", size=[NKV])
+    channel("VIn", size=[NKV])
+    channel("V2L1", size=[NKV])
     channel("out_dec", size=[NKV])
 
     @FuncOp.from_py_func(k_l3_t, v_l3_t, out_l3_t)
@@ -235,9 +244,42 @@ def build_module(
                 pos_src = get_global(pos_global_t, pos_global_names[c])
                 ChannelPut("pos_mmio", pos_src, indices=[c_idx])
 
-            @segment(name="decode_seg", operands=[k_l, v_l, out_l])
-            def segment_body(k_s, v_s, out_s):
+            # Launch-side L3 puts: one multi-dim shim BD per col covers
+            # ALL chunks for K (and similarly for V). Per-col shim BD
+            # count is 2 (K + V), constant in `chunks` -> scales to any
+            # lk. 4D iteration: outer dim selects the KV head (stride
+            # lk*dk for K, lk*dv for V — the natural row-major stride
+            # of K/V's first dim); middle dim iterates the chunks
+            # within that head; inner two dims are (lkp rows, dk/dv
+            # elements). The memtile breaks each multi-dim transfer
+            # into chunks for the L2->L1 path.
+            for tx_i in range(NKV):
+                c_tx_i = ConstantOp(index_type, tx_i)
+                ChannelPut(
+                    "KIn",
+                    k_l,
+                    offsets=[c_tx_i, 0, 0, 0],
+                    sizes=[1, chunks, lkp, dk],
+                    strides=[lk * dk, lkp * dk, dk, 1],
+                    indices=[c_tx_i],
+                )
+                ChannelPut(
+                    "VIn",
+                    v_l,
+                    offsets=[c_tx_i, 0, 0, 0],
+                    sizes=[1, chunks, lkp, dv],
+                    strides=[lk * dv, lkp * dv, dv, 1],
+                    indices=[c_tx_i],
+                )
+
+            @segment(name="decode_seg", operands=[out_l])
+            def segment_body(out_s):
                 out_l2 = AllocOp(out_l2_t, [], [])
+                # Per-col L2 staging buffers for K and V (one chunk's
+                # worth each). The memtile DMA chain reuses these buffers
+                # across chunks: fill from L3, drain to L1, repeat.
+                k_l2_bufs = [AllocOp(k_l2_t, [], []) for _ in range(NKV)]
+                v_l2_bufs = [AllocOp(v_l2_t, [], []) for _ in range(NKV)]
                 q_l1 = AllocOp(q_l1_t, [], [])
                 k_l1 = AllocOp(k_l1_t, [], [])
                 v_l1 = AllocOp(v_l1_t, [], [])
@@ -251,31 +293,37 @@ def build_module(
 
                 c_nkv = ConstantOp(index_type, NKV)
                 c_ns = ConstantOp(index_type, 1)
+                c_chunks_seg = ConstantOp(index_type, chunks)
 
-                # Per-chunk Python-unrolled K then V interleaved puts on
-                # the single KV_dec channel (S2MM 0). Order K0,V0,K1,V1,...
-                # matches the tile S2MM 0 BD chain on the herd side.
-                for chunk_i in range(chunks):
-                    chunk_off = chunk_i * lkp
-                    for tx_i in range(NKV):
-                        c_tx_i = ConstantOp(index_type, tx_i)
-                        c_chunk_off = ConstantOp(index_type, chunk_off)
-                        ChannelPut(
-                            "KV_dec",
-                            k_s,
-                            offsets=[c_tx_i, c_chunk_off, 0],
-                            sizes=[1, lkp, dk],
-                            strides=[lk * dk, dk, 1],
+                # Memtile L2->L1 relay: per col, drive `chunks`
+                # iterations of (get from L3->L2, put L2->L1). The
+                # memtile DMA chain handles the buffer reuse and pacing.
+                for tx_i in range(NKV):
+                    c_tx_i = ConstantOp(index_type, tx_i)
+                    for _ in scf_range(0, c_chunks_seg, 1):
+                        ChannelGet(
+                            "KIn",
+                            k_l2_bufs[tx_i].result,
                             indices=[c_tx_i],
                         )
                         ChannelPut(
-                            "KV_dec",
-                            v_s,
-                            offsets=[c_tx_i, c_chunk_off, 0],
-                            sizes=[1, lkp, dv],
-                            strides=[lk * dv, dv, 1],
+                            "K2L1",
+                            k_l2_bufs[tx_i].result,
                             indices=[c_tx_i],
                         )
+                        yield_([])
+                    for _ in scf_range(0, c_chunks_seg, 1):
+                        ChannelGet(
+                            "VIn",
+                            v_l2_bufs[tx_i].result,
+                            indices=[c_tx_i],
+                        )
+                        ChannelPut(
+                            "V2L1",
+                            v_l2_bufs[tx_i].result,
+                            indices=[c_tx_i],
+                        )
+                        yield_([])
 
                 @herd(
                     name="decode_herd",
@@ -338,9 +386,10 @@ def build_module(
                     for chunk_idx in scf_range(0, c_chunks, 1):
                         chunk_pos = affine_apply(chunk_pos_map, [chunk_idx])
 
-                        # K then V on KV_dec (S2MM 0).
-                        ChannelGet("KV_dec", _k_l1, indices=[tx])
-                        ChannelGet("KV_dec", _v_l1, indices=[tx])
+                        # K on S2MM 0, V on S2MM 1 — both fed by the
+                        # memtile L2->L1 relay (KIn/K2L1 and VIn/V2L1).
+                        ChannelGet("K2L1", _k_l1, indices=[tx])
+                        ChannelGet("V2L1", _v_l1, indices=[tx])
 
                         CallOp(
                             [],
