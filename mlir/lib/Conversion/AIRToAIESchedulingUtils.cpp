@@ -8,6 +8,8 @@
 #include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Util/Util.h"
 
+#include "aie/Dialect/AIE/Transforms/AIEPlacer.h"
+
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 
@@ -57,6 +59,46 @@ AIE::TileOp air::getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col,
       return t;
   }
   return nullptr;
+}
+
+// Materialize a physical aie.tile<ShimNOCTile> at the given column without
+// hardcoding row=0. Emits an aie.logical_tile<ShimNOCTile>(col, ?), runs
+// SequentialPlacer once, resolves to a physical aie.tile (via getPhysTileOp,
+// which dedups against any pre-existing tile at that location). Used by
+// ShimDMAAllocator (RFC #1567 Stage A milestone 3).
+//
+// Caller must NOT be inside a greedy PatternRewriter callback — placer's IR
+// reads + the subsequent replaceAllUsesWith mutation would invalidate the
+// rewriter's worklist. The DMA-path consumers in lowerAIRMemcpyOp use a
+// direct IRRewriter, which is safe.
+static AIE::TileOp createShimTileViaPlacer(AIE::DeviceOp aie_device, int col) {
+  OpBuilder builder(aie_device);
+  builder.setInsertionPointToStart(aie_device.getBody());
+  auto *ctx = builder.getContext();
+  auto colAttr = IntegerAttr::get(IntegerType::get(ctx, 32), col);
+  auto logical = AIE::LogicalTileOp::create(
+      builder, aie_device.getLoc(), AIE::AIETileType::ShimNOCTile, colAttr,
+      /*row=*/IntegerAttr(),
+      /*allocation_scheme=*/StringAttr());
+
+  AIE::SequentialPlacer placer;
+  placer.initialize(aie_device.getTargetModel());
+  if (failed(placer.place(aie_device))) {
+    aie_device.emitError("failed to place logical shim tile");
+    logical.erase();
+    return nullptr;
+  }
+  auto placement = placer.getPlacement(logical.getOperation());
+  if (!placement) {
+    logical.emitError("placer returned no placement for shim tile");
+    logical.erase();
+    return nullptr;
+  }
+  auto physTile =
+      air::getPhysTileOp(aie_device, placement->col, placement->row);
+  logical.getResult().replaceAllUsesWith(physTile.getResult());
+  logical.erase();
+  return physTile;
 }
 
 // get tileop using physical coordinates
@@ -976,7 +1018,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   if (isPacketFlowOp) {
     for (auto &t : *allocs) {
       if (t.foundPacketFlowAllocInTile(dma_col, 0)) {
-        tile = getPhysTileOp(device, dma_col, 0);
+        tile = createShimTileViaPlacer(device, dma_col);
         std::vector<int> dma_ops_get_id;
         for (auto op : dma_ops) {
           if (op->hasAttr("id"))
@@ -1018,7 +1060,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   if (dma_channel >= shim_dma_channels) {
     return memcpyOp.emitOpError("out of shim dma channels.");
   }
-  tile = getPhysTileOp(device, dma_col, 0);
+  tile = createShimTileViaPlacer(device, dma_col);
   if (!tile) {
     return memcpyOp.emitOpError(
         "failed to get shim tile for the newly allocated shim dma channel.");
