@@ -396,22 +396,17 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                                memrefsWrittenBySinkOp)) != 0;
       if (sourceOpTouchesMemref && sinkOpTouchesMemref) {
         // Check if two memref values may alias through view-like op chains.
-        // Walks through memref.subview, memref.cast, and other
-        // ViewLikeOpInterface ops to find the root memref, then checks if
-        // they share the same root.
+        // Walks any ViewLikeOpInterface (subview, cast, expand_shape,
+        // collapse_shape, reinterpret_cast, transpose, ...) to its source,
+        // and treats two values that resolve to the same root as aliasing.
+        // Conservative: disjoint views of the same root are reported as
+        // aliasing — safe for dependency-removal canonicalization, since
+        // over-approximating aliasing only suppresses dead-edge removal,
+        // never invents races.
         auto mayAlias = [](Value a, Value b) {
           auto getRoot = [](Value v) -> Value {
-            bool changed = true;
-            while (changed) {
-              changed = false;
-              if (auto viewOp = v.getDefiningOp<ViewLikeOpInterface>()) {
-                v = viewOp.getViewSource();
-                changed = true;
-              } else if (auto castOp = v.getDefiningOp<memref::CastOp>()) {
-                v = castOp.getSource();
-                changed = true;
-              }
-            }
+            while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
+              v = view.getViewSource();
             return v;
           };
           return getRoot(a) == getRoot(b);
