@@ -72,12 +72,22 @@ by the `channel_type` attribute.
 
 ### Channel Types
 The `channel_type` attribute is a string that determines the mechanism used for data movement:
-- **"dma_stream"** (default):  
+- **"dma_stream"** (default):
   Use DMA engines to send and receive data, with routing performed over a streaming interconnect.
-- **"dma_packet"**:  
+- **"dma_packet"**:
   Use DMA engines to send and receive data, with routing performed over a packet-switched network.
-- **"cascade"**:  
+- **"cascade"**:
   Use processor cores to send and receive data via cascade connections between adjacent tiles.
+- **"mmio"**:
+  Use host-side MMIO writes (e.g. `aiex.npu.blockwrite`) issued from the runtime
+  sequence to deliver a constant payload directly into a tile-local L1 buffer.
+  No DMA channel, no shim allocation, no flow is reserved.
+  Verifier-enforced constraints on the put/get sites:
+    * the `put` source memref must live in L3 (`memory_space=0`);
+    * the `get` destination memref must live in L1 (`memory_space=2`).
+  The lowering further requires the put source to be a constant
+  `memref.get_global`. The consumer-side `get` lowers to a no-op
+  because the L1 buffer is already populated when the core begins executing.
 
 ### Broadcasting
 If a channel broadcasts to multiple destinations, the optional `broadcast_shape` attribute  
@@ -101,6 +111,10 @@ air.channel @channel_3 [] {channel_type = "dma_packet"}
 
 // A cascade channel using core-to-core cascade connections
 air.channel @channel_4 [] {channel_type = "cascade"}
+
+// An MMIO channel: the put writes a constant from host into L1 of each
+// get's destination tile via runtime-sequence blockwrites
+air.channel @channel_5 [] {channel_type = "mmio"}
 ```
 
 Interfaces: `Symbol`
