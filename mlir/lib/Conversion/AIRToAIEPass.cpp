@@ -282,8 +282,14 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       auto phys_x = x + col_offset;
       auto phys_y = y + row_offset;
 
-      // make the aie.tile
-      auto tile = air::getPhysTileOp(aie_device, phys_x, phys_y);
+      // Emit aie.logical_tile<CoreTile>(phys_x, phys_y) and resolve via
+      // mlir-aie's SequentialPlacer (RFC #1567 Stage A milestone 4). For
+      // this milestone we keep both coordinates fully constrained, so the
+      // placer is a pass-through and physical placement is identical to
+      // before. Future milestones can relax to (col, ?) or (?, ?) for
+      // herds whose communication patterns don't require strict adjacency.
+      auto tile = air::createTileViaPlacer(
+          aie_device, AIE::AIETileType::CoreTile, phys_x, phys_y);
 
       Operation *t = tile.getOperation();
       while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
