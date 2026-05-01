@@ -753,18 +753,18 @@ module {
 // CHECK: air.herd
 // CHECK: %[[for_loop_1:.*]] = scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[arg11:.*]] =
 // CHECK: %[[for_loop_2:.*]] = scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[arg13:.*]] = %[[arg11]]
-// CHECK: air.execute [%[[arg13]]] {
+// CHECK: %[[fill_token:.*]] = air.execute [%[[arg13]]] {
 // CHECK-NEXT: linalg.fill
 // CHECK-NEXT: }
 
-// CHECK: %[[for_loop_3:.*]] = scf.for %{{.*}} = %c0{{.*}} to %c8{{.*}} step %c1{{.*}} iter_args(%[[arg15:.*]] = %[[arg13]]
+// CHECK: %[[for_loop_3:.*]] = scf.for %{{.*}} = %c0{{.*}} to %c8{{.*}} step %c1{{.*}} iter_args(%[[arg15:.*]] = %[[fill_token]]
 // CHECK: air.execute [%[[arg15]]] {
 // CHECK-NEXT: linalg.fill
 // CHECK-NEXT: }
 // CHECK-NEXT: scf.yield
 // CHECK-NEXT: }
 
-// CHECK: air.execute [%[[arg13]]] {
+// CHECK: air.execute [%[[for_loop_3]]] {
 // CHECK-NEXT: linalg.fill
 // CHECK-NEXT: }
 
