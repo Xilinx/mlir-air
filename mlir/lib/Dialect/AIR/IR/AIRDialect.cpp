@@ -2838,23 +2838,19 @@ static LogicalResult FoldMemrefCastOnChannelOp(OpT op,
   return success();
 }
 
-// Resolve the air.channel declaration referenced by a channel interface op
-// by walking up through enclosing symbol tables. Duplicated from
-// `air::getChannelDeclarationThroughSymbol` in Util/Util.cpp because
-// AIRDialect.cpp cannot depend on Util/Util.cpp (the dependency points the
-// other way).
+// Resolve the air.channel declaration referenced by a channel interface op.
+// Wraps `SymbolTable::lookupNearestSymbolFrom`, which walks up to the
+// nearest enclosing SymbolTable and queries it. This dialect file cannot
+// depend on Util/Util.cpp (the dependency points the other way), so the
+// `air::getChannelDeclarationThroughSymbol` helper there can't be used —
+// but the MLIR core utility serves the same role for the verifier /
+// canonicalizer call sites in this file (channels are visible from the
+// nearest SymbolTable above the put/get).
 static air::ChannelOp resolveChannelDecl(air::ChannelInterface op) {
   if (!op)
     return air::ChannelOp();
-  Operation *parent = op;
-  while ((parent = parent->getParentOp())) {
-    if (parent->hasTrait<OpTrait::SymbolTable>()) {
-      auto st = SymbolTable::lookupSymbolIn(parent, op.getChanName());
-      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(st))
-        return chanOp;
-    }
-  }
-  return air::ChannelOp();
+  return SymbolTable::lookupNearestSymbolFrom<air::ChannelOp>(
+      op.getOperation(), StringAttr::get(op->getContext(), op.getChanName()));
 }
 
 template <typename OpT>
