@@ -5923,6 +5923,13 @@ public:
           // types. Mirror non-i32 globals as memref<Nxi32> with identical
           // raw bytes (suffixed `_mmio_i32`); the destination buffer keeps
           // its natural type since `buffer = @sym` is just a symbol ref.
+          //
+          // TODO: drop this entire repack path (and the `_mmio_i32` mirror
+          // globals) once the upstream blockwrite translator learns to
+          // handle non-i32 element types. The 32-bit-only check lives in
+          // mlir-aie at AIEXDialect.cpp `NpuBlockWriteOp::getDataWords`
+          // and AIETxnToControlPacket.cpp (both currently emit
+          // "Only 32-bit data type is supported for now").
           auto origMemTy = cast<MemRefType>(getGlobalOp.getType());
           bool needsRepack = !origMemTy.getElementType().isInteger(32);
           MemRefType cloneMemTy = origMemTy;
