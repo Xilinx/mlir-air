@@ -2943,6 +2943,24 @@ LogicalResult air::ChannelPutOp::getResultTilePosition(
   return success();
 }
 
+// Resolve the air.channel declaration referenced by a channel interface op
+// by walking up through enclosing symbol tables. Duplicated locally because
+// AIRDialect.cpp must not depend on Util/Util.cpp (the dependency points the
+// other way).
+static air::ChannelOp resolveChannelDecl(air::ChannelInterface op) {
+  if (!op)
+    return air::ChannelOp();
+  Operation *parent = op;
+  while ((parent = parent->getParentOp())) {
+    if (parent->hasTrait<OpTrait::SymbolTable>()) {
+      auto st = SymbolTable::lookupSymbolIn(parent, op.getChanName());
+      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(st))
+        return chanOp;
+    }
+  }
+  return air::ChannelOp();
+}
+
 LogicalResult air::ChannelPutOp::verify() {
   if (failed(verifySizesStridesRank(getOperation(), getSrcSizes(),
                                     getSrcStrides(), "src")))
@@ -2955,6 +2973,20 @@ LogicalResult air::ChannelPutOp::verify() {
              << "channel index " << i
              << " is an scf.for induction variable; channel bundle indices "
                 "must not be temporal scf.for induction variables";
+  }
+
+  // For channel_type="mmio", the put runs from the host runtime sequence
+  // and writes into a tile-local L1 buffer. Its source memref must
+  // therefore live in L3 (host memory). Allow lookup-failure to silently
+  // pass — that's a separate diagnostic surface.
+  if (auto chan = resolveChannelDecl(*this)) {
+    if (chan.getChannelType() == "mmio") {
+      auto memrefTy = dyn_cast<MemRefType>(getMemref().getType());
+      if (memrefTy && memrefTy.getMemorySpaceAsInt() != 0)
+        return emitOpError() << "channel_type=\"mmio\" put source must be "
+                                "in L3 (memory_space=0), got memory_space="
+                             << memrefTy.getMemorySpaceAsInt();
+    }
   }
 
   auto padBefore = getPadBefore();
@@ -3032,6 +3064,20 @@ LogicalResult air::ChannelGetOp::verify() {
                 "must not be temporal scf.for induction variables";
   }
 
+  // For channel_type="mmio", the destination must be a tile-local L1 buffer
+  // (memory_space=2): the host writes into it via runtime-sequence
+  // blockwrites before the consuming core starts. L2/L3 destinations have
+  // no representation in the lowered IR.
+  if (auto chan = resolveChannelDecl(*this)) {
+    if (chan.getChannelType() == "mmio") {
+      auto memrefTy = dyn_cast<MemRefType>(getMemref().getType());
+      if (memrefTy && memrefTy.getMemorySpaceAsInt() != 2)
+        return emitOpError() << "channel_type=\"mmio\" get destination must be "
+                                "in L1 (memory_space=2), got memory_space="
+                             << memrefTy.getMemorySpaceAsInt();
+    }
+  }
+
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -3062,6 +3108,15 @@ void air::ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 //
 
 LogicalResult air::ChannelOp::verify() {
+  // Allow-list of supported channel_type values. Adding a new transport
+  // requires both an enum entry here and a lowering branch in air-to-aie.
+  StringRef chanType = getChannelType();
+  if (chanType != "dma_stream" && chanType != "dma_packet" &&
+      chanType != "cascade" && chanType != "mmio")
+    return emitOpError() << "unsupported channel_type \"" << chanType
+                         << "\"; expected one of \"dma_stream\", "
+                            "\"dma_packet\", \"cascade\", or \"mmio\"";
+
   if (isBroadcast()) {
     auto bundle_size = getSize();
     auto broadcast_shape = getBroadcastShape();

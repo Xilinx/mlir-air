@@ -5599,6 +5599,280 @@ public:
     return nullptr;
   }
 
+  // Lower mmio-typed channels into runtime-sequence MMIO writes.
+  //
+  // For each `air.channel @c [...] {channel_type = "mmio"}`:
+  //   * each `air.channel.get @c` inside an `aie.core` is replaced by an
+  //     erase — the destination L1 `aie.buffer` is populated by the host
+  //     before the core runs, so the get is a no-op;
+  //   * each `air.channel.put @c` outside the device (i.e. living in the
+  //     L3/launch-side `func.func` that becomes the runtime sequence) is
+  //     rewritten to `aiex.npu.blockwrite` targeting the L1 buffer's
+  //     symbol with the put's source memref as the data payload.
+  //
+  // V1 restrictions enforced here:
+  //   * the put's source must be a `memref.get_global` of a constant
+  //     `memref.global`, because `aiex.npu.blockwrite` encodes the data
+  //     directly in the instruction stream;
+  //   * the get's destination must resolve to an `aie.buffer` (it must be
+  //     an L1 allocation, already converted by air-to-aie);
+  //   * each (put, get) pair is matched by equal constant indices; non-
+  //     matching pairs are silently skipped.
+  LogicalResult lowerAIRMMIOChannelOps(AIE::DeviceOp device) {
+    IRRewriter rewriter(device->getContext());
+
+    // Collect all mmio channel decls reachable from this device.
+    SmallVector<air::ChannelOp> mmioChannels;
+    auto collectMMIO = [&](Operation *root) {
+      root->walk([&](air::ChannelOp chan) {
+        if (chan.getChannelType() == "mmio")
+          if (!llvm::is_contained(mmioChannels, chan))
+            mmioChannels.push_back(chan);
+      });
+    };
+    collectMMIO(device);
+    if (auto module = device->getParentOfType<ModuleOp>())
+      collectMMIO(module);
+
+    // Helper to compare two ValueRange of indices for constant equality.
+    auto sameConstIndices = [](ValueRange a, ValueRange b) -> bool {
+      if (a.size() != b.size())
+        return false;
+      for (size_t i = 0; i < a.size(); i++) {
+        auto va = getConstantIntValue(a[i]);
+        auto vb = getConstantIntValue(b[i]);
+        if (!va || !vb || *va != *vb)
+          return false;
+      }
+      return true;
+    };
+
+    // Helper: trace a memref Value back through launch/segment/herd block
+    // arguments and trivial view ops to a defining `memref.get_global`.
+    // The put often appears inside an `air.launch` body, where its source
+    // is a kernel block-arg whose backing operand outside the launch is
+    // the actual `memref.get_global`.
+    auto getSourceGlobal = [](Value v) -> memref::GetGlobalOp {
+      while (v) {
+        if (auto gg = v.getDefiningOp<memref::GetGlobalOp>())
+          return gg;
+        if (Operation *def = v.getDefiningOp()) {
+          if (auto cs = dyn_cast<memref::CastOp>(def)) {
+            v = cs.getSource();
+            continue;
+          }
+          return nullptr;
+        }
+        // No defining op — `v` is a block argument. Walk to the
+        // corresponding kernel operand of the enclosing launch/segment/herd.
+        auto ba = dyn_cast<BlockArgument>(v);
+        if (!ba)
+          return nullptr;
+        Operation *parent = ba.getOwner()->getParentOp();
+        Value next = nullptr;
+        if (auto launch = dyn_cast_if_present<air::LaunchOp>(parent)) {
+          auto args = launch.getKernelArguments();
+          auto operands = launch.getKernelOperands();
+          for (size_t i = 0; i < args.size(); i++)
+            if (args[i] == ba) {
+              next = operands[i];
+              break;
+            }
+        } else if (auto seg = dyn_cast_if_present<air::SegmentOp>(parent)) {
+          auto args = seg.getKernelArguments();
+          auto operands = seg.getKernelOperands();
+          for (size_t i = 0; i < args.size(); i++)
+            if (args[i] == ba) {
+              next = operands[i];
+              break;
+            }
+        } else if (auto herd = dyn_cast_if_present<air::HerdOp>(parent)) {
+          auto args = herd.getKernelArguments();
+          auto operands = herd.getKernelOperands();
+          for (size_t i = 0; i < args.size(); i++)
+            if (args[i] == ba) {
+              next = operands[i];
+              break;
+            }
+        }
+        if (!next)
+          return nullptr;
+        v = next;
+      }
+      return nullptr;
+    };
+
+    // Helper: trace a memref Value back through trivial view ops to its
+    // defining aie.buffer, if any.
+    auto getDefiningBuffer = [](Value v) -> AIE::BufferOp {
+      while (v) {
+        if (auto buf = v.getDefiningOp<AIE::BufferOp>())
+          return buf;
+        // Peel through common view-style ops that don't change the buffer
+        // identity.
+        Operation *def = v.getDefiningOp();
+        if (!def)
+          return nullptr;
+        if (auto sv = dyn_cast<memref::SubViewOp>(def)) {
+          v = sv.getSource();
+          continue;
+        }
+        if (auto cs = dyn_cast<memref::CastOp>(def)) {
+          v = cs.getSource();
+          continue;
+        }
+        return nullptr;
+      }
+      return nullptr;
+    };
+
+    Operation *root = device->getParentOp();
+    while (root && !isa<ModuleOp>(root))
+      root = root->getParentOp();
+    if (!root)
+      root = device->getParentOp();
+
+    for (auto chan : mmioChannels) {
+      auto chanName = chan.getSymName();
+
+      SmallVector<air::ChannelPutOp> hostPuts;
+      SmallVector<air::ChannelPutOp> devicePuts;
+      SmallVector<air::ChannelGetOp> deviceGets;
+      SmallVector<air::ChannelGetOp> hostGets;
+      // air-to-aie's pre-processing clones each L3 channel.put into the
+      // device with its source rebound to an aie.external_buffer (so that
+      // later flow allocation can route through shim DMA). For mmio we
+      // bypass shim DMA entirely, so those device-side puts are pure
+      // artifacts and must be discarded — keep only puts in the L3 control
+      // func, where the original `memref.get_global` source is reachable
+      // via launch / segment / herd kernel args.
+      root->walk([&](air::ChannelPutOp put) {
+        if (put.getChanName() != chanName)
+          return;
+        if (put->getParentOfType<AIE::DeviceOp>())
+          devicePuts.push_back(put);
+        else
+          hostPuts.push_back(put);
+      });
+      // Gets exist in two places after air-to-aie outlining:
+      //   * inside `aie.core` ops within the device (the lowered form,
+      //     where the destination is an `aie.buffer` whose sym_name is
+      //     what blockwrite needs to reference),
+      //   * inside the original `air.herd` body in the L3 control func
+      //     (kept around for AIRLoweringPass; destination is a plain
+      //     `memref.alloc`, no aie.buffer to reference).
+      // Both must go for mmio. Use the device-side gets for buffer lookup;
+      // erase the host-side gets without any further processing.
+      device.walk([&](air::ChannelGetOp get) {
+        if (get.getChanName() == chanName)
+          deviceGets.push_back(get);
+      });
+      root->walk([&](air::ChannelGetOp get) {
+        if (get.getChanName() != chanName)
+          return;
+        if (get->getParentOfType<AIE::DeviceOp>())
+          return;
+        hostGets.push_back(get);
+      });
+
+      if (hostPuts.empty() && devicePuts.empty() && deviceGets.empty() &&
+          hostGets.empty())
+        continue;
+
+      // mmio has no hardware broadcast. When the channel is declared with a
+      // `broadcast_shape`, the lowering instead emits one blockwrite per
+      // destination buffer carrying the same payload — the controller
+      // writes each tile individually. This matches the shape of
+      // `q_n8_w128` in MMIO_BENCHMARK.md, which proved sub-microsecond per
+      // write at LLaMA-3.2-1B Q sizes.
+      bool isBcast = chan.isBroadcast();
+
+      // For each L3-side put, find every matching get and emit one
+      // blockwrite per destination buffer. Match rule:
+      //   * non-broadcast: indices must be constant-equal between put/get;
+      //   * broadcast: every device-side get on this channel matches every
+      //     put (one put fans out to all destinations).
+      for (auto put : hostPuts) {
+        Value src = put.getMemref();
+        memref::GetGlobalOp getGlobalOp = getSourceGlobal(src);
+        if (!getGlobalOp)
+          return put.emitOpError(
+              "channel_type=\"mmio\" put requires source memref defined by "
+              "memref.get_global of a constant memref.global");
+
+        for (auto get : deviceGets) {
+          if (!isBcast && !sameConstIndices(put.getIndices(), get.getIndices()))
+            continue;
+          AIE::BufferOp bufferOp = getDefiningBuffer(get.getMemref());
+          if (!bufferOp)
+            return get.emitOpError(
+                "channel_type=\"mmio\" get destination does not resolve to "
+                "an aie.buffer (must be an L1 allocation)");
+
+          auto bufSymOpt = bufferOp.getSymName();
+          if (!bufSymOpt)
+            return get.emitOpError(
+                "channel_type=\"mmio\" get destination aie.buffer has no "
+                "sym_name; cannot reference from blockwrite");
+          // Insert the blockwrite just before the outermost air.launch that
+          // contains the put (or before the put itself if not nested in a
+          // launch). MMIO writes are issued from the host before the launch
+          // begins, and the constant `memref.get_global` lives outside the
+          // launch in the L3 control func.
+          Operation *insertionAnchor = put.getOperation();
+          if (auto outerLaunch = put->getParentOfType<air::LaunchOp>())
+            insertionAnchor = outerLaunch.getOperation();
+          rewriter.setInsertionPoint(insertionAnchor);
+          AIEX::NpuBlockWriteOp::create(
+              rewriter, put.getLoc(),
+              /*address=*/rewriter.getUI32IntegerAttr(0),
+              /*data=*/getGlobalOp.getResult(),
+              /*buffer=*/
+              FlatSymbolRefAttr::get(rewriter.getContext(), *bufSymOpt),
+              /*column=*/IntegerAttr{},
+              /*row=*/IntegerAttr{});
+        }
+      }
+
+      // Erase all mmio puts (host-side ones have been replaced with
+      // blockwrite; device-side ones are pure pre-processing artifacts
+      // and have no representation in the lowered IR).
+      auto erasePut = [](air::ChannelPutOp put) {
+        if (auto async = dyn_cast<air::AsyncOpInterface>(put.getOperation())) {
+          if (async.getAsyncToken()) {
+            OpBuilder b(put);
+            put->replaceAllUsesWith(air::WaitAllOp::create(
+                b, put.getLoc(), air::AsyncTokenType::get(put.getContext()),
+                async.getAsyncDependencies()));
+          }
+        }
+        put->erase();
+      };
+      for (auto put : hostPuts)
+        erasePut(put);
+      for (auto put : devicePuts)
+        erasePut(put);
+      // Erase all mmio gets — the destination L1 buffer is populated by
+      // the blockwrite issued from the host before the core starts.
+      auto eraseGet = [](air::ChannelGetOp get) {
+        if (auto async = dyn_cast<air::AsyncOpInterface>(get.getOperation())) {
+          if (async.getAsyncToken()) {
+            OpBuilder b(get);
+            get->replaceAllUsesWith(air::WaitAllOp::create(
+                b, get.getLoc(), air::AsyncTokenType::get(get.getContext()),
+                async.getAsyncDependencies()));
+          }
+        }
+        get->erase();
+      };
+      for (auto get : deviceGets)
+        eraseGet(get);
+      for (auto get : hostGets)
+        eraseGet(get);
+    }
+    return success();
+  }
+
   template <typename T>
   LogicalResult lowerAIRMemcpyOp(AIE::DeviceOp device,
                                  air::ShimDMAAllocator &shimDmaAlloc,
@@ -5895,6 +6169,15 @@ public:
       alloc.memcpyOps.clear();
     for (auto &alloc : tileDmaAlloc.s2mm_allocs)
       alloc.memcpyOps.clear();
+
+    // Lower channel_type="mmio" puts/gets into runtime-sequence blockwrites
+    // before the generic erase loop below removes the underlying air ops.
+    // Only meaningful for the ChannelInterface specialization; for the
+    // DmaMemcpyNd specialization there are no air.channel ops to convert.
+    if constexpr (std::is_same_v<T, air::ChannelInterface>) {
+      if (failed(lowerAIRMMIOChannelOps(device)))
+        return failure();
+    }
 
     // erase the memcpy operations in aie.device
     std::vector<Operation *> memcpy_ops;

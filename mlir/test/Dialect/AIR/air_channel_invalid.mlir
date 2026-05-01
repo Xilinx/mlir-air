@@ -81,3 +81,49 @@ func.func @channel_get_temporal_for_iv(%m: memref<64xi32>) {
   }
   return
 }
+
+// -----
+
+// Test: unsupported channel_type string is rejected by the verifier.
+// expected-error @+1 {{'air.channel' op unsupported channel_type "ddr_stream"; expected one of "dma_stream", "dma_packet", "cascade", or "mmio"}}
+air.channel @bad_chan_type [] {channel_type = "ddr_stream"}
+
+// -----
+
+// Test: mmio channel put source must be in L3 (memory_space=0).
+air.channel @mmio_bad_put [] {channel_type = "mmio"}
+func.func @mmio_put_wrong_memspace(%m: memref<8xi32, 2>) {
+  // expected-error @+1 {{'air.channel.put' op channel_type="mmio" put source must be in L3 (memory_space=0), got memory_space=2}}
+  air.channel.put @mmio_bad_put[] (%m[] [] []) : (memref<8xi32, 2>)
+  return
+}
+
+// -----
+
+// Test: mmio channel get destination must be in L1 (memory_space=2).
+air.channel @mmio_bad_get [] {channel_type = "mmio"}
+func.func @mmio_get_wrong_memspace(%m: memref<8xi32, 1>) {
+  // expected-error @+1 {{'air.channel.get' op channel_type="mmio" get destination must be in L1 (memory_space=2), got memory_space=1}}
+  air.channel.get @mmio_bad_get[] (%m[] [] []) : (memref<8xi32, 1>)
+  return
+}
+
+// -----
+
+// Test: mmio put with L2 source is also rejected (only L3 is allowed).
+air.channel @mmio_bad_put_l2 [] {channel_type = "mmio"}
+func.func @mmio_put_l2(%m: memref<8xi32, 1>) {
+  // expected-error @+1 {{'air.channel.put' op channel_type="mmio" put source must be in L3 (memory_space=0), got memory_space=1}}
+  air.channel.put @mmio_bad_put_l2[] (%m[] [] []) : (memref<8xi32, 1>)
+  return
+}
+
+// -----
+
+// Test: mmio get with L3 destination is rejected (only L1 is allowed).
+air.channel @mmio_bad_get_l3 [] {channel_type = "mmio"}
+func.func @mmio_get_l3(%m: memref<8xi32>) {
+  // expected-error @+1 {{'air.channel.get' op channel_type="mmio" get destination must be in L1 (memory_space=2), got memory_space=0}}
+  air.channel.get @mmio_bad_get_l3[] (%m[] [] []) : (memref<8xi32>)
+  return
+}
