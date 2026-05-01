@@ -184,6 +184,18 @@ run-decode: compile-kernel-decode
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py --lk $(LK) --lkp $(LKP) --dk $(DK) --dv $(DV) --group-size $(GROUP_SIZE) --num-kv-heads $(NUM_KV_HEADS_DECODE) --num-kv-parallel $(NUM_KV_PARALLEL) --num-cascade-stages $(NUM_CASCADE_STAGES) $(EXTRA_PY_FLAGS)
 
+# MMIO-Q decode variant: [NKV, 1] herd with NS=1, Q + pos delivered
+# via channel_type="mmio" (compile-time constants baked into the
+# program). Stepping stone toward the cascade-Q fusion plan.
+NUM_KV_HEADS_MMIOQ ?= 8
+
+print-decode-mmioq:
+	${powershell} python3 ${srcdir}/attn_decode_npu2_mmioq.py -p --lk $(LK) --lkp $(LKP) --dk $(DK) --dv $(DV) --group-size $(GROUP_SIZE) --num-kv-heads $(NUM_KV_HEADS_MMIOQ)
+
+run-decode-mmioq: compile-kernel-decode
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2_mmioq.py --lk $(LK) --lkp $(LKP) --dk $(DK) --dv $(DV) --group-size $(GROUP_SIZE) --num-kv-heads $(NUM_KV_HEADS_MMIOQ) $(EXTRA_PY_FLAGS)
+
 profile-decode: compile-kernel-decode build-test-exe-decode
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py \
 		--lk $(LK) --lkp $(LKP) --dk $(DK) --dv $(DV) --group-size $(GROUP_SIZE) \
