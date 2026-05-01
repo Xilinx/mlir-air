@@ -60,8 +60,9 @@ void eraseAsyncDependency(Operation *op, unsigned index);
 //      LoopLikeOpInterface op as an init operand, the corresponding region
 //      iter_arg block argument carries the token into the body, so body ops
 //      using the iter_arg are also consumers.
-// `root` itself is not added to `consumers`. Termination: each Value
-// (op result or iter_arg) is enqueued at most once.
+// `root` itself is not added to `consumers`. Runs in O(N) where N is the
+// number of async tokens reachable from `root`; the implementation
+// memoizes already-walked tokens to ensure termination.
 void walkAsyncTokenConsumers(Operation *root,
                              llvm::SetVector<Operation *> &consumers);
 

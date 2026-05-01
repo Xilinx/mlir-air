@@ -150,6 +150,9 @@ void air::eraseAsyncDependency(Operation *op, unsigned index) {
 
 void air::walkAsyncTokenConsumers(Operation *root,
                                   llvm::SetVector<Operation *> &consumers) {
+  // `expanded` memoizes tokens already enqueued so each is walked at most
+  // once — this is what bounds the worklist and ensures termination, not
+  // the worklist data structure itself.
   llvm::SmallPtrSet<Value, 16> expanded;
   SmallVector<Value> tokenWorklist;
   auto enqueue = [&](Value v) {
