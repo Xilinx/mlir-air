@@ -10,8 +10,9 @@
 
 // RUN: not air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" 2>&1 | FileCheck %s
 
-// blockwrite encodes data directly in the instruction stream, so the
-// put source must be a compile-time constant.
+// The source data is stamped onto the destination L1 buffer's
+// initial_value, so the put source must be a compile-time constant
+// memref.global.
 // CHECK: channel_type="mmio" put requires source memref defined by memref.get_global
 air.channel @mmio_nc [] {channel_type = "mmio"}
 func.func @mmio_nonconst(%h: memref<8xi32>) {
@@ -82,26 +83,44 @@ func.func @mmio_no_match() {
 
 // -----
 
-// V1: source memref.global must have no users outside the put's func,
-// or the post-airrt-to-npu `symbol-dce` (tools/aircc/aircc.cpp) can't
-// drop the module-level original → llvm.mlir.global collision.
-// CHECK: channel_type="mmio" V1 requires the source memref.global to be used only inside the func containing the put
-memref.global "private" @shared_const : memref<8xi32> = dense<3>
-air.channel @sc_chan [] {channel_type = "mmio"}
-func.func @other_user() -> memref<8xi32> {
-  %g = memref.get_global @shared_const : memref<8xi32>
-  return %g : memref<8xi32>
-}
-func.func @mmio_shared_global() {
-  %src = memref.get_global @shared_const : memref<8xi32>
+// The destination L1 buffer's element type must match the source so the
+// initializer is type-compatible.
+// CHECK: channel_type="mmio" source/destination element type mismatch
+memref.global "private" @i32_src : memref<4xi32> = dense<7>
+air.channel @typemis_chan [] {channel_type = "mmio"}
+func.func @mmio_type_mismatch() {
+  %src = memref.get_global @i32_src : memref<4xi32>
   %c1 = arith.constant 1 : index
-  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<8xi32> {
-    air.channel.put @sc_chan[] (%a[] [] []) : (memref<8xi32>)
+  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<4xi32> {
+    air.channel.put @typemis_chan[] (%a[] [] []) : (memref<4xi32>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
+        %alloc = memref.alloc() : memref<4xbf16, 2>
+        air.channel.get @typemis_chan[] (%alloc[] [] []) : (memref<4xbf16, 2>)
+        memref.dealloc %alloc : memref<4xbf16, 2>
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// Source/destination must agree on total element count.
+// CHECK: channel_type="mmio" source/destination element count mismatch
+memref.global "private" @short_src : memref<4xi32> = dense<7>
+air.channel @sizemis_chan [] {channel_type = "mmio"}
+func.func @mmio_size_mismatch() {
+  %src = memref.get_global @short_src : memref<4xi32>
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<4xi32> {
+    air.channel.put @sizemis_chan[] (%a[] [] []) : (memref<4xi32>)
     air.segment @seg {
       %c1_0 = arith.constant 1 : index
       air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
         %alloc = memref.alloc() : memref<8xi32, 2>
-        air.channel.get @sc_chan[] (%alloc[] [] []) : (memref<8xi32, 2>)
+        air.channel.get @sizemis_chan[] (%alloc[] [] []) : (memref<8xi32, 2>)
         memref.dealloc %alloc : memref<8xi32, 2>
       }
     }
@@ -111,57 +130,9 @@ func.func @mmio_shared_global() {
 
 // -----
 
-// Sub-byte / non-byte-aligned element types have no portable raw-byte
-// repack; reject up front.
-// CHECK: channel_type="mmio" source element bitwidth must be a positive multiple of 8
-memref.global "private" @i1_const : memref<32xi1> = dense<true>
-air.channel @i1_chan [] {channel_type = "mmio"}
-func.func @mmio_subbyte_elt() {
-  %src = memref.get_global @i1_const : memref<32xi1>
-  %c1 = arith.constant 1 : index
-  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<32xi1> {
-    air.channel.put @i1_chan[] (%a[] [] []) : (memref<32xi1>)
-    air.segment @seg {
-      %c1_0 = arith.constant 1 : index
-      air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
-        %alloc = memref.alloc() : memref<32xi1, 2>
-        air.channel.get @i1_chan[] (%alloc[] [] []) : (memref<32xi1, 2>)
-        memref.dealloc %alloc : memref<32xi1, 2>
-      }
-    }
-  }
-  return
-}
-
-// -----
-
-// blockwrite is i32-granular; payloads not a multiple of 4 bytes
-// (here 3 bf16 = 6 bytes) can't be repacked to memref<Nxi32>.
-// CHECK: channel_type="mmio" source size must be a multiple of 4 bytes (got 6)
-memref.global "private" @bf16_unaligned : memref<3xbf16> = dense<1.5>
-air.channel @bf16u_chan [] {channel_type = "mmio"}
-func.func @mmio_unaligned_payload() {
-  %src = memref.get_global @bf16_unaligned : memref<3xbf16>
-  %c1 = arith.constant 1 : index
-  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<3xbf16> {
-    air.channel.put @bf16u_chan[] (%a[] [] []) : (memref<3xbf16>)
-    air.segment @seg {
-      %c1_0 = arith.constant 1 : index
-      air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
-        %alloc = memref.alloc() : memref<3xbf16, 2>
-        air.channel.get @bf16u_chan[] (%alloc[] [] []) : (memref<3xbf16, 2>)
-        memref.dealloc %alloc : memref<3xbf16, 2>
-      }
-    }
-  }
-  return
-}
-
-// -----
-
-// Repack needs a DenseElementsAttr initializer; a pure declaration
-// (no `= dense<...>`) used to crash on the optional dereference.
-// CHECK: channel_type="mmio" non-i32 source requires a DenseElementsAttr initializer on the memref.global
+// initial_value is set by the lowering, so the source memref.global
+// needs a DenseElementsAttr initializer to copy from.
+// CHECK: channel_type="mmio" source memref.global must have a DenseElementsAttr initializer
 memref.global "private" @uninit_bf16 : memref<2x2xbf16>
 air.channel @uninit_chan [] {channel_type = "mmio"}
 func.func @mmio_uninitialized_global() {

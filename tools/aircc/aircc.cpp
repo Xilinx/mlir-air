@@ -1118,9 +1118,6 @@ static LogicalResult runAieCompilation() {
       os << ",affine-expand-index-ops";
       os << ",canonicalize,cse";
       os << "," << airrtToNpuPass;
-      // symbol-dce: drop module-level globals orphaned by mmio lowering
-      // before aiecc promotes them to llvm.mlir.global at module scope.
-      os << ",symbol-dce";
       os << ",canonicalize,cse";
       os << ")";
     }

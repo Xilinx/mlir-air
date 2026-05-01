@@ -2940,25 +2940,6 @@ void lowerMemRefCopyToLoops(AIE::DeviceOp d) {
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
-/// Reinterpret a non-i32 DenseElementsAttr as i32 with identical raw bytes;
-/// splats are byte-expanded first. Caller validates 8-bit-aligned element
-/// type and 4-byte-multiple total size.
-static DenseElementsAttr repackAsI32Bytes(DenseElementsAttr orig,
-                                          RankedTensorType i32TensorTy) {
-  unsigned bits = orig.getType().getElementType().getIntOrFloatBitWidth();
-  size_t bytesPerElt = bits / 8;
-  int64_t totalBytes = orig.getType().getNumElements() * bytesPerElt;
-  SmallVector<char> raw(totalBytes);
-  ArrayRef<char> src = orig.getRawData();
-  if (orig.isSplat()) {
-    for (int64_t i = 0; i < totalBytes; i += bytesPerElt)
-      std::copy_n(src.begin(), bytesPerElt, raw.begin() + i);
-  } else {
-    std::copy(src.begin(), src.end(), raw.begin());
-  }
-  return DenseElementsAttr::getFromRawBuffer(i32TensorTy, raw);
-}
-
 /// Remove dead memref.get_global ops and their corresponding memref.global
 /// declarations. outlineAIECores creates these for ALL L2/L3 herd memref
 /// args, but DMA/channel lowering erases the ops that referenced them,
@@ -2978,14 +2959,9 @@ static void removeDeadGlobalOps(AIE::DeviceOp device) {
   device.walk(
       [&](memref::GetGlobalOp op) { referencedGlobals.insert(op.getName()); });
 
-  // Erase unreferenced memref.global declarations, but preserve any
-  // tagged with `air.mmio_global` — those are MMIO-channel mirrors of
-  // module-level globals whose runtime_sequence get_global users are
-  // synthesized later in the pipeline.
+  // Erase unreferenced memref.global declarations.
   SmallVector<memref::GlobalOp> deadGlobals;
   for (auto globalOp : device.getOps<memref::GlobalOp>()) {
-    if (globalOp->hasAttr("air.mmio_global"))
-      continue;
     if (!referencedGlobals.contains(globalOp.getSymName()))
       deadGlobals.push_back(globalOp);
   }
@@ -5837,11 +5813,20 @@ public:
             return failure();
       }
 
-      // For each L3-side put, find every matching get and emit one
-      // blockwrite per destination buffer. Match rule:
+      // For each L3-side put, find every matching get and stamp the
+      // source data onto the destination L1 buffer's `initial_value`
+      // attribute. Match rule:
       //   * non-broadcast: indices must be constant-equal between put/get;
       //   * broadcast: every device-side get on this channel matches every
       //     put (one put fans out to all destinations).
+      //
+      // The aie.buffer initial_value is loaded into the tile by
+      // AIERTControl::initBuffers (XAie_DataMemBlockWrite) at device-init
+      // time — before any core starts. This eliminates the host↔core
+      // race that would arise from placing the data delivery in the
+      // runtime sequence (where blockwrites would race CDO-started cores).
+      // It also handles bf16/other float types natively, so no i32
+      // repack is required.
       for (auto put : hostPuts) {
         Value src = put.getMemref();
         memref::GetGlobalOp getGlobalOp = getSourceGlobal(src);
@@ -5849,6 +5834,26 @@ public:
           return put.emitOpError(
               "channel_type=\"mmio\" put requires source memref defined by "
               "memref.get_global of a constant memref.global");
+
+        StringAttr origName = getGlobalOp.getNameAttr().getAttr();
+        Operation *moduleOp = device->getParentOp();
+        while (moduleOp && !isa<ModuleOp>(moduleOp))
+          moduleOp = moduleOp->getParentOp();
+        auto moduleGlobal = dyn_cast_if_present<memref::GlobalOp>(
+            moduleOp ? SymbolTable::lookupSymbolIn(moduleOp, origName)
+                     : nullptr);
+        if (!moduleGlobal)
+          return getGlobalOp.emitOpError(
+              "channel_type=\"mmio\" lowering: cannot find memref.global "
+              "for the put source at module scope");
+
+        auto initOpt = moduleGlobal.getInitialValue();
+        auto initDense =
+            initOpt ? dyn_cast<DenseElementsAttr>(*initOpt) : nullptr;
+        if (!initDense)
+          return put.emitOpError(
+              "channel_type=\"mmio\" source memref.global must have a "
+              "DenseElementsAttr initializer");
 
         unsigned matchCount = 0;
         for (auto get : deviceGets) {
@@ -5860,145 +5865,37 @@ public:
                 "channel_type=\"mmio\" get destination does not resolve to "
                 "an aie.buffer (must be an L1 allocation)");
 
-          auto bufSymOpt = bufferOp.getSymName();
-          if (!bufSymOpt)
+          // Element type and total element count must match between source
+          // and destination so the DenseElementsAttr is valid for the
+          // buffer's memref type.
+          auto bufMemTy = bufferOp.getType();
+          auto srcMemTy = cast<MemRefType>(getGlobalOp.getType());
+          if (bufMemTy.getElementType() != srcMemTy.getElementType())
             return get.emitOpError(
-                "channel_type=\"mmio\" get destination aie.buffer has no "
-                "sym_name; cannot reference from blockwrite");
-          // Hoist the blockwrite (and a clone of the source get_global)
-          // out of any enclosing air.launch — later passes recreate a
-          // fresh launch body and drop non-channel ops.
-          air::LaunchOp outerLaunch = put->getParentOfType<air::LaunchOp>();
-          Operation *insertionAnchor =
-              outerLaunch ? outerLaunch.getOperation() : put.getOperation();
-          rewriter.setInsertionPoint(insertionAnchor);
+                       "channel_type=\"mmio\" source/destination element type "
+                       "mismatch (source: ")
+                   << srcMemTy.getElementType()
+                   << ", destination: " << bufMemTy.getElementType() << ")";
+          if (bufMemTy.getNumElements() != srcMemTy.getNumElements())
+            return get.emitOpError(
+                       "channel_type=\"mmio\" source/destination element count "
+                       "mismatch (source: ")
+                   << srcMemTy.getNumElements()
+                   << ", destination: " << bufMemTy.getNumElements() << ")";
 
-          // aie.device is IsolatedFromAbove, so the runtime_sequence's
-          // get_global can't reach a module-scope memref.global. Mirror
-          // it into the device under the same name; the module-scope
-          // original is later DCE'd to avoid an llvm.mlir.global collision.
-          StringAttr origName = getGlobalOp.getNameAttr().getAttr();
-          Operation *moduleOp = device->getParentOp();
-          while (moduleOp && !isa<ModuleOp>(moduleOp))
-            moduleOp = moduleOp->getParentOp();
-          auto moduleGlobal = dyn_cast_if_present<memref::GlobalOp>(
-              moduleOp ? SymbolTable::lookupSymbolIn(moduleOp, origName)
-                       : nullptr);
-          if (!moduleGlobal)
-            return getGlobalOp.emitOpError(
-                "channel_type=\"mmio\" lowering: cannot find memref.global "
-                "for the put source at module scope");
+          // Reshape the source DenseElementsAttr to match the destination
+          // buffer's tensor shape (same bytes, possibly different rank).
+          auto bufTensorTy = RankedTensorType::get(bufMemTy.getShape(),
+                                                   bufMemTy.getElementType());
+          auto reshapedInit = initDense.reshape(bufTensorTy);
 
-          // V1: in-device mirror reuses sym_name, so module-scope original
-          // must be DCE-able by `symbol-dce` after airrt-to-npu (see
-          // tools/aircc/aircc.cpp). Reject any other module-scope users.
-          auto putFunc = put->getParentOfType<func::FuncOp>();
-          auto uses = SymbolTable::getSymbolUses(origName, moduleOp);
-          if (uses && llvm::any_of(*uses, [&](SymbolTable::SymbolUse u) {
-                return u.getUser()->getParentOfType<func::FuncOp>() != putFunc;
-              }))
-            return getGlobalOp.emitOpError(
-                "channel_type=\"mmio\" V1 requires the source memref.global "
-                "to be used only inside the func containing the put");
-
-          // blockwrite translator is i32-only. Mirror non-i32 globals as
-          // memref<Nxi32> with the same raw bytes (suffixed `_mmio_i32`).
-          // TODO: delete once mlir-aie's NpuBlockWriteOp::getDataWords and
-          // AIETxnToControlPacket.cpp drop their 32-bit-only restriction.
-          auto origMemTy = cast<MemRefType>(getGlobalOp.getType());
-          bool needsRepack = !origMemTy.getElementType().isInteger(32);
-          MemRefType cloneMemTy = origMemTy;
-          StringAttr cloneName = origName;
-          DenseElementsAttr repackedInit;
-
-          if (needsRepack) {
-            unsigned elemBits = origMemTy.getElementTypeBitWidth();
-            if (elemBits == 0 || elemBits % 8 != 0)
-              return put.emitOpError(
-                         "channel_type=\"mmio\" source element bitwidth must "
-                         "be a positive multiple of 8 (got ")
-                     << elemBits << ")";
-            int64_t totalBytes = origMemTy.getNumElements() * (elemBits / 8);
-            if (totalBytes % 4 != 0)
-              return put.emitOpError(
-                         "channel_type=\"mmio\" source size must be a multiple "
-                         "of 4 bytes (got ")
-                     << totalBytes << ")";
-            // Repack needs concrete bytes; reject declarations / UnitAttr.
-            auto initOpt = moduleGlobal.getInitialValue();
-            auto initDense =
-                initOpt ? dyn_cast<DenseElementsAttr>(*initOpt) : nullptr;
-            if (!initDense)
-              return put.emitOpError(
-                  "channel_type=\"mmio\" non-i32 source requires a "
-                  "DenseElementsAttr initializer on the memref.global");
-            cloneMemTy =
-                MemRefType::get({totalBytes / 4}, rewriter.getI32Type());
-            cloneName = StringAttr::get(
-                rewriter.getContext(), origName.getValue().str() + "_mmio_i32");
-            // Only a prior mirror is allowed to share the suffixed name.
-            if (auto *exist = SymbolTable::lookupSymbolIn(moduleOp, cloneName))
-              if (!exist->hasAttr("air.mmio_global"))
-                return put.emitOpError(
-                           "channel_type=\"mmio\" repack target name `")
-                       << cloneName.getValue()
-                       << "` already exists at module scope";
-            auto i32TensorTy = RankedTensorType::get(
-                cloneMemTy.getShape(), cloneMemTy.getElementType());
-            repackedInit = repackAsI32Bytes(initDense, i32TensorTy);
-
-            // Module-scope mirror: keeps the func-level get_global resolvable
-            // until airrt-to-npu moves the func into the device.
-            if (!SymbolTable::lookupSymbolIn(moduleOp, cloneName)) {
-              OpBuilder b(moduleOp->getRegion(0));
-              b.setInsertionPointAfter(moduleGlobal);
-              memref::GlobalOp::create(
-                  b, moduleGlobal.getLoc(), cloneName.getValue(),
-                  rewriter.getStringAttr("private"), cloneMemTy, repackedInit,
-                  moduleGlobal.getConstant(), moduleGlobal.getAlignmentAttr());
-            }
-          }
-
-          auto inDevGlobal = dyn_cast_or_null<memref::GlobalOp>(
-              SymbolTable::lookupSymbolIn(device, cloneName));
-          if (!inDevGlobal) {
-            if (needsRepack) {
-              // push_front so the global dominates the runtime_sequence.
-              OpBuilder b(device.getBody(), device.getBody()->begin());
-              inDevGlobal = memref::GlobalOp::create(
-                  b, moduleGlobal.getLoc(), cloneName.getValue(),
-                  /*sym_visibility=*/StringAttr{}, cloneMemTy, repackedInit,
-                  moduleGlobal.getConstant(), moduleGlobal.getAlignmentAttr());
-            } else {
-              auto cloned = cast<memref::GlobalOp>(moduleGlobal->clone());
-              cloned->removeAttr(SymbolTable::getVisibilityAttrName());
-              device.getBody()->getOperations().push_front(cloned);
-              inDevGlobal = cloned;
-            }
-            inDevGlobal->setAttr("air.mmio_global",
-                                 UnitAttr::get(rewriter.getContext()));
-          }
-
-          auto hoistedGG = memref::GetGlobalOp::create(
-              rewriter, getGlobalOp.getLoc(), cloneMemTy,
-              FlatSymbolRefAttr::get(rewriter.getContext(),
-                                     inDevGlobal.getSymNameAttr()));
-          Value dataOperand = hoistedGG.getResult();
-
-          // Orphaned module-scope global is erased by `symbol-dce` after
-          // airrt-to-npu (tools/aircc/aircc.cpp NPU pipeline).
-
-          AIEX::NpuBlockWriteOp::create(
-              rewriter, put.getLoc(),
-              /*address=*/rewriter.getUI32IntegerAttr(0),
-              /*data=*/dataOperand,
-              /*buffer=*/
-              FlatSymbolRefAttr::get(rewriter.getContext(), *bufSymOpt),
-              /*column=*/IntegerAttr{},
-              /*row=*/IntegerAttr{});
+          if (auto existing = bufferOp.getInitialValue())
+            return bufferOp.emitOpError(
+                "channel_type=\"mmio\" destination aie.buffer already has an "
+                "initial_value; cannot stamp two sources into one buffer");
+          bufferOp.setInitialValueAttr(reshapedInit);
           ++matchCount;
         }
-        // The put would otherwise be erased below with no replacement.
         if (matchCount == 0)
           return put.emitOpError("channel_type=\"mmio\" put has no matching "
                                  "device-side air.channel.get");
