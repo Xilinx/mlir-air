@@ -20,6 +20,7 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <map>
@@ -49,6 +50,20 @@ public:
 void addAsyncDependency(Operation *op, Value token);
 // Erases a `air.async.token` at position index of the argument list.
 void eraseAsyncDependency(Operation *op, unsigned index);
+
+// Walks forward through async-token consumers of `root`, accumulating every
+// op transitively reachable via async-token use chains into `consumers`.
+// Token flow is followed along two edges:
+//   1. op-result -> use: a token result of op A used as an operand of op B
+//      makes B a consumer of A.
+//   2. loop init -> region iter_arg: when a token enters a
+//      LoopLikeOpInterface op as an init operand, the corresponding region
+//      iter_arg block argument carries the token into the body, so body ops
+//      using the iter_arg are also consumers.
+// `root` itself is not added to `consumers`. Termination: each Value
+// (op result or iter_arg) is enqueued at most once.
+void walkAsyncTokenConsumers(Operation *root,
+                             llvm::SetVector<Operation *> &consumers);
 
 } // namespace air
 } // namespace xilinx

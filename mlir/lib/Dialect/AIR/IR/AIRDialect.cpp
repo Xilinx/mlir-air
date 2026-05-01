@@ -148,6 +148,34 @@ void air::eraseAsyncDependency(Operation *op, unsigned index) {
   op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
 }
 
+void air::walkAsyncTokenConsumers(Operation *root,
+                                  llvm::SetVector<Operation *> &consumers) {
+  llvm::SmallPtrSet<Value, 16> expanded;
+  SmallVector<Value> tokenWorklist;
+  auto enqueue = [&](Value v) {
+    if (!v || !isa<air::AsyncTokenType>(v.getType()))
+      return;
+    if (expanded.insert(v).second)
+      tokenWorklist.push_back(v);
+  };
+  for (Value res : root->getResults())
+    enqueue(res);
+  while (!tokenWorklist.empty()) {
+    Value tok = tokenWorklist.pop_back_val();
+    for (OpOperand &use : tok.getUses()) {
+      Operation *user = use.getOwner();
+      consumers.insert(user);
+      for (Value res : user->getResults())
+        enqueue(res);
+      // If the use is a loop init operand, the token continues into the
+      // body via the tied region iter_arg.
+      if (auto loop = dyn_cast<LoopLikeOpInterface>(user))
+        if (BlockArgument iterArg = loop.getTiedLoopRegionIterArg(&use))
+          enqueue(iterArg);
+    }
+  }
+}
+
 static ParseResult parseAsyncDependencies(
     OpAsmParser &parser, Type &asyncTokenType,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &asyncDependencies) {
@@ -293,52 +321,16 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
-  // Walk forward through async-token consumers transitively, collecting all
-  // ops reachable via async-token use chains. Token flow follows two edges:
-  //   1. op-result → use: a token result of op A is used as an operand of op B,
-  //      so B is a consumer of A.
-  //   2. loop init → region iter_arg: when a token enters a LoopLikeOpInterface
-  //      op as an init operand, the corresponding region iter_arg block
-  //      argument carries the token into the loop body — body ops that use
-  //      the iter_arg are also consumers. Without this descent, body-side
-  //      consumers would be missed and the helper's contract would be a
-  //      shallower "downstream-of-op consumers" rather than truly transitive.
-  // Termination: each Value (op result or block arg) is enqueued at most once,
-  // tracked by the `expanded` set.
-  auto walkAsyncTokenConsumers = [](Operation *root,
-                                    llvm::SetVector<Operation *> &consumers) {
-    llvm::SmallPtrSet<Value, 16> expanded;
-    SmallVector<Value> tokenWorklist;
-    auto enqueue = [&](Value v) {
-      if (!v || !isa<air::AsyncTokenType>(v.getType()))
-        return;
-      if (expanded.insert(v).second)
-        tokenWorklist.push_back(v);
-    };
-    for (Value res : root->getResults())
-      enqueue(res);
-    while (!tokenWorklist.empty()) {
-      Value tok = tokenWorklist.pop_back_val();
-      for (OpOperand &use : tok.getUses()) {
-        Operation *user = use.getOwner();
-        consumers.insert(user);
-        for (Value res : user->getResults())
-          enqueue(res);
-        // If the use is a loop init operand, the token continues into the
-        // body via the tied region iter_arg.
-        if (auto loop = dyn_cast<LoopLikeOpInterface>(user))
-          if (BlockArgument iterArg = loop.getTiedLoopRegionIterArg(&use))
-            enqueue(iterArg);
-      }
-    }
-  };
+  // (See `air::walkAsyncTokenConsumers` in AIRDialect.h for the consumer
+  // walk used below.)
   // Collect the set of root memrefs accessed by `o` under `accessFn` (which
   // selects either reads or writes).
   //
   // `walkConsumers` controls whether to also include accesses from the
-  // transitive forward async-token consumers of `o`. Use `true` for sink-side
-  // analysis (where `o` acts as a scheduling barrier for its consumers) and
-  // `false` for source-side analysis (where we want only `o`'s own accesses).
+  // transitive forward async-token consumers of `o` (see
+  // `air::walkAsyncTokenConsumers`). Use `true` for sink-side analysis
+  // (where `o` acts as a scheduling barrier for its consumers) and `false`
+  // for source-side analysis (where we want only `o`'s own accesses).
   // Mixing these would corrupt source-side analysis: a synchronization
   // primitive used as a source would otherwise be credited with downstream
   // accesses it doesn't actually perform.
@@ -351,9 +343,8 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
   // doesn't touch the memref the source wrote — even though a downstream
   // consumer reachable via the token chain does (issue #1559 race #2/#3).
   auto getAllMemrefsAccessedByOp =
-      [getRoot, walkAsyncTokenConsumers](
-          Operation *o, bool walkConsumers,
-          llvm::function_ref<SmallVector<Value>(Operation *)> accessFn) {
+      [getRoot](Operation *o, bool walkConsumers,
+                llvm::function_ref<SmallVector<Value>(Operation *)> accessFn) {
         llvm::SetVector<Value> memrefs;
         auto insertRoot = [&](Value v) { memrefs.insert(getRoot(v)); };
         for (Value v : accessFn(o))
@@ -363,7 +354,7 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           regions.push_back(&region);
         if (walkConsumers && isa<air::AsyncOpInterface>(o)) {
           llvm::SetVector<Operation *> consumers;
-          walkAsyncTokenConsumers(o, consumers);
+          air::walkAsyncTokenConsumers(o, consumers);
           for (auto user : consumers) {
             for (Value v : accessFn(user))
               insertRoot(v);
