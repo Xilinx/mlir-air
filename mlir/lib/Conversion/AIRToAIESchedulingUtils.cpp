@@ -69,7 +69,10 @@ AIE::TileOp air::getPhysTileOp(AIE::DeviceOp aie_device, int col, int row) {
 
   builder.setInsertionPointToStart(aie_device.getBody());
   for (auto &o : aie_device.getBody()->getOperations()) {
-    if (isa<AIE::TileOp>(o))
+    // Skip past both physical and logical tile ops so the new TileOp lands
+    // after them (preserves stable ordering for downstream consumers like
+    // getMemtilesFromDeviceOp that index by IR position).
+    if (isa<AIE::TileOp, AIE::LogicalTileOp>(o))
       builder.setInsertionPointAfter(&o);
     else
       break;

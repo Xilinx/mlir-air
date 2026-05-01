@@ -110,50 +110,68 @@ int getMemcpySizesAsInt(Value memref, SmallVector<Value> sizes) {
   }
 }
 
+// Allocator for shim NOC tiles. AIR no longer makes shim placement decisions;
+// each call to getShimTile() emits an unplaced aie.logical_tile<ShimNOCTile>.
+// resolveLogicalShimTiles() runs the placer after channel lowering completes
+// to convert them into physical aie.tile ops. The placer's
+// findTileWithCapacity / hasAvailableChannels logic in mlir-aie absorbs the
+// channel-aware merging that used to live here. See RFC #1567.
 struct ShimTileAllocator {
 
-  std::vector<int> shim_columns;
-  int shim_dma_channels;
   const AIE::AIETargetModel &aie_target;
+  // Channel symbol names that went through getShimTile(); consumed downstream
+  // for objectfifo metadata labeling.
+  std::vector<std::string> chan_names;
+  // Logical shim tiles emitted during channel lowering, one per call. Each
+  // is a fresh op created via the active PatternRewriter; entries are
+  // cleared and replaced with physical aie.tile by resolveLogicalShimTiles.
+  std::vector<AIE::LogicalTileOp> logical_shim_tiles;
 
-  struct shim_allocation_info_t {
-    int shim_col;
-    int available_channels;
-    std::vector<std::string> chan_names;
-  };
+  ShimTileAllocator(const AIE::AIETargetModel &target) : aie_target(target) {}
 
-  std::vector<shim_allocation_info_t> mm2s_allocs, s2mm_allocs;
-
-  ShimTileAllocator(const AIE::AIETargetModel &target) : aie_target(target) {
-    for (int i = 0, e = aie_target.columns(); i < e; i++) {
-      if (aie_target.isShimNOCTile(i, 0)) {
-        shim_columns.push_back(i);
-        shim_dma_channels = aie_target.getNumDestSwitchboxConnections(
-            i, 0, AIE::WireBundle::FIFO);
-      }
-    }
+  // Emit a fresh aie.logical_tile<ShimNOCTile>(?, ?) and return its result.
+  // No round-robin column selection, no per-direction capacity tracking; the
+  // placer handles all of that. Must be called from inside a pattern with an
+  // active rewriter, since the result is immediately consumed by ops the
+  // rewriter is building.
+  Value getShimTile(PatternRewriter &rewriter, AIE::DeviceOp aie_device,
+                    std::string chan_name) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(aie_device.getBody());
+    auto logical = AIE::LogicalTileOp::create(
+        rewriter, aie_device.getLoc(), AIE::AIETileType::ShimNOCTile,
+        /*col=*/IntegerAttr(),
+        /*row=*/IntegerAttr(),
+        /*allocation_scheme=*/StringAttr());
+    logical_shim_tiles.push_back(logical);
+    chan_names.push_back(chan_name);
+    return logical.getResult();
   }
 
-  AIE::TileOp getShimTile(AIE::DeviceOp aie_device,
-                          air::MemorySpace src_memory_space,
-                          air::MemorySpace dst_memory_space,
-                          std::string chan_name) {
-    bool isMM2S = (src_memory_space < dst_memory_space);
-    auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+  // Resolve all aie.logical_tile<ShimNOCTile> into physical aie.tile via the
+  // SequentialPlacer. Must be called after channel lowering completes — once
+  // the greedy rewriter has settled — so no Operation* is held across rewrite
+  // iterations.
+  LogicalResult resolveLogicalShimTiles(AIE::DeviceOp aie_device) {
+    if (logical_shim_tiles.empty())
+      return success();
 
-    // return first available shim tile with a free channel
-    for (auto &t : *allocs) {
-      if (t.available_channels > 0) {
-        t.available_channels -= 1;
-        t.chan_names.push_back(chan_name);
-        return air::getPhysTileOp(aie_device, t.shim_col, 0);
-      }
+    AIE::SequentialPlacer placer;
+    placer.initialize(aie_target);
+    if (failed(placer.place(aie_device)))
+      return aie_device.emitError("failed to place logical shim tiles");
+
+    for (auto logical : logical_shim_tiles) {
+      auto placement = placer.getPlacement(logical.getOperation());
+      if (!placement)
+        return logical.emitError("no placement for logical shim tile");
+      auto physTile =
+          air::getPhysTileOp(aie_device, placement->col, placement->row);
+      logical.getResult().replaceAllUsesWith(physTile.getResult());
+      logical.erase();
     }
-    auto shim_col = shim_columns[allocs->size()];
-    auto shim_tile = air::getPhysTileOp(aie_device, shim_col, 0);
-    allocs->push_back({shim_col, shim_dma_channels - 1, {chan_name}});
-
-    return shim_tile;
+    logical_shim_tiles.clear();
+    return success();
   }
 };
 
@@ -2333,9 +2351,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       }
     } else {
       // put from L3
-      producerTile = shimTileAlloc.getShimTile(device, air::MemorySpace::L3,
-                                               air::MemorySpace::L1,
-                                               channel.getName().str());
+      producerTile =
+          shimTileAlloc.getShimTile(rewriter, device, channel.getName().str());
     }
 
     // put/get come in pairs, if one is missing then it's L3
@@ -2373,9 +2390,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     }
     for (int i = 0; i < expectedGets - (int)channelGets.size(); i++) {
       // get from L3
-      consumerTile = shimTileAlloc.getShimTile(device, air::MemorySpace::L1,
-                                               air::MemorySpace::L3,
-                                               channel.getName().str());
+      consumerTile =
+          shimTileAlloc.getShimTile(rewriter, device, channel.getName().str());
       consumers.push_back(consumerTile);
     }
 
@@ -2587,6 +2603,10 @@ void lowerAIRChannels(
   patterns.insert<LowerAIRChannelsPattern>(ctx, s, bufferToMemtileMap,
                                            linksToComplete);
   (void)applyPatternsGreedily(d, std::move(patterns));
+  // Now that the rewriter has settled, resolve the logical shim tiles emitted
+  // during pattern matching into physical aie.tile via the placer. Doing this
+  // outside the pattern driver avoids invalidating the worklist.
+  (void)s.resolveLogicalShimTiles(d);
 }
 
 struct SpecializeChannelBundlePattern
@@ -6156,6 +6176,16 @@ public:
 
     if (patterns.getNativePatterns().size())
       (void)applyPatternsGreedily(m, std::move(patterns));
+
+    // Resolve any aie.logical_tile<ShimNOCTile> ops emitted by the test-path
+    // LowerAIRChannelsPattern. The production path goes through
+    // lowerAIRChannels() which already calls this; here we mirror it for the
+    // test runner.
+    if (clTestPatterns.find("lower-air-channels") != std::string::npos) {
+      m.walk([&](AIE::DeviceOp d) {
+        (void)shimTileAlloc.resolveLogicalShimTiles(d);
+      });
+    }
   }
 
   void runOnOperation() override {
@@ -6419,12 +6449,8 @@ public:
           if (!o->getParentOfType<air::HerdOp>())
             channel_ops.push_back(o);
         });
-        for (auto &t : shimTileAlloc.s2mm_allocs)
-          for (auto n : t.chan_names)
-            labelAIRDmaOpsWithMetadataObjFifo(channel_ops, n, chan_to_chan_map);
-        for (auto &t : shimTileAlloc.mm2s_allocs)
-          for (auto n : t.chan_names)
-            labelAIRDmaOpsWithMetadataObjFifo(channel_ops, n, chan_to_chan_map);
+        for (auto &n : shimTileAlloc.chan_names)
+          labelAIRDmaOpsWithMetadataObjFifo(channel_ops, n, chan_to_chan_map);
       }
 
       RewritePatternSet patterns(ctx);
