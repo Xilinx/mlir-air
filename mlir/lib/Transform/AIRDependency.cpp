@@ -391,6 +391,13 @@ public:
                                         yielded_tokens_in_for_op);
         } else if (RegionBranchOpInterface branch_op =
                        dyn_cast_if_present<RegionBranchOpInterface>(op)) {
+          // air hierarchy ops also implement RegionBranchOpInterface (so
+          // upstream alias/dataflow analyses can walk their kernel-arg
+          // mapping), but they have their own async-token machinery and
+          // must not be processed by the generic region-branch handling
+          // below.
+          if (isa<air::HierarchyInterface>(op))
+            return;
           auto regions = op->getRegions();
           SmallVector<SmallVector<Value, 1>> yielded_tokens_per_region(
               regions.size());

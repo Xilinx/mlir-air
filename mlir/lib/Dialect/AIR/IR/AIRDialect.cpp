@@ -20,6 +20,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Transforms/RegionUtils.h"
 
@@ -845,6 +846,27 @@ unsigned air::LaunchOp::getNumDims() {
   return segment_sizes[1];
 }
 
+// RegionBranchOpInterface: kernel operands flow into the body's kernel-arg
+// block args; the body returns no values to the parent.
+OperandRange air::LaunchOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::LaunchOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::LaunchOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
+}
+
 //
 // RankOp
 //
@@ -1223,6 +1245,25 @@ unsigned air::RankOp::getNumDims() {
   return segment_sizes[2];
 }
 
+OperandRange air::RankOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::RankOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::RankOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
+}
+
 LogicalResult air::RankOp::verify() {
   // RankOp may be nested inside air.launch (for multi-GPU parallelism),
   // but not inside air.segment, air.herd, or another air.rank.
@@ -1498,6 +1539,25 @@ unsigned air::SegmentOp::getNumDims() {
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
+}
+
+OperandRange air::SegmentOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::SegmentOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::SegmentOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
 }
 
 /// Utility function to verify that all memref.alloc operations within a region
@@ -1856,7 +1916,7 @@ Value air::HerdOp::getKernelOperand(unsigned i) {
 }
 
 ArrayRef<BlockArgument> air::HerdOp::getKernelArguments() {
-  return getBody().front().getArguments().drop_front(4);
+  return getBody().front().getArguments().drop_front(getNumDims() * 2);
 }
 
 BlockArgument air::HerdOp::getKernelArgument(unsigned i) {
@@ -1868,6 +1928,25 @@ unsigned air::HerdOp::getNumDims() {
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
+}
+
+OperandRange air::HerdOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::HerdOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::HerdOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
 }
 
 uint64_t air::HerdOp::getNumCols() {
