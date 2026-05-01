@@ -16,6 +16,8 @@
 #include <numeric>
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIE/Transforms/AIEPasses.h"
+#include "aie/Dialect/AIE/Transforms/AIEPlacer.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
@@ -37,6 +39,7 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -168,27 +171,45 @@ std::string createSymbolName(Operation *symbol_table, std::string dma_name) {
   return cname;
 }
 
+// Returns true if `op` is a tile-defining op (physical or logical) — i.e.,
+// something we should walk past to find the right insertion point for buffers
+// and other tile-attached ops.
+static bool isTileLikeOp(Operation *op) {
+  return isa_and_present<AIE::TileOp, AIE::LogicalTileOp>(op);
+}
+
 AIE::BufferOp allocateBufferOp(uint64_t &BufferId, MemRefType memrefTy,
-                               AIE::TileOp tile,
+                               Operation *tileLike,
                                mlir::StringAttr attr = nullptr, int x = -1,
                                int y = -1) {
+  assert(tileLike && isTileLikeOp(tileLike) &&
+         "allocateBufferOp expects an AIE::TileOp or AIE::LogicalTileOp");
 
-  OpBuilder builder(tile);
-  Operation *t = tile.getOperation();
-  while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+  OpBuilder builder(tileLike);
+  Operation *t = tileLike;
+  while (isTileLikeOp(t->getNextNode()))
     t = t->getNextNode();
   builder.setInsertionPointAfter(t);
   AIE::BufferOp bufferOp = AIE::BufferOp::create(
-      builder, tile->getLoc(), memrefTy, tile, /*sym_name*/ nullptr,
+      builder, tileLike->getLoc(), memrefTy, tileLike->getResult(0),
+      /*sym_name*/ nullptr,
       /*address*/ nullptr, /*initial_value*/ nullptr,
       /*mem_bank*/ nullptr);
 
   std::stringstream ss =
       air::generateBufferNameInStringStream("buf", BufferId, attr, x, y);
   bufferOp->setAttr(SymbolTable::getSymbolAttrName(),
-                    StringAttr::get(tile->getContext(), ss.str()));
+                    StringAttr::get(tileLike->getContext(), ss.str()));
 
   return bufferOp;
+}
+
+// Backwards-compatible overload accepting a concrete TileOp.
+AIE::BufferOp allocateBufferOp(uint64_t &BufferId, MemRefType memrefTy,
+                               AIE::TileOp tile,
+                               mlir::StringAttr attr = nullptr, int x = -1,
+                               int y = -1) {
+  return allocateBufferOp(BufferId, memrefTy, tile.getOperation(), attr, x, y);
 }
 
 // Set data layout attribute on AIE device to specify index type has 32 bits
@@ -779,20 +800,72 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
   // use the command line offsets unless the attribute is present
   int64_t col_offset = options.col_offset;
 
+  // Emit each memtile as an unplaced aie.logical_tile<MemTile>(col, ?). The
+  // column is constrained because the segment owns that column; the row is
+  // left to mlir-aie's --aie-place-tiles pass to determine. This removes the
+  // hardcoded `phys_y = 1` and is the first step of the migration to logical
+  // tiles (see RFC #1567).
+  //
+  // Skip columns that have no memtile in this device (e.g., out-of-range
+  // columns due to a too-large segment x_size + col_offset). Previously
+  // getPhysTileOp would silently fabricate an invalid aie.tile; the placer is
+  // strict so we filter here.
+  SmallVector<AIE::LogicalTileOp> logicalMemTiles;
+  auto *ctx = builder.getContext();
+  const auto &targetModel = aie_device.getTargetModel();
+  auto colHasMemTile = [&](int col) {
+    if (col < 0 || col >= targetModel.columns())
+      return false;
+    for (int row = 0; row < targetModel.rows(); row++)
+      if (targetModel.isMemTile(col, row))
+        return true;
+    return false;
+  };
   for (auto x = 0; x < seg_size_x; x++) {
-    // auto segloc = seg.getLoc();
     auto phys_x = x + col_offset;
-    // TODO: Hard coded memtile row to be 1 here.
-    auto phys_y = 1;
+    if (!colHasMemTile(phys_x))
+      continue;
+    auto colAttr = IntegerAttr::get(IntegerType::get(ctx, 32), phys_x);
+    auto logicalTile = AIE::LogicalTileOp::create(
+        builder, seg.getLoc(), AIE::AIETileType::MemTile, colAttr,
+        /*row=*/IntegerAttr(),
+        /*allocation_scheme=*/StringAttr());
+    logicalMemTiles.push_back(logicalTile);
+  }
 
-    // make the aie.tile
-    AIE::TileOp tile = air::getPhysTileOp(aie_device, phys_x, phys_y);
+  // Resolve the freshly-emitted logical tiles to physical aie.tile ops. We
+  // run the placer directly (rather than via PassManager) so we can create
+  // physical tiles using AIR's existing getPhysTileOp helper, which appends
+  // tiles in walk order. The PassManager-driven `--aie-place-tiles` pass
+  // uses TileOp::getOrCreate which prepends, reversing the IR order and
+  // breaking downstream consumers that depend on memtile ordering. We can
+  // drop this manual emission once those downstream consumers are migrated.
+  AIE::SequentialPlacer placer;
+  placer.initialize(targetModel);
+  if (failed(placer.place(aie_device))) {
+    aie_device.emitError("failed to place logical memtiles");
+    return;
+  }
 
-    // Create a temporary buffer allocated to the memtile. This prevents
-    // an unused memtile from being folded away before the L2 allocation pass.
-    auto memrefTy =
-        MemRefType::get(SmallVector<int64_t>{1}, builder.getI8Type());
-    static uint64_t BufferId = 0;
+  SmallVector<AIE::TileOp> placedMemTiles;
+  for (auto logicalTile : logicalMemTiles) {
+    auto placement = placer.getPlacement(logicalTile.getOperation());
+    if (!placement) {
+      logicalTile.emitError("placer returned no placement");
+      return;
+    }
+    auto physTile =
+        air::getPhysTileOp(aie_device, placement->col, placement->row);
+    logicalTile.getResult().replaceAllUsesWith(physTile.getResult());
+    logicalTile.erase();
+    placedMemTiles.push_back(physTile);
+  }
+
+  // Anchor each placed memtile with a tiny L2 buffer so it isn't folded away
+  // before L2 allocation runs.
+  auto memrefTy = MemRefType::get(SmallVector<int64_t>{1}, builder.getI8Type());
+  static uint64_t BufferId = 0;
+  for (auto tile : placedMemTiles) {
     allocateBufferOp(BufferId, memrefTy, tile,
                      builder.getStringAttr("__L2_tmp"));
   }
