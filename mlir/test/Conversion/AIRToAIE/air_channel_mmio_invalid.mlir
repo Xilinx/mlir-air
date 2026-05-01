@@ -112,3 +112,29 @@ func.func @mmio_shared_global() {
   }
   return
 }
+
+// -----
+
+// Sub-byte (e.g. i1) and other non-byte-aligned element types have no
+// portable raw-byte representation and would make the (elts*bits)/8
+// repack accounting lossy. Reject them up front rather than emitting
+// a malformed blockwrite.
+// CHECK: channel_type="mmio" source element bitwidth must be a positive multiple of 8
+memref.global "private" @i1_const : memref<32xi1> = dense<true>
+air.channel @i1_chan [] {channel_type = "mmio"}
+func.func @mmio_subbyte_elt() {
+  %src = memref.get_global @i1_const : memref<32xi1>
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<32xi1> {
+    air.channel.put @i1_chan[] (%a[] [] []) : (memref<32xi1>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
+        %alloc = memref.alloc() : memref<32xi1, 2>
+        air.channel.get @i1_chan[] (%alloc[] [] []) : (memref<32xi1, 2>)
+        memref.dealloc %alloc : memref<32xi1, 2>
+      }
+    }
+  }
+  return
+}
