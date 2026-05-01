@@ -31,7 +31,6 @@ all: run
 
 print:
 	${powershell} python3 ${srcdir}/matvec_cascade.py $(OUTPUT_FORMAT_FLAG) -p --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
-
 run:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/matvec_cascade.py $(OUTPUT_FORMAT_FLAG) --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE) $(if $(DEBUG_IR),--debug-ir) || \
@@ -44,6 +43,7 @@ run:
 	   false)
 
 profile: build-test-exe
+	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/matvec_cascade.py $(OUTPUT_FORMAT_FLAG) --compile-mode compile-and-xclbin --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M $(M) -K $(K)
 

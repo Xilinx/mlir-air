@@ -1,0 +1,10 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu1, peano
+//
+// RUN: mkdir -p test_npu1_1col_2cascade_peano
+// RUN: cd test_npu1_1col_2cascade_peano
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run M=128 K=128 TILE_M=2 M_INPUT=1 HERD_COLS=1 N_CASCADE=2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PASS!
