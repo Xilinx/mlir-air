@@ -8,6 +8,8 @@
 #include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Util/Util.h"
 
+#include "aie/Dialect/AIE/Transforms/AIEPlacer.h"
+
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 
@@ -59,6 +61,73 @@ AIE::TileOp air::getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col,
   return nullptr;
 }
 
+// See header for contract. Used by milestones 1 (memtile, inlined),
+// 3 (ShimDMAAllocator), and 4 (compute tiles).
+AIE::TileOp air::createTileViaPlacer(AIE::DeviceOp aie_device,
+                                     AIE::AIETileType tileType,
+                                     std::optional<int> col_hint,
+                                     std::optional<int> row_hint) {
+  SmallVector<AIE::TileOp> out;
+  std::pair<std::optional<int>, std::optional<int>> hint{col_hint, row_hint};
+  if (failed(createTilesViaPlacer(aie_device, tileType, {hint}, out)))
+    return nullptr;
+  return out.front();
+}
+
+LogicalResult air::createTilesViaPlacer(
+    AIE::DeviceOp aie_device, AIE::AIETileType tileType,
+    ArrayRef<std::pair<std::optional<int>, std::optional<int>>> hints,
+    SmallVectorImpl<AIE::TileOp> &outTiles) {
+  outTiles.clear();
+  if (hints.empty())
+    return success();
+
+  OpBuilder builder(aie_device);
+  builder.setInsertionPointToStart(aie_device.getBody());
+  auto *ctx = builder.getContext();
+
+  // Phase 1: emit all aie.logical_tile ops up-front so the placer sees them
+  // together. Per-tile placement (one place() call per logical tile) would
+  // re-pick the same row for every (col, ?) request because the placer's
+  // nextCompIdx state doesn't persist across calls.
+  SmallVector<AIE::LogicalTileOp> logicals;
+  logicals.reserve(hints.size());
+  for (auto &[col_hint, row_hint] : hints) {
+    IntegerAttr colAttr =
+        col_hint ? IntegerAttr::get(IntegerType::get(ctx, 32), *col_hint)
+                 : IntegerAttr();
+    IntegerAttr rowAttr =
+        row_hint ? IntegerAttr::get(IntegerType::get(ctx, 32), *row_hint)
+                 : IntegerAttr();
+    logicals.push_back(AIE::LogicalTileOp::create(
+        builder, aie_device.getLoc(), tileType, colAttr, rowAttr,
+        /*allocation_scheme=*/StringAttr()));
+  }
+
+  // Phase 2: place all in a single placer invocation.
+  AIE::SequentialPlacer placer;
+  placer.initialize(aie_device.getTargetModel());
+  if (failed(placer.place(aie_device))) {
+    for (auto l : logicals)
+      l.erase();
+    return aie_device.emitError("failed to place logical tiles");
+  }
+
+  // Phase 3: resolve each logical to a physical tile in input order.
+  outTiles.reserve(hints.size());
+  for (auto logical : logicals) {
+    auto placement = placer.getPlacement(logical.getOperation());
+    if (!placement)
+      return logical.emitError("placer returned no placement for logical tile");
+    auto physTile =
+        air::getPhysTileOp(aie_device, placement->col, placement->row);
+    logical.getResult().replaceAllUsesWith(physTile.getResult());
+    logical.erase();
+    outTiles.push_back(physTile);
+  }
+  return success();
+}
+
 // get tileop using physical coordinates
 AIE::TileOp air::getPhysTileOp(AIE::DeviceOp aie_device, int col, int row) {
   auto t = getPhysTileOpOrNull(aie_device, col, row);
@@ -69,7 +138,10 @@ AIE::TileOp air::getPhysTileOp(AIE::DeviceOp aie_device, int col, int row) {
 
   builder.setInsertionPointToStart(aie_device.getBody());
   for (auto &o : aie_device.getBody()->getOperations()) {
-    if (isa<AIE::TileOp>(o))
+    // Skip past both physical and logical tile ops so the new TileOp lands
+    // after them (preserves stable ordering for downstream consumers like
+    // getMemtilesFromDeviceOp that index by IR position).
+    if (isa<AIE::TileOp, AIE::LogicalTileOp>(o))
       builder.setInsertionPointAfter(&o);
     else
       break;
@@ -973,7 +1045,8 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   if (isPacketFlowOp) {
     for (auto &t : *allocs) {
       if (t.foundPacketFlowAllocInTile(dma_col, 0)) {
-        tile = getPhysTileOp(device, dma_col, 0);
+        tile = air::createTileViaPlacer(device, AIE::AIETileType::ShimNOCTile,
+                                        dma_col, /*row_hint=*/std::nullopt);
         std::vector<int> dma_ops_get_id;
         for (auto op : dma_ops) {
           if (op->hasAttr("id"))
@@ -1015,7 +1088,8 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   if (dma_channel >= shim_dma_channels) {
     return memcpyOp.emitOpError("out of shim dma channels.");
   }
-  tile = getPhysTileOp(device, dma_col, 0);
+  tile = air::createTileViaPlacer(device, AIE::AIETileType::ShimNOCTile,
+                                  dma_col, /*row_hint=*/std::nullopt);
   if (!tile) {
     return memcpyOp.emitOpError(
         "failed to get shim tile for the newly allocated shim dma channel.");

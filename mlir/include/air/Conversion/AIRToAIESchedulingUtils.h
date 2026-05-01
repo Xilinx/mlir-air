@@ -28,6 +28,29 @@ AIE::TileOp getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col, int row);
 // get tileop using physical coordinates
 AIE::TileOp getPhysTileOp(AIE::DeviceOp aie_device, int col, int row);
 
+// Materialize a physical aie.tile by emitting an aie.logical_tile<tileType>
+// with the given hints (use std::nullopt for "?"), running mlir-aie's
+// SequentialPlacer, and resolving the result through getPhysTileOp.
+//
+// Caller must NOT be inside a greedy PatternRewriter callback; this helper
+// uses plain OpBuilder + replaceAllUsesWith/erase, which would invalidate
+// a greedy worklist's cached use-def edges (see RFC #1567 milestone 2).
+AIE::TileOp createTileViaPlacer(AIE::DeviceOp aie_device,
+                                AIE::AIETileType tileType,
+                                std::optional<int> col_hint,
+                                std::optional<int> row_hint);
+
+// Batched variant: emits N aie.logical_tile<tileType> ops (one per hint),
+// runs the placer ONCE, and resolves each into a physical aie.tile. The
+// returned vector parallels `hints`. Use this when multiple unconstrained
+// or partially-constrained logical tiles must be placed together — e.g.,
+// a herd of cores all asking (col, ?), which a per-tile placer would all
+// map to the same row because state doesn't persist across place() calls.
+mlir::LogicalResult createTilesViaPlacer(
+    AIE::DeviceOp aie_device, AIE::AIETileType tileType,
+    llvm::ArrayRef<std::pair<std::optional<int>, std::optional<int>>> hints,
+    llvm::SmallVectorImpl<AIE::TileOp> &outTiles);
+
 AIE::LockOp allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
                            int init = 0, int id = -1,
                            StringAttr name = nullptr);
