@@ -1,3 +1,10 @@
+//===- canonicalize_execute_alloc_dep.mlir ---------------------*- MLIR -*-===//
+//
+// Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: air-opt -canonicalize -split-input-file %s | FileCheck %s
 
 // Reproducer for issue #1559 (race #2/#3 family). Inside a merged herd body,
@@ -77,3 +84,53 @@ module {
     return
   }
 }
+
+// -----
+
+// Positive control: the fix only suppresses the *spurious* result-based write
+// classification on `air.execute`. Body writes through a pre-existing memref
+// (captured from the surrounding region) must still be detected as writes by
+// `getAllMemrefsWrittenByOp` via its `visitUsedValuesDefinedAbove` region walk.
+//
+// Setup: two `air.execute` ops both store into the same captured memref %buf.
+// The second carries an explicit token dep on the first. Both write %buf
+// (WAW), so canonicalize must keep the dep.
+
+// CHECK-LABEL: func.func @execute_body_write_dep_preserved
+// CHECK: air.herd
+// CHECK: %[[BUF:[a-zA-Z0-9_]+]] = memref.alloc() : memref<16xi16, 2 : i32>
+// CHECK: %[[T0:[a-zA-Z0-9_]+]] = air.execute {{.*}}{
+// CHECK:   memref.store {{.*}} %[[BUF]]
+// CHECK: }
+// CHECK: air.execute [%[[T0]]] {
+// CHECK:   memref.store {{.*}} %[[BUF]]
+// CHECK: }
+
+module {
+  func.func @execute_body_write_dep_preserved(%out: memref<16xi16, 2 : i32>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%lx, %ly) in (%lsx=%c1, %lsy=%c1) args(%argout=%out) : memref<16xi16, 2 : i32> {
+      %1 = air.segment @seg async args(%segout=%argout) : memref<16xi16, 2 : i32> {
+        %c1_s = arith.constant 1 : index
+        %h = air.herd @h async tile (%tx, %ty) in (%sx=%c1_s, %sy=%c1_s) args(%hout=%segout) : memref<16xi16, 2 : i32> {
+          %c0_i16 = arith.constant 0 : i16
+          %c1_i16 = arith.constant 1 : i16
+          %c0 = arith.constant 0 : index
+          %buf = memref.alloc() : memref<16xi16, 2 : i32>
+          %t0 = air.execute {
+            memref.store %c0_i16, %buf[%c0] : memref<16xi16, 2 : i32>
+          }
+          %t1 = air.execute [%t0] {
+            memref.store %c1_i16, %buf[%c0] : memref<16xi16, 2 : i32>
+          }
+          %t2 = air.execute [%t1] {
+            %v = memref.load %buf[%c0] : memref<16xi16, 2 : i32>
+            memref.store %v, %hout[%c0] : memref<16xi16, 2 : i32>
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
