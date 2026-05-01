@@ -137,3 +137,9 @@ func.func @cascade_func() {
   }
   return
 }
+
+// -----
+
+// CHECK: air.channel @mmio_chan
+// CHECK-SAME: channel_type = "mmio"
+air.channel @mmio_chan [] {channel_type = "mmio"}

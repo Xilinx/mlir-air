@@ -1387,6 +1387,21 @@ LogicalResult
 air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
   auto chan = air::getChannelDeclarationThroughSymbol(memcpyOp);
   int alloc_id = 0;
+  // mmio channels reserve no DMA allocations and don't need the
+  // broadcast/index-matching logic below, which assumes hardware fanout.
+  // Record the resource type (so downstream code can skip mmio bundles)
+  // and return — the dedicated mmio lowering pass handles the rest.
+  if (chan.getChannelType() == "mmio") {
+    air_flow_op = chan.getOperation();
+    S2MM[alloc_id].push_back(memcpyOp.getOperation());
+    auto getMS = air::getMemorySpace(
+        llvm::cast<BaseMemRefType>(memcpyOp.getMemref().getType()));
+    if (!getMS)
+      return memcpyOp->emitOpError("unrecognized memory space on memref");
+    S2MM_memspace = *getMS;
+    memcpyResourceType = "mmio";
+    return success();
+  }
   if (chan->hasAttr("broadcast_shape")) {
     // Walk through each element in broadcast_shape
     auto bcast_sizes = extractFromIntegerArrayAttr<int64_t>(
@@ -1490,6 +1505,12 @@ LogicalResult air::simpleDMAChannelAllocation(
     TileDMAAllocator &tile_dma_alloc,
     air::CascadeAllocator &core_cascade_alloc) {
   for (auto &f : memcpy_flows) {
+    // MMIO channels carry data via host-side runtime-sequence blockwrites,
+    // not DMA. They consume no DMA channel, BD, or routing resource and
+    // bypass allocation entirely. Their put/get pairs are converted by a
+    // dedicated late pass (see lowerAIRMMIOChannelOps).
+    if (f.memcpyResourceType == "mmio")
+      continue;
     if (f.MM2S_memspace == air::MemorySpace::L1) {
       for (auto o : f.MM2S) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
@@ -1554,6 +1575,9 @@ LogicalResult air::simpleDMAChannelAllocation(
     }
   }
   for (auto &f : memcpy_flows) {
+    // MMIO channels are not allocated to any DMA resource at L2 either.
+    if (f.memcpyResourceType == "mmio")
+      continue;
     if (f.MM2S_memspace == air::MemorySpace::L2) {
       for (auto o : f.MM2S) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
@@ -1589,6 +1613,9 @@ LogicalResult air::simpleDMAChannelAllocation(
     }
   }
   for (auto &f : memcpy_flows) {
+    // MMIO channels are not allocated to any shim DMA resource.
+    if (f.memcpyResourceType == "mmio")
+      continue;
     if (f.MM2S_memspace == air::MemorySpace::L3) {
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.MM2S) {

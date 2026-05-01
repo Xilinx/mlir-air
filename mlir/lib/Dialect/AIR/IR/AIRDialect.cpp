@@ -20,6 +20,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/TypeSwitch.h"
@@ -205,6 +206,48 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 template <class OpT>
 static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                              PatternRewriter &rewriter) {
+  // Walk view-like ops, air.hierarchy body args, and loop iter_args back
+  // to a root memref. The collectors below resolve every memref through
+  // this walk before inserting, so the RAW/WAR/WAW comparisons reduce to
+  // set-membership.
+  //
+  // Intentionally conservative — DO NOT TIGHTEN without a strong reason:
+  //   * Two disjoint views of the same root return the same root and
+  //     are reported as aliasing. Modeling subview offsets/sizes to
+  //     prove disjointness was the bug behind #1559: the original code
+  //     compared SSA identity (the strictest possible "alias" predicate)
+  //     and dropped real RAW edges between fill and channel.put.
+  //   * iter_args resolve to the loop init; a body that conditionally
+  //     yields a different memref will under-approximate roots seen
+  //     across iterations, but still over-approximates aliasing.
+  //
+  // Over-approximating aliasing is the safe direction here: this
+  // predicate gates dead-edge *removal*, so false positives only
+  // suppress an optimization, never invent a race.
+  auto getRoot = [](Value v) -> Value {
+    while (true) {
+      if (auto view = v.getDefiningOp<ViewLikeOpInterface>()) {
+        v = view.getViewSource();
+        continue;
+      }
+      if (auto barg = dyn_cast<BlockArgument>(v)) {
+        Operation *parent = barg.getOwner()->getParentOp();
+        if (auto h = dyn_cast_if_present<air::HierarchyInterface>(parent)) {
+          if (Value outer = h.getTiedKernelOperand(barg)) {
+            v = outer;
+            continue;
+          }
+        }
+        if (auto loop = dyn_cast_if_present<LoopLikeOpInterface>(parent)) {
+          if (OpOperand *init = loop.getTiedLoopInit(barg)) {
+            v = init->get();
+            continue;
+          }
+        }
+      }
+      return v;
+    }
+  };
   auto getAllReadAccess = [](Operation *op) {
     SmallVector<Value> operands;
     if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(op)) {
@@ -226,10 +269,11 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
-  auto getAllMemrefsReadByOp = [getAllReadAccess](Operation *o) {
+  auto getAllMemrefsReadByOp = [getAllReadAccess, getRoot](Operation *o) {
     llvm::SetVector<Value> memrefs;
-    auto opReadAccesses = getAllReadAccess(o);
-    memrefs.insert(opReadAccesses.begin(), opReadAccesses.end());
+    auto insertRoot = [&](Value v) { memrefs.insert(getRoot(v)); };
+    for (Value v : getAllReadAccess(o))
+      insertRoot(v);
     SmallVector<Region *> regions;
     for (auto &region : o->getRegions())
       regions.push_back(&region);
@@ -238,17 +282,16 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     auto waitAllOp = dyn_cast_if_present<air::WaitAllOp>(o);
     if (waitAllOp && waitAllOp.getAsyncToken()) {
       for (auto user : waitAllOp.getAsyncToken().getUsers()) {
-        auto userReadAccesses = getAllReadAccess(user);
-        memrefs.insert(userReadAccesses.begin(), userReadAccesses.end());
+        for (Value v : getAllReadAccess(user))
+          insertRoot(v);
         for (auto &region : user->getRegions())
           regions.push_back(&region);
       }
     }
     for (auto region : regions) {
-      visitUsedValuesDefinedAbove(*region, [&memrefs,
-                                            getAllReadAccess](OpOperand *use) {
+      visitUsedValuesDefinedAbove(*region, [&](OpOperand *use) {
         if (llvm::is_contained(getAllReadAccess(use->getOwner()), use->get()))
-          memrefs.insert(use->get());
+          insertRoot(use->get());
       });
     }
     return memrefs;
@@ -277,10 +320,11 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
-  auto getAllMemrefsWrittenByOp = [getAllWriteAccess](Operation *o) {
+  auto getAllMemrefsWrittenByOp = [getAllWriteAccess, getRoot](Operation *o) {
     llvm::SetVector<Value> memrefs;
-    auto opWriteAccesses = getAllWriteAccess(o);
-    memrefs.insert(opWriteAccesses.begin(), opWriteAccesses.end());
+    auto insertRoot = [&](Value v) { memrefs.insert(getRoot(v)); };
+    for (Value v : getAllWriteAccess(o))
+      insertRoot(v);
     SmallVector<Region *> regions;
     for (auto &region : o->getRegions())
       regions.push_back(&region);
@@ -289,17 +333,16 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     auto waitAllOp = dyn_cast_if_present<air::WaitAllOp>(o);
     if (waitAllOp && waitAllOp.getAsyncToken()) {
       for (auto user : waitAllOp.getAsyncToken().getUsers()) {
-        auto userWriteAccesses = getAllWriteAccess(user);
-        memrefs.insert(userWriteAccesses.begin(), userWriteAccesses.end());
+        for (Value v : getAllWriteAccess(user))
+          insertRoot(v);
         for (auto &region : user->getRegions())
           regions.push_back(&region);
       }
     }
     for (auto region : regions) {
-      visitUsedValuesDefinedAbove(*region, [&memrefs,
-                                            getAllWriteAccess](OpOperand *use) {
+      visitUsedValuesDefinedAbove(*region, [&](OpOperand *use) {
         if (llvm::is_contained(getAllWriteAccess(use->getOwner()), use->get()))
-          memrefs.insert(use->get());
+          insertRoot(use->get());
       });
     }
     return memrefs;
@@ -395,17 +438,18 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           llvm::range_size(llvm::concat<Value>(memrefsReadBySinkOp,
                                                memrefsWrittenBySinkOp)) != 0;
       if (sourceOpTouchesMemref && sinkOpTouchesMemref) {
-        bool RAWNotFound = llvm::none_of(
-            memrefsWrittenBySourceOp, [&memrefsReadBySinkOp](Value v) {
-              return llvm::is_contained(memrefsReadBySinkOp, v);
+        // Sets already contain root memrefs (resolved by the collectors),
+        // so RAW/WAR/WAW checks reduce to plain set-membership.
+        bool RAWNotFound =
+            llvm::none_of(memrefsWrittenBySourceOp, [&](Value v) {
+              return memrefsReadBySinkOp.contains(v);
             });
-        bool WARNotFound = llvm::none_of(
-            memrefsReadBySourceOp, [&memrefsWrittenBySinkOp](Value v) {
-              return llvm::is_contained(memrefsWrittenBySinkOp, v);
-            });
-        bool WAWNotFound = llvm::none_of(
-            memrefsWrittenBySourceOp, [&memrefsWrittenBySinkOp](Value v) {
-              return llvm::is_contained(memrefsWrittenBySinkOp, v);
+        bool WARNotFound = llvm::none_of(memrefsReadBySourceOp, [&](Value v) {
+          return memrefsWrittenBySinkOp.contains(v);
+        });
+        bool WAWNotFound =
+            llvm::none_of(memrefsWrittenBySourceOp, [&](Value v) {
+              return memrefsWrittenBySinkOp.contains(v);
             });
         bool noSharedResource = llvm::none_of(
             resourcesUsedBySourceOp, [&resourcesUsedBySinkOp](SymbolRefAttr r) {
@@ -2838,40 +2882,31 @@ static LogicalResult FoldMemrefCastOnChannelOp(OpT op,
   return success();
 }
 
+// Resolve the air.channel declaration referenced by a channel interface op.
+// Wraps `SymbolTable::lookupNearestSymbolFrom`, which walks up to the
+// nearest enclosing SymbolTable and queries it. This dialect file cannot
+// depend on Util/Util.cpp (the dependency points the other way), so the
+// `air::getChannelDeclarationThroughSymbol` helper there can't be used —
+// but the MLIR core utility serves the same role for the verifier /
+// canonicalizer call sites in this file (channels are visible from the
+// nearest SymbolTable above the put/get).
+static air::ChannelOp resolveChannelDecl(air::ChannelInterface op) {
+  if (!op)
+    return air::ChannelOp();
+  return SymbolTable::lookupNearestSymbolFrom<air::ChannelOp>(
+      op.getOperation(), StringAttr::get(op->getContext(), op.getChanName()));
+}
+
 template <typename OpT>
 static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
                                                 PatternRewriter &rewriter) {
-
-  // Lambda version of `getChannelDeclarationThroughSymbol` method defined in
-  // `Util/Utils.cpp`. It is duplicated here because `Util/Utils.cpp` depends on
-  // this file, so direct inclusion is not possible.
-  auto getChannelDeclarationThroughSymbol = [](air::ChannelInterface op) {
-    if (!op)
-      // Return an empty ChannelOp if the input operation is invalid.
-      return air::ChannelOp();
-
-    // Traverse up through the operation's parents until a symbol table is
-    // found.
-    Operation *parent = op;
-    while ((parent = parent->getParentOp())) {
-      if (parent->hasTrait<OpTrait::SymbolTable>()) {
-        auto st = mlir::SymbolTable::lookupSymbolIn(parent, op.getChanName());
-        if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(st))
-          return chanOp;
-      }
-    }
-
-    // No matching channel declaration found in any enclosing symbol tables.
-    return air::ChannelOp();
-  };
-
   // Extract the memref operand from the operation.
   Value memref = op.getMemref();
   if (!memref)
     // If there is no associated memref, signal a failure.
     return failure();
   // Resolve the channel declaration for the given channel interface operation.
-  air::ChannelOp chan = getChannelDeclarationThroughSymbol(op);
+  air::ChannelOp chan = resolveChannelDecl(op);
   if (!chan)
     // If the channel declaration cannot be resolved, signal a failure.
     return failure();
@@ -2957,6 +2992,20 @@ LogicalResult air::ChannelPutOp::verify() {
                 "must not be temporal scf.for induction variables";
   }
 
+  // For channel_type="mmio", the put runs from the host runtime sequence
+  // and writes into a tile-local L1 buffer. Its source memref must
+  // therefore live in L3 (host memory). Allow lookup-failure to silently
+  // pass — that's a separate diagnostic surface.
+  if (auto chan = resolveChannelDecl(*this)) {
+    if (chan.getChannelType() == "mmio") {
+      auto memrefTy = dyn_cast<MemRefType>(getMemref().getType());
+      if (memrefTy && memrefTy.getMemorySpaceAsInt() != 0)
+        return emitOpError() << "channel_type=\"mmio\" put source must be "
+                                "in L3 (memory_space=0), got memory_space="
+                             << memrefTy.getMemorySpaceAsInt();
+    }
+  }
+
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -3032,6 +3081,20 @@ LogicalResult air::ChannelGetOp::verify() {
                 "must not be temporal scf.for induction variables";
   }
 
+  // For channel_type="mmio", the destination must be a tile-local L1 buffer
+  // (memory_space=2): the host writes into it via runtime-sequence
+  // blockwrites before the consuming core starts. L2/L3 destinations have
+  // no representation in the lowered IR.
+  if (auto chan = resolveChannelDecl(*this)) {
+    if (chan.getChannelType() == "mmio") {
+      auto memrefTy = dyn_cast<MemRefType>(getMemref().getType());
+      if (memrefTy && memrefTy.getMemorySpaceAsInt() != 2)
+        return emitOpError() << "channel_type=\"mmio\" get destination must be "
+                                "in L1 (memory_space=2), got memory_space="
+                             << memrefTy.getMemorySpaceAsInt();
+    }
+  }
+
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -3062,6 +3125,15 @@ void air::ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 //
 
 LogicalResult air::ChannelOp::verify() {
+  // Allow-list of supported channel_type values. Adding a new transport
+  // requires both an enum entry here and a lowering branch in air-to-aie.
+  StringRef chanType = getChannelType();
+  if (chanType != "dma_stream" && chanType != "dma_packet" &&
+      chanType != "cascade" && chanType != "mmio")
+    return emitOpError() << "unsupported channel_type \"" << chanType
+                         << "\"; expected one of \"dma_stream\", "
+                            "\"dma_packet\", \"cascade\", or \"mmio\"";
+
   if (isBroadcast()) {
     auto bundle_size = getSize();
     auto broadcast_shape = getBroadcastShape();

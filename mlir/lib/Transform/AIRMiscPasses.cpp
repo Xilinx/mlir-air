@@ -1129,30 +1129,29 @@ void AIRLabelBroadcastChannelWithTilePass::runOnOperation() {
   });
 }
 
-// Returns true if the herd uses intra-herd cascade communication, i.e.,
-// it both puts and gets on the same cascade channel. Such herds must not
-// be collapsed because collapsing changes the spatial layout from columns
-// to rows, reversing the cascade data flow direction and violating hardware
-// cascade constraints.
-//
-// Inter-herd cascade (one herd puts, another gets) is safe to collapse
-// because the cascade flows between separate herds, not within one.
-static bool herdUsesIntraHerdCascade(air::HerdOp herd) {
-  llvm::SmallDenseSet<llvm::StringRef> cascadePuts, cascadeGets;
-  herd.walk([&](air::ChannelInterface chanOp) {
+// Returns true if the enclosing segment (or launch/func if no segment)
+// of the given herd contains any cascade channel usage. When any herd
+// in a segment uses cascade, ALL herds in that segment must skip
+// collapsing to maintain consistent spatial dimensions for placement.
+// Cascade connections are peer-to-peer between neighboring tiles, and
+// selectively collapsing some herds but not others creates incompatible
+// dimension mixes that break the placement pass.
+static bool segmentUsesCascade(air::HerdOp herd) {
+  Operation *container = herd->getParentOfType<air::SegmentOp>();
+  if (!container)
+    container = herd->getParentOfType<air::LaunchOp>();
+  if (!container)
+    container = herd->getParentOfType<func::FuncOp>();
+  if (!container)
+    return false;
+
+  auto result = container->walk([&](air::ChannelInterface chanOp) {
     auto channelDecl = air::getChannelDeclarationThroughSymbol(chanOp);
-    if (channelDecl && channelDecl.getChannelType() == "cascade") {
-      if (isa<air::ChannelPutOp>(chanOp.getOperation()))
-        cascadePuts.insert(chanOp.getChanName());
-      else if (isa<air::ChannelGetOp>(chanOp.getOperation()))
-        cascadeGets.insert(chanOp.getChanName());
-    }
+    if (channelDecl && channelDecl.getChannelType() == "cascade")
+      return WalkResult::interrupt();
+    return WalkResult::advance();
   });
-  // Intra-herd cascade: same channel name appears in both puts and gets
-  for (auto &name : cascadePuts)
-    if (cascadeGets.contains(name))
-      return true;
-  return false;
+  return result.wasInterrupted();
 }
 
 class AIRCollapseHerdPass
@@ -1175,24 +1174,21 @@ void AIRCollapseHerdPass::runOnOperation() {
   int maximumColumnSize = clMaxColSize;
   if (clMaxColSize == -1)
     maximumColumnSize = INT_MAX; // max-col-size disabled.
-  SmallVector<std::pair<air::HerdOp, bool>> herdsWithCascadeInfo;
   func.walk([&](air::HerdOp op) {
     if (op.getNumDims() != 2)
       return;
-    bool isCascade = herdUsesIntraHerdCascade(op);
-    // For non-cascade herds: collapse multi-column herds to single column.
-    // For cascade herds: only collapse truly 2D herds (both dims > 1) to
-    // single row. Already-1D cascade herds are left alone since their
-    // layout is already valid for cascade flow.
-    bool shouldCollapse = isCascade
-                              ? (op.getNumRows() != 1 && op.getNumCols() != 1)
-                              : (op.getNumCols() != 1);
-    if (shouldCollapse &&
+    // Skip all herds in segments that use cascade channels. Cascade
+    // connections are peer-to-peer between neighboring tiles, and
+    // collapsing any herd in such a segment would create dimension
+    // mismatches that break placement.
+    if (segmentUsesCascade(op))
+      return;
+    if (op.getNumCols() != 1 &&
         op.getNumRows() * op.getNumCols() <= (unsigned)maximumColumnSize)
-      herdsWithCascadeInfo.push_back({op, isCascade});
+      herds.push_back(op);
   });
 
-  for (auto [h, isCascade] : herdsWithCascadeInfo) {
+  for (auto h : herds) {
     OpBuilder outsideBuilder(h);
     Location loc = h.getLoc();
 
@@ -1214,32 +1210,16 @@ void AIRCollapseHerdPass::runOnOperation() {
           h->getOperand(h.getAsyncDependencies().size() + idx));
     }
 
-    if (isCascade) {
-      // Cascade herds: collapse to (M*N, 1) — all columns, single row.
-      // This preserves west-to-east cascade direction.
-      lowerBounds.push_back(cst0);
-      steps.push_back(cst1);
-      upperBounds.push_back(newUpperBound);
-      lowerBounds.push_back(cst0);
-      steps.push_back(cst1);
-      upperBounds.push_back(cst1);
-    } else {
-      // Non-cascade herds: collapse to (1, M*N) — single column, all rows.
-      lowerBounds.push_back(cst0);
-      steps.push_back(cst1);
-      upperBounds.push_back(cst1);
-      lowerBounds.push_back(cst0);
-      steps.push_back(cst1);
-      upperBounds.push_back(newUpperBound);
-    }
+    // Collapse to (1, M*N) — single column, all rows.
+    lowerBounds.push_back(cst0);
+    steps.push_back(cst1);
+    upperBounds.push_back(cst1);
+    lowerBounds.push_back(cst0);
+    steps.push_back(cst1);
+    upperBounds.push_back(newUpperBound);
 
     OpBuilder insideBuilder(h);
     insideBuilder.setInsertionPointToStart(&h.getBody().front());
-
-    // For cascade herds, the iteration variable is in the first dimension
-    // (columns). For non-cascade, it's in the second dimension (rows).
-    unsigned iterDim = isCascade ? 0 : 1;
-    unsigned otherDim = isCascade ? 1 : 0;
 
     // old_upper_bound is always from the second original dimension (dims[1]),
     // since the rem/div decomposition reconstructs: dim1 = combined % N,
@@ -1252,16 +1232,16 @@ void AIRCollapseHerdPass::runOnOperation() {
         arith::ConstantIndexOp::create(insideBuilder, loc, *old_upper_bound);
 
     // Determine the current induction value's current loop iteration
-    Value iv_other = arith::RemSIOp::create(insideBuilder, loc,
-                                            h.getIds()[iterDim], old_upper_b_v);
-    llvm::cast<Value>(h.getIds()[iterDim])
+    Value iv_other = arith::RemSIOp::create(insideBuilder, loc, h.getIds()[1],
+                                            old_upper_b_v);
+    llvm::cast<Value>(h.getIds()[1])
         .replaceAllUsesExcept(iv_other, iv_other.getDefiningOp());
 
     // Remove the effect of the current induction value to prepare for
     // the next value.
-    Value iv_iter = arith::DivSIOp::create(insideBuilder, loc,
-                                           h.getIds()[iterDim], old_upper_b_v);
-    replaceAllUsesInRegionWith(h.getIds()[otherDim], iv_iter, h.getBody());
+    Value iv_iter = arith::DivSIOp::create(insideBuilder, loc, h.getIds()[1],
+                                           old_upper_b_v);
+    replaceAllUsesInRegionWith(h.getIds()[0], iv_iter, h.getBody());
 
     // Update upper bounds.
     int operandsIdxOffset = h.getAsyncDependencies().size();
