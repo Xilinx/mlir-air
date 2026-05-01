@@ -2536,6 +2536,15 @@ struct SpecializeChannelBundlePattern
     if (channel.getBundleSize() <= 1)
       return failure();
 
+    // mmio channels are handled directly by lowerAIRMMIOChannelOps, which
+    // matches host-side puts to per-core gets by constant index across the
+    // full bundle. Splitting the bundle here would orphan the original
+    // host-side puts (they sit outside the device, where this pattern's
+    // rewrites don't reach), leaving them to fail later as
+    // "no matching device-side air.channel.get".
+    if (channel.getChannelType() == "mmio")
+      return failure();
+
     std::vector<air::ChannelPutOp> channelPuts =
         getChannelPutOpThroughSymbol(channel, device);
     std::vector<air::ChannelGetOp> channelGets =

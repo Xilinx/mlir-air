@@ -18,7 +18,7 @@
 // `air_channel_mmio_invalid.mlir`. Each split here uses its own check
 // prefix so directives don't leak across split boundaries.
 
-// RUN: air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" | FileCheck %s --check-prefixes=CHECK-SIMPLE,CHECK-MIXED,CHECK-BCAST
+// RUN: air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" | FileCheck %s --check-prefixes=CHECK-SIMPLE,CHECK-MIXED,CHECK-BCAST,CHECK-INDEXED
 
 // -----
 
@@ -147,3 +147,58 @@ func.func @bcast() {
   }
   return
 }
+
+// -----
+
+// Non-broadcast indexed mmio with a multi-tile herd: the bundled channel
+// `[N]` has N puts at constant indices and N herd-side gets at the
+// herd induction var that resolves per tile. After herd outlining each
+// tile gets its own constant-indexed get; the lowering matches one put
+// to each get and emits N blockwrites, each targeting the matching
+// tile's L1 buffer.
+//
+// This case used to be broken by `specializeChannelBundle` splitting
+// the bundle into per-position channels but leaving the host-side puts
+// orphaned on the original symbol. The fix makes that pattern skip mmio
+// channels and lets the MMIO lowering match across the bundle directly.
+//
+// CHECK-INDEXED-LABEL: aie.device(npu1)
+// CHECK-INDEXED-DAG:     memref.global @c0 : memref<8xi32> = dense<10> {air.mmio_global}
+// CHECK-INDEXED-DAG:     memref.global @c1 : memref<8xi32> = dense<20> {air.mmio_global}
+// CHECK-INDEXED-DAG:     aie.tile(0, 2)
+// CHECK-INDEXED-DAG:     aie.tile(1, 2)
+// CHECK-INDEXED-NOT:     air.channel.put @qm
+// CHECK-INDEXED-NOT:     air.channel.get @qm
+// CHECK-INDEXED-NOT:     aie.shim_dma_allocation
+//
+// CHECK-INDEXED-LABEL: func.func @indexed
+// CHECK-INDEXED:         memref.get_global @c0
+// CHECK-INDEXED:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @{{.+}}} : memref<8xi32>
+// CHECK-INDEXED:         memref.get_global @c1
+// CHECK-INDEXED:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @{{.+}}} : memref<8xi32>
+
+memref.global "private" @c0 : memref<8xi32> = dense<10>
+memref.global "private" @c1 : memref<8xi32> = dense<20>
+air.channel @qm [2] {channel_type = "mmio"}
+func.func @indexed() {
+  %g0 = memref.get_global @c0 : memref<8xi32>
+  %g1 = memref.get_global @c1 : memref<8xi32>
+  %c1i = arith.constant 1 : index
+  air.launch (%lx) in (%sx = %c1i) args(%a0 = %g0, %a1 = %g1) : memref<8xi32>, memref<8xi32> {
+    %c0i = arith.constant 0 : index
+    %c1ii = arith.constant 1 : index
+    air.channel.put @qm[%c0i] (%a0[] [] []) : (memref<8xi32>)
+    air.channel.put @qm[%c1ii] (%a1[] [] []) : (memref<8xi32>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      %c2_0 = arith.constant 2 : index
+      air.herd @h tile (%tx, %ty) in (%nx = %c2_0, %ny = %c1_0) {
+        %alloc = memref.alloc() : memref<8xi32, 2>
+        air.channel.get @qm[%tx] (%alloc[] [] []) : (memref<8xi32, 2>)
+        memref.dealloc %alloc : memref<8xi32, 2>
+      }
+    }
+  }
+  return
+}
+
