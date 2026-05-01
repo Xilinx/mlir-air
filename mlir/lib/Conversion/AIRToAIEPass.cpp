@@ -2940,11 +2940,9 @@ void lowerMemRefCopyToLoops(AIE::DeviceOp d) {
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
-/// Repack a non-i32 DenseElementsAttr as an i32-typed tensor with identical
-/// raw bytes. Splat attributes carry one element's worth of bytes; expand
-/// to the full size before reinterpretation. Caller must have validated
-/// that the source element bitwidth is a positive multiple of 8 and the
-/// total byte size is a multiple of 4.
+/// Reinterpret a non-i32 DenseElementsAttr as i32 with identical raw bytes;
+/// splats are byte-expanded first. Caller validates 8-bit-aligned element
+/// type and 4-byte-multiple total size.
 static DenseElementsAttr repackAsI32Bytes(DenseElementsAttr orig,
                                           RankedTensorType i32TensorTy) {
   unsigned bits = orig.getType().getElementType().getIntOrFloatBitWidth();
@@ -5867,31 +5865,18 @@ public:
             return get.emitOpError(
                 "channel_type=\"mmio\" get destination aie.buffer has no "
                 "sym_name; cannot reference from blockwrite");
-          // The blockwrite must end up OUTSIDE any enclosing air.launch:
-          // later passes (AIROptimizeShimDMABDs / AIRLaunchToScfForPattern)
-          // recreate a fresh dummy launch and only carry forward channel
-          // ops, dropping any other ops that happened to live in the
-          // launch body. Hoisting the blockwrite to the func.func level
-          // also forces us to hoist a clone of the source
-          // `memref.get_global` so SSA dominance is preserved when the
-          // original get_global lives inside the launch.
+          // Hoist the blockwrite (and a clone of the source get_global)
+          // out of any enclosing air.launch — later passes recreate a
+          // fresh launch body and drop non-channel ops.
           air::LaunchOp outerLaunch = put->getParentOfType<air::LaunchOp>();
           Operation *insertionAnchor =
               outerLaunch ? outerLaunch.getOperation() : put.getOperation();
           rewriter.setInsertionPoint(insertionAnchor);
 
-          // The blockwrite carries a constant payload that must remain
-          // resolvable from inside `aie.runtime_sequence` (which lives
-          // inside `aie.device`) after AIRRtToNpuPass wraps the func.
-          // `aie.device` is `IsolatedFromAbove`, so a get_global inside
-          // it cannot reference a `memref.global` at module scope.
-          // Mirror the global into the device under the SAME name
-          // (different SymbolTables admit identical names — vanilla
-          // MLIR verifiers accept this), then erase the module-level
-          // original. The aircc LLVM-lowering pipeline promotes
-          // memref.global to llvm.mlir.global at module scope, where
-          // duplicates collide; deleting the module-level original
-          // keeps the in-device copy as the unique source of truth.
+          // aie.device is IsolatedFromAbove, so the runtime_sequence's
+          // get_global can't reach a module-scope memref.global. Mirror
+          // it into the device under the same name; the module-scope
+          // original is later DCE'd to avoid an llvm.mlir.global collision.
           StringAttr origName = getGlobalOp.getNameAttr().getAttr();
           Operation *moduleOp = device->getParentOp();
           while (moduleOp && !isa<ModuleOp>(moduleOp))
@@ -5904,13 +5889,9 @@ public:
                 "channel_type=\"mmio\" lowering: cannot find memref.global "
                 "for the put source at module scope");
 
-          // V1 limitation: the in-device mirror is cloned under the same
-          // sym_name, so the `symbol-dce` pass invoked in the NPU pipeline
-          // (tools/aircc/aircc.cpp, after `airrt-to-npu`) must be able to
-          // erase the module-level original to avoid a duplicate-symbol
-          // collision in LLVM lowering. That requires no users to survive
-          // outside the func that becomes the runtime_sequence and moves
-          // into the device. Reject other module-scope users loudly.
+          // V1: in-device mirror reuses sym_name, so module-scope original
+          // must be DCE-able by `symbol-dce` after airrt-to-npu (see
+          // tools/aircc/aircc.cpp). Reject any other module-scope users.
           auto putFunc = put->getParentOfType<func::FuncOp>();
           auto uses = SymbolTable::getSymbolUses(origName, moduleOp);
           if (uses && llvm::any_of(*uses, [&](SymbolTable::SymbolUse u) {
@@ -5920,17 +5901,10 @@ public:
                 "channel_type=\"mmio\" V1 requires the source memref.global "
                 "to be used only inside the func containing the put");
 
-          // The aiex.npu.blockwrite translator only handles i32 element
-          // types. Mirror non-i32 globals as memref<Nxi32> with identical
-          // raw bytes (suffixed `_mmio_i32`); the destination buffer keeps
-          // its natural type since `buffer = @sym` is just a symbol ref.
-          //
-          // TODO: drop this entire repack path (and the `_mmio_i32` mirror
-          // globals) once the upstream blockwrite translator learns to
-          // handle non-i32 element types. The 32-bit-only check lives in
-          // mlir-aie at AIEXDialect.cpp `NpuBlockWriteOp::getDataWords`
-          // and AIETxnToControlPacket.cpp (both currently emit
-          // "Only 32-bit data type is supported for now").
+          // blockwrite translator is i32-only. Mirror non-i32 globals as
+          // memref<Nxi32> with the same raw bytes (suffixed `_mmio_i32`).
+          // TODO: delete once mlir-aie's NpuBlockWriteOp::getDataWords and
+          // AIETxnToControlPacket.cpp drop their 32-bit-only restriction.
           auto origMemTy = cast<MemRefType>(getGlobalOp.getType());
           bool needsRepack = !origMemTy.getElementType().isInteger(32);
           MemRefType cloneMemTy = origMemTy;
@@ -5950,9 +5924,7 @@ public:
                          "channel_type=\"mmio\" source size must be a multiple "
                          "of 4 bytes (got ")
                      << totalBytes << ")";
-            // Repack needs concrete bytes — reject pure declarations and
-            // uninitialized definitions (UnitAttr) up front; either would
-            // crash the dereference / cast below.
+            // Repack needs concrete bytes; reject declarations / UnitAttr.
             auto initOpt = moduleGlobal.getInitialValue();
             auto initDense =
                 initOpt ? dyn_cast<DenseElementsAttr>(*initOpt) : nullptr;
@@ -5964,8 +5936,7 @@ public:
                 MemRefType::get({totalBytes / 4}, rewriter.getI32Type());
             cloneName = StringAttr::get(
                 rewriter.getContext(), origName.getValue().str() + "_mmio_i32");
-            // Reject collision with an unrelated pre-existing symbol; only
-            // a previously-synthesized mirror is allowed to share the name.
+            // Only a prior mirror is allowed to share the suffixed name.
             if (auto *exist = SymbolTable::lookupSymbolIn(moduleOp, cloneName))
               if (!exist->hasAttr("air.mmio_global"))
                 return put.emitOpError(
@@ -5976,9 +5947,8 @@ public:
                 cloneMemTy.getShape(), cloneMemTy.getElementType());
             repackedInit = repackAsI32Bytes(initDense, i32TensorTy);
 
-            // Synthesize a module-scope mirror so the func-level get_global
-            // we're about to insert resolves before airrt-to-npu moves the
-            // func into the device.
+            // Module-scope mirror: keeps the func-level get_global resolvable
+            // until airrt-to-npu moves the func into the device.
             if (!SymbolTable::lookupSymbolIn(moduleOp, cloneName)) {
               OpBuilder b(moduleOp->getRegion(0));
               b.setInsertionPointAfter(moduleGlobal);
@@ -6015,10 +5985,8 @@ public:
                                      inDevGlobal.getSymNameAttr()));
           Value dataOperand = hoistedGG.getResult();
 
-          // After `airrt-to-npu` moves the func into the device, the
-          // module-scope original (or repacked mirror) becomes orphaned
-          // and is erased by the `symbol-dce` pass run immediately after
-          // (see tools/aircc/aircc.cpp NPU pipeline).
+          // Orphaned module-scope global is erased by `symbol-dce` after
+          // airrt-to-npu (tools/aircc/aircc.cpp NPU pipeline).
 
           AIEX::NpuBlockWriteOp::create(
               rewriter, put.getLoc(),

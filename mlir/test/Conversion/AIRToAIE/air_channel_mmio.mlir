@@ -5,26 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Positive tests for the channel_type="mmio" lowering in air-to-aie:
-//   * the L3 put becomes aiex.npu.blockwrite targeting the matching get's
-//     L1 aie.buffer, and the get is erased;
-//   * no DMA channel, shim allocation, or aie.flow is reserved for an
-//     mmio channel;
-//   * mmio channels coexist with regular dma_stream channels;
-//   * mmio with `broadcast_shape` fans out to N back-to-back blockwrites,
-//     one per destination L1 buffer (no hardware fanout).
-//
-// The negative case (non-constant put source) is in
-// `air_channel_mmio_invalid.mlir`. Each split here uses its own check
-// prefix so directives don't leak across split boundaries.
+// Positive tests for channel_type="mmio" in air-to-aie. Each split has
+// its own CHECK prefix so directives don't leak across boundaries.
+// Negative cases live in `air_channel_mmio_invalid.mlir`.
 
 // RUN: air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" | FileCheck %s --check-prefixes=CHECK-SIMPLE,CHECK-MIXED,CHECK-BCAST,CHECK-INDEXED,CHECK-BF16,CHECK-BF16NS,CHECK-I8,CHECK-I16
 
 // -----
 
-// Simple one-to-one mmio transfer: put at L3 lowers to a single
-// aiex.npu.blockwrite into the L1 aie.buffer; the get is erased; no shim
-// DMA, no aie.flow.
+// One-to-one: L3 put → one blockwrite into the L1 buffer; get erased;
+// no shim DMA, no aie.flow.
 //
 // CHECK-SIMPLE-LABEL: aie.device(npu1)
 // CHECK-SIMPLE:         memref.global @const_data : memref<8xi32> = dense<42> {air.mmio_global}
@@ -64,11 +54,8 @@ func.func @mmio_simple() {
 
 // -----
 
-// An mmio channel coexists with a regular dma_stream channel without
-// interference: the dma_stream side still receives its shim DMA / flow
-// allocation, and the mmio side still lowers to a blockwrite. The
-// dma_stream put survives in the L3 control func (it lowers later in
-// AIRLoweringPass), while the mmio put and get are gone.
+// mmio + dma_stream coexist: dma_stream keeps its shim/flow allocation
+// and survives in the L3 control func; mmio lowers to blockwrite.
 //
 // CHECK-MIXED-LABEL: func.func @mixed
 // CHECK-MIXED:         memref.get_global @mmio_const
@@ -103,11 +90,8 @@ func.func @mixed(%dma_src: memref<16xi32>) {
 
 // -----
 
-// Broadcast mmio: one put with `broadcast_shape` fans out to two distinct
-// L1 buffers via two back-to-back blockwrites. There is no hardware
-// fanout for MMIO writes (unlike aie.flow), so the controller writes each
-// destination separately. Per MMIO_BENCHMARK.md this remains essentially
-// free at decode-attention payload sizes.
+// Broadcast mmio: one put with `broadcast_shape` → N back-to-back
+// blockwrites (no hardware fanout for MMIO).
 //
 // CHECK-BCAST-LABEL: aie.device(npu1)
 // CHECK-BCAST:         aie.tile(0, 2)
@@ -150,17 +134,10 @@ func.func @bcast() {
 
 // -----
 
-// Non-broadcast indexed mmio with a multi-tile herd: the bundled channel
-// `[N]` has N puts at constant indices and N herd-side gets at the
-// herd induction var that resolves per tile. After herd outlining each
-// tile gets its own constant-indexed get; the lowering matches one put
-// to each get and emits N blockwrites, each targeting the matching
-// tile's L1 buffer.
-//
-// This case used to be broken by `specializeChannelBundle` splitting
-// the bundle into per-position channels but leaving the host-side puts
-// orphaned on the original symbol. The fix makes that pattern skip mmio
-// channels and lets the MMIO lowering match across the bundle directly.
+// Indexed mmio over a `[N]` bundle on a multi-tile herd: each constant
+// index pairs one host-side put with one per-tile get, lowering to N
+// blockwrites. Regression: specializeChannelBundle used to split the
+// bundle and orphan the host-side puts (now skipped for mmio).
 //
 // CHECK-INDEXED-LABEL: aie.device(npu1)
 // CHECK-INDEXED-DAG:     memref.global @c0 : memref<8xi32> = dense<10> {air.mmio_global}
@@ -204,12 +181,9 @@ func.func @indexed() {
 
 // -----
 
-// Non-i32 element type (here splat bf16): the `aiex.npu.blockwrite`
-// translator only handles i32, so the lowering mirrors the bf16 global
-// into the device as a 1-D `memref<Nxi32>` with the same raw bytes
-// (suffixed `_mmio_i32`). Splat bf16(1.5) = 0x3FC0 packs to i32
-// 0x3FC03FC0 = 1069563840, and the resulting payload remains splat.
-// The source alignment also propagates to the i32 mirror.
+// Splat bf16: blockwrite's i32-only translator forces a `memref<Nxi32>`
+// mirror (suffixed `_mmio_i32`). bf16(1.5)=0x3FC0 → i32 0x3FC03FC0 =
+// 1069563840, splat preserved. Alignment also round-trips.
 //
 // CHECK-BF16-LABEL: aie.device(npu1)
 // CHECK-BF16:         memref.global @qbf16_mmio_i32 : memref<2xi32> = dense<1069563840> {air.mmio_global, alignment = 64 : i64}
@@ -239,11 +213,9 @@ func.func @bf16_payload() {
 
 // -----
 
-// Non-splat bf16: exercises the non-splat branch of repackAsI32Bytes,
-// which copies the raw byte buffer wholesale. With elements
-// {1.5, 2.5, 3.5, 4.5} the bf16 hex bytes are
-// {3FC0, 4020, 4060, 4090}; LE-packed into two i32s this gives
-// 0x40203FC0 = 1075855296 and 0x40904060 = 1083195488.
+// Non-splat bf16: hits the wholesale-copy branch. bf16 bytes
+// {3FC0, 4020, 4060, 4090} LE-pack to i32 {0x40203FC0, 0x40904060}
+// = {1075855296, 1083195488}.
 //
 // CHECK-BF16NS-LABEL: aie.device(npu1)
 // CHECK-BF16NS:         memref.global @qbf16ns_mmio_i32 : memref<2xi32> = dense<[1075855296, 1083195488]> {air.mmio_global}
@@ -273,10 +245,7 @@ func.func @bf16_nonsplat() {
 
 // -----
 
-// i8 splat: exercises the bytesPerElt=1 case of the splat-expansion
-// loop, where each iteration copies a single byte. dense<66> across
-// 4 i8 elements packs into one i32 with all four bytes equal to 0x42,
-// i.e. 0x42424242 = 1111638594.
+// i8 splat: bytesPerElt=1 stride. dense<66> × 4 → 0x42424242 = 1111638594.
 //
 // CHECK-I8-LABEL: aie.device(npu1)
 // CHECK-I8:         memref.global @c8s_mmio_i32 : memref<1xi32> = dense<1111638594> {air.mmio_global}
@@ -306,11 +275,8 @@ func.func @i8_splat() {
 
 // -----
 
-// i16 non-splat: covers the non-splat branch at a different stride
-// from the bf16 case (also 16-bit, but reaches the helper through a
-// pure-int storage path). With elements {0x1234, 0xABCD} the LE byte
-// stream is {34, 12, CD, AB}, packing into one signed i32
-// 0xABCD1234 = -1412623820.
+// i16 non-splat: pure-int storage path. {0x1234, 0xABCD} LE → i32
+// 0xABCD1234 = -1412623820 (signed).
 //
 // CHECK-I16-LABEL: aie.device(npu1)
 // CHECK-I16:         memref.global @c16ns_mmio_i32 : memref<1xi32> = dense<-1412623820> {air.mmio_global}

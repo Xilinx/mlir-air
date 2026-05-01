@@ -5,14 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Negative tests for the channel_type="mmio" lowering. Each split is run
-// individually with `not` so the FileCheck directive after it sees only
-// that split's diagnostic.
+// Negative tests for channel_type="mmio". Each split runs under `not`
+// so FileCheck sees only that split's diagnostic.
 
 // RUN: not air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" 2>&1 | FileCheck %s
 
-// The runtime-sequence blockwrite encodes the data directly in the
-// instruction stream, so the put source must be a compile-time constant.
+// blockwrite encodes data directly in the instruction stream, so the
+// put source must be a compile-time constant.
 // CHECK: channel_type="mmio" put requires source memref defined by memref.get_global
 air.channel @mmio_nc [] {channel_type = "mmio"}
 func.func @mmio_nonconst(%h: memref<8xi32>) {
@@ -33,9 +32,8 @@ func.func @mmio_nonconst(%h: memref<8xi32>) {
 
 // -----
 
-// Non-broadcast mmio with a non-constant index would silently fail to
-// match any device-side get and the put would be erased with no
-// blockwrite emitted. Reject up front.
+// Non-broadcast mmio with non-constant index can't match any get;
+// would silently erase the put. Reject up front.
 // CHECK: channel_type="mmio" non-broadcast put requires compile-time constant indices
 memref.global "private" @nci_const : memref<8xi32> = dense<1>
 air.channel @nci_chan [1] {channel_type = "mmio"}
@@ -59,8 +57,7 @@ func.func @mmio_nonconst_index(%n: index) {
 
 // -----
 
-// Non-broadcast put whose constant index does not match any device-side
-// get would otherwise be erased with no blockwrite emitted.
+// Constant-index put with no matching get would be silently erased.
 // CHECK: channel_type="mmio" put has no matching device-side air.channel.get
 memref.global "private" @nm_const : memref<8xi32> = dense<2>
 air.channel @nm_chan [2] {channel_type = "mmio"}
@@ -85,11 +82,9 @@ func.func @mmio_no_match() {
 
 // -----
 
-// V1 limitation: the source memref.global must have no users outside the
-// func containing the put — otherwise the `symbol-dce` pass run after
-// `airrt-to-npu` (in tools/aircc/aircc.cpp's NPU pipeline) can't remove
-// the module-level original and a duplicate-symbol collision occurs in
-// LLVM lowering.
+// V1: source memref.global must have no users outside the put's func,
+// or the post-airrt-to-npu `symbol-dce` (tools/aircc/aircc.cpp) can't
+// drop the module-level original → llvm.mlir.global collision.
 // CHECK: channel_type="mmio" V1 requires the source memref.global to be used only inside the func containing the put
 memref.global "private" @shared_const : memref<8xi32> = dense<3>
 air.channel @sc_chan [] {channel_type = "mmio"}
@@ -116,10 +111,8 @@ func.func @mmio_shared_global() {
 
 // -----
 
-// Sub-byte (e.g. i1) and other non-byte-aligned element types have no
-// portable raw-byte representation and would make the (elts*bits)/8
-// repack accounting lossy. Reject them up front rather than emitting
-// a malformed blockwrite.
+// Sub-byte / non-byte-aligned element types have no portable raw-byte
+// repack; reject up front.
 // CHECK: channel_type="mmio" source element bitwidth must be a positive multiple of 8
 memref.global "private" @i1_const : memref<32xi1> = dense<true>
 air.channel @i1_chan [] {channel_type = "mmio"}
@@ -142,9 +135,8 @@ func.func @mmio_subbyte_elt() {
 
 // -----
 
-// blockwrite is i32-granular on the wire. A byte-aligned element type
-// whose total payload size isn't a multiple of 4 bytes (here 3 bf16 = 6
-// bytes) cannot be safely repacked to memref<Nxi32>; reject up front.
+// blockwrite is i32-granular; payloads not a multiple of 4 bytes
+// (here 3 bf16 = 6 bytes) can't be repacked to memref<Nxi32>.
 // CHECK: channel_type="mmio" source size must be a multiple of 4 bytes (got 6)
 memref.global "private" @bf16_unaligned : memref<3xbf16> = dense<1.5>
 air.channel @bf16u_chan [] {channel_type = "mmio"}
@@ -167,10 +159,8 @@ func.func @mmio_unaligned_payload() {
 
 // -----
 
-// Repack needs concrete bytes from the source memref.global. A pure
-// declaration (no `= dense<...>` initializer) has none, and previously
-// crashed via `std::optional::operator*` on getInitialValue(). Reject
-// with a clean diagnostic.
+// Repack needs a DenseElementsAttr initializer; a pure declaration
+// (no `= dense<...>`) used to crash on the optional dereference.
 // CHECK: channel_type="mmio" non-i32 source requires a DenseElementsAttr initializer on the memref.global
 memref.global "private" @uninit_bf16 : memref<2x2xbf16>
 air.channel @uninit_chan [] {channel_type = "mmio"}
