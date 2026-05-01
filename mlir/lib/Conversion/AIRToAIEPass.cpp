@@ -5973,11 +5973,8 @@ public:
             }
           }
 
-          memref::GlobalOp inDevGlobal;
-          device.walk([&](memref::GlobalOp g) {
-            if (g.getSymNameAttr() == cloneName)
-              inDevGlobal = g;
-          });
+          auto inDevGlobal = dyn_cast_or_null<memref::GlobalOp>(
+              SymbolTable::lookupSymbolIn(device, cloneName));
           if (!inDevGlobal) {
             if (needsRepack) {
               // push_front so the global dominates the runtime_sequence.
