@@ -20,6 +20,7 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <map>
@@ -49,6 +50,12 @@ public:
 void addAsyncDependency(Operation *op, Value token);
 // Erases a `air.async.token` at position index of the argument list.
 void eraseAsyncDependency(Operation *op, unsigned index);
+
+// Collects ops transitively reachable from `root` via async-token use chains
+// into `consumers`. Follows both op-result uses and (for LoopLikeOpInterface
+// ops) the tied region iter_arg, so body ops are reached. `root` is excluded.
+void walkAsyncTokenConsumers(Operation *root,
+                             llvm::SetVector<Operation *> &consumers);
 
 } // namespace air
 } // namespace xilinx
