@@ -206,6 +206,35 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 template <class OpT>
 static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                              PatternRewriter &rewriter) {
+  // Walk view-like ops, hierarchy body args, and loop iter_args back to a
+  // root memref. Conservative: disjoint views of the same root are reported
+  // as aliasing (safe — only suppresses dead-edge removal). The collectors
+  // below resolve every memref through this walk before inserting, so the
+  // RAW/WAR/WAW comparisons can be plain set-membership.
+  auto getRoot = [](Value v) -> Value {
+    while (true) {
+      if (auto view = v.getDefiningOp<ViewLikeOpInterface>()) {
+        v = view.getViewSource();
+        continue;
+      }
+      if (auto barg = dyn_cast<BlockArgument>(v)) {
+        Operation *parent = barg.getOwner()->getParentOp();
+        if (auto h = dyn_cast_if_present<air::HierarchyInterface>(parent)) {
+          if (Value outer = h.getTiedKernelOperand(barg)) {
+            v = outer;
+            continue;
+          }
+        }
+        if (auto loop = dyn_cast_if_present<LoopLikeOpInterface>(parent)) {
+          if (OpOperand *init = loop.getTiedLoopInit(barg)) {
+            v = init->get();
+            continue;
+          }
+        }
+      }
+      return v;
+    }
+  };
   auto getAllReadAccess = [](Operation *op) {
     SmallVector<Value> operands;
     if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(op)) {
@@ -227,10 +256,11 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
-  auto getAllMemrefsReadByOp = [getAllReadAccess](Operation *o) {
+  auto getAllMemrefsReadByOp = [getAllReadAccess, getRoot](Operation *o) {
     llvm::SetVector<Value> memrefs;
-    auto opReadAccesses = getAllReadAccess(o);
-    memrefs.insert(opReadAccesses.begin(), opReadAccesses.end());
+    auto insertRoot = [&](Value v) { memrefs.insert(getRoot(v)); };
+    for (Value v : getAllReadAccess(o))
+      insertRoot(v);
     SmallVector<Region *> regions;
     for (auto &region : o->getRegions())
       regions.push_back(&region);
@@ -239,17 +269,16 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     auto waitAllOp = dyn_cast_if_present<air::WaitAllOp>(o);
     if (waitAllOp && waitAllOp.getAsyncToken()) {
       for (auto user : waitAllOp.getAsyncToken().getUsers()) {
-        auto userReadAccesses = getAllReadAccess(user);
-        memrefs.insert(userReadAccesses.begin(), userReadAccesses.end());
+        for (Value v : getAllReadAccess(user))
+          insertRoot(v);
         for (auto &region : user->getRegions())
           regions.push_back(&region);
       }
     }
     for (auto region : regions) {
-      visitUsedValuesDefinedAbove(*region, [&memrefs,
-                                            getAllReadAccess](OpOperand *use) {
+      visitUsedValuesDefinedAbove(*region, [&](OpOperand *use) {
         if (llvm::is_contained(getAllReadAccess(use->getOwner()), use->get()))
-          memrefs.insert(use->get());
+          insertRoot(use->get());
       });
     }
     return memrefs;
@@ -278,10 +307,11 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
-  auto getAllMemrefsWrittenByOp = [getAllWriteAccess](Operation *o) {
+  auto getAllMemrefsWrittenByOp = [getAllWriteAccess, getRoot](Operation *o) {
     llvm::SetVector<Value> memrefs;
-    auto opWriteAccesses = getAllWriteAccess(o);
-    memrefs.insert(opWriteAccesses.begin(), opWriteAccesses.end());
+    auto insertRoot = [&](Value v) { memrefs.insert(getRoot(v)); };
+    for (Value v : getAllWriteAccess(o))
+      insertRoot(v);
     SmallVector<Region *> regions;
     for (auto &region : o->getRegions())
       regions.push_back(&region);
@@ -290,17 +320,16 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     auto waitAllOp = dyn_cast_if_present<air::WaitAllOp>(o);
     if (waitAllOp && waitAllOp.getAsyncToken()) {
       for (auto user : waitAllOp.getAsyncToken().getUsers()) {
-        auto userWriteAccesses = getAllWriteAccess(user);
-        memrefs.insert(userWriteAccesses.begin(), userWriteAccesses.end());
+        for (Value v : getAllWriteAccess(user))
+          insertRoot(v);
         for (auto &region : user->getRegions())
           regions.push_back(&region);
       }
     }
     for (auto region : regions) {
-      visitUsedValuesDefinedAbove(*region, [&memrefs,
-                                            getAllWriteAccess](OpOperand *use) {
+      visitUsedValuesDefinedAbove(*region, [&](OpOperand *use) {
         if (llvm::is_contained(getAllWriteAccess(use->getOwner()), use->get()))
-          memrefs.insert(use->get());
+          insertRoot(use->get());
       });
     }
     return memrefs;
@@ -396,54 +425,18 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           llvm::range_size(llvm::concat<Value>(memrefsReadBySinkOp,
                                                memrefsWrittenBySinkOp)) != 0;
       if (sourceOpTouchesMemref && sinkOpTouchesMemref) {
-        // Walk view-like ops, hierarchy body args, and loop iter_args
-        // back to a root memref. Conservative: disjoint views of the same
-        // root are reported as aliasing (safe — only suppresses dead-edge
-        // removal).
-        auto mayAlias = [](Value a, Value b) {
-          auto getRoot = [](Value v) -> Value {
-            while (true) {
-              if (auto view = v.getDefiningOp<ViewLikeOpInterface>()) {
-                v = view.getViewSource();
-                continue;
-              }
-              if (auto barg = dyn_cast<BlockArgument>(v)) {
-                Operation *parent = barg.getOwner()->getParentOp();
-                if (auto h =
-                        dyn_cast_if_present<air::HierarchyInterface>(parent)) {
-                  if (Value outer = h.getTiedKernelOperand(barg)) {
-                    v = outer;
-                    continue;
-                  }
-                }
-                if (auto loop =
-                        dyn_cast_if_present<LoopLikeOpInterface>(parent)) {
-                  if (OpOperand *init = loop.getTiedLoopInit(barg)) {
-                    v = init->get();
-                    continue;
-                  }
-                }
-              }
-              return v;
-            }
-          };
-          return getRoot(a) == getRoot(b);
-        };
-        auto containsOrAliases = [&mayAlias](const llvm::SetVector<Value> &set,
-                                             Value v) {
-          return llvm::any_of(
-              set, [&](Value s) { return s == v || mayAlias(s, v); });
-        };
+        // Sets already contain root memrefs (resolved by the collectors),
+        // so RAW/WAR/WAW checks reduce to plain set-membership.
         bool RAWNotFound =
             llvm::none_of(memrefsWrittenBySourceOp, [&](Value v) {
-              return containsOrAliases(memrefsReadBySinkOp, v);
+              return memrefsReadBySinkOp.contains(v);
             });
         bool WARNotFound = llvm::none_of(memrefsReadBySourceOp, [&](Value v) {
-          return containsOrAliases(memrefsWrittenBySinkOp, v);
+          return memrefsWrittenBySinkOp.contains(v);
         });
         bool WAWNotFound =
             llvm::none_of(memrefsWrittenBySourceOp, [&](Value v) {
-              return containsOrAliases(memrefsWrittenBySinkOp, v);
+              return memrefsWrittenBySinkOp.contains(v);
             });
         bool noSharedResource = llvm::none_of(
             resourcesUsedBySourceOp, [&resourcesUsedBySinkOp](SymbolRefAttr r) {
