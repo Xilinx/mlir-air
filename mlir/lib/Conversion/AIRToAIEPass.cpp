@@ -2950,9 +2950,14 @@ static void removeDeadGlobalOps(AIE::DeviceOp device) {
   device.walk(
       [&](memref::GetGlobalOp op) { referencedGlobals.insert(op.getName()); });
 
-  // Erase unreferenced memref.global declarations.
+  // Erase unreferenced memref.global declarations, but preserve any
+  // tagged with `air.mmio_global` — those are MMIO-channel mirrors of
+  // module-level globals whose runtime_sequence get_global users are
+  // synthesized later in the pipeline.
   SmallVector<memref::GlobalOp> deadGlobals;
   for (auto globalOp : device.getOps<memref::GlobalOp>()) {
+    if (globalOp->hasAttr("air.mmio_global"))
+      continue;
     if (!referencedGlobals.contains(globalOp.getSymName()))
       deadGlobals.push_back(globalOp);
   }
@@ -5814,19 +5819,78 @@ public:
             return get.emitOpError(
                 "channel_type=\"mmio\" get destination aie.buffer has no "
                 "sym_name; cannot reference from blockwrite");
-          // Insert the blockwrite just before the outermost air.launch that
-          // contains the put (or before the put itself if not nested in a
-          // launch). MMIO writes are issued from the host before the launch
-          // begins, and the constant `memref.get_global` lives outside the
-          // launch in the L3 control func.
-          Operation *insertionAnchor = put.getOperation();
-          if (auto outerLaunch = put->getParentOfType<air::LaunchOp>())
-            insertionAnchor = outerLaunch.getOperation();
+          // The blockwrite must end up OUTSIDE any enclosing air.launch:
+          // later passes (AIROptimizeShimDMABDs / AIRLaunchToScfForPattern)
+          // recreate a fresh dummy launch and only carry forward channel
+          // ops, dropping any other ops that happened to live in the
+          // launch body. Hoisting the blockwrite to the func.func level
+          // also forces us to hoist a clone of the source
+          // `memref.get_global` so SSA dominance is preserved when the
+          // original get_global lives inside the launch.
+          air::LaunchOp outerLaunch = put->getParentOfType<air::LaunchOp>();
+          Operation *insertionAnchor =
+              outerLaunch ? outerLaunch.getOperation() : put.getOperation();
           rewriter.setInsertionPoint(insertionAnchor);
+
+          // The blockwrite carries a constant payload that must remain
+          // resolvable from inside `aie.runtime_sequence` (which lives
+          // inside `aie.device`) after AIRRtToNpuPass wraps the func.
+          // `aie.device` is `IsolatedFromAbove`, so a get_global inside
+          // it cannot reference a `memref.global` at module scope.
+          // Mirror the global into the device under the SAME name
+          // (different SymbolTables admit identical names — vanilla
+          // MLIR verifiers accept this), then erase the module-level
+          // original. The aircc LLVM-lowering pipeline promotes
+          // memref.global to llvm.mlir.global at module scope, where
+          // duplicates collide; deleting the module-level original
+          // keeps the in-device copy as the unique source of truth.
+          StringAttr origName = getGlobalOp.getNameAttr().getAttr();
+          Operation *moduleOp = device->getParentOp();
+          while (moduleOp && !isa<ModuleOp>(moduleOp))
+            moduleOp = moduleOp->getParentOp();
+          auto moduleGlobal = dyn_cast_if_present<memref::GlobalOp>(
+              moduleOp ? SymbolTable::lookupSymbolIn(moduleOp, origName)
+                       : nullptr);
+          if (!moduleGlobal)
+            return getGlobalOp.emitOpError(
+                "channel_type=\"mmio\" lowering: cannot find memref.global "
+                "for the put source at module scope");
+
+          memref::GlobalOp inDevGlobal;
+          device.walk([&](memref::GlobalOp g) {
+            if (g.getSymName() == origName.getValue())
+              inDevGlobal = g;
+          });
+          if (!inDevGlobal) {
+            auto cloned = cast<memref::GlobalOp>(moduleGlobal->clone());
+            cloned->removeAttr(SymbolTable::getVisibilityAttrName());
+            cloned->setAttr("air.mmio_global",
+                            UnitAttr::get(rewriter.getContext()));
+            // Place at the very top of the device body so it dominates
+            // the runtime_sequence created later. push_front bypasses
+            // SymbolTable::insert renaming logic.
+            device.getBody()->getOperations().push_front(cloned);
+            inDevGlobal = cloned;
+          }
+
+          auto hoistedGG = memref::GetGlobalOp::create(
+              rewriter, getGlobalOp.getLoc(),
+              cast<MemRefType>(getGlobalOp.getResult().getType()),
+              FlatSymbolRefAttr::get(rewriter.getContext(),
+                                     inDevGlobal.getSymNameAttr()));
+          Value dataOperand = hoistedGG.getResult();
+
+          // After this point the hoisted get_global at module scope
+          // resolves to the module-level original; once airrt-to-npu
+          // moves the surrounding func into the device, lookup will
+          // pick up the in-device copy first. The module-level original
+          // is not removed here because there may be a brief window
+          // where the func still references it.
+
           AIEX::NpuBlockWriteOp::create(
               rewriter, put.getLoc(),
               /*address=*/rewriter.getUI32IntegerAttr(0),
-              /*data=*/getGlobalOp.getResult(),
+              /*data=*/dataOperand,
               /*buffer=*/
               FlatSymbolRefAttr::get(rewriter.getContext(), *bufSymOpt),
               /*column=*/IntegerAttr{},

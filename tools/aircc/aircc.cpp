@@ -1118,6 +1118,13 @@ static LogicalResult runAieCompilation() {
       os << ",affine-expand-index-ops";
       os << ",canonicalize,cse";
       os << "," << airrtToNpuPass;
+      // Clean up symbols that became unused once airrt-to-npu moved
+      // the L3 control func into the device. In particular, mmio
+      // channel lowering leaves a module-level memref.global alongside
+      // an in-device mirror; the module-level copy is dead post-move
+      // and would otherwise collide with the in-device copy when aiecc
+      // promotes both to llvm.mlir.global at module scope.
+      os << ",symbol-dce";
       os << ",canonicalize,cse";
       os << ")";
     }

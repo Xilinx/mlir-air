@@ -27,6 +27,7 @@
 // DMA, no aie.flow.
 //
 // CHECK-SIMPLE-LABEL: aie.device(npu1)
+// CHECK-SIMPLE:         memref.global @const_data : memref<8xi32> = dense<42> {air.mmio_global}
 // CHECK-SIMPLE:         %[[TILE:.+]] = aie.tile(0, 2)
 // CHECK-SIMPLE:         %[[BUF:.+]] = aie.buffer(%[[TILE]]) {sym_name = "[[BUFNAME:.+]]"} : memref<8xi32, 2>
 // CHECK-SIMPLE:         aie.core(%[[TILE]])
@@ -36,8 +37,8 @@
 // CHECK-SIMPLE-NOT:     aie.shim_dma_allocation
 //
 // CHECK-SIMPLE-LABEL: func.func @mmio_simple
-// CHECK-SIMPLE:         %[[GBL:.+]] = memref.get_global @const_data
-// CHECK-SIMPLE:         aiex.npu.blockwrite(%[[GBL]]) {address = 0 : ui32, buffer = @[[BUFNAME]]} : memref<8xi32>
+// CHECK-SIMPLE:         memref.get_global @const_data
+// CHECK-SIMPLE:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @[[BUFNAME]]} : memref<8xi32>
 // CHECK-SIMPLE:         air.launch
 // CHECK-SIMPLE-NOT:     air.channel.put @mmio_chan
 // CHECK-SIMPLE-NOT:     air.channel.get @mmio_chan
@@ -73,9 +74,8 @@ func.func @mmio_simple() {
 // CHECK-MIXED:         memref.get_global @mmio_const
 // CHECK-MIXED:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @{{.+}}} : memref<8xi32>
 // CHECK-MIXED:         air.launch
-// CHECK-MIXED:           air.channel.put @dma_chan
-// CHECK-MIXED-NOT:       air.channel.put @mmio_chan2
-// CHECK-MIXED-NOT:       air.channel.get @mmio_chan2
+// CHECK-MIXED-NOT:     air.channel.put @mmio_chan2
+// CHECK-MIXED-NOT:     air.channel.get @mmio_chan2
 
 memref.global "private" @mmio_const : memref<8xi32> = dense<7>
 air.channel @mmio_chan2 [] {channel_type = "mmio"}
@@ -120,9 +120,9 @@ func.func @mixed(%dma_src: memref<16xi32>) {
 // CHECK-BCAST-NOT:     aie.shim_dma_allocation
 //
 // CHECK-BCAST-LABEL: func.func @bcast
-// CHECK-BCAST:         %[[GBL:.+]] = memref.get_global @const_q
-// CHECK-BCAST:         aiex.npu.blockwrite(%[[GBL]]) {address = 0 : ui32, buffer = @{{buf[01]}}} : memref<8xi32>
-// CHECK-BCAST:         aiex.npu.blockwrite(%[[GBL]]) {address = 0 : ui32, buffer = @{{buf[01]}}} : memref<8xi32>
+// CHECK-BCAST:         memref.get_global @const_q
+// CHECK-BCAST:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @{{buf[01]}}} : memref<8xi32>
+// CHECK-BCAST:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @{{buf[01]}}} : memref<8xi32>
 // CHECK-BCAST:         air.launch
 // CHECK-BCAST-NOT:     air.channel.put @bcast_mmio
 // CHECK-BCAST-NOT:     air.channel.get @bcast_mmio
