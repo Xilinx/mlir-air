@@ -223,6 +223,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Attention",
+        "name": "Flash Attention + KV Cache Prefill",
+        "path": "flash_attention/kv_cache_prefill",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Data Movement",
         "name": "Passthrough (DMA)",
         "path": "passthrough/passthrough_dma",
