@@ -20,6 +20,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/TypeSwitch.h"
@@ -395,19 +396,36 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           llvm::range_size(llvm::concat<Value>(memrefsReadBySinkOp,
                                                memrefsWrittenBySinkOp)) != 0;
       if (sourceOpTouchesMemref && sinkOpTouchesMemref) {
-        // Check if two memref values may alias through view-like op chains.
-        // Walks any ViewLikeOpInterface (subview, cast, expand_shape,
-        // collapse_shape, reinterpret_cast, transpose, ...) to its source,
-        // and treats two values that resolve to the same root as aliasing.
-        // Conservative: disjoint views of the same root are reported as
-        // aliasing — safe for dependency-removal canonicalization, since
-        // over-approximating aliasing only suppresses dead-edge removal,
-        // never invents races.
+        // Walk view-like ops, hierarchy body args, and loop iter_args
+        // back to a root memref. Conservative: disjoint views of the same
+        // root are reported as aliasing (safe — only suppresses dead-edge
+        // removal).
         auto mayAlias = [](Value a, Value b) {
           auto getRoot = [](Value v) -> Value {
-            while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
-              v = view.getViewSource();
-            return v;
+            while (true) {
+              if (auto view = v.getDefiningOp<ViewLikeOpInterface>()) {
+                v = view.getViewSource();
+                continue;
+              }
+              if (auto barg = dyn_cast<BlockArgument>(v)) {
+                Operation *parent = barg.getOwner()->getParentOp();
+                if (auto h =
+                        dyn_cast_if_present<air::HierarchyInterface>(parent)) {
+                  if (Value outer = h.getTiedKernelOperand(barg)) {
+                    v = outer;
+                    continue;
+                  }
+                }
+                if (auto loop =
+                        dyn_cast_if_present<LoopLikeOpInterface>(parent)) {
+                  if (OpOperand *init = loop.getTiedLoopInit(barg)) {
+                    v = init->get();
+                    continue;
+                  }
+                }
+              }
+              return v;
+            }
           };
           return getRoot(a) == getRoot(b);
         };
