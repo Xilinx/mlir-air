@@ -51,18 +51,9 @@ void addAsyncDependency(Operation *op, Value token);
 // Erases a `air.async.token` at position index of the argument list.
 void eraseAsyncDependency(Operation *op, unsigned index);
 
-// Walks forward through async-token consumers of `root`, accumulating every
-// op transitively reachable via async-token use chains into `consumers`.
-// Token flow is followed along two edges:
-//   1. op-result -> use: a token result of op A used as an operand of op B
-//      makes B a consumer of A.
-//   2. loop init -> region iter_arg: when a token enters a
-//      LoopLikeOpInterface op as an init operand, the corresponding region
-//      iter_arg block argument carries the token into the body, so body ops
-//      using the iter_arg are also consumers.
-// `root` itself is not added to `consumers`. Runs in O(N) where N is the
-// number of async tokens reachable from `root`; the implementation
-// memoizes already-walked tokens to ensure termination.
+// Collects ops transitively reachable from `root` via async-token use chains
+// into `consumers`. Follows both op-result uses and (for LoopLikeOpInterface
+// ops) the tied region iter_arg, so body ops are reached. `root` is excluded.
 void walkAsyncTokenConsumers(Operation *root,
                              llvm::SetVector<Operation *> &consumers);
 

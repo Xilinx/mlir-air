@@ -150,9 +150,7 @@ void air::eraseAsyncDependency(Operation *op, unsigned index) {
 
 void air::walkAsyncTokenConsumers(Operation *root,
                                   llvm::SetVector<Operation *> &consumers) {
-  // `expanded` memoizes tokens already enqueued so each is walked at most
-  // once — this is what bounds the worklist and ensures termination, not
-  // the worklist data structure itself.
+  // `expanded` dedupes tokens; this is what bounds the worklist.
   llvm::SmallPtrSet<Value, 16> expanded;
   SmallVector<Value> tokenWorklist;
   auto enqueue = [&](Value v) {
@@ -170,8 +168,6 @@ void air::walkAsyncTokenConsumers(Operation *root,
       consumers.insert(user);
       for (Value res : user->getResults())
         enqueue(res);
-      // If the use is a loop init operand, the token continues into the
-      // body via the tied region iter_arg.
       if (auto loop = dyn_cast<LoopLikeOpInterface>(user))
         if (BlockArgument iterArg = loop.getTiedLoopRegionIterArg(&use))
           enqueue(iterArg);
@@ -324,27 +320,11 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
-  // (See `air::walkAsyncTokenConsumers` in AIRDialect.h for the consumer
-  // walk used below.)
-  // Collect the set of root memrefs accessed by `o` under `accessFn` (which
-  // selects either reads or writes).
-  //
-  // `walkConsumers` controls whether to also include accesses from the
-  // transitive forward async-token consumers of `o` (see
-  // `air::walkAsyncTokenConsumers`). Use `true` for sink-side analysis
-  // (where `o` acts as a scheduling barrier for its consumers) and `false`
-  // for source-side analysis (where we want only `o`'s own accesses).
-  // Mixing these would corrupt source-side analysis: a synchronization
-  // primitive used as a source would otherwise be credited with downstream
-  // accesses it doesn't actually perform.
-  //
-  // The sink-side path generalizes the historical wait_all "barrier"
-  // semantics to all air::AsyncOpInterface ops. Without it, a memref-flow
-  // dep injected as a scheduling barrier on a synchronization primitive
-  // (e.g. air.channel.get/put or an air.execute wrapping an alloc) gets
-  // silently pruned by the RAW/WAR/WAW step because the primitive itself
-  // doesn't touch the memref the source wrote — even though a downstream
-  // consumer reachable via the token chain does (issue #1559 race #2/#3).
+  // Root memrefs accessed by `o` under `accessFn`. With `walkConsumers=true`
+  // (sink side), also unions in accesses from `o`'s transitive async-token
+  // consumers — required for sync primitives whose own accesses don't
+  // overlap a real barrier dep (issue #1559). Must be `false` on the source
+  // side, or the source would inherit its own sink's accesses.
   auto getAllMemrefsAccessedByOp =
       [getRoot](Operation *o, bool walkConsumers,
                 llvm::function_ref<SmallVector<Value>(Operation *)> accessFn) {

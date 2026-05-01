@@ -1,30 +1,20 @@
+//===- canonicalize_channel_get_barrier_dep.mlir ---------------*- MLIR -*-===//
+//
+// Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: air-opt -canonicalize -split-input-file %s | FileCheck %s
 
-// Reproducer for the residual race in issue #1559 (race #2/#3 family,
-// post-`fb14adaf9`). After `air-ping-pong-transform` restructures the merged
-// herd body, the `MergeAIRHerds`-injected barrier dep on the fill scf.for
-// migrates to an `air.channel.get` that fetches input data into a freshly-
-// allocated input buffer.
-//
-// Before the fix below, `CanonicalizeAsyncOpDeps` would drop the dep:
-//   - source = fill scf.for, writes %output_buf
-//   - sink = chan.get, writes %input_buf (no read of %output_buf)
-//   - no RAW/WAR/WAW match → dep dropped
-//
-// But the chan.get is just a synchronization primitive; its async-token
-// consumer chain (chan.get → wait_all → matmul scf.for) reads %output_buf.
-// Dropping the dep removes the only ordering edge between fill and matmul
-// → race on %output_buf.
-//
-// Fix: when computing the sink op's effective memref accesses for the
-// RAW/WAR/WAW pruning, walk forward through the sink's async-token consumer
-// chain and union in their accesses too. The chan.get inherits the matmul's
-// reads of %output_buf, so RAW(fill, chan.get) matches and the dep is kept.
+// A barrier dep injected on an async sync primitive (channel.get/put,
+// dma_memcpy_nd, alloc execute) must survive canonicalization when its
+// transitive token consumers — not the primitive itself — touch the source's
+// memref. Issue #1559 race #2/#3.
 
 // CHECK-LABEL: func.func @chan_get_barrier_dep_preserved
 // CHECK: %[[FILL:[a-zA-Z0-9_]+]] = scf.for {{.*}} iter_args
 // CHECK:{{ *}}memref.store {{.*}} : memref<32x32xi16, 2 : i32>
-// The barrier dep on the fill loop must survive on the chan.get sinks:
 // CHECK: air.channel.get async [%[[FILL]]
 // CHECK: air.channel.get async [%[[FILL]]
 
@@ -60,11 +50,6 @@ module {
             %a = memref.alloc() : memref<32xi16, 2 : i32>
             air.execute_terminator %a : memref<32xi16, 2 : i32>
           }
-          // These chan.get ops carry a scheduling barrier on the fill loop.
-          // The fill loop writes %argbuf; the chan.gets write distinct fresh
-          // input buffers — so naive RAW/WAR/WAW analysis would drop the
-          // %fill_loop dep. But the matmul scf.for below (the chan.gets'
-          // transitive consumer) READS %argbuf, so the barrier is real.
           %g1 = air.channel.get async [%fill_loop, %tk_in1] @ch_a[%tx, %ty] (%in_buf1[] [] []) : (memref<32xi16, 2 : i32>)
           %g2 = air.channel.get async [%fill_loop, %tk_in2] @ch_b[%tx, %ty] (%in_buf2[] [] []) : (memref<32xi16, 2 : i32>)
           %wa = air.wait_all async [%g1, %g2]
@@ -88,11 +73,7 @@ module {
 
 // -----
 
-// Same scenario as above, but the sink op carrying the fill-loop barrier dep
-// is `air.channel.put` instead of `air.channel.get`. The put reads a fresh
-// staging buffer (not %argbuf), so the source op's write-set and the sink's
-// own read-set don't overlap. The dep is real because the put's transitive
-// async-token consumer (the matmul scf.for) reads %argbuf.
+// Sink is air.channel.put reading a fresh staging buffer; consumer loop reads %argbuf.
 
 // CHECK-LABEL: func.func @chan_put_barrier_dep_preserved
 // CHECK: %[[FILL:[a-zA-Z0-9_]+]] = scf.for {{.*}} iter_args
@@ -126,8 +107,6 @@ module {
             %a = memref.alloc() : memref<32xi16, 2 : i32>
             air.execute_terminator %a : memref<32xi16, 2 : i32>
           }
-          // Sink: chan.put reads %stage_buf (fresh, disjoint from %argbuf).
-          // Barrier dep on %fill_loop must survive — downstream loop reads %argbuf.
           %p = air.channel.put async [%fill_loop, %tk_stage] @ch_p[%tx, %ty] (%stage_buf[] [] []) : (memref<32xi16, 2 : i32>)
           %loop = scf.for %k = %c0 to %c32 step %c1_h iter_args(%it = %p) -> (!air.async.token) {
             %tk = air.execute [%it] {
@@ -145,11 +124,7 @@ module {
 
 // -----
 
-// Sink op is `air.dma_memcpy_nd`. The DMA copies between two fresh L1 buffers
-// (%src_buf → %dst_buf), neither of which is %argbuf. Without the consumer-
-// walk, the fill→DMA barrier dep would be dropped: source writes %argbuf,
-// sink reads %src_buf and writes %dst_buf — no RAW/WAR/WAW match. The matmul
-// loop downstream reads %argbuf, making the barrier real.
+// Sink is air.dma_memcpy_nd between two fresh buffers; consumer loop reads %argbuf.
 
 // CHECK-LABEL: func.func @dma_barrier_dep_preserved
 // CHECK: %[[FILL:[a-zA-Z0-9_]+]] = scf.for {{.*}} iter_args
@@ -186,8 +161,6 @@ module {
             %a = memref.alloc() : memref<32xi16, 2 : i32>
             air.execute_terminator %a : memref<32xi16, 2 : i32>
           }
-          // Sink: DMA between two fresh buffers. Barrier dep on %fill_loop
-          // must survive — downstream loop reads %argbuf via %dma's token.
           %dma = air.dma_memcpy_nd async [%fill_loop, %tk_src, %tk_dst] (%dst_buf[] [] [], %src_buf[] [] []) : (memref<32xi16, 2 : i32>, memref<32xi16, 2 : i32>)
           %loop = scf.for %k = %c0 to %c32 step %c1_h iter_args(%it = %dma) -> (!air.async.token) {
             %tk = air.execute [%it] {
@@ -205,13 +178,7 @@ module {
 
 // -----
 
-// Sink op is `air.execute` wrapping a pure `memref.alloc`. The execute body
-// does not touch %argbuf — its only memref result is a freshly-allocated
-// buffer. Without the consumer-walk, the fill→execute barrier dep would be
-// dropped (source writes %argbuf; sink writes a fresh memref result). The
-// matmul loop downstream reads %argbuf via the execute's token, making the
-// barrier real. This case also exercises the region-walking path of the
-// generalized sink-side analysis (air.execute carries a body region).
+// Sink is air.execute wrapping a pure alloc; consumer loop reads %argbuf.
 
 // CHECK-LABEL: func.func @execute_barrier_dep_preserved
 // CHECK: %[[FILL:[a-zA-Z0-9_]+]] = scf.for {{.*}} iter_args
@@ -240,9 +207,6 @@ module {
             }
             scf.yield %tk : !air.async.token
           }
-          // Sink: air.execute wrapping a pure alloc. Body does not touch
-          // %argbuf. Barrier dep on %fill_loop must survive — downstream
-          // loop reads %argbuf via the execute's token chain.
           %tk_scratch, %scratch = air.execute [%fill_loop] -> (memref<32xi16, 2 : i32>) {
             %a = memref.alloc() : memref<32xi16, 2 : i32>
             air.execute_terminator %a : memref<32xi16, 2 : i32>
