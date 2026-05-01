@@ -1,4 +1,4 @@
-# (c) Copyright 2024 Advanced Micro Devices, Inc.
+# (c) Copyright 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
