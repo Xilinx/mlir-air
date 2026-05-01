@@ -23,7 +23,7 @@
 
 // CHECK-LABEL: func.func @chan_get_barrier_dep_preserved
 // CHECK: %[[FILL:[a-zA-Z0-9_]+]] = scf.for {{.*}} iter_args
-// CHECK:   memref.store {{.*}} : memref<32x32xi16, 2 : i32>
+// CHECK:{{ *}}memref.store {{.*}} : memref<32x32xi16, 2 : i32>
 // The barrier dep on the fill loop must survive on the chan.get sinks:
 // CHECK: air.channel.get async [%[[FILL]]
 // CHECK: air.channel.get async [%[[FILL]]
@@ -96,7 +96,7 @@ module {
 
 // CHECK-LABEL: func.func @chan_put_barrier_dep_preserved
 // CHECK: %[[FILL:[a-zA-Z0-9_]+]] = scf.for {{.*}} iter_args
-// CHECK:   memref.store {{.*}} : memref<32x32xi16, 2 : i32>
+// CHECK:{{ *}}memref.store {{.*}} : memref<32x32xi16, 2 : i32>
 // CHECK: air.channel.put async [%[[FILL]]
 
 module {
@@ -153,7 +153,7 @@ module {
 
 // CHECK-LABEL: func.func @dma_barrier_dep_preserved
 // CHECK: %[[FILL:[a-zA-Z0-9_]+]] = scf.for {{.*}} iter_args
-// CHECK:   memref.store {{.*}} : memref<32x32xi16, 2 : i32>
+// CHECK:{{ *}}memref.store {{.*}} : memref<32x32xi16, 2 : i32>
 // CHECK: air.dma_memcpy_nd async [%[[FILL]]
 
 module {
@@ -215,7 +215,7 @@ module {
 
 // CHECK-LABEL: func.func @execute_barrier_dep_preserved
 // CHECK: %[[FILL:[a-zA-Z0-9_]+]] = scf.for {{.*}} iter_args
-// CHECK:   memref.store {{.*}} : memref<32x32xi16, 2 : i32>
+// CHECK:{{ *}}memref.store {{.*}} : memref<32x32xi16, 2 : i32>
 // CHECK: %{{.*}}, %{{.*}} = air.execute [%[[FILL]]]
 
 module {
