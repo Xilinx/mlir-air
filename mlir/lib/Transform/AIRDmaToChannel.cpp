@@ -1603,6 +1603,12 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         if (!chanOp)
           continue;
 
+        // mmio channels are runtime-sequence MMIO writes, not shim DMA, so
+        // they neither contribute to per-column shim pressure nor are
+        // eligible for dma_packet upgrade.
+        if (chanOp.getChannelType() == "mmio")
+          continue;
+
         bool isAlreadyPacket = (chanOp.getChannelType() == "dma_packet");
         auto channelName = chanOp.getSymName();
 
