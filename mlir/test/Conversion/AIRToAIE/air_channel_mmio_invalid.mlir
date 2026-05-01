@@ -86,9 +86,10 @@ func.func @mmio_no_match() {
 // -----
 
 // V1 limitation: the source memref.global must have no users outside the
-// func containing the put — otherwise symbol-dce later in the pipeline
-// can't remove the module-level original and a duplicate-symbol
-// collision occurs in LLVM lowering.
+// func containing the put — otherwise the `symbol-dce` pass run after
+// `airrt-to-npu` (in tools/aircc/aircc.cpp's NPU pipeline) can't remove
+// the module-level original and a duplicate-symbol collision occurs in
+// LLVM lowering.
 // CHECK: channel_type="mmio" V1 requires the source memref.global to be used only inside the func containing the put
 memref.global "private" @shared_const : memref<8xi32> = dense<3>
 air.channel @sc_chan [] {channel_type = "mmio"}

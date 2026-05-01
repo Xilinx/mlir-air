@@ -5905,11 +5905,12 @@ public:
                 "for the put source at module scope");
 
           // V1 limitation: the in-device mirror is cloned under the same
-          // sym_name, so a later symbol-dce of the module-level original
-          // is required to avoid a duplicate-symbol collision in LLVM
-          // lowering. That requires no users to survive outside the
-          // func that becomes the runtime_sequence and moves into the
-          // device. Reject other module-scope users loudly.
+          // sym_name, so the `symbol-dce` pass invoked in the NPU pipeline
+          // (tools/aircc/aircc.cpp, after `airrt-to-npu`) must be able to
+          // erase the module-level original to avoid a duplicate-symbol
+          // collision in LLVM lowering. That requires no users to survive
+          // outside the func that becomes the runtime_sequence and moves
+          // into the device. Reject other module-scope users loudly.
           auto putFunc = put->getParentOfType<func::FuncOp>();
           auto uses = SymbolTable::getSymbolUses(origName, moduleOp);
           if (uses && llvm::any_of(*uses, [&](SymbolTable::SymbolUse u) {
@@ -6014,9 +6015,10 @@ public:
                                      inDevGlobal.getSymNameAttr()));
           Value dataOperand = hoistedGG.getResult();
 
-          // The module-scope original (or repacked mirror) is removed
-          // later by symbol-DCE once airrt-to-npu moves the func into
-          // the device and the in-device copy becomes the unique source.
+          // After `airrt-to-npu` moves the func into the device, the
+          // module-scope original (or repacked mirror) becomes orphaned
+          // and is erased by the `symbol-dce` pass run immediately after
+          // (see tools/aircc/aircc.cpp NPU pipeline).
 
           AIEX::NpuBlockWriteOp::create(
               rewriter, put.getLoc(),
