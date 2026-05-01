@@ -1046,7 +1046,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     for (auto &t : *allocs) {
       if (t.foundPacketFlowAllocInTile(dma_col, 0)) {
         tile = air::createTileViaPlacer(device, AIE::AIETileType::ShimNOCTile,
-                                   dma_col, /*row_hint=*/std::nullopt);
+                                        dma_col, /*row_hint=*/std::nullopt);
         std::vector<int> dma_ops_get_id;
         for (auto op : dma_ops) {
           if (op->hasAttr("id"))
@@ -1089,7 +1089,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     return memcpyOp.emitOpError("out of shim dma channels.");
   }
   tile = air::createTileViaPlacer(device, AIE::AIETileType::ShimNOCTile,
-                                   dma_col, /*row_hint=*/std::nullopt);
+                                  dma_col, /*row_hint=*/std::nullopt);
   if (!tile) {
     return memcpyOp.emitOpError(
         "failed to get shim tile for the newly allocated shim dma channel.");
