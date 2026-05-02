@@ -291,10 +291,15 @@ func.func @execute_2() -> (index, !air.async.token) {
   return %results, %t : index, !air.async.token
 }
 
+// air.dma_memcpy_nd has a Write effect on its dst, so the execute body
+// is conservatively kept by FoldExecute. The unused %results index is
+// still replaced by the constant.
 // CHECK-LABEL: execute_3
 // CHECK-NEXT: arith.constant 0 : index
-// CHECK-NEXT: air.wait_all async 
-// CHECK-NEXT: return %{{.*}}, %{{.*}} : index, !air.async.token
+// CHECK-NEXT: air.execute
+// CHECK-NEXT: memref.alloc
+// CHECK-NEXT: air.dma_memcpy_nd
+// CHECK: return %{{.*}}, %{{.*}} : index, !air.async.token
 func.func @execute_3(%arg0: memref<1xi32>) -> (index, !air.async.token) {
   %c0 = arith.constant 0 : index
   %async_token, %results = air.execute -> (index) {

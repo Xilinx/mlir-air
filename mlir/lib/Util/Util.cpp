@@ -824,19 +824,18 @@ char air::checkOpOperandReadOrWrite(Value v, Operation *owner) {
 }
 char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
   auto owner = op_operand.getOwner();
-  // If used in DmaMemcpy Op
-  if (auto dma = dyn_cast_if_present<xilinx::air::DmaMemcpyNdOp>(owner)) {
-    if (op_operand.is(dma.getSrcMemref())) {
-      return 'r';
-    } else if (op_operand.is(dma.getDstMemref())) {
-      return 'w';
-    } else {
-      return 'u';
-    }
-  }
+  // Generic side-effect query first. air.dma_memcpy_nd declares
+  // MemReadAt<src> + MemWriteAt<dst>, so it answers here without an
+  // explicit dialect branch. air.channel.put/get do not yet declare
+  // effects (channel-resource modeling is a separate followup) and
+  // continue to use the dialect-specific branches below.
+  if (mlir::hasEffect<mlir::MemoryEffects::Write>(owner, op_operand.get()))
+    return 'w';
+  if (mlir::hasEffect<mlir::MemoryEffects::Read>(owner, op_operand.get()))
+    return 'r';
   // If used in Channel Put Op
-  else if (auto channel_put =
-               dyn_cast_if_present<xilinx::air::ChannelPutOp>(owner)) {
+  if (auto channel_put =
+          dyn_cast_if_present<xilinx::air::ChannelPutOp>(owner)) {
     if (op_operand.is(channel_put.getSrc())) {
       return 'r';
     } else {
