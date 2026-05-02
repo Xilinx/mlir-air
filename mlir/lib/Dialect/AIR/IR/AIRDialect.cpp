@@ -879,6 +879,7 @@ unsigned air::LaunchOp::getNumDims() {
 static InvocationBounds computeHierarchyBounds(ArrayRef<Attribute> operands,
                                                unsigned sizeStart,
                                                unsigned numDims) {
+  constexpr uint64_t kMaxUnsigned = std::numeric_limits<unsigned>::max();
   uint64_t product = 1;
   for (unsigned i = 0; i < numDims; ++i) {
     auto intAttr = dyn_cast_if_present<IntegerAttr>(operands[sizeStart + i]);
@@ -887,9 +888,12 @@ static InvocationBounds computeHierarchyBounds(ArrayRef<Attribute> operands,
     int64_t v = intAttr.getInt();
     if (v < 0)
       return InvocationBounds::getUnknown();
-    product *= static_cast<uint64_t>(v);
-    if (product > std::numeric_limits<unsigned>::max())
+    uint64_t uv = static_cast<uint64_t>(v);
+    // Pre-multiply overflow guard: check before doing the multiply, so we
+    // never wrap and silently produce a small bound for very large sizes.
+    if (uv != 0 && product > kMaxUnsigned / uv)
       return InvocationBounds::getUnknown();
+    product *= uv;
   }
   unsigned n = static_cast<unsigned>(product);
   return InvocationBounds(n, n);
@@ -2078,6 +2082,13 @@ void air::ExecuteOp::getEffects(
       return;
     auto effectOp = dyn_cast<MemoryEffectOpInterface>(inner);
     if (!effectOp) {
+      // No interface declared. If the op is provably effect-free via
+      // upstream helpers (Pure trait, NoMemoryEffect trait, etc.) then
+      // treat it as such — `arith.constant`, `affine.apply`, and friends
+      // commonly appear in execute bodies and should not pessimise our
+      // declared effects.
+      if (mlir::isMemoryEffectFree(inner))
+        return;
       sawUnknownOp = true;
       return;
     }
