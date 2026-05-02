@@ -2103,19 +2103,10 @@ static LogicalResult FoldExecute(air::ExecuteOp op, PatternRewriter &rewriter) {
 
   // if we get here then only the async token result has uses.
 
-  // Don't fold if body contains ops with memory write side effects
-  // (e.g., memref.store). These ops must be preserved even if the
-  // execute's async token becomes unused due to wait_all folding.
-  for (auto &bodyOp : body.without_terminator()) {
-    if (auto memEffects =
-            dyn_cast_if_present<MemoryEffectOpInterface>(bodyOp)) {
-      SmallVector<MemoryEffects::EffectInstance> effects;
-      memEffects.getEffects(effects);
-      for (auto &effect : effects)
-        if (isa<MemoryEffects::Write>(effect.getEffect()))
-          return failure();
-    }
-  }
+  // ExecuteOp::getEffects mirrors body effects up; an inner Write or any
+  // unknown-effect op blocks folding.
+  if (mlir::mightHaveEffect<MemoryEffects::Write>(op))
+    return failure();
 
   // if there are extra results than async token, and none of them are used,
   // then replace the execute with a wait_all no-op.
