@@ -5,43 +5,33 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Positive tests for the channel_type="mmio" lowering in air-to-aie:
-//   * the L3 put becomes aiex.npu.blockwrite targeting the matching get's
-//     L1 aie.buffer, and the get is erased;
-//   * no DMA channel, shim allocation, or aie.flow is reserved for an
-//     mmio channel;
-//   * mmio channels coexist with regular dma_stream channels;
-//   * mmio with `broadcast_shape` fans out to N back-to-back blockwrites,
-//     one per destination L1 buffer (no hardware fanout).
+// Positive tests for channel_type="mmio" in air-to-aie. Each split has
+// its own CHECK prefix so directives don't leak across boundaries.
+// Negative cases live in `air_channel_mmio_invalid.mlir`.
 //
-// The negative case (non-constant put source) is in
-// `air_channel_mmio_invalid.mlir`. Each split here uses its own check
-// prefix so directives don't leak across split boundaries.
+// The mmio lowering stamps the source memref.global's initializer onto
+// the destination L1 aie.buffer's `initial_value` attribute.
+// AIERTControl::initBuffers loads this into the tile via
+// XAie_DataMemBlockWrite at device-init time — before any core starts —
+// which makes the data delivery race-free relative to core execution
+// and natively handles any element type (no i32 repack required).
 
-// RUN: air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" | FileCheck %s --check-prefixes=CHECK-SIMPLE,CHECK-MIXED,CHECK-BCAST
+// RUN: air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" | FileCheck %s --check-prefixes=CHECK-SIMPLE,CHECK-MIXED,CHECK-BCAST,CHECK-INDEXED,CHECK-BF16,CHECK-BF16NS,CHECK-I8
 
 // -----
 
-// Simple one-to-one mmio transfer: put at L3 lowers to a single
-// aiex.npu.blockwrite into the L1 aie.buffer; the get is erased; no shim
-// DMA, no aie.flow.
+// One-to-one: L3 put → destination L1 aie.buffer's initial_value is set;
+// get/put erased; no shim DMA, no aie.flow.
 //
 // CHECK-SIMPLE-LABEL: aie.device(npu1)
-// CHECK-SIMPLE:         memref.global @const_data : memref<8xi32> = dense<42> {air.mmio_global}
 // CHECK-SIMPLE:         %[[TILE:.+]] = aie.tile(0, 2)
-// CHECK-SIMPLE:         %[[BUF:.+]] = aie.buffer(%[[TILE]]) {sym_name = "[[BUFNAME:.+]]"} : memref<8xi32, 2>
+// CHECK-SIMPLE:         %[[BUF:.+]] = aie.buffer(%[[TILE]]) {sym_name = "[[BUFNAME:.+]]"} : memref<8xi32, 2> = dense<42>
 // CHECK-SIMPLE:         aie.core(%[[TILE]])
 // CHECK-SIMPLE-NOT:     air.channel.put @mmio_chan
 // CHECK-SIMPLE-NOT:     air.channel.get @mmio_chan
 // CHECK-SIMPLE-NOT:     aie.flow
 // CHECK-SIMPLE-NOT:     aie.shim_dma_allocation
-//
-// CHECK-SIMPLE-LABEL: func.func @mmio_simple
-// CHECK-SIMPLE:         memref.get_global @const_data
-// CHECK-SIMPLE:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @[[BUFNAME]]} : memref<8xi32>
-// CHECK-SIMPLE:         air.launch
-// CHECK-SIMPLE-NOT:     air.channel.put @mmio_chan
-// CHECK-SIMPLE-NOT:     air.channel.get @mmio_chan
+// CHECK-SIMPLE-NOT:     aiex.npu.blockwrite
 
 memref.global "private" @const_data : memref<8xi32> = dense<42>
 air.channel @mmio_chan [] {channel_type = "mmio"}
@@ -64,16 +54,14 @@ func.func @mmio_simple() {
 
 // -----
 
-// An mmio channel coexists with a regular dma_stream channel without
-// interference: the dma_stream side still receives its shim DMA / flow
-// allocation, and the mmio side still lowers to a blockwrite. The
-// dma_stream put survives in the L3 control func (it lowers later in
-// AIRLoweringPass), while the mmio put and get are gone.
+// mmio + dma_stream coexist: dma_stream keeps its shim/flow allocation
+// and survives in the L3 control func; mmio sets buffer initial_value.
+//
+// CHECK-MIXED-LABEL: aie.device(npu1)
+// CHECK-MIXED:         aie.buffer(%{{.+}}) {sym_name = "{{.+}}"} : memref<8xi32, 2> = dense<7>
+// CHECK-MIXED-NOT:     aiex.npu.blockwrite
 //
 // CHECK-MIXED-LABEL: func.func @mixed
-// CHECK-MIXED:         memref.get_global @mmio_const
-// CHECK-MIXED:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @{{.+}}} : memref<8xi32>
-// CHECK-MIXED:         air.launch
 // CHECK-MIXED-NOT:     air.channel.put @mmio_chan2
 // CHECK-MIXED-NOT:     air.channel.get @mmio_chan2
 
@@ -103,29 +91,19 @@ func.func @mixed(%dma_src: memref<16xi32>) {
 
 // -----
 
-// Broadcast mmio: one put with `broadcast_shape` fans out to two distinct
-// L1 buffers via two back-to-back blockwrites. There is no hardware
-// fanout for MMIO writes (unlike aie.flow), so the controller writes each
-// destination separately. Per MMIO_BENCHMARK.md this remains essentially
-// free at decode-attention payload sizes.
+// Broadcast mmio: one put with `broadcast_shape` stamps the same
+// initial_value onto each destination L1 buffer.
 //
 // CHECK-BCAST-LABEL: aie.device(npu1)
 // CHECK-BCAST:         aie.tile(0, 2)
 // CHECK-BCAST:         aie.tile(0, 3)
-// CHECK-BCAST-DAG:     aie.buffer(%{{.+}}) {sym_name = "[[BUF0:.+]]"} : memref<8xi32, 2>
-// CHECK-BCAST-DAG:     aie.buffer(%{{.+}}) {sym_name = "[[BUF1:.+]]"} : memref<8xi32, 2>
+// CHECK-BCAST-DAG:     aie.buffer(%{{.+}}) {sym_name = "{{.+}}"} : memref<8xi32, 2> = dense<5>
+// CHECK-BCAST-DAG:     aie.buffer(%{{.+}}) {sym_name = "{{.+}}"} : memref<8xi32, 2> = dense<5>
 // CHECK-BCAST-NOT:     air.channel.put @bcast_mmio
 // CHECK-BCAST-NOT:     air.channel.get @bcast_mmio
 // CHECK-BCAST-NOT:     aie.flow
 // CHECK-BCAST-NOT:     aie.shim_dma_allocation
-//
-// CHECK-BCAST-LABEL: func.func @bcast
-// CHECK-BCAST:         memref.get_global @const_q
-// CHECK-BCAST:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @{{buf[01]}}} : memref<8xi32>
-// CHECK-BCAST:         aiex.npu.blockwrite(%{{.+}}) {address = 0 : ui32, buffer = @{{buf[01]}}} : memref<8xi32>
-// CHECK-BCAST:         air.launch
-// CHECK-BCAST-NOT:     air.channel.put @bcast_mmio
-// CHECK-BCAST-NOT:     air.channel.get @bcast_mmio
+// CHECK-BCAST-NOT:     aiex.npu.blockwrite
 
 memref.global "private" @const_q : memref<8xi32> = dense<5>
 air.channel @bcast_mmio [1] {channel_type = "mmio", broadcast_shape = [2]}
@@ -142,6 +120,135 @@ func.func @bcast() {
         %alloc = memref.alloc() : memref<8xi32, 2>
         air.channel.get @bcast_mmio[%tx, %ty] (%alloc[] [] []) : (memref<8xi32, 2>)
         memref.dealloc %alloc : memref<8xi32, 2>
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// Indexed mmio over a `[N]` bundle on a multi-tile herd: each constant
+// index pairs one host-side put with one per-tile get; each destination
+// buffer gets its own initial_value. Regression: specializeChannelBundle
+// used to split the bundle and orphan the host-side puts (now skipped
+// for mmio).
+//
+// CHECK-INDEXED-LABEL: aie.device(npu1)
+// CHECK-INDEXED-DAG:     aie.tile(0, 2)
+// CHECK-INDEXED-DAG:     aie.tile(1, 2)
+// CHECK-INDEXED-DAG:     aie.buffer(%{{.+}}) {sym_name = "{{.+}}"} : memref<8xi32, 2> = dense<10>
+// CHECK-INDEXED-DAG:     aie.buffer(%{{.+}}) {sym_name = "{{.+}}"} : memref<8xi32, 2> = dense<20>
+// CHECK-INDEXED-NOT:     air.channel.put @qm
+// CHECK-INDEXED-NOT:     air.channel.get @qm
+// CHECK-INDEXED-NOT:     aie.shim_dma_allocation
+// CHECK-INDEXED-NOT:     aiex.npu.blockwrite
+
+memref.global "private" @c0 : memref<8xi32> = dense<10>
+memref.global "private" @c1 : memref<8xi32> = dense<20>
+air.channel @qm [2] {channel_type = "mmio"}
+func.func @indexed() {
+  %g0 = memref.get_global @c0 : memref<8xi32>
+  %g1 = memref.get_global @c1 : memref<8xi32>
+  %c1i = arith.constant 1 : index
+  air.launch (%lx) in (%sx = %c1i) args(%a0 = %g0, %a1 = %g1) : memref<8xi32>, memref<8xi32> {
+    %c0i = arith.constant 0 : index
+    %c1ii = arith.constant 1 : index
+    air.channel.put @qm[%c0i] (%a0[] [] []) : (memref<8xi32>)
+    air.channel.put @qm[%c1ii] (%a1[] [] []) : (memref<8xi32>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      %c2_0 = arith.constant 2 : index
+      air.herd @h tile (%tx, %ty) in (%nx = %c2_0, %ny = %c1_0) {
+        %alloc = memref.alloc() : memref<8xi32, 2>
+        air.channel.get @qm[%tx] (%alloc[] [] []) : (memref<8xi32, 2>)
+        memref.dealloc %alloc : memref<8xi32, 2>
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// Splat bf16: AIERTControl::initBuffers handles float types natively
+// (XAie_DataMemBlockWrite copies APFloat bytes), so no i32 repack — the
+// destination bf16 buffer takes the bf16 splat directly.
+//
+// CHECK-BF16-LABEL: aie.device(npu1)
+// CHECK-BF16:         aie.buffer(%{{.+}}) {sym_name = "{{.+}}"} : memref<2x2xbf16, 2> = dense<1.500000e+00>
+// CHECK-BF16-NOT:     aiex.npu.blockwrite
+
+memref.global "private" @qbf16 : memref<2x2xbf16> = dense<1.5>
+air.channel @qbf16_chan [] {channel_type = "mmio"}
+func.func @bf16_payload() {
+  %src = memref.get_global @qbf16 : memref<2x2xbf16>
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<2x2xbf16> {
+    air.channel.put @qbf16_chan[] (%a[] [] []) : (memref<2x2xbf16>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
+        %alloc = memref.alloc() : memref<2x2xbf16, 2>
+        air.channel.get @qbf16_chan[] (%alloc[] [] []) : (memref<2x2xbf16, 2>)
+        memref.dealloc %alloc : memref<2x2xbf16, 2>
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// Non-splat bf16: same path, full element list preserved on the
+// destination buffer.
+//
+// CHECK-BF16NS-LABEL: aie.device(npu1)
+// CHECK-BF16NS:         aie.buffer(%{{.+}}) {sym_name = "{{.+}}"} : memref<2x2xbf16, 2> = dense<{{\[}}{{\[}}1.500000e+00, 2.500000e+00{{\]}}, {{\[}}3.500000e+00, 4.500000e+00{{\]}}{{\]}}>
+// CHECK-BF16NS-NOT:     aiex.npu.blockwrite
+
+memref.global "private" @qbf16ns : memref<2x2xbf16> = dense<[[1.5, 2.5], [3.5, 4.5]]>
+air.channel @qbf16ns_chan [] {channel_type = "mmio"}
+func.func @bf16_nonsplat() {
+  %src = memref.get_global @qbf16ns : memref<2x2xbf16>
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<2x2xbf16> {
+    air.channel.put @qbf16ns_chan[] (%a[] [] []) : (memref<2x2xbf16>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
+        %alloc = memref.alloc() : memref<2x2xbf16, 2>
+        air.channel.get @qbf16ns_chan[] (%alloc[] [] []) : (memref<2x2xbf16, 2>)
+        memref.dealloc %alloc : memref<2x2xbf16, 2>
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// i8 splat: integer types are also handled natively by initBuffers
+// (XAie_DataMemBlockWrite copies APInt bytes), so the destination i8
+// buffer takes the i8 splat as-is.
+//
+// CHECK-I8-LABEL: aie.device(npu1)
+// CHECK-I8:         aie.buffer(%{{.+}}) {sym_name = "{{.+}}"} : memref<4xi8, 2> = dense<66>
+// CHECK-I8-NOT:     aiex.npu.blockwrite
+
+memref.global "private" @c8s : memref<4xi8> = dense<66>
+air.channel @c8s_chan [] {channel_type = "mmio"}
+func.func @i8_splat() {
+  %src = memref.get_global @c8s : memref<4xi8>
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<4xi8> {
+    air.channel.put @c8s_chan[] (%a[] [] []) : (memref<4xi8>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%nx = %c1_0, %ny = %c1_0) {
+        %alloc = memref.alloc() : memref<4xi8, 2>
+        air.channel.get @c8s_chan[] (%alloc[] [] []) : (memref<4xi8, 2>)
+        memref.dealloc %alloc : memref<4xi8, 2>
       }
     }
   }
