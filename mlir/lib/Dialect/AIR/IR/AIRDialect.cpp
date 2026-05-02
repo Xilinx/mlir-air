@@ -236,27 +236,11 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 template <class OpT>
 static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                              PatternRewriter &rewriter) {
-  // Walk view-like ops, air.hierarchy body args, and loop iter_args back
-  // to a root memref. Preserved as a fallback for the AIR-domain
-  // assumption "distinct top-level memref SSA values address distinct
-  // storage", which upstream LocalAliasAnalysis intentionally does not
-  // make (a caller could in principle pass the same buffer twice as two
-  // distinct func args, and there is no `noalias` annotation on MLIR
-  // func args by default).
-  //
-  // Intentionally conservative — DO NOT TIGHTEN without a strong reason:
-  //   * Two disjoint views of the same root return the same root and
-  //     are reported as aliasing. Modeling subview offsets/sizes to
-  //     prove disjointness was the bug behind #1559: the original code
-  //     compared SSA identity (the strictest possible "alias" predicate)
-  //     and dropped real RAW edges between fill and channel.put.
-  //   * iter_args resolve to the loop init; a body that conditionally
-  //     yields a different memref will under-approximate roots seen
-  //     across iterations, but still over-approximates aliasing.
-  //
-  // Over-approximating aliasing is the safe direction here: this
-  // predicate gates dead-edge *removal*, so false positives only
-  // suppress an optimization, never invent a race.
+  // Fallback for the AIR-domain assumption that distinct top-level memref
+  // SSA values address distinct storage; upstream alias analysis cannot
+  // make that claim because MLIR has no noalias on func args. Aliasing
+  // here gates dead-edge removal, so over-approximation only suppresses
+  // an optimization (#1559).
   auto getRoot = [](Value v) -> Value {
     while (true) {
       if (auto view = v.getDefiningOp<ViewLikeOpInterface>()) {
@@ -281,14 +265,6 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
       return v;
     }
   };
-  // Hybrid alias query: first consult upstream LocalAliasAnalysis (which
-  // can prove NoAlias between distinct allocations — including two
-  // air.execute -> memref results, since ExecuteOp now propagates the
-  // inner Allocate effect to its outer result, and which transparently
-  // walks RegionBranchOpInterface block args including air hierarchy
-  // body args). When that returns MayAlias, fall back to the getRoot
-  // SSA-identity check that encodes the AIR-domain assumption above.
-  // Strictly more precise than either alone.
   mlir::LocalAliasAnalysis aliasAnalysis;
   auto mayAlias = [&aliasAnalysis, &getRoot](Value a, Value b) {
     if (aliasAnalysis.alias(a, b).isNo())
@@ -340,12 +316,9 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
-  // Memrefs accessed by `o` under `accessFn`. With `walkConsumers=true`
-  // (sink side), also unions in accesses from `o`'s transitive async-token
-  // consumers — required for sync primitives whose own accesses don't
-  // overlap a real barrier dep (issue #1559). Must be `false` on the source
-  // side, or the source would inherit its own sink's accesses.
-  // Values are inserted as-is; aliasing is resolved by mayAlias() below.
+  // walkConsumers=true unions accesses from `o`'s transitive async-token
+  // consumers (required for sync primitives, #1559). Must be false on the
+  // source side or the source inherits its own sink's accesses.
   auto getAllMemrefsAccessedByOp =
       [](Operation *o, bool walkConsumers,
          llvm::function_ref<SmallVector<Value>(Operation *)> accessFn) {
@@ -467,8 +440,6 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           llvm::range_size(llvm::concat<Value>(memrefsReadBySinkOp,
                                                memrefsWrittenBySinkOp)) != 0;
       if (sourceOpTouchesMemref && sinkOpTouchesMemref) {
-        // Pairwise alias check via the hybrid mayAlias above. Sets are
-        // typically small (1-5 memrefs) so the O(N*M) cost is negligible.
         auto anyAlias = [&](const llvm::SetVector<Value> &as,
                             const llvm::SetVector<Value> &bs) {
           for (Value a : as)
@@ -868,14 +839,8 @@ unsigned air::LaunchOp::getNumDims() {
   return segment_sizes[1];
 }
 
-// RegionBranchOpInterface: kernel operands flow into the body's kernel-arg
-// block args; the body returns no values to the parent.
-//
-// Invocation bounds: the body executes once per (x, y, ...) coordinate of
-// the iteration space, i.e. the product of the size operands. If every size
-// operand folds to a non-negative IntegerAttr we report a tight {n, n}
-// bound, otherwise we report Unknown. This matches scf.forall's convention
-// (each lattice point invokes the body once, in parallel).
+// Hierarchy body invokes once per iteration-space coordinate — product of
+// the size operands when all are constant, Unknown otherwise.
 static InvocationBounds computeHierarchyBounds(ArrayRef<Attribute> operands,
                                                unsigned sizeStart,
                                                unsigned numDims) {
@@ -889,8 +854,6 @@ static InvocationBounds computeHierarchyBounds(ArrayRef<Attribute> operands,
     if (v < 0)
       return InvocationBounds::getUnknown();
     uint64_t uv = static_cast<uint64_t>(v);
-    // Pre-multiply overflow guard: check before doing the multiply, so we
-    // never wrap and silently produce a small bound for very large sizes.
     if (uv != 0 && product > kMaxUnsigned / uv)
       return InvocationBounds::getUnknown();
     product *= uv;
@@ -2051,22 +2014,15 @@ LogicalResult air::ExecuteOp::verify() {
   return success();
 }
 
-// MemoryEffectOpInterface: mirror the body's effects out to the
-// air.execute op. For Allocate effects on values that are yielded out of
-// the region, retarget the effect to the corresponding outer result so
-// upstream alias analyses (e.g. LocalAliasAnalysis) recognise that two
-// distinct `air.execute -> memref` ops produce non-aliasing storage.
-// Other inner effects are forwarded onto the default resource. If the
-// body contains ANY op that does not declare its effects (no
-// MemoryEffectOpInterface), conservatively report Read+Write+Free on the
-// default resource so callers don't assume the execute is side-effect
-// free. This matches the safe-default behaviour the op had before this
-// interface was declared.
+// Mirror body effects up to the execute op. Inner Allocate effects on
+// yielded values get retargeted to the outer result so alias analysis
+// can prove distinct execute-yielded memrefs NoAlias. Inner ops with no
+// declared effects fall back to conservative R+W+Free unless upstream
+// can prove them effect-free.
 void air::ExecuteOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   if (getBody().empty())
     return;
-  // Map terminator-yielded values to their corresponding outer OpResult.
   llvm::SmallDenseMap<Value, OpResult> yieldToResult;
   if (auto execTerm = dyn_cast_if_present<air::ExecuteTerminatorOp>(
           getBody().getTerminator())) {
@@ -2082,11 +2038,6 @@ void air::ExecuteOp::getEffects(
       return;
     auto effectOp = dyn_cast<MemoryEffectOpInterface>(inner);
     if (!effectOp) {
-      // No interface declared. If the op is provably effect-free via
-      // upstream helpers (Pure trait, NoMemoryEffect trait, etc.) then
-      // treat it as such — `arith.constant`, `affine.apply`, and friends
-      // commonly appear in execute bodies and should not pessimise our
-      // declared effects.
       if (mlir::isMemoryEffectFree(inner))
         return;
       sawUnknownOp = true;
@@ -2100,8 +2051,6 @@ void air::ExecuteOp::getEffects(
         auto it = v ? yieldToResult.find(v) : yieldToResult.end();
         if (it != yieldToResult.end())
           effects.emplace_back(e.getEffect(), it->second, e.getResource());
-        // Inner Allocate effects on non-yielded values are scoped to the
-        // body and don't affect outer aliasing; do not report them.
       } else {
         effects.emplace_back(e.getEffect(), e.getResource());
       }
