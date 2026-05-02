@@ -8,6 +8,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#include "mlir/Analysis/AliasAnalysis/LocalAliasAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -20,12 +21,14 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <iostream>
+#include <limits>
 
 using namespace mlir;
 
@@ -233,24 +236,11 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 template <class OpT>
 static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                              PatternRewriter &rewriter) {
-  // Walk view-like ops, air.hierarchy body args, and loop iter_args back
-  // to a root memref. The collectors below resolve every memref through
-  // this walk before inserting, so the RAW/WAR/WAW comparisons reduce to
-  // set-membership.
-  //
-  // Intentionally conservative — DO NOT TIGHTEN without a strong reason:
-  //   * Two disjoint views of the same root return the same root and
-  //     are reported as aliasing. Modeling subview offsets/sizes to
-  //     prove disjointness was the bug behind #1559: the original code
-  //     compared SSA identity (the strictest possible "alias" predicate)
-  //     and dropped real RAW edges between fill and channel.put.
-  //   * iter_args resolve to the loop init; a body that conditionally
-  //     yields a different memref will under-approximate roots seen
-  //     across iterations, but still over-approximates aliasing.
-  //
-  // Over-approximating aliasing is the safe direction here: this
-  // predicate gates dead-edge *removal*, so false positives only
-  // suppress an optimization, never invent a race.
+  // Fallback for the AIR-domain assumption that distinct top-level memref
+  // SSA values address distinct storage; upstream alias analysis cannot
+  // make that claim because MLIR has no noalias on func args. Aliasing
+  // here gates dead-edge removal, so over-approximation only suppresses
+  // an optimization (#1559).
   auto getRoot = [](Value v) -> Value {
     while (true) {
       if (auto view = v.getDefiningOp<ViewLikeOpInterface>()) {
@@ -274,6 +264,12 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
       }
       return v;
     }
+  };
+  mlir::LocalAliasAnalysis aliasAnalysis;
+  auto mayAlias = [&aliasAnalysis, &getRoot](Value a, Value b) {
+    if (aliasAnalysis.alias(a, b).isNo())
+      return false;
+    return getRoot(a) == getRoot(b);
   };
   auto getAllReadAccess = [](Operation *op) {
     SmallVector<Value> operands;
@@ -320,18 +316,15 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
-  // Root memrefs accessed by `o` under `accessFn`. With `walkConsumers=true`
-  // (sink side), also unions in accesses from `o`'s transitive async-token
-  // consumers — required for sync primitives whose own accesses don't
-  // overlap a real barrier dep (issue #1559). Must be `false` on the source
-  // side, or the source would inherit its own sink's accesses.
+  // walkConsumers=true unions accesses from `o`'s transitive async-token
+  // consumers (required for sync primitives, #1559). Must be false on the
+  // source side or the source inherits its own sink's accesses.
   auto getAllMemrefsAccessedByOp =
-      [getRoot](Operation *o, bool walkConsumers,
-                llvm::function_ref<SmallVector<Value>(Operation *)> accessFn) {
+      [](Operation *o, bool walkConsumers,
+         llvm::function_ref<SmallVector<Value>(Operation *)> accessFn) {
         llvm::SetVector<Value> memrefs;
-        auto insertRoot = [&](Value v) { memrefs.insert(getRoot(v)); };
         for (Value v : accessFn(o))
-          insertRoot(v);
+          memrefs.insert(v);
         SmallVector<Region *> regions;
         for (auto &region : o->getRegions())
           regions.push_back(&region);
@@ -340,7 +333,7 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           air::walkAsyncTokenConsumers(o, consumers);
           for (auto user : consumers) {
             for (Value v : accessFn(user))
-              insertRoot(v);
+              memrefs.insert(v);
             for (auto &region : user->getRegions())
               regions.push_back(&region);
           }
@@ -348,7 +341,7 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
         for (auto region : regions) {
           visitUsedValuesDefinedAbove(*region, [&](OpOperand *use) {
             if (llvm::is_contained(accessFn(use->getOwner()), use->get()))
-              insertRoot(use->get());
+              memrefs.insert(use->get());
           });
         }
         return memrefs;
@@ -447,19 +440,20 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           llvm::range_size(llvm::concat<Value>(memrefsReadBySinkOp,
                                                memrefsWrittenBySinkOp)) != 0;
       if (sourceOpTouchesMemref && sinkOpTouchesMemref) {
-        // Sets already contain root memrefs (resolved by the collectors),
-        // so RAW/WAR/WAW checks reduce to plain set-membership.
+        auto anyAlias = [&](const llvm::SetVector<Value> &as,
+                            const llvm::SetVector<Value> &bs) {
+          for (Value a : as)
+            for (Value b : bs)
+              if (mayAlias(a, b))
+                return true;
+          return false;
+        };
         bool RAWNotFound =
-            llvm::none_of(memrefsWrittenBySourceOp, [&](Value v) {
-              return memrefsReadBySinkOp.contains(v);
-            });
-        bool WARNotFound = llvm::none_of(memrefsReadBySourceOp, [&](Value v) {
-          return memrefsWrittenBySinkOp.contains(v);
-        });
+            !anyAlias(memrefsWrittenBySourceOp, memrefsReadBySinkOp);
+        bool WARNotFound =
+            !anyAlias(memrefsReadBySourceOp, memrefsWrittenBySinkOp);
         bool WAWNotFound =
-            llvm::none_of(memrefsWrittenBySourceOp, [&](Value v) {
-              return memrefsWrittenBySinkOp.contains(v);
-            });
+            !anyAlias(memrefsWrittenBySourceOp, memrefsWrittenBySinkOp);
         bool noSharedResource = llvm::none_of(
             resourcesUsedBySourceOp, [&resourcesUsedBySinkOp](SymbolRefAttr r) {
               return llvm::is_contained(resourcesUsedBySinkOp, r);
@@ -845,6 +839,53 @@ unsigned air::LaunchOp::getNumDims() {
   return segment_sizes[1];
 }
 
+// Hierarchy body invokes once per iteration-space coordinate — product of
+// the size operands when all are constant, Unknown otherwise.
+static InvocationBounds computeHierarchyBounds(ArrayRef<Attribute> operands,
+                                               unsigned sizeStart,
+                                               unsigned numDims) {
+  constexpr uint64_t kMaxUnsigned = std::numeric_limits<unsigned>::max();
+  uint64_t product = 1;
+  for (unsigned i = 0; i < numDims; ++i) {
+    auto intAttr = dyn_cast_if_present<IntegerAttr>(operands[sizeStart + i]);
+    if (!intAttr)
+      return InvocationBounds::getUnknown();
+    int64_t v = intAttr.getInt();
+    if (v < 0)
+      return InvocationBounds::getUnknown();
+    uint64_t uv = static_cast<uint64_t>(v);
+    if (uv != 0 && product > kMaxUnsigned / uv)
+      return InvocationBounds::getUnknown();
+    product *= uv;
+  }
+  unsigned n = static_cast<unsigned>(product);
+  return InvocationBounds(n, n);
+}
+
+OperandRange air::LaunchOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::LaunchOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::LaunchOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
+}
+void air::LaunchOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  bounds.push_back(computeHierarchyBounds(
+      operands, getAsyncDependencies().size(), getNumDims()));
+}
+
 //
 // RankOp
 //
@@ -1223,6 +1264,30 @@ unsigned air::RankOp::getNumDims() {
   return segment_sizes[2];
 }
 
+OperandRange air::RankOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::RankOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::RankOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
+}
+void air::RankOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  unsigned sizeStart = getAsyncDependencies().size() + (getUniverse() ? 1 : 0);
+  bounds.push_back(computeHierarchyBounds(operands, sizeStart, getNumDims()));
+}
+
 LogicalResult air::RankOp::verify() {
   // RankOp may be nested inside air.launch (for multi-GPU parallelism),
   // but not inside air.segment, air.herd, or another air.rank.
@@ -1498,6 +1563,30 @@ unsigned air::SegmentOp::getNumDims() {
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
+}
+
+OperandRange air::SegmentOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::SegmentOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::SegmentOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
+}
+void air::SegmentOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  bounds.push_back(computeHierarchyBounds(
+      operands, getAsyncDependencies().size(), getNumDims()));
 }
 
 /// Utility function to verify that all memref.alloc operations within a region
@@ -1856,7 +1945,7 @@ Value air::HerdOp::getKernelOperand(unsigned i) {
 }
 
 ArrayRef<BlockArgument> air::HerdOp::getKernelArguments() {
-  return getBody().front().getArguments().drop_front(4);
+  return getBody().front().getArguments().drop_front(getNumDims() * 2);
 }
 
 BlockArgument air::HerdOp::getKernelArgument(unsigned i) {
@@ -1868,6 +1957,30 @@ unsigned air::HerdOp::getNumDims() {
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
+}
+
+OperandRange air::HerdOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::HerdOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::HerdOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
+}
+void air::HerdOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  bounds.push_back(computeHierarchyBounds(
+      operands, getAsyncDependencies().size(), getNumDims()));
 }
 
 uint64_t air::HerdOp::getNumCols() {
@@ -1899,6 +2012,58 @@ LogicalResult air::ExecuteOp::verify() {
     return emitOpError("ExecuteOp should have non-empty body.");
 
   return success();
+}
+
+// Mirror body effects up to the execute op. Inner Allocate effects on
+// yielded values get retargeted to the outer result so alias analysis
+// can prove distinct execute-yielded memrefs NoAlias. Inner ops with no
+// declared effects fall back to conservative R+W+Free unless upstream
+// can prove them effect-free.
+void air::ExecuteOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (getBody().empty())
+    return;
+  llvm::SmallDenseMap<Value, OpResult> yieldToResult;
+  if (auto execTerm = dyn_cast_if_present<air::ExecuteTerminatorOp>(
+          getBody().getTerminator())) {
+    unsigned numYields = execTerm->getNumOperands();
+    unsigned firstYieldResult = getNumResults() - numYields;
+    for (unsigned i = 0; i < numYields; ++i)
+      yieldToResult[execTerm->getOperand(i)] =
+          cast<OpResult>(getResult(firstYieldResult + i));
+  }
+  bool sawUnknownOp = false;
+  getBody().walk([&](Operation *inner) {
+    if (inner == getBody().getTerminator())
+      return;
+    auto effectOp = dyn_cast<MemoryEffectOpInterface>(inner);
+    if (!effectOp) {
+      if (mlir::isMemoryEffectFree(inner))
+        return;
+      sawUnknownOp = true;
+      return;
+    }
+    SmallVector<MemoryEffects::EffectInstance> innerEffects;
+    effectOp.getEffects(innerEffects);
+    for (auto &e : innerEffects) {
+      if (isa<MemoryEffects::Allocate>(e.getEffect())) {
+        Value v = e.getValue();
+        auto it = v ? yieldToResult.find(v) : yieldToResult.end();
+        if (it != yieldToResult.end())
+          effects.emplace_back(e.getEffect(), it->second, e.getResource());
+      } else {
+        effects.emplace_back(e.getEffect(), e.getResource());
+      }
+    }
+  });
+  if (sawUnknownOp) {
+    effects.emplace_back(MemoryEffects::Read::get(),
+                         SideEffects::DefaultResource::get());
+    effects.emplace_back(MemoryEffects::Write::get(),
+                         SideEffects::DefaultResource::get());
+    effects.emplace_back(MemoryEffects::Free::get(),
+                         SideEffects::DefaultResource::get());
+  }
 }
 
 static LogicalResult FoldExecute(air::ExecuteOp op, PatternRewriter &rewriter) {
