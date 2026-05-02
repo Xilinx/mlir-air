@@ -393,7 +393,7 @@ the region must be executed sequentially.
 
 Traits: `SingleBlockImplicitTerminator<ExecuteTerminatorOp>`, `SingleBlock`
 
-Interfaces: `air_AsyncOpInterface`
+Interfaces: `MemoryEffectOpInterface`, `air_AsyncOpInterface`
 
 #### Operands:
 
@@ -447,7 +447,7 @@ Define and run a 1D or 2D array of tiles as an AIR Herd.
 
 Traits: `AffineScope`, `AttrSizedOperandSegments`, `IsolatedFromAbove`, `SingleBlockImplicitTerminator<HerdTerminatorOp>`, `SingleBlock`
 
-Interfaces: `air_AsyncOpInterface`, `air_HierarchyInterface`
+Interfaces: `RegionBranchOpInterface`, `air_AsyncOpInterface`, `air_HierarchyInterface`
 
 #### Attributes:
 
@@ -503,7 +503,7 @@ Launch
 
 Traits: `AffineScope`, `AttrSizedOperandSegments`, `IsolatedFromAbove`, `SingleBlockImplicitTerminator<LaunchTerminatorOp>`, `SingleBlock`
 
-Interfaces: `air_AsyncOpInterface`, `air_HierarchyInterface`
+Interfaces: `RegionBranchOpInterface`, `air_AsyncOpInterface`, `air_HierarchyInterface`
 
 #### Attributes:
 
@@ -567,7 +567,7 @@ physical pool from which rank instances are scheduled.
 
 Traits: `AffineScope`, `AttrSizedOperandSegments`, `IsolatedFromAbove`, `SingleBlockImplicitTerminator<RankTerminatorOp>`, `SingleBlock`
 
-Interfaces: `air_AsyncOpInterface`, `air_HierarchyInterface`
+Interfaces: `RegionBranchOpInterface`, `air_AsyncOpInterface`, `air_HierarchyInterface`
 
 #### Attributes:
 
@@ -623,7 +623,7 @@ Segment
 
 Traits: `AffineScope`, `AttrSizedOperandSegments`, `IsolatedFromAbove`, `SingleBlockImplicitTerminator<SegmentTerminatorOp>`, `SingleBlock`
 
-Interfaces: `air_AsyncOpInterface`, `air_HierarchyInterface`
+Interfaces: `RegionBranchOpInterface`, `air_AsyncOpInterface`, `air_HierarchyInterface`
 
 #### Attributes:
 
