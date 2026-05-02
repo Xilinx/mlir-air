@@ -27,6 +27,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <iostream>
+#include <limits>
 
 using namespace mlir;
 
@@ -848,6 +849,31 @@ unsigned air::LaunchOp::getNumDims() {
 
 // RegionBranchOpInterface: kernel operands flow into the body's kernel-arg
 // block args; the body returns no values to the parent.
+//
+// Invocation bounds: the body executes once per (x, y, ...) coordinate of
+// the iteration space, i.e. the product of the size operands. If every size
+// operand folds to a non-negative IntegerAttr we report a tight {n, n}
+// bound, otherwise we report Unknown. This matches scf.forall's convention
+// (each lattice point invokes the body once, in parallel).
+static InvocationBounds computeHierarchyBounds(ArrayRef<Attribute> operands,
+                                               unsigned sizeStart,
+                                               unsigned numDims) {
+  uint64_t product = 1;
+  for (unsigned i = 0; i < numDims; ++i) {
+    auto intAttr = dyn_cast_if_present<IntegerAttr>(operands[sizeStart + i]);
+    if (!intAttr)
+      return InvocationBounds::getUnknown();
+    int64_t v = intAttr.getInt();
+    if (v < 0)
+      return InvocationBounds::getUnknown();
+    product *= static_cast<uint64_t>(v);
+    if (product > std::numeric_limits<unsigned>::max())
+      return InvocationBounds::getUnknown();
+  }
+  unsigned n = static_cast<unsigned>(product);
+  return InvocationBounds(n, n);
+}
+
 OperandRange air::LaunchOp::getEntrySuccessorOperands(RegionSuccessor succ) {
   if (succ.getSuccessor() == &getBody())
     return getKernelOperands();
@@ -865,6 +891,11 @@ void air::LaunchOp::getSuccessorRegions(
     regions.push_back(RegionSuccessor(&getBody()));
   else
     regions.push_back(RegionSuccessor::parent());
+}
+void air::LaunchOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  bounds.push_back(computeHierarchyBounds(
+      operands, getAsyncDependencies().size(), getNumDims()));
 }
 
 //
@@ -1263,6 +1294,11 @@ void air::RankOp::getSuccessorRegions(
   else
     regions.push_back(RegionSuccessor::parent());
 }
+void air::RankOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  unsigned sizeStart = getAsyncDependencies().size() + (getUniverse() ? 1 : 0);
+  bounds.push_back(computeHierarchyBounds(operands, sizeStart, getNumDims()));
+}
 
 LogicalResult air::RankOp::verify() {
   // RankOp may be nested inside air.launch (for multi-GPU parallelism),
@@ -1558,6 +1594,11 @@ void air::SegmentOp::getSuccessorRegions(
     regions.push_back(RegionSuccessor(&getBody()));
   else
     regions.push_back(RegionSuccessor::parent());
+}
+void air::SegmentOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  bounds.push_back(computeHierarchyBounds(
+      operands, getAsyncDependencies().size(), getNumDims()));
 }
 
 /// Utility function to verify that all memref.alloc operations within a region
@@ -1947,6 +1988,11 @@ void air::HerdOp::getSuccessorRegions(
     regions.push_back(RegionSuccessor(&getBody()));
   else
     regions.push_back(RegionSuccessor::parent());
+}
+void air::HerdOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  bounds.push_back(computeHierarchyBounds(
+      operands, getAsyncDependencies().size(), getNumDims()));
 }
 
 uint64_t air::HerdOp::getNumCols() {
