@@ -8,6 +8,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#include "mlir/Analysis/AliasAnalysis/LocalAliasAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -236,9 +237,12 @@ template <class OpT>
 static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                              PatternRewriter &rewriter) {
   // Walk view-like ops, air.hierarchy body args, and loop iter_args back
-  // to a root memref. The collectors below resolve every memref through
-  // this walk before inserting, so the RAW/WAR/WAW comparisons reduce to
-  // set-membership.
+  // to a root memref. Preserved as a fallback for the AIR-domain
+  // assumption "distinct top-level memref SSA values address distinct
+  // storage", which upstream LocalAliasAnalysis intentionally does not
+  // make (a caller could in principle pass the same buffer twice as two
+  // distinct func args, and there is no `noalias` annotation on MLIR
+  // func args by default).
   //
   // Intentionally conservative — DO NOT TIGHTEN without a strong reason:
   //   * Two disjoint views of the same root return the same root and
@@ -276,6 +280,20 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
       }
       return v;
     }
+  };
+  // Hybrid alias query: first consult upstream LocalAliasAnalysis (which
+  // can prove NoAlias between distinct allocations — including two
+  // air.execute -> memref results, since ExecuteOp now propagates the
+  // inner Allocate effect to its outer result, and which transparently
+  // walks RegionBranchOpInterface block args including air hierarchy
+  // body args). When that returns MayAlias, fall back to the getRoot
+  // SSA-identity check that encodes the AIR-domain assumption above.
+  // Strictly more precise than either alone.
+  mlir::LocalAliasAnalysis aliasAnalysis;
+  auto mayAlias = [&aliasAnalysis, &getRoot](Value a, Value b) {
+    if (aliasAnalysis.alias(a, b).isNo())
+      return false;
+    return getRoot(a) == getRoot(b);
   };
   auto getAllReadAccess = [](Operation *op) {
     SmallVector<Value> operands;
@@ -322,18 +340,18 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
-  // Root memrefs accessed by `o` under `accessFn`. With `walkConsumers=true`
+  // Memrefs accessed by `o` under `accessFn`. With `walkConsumers=true`
   // (sink side), also unions in accesses from `o`'s transitive async-token
   // consumers — required for sync primitives whose own accesses don't
   // overlap a real barrier dep (issue #1559). Must be `false` on the source
   // side, or the source would inherit its own sink's accesses.
+  // Values are inserted as-is; aliasing is resolved by mayAlias() below.
   auto getAllMemrefsAccessedByOp =
-      [getRoot](Operation *o, bool walkConsumers,
-                llvm::function_ref<SmallVector<Value>(Operation *)> accessFn) {
+      [](Operation *o, bool walkConsumers,
+         llvm::function_ref<SmallVector<Value>(Operation *)> accessFn) {
         llvm::SetVector<Value> memrefs;
-        auto insertRoot = [&](Value v) { memrefs.insert(getRoot(v)); };
         for (Value v : accessFn(o))
-          insertRoot(v);
+          memrefs.insert(v);
         SmallVector<Region *> regions;
         for (auto &region : o->getRegions())
           regions.push_back(&region);
@@ -342,7 +360,7 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           air::walkAsyncTokenConsumers(o, consumers);
           for (auto user : consumers) {
             for (Value v : accessFn(user))
-              insertRoot(v);
+              memrefs.insert(v);
             for (auto &region : user->getRegions())
               regions.push_back(&region);
           }
@@ -350,7 +368,7 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
         for (auto region : regions) {
           visitUsedValuesDefinedAbove(*region, [&](OpOperand *use) {
             if (llvm::is_contained(accessFn(use->getOwner()), use->get()))
-              insertRoot(use->get());
+              memrefs.insert(use->get());
           });
         }
         return memrefs;
@@ -449,19 +467,22 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           llvm::range_size(llvm::concat<Value>(memrefsReadBySinkOp,
                                                memrefsWrittenBySinkOp)) != 0;
       if (sourceOpTouchesMemref && sinkOpTouchesMemref) {
-        // Sets already contain root memrefs (resolved by the collectors),
-        // so RAW/WAR/WAW checks reduce to plain set-membership.
+        // Pairwise alias check via the hybrid mayAlias above. Sets are
+        // typically small (1-5 memrefs) so the O(N*M) cost is negligible.
+        auto anyAlias = [&](const llvm::SetVector<Value> &as,
+                            const llvm::SetVector<Value> &bs) {
+          for (Value a : as)
+            for (Value b : bs)
+              if (mayAlias(a, b))
+                return true;
+          return false;
+        };
         bool RAWNotFound =
-            llvm::none_of(memrefsWrittenBySourceOp, [&](Value v) {
-              return memrefsReadBySinkOp.contains(v);
-            });
-        bool WARNotFound = llvm::none_of(memrefsReadBySourceOp, [&](Value v) {
-          return memrefsWrittenBySinkOp.contains(v);
-        });
+            !anyAlias(memrefsWrittenBySourceOp, memrefsReadBySinkOp);
+        bool WARNotFound =
+            !anyAlias(memrefsReadBySourceOp, memrefsWrittenBySinkOp);
         bool WAWNotFound =
-            llvm::none_of(memrefsWrittenBySourceOp, [&](Value v) {
-              return memrefsWrittenBySinkOp.contains(v);
-            });
+            !anyAlias(memrefsWrittenBySourceOp, memrefsWrittenBySinkOp);
         bool noSharedResource = llvm::none_of(
             resourcesUsedBySourceOp, [&resourcesUsedBySinkOp](SymbolRefAttr r) {
               return llvm::is_contained(resourcesUsedBySinkOp, r);
@@ -2024,6 +2045,65 @@ LogicalResult air::ExecuteOp::verify() {
     return emitOpError("ExecuteOp should have non-empty body.");
 
   return success();
+}
+
+// MemoryEffectOpInterface: mirror the body's effects out to the
+// air.execute op. For Allocate effects on values that are yielded out of
+// the region, retarget the effect to the corresponding outer result so
+// upstream alias analyses (e.g. LocalAliasAnalysis) recognise that two
+// distinct `air.execute -> memref` ops produce non-aliasing storage.
+// Other inner effects are forwarded onto the default resource. If the
+// body contains ANY op that does not declare its effects (no
+// MemoryEffectOpInterface), conservatively report Read+Write+Free on the
+// default resource so callers don't assume the execute is side-effect
+// free. This matches the safe-default behaviour the op had before this
+// interface was declared.
+void air::ExecuteOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (getBody().empty())
+    return;
+  // Map terminator-yielded values to their corresponding outer OpResult.
+  llvm::SmallDenseMap<Value, OpResult> yieldToResult;
+  if (auto execTerm = dyn_cast_if_present<air::ExecuteTerminatorOp>(
+          getBody().getTerminator())) {
+    unsigned numYields = execTerm->getNumOperands();
+    unsigned firstYieldResult = getNumResults() - numYields;
+    for (unsigned i = 0; i < numYields; ++i)
+      yieldToResult[execTerm->getOperand(i)] =
+          cast<OpResult>(getResult(firstYieldResult + i));
+  }
+  bool sawUnknownOp = false;
+  getBody().walk([&](Operation *inner) {
+    if (inner == getBody().getTerminator())
+      return;
+    auto effectOp = dyn_cast<MemoryEffectOpInterface>(inner);
+    if (!effectOp) {
+      sawUnknownOp = true;
+      return;
+    }
+    SmallVector<MemoryEffects::EffectInstance> innerEffects;
+    effectOp.getEffects(innerEffects);
+    for (auto &e : innerEffects) {
+      if (isa<MemoryEffects::Allocate>(e.getEffect())) {
+        Value v = e.getValue();
+        auto it = v ? yieldToResult.find(v) : yieldToResult.end();
+        if (it != yieldToResult.end())
+          effects.emplace_back(e.getEffect(), it->second, e.getResource());
+        // Inner Allocate effects on non-yielded values are scoped to the
+        // body and don't affect outer aliasing; do not report them.
+      } else {
+        effects.emplace_back(e.getEffect(), e.getResource());
+      }
+    }
+  });
+  if (sawUnknownOp) {
+    effects.emplace_back(MemoryEffects::Read::get(),
+                         SideEffects::DefaultResource::get());
+    effects.emplace_back(MemoryEffects::Write::get(),
+                         SideEffects::DefaultResource::get());
+    effects.emplace_back(MemoryEffects::Free::get(),
+                         SideEffects::DefaultResource::get());
+  }
 }
 
 static LogicalResult FoldExecute(air::ExecuteOp op, PatternRewriter &rewriter) {

@@ -809,7 +809,8 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
 // AIR asynchronous region for dynamic event dispatching.
 
 def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTerminatorOp">,
-                                       air_AsyncOpInterface]> {
+                                       air_AsyncOpInterface,
+                                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let arguments = (
     ins Variadic<air_AsyncToken>:$async_dependencies
   );
