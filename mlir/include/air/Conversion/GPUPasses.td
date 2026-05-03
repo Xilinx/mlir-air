@@ -49,6 +49,29 @@ def ConvertGPUKernelOutline : Pass<"air-gpu-outlining", "ModuleOp"> {
   let options = [];
 }
 
+def AIRSymmetricAllocToMgpu : Pass<"air-symmetric-alloc-to-mgpu", "ModuleOp"> {
+  let summary = "Lower memref.alloc {air.symmetric} to mgpuSymmetricAlloc and "
+                "memref.dealloc of the result to mgpuSymmetricFree";
+  let constructor = "xilinx::air::createAIRSymmetricAllocToMgpuPass()";
+  let description = [{
+    Replaces each `memref.alloc` carrying the unit attribute `air.symmetric`
+    with a call to `mgpuSymmetricAlloc(size_in_bytes, stream)` returning
+    `!llvm.ptr`, then builds an LLVM memref descriptor (struct) wrapping that
+    pointer and projects it back to the original memref type via
+    `builtin.unrealized_conversion_cast` so downstream uses keep working.
+
+    For every `memref.dealloc` whose operand traces back (through a single
+    `unrealized_conversion_cast`) to such a symmetric alloc, the pass emits
+    `mgpuSymmetricFree(ptr, stream)` and erases the dealloc.
+
+    Should run before `convert-to-llvm`. Does nothing if no `air.symmetric`
+    allocations are present.
+  }];
+  let dependentDialects = [
+    "func::FuncDialect", "arith::ArithDialect", "LLVM::LLVMDialect"
+  ];
+}
+
 def AIRRankToMgpu : Pass<"air-rank-to-mgpu", "ModuleOp"> {
   let summary = "Lower air.rank to mgpu* runtime calls (multi-GPU process model)";
   let constructor = "xilinx::air::createAIRRankToMgpuPass()";
