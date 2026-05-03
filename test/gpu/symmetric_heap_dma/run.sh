@@ -80,8 +80,16 @@ case "$INPUT" in
         --pass-pipeline='builtin.module(func.func(convert-scf-to-cf),convert-to-llvm,reconcile-unrealized-casts)' \
         -o "$TMPDIR/sym_lowered.mlir"
     ;;
+  alloc)
+    SRC="$SCRIPT_DIR/air_sym_with_alloc.mlir"
+    # Phase 4 alloc lowering, then Phase 3 rank lowering, then standard LLVM.
+    air-opt "$SRC" -air-symmetric-alloc-to-mgpu -air-rank-to-mgpu \
+        -o "$TMPDIR/post_phase4.mlir"
+    SRC="$TMPDIR/post_phase4.mlir"
+    PIPE='builtin.module(func.func(convert-scf-to-cf),convert-to-llvm,reconcile-unrealized-casts)'
+    ;;
   *)
-    echo "Unknown INPUT=$INPUT; expected 'atomic', 'cacheline', or 'rank'" >&2; exit 1;;
+    echo "Unknown INPUT=$INPUT; expected 'atomic', 'cacheline', 'rank', or 'alloc'" >&2; exit 1;;
 esac
 
 echo "Step 2: Run as ${NUM_RANKS} processes"
