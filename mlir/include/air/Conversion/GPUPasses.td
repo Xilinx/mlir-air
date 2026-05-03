@@ -49,4 +49,33 @@ def ConvertGPUKernelOutline : Pass<"air-gpu-outlining", "ModuleOp"> {
   let options = [];
 }
 
+def AIRRankToMgpu : Pass<"air-rank-to-mgpu", "ModuleOp"> {
+  let summary = "Lower air.rank to mgpu* runtime calls (multi-GPU process model)";
+  let constructor = "xilinx::air::createAIRRankToMgpuPass()";
+  let description = [{
+    Each `air.rank` op is replaced by inlining its body in place, with rank
+    IDs computed from `mgpuGetRank()` (delinearized into the rank's N-D
+    iteration space) and rank sizes substituted from the static size operands.
+
+    The pass also inserts `mgpuSymmetricHeapInit(heap_size)` at the entry of
+    the enclosing `func.func` (default 256 MB; configurable via the
+    `heap-size` option) and `mgpuSymmetricHeapDestroy()` before each
+    `func.return` in that function.
+
+    This replaces `air-rank-to-launch` for the GPU pipeline. Unlike
+    `air-rank-to-launch` (which serializes ranks via `scf.for`), this pass
+    assumes each process executes the whole rank body once and runtime
+    coordinates across processes via env vars (RANK / WORLD_SIZE / LOCAL_RANK)
+    and the symmetric-heap fabric.
+  }];
+  let options = [
+    Option<"heapSize", "heap-size", "uint64_t", "/*default=*/268435456",
+           "Symmetric heap size in bytes (default: 256 MB)">
+  ];
+  let dependentDialects = [
+    "func::FuncDialect", "arith::ArithDialect",
+    "xilinx::air::airDialect"
+  ];
+}
+
 #endif // AIR_CONVERSION_GPU_PASSES

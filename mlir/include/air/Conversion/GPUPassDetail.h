@@ -8,6 +8,7 @@
 #ifndef AIR_CONVERSION_GPU_PASSDETAIL_H
 #define AIR_CONVERSION_GPU_PASSDETAIL_H
 
+#include "air/Dialect/AIR/AIRDialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -26,6 +27,7 @@ using namespace mlir;
 #define GEN_PASS_DEF_AIRTRANSLATETOLLVM
 #define GEN_PASS_DEF_CONVERTAIRTOROCDL
 #define GEN_PASS_DEF_CONVERTGPUKERNELOUTLINE
+#define GEN_PASS_DEF_AIRRANKTOMGPU
 #include "air/Conversion/GPUPasses.h.inc"
 
 } // namespace air
