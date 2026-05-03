@@ -50,36 +50,39 @@ fi
 LLVM_LIB_DIR="${LLVM_INSTALL_DIR:-$(dirname "$(which mlir-opt)")/..}/lib"
 AIRGPU_LIB="${MLIR_AIR_INSTALL_DIR:-$(dirname "$(which air-opt)")/..}/lib/libairgpu.so"
 
-# Two parallel kernel-driven examples — same outer test harness, two
-# different cross-rank synchronization mechanisms:
-#   atomic    — LLVM atomicrmw release / atomic load acquire with
-#               syncscope("") (= AMDGPUUsage System scope = cross-device).
-#               Spec-defined ordering contract; pinned by
-#               sym_atomic_syncscope.mlir.
-#   cacheline — Cache-line atomicity: producer writes 32 i32 (one 128-byte
-#               line) in a single vec store with the flag in-band at lane
-#               31; consumer spins via gpu.shuffle of lane 31. Trades the
-#               LLVM contract for a microarchitectural one (relies on the
-#               XGMI fabric publishing peer cache lines whole).
+# Input MLIR can be selected via INPUT env var.
+#   atomic    — kernel-driven producer/consumer, LLVM atomicrmw + atomic
+#               load with syncscope("") (Phase 2)
+#   cacheline — kernel-driven producer/consumer, cache-line atomicity +
+#               gpu.shuffle (Phase 2)
+#   rank      — high-level air.rank form (Phase 3)
 INPUT="${INPUT:-cacheline}"
 case "$INPUT" in
   atomic|cacheline)
+    # Kernel-driven test: needs the full GPU compilation chain
+    # (rocdl-attach-target → convert-gpu-to-rocdl → gpu-module-to-binary).
     SRC_MLIR="$SCRIPT_DIR/air_sym_handwritten_${INPUT}.mlir"
+    echo "Step 1a: Expand air.translate ops ($INPUT variant)"
+    air-opt "$SRC_MLIR" --air-translate-to-llvm \
+        -o "$TMPDIR/sym_post_translate.mlir"
+    echo "Step 1b: Compile gpu.module to AMDGPU binary + finalize host"
+    mlir-opt "$TMPDIR/sym_post_translate.mlir" \
+        --pass-pipeline='builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-scf-to-cf,convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary,func.func(gpu-async-region,convert-scf-to-cf),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
+        -o "$TMPDIR/sym_lowered.mlir"
+    ;;
+  rank)
+    # Host-orchestrated test: simple LLVM-only pipeline.
+    echo "Step 1a: Lower air.rank to mgpu*"
+    air-opt "$SCRIPT_DIR/air_sym_with_rank.mlir" -air-rank-to-mgpu \
+        -o "$TMPDIR/post_rank.mlir"
+    echo "Step 1b: Lower IR to LLVM dialect"
+    mlir-opt "$TMPDIR/post_rank.mlir" \
+        --pass-pipeline='builtin.module(func.func(convert-scf-to-cf),convert-to-llvm,reconcile-unrealized-casts)' \
+        -o "$TMPDIR/sym_lowered.mlir"
     ;;
   *)
-    echo "Unknown INPUT=$INPUT; expected 'atomic' or 'cacheline'" >&2
-    exit 1
-    ;;
+    echo "Unknown INPUT=$INPUT; expected 'atomic', 'cacheline', or 'rank'" >&2; exit 1;;
 esac
-
-echo "Step 1a: Expand air.translate ops ($INPUT variant)"
-air-opt "$SRC_MLIR" --air-translate-to-llvm \
-    -o "$TMPDIR/sym_post_translate.mlir"
-
-echo "Step 1b: Compile gpu.module to AMDGPU binary + finalize host"
-mlir-opt "$TMPDIR/sym_post_translate.mlir" \
-    --pass-pipeline='builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-scf-to-cf,convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary,func.func(gpu-async-region,convert-scf-to-cf),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
-    -o "$TMPDIR/sym_lowered.mlir"
 
 echo "Step 2: Run as ${NUM_RANKS} processes"
 export AIRGPU_JOB_ID="${AIRGPU_JOB_ID:-$$}"

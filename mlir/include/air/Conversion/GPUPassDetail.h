@@ -26,6 +26,7 @@ using namespace mlir;
 #define GEN_PASS_DEF_AIRTRANSLATETOLLVM
 #define GEN_PASS_DEF_CONVERTAIRTOROCDL
 #define GEN_PASS_DEF_CONVERTGPUKERNELOUTLINE
+#define GEN_PASS_DEF_AIRRANKTOMGPU
 #include "air/Conversion/GPUPasses.h.inc"
 
 } // namespace air
