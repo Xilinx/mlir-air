@@ -69,6 +69,7 @@ case "$INPUT" in
     mlir-opt "$TMPDIR/sym_post_translate.mlir" \
         --pass-pipeline='builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-scf-to-cf,convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary,func.func(gpu-async-region,convert-scf-to-cf),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
         -o "$TMPDIR/sym_lowered.mlir"
+    SKIP_LOWER=1
     ;;
   rank)
     # Host-orchestrated test: simple LLVM-only pipeline.
@@ -79,6 +80,7 @@ case "$INPUT" in
     mlir-opt "$TMPDIR/post_rank.mlir" \
         --pass-pipeline='builtin.module(func.func(convert-scf-to-cf),convert-to-llvm,reconcile-unrealized-casts)' \
         -o "$TMPDIR/sym_lowered.mlir"
+    SKIP_LOWER=1
     ;;
   alloc)
     SRC="$SCRIPT_DIR/air_sym_with_alloc.mlir"
@@ -104,9 +106,24 @@ case "$INPUT" in
     SRC="$TMPDIR/post_phase6.mlir"
     PIPE='builtin.module(func.func(convert-scf-to-cf),convert-to-llvm,reconcile-unrealized-casts)'
     ;;
+  prelowered)
+    # Pre-lowered MLIR file (e.g., output of `aircc --multi-gpu`).
+    # Path provided via SRC=path env var; bypass step 1.
+    if [ -z "${SRC:-}" ]; then
+      echo "INPUT=prelowered requires SRC=<path-to-lowered.mlir>" >&2
+      exit 1
+    fi
+    cp "$SRC" "$TMPDIR/sym_lowered.mlir"
+    SKIP_LOWER=1
+    ;;
   *)
-    echo "Unknown INPUT=$INPUT; expected 'atomic', 'cacheline', 'rank', 'alloc', 'dma', or 'channel'" >&2; exit 1;;
+    echo "Unknown INPUT=$INPUT; expected 'atomic', 'cacheline', 'rank', 'alloc', 'dma', 'channel', or 'prelowered'" >&2; exit 1;;
 esac
+
+if [ -z "${SKIP_LOWER:-}" ]; then
+  echo "Step 1c: Lower IR to LLVM dialect (INPUT=$INPUT)"
+  mlir-opt "$SRC" --pass-pipeline="$PIPE" -o "$TMPDIR/sym_lowered.mlir"
+fi
 
 echo "Step 2: Run as ${NUM_RANKS} processes"
 export AIRGPU_JOB_ID="${AIRGPU_JOB_ID:-$$}"
