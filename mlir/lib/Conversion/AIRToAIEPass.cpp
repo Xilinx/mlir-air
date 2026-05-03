@@ -2542,7 +2542,7 @@ struct SpecializeChannelBundlePattern
     // host-side puts (they sit outside the device, where this pattern's
     // rewrites don't reach), leaving them to fail later as
     // "no matching device-side air.channel.get".
-    if (channel.getChannelType() == "mmio")
+    if (channel.getChannelType() == "npu_mmio")
       return failure();
 
     std::vector<air::ChannelPutOp> channelPuts =
@@ -4017,7 +4017,7 @@ public:
         bool isShimFlow = f.MM2S_alloc.getDmaTile().isShimNOCorPLTile() ||
                           f.S2MM_alloc[i].getDmaTile().isShimNOCorPLTile();
 
-        if (f.memcpyResourceType == "dma_packet") {
+        if (f.memcpyResourceType == "npu_dma_packet") {
           // Use appropriate flow map based on whether flow involves shim tiles
           if (isShimFlow) {
             // Device-host flows use global shim flow ID
@@ -4059,12 +4059,12 @@ public:
             // assignment.
             intraDeviceFlowID = std::max(intraDeviceFlowID, flowID);
           }
-        } else if (f.memcpyResourceType == "dma_stream")
+        } else if (f.memcpyResourceType == "npu_dma_stream")
           getFlowOp(aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
                     (uint32_t)f.MM2S_alloc.dma_channel.channel,
                     f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
                     (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
-        else if (f.memcpyResourceType == "cascade") {
+        else if (f.memcpyResourceType == "npu_cascade") {
           getCascadeFlowOp(aie_device, f.MM2S_alloc.getDmaTile(),
                            AIE::WireBundle::DMA,
                            (uint32_t)f.MM2S_alloc.dma_channel.channel,
@@ -5408,19 +5408,19 @@ public:
     return aieDmaBdOp;
   }
 
-  // Converts an air.channel.put/get operation with channel_type = "cascade"
+  // Converts an air.channel.put/get operation with channel_type = "npu_cascade"
   // into aie.get/put_cascade + vector.transfer_read/write sequence.
   // The conversion flattens the entire memref into a 1-D vector to match
   // the cascade data format expected by the AIE put/get_cascade ops.
   LogicalResult ConvertCascadeChannelIfToAIE(RewriterBase &rewriter,
                                              air::ChannelInterface op) {
-    // Match only if the associated channel has channel_type = "cascade".
+    // Match only if the associated channel has channel_type = "npu_cascade".
     auto chan = air::getChannelDeclarationThroughSymbol(op);
     if (!chan)
       return op->emitOpError("cannot resolve channel symbol");
 
-    if (chan.getChannelType().str() != "cascade")
-      return op->emitOpError("channel_type is not cascade");
+    if (chan.getChannelType().str() != "npu_cascade")
+      return op->emitOpError("channel_type is not npu_cascade");
 
     Location loc = op.getLoc();
     Value memref = op.getMemref();
@@ -5492,13 +5492,13 @@ public:
 
   FailureOr<air::ChannelInterface> TileCascadeChannelIfUsingScfFor(
       RewriterBase &rewriter, air::ChannelInterface op, unsigned cascadeWidth) {
-    // Match only if the associated channel has channel_type = "cascade".
+    // Match only if the associated channel has channel_type = "npu_cascade".
     auto chan = air::getChannelDeclarationThroughSymbol(op);
     if (!chan)
       return op->emitOpError("cannot resolve channel symbol");
 
-    if (chan.getChannelType().str() != "cascade")
-      return op->emitOpError("channel_type is not cascade");
+    if (chan.getChannelType().str() != "npu_cascade")
+      return op->emitOpError("channel_type is not npu_cascade");
 
     Location loc = op.getLoc();
     Value memref = op.getMemref();
@@ -5610,7 +5610,7 @@ public:
 
   // Lower mmio-typed channels into runtime-sequence MMIO writes.
   //
-  // For each `air.channel @c [...] {channel_type = "mmio"}`:
+  // For each `air.channel @c [...] {channel_type = "npu_mmio"}`:
   //   * each `air.channel.get @c` inside an `aie.core` is replaced by an
   //     erase — the destination L1 `aie.buffer` is populated by the host
   //     before the core runs, so the get is a no-op;
@@ -5636,7 +5636,7 @@ public:
     SmallVector<air::ChannelOp> mmioChannels;
     auto collectMMIO = [&](Operation *root) {
       root->walk([&](air::ChannelOp chan) {
-        if (chan.getChannelType() == "mmio")
+        if (chan.getChannelType() == "npu_mmio")
           if (!llvm::is_contained(mmioChannels, chan))
             mmioChannels.push_back(chan);
       });
@@ -5802,7 +5802,7 @@ public:
                                     StringRef kind) -> LogicalResult {
           if (constIndices(indices))
             return success();
-          return op->emitOpError("channel_type=\"mmio\" non-broadcast ")
+          return op->emitOpError("channel_type=\"npu_mmio\" non-broadcast ")
                  << kind << " requires compile-time constant indices";
         };
         for (auto put : hostPuts)
@@ -5832,7 +5832,7 @@ public:
         memref::GetGlobalOp getGlobalOp = getSourceGlobal(src);
         if (!getGlobalOp)
           return put.emitOpError(
-              "channel_type=\"mmio\" put requires source memref defined by "
+              "channel_type=\"npu_mmio\" put requires source memref defined by "
               "memref.get_global of a constant memref.global");
 
         StringAttr origName = getGlobalOp.getNameAttr().getAttr();
@@ -5844,7 +5844,7 @@ public:
                      : nullptr);
         if (!moduleGlobal)
           return getGlobalOp.emitOpError(
-              "channel_type=\"mmio\" lowering: cannot find memref.global "
+              "channel_type=\"npu_mmio\" lowering: cannot find memref.global "
               "for the put source at module scope");
 
         auto initOpt = moduleGlobal.getInitialValue();
@@ -5852,7 +5852,7 @@ public:
             initOpt ? dyn_cast<DenseElementsAttr>(*initOpt) : nullptr;
         if (!initDense)
           return put.emitOpError(
-              "channel_type=\"mmio\" source memref.global must have a "
+              "channel_type=\"npu_mmio\" source memref.global must have a "
               "DenseElementsAttr initializer");
 
         unsigned matchCount = 0;
@@ -5862,7 +5862,7 @@ public:
           AIE::BufferOp bufferOp = getDefiningBuffer(get.getMemref());
           if (!bufferOp)
             return get.emitOpError(
-                "channel_type=\"mmio\" get destination does not resolve to "
+                "channel_type=\"npu_mmio\" get destination does not resolve to "
                 "an aie.buffer (must be an L1 allocation)");
 
           // Element type and total element count must match between source
@@ -5872,13 +5872,13 @@ public:
           auto srcMemTy = cast<MemRefType>(getGlobalOp.getType());
           if (bufMemTy.getElementType() != srcMemTy.getElementType())
             return get.emitOpError(
-                       "channel_type=\"mmio\" source/destination element type "
+                       "channel_type=\"npu_mmio\" source/destination element type "
                        "mismatch (source: ")
                    << srcMemTy.getElementType()
                    << ", destination: " << bufMemTy.getElementType() << ")";
           if (bufMemTy.getNumElements() != srcMemTy.getNumElements())
             return get.emitOpError(
-                       "channel_type=\"mmio\" source/destination element count "
+                       "channel_type=\"npu_mmio\" source/destination element count "
                        "mismatch (source: ")
                    << srcMemTy.getNumElements()
                    << ", destination: " << bufMemTy.getNumElements() << ")";
@@ -5891,13 +5891,13 @@ public:
 
           if (auto existing = bufferOp.getInitialValue())
             return bufferOp.emitOpError(
-                "channel_type=\"mmio\" destination aie.buffer already has an "
+                "channel_type=\"npu_mmio\" destination aie.buffer already has an "
                 "initial_value; cannot stamp two sources into one buffer");
           bufferOp.setInitialValueAttr(reshapedInit);
           ++matchCount;
         }
         if (matchCount == 0)
-          return put.emitOpError("channel_type=\"mmio\" put has no matching "
+          return put.emitOpError("channel_type=\"npu_mmio\" put has no matching "
                                  "device-side air.channel.get");
       }
 
@@ -6237,7 +6237,7 @@ public:
     for (auto &alloc : tileDmaAlloc.s2mm_allocs)
       alloc.memcpyOps.clear();
 
-    // Lower channel_type="mmio" puts/gets into runtime-sequence blockwrites
+    // Lower channel_type="npu_mmio" puts/gets into runtime-sequence blockwrites
     // before the generic erase loop below removes the underlying air ops.
     // Only meaningful for the ChannelInterface specialization; for the
     // DmaMemcpyNd specialization there are no air.channel ops to convert.

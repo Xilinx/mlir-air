@@ -22,7 +22,7 @@ module {
   air.channel @channel_13 [1, 1] {broadcast_shape = [1, 4]}
   air.channel @channel_14 [1, 1] {broadcast_shape = [1, 4]}
   air.channel @channel_15 [1, 1] {broadcast_shape = [1, 4]}
-  air.channel @channel_2 [4, 1] {channel_type = "dma_packet"}
+  air.channel @channel_2 [4, 1] {channel_type = "npu_dma_packet"}
   func.func @func2(%arg0: memref<512x512xbf16>) {
     %c2 = arith.constant 2 : index
     %0 = air.launch async (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg0) : memref<512x512xbf16> attributes {id = 1 : i32} {

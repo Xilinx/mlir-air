@@ -2417,17 +2417,17 @@ module {
 
 // Verify that channel_type attribute is preserved after L2 memref splitting.
 // The split pass creates new channel declarations; non-default channel_type
-// (e.g., "dma_packet") must be carried over from the original channel.
+// (e.g., "npu_dma_packet") must be carried over from the original channel.
 
-// CHECK: air.channel @channel_1 [1, 1] {channel_type = "dma_packet"}
-// CHECK: air.channel @channel_0 [4, 4] {channel_type = "dma_packet"}
-// CHECK: air.channel @channel_2 [4, 1] {channel_type = "dma_packet"}
+// CHECK: air.channel @channel_1 [1, 1] {channel_type = "npu_dma_packet"}
+// CHECK: air.channel @channel_0 [4, 4] {channel_type = "npu_dma_packet"}
+// CHECK: air.channel @channel_2 [4, 1] {channel_type = "npu_dma_packet"}
 // CHECK-LABEL: func.func @test_preserve_channel_type
 
 #map = affine_map<()[s0] -> (s0 * 256)>
 #map1 = affine_map<()[s0] -> (s0 * 64)>
-air.channel @channel_1 [1, 1] {channel_type = "dma_packet"}
-air.channel @channel_0 [4, 4] {channel_type = "dma_packet"}
+air.channel @channel_1 [1, 1] {channel_type = "npu_dma_packet"}
+air.channel @channel_0 [4, 4] {channel_type = "npu_dma_packet"}
 func.func @test_preserve_channel_type(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<512x512xbf16>) {
   %c2 = arith.constant 2 : index
   %0 = air.launch async (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg2) : memref<512x512xbf16> attributes {id = 1 : i32} {

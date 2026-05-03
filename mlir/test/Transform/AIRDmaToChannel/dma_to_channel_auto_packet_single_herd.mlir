@@ -10,8 +10,8 @@
 
 // RUN: air-opt %s -air-dma-to-channel 2>&1 | FileCheck %s
 
-// CHECK-COUNT-3: air.channel {{.*}} {channel_type = "dma_packet"}
-// CHECK-NOT: channel_type = "dma_packet"
+// CHECK-COUNT-3: air.channel {{.*}} {channel_type = "npu_dma_packet"}
+// CHECK-NOT: channel_type = "npu_dma_packet"
 
 module {
   func.func @single_herd_overflow(%arg0: memref<1024xbf16>,

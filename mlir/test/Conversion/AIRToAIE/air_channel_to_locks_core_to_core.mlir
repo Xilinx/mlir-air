@@ -241,7 +241,7 @@ func.func @one_to_two() {
 
 #set = affine_set<()[s0] : (s0 - 3 == 0)>
 #set1 = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
-air.channel @channel_0 [3] {channel_type = "cascade"}
+air.channel @channel_0 [3] {channel_type = "npu_cascade"}
 air.channel @channel_1 [1]
 air.channel @channel_2 [1]
 func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
@@ -393,7 +393,7 @@ func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
 #set = affine_set<()[s0] : (s0 - 3 == 0)>
 #set1 = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
 module {
-  air.channel @channel_0 [3] {channel_type = "cascade"}
+  air.channel @channel_0 [3] {channel_type = "npu_cascade"}
   air.channel @channel_1 [1]
   air.channel @channel_2 [1]
   func.func @cascade2(%arg0: memref<1x1x2048xi32>, %arg1: memref<1x1x2048xi32>) {
@@ -496,7 +496,7 @@ module {
 // Test 2D memref flattening for cascade
 #set_2d = affine_set<()[s0] : (s0 - 1 == 0)>
 module {
-  air.channel @cascade_2d [1] {channel_type = "cascade"}
+  air.channel @cascade_2d [1] {channel_type = "npu_cascade"}
   func.func @cascade_2d_flatten(%arg0: memref<32x64xi32>) {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0) : memref<32x64xi32> attributes {id = 1 : i32} {
@@ -543,7 +543,7 @@ module {
 // Test 4D memref flattening for cascade
 #set_4d = affine_set<()[s0] : (s0 - 1 == 0)>
 module {
-  air.channel @cascade_4d [1] {channel_type = "cascade"}
+  air.channel @cascade_4d [1] {channel_type = "npu_cascade"}
   func.func @cascade_4d_flatten(%arg0: memref<2x4x8x32xi32>) {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0) : memref<2x4x8x32xi32> attributes {id = 1 : i32} {
@@ -589,7 +589,7 @@ module {
 // Test bf16 cascade flattening (different tile size due to element width)
 #set_bf16 = affine_set<()[s0] : (s0 - 1 == 0)>
 module {
-  air.channel @cascade_bf16 [1] {channel_type = "cascade"}
+  air.channel @cascade_bf16 [1] {channel_type = "npu_cascade"}
   func.func @cascade_bf16_flatten(%arg0: memref<32x32xbf16>) {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0) : memref<32x32xbf16> attributes {id = 1 : i32} {
@@ -684,7 +684,7 @@ module {
 #set = affine_set<()[s0] : (s0 - 3 == 0)>
 #set1 = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
 module {
-  air.channel @channel_0 [3] {channel_type = "cascade"}
+  air.channel @channel_0 [3] {channel_type = "npu_cascade"}
   air.channel @channel_1 [1]
   air.channel @channel_2 [1]
   func.func @cascade3(%arg0: memref<1x1x2048xi32>, %arg1: memref<1x1x2048xi32>) {

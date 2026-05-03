@@ -477,7 +477,9 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         Variadic<Index>:$src_sizes,
         Variadic<Index>:$src_strides,
         OptionalAttr<DenseI32ArrayAttr>:$pad_before,
-        OptionalAttr<DenseI32ArrayAttr>:$pad_after
+        OptionalAttr<DenseI32ArrayAttr>:$pad_after,
+        OptionalAttr<I64Attr>:$src_rank,
+        OptionalAttr<I64Attr>:$dst_rank
   );
   let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
@@ -487,7 +489,14 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     `(` type($dst) `,` type($src) `)`
   }];
   let description = [{
-    dma operator
+    N-dimensional strided bulk copy between two memrefs.
+
+    Optional `src_rank` / `dst_rank` integer attributes name a peer rank in the
+    enclosing `air.rank` scope. When present, the corresponding memref is
+    interpreted as living on rank R's symmetric heap rather than on the local
+    process. These attributes are only valid for `air.symmetric`-tagged memref
+    allocations and require an enclosing `air.rank`. They are currently only
+    supported by the GPU lowering (`air-to-rocdl`).
   }];
   let extraClassDeclaration = [{
     Value getSrcMemref() { return getSrc(); }
@@ -501,7 +510,31 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     bool hasPadding() {
       return getPadBefore().has_value();
     }
+    bool hasCrossRank() {
+      return getSrcRank().has_value() || getDstRank().has_value();
+    }
   }];
+  let builders = [
+    // Backward-compatible builder: defaults src_rank/dst_rank to absent.
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::mlir::Value":$dst,
+                   "::mlir::ValueRange":$dst_offsets,
+                   "::mlir::ValueRange":$dst_sizes,
+                   "::mlir::ValueRange":$dst_strides,
+                   "::mlir::Value":$src,
+                   "::mlir::ValueRange":$src_offsets,
+                   "::mlir::ValueRange":$src_sizes,
+                   "::mlir::ValueRange":$src_strides,
+                   "::mlir::DenseI32ArrayAttr":$pad_before,
+                   "::mlir::DenseI32ArrayAttr":$pad_after), [{
+      build($_builder, $_state, resultTypes, async_dependencies, dst,
+            dst_offsets, dst_sizes, dst_strides, src,
+            src_offsets, src_sizes, src_strides, pad_before, pad_after,
+            /*src_rank=*/IntegerAttr(),
+            /*dst_rank=*/IntegerAttr());
+    }]>
+  ];
   let hasCanonicalizer = 1;
   let hasVerifier = 1;
 }
@@ -535,7 +568,7 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
 def air_ChannelOp : air_Op<"channel", [Symbol]>,
     Arguments<(ins SymbolNameAttr:$sym_name,
                    DefaultValuedAttr<I64ArrayAttr, "{}">:$size,
-                   DefaultValuedAttr<StrAttr, "\"dma_stream\"">:$channel_type)> {
+                   DefaultValuedAttr<StrAttr, "\"npu_dma_stream\"">:$channel_type)> {
   let assemblyFormat = [{
     $sym_name $size attr-dict
   }];
@@ -543,18 +576,22 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
   let description = [{
     Operation to represent a communication channel as a point-to-point connection between two memrefs.
     The array following the channel name symbol represents the channel's dimensional sizes. Default
-    size, with empty size array, is 1. The data movement mechanism that the channel uses is controlled 
+    size, with empty size array, is 1. The data movement mechanism that the channel uses is controlled
     by the `channel_type` attribute.
 
     ### Channel Types
-    The `channel_type` attribute is a string that determines the mechanism used for data movement:
-    - **"dma_stream"** (default):
+    The `channel_type` attribute is a string that determines the mechanism used for data movement.
+    Values are namespaced by backend: NPU (AIE) channels use the `npu_` prefix; GPU channels use
+    the `gpu_` prefix.
+
+    NPU (AIE) channel types:
+    - **"npu_dma_stream"** (default):
       Use DMA engines to send and receive data, with routing performed over a streaming interconnect.
-    - **"dma_packet"**:
+    - **"npu_dma_packet"**:
       Use DMA engines to send and receive data, with routing performed over a packet-switched network.
-    - **"cascade"**:
+    - **"npu_cascade"**:
       Use processor cores to send and receive data via cascade connections between adjacent tiles.
-    - **"mmio"**:
+    - **"npu_mmio"**:
       Use host-side MMIO writes (e.g. `aiex.npu.blockwrite`) issued from the runtime
       sequence to deliver a constant payload directly into a tile-local L1 buffer.
       No DMA channel, no shim allocation, no flow is reserved.
@@ -565,32 +602,44 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
       `memref.get_global`. The consumer-side `get` lowers to a no-op
       because the L1 buffer is already populated when the core begins executing.
 
+    GPU channel types:
+    - **"gpu_symmetric_heap"**:
+      Cross-GPU messaging through the symmetric heap runtime
+      (`runtime_lib/airgpu/symmetric_heap.{h,cpp}`). The channel must be enclosed
+      by an `air.rank` op; the put/get sites use rank indices to address peer
+      heaps. Lowered by `air-to-rocdl` to thread-cooperative loops over peer-mapped
+      VMem buffers, with synchronization via in-heap notify flags or `mgpuBarrier`.
+
     ### Broadcasting
-    If a channel broadcasts to multiple destinations, the optional `broadcast_shape` attribute  
+    If a channel broadcasts to multiple destinations, the optional `broadcast_shape` attribute
     annotates the output sizes after broadcasting. Broadcasting follows NumPy's broadcasting rules.
 
     Example:
 
     ```mlir
-    // An array of 4 x 4 streaming DMA channels
-    air.channel @channel_0 [4, 4] {channel_type = "dma_stream"}
+    // An array of 4 x 4 streaming DMA channels (NPU)
+    air.channel @channel_0 [4, 4] {channel_type = "npu_dma_stream"}
 
-    // A streaming DMA channel broadcasting to 4 destinations
-    air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_stream"}
+    // A streaming DMA channel broadcasting to 4 destinations (NPU)
+    air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "npu_dma_stream"}
 
-    // An array of 1 x 4 streaming DMA channels broadcasting to 4 x 4 destinations.
+    // An array of 1 x 4 streaming DMA channels broadcasting to 4 x 4 destinations (NPU).
     // Broadcasting follows NumPy's rules.
-    air.channel @channel_2 [1, 4] {broadcast_shape = [4, 4], channel_type = "dma_stream"}
+    air.channel @channel_2 [1, 4] {broadcast_shape = [4, 4], channel_type = "npu_dma_stream"}
 
-    // A packet-switched DMA channel
-    air.channel @channel_3 [] {channel_type = "dma_packet"}
+    // A packet-switched DMA channel (NPU)
+    air.channel @channel_3 [] {channel_type = "npu_dma_packet"}
 
-    // A cascade channel using core-to-core cascade connections
-    air.channel @channel_4 [] {channel_type = "cascade"}
+    // A cascade channel using core-to-core cascade connections (NPU)
+    air.channel @channel_4 [] {channel_type = "npu_cascade"}
 
     // An MMIO channel: the put writes a constant from host into L1 of each
-    // get's destination tile via runtime-sequence blockwrites
-    air.channel @channel_5 [] {channel_type = "mmio"}
+    // get's destination tile via runtime-sequence blockwrites (NPU)
+    air.channel @channel_5 [] {channel_type = "npu_mmio"}
+
+    // A cross-GPU channel through the symmetric heap (GPU). Must appear inside
+    // an air.rank scope; the indices on put/get encode the peer rank.
+    air.channel @channel_6 [] {channel_type = "gpu_symmetric_heap"}
     ```
   }];
   let extraClassDeclaration = [{

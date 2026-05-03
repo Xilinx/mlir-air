@@ -1942,7 +1942,7 @@ module {
 // -----
 
 // Prevent fusing channels with different channel_type attributes.
-// Channels with "dma_stream" and "dma_packet" should not be fused.
+// Channels with "npu_dma_stream" and "npu_dma_packet" should not be fused.
 
 // CHECK-LABEL: func14
 // CHECK: air.launch
@@ -1967,8 +1967,8 @@ module {
 // AGGL1: air.channel.get{{.*}}@channel_packet
 
 module {
-  air.channel @channel_stream [1, 1] {channel_type = "dma_stream"}
-  air.channel @channel_packet [1, 1] {channel_type = "dma_packet"}
+  air.channel @channel_stream [1, 1] {channel_type = "npu_dma_stream"}
+  air.channel @channel_packet [1, 1] {channel_type = "npu_dma_packet"}
   func.func @func14(){
     %c1 = arith.constant 1 : index
     air.launch (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) {

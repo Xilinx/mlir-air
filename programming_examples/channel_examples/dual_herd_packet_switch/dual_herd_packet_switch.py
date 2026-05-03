@@ -11,7 +11,7 @@
 # The compiler automatically:
 #   1. Converts DMAs to channels (air-dma-to-channel)
 #   2. Detects that 4 input channels exceed the 2-per-column shim DMA limit
-#   3. Upgrades input channels to channel_type="dma_packet" for packet-switched
+#   3. Upgrades input channels to channel_type="npu_dma_packet" for packet-switched
 #      time-multiplexing of shim DMA MM2S ports
 
 import argparse

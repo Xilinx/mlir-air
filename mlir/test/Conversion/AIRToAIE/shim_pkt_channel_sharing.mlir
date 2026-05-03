@@ -24,9 +24,9 @@
 // CHECK: aie.shim_dma_allocation @air_pkt_in_2({{.*}}, MM2S, 0)
 
 module {
-  air.channel @pkt_in_0 [1, 1] {channel_type = "dma_packet"}
-  air.channel @pkt_in_1 [1, 1] {channel_type = "dma_packet"}
-  air.channel @pkt_in_2 [1, 1] {channel_type = "dma_packet"}
+  air.channel @pkt_in_0 [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @pkt_in_1 [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @pkt_in_2 [1, 1] {channel_type = "npu_dma_packet"}
   air.channel @to_core [1, 1]
   air.channel @from_core [1, 1]
   air.channel @out [1, 1]

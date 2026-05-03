@@ -85,15 +85,15 @@ func.func @channel_get_temporal_for_iv(%m: memref<64xi32>) {
 // -----
 
 // Test: unsupported channel_type string is rejected by the verifier.
-// expected-error @+1 {{'air.channel' op unsupported channel_type "ddr_stream"; expected one of "dma_stream", "dma_packet", "cascade", or "mmio"}}
+// expected-error @+1 {{'air.channel' op unsupported channel_type "ddr_stream"; expected one of "npu_dma_stream", "npu_dma_packet", "npu_cascade", "npu_mmio", or "gpu_symmetric_heap"}}
 air.channel @bad_chan_type [] {channel_type = "ddr_stream"}
 
 // -----
 
 // Test: mmio channel put source must be in L3 (memory_space=0).
-air.channel @mmio_bad_put [] {channel_type = "mmio"}
+air.channel @mmio_bad_put [] {channel_type = "npu_mmio"}
 func.func @mmio_put_wrong_memspace(%m: memref<8xi32, 2>) {
-  // expected-error @+1 {{'air.channel.put' op channel_type="mmio" put source must be in L3 (memory_space=0), got memory_space=2}}
+  // expected-error @+1 {{'air.channel.put' op channel_type="npu_mmio" put source must be in L3 (memory_space=0), got memory_space=2}}
   air.channel.put @mmio_bad_put[] (%m[] [] []) : (memref<8xi32, 2>)
   return
 }
@@ -101,9 +101,9 @@ func.func @mmio_put_wrong_memspace(%m: memref<8xi32, 2>) {
 // -----
 
 // Test: mmio channel get destination must be in L1 (memory_space=2).
-air.channel @mmio_bad_get [] {channel_type = "mmio"}
+air.channel @mmio_bad_get [] {channel_type = "npu_mmio"}
 func.func @mmio_get_wrong_memspace(%m: memref<8xi32, 1>) {
-  // expected-error @+1 {{'air.channel.get' op channel_type="mmio" get destination must be in L1 (memory_space=2), got memory_space=1}}
+  // expected-error @+1 {{'air.channel.get' op channel_type="npu_mmio" get destination must be in L1 (memory_space=2), got memory_space=1}}
   air.channel.get @mmio_bad_get[] (%m[] [] []) : (memref<8xi32, 1>)
   return
 }
@@ -111,9 +111,9 @@ func.func @mmio_get_wrong_memspace(%m: memref<8xi32, 1>) {
 // -----
 
 // Test: mmio put with L2 source is also rejected (only L3 is allowed).
-air.channel @mmio_bad_put_l2 [] {channel_type = "mmio"}
+air.channel @mmio_bad_put_l2 [] {channel_type = "npu_mmio"}
 func.func @mmio_put_l2(%m: memref<8xi32, 1>) {
-  // expected-error @+1 {{'air.channel.put' op channel_type="mmio" put source must be in L3 (memory_space=0), got memory_space=1}}
+  // expected-error @+1 {{'air.channel.put' op channel_type="npu_mmio" put source must be in L3 (memory_space=0), got memory_space=1}}
   air.channel.put @mmio_bad_put_l2[] (%m[] [] []) : (memref<8xi32, 1>)
   return
 }
@@ -121,9 +121,29 @@ func.func @mmio_put_l2(%m: memref<8xi32, 1>) {
 // -----
 
 // Test: mmio get with L3 destination is rejected (only L1 is allowed).
-air.channel @mmio_bad_get_l3 [] {channel_type = "mmio"}
+air.channel @mmio_bad_get_l3 [] {channel_type = "npu_mmio"}
 func.func @mmio_get_l3(%m: memref<8xi32>) {
-  // expected-error @+1 {{'air.channel.get' op channel_type="mmio" get destination must be in L1 (memory_space=2), got memory_space=0}}
+  // expected-error @+1 {{'air.channel.get' op channel_type="npu_mmio" get destination must be in L1 (memory_space=2), got memory_space=0}}
   air.channel.get @mmio_bad_get_l3[] (%m[] [] []) : (memref<8xi32>)
+  return
+}
+
+// -----
+
+// Test: gpu_symmetric_heap put outside an air.rank scope is rejected.
+air.channel @sym_chan_put [] {channel_type = "gpu_symmetric_heap"}
+func.func @sym_put_no_rank(%m: memref<128xf32>) {
+  // expected-error @+1 {{'air.channel.put' op channel_type="gpu_symmetric_heap" put requires an enclosing air.rank scope}}
+  air.channel.put @sym_chan_put[] (%m[] [] []) : (memref<128xf32>)
+  return
+}
+
+// -----
+
+// Test: gpu_symmetric_heap get outside an air.rank scope is rejected.
+air.channel @sym_chan_get [] {channel_type = "gpu_symmetric_heap"}
+func.func @sym_get_no_rank(%m: memref<128xf32>) {
+  // expected-error @+1 {{'air.channel.get' op channel_type="gpu_symmetric_heap" get requires an enclosing air.rank scope}}
+  air.channel.get @sym_chan_get[] (%m[] [] []) : (memref<128xf32>)
   return
 }

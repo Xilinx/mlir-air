@@ -249,9 +249,9 @@ def build_module(
         Channel(f"VIn_{s}", size=[num_heads_per_unroll])
 
     # Cascade: 2D per-segment (shared within each segment instance)
-    channel("cascade_gp", size=[NQ, NS - 1], channel_type="cascade")
-    channel("cascade_up", size=[NQ, NS - 1], channel_type="cascade")
-    channel("cascade_sp", size=[NQ, NS - 1], channel_type="cascade")
+    channel("cascade_gp", size=[NQ, NS - 1], channel_type="npu_cascade")
+    channel("cascade_up", size=[NQ, NS - 1], channel_type="npu_cascade")
+    channel("cascade_sp", size=[NQ, NS - 1], channel_type="npu_cascade")
 
     # Output: L1-to-L2 gather, then L2-to-L3
     Channel("Gp2L2", size=[NQ, 1])

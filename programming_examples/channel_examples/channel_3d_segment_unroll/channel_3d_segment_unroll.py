@@ -72,7 +72,7 @@ def build_module():
 
     # Cascade channel: per-segment, two independent chains.
     channel(
-        "chan_cascade", size=[NUM_SEGMENTS, NUM_TILES, NUM_COLS], channel_type="cascade"
+        "chan_cascade", size=[NUM_SEGMENTS, NUM_TILES, NUM_COLS], channel_type="npu_cascade"
     )
 
     # Output channel: one per cascade column across all segments.

@@ -781,7 +781,7 @@ separateScfParallel(scf::ParallelOp op, unsigned innerNumLoops,
 
 // Create a new air.channel symbol in the module for the cascade pipeline.
 // The symbol name is unique in the module, and the channel is tagged with
-// the "cascade" attribute.
+// the "npu_cascade" attribute.
 air::ChannelOp
 createCascadeChannelOp(OpBuilder &builder, ModuleOp module, Location loc,
                        SmallVector<int64_t> channel_bundle_sizes) {
@@ -797,10 +797,10 @@ createCascadeChannelOp(OpBuilder &builder, ModuleOp module, Location loc,
     o = o->getNextNode();
   builder.setInsertionPoint(o);
 
-  // Create the channel op with the given bundle sizes and "cascade" tag.
+  // Create the channel op with the given bundle sizes and "npu_cascade" tag.
   auto channel_op = air::ChannelOp::create(
       builder, loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
-      builder.getStringAttr("cascade"));
+      builder.getStringAttr("npu_cascade"));
 
   return channel_op;
 }

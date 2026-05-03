@@ -374,7 +374,7 @@ private:
     // Collect cascade channel declarations
     std::map<StringRef, air::ChannelOp> cascadeChannels;
     module.walk([&](air::ChannelOp channelOp) {
-      if (channelOp.getChannelType() == "cascade") {
+      if (channelOp.getChannelType() == "npu_cascade") {
         cascadeChannels[channelOp.getSymName()] = channelOp;
       }
     });

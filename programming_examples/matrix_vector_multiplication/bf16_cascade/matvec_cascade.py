@@ -192,7 +192,7 @@ def build_module(
 
     # Cascade channel: per-column cascade links.
     # n_cascade tiles per column → n_cascade-1 links per column.
-    channel("chan_cascade", size=[herd_cols, n_cascade - 1], channel_type="cascade")
+    channel("chan_cascade", size=[herd_cols, n_cascade - 1], channel_type="npu_cascade")
 
     @FuncOp.from_py_func(memrefTyA, memrefTyB, memrefTyC)
     def matvec_cascade_bf16(arg0, arg1, arg2):
