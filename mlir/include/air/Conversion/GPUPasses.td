@@ -49,6 +49,31 @@ def ConvertGPUKernelOutline : Pass<"air-gpu-outlining", "ModuleOp"> {
   let options = [];
 }
 
+def AIRCrossRankDmaToMgpu : Pass<"air-cross-rank-dma-to-mgpu", "ModuleOp"> {
+  let summary = "Lower air.dma_memcpy_nd with src_rank/dst_rank to mgpuMemcpy "
+                "with peer-VA addressing through mgpuGetHeapBases()";
+  let constructor = "xilinx::air::createAIRCrossRankDmaToMgpuPass()";
+  let description = [{
+    For each `air.dma_memcpy_nd` op carrying a `src_rank` or `dst_rank`
+    integer attribute, emit a host-side `mgpuMemcpy` whose peer-side pointer
+    is computed as `mgpuGetHeapBases()[peer] + (local_ptr - local_base)`.
+
+    Restrictions in this initial version:
+      - Both `src` and `dst` memrefs must be in `memory_space=0`.
+      - The op must be at host scope (not inside any `gpu.launch`/`gpu.func`).
+      - "Entire memref" form only: `[]` `[]` `[]` for both sides — no
+        custom offsets / sizes / strides.
+
+    Lower this pass *before* `air-symmetric-alloc-to-mgpu` so that pointer
+    extraction (`memref.extract_aligned_pointer_as_index`) sees plain
+    memrefs rather than already-cast LLVM struct values.
+  }];
+  let dependentDialects = [
+    "func::FuncDialect", "arith::ArithDialect", "memref::MemRefDialect",
+    "LLVM::LLVMDialect"
+  ];
+}
+
 def AIRSymmetricAllocToMgpu : Pass<"air-symmetric-alloc-to-mgpu", "ModuleOp"> {
   let summary = "Lower memref.alloc {air.symmetric} to mgpuSymmetricAlloc and "
                 "memref.dealloc of the result to mgpuSymmetricFree";

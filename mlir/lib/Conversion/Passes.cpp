@@ -9,6 +9,7 @@
 #include "air/Conversion/Passes.h"
 
 #if AIR_ENABLE_GPU
+#include "air/Conversion/AIRCrossRankDmaToMgpuPass.h"
 #include "air/Conversion/AIRRankToMgpuPass.h"
 #include "air/Conversion/AIRSymmetricAllocToMgpuPass.h"
 #include "air/Conversion/AIRToROCDLPass.h"
