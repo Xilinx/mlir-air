@@ -60,6 +60,7 @@ if(AIR_ENABLE_GPU)
     AIRRankToMgpuPass.cpp
     AIRSymmetricAllocToMgpuPass.cpp
     AIRCrossRankDmaToMgpuPass.cpp
+    AIRGpuChannelToMgpuPass.cpp
   )
   list(APPEND CONVERSION_LINK_LIBS
     MLIRGPUDialect

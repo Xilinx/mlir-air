@@ -49,6 +49,33 @@ def ConvertGPUKernelOutline : Pass<"air-gpu-outlining", "ModuleOp"> {
   let options = [];
 }
 
+def AIRGpuChannelToMgpu : Pass<"air-gpu-channel-to-mgpu", "ModuleOp"> {
+  let summary = "Lower air.channel.put/get of channel_type=\"gpu_symmetric_heap\" "
+                "to host-side mgpuMemcpy (peer-VA) + mgpuBarrier";
+  let constructor = "xilinx::air::createAIRGpuChannelToMgpuPass()";
+  let description = [{
+    For each `air.channel @C [...] {channel_type = "gpu_symmetric_heap"}`,
+    pair its single `air.channel.put` and single `air.channel.get`. The put
+    becomes `mgpuBarrier()` (publish: data is already in the symmetric heap
+    via the put's `air.symmetric` source memref). The get becomes
+    `mgpuBarrier()` followed by `mgpuMemcpy(dst, peer_va(put_src), size)`
+    where the peer rank is the get's first index operand and the peer VA is
+    computed via `mgpuGetHeapBases()`.
+
+    Restrictions in this initial version:
+      - One put and one get per channel symbol.
+      - Both put and get at host scope (no `gpu.launch`/`gpu.func`).
+      - put's source memref must be `air.symmetric`-tagged.
+      - get's destination memref must be in `memory_space=0`.
+      - "Entire memref" form only on both sides.
+      - get must take exactly one index operand (the peer rank).
+  }];
+  let dependentDialects = [
+    "func::FuncDialect", "arith::ArithDialect", "memref::MemRefDialect",
+    "LLVM::LLVMDialect"
+  ];
+}
+
 def AIRCrossRankDmaToMgpu : Pass<"air-cross-rank-dma-to-mgpu", "ModuleOp"> {
   let summary = "Lower air.dma_memcpy_nd with src_rank/dst_rank to mgpuMemcpy "
                 "with peer-VA addressing through mgpuGetHeapBases()";

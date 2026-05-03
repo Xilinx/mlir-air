@@ -96,8 +96,16 @@ case "$INPUT" in
     SRC="$TMPDIR/post_phase5.mlir"
     PIPE='builtin.module(func.func(convert-scf-to-cf),convert-to-llvm,reconcile-unrealized-casts)'
     ;;
+  channel)
+    SRC="$SCRIPT_DIR/air_sym_with_channel.mlir"
+    # Phase 6 channel, Phase 4 alloc, Phase 3 rank, then standard LLVM.
+    air-opt "$SRC" -air-gpu-channel-to-mgpu -air-symmetric-alloc-to-mgpu \
+        -air-rank-to-mgpu -o "$TMPDIR/post_phase6.mlir"
+    SRC="$TMPDIR/post_phase6.mlir"
+    PIPE='builtin.module(func.func(convert-scf-to-cf),convert-to-llvm,reconcile-unrealized-casts)'
+    ;;
   *)
-    echo "Unknown INPUT=$INPUT; expected 'atomic', 'cacheline', 'rank', 'alloc', or 'dma'" >&2; exit 1;;
+    echo "Unknown INPUT=$INPUT; expected 'atomic', 'cacheline', 'rank', 'alloc', 'dma', or 'channel'" >&2; exit 1;;
 esac
 
 echo "Step 2: Run as ${NUM_RANKS} processes"

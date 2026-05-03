@@ -29,6 +29,7 @@ using namespace mlir;
 #define GEN_PASS_DEF_AIRRANKTOMGPU
 #define GEN_PASS_DEF_AIRSYMMETRICALLOCTOMGPU
 #define GEN_PASS_DEF_AIRCROSSRANKDMATOMGPU
+#define GEN_PASS_DEF_AIRGPUCHANNELTOMGPU
 #include "air/Conversion/GPUPasses.h.inc"
 
 } // namespace air
