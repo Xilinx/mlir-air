@@ -703,34 +703,38 @@ private:
     return false;
   }
 
-  // Longest cascade chain length rooted at each herd (the herd itself counts
-  // as 1). Used by the placement fallback to reserve enough rows south of a
-  // cascade producer for the rest of the chain to stack adjacently.
-  // `visiting` guards against malformed cyclic cascade graphs that would
-  // otherwise infinite-recurse.
-  std::map<std::string, int> computeCascadeChainDepth(
-      const std::map<std::string, std::set<std::string>> &herdToConsumers) {
-    std::map<std::string, int> depth;
+  // Number of rows south needed to stack the longest cascade chain rooted at
+  // each herd, excluding the herd itself. Sums consumer numRows along the
+  // longest path (so a chain of two [N,2] consumers reserves 4 rows, not 2).
+  // `visiting` guards malformed cyclic cascade graphs from infinite recursion.
+  std::map<std::string, int> computeCascadeChainSouthRows(
+      const std::map<std::string, std::set<std::string>> &herdToConsumers,
+      const std::map<std::string, int> &herdHeight) {
+    std::map<std::string, int> southRows;
     std::set<std::string> visiting;
     std::function<int(const std::string &)> dfs =
         [&](const std::string &name) -> int {
-      auto it = depth.find(name);
-      if (it != depth.end())
+      auto it = southRows.find(name);
+      if (it != southRows.end())
         return it->second;
       if (!visiting.insert(name).second)
-        return 0; // cycle: break recursion, treat back-edge as depth 0
+        return 0; // cycle: break recursion
       int maxChild = 0;
       auto consIt = herdToConsumers.find(name);
-      if (consIt != herdToConsumers.end())
-        for (const auto &c : consIt->second)
-          maxChild = std::max(maxChild, dfs(c));
+      if (consIt != herdToConsumers.end()) {
+        for (const auto &c : consIt->second) {
+          auto hIt = herdHeight.find(c);
+          int childHeight = (hIt != herdHeight.end()) ? hIt->second : 1;
+          maxChild = std::max(maxChild, dfs(c) + childHeight);
+        }
+      }
       visiting.erase(name);
-      depth[name] = maxChild + 1;
-      return depth[name];
+      southRows[name] = maxChild;
+      return maxChild;
     };
     for (const auto &entry : herdToConsumers)
       dfs(entry.first);
-    return depth;
+    return southRows;
   }
 
   // Neighbor-aware placement algorithm that handles both cascade and shared L1
@@ -758,8 +762,13 @@ private:
       herdToProducers[conn.consumerHerdName].insert(conn.producerHerdName);
     }
 
-    // Longest chain rooted at each herd; drives roomSouth reservation.
-    auto chainDepth = computeCascadeChainDepth(herdToConsumers);
+    // Rows south needed for the longest cascade chain rooted at each herd
+    // (sums consumer heights, so [N,2] chains reserve correctly).
+    std::map<std::string, int> herdHeight;
+    for (auto &h : unplacedHerds)
+      herdHeight[h->getName(0)] = h->getNumRows();
+    auto chainSouthRows =
+        computeCascadeChainSouthRows(herdToConsumers, herdHeight);
 
     // Build map for shared L1 relationships (bidirectional)
     std::map<std::string, std::set<std::string>> herdToL1Neighbors;
@@ -931,12 +940,12 @@ private:
           }
         }
 
-        // Reserve chainDepth-1 rows south so the rest of the chain stacks.
+        // Reserve enough rows south for the rest of the cascade chain.
         int requiredSouthRows = 1;
         if (needsRoomSouth) {
-          auto depthIt = chainDepth.find(herdName);
-          if (depthIt != chainDepth.end() && depthIt->second > 1)
-            requiredSouthRows = depthIt->second - 1;
+          auto rowsIt = chainSouthRows.find(herdName);
+          if (rowsIt != chainSouthRows.end() && rowsIt->second > 0)
+            requiredSouthRows = rowsIt->second;
         }
 
         for (int64_t i = 0; i < segment->getNumRows() && !placed; i++) {
