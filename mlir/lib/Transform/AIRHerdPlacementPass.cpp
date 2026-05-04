@@ -409,10 +409,33 @@ private:
         }
       });
 
-      // Create cascade connections for each producer-consumer pair
+      // Create cascade connections for each producer-consumer pair.
+      // Dedupe by (producer, consumer): if multiple cascade channels
+      // connect the same herd pair, downstream "multi-producer
+      // consumer" detection (which checks producers list size) would
+      // false-positive and route through placeProducerForMultiConsumer,
+      // which is designed for distinct producers feeding one consumer.
+      // For 3+ herd cascade chains with multiple per-pair channels
+      // (e.g. Q + K + V cascades from rope to attn), this misroute
+      // breaks placement at NKV>=2.
       for (const auto &producer : producerHerds) {
         for (const auto &consumer : consumerHerds) {
           if (producer != consumer) {
+            bool alreadyConnected = false;
+            for (const auto &existing : cascadeConnections) {
+              if (existing.producerHerdName == producer &&
+                  existing.consumerHerdName == consumer) {
+                alreadyConnected = true;
+                break;
+              }
+            }
+            if (alreadyConnected) {
+              LLVM_DEBUG(llvm::dbgs()
+                         << "Skipping duplicate cascade connection: "
+                         << producer << " -> " << consumer << " via channel "
+                         << channelName << "\n");
+              continue;
+            }
             CascadeConnection conn;
             conn.producerHerdName = producer;
             conn.consumerHerdName = consumer;
@@ -532,12 +555,24 @@ private:
       inDegree[conn.consumerHerdName]++;
     }
 
-    // Kahn's algorithm for topological sort
+    // Identify herds that participate in any cascade edge — these
+    // need to be placed first so the chain can claim its rows. Herds
+    // with no cascade edges (e.g. an upstream rms_herd that only
+    // broadcasts via L1 to a cascade chain head) get placed last
+    // into whatever rows are left over.
+    std::set<std::string> cascadeConnected;
+    for (const auto &conn : cascadeConnections) {
+      cascadeConnected.insert(conn.producerHerdName);
+      cascadeConnected.insert(conn.consumerHerdName);
+    }
+
+    // Kahn's algorithm for topological sort, scoped to cascade-
+    // connected herds.
     std::vector<std::string> order;
     std::vector<std::string> queue;
 
     for (const auto &name : allHerds) {
-      if (inDegree[name] == 0) {
+      if (cascadeConnected.count(name) && inDegree[name] == 0) {
         queue.push_back(name);
       }
     }
@@ -555,7 +590,11 @@ private:
       }
     }
 
-    // Add any remaining herds not in cascade chains
+    // Append non-cascade-connected herds (and any cascade herds the
+    // Kahn pass missed due to cycles — though cascade graphs should
+    // be acyclic). They get placed after the cascade chain has
+    // claimed its preferred rows, so an upstream rms_herd ends up in
+    // a leftover slot rather than blocking the chain's south-stack.
     for (auto &herd : herds) {
       std::string name = herd->getName(0);
       if (std::find(order.begin(), order.end(), name) == order.end()) {
@@ -704,6 +743,35 @@ private:
     return false;
   }
 
+  // Compute the longest north-to-south cascade chain rooted at each
+  // herd (including the herd itself). For a 3-herd chain
+  // gemv->rope->decode, depth(gemv)=3, depth(rope)=2, depth(decode)=1.
+  // Used by the placement fallback to anchor cascade producers at
+  // a high enough Y so the entire chain has room to stack south.
+  std::map<std::string, int> computeCascadeChainDepth(
+      const std::map<std::string, std::vector<std::string>> &herdToConsumers) {
+    std::map<std::string, int> depth;
+    std::function<int(const std::string &)> dfs =
+        [&](const std::string &name) -> int {
+      auto it = depth.find(name);
+      if (it != depth.end())
+        return it->second;
+      int maxChild = 0;
+      auto consIt = herdToConsumers.find(name);
+      if (consIt != herdToConsumers.end()) {
+        for (const auto &c : consIt->second) {
+          maxChild = std::max(maxChild, dfs(c));
+        }
+      }
+      depth[name] = maxChild + 1;
+      return depth[name];
+    };
+    for (const auto &entry : herdToConsumers) {
+      dfs(entry.first);
+    }
+    return depth;
+  }
+
   // Neighbor-aware placement algorithm that handles both cascade and shared L1
   // connections
   void
@@ -726,6 +794,11 @@ private:
       herdToConsumers[conn.producerHerdName].push_back(conn.consumerHerdName);
       herdToProducers[conn.consumerHerdName].push_back(conn.producerHerdName);
     }
+
+    // Longest cascade chain rooted at each herd. Used by the
+    // fallback to reserve enough rows south of cascade producers so
+    // the rest of the chain can stack adjacently below them.
+    auto chainDepth = computeCascadeChainDepth(herdToConsumers);
 
     // Build map for shared L1 relationships (bidirectional)
     std::map<std::string, std::set<std::string>> herdToL1Neighbors;
@@ -897,6 +970,16 @@ private:
           }
         }
 
+        // For 3+ herd cascade chains, "room south" must be enough for
+        // the *entire* remaining chain to stack adjacently. Reserve
+        // chainDepth-1 rows south of this herd.
+        int requiredSouthRows = 1;
+        if (needsRoomSouth) {
+          auto depthIt = chainDepth.find(herdName);
+          if (depthIt != chainDepth.end() && depthIt->second > 1)
+            requiredSouthRows = depthIt->second - 1;
+        }
+
         for (int64_t i = 0; i < segment->getNumRows() && !placed; i++) {
           for (int64_t j = 0; j < segment->getNumCols() && !placed; j++) {
             if (segment->grid[segment->getNumRows() - i - 1][j] == -1) {
@@ -907,7 +990,7 @@ private:
                   bool roomEast =
                       (j + herd->getNumCols() < segment->getNumCols());
                   bool roomWest = (j > 0);
-                  bool roomSouth = (i > 0);
+                  bool roomSouth = (i >= requiredSouthRows);
                   bool roomNorth =
                       (i + herd->getNumRows() < segment->getNumRows());
                   if (needsRoomSouth)
