@@ -703,20 +703,20 @@ private:
     return false;
   }
 
-  // Number of rows south needed to stack the longest cascade chain rooted at
-  // each herd, excluding the herd itself. Sums consumer numRows along the
-  // longest path so multi-row consumers reserve correctly. Real cascade
-  // chains are typically single-row, but the formula stays general.
+  // Extent (rows south or cols east) needed to stack the longest cascade
+  // chain rooted at each herd, excluding the herd itself. `herdExtent`
+  // supplies the per-herd dimension (numRows for south stacking, numCols
+  // for east stacking) summed along the longest path.
   // `visiting` guards malformed cyclic cascade graphs from infinite recursion.
-  std::map<std::string, int> computeCascadeChainSouthRows(
+  std::map<std::string, int> computeCascadeChainExtent(
       const std::map<std::string, std::set<std::string>> &herdToConsumers,
-      const std::map<std::string, int> &herdHeight) {
-    std::map<std::string, int> southRows;
+      const std::map<std::string, int> &herdExtent) {
+    std::map<std::string, int> extent;
     std::set<std::string> visiting;
     std::function<int(const std::string &)> dfs =
         [&](const std::string &name) -> int {
-      auto it = southRows.find(name);
-      if (it != southRows.end())
+      auto it = extent.find(name);
+      if (it != extent.end())
         return it->second;
       if (!visiting.insert(name).second)
         return 0; // cycle: break recursion
@@ -724,18 +724,18 @@ private:
       auto consIt = herdToConsumers.find(name);
       if (consIt != herdToConsumers.end()) {
         for (const auto &c : consIt->second) {
-          auto hIt = herdHeight.find(c);
-          int childHeight = (hIt != herdHeight.end()) ? hIt->second : 1;
-          maxChild = std::max(maxChild, dfs(c) + childHeight);
+          auto hIt = herdExtent.find(c);
+          int childExtent = (hIt != herdExtent.end()) ? hIt->second : 1;
+          maxChild = std::max(maxChild, dfs(c) + childExtent);
         }
       }
       visiting.erase(name);
-      southRows[name] = maxChild;
+      extent[name] = maxChild;
       return maxChild;
     };
     for (const auto &entry : herdToConsumers)
       dfs(entry.first);
-    return southRows;
+    return extent;
   }
 
   // Neighbor-aware placement algorithm that handles both cascade and shared L1
@@ -763,12 +763,18 @@ private:
       herdToProducers[conn.consumerHerdName].insert(conn.producerHerdName);
     }
 
-    // Rows south needed for the longest cascade chain rooted at each herd.
+    // Extent needed for the longest cascade chain rooted at each herd, in
+    // both directions: south rows for north-to-south chains and east cols
+    // for west-to-east chains.
     std::map<std::string, int> herdHeight;
-    for (auto &h : unplacedHerds)
+    std::map<std::string, int> herdWidth;
+    for (auto &h : unplacedHerds) {
       herdHeight[h->getName(0)] = h->getNumRows();
+      herdWidth[h->getName(0)] = h->getNumCols();
+    }
     auto chainSouthRows =
-        computeCascadeChainSouthRows(herdToConsumers, herdHeight);
+        computeCascadeChainExtent(herdToConsumers, herdHeight);
+    auto chainEastCols = computeCascadeChainExtent(herdToConsumers, herdWidth);
 
     // Build map for shared L1 relationships (bidirectional)
     std::map<std::string, std::set<std::string>> herdToL1Neighbors;
@@ -928,24 +934,37 @@ private:
         bool hasL1Neighbors =
             l1It != herdToL1Neighbors.end() && !l1It->second.empty();
 
-        // Cascade producers with multi-column consumers need room south
-        // so that per-tile cascade adjacency is maintained. Check if any
-        // consumer is multi-column.
+        // Cascade producers stack south when both ends are multi-column
+        // (north-to-south chain) and east when both ends are multi-row
+        // (west-to-east chain). Per-tile cascade adjacency requires room
+        // for the rest of the chain in that direction.
         bool needsRoomSouth = false;
-        if (hasConsumers && herd->getNumCols() > 1) {
+        bool needsRoomEast = false;
+        if (hasConsumers) {
           for (const auto &consumerName : consIt->second) {
             int consIdx = findHerdIdxByName(unplacedHerds, consumerName);
-            if (consIdx >= 0 && unplacedHerds[consIdx]->getNumCols() > 1)
+            if (consIdx < 0)
+              continue;
+            auto &cons = unplacedHerds[consIdx];
+            if (herd->getNumCols() > 1 && cons->getNumCols() > 1)
               needsRoomSouth = true;
+            if (herd->getNumRows() > 1 && cons->getNumRows() > 1)
+              needsRoomEast = true;
           }
         }
 
-        // Reserve enough rows south for the rest of the cascade chain.
+        // Reserve enough extent in the chain direction for the rest of it.
         int requiredSouthRows = 1;
         if (needsRoomSouth) {
           auto rowsIt = chainSouthRows.find(herdName);
           if (rowsIt != chainSouthRows.end() && rowsIt->second > 0)
             requiredSouthRows = rowsIt->second;
+        }
+        int requiredEastCols = 1;
+        if (needsRoomEast) {
+          auto colsIt = chainEastCols.find(herdName);
+          if (colsIt != chainEastCols.end() && colsIt->second > 0)
+            requiredEastCols = colsIt->second;
         }
 
         for (int64_t i = 0; i < segment->getNumRows() && !placed; i++) {
@@ -955,14 +974,16 @@ private:
                 bool goodPosition = true;
                 if (hasConsumers || hasL1Neighbors) {
                   // Ensure room for neighbor in any direction
-                  bool roomEast =
-                      (j + herd->getNumCols() < segment->getNumCols());
+                  bool roomEast = (j + herd->getNumCols() + requiredEastCols <=
+                                   segment->getNumCols());
                   bool roomWest = (j > 0);
                   bool roomSouth = (i >= requiredSouthRows);
                   bool roomNorth =
                       (i + herd->getNumRows() < segment->getNumRows());
                   if (needsRoomSouth)
                     goodPosition = roomSouth;
+                  else if (needsRoomEast)
+                    goodPosition = roomEast;
                   else
                     goodPosition =
                         roomEast || roomWest || roomSouth || roomNorth;
