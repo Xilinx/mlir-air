@@ -1,43 +1,17 @@
 //===- cascade_chain_3herd_with_l1_upstream.mlir ------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-place-herds='num-rows=6 num-cols=8 row-anchor=2 col-anchor=0' | FileCheck %s
 
-// 4-herd composition: a single-tile `upstream` herd connected to
-// `producer_a` (head of a 3-herd cascade chain) via a non-cascade
-// L1 broadcast channel. Both herds have cascade-inDegree of zero
-// in the cascade graph; without fix #3 (cascade-rooted herds first
-// in topo order), Kahn's queue processed `upstream` first (LIFO
-// order over the std::set of herd names) and placed it at the
-// southernmost legal slot, which then blocked the cascade chain
-// from stacking south and forced `consumer` to wrap NORTH of the
-// chain — violating the cascade direction.
-//
-// The fix seeds the Kahn queue ONLY with cascade-connected herds.
-// Non-cascade herds (like `upstream` here, broadcasting via L1 to
-// a chain head) get appended at the end of the topological order
-// and placed last into whatever slot remains.
+// Isolates the topo-order fix. A single-tile `upstream` herd feeds the
+// cascade-chain head via a non-cascade L1 broadcast. Both have cascade
+// inDegree 0; the topo seeder must pick only cascade-rooted herds so
+// `upstream` is placed last into a leftover slot rather than blocking
+// the chain's south stack.
 
 // `upstream` lands in a leftover slot (not on top of the chain).
 // Cascade chain occupies the south rows in the same column range.

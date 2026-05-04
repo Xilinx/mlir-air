@@ -409,43 +409,24 @@ private:
         }
       });
 
-      // Create cascade connections for each producer-consumer pair.
-      // Dedupe by (producer, consumer): if multiple cascade channels
-      // connect the same herd pair, downstream "multi-producer
-      // consumer" detection (which checks producers list size) would
-      // false-positive and route through placeProducerForMultiConsumer,
-      // which is designed for distinct producers feeding one consumer.
-      // For 3+ herd cascade chains with multiple per-pair channels
-      // (e.g. Q + K + V cascades from rope to attn), this misroute
-      // breaks placement at NKV>=2.
+      // One CascadeConnection per channel-level (producer, consumer) edge.
+      // Downstream maps (herdToProducers / herdToConsumers) dedupe by
+      // collecting into std::set, so multiple channels between the same
+      // herd pair (e.g. Q+K+V from rope to attn) don't false-positive
+      // multi-producer detection in neighborAwarePlacement.
       for (const auto &producer : producerHerds) {
         for (const auto &consumer : consumerHerds) {
-          if (producer != consumer) {
-            bool alreadyConnected = false;
-            for (const auto &existing : cascadeConnections) {
-              if (existing.producerHerdName == producer &&
-                  existing.consumerHerdName == consumer) {
-                alreadyConnected = true;
-                break;
-              }
-            }
-            if (alreadyConnected) {
-              LLVM_DEBUG(llvm::dbgs()
-                         << "Skipping duplicate cascade connection: "
-                         << producer << " -> " << consumer << " via channel "
-                         << channelName << "\n");
-              continue;
-            }
-            CascadeConnection conn;
-            conn.producerHerdName = producer;
-            conn.consumerHerdName = consumer;
-            conn.channelOp = channelOp;
-            cascadeConnections.push_back(conn);
+          if (producer == consumer)
+            continue;
+          CascadeConnection conn;
+          conn.producerHerdName = producer;
+          conn.consumerHerdName = consumer;
+          conn.channelOp = channelOp;
+          cascadeConnections.push_back(conn);
 
-            LLVM_DEBUG(llvm::dbgs()
-                       << "Found cascade connection: " << producer << " -> "
-                       << consumer << " via channel " << channelName << "\n");
-          }
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Found cascade connection: " << producer << " -> "
+                     << consumer << " via channel " << channelName << "\n");
         }
       }
     }
@@ -538,68 +519,47 @@ private:
   std::vector<std::string> buildCascadeTopologicalOrder(
       std::vector<std::unique_ptr<Herd>> &herds,
       std::vector<CascadeConnection> &cascadeConnections) {
-    // Build adjacency list: producer -> consumers
-    std::map<std::string, std::vector<std::string>> producerToConsumers;
-    std::map<std::string, int> inDegree;
-    std::set<std::string> allHerds;
-
-    for (auto &herd : herds) {
-      std::string name = herd->getName(0);
-      allHerds.insert(name);
-      inDegree[name] = 0;
-    }
-
-    for (const auto &conn : cascadeConnections) {
-      producerToConsumers[conn.producerHerdName].push_back(
-          conn.consumerHerdName);
-      inDegree[conn.consumerHerdName]++;
-    }
-
-    // Identify herds that participate in any cascade edge — these
-    // need to be placed first so the chain can claim its rows. Herds
-    // with no cascade edges (e.g. an upstream rms_herd that only
-    // broadcasts via L1 to a cascade chain head) get placed last
-    // into whatever rows are left over.
+    // Adjacency uses set<string> so multi-channel pairs collapse to one edge.
+    std::map<std::string, std::set<std::string>> producerToConsumers;
     std::set<std::string> cascadeConnected;
     for (const auto &conn : cascadeConnections) {
+      producerToConsumers[conn.producerHerdName].insert(conn.consumerHerdName);
       cascadeConnected.insert(conn.producerHerdName);
       cascadeConnected.insert(conn.consumerHerdName);
     }
 
-    // Kahn's algorithm for topological sort, scoped to cascade-
-    // connected herds.
+    std::map<std::string, int> inDegree;
+    for (auto &herd : herds)
+      inDegree[herd->getName(0)] = 0;
+    for (const auto &entry : producerToConsumers)
+      for (const auto &consumer : entry.second)
+        inDegree[consumer]++;
+
+    // Seed Kahn's queue with cascade-connected roots only. Non-cascade
+    // herds get appended at the end so they don't claim rows the cascade
+    // chain needs to stack into.
     std::vector<std::string> order;
     std::vector<std::string> queue;
-
-    for (const auto &name : allHerds) {
-      if (cascadeConnected.count(name) && inDegree[name] == 0) {
+    for (const auto &name : cascadeConnected)
+      if (inDegree[name] == 0)
         queue.push_back(name);
-      }
-    }
 
     while (!queue.empty()) {
       std::string current = queue.back();
       queue.pop_back();
       order.push_back(current);
-
       for (const auto &consumer : producerToConsumers[current]) {
-        inDegree[consumer]--;
-        if (inDegree[consumer] == 0) {
+        if (--inDegree[consumer] == 0)
           queue.push_back(consumer);
-        }
       }
     }
 
-    // Append non-cascade-connected herds (and any cascade herds the
-    // Kahn pass missed due to cycles — though cascade graphs should
-    // be acyclic). They get placed after the cascade chain has
-    // claimed its preferred rows, so an upstream rms_herd ends up in
-    // a leftover slot rather than blocking the chain's south-stack.
+    // Tail: non-cascade herds, plus any cascade herds left behind by
+    // a (malformed) cyclic cascade graph.
     for (auto &herd : herds) {
       std::string name = herd->getName(0);
-      if (std::find(order.begin(), order.end(), name) == order.end()) {
+      if (std::find(order.begin(), order.end(), name) == order.end())
         order.push_back(name);
-      }
     }
 
     return order;
@@ -743,32 +703,33 @@ private:
     return false;
   }
 
-  // Compute the longest north-to-south cascade chain rooted at each
-  // herd (including the herd itself). For a 3-herd chain
-  // gemv->rope->decode, depth(gemv)=3, depth(rope)=2, depth(decode)=1.
-  // Used by the placement fallback to anchor cascade producers at
-  // a high enough Y so the entire chain has room to stack south.
+  // Longest cascade chain length rooted at each herd (the herd itself counts
+  // as 1). Used by the placement fallback to reserve enough rows south of a
+  // cascade producer for the rest of the chain to stack adjacently.
+  // `visiting` guards against malformed cyclic cascade graphs that would
+  // otherwise infinite-recurse.
   std::map<std::string, int> computeCascadeChainDepth(
-      const std::map<std::string, std::vector<std::string>> &herdToConsumers) {
+      const std::map<std::string, std::set<std::string>> &herdToConsumers) {
     std::map<std::string, int> depth;
+    std::set<std::string> visiting;
     std::function<int(const std::string &)> dfs =
         [&](const std::string &name) -> int {
       auto it = depth.find(name);
       if (it != depth.end())
         return it->second;
+      if (!visiting.insert(name).second)
+        return 0; // cycle: break recursion, treat back-edge as depth 0
       int maxChild = 0;
       auto consIt = herdToConsumers.find(name);
-      if (consIt != herdToConsumers.end()) {
-        for (const auto &c : consIt->second) {
+      if (consIt != herdToConsumers.end())
+        for (const auto &c : consIt->second)
           maxChild = std::max(maxChild, dfs(c));
-        }
-      }
+      visiting.erase(name);
       depth[name] = maxChild + 1;
       return depth[name];
     };
-    for (const auto &entry : herdToConsumers) {
+    for (const auto &entry : herdToConsumers)
       dfs(entry.first);
-    }
     return depth;
   }
 
@@ -786,18 +747,18 @@ private:
                << cascadeConnections.size() << " cascade connections and "
                << sharedL1Connections.size() << " shared L1 connections\n");
 
-    // Build maps for cascade relationships (directional: producer -> consumer)
-    std::map<std::string, std::vector<std::string>> herdToConsumers;
-    std::map<std::string, std::vector<std::string>> herdToProducers;
+    // Build maps for cascade relationships (directional: producer -> consumer).
+    // set<string> collapses multi-channel pairs (Q+K+V from rope to attn) to
+    // a single edge so multi-producer detection below isn't false-positive.
+    std::map<std::string, std::set<std::string>> herdToConsumers;
+    std::map<std::string, std::set<std::string>> herdToProducers;
 
     for (const auto &conn : cascadeConnections) {
-      herdToConsumers[conn.producerHerdName].push_back(conn.consumerHerdName);
-      herdToProducers[conn.consumerHerdName].push_back(conn.producerHerdName);
+      herdToConsumers[conn.producerHerdName].insert(conn.consumerHerdName);
+      herdToProducers[conn.consumerHerdName].insert(conn.producerHerdName);
     }
 
-    // Longest cascade chain rooted at each herd. Used by the
-    // fallback to reserve enough rows south of cascade producers so
-    // the rest of the chain can stack adjacently below them.
+    // Longest chain rooted at each herd; drives roomSouth reservation.
     auto chainDepth = computeCascadeChainDepth(herdToConsumers);
 
     // Build map for shared L1 relationships (bidirectional)
@@ -970,9 +931,7 @@ private:
           }
         }
 
-        // For 3+ herd cascade chains, "room south" must be enough for
-        // the *entire* remaining chain to stack adjacently. Reserve
-        // chainDepth-1 rows south of this herd.
+        // Reserve chainDepth-1 rows south so the rest of the chain stacks.
         int requiredSouthRows = 1;
         if (needsRoomSouth) {
           auto depthIt = chainDepth.find(herdName);
@@ -1095,7 +1054,7 @@ private:
   bool placeConsumerWithMultipleProducers(
       std::unique_ptr<Segment> &segment, std::unique_ptr<Herd> &consumer,
       std::vector<std::unique_ptr<Herd>> &placedHerds,
-      const std::vector<std::string> &producerNames) {
+      const std::set<std::string> &producerNames) {
 
     // Collect all placed producers
     std::vector<Herd *> placedProducers;
@@ -1279,7 +1238,7 @@ private:
   bool placeProducerForMultiConsumer(
       std::unique_ptr<Segment> &segment, std::unique_ptr<Herd> &producer,
       const std::string &producerName, const std::string &consumerName,
-      const std::vector<std::string> &allProducerNames,
+      const std::set<std::string> &allProducerNames,
       std::vector<std::unique_ptr<Herd>> &placedHerds,
       std::map<std::string, std::pair<int32_t, int32_t>>
           &plannedConsumerPositions,
