@@ -705,8 +705,8 @@ private:
 
   // Number of rows south needed to stack the longest cascade chain rooted at
   // each herd, excluding the herd itself. Sums consumer numRows along the
-  // longest path so multi-row consumers reserve correctly; cascade hardware
-  // requires single-row herds in practice, but the formula stays general.
+  // longest path so multi-row consumers reserve correctly. Real cascade
+  // chains are typically single-row, but the formula stays general.
   // `visiting` guards malformed cyclic cascade graphs from infinite recursion.
   std::map<std::string, int> computeCascadeChainSouthRows(
       const std::map<std::string, std::set<std::string>> &herdToConsumers,

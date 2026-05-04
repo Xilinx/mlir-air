@@ -8,10 +8,10 @@
 // RUN: air-opt %s -air-place-herds='num-rows=6 num-cols=8 row-anchor=2 col-anchor=0' | FileCheck %s
 
 // Isolates the chain-depth-aware roomSouth fix. A 3-herd cascade chain
-// at multi-column herd width must stack north-to-south so per-tile
+// at multi-column herd width must stack north-to-south so per-column
 // cascade adjacency holds. Without the fix the head anchors with only
-// 1 row south and the tail wraps north of the chain — which the AIE
-// verifier rejects as 'aie.cascade_flow' op tiles must be adjacent.
+// 1 row south and the tail wraps north of the chain — which downstream
+// dialects reject as a non-adjacent cascade flow.
 
 // CHECK: air.herd @producer_a {{.*}} attributes {{{.*}}x_loc = 0 : i64, y_loc = 4 : i64}
 // CHECK: air.herd @producer_b {{.*}} attributes {{{.*}}x_loc = 0 : i64, y_loc = 3 : i64}
