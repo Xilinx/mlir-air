@@ -705,7 +705,8 @@ private:
 
   // Number of rows south needed to stack the longest cascade chain rooted at
   // each herd, excluding the herd itself. Sums consumer numRows along the
-  // longest path (so a chain of two [N,2] consumers reserves 4 rows, not 2).
+  // longest path so multi-row consumers reserve correctly; cascade hardware
+  // requires single-row herds in practice, but the formula stays general.
   // `visiting` guards malformed cyclic cascade graphs from infinite recursion.
   std::map<std::string, int> computeCascadeChainSouthRows(
       const std::map<std::string, std::set<std::string>> &herdToConsumers,
@@ -762,8 +763,7 @@ private:
       herdToProducers[conn.consumerHerdName].insert(conn.producerHerdName);
     }
 
-    // Rows south needed for the longest cascade chain rooted at each herd
-    // (sums consumer heights, so [N,2] chains reserve correctly).
+    // Rows south needed for the longest cascade chain rooted at each herd.
     std::map<std::string, int> herdHeight;
     for (auto &h : unplacedHerds)
       herdHeight[h->getName(0)] = h->getNumRows();
