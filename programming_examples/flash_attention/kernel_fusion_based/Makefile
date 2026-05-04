@@ -176,3 +176,30 @@ compile-kernel-npu1:
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
+
+# ============================================================================
+# decode_block_npu2_5all_v2: full RMS -> GEMV(QKV) -> RoPE -> Attention
+# decode block in a single launch+segment with cross-herd cascade for Q,
+# K_new, V_new. Toy GEMV input dim N=64; LLaMA-3.2-1B output dims
+# (NKV=8, group_size=4, dk=dv=64, lk up to 2048).
+# ============================================================================
+GROUP_SIZE ?= 4
+NUM_KV_HEADS_E2E ?= 8
+
+print-decode-block-e2e:
+	${powershell} python3 ${srcdir}/decode_block_npu2_5all_v2.py -p --lk $(LK) --lkp $(LKP) --dk $(DK) --dv $(DV) --group-size $(GROUP_SIZE) --num-kv-heads $(NUM_KV_HEADS_E2E)
+
+run-decode-block-e2e: compile-decode-block-kernels
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/decode_block_npu2_5all_v2.py --lk $(LK) --lkp $(LKP) --dk $(DK) --dv $(DV) --group-size $(GROUP_SIZE) --num-kv-heads $(NUM_KV_HEADS_E2E) $(EXTRA_PY_FLAGS)
+
+compile-decode-block-kernels:
+	mkdir -p $(BUILD_DIR)
+	@if [ -z "$(PEANO_INSTALL_DIR)" ] || [ ! -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
+		echo "Error: PEANO_INSTALL_DIR not set or clang++ missing."; \
+		exit 1; \
+	fi
+	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -c ${srcdir}/attn_decode_npu2.cc -o $(BUILD_DIR)/attn_decode_npu2.o -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV) -Dgroup_size=$(GROUP_SIZE) -Dmax_sum_buf_size=32 -DROUND_CONV_EVEN
+	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -c ${srcdir}/rope_multi.cc -o $(BUILD_DIR)/rope_multi.o
+	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -c ${srcdir}/simple_matvec.cc -o $(BUILD_DIR)/simple_matvec.o
+	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -c ${srcdir}/simple_rms.cc -o $(BUILD_DIR)/simple_rms.o
