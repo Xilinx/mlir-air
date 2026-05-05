@@ -64,6 +64,10 @@ int main(int argc, const char *argv[]) {
        cxxopts::value<int>()->default_value("64"))
       ("lk", "K/V cache length (sequence length)",
        cxxopts::value<int>()->default_value("2048"))
+      ("tile-k", "GEMV inner-k tile (xrms padded to [tile_k, tile_n])",
+       cxxopts::value<int>()->default_value("128"))
+      ("tile-n", "GEMV output tile (xrms padded to [tile_k, tile_n])",
+       cxxopts::value<int>()->default_value("64"))
       ("warmup,w", "warmup iterations",
        cxxopts::value<int>()->default_value("10"))
       ("iterations,n", "profile iterations",
@@ -89,10 +93,16 @@ int main(int argc, const char *argv[]) {
   int kdim = vm["n-in"].as<int>();
   int hdim = vm["head-dim"].as<int>();
   int lk = vm["lk"].as<int>();
+  int tile_k = vm["tile-k"].as<int>();
+  int tile_n = vm["tile-n"].as<int>();
   int verbosity = vm["verbosity"].as<int>();
   int gemv_count = group_size + 2;
 
-  size_t XRMS_VOLUME = (size_t)2 * kdim;
+  // xrms is padded to [tile_k, tile_n] so it shares one BD shape with
+  // weight chunks on bL3ToL2 (single self-loop, no repeat_count). The
+  // first 2*kdim flat elements hold real x_raw + w_rms; the rest is
+  // padding the kernel demux ignores.
+  size_t XRMS_VOLUME = (size_t)tile_k * tile_n;
   size_t W_VOLUME = (size_t)nkv * gemv_count * kdim * hdim;
   size_t KC_VOLUME = (size_t)nkv * lk * hdim;
   size_t VC_VOLUME = (size_t)nkv * lk * hdim;

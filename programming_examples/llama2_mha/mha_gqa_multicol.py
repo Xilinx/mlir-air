@@ -30,13 +30,18 @@ def build_module(
 
     assert k % tile_k == 0
     assert n % tile_n == 0
-    # L3 args (packed to 5 total to fit XRT runner's 5-arg limit):
-    #   xrms[2, k]                     row 0 = x_raw, row 1 = w_rms (shared)
-    #   W_qkv[NKV, GEMV_COUNT, k, n]   per KV head
-    #   K/V cache[NKV, seq_len, n]     per KV head
-    #   xb output[NKV, GROUP_SIZE, n]  per KV head
+    # xrms is padded to match the weight packet shape [tile_k, tile_n] so
+    # bL3ToL2 carries one uniform packet shape across xrms and weights —
+    # the channel becomes a single self-loop BD chain (no repeat_count, no
+    # lightweight-reset PDI between tokens). Real data (x_raw, w_rms) lives
+    # in the first 2*k flat elements of the [tile_k, tile_n] packet; the
+    # remainder is padding read by the kernel demux but ignored.
+    assert tile_k * tile_n >= 2 * k, (
+        f"xrms padded packet ([tile_k, tile_n]={tile_k * tile_n} elems) must "
+        f"hold 2*k={2 * k} bf16 (x_raw + w_rms)"
+    )
     xrms_size = [k]
-    xrms_pack_size = [2, k]
+    xrms_pack_size = [tile_k, tile_n]
     b_size = [NKV, GEMV_COUNT, k, n]
     kv_cache_size = [NKV, seq_len, n]
     xb_size_l3 = [NKV, GROUP_SIZE, n]
@@ -50,18 +55,15 @@ def build_module(
     memrefTyKCache = MemRefType.get(kv_cache_size, xrt_dtype_out)
     memrefTyVCache = MemRefType.get(kv_cache_size, xrt_dtype_out)
 
-    # Channels (Path B with per-col rms duplication + shim-side broadcast):
-    #   - xRmsL2ToL1 size=[1,1] broadcast_shape=[NKV,1]: memtile fans out
-    #     x_raw + w_rms to all NKV rms tiles via L1 broadcast.
-    #   - x_raw + w_rms enter via col 0's bL3ToL2 slot (multiplexed BEFORE
-    #     the weight tiles). This avoids needing a 17th shim MM2S — at NKV=8
-    #     the existing 8 cols × 2 MM2S = 16 shim MM2S are exactly saturated.
-    #   - x_norm_cascade size=[NKV]: per-col cascade rms tile -> gqa tile.
-    #   - aL3ToL2 / aL2ToL1: per-col K + V cache rows.
-    #   - bL3ToL2 / bL2ToL1: per-col weights (col 0 also carries xRms).
-    #   - cL1ToL2, dL1ToL2: per-col KV writeback and xb output.
-    Channel("xRmsL2ToL1", size=[1, 1], broadcast_shape=[NKV, 1])
-    channel("x_norm_cascade", size=[NKV], channel_type="cascade")
+    # Channels: every memtile/L1 channel is single-task self-loop. xrms is
+    # fused onto the weight stream as one [tile_k, tile_n]-shaped padded
+    # packet so bL3ToL2's BD config is uniform across all 49 fires per
+    # token (1 padded xrms + 48 weight chunks). Each col reads its own
+    # xrms copy from L3 (no broadcast); rms is computed on the gqa tile.
+    #   - aL3ToL2 / aL2ToL1: per-col K + V cache rows ([tile_n] packets).
+    #   - bL3ToL2 / bL2ToL1: per-col weights + padded xrms head packet
+    #     ([tile_k, tile_n] packets, all identical config).
+    #   - cL1ToL2 / cL2ToL3: KV writeback. dL1ToL2 / dL2ToL3: xb output.
     channel("aL3ToL2", size=[NKV])
     channel("bL3ToL2", size=[NKV])
     channel("aL2ToL1", size=[NKV])
@@ -181,12 +183,6 @@ def build_module(
         element_type=xrt_dtype_out,
         memory_space=l1_mem_space,
     )
-    vector_copy_func = FuncOp(
-        "vector_copy",
-        ([T.i32(), l1MemrefTySharedL1BDBuf, l1MemrefTyAChunk], []),
-        visibility="private",
-    )
-
     # GQA: q has GROUP_SIZE rows, attn has GROUP_SIZE rows of seq_len, xb
     # has GROUP_SIZE rows. K/V cache rows are shared across the group.
     q_l1_size = [GROUP_SIZE, n]
@@ -225,13 +221,38 @@ def build_module(
         ([l1MemrefTyAttn, l1MemrefTySharedL1BDBuf, T.i32(), l1MemrefTyXb], []),
         visibility="private",
     )
-    # rms_herd uses simple_rms_bf16(x[k], w[k], y[k], N) — same .o as gqa.
+    # rms now runs on the gqa tile: receives a padded [tile_k, tile_n] xrms
+    # packet on bL2ToL1 (same channel as weights), demuxes into x_raw + w_rms
+    # L1 buffers, then runs simple_rms_bf16 in-place (x_raw -> x_norm).
     l1MemrefTyXRms = MemRefType.get(
         shape=xrms_size, element_type=xrt_dtype_in, memory_space=l1_mem_space
     )
     simple_rms_func = FuncOp(
         "simple_rms_bf16",
         ([l1MemrefTyXRms, l1MemrefTyXRms, l1MemrefTyXRms, T.i32()], []),
+        visibility="private",
+    )
+    xrms_demux_func = FuncOp(
+        "xrms_demux_bf16",
+        ([l1MemrefTyB, l1MemrefTyXRms, l1MemrefTyXRms, T.i32()], []),
+        visibility="private",
+    )
+    # Vectorized fill / copy helpers replace per-element scf.for stores
+    # in the herd body — the scalar variants unroll into thousands of
+    # stores in the AIE2P core ELF, exceeding the 16 KB program memory.
+    fill_neg99_func = FuncOp(
+        "fill_neg99_bf16",
+        ([l1MemrefTyAttn, T.i32()], []),
+        visibility="private",
+    )
+    fill_zero_func = FuncOp(
+        "fill_zero_bf16",
+        ([l1MemrefTyXb, T.i32()], []),
+        visibility="private",
+    )
+    vec_copy_n_func = FuncOp(
+        "vector_copy_n_bf16",
+        ([l1MemrefTyThreeByFortyEightVec, l1MemrefTyQ, T.i32()], []),
         visibility="private",
     )
 
@@ -242,11 +263,14 @@ def build_module(
         sinf_poly_func,
         freq_pos_func,
         shuffle_apply_rope_poly_func,
-        vector_copy_func,
         attn_func,
         softmax_func,
         attn2_func,
         simple_rms_func,
+        xrms_demux_func,
+        fill_neg99_func,
+        fill_zero_func,
+        vec_copy_n_func,
     ]:
         func.attributes["link_with"] = StringAttr.get("mha_gqa.o")
         func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
@@ -291,37 +315,28 @@ def build_module(
             )
             launch_offset_y = affine_apply(launch_ivy_map, [launch_ivy])
 
-            # RMS inputs: x_raw (row 0) and w_rms (row 1) sent on col 0's
-            # bL3ToL2 slot BEFORE the weight tiles. Multiplexing onto an
-            # existing per-col channel avoids a 17th shim MM2S at NKV=8.
-            c0_idx = arith.ConstantOp.create_index(0)
-            ChannelPut(
-                "bL3ToL2",
-                l3_xrms_data,
-                offsets=[0, 0],
-                sizes=[1, k],
-                strides=[k, 1],
-                indices=[c0_idx],
-            )
-            ChannelPut(
-                "bL3ToL2",
-                l3_xrms_data,
-                offsets=[1, 0],
-                sizes=[1, k],
-                strides=[k, 1],
-                indices=[c0_idx],
-            )
-
             # Per-col data movement: Python-unrolled over NKV. Each col gets
             # its own indices=[c_tx_i] slot on the size=[NKV] channels.
             for tx_i in range(NKV):
                 c_tx_i = arith.ConstantOp.create_index(tx_i)
 
-                # GEMV weights → bL3ToL2: GEMV_COUNT separate shim BDs per
-                # col (Python-unroll), each [k, tile_n]. Don't let the
-                # compiler fold to one repeat_count BD — at large N_IN the
-                # folded BD's total bytes can exceed the shim's per-BD
-                # transfer limit and silently produce truncated streams.
+                # bL3ToL2 packet 0: padded xrms ([tile_k, tile_n] = same
+                # shape as a weight chunk). Each col reads its own copy from
+                # the shared L3 xrms buffer (no broadcast). Real x_raw +
+                # w_rms occupy the first 2*k flat elements; the rest is
+                # padding the demux kernel ignores.
+                ChannelPut(
+                    "bL3ToL2",
+                    l3_xrms_data,
+                    offsets=[0, 0],
+                    sizes=[tile_k, tile_n],
+                    strides=[tile_n, 1],
+                    indices=[c_tx_i],
+                )
+
+                # bL3ToL2 packets 1..GEMV_COUNT*chunks: weight chunks. Same
+                # [tile_k, tile_n] packet shape as the xrms head packet —
+                # the memtile S2MM and L1 S2MM are single self-loop BDs.
                 for mm_iter in range(GEMV_COUNT):
                     ChannelPut(
                         "bL3ToL2",
@@ -406,82 +421,12 @@ def build_module(
                     element_type=xrt_dtype_out,
                     memory_space=l2_mem_space,
                 )
-                # L2 staging for x_raw + w_rms: arrive on col 0's bL3ToL2 slot
-                # (multiplexed before weight tiles), forwarded via xRmsL2ToL1
-                # broadcast (broadcast_shape=[NKV,1]) to all NKV rms tiles.
-                l2MemrefTyXRms = MemRefType.get(
-                    shape=xrms_size,
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
-                xraw_l2 = AllocOp(l2MemrefTyXRms, [], [])
-                wrms_l2 = AllocOp(l2MemrefTyXRms, [], [])
-                c0_idx_seg = arith.ConstantOp.create_index(0)
-                # x_raw: bL3ToL2[0] -> L2 -> broadcast.
-                ChannelGet(
-                    "bL3ToL2",
-                    xraw_l2.result,
-                    offsets=[], sizes=[], strides=[],
-                    indices=[c0_idx_seg],
-                )
-                ChannelPut(
-                    "xRmsL2ToL1",
-                    xraw_l2.result,
-                    offsets=[], sizes=[], strides=[],
-                    indices=[c0_idx_seg, c0_idx_seg],
-                )
-                # w_rms: bL3ToL2[0] -> L2 -> broadcast.
-                ChannelGet(
-                    "bL3ToL2",
-                    wrms_l2.result,
-                    offsets=[], sizes=[], strides=[],
-                    indices=[c0_idx_seg],
-                )
-                ChannelPut(
-                    "xRmsL2ToL1",
-                    wrms_l2.result,
-                    offsets=[], sizes=[], strides=[],
-                    indices=[c0_idx_seg, c0_idx_seg],
-                )
-
-                # rms_herd: NKV tiles (one per col). Each computes
-                # x_norm = RMSNorm(x_raw, w_rms) on its own copy of the input,
-                # then cascades x_norm to its same-col gqa tile.
+                # rms now runs on the gqa tile — no L2 xrms staging, no
+                # rms_herd, no xRms L2-to-L1 broadcast, no x_norm cascade.
+                # The padded xrms packet arrives on bL3ToL2 like a weight
+                # chunk and is consumed by the gqa tile as the first
+                # bL2ToL1 acquire.
                 k_i32_const = arith.ConstantOp(IntegerAttr.get(T.i32(), k), None)
-
-                @herd(name="rms_herd", sizes=[NKV, 1], operands=[k_i32_const])
-                def rms_body(_rtx, _rty, _rsx, _rsy, k_i32):
-                    xraw_l1 = AllocOp(l1MemrefTyXRms, [], [])
-                    wrms_l1 = AllocOp(l1MemrefTyXRms, [], [])
-                    xnorm_l1 = AllocOp(l1MemrefTyXRms, [], [])
-                    # x_raw + w_rms arrive via L1 broadcast (single producer
-                    # fans out to all NKV rms tiles). indices=[_rtx, _rty]
-                    # match the broadcast_shape=[NKV, 1].
-                    ChannelGet(
-                        "xRmsL2ToL1",
-                        xraw_l1.result,
-                        offsets=[], sizes=[], strides=[],
-                        indices=[_rtx, _rty],
-                    )
-                    ChannelGet(
-                        "xRmsL2ToL1",
-                        wrms_l1.result,
-                        offsets=[], sizes=[], strides=[],
-                        indices=[_rtx, _rty],
-                    )
-                    CallOp(simple_rms_func, [xraw_l1, wrms_l1, xnorm_l1, k_i32])
-                    # Cascade-out x_norm to this col's gqa tile.
-                    ChannelPut(
-                        "x_norm_cascade",
-                        xnorm_l1.result,
-                        offsets=[], sizes=[], strides=[],
-                        indices=[_rtx],
-                    )
-                    DeallocOp(xraw_l1)
-                    DeallocOp(wrms_l1)
-                    DeallocOp(xnorm_l1)
-
-                rms_body.attributes["link_with"] = StringAttr.get("mha_gqa.o")
 
                 # Per-col L2 staging: one buffer per col so memtile DMA channels
                 # don't collide. Same allocation pattern as v2.
@@ -556,24 +501,36 @@ def build_module(
                 @herd(
                     name="herd_0",
                     sizes=[NKV, 1],
-                    operands=[l1_c_data, l1_out_data, pos_c],
+                    operands=[l1_c_data, l1_out_data, pos_c, k_i32_const],
                 )
-                def herd_body_0(_tx, _ty, _sx, _sy, c_data, out_data, pos):
+                def herd_body_0(_tx, _ty, _sx, _sy, c_data, out_data, pos,
+                                k_i32):
 
                     zero_const = ConstantOp(FloatAttr.get(xrt_dtype_vm_acc, 0), None)
                     l1_a_data = AllocOp(l1MemrefTyA, [], [])
                     l1_b_data = AllocOp(l1MemrefTyB, [], [])
                     l1_shared_bd_buf_data = AllocOp(l1MemrefTySharedL1BDBuf, [], [])
 
-                    # Receive x_norm via cascade-in from this col's rms tile
-                    # (no DMA channel; cascade is dedicated hardware). Reused
-                    # across all GEMV_COUNT iterations. Assumes k == tile_k.
+                    # First bL2ToL1 acquire: padded xrms packet (same shape
+                    # as a weight chunk). Demux into x_raw_l1 + w_rms_l1
+                    # scratch buffers, then run rms into l1_a_data. Cannot
+                    # alias x and y (rms_kernel_bf16 has __restrict on both).
+                    # Subsequent GEMV_COUNT*chunks acquires reuse l1_b_data
+                    # for weights.
+                    x_raw_l1 = AllocOp(l1MemrefTyXRms, [], [])
+                    w_rms_l1 = AllocOp(l1MemrefTyXRms, [], [])
                     ChannelGet(
-                        "x_norm_cascade",
-                        l1_a_data,
+                        "bL2ToL1",
+                        l1_b_data,
                         offsets=[], sizes=[], strides=[],
                         indices=[_tx],
                     )
+                    CallOp(xrms_demux_func,
+                           [l1_b_data, x_raw_l1, w_rms_l1, k_i32])
+                    CallOp(simple_rms_func,
+                           [x_raw_l1, w_rms_l1, l1_a_data, k_i32])
+                    DeallocOp(x_raw_l1)
+                    DeallocOp(w_rms_l1)
 
                     # GEMV: GEMV_COUNT iterations (4 Q + 1 K + 1 V), each
                     # producing one [tile_n] row of c_data at offset g*tile_n.
@@ -677,22 +634,20 @@ def build_module(
                     # at lk=2048, important for L1 budget at large lk).
                     softmax_l1_data = attn_l1_data
 
-                    # Zero fill attn buffer (GROUP_SIZE rows of seq_len) with -99
-                    # so out-of-range positions exp() to ~0 in softmax.
-                    const_negInf = ConstantOp(FloatAttr.get(T.bf16(), -99), None)
-                    for g in range_(0, GROUP_SIZE):
-                        for i in range_(0, seq_len):
-                            store(const_negInf, attn_l1_data, [g, i])
-                            yield_([])
-                        yield_([])
+                    # Vectorized -99 fill of attn buffer (GROUP_SIZE * seq_len);
+                    # the previous scalar scf.for variant unrolled into thousands
+                    # of stores in the AIE2P core ELF.
+                    attn_total = arith.ConstantOp(
+                        IntegerAttr.get(T.i32(), GROUP_SIZE * seq_len), None
+                    )
+                    CallOp(fill_neg99_func, [attn_l1_data, attn_total])
 
-                    # Copy GROUP_SIZE Q rows from c_data[0..GROUP_SIZE, :] to q_l1_data.
-                    for g in range_(0, GROUP_SIZE):
-                        for y in range_(0, n):
-                            inval = load(c_data, [g, y])
-                            store(inval, q_l1_data, [g, y])
-                            yield_([])
-                        yield_([])
+                    # Vectorized copy of the first GROUP_SIZE rows of c_data
+                    # (Q heads) into q_l1_data.
+                    q_total = arith.ConstantOp(
+                        IntegerAttr.get(T.i32(), GROUP_SIZE * n), None
+                    )
+                    CallOp(vec_copy_n_func, [c_data, q_l1_data, q_total])
 
                     # attn_1_group: K rows shared across all GROUP_SIZE Q heads.
                     # aL2ToL1 only carries K then V rows now (no x, no weights),
@@ -724,12 +679,10 @@ def build_module(
                     )
 
                     xb_l1_data = AllocOp(l1MemrefTyXb, [], [])
-                    const_zero = ConstantOp(FloatAttr.get(T.bf16(), 0), None)
-                    for g in range_(0, GROUP_SIZE):
-                        for i in range_(0, n):
-                            store(const_zero, xb_l1_data, [g, i])
-                            yield_([])
-                        yield_([])
+                    xb_total = arith.ConstantOp(
+                        IntegerAttr.get(T.i32(), GROUP_SIZE * n), None
+                    )
+                    CallOp(fill_zero_func, [xb_l1_data, xb_total])
                     # attn_2_group: V rows shared across the group.
                     for i in range_(0, pos_p1):
                         ChannelGet(
@@ -937,11 +890,16 @@ if __name__ == "__main__":
     # cascading overflow through the GEMV+softmax+attn_2 chain.
     rng = np.random.default_rng(42)
     val_range = 4.0
-    # x_raw + w_rms packed into a single [2, k] arg (XRT runner has a 5-arg
-    # limit). Row 0 = x_raw (input embedding), row 1 = w_rms (RMSNorm gamma).
-    input_xrms = rng.uniform(0, val_range, (2, args.k)).astype(INPUT_DATATYPE)
-    input_xraw = input_xrms[0]
-    input_wrms = input_xrms[1]
+    # xrms is padded to [tile_k, tile_n] so it shares one BD shape with the
+    # weight stream on bL3ToL2 (single self-loop per memtile/L1 channel,
+    # no repeat_count). Real x_raw + w_rms occupy the first 2*k flat
+    # elements; the rest is padding the kernel demux ignores.
+    input_xrms = np.zeros((args.tile_k, args.tile_n), dtype=INPUT_DATATYPE)
+    input_xraw = rng.uniform(0, val_range, (args.k,)).astype(INPUT_DATATYPE)
+    input_wrms = rng.uniform(0, val_range, (args.k,)).astype(INPUT_DATATYPE)
+    input_xrms_flat = input_xrms.reshape(-1)
+    input_xrms_flat[: args.k] = input_xraw
+    input_xrms_flat[args.k : 2 * args.k] = input_wrms
     input_b = rng.uniform(0, val_range, (NKV, GEMV_COUNT, args.k, args.n)).astype(
         INPUT_DATATYPE
     )
@@ -1028,12 +986,15 @@ if __name__ == "__main__":
 
     elif args.compile_mode == "compile-only":
         ####### Compile only — for profiling via test_xclbin_decode.exe.
-        # omit_while_true_loop=True so each host invocation runs the runtime
+        # omit_while_true_loop=False keeps the runtime self-loop intact —
+        # required because the all-self-loop DMA design (no repeat_count)
+        # has no producer-side terminator; only the runtime while loop
+        # gates the per-iteration shim BD launch sequence.
         # once and exits, allowing multi-iteration profiling. (run_test path
         # above uses False — XRTRunner only does one invocation per call.)
         backend = XRTBackend(
             verbose=args.verbose,
-            omit_while_true_loop=True,
+            omit_while_true_loop=False,
             omit_pingpong=True,
             kernel_name=args.kernel_name,
             instance_name=args.instance_name,

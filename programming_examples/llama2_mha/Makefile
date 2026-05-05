@@ -16,7 +16,10 @@ OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
-PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 -I ${AIEOPT_DIR}/include
+# -Os (aggressive size opt) keeps the AIE2P core ELF under the 16 KB
+# program memory limit when rms shares a tile with vecmat + attn +
+# softmax + RoPE (-O2 builds ~18 KB for N_IN=2048 TILE_K=128).
+PEANOWRAP2P_FLAGS = -Os -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 -I ${AIEOPT_DIR}/include
 
 all: run
 
@@ -63,7 +66,7 @@ LKP ?= 64
 DK ?= 64
 DV ?= 64
 N_IN ?= 2048
-TILE_K ?= 256
+TILE_K ?= 128
 TILE_N ?= 64
 POS ?= 2046
 WARMUP ?= 10
@@ -111,7 +114,7 @@ profile-decode: compile-kernel-gqa build-test-exe-decode
 		--compile-mode compile-only --output-format xclbin
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_xclbin_decode.exe \
 		-x air.xclbin -k "MLIR_AIE" -i air.insts.bin \
-		--nkv $(NKV) --group-size $(GROUP_SIZE) --n-in $(N_IN) --head-dim $(DK) --lk $(LK) \
+		--nkv $(NKV) --group-size $(GROUP_SIZE) --n-in $(N_IN) --head-dim $(DK) --lk $(LK) --tile-k $(TILE_K) --tile-n $(TILE_N) \
 		--warmup $(WARMUP) --iterations $(ITERS)
 
 # ELF profile target — preferred for multi-iteration profiling. ELF format
@@ -124,7 +127,7 @@ profile-decode-elf: compile-kernel-gqa build-test-exe-decode-elf
 		--compile-mode compile-only --output-format elf
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_elf_npu2_decode.exe \
 		-e air.elf -k "main:mha_bf16" \
-		--nkv $(NKV) --group-size $(GROUP_SIZE) --n-in $(N_IN) --head-dim $(DK) --lk $(LK) \
+		--nkv $(NKV) --group-size $(GROUP_SIZE) --n-in $(N_IN) --head-dim $(DK) --lk $(LK) --tile-k $(TILE_K) --tile-n $(TILE_N) \
 		--warmup $(WARMUP) --iterations $(ITERS)
 
 build-test-exe-decode-elf:

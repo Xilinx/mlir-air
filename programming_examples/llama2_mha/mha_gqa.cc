@@ -321,35 +321,45 @@ static inline float fast_rsqrt(float x) {
   u.f = x;
   u.i = 0x5f3759df - (u.i >> 1);
   float y = u.f;
-  y = y * (1.5f - 0.5f * x * y * y);
+  // Single Newton-Raphson iteration. RMSNorm tolerates ~1% rstd error
+  // and the 2nd iter pulls in extra scalar __mulsf3/__divsf3 libcalls
+  // that bloat the AIE2P core ELF beyond the 16 KB program memory limit
+  // when rms shares a tile with vecmat + attn + softmax + RoPE.
   y = y * (1.5f - 0.5f * x * y * y);
   return y;
 }
 
-template <int N_VAL>
+// Runtime-N rms (no templating). Per-build template instantiation for
+// large N (e.g., 2048) explodes the AIE2P core's 16 KB program memory
+// when fully unrolled. Runtime loops keep the function size constant
+// across N at the cost of a few cycles per token.
 static inline void rms_kernel_bf16(const bfloat16 *__restrict x,
                                    const bfloat16 *__restrict w,
-                                   bfloat16 *__restrict y, float eps) {
+                                   bfloat16 *__restrict y, int n_val,
+                                   float eps) {
   constexpr int VL = 16;
-  static_assert(N_VAL % VL == 0, "N must be a multiple of 16");
-  constexpr int N_VECS = N_VAL / VL;
+  const int n_vecs = n_val / VL;
 
   aie::accum<accfloat, VL> ssq = aie::zeros<accfloat, VL>();
-  aie::vector<bfloat16, VL> x_vec[N_VECS];
-  for (int i = 0; i < N_VECS; i++) {
-    x_vec[i] = aie::load_v<VL>(x + i * VL);
-    ssq = aie::mac(ssq, x_vec[i], x_vec[i]);
+  for (int i = 0; i < n_vecs; i++) {
+    aie::vector<bfloat16, VL> xv = aie::load_v<VL>(x + i * VL);
+    ssq = aie::mac(ssq, xv, xv);
   }
-  aie::vector<float, VL> ssq_v = ssq.template to_vector<float>();
-  float total = 0.0f;
-  for (int i = 0; i < VL; i++)
-    total += ssq_v[i];
-  float rstd = fast_rsqrt(total / (float)N_VAL + eps);
+  // Vector reduce avoids a scalar 16-iter sum loop (more libcall churn).
+  // Multiply by precomputed 1/n instead of dividing — sidesteps __divsf3.
+  aie::vector<float, VL> ssq_v = ssq.to_vector<float>();
+  float total = aie::reduce_add(ssq_v);
+  float inv_n = 1.0f / (float)n_val;
+  float rstd = fast_rsqrt(total * inv_n + eps);
 
-  for (int i = 0; i < N_VAL; i++) {
-    float xi = (float)x[i];
-    float wi = (float)w[i];
-    y[i] = (bfloat16)(xi * rstd * wi);
+  aie::vector<bfloat16, VL> rstd_v = aie::broadcast<bfloat16, VL>((bfloat16)rstd);
+  for (int i = 0; i < n_val; i += VL) {
+    aie::vector<bfloat16, VL> xv = aie::load_v<VL>(x + i);
+    aie::vector<bfloat16, VL> wv = aie::load_v<VL>(w + i);
+    aie::accum<accfloat, VL> a1 = aie::mul(xv, rstd_v);
+    aie::vector<bfloat16, VL> rx = a1.to_vector<bfloat16>();
+    aie::accum<accfloat, VL> a2 = aie::mul(rx, wv);
+    aie::store_v(y + i, a2.to_vector<bfloat16>());
   }
 }
 
@@ -416,42 +426,40 @@ void shuffle_apply_rope_bf16_64(int offset, const bfloat16 *fcr,
   shuffle_apply_rope<HEAD_SIZE, VEC>(offset, fcr, fci, outputs);
 }
 
-void vector_copy(int offset, const bfloat16 *inputs, bfloat16 *outputs) {
-  bfloat16 *out = outputs + offset;
-  // Copies DIM_K=64 elements (one tile of GEMV input vector).
-  for (unsigned j = 0; j < DIM_K; j += 16) {
-    aie::vector<bfloat16, 16> v = aie::load_v<16>(inputs + j);
-    aie::store_v(out + j, v);
-  }
+// xrms_demux_bf16: split a [tile_k, tile_n] padded packet (laid out flat)
+// into x_raw[k] and w_rms[k]. The padded packet contains [x_raw[0:k],
+// w_rms[0:k], junk...] in row-major order. K elements each, vector-copy.
+void xrms_demux_bf16(const bfloat16 *padded, bfloat16 *x_raw, bfloat16 *w_rms,
+                     int32_t k) {
+  constexpr int VL = 16;
+  for (int i = 0; i < k; i += VL)
+    aie::store_v(x_raw + i, aie::load_v<VL>(padded + i));
+  const bfloat16 *w_src = padded + k;
+  for (int i = 0; i < k; i += VL)
+    aie::store_v(w_rms + i, aie::load_v<VL>(w_src + i));
 }
 
-void attn_1(const bfloat16 *q, const bfloat16 *k, int pos, bfloat16 *outputs) {
-  float result = 0.0f;
-  for (unsigned i = 0; i < DIM_N / 16; i++) {
-    aie::vector<bfloat16, 16> qv = aie::load_v<16>(q + i * 16);
-    aie::vector<bfloat16, 16> kv = aie::load_v<16>(k + i * 16);
-    aie::accum<accfloat, 16> acc = aie::mul(qv, kv);
-    result += aie::reduce_add(acc.to_vector<float>());
-  }
-  // 1/sqrt(64) = 0.125
-  result *= 0.125f;
-  outputs[pos] = (bfloat16)result;
+// Vectorized fills to replace per-element scf.for stores in the herd
+// body — those unroll into thousands of scalar stores in the AIE2P core
+// ELF, exceeding the 16 KB program memory.
+void fill_neg99_bf16(bfloat16 *p, int32_t total_elems) {
+  aie::vector<bfloat16, 16> v = aie::broadcast<bfloat16, 16>((bfloat16)-99);
+  for (int i = 0; i < total_elems; i += 16)
+    aie::store_v(p + i, v);
 }
 
-void softmax_bf16(const bfloat16 *in, int num_elems, bfloat16 *out) {
-  softmax_bf16_impl(in, num_elems, out);
+void fill_zero_bf16(bfloat16 *p, int32_t total_elems) {
+  aie::vector<bfloat16, 16> v = aie::zeros<bfloat16, 16>();
+  for (int i = 0; i < total_elems; i += 16)
+    aie::store_v(p + i, v);
 }
 
-void attn_2(const bfloat16 *attn, const bfloat16 *v, int pos,
-            bfloat16 *outputs) {
-  aie::vector<bfloat16, 16> attnB = aie::broadcast<bfloat16, 16>(attn[pos]);
-  for (unsigned j = 0; j < DIM_N / 16; j++) {
-    aie::accum<accfloat, 16> acc;
-    acc.from_vector(aie::load_v<16>(outputs + j * 16));
-    acc = mac(acc, attnB, aie::load_v<16>(v + j * 16));
-    aie::store_v(outputs + j * 16, acc.template to_vector<bfloat16>());
-  }
+void vector_copy_n_bf16(const bfloat16 *src, bfloat16 *dst,
+                        int32_t total_elems) {
+  for (int i = 0; i < total_elems; i += 16)
+    aie::store_v(dst + i, aie::load_v<16>(src + i));
 }
+
 
 //------------------------------------------------------------------------------
 // GQA group-aware kernels: process group_size Q heads sharing 1 K, 1 V cache.
@@ -513,18 +521,7 @@ void attn_2_group(const bfloat16 *softmax, const bfloat16 *v_row, int pos,
 }
 
 void simple_rms_bf16(bfloat16 *x, bfloat16 *w, bfloat16 *y, int32_t N) {
-  if (N == 64)
-    rms_kernel_bf16<64>(x, w, y, 1e-5f);
-  else if (N == 128)
-    rms_kernel_bf16<128>(x, w, y, 1e-5f);
-  else if (N == 256)
-    rms_kernel_bf16<256>(x, w, y, 1e-5f);
-  else if (N == 512)
-    rms_kernel_bf16<512>(x, w, y, 1e-5f);
-  else if (N == 1024)
-    rms_kernel_bf16<1024>(x, w, y, 1e-5f);
-  else if (N == 2048)
-    rms_kernel_bf16<2048>(x, w, y, 1e-5f);
+  rms_kernel_bf16(x, w, y, N, 1e-5f);
 }
 
 } // extern "C"
