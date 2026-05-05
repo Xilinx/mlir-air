@@ -51,17 +51,22 @@ compile-kernel:
 # ============================================================================
 
 # Configurable for profiling and verification.
+# Defaults: full LLaMA-3.2-1B decode config (NKV=8 GROUP_SIZE=4 N_IN=2048
+# LK=2048 head_dim=64). TILE_K must be 256 at N_IN >= 512 — smaller TILE_K
+# at large N_IN produces wrong output (suspected memtile DMA streaming
+# limit at small packet × many fires). TILE_K=256 caps L1 weight buf at
+# 32 KB which fits alongside attn_l1=16 KB and the rest of the herd state.
 NKV ?= 8
 GROUP_SIZE ?= 4
-LK ?= 128
+LK ?= 2048
 LKP ?= 64
 DK ?= 64
 DV ?= 64
-N_IN ?= 64
-TILE_K ?= 64
+N_IN ?= 2048
+TILE_K ?= 256
 TILE_N ?= 64
-POS ?= 2
-WARMUP ?= 5
+POS ?= 2046
+WARMUP ?= 10
 ITERS ?= 20
 
 print-multicol:
@@ -92,7 +97,7 @@ compile-kernel-gqa:
 		echo "Error: NPU2 build requires PEANO_INSTALL_DIR with clang++."; \
 		exit 1; \
 	fi
-	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DSEQ_LEN=$(LK) -DGROUP_SIZE=$(GROUP_SIZE) -DDIM_K=$(N_IN) -DDIM_N=$(DK) -DHEAD_SIZE=$(DK) -c ${srcdir}/mha_gqa.cc -o $(BUILD_DIR)/mha_gqa.o
+	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DSEQ_LEN=$(LK) -DGROUP_SIZE=$(GROUP_SIZE) -DDIM_K=$(N_IN) -DTILE_K=$(TILE_K) -DDIM_N=$(DK) -DHEAD_SIZE=$(DK) -c ${srcdir}/mha_gqa.cc -o $(BUILD_DIR)/mha_gqa.o
 
 # ============================================================================
 # Profile target for the decode design at LLaMA configuration

@@ -73,10 +73,20 @@ def build_module(
 
     l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
 
-    a_l1_size = [tile_k]
+    # x_norm L1 buffer (full k=n_in, cascade-received as one shot from rms);
+    # weight L1 buffer (per inner-k chunk, sized [tile_k, tile_n]). For
+    # backward compatibility tile_k may equal k; in that case the inner-k
+    # loop has a single iteration and x_offset is always 0.
+    a_l1_size = [k]
+    a_chunk_l1_size = [tile_k]
     b_l1_size = [tile_k, tile_n]
     l1MemrefTyA = MemRefType.get(
         shape=a_l1_size,
+        element_type=xrt_dtype_in,
+        memory_space=l1_mem_space,
+    )
+    l1MemrefTyAChunk = MemRefType.get(
+        shape=a_chunk_l1_size,
         element_type=xrt_dtype_in,
         memory_space=l1_mem_space,
     )
@@ -107,9 +117,20 @@ def build_module(
         ([T.i32(), l1MemrefTyThreeByFortyEightVec], []),
         visibility="private",
     )
+    # vecmat_bf16_bf16(x_offset, c_offset, a, b, c): x_offset selects the
+    # tile_k-sized slice of the full-k x_norm buffer for this inner-k chunk.
     vecmat_func = FuncOp(
         "vecmat_bf16_bf16",
-        ([T.i32(), l1MemrefTyA, l1MemrefTyB, l1MemrefTyThreeByFortyEightVec], []),
+        (
+            [
+                T.i32(),
+                T.i32(),
+                l1MemrefTyA,
+                l1MemrefTyB,
+                l1MemrefTyThreeByFortyEightVec,
+            ],
+            [],
+        ),
         visibility="private",
     )
     l1MemrefTyHSByTwo = MemRefType.get(
@@ -162,7 +183,7 @@ def build_module(
     )
     vector_copy_func = FuncOp(
         "vector_copy",
-        ([T.i32(), l1MemrefTySharedL1BDBuf, l1MemrefTyA], []),
+        ([T.i32(), l1MemrefTySharedL1BDBuf, l1MemrefTyAChunk], []),
         visibility="private",
     )
 
@@ -296,8 +317,12 @@ def build_module(
             for tx_i in range(NKV):
                 c_tx_i = arith.ConstantOp.create_index(tx_i)
 
-                # GEMV weights → bL3ToL2 (separate channel, Step 3 pattern).
-                for mm_iter in range_(0, GEMV_COUNT):
+                # GEMV weights → bL3ToL2: GEMV_COUNT separate shim BDs per
+                # col (Python-unroll), each [k, tile_n]. Don't let the
+                # compiler fold to one repeat_count BD — at large N_IN the
+                # folded BD's total bytes can exceed the shim's per-BD
+                # transfer limit and silently produce truncated streams.
+                for mm_iter in range(GEMV_COUNT):
                     ChannelPut(
                         "bL3ToL2",
                         l3_b_data,
@@ -306,7 +331,6 @@ def build_module(
                         strides=[GEMV_COUNT * n * k, n * k, n, 1],
                         indices=[c_tx_i],
                     )
-                    yield_([])
 
                 # KV cache writeback at slot pos_host for this col.
                 ChannelGet(
@@ -360,9 +384,11 @@ def build_module(
 
             @segment(name="vecmat_i8_0")
             def segment_body():
-                # L2 MemRefTypes
+                # L2 MemRefTypes. Inner-k chunked: weight L2 buf shrinks from
+                # [k, tile_n] to [tile_k, tile_n] (8 KB/col at tile_k=64,
+                # vs 256 KB/col at k=2048 without chunking).
                 a_size_l2 = [tile_n]  # K/V cache row staging (single row at a time)
-                b_size_l2 = [k, tile_n]
+                b_size_l2 = [tile_k, tile_n]
                 c_size_l2 = [KV_COUNT, tile_n]
                 l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
                 l2MemrefTyA = MemRefType.get(
@@ -488,21 +514,13 @@ def build_module(
                         indices=[c_tx_i],
                     )
 
-                    for_iv_map_data = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(tile_k),
-                            )
-                        ],
-                    )
-
-                    # Python-unroll GEMV_COUNT (was scf.for) to avoid an L2
-                    # DMA BD with repeat_count, which would not reset across
-                    # multi-iteration xclbin invocations (profiling).
-                    for mm_iter in range(GEMV_COUNT):
+                    # Inner-k weight relay: nested scf.for over GEMV_COUNT *
+                    # (k/tile_k) chunks. Folds to one repeat_count BD on each
+                    # of bL3ToL2 RX and bL2ToL1 TX (memtile BD limit is 24/ch
+                    # — Python-unrolling explodes here at large N_IN). The
+                    # repeat_count BD does NOT reset across host invocations
+                    # in xclbin format, so multi-iter profiling requires ELF.
+                    for mm_iter in range_(0, GEMV_COUNT * (k // tile_k)):
                         ChannelGet(
                             "bL3ToL2",
                             l2_b_bufs[tx_i].result,
@@ -511,17 +529,15 @@ def build_module(
                             strides=[],
                             indices=[c_tx_i],
                         )
-                        for i in range_(0, k // tile_k):
-                            for_iv_data_offset = affine_apply(for_iv_map_data, [i])
-                            ChannelPut(
-                                "bL2ToL1",
-                                l2_b_bufs[tx_i].result,
-                                offsets=[for_iv_data_offset, 0],
-                                sizes=[tile_k, tile_n],
-                                strides=[tile_n, 1],
-                                indices=[c_tx_i],
-                            )
-                            yield_([])
+                        ChannelPut(
+                            "bL2ToL1",
+                            l2_b_bufs[tx_i].result,
+                            offsets=[],
+                            sizes=[],
+                            strides=[],
+                            indices=[c_tx_i],
+                        )
+                        yield_([])
 
                     # KV cache writeback: pull from herd then forward to L3.
                     ChannelGet(
@@ -572,7 +588,8 @@ def build_module(
                             linalg_fill_func, [gemv_offset_consts[g], c_data]
                         )
                         for i in range_(0, k, tile_k):
-                            # Weight tile via bL2ToL1 (Step 3 channel layout).
+                            # Weight chunk via bL2ToL1 (one [tile_k, tile_n]
+                            # tile per inner-k iter).
                             ChannelGet(
                                 "bL2ToL1",
                                 l1_b_data,
@@ -581,9 +598,13 @@ def build_module(
                                 strides=[],
                                 indices=[_tx],
                             )
+                            # x_offset = i (in elements) selects the
+                            # tile_k-sized slice of l1_a_data for this chunk.
+                            i32_x_offset = arith.index_cast(T.i32(), i)
                             vecmat = CallOp(
                                 vecmat_func,
                                 [
+                                    i32_x_offset,
                                     gemv_offset_consts[g],
                                     l1_a_data,
                                     l1_b_data,

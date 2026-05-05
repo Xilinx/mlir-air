@@ -364,6 +364,14 @@ static inline void rms_kernel_bf16(const bfloat16 *__restrict x,
 #ifndef DIM_K
 #define DIM_K 64
 #endif
+// TILE_K is the inner-k chunk size processed per vecmat call. The caller
+// invokes vecmat_bf16_bf16 (DIM_K / TILE_K) times with x_offset stepping in
+// TILE_K units, accumulating into c[offset..offset+DIM_N]. Defaults to DIM_K
+// (single-chunk GEMV) for backward compatibility with small-K configs.
+#ifndef TILE_K
+#define TILE_K DIM_K
+#endif
+static_assert(DIM_K % TILE_K == 0, "DIM_K must be a multiple of TILE_K");
 #ifndef HEAD_SIZE
 #define HEAD_SIZE 64
 #endif
@@ -378,8 +386,15 @@ void linalg_fill_bf16(int offset, bfloat16 *c) {
     aie::store_v(p + i, z);
 }
 
-void vecmat_bf16_bf16(int offset, bfloat16 *a, bfloat16 *b, bfloat16 *c) {
-  vecmat_vectorized<bfloat16, bfloat16, DIM_K, DIM_N, 8, 16>(offset, a, b, c);
+// Inner-k chunked GEMV. x_offset is in elements (caller passes
+// chunk_idx * TILE_K). Reads a[x_offset..x_offset+TILE_K] @ b[TILE_K, DIM_N]
+// and accumulates into c[offset..offset+DIM_N]. Caller must zero c (via
+// linalg_fill_bf16) before the first chunk in a given GEMV head.
+void vecmat_bf16_bf16(int x_offset, int offset, bfloat16 *a, bfloat16 *b,
+                      bfloat16 *c) {
+  vecmat_vectorized<bfloat16, bfloat16, TILE_K, DIM_N, 8, 16>(offset,
+                                                              a + x_offset, b,
+                                                              c);
 }
 
 // dk=64 => 32-elem buffers, native n=16 vectors. No padding needed.
