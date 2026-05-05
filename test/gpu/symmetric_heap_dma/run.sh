@@ -21,11 +21,23 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NUM_RANKS=${1:-2}
-# Set SHARE_GPU=1 to make all ranks use GPU 0 (single-GPU test machines).
-# Default: each rank uses its own GPU (LOCAL_RANK=$i).
-SHARE_GPU=${SHARE_GPU:-0}
 TMPDIR="${TMPDIR:-/tmp/air_sym_dma}"
 mkdir -p "$TMPDIR"
+
+# Refuse to run if there aren't enough physically distinct GPUs for one
+# rank per GPU. Colocating ranks on a single GPU would make XGMI/peer-VA
+# transparently fall back to local memory and produce false-positive PASSes.
+if [ -n "${HIP_VISIBLE_DEVICES:-}" ]; then
+  NUM_GPUS=$(echo "$HIP_VISIBLE_DEVICES" | tr ',' '\n' | grep -c .)
+else
+  NUM_GPUS=$(grep -l '^simd_count [1-9]' /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null | wc -l)
+fi
+if [ "$NUM_GPUS" -lt "$NUM_RANKS" ]; then
+  echo "ERROR: need >= $NUM_RANKS GPUs to validate cross-rank XGMI traffic; found $NUM_GPUS." >&2
+  echo "       This test refuses to colocate ranks on a single GPU because it would" >&2
+  echo "       silently bypass the symmetric-heap path and report false PASSes." >&2
+  exit 1
+fi
 
 LLVM_LIB_DIR="${LLVM_INSTALL_DIR:-$(dirname "$(which mlir-opt)")/..}/lib"
 AIRGPU_LIB="${MLIR_AIR_INSTALL_DIR:-$(dirname "$(which air-opt)")/..}/lib/libairgpu.so"
@@ -42,13 +54,8 @@ PIDS=()
 PASS=1
 
 for i in $(seq 0 $((NUM_RANKS - 1))); do
-  if [ "$SHARE_GPU" = "1" ]; then
-    LR=0
-  else
-    LR=$i
-  fi
   (set -o pipefail
-   RANK=$i WORLD_SIZE=$NUM_RANKS LOCAL_RANK=$LR \
+   RANK=$i WORLD_SIZE=$NUM_RANKS LOCAL_RANK=$i \
    mlir-runner --entry-point-result=void \
        --shared-libs="$LLVM_LIB_DIR/libmlir_rocm_runtime.so" \
        --shared-libs="$AIRGPU_LIB" \
