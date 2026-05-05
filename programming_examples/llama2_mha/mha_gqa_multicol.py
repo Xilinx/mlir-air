@@ -19,8 +19,17 @@ range_ = for_
 
 @module_builder
 def build_module(
-    k, n, tile_k, tile_n, seq_len, np_dtype_in, np_dtype_vm_acc, np_dtype_out,
-    pos_host, group_size=4, nkv=2
+    k,
+    n,
+    tile_k,
+    tile_n,
+    seq_len,
+    np_dtype_in,
+    np_dtype_vm_acc,
+    np_dtype_out,
+    pos_host,
+    group_size=4,
+    nkv=2,
 ):
 
     GROUP_SIZE = group_size
@@ -503,8 +512,7 @@ def build_module(
                     sizes=[NKV, 1],
                     operands=[l1_c_data, l1_out_data, pos_c, k_i32_const],
                 )
-                def herd_body_0(_tx, _ty, _sx, _sy, c_data, out_data, pos,
-                                k_i32):
+                def herd_body_0(_tx, _ty, _sx, _sy, c_data, out_data, pos, k_i32):
 
                     zero_const = ConstantOp(FloatAttr.get(xrt_dtype_vm_acc, 0), None)
                     l1_a_data = AllocOp(l1MemrefTyA, [], [])
@@ -522,22 +530,20 @@ def build_module(
                     ChannelGet(
                         "bL2ToL1",
                         l1_b_data,
-                        offsets=[], sizes=[], strides=[],
+                        offsets=[],
+                        sizes=[],
+                        strides=[],
                         indices=[_tx],
                     )
-                    CallOp(xrms_demux_func,
-                           [l1_b_data, x_raw_l1, w_rms_l1, k_i32])
-                    CallOp(simple_rms_func,
-                           [x_raw_l1, w_rms_l1, l1_a_data, k_i32])
+                    CallOp(xrms_demux_func, [l1_b_data, x_raw_l1, w_rms_l1, k_i32])
+                    CallOp(simple_rms_func, [x_raw_l1, w_rms_l1, l1_a_data, k_i32])
                     DeallocOp(x_raw_l1)
                     DeallocOp(w_rms_l1)
 
                     # GEMV: GEMV_COUNT iterations (4 Q + 1 K + 1 V), each
                     # producing one [tile_n] row of c_data at offset g*tile_n.
                     gemv_offset_consts = [
-                        ConstantOp(
-                            IntegerAttr.get(T.i32(), g * tile_n), None
-                        )
+                        ConstantOp(IntegerAttr.get(T.i32(), g * tile_n), None)
                         for g in range(GEMV_COUNT)
                     ]
                     for g in range(GEMV_COUNT):

@@ -102,6 +102,28 @@ compile-kernel-gqa:
 	fi
 	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DSEQ_LEN=$(LK) -DGROUP_SIZE=$(GROUP_SIZE) -DDIM_K=$(N_IN) -DTILE_K=$(TILE_K) -DDIM_N=$(DK) -DHEAD_SIZE=$(DK) -c ${srcdir}/mha_gqa.cc -o $(BUILD_DIR)/mha_gqa.o
 
+# DATA_MOVEMENT_ONLY build: every extern-C kernel function returns
+# immediately (compute disabled). Locks/DMA still cycle through the herd
+# body, so per-token latency reflects pure data-movement + sync cost.
+# Use to measure DMA vs compute share of the per-token time.
+compile-kernel-gqa-nocompute:
+	mkdir -p $(BUILD_DIR)
+	@if [ -z "$(PEANO_INSTALL_DIR)" ] || [ ! -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
+		echo "Error: NPU2 build requires PEANO_INSTALL_DIR with clang++."; \
+		exit 1; \
+	fi
+	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DSEQ_LEN=$(LK) -DGROUP_SIZE=$(GROUP_SIZE) -DDIM_K=$(N_IN) -DTILE_K=$(TILE_K) -DDIM_N=$(DK) -DHEAD_SIZE=$(DK) -DDATA_MOVEMENT_ONLY -c ${srcdir}/mha_gqa.cc -o $(BUILD_DIR)/mha_gqa.o
+
+profile-decode-nocompute: compile-kernel-gqa-nocompute build-test-exe-decode
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/mha_gqa_multicol.py \
+		--nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) \
+		--compile-mode compile-only --output-format xclbin
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_xclbin_decode.exe \
+		-x air.xclbin -k "MLIR_AIE" -i air.insts.bin \
+		--nkv $(NKV) --group-size $(GROUP_SIZE) --n-in $(N_IN) --head-dim $(DK) --lk $(LK) --tile-k $(TILE_K) --tile-n $(TILE_N) \
+		--warmup $(WARMUP) --iterations $(ITERS)
+
 # ============================================================================
 # Profile target for the decode design at LLaMA configuration
 # Usage:

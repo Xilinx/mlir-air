@@ -181,17 +181,17 @@ static void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
 // fits exactly one native n=16 vector pair).
 //------------------------------------------------------------------------------
 alignas(aie::vector_decl_align) static const bfloat16 freq_table_dk64[32] = {
-    (bfloat16)1.000000f,  (bfloat16)0.749894f,  (bfloat16)0.562341f,
-    (bfloat16)0.421697f,  (bfloat16)0.316228f,  (bfloat16)0.237137f,
-    (bfloat16)0.177828f,  (bfloat16)0.133352f,  (bfloat16)0.100000f,
-    (bfloat16)0.074989f,  (bfloat16)0.056234f,  (bfloat16)0.042170f,
-    (bfloat16)0.031623f,  (bfloat16)0.023714f,  (bfloat16)0.017783f,
-    (bfloat16)0.013335f,  (bfloat16)0.010000f,  (bfloat16)0.007499f,
-    (bfloat16)0.005623f,  (bfloat16)0.004217f,  (bfloat16)0.003162f,
-    (bfloat16)0.002371f,  (bfloat16)0.001778f,  (bfloat16)0.001334f,
-    (bfloat16)0.001000f,  (bfloat16)0.000750f,  (bfloat16)0.000562f,
-    (bfloat16)0.000422f,  (bfloat16)0.000316f,  (bfloat16)0.000237f,
-    (bfloat16)0.000178f,  (bfloat16)0.000133f,
+    (bfloat16)1.000000f, (bfloat16)0.749894f, (bfloat16)0.562341f,
+    (bfloat16)0.421697f, (bfloat16)0.316228f, (bfloat16)0.237137f,
+    (bfloat16)0.177828f, (bfloat16)0.133352f, (bfloat16)0.100000f,
+    (bfloat16)0.074989f, (bfloat16)0.056234f, (bfloat16)0.042170f,
+    (bfloat16)0.031623f, (bfloat16)0.023714f, (bfloat16)0.017783f,
+    (bfloat16)0.013335f, (bfloat16)0.010000f, (bfloat16)0.007499f,
+    (bfloat16)0.005623f, (bfloat16)0.004217f, (bfloat16)0.003162f,
+    (bfloat16)0.002371f, (bfloat16)0.001778f, (bfloat16)0.001334f,
+    (bfloat16)0.001000f, (bfloat16)0.000750f, (bfloat16)0.000562f,
+    (bfloat16)0.000422f, (bfloat16)0.000316f, (bfloat16)0.000237f,
+    (bfloat16)0.000178f, (bfloat16)0.000133f,
 };
 
 template <unsigned N, unsigned n>

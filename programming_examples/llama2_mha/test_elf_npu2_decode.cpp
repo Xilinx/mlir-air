@@ -47,33 +47,31 @@ int main(int argc, const char *argv[]) {
 
   cxxopts::Options options("Allowed options");
 
-  options.add_options()
-      ("help,h", "produce help message")
-      ("elf,e", "input elf path", cxxopts::value<std::string>())
-      ("kernel,k", "kernel name (format: <kernel_name>:<instance_name>)",
-       cxxopts::value<std::string>())
-      ("verbosity,v", "verbosity",
-       cxxopts::value<int>()->default_value("0"))
-      ("nkv", "Number of KV heads (cols)",
-       cxxopts::value<int>()->default_value("8"))
-      ("group-size", "GQA group size",
-       cxxopts::value<int>()->default_value("4"))
-      ("n-in", "GEMV input dim (n_in / hidden_size)",
-       cxxopts::value<int>()->default_value("64"))
-      ("head-dim", "Head dim (dk = dv)",
-       cxxopts::value<int>()->default_value("64"))
-      ("lk", "K/V cache length (sequence length)",
-       cxxopts::value<int>()->default_value("2048"))
-      ("tile-k", "GEMV inner-k tile (xrms padded to [tile_k, tile_n])",
-       cxxopts::value<int>()->default_value("128"))
-      ("tile-n", "GEMV output tile (xrms padded to [tile_k, tile_n])",
-       cxxopts::value<int>()->default_value("64"))
-      ("warmup,w", "warmup iterations",
-       cxxopts::value<int>()->default_value("10"))
-      ("iterations,n", "profile iterations",
-       cxxopts::value<int>()->default_value("20"))
-      ("trace-size,t", "trace buffer bytes (0 disables)",
-       cxxopts::value<int>()->default_value("0"));
+  options.add_options()("help,h", "produce help message")(
+      "elf,e", "input elf path", cxxopts::value<std::string>())(
+      "kernel,k", "kernel name (format: <kernel_name>:<instance_name>)",
+      cxxopts::value<std::string>())("verbosity,v", "verbosity",
+                                     cxxopts::value<int>()->default_value("0"))(
+      "nkv", "Number of KV heads (cols)",
+      cxxopts::value<int>()->default_value("8"))(
+      "group-size", "GQA group size",
+      cxxopts::value<int>()->default_value("4"))(
+      "n-in", "GEMV input dim (n_in / hidden_size)",
+      cxxopts::value<int>()->default_value("64"))(
+      "head-dim", "Head dim (dk = dv)",
+      cxxopts::value<int>()->default_value("64"))(
+      "lk", "K/V cache length (sequence length)",
+      cxxopts::value<int>()->default_value("2048"))(
+      "tile-k", "GEMV inner-k tile (xrms padded to [tile_k, tile_n])",
+      cxxopts::value<int>()->default_value("128"))(
+      "tile-n", "GEMV output tile (xrms padded to [tile_k, tile_n])",
+      cxxopts::value<int>()->default_value("64"))(
+      "warmup,w", "warmup iterations",
+      cxxopts::value<int>()->default_value("10"))(
+      "iterations,n", "profile iterations",
+      cxxopts::value<int>()->default_value("20"))(
+      "trace-size,t", "trace buffer bytes (0 disables)",
+      cxxopts::value<int>()->default_value("0"));
 
   auto vm = options.parse(argc, argv);
 
@@ -153,8 +151,8 @@ int main(int argc, const char *argv[]) {
 
   std::cout << "Decode Attention Benchmark (ELF format)" << std::endl;
   std::cout << "  nkv=" << nkv << " group_size=" << group_size
-            << " kdim(n_in)=" << kdim << " hdim(dk=dv)=" << hdim
-            << " lk=" << lk << std::endl;
+            << " kdim(n_in)=" << kdim << " hdim(dk=dv)=" << hdim << " lk=" << lk
+            << std::endl;
   std::cout << "  xrms: [2x" << kdim << "] (" << XRMS_SIZE << " B)\n"
             << "  W:    [" << nkv << "x" << gemv_count << "x" << kdim << "x"
             << hdim << "] (" << W_SIZE << " B)\n"

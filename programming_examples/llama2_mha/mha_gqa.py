@@ -19,8 +19,16 @@ range_ = for_
 
 @module_builder
 def build_module(
-    k, n, tile_k, tile_n, seq_len, np_dtype_in, np_dtype_vm_acc, np_dtype_out,
-    pos_host, group_size=4
+    k,
+    n,
+    tile_k,
+    tile_n,
+    seq_len,
+    np_dtype_in,
+    np_dtype_vm_acc,
+    np_dtype_out,
+    pos_host,
+    group_size=4,
 ):
 
     GROUP_SIZE = group_size
@@ -406,9 +414,7 @@ def build_module(
                     # producing one [tile_n] row of c_data at offset g*tile_n.
                     # Python-loop-unrolled (matches mha.py original style).
                     gemv_offset_consts = [
-                        ConstantOp(
-                            IntegerAttr.get(T.i32(), g * tile_n), None
-                        )
+                        ConstantOp(IntegerAttr.get(T.i32(), g * tile_n), None)
                         for g in range(GEMV_COUNT)
                     ]
                     for g in range(GEMV_COUNT):
