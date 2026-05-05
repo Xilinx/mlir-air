@@ -16,6 +16,14 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/TilingInterface.td"
 
+// Type predicate for !llvm.ptr. Inlined here (instead of including
+// "mlir/Dialect/LLVMIR/LLVMOpBase.td") to avoid pulling the LLVM dialect
+// into our TableGen scope — that would confuse `mlir-tblgen
+// -gen-dialect-doc` which expects exactly one dialect per .td file.
+def air_LLVMPtr : Type<CPred<"::llvm::isa<::mlir::LLVM::LLVMPointerType>($_self)">,
+                       "LLVM pointer",
+                       "::mlir::LLVM::LLVMPointerType">;
+
 class air_Op<string mnemonic, list<Trait> traits = []> :
     Op<air_Dialect, mnemonic, traits>;
 
@@ -924,6 +932,42 @@ def air_ExecuteTerminatorOp : air_Op<"execute_terminator", [HasParent<"ExecuteOp
 
   let assemblyFormat =
       [{  attr-dict ($results^ `:` type($results))? }];
+}
+
+def air_TranslateOp : air_Op<"translate",
+                              [Pure, AllTypesMatch<["source", "result"]>]>,
+                       Arguments<(ins AnyMemRef:$source,
+                                      Index:$from_rank,
+                                      Index:$to_rank,
+                                      air_LLVMPtr:$heap_bases)>,
+                       Results<(outs AnyMemRef:$result)> {
+  let summary = "Re-express a symmetric-heap memref in another rank's address space";
+  let description = [{
+    Produces a memref of the same type as `$source` whose underlying
+    pointer references the corresponding allocation on `$to_rank`. The
+    `$source` memref is assumed to live on `$from_rank`'s symmetric heap.
+    The translation is the pointer rebase
+
+        peer_va = bases[to_rank] + (source_ptr - bases[from_rank])
+
+    where `$heap_bases` is the per-rank base table obtained from the
+    `mgpuGetHeapBases()` runtime hook (typically called once at host
+    scope and threaded through `gpu.launch_func` as a kernel argument).
+    No data is moved; this op produces a value-level "view" of peer
+    memory.
+
+    Folds to `$source` when `$from_rank` and `$to_rank` are statically
+    equal.
+
+    Both ranks must address the same collective allocation on the
+    symmetric heap (i.e. `$source` must trace back to a
+    `memref.alloc {air.symmetric}`). Using this op outside that contract
+    is undefined.
+  }];
+  let assemblyFormat =
+      [{ $source `,` $from_rank `,` $to_rank `,` $heap_bases
+         attr-dict `:` type($source) `,` type($heap_bases) }];
+  let hasFolder = 1;
 }
 
 // AIR custom op, as a handle for a user-provided AIE kernel

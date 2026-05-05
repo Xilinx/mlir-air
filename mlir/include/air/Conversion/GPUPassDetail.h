@@ -23,6 +23,7 @@ namespace air {
 using namespace mlir;
 
 #define GEN_PASS_DECL
+#define GEN_PASS_DEF_AIRTRANSLATETOLLVM
 #define GEN_PASS_DEF_CONVERTAIRTOROCDL
 #define GEN_PASS_DEF_CONVERTGPUKERNELOUTLINE
 #include "air/Conversion/GPUPasses.h.inc"

@@ -9,6 +9,7 @@
 #ifndef MLIR_AIR_DIALECT_H
 #define MLIR_AIR_DIALECT_H
 
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"

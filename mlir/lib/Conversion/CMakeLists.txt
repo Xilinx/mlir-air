@@ -55,6 +55,7 @@ if(AIR_ENABLE_GPU)
   set(GPU_PASS_DEPENDS AIRGPUConversionPassIncGen)
   list(APPEND CONVERSION_SOURCES
     AIRToROCDLPass.cpp
+    AIRTranslateToLLVMPass.cpp
     GPUKernelOutlinePass.cpp
   )
   list(APPEND CONVERSION_LINK_LIBS
