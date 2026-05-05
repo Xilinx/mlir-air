@@ -409,20 +409,24 @@ private:
         }
       });
 
-      // Create cascade connections for each producer-consumer pair
+      // One CascadeConnection per channel-level (producer, consumer) edge.
+      // Downstream maps (herdToProducers / herdToConsumers) dedupe by
+      // collecting into std::set, so multiple channels between the same
+      // herd pair (e.g. Q+K+V from rope to attn) don't false-positive
+      // multi-producer detection in neighborAwarePlacement.
       for (const auto &producer : producerHerds) {
         for (const auto &consumer : consumerHerds) {
-          if (producer != consumer) {
-            CascadeConnection conn;
-            conn.producerHerdName = producer;
-            conn.consumerHerdName = consumer;
-            conn.channelOp = channelOp;
-            cascadeConnections.push_back(conn);
+          if (producer == consumer)
+            continue;
+          CascadeConnection conn;
+          conn.producerHerdName = producer;
+          conn.consumerHerdName = consumer;
+          conn.channelOp = channelOp;
+          cascadeConnections.push_back(conn);
 
-            LLVM_DEBUG(llvm::dbgs()
-                       << "Found cascade connection: " << producer << " -> "
-                       << consumer << " via channel " << channelName << "\n");
-          }
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Found cascade connection: " << producer << " -> "
+                     << consumer << " via channel " << channelName << "\n");
         }
       }
     }
@@ -515,52 +519,47 @@ private:
   std::vector<std::string> buildCascadeTopologicalOrder(
       std::vector<std::unique_ptr<Herd>> &herds,
       std::vector<CascadeConnection> &cascadeConnections) {
-    // Build adjacency list: producer -> consumers
-    std::map<std::string, std::vector<std::string>> producerToConsumers;
-    std::map<std::string, int> inDegree;
-    std::set<std::string> allHerds;
-
-    for (auto &herd : herds) {
-      std::string name = herd->getName(0);
-      allHerds.insert(name);
-      inDegree[name] = 0;
-    }
-
+    // Adjacency uses set<string> so multi-channel pairs collapse to one edge.
+    std::map<std::string, std::set<std::string>> producerToConsumers;
+    std::set<std::string> cascadeConnected;
     for (const auto &conn : cascadeConnections) {
-      producerToConsumers[conn.producerHerdName].push_back(
-          conn.consumerHerdName);
-      inDegree[conn.consumerHerdName]++;
+      producerToConsumers[conn.producerHerdName].insert(conn.consumerHerdName);
+      cascadeConnected.insert(conn.producerHerdName);
+      cascadeConnected.insert(conn.consumerHerdName);
     }
 
-    // Kahn's algorithm for topological sort
+    std::map<std::string, int> inDegree;
+    for (auto &herd : herds)
+      inDegree[herd->getName(0)] = 0;
+    for (const auto &entry : producerToConsumers)
+      for (const auto &consumer : entry.second)
+        inDegree[consumer]++;
+
+    // Seed Kahn's queue with cascade-connected roots only. Non-cascade
+    // herds get appended at the end so they don't claim rows the cascade
+    // chain needs to stack into.
     std::vector<std::string> order;
     std::vector<std::string> queue;
-
-    for (const auto &name : allHerds) {
-      if (inDegree[name] == 0) {
+    for (const auto &name : cascadeConnected)
+      if (inDegree[name] == 0)
         queue.push_back(name);
-      }
-    }
 
     while (!queue.empty()) {
       std::string current = queue.back();
       queue.pop_back();
       order.push_back(current);
-
       for (const auto &consumer : producerToConsumers[current]) {
-        inDegree[consumer]--;
-        if (inDegree[consumer] == 0) {
+        if (--inDegree[consumer] == 0)
           queue.push_back(consumer);
-        }
       }
     }
 
-    // Add any remaining herds not in cascade chains
+    // Tail: non-cascade herds, plus any cascade herds left behind by
+    // a (malformed) cyclic cascade graph.
     for (auto &herd : herds) {
       std::string name = herd->getName(0);
-      if (std::find(order.begin(), order.end(), name) == order.end()) {
+      if (std::find(order.begin(), order.end(), name) == order.end())
         order.push_back(name);
-      }
     }
 
     return order;
@@ -704,6 +703,41 @@ private:
     return false;
   }
 
+  // Extent (rows south or cols east) needed to stack the longest cascade
+  // chain rooted at each herd, excluding the herd itself. `herdExtent`
+  // supplies the per-herd dimension (numRows for south stacking, numCols
+  // for east stacking) summed along the longest path.
+  // `visiting` guards malformed cyclic cascade graphs from infinite recursion.
+  std::map<std::string, int> computeCascadeChainExtent(
+      const std::map<std::string, std::set<std::string>> &herdToConsumers,
+      const std::map<std::string, int> &herdExtent) {
+    std::map<std::string, int> extent;
+    std::set<std::string> visiting;
+    std::function<int(const std::string &)> dfs =
+        [&](const std::string &name) -> int {
+      auto it = extent.find(name);
+      if (it != extent.end())
+        return it->second;
+      if (!visiting.insert(name).second)
+        return 0; // cycle: break recursion
+      int maxChild = 0;
+      auto consIt = herdToConsumers.find(name);
+      if (consIt != herdToConsumers.end()) {
+        for (const auto &c : consIt->second) {
+          auto hIt = herdExtent.find(c);
+          int childExtent = (hIt != herdExtent.end()) ? hIt->second : 1;
+          maxChild = std::max(maxChild, dfs(c) + childExtent);
+        }
+      }
+      visiting.erase(name);
+      extent[name] = maxChild;
+      return maxChild;
+    };
+    for (const auto &entry : herdToConsumers)
+      dfs(entry.first);
+    return extent;
+  }
+
   // Neighbor-aware placement algorithm that handles both cascade and shared L1
   // connections
   void
@@ -718,14 +752,29 @@ private:
                << cascadeConnections.size() << " cascade connections and "
                << sharedL1Connections.size() << " shared L1 connections\n");
 
-    // Build maps for cascade relationships (directional: producer -> consumer)
-    std::map<std::string, std::vector<std::string>> herdToConsumers;
-    std::map<std::string, std::vector<std::string>> herdToProducers;
+    // Build maps for cascade relationships (directional: producer -> consumer).
+    // set<string> collapses multi-channel pairs (Q+K+V from rope to attn) to
+    // a single edge so multi-producer detection below isn't false-positive.
+    std::map<std::string, std::set<std::string>> herdToConsumers;
+    std::map<std::string, std::set<std::string>> herdToProducers;
 
     for (const auto &conn : cascadeConnections) {
-      herdToConsumers[conn.producerHerdName].push_back(conn.consumerHerdName);
-      herdToProducers[conn.consumerHerdName].push_back(conn.producerHerdName);
+      herdToConsumers[conn.producerHerdName].insert(conn.consumerHerdName);
+      herdToProducers[conn.consumerHerdName].insert(conn.producerHerdName);
     }
+
+    // Extent needed for the longest cascade chain rooted at each herd, in
+    // both directions: south rows for north-to-south chains and east cols
+    // for west-to-east chains.
+    std::map<std::string, int> herdHeight;
+    std::map<std::string, int> herdWidth;
+    for (auto &h : unplacedHerds) {
+      herdHeight[h->getName(0)] = h->getNumRows();
+      herdWidth[h->getName(0)] = h->getNumCols();
+    }
+    auto chainSouthRows =
+        computeCascadeChainExtent(herdToConsumers, herdHeight);
+    auto chainEastCols = computeCascadeChainExtent(herdToConsumers, herdWidth);
 
     // Build map for shared L1 relationships (bidirectional)
     std::map<std::string, std::set<std::string>> herdToL1Neighbors;
@@ -885,16 +934,37 @@ private:
         bool hasL1Neighbors =
             l1It != herdToL1Neighbors.end() && !l1It->second.empty();
 
-        // Cascade producers with multi-column consumers need room south
-        // so that per-tile cascade adjacency is maintained. Check if any
-        // consumer is multi-column.
+        // Cascade producers stack south when both ends are multi-column
+        // (north-to-south chain) and east when both ends are multi-row
+        // (west-to-east chain). Per-tile cascade adjacency requires room
+        // for the rest of the chain in that direction.
         bool needsRoomSouth = false;
-        if (hasConsumers && herd->getNumCols() > 1) {
+        bool needsRoomEast = false;
+        if (hasConsumers) {
           for (const auto &consumerName : consIt->second) {
             int consIdx = findHerdIdxByName(unplacedHerds, consumerName);
-            if (consIdx >= 0 && unplacedHerds[consIdx]->getNumCols() > 1)
+            if (consIdx < 0)
+              continue;
+            auto &cons = unplacedHerds[consIdx];
+            if (herd->getNumCols() > 1 && cons->getNumCols() > 1)
               needsRoomSouth = true;
+            if (herd->getNumRows() > 1 && cons->getNumRows() > 1)
+              needsRoomEast = true;
           }
+        }
+
+        // Reserve enough extent in the chain direction for the rest of it.
+        int requiredSouthRows = 1;
+        if (needsRoomSouth) {
+          auto rowsIt = chainSouthRows.find(herdName);
+          if (rowsIt != chainSouthRows.end() && rowsIt->second > 0)
+            requiredSouthRows = rowsIt->second;
+        }
+        int requiredEastCols = 1;
+        if (needsRoomEast) {
+          auto colsIt = chainEastCols.find(herdName);
+          if (colsIt != chainEastCols.end() && colsIt->second > 0)
+            requiredEastCols = colsIt->second;
         }
 
         for (int64_t i = 0; i < segment->getNumRows() && !placed; i++) {
@@ -904,14 +974,16 @@ private:
                 bool goodPosition = true;
                 if (hasConsumers || hasL1Neighbors) {
                   // Ensure room for neighbor in any direction
-                  bool roomEast =
-                      (j + herd->getNumCols() < segment->getNumCols());
+                  bool roomEast = (j + herd->getNumCols() + requiredEastCols <=
+                                   segment->getNumCols());
                   bool roomWest = (j > 0);
-                  bool roomSouth = (i > 0);
+                  bool roomSouth = (i >= requiredSouthRows);
                   bool roomNorth =
                       (i + herd->getNumRows() < segment->getNumRows());
                   if (needsRoomSouth)
                     goodPosition = roomSouth;
+                  else if (needsRoomEast)
+                    goodPosition = roomEast;
                   else
                     goodPosition =
                         roomEast || roomWest || roomSouth || roomNorth;
@@ -1012,7 +1084,7 @@ private:
   bool placeConsumerWithMultipleProducers(
       std::unique_ptr<Segment> &segment, std::unique_ptr<Herd> &consumer,
       std::vector<std::unique_ptr<Herd>> &placedHerds,
-      const std::vector<std::string> &producerNames) {
+      const std::set<std::string> &producerNames) {
 
     // Collect all placed producers
     std::vector<Herd *> placedProducers;
@@ -1196,7 +1268,7 @@ private:
   bool placeProducerForMultiConsumer(
       std::unique_ptr<Segment> &segment, std::unique_ptr<Herd> &producer,
       const std::string &producerName, const std::string &consumerName,
-      const std::vector<std::string> &allProducerNames,
+      const std::set<std::string> &allProducerNames,
       std::vector<std::unique_ptr<Herd>> &placedHerds,
       std::map<std::string, std::pair<int32_t, int32_t>>
           &plannedConsumerPositions,
