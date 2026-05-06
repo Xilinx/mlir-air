@@ -5,34 +5,13 @@
 //
 //===------------------------------------------------------------------===//
 //
-// Hand-written reference IR for the symmetric-heap multi-GPU programming
-// model on ROCm. Kernel-driven producer/consumer (rather than host-
-// orchestrated mgpuMemcpy), per @mawad-amd's review feedback on PR #1577.
-//
-// Two ranks (WORLD_SIZE=2):
-//   rank 0 launches the producer kernel.
-//   rank 1 launches the consumer kernel.
-//
-// The producer kernel runs on rank 0's GPU and writes 42.0 directly into
-// rank 1's `data` HBM via XGMI peer access. Each warp signals completion
-// of its 64-element slice via a release-store on a per-warp flag (also in
-// rank 1's HBM). No mgpuMemcpy is involved on the data path.
-//
-// The consumer kernel runs on rank 1's GPU. Each warp's lane 0 spins on
-// its flag with an acquire-load until the producer has signaled, then all
-// 64 lanes of the warp read their slice of `data` and copy it to a local
-// verification buffer. The host then D2H reads the verification buffer
-// and checks every element == 42.0.
-//
-// Block shape:
-//   1 grid point × 256 threads = 4 warps × 64 lanes.
-//   data:  256 f32   (one float per thread).
-//   flags: 4 i32     (one flag per warp).
-//
-// This file is the IR shape that future high-level passes
-// (air.launch/air.segment/air.herd → gpu.func via air-to-rocdl +
-// air-gpu-outlining) should produce. Phase 2's role is to lock down
-// that target shape.
+// Symmetric-heap producer/consumer e2e (WORLD_SIZE=2):
+//   rank 0 launches @producer; rank 1 launches @consumer.
+//   producer writes 42.0 into rank 1's `data` over XGMI; per-warp flags
+//   (4 i32, in rank 1's HBM) signal completion via release atomicrmw.
+//   consumer's lane 0 acquires on its flag, then all 64 lanes copy
+//   the local data slot to verify_buf for host check.
+//   Block: 1 grid × 256 threads = 4 warps × 64 lanes.
 //
 // Launcher: run.sh forks N processes with RANK / WORLD_SIZE / LOCAL_RANK.
 //
@@ -52,6 +31,10 @@ module attributes {gpu.container_module} {
   func.func private @mgpuMemFree(!llvm.ptr, !llvm.ptr)
   func.func private @mgpuMemcpy(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr)
 
+  // libc exit — verify branch calls this on any mismatch so run.sh
+  // sees a non-zero process exit (no green-without-validation).
+  func.func private @exit(i32)
+
   llvm.func @printf(!llvm.ptr, ...) -> i32
 
   llvm.mlir.global internal constant @msg_init(
@@ -70,8 +53,8 @@ module attributes {gpu.container_module} {
   // ---- GPU kernels ------------------------------------------------------
   gpu.module @sym_kernels {
 
-    // Producer: store 42.0 into peer (rank 1)'s `data`, signal each warp's
-    // flag with system-scope release atomic.
+    // Producer: each thread stores 42.0 into peer's data; lane 0 of each
+    // warp release-atomicrmws peer's per-warp flag.
     gpu.func @producer(%data : memref<256xf32>,
                        %flags : memref<4xi32>,
                        %bases : memref<?xindex>) kernel
@@ -81,48 +64,37 @@ module attributes {gpu.container_module} {
       %c64 = arith.constant 64 : index
       %c1_i32 = arith.constant 1 : i32
       %c42_f = arith.constant 42.0 : f32
-
-      // Producer rank id = 0, consumer rank id = 1 (hard-coded for 2-rank test).
-      %from = arith.constant 0 : index
-      %to   = arith.constant 1 : index
+      %from = arith.constant 0 : index   // rank 0 (producer)
+      %to   = arith.constant 1 : index   // rank 1 (consumer)
 
       %tid = gpu.thread_id x
-      %wid = arith.divui %tid, %c64 : index   // warp id 0..3
-      %lane = arith.remui %tid, %c64 : index  // lane 0..63
+      %wid = arith.divui %tid, %c64 : index
+      %lane = arith.remui %tid, %c64 : index
 
-      // Translate local memrefs into peer (rank 1)'s address space.
       %peer_data  = air.translate %data,  %from, %to, %bases : memref<256xf32>, memref<?xindex>
       %peer_flags = air.translate %flags, %from, %to, %bases : memref<4xi32>,   memref<?xindex>
-
-      // Each thread writes one f32 into peer's data slot.
       memref.store %c42_f, %peer_data[%tid] : memref<256xf32>
 
-      // Lane 0 of each warp signals the per-warp flag with a release-store.
-      // Use llvm.atomicrmw for syncscope("system") semantics — required so
-      // the consumer GPU's acquire-load synchronizes with this store across
-      // XGMI.
       %is_lane0 = arith.cmpi eq, %lane, %c0 : index
       scf.if %is_lane0 {
-        // Extract raw aligned pointer from peer_flags so we can do atomic.
+        // Drop to llvm.ptr for the atomic — AMDGPU rejects an explicit
+        // syncscope("system"); default = LLVM System = cross-device.
+        // See sym_atomic_syncscope.mlir for the contract test.
         %flag_idx = memref.extract_aligned_pointer_as_index %peer_flags
             : memref<4xi32> -> index
         %flag_int = arith.index_cast %flag_idx : index to i64
         %flag_ptr = llvm.inttoptr %flag_int : i64 to !llvm.ptr
-        // &flags[wid] = flag_ptr + wid * 4
         %wid_i64 = arith.index_cast %wid : index to i64
         %slot_ptr = llvm.getelementptr %flag_ptr[%wid_i64]
             : (!llvm.ptr, i64) -> !llvm.ptr, i32
-        // Default syncscope (system / cross-device); AMDGPU rejects an
-        // explicit "system" syncscope name, so we omit the keyword and
-        // rely on the LLVM IR default.
         %old = llvm.atomicrmw xchg %slot_ptr, %c1_i32 release
             : !llvm.ptr, i32
       }
       gpu.return
     }
 
-    // Consumer: spin on flag (system-scope acquire), then copy data slot
-    // into the local verification buffer.
+    // Consumer: lane 0 acquires on its flag; then all 64 lanes copy
+    // their data slot into verify_buf for host check.
     gpu.func @consumer(%data       : memref<256xf32>,
                        %verify_buf : memref<256xf32>,
                        %flags      : memref<4xi32>) kernel
@@ -136,11 +108,10 @@ module attributes {gpu.container_module} {
       %wid = arith.divui %tid, %c64 : index
       %lane = arith.remui %tid, %c64 : index
 
-      // Lane 0 of each warp spins on its flag until producer signals.
-      // Use atomic acquire syncscope("system") to synchronize with the
-      // producer's release-store across XGMI.
       %is_lane0 = arith.cmpi eq, %lane, %c0 : index
       scf.if %is_lane0 {
+        // Drop to llvm.ptr for the atomic; default = LLVM System scope
+        // (cross-device on AMDGPU). See sym_atomic_syncscope.mlir.
         %flag_idx = memref.extract_aligned_pointer_as_index %flags
             : memref<4xi32> -> index
         %flag_int = arith.index_cast %flag_idx : index to i64
@@ -148,8 +119,7 @@ module attributes {gpu.container_module} {
         %wid_i64 = arith.index_cast %wid : index to i64
         %slot_ptr = llvm.getelementptr %flag_ptr[%wid_i64]
             : (!llvm.ptr, i64) -> !llvm.ptr, i32
-
-        // scf.while: spin while flag == 0.
+        // Spin: flag == 0.
         scf.while : () -> () {
           %v = llvm.load %slot_ptr atomic acquire {alignment = 4 : i64}
               : !llvm.ptr -> i32
@@ -159,24 +129,16 @@ module attributes {gpu.container_module} {
           scf.yield
         }
       }
-      // Workgroup barrier: lanes 1..63 of each warp wait for lane 0's
-      // spin to terminate before reading data.
-      gpu.barrier
-
-      // All 256 threads cooperatively copy their slot from data → verify_buf.
+      gpu.barrier  // lanes 1..63 wait for lane 0's spin to terminate
       %v = memref.load %data[%tid] : memref<256xf32>
       memref.store %v, %verify_buf[%tid] : memref<256xf32>
       gpu.return
     }
   }
 
-  // ---- Helpers: build a static-shape memref descriptor over a raw ptr. --
-  //
-  // Matches the descriptor that AIRSymmetricAllocToMgpuPass (Phase 4) will
-  // build automatically. Hand-written here so Phase 2 stands alone.
-  //
-  //   wrap_data(ptr) : memref<256xf32>  — 256 elements, stride 1, offset 0
-  //   wrap_flags(ptr) : memref<4xi32>   — 4   elements, stride 1, offset 0
+  // ---- Helpers ----------------------------------------------------------
+  // Build a static-shape memref descriptor over a raw runtime ptr.
+  // Phase 4's AIRSymmetricAllocToMgpuPass will do this automatically.
   func.func private @wrap_data(%ptr : !llvm.ptr) -> memref<256xf32> {
     %c0_i64    = arith.constant 0 : i64
     %c1_i64    = arith.constant 1 : i64
@@ -205,9 +167,7 @@ module attributes {gpu.container_module} {
     return %m : memref<4xi32>
   }
 
-  // Wrap a runtime !llvm.ptr (heap_bases table — array of pointer-width
-  // values) as memref<?xindex> so it can be passed through gpu.launch_func
-  // and indexed with memref.load.
+  // Wrap a runtime ptr (heap_bases table) as memref<?xindex>.
   func.func private @wrap_bases(%ptr : !llvm.ptr, %size : i64) -> memref<?xindex> {
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64
@@ -236,7 +196,7 @@ module attributes {gpu.container_module} {
     %c1 = arith.constant 1 : index
     %c256 = arith.constant 256 : index
 
-    // Init heap collectively.
+    // Heap init (collective).
     func.call @mgpuSymmetricHeapInit(%heap_size) : (i64) -> ()
     %rank = func.call @mgpuGetRank() : () -> i32
     %world = func.call @mgpuGetWorldSize() : () -> i32
@@ -244,11 +204,11 @@ module attributes {gpu.container_module} {
     llvm.call @printf(%fmt_init, %rank, %world)
         vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr, i32, i32) -> i32
 
-    // Two symmetric allocations: data (256 f32) + flags (4 i32).
+    // Symmetric allocations: data (256 f32) + flags (4 i32).
     %data_ptr  = func.call @mgpuSymmetricAlloc(%c1024_bytes, %nullptr) : (i64, !llvm.ptr) -> !llvm.ptr
     %flags_ptr = func.call @mgpuSymmetricAlloc(%c16_bytes,   %nullptr) : (i64, !llvm.ptr) -> !llvm.ptr
 
-    // Initialize flags to 0 from host (ensures consumer's spin starts at 0).
+    // Zero-init flags from host so the consumer's spin starts at 0.
     %flags_host = memref.alloc() : memref<4xi32>
     %fc0 = arith.constant 0 : index
     %fc1 = arith.constant 1 : index
@@ -264,19 +224,14 @@ module attributes {gpu.container_module} {
         : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> ()
     memref.dealloc %flags_host : memref<4xi32>
 
-    // All ranks: barrier so flags init is visible before producer runs.
-    func.call @mgpuBarrier() : () -> ()
+    func.call @mgpuBarrier() : () -> ()  // flags init visible to all ranks
 
-    // Wrap raw pointers as memrefs for kernel argument typing.
     %data_m  = func.call @wrap_data(%data_ptr)   : (!llvm.ptr) -> memref<256xf32>
     %flags_m = func.call @wrap_flags(%flags_ptr) : (!llvm.ptr) -> memref<4xi32>
 
-    // mgpuGetHeapBases() returns a HOST pointer (std::vector<void*>::data()).
-    // GPU kernels cannot dereference host memory, so we copy the table into a
-    // device-resident buffer. Size = world_size * sizeof(void*) = world * 8.
-    //
-    // TODO(symmetric_heap): change runtime to allocate heap_bases as
-    // hipHostMalloc(...,Mapped) or hipMallocManaged so this copy is unnecessary.
+    // mgpuGetHeapBases() returns a HOST pointer; GPU can't deref it, so
+    // copy to device. TODO(airgpu): make heap_bases device-accessible
+    // (hipMallocManaged / hipHostMalloc-Mapped) and drop this copy.
     %world_i64 = arith.extui %world : i32 to i64
     %c8_i64 = arith.constant 8 : i64
     %bases_size = arith.muli %world_i64, %c8_i64 : i64
@@ -285,8 +240,6 @@ module attributes {gpu.container_module} {
         : (i64, !llvm.ptr, i1) -> !llvm.ptr
     func.call @mgpuMemcpy(%bases_devptr, %bases_host, %bases_size, %nullptr)
         : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> ()
-    // Wrap the device-resident bases buffer as memref<?xindex> for kernel
-    // arg typing. Each element is a pointer-width index = one peer's heap base.
     %bases = func.call @wrap_bases(%bases_devptr, %world_i64)
         : (!llvm.ptr, i64) -> memref<?xindex>
 
@@ -300,7 +253,6 @@ module attributes {gpu.container_module} {
       // (Future: extend to all-pairs producer/consumer mesh.)
       %is_producer = arith.cmpi eq, %rank, %c0_i32 : i32
       scf.if %is_producer {
-        // Rank 0: launch producer kernel (1 block, 256 threads).
         gpu.launch_func @sym_kernels::@producer
             blocks  in (%c1, %c1, %c1)
             threads in (%c256, %c1, %c1)
@@ -311,9 +263,9 @@ module attributes {gpu.container_module} {
         llvm.call @printf(%fmt_p)
             vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr) -> i32
       } else {
+        // Rank 1 = consumer; ranks > 1 idle.
         %is_consumer = arith.cmpi eq, %rank, %c1_i32 : i32
         scf.if %is_consumer {
-          // Rank 1: launch consumer kernel; allocate verify buffer.
           %verify_ptr = func.call @mgpuMemAlloc(%c1024_bytes, %nullptr, %false)
               : (i64, !llvm.ptr, i1) -> !llvm.ptr
           %verify_m = func.call @wrap_data(%verify_ptr) : (!llvm.ptr) -> memref<256xf32>
@@ -324,7 +276,10 @@ module attributes {gpu.container_module} {
                    %verify_m: memref<256xf32>,
                    %flags_m : memref<4xi32>)
 
-          // D2H readback verify_buf and check element 0 == 42.0.
+          // D2H readback verify_buf and check ALL 256 elements == 42.0.
+          // (Checking only element 0 would mask a bug where warps 1..3
+          // didn't write their slice. exit(1) on mismatch makes the
+          // multi-process driver see a non-zero exit code.)
           %hb = memref.alloc() : memref<256xf32>
           %hb_intptr = memref.extract_aligned_pointer_as_index %hb : memref<256xf32> -> index
           %hb_int = arith.index_cast %hb_intptr : index to i64
@@ -332,26 +287,52 @@ module attributes {gpu.container_module} {
           func.call @mgpuMemcpy(%hb_ptr, %verify_ptr, %c1024_bytes, %nullptr)
               : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> ()
 
-          // Check element 0.
           %c0_idx = arith.constant 0 : index
-          %v0 = memref.load %hb[%c0_idx] : memref<256xf32>
+          %c1_idx = arith.constant 1 : index
+          %c256_idx = arith.constant 256 : index
           %expected = arith.constant 42.0 : f32
-          %ok = arith.cmpf oeq, %v0, %expected : f32
-          scf.if %ok {
+
+          // Count mismatches; print msg_fail on the first.
+          %nfail = scf.for %i = %c0_idx to %c256_idx step %c1_idx
+                          iter_args(%nfail_acc = %c0_i32) -> (i32) {
+            %v = memref.load %hb[%i] : memref<256xf32>
+            %ne = arith.cmpf une, %v, %expected : f32
+            %new_nfail = scf.if %ne -> i32 {
+              %is_first = arith.cmpi eq, %nfail_acc, %c0_i32 : i32
+              scf.if %is_first {
+                %fmt_fail = llvm.mlir.addressof @msg_fail : !llvm.ptr
+                %i_i64 = arith.index_cast %i : index to i64
+                %v_64 = arith.extf %v : f32 to f64
+                %e_64 = arith.extf %expected : f32 to f64
+                llvm.call @printf(%fmt_fail, %rank, %i_i64, %v_64, %e_64)
+                    vararg(!llvm.func<i32 (ptr, ...)>)
+                    : (!llvm.ptr, i32, i64, f64, f64) -> i32
+              }
+              %inc = arith.addi %nfail_acc, %c1_i32 : i32
+              scf.yield %inc : i32
+            } else {
+              scf.yield %nfail_acc : i32
+            }
+            scf.yield %new_nfail : i32
+          }
+
+          %ok_all = arith.cmpi eq, %nfail, %c0_i32 : i32
+          scf.if %ok_all {
             %fmt_c = llvm.mlir.addressof @msg_pass_c : !llvm.ptr
+            %v0 = memref.load %hb[%c0_idx] : memref<256xf32>
             %v0_64 = arith.extf %v0 : f32 to f64
             llvm.call @printf(%fmt_c, %v0_64)
                 vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr, f64) -> i32
+          } else {
+            func.call @exit(%c1_i32) : (i32) -> ()
           }
 
           memref.dealloc %hb : memref<256xf32>
           func.call @mgpuMemFree(%verify_ptr, %nullptr) : (!llvm.ptr, !llvm.ptr) -> ()
         }
-        // ranks > 1: idle (no kernel launch)
       }
     }
 
-    // All-rank barrier and cleanup.
     func.call @mgpuBarrier() : () -> ()
     func.call @mgpuMemFree(%bases_devptr, %nullptr) : (!llvm.ptr, !llvm.ptr) -> ()
     func.call @mgpuSymmetricFree(%data_ptr,  %nullptr) : (!llvm.ptr, !llvm.ptr) -> ()
