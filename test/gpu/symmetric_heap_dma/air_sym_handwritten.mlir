@@ -53,6 +53,22 @@ module attributes {gpu.container_module} {
   // ---- GPU kernels ------------------------------------------------------
   gpu.module @sym_kernels {
 
+    // Drop a memref<4xi32> + warp index to a raw !llvm.ptr to the warp's
+    // flag slot. We must drop to llvm.ptr because memref dialect atomics
+    // (memref.atomic_rmw, memref.generic_atomic_rmw) lack ordering and
+    // syncscope today, and there is no memref.atomic_load/store at all.
+    // TODO: when upstream memref grows ordering+syncscope (track in
+    // mlir/include/mlir/Dialect/MemRef/IR/MemRefOps.td), inline this and
+    // use the memref-level ops directly.
+    func.func private @flag_slot_ptr(%flags : memref<4xi32>, %wid : index) -> !llvm.ptr {
+      %p_idx = memref.extract_aligned_pointer_as_index %flags : memref<4xi32> -> index
+      %p_int = arith.index_cast %p_idx : index to i64
+      %p     = llvm.inttoptr %p_int : i64 to !llvm.ptr
+      %w64   = arith.index_cast %wid : index to i64
+      %slot  = llvm.getelementptr %p[%w64] : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      return %slot : !llvm.ptr
+    }
+
     // Producer: each thread stores 42.0 into peer's data; lane 0 of each
     // warp release-atomicrmws peer's per-warp flag.
     gpu.func @producer(%data : memref<256xf32>,
@@ -77,16 +93,10 @@ module attributes {gpu.container_module} {
 
       %is_lane0 = arith.cmpi eq, %lane, %c0 : index
       scf.if %is_lane0 {
-        // Drop to llvm.ptr for the atomic — AMDGPU rejects an explicit
-        // syncscope("system"); default = LLVM System = cross-device.
+        // Default syncscope = LLVM System = cross-device on AMDGPU.
         // See sym_atomic_syncscope.mlir for the contract test.
-        %flag_idx = memref.extract_aligned_pointer_as_index %peer_flags
-            : memref<4xi32> -> index
-        %flag_int = arith.index_cast %flag_idx : index to i64
-        %flag_ptr = llvm.inttoptr %flag_int : i64 to !llvm.ptr
-        %wid_i64 = arith.index_cast %wid : index to i64
-        %slot_ptr = llvm.getelementptr %flag_ptr[%wid_i64]
-            : (!llvm.ptr, i64) -> !llvm.ptr, i32
+        %slot_ptr = func.call @flag_slot_ptr(%peer_flags, %wid)
+            : (memref<4xi32>, index) -> !llvm.ptr
         %old = llvm.atomicrmw xchg %slot_ptr, %c1_i32 release
             : !llvm.ptr, i32
       }
@@ -110,15 +120,8 @@ module attributes {gpu.container_module} {
 
       %is_lane0 = arith.cmpi eq, %lane, %c0 : index
       scf.if %is_lane0 {
-        // Drop to llvm.ptr for the atomic; default = LLVM System scope
-        // (cross-device on AMDGPU). See sym_atomic_syncscope.mlir.
-        %flag_idx = memref.extract_aligned_pointer_as_index %flags
-            : memref<4xi32> -> index
-        %flag_int = arith.index_cast %flag_idx : index to i64
-        %flag_ptr = llvm.inttoptr %flag_int : i64 to !llvm.ptr
-        %wid_i64 = arith.index_cast %wid : index to i64
-        %slot_ptr = llvm.getelementptr %flag_ptr[%wid_i64]
-            : (!llvm.ptr, i64) -> !llvm.ptr, i32
+        %slot_ptr = func.call @flag_slot_ptr(%flags, %wid)
+            : (memref<4xi32>, index) -> !llvm.ptr
         // Spin: flag == 0.
         scf.while : () -> () {
           %v = llvm.load %slot_ptr atomic acquire {alignment = 4 : i64}
