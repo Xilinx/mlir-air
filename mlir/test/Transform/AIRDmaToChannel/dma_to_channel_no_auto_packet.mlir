@@ -11,7 +11,7 @@
 // RUN: air-opt %s -air-dma-to-channel -split-input-file | FileCheck %s
 
 // None of these cases should produce dma_packet channels.
-// CHECK-NOT: channel_type = "dma_packet"
+// CHECK-NOT: channel_type = "npu_dma_packet"
 
 // Test 1: Two 1x1 herds with 1 input each = 2 input channels.
 // Capacity = 2 channels/col * 1 col = 2. 2 <= 2 => no upgrade.

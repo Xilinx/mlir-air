@@ -495,7 +495,7 @@ createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
 
   auto channel_op = air::ChannelOp::create(
       builder, loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
-      builder.getStringAttr("dma_stream"));
+      builder.getStringAttr("npu_dma_stream"));
 
   builder.restoreInsertionPoint(insertionCheckpoint);
 
@@ -1606,10 +1606,10 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         // mmio channels are runtime-sequence MMIO writes, not shim DMA, so
         // they neither contribute to per-column shim pressure nor are
         // eligible for dma_packet upgrade.
-        if (chanOp.getChannelType() == "mmio")
+        if (chanOp.getChannelType() == "npu_mmio")
           continue;
 
-        bool isAlreadyPacket = (chanOp.getChannelType() == "dma_packet");
+        bool isAlreadyPacket = (chanOp.getChannelType() == "npu_dma_packet");
         auto channelName = chanOp.getSymName();
 
         // Check if this channel has a herd-side endpoint in this segment.
@@ -1722,7 +1722,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
                            << pressure << " exceeds shim DMA limit of "
                            << shimChannelsPerCol << ")";
         for (auto chanOp : channels) {
-          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+          chanOp.setChannelType(StringAttr::get(context, "npu_dma_packet"));
         }
       };
 
@@ -1733,9 +1733,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
                             << inputChannels.size() + outputChannels.size()
                             << " shim-bound channels to dma_packet";
         for (auto chanOp : inputChannels)
-          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+          chanOp.setChannelType(StringAttr::get(context, "npu_dma_packet"));
         for (auto chanOp : outputChannels)
-          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+          chanOp.setChannelType(StringAttr::get(context, "npu_dma_packet"));
         return;
       }
 

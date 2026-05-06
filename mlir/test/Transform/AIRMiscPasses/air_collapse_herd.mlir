@@ -104,7 +104,7 @@ func.func @test2() -> () {
 // MAXCOL-DAG: %[[CST2:.*]] = arith.constant 2 : index
 // MAXCOL: air.herd @cascade_herd tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[CST2]], %{{.*}}=%[[CST2]])
 
-air.channel @cascade_chan [3] {channel_type = "cascade"}
+air.channel @cascade_chan [3] {channel_type = "npu_cascade"}
 func.func @test_intra_herd_cascade_skip() -> () {
   %c2 = arith.constant 2 : index
   air.herd @cascade_herd tile (%x, %y) in (%sx=%c2, %sy=%c2) {
@@ -131,7 +131,7 @@ func.func @test_intra_herd_cascade_skip() -> () {
 // MAXCOL-DAG: %[[CST2:.*]] = arith.constant 2 : index
 // MAXCOL: air.herd @cascade_producer tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[CST2]], %{{.*}}=%[[CST2]])
 
-air.channel @inter_cascade [1] {channel_type = "cascade"}
+air.channel @inter_cascade [1] {channel_type = "npu_cascade"}
 func.func @test_inter_herd_cascade_skip() -> () {
   %c2 = arith.constant 2 : index
   air.herd @cascade_producer tile (%x, %y) in (%sx=%c2, %sy=%c2) {
@@ -157,7 +157,7 @@ func.func @test_inter_herd_cascade_skip() -> () {
 // MAXCOL: air.herd @no_cascade_herd tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[CST2]], %{{.*}}=%[[CST2]])
 // MAXCOL: air.herd @cascade_herd_put tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[CST2]], %{{.*}}=%[[CST2]])
 
-air.channel @seg_cascade [1] {channel_type = "cascade"}
+air.channel @seg_cascade [1] {channel_type = "npu_cascade"}
 func.func @test_non_cascade_herd_in_cascade_segment() -> () {
   %c1 = arith.constant 1 : index
   air.launch (%arg0) in (%arg1=%c1) {

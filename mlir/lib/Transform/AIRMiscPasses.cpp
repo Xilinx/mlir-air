@@ -1147,7 +1147,7 @@ static bool segmentUsesCascade(air::HerdOp herd) {
 
   auto result = container->walk([&](air::ChannelInterface chanOp) {
     auto channelDecl = air::getChannelDeclarationThroughSymbol(chanOp);
-    if (channelDecl && channelDecl.getChannelType() == "cascade")
+    if (channelDecl && channelDecl.getChannelType() == "npu_cascade")
       return WalkResult::interrupt();
     return WalkResult::advance();
   });

@@ -54,7 +54,7 @@ def build_module():
     # Channels: chan_in/chan_out use DMA (L3<->L1), chan_cascade uses
     # direct core-to-core cascade connections between adjacent tiles.
     channel("chan_in", size=[1])
-    channel("chan_cascade", size=[NUM_TILES], channel_type="cascade")
+    channel("chan_cascade", size=[NUM_TILES], channel_type="npu_cascade")
     channel("chan_out", size=[1])
 
     @FuncOp.from_py_func(l3MemrefTy, l3MemrefTy)

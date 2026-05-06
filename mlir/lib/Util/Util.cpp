@@ -522,7 +522,7 @@ FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {
   auto chanIfOp =
       dyn_cast_if_present<air::ChannelInterface>(memcpyIfOp.getOperation());
   if (!chanIfOp)
-    return StringRef("dma_stream");
+    return StringRef("npu_dma_stream");
   auto chanOp = getChannelDeclarationThroughSymbol(chanIfOp);
   if (chanOp) {
     return chanOp.getChannelType();

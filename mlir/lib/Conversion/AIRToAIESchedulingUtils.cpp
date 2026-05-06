@@ -599,7 +599,7 @@ bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(int32_t col,
       continue;
     auto chanTypeRes = air::getChannelType(memcpy_op);
     if (succeeded(chanTypeRes))
-      return chanTypeRes.value().str() == "dma_packet";
+      return chanTypeRes.value().str() == "npu_dma_packet";
   }
   return false;
 }
@@ -865,7 +865,7 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   bool isPacketFlowOp = false;
   auto chanTypeRes = getChannelType(memcpyOp);
   if (succeeded(chanTypeRes)) {
-    isPacketFlowOp = chanTypeRes.value().str() == "dma_packet";
+    isPacketFlowOp = chanTypeRes.value().str() == "npu_dma_packet";
   }
 
   // Search for existing dma channel allocation
@@ -942,7 +942,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   bool isPacketFlowOp = false;
   auto chanTypeRes = getChannelType(memcpyOp);
   if (succeeded(chanTypeRes)) {
-    isPacketFlowOp = chanTypeRes.value().str() == "dma_packet";
+    isPacketFlowOp = chanTypeRes.value().str() == "npu_dma_packet";
   }
 
   // Search for existing dma channel allocation
@@ -1158,7 +1158,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   bool isPacketFlowOp = false;
   auto chanTypeRes = getChannelType(memcpyOp);
   if (succeeded(chanTypeRes)) {
-    isPacketFlowOp = chanTypeRes.value().str() == "dma_packet";
+    isPacketFlowOp = chanTypeRes.value().str() == "npu_dma_packet";
   }
 
   // Search for existing dma channel allocation
@@ -1379,7 +1379,7 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp) {
   S2MM_memspace = *dstMS;
   MM2S.push_back(memcpyOp.getOperation());
   MM2S_memspace = *srcMS;
-  memcpyResourceType = "dma_stream";
+  memcpyResourceType = "npu_dma_stream";
   return success();
 }
 
@@ -1391,7 +1391,7 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
   // broadcast/index-matching logic below, which assumes hardware fanout.
   // Record the resource type (so downstream code can skip mmio bundles)
   // and return — the dedicated mmio lowering pass handles the rest.
-  if (chan.getChannelType() == "mmio") {
+  if (chan.getChannelType() == "npu_mmio") {
     air_flow_op = chan.getOperation();
     S2MM[alloc_id].push_back(memcpyOp.getOperation());
     auto getMS = air::getMemorySpace(
@@ -1399,7 +1399,7 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
     if (!getMS)
       return memcpyOp->emitOpError("unrecognized memory space on memref");
     S2MM_memspace = *getMS;
-    memcpyResourceType = "mmio";
+    memcpyResourceType = "npu_mmio";
     return success();
   }
   if (chan->hasAttr("broadcast_shape")) {
@@ -1470,7 +1470,7 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::DmaMemcpyNdOp dmaMemcpyOp) {
                                            std::vector<Operation *>());
   S2MM = v1;
   S2MM_alloc = std::vector<air::allocation_info_t>(numS2MMAllocs);
-  memcpyResourceType = "dma_stream";
+  memcpyResourceType = "npu_dma_stream";
 }
 
 air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
@@ -1509,7 +1509,7 @@ LogicalResult air::simpleDMAChannelAllocation(
     // not DMA. They consume no DMA channel, BD, or routing resource and
     // bypass allocation entirely. Their put/get pairs are converted by a
     // dedicated late pass (see lowerAIRMMIOChannelOps).
-    if (f.memcpyResourceType == "mmio")
+    if (f.memcpyResourceType == "npu_mmio")
       continue;
     if (f.MM2S_memspace == air::MemorySpace::L1) {
       for (auto o : f.MM2S) {
@@ -1524,13 +1524,13 @@ LogicalResult air::simpleDMAChannelAllocation(
         int y = tile.getRow();
 
         FailureOr<air::allocation_info_t> alloc_res;
-        if (f.memcpyResourceType == "dma_stream" ||
-            f.memcpyResourceType == "dma_packet") {
+        if (f.memcpyResourceType == "npu_dma_stream" ||
+            f.memcpyResourceType == "npu_dma_packet") {
           alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
               memcpyOpIf, x, y, f.MM2S_alloc.dma_channel.channel);
           if (failed(alloc_res))
             return failure();
-        } else if (f.memcpyResourceType == "cascade") {
+        } else if (f.memcpyResourceType == "npu_cascade") {
           alloc_res = core_cascade_alloc.coreCascadeAlloc(memcpyOpIf);
           if (failed(alloc_res))
             return failure();
@@ -1555,13 +1555,13 @@ LogicalResult air::simpleDMAChannelAllocation(
           int y = tile.getRow();
 
           FailureOr<air::allocation_info_t> alloc_res;
-          if (f.memcpyResourceType == "dma_stream" ||
-              f.memcpyResourceType == "dma_packet") {
+          if (f.memcpyResourceType == "npu_dma_stream" ||
+              f.memcpyResourceType == "npu_dma_packet") {
             alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
                 memcpyOpIf, x, y, f.S2MM_alloc[i].dma_channel.channel);
             if (failed(alloc_res))
               return failure();
-          } else if (f.memcpyResourceType == "cascade") {
+          } else if (f.memcpyResourceType == "npu_cascade") {
             alloc_res = core_cascade_alloc.coreCascadeAlloc(memcpyOpIf);
             if (failed(alloc_res))
               return failure();
@@ -1576,17 +1576,18 @@ LogicalResult air::simpleDMAChannelAllocation(
   }
   for (auto &f : memcpy_flows) {
     // MMIO channels are not allocated to any DMA resource at L2 either.
-    if (f.memcpyResourceType == "mmio")
+    if (f.memcpyResourceType == "npu_mmio")
       continue;
     if (f.MM2S_memspace == air::MemorySpace::L2) {
       for (auto o : f.MM2S) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
         // Report error if the data movement lowers to neither dma stream
         // (aie.flow) nor dma packet flow (aie.packet_flow).
-        if (f.memcpyResourceType != "dma_stream" &&
-            f.memcpyResourceType != "dma_packet")
-          return memcpyOpIf->emitOpError("only supports dma_stream or "
-                                         "dma_packet connections at L2 memory");
+        if (f.memcpyResourceType != "npu_dma_stream" &&
+            f.memcpyResourceType != "npu_dma_packet")
+          return memcpyOpIf->emitOpError(
+              "only supports npu_dma_stream or npu_dma_packet "
+              "connections at L2 memory");
         auto alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
         if (failed(alloc_res) || !alloc_res->valid())
           return failure();
@@ -1599,11 +1600,11 @@ LogicalResult air::simpleDMAChannelAllocation(
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           // Report error if the data movement lowers to neither dma stream
           // (aie.flow) nor dma packet flow (aie.packet_flow).
-          if (f.memcpyResourceType != "dma_stream" &&
-              f.memcpyResourceType != "dma_packet")
+          if (f.memcpyResourceType != "npu_dma_stream" &&
+              f.memcpyResourceType != "npu_dma_packet")
             return memcpyOpIf->emitOpError(
-                "only supports dma_stream or dma_packet connections at L2 "
-                "memory");
+                "only supports npu_dma_stream or npu_dma_packet "
+                "connections at L2 memory");
           auto alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
@@ -1614,7 +1615,7 @@ LogicalResult air::simpleDMAChannelAllocation(
   }
   for (auto &f : memcpy_flows) {
     // MMIO channels are not allocated to any shim DMA resource.
-    if (f.memcpyResourceType == "mmio")
+    if (f.memcpyResourceType == "npu_mmio")
       continue;
     if (f.MM2S_memspace == air::MemorySpace::L3) {
       for (size_t i = 0; i < f.S2MM.size(); i++) {
@@ -1622,11 +1623,11 @@ LogicalResult air::simpleDMAChannelAllocation(
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           // Report error if the data movement lowers to neither dma stream
           // (aie.flow) nor dma packet flow (aie.packet_flow).
-          if (f.memcpyResourceType != "dma_stream" &&
-              f.memcpyResourceType != "dma_packet")
+          if (f.memcpyResourceType != "npu_dma_stream" &&
+              f.memcpyResourceType != "npu_dma_packet")
             return memcpyOpIf->emitOpError(
-                "only supports dma_stream or dma_packet connections at L3 "
-                "memory");
+                "only supports npu_dma_stream or npu_dma_packet "
+                "connections at L3 memory");
           if (!f.S2MM_alloc[i].getDmaTile())
             return memcpyOpIf->emitOpError(
                 "failed to get S2MM tile for L3 allocation.");
@@ -1650,10 +1651,11 @@ LogicalResult air::simpleDMAChannelAllocation(
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
         // Report error if the data movement lowers to neither dma stream
         // (aie.flow) nor dma packet flow (aie.packet_flow).
-        if (f.memcpyResourceType != "dma_stream" &&
-            f.memcpyResourceType != "dma_packet")
-          return memcpyOpIf->emitOpError("only supports dma_stream or "
-                                         "dma_packet connections at L3 memory");
+        if (f.memcpyResourceType != "npu_dma_stream" &&
+            f.memcpyResourceType != "npu_dma_packet")
+          return memcpyOpIf->emitOpError(
+              "only supports npu_dma_stream or npu_dma_packet "
+              "connections at L3 memory");
         if (!f.MM2S_alloc.getDmaTile())
           return memcpyOpIf->emitOpError(
               "failed to get MM2S tile for L3 allocation.");

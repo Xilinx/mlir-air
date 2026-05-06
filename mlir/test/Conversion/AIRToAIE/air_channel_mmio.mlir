@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Positive tests for channel_type="mmio" in air-to-aie. Each split has
+// Positive tests for channel_type="npu_mmio" in air-to-aie. Each split has
 // its own CHECK prefix so directives don't leak across boundaries.
 // Negative cases live in `air_channel_mmio_invalid.mlir`.
 //
@@ -34,7 +34,7 @@
 // CHECK-SIMPLE-NOT:     aiex.npu.blockwrite
 
 memref.global "private" @const_data : memref<8xi32> = dense<42>
-air.channel @mmio_chan [] {channel_type = "mmio"}
+air.channel @mmio_chan [] {channel_type = "npu_mmio"}
 func.func @mmio_simple() {
   %src = memref.get_global @const_data : memref<8xi32>
   %c1 = arith.constant 1 : index
@@ -66,8 +66,8 @@ func.func @mmio_simple() {
 // CHECK-MIXED-NOT:     air.channel.get @mmio_chan2
 
 memref.global "private" @mmio_const : memref<8xi32> = dense<7>
-air.channel @mmio_chan2 [] {channel_type = "mmio"}
-air.channel @dma_chan [] {channel_type = "dma_stream"}
+air.channel @mmio_chan2 [] {channel_type = "npu_mmio"}
+air.channel @dma_chan [] {channel_type = "npu_dma_stream"}
 func.func @mixed(%dma_src: memref<16xi32>) {
   %src = memref.get_global @mmio_const : memref<8xi32>
   %c1 = arith.constant 1 : index
@@ -106,7 +106,7 @@ func.func @mixed(%dma_src: memref<16xi32>) {
 // CHECK-BCAST-NOT:     aiex.npu.blockwrite
 
 memref.global "private" @const_q : memref<8xi32> = dense<5>
-air.channel @bcast_mmio [1] {channel_type = "mmio", broadcast_shape = [2]}
+air.channel @bcast_mmio [1] {channel_type = "npu_mmio", broadcast_shape = [2]}
 func.func @bcast() {
   %src = memref.get_global @const_q : memref<8xi32>
   %c1 = arith.constant 1 : index
@@ -146,7 +146,7 @@ func.func @bcast() {
 
 memref.global "private" @c0 : memref<8xi32> = dense<10>
 memref.global "private" @c1 : memref<8xi32> = dense<20>
-air.channel @qm [2] {channel_type = "mmio"}
+air.channel @qm [2] {channel_type = "npu_mmio"}
 func.func @indexed() {
   %g0 = memref.get_global @c0 : memref<8xi32>
   %g1 = memref.get_global @c1 : memref<8xi32>
@@ -180,7 +180,7 @@ func.func @indexed() {
 // CHECK-BF16-NOT:     aiex.npu.blockwrite
 
 memref.global "private" @qbf16 : memref<2x2xbf16> = dense<1.5>
-air.channel @qbf16_chan [] {channel_type = "mmio"}
+air.channel @qbf16_chan [] {channel_type = "npu_mmio"}
 func.func @bf16_payload() {
   %src = memref.get_global @qbf16 : memref<2x2xbf16>
   %c1 = arith.constant 1 : index
@@ -208,7 +208,7 @@ func.func @bf16_payload() {
 // CHECK-BF16NS-NOT:     aiex.npu.blockwrite
 
 memref.global "private" @qbf16ns : memref<2x2xbf16> = dense<[[1.5, 2.5], [3.5, 4.5]]>
-air.channel @qbf16ns_chan [] {channel_type = "mmio"}
+air.channel @qbf16ns_chan [] {channel_type = "npu_mmio"}
 func.func @bf16_nonsplat() {
   %src = memref.get_global @qbf16ns : memref<2x2xbf16>
   %c1 = arith.constant 1 : index
@@ -237,7 +237,7 @@ func.func @bf16_nonsplat() {
 // CHECK-I8-NOT:     aiex.npu.blockwrite
 
 memref.global "private" @c8s : memref<4xi8> = dense<66>
-air.channel @c8s_chan [] {channel_type = "mmio"}
+air.channel @c8s_chan [] {channel_type = "npu_mmio"}
 func.func @i8_splat() {
   %src = memref.get_global @c8s : memref<4xi8>
   %c1 = arith.constant 1 : index

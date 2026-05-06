@@ -43,8 +43,8 @@
 // CHECK: air.herd @conv1x1_skip {{.*}} attributes {{{.*}}x_loc = 1 : i64, y_loc = 3 : i64}
 
 module {
-  air.channel @L1ToL1_Conv3x3AToSkip [1] {channel_type = "cascade"}
-  air.channel @L1ToL1_Conv3x3BToSkip [1] {channel_type = "cascade"}
+  air.channel @L1ToL1_Conv3x3AToSkip [1] {channel_type = "npu_cascade"}
+  air.channel @L1ToL1_Conv3x3BToSkip [1] {channel_type = "npu_cascade"}
   air.channel @L1ToL1_Conv1ToConv3x3 [1, 1] {broadcast_shape = [2 : index, 1 : index]}
   air.channel @L2ToL1_ActIn [1, 1]
   air.channel @L1ToL2_ActOut [1, 1]

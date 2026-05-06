@@ -158,7 +158,7 @@ def build_module(
     Channel("L1ToL1Chan2", size=[1, num_cascade_stages])
     Channel("L1ToL1Chan3", size=[1, num_cascade_stages])
     chan_cascade = Channel("cascade", size=[1, num_cascade_stages - 1])
-    chan_cascade.attributes["channel_type"] = StringAttr.get("cascade")
+    chan_cascade.attributes["channel_type"] = StringAttr.get("npu_cascade")
 
     # Main attention function
     @FuncOp.from_py_func(

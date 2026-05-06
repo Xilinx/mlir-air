@@ -51,7 +51,7 @@ with air.ir.Context() as ctx, Location.unknown():
     #set = affine_set<()[s0] : (s0 == 3)>
     #set1 = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
     module {
-    air.channel @channel_0 [3] {channel_type = "cascade"}
+    air.channel @channel_0 [3] {channel_type = "npu_cascade"}
       air.channel @channel_1 [1]
       air.channel @channel_2 [1]
       func.func @scf1(%arg0: memref<1x1x2048xi32>, %arg1: memref<1x1x2048xi32>) {

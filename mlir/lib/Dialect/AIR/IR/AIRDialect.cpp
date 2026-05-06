@@ -2811,6 +2811,51 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
         return emitOpError("padding values must be <= 65535");
     }
   }
+
+  // Cross-rank addressing requires an enclosing air.rank scope, and the
+  // peer-side memref (when it is a direct memref.alloc result) must carry
+  // the air.symmetric attribute.
+  if (hasCrossRank()) {
+    Operation *p = (*this)->getParentOp();
+    while (p && !isa<air::RankOp>(p))
+      p = p->getParentOp();
+    if (!p)
+      return emitOpError("src_rank/dst_rank attributes require an enclosing "
+                         "air.rank scope");
+
+    // Rank indices are non-negative. Use the typed *Attr accessor instead
+    // of the generated getSrcRank()/getDstRank() (those return uint64_t
+    // for OptionalAttr<I64Attr>, so a comparison against 0 is meaningless
+    // for negative values stored as i64).
+    if (auto srAttr = getSrcRankAttr()) {
+      int64_t sr = srAttr.getInt();
+      if (sr < 0)
+        return emitOpError() << "src_rank must be >= 0, got " << sr;
+    }
+    if (auto drAttr = getDstRankAttr()) {
+      int64_t dr = drAttr.getInt();
+      if (dr < 0)
+        return emitOpError() << "dst_rank must be >= 0, got " << dr;
+    }
+
+    auto requireSymmetricAlloc = [&](Value v, StringRef side) -> LogicalResult {
+      auto alloc = v.getDefiningOp<memref::AllocOp>();
+      if (!alloc)
+        return success(); // Block args / non-alloc sources are user-trusted.
+      if (!alloc->hasAttr("air.symmetric"))
+        return emitOpError() << side
+                             << " memref is referenced cross-rank but its "
+                                "memref.alloc lacks the \"air.symmetric\" "
+                                "attribute";
+      return success();
+    };
+    if (getSrcRank().has_value() &&
+        failed(requireSymmetricAlloc(getSrc(), "src")))
+      return failure();
+    if (getDstRank().has_value() &&
+        failed(requireSymmetricAlloc(getDst(), "dst")))
+      return failure();
+  }
   return success();
 }
 
@@ -3075,9 +3120,9 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
   if (!chan)
     // If the channel declaration cannot be resolved, signal a failure.
     return failure();
-  // If the channel is of type "cascade", try to fold memref.cast but skip full
-  // composition
-  if (chan.getChannelType() == "cascade")
+  // If the channel is of type "npu_cascade", try to fold memref.cast but skip
+  // full composition
+  if (chan.getChannelType() == "npu_cascade")
     return FoldMemrefCastOnChannelOp(op, rewriter);
 
   // Init. memref type and offsets from memref's defining op's input type
@@ -3157,17 +3202,28 @@ LogicalResult air::ChannelPutOp::verify() {
                 "must not be temporal scf.for induction variables";
   }
 
-  // For channel_type="mmio", the put runs from the host runtime sequence
+  // For channel_type="npu_mmio", the put runs from the host runtime sequence
   // and writes into a tile-local L1 buffer. Its source memref must
   // therefore live in L3 (host memory). Allow lookup-failure to silently
   // pass — that's a separate diagnostic surface.
   if (auto chan = resolveChannelDecl(*this)) {
-    if (chan.getChannelType() == "mmio") {
+    if (chan.getChannelType() == "npu_mmio") {
       auto memrefTy = dyn_cast<MemRefType>(getMemref().getType());
       if (memrefTy && memrefTy.getMemorySpaceAsInt() != 0)
-        return emitOpError() << "channel_type=\"mmio\" put source must be "
+        return emitOpError() << "channel_type=\"npu_mmio\" put source must be "
                                 "in L3 (memory_space=0), got memory_space="
                              << memrefTy.getMemorySpaceAsInt();
+    }
+    // For channel_type="gpu_symmetric_heap", the put must be inside an
+    // air.rank scope (cross-rank addressing requires a multi-rank world).
+    if (chan.getChannelType() == "gpu_symmetric_heap") {
+      Operation *p = (*this)->getParentOp();
+      while (p && !isa<air::RankOp>(p))
+        p = p->getParentOp();
+      if (!p)
+        return emitOpError()
+               << "channel_type=\"gpu_symmetric_heap\" put requires an "
+                  "enclosing air.rank scope";
     }
   }
 
@@ -3246,17 +3302,29 @@ LogicalResult air::ChannelGetOp::verify() {
                 "must not be temporal scf.for induction variables";
   }
 
-  // For channel_type="mmio", the destination must be a tile-local L1 buffer
-  // (memory_space=2): the host writes into it via runtime-sequence
+  // For channel_type="npu_mmio", the destination must be a tile-local L1
+  // buffer (memory_space=2): the host writes into it via runtime-sequence
   // blockwrites before the consuming core starts. L2/L3 destinations have
   // no representation in the lowered IR.
   if (auto chan = resolveChannelDecl(*this)) {
-    if (chan.getChannelType() == "mmio") {
+    if (chan.getChannelType() == "npu_mmio") {
       auto memrefTy = dyn_cast<MemRefType>(getMemref().getType());
       if (memrefTy && memrefTy.getMemorySpaceAsInt() != 2)
-        return emitOpError() << "channel_type=\"mmio\" get destination must be "
-                                "in L1 (memory_space=2), got memory_space="
-                             << memrefTy.getMemorySpaceAsInt();
+        return emitOpError()
+               << "channel_type=\"npu_mmio\" get destination must be "
+                  "in L1 (memory_space=2), got memory_space="
+               << memrefTy.getMemorySpaceAsInt();
+    }
+    // For channel_type="gpu_symmetric_heap", the get must be inside an
+    // air.rank scope.
+    if (chan.getChannelType() == "gpu_symmetric_heap") {
+      Operation *p = (*this)->getParentOp();
+      while (p && !isa<air::RankOp>(p))
+        p = p->getParentOp();
+      if (!p)
+        return emitOpError()
+               << "channel_type=\"gpu_symmetric_heap\" get requires an "
+                  "enclosing air.rank scope";
     }
   }
 
@@ -3290,14 +3358,18 @@ void air::ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 //
 
 LogicalResult air::ChannelOp::verify() {
-  // Allow-list of supported channel_type values. Adding a new transport
-  // requires both an enum entry here and a lowering branch in air-to-aie.
+  // Allow-list of supported channel_type values. Values are namespaced by
+  // backend: NPU (AIE) channels use the "npu_" prefix, GPU channels use the
+  // "gpu_" prefix. Adding a new transport requires both an entry here and a
+  // lowering branch in the appropriate conversion pass.
   StringRef chanType = getChannelType();
-  if (chanType != "dma_stream" && chanType != "dma_packet" &&
-      chanType != "cascade" && chanType != "mmio")
+  if (chanType != "npu_dma_stream" && chanType != "npu_dma_packet" &&
+      chanType != "npu_cascade" && chanType != "npu_mmio" &&
+      chanType != "gpu_symmetric_heap")
     return emitOpError() << "unsupported channel_type \"" << chanType
-                         << "\"; expected one of \"dma_stream\", "
-                            "\"dma_packet\", \"cascade\", or \"mmio\"";
+                         << "\"; expected one of \"npu_dma_stream\", "
+                            "\"npu_dma_packet\", \"npu_cascade\", "
+                            "\"npu_mmio\", or \"gpu_symmetric_heap\"";
 
   if (isBroadcast()) {
     auto bundle_size = getSize();
