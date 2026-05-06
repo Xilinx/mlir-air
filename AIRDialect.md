@@ -67,18 +67,22 @@ operation ::= `air.channel` $sym_name $size attr-dict
 
 Operation to represent a communication channel as a point-to-point connection between two memrefs.
 The array following the channel name symbol represents the channel's dimensional sizes. Default
-size, with empty size array, is 1. The data movement mechanism that the channel uses is controlled 
+size, with empty size array, is 1. The data movement mechanism that the channel uses is controlled
 by the `channel_type` attribute.
 
 ### Channel Types
-The `channel_type` attribute is a string that determines the mechanism used for data movement:
-- **"dma_stream"** (default):
+The `channel_type` attribute is a string that determines the mechanism used for data movement.
+Values are namespaced by backend: NPU (AIE) channels use the `npu_` prefix; GPU channels use
+the `gpu_` prefix.
+
+NPU (AIE) channel types:
+- **"npu_dma_stream"** (default):
   Use DMA engines to send and receive data, with routing performed over a streaming interconnect.
-- **"dma_packet"**:
+- **"npu_dma_packet"**:
   Use DMA engines to send and receive data, with routing performed over a packet-switched network.
-- **"cascade"**:
+- **"npu_cascade"**:
   Use processor cores to send and receive data via cascade connections between adjacent tiles.
-- **"mmio"**:
+- **"npu_mmio"**:
   Use host-side MMIO writes (e.g. `aiex.npu.blockwrite`) issued from the runtime
   sequence to deliver a constant payload directly into a tile-local L1 buffer.
   No DMA channel, no shim allocation, no flow is reserved.
@@ -89,32 +93,46 @@ The `channel_type` attribute is a string that determines the mechanism used for 
   `memref.get_global`. The consumer-side `get` lowers to a no-op
   because the L1 buffer is already populated when the core begins executing.
 
+GPU channel types:
+- **"gpu_symmetric_heap"**:
+  Cross-GPU messaging through the symmetric heap runtime
+  (`runtime_lib/airgpu/symmetric_heap.{h,cpp}`). The channel must be enclosed
+  by an `air.rank` op; the put/get sites use rank indices to address peer
+  heaps. Lowering will be added by a future GPU pass (planned:
+  `air-gpu-channel-to-mgpu`) which expands put/get to peer-mapped
+  `mgpuMemcpy` calls plus a barrier; this PR introduces only the IR
+  surface and verifier rules.
+
 ### Broadcasting
-If a channel broadcasts to multiple destinations, the optional `broadcast_shape` attribute  
+If a channel broadcasts to multiple destinations, the optional `broadcast_shape` attribute
 annotates the output sizes after broadcasting. Broadcasting follows NumPy's broadcasting rules.
 
 Example:
 
 ```mlir
-// An array of 4 x 4 streaming DMA channels
-air.channel @channel_0 [4, 4] {channel_type = "dma_stream"}
+// An array of 4 x 4 streaming DMA channels (NPU)
+air.channel @channel_0 [4, 4] {channel_type = "npu_dma_stream"}
 
-// A streaming DMA channel broadcasting to 4 destinations
-air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_stream"}
+// A streaming DMA channel broadcasting to 4 destinations (NPU)
+air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "npu_dma_stream"}
 
-// An array of 1 x 4 streaming DMA channels broadcasting to 4 x 4 destinations.
+// An array of 1 x 4 streaming DMA channels broadcasting to 4 x 4 destinations (NPU).
 // Broadcasting follows NumPy's rules.
-air.channel @channel_2 [1, 4] {broadcast_shape = [4, 4], channel_type = "dma_stream"}
+air.channel @channel_2 [1, 4] {broadcast_shape = [4, 4], channel_type = "npu_dma_stream"}
 
-// A packet-switched DMA channel
-air.channel @channel_3 [] {channel_type = "dma_packet"}
+// A packet-switched DMA channel (NPU)
+air.channel @channel_3 [] {channel_type = "npu_dma_packet"}
 
-// A cascade channel using core-to-core cascade connections
-air.channel @channel_4 [] {channel_type = "cascade"}
+// A cascade channel using core-to-core cascade connections (NPU)
+air.channel @channel_4 [] {channel_type = "npu_cascade"}
 
 // An MMIO channel: the put writes a constant from host into L1 of each
-// get's destination tile via runtime-sequence blockwrites
-air.channel @channel_5 [] {channel_type = "mmio"}
+// get's destination tile via runtime-sequence blockwrites (NPU)
+air.channel @channel_5 [] {channel_type = "npu_mmio"}
+
+// A cross-GPU channel through the symmetric heap (GPU). Must appear inside
+// an air.rank scope; the indices on put/get encode the peer rank.
+air.channel @channel_6 [] {channel_type = "gpu_symmetric_heap"}
 ```
 
 Interfaces: `Symbol`
@@ -341,7 +359,15 @@ operation ::= `air.dma_memcpy_nd` custom<AsyncDependencies>(type($async_token), 
               `(` type($dst) `,` type($src) `)`
 ```
 
-dma operator
+N-dimensional strided bulk copy between two memrefs.
+
+Optional `src_rank` / `dst_rank` integer attributes name a peer rank in the
+enclosing `air.rank` scope. When present, the corresponding memref is
+interpreted as living on rank R's symmetric heap rather than on the local
+process. These attributes are only valid for `air.symmetric`-tagged memref
+allocations and require an enclosing `air.rank`. Lowering for these
+attributes will be added by a future GPU pass (planned: `air-cross-rank-
+dma-to-mgpu`); this PR introduces only the IR surface and verifier rules.
 
 Traits: `AttrSizedOperandSegments`
 
@@ -353,6 +379,8 @@ Interfaces: `air_AsyncOpInterface`, `air_MemcpyInterface`
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>pad_before</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
 <tr><td><code>pad_after</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
+<tr><td><code>src_rank</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute</td></tr>
+<tr><td><code>dst_rank</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute</td></tr>
 </table>
 
 #### Operands:
