@@ -1,21 +1,26 @@
-//===- mha_gqa.cc -----------------------------------------------*- C++ -*-===//
+//===- attn_decode_npu2.cc --------------------------------------*- C++ -*-===//
 //
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
-// Step 2b: AIE2P mha kernels at LLaMA dims, GQA group_size=4.
-// 4 Q heads share 1 K and 1 V (LLaMA GQA). K/V cache rows are read
-// ONCE per history position and reused across the 4 Q heads via
-// attn_1_group / attn_2_group / softmax_group kernels.
-// Inherits Step 2a's dk=64 freq table and rope/sinf/cosf kernels.
+// AIE2P kernels for the LLaMA-3.2-1B decode flash-attention design under
+// programming_examples/llama2_mha/ (entry point attn_decode_npu2.py).
 //
-// Differences from mha.cc:
-// - sinf/cosf: use rope_sincos-style polynomial with native n=16 vectors
-//   and 32-elem padded internal buffers (24-elem outer interface preserved)
-// - shuffle_apply_rope: use AIE2P-friendly aie::filter_even/odd +
-//   interleave_zip (no shuffle_T16_* constants)
+// Functions: simple_rms_bf16, xrms_demux_bf16, vecmat_bf16_bf16,
+// linalg_fill_bf16, freq_pos_bf16_32_16, sinf_bf16_32_16, cosf_bf16_32_16,
+// shuffle_apply_rope_bf16_64, attn_1_group, softmax_group, attn_2_group,
+// fill_neg99_bf16, fill_zero_bf16, vector_copy_n_bf16.
+//
+// LLaMA GQA group_size=4: 4 Q heads share 1 K and 1 V. K/V cache rows
+// are read ONCE per history position and reused across the 4 Q heads
+// via attn_1_group / attn_2_group / softmax_group.
+//
+// AIE2P-portability notes (vs the NPU1 mha.cc reference):
+// - sinf/cosf: rope_sincos-style polynomial with native n=16 vectors
+//   and 32-elem padded internal buffers (24-elem outer interface)
+// - shuffle_apply_rope: aie::filter_even/odd + interleave_zip (no
+//   shuffle_T16_* constants on AIE2P)
 // - softmax: aie::exp2-based (AIE2P has no LUT-based exp lowering)
-// - vecmat, attn_1, attn_2, vector_copy, linalg_fill: ported as-is
 //
 //===----------------------------------------------------------------------===//
 
