@@ -263,8 +263,12 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           makeLatest: ${{ github.event_name == 'push' }}
+          # Skip body on versioned tag pushes (v*.*.*) so those releases can carry
+          # human-written or auto-generated notes; only populate body for the
+          # rolling latest-* tags.
+          omitBody: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
           body: |
-            ## MLIR-AIR Wheels
+            ## MLIR-AIR Wheels (${{ matrix.ENABLE_RTTI == 'ON' && 'RTTI' || 'no-RTTI' }})
 
             **Latest commit:** `${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}`
             **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.12)
@@ -272,11 +276,11 @@ jobs:
             ### Installation
 
             ```bash
-            # MLIR-AIR (default: RTTI enabled)
-            pip install mlir_air -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels
+            # MLIR-AIR (${{ matrix.ENABLE_RTTI == 'ON' && 'RTTI enabled' || 'RTTI disabled' }})
+            pip install mlir_air -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }}
 
-            # MLIR-AIE
-            pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3
+            # MLIR-AIE (must match RTTI setting above)
+            pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }}
 
             # Peano (llvm-aie) — AIE backend compiler
             pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
@@ -448,8 +452,12 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           makeLatest: ${{ github.event_name == 'push' }}
+          # Skip body on versioned tag pushes (v*.*.*) so those releases can carry
+          # human-written or auto-generated notes; only populate body for the
+          # rolling latest-* tags.
+          omitBody: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
           body: |
-            ## MLIR-AIR Wheels
+            ## MLIR-AIR Wheels (${{ matrix.ENABLE_RTTI == 'ON' && 'RTTI' || 'no-RTTI' }})
 
             **Latest commit:** `${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}`
             **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.12)
@@ -457,11 +465,11 @@ jobs:
             ### Installation
 
             ```bash
-            # MLIR-AIR (default: RTTI enabled)
-            pip install mlir_air -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels
+            # MLIR-AIR (${{ matrix.ENABLE_RTTI == 'ON' && 'RTTI enabled' || 'RTTI disabled' }})
+            pip install mlir_air -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }}
 
-            # MLIR-AIE
-            pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3
+            # MLIR-AIE (must match RTTI setting above)
+            pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }}
 
             # Peano (llvm-aie) — AIE backend compiler
             pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
