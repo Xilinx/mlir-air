@@ -78,7 +78,6 @@ module attributes {gpu.container_module} {
                        attributes {gpu.known_block_size = array<i32: 256, 1, 1>,
                                    gpu.known_grid_size  = array<i32: 1, 1, 1>} {
       %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
       %c64 = arith.constant 64 : index
       %c1_i32 = arith.constant 1 : i32
       %c42_f = arith.constant 42.0 : f32
@@ -126,12 +125,10 @@ module attributes {gpu.container_module} {
     // into the local verification buffer.
     gpu.func @consumer(%data       : memref<256xf32>,
                        %verify_buf : memref<256xf32>,
-                       %flags      : memref<4xi32>,
-                       %bases      : memref<?xindex>) kernel
+                       %flags      : memref<4xi32>) kernel
                        attributes {gpu.known_block_size = array<i32: 256, 1, 1>,
                                    gpu.known_grid_size  = array<i32: 1, 1, 1>} {
       %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
       %c64 = arith.constant 64 : index
       %c0_i32 = arith.constant 0 : i32
 
@@ -325,8 +322,7 @@ module attributes {gpu.container_module} {
               threads in (%c256, %c1, %c1)
               args(%data_m  : memref<256xf32>,
                    %verify_m: memref<256xf32>,
-                   %flags_m : memref<4xi32>,
-                   %bases   : memref<?xindex>)
+                   %flags_m : memref<4xi32>)
 
           // D2H readback verify_buf and check element 0 == 42.0.
           %hb = memref.alloc() : memref<256xf32>
