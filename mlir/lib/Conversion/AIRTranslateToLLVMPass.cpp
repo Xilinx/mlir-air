@@ -124,22 +124,21 @@ struct AIRTranslateToLLVMPass
       // Extract source aligned pointer as !llvm.ptr.
       Value srcAlignedIdx = memref::ExtractAlignedPointerAsIndexOp::create(
           builder, loc, op.getSource());
-      Value srcAlignedI64 = arith::IndexCastOp::create(builder, loc, i64Ty,
-                                                       srcAlignedIdx);
+      Value srcAlignedI64 =
+          arith::IndexCastOp::create(builder, loc, i64Ty, srcAlignedIdx);
       Value srcAlignedPtr =
           LLVM::IntToPtrOp::create(builder, loc, ptrTy, srcAlignedI64);
 
       // Load bases[from] and bases[to].
-      Value fromI64 = arith::IndexCastOp::create(builder, loc, i64Ty,
-                                                 op.getFromRank());
-      Value toI64 = arith::IndexCastOp::create(builder, loc, i64Ty,
-                                               op.getToRank());
+      Value fromI64 =
+          arith::IndexCastOp::create(builder, loc, i64Ty, op.getFromRank());
+      Value toI64 =
+          arith::IndexCastOp::create(builder, loc, i64Ty, op.getToRank());
       Value fromBaseAddr = LLVM::GEPOp::create(
           builder, loc, ptrTy, ptrTy, op.getHeapBases(), ValueRange{fromI64});
       Value fromBase = LLVM::LoadOp::create(builder, loc, ptrTy, fromBaseAddr);
-      Value toBaseAddr = LLVM::GEPOp::create(builder, loc, ptrTy, ptrTy,
-                                             op.getHeapBases(),
-                                             ValueRange{toI64});
+      Value toBaseAddr = LLVM::GEPOp::create(
+          builder, loc, ptrTy, ptrTy, op.getHeapBases(), ValueRange{toI64});
       Value toBase = LLVM::LoadOp::create(builder, loc, ptrTy, toBaseAddr);
 
       // byte_diff = ptrtoint(toBase) - ptrtoint(fromBase)
@@ -154,11 +153,9 @@ struct AIRTranslateToLLVMPass
 
       // Build a fresh memref descriptor with the peer aligned pointer.
       Value desc = buildPeerDescriptor(builder, loc, memrefTy, peerAlignedPtr);
-      Value newMemref =
-          UnrealizedConversionCastOp::create(builder, loc,
-                                             TypeRange{memrefTy},
-                                             ValueRange{desc})
-              .getResult(0);
+      Value newMemref = UnrealizedConversionCastOp::create(
+                            builder, loc, TypeRange{memrefTy}, ValueRange{desc})
+                            .getResult(0);
 
       op.getResult().replaceAllUsesWith(newMemref);
       op.erase();

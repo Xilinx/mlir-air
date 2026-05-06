@@ -5,6 +5,7 @@
 //
 //===-----------------------------------------------------------------------===//
 
+// REQUIRES: gpu
 // RUN: air-opt --air-translate-to-llvm --split-input-file %s | FileCheck %s
 
 // 1D static memref: full peer-VA expansion shape.
