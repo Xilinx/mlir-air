@@ -1216,23 +1216,24 @@ int findLargestFactor(int num, int max) {
 // Largest factor of `num` that is <= `max` and a multiple of `alignment`.
 // Used when tiling the contiguous innermost dim: the resulting inner wrap
 // times the element size must be a multiple of the shim address granularity
-// (e.g. 4 bytes), otherwise aie.dma_bd verification fails. With alignment=1
-// behavior matches findLargestFactor.
+// (e.g. 4 bytes), otherwise aie.dma_bd verification fails. With alignment<=1
+// behaves as findLargestFactor. Returns 0 when no aligned factor exists, so
+// the caller can emit a diagnostic instead of silently producing misaligned IR.
 int findLargestAlignedFactor(int num, int max, int alignment) {
   if (alignment <= 1)
     return findLargestFactor(num, max);
   if (max < alignment)
-    return findLargestFactor(num, max);
+    return 0;
   int alignedMax = (max / alignment) * alignment;
   for (int candidate = alignedMax; candidate >= alignment;
        candidate -= alignment) {
     if (num % candidate == 0)
       return candidate;
   }
-  return findLargestFactor(num, max);
+  return 0;
 }
 
-void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
+LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto loc = memcpy_op->getLoc();
   auto ctx = memcpy_op->getContext();
   auto oper_begin = memcpy_op.getOperands().begin();
@@ -1253,12 +1254,13 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       // factor like 683 for a bf16 transfer of length 131136 produces a
       // 1366 B inner segment that aie.dma_bd verification rejects.
       int alignment = 1;
+      unsigned elemBits = 0;
+      unsigned addrGranBits = 32; // AIE2/AIE2P shim default.
       if (const_stride == 1) {
         if (auto memrefTy = llvm::dyn_cast<BaseMemRefType>(
                 memcpy_op.getMemref().getType())) {
           mlir::DataLayout dl = mlir::DataLayout::closest(memcpy_op);
-          unsigned elemBits = dl.getTypeSizeInBits(memrefTy.getElementType());
-          unsigned addrGranBits = 32; // AIE2/AIE2P shim default.
+          elemBits = dl.getTypeSizeInBits(memrefTy.getElementType());
           if (auto dev = memcpy_op->getParentOfType<AIE::DeviceOp>())
             addrGranBits = dev.getTargetModel().getAddressGenGranularity();
           if (elemBits > 0 && elemBits < addrGranBits)
@@ -1267,6 +1269,16 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       }
       int a_wrap = findLargestAlignedFactor(
           const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1, alignment);
+      if (a_wrap == 0) {
+        return memcpy_op.emitOpError()
+               << "cannot tile dim " << i << " of size " << const_wrap
+               << " into shim-legal chunks: no factor in [" << alignment << ", "
+               << (AIE2_WRAP_UPPER_BOUNDS[i] - 1) << "] is a multiple of "
+               << alignment << " elements (" << (addrGranBits / 8)
+               << "-byte shim address granularity / " << (elemBits / 8)
+               << "-byte element size). Reshape the "
+                  "transfer or pad the inner dimension.";
+      }
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
       int new_a_stride = const_stride * a_wrap;
       auto volume = air::getTensorVolume(
@@ -1396,9 +1408,10 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   }
 
   memcpy_op.erase();
+  return success();
 }
 
-void enforceAIE2WrapLimit(ModuleOp module) {
+LogicalResult enforceAIE2WrapLimit(ModuleOp module) {
   // Identify airrt.dma_memcpy_nd ops that violate the AIE2 wrap size
   // constraint.
   SmallVector<airrt::DmaMemcpyNdOp> target_airrt_dmas;
@@ -1413,7 +1426,9 @@ void enforceAIE2WrapLimit(ModuleOp module) {
 
   // Enforce the AIE2 wrap limit by tiling that dimension.
   for (auto memcpy_op : target_airrt_dmas)
-    tileIllegalWrapDim(memcpy_op);
+    if (failed(tileIllegalWrapDim(memcpy_op)))
+      return failure();
+  return success();
 }
 
 struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
@@ -1494,7 +1509,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     generateNpuWaitFromAIRRtWaitAll(module);
 
     // Enforce AIE2 hardware constraints.
-    enforceAIE2WrapLimit(module);
+    if (failed(enforceAIE2WrapLimit(module))) {
+      signalPassFailure();
+      return;
+    }
 
     // Simplify arith ops (from airrt)
     RewritePatternSet canoPatterns_3(ctx);
