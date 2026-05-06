@@ -5,13 +5,15 @@
 //
 // Decode flash attention benchmark (ELF format) for NPU2. Mirrors prefill
 // flash_attention/kernel_fusion_based/test_elf_npu2.cpp but for the decode
-// kernel signature: mha_bf16(xrms[2,k], W[NKV,GEMV_COUNT,k,n],
+// kernel signature: mha_bf16(xrms[tile_k,tile_n], W[NKV,GEMV_COUNT,k,n],
 //                            K_cache[NKV,lk,n], V_cache[NKV,lk,n],
 //                            xb[NKV,GROUP_SIZE,n]).
 //
-// ELF format has the lightweight reset device that resets BD state between
-// host invocations — required for the decode design which generates a
-// memtile DMA chain with `repeat_count` on the weight forwarding path.
+// The current attn_decode_npu2 design has zero `repeat_count > 0` DMAs and
+// runs cleanly multi-iteration in either xclbin or ELF format. This ELF
+// driver is kept for parity with the prefill profile setup and for users
+// who want the xrt::ext::kernel / xrt::run API surface; functionally the
+// xclbin profile (test_xclbin_decode.cpp) covers the same use case.
 //
 //===----------------------------------------------------------------------===//
 
@@ -86,6 +88,10 @@ int main(int argc, const char *argv[]) {
   }
 
   int trace_size = vm["trace-size"].as<int>();
+  if (trace_size < 0) {
+    std::cerr << "Error: --trace-size must be >= 0\n";
+    return 1;
+  }
   int nkv = vm["nkv"].as<int>();
   int group_size = vm["group-size"].as<int>();
   int kdim = vm["n-in"].as<int>();
@@ -137,6 +143,10 @@ int main(int argc, const char *argv[]) {
 
   unsigned n_iterations = vm["iterations"].as<int>();
   unsigned n_warmup_iterations = vm["warmup"].as<int>();
+  if (n_iterations == 0) {
+    std::cerr << "Error: --iterations must be > 0\n";
+    return 1;
+  }
   unsigned num_iter = n_iterations + n_warmup_iterations;
   float npu_time_total = 0;
   float npu_time_min = std::numeric_limits<float>::max();

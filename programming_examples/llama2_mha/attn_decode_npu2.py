@@ -722,11 +722,14 @@ def build_module(
 
                     DeallocOp(q_l1_data)
                     DeallocOp(attn_l1_data)
-                    DeallocOp(softmax_l1_data)
+                    # softmax_l1_data aliases attn_l1_data (in-place softmax) —
+                    # only one dealloc.
                     DeallocOp(xb_l1_data)
                     DeallocOp(l1_shared_bd_buf_data)
 
-                herd_body_0.attributes["link_with"] = StringAttr.get("attn_decode_npu2.o")
+                herd_body_0.attributes["link_with"] = StringAttr.get(
+                    "attn_decode_npu2.o"
+                )
 
                 # Per-col KV cache writeback forwarding to L3.
                 for tx_i in range(NKV):
