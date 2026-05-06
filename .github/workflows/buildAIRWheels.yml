@@ -263,6 +263,35 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           makeLatest: ${{ github.event_name == 'push' }}
+          body: |
+            ## MLIR-AIR Wheels
+
+            **Latest commit:** `${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}`
+            **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.12)
+
+            ### Installation
+
+            ```bash
+            # MLIR-AIR (default: RTTI enabled)
+            pip install mlir_air -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels
+
+            # MLIR-AIE
+            pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3
+
+            # Peano (llvm-aie) — AIE backend compiler
+            pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+            ```
+
+            ### RTTI / no-RTTI Variants
+
+            Both RTTI-enabled and RTTI-disabled wheels are released for downstream integration convenience:
+
+            - [`latest-air-wheels`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels) — RTTI **on**. Default; use this for standalone development.
+            - [`latest-air-wheels-no-rtti`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels-no-rtti) — RTTI **off**. For integrating MLIR-AIR into a downstream project whose LLVM is built with `-DLLVM_ENABLE_RTTI=OFF`. Pair with `mlir_aie` from [`latest-wheels-no-rtti`](https://github.com/Xilinx/mlir-aie/releases/tag/latest-wheels-no-rtti).
+
+            When mixing wheels into a downstream build, all three of `mlir`, `mlir_aie`, and `mlir_air` must agree on RTTI.
+
+            Full setup guide: [docs/buildingRyzenLin.md](https://github.com/Xilinx/mlir-air/blob/main/docs/buildingRyzenLin.md#install-prebuilt-wheels-recommended)
 
   build-windows:
     name: Build and upload mlir_air wheels (Windows)
@@ -419,3 +448,32 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           makeLatest: ${{ github.event_name == 'push' }}
+          body: |
+            ## MLIR-AIR Wheels
+
+            **Latest commit:** `${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}`
+            **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.12)
+
+            ### Installation
+
+            ```bash
+            # MLIR-AIR (default: RTTI enabled)
+            pip install mlir_air -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels
+
+            # MLIR-AIE
+            pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3
+
+            # Peano (llvm-aie) — AIE backend compiler
+            pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+            ```
+
+            ### RTTI / no-RTTI Variants
+
+            Both RTTI-enabled and RTTI-disabled wheels are released for downstream integration convenience:
+
+            - [`latest-air-wheels`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels) — RTTI **on**. Default; use this for standalone development.
+            - [`latest-air-wheels-no-rtti`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels-no-rtti) — RTTI **off**. For integrating MLIR-AIR into a downstream project whose LLVM is built with `-DLLVM_ENABLE_RTTI=OFF`. Pair with `mlir_aie` from [`latest-wheels-no-rtti`](https://github.com/Xilinx/mlir-aie/releases/tag/latest-wheels-no-rtti).
+
+            When mixing wheels into a downstream build, all three of `mlir`, `mlir_aie`, and `mlir_air` must agree on RTTI.
+
+            Full setup guide: [docs/buildingRyzenLin.md](https://github.com/Xilinx/mlir-air/blob/main/docs/buildingRyzenLin.md#install-prebuilt-wheels-recommended)
