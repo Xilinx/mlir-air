@@ -2196,9 +2196,14 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     SmallVector<Value> strides = channel_op.getStrides();
 
     OpBuilder b(channel_op);
+    auto memrefTy =
+        llvm::dyn_cast<BaseMemRefType>(channel_op.getMemref().getType());
+    int innerAlignment =
+        memrefTy ? air::getDmaInnerElementAlignment(memrefTy, channel_op) : 1;
     (void)canonicalizeWrapAndStrideList(
         b, offsets, wraps, strides,
-        air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
+        air::getTensorVolume(channel_op.getMemref().getType()), maxSize,
+        innerAlignment);
 
     // If empty offsets/sizes/strides, then populate the lists with default
     // values.
@@ -2225,7 +2230,8 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
+        air::getTensorVolume(channel_op.getMemref().getType()), maxSize,
+        innerAlignment);
 
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
     if (enableRepeatAtHighestDim && !wraps.empty()) {
@@ -2605,9 +2611,13 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
       if (padBeforeCheck)
         return failure();
       // Canonicalize offsets/sizes/strides using a helper function.
+      auto memrefTy = llvm::dyn_cast<BaseMemRefType>(op.getMemref().getType());
+      int innerAlignment =
+          memrefTy ? air::getDmaInnerElementAlignment(memrefTy, op) : 1;
       if (failed(canonicalizeWrapAndStrideList(
               rewriter, offsets, sizes, strides,
-              air::getTensorVolume(op.getMemref().getType()), maxSize)))
+              air::getTensorVolume(op.getMemref().getType()), maxSize,
+              innerAlignment)))
         return failure();
 
       // When highest-dimension repeat is active, pad offsets/sizes/strides to

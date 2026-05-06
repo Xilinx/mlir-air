@@ -2686,9 +2686,13 @@ private:
     SmallVector<Value> offsets = ci.getOffsets();
     SmallVector<Value> wraps = ci.getSizes();
     SmallVector<Value> strides = ci.getStrides();
+    auto memrefTy = llvm::dyn_cast<BaseMemRefType>(ci.getMemref().getType());
+    int innerAlignment =
+        memrefTy ? air::getDmaInnerElementAlignment(memrefTy, ci) : 1;
     (void)air::canonicalizeWrapAndStrideList(
         builder, offsets, wraps, strides,
-        air::getTensorVolume(ci.getMemref().getType()), maxSize);
+        air::getTensorVolume(ci.getMemref().getType()), maxSize,
+        innerAlignment);
     air::ChannelInterface new_ci = nullptr;
     if (isa<air::ChannelPutOp>(ci))
       new_ci = air::ChannelPutOp::create(

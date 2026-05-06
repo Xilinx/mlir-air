@@ -22,7 +22,6 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
-#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -1180,59 +1179,6 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   return false;
 }
 
-// Find the largest factor of 'num' which is not larger than 'max'. Ref:
-// https://github.com/nod-ai/iree-amd-aie/blob/main/compiler/plugins/target/AMD-AIE/iree-amd-aie/Transforms/AMDAIEUtils.cpp#L334
-int findLargestFactor(int num, int max) {
-  // No factors less than or equal to 0 exist
-  if (max <= 0)
-    return 0;
-
-  // Do O(1) instead of O(sqrt(num)) computation for this common case.
-  if (num <= max) {
-    return num;
-  }
-
-  int largestLowFactor = 1;
-  for (int lowFactor = 2; lowFactor <= max; ++lowFactor) {
-    const int highFactor = num / lowFactor;
-
-    // This early exit is what makes this O(sqrt(num)) instead of O(num).
-    if (highFactor < lowFactor)
-      return largestLowFactor;
-
-    const bool areActuallyFactors = num % lowFactor == 0;
-    if (areActuallyFactors) {
-      // We're certain that here lowFactor <= highFactor, and highFactor is
-      // descending in this loop. So we can return immediately if highFactor
-      // is good.
-      if (highFactor <= max)
-        return highFactor;
-      largestLowFactor = lowFactor;
-    }
-  }
-  return largestLowFactor;
-}
-
-// Largest factor of `num` that is <= `max` and a multiple of `alignment`.
-// Used when tiling the contiguous innermost dim: the resulting inner wrap
-// times the element size must be a multiple of the shim address granularity
-// (e.g. 4 bytes), otherwise aie.dma_bd verification fails. With alignment<=1
-// behaves as findLargestFactor. Returns 0 when no aligned factor exists, so
-// the caller can emit a diagnostic instead of silently producing misaligned IR.
-int findLargestAlignedFactor(int num, int max, int alignment) {
-  if (alignment <= 1)
-    return findLargestFactor(num, max);
-  if (max < alignment)
-    return 0;
-  int alignedMax = (max / alignment) * alignment;
-  for (int candidate = alignedMax; candidate >= alignment;
-       candidate -= alignment) {
-    if (num % candidate == 0)
-      return candidate;
-  }
-  return 0;
-}
-
 LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto loc = memcpy_op->getLoc();
   auto ctx = memcpy_op->getContext();
@@ -1242,42 +1188,29 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   SmallVector<Value> strides(oper_begin + 12, oper_begin + 16);
   OpBuilder builder(memcpy_op);
 
+  auto memrefTy =
+      llvm::dyn_cast<BaseMemRefType>(memcpy_op.getMemref().getType());
+  int innerAlignment =
+      memrefTy ? air::getDmaInnerElementAlignment(memrefTy, memcpy_op) : 1;
+
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
     if (const_wrap >= AIE2_WRAP_UPPER_BOUNDS[i]) {
-      // Found dimension with illegal wrap. Tiling. (Prefers smaller outer
-      // wrap values, as long as stride fits)
-      // For the contiguous innermost case (stride == 1), enforce that the
-      // new inner wrap times the element size is a multiple of the shim
-      // address granularity (typically 4 B). Without this, picking a prime
-      // factor like 683 for a bf16 transfer of length 131136 produces a
-      // 1366 B inner segment that aie.dma_bd verification rejects.
-      int alignment = 1;
-      unsigned elemBits = 0;
-      unsigned addrGranBits = 32; // AIE2/AIE2P shim default.
-      if (const_stride == 1) {
-        if (auto memrefTy = llvm::dyn_cast<BaseMemRefType>(
-                memcpy_op.getMemref().getType())) {
-          mlir::DataLayout dl = mlir::DataLayout::closest(memcpy_op);
-          elemBits = dl.getTypeSizeInBits(memrefTy.getElementType());
-          if (auto dev = memcpy_op->getParentOfType<AIE::DeviceOp>())
-            addrGranBits = dev.getTargetModel().getAddressGenGranularity();
-          if (elemBits > 0 && elemBits < addrGranBits)
-            alignment = addrGranBits / elemBits;
-        }
-      }
-      int a_wrap = findLargestAlignedFactor(
+      // Found dimension with illegal wrap. Prefers smaller outer wrap as
+      // long as stride fits. For stride==1, force the inner wrap to a
+      // multiple of innerAlignment elements so its byte size stays aligned
+      // to the shim address granularity (otherwise aie.dma_bd rejects it).
+      int alignment = (const_stride == 1) ? innerAlignment : 1;
+      int a_wrap = air::findLargestAlignedFactor(
           const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1, alignment);
       if (a_wrap == 0) {
         return memcpy_op.emitOpError()
                << "cannot tile dim " << i << " of size " << const_wrap
                << " into shim-legal chunks: no factor in [" << alignment << ", "
                << (AIE2_WRAP_UPPER_BOUNDS[i] - 1) << "] is a multiple of "
-               << alignment << " elements (" << (addrGranBits / 8)
-               << "-byte shim address granularity / " << (elemBits / 8)
-               << "-byte element size). Reshape the "
-                  "transfer or pad the inner dimension.";
+               << alignment
+               << " elements. Reshape the transfer or pad the inner dimension.";
       }
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
       int new_a_stride = const_stride * a_wrap;
