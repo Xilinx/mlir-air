@@ -42,9 +42,13 @@ fi
 LLVM_LIB_DIR="${LLVM_INSTALL_DIR:-$(dirname "$(which mlir-opt)")/..}/lib"
 AIRGPU_LIB="${MLIR_AIR_INSTALL_DIR:-$(dirname "$(which air-opt)")/..}/lib/libairgpu.so"
 
-echo "Step 1: Lower hand-written IR to LLVM dialect"
-mlir-opt "$SCRIPT_DIR/air_sym_handwritten.mlir" \
-    --pass-pipeline='builtin.module(func.func(convert-scf-to-cf),convert-to-llvm,reconcile-unrealized-casts)' \
+echo "Step 1a: Expand air.translate ops"
+air-opt "$SCRIPT_DIR/air_sym_handwritten.mlir" --air-translate-to-llvm \
+    -o "$TMPDIR/sym_post_translate.mlir"
+
+echo "Step 1b: Compile gpu.module to AMDGPU binary + finalize host"
+mlir-opt "$TMPDIR/sym_post_translate.mlir" \
+    --pass-pipeline='builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-scf-to-cf,convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary,func.func(gpu-async-region,convert-scf-to-cf),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
     -o "$TMPDIR/sym_lowered.mlir"
 
 echo "Step 2: Run as ${NUM_RANKS} processes"
@@ -55,7 +59,12 @@ PASS=1
 
 for i in $(seq 0 $((NUM_RANKS - 1))); do
   (set -o pipefail
-   RANK=$i WORLD_SIZE=$NUM_RANKS LOCAL_RANK=$i \
+   # Pin each process to its own GPU at the OS / HIP-visibility level.
+   # mlir-runner's built-in gpu.launch_func handler (and any nested call
+   # into libmlir_rocm_runtime.so) only ever sees one device, so it can't
+   # accidentally launch on the wrong one. Every rank still sees device 0
+   # internally, so airgpu uses LOCAL_RANK=0.
+   RANK=$i WORLD_SIZE=$NUM_RANKS LOCAL_RANK=0 HIP_VISIBLE_DEVICES=$i \
    mlir-runner --entry-point-result=void \
        --shared-libs="$LLVM_LIB_DIR/libmlir_rocm_runtime.so" \
        --shared-libs="$AIRGPU_LIB" \
