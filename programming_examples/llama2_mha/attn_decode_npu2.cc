@@ -192,21 +192,22 @@ static void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
 }
 
 //------------------------------------------------------------------------------
-// freq_pos: out[i] = pos / 10000^(2i/dk). dk=64 => 32 entries (no padding;
-// fits exactly one native n=16 vector pair).
+// freq_pos: out[i] = pos / rope_base^(2i/dk). dk=64 => 32 entries (no padding;
+// fits exactly one native n=16 vector pair). rope_base = 500000 matches the
+// HuggingFace LLaMA-3 / LLaMA-3.2 rope_theta config.
 //------------------------------------------------------------------------------
 alignas(aie::vector_decl_align) static const bfloat16 freq_table_dk64[32] = {
-    (bfloat16)1.000000f, (bfloat16)0.749894f, (bfloat16)0.562341f,
-    (bfloat16)0.421697f, (bfloat16)0.316228f, (bfloat16)0.237137f,
-    (bfloat16)0.177828f, (bfloat16)0.133352f, (bfloat16)0.100000f,
-    (bfloat16)0.074989f, (bfloat16)0.056234f, (bfloat16)0.042170f,
-    (bfloat16)0.031623f, (bfloat16)0.023714f, (bfloat16)0.017783f,
-    (bfloat16)0.013335f, (bfloat16)0.010000f, (bfloat16)0.007499f,
-    (bfloat16)0.005623f, (bfloat16)0.004217f, (bfloat16)0.003162f,
-    (bfloat16)0.002371f, (bfloat16)0.001778f, (bfloat16)0.001334f,
-    (bfloat16)0.001000f, (bfloat16)0.000750f, (bfloat16)0.000562f,
-    (bfloat16)0.000422f, (bfloat16)0.000316f, (bfloat16)0.000237f,
-    (bfloat16)0.000178f, (bfloat16)0.000133f,
+    (bfloat16)1.000000f, (bfloat16)0.663601f, (bfloat16)0.440367f,
+    (bfloat16)0.292228f, (bfloat16)0.193923f, (bfloat16)0.128687f,
+    (bfloat16)0.085397f, (bfloat16)0.056670f, (bfloat16)0.037606f,
+    (bfloat16)0.024955f, (bfloat16)0.016560f, (bfloat16)0.010990f,
+    (bfloat16)0.007293f, (bfloat16)0.004839f, (bfloat16)0.003211f,
+    (bfloat16)0.002131f, (bfloat16)0.001414f, (bfloat16)0.000938f,
+    (bfloat16)0.000623f, (bfloat16)0.000413f, (bfloat16)0.000274f,
+    (bfloat16)0.000182f, (bfloat16)0.000121f, (bfloat16)0.000080f,
+    (bfloat16)0.000053f, (bfloat16)0.000035f, (bfloat16)0.000023f,
+    (bfloat16)0.000016f, (bfloat16)0.000010f, (bfloat16)0.000007f,
+    (bfloat16)0.000005f, (bfloat16)0.000003f,
 };
 
 template <unsigned N, unsigned n>
@@ -222,32 +223,30 @@ static void freq_pos_bf16(int pos, const bfloat16 *freq_table,
 }
 
 //------------------------------------------------------------------------------
-// shuffle_apply_rope: RoPE rotation via filter_even/odd + interleave_zip.
-// AIE2P-portable (no shuffle_T16_* constants).
+// shuffle_apply_rope: HuggingFace LLaMA half-split RoPE. Pairs are
+// (x[i], x[i + N/2]) for i in 0..N/2-1, not the original pairwise
+// (x[2i], x[2i+1]). N=64 (head_dim) so half=32=2*VL with VL=16.
 //------------------------------------------------------------------------------
 template <unsigned N, unsigned n>
 static void shuffle_apply_rope(int offset, const bfloat16 *__restrict fcr,
                                const bfloat16 *__restrict fci,
                                bfloat16 *__restrict outputs) {
-  constexpr unsigned two_n = n * 2;
-  const bfloat16 *__restrict pFcr = fcr;
-  const bfloat16 *__restrict pFci = fci;
-  for (unsigned i = 0; i < N; i += two_n) {
-    aie::vector<bfloat16, two_n> v0 = aie::load_v<two_n>(outputs + i + offset);
-    aie::vector<bfloat16, n> v0Even = aie::filter_even(v0, 1);
-    aie::vector<bfloat16, n> v0Odd = aie::filter_odd(v0, 1);
-    aie::vector<bfloat16, n> vFcr = aie::load_v<n>(pFcr);
-    pFcr += n;
-    aie::vector<bfloat16, n> vFci = aie::load_v<n>(pFci);
-    pFci += n;
-    aie::vector<bfloat16, n> vOutEven =
-        msc(aie::mul(v0Even, vFcr), v0Odd, vFci).template to_vector<bfloat16>();
-    aie::vector<bfloat16, n> vOutOdd =
-        mac(aie::mul(v0Even, vFci), v0Odd, vFcr).template to_vector<bfloat16>();
-    auto [vOutLo, vOutHi] = aie::interleave_zip(vOutEven, vOutOdd, 1);
-    bfloat16 *__restrict pOut = outputs + i + offset;
-    aie::store_v(pOut, vOutLo);
-    aie::store_v(pOut + n, vOutHi);
+  constexpr unsigned half = N / 2;
+  static_assert(half % n == 0, "half must be a multiple of vector width n");
+  bfloat16 *__restrict p = outputs + offset;
+  for (unsigned i = 0; i < half; i += n) {
+    aie::vector<bfloat16, n> x1 = aie::load_v<n>(p + i);
+    aie::vector<bfloat16, n> x2 = aie::load_v<n>(p + half + i);
+    aie::vector<bfloat16, n> c = aie::load_v<n>(fcr + i);
+    aie::vector<bfloat16, n> s = aie::load_v<n>(fci + i);
+    // out_first  = x1 * c - x2 * s
+    // out_second = x1 * s + x2 * c
+    aie::vector<bfloat16, n> out1 =
+        msc(aie::mul(x1, c), x2, s).template to_vector<bfloat16>();
+    aie::vector<bfloat16, n> out2 =
+        mac(aie::mul(x1, s), x2, c).template to_vector<bfloat16>();
+    aie::store_v(p + i, out1);
+    aie::store_v(p + half + i, out2);
   }
 }
 
