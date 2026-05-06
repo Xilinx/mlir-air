@@ -92,6 +92,7 @@ jobs:
     outputs:
       AIR_PROJECT_COMMIT: ${{ steps.get_commit.outputs.AIR_PROJECT_COMMIT }}
       DATETIME: ${{ steps.get_commit.outputs.DATETIME }}
+      MLIR_AIE_VERSION: ${{ steps.get_commit.outputs.MLIR_AIE_VERSION }}
     steps:
       - uses: actions/checkout@v4
 
@@ -107,6 +108,11 @@ jobs:
           echo "AIR_PROJECT_COMMIT=${AIR_PROJECT_COMMIT}" | tee -a "$GITHUB_OUTPUT"
           DATETIME=$(date +"%Y%m%d%H")
           echo "DATETIME=${DATETIME}" | tee -a "$GITHUB_OUTPUT"
+          # The pinned mlir-aie wheel version that this AIR commit was built and
+          # tested against. Surfaced into the release body so users install the
+          # matching mlir-aie wheel rather than guessing latest.
+          MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
+          echo "MLIR_AIE_VERSION=${MLIR_AIE_VERSION}" | tee -a "$GITHUB_OUTPUT"
 
   build-repo:
     name: Build and upload mlir_air wheels
@@ -279,8 +285,10 @@ jobs:
             # MLIR-AIR (${{ matrix.ENABLE_RTTI == 'ON' && 'RTTI enabled' || 'RTTI disabled' }})
             pip install mlir_air -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }}
 
-            # MLIR-AIE (must match RTTI setting above)
-            pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }}
+            # MLIR-AIE — pinned to the version this AIR commit was built and
+            # tested against (must match RTTI setting above).
+            pip install "mlir_aie==${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}${{ matrix.ENABLE_RTTI == 'ON' && '' || '.no.rtti' }}" \
+              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }}
 
             # Peano (llvm-aie) — AIE backend compiler
             pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
@@ -468,8 +476,10 @@ jobs:
             # MLIR-AIR (${{ matrix.ENABLE_RTTI == 'ON' && 'RTTI enabled' || 'RTTI disabled' }})
             pip install mlir_air -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }}
 
-            # MLIR-AIE (must match RTTI setting above)
-            pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }}
+            # MLIR-AIE — pinned to the version this AIR commit was built and
+            # tested against (must match RTTI setting above).
+            pip install "mlir_aie==${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}${{ matrix.ENABLE_RTTI == 'ON' && '' || '.no.rtti' }}" \
+              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }}
 
             # Peano (llvm-aie) — AIE backend compiler
             pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
