@@ -74,7 +74,7 @@ module attributes {gpu.container_module} {
     // flag with system-scope release atomic.
     gpu.func @producer(%data : memref<256xf32>,
                        %flags : memref<4xi32>,
-                       %bases : !llvm.ptr) kernel
+                       %bases : memref<?xindex>) kernel
                        attributes {gpu.known_block_size = array<i32: 256, 1, 1>,
                                    gpu.known_grid_size  = array<i32: 1, 1, 1>} {
       %c0 = arith.constant 0 : index
@@ -92,8 +92,8 @@ module attributes {gpu.container_module} {
       %lane = arith.remui %tid, %c64 : index  // lane 0..63
 
       // Translate local memrefs into peer (rank 1)'s address space.
-      %peer_data  = air.translate %data,  %from, %to, %bases : memref<256xf32>, !llvm.ptr
-      %peer_flags = air.translate %flags, %from, %to, %bases : memref<4xi32>,   !llvm.ptr
+      %peer_data  = air.translate %data,  %from, %to, %bases : memref<256xf32>, memref<?xindex>
+      %peer_flags = air.translate %flags, %from, %to, %bases : memref<4xi32>,   memref<?xindex>
 
       // Each thread writes one f32 into peer's data slot.
       memref.store %c42_f, %peer_data[%tid] : memref<256xf32>
@@ -127,7 +127,7 @@ module attributes {gpu.container_module} {
     gpu.func @consumer(%data       : memref<256xf32>,
                        %verify_buf : memref<256xf32>,
                        %flags      : memref<4xi32>,
-                       %bases      : !llvm.ptr) kernel
+                       %bases      : memref<?xindex>) kernel
                        attributes {gpu.known_block_size = array<i32: 256, 1, 1>,
                                    gpu.known_grid_size  = array<i32: 1, 1, 1>} {
       %c0 = arith.constant 0 : index
@@ -208,6 +208,23 @@ module attributes {gpu.container_module} {
     return %m : memref<4xi32>
   }
 
+  // Wrap a runtime !llvm.ptr (heap_bases table — array of pointer-width
+  // values) as memref<?xindex> so it can be passed through gpu.launch_func
+  // and indexed with memref.load.
+  func.func private @wrap_bases(%ptr : !llvm.ptr, %size : i64) -> memref<?xindex> {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %d0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+    %d1 = llvm.insertvalue %ptr,    %d0[0]    : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+    %d2 = llvm.insertvalue %ptr,    %d1[1]    : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+    %d3 = llvm.insertvalue %c0_i64, %d2[2]    : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+    %d4 = llvm.insertvalue %size,   %d3[3, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+    %d5 = llvm.insertvalue %c1_i64, %d4[4, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+    %m  = builtin.unrealized_conversion_cast %d5
+        : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> to memref<?xindex>
+    return %m : memref<?xindex>
+  }
+
   // ---- main ------------------------------------------------------------
   func.func @main() {
     %c0_i32 = arith.constant 0 : i32
@@ -259,17 +276,22 @@ module attributes {gpu.container_module} {
 
     // mgpuGetHeapBases() returns a HOST pointer (std::vector<void*>::data()).
     // GPU kernels cannot dereference host memory, so we copy the table into a
-    // device-resident buffer and pass that pointer instead. Conservative size:
-    // 256 bytes (32 ranks * 8 bytes/ptr).
+    // device-resident buffer. Size = world_size * sizeof(void*) = world * 8.
     //
     // TODO(symmetric_heap): change runtime to allocate heap_bases as
     // hipHostMalloc(...,Mapped) or hipMallocManaged so this copy is unnecessary.
-    %bases_size = arith.constant 256 : i64
+    %world_i64 = arith.extui %world : i32 to i64
+    %c8_i64 = arith.constant 8 : i64
+    %bases_size = arith.muli %world_i64, %c8_i64 : i64
     %bases_host = func.call @mgpuGetHeapBases() : () -> !llvm.ptr
-    %bases = func.call @mgpuMemAlloc(%bases_size, %nullptr, %false)
+    %bases_devptr = func.call @mgpuMemAlloc(%bases_size, %nullptr, %false)
         : (i64, !llvm.ptr, i1) -> !llvm.ptr
-    func.call @mgpuMemcpy(%bases, %bases_host, %bases_size, %nullptr)
+    func.call @mgpuMemcpy(%bases_devptr, %bases_host, %bases_size, %nullptr)
         : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> ()
+    // Wrap the device-resident bases buffer as memref<?xindex> for kernel
+    // arg typing. Each element is a pointer-width index = one peer's heap base.
+    %bases = func.call @wrap_bases(%bases_devptr, %world_i64)
+        : (!llvm.ptr, i64) -> memref<?xindex>
 
     %is_solo = arith.cmpi sle, %world, %c1_i32 : i32
     scf.if %is_solo {
@@ -287,7 +309,7 @@ module attributes {gpu.container_module} {
             threads in (%c256, %c1, %c1)
             args(%data_m  : memref<256xf32>,
                  %flags_m : memref<4xi32>,
-                 %bases   : !llvm.ptr)
+                 %bases   : memref<?xindex>)
         %fmt_p = llvm.mlir.addressof @msg_pass_p : !llvm.ptr
         llvm.call @printf(%fmt_p)
             vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr) -> i32
@@ -304,7 +326,7 @@ module attributes {gpu.container_module} {
               args(%data_m  : memref<256xf32>,
                    %verify_m: memref<256xf32>,
                    %flags_m : memref<4xi32>,
-                   %bases   : !llvm.ptr)
+                   %bases   : memref<?xindex>)
 
           // D2H readback verify_buf and check element 0 == 42.0.
           %hb = memref.alloc() : memref<256xf32>
@@ -335,7 +357,7 @@ module attributes {gpu.container_module} {
 
     // All-rank barrier and cleanup.
     func.call @mgpuBarrier() : () -> ()
-    func.call @mgpuMemFree(%bases, %nullptr) : (!llvm.ptr, !llvm.ptr) -> ()
+    func.call @mgpuMemFree(%bases_devptr, %nullptr) : (!llvm.ptr, !llvm.ptr) -> ()
     func.call @mgpuSymmetricFree(%data_ptr,  %nullptr) : (!llvm.ptr, !llvm.ptr) -> ()
     func.call @mgpuSymmetricFree(%flags_ptr, %nullptr) : (!llvm.ptr, !llvm.ptr) -> ()
     func.call @mgpuSymmetricHeapDestroy() : () -> ()

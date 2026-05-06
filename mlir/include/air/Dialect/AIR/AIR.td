@@ -16,14 +16,6 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/TilingInterface.td"
 
-// Type predicate for !llvm.ptr. Inlined here (instead of including
-// "mlir/Dialect/LLVMIR/LLVMOpBase.td") to avoid pulling the LLVM dialect
-// into our TableGen scope — that would confuse `mlir-tblgen
-// -gen-dialect-doc` which expects exactly one dialect per .td file.
-def air_LLVMPtr : Type<CPred<"::llvm::isa<::mlir::LLVM::LLVMPointerType>($_self)">,
-                       "LLVM pointer",
-                       "::mlir::LLVM::LLVMPointerType">;
-
 class air_Op<string mnemonic, list<Trait> traits = []> :
     Op<air_Dialect, mnemonic, traits>;
 
@@ -939,7 +931,7 @@ def air_TranslateOp : air_Op<"translate",
                        Arguments<(ins AnyMemRef:$source,
                                       Index:$from_rank,
                                       Index:$to_rank,
-                                      air_LLVMPtr:$heap_bases)>,
+                                      MemRefRankOf<[Index], [1]>:$heap_bases)>,
                        Results<(outs AnyMemRef:$result)> {
   let summary = "Re-express a symmetric-heap memref in another rank's address space";
   let description = [{
@@ -950,11 +942,12 @@ def air_TranslateOp : air_Op<"translate",
 
         peer_va = bases[to_rank] + (source_ptr - bases[from_rank])
 
-    where `$heap_bases` is the per-rank base table obtained from the
-    `mgpuGetHeapBases()` runtime hook (typically called once at host
-    scope and threaded through `gpu.launch_func` as a kernel argument).
-    No data is moved; this op produces a value-level "view" of peer
-    memory.
+    where `$heap_bases` is a 1-D memref of `index`-typed pointer values
+    (per-rank symmetric-heap base addresses) obtained from the
+    `mgpuGetHeapBases()` runtime hook. The host typically wraps the raw
+    runtime pointer as a `memref<?xindex>` once and threads it through
+    `gpu.launch_func` as a kernel argument. No data is moved; this op
+    produces a value-level "view" of peer memory.
 
     Folds to `$source` when `$from_rank` and `$to_rank` are statically
     equal.

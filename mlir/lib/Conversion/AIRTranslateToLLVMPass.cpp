@@ -9,24 +9,27 @@
 // pointer.
 //
 // For each `air.translate %src, %from, %to, %bases`:
-//   1. Extract the source memref's aligned pointer as !llvm.ptr.
-//   2. Compute the byte diff between the per-rank base pointers from the
-//      `$heap_bases` table:
-//         byte_diff = ptrtoint(bases[to]) - ptrtoint(bases[from])
-//   3. Apply the byte diff to the source aligned pointer (i8 GEP) to obtain
-//      the peer aligned pointer.
-//   4. Build a fresh LLVM memref descriptor (poison + insertvalue chain)
-//      whose allocated/aligned pointers both point at the peer address; the
-//      offset is 0, and sizes/strides are taken from the source memref's
-//      static type.
-//   5. unrealized_conversion_cast the descriptor back to the result memref
+//   1. Extract the source memref's aligned pointer as `index`.
+//   2. Read per-rank base addresses from the heap_bases memref:
+//          from_base = bases[from]
+//          to_base   = bases[to]
+//      via memref.load (each element is an `index` — a pointer-width
+//      integer).
+//   3. Compute the peer aligned index:
+//          peer_aligned = src_aligned + (to_base - from_base)
+//   4. Materialize the peer aligned address as !llvm.ptr (needed only for
+//      the descriptor build below — memref descriptors are LLVM structs).
+//   5. Build a fresh LLVM memref descriptor (poison + insertvalue chain)
+//      whose allocated/aligned pointers both reference the peer address;
+//      offset = 0, sizes/strides come from the source memref's static type.
+//   6. unrealized_conversion_cast the descriptor back to the result memref
 //      type so downstream uses keep working through the standard
 //      memref-to-llvm pipeline.
 //
-// The lowering only uses arith + memref + llvm dialect ops — no runtime
-// calls. It is therefore valid both at host scope and inside `gpu.func`
-// (the kernel must already have been given the heap_bases pointer as a
-// kernel argument).
+// Steps 1-3 use only memref + arith + index ops. The LLVM dialect appears
+// only in steps 4-5 where it is unavoidable (memref descriptors *are* LLVM
+// structs). The lowering is therefore valid both at host scope and inside
+// `gpu.func` — the kernel just needs the heap_bases memref as an argument.
 //
 //===-----------------------------------------------------------------------===//
 
@@ -121,35 +124,31 @@ struct AIRTranslateToLLVMPass
         return;
       }
 
-      // Extract source aligned pointer as !llvm.ptr.
+      // Extract source aligned pointer (as index — pointer-width integer).
       Value srcAlignedIdx = memref::ExtractAlignedPointerAsIndexOp::create(
           builder, loc, op.getSource());
-      Value srcAlignedI64 =
-          arith::IndexCastOp::create(builder, loc, i64Ty, srcAlignedIdx);
-      Value srcAlignedPtr =
-          LLVM::IntToPtrOp::create(builder, loc, ptrTy, srcAlignedI64);
 
-      // Load bases[from] and bases[to].
-      Value fromI64 =
-          arith::IndexCastOp::create(builder, loc, i64Ty, op.getFromRank());
-      Value toI64 =
-          arith::IndexCastOp::create(builder, loc, i64Ty, op.getToRank());
-      Value fromBaseAddr = LLVM::GEPOp::create(
-          builder, loc, ptrTy, ptrTy, op.getHeapBases(), ValueRange{fromI64});
-      Value fromBase = LLVM::LoadOp::create(builder, loc, ptrTy, fromBaseAddr);
-      Value toBaseAddr = LLVM::GEPOp::create(
-          builder, loc, ptrTy, ptrTy, op.getHeapBases(), ValueRange{toI64});
-      Value toBase = LLVM::LoadOp::create(builder, loc, ptrTy, toBaseAddr);
+      // Load bases[from] / bases[to] as index values. Each element of the
+      // heap_bases memref<?xindex> is a per-rank symmetric-heap base
+      // address stored as a pointer-width integer.
+      Value fromBaseIdx = memref::LoadOp::create(
+          builder, loc, op.getHeapBases(), ValueRange{op.getFromRank()});
+      Value toBaseIdx = memref::LoadOp::create(builder, loc, op.getHeapBases(),
+                                               ValueRange{op.getToRank()});
 
-      // byte_diff = ptrtoint(toBase) - ptrtoint(fromBase)
-      Value fromInt = LLVM::PtrToIntOp::create(builder, loc, i64Ty, fromBase);
-      Value toInt = LLVM::PtrToIntOp::create(builder, loc, i64Ty, toBase);
-      Value byteDiff = arith::SubIOp::create(builder, loc, toInt, fromInt);
+      // peer_aligned_idx = srcAlignedIdx + (toBaseIdx - fromBaseIdx)
+      Value diffIdx =
+          arith::SubIOp::create(builder, loc, toBaseIdx, fromBaseIdx);
+      Value peerAlignedIdx =
+          arith::AddIOp::create(builder, loc, srcAlignedIdx, diffIdx);
 
-      // peer_aligned_ptr = srcAlignedPtr + byteDiff (as i8 GEP)
-      auto i8Ty = builder.getI8Type();
-      Value peerAlignedPtr = LLVM::GEPOp::create(
-          builder, loc, ptrTy, i8Ty, srcAlignedPtr, ValueRange{byteDiff});
+      // Materialize as !llvm.ptr for the descriptor build below (the
+      // descriptor's allocated/aligned-ptr fields are LLVM-typed because
+      // memref descriptors are LLVM structs).
+      Value peerAlignedI64 =
+          arith::IndexCastOp::create(builder, loc, i64Ty, peerAlignedIdx);
+      Value peerAlignedPtr =
+          LLVM::IntToPtrOp::create(builder, loc, ptrTy, peerAlignedI64);
 
       // Build a fresh memref descriptor with the peer aligned pointer.
       Value desc = buildPeerDescriptor(builder, loc, memrefTy, peerAlignedPtr);
