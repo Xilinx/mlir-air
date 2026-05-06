@@ -22,6 +22,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -1212,6 +1213,25 @@ int findLargestFactor(int num, int max) {
   return largestLowFactor;
 }
 
+// Largest factor of `num` that is <= `max` and a multiple of `alignment`.
+// Used when tiling the contiguous innermost dim: the resulting inner wrap
+// times the element size must be a multiple of the shim address granularity
+// (e.g. 4 bytes), otherwise aie.dma_bd verification fails. With alignment=1
+// behavior matches findLargestFactor.
+int findLargestAlignedFactor(int num, int max, int alignment) {
+  if (alignment <= 1)
+    return findLargestFactor(num, max);
+  if (max < alignment)
+    return findLargestFactor(num, max);
+  int alignedMax = (max / alignment) * alignment;
+  for (int candidate = alignedMax; candidate >= alignment;
+       candidate -= alignment) {
+    if (num % candidate == 0)
+      return candidate;
+  }
+  return findLargestFactor(num, max);
+}
+
 void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto loc = memcpy_op->getLoc();
   auto ctx = memcpy_op->getContext();
@@ -1227,7 +1247,26 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
     if (const_wrap >= AIE2_WRAP_UPPER_BOUNDS[i]) {
       // Found dimension with illegal wrap. Tiling. (Prefers smaller outer
       // wrap values, as long as stride fits)
-      int a_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1);
+      // For the contiguous innermost case (stride == 1), enforce that the
+      // new inner wrap times the element size is a multiple of the shim
+      // address granularity (typically 4 B). Without this, picking a prime
+      // factor like 683 for a bf16 transfer of length 131136 produces a
+      // 1366 B inner segment that aie.dma_bd verification rejects.
+      int alignment = 1;
+      if (const_stride == 1) {
+        if (auto memrefTy = llvm::dyn_cast<BaseMemRefType>(
+                memcpy_op.getMemref().getType())) {
+          mlir::DataLayout dl = mlir::DataLayout::closest(memcpy_op);
+          unsigned elemBits = dl.getTypeSizeInBits(memrefTy.getElementType());
+          unsigned addrGranBits = 32; // AIE2/AIE2P shim default.
+          if (auto dev = memcpy_op->getParentOfType<AIE::DeviceOp>())
+            addrGranBits = dev.getTargetModel().getAddressGenGranularity();
+          if (elemBits > 0 && elemBits < addrGranBits)
+            alignment = addrGranBits / elemBits;
+        }
+      }
+      int a_wrap = findLargestAlignedFactor(
+          const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1, alignment);
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
       int new_a_stride = const_stride * a_wrap;
       auto volume = air::getTensorVolume(
