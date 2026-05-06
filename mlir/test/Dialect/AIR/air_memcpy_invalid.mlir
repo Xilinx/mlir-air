@@ -106,3 +106,33 @@ func.func @dma_dst_rank_alloc_not_symmetric() {
   }
   return
 }
+
+// -----
+
+// Test: src_rank must be non-negative.
+func.func @dma_src_rank_negative() {
+  %c2 = arith.constant 2 : index
+  air.rank (%rx) in (%sx = %c2) {
+    %dst = memref.alloc() : memref<128xf32, 2>
+    %src = memref.alloc() {air.symmetric} : memref<128xf32>
+    // expected-error @+1 {{'air.dma_memcpy_nd' op src_rank must be >= 0, got -1}}
+    air.dma_memcpy_nd (%dst[] [] [], %src[] [] []) {src_rank = -1 : i64}
+        : (memref<128xf32, 2>, memref<128xf32>)
+  }
+  return
+}
+
+// -----
+
+// Test: dst_rank must be non-negative.
+func.func @dma_dst_rank_negative() {
+  %c2 = arith.constant 2 : index
+  air.rank (%rx) in (%sx = %c2) {
+    %dst = memref.alloc() {air.symmetric} : memref<128xf32>
+    %src = memref.alloc() : memref<128xf32, 2>
+    // expected-error @+1 {{'air.dma_memcpy_nd' op dst_rank must be >= 0, got -3}}
+    air.dma_memcpy_nd (%dst[] [] [], %src[] [] []) {dst_rank = -3 : i64}
+        : (memref<128xf32>, memref<128xf32, 2>)
+  }
+  return
+}

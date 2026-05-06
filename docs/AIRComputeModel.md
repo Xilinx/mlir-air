@@ -676,9 +676,10 @@ Optional `src_rank` / `dst_rank` integer attributes name a peer rank in the
 enclosing `air.rank` scope. When present, the corresponding memref is
 interpreted as living on rank R's symmetric heap rather than on the local
 process. The verifier requires the op to be enclosed by an `air.rank` and the
-referenced memref to be `air.symmetric`-tagged (see §2.7). The GPU backend
-(`air-to-rocdl`) lowers cross-rank DMAs through `mgpuGetHeapBases()`-based
-peer addressing; the NPU backend does not support these attributes.
+referenced memref to be `air.symmetric`-tagged (see §2.7). Lowering for the
+GPU backend (planned: `air-cross-rank-dma-to-mgpu`) will expand these into
+`mgpuGetHeapBases()`-based peer-VA arithmetic + `mgpuMemcpy`; the NPU
+backend does not support these attributes.
 
 ```
 // Read 1024 floats from rank 0's symmetric buffer into local L1.
@@ -830,10 +831,11 @@ ranks' symmetric memrefs at the same logical offset.
 %buf = memref.alloc() {air.symmetric} : memref<1024xf32>
 ```
 
-The GPU lowering routes such allocations through `mgpuSymmetricAlloc`
-(`runtime_lib/airgpu/gpu_runtime.cpp`) instead of plain `mgpuMemAlloc`.
-Peer ranks' base pointers are obtained via `mgpuGetHeapBases()`. The NPU
-backend does not interpret this attribute.
+The GPU lowering (planned: `air-symmetric-alloc-to-mgpu`) will route such
+allocations through `mgpuSymmetricAlloc` (`runtime_lib/airgpu/gpu_runtime.cpp`)
+instead of plain `mgpuMemAlloc`. Peer ranks' base pointers are obtained at
+runtime via `mgpuGetHeapBases()`. The NPU backend does not interpret this
+attribute.
 
 ---
 

@@ -1585,8 +1585,9 @@ LogicalResult air::simpleDMAChannelAllocation(
         // (aie.flow) nor dma packet flow (aie.packet_flow).
         if (f.memcpyResourceType != "npu_dma_stream" &&
             f.memcpyResourceType != "npu_dma_packet")
-          return memcpyOpIf->emitOpError("only supports dma_stream or "
-                                         "dma_packet connections at L2 memory");
+          return memcpyOpIf->emitOpError(
+              "only supports npu_dma_stream or npu_dma_packet "
+              "connections at L2 memory");
         auto alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
         if (failed(alloc_res) || !alloc_res->valid())
           return failure();
@@ -1602,8 +1603,8 @@ LogicalResult air::simpleDMAChannelAllocation(
           if (f.memcpyResourceType != "npu_dma_stream" &&
               f.memcpyResourceType != "npu_dma_packet")
             return memcpyOpIf->emitOpError(
-                "only supports dma_stream or dma_packet connections at L2 "
-                "memory");
+                "only supports npu_dma_stream or npu_dma_packet "
+                "connections at L2 memory");
           auto alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
@@ -1625,8 +1626,8 @@ LogicalResult air::simpleDMAChannelAllocation(
           if (f.memcpyResourceType != "npu_dma_stream" &&
               f.memcpyResourceType != "npu_dma_packet")
             return memcpyOpIf->emitOpError(
-                "only supports dma_stream or dma_packet connections at L3 "
-                "memory");
+                "only supports npu_dma_stream or npu_dma_packet "
+                "connections at L3 memory");
           if (!f.S2MM_alloc[i].getDmaTile())
             return memcpyOpIf->emitOpError(
                 "failed to get S2MM tile for L3 allocation.");
@@ -1652,8 +1653,9 @@ LogicalResult air::simpleDMAChannelAllocation(
         // (aie.flow) nor dma packet flow (aie.packet_flow).
         if (f.memcpyResourceType != "npu_dma_stream" &&
             f.memcpyResourceType != "npu_dma_packet")
-          return memcpyOpIf->emitOpError("only supports dma_stream or "
-                                         "dma_packet connections at L3 memory");
+          return memcpyOpIf->emitOpError(
+              "only supports npu_dma_stream or npu_dma_packet "
+              "connections at L3 memory");
         if (!f.MM2S_alloc.getDmaTile())
           return memcpyOpIf->emitOpError(
               "failed to get MM2S tile for L3 allocation.");

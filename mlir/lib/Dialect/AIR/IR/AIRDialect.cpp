@@ -2823,6 +2823,14 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
       return emitOpError("src_rank/dst_rank attributes require an enclosing "
                          "air.rank scope");
 
+    // Rank indices are non-negative.
+    if (auto sr = getSrcRank())
+      if (*sr < 0)
+        return emitOpError() << "src_rank must be >= 0, got " << *sr;
+    if (auto dr = getDstRank())
+      if (*dr < 0)
+        return emitOpError() << "dst_rank must be >= 0, got " << *dr;
+
     auto requireSymmetricAlloc = [&](Value v, StringRef side) -> LogicalResult {
       auto alloc = v.getDefiningOp<memref::AllocOp>();
       if (!alloc)

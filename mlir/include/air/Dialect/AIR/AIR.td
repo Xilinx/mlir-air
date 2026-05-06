@@ -495,8 +495,9 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     enclosing `air.rank` scope. When present, the corresponding memref is
     interpreted as living on rank R's symmetric heap rather than on the local
     process. These attributes are only valid for `air.symmetric`-tagged memref
-    allocations and require an enclosing `air.rank`. They are currently only
-    supported by the GPU lowering (`air-to-rocdl`).
+    allocations and require an enclosing `air.rank`. Lowering for these
+    attributes will be added by a future GPU pass (planned: `air-cross-rank-
+    dma-to-mgpu`); this PR introduces only the IR surface and verifier rules.
   }];
   let extraClassDeclaration = [{
     Value getSrcMemref() { return getSrc(); }
@@ -607,8 +608,10 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
       Cross-GPU messaging through the symmetric heap runtime
       (`runtime_lib/airgpu/symmetric_heap.{h,cpp}`). The channel must be enclosed
       by an `air.rank` op; the put/get sites use rank indices to address peer
-      heaps. Lowered by `air-to-rocdl` to thread-cooperative loops over peer-mapped
-      VMem buffers, with synchronization via in-heap notify flags or `mgpuBarrier`.
+      heaps. Lowering will be added by a future GPU pass (planned:
+      `air-gpu-channel-to-mgpu`) which expands put/get to peer-mapped
+      `mgpuMemcpy` calls plus a barrier; this PR introduces only the IR
+      surface and verifier rules.
 
     ### Broadcasting
     If a channel broadcasts to multiple destinations, the optional `broadcast_shape` attribute
