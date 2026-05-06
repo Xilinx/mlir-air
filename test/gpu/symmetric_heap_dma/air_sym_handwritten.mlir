@@ -137,38 +137,11 @@ module attributes {gpu.container_module} {
   }
 
   // ---- Helpers ----------------------------------------------------------
-  // Build a static-shape memref descriptor over a raw runtime ptr.
-  // Phase 4's AIRSymmetricAllocToMgpuPass will do this automatically.
-  func.func private @wrap_data(%ptr : !llvm.ptr) -> memref<256xf32> {
-    %c0_i64    = arith.constant 0 : i64
-    %c1_i64    = arith.constant 1 : i64
-    %c256_i64  = arith.constant 256 : i64
-    %d0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %d1 = llvm.insertvalue %ptr,        %d0[0]    : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %d2 = llvm.insertvalue %ptr,        %d1[1]    : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %d3 = llvm.insertvalue %c0_i64,     %d2[2]    : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %d4 = llvm.insertvalue %c256_i64,   %d3[3, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %d5 = llvm.insertvalue %c1_i64,     %d4[4, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %m  = builtin.unrealized_conversion_cast %d5 : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> to memref<256xf32>
-    return %m : memref<256xf32>
-  }
-
-  func.func private @wrap_flags(%ptr : !llvm.ptr) -> memref<4xi32> {
-    %c0_i64    = arith.constant 0 : i64
-    %c1_i64    = arith.constant 1 : i64
-    %c4_i64    = arith.constant 4 : i64
-    %d0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %d1 = llvm.insertvalue %ptr,        %d0[0]    : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %d2 = llvm.insertvalue %ptr,        %d1[1]    : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %d3 = llvm.insertvalue %c0_i64,     %d2[2]    : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %d4 = llvm.insertvalue %c4_i64,     %d3[3, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %d5 = llvm.insertvalue %c1_i64,     %d4[4, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
-    %m  = builtin.unrealized_conversion_cast %d5 : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> to memref<4xi32>
-    return %m : memref<4xi32>
-  }
-
-  // Wrap a runtime ptr (heap_bases table) as memref<?xindex>.
-  func.func private @wrap_bases(%ptr : !llvm.ptr, %size : i64) -> memref<?xindex> {
+  // Single ABI-leaking helper: wrap a raw runtime !llvm.ptr as a 1-D byte
+  // memref. All typed views below derive from this via memref.view, so the
+  // hand-built LLVM-struct descriptor literal lives in exactly one place.
+  // Phase 4's AIRSymmetricAllocToMgpuPass will replace this entirely.
+  func.func private @wrap_bytes(%ptr : !llvm.ptr, %size : i64) -> memref<?xi8> {
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64
     %d0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
@@ -178,8 +151,8 @@ module attributes {gpu.container_module} {
     %d4 = llvm.insertvalue %size,   %d3[3, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
     %d5 = llvm.insertvalue %c1_i64, %d4[4, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
     %m  = builtin.unrealized_conversion_cast %d5
-        : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> to memref<?xindex>
-    return %m : memref<?xindex>
+        : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> to memref<?xi8>
+    return %m : memref<?xi8>
   }
 
   // ---- main ------------------------------------------------------------
@@ -226,8 +199,11 @@ module attributes {gpu.container_module} {
 
     func.call @mgpuBarrier() : () -> ()  // flags init visible to all ranks
 
-    %data_m  = func.call @wrap_data(%data_ptr)   : (!llvm.ptr) -> memref<256xf32>
-    %flags_m = func.call @wrap_flags(%flags_ptr) : (!llvm.ptr) -> memref<4xi32>
+    %c0_view = arith.constant 0 : index
+    %data_bytes  = func.call @wrap_bytes(%data_ptr,  %c1024_bytes) : (!llvm.ptr, i64) -> memref<?xi8>
+    %flags_bytes = func.call @wrap_bytes(%flags_ptr, %c16_bytes)   : (!llvm.ptr, i64) -> memref<?xi8>
+    %data_m  = memref.view %data_bytes[%c0_view][]  : memref<?xi8> to memref<256xf32>
+    %flags_m = memref.view %flags_bytes[%c0_view][] : memref<?xi8> to memref<4xi32>
 
     // mgpuGetHeapBases() returns a HOST pointer; GPU can't deref it, so
     // copy to device. TODO(airgpu): make heap_bases device-accessible
@@ -240,8 +216,9 @@ module attributes {gpu.container_module} {
         : (i64, !llvm.ptr, i1) -> !llvm.ptr
     func.call @mgpuMemcpy(%bases_devptr, %bases_host, %bases_size, %nullptr)
         : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> ()
-    %bases = func.call @wrap_bases(%bases_devptr, %world_i64)
-        : (!llvm.ptr, i64) -> memref<?xindex>
+    %bases_bytes = func.call @wrap_bytes(%bases_devptr, %bases_size) : (!llvm.ptr, i64) -> memref<?xi8>
+    %world_idx = arith.index_cast %world_i64 : i64 to index
+    %bases = memref.view %bases_bytes[%c0_view][%world_idx] : memref<?xi8> to memref<?xindex>
 
     %is_solo = arith.cmpi sle, %world, %c1_i32 : i32
     scf.if %is_solo {
@@ -268,7 +245,8 @@ module attributes {gpu.container_module} {
         scf.if %is_consumer {
           %verify_ptr = func.call @mgpuMemAlloc(%c1024_bytes, %nullptr, %false)
               : (i64, !llvm.ptr, i1) -> !llvm.ptr
-          %verify_m = func.call @wrap_data(%verify_ptr) : (!llvm.ptr) -> memref<256xf32>
+          %verify_bytes = func.call @wrap_bytes(%verify_ptr, %c1024_bytes) : (!llvm.ptr, i64) -> memref<?xi8>
+          %verify_m = memref.view %verify_bytes[%c0_view][] : memref<?xi8> to memref<256xf32>
           gpu.launch_func @sym_kernels::@consumer
               blocks  in (%c1, %c1, %c1)
               threads in (%c256, %c1, %c1)
