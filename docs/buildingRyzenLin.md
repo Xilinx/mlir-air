@@ -14,7 +14,7 @@ The fastest way to get MLIR-AIR is to install the prebuilt wheel — no source b
 
 ### Steps
 
-MLIR-AIR depends on **MLIR-AIE** and **Peano (`llvm-aie`)** at compile/run time. The `mlir_air` wheel declares both as runtime dependencies (`mlir_aie` is pinned to the exact version AIR was built and tested against), so a single `pip install` with the right `--find-links` pages installs the whole stack — no clone, no helper script.
+AIR supports multiple backends — AIE (NPU / Versal AI Engines), [GPU](buildingGPU.md), and [VCK5000](buildingVCK5000.md). Backend dependencies are exposed as pip **extras** so you only install what you need. For the AIE backend on Ryzen™ AI, use the `[aie]` extra; pip reads the pinned `mlir_aie==<version>` and `llvm-aie` from the wheel's metadata and resolves them from the additional `--find-links` pages.
 
 1. **Create a virtual environment:**
    ```bash
@@ -23,15 +23,17 @@ MLIR-AIR depends on **MLIR-AIE** and **Peano (`llvm-aie`)** at compile/run time.
    pip install --upgrade pip
    ```
 
-2. **Install MLIR-AIR and its pinned dependencies:**
+2. **Install MLIR-AIR with the AIE backend:**
    ```bash
-   pip install mlir_air \
+   pip install 'mlir_air[aie]' \
      -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels \
      -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3 \
      -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
    ```
 
-   Pip reads the `mlir_aie==<pinned>` and `llvm-aie` requirements from `mlir_air`'s wheel metadata and resolves them from the additional `--find-links` pages. The exact pinned `mlir_aie` version this AIR wheel was tested against is shown on the [release page](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels).
+   The `[aie]` extra pulls `mlir_aie` (pinned to the exact version this AIR wheel was tested against) and `llvm-aie` (the Peano backend compiler — nightly). The pinned `mlir_aie` version is shown on the [release page](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels).
+
+   To install AIR core only (e.g. when bringing your own backend), drop the `[aie]` extra and the last two `-f` flags.
 
 3. **Set up environment variables** (paths derived from `pip show`):
    ```bash
@@ -67,7 +69,7 @@ We release **both RTTI and no-RTTI variants** so downstream projects can match t
 For the no-RTTI variant, point both find-links at the no-RTTI pages so pip resolves the matching `mlir_aie`:
 
 ```bash
-pip install mlir_air \
+pip install 'mlir_air[aie]' \
   -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels-no-rtti \
   -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti \
   -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly

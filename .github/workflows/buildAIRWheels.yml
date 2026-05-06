@@ -282,14 +282,16 @@ jobs:
 
             ### Installation
 
-            The `mlir_air` wheel declares `mlir_aie` (pinned) and `llvm-aie` as runtime dependencies, so a single `pip install` with the right `--find-links` pages resolves the whole stack:
+            AIR supports multiple backends (AIE, GPU, VCK5000); backend dependencies are exposed as pip extras. For the AIE backend, the `[aie]` extra pulls the matching pinned `mlir_aie` and `llvm-aie` from the additional `--find-links` pages:
 
             ```bash
-            pip install mlir_air \
+            pip install 'mlir_air[aie]' \
               -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }} \
               -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }} \
               -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
             ```
+
+            Drop the `[aie]` extra to install AIR core only (e.g. when bringing your own backend).
 
             ### RTTI / no-RTTI Variants
 
@@ -471,14 +473,16 @@ jobs:
 
             ### Installation
 
-            The `mlir_air` wheel declares `mlir_aie` (pinned) and `llvm-aie` as runtime dependencies, so a single `pip install` with the right `--find-links` pages resolves the whole stack:
+            AIR supports multiple backends (AIE, GPU, VCK5000); backend dependencies are exposed as pip extras. For the AIE backend, the `[aie]` extra pulls the matching pinned `mlir_aie` and `llvm-aie` from the additional `--find-links` pages:
 
             ```bash
-            pip install mlir_air \
+            pip install 'mlir_air[aie]' \
               -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }} \
               -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }} \
               -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
             ```
+
+            Drop the `[aie]` extra to install AIR core only (e.g. when bringing your own backend).
 
             ### RTTI / no-RTTI Variants
 

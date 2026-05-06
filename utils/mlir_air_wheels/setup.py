@@ -304,21 +304,22 @@ def parse_requirements(filename):
         ]
 
 
-def get_install_requires():
-    reqs = parse_requirements(Path(__file__).parent / "requirements.txt")
-    # Pin mlir_aie to the version this AIR wheel was built and tested
-    # against, so users only need a single `pip install mlir_air -f ... -f
-    # ...` and pip resolves the matching mlir_aie wheel automatically.
-    # Falls back to no pin when MLIR_AIE_VERSION isn't set (e.g. local dev
-    # builds outside CI).
+def get_extras_require():
+    # AIR supports multiple backends (AIE, GPU, VCK5000), so backend
+    # dependencies live in `extras_require` rather than `install_requires`.
+    # `pip install mlir_air[aie]` pulls the matching mlir_aie + Peano;
+    # users targeting other backends skip the extra.
+    extras = {}
     mlir_aie_version = os.getenv("MLIR_AIE_VERSION", "")
     if mlir_aie_version:
         no_rtti_dot = "" if check_env("ENABLE_RTTI", 1) else ".no.rtti"
-        reqs.append(f"mlir_aie=={mlir_aie_version}{no_rtti_dot}")
-    # Peano (Xilinx llvm-aie) is the AIE backend compiler. No version pin
-    # — AIR tracks the nightly build.
-    reqs.append("llvm-aie")
-    return reqs
+        # mlir_aie is pinned to the version this AIR wheel was built and
+        # tested against. llvm-aie (Peano) tracks nightly — no pin.
+        extras["aie"] = [
+            f"mlir_aie=={mlir_aie_version}{no_rtti_dot}",
+            "llvm-aie",
+        ]
+    return extras
 
 
 setup(
@@ -334,5 +335,6 @@ setup(
     zip_safe=False,
     packages=find_packages(exclude=["wheelhouse", "mlir-air"]),
     python_requires=">=3.10",
-    install_requires=get_install_requires(),
+    install_requires=parse_requirements(Path(__file__).parent / "requirements.txt"),
+    extras_require=get_extras_require(),
 )
