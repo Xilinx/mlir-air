@@ -1,6 +1,89 @@
 # Getting Started and Running on Linux Ryzen™ AI
 
-## Quick Start: Build with Prebuilt Wheels
+## Install Prebuilt Wheels (Recommended)
+
+The fastest way to get MLIR-AIR is to install the prebuilt wheel — no source build, no CMake, no LLVM clone. Use this path unless you need to modify MLIR-AIR itself or run on an unsupported Python/platform.
+
+### Prerequisites
+
+- **Python 3.10–3.14**
+- **pip**
+- **XRT** (optional, required only for running on hardware) — see [mlir-aie's XRT install instructions](https://github.com/Xilinx/mlir-aie#install-the-xdna-driver-and-xrt)
+
+> Windows wheels are also published. This guide covers Linux only; Windows users will need to translate the `source`/`export` commands to PowerShell equivalents.
+
+### Steps
+
+AIR supports multiple backends — AIE (NPU / Versal AI Engines), [GPU](buildingGPU.md), and [VCK5000](buildingVCK5000.md). Backend dependencies are exposed as pip **extras** so you only install what you need. For the AIE backend on Ryzen™ AI, use the `[aie]` extra; pip reads the pinned `mlir_aie==<version>` and `llvm-aie` from the wheel's metadata and resolves them from the additional `--find-links` pages.
+
+1. **Create a virtual environment:**
+   ```bash
+   python3 -m venv airenv
+   source airenv/bin/activate
+   pip install --upgrade pip
+   ```
+
+2. **Install MLIR-AIR with the AIE backend:**
+   ```bash
+   pip install 'mlir_air[aie]' \
+     -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels \
+     -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3 \
+     -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+   ```
+
+   The `[aie]` extra pulls `mlir_aie` (pinned to the exact version this AIR wheel was tested against) and `llvm-aie` (the Peano backend compiler — nightly). The pinned `mlir_aie` version is shown on the [release page](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels).
+
+   To install AIR core only (e.g. when bringing your own backend), drop the `[aie]` extra and the last two `-f` flags.
+
+3. **Set up environment variables** (paths derived from `pip show`):
+   ```bash
+   export MLIR_AIR_INSTALL_DIR=$(python3 -m pip show mlir_air | grep ^Location: | awk '{print $2}')/mlir_air
+   export MLIR_AIE_INSTALL_DIR=$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie
+   export PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
+
+   export PATH=$MLIR_AIR_INSTALL_DIR/bin:$MLIR_AIE_INSTALL_DIR/bin:$PATH
+   export PYTHONPATH=$MLIR_AIR_INSTALL_DIR/python:$MLIR_AIE_INSTALL_DIR/python:$PYTHONPATH
+   export LD_LIBRARY_PATH=$MLIR_AIR_INSTALL_DIR/lib:$MLIR_AIE_INSTALL_DIR/lib:$LD_LIBRARY_PATH
+
+   # Only if you have XRT installed:
+   source /opt/xilinx/xrt/setup.sh
+   ```
+
+4. **Verify the install:**
+   ```bash
+   air-opt --help
+   ```
+
+You can now jump to [Running a Quick Example](#running-a-quick-example) below.
+
+### Choosing a Wheel Release
+
+We release **both RTTI and no-RTTI variants** so downstream projects can match their LLVM build configuration without having to rebuild MLIR-AIR from source.
+
+| Tag | When to use |
+|-----|-------------|
+| [`latest-air-wheels`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels) | Default. RTTI enabled. Use this for standalone development. The install command in step 2 above targets this tag. |
+| [`latest-air-wheels-no-rtti`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels-no-rtti) | For integrating MLIR-AIR into a downstream project whose LLVM is built with `-DLLVM_ENABLE_RTTI=OFF`. Use the no-RTTI install snippet below. |
+| [`v*.*.*`](https://github.com/Xilinx/mlir-air/releases) (e.g. `v1.0.0`) | Pinned tagged release, for reproducible builds. Replace the find-links URL with `.../expanded_assets/v<ver>` and the package spec with `mlir_air==<ver>`. |
+
+For the no-RTTI variant, point both find-links at the no-RTTI pages so pip resolves the matching `mlir_aie`:
+
+```bash
+pip install 'mlir_air[aie]' \
+  -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels-no-rtti \
+  -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti \
+  -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+```
+
+When mixing wheels into a downstream build, all three (`mlir`, `mlir_aie`, `mlir_air`) must agree on RTTI.
+
+If the wheel install path doesn't fit your needs, see the source-build instructions below.
+
+---
+
+## Build From Source Using Prebuilt Dependencies
+
+This path builds MLIR-AIR from source but installs LLVM, MLIR-AIE, and Peano from prebuilt wheels — useful when you're hacking on MLIR-AIR itself but don't want to also rebuild its dependencies.
 
 ### Prerequisites
 
