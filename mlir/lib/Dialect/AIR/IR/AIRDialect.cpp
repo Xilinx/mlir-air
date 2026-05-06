@@ -2823,13 +2823,20 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
       return emitOpError("src_rank/dst_rank attributes require an enclosing "
                          "air.rank scope");
 
-    // Rank indices are non-negative.
-    if (auto sr = getSrcRank())
-      if (*sr < 0)
-        return emitOpError() << "src_rank must be >= 0, got " << *sr;
-    if (auto dr = getDstRank())
-      if (*dr < 0)
-        return emitOpError() << "dst_rank must be >= 0, got " << *dr;
+    // Rank indices are non-negative. Use the typed *Attr accessor instead
+    // of the generated getSrcRank()/getDstRank() (those return uint64_t
+    // for OptionalAttr<I64Attr>, so a comparison against 0 is meaningless
+    // for negative values stored as i64).
+    if (auto srAttr = getSrcRankAttr()) {
+      int64_t sr = srAttr.getInt();
+      if (sr < 0)
+        return emitOpError() << "src_rank must be >= 0, got " << sr;
+    }
+    if (auto drAttr = getDstRankAttr()) {
+      int64_t dr = drAttr.getInt();
+      if (dr < 0)
+        return emitOpError() << "dst_rank must be >= 0, got " << dr;
+    }
 
     auto requireSymmetricAlloc = [&](Value v, StringRef side) -> LogicalResult {
       auto alloc = v.getDefiningOp<memref::AllocOp>();
