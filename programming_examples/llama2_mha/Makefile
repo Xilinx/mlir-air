@@ -50,19 +50,15 @@ compile-kernel:
 	fi
 
 # ============================================================================
-# Step 3/4: GQA + multi-col NKV>=2, optional rms front-end
+# attn_decode_npu2: per-token attention block (RMSNorm + QKV GEMV + RoPE +
+# Q.K + softmax + softmax.V) on NPU2. One herd of NKV tiles, one KV head
+# per tile, GROUP_SIZE Q heads per KV head.
 # ============================================================================
 
-# Configurable for profiling and verification.
-# Defaults: full LLaMA-3.2-1B decode config (NKV=8 GROUP_SIZE=4 N_IN=2048
-# LK=2048 head_dim=64). TILE_K must be 256 at N_IN >= 512 — smaller TILE_K
-# at large N_IN produces wrong output (suspected memtile DMA streaming
-# limit at small packet × many fires). TILE_K=256 caps L1 weight buf at
-# 32 KB which fits alongside attn_l1=16 KB and the rest of the herd state.
+# Defaults: full LLaMA-3.2-1B decode config.
 NKV ?= 8
 GROUP_SIZE ?= 4
 LK ?= 2048
-LKP ?= 64
 DK ?= 64
 DV ?= 64
 N_IN ?= 2048
@@ -72,51 +68,36 @@ POS ?= 2046
 WARMUP ?= 10
 ITERS ?= 20
 
-print-multicol:
-	${powershell} python3 ${srcdir}/mha_gqa_multicol.py $(OUTPUT_FORMAT_FLAG) -p --nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK)
+print-attn-decode:
+	${powershell} python3 ${srcdir}/attn_decode_npu2.py $(OUTPUT_FORMAT_FLAG) -p --nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK)
 
-run-multicol: compile-kernel-gqa
+run-attn-decode: compile-attn-decode-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/mha_gqa_multicol.py $(OUTPUT_FORMAT_FLAG) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) --nkv $(NKV) --compile-mode compile-and-run
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py $(OUTPUT_FORMAT_FLAG) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) --nkv $(NKV) --compile-mode compile-and-run
 
-run-multicol-nkv8: compile-kernel-gqa
-	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/mha_gqa_multicol.py $(OUTPUT_FORMAT_FLAG) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) --nkv 8 --compile-mode compile-and-run
-
-# ============================================================================
-# Step 2b: dk=dv=64 + GQA group_size=4 (4 Q heads share 1 K, 1 V)
-# ============================================================================
-
-print-gqa:
-	${powershell} python3 ${srcdir}/mha_gqa.py $(OUTPUT_FORMAT_FLAG) -p
-
-run-gqa: compile-kernel-gqa
-	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/mha_gqa.py $(OUTPUT_FORMAT_FLAG) --pos 2 --k 64 --n 64 --tile-k 64 --tile-n 64 --seq-len 128 --compile-mode compile-and-run
-
-compile-kernel-gqa:
+compile-attn-decode-kernel:
 	mkdir -p $(BUILD_DIR)
 	@if [ -z "$(PEANO_INSTALL_DIR)" ] || [ ! -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
 		echo "Error: NPU2 build requires PEANO_INSTALL_DIR with clang++."; \
 		exit 1; \
 	fi
-	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DSEQ_LEN=$(LK) -DGROUP_SIZE=$(GROUP_SIZE) -DDIM_K=$(N_IN) -DTILE_K=$(TILE_K) -DDIM_N=$(DK) -DHEAD_SIZE=$(DK) -c ${srcdir}/mha_gqa.cc -o $(BUILD_DIR)/mha_gqa.o
+	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DSEQ_LEN=$(LK) -DGROUP_SIZE=$(GROUP_SIZE) -DDIM_K=$(N_IN) -DTILE_K=$(TILE_K) -DDIM_N=$(DK) -DHEAD_SIZE=$(DK) -c ${srcdir}/attn_decode_npu2.cc -o $(BUILD_DIR)/attn_decode_npu2.o
 
 # DATA_MOVEMENT_ONLY build: every extern-C kernel function returns
 # immediately (compute disabled). Locks/DMA still cycle through the herd
 # body, so per-token latency reflects pure data-movement + sync cost.
 # Use to measure DMA vs compute share of the per-token time.
-compile-kernel-gqa-nocompute:
+compile-attn-decode-kernel-nocompute:
 	mkdir -p $(BUILD_DIR)
 	@if [ -z "$(PEANO_INSTALL_DIR)" ] || [ ! -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
 		echo "Error: NPU2 build requires PEANO_INSTALL_DIR with clang++."; \
 		exit 1; \
 	fi
-	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DSEQ_LEN=$(LK) -DGROUP_SIZE=$(GROUP_SIZE) -DDIM_K=$(N_IN) -DTILE_K=$(TILE_K) -DDIM_N=$(DK) -DHEAD_SIZE=$(DK) -DDATA_MOVEMENT_ONLY -c ${srcdir}/mha_gqa.cc -o $(BUILD_DIR)/mha_gqa.o
+	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DSEQ_LEN=$(LK) -DGROUP_SIZE=$(GROUP_SIZE) -DDIM_K=$(N_IN) -DTILE_K=$(TILE_K) -DDIM_N=$(DK) -DHEAD_SIZE=$(DK) -DDATA_MOVEMENT_ONLY -c ${srcdir}/attn_decode_npu2.cc -o $(BUILD_DIR)/attn_decode_npu2.o
 
-profile-decode-nocompute: compile-kernel-gqa-nocompute build-test-exe-decode
+profile-decode-nocompute: compile-attn-decode-kernel-nocompute build-test-exe-decode
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/mha_gqa_multicol.py \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py \
 		--nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) \
 		--compile-mode compile-only --output-format xclbin
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_xclbin_decode.exe \
@@ -129,9 +110,9 @@ profile-decode-nocompute: compile-kernel-gqa-nocompute build-test-exe-decode
 # Usage:
 #   make profile-decode [NKV=8] [LK=2048] [POS=2046] [N_IN=64] [DK=64] [GROUP_SIZE=4] [WARMUP=10] [ITERS=20]
 # ============================================================================
-profile-decode: compile-kernel-gqa build-test-exe-decode
+profile-decode: compile-attn-decode-kernel build-test-exe-decode
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/mha_gqa_multicol.py \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py \
 		--nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) \
 		--compile-mode compile-only --output-format xclbin
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_xclbin_decode.exe \
@@ -142,9 +123,9 @@ profile-decode: compile-kernel-gqa build-test-exe-decode
 # ELF profile target — preferred for multi-iteration profiling. ELF format
 # has lightweight reset device that resets BD state across host invocations
 # (xclbin format does not, so the design's repeat_count BDs hang on iter 2).
-profile-decode-elf: compile-kernel-gqa build-test-exe-decode-elf
+profile-decode-elf: compile-attn-decode-kernel build-test-exe-decode-elf
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/mha_gqa_multicol.py \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py \
 		--nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) \
 		--compile-mode compile-only --output-format elf
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_elf_npu2_decode.exe \
@@ -202,44 +183,6 @@ build-test-exe-decode:
 		-I$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/include \
 		-L$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/lib \
 		-luuid -lxrt_coreutil -lrt -lstdc++ -ltest_utils
-
-# ============================================================================
-# Step 2a: dk=dv=64 (LLaMA head_size), single Q head per call
-# ============================================================================
-
-print-dk64:
-	${powershell} python3 ${srcdir}/mha_dk64.py $(OUTPUT_FORMAT_FLAG) -p
-
-run-dk64: compile-kernel-dk64
-	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/mha_dk64.py $(OUTPUT_FORMAT_FLAG) --pos 2 --k 64 --n 64 --tile-k 64 --tile-n 64 --seq-len 128 --compile-mode compile-and-run
-
-compile-kernel-dk64:
-	mkdir -p $(BUILD_DIR)
-	@if [ -z "$(PEANO_INSTALL_DIR)" ] || [ ! -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
-		echo "Error: NPU2 build requires PEANO_INSTALL_DIR with clang++."; \
-		exit 1; \
-	fi
-	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DSEQ_LEN=128 -c ${srcdir}/mha_dk64.cc -o $(BUILD_DIR)/mha_dk64.o
-
-# ============================================================================
-# NPU2 (AIE2P) targets — uses mha_npu2.py + mha_npu2.cc
-# ============================================================================
-
-print-npu2:
-	${powershell} python3 ${srcdir}/mha_npu2.py $(OUTPUT_FORMAT_FLAG) -p
-
-run-npu2: compile-kernel-npu2
-	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/mha_npu2.py $(OUTPUT_FORMAT_FLAG) --pos 2 --k 288 --n 48 --compile-mode compile-and-run
-
-compile-kernel-npu2:
-	mkdir -p $(BUILD_DIR)
-	@if [ -z "$(PEANO_INSTALL_DIR)" ] || [ ! -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
-		echo "Error: NPU2 build requires PEANO_INSTALL_DIR with clang++."; \
-		exit 1; \
-	fi
-	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -c ${srcdir}/mha_npu2.cc -o $(BUILD_DIR)/mha_npu2.o
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

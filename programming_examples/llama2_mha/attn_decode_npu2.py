@@ -281,7 +281,7 @@ def build_module(
         fill_zero_func,
         vec_copy_n_func,
     ]:
-        func.attributes["link_with"] = StringAttr.get("mha_gqa.o")
+        func.attributes["link_with"] = StringAttr.get("attn_decode_npu2.o")
         func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
 
     @FuncOp.from_py_func(
@@ -726,7 +726,7 @@ def build_module(
                     DeallocOp(xb_l1_data)
                     DeallocOp(l1_shared_bd_buf_data)
 
-                herd_body_0.attributes["link_with"] = StringAttr.get("mha_gqa.o")
+                herd_body_0.attributes["link_with"] = StringAttr.get("attn_decode_npu2.o")
 
                 # Per-col KV cache writeback forwarding to L3.
                 for tx_i in range(NKV):
