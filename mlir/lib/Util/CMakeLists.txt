@@ -2,6 +2,19 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
+set(AIRUTIL_LINK_LIBS
+  MLIRIR
+  MLIRTransforms
+)
+
+# AIE target model is queried for the shim address-gen granularity when
+# computing DMA inner-element alignment. Conditional on AIR_ENABLE_AIE; the
+# fallback path in Util.cpp is used when AIE is disabled or no DeviceOp is
+# reachable from the op.
+if(AIR_ENABLE_AIE)
+  list(APPEND AIRUTIL_LINK_LIBS AIE)
+endif()
+
 add_mlir_library(AIRUtil
   Util.cpp
   Outliner.cpp
@@ -15,6 +28,5 @@ add_mlir_library(AIRUtil
   AIRDialect
 
   LINK_LIBS PUBLIC
-  MLIRIR
-  MLIRTransforms
+  ${AIRUTIL_LINK_LIBS}
 )
