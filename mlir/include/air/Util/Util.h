@@ -199,9 +199,11 @@ int findLargestFactor(int num, int max);
 int findLargestAlignedFactor(int num, int max, int alignment);
 
 // Element-count alignment required so that an inner DMA wrap stays a
-// multiple of the AIE shim address granularity (32 bits on AIE2/AIE2P).
-// Returns 1 when each element already meets or exceeds the granularity
-// (e.g. f32, i32). Returns 2 for bf16/i16, 4 for i8/ui8. 'op' is used to
+// multiple of the AIE shim address granularity. Queries the parent
+// AIE::DeviceOp's target model when reachable (preferred); otherwise falls
+// back to 32 bits (the AIE2 / AIE2P value). Returns 1 when each element
+// already meets or exceeds the granularity (e.g. f32, i32); 2 for bf16/i16;
+// 4 for i8/ui8. 'op' is used both to find the DeviceOp ancestor and to
 // resolve the DataLayout via DataLayout::closest().
 int getDmaInnerElementAlignment(mlir::BaseMemRefType memrefTy,
                                 mlir::Operation *op);

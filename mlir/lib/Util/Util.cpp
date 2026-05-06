@@ -9,6 +9,11 @@
 #include "air/Util/Util.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#if AIR_ENABLE_AIE
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIE/IR/AIETargetModel.h"
+#endif
+
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -1127,20 +1132,27 @@ int air::findLargestFactor(int num, int max) {
   return largestLowFactor;
 }
 
-// AIE2/AIE2P shim address generator granularity (matches
-// AIETargetModel::getAddressGenGranularity for both devices). Hard-coded so
-// air::Util doesn't need to depend on the AIE dialect; revisit if a future
-// device reports a different value.
-static constexpr unsigned kAIEShimAddrGenBits = 32;
+// Fallback shim address-gen granularity when we can't reach an AIE::DeviceOp
+// to query the target model. Matches AIETargetModel::getAddressGenGranularity
+// for AIE2 and AIE2P. The dynamic lookup below is preferred when available so
+// future devices with a different value just work.
+static constexpr unsigned kAIEShimAddrGenBitsFallback = 32;
 
 int air::getDmaInnerElementAlignment(BaseMemRefType memrefTy, Operation *op) {
   if (!memrefTy || !op)
     return 1;
   DataLayout dl = DataLayout::closest(op);
   unsigned elemBits = dl.getTypeSizeInBits(memrefTy.getElementType());
-  if (elemBits == 0 || elemBits >= kAIEShimAddrGenBits)
+  if (elemBits == 0)
     return 1;
-  return kAIEShimAddrGenBits / elemBits;
+  unsigned addrGenBits = kAIEShimAddrGenBitsFallback;
+#if AIR_ENABLE_AIE
+  if (auto dev = op->getParentOfType<AIE::DeviceOp>())
+    addrGenBits = dev.getTargetModel().getAddressGenGranularity();
+#endif
+  if (elemBits >= addrGenBits)
+    return 1;
+  return addrGenBits / elemBits;
 }
 
 // Largest factor of 'num' that is <= 'max' and a multiple of 'alignment'.
