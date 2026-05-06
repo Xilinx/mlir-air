@@ -304,6 +304,23 @@ def parse_requirements(filename):
         ]
 
 
+def get_install_requires():
+    reqs = parse_requirements(Path(__file__).parent / "requirements.txt")
+    # Pin mlir_aie to the version this AIR wheel was built and tested
+    # against, so users only need a single `pip install mlir_air -f ... -f
+    # ...` and pip resolves the matching mlir_aie wheel automatically.
+    # Falls back to no pin when MLIR_AIE_VERSION isn't set (e.g. local dev
+    # builds outside CI).
+    mlir_aie_version = os.getenv("MLIR_AIE_VERSION", "")
+    if mlir_aie_version:
+        no_rtti_dot = "" if check_env("ENABLE_RTTI", 1) else ".no.rtti"
+        reqs.append(f"mlir_aie=={mlir_aie_version}{no_rtti_dot}")
+    # Peano (Xilinx llvm-aie) is the AIE backend compiler. No version pin
+    # — AIR tracks the nightly build.
+    reqs.append("llvm-aie")
+    return reqs
+
+
 setup(
     version=get_version(),
     license="MIT",
@@ -317,5 +334,5 @@ setup(
     zip_safe=False,
     packages=find_packages(exclude=["wheelhouse", "mlir-air"]),
     python_requires=">=3.10",
-    install_requires=parse_requirements(Path(__file__).parent / "requirements.txt"),
+    install_requires=get_install_requires(),
 )

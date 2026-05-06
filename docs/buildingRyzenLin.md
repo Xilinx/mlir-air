@@ -14,9 +14,7 @@ The fastest way to get MLIR-AIR is to install the prebuilt wheel — no source b
 
 ### Steps
 
-MLIR-AIR depends on **MLIR-AIE** and **Peano (`llvm-aie`)** at compile/run time but not at pip-install time — the three wheels are pre-built binaries that don't need to be installed in any particular order. All three just need to be present before you run `aircc` or `air-opt`.
-
-> **Important:** MLIR-AIR is verified only against the specific MLIR-AIE wheel version that AIR was built against (pinned in [`utils/clone-mlir-aie.sh`](../utils/clone-mlir-aie.sh)). Installing the latest `mlir_aie` may pick up a newer MLIR-AIE that breaks AIR. The steps below derive the pinned version from the script.
+MLIR-AIR depends on **MLIR-AIE** and **Peano (`llvm-aie`)** at compile/run time. The `mlir_air` wheel declares both as runtime dependencies (`mlir_aie` is pinned to the exact version AIR was built and tested against), so a single `pip install` with the right `--find-links` pages installs the whole stack — no clone, no helper script.
 
 1. **Create a virtual environment:**
    ```bash
@@ -25,32 +23,17 @@ MLIR-AIR depends on **MLIR-AIE** and **Peano (`llvm-aie`)** at compile/run time 
    pip install --upgrade pip
    ```
 
-2. **Clone the MLIR-AIR repository** (needed for the version-pinning script and for the programming examples):
+2. **Install MLIR-AIR and its pinned dependencies:**
    ```bash
-   git clone https://github.com/Xilinx/mlir-air.git
-   cd mlir-air
+   pip install mlir_air \
+     -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels \
+     -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3 \
+     -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
    ```
 
-3. **Install MLIR-AIR** (latest wheel):
-   ```bash
-   pip install mlir_air -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels
-   ```
+   Pip reads the `mlir_aie==<pinned>` and `llvm-aie` requirements from `mlir_air`'s wheel metadata and resolves them from the additional `--find-links` pages. The exact pinned `mlir_aie` version this AIR wheel was tested against is shown on the [release page](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels).
 
-   For best reproducibility, after the install also `git checkout` the AIR commit hash that the wheel was built from — it's the 7-char hash in the wheel filename (`mlir_air-0.0.1.{DATETIME}+{HASH}-...`) and is also shown on the [release page](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels).
-
-4. **Install MLIR-AIE pinned to the version this AIR was tested against:**
-   ```bash
-   MLIR_AIE_VERSION=$(./utils/clone-mlir-aie.sh --get-wheel-version)
-   pip install "mlir_aie==${MLIR_AIE_VERSION}" \
-     -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3
-   ```
-
-5. **Install Peano** (AIE backend compiler — latest nightly):
-   ```bash
-   pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
-   ```
-
-6. **Set up environment variables** (paths derived from `pip show`):
+3. **Set up environment variables** (paths derived from `pip show`):
    ```bash
    export MLIR_AIR_INSTALL_DIR=$(python3 -m pip show mlir_air | grep ^Location: | awk '{print $2}')/mlir_air
    export MLIR_AIE_INSTALL_DIR=$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie
@@ -64,7 +47,7 @@ MLIR-AIR depends on **MLIR-AIE** and **Peano (`llvm-aie`)** at compile/run time 
    source /opt/xilinx/xrt/setup.sh
    ```
 
-7. **Verify the install:**
+4. **Verify the install:**
    ```bash
    air-opt --help
    ```
@@ -73,13 +56,24 @@ You can now jump to [Running a Quick Example](#running-a-quick-example) below.
 
 ### Choosing a Wheel Release
 
+We release **both RTTI and no-RTTI variants** so downstream projects can match their LLVM build configuration without having to rebuild MLIR-AIR from source.
+
 | Tag | When to use |
 |-----|-------------|
-| [`latest-air-wheels`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels) | Default. RTTI enabled. Use this for standalone development. |
-| [`latest-air-wheels-no-rtti`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels-no-rtti) | For integrating MLIR-AIR into a downstream project whose LLVM is built with `-DLLVM_ENABLE_RTTI=OFF`. Pair with `mlir_aie` from `latest-wheels-no-rtti`. |
-| [`v*.*.*`](https://github.com/Xilinx/mlir-air/releases) (e.g. `v1.0.0`) | Pinned tagged release, for reproducible builds: `pip install mlir_air==<ver> -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/v<ver>` |
+| [`latest-air-wheels`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels) | Default. RTTI enabled. Use this for standalone development. The install command in step 2 above targets this tag. |
+| [`latest-air-wheels-no-rtti`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels-no-rtti) | For integrating MLIR-AIR into a downstream project whose LLVM is built with `-DLLVM_ENABLE_RTTI=OFF`. Use the no-RTTI install snippet below. |
+| [`v*.*.*`](https://github.com/Xilinx/mlir-air/releases) (e.g. `v1.0.0`) | Pinned tagged release, for reproducible builds. Replace the find-links URL with `.../expanded_assets/v<ver>` and the package spec with `mlir_air==<ver>`. |
 
-We release **both RTTI and no-RTTI variants** so downstream projects can match their LLVM build configuration without having to rebuild MLIR-AIR from source. When mixing wheels into a downstream build, all three (`mlir`, `mlir_aie`, `mlir_air`) must agree on RTTI.
+For the no-RTTI variant, point both find-links at the no-RTTI pages so pip resolves the matching `mlir_aie`:
+
+```bash
+pip install mlir_air \
+  -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels-no-rtti \
+  -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti \
+  -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+```
+
+When mixing wheels into a downstream build, all three (`mlir`, `mlir_aie`, `mlir_air`) must agree on RTTI.
 
 If the wheel install path doesn't fit your needs, see the source-build instructions below.
 
