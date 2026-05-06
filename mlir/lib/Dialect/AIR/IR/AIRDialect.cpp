@@ -3105,8 +3105,8 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
   if (!chan)
     // If the channel declaration cannot be resolved, signal a failure.
     return failure();
-  // If the channel is of type "npu_cascade", try to fold memref.cast but skip full
-  // composition
+  // If the channel is of type "npu_cascade", try to fold memref.cast but skip
+  // full composition
   if (chan.getChannelType() == "npu_cascade")
     return FoldMemrefCastOnChannelOp(op, rewriter);
 

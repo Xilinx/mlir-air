@@ -5871,15 +5871,15 @@ public:
           auto bufMemTy = bufferOp.getType();
           auto srcMemTy = cast<MemRefType>(getGlobalOp.getType());
           if (bufMemTy.getElementType() != srcMemTy.getElementType())
-            return get.emitOpError(
-                       "channel_type=\"npu_mmio\" source/destination element type "
-                       "mismatch (source: ")
+            return get.emitOpError("channel_type=\"npu_mmio\" "
+                                   "source/destination element type "
+                                   "mismatch (source: ")
                    << srcMemTy.getElementType()
                    << ", destination: " << bufMemTy.getElementType() << ")";
           if (bufMemTy.getNumElements() != srcMemTy.getNumElements())
-            return get.emitOpError(
-                       "channel_type=\"npu_mmio\" source/destination element count "
-                       "mismatch (source: ")
+            return get.emitOpError("channel_type=\"npu_mmio\" "
+                                   "source/destination element count "
+                                   "mismatch (source: ")
                    << srcMemTy.getNumElements()
                    << ", destination: " << bufMemTy.getNumElements() << ")";
 
@@ -5891,14 +5891,16 @@ public:
 
           if (auto existing = bufferOp.getInitialValue())
             return bufferOp.emitOpError(
-                "channel_type=\"npu_mmio\" destination aie.buffer already has an "
+                "channel_type=\"npu_mmio\" destination aie.buffer already has "
+                "an "
                 "initial_value; cannot stamp two sources into one buffer");
           bufferOp.setInitialValueAttr(reshapedInit);
           ++matchCount;
         }
         if (matchCount == 0)
-          return put.emitOpError("channel_type=\"npu_mmio\" put has no matching "
-                                 "device-side air.channel.get");
+          return put.emitOpError(
+              "channel_type=\"npu_mmio\" put has no matching "
+              "device-side air.channel.get");
       }
 
       // Erase all mmio puts (host-side ones have been replaced with
