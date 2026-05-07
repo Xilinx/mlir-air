@@ -96,7 +96,7 @@ verify:
 ## Interactive chat: prepare runtime once, then loop on prompts
 chat:
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
-		--run-only --interactive --n-tokens $(N_TOKENS) --model $(MODEL)
+		--run-only --interactive --n-tokens $(N_TOKENS) --model $(MODEL) $(WEIGHTS_FLAG)
 
 ## Compile and run in one step
 all: compile profile

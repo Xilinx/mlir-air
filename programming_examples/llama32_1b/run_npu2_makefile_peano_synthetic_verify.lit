@@ -14,7 +14,7 @@
 //
 // RUN: mkdir -p test_synthetic_verify
 // RUN: cd test_synthetic_verify
-// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile clean PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: make -f %S/Makefile verify WEIGHTS=synthetic N_TOKENS=1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 //

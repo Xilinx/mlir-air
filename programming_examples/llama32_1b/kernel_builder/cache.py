@@ -30,8 +30,22 @@ def prepare_air_project():
 
     compile_all_external_kernels()
 
-    # Copy compiled .o files to air_project/ for aiecc to find
-    for obj_name in ["silu_and_mul.o", "rope.o", "attn.o", "attn_npu2.o", "mv_k8192.o"]:
+    # Copy compiled .o files to air_project/ for aiecc to find. Must include
+    # every external symbol referenced by `link_with` in the kernel modules:
+    # - mv.o            : K=2048 GEMVs (rms_gemv_rope, o_gemv_ffn, lm_head_gemv)
+    # - mv_k8192.o      : K=8192 Down GEMV (renamed entry point in o_gemv_ffn)
+    # - rope.o          : RoPE (prefill + decode rms_*_rope)
+    # - silu_and_mul.o  : SwiGLU (prefill o_ffn, decode o_gemv_ffn)
+    # - attn.o          : flash attention (prefill, when --cpu-attn=False)
+    # - attn_npu2.o     : flash attention NPU2 variant alias
+    for obj_name in [
+        "silu_and_mul.o",
+        "rope.o",
+        "attn.o",
+        "attn_npu2.o",
+        "mv.o",
+        "mv_k8192.o",
+    ]:
         src = Path(obj_name)
         if src.exists():
             shutil.copy2(src, air_proj / obj_name)
