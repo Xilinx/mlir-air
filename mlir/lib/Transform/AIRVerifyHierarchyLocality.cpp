@@ -513,7 +513,27 @@ static LogicalResult verifyOne(xilinx::air::HierarchyInterface H, bool strict) {
     if (terminals.empty())
       continue; // operand passed in but not used: vacuously fine.
 
-    SmallVector<BlockArgument> ivs(H.getIds().begin(), H.getIds().end());
+    // Filter out IVs whose iteration-space size is statically 1: with only
+    // one iteration value, every access is trivially "disjoint" across
+    // iterations and the partitioning check is vacuous. This matters for
+    // single-iteration launches/segments/herds (e.g. an air.launch wrapped
+    // around a unary kernel like relu), where the IV exists but isn't used
+    // in any offset and the verifier would otherwise false-flag every
+    // kernel operand.
+    SmallVector<BlockArgument> ivs;
+    {
+      ArrayRef<BlockArgument> allIvs = H.getIds();
+      OperandRange sizeOps = H.getSizeOperands();
+      for (auto [iv, sz] : llvm::zip(allIvs, sizeOps)) {
+        auto staticSz = getConstantIntValue(sz);
+        if (staticSz && *staticSz == 1)
+          continue; // trivial dim — skip
+        ivs.push_back(iv);
+      }
+    }
+
+    if (ivs.empty())
+      continue; // every iteration dim is size 1 — nothing to check.
 
     for (const TerminalAccess &t : terminals) {
       CheckOutcome outcome = checkTerminal(t, ivs);

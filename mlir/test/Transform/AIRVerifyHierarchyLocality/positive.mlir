@@ -159,3 +159,26 @@ module {
     return
   }
 }
+
+// -----
+// Trivial iteration space (size 1): the IV exists but with only one
+// iteration value, every access is vacuously disjoint across iterations.
+// This is the relu/mul-style pattern where torch_mlir produces a 1×1
+// air.launch wrapping a unary kernel; the launch arg is consumed by a
+// channel.put with no IV in offsets, which is correct for a single
+// iteration.
+module {
+  air.channel @ch [1]
+  func.func @trivial_launch_size_one(%arg0: memref<10240xi32>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%i) in (%si = %c1) args(%a = %arg0) : memref<10240xi32> {
+      %c0 = arith.constant 0 : index
+      %c10240 = arith.constant 10240 : index
+      %c1_0 = arith.constant 1 : index
+      air.channel.put @ch[%c0] (%a[%c0] [%c10240] [%c1_0])
+          : (memref<10240xi32>)
+      air.launch_terminator
+    }
+    return
+  }
+}
