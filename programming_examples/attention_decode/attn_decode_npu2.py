@@ -7,9 +7,18 @@ from air.ir import *
 from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
 from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
+from air.dialects.memref import AllocOp, DeallocOp, load, store, subview, collapse_shape
+from air.dialects.vector import (
+    transfer_read,
+    transfer_write,
+    BroadcastOp,
+    fma as vector_fma,
+    reduction as vector_reduction,
+)
+from air.dialects import arith as arith_dialect, math as math_dialect
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
+from air.dialects import linalg
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 from ml_dtypes import bfloat16
@@ -123,27 +132,6 @@ def build_module(
         element_type=xrt_dtype_out,
         memory_space=l1_mem_space,
     )
-    linalg_fill_func = FuncOp(
-        "linalg_fill_bf16",
-        ([T.i32(), l1MemrefTyThreeByFortyEightVec], []),
-        visibility="private",
-    )
-    # vecmat_bf16_bf16(x_offset, c_offset, a, b, c): x_offset selects the
-    # tile_k-sized slice of the full-k x_norm buffer for this inner-k chunk.
-    vecmat_func = FuncOp(
-        "vecmat_bf16_bf16",
-        (
-            [
-                T.i32(),
-                T.i32(),
-                l1MemrefTyA,
-                l1MemrefTyB,
-                l1MemrefTyThreeByFortyEightVec,
-            ],
-            [],
-        ),
-        visibility="private",
-    )
     l1MemrefTyHSByTwo = MemRefType.get(
         shape=[32],
         element_type=xrt_dtype_out,
@@ -220,11 +208,6 @@ def build_module(
         ([l1MemrefTyQ, l1MemrefTySharedL1BDBuf, T.i32(), l1MemrefTyAttn], []),
         visibility="private",
     )
-    softmax_func = FuncOp(
-        "softmax_group",
-        ([l1MemrefTyAttn, T.i32(), l1MemrefTyAttn], []),
-        visibility="private",
-    )
     attn2_func = FuncOp(
         "attn_2_group",
         ([l1MemrefTyAttn, l1MemrefTySharedL1BDBuf, T.i32(), l1MemrefTyXb], []),
@@ -246,40 +229,24 @@ def build_module(
         ([l1MemrefTyB, l1MemrefTyXRms, l1MemrefTyXRms, T.i32()], []),
         visibility="private",
     )
-    # Vectorized fill / copy helpers replace per-element scf.for stores
-    # in the herd body — the scalar variants unroll into thousands of
-    # stores in the AIE2P core ELF, exceeding the 16 KB program memory.
-    fill_neg99_func = FuncOp(
-        "fill_neg99_bf16",
-        ([l1MemrefTyAttn, T.i32()], []),
-        visibility="private",
-    )
-    fill_zero_func = FuncOp(
-        "fill_zero_bf16",
-        ([l1MemrefTyXb, T.i32()], []),
-        visibility="private",
-    )
-    vec_copy_n_func = FuncOp(
-        "vector_copy_n_bf16",
+    # Pre-scales Q by 1/sqrt(DIM_N) during the c_data->q_l1_data copy; lets
+    # attn_1_group skip the per-call scalar 0.125 multiply at the reduce.
+    copy_scale_q_func = FuncOp(
+        "copy_scale_q_bf16",
         ([l1MemrefTyThreeByFortyEightVec, l1MemrefTyQ, T.i32()], []),
         visibility="private",
     )
 
     for func in [
-        linalg_fill_func,
-        vecmat_func,
         cosf_poly_func,
         sinf_poly_func,
         freq_pos_func,
         shuffle_apply_rope_poly_func,
         attn_func,
-        softmax_func,
         attn2_func,
         simple_rms_func,
         xrms_demux_func,
-        fill_neg99_func,
-        fill_zero_func,
-        vec_copy_n_func,
+        copy_scale_q_func,
     ]:
         func.attributes["link_with"] = StringAttr.get("attn_decode_npu2.o")
         func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
@@ -535,24 +502,190 @@ def build_module(
                         strides=[],
                         indices=[_tx],
                     )
-                    CallOp(xrms_demux_func, [l1_b_data, x_raw_l1, w_rms_l1, k_i32])
-                    CallOp(simple_rms_func, [x_raw_l1, w_rms_l1, l1_a_data, k_i32])
+                    # Inline-MLIR demux of padded [tile_k, tile_n] packet into
+                    # x_raw[k] (first k elems) and w_rms[k] (next k elems).
+                    b_flat_type = MemRefType.get(
+                        (tile_k * tile_n,),
+                        xrt_dtype_in,
+                        memory_space=l1_mem_space,
+                    )
+                    b_flat = collapse_shape(b_flat_type, l1_b_data.result, [[0, 1]])
+                    vec_d_lanes = 32
+                    vec_d_type = VectorType.get([vec_d_lanes], xrt_dtype_in)
+                    c0_idx_d = arith.ConstantOp.create_index(0)
+                    k_total_idx = arith.ConstantOp.create_index(k)
+                    vec_d_step = arith.ConstantOp.create_index(vec_d_lanes)
+                    cst0_bf_d = arith.ConstantOp(xrt_dtype_in, 0.0)
+                    identity_map_1d_d = AffineMapAttr.get(AffineMap.get_identity(1))
+                    # Pass 1: x_raw_l1 ← b_flat[0..k]
+                    for j in range_(c0_idx_d, k_total_idx, vec_d_step):
+                        sub_b = subview(b_flat, [j], [vec_d_lanes], [1])
+                        sub_x = subview(x_raw_l1.result, [j], [vec_d_lanes], [1])
+                        v = transfer_read(
+                            vec_d_type,
+                            sub_b,
+                            [c0_idx_d],
+                            identity_map_1d_d,
+                            cst0_bf_d,
+                            [True],
+                        )
+                        transfer_write(
+                            None, v, sub_x, [c0_idx_d], identity_map_1d_d, [True]
+                        )
+                        yield_([])
+                    # Pass 2: w_rms_l1 ← b_flat[k..2k]
+                    for j in range_(c0_idx_d, k_total_idx, vec_d_step):
+                        # b offset = k + j
+                        k_const = arith.ConstantOp.create_index(k)
+                        j_plus_k = arith.addi(j, k_const)
+                        sub_b_w = subview(b_flat, [j_plus_k], [vec_d_lanes], [1])
+                        sub_w = subview(w_rms_l1.result, [j], [vec_d_lanes], [1])
+                        v = transfer_read(
+                            vec_d_type,
+                            sub_b_w,
+                            [c0_idx_d],
+                            identity_map_1d_d,
+                            cst0_bf_d,
+                            [True],
+                        )
+                        transfer_write(
+                            None, v, sub_w, [c0_idx_d], identity_map_1d_d, [True]
+                        )
+                        yield_([])
+                    # Inline-MLIR simple RMS norm: y = x * w * rsqrt(mean(x^2) + eps)
+                    # x = x_raw_l1 [k], w = w_rms_l1 [k], y = l1_a_data [k]
+                    rms_vl = 16
+                    rms_vec_type = VectorType.get([rms_vl], xrt_dtype_in)
+                    f32_type = F32Type.get()
+                    rms_acc_l1_type = MemRefType.get(
+                        (rms_vl,), xrt_dtype_in, memory_space=l1_mem_space
+                    )
+                    rms_acc_buf = AllocOp(rms_acc_l1_type, [], [])
+                    rms_zero_const = arith.ConstantOp(xrt_dtype_in, 0.0)
+                    rms_eps_const = arith.ConstantOp(xrt_dtype_in, 1e-5)
+                    rms_inv_n_const_f32 = arith.ConstantOp(f32_type, 1.0 / float(k))
+                    linalg.fill(rms_zero_const, outs=[rms_acc_buf])
+                    rms_c0_idx = arith.ConstantOp.create_index(0)
+                    rms_k_idx = arith.ConstantOp.create_index(k)
+                    rms_vl_idx = arith.ConstantOp.create_index(rms_vl)
+                    rms_id_map = AffineMapAttr.get(AffineMap.get_identity(1))
+                    # Phase 1: ssq = sum(x*x) via vector.fma chain
+                    for j in range_(rms_c0_idx, rms_k_idx, rms_vl_idx):
+                        sub_x_rms = subview(x_raw_l1.result, [j], [rms_vl], [1])
+                        v_x_rms = transfer_read(
+                            rms_vec_type,
+                            sub_x_rms,
+                            [rms_c0_idx],
+                            rms_id_map,
+                            rms_zero_const,
+                            [True],
+                        )
+                        v_acc_rms = transfer_read(
+                            rms_vec_type,
+                            rms_acc_buf,
+                            [rms_c0_idx],
+                            rms_id_map,
+                            rms_zero_const,
+                            [True],
+                        )
+                        v_acc_new = vector_fma(v_x_rms, v_x_rms, v_acc_rms)
+                        transfer_write(
+                            None,
+                            v_acc_new,
+                            rms_acc_buf,
+                            [rms_c0_idx],
+                            rms_id_map,
+                            [True],
+                        )
+                        yield_([])
+                    # Reduce to scalar, compute rstd
+                    v_final_rms = transfer_read(
+                        rms_vec_type,
+                        rms_acc_buf,
+                        [rms_c0_idx],
+                        rms_id_map,
+                        rms_zero_const,
+                        [True],
+                    )
+                    ssq_bf = vector_reduction(xrt_dtype_in, "add", v_final_rms)
+                    ssq_f32 = arith.extf(f32_type, ssq_bf)
+                    mean_f32 = arith.mulf(ssq_f32, rms_inv_n_const_f32)
+                    eps_f32 = arith.extf(f32_type, rms_eps_const)
+                    mean_eps_f32 = arith.addf(mean_f32, eps_f32)
+                    rstd_f32 = math_dialect.rsqrt(mean_eps_f32)
+                    rstd_bf = arith.truncf(xrt_dtype_in, rstd_f32)
+                    v_rstd = BroadcastOp(rms_vec_type, rstd_bf)
+                    # Phase 2: y = x * rstd * w
+                    for j in range_(rms_c0_idx, rms_k_idx, rms_vl_idx):
+                        sub_x2 = subview(x_raw_l1.result, [j], [rms_vl], [1])
+                        sub_w2 = subview(w_rms_l1.result, [j], [rms_vl], [1])
+                        sub_y2 = subview(l1_a_data.result, [j], [rms_vl], [1])
+                        v_x2 = transfer_read(
+                            rms_vec_type,
+                            sub_x2,
+                            [rms_c0_idx],
+                            rms_id_map,
+                            rms_zero_const,
+                            [True],
+                        )
+                        v_w2 = transfer_read(
+                            rms_vec_type,
+                            sub_w2,
+                            [rms_c0_idx],
+                            rms_id_map,
+                            rms_zero_const,
+                            [True],
+                        )
+                        v_xr = arith.mulf(v_x2, v_rstd.result)
+                        v_y2 = arith.mulf(v_xr, v_w2)
+                        transfer_write(
+                            None, v_y2, sub_y2, [rms_c0_idx], rms_id_map, [True]
+                        )
+                        yield_([])
+                    DeallocOp(rms_acc_buf)
                     DeallocOp(x_raw_l1)
                     DeallocOp(w_rms_l1)
 
                     # GEMV: GEMV_COUNT iterations (4 Q + 1 K + 1 V), each
                     # producing one [tile_n] row of c_data at offset g*tile_n.
+                    # Pre-zero entire c_data once via inline linalg.fill;
+                    # each row is then overwritten by its own vecmat acc chain
+                    # (saves GEMV_COUNT-1=5 per-row extern fill_bf16 calls).
+                    zero_const_c = arith.ConstantOp(xrt_dtype_out, 0.0)
+                    linalg.fill(zero_const_c, outs=[c_data])
                     gemv_offset_consts = [
                         ConstantOp(IntegerAttr.get(T.i32(), g * tile_n), None)
                         for g in range(GEMV_COUNT)
                     ]
+                    # Inline vecmat (per matvec_cascade.py pattern):
+                    # f32 L1 accumulator, bf16->f32 extf, vector.fma in f32.
+                    # linalg.vecmat lowering was 14x slower; this hand-written
+                    # equivalent of the extern vecmat_bf16_bf16 should match.
+                    vm_vl = 16  # 512-bit f32 = full SIMD width
+                    vm_vec_bf16 = VectorType.get([vm_vl], xrt_dtype_in)
+                    vm_vec_f32 = VectorType.get([vm_vl], F32Type.get())
+                    vm_acc_buf_type = MemRefType.get(
+                        (vm_vl,),
+                        F32Type.get(),
+                        memory_space=l1_mem_space,
+                    )
+                    vm_acc_buf = AllocOp(vm_acc_buf_type, [], [])
+                    vm_c0 = arith.ConstantOp.create_index(0)
+                    vm_cst0_bf = arith.ConstantOp(xrt_dtype_in, 0.0)
+                    vm_cst0_f32 = arith.ConstantOp(F32Type.get(), 0.0)
+                    vm_id_map = AffineMapAttr.get(AffineMap.get_identity(1))
+                    vm_2d_to_1d_map = AffineMapAttr.get(
+                        AffineMap.get(2, 0, [AffineDimExpr.get(1)])
+                    )
+                    g_idx_consts_v = [
+                        arith.ConstantOp.create_index(g) for g in range(GEMV_COUNT)
+                    ]
+                    n_idx_v = arith.ConstantOp.create_index(n)
+                    vm_vl_idx_v = arith.ConstantOp.create_index(vm_vl)
+                    tile_k_idx_v = arith.ConstantOp.create_index(tile_k)
+                    one_idx_v = arith.ConstantOp.create_index(1)
                     for g in range(GEMV_COUNT):
-                        zero_fill = CallOp(
-                            linalg_fill_func, [gemv_offset_consts[g], c_data]
-                        )
                         for i in range_(0, k, tile_k):
-                            # Weight chunk via bL2ToL1 (one [tile_k, tile_n]
-                            # tile per inner-k iter).
                             ChannelGet(
                                 "bL2ToL1",
                                 l1_b_data,
@@ -561,20 +694,92 @@ def build_module(
                                 strides=[],
                                 indices=[_tx],
                             )
-                            # x_offset = i (in elements) selects the
-                            # tile_k-sized slice of l1_a_data for this chunk.
-                            i32_x_offset = arith.index_cast(T.i32(), i)
-                            vecmat = CallOp(
-                                vecmat_func,
-                                [
-                                    i32_x_offset,
-                                    gemv_offset_consts[g],
-                                    l1_a_data,
-                                    l1_b_data,
+                            # scf.for col chunks (n/vm_vl=4) so body emits once
+                            for jc in range_(vm_c0, n_idx_v, vm_vl_idx_v):
+                                # Load c[g, jc:jc+vl], extend to f32, init acc
+                                sub_c_init = subview(
                                     c_data,
-                                ],
-                            )
-                            yield_([])
+                                    [g_idx_consts_v[g], jc],
+                                    [1, vm_vl],
+                                    [1, 1],
+                                )
+                                v_c_init_bf = transfer_read(
+                                    vm_vec_bf16,
+                                    sub_c_init,
+                                    [vm_c0, vm_c0],
+                                    vm_2d_to_1d_map,
+                                    vm_cst0_bf,
+                                    [True],
+                                )
+                                v_c_init_f32 = arith.extf(vm_vec_f32, v_c_init_bf)
+                                transfer_write(
+                                    None,
+                                    v_c_init_f32,
+                                    vm_acc_buf,
+                                    [vm_c0],
+                                    vm_id_map,
+                                    [True],
+                                )
+                                # Loop over tile_k rows, accumulate into vm_acc_buf
+                                for row in range_(vm_c0, tile_k_idx_v, one_idx_v):
+                                    a_idx = arith.addi(i, row)
+                                    a_scalar = load(l1_a_data.result, [a_idx])
+                                    a_v_bf = BroadcastOp(vm_vec_bf16, a_scalar)
+                                    a_v_f32 = arith.extf(vm_vec_f32, a_v_bf.result)
+                                    sub_b = subview(
+                                        l1_b_data.result,
+                                        [row, jc],
+                                        [1, vm_vl],
+                                        [1, 1],
+                                    )
+                                    v_b_bf = transfer_read(
+                                        vm_vec_bf16,
+                                        sub_b,
+                                        [vm_c0, vm_c0],
+                                        vm_2d_to_1d_map,
+                                        vm_cst0_bf,
+                                        [True],
+                                    )
+                                    v_b_f32 = arith.extf(vm_vec_f32, v_b_bf)
+                                    v_acc = transfer_read(
+                                        vm_vec_f32,
+                                        vm_acc_buf,
+                                        [vm_c0],
+                                        vm_id_map,
+                                        vm_cst0_f32,
+                                        [True],
+                                    )
+                                    v_new = vector_fma(a_v_f32, v_b_f32, v_acc)
+                                    transfer_write(
+                                        None,
+                                        v_new,
+                                        vm_acc_buf,
+                                        [vm_c0],
+                                        vm_id_map,
+                                        [True],
+                                    )
+                                    yield_([])
+                                # Truncate acc back to bf16, store to c[g, jc:jc+vl]
+                                v_acc_final = transfer_read(
+                                    vm_vec_f32,
+                                    vm_acc_buf,
+                                    [vm_c0],
+                                    vm_id_map,
+                                    vm_cst0_f32,
+                                    [True],
+                                )
+                                v_c_final = arith.truncf(vm_vec_bf16, v_acc_final)
+                                transfer_write(
+                                    None,
+                                    v_c_final,
+                                    sub_c_init,
+                                    [vm_c0, vm_c0],
+                                    vm_2d_to_1d_map,
+                                    [True],
+                                )
+                                yield_([])  # col chunk scf.for terminator
+                            yield_([])  # inner-k scf.for terminator
+                    DeallocOp(vm_acc_buf)
 
                     DeallocOp(l1_a_data)
                     DeallocOp(l1_b_data)
@@ -640,20 +845,59 @@ def build_module(
                     # at lk=2048, important for L1 budget at large lk).
                     softmax_l1_data = attn_l1_data
 
-                    # Vectorized -99 fill of attn buffer (GROUP_SIZE * seq_len);
-                    # the previous scalar scf.for variant unrolled into thousands
-                    # of stores in the AIE2P core ELF.
-                    attn_total = arith.ConstantOp(
-                        IntegerAttr.get(T.i32(), GROUP_SIZE * seq_len), None
-                    )
-                    CallOp(fill_neg99_func, [attn_l1_data, attn_total])
+                    # Inline-MLIR -99 fill of attn buffer (GROUP_SIZE * seq_len)
+                    # via linalg.fill — costs ~30us extra over the hand-tuned
+                    # 16-lane vectorized extern kernel, accepted to remove
+                    # external dependency.
+                    neg99_const = arith.ConstantOp(xrt_dtype_out, -99.0)
+                    linalg.fill(neg99_const, outs=[attn_l1_data])
 
-                    # Vectorized copy of the first GROUP_SIZE rows of c_data
-                    # (Q heads) into q_l1_data.
-                    q_total = arith.ConstantOp(
-                        IntegerAttr.get(T.i32(), GROUP_SIZE * n), None
+                    # Inline-MLIR vectorized copy + 1/sqrt(DIM_N) pre-scale of
+                    # the first GROUP_SIZE rows of c_data (Q heads) into
+                    # q_l1_data. Pre-scaling Q here lets attn_1_group skip the
+                    # per-call (bf16)(scalar * 0.125f) tail.
+                    inv_sqrt_dk_const = arith.ConstantOp(xrt_dtype_out, 0.125)
+                    vec_q_lanes = 32
+                    vec_q_type = VectorType.get([vec_q_lanes], xrt_dtype_out)
+                    v_inv_sqrt_dk = BroadcastOp(vec_q_type, inv_sqrt_dk_const)
+                    c_flat_type = MemRefType.get(
+                        (GEMV_COUNT * n,),
+                        xrt_dtype_out,
+                        memory_space=l1_mem_space,
                     )
-                    CallOp(vec_copy_n_func, [c_data, q_l1_data, q_total])
+                    q_flat_type = MemRefType.get(
+                        (GROUP_SIZE * n,),
+                        xrt_dtype_out,
+                        memory_space=l1_mem_space,
+                    )
+                    c_flat_q = collapse_shape(c_flat_type, c_data, [[0, 1]])
+                    q_flat = collapse_shape(q_flat_type, q_l1_data.result, [[0, 1]])
+                    c0_idx_q = arith.ConstantOp.create_index(0)
+                    n_total_q = arith.ConstantOp.create_index(GROUP_SIZE * n)
+                    vec_q_step = arith.ConstantOp.create_index(vec_q_lanes)
+                    cst0_bf = arith.ConstantOp(xrt_dtype_out, 0.0)
+                    identity_map_1d_q = AffineMapAttr.get(AffineMap.get_identity(1))
+                    for j in range_(c0_idx_q, n_total_q, vec_q_step):
+                        sub_c_q = subview(c_flat_q, [j], [vec_q_lanes], [1])
+                        sub_q = subview(q_flat, [j], [vec_q_lanes], [1])
+                        v = transfer_read(
+                            vec_q_type,
+                            sub_c_q,
+                            [c0_idx_q],
+                            identity_map_1d_q,
+                            cst0_bf,
+                            [True],
+                        )
+                        v_scaled = arith.mulf(v, v_inv_sqrt_dk.result)
+                        transfer_write(
+                            None,
+                            v_scaled,
+                            sub_q,
+                            [c0_idx_q],
+                            identity_map_1d_q,
+                            [True],
+                        )
+                        yield_([])
 
                     # attn_1_group: K rows shared across all GROUP_SIZE Q heads.
                     # aL2ToL1 only carries K then V rows now (no x, no weights),
@@ -674,22 +918,193 @@ def build_module(
                         )
                         yield_([])
 
-                    # softmax_group: per-row softmax across the group.
-                    CallOp(
-                        softmax_func,
-                        [
-                            attn_l1_data,
-                            arith.index_cast(T.i32(), pos_p1),
-                            softmax_l1_data,
-                        ],
+                    # Inline-MLIR softmax over [GROUP_SIZE, SEQ_LEN]: per-row
+                    # 3-pass softmax (max-reduce, exp+sum-reduce, divide).
+                    # Uses L1 accumulator buffers (not scf.for iter_args — see
+                    # Xilinx/mlir-air#1591). Matches the extern softmax_group
+                    # semantics including reading -99 fill at positions past
+                    # pos (exp(-99-max) ~ 0 contributes nothing to sum).
+                    sm_vl = 16
+                    sm_vec_type = VectorType.get([sm_vl], xrt_dtype_out)
+                    sm_acc_buf_type = MemRefType.get(
+                        (sm_vl,), xrt_dtype_out, memory_space=l1_mem_space
                     )
+                    sm_neg_big = arith.ConstantOp(xrt_dtype_out, -1e30)
+                    sm_zero = arith.ConstantOp(xrt_dtype_out, 0.0)
+                    sm_one_const = arith.ConstantOp(xrt_dtype_out, 1.0)
+                    sm_one_vec = BroadcastOp(sm_vec_type, sm_one_const)
+                    sm_c0 = arith.ConstantOp.create_index(0)
+                    sm_seq_idx = arith.ConstantOp.create_index(seq_len)
+                    sm_vl_idx = arith.ConstantOp.create_index(sm_vl)
+                    sm_id_map = AffineMapAttr.get(AffineMap.get_identity(1))
+                    sm_2d_to_1d_map = AffineMapAttr.get(
+                        AffineMap.get(2, 0, [AffineDimExpr.get(1)])
+                    )
+                    f32_type_sm = F32Type.get()
+                    sm_group_size_idx = arith.ConstantOp.create_index(GROUP_SIZE)
+                    sm_one_step_idx = arith.ConstantOp.create_index(1)
+                    # Allocate the two per-row accumulator buffers ONCE,
+                    # outside the g loop; reset each g iter via linalg.fill.
+                    sm_max_buf = AllocOp(sm_acc_buf_type, [], [])
+                    sm_sum_buf = AllocOp(sm_acc_buf_type, [], [])
+                    for g in range_(sm_c0, sm_group_size_idx, sm_one_step_idx):
+                        # Pass 1: max reduce. acc_buf[VL] = -inf, max-update each chunk
+                        linalg.fill(sm_neg_big, outs=[sm_max_buf])
+                        for j in range_(sm_c0, sm_seq_idx, sm_vl_idx):
+                            sub_in_max = subview(
+                                softmax_l1_data.result,
+                                [g, j],
+                                [1, sm_vl],
+                                [1, 1],
+                            )
+                            v_in_max = transfer_read(
+                                sm_vec_type,
+                                sub_in_max,
+                                [sm_c0, sm_c0],
+                                sm_2d_to_1d_map,
+                                sm_zero,
+                                [True],
+                            )
+                            v_max_cur = transfer_read(
+                                sm_vec_type,
+                                sm_max_buf,
+                                [sm_c0],
+                                sm_id_map,
+                                sm_zero,
+                                [True],
+                            )
+                            v_max_new = arith.maximumf(v_max_cur, v_in_max)
+                            transfer_write(
+                                None,
+                                v_max_new,
+                                sm_max_buf,
+                                [sm_c0],
+                                sm_id_map,
+                                [True],
+                            )
+                            yield_([])
+                        v_max_final = transfer_read(
+                            sm_vec_type,
+                            sm_max_buf,
+                            [sm_c0],
+                            sm_id_map,
+                            sm_zero,
+                            [True],
+                        )
+                        max_scalar = vector_reduction(
+                            xrt_dtype_out, "maximumf", v_max_final
+                        )
+                        v_max_bcast = BroadcastOp(sm_vec_type, max_scalar)
+
+                        # Pass 2: exp(x-max), write back, accumulate sum
+                        linalg.fill(sm_zero, outs=[sm_sum_buf])
+                        for j in range_(sm_c0, sm_seq_idx, sm_vl_idx):
+                            sub_inout = subview(
+                                softmax_l1_data.result,
+                                [g, j],
+                                [1, sm_vl],
+                                [1, 1],
+                            )
+                            v_in = transfer_read(
+                                sm_vec_type,
+                                sub_inout,
+                                [sm_c0, sm_c0],
+                                sm_2d_to_1d_map,
+                                sm_zero,
+                                [True],
+                            )
+                            v_diff = arith.subf(v_in, v_max_bcast.result)
+                            v_exp = math_dialect.exp(v_diff)
+                            transfer_write(
+                                None,
+                                v_exp,
+                                sub_inout,
+                                [sm_c0, sm_c0],
+                                sm_2d_to_1d_map,
+                                [True],
+                            )
+                            v_sum_cur = transfer_read(
+                                sm_vec_type,
+                                sm_sum_buf,
+                                [sm_c0],
+                                sm_id_map,
+                                sm_zero,
+                                [True],
+                            )
+                            # vector.fma(1.0, v_exp, v_sum_cur) avoids the
+                            # mulf->addf rejection (CLAUDE.md known pitfall).
+                            v_sum_new = vector_fma(sm_one_vec.result, v_exp, v_sum_cur)
+                            transfer_write(
+                                None,
+                                v_sum_new,
+                                sm_sum_buf,
+                                [sm_c0],
+                                sm_id_map,
+                                [True],
+                            )
+                            yield_([])
+                        v_sum_final = transfer_read(
+                            sm_vec_type,
+                            sm_sum_buf,
+                            [sm_c0],
+                            sm_id_map,
+                            sm_zero,
+                            [True],
+                        )
+                        sum_scalar_bf = vector_reduction(
+                            xrt_dtype_out, "add", v_sum_final
+                        )
+                        # Compute 1/sum in f32 (bf16 div not legalized)
+                        sum_scalar_f32 = arith.extf(f32_type_sm, sum_scalar_bf)
+                        one_f32 = arith.ConstantOp(f32_type_sm, 1.0)
+                        inv_sum_f32 = arith.divf(one_f32, sum_scalar_f32)
+                        inv_sum_bf = arith.truncf(xrt_dtype_out, inv_sum_f32)
+                        v_inv_sum = BroadcastOp(sm_vec_type, inv_sum_bf)
+
+                        # Pass 3: out *= inv_sum
+                        for j in range_(sm_c0, sm_seq_idx, sm_vl_idx):
+                            sub_out_div = subview(
+                                softmax_l1_data.result,
+                                [g, j],
+                                [1, sm_vl],
+                                [1, 1],
+                            )
+                            v_out = transfer_read(
+                                sm_vec_type,
+                                sub_out_div,
+                                [sm_c0, sm_c0],
+                                sm_2d_to_1d_map,
+                                sm_zero,
+                                [True],
+                            )
+                            v_scaled = arith.mulf(v_out, v_inv_sum.result)
+                            transfer_write(
+                                None,
+                                v_scaled,
+                                sub_out_div,
+                                [sm_c0, sm_c0],
+                                sm_2d_to_1d_map,
+                                [True],
+                            )
+                            yield_([])
+                        yield_([])  # outer g scf.for terminator
+                    DeallocOp(sm_max_buf)
+                    DeallocOp(sm_sum_buf)
 
                     xb_l1_data = AllocOp(l1MemrefTyXb, [], [])
-                    xb_total = arith.ConstantOp(
-                        IntegerAttr.get(T.i32(), GROUP_SIZE * n), None
-                    )
-                    CallOp(fill_zero_func, [xb_l1_data, xb_total])
-                    # attn_2_group: V rows shared across the group.
+                    zero_const_xb = arith.ConstantOp(xrt_dtype_out, 0.0)
+                    linalg.fill(zero_const_xb, outs=[xb_l1_data])
+                    # attn_2_group: kept extern. Inline attempts:
+                    # (1) collapse_shape + load: read returned -99 fill (memory-
+                    #     effect tracking miss through softmax buffer alias).
+                    # (2) 2D direct load: same issue.
+                    # (3) scf.for iter_args (carry 8 accs): IR looks correct
+                    #     (memref.subview strides fixed [1,1]), but at runtime
+                    #     produces single-iter result — accumulation across
+                    #     iterations doesn't materialize. Replacing fma with
+                    #     arith.addf in iter_args body crashes aircc.
+                    # Conclusion: vector iter_args + L1 channel.get + AIE2P
+                    # lowering interact badly here. Hot path, keep extern.
                     for i in range_(0, pos_p1):
                         ChannelGet(
                             "aL2ToL1",
