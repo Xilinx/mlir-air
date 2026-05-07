@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -497,7 +498,28 @@ static bool isInnerHierarchyOf(Operation *op,
   return outerH.getBody().findAncestorOpInRegion(*op) != nullptr;
 }
 
-// Linear-in-`iv` analysis with inner-hierarchy-IV span tracking.
+// Decomposition of an offset expression with respect to outerH's IVs.
+struct OffsetDecomp {
+  // Coefficient (signed) on each outerH IV that appears in the offset.
+  // IVs not present have coefficient 0.
+  llvm::SmallDenseMap<BlockArgument, int64_t, 4> ivCoeffs;
+  // Per-outer-iteration access-span contribution from inner-hierarchy /
+  // scf.for / scf.parallel IVs (always >= 0).
+  int64_t innerSpan = 0;
+};
+
+// Decompose an offset expression into (per-outer-iv coefficients,
+// inner-iteration extra span). outerH is the hierarchy we're checking
+// partitioning for; `outerIvs` are its iteration variables. Returns nullopt
+// if the expression contains an unrecognized term (e.g., a non-IV /
+// non-passthrough BlockArgument, or a non-affine op).
+static std::optional<OffsetDecomp>
+decomposeOffset(Value v, ArrayRef<BlockArgument> outerIvs,
+                xilinx::air::HierarchyInterface outerH);
+
+// Linear-in-`iv` analysis with inner-hierarchy-IV span tracking. Used by the
+// per-iv interface; internally calls decomposeOffset and extracts the single
+// iv coefficient.
 //
 // When checking partitioning of `iv` (an IV of `outerH`), inner-hierarchy IVs
 // (e.g., a herd's `tx` when `outerH` is the launch) iterate over the SAME
@@ -698,10 +720,241 @@ coeffOfIvWithInnerSpan(Value v, BlockArgument iv,
   return std::nullopt;
 }
 
+// Recursive helper for decomposeOffset. Accumulates contributions of `v`
+// (multiplied by `coeff`) into `d`. Returns false on bail.
+static bool decomposeRecursive(Value v, int64_t coeff,
+                               ArrayRef<BlockArgument> outerIvs,
+                               xilinx::air::HierarchyInterface outerH,
+                               OffsetDecomp &d);
+
+// Decompose an offset expression into (per-outer-iv coefficients,
+// inner-iteration extra span). See struct OffsetDecomp doc.
+static std::optional<OffsetDecomp>
+decomposeOffset(Value v, ArrayRef<BlockArgument> outerIvs,
+                xilinx::air::HierarchyInterface outerH) {
+  OffsetDecomp d;
+  if (!decomposeRecursive(v, /*coeff=*/1, outerIvs, outerH, d))
+    return std::nullopt;
+  return d;
+}
+
+static bool decomposeRecursive(Value v, int64_t coeff,
+                               ArrayRef<BlockArgument> outerIvs,
+                               xilinx::air::HierarchyInterface outerH,
+                               OffsetDecomp &d) {
+  if (!v)
+    return true;
+  if (staticInt(v).has_value())
+    return true; // constant: no iv contribution.
+  if (isProvablyZero(v))
+    return true;
+
+  if (auto ba = dyn_cast<BlockArgument>(v)) {
+    if (llvm::is_contained(outerIvs, ba)) {
+      d.ivCoeffs[ba] += coeff;
+      return true;
+    }
+    Operation *parent = ba.getOwner()->getParentOp();
+    auto H = dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent);
+    if (H) {
+      // Hierarchy passthrough kernel arg: trace through.
+      ArrayRef<BlockArgument> kargs = H.getKernelArguments();
+      auto kIt = llvm::find(kargs, ba);
+      if (kIt != kargs.end()) {
+        unsigned i = std::distance(kargs.begin(), kIt);
+        return decomposeRecursive(H.getKernelOperand(i), coeff, outerIvs,
+                                  outerH, d);
+      }
+      // Inner-hierarchy IV (not outerH itself): contributes (extent-1) to
+      // per-outer-iteration span.
+      ArrayRef<BlockArgument> ids = H.getIds();
+      auto idIt = llvm::find(ids, ba);
+      if (idIt != ids.end() && H.getOperation() != outerH.getOperation() &&
+          isInnerHierarchyOf(H.getOperation(), outerH)) {
+        auto e = hierarchyIvExtent(ba);
+        if (!e)
+          return false;
+        d.innerSpan += std::abs(coeff) * (*e > 0 ? *e - 1 : 0);
+        return true;
+      }
+    }
+    // scf.for / scf.parallel IV inside outerH body.
+    if (parent && (isa<scf::ForOp>(parent) || isa<scf::ParallelOp>(parent)) &&
+        isInnerHierarchyOf(parent, outerH)) {
+      auto e = scfIvExtent(ba);
+      if (!e)
+        return false;
+      d.innerSpan += std::abs(coeff) * (*e > 0 ? *e - 1 : 0);
+      return true;
+    }
+    return false; // unknown BA
+  }
+
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return false;
+
+  if (auto add = dyn_cast<arith::AddIOp>(def))
+    return decomposeRecursive(add.getLhs(), coeff, outerIvs, outerH, d) &&
+           decomposeRecursive(add.getRhs(), coeff, outerIvs, outerH, d);
+  if (auto sub = dyn_cast<arith::SubIOp>(def))
+    return decomposeRecursive(sub.getLhs(), coeff, outerIvs, outerH, d) &&
+           decomposeRecursive(sub.getRhs(), -coeff, outerIvs, outerH, d);
+  if (auto mul = dyn_cast<arith::MulIOp>(def)) {
+    auto lc = staticInt(mul.getLhs());
+    auto rc = staticInt(mul.getRhs());
+    if (lc)
+      return decomposeRecursive(mul.getRhs(), coeff * (*lc), outerIvs, outerH,
+                                d);
+    if (rc)
+      return decomposeRecursive(mul.getLhs(), coeff * (*rc), outerIvs, outerH,
+                                d);
+    return false;
+  }
+  if (auto cast = dyn_cast<arith::IndexCastOp>(def))
+    return decomposeRecursive(cast.getIn(), coeff, outerIvs, outerH, d);
+
+  if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
+    AffineMap map = apply.getAffineMap();
+    if (map.getNumResults() != 1)
+      return false;
+    SmallVector<Value> inputs(apply.getOperands().begin(),
+                              apply.getOperands().end());
+    SmallVector<OffsetDecomp> dimVals(map.getNumDims());
+    SmallVector<OffsetDecomp> symVals(map.getNumSymbols());
+    for (unsigned i = 0; i < inputs.size(); ++i) {
+      OffsetDecomp inner;
+      if (!decomposeRecursive(inputs[i], 1, outerIvs, outerH, inner))
+        return false;
+      bool isSymbol = i >= map.getNumDims();
+      unsigned localIdx = isSymbol ? i - map.getNumDims() : i;
+      if (isSymbol)
+        symVals[localIdx] = std::move(inner);
+      else
+        dimVals[localIdx] = std::move(inner);
+    }
+    std::function<std::optional<OffsetDecomp>(AffineExpr)> eval =
+        [&](AffineExpr e) -> std::optional<OffsetDecomp> {
+      OffsetDecomp r;
+      if (isa<AffineConstantExpr>(e))
+        return r;
+      if (auto dim = dyn_cast<AffineDimExpr>(e))
+        return dimVals[dim.getPosition()];
+      if (auto sym = dyn_cast<AffineSymbolExpr>(e))
+        return symVals[sym.getPosition()];
+      auto bin = dyn_cast<AffineBinaryOpExpr>(e);
+      if (!bin)
+        return std::nullopt;
+      auto lhs = eval(bin.getLHS());
+      auto rhs = eval(bin.getRHS());
+      if (!lhs || !rhs)
+        return std::nullopt;
+      auto lConst = dyn_cast<AffineConstantExpr>(bin.getLHS());
+      auto rConst = dyn_cast<AffineConstantExpr>(bin.getRHS());
+      switch (bin.getKind()) {
+      case AffineExprKind::Add: {
+        OffsetDecomp out = *lhs;
+        for (auto &kv : rhs->ivCoeffs)
+          out.ivCoeffs[kv.first] += kv.second;
+        out.innerSpan += rhs->innerSpan;
+        return out;
+      }
+      case AffineExprKind::Mul: {
+        if (rConst) {
+          int64_t k = rConst.getValue();
+          OffsetDecomp out;
+          for (auto &kv : lhs->ivCoeffs)
+            out.ivCoeffs[kv.first] = kv.second * k;
+          out.innerSpan = lhs->innerSpan * std::abs(k);
+          return out;
+        }
+        if (lConst) {
+          int64_t k = lConst.getValue();
+          OffsetDecomp out;
+          for (auto &kv : rhs->ivCoeffs)
+            out.ivCoeffs[kv.first] = kv.second * k;
+          out.innerSpan = rhs->innerSpan * std::abs(k);
+          return out;
+        }
+        return std::nullopt;
+      }
+      case AffineExprKind::Mod:
+      case AffineExprKind::FloorDiv:
+      case AffineExprKind::CeilDiv: {
+        if (!rConst)
+          return std::nullopt;
+        int64_t dv = rConst.getValue();
+        if (dv <= 0)
+          return std::nullopt;
+        if (!lhs->ivCoeffs.empty())
+          return std::nullopt;
+        OffsetDecomp out;
+        if (bin.getKind() == AffineExprKind::Mod)
+          out.innerSpan = std::min<int64_t>(lhs->innerSpan, dv - 1);
+        else
+          out.innerSpan = lhs->innerSpan / dv;
+        return out;
+      }
+      case AffineExprKind::Constant:
+      case AffineExprKind::DimId:
+      case AffineExprKind::SymbolId:
+        return std::nullopt;
+      }
+      return std::nullopt;
+    };
+    auto res = eval(map.getResult(0));
+    if (!res)
+      return false;
+    for (auto &kv : res->ivCoeffs)
+      d.ivCoeffs[kv.first] += kv.second * coeff;
+    d.innerSpan += res->innerSpan * std::abs(coeff);
+    return true;
+  }
+
+  return false;
+}
+
+// Lex-packing partition condition for a single dim.
+//
+// For an offset expression `Σ c_iv * iv` (over a subset of the outer IVs in
+// `decomp.ivCoeffs`) with per-iteration access span `staticSize +
+// decomp.innerSpan`, decide whether distinct iv tuples (varying *only the
+// IVs that appear in this dim*) produce disjoint access regions.
+//
+// Sufficient condition (sort iv coefficients ascending by |c|):
+//   |c_1| ≥ size + innerSpan
+//   |c_2| ≥ size + innerSpan + |c_1| * (extent_1 - 1)
+//   ...
+//   |c_k| ≥ size + innerSpan + Σ_{j<k} |c_j| * (extent_j - 1)
+//
+// IVs not in `decomp.ivCoeffs` are *not* constrained by this dim — those
+// must be covered by some other dim (or by a per-iv check elsewhere).
+static bool dimLexPacks(const OffsetDecomp &decomp, int64_t staticSize) {
+  llvm::SmallVector<std::pair<BlockArgument, int64_t>, 4> entries;
+  for (auto &kv : decomp.ivCoeffs) {
+    if (kv.second != 0)
+      entries.push_back({kv.first, std::abs(kv.second)});
+  }
+  if (entries.empty())
+    return false;
+  llvm::sort(entries,
+             [](const auto &a, const auto &b) { return a.second < b.second; });
+  int64_t acc = staticSize + decomp.innerSpan;
+  for (const auto &[iv, c] : entries) {
+    if (c < acc)
+      return false;
+    auto e = hierarchyIvExtent(iv);
+    if (!e)
+      return false;
+    int64_t mul = (*e > 0) ? (*e - 1) : 0;
+    acc += c * mul;
+  }
+  return true;
+}
+
 // True if iterating `iv` produces disjoint per-instance ranges in this access
-// dimension. The condition is: offset depends linearly on `iv` with absolute
-// coefficient `c`, AND the per-outer-iteration access span (static size plus
-// inner-hierarchy-IV span contributions) is ≤ |c|.
+// dimension (legacy per-iv check). Kept for backward compat / used by the
+// per-PE replication path.
 static bool dimPartitionsBy(Value offset, Value sizeVal,
                             std::optional<int64_t> sizeStatic, BlockArgument iv,
                             xilinx::air::HierarchyInterface outerH) {
@@ -715,8 +968,6 @@ static bool dimPartitionsBy(Value offset, Value sizeVal,
   auto sz = resolveSize(sizeVal, sizeStatic);
   if (!sz)
     return false;
-  // distinct iv values shift the access by `coeff`; the access at one iv
-  // covers `[0, sz + extraSpan)` from that base. Disjoint iff coeff >= span.
   return coeff >= (*sz + extraSpan);
 }
 
@@ -880,6 +1131,42 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
       }
       hasPattern = true;
     }
+  } else if (auto store = dyn_cast<memref::StoreOp>(op)) {
+    if (store.getMemRef() == t.consumed) {
+      for (Value idx : store.getIndices()) {
+        offsets.push_back(idx);
+        pushStaticSize(1);
+      }
+      hasPattern = true;
+    }
+  } else if (auto load = dyn_cast<memref::LoadOp>(op)) {
+    if (load.getMemRef() == t.consumed) {
+      for (Value idx : load.getIndices()) {
+        offsets.push_back(idx);
+        pushStaticSize(1);
+      }
+      hasPattern = true;
+    }
+  } else if (auto vstore = dyn_cast<vector::TransferWriteOp>(op)) {
+    if (vstore.getBase() == t.consumed) {
+      for (Value idx : vstore.getIndices())
+        offsets.push_back(idx);
+      // Vector transfer writes a slice of vector shape into the memref;
+      // the access size in each dim is the vector dim size.
+      auto vecTy = vstore.getVectorType();
+      for (int64_t s : vecTy.getShape())
+        pushStaticSize(s);
+      hasPattern = true;
+    }
+  } else if (auto vload = dyn_cast<vector::TransferReadOp>(op)) {
+    if (vload.getBase() == t.consumed) {
+      for (Value idx : vload.getIndices())
+        offsets.push_back(idx);
+      auto vecTy = vload.getVectorType();
+      for (int64_t s : vecTy.getShape())
+        pushStaticSize(s);
+      hasPattern = true;
+    }
   }
 
   // No structured access pattern → treat as full-buffer access by every
@@ -903,17 +1190,62 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
             op};
   }
 
-  // For each IV, find a dim that cleanly partitions.
+  // Per-dim joint partition check. For each dim, decompose the offset and
+  // try the lex-packing condition over all outer IVs that appear in that
+  // dim. If any dim's lex-packing covers a given iv, that iv is partitioned
+  // by that dim. Across dims, every iv must be covered by at least one dim.
+  llvm::SmallVector<std::optional<OffsetDecomp>, 4> dimDecomps;
+  llvm::SmallVector<bool, 4> dimLex;
+  llvm::SmallVector<int64_t, 4> dimStaticSize;
+  for (unsigned d = 0; d < offsets.size() && d < sizesVal.size(); ++d) {
+    Value off = offsets[d];
+    if (!off) {
+      dimDecomps.push_back(std::nullopt);
+      dimLex.push_back(false);
+      dimStaticSize.push_back(0);
+      continue;
+    }
+    auto sz = resolveSize(sizesVal[d], sizesStatic[d]);
+    if (!sz) {
+      dimDecomps.push_back(std::nullopt);
+      dimLex.push_back(false);
+      dimStaticSize.push_back(0);
+      continue;
+    }
+    auto decomp = decomposeOffset(off, ivs, outerH);
+    dimStaticSize.push_back(*sz);
+    if (!decomp) {
+      dimDecomps.push_back(std::nullopt);
+      dimLex.push_back(false);
+      continue;
+    }
+    dimDecomps.push_back(decomp);
+    dimLex.push_back(dimLexPacks(*decomp, *sz));
+  }
+
+  // For each IV, find a dim where the iv appears AND that dim lex-packs.
   for (BlockArgument iv : ivs) {
     bool found = false;
-    for (unsigned d = 0; d < offsets.size() && d < sizesVal.size(); ++d) {
-      Value off = offsets[d];
-      // A static offset cannot depend on an IV; skip it.
-      if (!off)
+    for (unsigned d = 0; d < dimDecomps.size(); ++d) {
+      if (!dimDecomps[d] || !dimLex[d])
         continue;
-      if (dimPartitionsBy(off, sizesVal[d], sizesStatic[d], iv, outerH)) {
+      auto it = dimDecomps[d]->ivCoeffs.find(iv);
+      if (it != dimDecomps[d]->ivCoeffs.end() && it->second != 0) {
         found = true;
         break;
+      }
+    }
+    // Fallback: legacy per-iv check (covers patterns the multi-IV decomp
+    // doesn't reach yet, e.g., subview offsets with mixed Value/static).
+    if (!found) {
+      for (unsigned d = 0; d < offsets.size() && d < sizesVal.size(); ++d) {
+        Value off = offsets[d];
+        if (!off)
+          continue;
+        if (dimPartitionsBy(off, sizesVal[d], sizesStatic[d], iv, outerH)) {
+          found = true;
+          break;
+        }
       }
     }
     if (!found) {
