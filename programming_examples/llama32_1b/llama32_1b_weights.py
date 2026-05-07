@@ -148,13 +148,24 @@ def _resolve_safetensor_files(model_path: str) -> List[str]:
             raise FileNotFoundError(f"No .safetensors files found in {model_path}")
         return files
 
-    # HuggingFace model ID -- download via huggingface_hub
+    # HuggingFace model ID -- resolve via huggingface_hub. Try the offline
+    # path first so a cache hit doesn't print HF's "Fetching N files /
+    # Download complete: 0.00B" progress UI; fall back to a network
+    # download only if the cache is missing or incomplete.
     from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
 
-    local_dir = snapshot_download(
-        model_path,
-        allow_patterns=["*.safetensors", "*.json"],
-    )
+    try:
+        local_dir = snapshot_download(
+            model_path,
+            allow_patterns=["*.safetensors", "*.json"],
+            local_files_only=True,
+        )
+    except LocalEntryNotFoundError:
+        local_dir = snapshot_download(
+            model_path,
+            allow_patterns=["*.safetensors", "*.json"],
+        )
     pattern = os.path.join(local_dir, "*.safetensors")
     files = sorted(glob_module.glob(pattern))
     if not files:
@@ -302,8 +313,10 @@ def load_weights(
             config.emb_dim,
         ), f"lm_head shape mismatch: {lm_head.shape}"
     else:
-        # LLAMA-3.2-1B ties lm_head to embed_tokens
-        print("Note: lm_head not found, tying to embed_table")
+        # LLAMA-3.2-1B (and other small Llamas) tie lm_head to embed_tokens
+        # — the checkpoint omits lm_head.weight by design and the runtime
+        # is expected to compute logits = h @ embed_table.T.
+        print("  Tied embeddings: reusing embed_table as lm_head.")
         lm_head = embed_table
 
     return LlamaWeights(
