@@ -21,11 +21,7 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/Support/Debug.h"
-
 #include <functional>
-
-#define DEBUG_TYPE "air-verify-hierarchy-locality"
 
 using namespace mlir;
 
@@ -144,6 +140,26 @@ static std::optional<int64_t> staticInt(Value v) {
   return getConstantIntValue(v);
 }
 
+// If `ba` is a hierarchy kernel-arg (i.e., `ba` is a body block argument of
+// an air.launch / air.segment / air.herd that comes from `args(... = ...)`),
+// return the tied operand from the outer scope. Otherwise return nullopt.
+//
+// Walks at most one hierarchy hop. Callers that need to trace through several
+// nested hierarchies should re-invoke on the returned value (which is the
+// natural recursion in every analysis below). Centralizes a passthrough
+// pattern that was previously inlined identically in 4+ call sites.
+static std::optional<Value> hierarchyKernelArgPassthrough(BlockArgument ba) {
+  Operation *parent = ba.getOwner()->getParentOp();
+  auto H = dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent);
+  if (!H)
+    return std::nullopt;
+  ArrayRef<BlockArgument> kargs = H.getKernelArguments();
+  auto it = llvm::find(kargs, ba);
+  if (it == kargs.end())
+    return std::nullopt;
+  return H.getKernelOperand(std::distance(kargs.begin(), it));
+}
+
 // True if `v` is provably zero. Recognizes:
 //   - arith.constant 0
 //   - block argument that is a hierarchy iteration variable whose
@@ -154,12 +170,20 @@ static std::optional<int64_t> staticInt(Value v) {
 //     and a map of the form (...) -> sum of c_i * x_i (no constant term)
 //   - arith.addi/subi where both operands are provably zero
 //   - arith.muli where at least one operand is provably zero
+//
+// TODO: the embedded AffineExpr eval lambda below and the one in
+// decomposeRecursive (~70 LOC, OffsetDecomp algebra) share recursive
+// structure. They have different return types so a shared
+// AffineExprVisitor<Subclass, RetTy> base would help — pursue if a
+// third evaluator is ever added.
 static bool isProvablyZero(Value v) {
   if (!v)
     return false;
   if (auto c = staticInt(v))
     return *c == 0;
   if (auto ba = dyn_cast<BlockArgument>(v)) {
+    if (auto upstream = hierarchyKernelArgPassthrough(ba))
+      return isProvablyZero(*upstream);
     Operation *parent = ba.getOwner()->getParentOp();
     auto H = dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent);
     if (!H)
@@ -170,12 +194,6 @@ static bool isProvablyZero(Value v) {
       unsigned i = std::distance(ids.begin(), idIt);
       auto sz = staticInt(H.getSizeOperands()[i]);
       return sz && *sz == 1;
-    }
-    ArrayRef<BlockArgument> kargs = H.getKernelArguments();
-    auto kIt = llvm::find(kargs, ba);
-    if (kIt != kargs.end()) {
-      unsigned i = std::distance(kargs.begin(), kIt);
-      return isProvablyZero(H.getKernelOperand(i));
     }
     return false;
   }
@@ -235,200 +253,6 @@ static bool isProvablyZero(Value v) {
     return val && *val == 0;
   }
   return false;
-}
-
-// Resolve `v` to a (BlockArgument, multiplier) pair if `v` is an affine-style
-// expression of exactly one block argument with a positive constant scaling
-// factor, otherwise return nullopt. Walks through:
-//   - the block argument itself        →  (BA, 1)
-//   - arith.muli/addi/subi by constant
-//   - affine.apply with a single-symbol/dim affine_map of the form (s) -> s*c
-//
-// Returns the BA and the absolute coefficient |c|; sign doesn't matter for
-// disjointness because what counts is whether distinct BA values produce
-// distinct memory points spaced by at least the access size.
-static std::optional<std::pair<BlockArgument, int64_t>>
-asLinearInOneBlockArg(Value v) {
-  if (!v)
-    return std::nullopt;
-  if (auto ba = dyn_cast<BlockArgument>(v)) {
-    // If this block argument is a kernel argument of an inner hierarchy op
-    // (e.g., %arg10 in `air.segment ... args(%arg10 = %launch_iv)`), trace
-    // back through the tied kernel operand. This lets us prove that an
-    // offset like `affine.apply (%segment_arg * 64)` is actually a function
-    // of the OUTER launch IV, when checking from the launch's perspective.
-    Operation *parent = ba.getOwner()->getParentOp();
-    if (auto innerH =
-            dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent)) {
-      ArrayRef<BlockArgument> kernelArgs = innerH.getKernelArguments();
-      auto it = llvm::find(kernelArgs, ba);
-      if (it != kernelArgs.end()) {
-        unsigned idx = std::distance(kernelArgs.begin(), it);
-        Value tiedOperand = innerH.getKernelOperand(idx);
-        // Recurse on the operand passed in from the outer scope.
-        return asLinearInOneBlockArg(tiedOperand);
-      }
-    }
-    return std::make_pair(ba, int64_t{1});
-  }
-
-  Operation *def = v.getDefiningOp();
-  if (!def)
-    return std::nullopt;
-
-  if (auto cst = staticInt(v))
-    return std::nullopt; // pure constant: no IV dependence
-
-  if (auto add = dyn_cast<arith::AddIOp>(def)) {
-    auto l = asLinearInOneBlockArg(add.getLhs());
-    auto r = asLinearInOneBlockArg(add.getRhs());
-    bool rConst =
-        staticInt(add.getRhs()).has_value() || isProvablyZero(add.getRhs());
-    bool lConst =
-        staticInt(add.getLhs()).has_value() || isProvablyZero(add.getLhs());
-    if (l && rConst)
-      return l;
-    if (r && lConst)
-      return r;
-    return std::nullopt;
-  }
-  if (auto sub = dyn_cast<arith::SubIOp>(def)) {
-    auto l = asLinearInOneBlockArg(sub.getLhs());
-    bool rConst =
-        staticInt(sub.getRhs()).has_value() || isProvablyZero(sub.getRhs());
-    if (l && rConst)
-      return l;
-    return std::nullopt;
-  }
-  if (auto mul = dyn_cast<arith::MulIOp>(def)) {
-    auto l = asLinearInOneBlockArg(mul.getLhs());
-    auto r = asLinearInOneBlockArg(mul.getRhs());
-    auto lc = staticInt(mul.getLhs());
-    auto rc = staticInt(mul.getRhs());
-    if (l && rc)
-      return std::make_pair(l->first, l->second * std::abs(*rc));
-    if (r && lc)
-      return std::make_pair(r->first, r->second * std::abs(*lc));
-    return std::nullopt;
-  }
-  if (auto cast = dyn_cast<arith::IndexCastOp>(def))
-    return asLinearInOneBlockArg(cast.getIn());
-
-  if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
-    AffineMap map = apply.getAffineMap();
-    if (map.getNumResults() != 1)
-      return std::nullopt;
-    AffineExpr expr = map.getResult(0);
-    // Find a single dim or symbol that is the only non-constant input,
-    // and require the expression to be linear in it.
-    SmallVector<Value> inputs(apply.getOperands().begin(),
-                              apply.getOperands().end());
-    BlockArgument theBA = nullptr;
-    unsigned theIdx = 0;
-    bool theIsSymbol = false;
-    for (unsigned i = 0; i < inputs.size(); ++i) {
-      if (staticInt(inputs[i]))
-        continue;
-      auto inner = asLinearInOneBlockArg(inputs[i]);
-      if (!inner || inner->second != 1)
-        return std::nullopt;
-      if (theBA && theBA != inner->first)
-        return std::nullopt; // multiple distinct block args
-      theBA = inner->first;
-      theIdx = i;
-      theIsSymbol = i >= map.getNumDims();
-    }
-    if (!theBA)
-      return std::nullopt;
-
-    // Substitute constants for all other inputs and ask AffineExpr what the
-    // coefficient on the surviving variable is.
-    SmallVector<AffineExpr> dimSubs(map.getNumDims());
-    SmallVector<AffineExpr> symSubs(map.getNumSymbols());
-    auto *ctx = expr.getContext();
-    for (unsigned i = 0; i < inputs.size(); ++i) {
-      bool isSymbol = i >= map.getNumDims();
-      unsigned localIdx = isSymbol ? i - map.getNumDims() : i;
-      if (i == theIdx) {
-        AffineExpr placeholder = isSymbol ? getAffineSymbolExpr(localIdx, ctx)
-                                          : getAffineDimExpr(localIdx, ctx);
-        if (isSymbol)
-          symSubs[localIdx] = placeholder;
-        else
-          dimSubs[localIdx] = placeholder;
-      } else {
-        auto c = staticInt(inputs[i]);
-        if (!c)
-          return std::nullopt;
-        AffineExpr cstExpr = getAffineConstantExpr(*c, ctx);
-        if (isSymbol)
-          symSubs[localIdx] = cstExpr;
-        else
-          dimSubs[localIdx] = cstExpr;
-      }
-    }
-    AffineExpr substituted = expr.replaceDimsAndSymbols(dimSubs, symSubs);
-    // Substituted expression should now be of the form `c0 * IV + c1`.
-    // Probe for the coefficient by evaluating at IV=0 and IV=1.
-    SmallVector<int64_t> probe0(map.getNumDims(), 0),
-        probe0Sym(map.getNumSymbols(), 0);
-    SmallVector<int64_t> probe1(map.getNumDims(), 0),
-        probe1Sym(map.getNumSymbols(), 0);
-    if (theIsSymbol) {
-      probe1Sym[theIdx - map.getNumDims()] = 1;
-    } else {
-      probe1[theIdx] = 1;
-    }
-    std::function<std::optional<int64_t>(AffineExpr, ArrayRef<int64_t>,
-                                         ArrayRef<int64_t>)>
-        eval = [&](AffineExpr e, ArrayRef<int64_t> dims,
-                   ArrayRef<int64_t> syms) -> std::optional<int64_t> {
-      // Simple recursive evaluator for linear AffineExpr trees.
-      if (auto cst = dyn_cast<AffineConstantExpr>(e))
-        return cst.getValue();
-      if (auto d = dyn_cast<AffineDimExpr>(e))
-        return dims[d.getPosition()];
-      if (auto s = dyn_cast<AffineSymbolExpr>(e))
-        return syms[s.getPosition()];
-      if (auto bin = dyn_cast<AffineBinaryOpExpr>(e)) {
-        auto lhs = eval(bin.getLHS(), dims, syms);
-        auto rhs = eval(bin.getRHS(), dims, syms);
-        if (!lhs || !rhs)
-          return std::nullopt;
-        switch (bin.getKind()) {
-        case AffineExprKind::Add:
-          return *lhs + *rhs;
-        case AffineExprKind::Mul:
-          return *lhs * *rhs;
-        case AffineExprKind::Mod:
-          if (*rhs == 0)
-            return std::nullopt;
-          return *lhs % *rhs;
-        case AffineExprKind::FloorDiv:
-          if (*rhs == 0)
-            return std::nullopt;
-          return *lhs / *rhs;
-        case AffineExprKind::CeilDiv:
-          if (*rhs == 0)
-            return std::nullopt;
-          return (*lhs + *rhs - 1) / *rhs;
-        default:
-          return std::nullopt;
-        }
-      }
-      return std::nullopt;
-    };
-    auto v0 = eval(substituted, probe0, probe0Sym);
-    auto v1 = eval(substituted, probe1, probe1Sym);
-    if (!v0 || !v1)
-      return std::nullopt;
-    int64_t coef = std::abs(*v1 - *v0);
-    if (coef == 0)
-      return std::nullopt;
-    return std::make_pair(theBA, coef);
-  }
-
-  return std::nullopt;
 }
 
 // Resolve an OpFoldResult-like (Value or constant int) to an int64_t when
@@ -505,16 +329,8 @@ static bool dependsOnAnyIv(Value v, ArrayRef<BlockArgument> ivs) {
     if (auto ba = dyn_cast<BlockArgument>(v)) {
       if (llvm::is_contained(ivs, ba))
         return true;
-      Operation *parent = ba.getOwner()->getParentOp();
-      if (auto innerH =
-              dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent)) {
-        ArrayRef<BlockArgument> kargs = innerH.getKernelArguments();
-        auto it = llvm::find(kargs, ba);
-        if (it != kargs.end()) {
-          unsigned i = std::distance(kargs.begin(), it);
-          return rec(innerH.getKernelOperand(i));
-        }
-      }
+      if (auto upstream = hierarchyKernelArgPassthrough(ba))
+        return rec(*upstream);
       return false;
     }
     Operation *def = v.getDefiningOp();
@@ -550,218 +366,6 @@ struct OffsetDecomp {
   int64_t innerSpan = 0;
 };
 
-// Decompose an offset expression into (per-outer-iv coefficients,
-// inner-iteration extra span). outerH is the hierarchy we're checking
-// partitioning for; `outerIvs` are its iteration variables. Returns nullopt
-// if the expression contains an unrecognized term (e.g., a non-IV /
-// non-passthrough BlockArgument, or a non-affine op).
-static std::optional<OffsetDecomp>
-decomposeOffset(Value v, ArrayRef<BlockArgument> outerIvs,
-                xilinx::air::HierarchyInterface outerH);
-
-// Linear-in-`iv` analysis with inner-hierarchy-IV span tracking. Used by the
-// per-iv interface; internally calls decomposeOffset and extracts the single
-// iv coefficient.
-//
-// When checking partitioning of `iv` (an IV of `outerH`), inner-hierarchy IVs
-// (e.g., a herd's `tx` when `outerH` is the launch) iterate over the SAME
-// range for every outer iteration. They don't break linearity in `iv`; they
-// just expand the per-outer-iteration access span. We track that as
-// `extraSpan` (the maximum offset contribution beyond the linear-in-iv term).
-//
-// Returns (coefficient on `iv`, extraSpan from inner IVs), or nullopt on
-// non-affine / unrecognized operands. extraSpan is always >= 0.
-static std::optional<std::pair<int64_t, int64_t>>
-coeffOfIvWithInnerSpan(Value v, BlockArgument iv,
-                       xilinx::air::HierarchyInterface outerH) {
-  if (!v)
-    return std::make_pair<int64_t, int64_t>(0, 0);
-
-  if (auto c = staticInt(v))
-    return std::make_pair<int64_t, int64_t>(0, 0);
-  if (isProvablyZero(v))
-    return std::make_pair<int64_t, int64_t>(0, 0);
-
-  if (auto ba = dyn_cast<BlockArgument>(v)) {
-    if (ba == iv)
-      return std::make_pair<int64_t, int64_t>(1, 0);
-    Operation *parent = ba.getOwner()->getParentOp();
-    auto H = dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent);
-    if (H) {
-      // Hierarchy passthrough kernel arg: trace through to the tied operand
-      // in the outer scope.
-      ArrayRef<BlockArgument> kargs = H.getKernelArguments();
-      auto kIt = llvm::find(kargs, ba);
-      if (kIt != kargs.end()) {
-        unsigned idx = std::distance(kargs.begin(), kIt);
-        return coeffOfIvWithInnerSpan(H.getKernelOperand(idx), iv, outerH);
-      }
-      // Inner-hierarchy IV: contributes (extent - 1) to the per-outer-iter
-      // span and 0 to the iv coefficient. Only treat as inner if `H` is
-      // strictly inside outerH (not outerH itself).
-      ArrayRef<BlockArgument> ids = H.getIds();
-      auto idIt = llvm::find(ids, ba);
-      if (idIt != ids.end() && H.getOperation() != outerH.getOperation() &&
-          isInnerHierarchyOf(H.getOperation(), outerH)) {
-        auto e = hierarchyIvExtent(ba);
-        if (!e)
-          return std::nullopt;
-        int64_t span = (*e > 0) ? (*e - 1) : 0;
-        return std::make_pair<int64_t, int64_t>(0, std::move(span));
-      }
-    }
-    // scf.for / scf.parallel IV inside outerH body: same treatment as inner
-    // hierarchy IV — contributes (extent - 1) to span, 0 to coefficient on iv.
-    Operation *parent2 = ba.getOwner()->getParentOp();
-    if (parent2 &&
-        (isa<scf::ForOp>(parent2) || isa<scf::ParallelOp>(parent2)) &&
-        isInnerHierarchyOf(parent2, outerH)) {
-      auto e = scfIvExtent(ba);
-      if (!e)
-        return std::nullopt;
-      int64_t span = (*e > 0) ? (*e - 1) : 0;
-      return std::make_pair<int64_t, int64_t>(0, std::move(span));
-    }
-    return std::nullopt; // unknown BlockArgument
-  }
-
-  Operation *def = v.getDefiningOp();
-  if (!def)
-    return std::nullopt;
-
-  if (auto add = dyn_cast<arith::AddIOp>(def)) {
-    auto l = coeffOfIvWithInnerSpan(add.getLhs(), iv, outerH);
-    auto r = coeffOfIvWithInnerSpan(add.getRhs(), iv, outerH);
-    if (!l || !r)
-      return std::nullopt;
-    return std::make_pair(l->first + r->first, l->second + r->second);
-  }
-  if (auto sub = dyn_cast<arith::SubIOp>(def)) {
-    auto l = coeffOfIvWithInnerSpan(sub.getLhs(), iv, outerH);
-    auto r = coeffOfIvWithInnerSpan(sub.getRhs(), iv, outerH);
-    if (!l || !r)
-      return std::nullopt;
-    // Spans accumulate regardless of sign (max range only grows).
-    return std::make_pair(l->first - r->first, l->second + r->second);
-  }
-  if (auto mul = dyn_cast<arith::MulIOp>(def)) {
-    auto lc = staticInt(mul.getLhs());
-    auto rc = staticInt(mul.getRhs());
-    if (lc) {
-      auto r = coeffOfIvWithInnerSpan(mul.getRhs(), iv, outerH);
-      if (!r)
-        return std::nullopt;
-      int64_t k = std::abs(*lc);
-      return std::make_pair(*lc * r->first, k * r->second);
-    }
-    if (rc) {
-      auto l = coeffOfIvWithInnerSpan(mul.getLhs(), iv, outerH);
-      if (!l)
-        return std::nullopt;
-      int64_t k = std::abs(*rc);
-      return std::make_pair(*rc * l->first, k * l->second);
-    }
-    return std::nullopt;
-  }
-  if (auto cast = dyn_cast<arith::IndexCastOp>(def))
-    return coeffOfIvWithInnerSpan(cast.getIn(), iv, outerH);
-
-  // affine.apply: evaluate the affine map symbolically. For each input,
-  // compute its (coeff_on_iv, span). Then walk the AffineExpr and combine.
-  // Add: components add. Mul (by constant): scale both coeff and span.
-  // Mod/FloorDiv/CeilDiv: only safe when divisor is constant and the
-  // dividend has no iv dependence (coeff == 0); span becomes <= |divisor|-1.
-  if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
-    AffineMap map = apply.getAffineMap();
-    if (map.getNumResults() != 1)
-      return std::nullopt;
-    SmallVector<Value> inputs(apply.getOperands().begin(),
-                              apply.getOperands().end());
-    SmallVector<std::pair<int64_t, int64_t>> dimVals(map.getNumDims(), {0, 0});
-    SmallVector<std::pair<int64_t, int64_t>> symVals(map.getNumSymbols(),
-                                                     {0, 0});
-    for (unsigned i = 0; i < inputs.size(); ++i) {
-      auto sub = coeffOfIvWithInnerSpan(inputs[i], iv, outerH);
-      if (!sub)
-        return std::nullopt;
-      bool isSymbol = i >= map.getNumDims();
-      unsigned localIdx = isSymbol ? i - map.getNumDims() : i;
-      if (isSymbol)
-        symVals[localIdx] = *sub;
-      else
-        dimVals[localIdx] = *sub;
-    }
-    std::function<std::optional<std::pair<int64_t, int64_t>>(AffineExpr)> eval =
-        [&](AffineExpr e) -> std::optional<std::pair<int64_t, int64_t>> {
-      if (auto c = dyn_cast<AffineConstantExpr>(e))
-        return std::make_pair<int64_t, int64_t>(0, 0);
-      if (auto d = dyn_cast<AffineDimExpr>(e))
-        return dimVals[d.getPosition()];
-      if (auto s = dyn_cast<AffineSymbolExpr>(e))
-        return symVals[s.getPosition()];
-      auto bin = dyn_cast<AffineBinaryOpExpr>(e);
-      if (!bin)
-        return std::nullopt;
-      auto lhs = eval(bin.getLHS());
-      auto rhs = eval(bin.getRHS());
-      if (!lhs || !rhs)
-        return std::nullopt;
-      auto lConstE = dyn_cast<AffineConstantExpr>(bin.getLHS());
-      auto rConstE = dyn_cast<AffineConstantExpr>(bin.getRHS());
-      switch (bin.getKind()) {
-      case AffineExprKind::Add:
-        return std::make_pair(lhs->first + rhs->first,
-                              lhs->second + rhs->second);
-      case AffineExprKind::Mul: {
-        // One side must be a constant for affine to be valid.
-        if (rConstE) {
-          int64_t k = rConstE.getValue();
-          int64_t kAbs = std::abs(k);
-          return std::make_pair(k * lhs->first, kAbs * lhs->second);
-        }
-        if (lConstE) {
-          int64_t k = lConstE.getValue();
-          int64_t kAbs = std::abs(k);
-          return std::make_pair(k * rhs->first, kAbs * rhs->second);
-        }
-        return std::nullopt;
-      }
-      case AffineExprKind::Mod:
-      case AffineExprKind::FloorDiv:
-      case AffineExprKind::CeilDiv: {
-        // Only safe when divisor is a positive constant AND the dividend
-        // does not depend on iv (coeff == 0). The result then has coeff 0
-        // and bounded span: at most divisor-1 for Mod, span/divisor for div.
-        if (!rConstE)
-          return std::nullopt;
-        int64_t d = rConstE.getValue();
-        if (d <= 0)
-          return std::nullopt;
-        if (lhs->first != 0)
-          return std::nullopt;
-        if (bin.getKind() == AffineExprKind::Mod) {
-          int64_t span = std::min<int64_t>(lhs->second, d - 1);
-          return std::make_pair<int64_t, int64_t>(0, std::move(span));
-        }
-        // FloorDiv / CeilDiv
-        int64_t span = lhs->second / d;
-        return std::make_pair<int64_t, int64_t>(0, std::move(span));
-      }
-      case AffineExprKind::Constant:
-      case AffineExprKind::DimId:
-      case AffineExprKind::SymbolId:
-        // These are leaf expressions, not binary ops; should be unreachable
-        // here but listed for switch completeness.
-        return std::nullopt;
-      }
-      return std::nullopt;
-    };
-    return eval(map.getResult(0));
-  }
-
-  return std::nullopt;
-}
-
 // Recursive helper for decomposeOffset. Accumulates contributions of `v`
 // (multiplied by `coeff`) into `d`. Returns false on bail.
 static bool decomposeRecursive(Value v, int64_t coeff,
@@ -796,19 +400,13 @@ static bool decomposeRecursive(Value v, int64_t coeff,
       d.ivCoeffs[ba] += coeff;
       return true;
     }
+    if (auto upstream = hierarchyKernelArgPassthrough(ba))
+      return decomposeRecursive(*upstream, coeff, outerIvs, outerH, d);
     Operation *parent = ba.getOwner()->getParentOp();
-    auto H = dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent);
-    if (H) {
-      // Hierarchy passthrough kernel arg: trace through.
-      ArrayRef<BlockArgument> kargs = H.getKernelArguments();
-      auto kIt = llvm::find(kargs, ba);
-      if (kIt != kargs.end()) {
-        unsigned i = std::distance(kargs.begin(), kIt);
-        return decomposeRecursive(H.getKernelOperand(i), coeff, outerIvs,
-                                  outerH, d);
-      }
-      // Inner-hierarchy IV (not outerH itself): contributes (extent-1) to
-      // per-outer-iteration span.
+    // Inner-hierarchy IV (an air HierarchyInterface ID, NOT outerH itself):
+    // iterates the same range for every outer iteration → contributes
+    // (extent-1) to the per-outer-iteration access span, not to iv linearity.
+    if (auto H = dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent)) {
       ArrayRef<BlockArgument> ids = H.getIds();
       auto idIt = llvm::find(ids, ba);
       if (idIt != ids.end() && H.getOperation() != outerH.getOperation() &&
@@ -820,7 +418,8 @@ static bool decomposeRecursive(Value v, int64_t coeff,
         return true;
       }
     }
-    // scf.for / scf.parallel IV inside outerH body.
+    // scf.for / scf.parallel IV inside outerH body — same treatment as inner
+    // hierarchy IV.
     if (parent && (isa<scf::ForOp>(parent) || isa<scf::ParallelOp>(parent)) &&
         isInnerHierarchyOf(parent, outerH)) {
       auto e = scfIvExtent(ba);
@@ -971,6 +570,14 @@ static bool decomposeRecursive(Value v, int64_t coeff,
 //
 // IVs not in `decomp.ivCoeffs` are *not* constrained by this dim — those
 // must be covered by some other dim (or by a per-iv check elsewhere).
+//
+// TODO: this is sufficient but not necessary. A sound disjointness check
+// would build the access region as a presburger::IntegerRelation
+// (mlir::affine::MemRefRegion) and use IntegerRelation::isIntegerEmpty()
+// on the intersection of access(iv_a) ∩ access(iv_b) restricted to
+// iv_a ≠ iv_b. The lex-packing condition over-rejects programs where
+// individual dims don't dominate but the joint access still partitions
+// (e.g., interleaved-stride patterns). See follow-up PR.
 static bool dimLexPacks(const OffsetDecomp &decomp, int64_t staticSize) {
   llvm::SmallVector<std::pair<BlockArgument, int64_t>, 4> entries;
   for (auto &kv : decomp.ivCoeffs) {
@@ -992,25 +599,6 @@ static bool dimLexPacks(const OffsetDecomp &decomp, int64_t staticSize) {
     acc += c * mul;
   }
   return true;
-}
-
-// True if iterating `iv` produces disjoint per-instance ranges in this access
-// dimension (legacy per-iv check). Kept for backward compat / used by the
-// per-PE replication path.
-static bool dimPartitionsBy(Value offset, Value sizeVal,
-                            std::optional<int64_t> sizeStatic, BlockArgument iv,
-                            xilinx::air::HierarchyInterface outerH) {
-  auto lin = coeffOfIvWithInnerSpan(offset, iv, outerH);
-  if (!lin)
-    return false;
-  int64_t coeff = std::abs(lin->first);
-  int64_t extraSpan = lin->second;
-  if (coeff == 0)
-    return false;
-  auto sz = resolveSize(sizeVal, sizeStatic);
-  if (!sz)
-    return false;
-  return coeff >= (*sz + extraSpan);
 }
 
 // Result of analyzing a single terminal access.
@@ -1069,11 +657,10 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
   // `air.channel.get @ch[%pid] (%dst[][][])` (or put), even though the
   // memref offsets don't reference the iteration variable, the channel
   // INDEX does — so each iteration instance reads/writes a logically
-  // distinct stream of data into/from its own (LOCAL-cloned) memref. Skip
-  // the partitioning check when the channel index transitively depends on
-  // any iteration variable (through any chain of pure ops, not just the
-  // affine subset asLinearInOneBlockArg handles — patterns like
-  // `arith.divsi %iv, %c2` come up in practice).
+  // distinct stream of data into/from its own (LOCAL-cloned) memref.
+  // Skip the partitioning check when the channel index transitively
+  // depends on any iteration variable (through any chain of pure index
+  // ops, including non-affine forms like `arith.divsi %iv, %c2`).
   if (auto chan = dyn_cast<xilinx::air::ChannelInterface>(op)) {
     if (chan.getMemref() == t.consumed) {
       for (Value idx : chan.getIndices()) {
@@ -1243,41 +830,32 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
         break;
       }
     }
-    // Fallback: legacy per-iv check (covers patterns the multi-IV decomp
-    // doesn't reach yet, e.g., subview offsets with mixed Value/static).
     if (!found) {
-      for (unsigned d = 0; d < offsets.size() && d < sizesVal.size(); ++d) {
-        Value off = offsets[d];
-        if (!off)
-          continue;
-        if (dimPartitionsBy(off, sizesVal[d], sizesStatic[d], iv, outerH)) {
-          found = true;
-          break;
-        }
-      }
-    }
-    if (!found) {
-      // Either the IV genuinely does not partition (rejection) or the
-      // analysis bailed on the relevant offsets (inconclusive).
-      // Distinguish: if any offset for this access has the IV "somewhere"
-      // but with a non-static size or a non-recognized expression → bail.
-      bool sawIVSomewhere = false;
+      // Distinguish "iv genuinely doesn't appear anywhere" (definitive race
+      // → NotDisjoint) from "iv appears but lex-packing didn't hold or the
+      // decomposition bailed" (Inconclusive). Probe each offset
+      // independently of size resolution: if iv has a nonzero coefficient
+      // in any offset, the issue is partition arithmetic (or unknown size),
+      // not absence.
+      bool ivAppearsSomewhere = false;
       for (unsigned d = 0; d < offsets.size(); ++d) {
         Value off = offsets[d];
         if (!off)
           continue;
-        auto lin = asLinearInOneBlockArg(off);
-        if (lin && lin->first == iv) {
-          sawIVSomewhere = true;
+        auto probe = decomposeOffset(off, ivs, outerH);
+        if (!probe)
+          continue;
+        auto it = probe->ivCoeffs.find(iv);
+        if (it != probe->ivCoeffs.end() && it->second != 0) {
+          ivAppearsSomewhere = true;
           break;
         }
       }
-      if (!sawIVSomewhere) {
-        std::string r;
-        llvm::raw_string_ostream os(r);
-        os << "iteration variable does not appear in any offset of this "
-              "access; iterations cannot be disjoint";
-        return {CheckResult::NotDisjoint, os.str(), op};
+      if (!ivAppearsSomewhere) {
+        return {CheckResult::NotDisjoint,
+                "iteration variable does not appear in any offset of this "
+                "access; iterations cannot be disjoint",
+                op};
       }
       return {CheckResult::Inconclusive,
               "could not prove that the access size in the iteration-indexed "
@@ -1392,6 +970,11 @@ static LogicalResult verifyOne(xilinx::air::HierarchyInterface H, bool strict) {
       // replication signal so the verifier doesn't reject a working
       // example just because the partition is encoded in a kernel arg
       // instead of a memref offset.
+      //
+      // TODO: this is a heuristic — the kernel is opaque and may use the
+      // iv-dependent scalar for something other than memref partition
+      // (e.g., a loop bound). A function-declaration-level access summary
+      // attribute would be more precise; pursue if false-positives surface.
       if (auto call = dyn_cast<func::CallOp>(t.op)) {
         bool anyIvDep = false;
         for (Value arg : call.getOperands()) {
