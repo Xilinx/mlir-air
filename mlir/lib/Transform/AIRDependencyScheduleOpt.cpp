@@ -5126,7 +5126,7 @@ struct ShrinkMemrefSizesByAccessPattern
     if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc->getParentOp()))
       memref = exec->getResult(1);
 
-    if (alloc->hasAttr("shrinkage"))
+    if (alloc->hasAttr("air.shrinkage"))
       return failure();
 
     // Get dealloc.
@@ -5162,7 +5162,7 @@ struct ShrinkMemrefSizesByAccessPattern
         if (updateAccessPatternAfterShrinkage(chanOp, memref_shape,
                                               overall_access_bounds, rewriter)
                 .failed()) {
-          alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
+          alloc->setAttr("air.shrinkage", rewriter.getBoolAttr(false));
           return failure();
         }
       }
@@ -5174,7 +5174,7 @@ struct ShrinkMemrefSizesByAccessPattern
         if (updateAccessPatternAfterShrinkage(subViewOp, users,
                                               overall_access_bounds, rewriter)
                 .failed()) {
-          alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
+          alloc->setAttr("air.shrinkage", rewriter.getBoolAttr(false));
           return failure();
         }
       }
@@ -5186,13 +5186,13 @@ struct ShrinkMemrefSizesByAccessPattern
         if (transReadOp) {
           if (updateAccessPatternAfterShrinkage(transReadOp, rewriter)
                   .failed()) {
-            alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
+            alloc->setAttr("air.shrinkage", rewriter.getBoolAttr(false));
             return failure();
           }
         } else if (transWriteOp) {
           if (updateAccessPatternAfterShrinkage(transWriteOp, rewriter)
                   .failed()) {
-            alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
+            alloc->setAttr("air.shrinkage", rewriter.getBoolAttr(false));
             return failure();
           }
         }
@@ -5212,11 +5212,17 @@ struct ShrinkMemrefSizesByAccessPattern
             rewriter, execOp->getLoc(),
             air::AsyncTokenType::get(rewriter.getContext()), newMemrefType,
             execOp.getAsyncDependencies());
+        // Mark the wrapping air.execute (more durable across canonicalize
+        // than an attribute on the inner alloc, which gets stripped by
+        // op folding) so downstream passes / verifier can recognize this
+        // as a shrunk-by-pipeline alloc whose lowering will replicate per
+        // PE.
+        newExecOp->setAttr("air.shrinkage", rewriter.getBoolAttr(true));
         Block *async_exec_bb = rewriter.createBlock(&newExecOp.getRegion());
         rewriter.setInsertionPointToStart(async_exec_bb);
         auto newAlloc =
             memref::AllocOp::create(rewriter, alloc->getLoc(), newMemrefType);
-        newAlloc->setAttr("shrinkage", rewriter.getBoolAttr(true));
+        newAlloc->setAttr("air.shrinkage", rewriter.getBoolAttr(true));
         air::ExecuteTerminatorOp::create(rewriter, rewriter.getUnknownLoc(),
                                          newAlloc.getResult());
         for (unsigned i = 0; i < execOp->getNumResults(); i++)
@@ -5235,7 +5241,7 @@ struct ShrinkMemrefSizesByAccessPattern
         rewriter.setInsertionPoint(alloc);
         auto newAlloc =
             memref::AllocOp::create(rewriter, alloc->getLoc(), newMemrefType);
-        newAlloc->setAttr("shrinkage", rewriter.getBoolAttr(true));
+        newAlloc->setAttr("air.shrinkage", rewriter.getBoolAttr(true));
         alloc.getResult().replaceAllUsesWith(newAlloc.getResult());
         rewriter.eraseOp(alloc);
       }
@@ -6160,7 +6166,7 @@ public:
     // Update func.call declaration post memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
     funcOp.walk([&](memref::AllocOp op) {
-      if (op->hasAttr("shrinkage"))
+      if (op->hasAttr("air.shrinkage"))
         shrunkMemallocs.push_back(op);
     });
 
@@ -6214,7 +6220,7 @@ public:
     }
     (void)applyPatternsGreedily(func, std::move(patterns));
     runPostProcPatterns(func);
-    func.walk([&](memref::AllocOp op) { op->removeAttr("shrinkage"); });
+    func.walk([&](memref::AllocOp op) { op->removeAttr("air.shrinkage"); });
   }
 
 private:
@@ -7012,7 +7018,7 @@ public:
     // Update func.call declaration after memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
     funcOp.walk([&](memref::AllocOp op) {
-      if (op->hasAttr("shrinkage"))
+      if (op->hasAttr("air.shrinkage"))
         shrunkMemallocs.push_back(op);
     });
     // Find indirect funcCall users of memref.

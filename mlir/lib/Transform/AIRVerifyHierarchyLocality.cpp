@@ -508,6 +508,57 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
     if (dma.getSrc() == t.consumed)
       return {CheckResult::Disjoint, {}, op};
   }
+  // Channel index can disambiguate per-PE memref accesses. For an
+  // `air.channel.get @ch[%pid] (%dst[][][])` (or put), even though the
+  // memref offsets don't reference the iteration variable, the channel
+  // INDEX does — so each iteration instance reads/writes a logically
+  // distinct stream of data into/from its own (LOCAL-cloned) memref. Skip
+  // the partitioning check when the channel index transitively depends on
+  // any iteration variable (through any chain of pure ops, not just the
+  // affine subset asLinearInOneBlockArg handles — patterns like
+  // `arith.divsi %iv, %c2` come up in practice).
+  if (auto chan = dyn_cast<xilinx::air::ChannelInterface>(op)) {
+    if (chan.getMemref() == t.consumed) {
+      llvm::SmallPtrSet<Value, 8> visited;
+      std::function<bool(Value)> dependsOnAnyIv = [&](Value v) -> bool {
+        if (!v || !visited.insert(v).second)
+          return false;
+        if (auto ba = dyn_cast<BlockArgument>(v)) {
+          if (llvm::is_contained(ivs, ba))
+            return true;
+          // Trace through hierarchy passthrough kernel args to outer-IV.
+          Operation *parent = ba.getOwner()->getParentOp();
+          if (auto innerH =
+                  dyn_cast_if_present<xilinx::air::HierarchyInterface>(
+                      parent)) {
+            ArrayRef<BlockArgument> kargs = innerH.getKernelArguments();
+            auto it = llvm::find(kargs, ba);
+            if (it != kargs.end()) {
+              unsigned i = std::distance(kargs.begin(), it);
+              return dependsOnAnyIv(innerH.getKernelOperand(i));
+            }
+          }
+          return false;
+        }
+        Operation *def = v.getDefiningOp();
+        if (!def)
+          return false;
+        // Conservative: only descend through pure ops with index-y semantics.
+        if (!isa<arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::DivSIOp,
+                 arith::DivUIOp, arith::RemSIOp, arith::RemUIOp,
+                 arith::IndexCastOp, affine::AffineApplyOp>(def))
+          return false;
+        for (Value op : def->getOperands())
+          if (dependsOnAnyIv(op))
+            return true;
+        return false;
+      };
+      for (Value idx : chan.getIndices()) {
+        if (dependsOnAnyIv(idx))
+          return {CheckResult::Disjoint, {}, op};
+      }
+    }
+  }
   if (auto memEffectOp = dyn_cast<MemoryEffectOpInterface>(op)) {
     SmallVector<MemoryEffects::EffectInstance, 4> effects;
     memEffectOp.getEffectsOnValue(t.consumed, effects);
@@ -652,6 +703,30 @@ static LogicalResult verifyOne(xilinx::air::HierarchyInterface H, bool strict) {
     Operation *defOp = operand.getDefiningOp();
     if (defOp && insideRegion(H.getBody(), defOp))
       continue; // (R1) defined inside the body — implicit per-instance copy.
+
+    // The air-shrink-memref-sizes-by-access pass annotates the alloc it
+    // produces with `shrinkage = true`. By construction it has shrunk the
+    // memref to the per-PE access size, and the air-to-aie LOCAL clone
+    // path will materialize one private copy per core. Trust the
+    // shrinkage marker as the shrink pass's promise of per-PE replication
+    // — equivalent to having sunk the alloc into the herd body, just left
+    // annotated rather than physically moved.
+    if (defOp && defOp->hasAttr("air.shrinkage"))
+      continue;
+    // The alloc may live inside an air.execute wrapper for async tokens;
+    // unwrap one level and check there too.
+    if (defOp) {
+      if (auto exec = dyn_cast<xilinx::air::ExecuteOp>(defOp)) {
+        for (Operation &child : exec.getChildOps()) {
+          if (child.hasAttr("air.shrinkage")) {
+            defOp = &child;
+            break;
+          }
+        }
+        if (defOp->hasAttr("air.shrinkage"))
+          continue;
+      }
+    }
 
     BlockArgument blockArg = H.getKernelArgument(i);
     SmallVector<TerminalAccess> terminals;
