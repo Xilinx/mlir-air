@@ -757,6 +757,32 @@ static LogicalResult verifyOne(xilinx::air::HierarchyInterface H, bool strict) {
     if (ivs.empty())
       continue; // every iteration dim is size 1 — nothing to check.
 
+    // Two-pass check on terminals:
+    //   Pass 1: look for any terminal that proves per-PE replication
+    //           (e.g., air.channel.get/put with iv-dependent channel index
+    //           — the alloc is then per-PE-cloned at lowering, so EVERY
+    //           use inside the herd body operates on the PE-private copy).
+    //           If found, accept the operand and skip pass 2.
+    //   Pass 2: only if pass 1 found nothing, require every terminal
+    //           individually to prove disjointness.
+    bool perPeReplicated = false;
+    for (const TerminalAccess &t : terminals) {
+      // Channel ops with iv-dependent channel index disambiguate per-PE
+      // memref accesses (each PE gets a private (LOCAL-cloned) memref
+      // populated from a different channel slot).
+      if (auto chan = dyn_cast<xilinx::air::ChannelInterface>(t.op)) {
+        if (chan.getMemref() == t.consumed) {
+          CheckOutcome outcome = checkTerminal(t, ivs);
+          if (outcome.result == CheckResult::Disjoint) {
+            perPeReplicated = true;
+            break;
+          }
+        }
+      }
+    }
+    if (perPeReplicated)
+      continue; // operand is per-PE replicated; accept all its uses.
+
     for (const TerminalAccess &t : terminals) {
       CheckOutcome outcome = checkTerminal(t, ivs);
       if (outcome.result == CheckResult::Disjoint)
