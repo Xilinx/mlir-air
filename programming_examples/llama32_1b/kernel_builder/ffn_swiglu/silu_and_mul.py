@@ -131,9 +131,7 @@ def build_module(n, tile_n, np_dtype_in, herd_x=1, herd_y=None):
                     DeallocOp(l1_up)
                     DeallocOp(l1_out)
 
-                herd_body.attributes["link_with"] = StringAttr.get(
-                    "silu_and_mul.o"
-                )
+                herd_body.attributes["link_with"] = StringAttr.get("silu_and_mul.o")
 
 
 @module_builder
@@ -240,9 +238,7 @@ def build_module_2d(rows, cols, tile_n, np_dtype_in, herd_x=8, herd_y=1):
                     DeallocOp(l1_up)
                     DeallocOp(l1_out)
 
-                herd_body.attributes["link_with"] = StringAttr.get(
-                    "silu_and_mul.o"
-                )
+                herd_body.attributes["link_with"] = StringAttr.get("silu_and_mul.o")
 
 
 def silu_reference(x):
