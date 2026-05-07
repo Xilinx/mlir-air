@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
@@ -41,8 +40,13 @@ from llama32_1b_weights import (
     synthetic_weights,
     generate_rope_lut,
 )
-from llama32_1b.kernel_builder.cache import KernelCache
-from llama32_1b.kernel_builder.external_kernels import compile_all_external_kernels
+from kernel_builder.cache import KernelCache
+from kernel_builder.external_kernels import compile_all_external_kernels
+from kernel_builder.backend_presets import (
+    LM_GEMV_BACKEND,
+    RGR_BACKEND,
+    OGF_BACKEND,
+)
 from llama32_1b_prefill import (
     compile_all_kernels,
     run_transformer_block,
@@ -51,11 +55,6 @@ from llama32_1b_prefill import (
 from llama32_1b_decode import (
     compile_decode_kernels,
     run_decode_block,
-)
-from llama32_1b.kernel_builder.backend_presets import (
-    LM_GEMV_BACKEND,
-    RGR_BACKEND,
-    OGF_BACKEND,
 )
 
 # ---------------------------------------------------------------------------

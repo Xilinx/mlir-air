@@ -1,3 +1,6 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 """External C++ kernel compilation utilities.
 
 Compiles all external .o files from source to avoid relying on stale

@@ -98,6 +98,15 @@ def build_module(
     dv_tile = lkp
     assert dv % dv_tile == 0, f"dv ({dv}) must be divisible by dv_tile/lkp ({dv_tile})"
     dv_chunks = dv // dv_tile
+    # The seq-first L3 layout interleaves all kv-heads at column-stride dv,
+    # so a single chunk's per-head DMA descriptor is straightforward; with
+    # dv_chunks > 1 the per-chunk strides need additional validation that is
+    # not yet covered by a test. Restrict to dv == lkp until that exists.
+    assert dv_chunks == 1, (
+        f"attn_npu2_seqfirst.py currently supports only dv == lkp "
+        f"(dv_chunks == 1); got dv={dv}, lkp={lkp}. "
+        f"Use attn_npu2.py for the dv_chunks > 1 / heads-first layout."
+    )
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
         assert lqp // num_q_tiles == lkp, (
@@ -334,7 +343,7 @@ def build_module(
             # head_v_off = kv_head * dv (column offset in seq-first V)
             affine_map_head_v_dv = AffineMap.get(
                 0,
-                2,  # s0=kv_head, s1=lz (dv chunk index, unused when dv==lkp)
+                2,  # s0=kv_head, s1=lz (dv chunk index; constant 0 because dv == lkp is enforced above)
                 [
                     AffineExpr.get_add(
                         AffineExpr.get_mul(

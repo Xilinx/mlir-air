@@ -59,25 +59,11 @@ make verify
 
 | Doc | What's in it |
 |-----|-------------|
+| [Architecture](ARCHITECTURE.md) | Per-layer kernel sequence, runtime flow, key design patterns |
 | [Usage Guide](docs/usage.md) | All `make` targets, command-line options, file structure |
 | [Performance Profile](docs/profile.md) | Kernel timing breakdown, BO categories, memory model |
 | [Implementation Guide](docs/explain.md) | How kernels are built, compiled, and stitched together |
 | [Known Issues](docs/issues.md) | BF16 precision, fixed seq_len, no sampling |
-
-## Architecture Overview
-
-Each transformer layer runs as 3 NPU invocations (prefill) or 3 invocations (decode):
-
-```
-Prefill (per layer):
-  rms_gemms_rope  (6 launches) → flash_attn (1 launch) → o_ffn (8 launches)
-
-Decode (per token, per layer):
-  rms_gemv_rope   (6 launches) → CPU attention → o_gemv_ffn (8 launches)
-```
-
-Multiple operations are fused into single ELF binaries via multi-launch merging,
-reducing XRT dispatch overhead from 10 calls/layer to 3.
 
 ## Key Files
 

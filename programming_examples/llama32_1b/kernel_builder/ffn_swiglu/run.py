@@ -126,7 +126,7 @@ def build_ffn_module(
     Args:
         print_kernels: If True, print each sub-kernel's MLIR before stitching.
     """
-    from llama32_1b.kernel_builder.gemm_builder import _build_gemm_module
+    from kernel_builder.gemm_builder import _build_gemm_module
 
     # Import silu_and_mul from same directory as this file
     import importlib.util

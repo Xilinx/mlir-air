@@ -1,19 +1,16 @@
-# ============================================================
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
 # LLAMA-3.2-1B BF16 Inference on NPU2 (MLIR-AIR)
-# ============================================================
 #
 # Quick start:
-#   make compile        — Compile all kernels (~4 min, cached to disk)
+#   make compile        — Compile all kernels (~3 min, cached to disk)
 #   make run            — Run inference: NPU prefill + NPU decode
 #   make profile        — Run with per-kernel profiling breakdown
 #
 # Performance (NPU2, AMD Strix):
-#   Prefill:  1.26s (seq_len=2048, 16 layers)
+#   Prefill:  1.27s (seq_len=2048, 16 layers)
 #   Decode:   92ms/token (10.8 tokens/sec)
-#
-# Copyright (C) 2026, Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: MIT
-# ============================================================
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 

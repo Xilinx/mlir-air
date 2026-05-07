@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
@@ -45,7 +44,7 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
-from llama32_1b.kernel_builder.stitching import (
+from kernel_builder.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
@@ -227,7 +226,7 @@ def build_o_ffn_module(
             %arg13: down         (seq_len, emb_dim)       intermediate
             %arg14: output       (n_total,)               1D final output
     """
-    from llama32_1b.kernel_builder.gemm_builder import _build_gemm_module
+    from kernel_builder.gemm_builder import _build_gemm_module
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
 
     n_total = seq_len * emb_dim
@@ -294,7 +293,7 @@ def build_o_ffn_module(
 
     # L6: SwiGLU (bare herd → wrap)
     print("  [6/8] SwiGLU...")
-    from llama32_1b.kernel_builder.ffn_swiglu.silu_and_mul import (
+    from kernel_builder.ffn_swiglu.silu_and_mul import (
         build_module_2d as build_swiglu,
     )
 

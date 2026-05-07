@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
@@ -24,8 +23,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from llama32_1b_weights import LlamaConfig
-from llama32_1b.kernel_builder.cache import KernelCache
-from llama32_1b.kernel_builder.backend_presets import (
+from kernel_builder.cache import KernelCache
+from kernel_builder.backend_presets import (
     RGR_BACKEND,
     OGF_BACKEND,
     LM_GEMV_BACKEND,
@@ -38,7 +37,7 @@ from llama32_1b.kernel_builder.backend_presets import (
 
 def compile_decode_kernels(cache, config):
     """Compile the 3 merged decode kernels."""
-    from llama32_1b.kernel_builder.external_kernels import compile_all_external_kernels
+    from kernel_builder.external_kernels import compile_all_external_kernels
 
     compile_all_external_kernels(head_dim=config.head_dim)
 
@@ -54,7 +53,7 @@ def compile_decode_kernels(cache, config):
     print(f"{'='*60}\n")
 
     # 1. rms_gemv_rope: RMSNorm + QKV GEMV + RoPE Q+K (6 launches, 13 args)
-    from llama32_1b.multi_launch_builder.rms_gemv_rope_multi import (
+    from multi_launch_builder.rms_gemv_rope_multi import (
         build_rms_gemv_rope_module,
     )
 
@@ -66,7 +65,7 @@ def compile_decode_kernels(cache, config):
 
     # 2. o_gemv_ffn: O GEMV + Add + RMSNorm + Gate/Up GEMV + SiLU*mul
     #                + Down GEMV + Add (8 launches, 15 args)
-    from llama32_1b.multi_launch_builder.o_gemv_ffn_multi import build_o_gemv_ffn_module
+    from multi_launch_builder.o_gemv_ffn_multi import build_o_gemv_ffn_module
 
     cache.compile_and_cache(
         "o_gemv_ffn",
@@ -75,7 +74,7 @@ def compile_decode_kernels(cache, config):
     )
 
     # 3. LM Head GEMV multi-launch: 8-partition GEMV in one ELF
-    from llama32_1b.multi_launch_builder.lm_head_gemv_multi import (
+    from multi_launch_builder.lm_head_gemv_multi import (
         build_lm_head_gemv_module,
     )
 

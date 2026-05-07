@@ -39,7 +39,8 @@ A 6-token prompt processes 2042 EOS padding tokens, wasting ~99% of prefill comp
 "Hello"                     →  2 real + 2046 padding = 2048 tokens
 ```
 
-Prefill always takes ~1.54s regardless of prompt length.
+Prefill takes the same wall time (~1.27s on NPU2) regardless of prompt length —
+all 2048 positions are computed even when most are padding.
 
 **Why**: All NPU kernels are compiled with fixed dimensions:
 - GEMM launch grids: M=2048

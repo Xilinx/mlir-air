@@ -1,3 +1,6 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 """Text-based MLIR stitching utilities for multi-launch kernel assembly.
 
 Provides functions to extract, rename, and combine MLIR text fragments from
@@ -16,8 +19,12 @@ def _extract_between_func_and_return(mlir_text):
     for i, line in enumerate(lines):
         if "func.func @" in line and "private" not in line:
             body_start = i + 1
+    # Match the trailing `return` even if a future MLIR printer attaches
+    # operands, attributes, location, or trailing comments
+    # (e.g. `return`, `return %0`, `return loc(...)`, `return // comment`).
+    return_re = re.compile(r"^\s*return(\s|$|//|loc\()")
     for i in range(len(lines) - 1, body_start, -1):
-        if lines[i].strip() == "return":
+        if return_re.match(lines[i]):
             body_end = i
             break
     return "\n".join(lines[body_start:body_end])
@@ -183,11 +190,13 @@ def _rename_all_with_externs(text, prefix, extern_funcs):
     for name in sorted(set(re.findall(r"%[a-zA-Z_]\w*", text)), key=len, reverse=True):
         text = re.sub(re.escape(name) + r"(?!\w)", f"%{prefix}_{name[1:]}", text)
 
-    # SSA numbered values
+    # SSA numbered values — re.sub with `(?!\d)` boundary so `%10` cannot
+    # substring-match `%100`. Longest-first ordering is no longer required for
+    # correctness but kept for determinism.
     for name in sorted(
         set(re.findall(r"%\d+", text)), key=lambda x: int(x[1:]), reverse=True
     ):
-        text = text.replace(name, f"%{prefix}_n{name[1:]}")
+        text = re.sub(re.escape(name) + r"(?!\d)", f"%{prefix}_n{name[1:]}", text)
 
     # Symbol names but NOT extern functions
     for name in sorted(set(re.findall(r"@[\w]+", text)), key=len, reverse=True):

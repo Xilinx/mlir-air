@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
@@ -23,7 +22,7 @@ sys.path.insert(
     ),
 )
 
-from llama32_1b.kernel_builder.stitching import (
+from kernel_builder.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,

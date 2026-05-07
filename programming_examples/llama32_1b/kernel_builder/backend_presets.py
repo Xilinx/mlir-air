@@ -1,3 +1,6 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 """Backend kwarg presets for the kernels used by the LLAMA-3 example.
 
 These dicts are passed to `cache.load_and_run(...)` (and equivalent helpers)

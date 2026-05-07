@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
@@ -50,7 +49,7 @@ sys.path.insert(
     ),
 )
 
-from llama32_1b.kernel_builder.stitching import (
+from kernel_builder.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
@@ -327,7 +326,7 @@ def build_o_gemv_ffn_module(
     """
     from matvec import build_module as build_gemv
     from eltwise_add.eltwise_add import build_module as build_add
-    from llama32_1b.kernel_builder.ffn_swiglu.silu_and_mul import (
+    from kernel_builder.ffn_swiglu.silu_and_mul import (
         build_module as build_silu,
     )
 

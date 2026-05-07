@@ -47,8 +47,8 @@ from llama32_1b_reference import (
     attention_reference,
     ffn_full_reference,
 )
-from llama32_1b.kernel_builder.cache import KernelCache, Profiler
-from llama32_1b.kernel_builder.backend_presets import (
+from kernel_builder.cache import KernelCache, Profiler
+from kernel_builder.backend_presets import (
     SIMPLE_BACKEND,
     RMS_GEMMS_ROPE_BACKEND,
     O_FFN_BACKEND,
@@ -85,7 +85,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     print(f"{'='*60}\n")
 
     # 1. RMSNorm + QKV GEMMs + RoPE Q+K: 6 launches in one ELF
-    from llama32_1b.multi_launch_builder.rms_gemms_rope_multi import (
+    from multi_launch_builder.rms_gemms_rope_multi import (
         build_rms_gemms_rope_module,
     )
 
@@ -98,7 +98,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     )
 
     # 3. O GEMM + Residual Add + FFN: 8 launches in one ELF
-    from llama32_1b.multi_launch_builder.o_ffn_multi import build_o_ffn_module
+    from multi_launch_builder.o_ffn_multi import build_o_ffn_module
 
     cache.compile_and_cache(
         "o_ffn",

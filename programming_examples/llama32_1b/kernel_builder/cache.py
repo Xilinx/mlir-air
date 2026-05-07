@@ -1,3 +1,6 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 """Kernel compilation cache, profiling, and air_project utilities."""
 
 import json
@@ -23,7 +26,7 @@ def prepare_air_project():
     air_proj.mkdir(parents=True, exist_ok=True)
 
     # Compile external kernels from source (not stale .o copies)
-    from llama32_1b.kernel_builder.external_kernels import compile_all_external_kernels
+    from kernel_builder.external_kernels import compile_all_external_kernels
 
     compile_all_external_kernels()
 
@@ -315,6 +318,12 @@ class KernelCache:
             )
 
         # Level 1: Load backend on first call (XRT context reuse)
+        # Lock path note: this is intentionally distinct from the
+        # /tmp/mlir-air-npu.lock file used by the project's outer `flock`
+        # convention. Both layers use BSD flock(2), so on the same inode
+        # the inner Python lock would self-deadlock against an outer
+        # `flock /tmp/mlir-air-npu.lock make run`. Keep them on separate
+        # files so the layers compose cleanly.
         if name not in self._loaded:
             artifact = self.artifacts[name]
             backend = XRTBackend(**backend_kwargs)

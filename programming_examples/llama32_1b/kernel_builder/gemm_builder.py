@@ -1,3 +1,6 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 """GEMM module builder and transform IR for NPU2 BF16 matrix multiplication."""
 
 from ml_dtypes import bfloat16

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
@@ -42,7 +41,7 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
-from llama32_1b.kernel_builder.stitching import (
+from kernel_builder.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
@@ -227,7 +226,7 @@ def build_rms_gemms_rope_module(
             %arg11: q_roped     (seq_len, emb_dim)       RoPE Q output (2D)
             %arg12: k_roped     (seq_len, kv_dim)        RoPE K output (2D)
     """
-    from llama32_1b.kernel_builder.gemm_builder import _build_gemm_module
+    from kernel_builder.gemm_builder import _build_gemm_module
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
 
     q_total = seq_len * emb_dim  # = n_heads * seq_len * head_dim
