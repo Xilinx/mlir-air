@@ -742,26 +742,26 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
       }
       hasPattern = true;
     }
-  } else if (auto vstore = dyn_cast<vector::TransferWriteOp>(op)) {
-    if (vstore.getBase() == t.consumed) {
-      for (Value idx : vstore.getIndices())
-        offsets.push_back(idx);
-      // Vector transfer writes a slice of vector shape into the memref;
-      // the access size in each dim is the vector dim size.
-      auto vecTy = vstore.getVectorType();
-      for (int64_t s : vecTy.getShape())
-        pushStaticSize(s);
-      hasPattern = true;
+  } else if (auto vt = dyn_cast<VectorTransferOpInterface>(op);
+             vt && vt.getBase() == t.consumed) {
+    for (Value idx : vt.getIndices())
+      offsets.push_back(idx);
+    // Per memref dim, find which vector dim (if any) it maps to via the
+    // permutation map; non-vectorized memref dims access size 1.
+    AffineMap pm = vt.getPermutationMap();
+    auto vecShape = vt.getVectorType().getShape();
+    for (unsigned d = 0; d < pm.getNumInputs(); ++d) {
+      int64_t sz = 1;
+      for (unsigned r = 0; r < pm.getNumResults(); ++r) {
+        auto dim = dyn_cast<AffineDimExpr>(pm.getResult(r));
+        if (dim && dim.getPosition() == d) {
+          sz = vecShape[r];
+          break;
+        }
+      }
+      pushStaticSize(sz);
     }
-  } else if (auto vload = dyn_cast<vector::TransferReadOp>(op)) {
-    if (vload.getBase() == t.consumed) {
-      for (Value idx : vload.getIndices())
-        offsets.push_back(idx);
-      auto vecTy = vload.getVectorType();
-      for (int64_t s : vecTy.getShape())
-        pushStaticSize(s);
-      hasPattern = true;
-    }
+    hasPattern = true;
   }
 
   // No structured access pattern → treat as full-buffer access by every
@@ -886,28 +886,30 @@ static LogicalResult verifyOne(xilinx::air::HierarchyInterface H, bool strict) {
     if (defOp && insideRegion(H.getBody(), defOp))
       continue; // (R1) defined inside the body — implicit per-instance copy.
 
-    // The air-shrink-memref-sizes-by-access pass annotates the alloc it
-    // produces with `shrinkage = true`. By construction it has shrunk the
-    // memref to the per-PE access size, and the air-to-aie LOCAL clone
-    // path will materialize one private copy per core. Trust the
-    // shrinkage marker as the shrink pass's promise of per-PE replication
-    // — equivalent to having sunk the alloc into the herd body, just left
-    // annotated rather than physically moved.
-    if (defOp && defOp->hasAttr("air.shrinkage"))
+    // air-shrink-memref-sizes-by-access marks an alloc with
+    // `air.shrinkage = true` once it has shrunk the memref to per-PE
+    // size; the air-to-aie LOCAL clone path then materializes a private
+    // copy per core. Trust ONLY the true value — the shrink pass also
+    // sets the attribute to false on its failure paths.
+    auto isShrunk = [](Operation *op) {
+      auto attr = op->getAttrOfType<BoolAttr>("air.shrinkage");
+      return attr && attr.getValue();
+    };
+    if (defOp && isShrunk(defOp))
       continue;
-    // The alloc may live inside an air.execute wrapper for async tokens;
-    // unwrap one level and check there too.
-    if (defOp) {
-      if (auto exec = dyn_cast<xilinx::air::ExecuteOp>(defOp)) {
-        for (Operation &child : exec.getChildOps()) {
-          if (child.hasAttr("air.shrinkage")) {
-            defOp = &child;
-            break;
-          }
+    // The alloc may be wrapped in air.execute for async tokens; the
+    // marker may live on the execute or its inner alloc.
+    if (auto exec = dyn_cast_if_present<xilinx::air::ExecuteOp>(defOp)) {
+      if (isShrunk(exec))
+        continue;
+      bool ok = false;
+      for (Operation &child : exec.getChildOps())
+        if (isShrunk(&child)) {
+          ok = true;
+          break;
         }
-        if (defOp->hasAttr("air.shrinkage"))
-          continue;
-      }
+      if (ok)
+        continue;
     }
 
     BlockArgument blockArg = H.getKernelArgument(i);
@@ -949,16 +951,20 @@ static LogicalResult verifyOne(xilinx::air::HierarchyInterface H, bool strict) {
     //           individually to prove disjointness.
     bool perPeReplicated = false;
     for (const TerminalAccess &t : terminals) {
-      // Channel ops with iv-dependent channel index disambiguate per-PE
-      // memref accesses (each PE gets a private (LOCAL-cloned) memref
-      // populated from a different channel slot).
+      // iv-dependent channel index → each PE consumes a different slot,
+      // alloc gets LOCAL-cloned per core. Inspect the index directly: a
+      // checkTerminal=Disjoint result also fires for read-only paths
+      // and would mis-trigger replication on an unrelated channel.put.
       if (auto chan = dyn_cast<xilinx::air::ChannelInterface>(t.op)) {
         if (chan.getMemref() == t.consumed) {
-          CheckOutcome outcome = checkTerminal(t, ivs, H);
-          if (outcome.result == CheckResult::Disjoint) {
-            perPeReplicated = true;
-            break;
+          for (Value idx : chan.getIndices()) {
+            if (dependsOnAnyIv(idx, ivs)) {
+              perPeReplicated = true;
+              break;
+            }
           }
+          if (perPeReplicated)
+            break;
         }
       }
       // External kernel func.call sinks: the call is opaque, but if any
@@ -1029,9 +1035,9 @@ public:
   AIRVerifyHierarchyLocality(const AIRVerifyHierarchyLocality &) {}
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<xilinx::air::airDialect, memref::MemRefDialect,
-                affine::AffineDialect, arith::ArithDialect, scf::SCFDialect>();
+    registry.insert<xilinx::air::airDialect, memref::MemRefDialect,
+                    affine::AffineDialect, arith::ArithDialect, scf::SCFDialect,
+                    vector::VectorDialect, func::FuncDialect>();
   }
 
   void runOnOperation() override {
