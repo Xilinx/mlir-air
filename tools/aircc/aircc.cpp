@@ -1030,6 +1030,17 @@ static LogicalResult runAieCompilation() {
                              placedModule.get())))
     return failure();
 
+  // Verify AIR hierarchy locality on the placed IR before lowering to AIE.
+  // Catches kernel-operand patterns where a memref at the hierarchy's
+  // matching memory level is neither defined inside the body nor partitioned
+  // statically over the iteration variables (see issue #1545). strict=true
+  // surfaces both true overlaps and analysis bails so the failing tests are
+  // visible in CI.
+  if (failed(runPassPipeline(
+          "builtin.module(air-verify-hierarchy-locality{strict=true})",
+          placedModule.get())))
+    return failure();
+
   // --- AIR to AIE conversion ---
   std::string airToAiePipeline;
   {
