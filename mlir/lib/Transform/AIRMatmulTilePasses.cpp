@@ -14,6 +14,7 @@
 
 #include "air/Transform/AIRMatmulTilePasses.h"
 #include "air/Util/MatmulCodegenConfig.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -40,34 +41,7 @@ namespace air {
 
 namespace {
 
-/// Find the first op in `f` carrying `marker` as a discardable attribute.
-static Operation *findMarkedOp(func::FuncOp f, StringRef marker) {
-  Operation *found = nullptr;
-  f.walk([&](Operation *op) {
-    if (op->hasAttr(marker)) {
-      found = op;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return found;
-}
-
-/// Parse a comma-separated list of integers (e.g. "8,4,0") into a vector.
-static SmallVector<int64_t> parseIntList(StringRef s) {
-  SmallVector<int64_t> out;
-  SmallVector<StringRef> tokens;
-  s.split(tokens, ',');
-  for (StringRef t : tokens) {
-    t = t.trim();
-    if (t.empty())
-      continue;
-    int64_t v = 0;
-    if (!t.getAsInteger(10, v))
-      out.push_back(v);
-  }
-  return out;
-}
+// `findMarkedOp` lives in air/Util/Util.h as `xilinx::air::findOpWithAttr`.
 
 /// Build OpFoldResult-typed tile sizes (one per iterator dim) from int64s.
 /// Pads with 0 if shorter than `numIters`; truncates if longer.
@@ -172,6 +146,25 @@ static Operation *fuseProducerIntoLoop(Operation *producerOp,
   return res->tiledOps.front();
 }
 
+/// Tile `target` with `LoopType::ForallOp` and pre-built `tileSizes`. Returns
+/// the full `SCFTilingResult` on success; the original op is `replaceOp`d.
+static FailureOr<scf::SCFTilingResult>
+tileAsForallResult(Operation *target, ArrayRef<OpFoldResult> tileSizes,
+                   RewriterBase &rewriter) {
+  auto tileable = dyn_cast_if_present<TilingInterface>(target);
+  if (!tileable)
+    return failure();
+  rewriter.setInsertionPoint(target);
+  scf::SCFTilingOptions opts;
+  opts.setLoopType(scf::SCFTilingOptions::LoopType::ForallOp);
+  opts.setTileSizes(tileSizes);
+  auto res = scf::tileUsingSCF(rewriter, tileable, opts);
+  if (failed(res))
+    return failure();
+  rewriter.replaceOp(target, res->replacements);
+  return res;
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -193,7 +186,7 @@ public:
 
   void runOnOperation() override {
     func::FuncOp f = getOperation();
-    Operation *packedMatmulOp = findMarkedOp(f, clPackedMatmulMarker);
+    Operation *packedMatmulOp = xilinx::air::findOpWithAttr(f, clPackedMatmulMarker);
     if (!packedMatmulOp)
       return;
     auto matmul = dyn_cast<linalg::LinalgOp>(packedMatmulOp);
@@ -314,7 +307,7 @@ public:
 
   void runOnOperation() override {
     func::FuncOp f = getOperation();
-    Operation *packedMatmulOp = findMarkedOp(f, clPackedMatmulMarker);
+    Operation *packedMatmulOp = xilinx::air::findOpWithAttr(f, clPackedMatmulMarker);
     if (!packedMatmulOp)
       return;
     auto matmul = dyn_cast<linalg::LinalgOp>(packedMatmulOp);
@@ -323,7 +316,7 @@ public:
       return signalPassFailure();
     }
 
-    SmallVector<int64_t> rawSizes = parseIntList(clTileSizes);
+    SmallVector<int64_t> rawSizes = llvm::to_vector(clTileSizes);
     if (auto cfg = xilinx::air::findMatmulCodegenConfig(f)) {
       auto v = xilinx::air::getI64Array(*cfg, "tile_cores");
       if (!v.empty())
@@ -332,18 +325,12 @@ public:
     auto tileSizes =
         buildTileSizes(rawSizes, matmul.getNumLoops(), &getContext());
 
-    auto tileable = cast<TilingInterface>(packedMatmulOp);
     IRRewriter rewriter(&getContext());
-    rewriter.setInsertionPoint(packedMatmulOp);
-    scf::SCFTilingOptions opts;
-    opts.setLoopType(scf::SCFTilingOptions::LoopType::ForallOp);
-    opts.setTileSizes(tileSizes);
-    auto tilingResult = scf::tileUsingSCF(rewriter, tileable, opts);
+    auto tilingResult = tileAsForallResult(packedMatmulOp, tileSizes, rewriter);
     if (failed(tilingResult)) {
       packedMatmulOp->emitError("scf::tileUsingSCF (forall) failed");
       return signalPassFailure();
     }
-    rewriter.replaceOp(packedMatmulOp, tilingResult->replacements);
 
     if (tilingResult->loops.empty())
       return;
@@ -356,8 +343,8 @@ public:
                                               rewriter.getUnitAttr());
 
     // Fuse the K-loop-fused packs into the forall.
-    Operation *lhsPack = findMarkedOp(f, clLhsPackInKMarker);
-    Operation *rhsPack = findMarkedOp(f, clRhsPackInKMarker);
+    Operation *lhsPack = xilinx::air::findOpWithAttr(f, clLhsPackInKMarker);
+    Operation *rhsPack = xilinx::air::findOpWithAttr(f, clRhsPackInKMarker);
     if (Operation *fusedA = fuseProducerIntoLoop(lhsPack, forall, rewriter))
       fusedA->setAttr(clLhsL1PackMarker, rewriter.getUnitAttr());
     if (Operation *fusedB = fuseProducerIntoLoop(rhsPack, forall, rewriter))
@@ -379,8 +366,8 @@ createAIRMatmulTileCoresPass(const AIRMatmulTileCoresOptions &opts) {
 //===----------------------------------------------------------------------===//
 
 namespace {
-/// Tile `target` (which must implement TilingInterface) with `LoopType::ForallOp`
-/// and `tileSizes`. Returns the new forall loop on success.
+/// Convenience wrapper around `tileAsForallResult` for callers that only need
+/// the new forall loop and accept padded raw int64_t tile sizes.
 static LoopLikeOpInterface tileAsForall(Operation *target,
                                         ArrayRef<int64_t> tileSizes,
                                         RewriterBase &rewriter) {
@@ -389,16 +376,12 @@ static LoopLikeOpInterface tileAsForall(Operation *target,
   auto tileable = dyn_cast<TilingInterface>(target);
   if (!tileable)
     return {};
-  auto numIters = tileable.getLoopIteratorTypes().size();
-  auto folded = buildTileSizes(tileSizes, numIters, target->getContext());
-  rewriter.setInsertionPoint(target);
-  scf::SCFTilingOptions opts;
-  opts.setLoopType(scf::SCFTilingOptions::LoopType::ForallOp);
-  opts.setTileSizes(folded);
-  auto res = scf::tileUsingSCF(rewriter, tileable, opts);
+  auto folded = buildTileSizes(tileSizes,
+                               tileable.getLoopIteratorTypes().size(),
+                               target->getContext());
+  auto res = tileAsForallResult(target, folded, rewriter);
   if (failed(res))
     return {};
-  rewriter.replaceOp(target, res->replacements);
   return res->loops.empty() ? LoopLikeOpInterface() : res->loops.front();
 }
 
@@ -418,9 +401,10 @@ public:
     func::FuncOp f = getOperation();
     IRRewriter rewriter(&getContext());
 
-    SmallVector<int64_t> prologueTile = parseIntList(clPrologueTileSizes);
-    SmallVector<int64_t> epilogueTile = parseIntList(clEpilogueTileSizes);
-    SmallVector<int64_t> fillIterPerm = parseIntList(clFillIteratorInterchange);
+    SmallVector<int64_t> prologueTile = llvm::to_vector(clPrologueTileSizes);
+    SmallVector<int64_t> epilogueTile = llvm::to_vector(clEpilogueTileSizes);
+    SmallVector<int64_t> fillIterPerm =
+        llvm::to_vector(clFillIteratorInterchange);
     if (auto cfg = xilinx::air::findMatmulCodegenConfig(f)) {
       auto take = [&](StringRef key, SmallVector<int64_t> &dst) {
         auto v = xilinx::air::getI64Array(*cfg, key);
@@ -555,7 +539,7 @@ public:
     if (!matmul)
       return;
 
-    SmallVector<int64_t> rawSizes = parseIntList(clTileSizes);
+    SmallVector<int64_t> rawSizes = llvm::to_vector(clTileSizes);
     auto tileSizes = buildTileSizes(rawSizes,
                                     cast<TilingInterface>(matmul.getOperation())
                                         .getLoopIteratorTypes()
@@ -568,18 +552,13 @@ public:
     Operation *fillProducer =
         matmul.getOutputs()[0].getDefiningOp<linalg::FillOp>();
 
-    auto tileable = cast<TilingInterface>(matmul.getOperation());
     IRRewriter rewriter(&getContext());
-    rewriter.setInsertionPoint(matmul);
-    scf::SCFTilingOptions opts;
-    opts.setLoopType(scf::SCFTilingOptions::LoopType::ForallOp);
-    opts.setTileSizes(tileSizes);
-    auto tilingResult = scf::tileUsingSCF(rewriter, tileable, opts);
+    auto tilingResult =
+        tileAsForallResult(matmul.getOperation(), tileSizes, rewriter);
     if (failed(tilingResult)) {
       matmul->emitError("scf::tileUsingSCF (forall) on launch-tile failed");
       return signalPassFailure();
     }
-    rewriter.replaceOp(matmul, tilingResult->replacements);
 
     if (tilingResult->loops.empty())
       return;

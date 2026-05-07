@@ -16,6 +16,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRLinalgBufferize.h"
 #include "air/Transform/AIRMatmulCodegenHelpers.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -37,18 +38,8 @@ namespace air {
 
 namespace {
 
-/// Find the first op in `f` carrying `marker` as a discardable attribute.
-static Operation *findMarkedOp(func::FuncOp f, StringRef marker) {
-  Operation *found = nullptr;
-  f.walk([&](Operation *op) {
-    if (op->hasAttr(marker)) {
-      found = op;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return found;
-}
+// `findMarkedOp` / `findMarkedForLoop` live in air/Util/Util.h as
+// `xilinx::air::findOpWithAttr` and `findOpOfTypeWithAttr<scf::ForOp>`.
 
 /// Bufferize `target` into a new allocation in `memorySpace`.
 /// `bufferizeDestinationOnly=true` so the targeted op itself is not rewritten;
@@ -125,7 +116,7 @@ public:
 
   void runOnOperation() override {
     func::FuncOp f = getOperation();
-    Operation *packedMatmul = findMarkedOp(f, clPackedMatmulMarker);
+    Operation *packedMatmul = xilinx::air::findOpWithAttr(f, clPackedMatmulMarker);
     if (!packedMatmul)
       return;
     auto linalgOp = dyn_cast<linalg::LinalgOp>(packedMatmul);
@@ -175,7 +166,7 @@ public:
     if (StringRef(clMemcpyOp) == "linalg-copy")
       memcpy = linalg::BufferizeToAllocationOptions::MemcpyOp::LinalgCopy;
     for (StringRef marker : {StringRef(clLhsMarker), StringRef(clRhsMarker)}) {
-      Operation *target = findMarkedOp(f, marker);
+      Operation *target = xilinx::air::findOpWithAttr(f, marker);
       if (!target)
         continue;
       if (failed(bufferizeOpToAllocation(target, clMemorySpace, memcpy,
@@ -223,19 +214,6 @@ std::unique_ptr<mlir::Pass> createAIRMatmulCleanupBufferizePass() {
 //===----------------------------------------------------------------------===//
 
 namespace {
-
-/// Find the first scf.for in `f` whose `marker` discardable attribute is set.
-static scf::ForOp findMarkedForLoop(func::FuncOp f, StringRef marker) {
-  scf::ForOp found;
-  f.walk([&](scf::ForOp forOp) {
-    if (forOp->hasAttr(marker)) {
-      found = forOp;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return found;
-}
 
 /// Hoist any same-block ops between `target` and `source` that are used
 /// inside *either* loop's body. Required because
@@ -304,9 +282,9 @@ public:
     func::FuncOp f = getOperation();
     IRRewriter rewriter(&getContext());
 
-    scf::ForOp copyA = findMarkedForLoop(f, "copy_a_loop");
-    scf::ForOp copyB = findMarkedForLoop(f, "copy_b_loop");
-    scf::ForOp kRed = findMarkedForLoop(f, "k_reduction_loop");
+    scf::ForOp copyA = xilinx::air::findOpOfTypeWithAttr<scf::ForOp>(f, "copy_a_loop");
+    scf::ForOp copyB = xilinx::air::findOpOfTypeWithAttr<scf::ForOp>(f, "copy_b_loop");
+    scf::ForOp kRed = xilinx::air::findOpOfTypeWithAttr<scf::ForOp>(f, "k_reduction_loop");
 
     // No-op if the IR is not in the post-Phase-4 shape (e.g. running on a
     // function that didn't go through tile-l3-to-l2 + tile-k-and-fuse).

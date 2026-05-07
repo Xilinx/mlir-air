@@ -2350,6 +2350,18 @@ Operation *air::cloneOpAndOperands(RewriterBase &rewriter, IRMapping &remap,
   return new_op;
 }
 
+Operation *air::findOpWithAttr(Operation *root, StringRef attrName) {
+  Operation *found = nullptr;
+  root->walk([&](Operation *op) {
+    if (op->hasAttr(attrName)) {
+      found = op;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
 bool air::opOrAncestorIsDominantOver(Operation *a, Operation *b) {
   Region *commonRegion = air::findCommonRegionContainingAllAncestors(
       SmallVector<Operation *>{a, b}, nullptr);

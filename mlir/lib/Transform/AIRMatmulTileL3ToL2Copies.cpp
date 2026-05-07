@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRMatmulTileL3ToL2Copies.h"
+#include "air/Transform/AIRMatmulCodegenHelpers.h"
 #include "air/Util/MatmulCodegenConfig.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -14,10 +15,8 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #define DEBUG_TYPE "air-matmul-tile-l3-to-l2-copies"
 
@@ -28,20 +27,6 @@ namespace xilinx {
 namespace air {
 
 namespace {
-
-// Convert memref.copy → linalg.copy. Local copy of the pattern in
-// AIRLinalgCodegen.cpp's anonymous namespace; reproduced here to avoid
-// exposing it as public API just for one user.
-struct ConvertMemrefCopyToLinalgCopyPattern
-    : public OpRewritePattern<memref::CopyOp> {
-  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(memref::CopyOp copyOp,
-                                PatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<linalg::CopyOp>(copyOp, copyOp.getSource(),
-                                                copyOp.getTarget());
-    return success();
-  }
-};
 
 // Walk back from a matmul tensor operand to the linalg.copy that fills the
 // memref later read by `bufferization.to_tensor`. Returns nullptr if the
@@ -104,14 +89,9 @@ public:
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
-    // Step 1: convert any memref.copy to linalg.copy. Greedy walk over the
-    // function. Idempotent — passes that have already converted upstream
-    // contribute no work.
-    {
-      RewritePatternSet patterns(&getContext());
-      patterns.insert<ConvertMemrefCopyToLinalgCopyPattern>(&getContext());
-      (void)applyPatternsGreedily(func, std::move(patterns));
-    }
+    // Step 1: convert any memref.copy to linalg.copy.
+    if (failed(runConvertMemrefCopyToLinalgCopy(func)))
+      return signalPassFailure();
 
     // Step 2: locate the first linalg.matmul.
     linalg::MatmulOp matmul;

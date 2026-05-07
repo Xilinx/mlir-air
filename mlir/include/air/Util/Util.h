@@ -374,6 +374,26 @@ Operation *cloneOpAndOperands(
 
 bool opOrAncestorIsDominantOver(Operation *a, Operation *b);
 
+// Walk `root` for the first op (any kind) carrying `attrName` as a
+// discardable attribute. Returns nullptr if no match.
+mlir::Operation *findOpWithAttr(mlir::Operation *root,
+                                llvm::StringRef attrName);
+
+// Walk `root` for the first op of type `OpTy` carrying `attrName`.
+// Returns null OpTy if no match.
+template <typename OpTy>
+OpTy findOpOfTypeWithAttr(mlir::Operation *root, llvm::StringRef attrName) {
+  OpTy found;
+  root->walk([&](OpTy op) {
+    if (op->hasAttr(attrName)) {
+      found = op;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+  return found;
+}
+
 } // namespace air
 } // namespace xilinx
 

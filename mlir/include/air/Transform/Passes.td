@@ -1380,9 +1380,9 @@ def AIRMatmulTileCores : Pass<"air-matmul-tile-cores", "func::FuncOp"> {
     `air-matmul-bufferize-l1-inputs` can find them). M2 Phase 5.
   }];
   let options = [
-    Option<"clTileSizes", "tile-sizes", "std::string", /*default=*/"\"8,4,0\"",
-           "Comma-separated tile sizes on the packed-matmul iterators "
-           "(outer dims of the packed iteration space).">,
+    ListOption<"clTileSizes", "tile-sizes", "int64_t",
+               "Tile sizes on the packed-matmul iterators (outer dims of the "
+               "packed iteration space). Default = [8, 4, 0].">,
     Option<"clPackedMatmulMarker", "packed-matmul-marker", "std::string",
            /*default=*/"\"packed_matmul\"",
            "Attribute name on the packed matmul op.">,
@@ -1424,9 +1424,8 @@ def AIRMatmulTileLaunchTile : Pass<"air-matmul-tile-launch-tile",
     Used by the test-37 two-pack-level flow. M4a Phase 0.
   }];
   let options = [
-    Option<"clTileSizes", "tile-sizes", "std::string",
-           /*default=*/"\"256,256\"",
-           "Comma-separated tile sizes for the launch-tile forall.">,
+    ListOption<"clTileSizes", "tile-sizes", "int64_t",
+               "Tile sizes for the launch-tile forall. Default = [256, 256].">,
     Option<"clLaunchTileForallMarker", "launch-tile-forall-marker",
            "std::string", /*default=*/"\"launch_tile_forall\"",
            "Marker on the new outer scf.forall.">
@@ -1457,16 +1456,16 @@ def AIRMatmulPrologueEpilogue : Pass<"air-matmul-prologue-epilogue",
     don't need a separate prologue/epilogue. M2 Phase 6 prologue/epilogue.
   }];
   let options = [
-    Option<"clPrologueTileSizes", "prologue-tile-sizes", "std::string",
-           /*default=*/"\"8,4\"",
-           "Comma-separated tile sizes for the prologue (fill) forall.">,
-    Option<"clEpilogueTileSizes", "epilogue-tile-sizes", "std::string",
-           /*default=*/"\"64,32\"",
-           "Comma-separated tile sizes for the epilogue (unpack) forall.">,
-    Option<"clFillIteratorInterchange", "fill-iterator-interchange",
-           "std::string", /*default=*/"\"1,0,2,3\"",
-           "Iterator-permutation vector applied to the generalized fill "
-           "before tiling. Empty disables interchange.">,
+    ListOption<"clPrologueTileSizes", "prologue-tile-sizes", "int64_t",
+               "Tile sizes for the prologue (fill) forall. Default = [8, 4].">,
+    ListOption<"clEpilogueTileSizes", "epilogue-tile-sizes", "int64_t",
+               "Tile sizes for the epilogue (unpack) forall. "
+               "Default = [64, 32].">,
+    ListOption<"clFillIteratorInterchange", "fill-iterator-interchange",
+               "int64_t",
+               "Iterator-permutation vector applied to the generalized fill "
+               "before tiling. Empty disables interchange. "
+               "Default = [1, 0, 2, 3].">,
     Option<"clInitFillMarker", "init-fill-marker", "std::string",
            /*default=*/"\"init_fill\"",
            "Marker on the generalized fill op.">,
