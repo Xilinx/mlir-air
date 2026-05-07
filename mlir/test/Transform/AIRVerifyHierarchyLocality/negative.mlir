@@ -89,3 +89,106 @@ module {
     return
   }
 }
+
+// -----
+// memref.store with constant index — every PE writes the same slot, race.
+module {
+  func.func @neg_memref_store_const_idx() {
+    %c4 = arith.constant 4 : index
+    %a = memref.alloc() : memref<2048xi8, 2 : i32>
+    // expected-error@+1 {{kernel operand #0}}
+    air.herd tile (%x, %y) in (%sx = %c4, %sy = %c4)
+        args(%arg = %a) : memref<2048xi8, 2 : i32> {
+      %c0 = arith.constant 0 : index
+      %v = arith.constant 7 : i8
+      // expected-note@+1 {{access here}}
+      memref.store %v, %arg[%c0] : memref<2048xi8, 2 : i32>
+      air.herd_terminator
+    }
+    return
+  }
+}
+
+// -----
+// vector.transfer_write with constant offsets — every PE writes the same
+// region, race.
+module {
+  func.func @neg_vector_transfer_write_const() {
+    %c4 = arith.constant 4 : index
+    %a = memref.alloc() : memref<128x128xf32, 2 : i32>
+    // expected-error@+1 {{kernel operand #0}}
+    air.herd tile (%x, %y) in (%sx = %c4, %sy = %c4)
+        args(%arg = %a) : memref<128x128xf32, 2 : i32> {
+      %c0 = arith.constant 0 : index
+      %v = arith.constant dense<1.0> : vector<16x16xf32>
+      // expected-note@+1 {{access here}}
+      vector.transfer_write %v, %arg[%c0, %c0] {in_bounds = [true, true]}
+        : vector<16x16xf32>, memref<128x128xf32, 2 : i32>
+      air.herd_terminator
+    }
+    return
+  }
+}
+
+// -----
+// func.call with NO iv-dependent operand — the per-PE replication signal
+// does not fire and the call is opaque, so it bails as unrecognized.
+module {
+  func.func private @opaque_no_iv(memref<2048xi8, 2 : i32>, i32)
+  func.func @neg_funccall_no_iv_dep() {
+    %c2 = arith.constant 2 : index
+    %a = memref.alloc() : memref<2048xi8, 2 : i32>
+    // expected-error@+1 {{kernel operand #0}}
+    air.herd tile (%x, %y) in (%sx = %c2, %sy = %c2)
+        args(%arg = %a) : memref<2048xi8, 2 : i32> {
+      %c1024 = arith.constant 1024 : i32
+      // expected-note@+1 {{access here}}
+      func.call @opaque_no_iv(%arg, %c1024)
+        : (memref<2048xi8, 2 : i32>, i32) -> ()
+      air.herd_terminator
+    }
+    return
+  }
+}
+
+// -----
+// Multi-IV joint partition where the smallest coefficient is below the
+// access size — distinct iv tuples produce overlapping accesses.
+//   lvx ext=2, coeff=4. lvy ext=4, coeff=8. static size=16.
+//   sorted (4, 8): 4 >= 16? NO → reject.
+module {
+  func.func @neg_joint_partition_overlap(%arg0: memref<512xf32>) {
+    %c4 = arith.constant 4 : index
+    %c2 = arith.constant 2 : index
+    // expected-error@+1 {{kernel operand #0}}
+    air.launch (%lvx, %lvy) in (%lsx=%c2, %lsy=%c4) args(%la=%arg0)
+        : memref<512xf32> {
+      %c4_l = arith.constant 4 : index
+      %c8 = arith.constant 8 : index
+      %c1 = arith.constant 1 : index
+      %c16 = arith.constant 16 : index
+      %0 = arith.muli %lvx, %c4_l : index
+      %1 = arith.muli %lvy, %c8 : index
+      %2 = arith.addi %0, %1 : index
+      air.segment @seg args(%la_s=%la, %off_s=%2)
+          : memref<512xf32>, index {
+        %c1_s = arith.constant 1 : index
+        air.herd @herd0 tile(%tx, %ty) in (%hsx=%c1_s, %hsy=%c1_s)
+            args(%la_h=%la_s, %off_h=%off_s) : memref<512xf32>, index {
+          %c1_h = arith.constant 1 : index
+          %c16_h = arith.constant 16 : index
+          %tile_out = memref.alloc() : memref<16xf32, 2>
+          // expected-note@+1 {{access here}}
+          air.dma_memcpy_nd
+              (%la_h[%off_h] [%c16_h] [%c1_h], %tile_out[] [] [])
+              : (memref<512xf32>, memref<16xf32, 2>)
+          memref.dealloc %tile_out : memref<16xf32, 2>
+          air.herd_terminator
+        }
+        air.segment_terminator
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
