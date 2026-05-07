@@ -1,6 +1,6 @@
 # C++ Matmul Codegen Pipeline — Design Plan
 
-Replace the transform-dialect scripts that drive matmul tiling/bufferization/vectorization in mlir-air with a sequence of focused C++ MLIR passes, modeled on iree-amd-aie's pass structure.
+Replace the transform-dialect scripts that drive matmul tiling/bufferization/vectorization in mlir-air with a sequence of focused C++ MLIR passes.
 
 **Goal**: parametric, generally-applicable, debuggable, individually testable. Eventually supersede the per-test `transform_aie2*.mlir` scripts.
 
@@ -11,9 +11,7 @@ Replace the transform-dialect scripts that drive matmul tiling/bufferization/vec
 | **M0** — `air-matmul-pack-and-transpose` + `air-matmul-tile-l3-to-l2-copies` | ✅ landed; build clean; `check-air-mlir` passes; **IR equivalence verified byte-identical against transform-script Phases 1+3** on test 54 launch-tile input (with-perms) and on a small synthetic input (with- and no-perms) |
 | **M1** — Group B (passes 13–22) for `programming_examples/matrix_multiplication/{bf16,i8}` | ✅ landed and **hardware-validated end-to-end on NPU2** (both i8 and bf16 prog_ex matmul examples PASS via `--compile-mode=compile-and-run --arch=aie2p`). See M1 sub-status. |
 | **M2** — Group A passes #2–12 for tests 53/54 (test 12 deferred — non-canonical pad+kernel.cpp flow) | ✅ landed and **hardware-validated end-to-end on NPU2** for both test 54 (BFP16 emulation, f32 in/out) and test 53 (bf16 in/out, truncf-fuse + hoist-cast-pairs). All four downstream paths still PASS (legacy 54, legacy 53, prog_ex i8, prog_ex bf16). M2d pending (transform script deletion + final doc cleanup). Profiling matrix: test 54 cpp 5.067 ms vs legacy 5.078 ms; test 53 cpp 1.766 ms vs legacy 1.731 ms — within run-to-run noise on both. |
-| **M3a** — `air-matmul-set-codegen-config` heuristic + each consumer pass reads from `air.matmul_codegen_config` dict attribute | ✅ landed and **hardware-validated on NPU2** for tests 53/54 via `--use-codegen-config` (implies `--use-cpp-pipeline`). Hardcoded AIE2/AIE2P lookup-table heuristic; users no longer pass tile/pack/vector params via run.py kwargs. Both tests PASS in HW: test 54 M3 5.108 ms (vs M2 cpp 5.067), test 53 M3 1.762 ms (vs M2 cpp 1.766) — within run-to-run noise. All six downstream paths still PASS (legacy 53/54, M2 cpp 53/54, prog_ex i8, prog_ex bf16). See M3a sub-status. |
-| **M3b** — drop hand-tuned per-pass options entirely from run.py; add L1-fit guardrail; sweep new shapes | ✅ landed and **hardware-validated on NPU2**. `--use-cpp-pipeline` now implies M3 (heuristic-driven); per-pass option strings dropped from the run.py pipeline list. L1-fit guardrail halves coreTile when the per-tile L1 footprint exceeds 64 KB. Shape sweep on tests 53/54 with non-default --M/--N/--K: 5/6 PASS; the one failure (test 53 M=256/N=256/K=512) reproduces under the legacy transform script too (pre-existing bug, not introduced by M3). See M3b sub-status. |
-| M3c — replace lookup-table tile_cores with a real derivation (needs `air-collapse-herd` modelling) | not started |
+| M3 (entire family) — automatic heuristic that derives pack / tile / vector params from matmul shape and writes the `air.matmul_codegen_config` carrier attribute | **deferred to a follow-up PR**. The carrier-attribute infrastructure (`MatmulCodegenConfig.{h,cpp}` + each consumer pass's "read from carrier attr if present, else use pass options" code path) **stays in this PR** as the external API. The pass that *populates* the attribute via heuristic (`air-matmul-set-codegen-config`) does not. Tests 37/48/53/54 cpp pipelines specify all tile/pack/vector parameters via per-pass options instead. |
 | **M4a** — two-pack-level (test 37) infrastructure | ✅ landed and **hardware-validated on NPU2**. 7 new/extended passes + 2 marker-flow fixes in `tile-k-and-fuse-packs`. Test 37 cpp `air_tiled.mlir` matches legacy structurally (identical alloc set/memory spaces). Tests 37/53/54 cpp paths all PASS via `--use-cpp-pipeline` on NPU2. 390/391 lit tests pass (the 1 failure is unrelated, pre-existing). **Perf parity confirmed**: test 37 cpp 1.428ms vs legacy 1.430ms (0.1% faster); test 53 cpp 1.754ms vs legacy 1.745ms (0.5% slower); test 54 cpp 5.052ms vs legacy 5.032ms (0.4% slower) via `--profile-iters 50`; test 54 Makefile `profile` target 3-run mean cpp 3342us vs legacy 3314us (0.85% slower) — all within per-run noise (5–12%). |
 | M4b | not started |
 | **M5 Phase 1** — wire test 48 (latest Triton-XDNA matmul strategy) to `--use-cpp-pipeline` | ✅ landed and **hardware-validated on NPU2**. Test 48 transform_aie2p.mlir maps phase-by-phase to existing M0/M1/M2 passes (no new infrastructure needed); the test 53 cpp pipeline string was reusable verbatim. Open question on `air-hoist-cast-pairs` resolved: fixed-point converges to **structurally identical IR** vs the 4 sequential `transform.air.hoist_cast_pair` calls (same op counts, alloc shapes, nesting; only diffs are SSA renumbering and missing `prologue_herd`/`compute_herd`/`epilogue_herd` annotations — cosmetic). Perf parity confirmed: 3-run-mean of `min` times legacy 0.211ms vs cpp 0.208ms (cpp slightly faster by min, within noise). |
@@ -190,7 +188,7 @@ Test 53/54's padding does NOT live in the transform script. The transform script
 
 ## 4. Configuration carrier
 
-A new attribute interface, `#air.matmul_codegen_config`, attached to the `linalg.matmul`. Modeled on iree-amd-aie's `lowering_config`. Single source of truth; passes read what they need via a level index.
+A new attribute interface, `#air.matmul_codegen_config`, attached to the `linalg.matmul`. Single source of truth; passes read what they need via a level index.
 
 ```mlir
 #air.matmul_codegen_config<
@@ -272,7 +270,7 @@ Today the transform script uses ~10 named markers (`copy_a_loop`, `copy_b_loop`,
 
 ## 6. Heuristic config-setter pass
 
-`air-matmul-set-codegen-config{target=aie2p,bfp16-emulation=true,herd-m=4,herd-n=4}` — runs once at the front and writes the `#air.matmul_codegen_config` attribute. Mirrors iree-amd-aie's [KernelDispatch.cpp](https://raw.githubusercontent.com/nod-ai/iree-amd-aie/main/compiler/plugins/target/AMD-AIE/iree-amd-aie/Transforms/KernelDispatch.cpp) flow:
+`air-matmul-set-codegen-config{target=aie2p,bfp16-emulation=true,herd-m=4,herd-n=4}` — runs once at the front and writes the `#air.matmul_codegen_config` attribute:
 
 1. **Inner pack from device model**: `air::AIEDeviceModel(target).getMatmulInstructionSize(lhsTy, rhsTy, accTy)` → `[m1Pack, n1Pack, k1Pack]`.
    - AIE2 bf16/f32 → `[4, 8, 4]`
@@ -371,8 +369,6 @@ The IR-equivalence layer is fast and cheap, but it can be misleading: my M1 IR w
 - [AIRLinalgCodegen.cpp:5488](mlir/lib/Transform/AIRLinalgCodegen.cpp) — `HoistCastPairOp` (extract + wrap in fixed-point pass)
 - [ConvertToAIRPass.cpp:2282](mlir/lib/Conversion/ConvertToAIRPass.cpp) — `ParToHerdOp` (extract)
 - [AIRSplitLaunchForPadding.cpp](mlir/lib/Transform/AIRSplitLaunchForPadding.cpp) — already C++; understand the boundary it expects from the codegen pipeline
-- iree-amd-aie [KernelDispatch.cpp](https://raw.githubusercontent.com/nod-ai/iree-amd-aie/main/compiler/plugins/target/AMD-AIE/iree-amd-aie/Transforms/KernelDispatch.cpp) — heuristic
-- iree-amd-aie [AMDAIETileAndFusePass.cpp](https://github.com/nod-ai/iree-amd-aie/blob/main/compiler/plugins/target/AMD-AIE/iree-amd-aie/Transforms/AMDAIETileAndFuse.cpp) and `AMDAIEPackAndTransposePass.cpp` — copy the lowering_config-driven pattern
 
 ---
 
@@ -380,7 +376,7 @@ The IR-equivalence layer is fast and cheap, but it can be misleading: my M1 IR w
 
 1. **Where does the config attribute come from in M0–M2?** Pass options + JSON for parity with current scripts. Heuristic lands in M3.
 2. **Coexistence with `transform.air.*` ops?** Yes — they share C++ implementations. The new passes are an additional entry point; existing transform-based tests keep working until their per-test scripts are deleted in M2/M4.
-3. **`bufferDepthAcc=0` vs `1`** for the L1 accumulator: today mlir-air uses register-only accumulation for pure matmul (matches iree-amd-aie's `bufferDepthAcc=0` branch). The heuristic should detect elementwise consumers (e.g., bias add) and switch to `bufferDepthAcc=1`. Out of scope for M0–M3, on by M4.
+3. **`bufferDepthAcc=0` vs `1`** for the L1 accumulator: today mlir-air uses register-only accumulation for pure matmul. The heuristic should detect elementwise consumers (e.g., bias add) and switch to `bufferDepthAcc=1`. Out of scope for M0–M3, on by M4.
 4. **`runHoistVectorTransferPointers` latent bug**: the helper produces an invalid `memref.collapse_shape` if called on an scf.for whose body has vector.transfer_read ops on subview-derived strided memrefs. M1 dodged this by filtering to compute herds only (where transfers are on full L1 allocs, not subviews). M2's linalg-input flow may exercise the bug; revisit the helper when first triggered.
 
 ---

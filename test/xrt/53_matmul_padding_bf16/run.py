@@ -42,13 +42,9 @@ parser.add_argument("-v", "--verbose", action="store_true")
 parser.add_argument(
     "--use-cpp-pipeline",
     action="store_true",
-    help="Replace transform_aie2p.mlir with the C++ matmul codegen pipeline.",
-)
-parser.add_argument(
-    "--use-codegen-config",
-    action="store_true",
-    help="Use M3 air-matmul-set-codegen-config heuristic (auto-derive pack/"
-    "tile/vector params). Implies --use-cpp-pipeline.",
+    help="Replace transform_aie2p.mlir with the C++ matmul codegen pipeline. "
+    "All tile/pack/vector parameters are passed explicitly per-pass; this "
+    "PR contains no automatic heuristic.",
 )
 parser.add_argument(
     "--print-module-only",
@@ -197,26 +193,35 @@ with air.ir.Context() as ctx, Location.unknown():
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
-    if args.use_codegen_config:
-        args.use_cpp_pipeline = True
     if args.use_cpp_pipeline:
-        # Drive bf16-out matmul codegen via the C++ pass pipeline. The
-        # heuristic pass attaches a config attribute that downstream consumer
-        # passes read; no per-pass options needed in the pipeline.
-        # See MATMUL_CODEGEN_PIPELINE_PLAN.md.
+        # Drive bf16-out matmul codegen via the C++ pass pipeline. All
+        # tile/pack/vector parameters are passed explicitly per-pass; the
+        # automatic heuristic that derives these from the matmul shape lives
+        # in a follow-up PR. See MATMUL_CODEGEN_PIPELINE_PLAN.md.
+        # Per-launch-tile shape is M_TILE=128, N_TILE=256, K=K_FULL.
+        # Hand-picked values matching the previously-validated heuristic:
+        # K=784 forces L2-K-tile = 16 (largest power-of-2 divisor of 784
+        # that is also a multiple of pack-K=8); 4×4 herd means epilogue
+        # tile is min(per-core-M-span, M/herdM) = min(8*8, 128/4) = 32 —
+        # but the heuristic raised it to 64 to match the per-core mmul.
+        l2_k = K_L2_TILE  # default 16 — must match user's --k-l2-tile.
+        k_factor = max(1, l2_k // 8)
         phases = [
-            "func.func(air-matmul-set-codegen-config{"
-            "target-device=aie2p herd-m=4 herd-n=4 bfp16-emulation=false})",
-            "func.func(air-matmul-tile-l3-to-l2-copies)",
+            f"func.func(air-matmul-tile-l3-to-l2-copies{{k-l2-tile={l2_k}}})",
             "func.func(air-matmul-fuse-output-truncf)",
             "func.func(air-matmul-bufferize-output-l2)",
-            "func.func(air-matmul-pack-and-transpose)",
+            "func.func(air-matmul-pack-and-transpose{pack-sizes=8,8,8 "
+            "lhs-outer-perm=1,0 lhs-inner-perm=0,1 "
+            "rhs-outer-perm=1,0 rhs-inner-perm=1,0 "
+            "acc-outer-perm=1,0 acc-inner-perm=0,1})",
             "func.func(air-matmul-bufferize-l1-output)",
-            "func.func(air-matmul-tile-k-and-fuse-packs)",
-            "func.func(air-matmul-tile-cores)",
+            f"func.func(air-matmul-tile-k-and-fuse-packs{{k-tile-factor={k_factor}}})",
+            "func.func(air-matmul-tile-cores{tile-sizes=8,8,0})",
             "func.func(canonicalize,cse)",
             "func.func(air-matmul-bufferize-l1-inputs)",
-            "func.func(air-matmul-prologue-epilogue)",
+            "func.func(air-matmul-prologue-epilogue{"
+            "prologue-tile-sizes=8,8 epilogue-tile-sizes=64,64 "
+            "fill-iterator-interchange=1,0,2,3})",
             "func.func(canonicalize,cse)",
             "one-shot-bufferize{bufferize-function-boundaries=1 "
             "unknown-type-conversion=identity-layout-map "
@@ -224,7 +229,10 @@ with air.ir.Context() as ctx, Location.unknown():
             "func.func(canonicalize,cse,canonicalize)",
             "func.func(air-matmul-cleanup-bufferize)",
             "func.func(air-matmul-fuse-pingpong-loops)",
-            "func.func(air-matmul-tile-for-vectorize)",
+            "func.func(air-matmul-tile-for-vectorize{"
+            "matmul-tile-sizes=2,2,1,0,0,0 "
+            "matmul-unroll-tile-sizes=1,1,0,0,0,0 "
+            "matmul-unroll-factor=2 fill-tile-sizes=1,1,0,0})",
             "func.func(scf-forall-to-parallel)",
             "air-par-to-herd",
             "func.func(air-herd-vectorize)",

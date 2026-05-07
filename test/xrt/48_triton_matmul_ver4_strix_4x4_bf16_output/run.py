@@ -104,23 +104,26 @@ with air.ir.Context() as ctx, Location.unknown():
 
     if args.use_cpp_pipeline:
         # Drive Triton-XDNA bf16-out matmul codegen via the C++ pass pipeline.
-        # The heuristic pass attaches a config attribute that downstream
-        # consumer passes read; no per-pass options needed in the pipeline.
-        # Same shape as test 53 cpp pipeline (M2/M3a/M3b).
-        # See MATMUL_CODEGEN_PIPELINE_PLAN.md (M5).
+        # All tile/pack/vector parameters are passed explicitly per-pass; the
+        # automatic heuristic that derives these from the matmul shape lives
+        # in a follow-up PR. See MATMUL_CODEGEN_PIPELINE_PLAN.md (M5).
+        # Per-launch-tile shape is 256x256x256 (single launch tile).
         phases = [
-            "func.func(air-matmul-set-codegen-config{"
-            "target-device=aie2p herd-m=4 herd-n=4 bfp16-emulation=false})",
-            "func.func(air-matmul-tile-l3-to-l2-copies)",
+            "func.func(air-matmul-tile-l3-to-l2-copies{k-l2-tile=64})",
             "func.func(air-matmul-fuse-output-truncf)",
             "func.func(air-matmul-bufferize-output-l2)",
-            "func.func(air-matmul-pack-and-transpose)",
+            "func.func(air-matmul-pack-and-transpose{pack-sizes=8,8,8 "
+            "lhs-outer-perm=1,0 lhs-inner-perm=0,1 "
+            "rhs-outer-perm=1,0 rhs-inner-perm=1,0 "
+            "acc-outer-perm=1,0 acc-inner-perm=0,1})",
             "func.func(air-matmul-bufferize-l1-output)",
-            "func.func(air-matmul-tile-k-and-fuse-packs)",
-            "func.func(air-matmul-tile-cores)",
+            "func.func(air-matmul-tile-k-and-fuse-packs{k-tile-factor=8})",
+            "func.func(air-matmul-tile-cores{tile-sizes=8,8,0})",
             "func.func(canonicalize,cse)",
             "func.func(air-matmul-bufferize-l1-inputs)",
-            "func.func(air-matmul-prologue-epilogue)",
+            "func.func(air-matmul-prologue-epilogue{"
+            "prologue-tile-sizes=8,8 epilogue-tile-sizes=64,64 "
+            "fill-iterator-interchange=1,0,2,3})",
             "func.func(canonicalize,cse)",
             "one-shot-bufferize{bufferize-function-boundaries=1 "
             "unknown-type-conversion=identity-layout-map "
@@ -128,7 +131,10 @@ with air.ir.Context() as ctx, Location.unknown():
             "func.func(canonicalize,cse,canonicalize)",
             "func.func(air-matmul-cleanup-bufferize)",
             "func.func(air-matmul-fuse-pingpong-loops)",
-            "func.func(air-matmul-tile-for-vectorize)",
+            "func.func(air-matmul-tile-for-vectorize{"
+            "matmul-tile-sizes=2,2,1,0,0,0 "
+            "matmul-unroll-tile-sizes=1,1,0,0,0,0 "
+            "matmul-unroll-factor=2 fill-tile-sizes=1,1,0,0})",
             "func.func(scf-forall-to-parallel)",
             "air-par-to-herd",
             "func.func(air-herd-vectorize)",

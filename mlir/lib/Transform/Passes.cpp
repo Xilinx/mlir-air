@@ -56,7 +56,6 @@ void xilinx::air::registerTransformPasses() {
   registerAIRHoistVectorTransferPointers();
   registerAIRVectorCastForEmulation();
   registerAIRHoistCastPairs();
-  registerAIRMatmulSetCodegenConfig();
   registerAIRMatmulTileLaunchTile();
   registerAIRMatmulTileKAndFusePacks();
   registerAIRMatmulTileCores();

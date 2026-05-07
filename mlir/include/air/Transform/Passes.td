@@ -1433,44 +1433,6 @@ def AIRMatmulTileLaunchTile : Pass<"air-matmul-tile-launch-tile",
   ];
 }
 
-def AIRMatmulSetCodegenConfig : Pass<"air-matmul-set-codegen-config",
-                                      "func::FuncOp"> {
-  let summary = "M3 heuristic: write the #air.matmul_codegen_config dict "
-                "attribute on the first linalg.matmul.";
-  let constructor = "xilinx::air::createAIRMatmulSetCodegenConfigPass()";
-  let description = [{
-    Walks for the first `linalg.matmul` in the function and writes the
-    `air.matmul_codegen_config` discardable DictionaryAttr on it. The dict
-    carries: pack_sizes, lhs/rhs/acc outer/inner perms, tile_l3_l2_k,
-    tile_k_factor, tile_cores, prologue/epilogue_tile, vector_tile,
-    vector_unroll_tile, vector_unroll_factor, fill_vector_tile,
-    plus the mode flags bfp16_emulation / fuse_output_truncf /
-    bf16_output_hoist_pairs / three_herd_prologue_epilogue.
-
-    M3a heuristic: hardcoded type+target lookup table (no L1-fit solver yet).
-    See MATMUL_CODEGEN_PIPELINE_PLAN.md. Each downstream M2 pass reads the
-    dict at its key when present and falls back to its pass-options
-    otherwise.
-  }];
-  let options = [
-    Option<"clTargetDevice", "target-device", "std::string",
-           /*default=*/"\"aie2p\"",
-           "Target device: \"aie2\" or \"aie2p\".">,
-    Option<"clHerdM", "herd-m", "int64_t", /*default=*/"4",
-           "Compute herd M dimension.">,
-    Option<"clHerdN", "herd-n", "int64_t", /*default=*/"4",
-           "Compute herd N dimension.">,
-    Option<"clTileL3L2K", "tile-l3-l2-k", "int64_t", /*default=*/"0",
-           "L2 K-tile size; 0 = auto-derive from element types "
-           "(64 for bf16/i8, 16 for f32 inputs).">,
-    Option<"clBfp16Emulation", "bfp16-emulation", "bool",
-           /*default=*/"false",
-           "Set the bfp16-emulation mode flag (test-54-style f32 in/out).">,
-    Option<"clThreeHerd", "three-herd", "bool", /*default=*/"true",
-           "Set three-herd prologue/epilogue mode flag (tests 53/54).">
-  ];
-}
-
 def AIRMatmulPrologueEpilogue : Pass<"air-matmul-prologue-epilogue",
                                       "func::FuncOp"> {
   let summary = "Phase 6 prologue/epilogue: generalize+interchange the matmul "

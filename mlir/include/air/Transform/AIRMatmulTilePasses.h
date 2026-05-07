@@ -35,10 +35,6 @@ std::unique_ptr<mlir::Pass> createAIRMatmulPrologueEpiloguePass();
 std::unique_ptr<mlir::Pass> createAIRMatmulPrologueEpiloguePass(
     const AIRMatmulPrologueEpilogueOptions &);
 
-std::unique_ptr<mlir::Pass> createAIRMatmulSetCodegenConfigPass();
-std::unique_ptr<mlir::Pass> createAIRMatmulSetCodegenConfigPass(
-    const AIRMatmulSetCodegenConfigOptions &);
-
 std::unique_ptr<mlir::Pass> createAIRMatmulTileLaunchTilePass();
 std::unique_ptr<mlir::Pass> createAIRMatmulTileLaunchTilePass(
     const AIRMatmulTileLaunchTileOptions &);
