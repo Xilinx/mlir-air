@@ -27,6 +27,19 @@ parser.add_argument(
     default="transform.mlir",
     help="Transform script path",
 )
+parser.add_argument(
+    "--use-cpp-pipeline",
+    action="store_true",
+    help="Replace the legacy transform script with the C++ matmul codegen "
+    "pipeline (M5 — Triton-XDNA single-pack bf16-out flow). See "
+    "MATMUL_CODEGEN_PIPELINE_PLAN.md.",
+)
+parser.add_argument(
+    "--profile-iters",
+    type=int,
+    default=0,
+    help="If >0, also benchmark on HW for this many iters (after correctness).",
+)
 args = parser.parse_args()
 
 with air.ir.Context() as ctx, Location.unknown():
@@ -89,11 +102,57 @@ with air.ir.Context() as ctx, Location.unknown():
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
-    # Load the MLIR transform IR from an external file
-    with open(args.transform_script, "r") as f:
-        transform_ir_string = f.read()
-    transform_ir = Module.parse(transform_ir_string)
-    run_transform(transform_ir, air_module)
+    if args.use_cpp_pipeline:
+        # Drive Triton-XDNA bf16-out matmul codegen via the C++ pass pipeline.
+        # The heuristic pass attaches a config attribute that downstream
+        # consumer passes read; no per-pass options needed in the pipeline.
+        # Same shape as test 53 cpp pipeline (M2/M3a/M3b).
+        # See MATMUL_CODEGEN_PIPELINE_PLAN.md (M5).
+        phases = [
+            "func.func(air-matmul-set-codegen-config{"
+            "target-device=aie2p herd-m=4 herd-n=4 bfp16-emulation=false})",
+            "func.func(air-matmul-tile-l3-to-l2-copies)",
+            "func.func(air-matmul-fuse-output-truncf)",
+            "func.func(air-matmul-bufferize-output-l2)",
+            "func.func(air-matmul-pack-and-transpose)",
+            "func.func(air-matmul-bufferize-l1-output)",
+            "func.func(air-matmul-tile-k-and-fuse-packs)",
+            "func.func(air-matmul-tile-cores)",
+            "func.func(canonicalize,cse)",
+            "func.func(air-matmul-bufferize-l1-inputs)",
+            "func.func(air-matmul-prologue-epilogue)",
+            "func.func(canonicalize,cse)",
+            "one-shot-bufferize{bufferize-function-boundaries=1 "
+            "unknown-type-conversion=identity-layout-map "
+            "function-boundary-type-conversion=identity-layout-map}",
+            "func.func(canonicalize,cse,canonicalize)",
+            "func.func(air-matmul-cleanup-bufferize)",
+            "func.func(air-matmul-fuse-pingpong-loops)",
+            "func.func(air-matmul-tile-for-vectorize)",
+            "func.func(scf-forall-to-parallel)",
+            "air-par-to-herd",
+            "func.func(air-herd-vectorize)",
+            "func.func(canonicalize,cse,fold-memref-alias-ops)",
+            "func.func(air-fold-unit-extent-dims)",
+            "func.func(air-eliminate-redundant-vector-transfers)",
+            "func.func(air-vector-cast-for-emulation{"
+            "target-element-type=f32 input-indices=2 output-indices=0})",
+            "func.func(air-hoist-loop-invariant-transfers)",
+            "func.func(air-flatten-for-iter-args)",
+            "func.func(air-hoist-vector-transfer-pointers)",
+            "func.func(air-hoist-cast-pairs)",
+            "func.func(canonicalize,cse,fold-memref-alias-ops,"
+            "air-fold-unit-extent-dims)",
+        ]
+        cpp_pipeline = "builtin.module(" + ",".join(phases) + ")"
+        pm = air.passmanager.PassManager.parse(cpp_pipeline)
+        pm.run(air_module.operation)
+    else:
+        # Load the MLIR transform IR from an external file
+        with open(args.transform_script, "r") as f:
+            transform_ir_string = f.read()
+        transform_ir = Module.parse(transform_ir_string)
+        run_transform(transform_ir, air_module)
 
     ################################################
     ## Binding scf.parallel to air hierarchies
@@ -119,6 +178,11 @@ with air.ir.Context() as ctx, Location.unknown():
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
+    import os
+    if os.environ.get("AIR_DUMP_FINAL_IR"):
+        with open(os.environ["AIR_DUMP_FINAL_IR"], "w") as f:
+            f.write(str(air_module))
+
     ###############################################
     # Run compile and load
     ###############################################
@@ -134,11 +198,18 @@ with air.ir.Context() as ctx, Location.unknown():
         omit_while_true_loop=False,
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(
-        runner.run_test(
+    rc = runner.run_test(
+        air_module,
+        inputs=[A, B],
+        expected_outputs=[C],
+        rtol=1e-1,
+    )
+    if args.profile_iters > 0 and rc == 0:
+        runner.benchmark(
             air_module,
             inputs=[A, B],
-            expected_outputs=[C],
-            rtol=1e-1,
+            output_shapes_dtypes=[(C.shape, C.dtype)],
+            iters=args.profile_iters,
+            label=("cpp" if args.use_cpp_pipeline else "legacy"),
         )
-    )
+    exit(rc)
