@@ -12,6 +12,7 @@ via its link_with search path.
 """
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -26,24 +27,28 @@ def _get_peano_clang():
 
 def _get_aie_include_dir():
     """Find the AIE API include directory (for aie_api/aie.hpp)."""
-    # Try mlir-aie install path
-    candidates = [
+    # Primary: locate via aie-opt on PATH. Matches the convention used by
+    # every other Makefile in this repo (AIEOPT_DIR = $(dir $(which aie-opt))/..)
+    # and works for both local source builds and CI's mlir_aie wheel install.
+    aie_opt = shutil.which("aie-opt")
+    if aie_opt:
+        p = Path(aie_opt).resolve().parent.parent / "include"
+        if (p / "aie_api" / "aie.hpp").exists():
+            return str(p)
+    # Fallback: explicit local dev install path.
+    p = (
         Path(__file__).resolve().parent.parent.parent.parent
         / "my_install"
         / "mlir-aie"
         / "install"
-        / "include",
-    ]
-    for p in candidates:
-        if (p / "aie_api" / "aie.hpp").exists():
-            return str(p)
-    # Fallback: search from PEANO_INSTALL_DIR
-    peano_dir = os.environ.get("PEANO_INSTALL_DIR", "")
-    if peano_dir:
-        p = Path(peano_dir).parent.parent / "include"
-        if (p / "aie_api" / "aie.hpp").exists():
-            return str(p)
-    raise RuntimeError("Cannot find aie_api/aie.hpp include directory")
+        / "include"
+    )
+    if (p / "aie_api" / "aie.hpp").exists():
+        return str(p)
+    raise RuntimeError(
+        "Cannot find aie_api/aie.hpp include directory "
+        "(no aie-opt on PATH and no my_install/mlir-aie/install)"
+    )
 
 
 _PEANO_FLAGS = [
