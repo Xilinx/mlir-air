@@ -3,6 +3,7 @@
 import argparse
 from math import cos, sin, sqrt, exp
 
+import numpy as np
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
@@ -24,6 +25,46 @@ from air.backend.xrt import XRTBackend
 from ml_dtypes import bfloat16
 
 range_ = for_
+
+# RoPE freq table for dk=64. out[i] = pos / rope_base^(2i/dk), rope_base=500000
+# (LLaMA-3 / LLaMA-3.2 rope_theta). Mirrors freq_table_dk64 in attn_decode_npu2.cc.
+_FREQ_TABLE_DK64_BF16 = np.array(
+    [
+        1.000000,
+        0.663601,
+        0.440367,
+        0.292228,
+        0.193923,
+        0.128687,
+        0.085397,
+        0.056670,
+        0.037606,
+        0.024955,
+        0.016560,
+        0.010990,
+        0.007293,
+        0.004839,
+        0.003211,
+        0.002131,
+        0.001414,
+        0.000938,
+        0.000623,
+        0.000413,
+        0.000274,
+        0.000182,
+        0.000121,
+        0.000080,
+        0.000053,
+        0.000035,
+        0.000023,
+        0.000016,
+        0.000010,
+        0.000007,
+        0.000005,
+        0.000003,
+    ],
+    dtype=bfloat16,
+)
 
 
 @module_builder
@@ -152,11 +193,6 @@ def build_module(
         ([l1MemrefTyHSByTwo, l1MemrefTyHSByTwo], []),
         visibility="private",
     )
-    freq_pos_func = FuncOp(
-        "freq_pos_bf16_32_16",
-        ([T.i32(), l1MemrefTyHSByTwo], []),
-        visibility="private",
-    )
     shuffle_apply_rope_poly_func = FuncOp(
         "shuffle_apply_rope_bf16_64",
         (
@@ -219,34 +255,13 @@ def build_module(
     l1MemrefTyXRms = MemRefType.get(
         shape=xrms_size, element_type=xrt_dtype_in, memory_space=l1_mem_space
     )
-    simple_rms_func = FuncOp(
-        "simple_rms_bf16",
-        ([l1MemrefTyXRms, l1MemrefTyXRms, l1MemrefTyXRms, T.i32()], []),
-        visibility="private",
-    )
-    xrms_demux_func = FuncOp(
-        "xrms_demux_bf16",
-        ([l1MemrefTyB, l1MemrefTyXRms, l1MemrefTyXRms, T.i32()], []),
-        visibility="private",
-    )
-    # Pre-scales Q by 1/sqrt(DIM_N) during the c_data->q_l1_data copy; lets
-    # attn_1_group skip the per-call scalar 0.125 multiply at the reduce.
-    copy_scale_q_func = FuncOp(
-        "copy_scale_q_bf16",
-        ([l1MemrefTyThreeByFortyEightVec, l1MemrefTyQ, T.i32()], []),
-        visibility="private",
-    )
 
     for func in [
         cosf_poly_func,
         sinf_poly_func,
-        freq_pos_func,
         shuffle_apply_rope_poly_func,
         attn_func,
         attn2_func,
-        simple_rms_func,
-        xrms_demux_func,
-        copy_scale_q_func,
     ]:
         func.attributes["link_with"] = StringAttr.get("attn_decode_npu2.o")
         func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
@@ -787,9 +802,42 @@ def build_module(
                     l1_freq_pos_data = AllocOp(l1MemrefTyHSByTwo, [], [])
                     zero_constindex = ConstantOp.create_index(0)
 
-                    freq_pos_call = CallOp(
-                        freq_pos_func,
-                        [arith.index_cast(T.i32(), pos), l1_freq_pos_data],
+                    # Inline freq_pos_bf16_32_16: l1_freq_pos_data[i] =
+                    # bf16(pos) * freq_table[i] for i in 0..32. Two 16-lane
+                    # arith.mulf chunks with a precomputed dense<vector<16xbf16>>
+                    # constant for each half of freq_table_dk64.
+                    fp_vec_bf16 = VectorType.get([16], xrt_dtype_out)
+                    fp_pos_i32 = arith.index_cast(T.i32(), pos)
+                    fp_pos_f32 = arith_dialect.sitofp(F32Type.get(), fp_pos_i32)
+                    fp_pos_bf = arith_dialect.truncf(xrt_dtype_out, fp_pos_f32)
+                    fp_pos_v = BroadcastOp(fp_vec_bf16, fp_pos_bf)
+                    fp_freq_lo_attr = DenseElementsAttr.get(
+                        _FREQ_TABLE_DK64_BF16[:16].copy(), type=fp_vec_bf16
+                    )
+                    fp_freq_hi_attr = DenseElementsAttr.get(
+                        _FREQ_TABLE_DK64_BF16[16:].copy(), type=fp_vec_bf16
+                    )
+                    fp_freq_lo = arith_dialect.ConstantOp(fp_vec_bf16, fp_freq_lo_attr)
+                    fp_freq_hi = arith_dialect.ConstantOp(fp_vec_bf16, fp_freq_hi_attr)
+                    fp_out_lo = arith_dialect.mulf(fp_pos_v.result, fp_freq_lo.result)
+                    fp_out_hi = arith_dialect.mulf(fp_pos_v.result, fp_freq_hi.result)
+                    fp_c16 = arith.ConstantOp.create_index(16)
+                    fp_id_map = AffineMapAttr.get(AffineMap.get_identity(1))
+                    transfer_write(
+                        None,
+                        fp_out_lo,
+                        l1_freq_pos_data.result,
+                        [zero_constindex],
+                        fp_id_map,
+                        [True],
+                    )
+                    transfer_write(
+                        None,
+                        fp_out_hi,
+                        l1_freq_pos_data.result,
+                        [fp_c16],
+                        fp_id_map,
+                        [True],
                     )
 
                     l1_sinf_vec = AllocOp(l1MemrefTyHSByTwo, [], [])
@@ -804,6 +852,14 @@ def build_module(
                     # RoPE: rotate Q[0..GROUP_SIZE-1] (4 calls) and K (1 call,
                     # at offset GROUP_SIZE*tile_n). V (offset (GROUP_SIZE+1)*
                     # tile_n) is NOT rotated.
+                    # Inline-MLIR attempt revealed a Peano codegen issue: any
+                    # combination of {arith.subf following arith.mulf} +
+                    # {vector.fma following arith.mulf} in the same body
+                    # produces correct-looking aievec IR (sub_elem + mac_elem)
+                    # but emits an ELF that writes all-zeros at runtime.
+                    # Simpler patterns (mul-only, mul+subf only, mul+fma only)
+                    # work; mul+addf is rejected at peano llc time. Reverted to
+                    # extern shuffle_apply_rope_bf16_64 — only 5 calls/token.
                     for g in range(GROUP_SIZE):
                         rope_off = ConstantOp(
                             IntegerAttr.get(T.i32(), g * tile_n), None
