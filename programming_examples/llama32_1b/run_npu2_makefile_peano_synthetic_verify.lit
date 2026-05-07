@@ -1,0 +1,32 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// End-to-end LLAMA-3.2-1B prefill + 1 decode token with deterministic
+// random weights (no HuggingFace download / no auth in CI). Compares the
+// per-layer NPU output against a CPU F32 reference computed from the same
+// synthetic weight tensors. We FileCheck the per-layer-internal
+// correctness markers (q_roped / k_roped / final output) which are
+// invariant to weight magnitude — the end-to-end K-cache drift after 16
+// layers is expected with unnormalized random weights and is not asserted
+// here.
+//
+// RUN: mkdir -p test_synthetic_verify
+// RUN: cd test_synthetic_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile verify WEIGHTS=synthetic N_TOKENS=1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+//
+// Synthetic-weights banner.
+// CHECK: Using synthetic random weights
+//
+// Per-layer kernel correctness — q_roped / k_roped / output all produced
+// by the multi-launch ELFs and compared against the CPU F32 reference.
+// CHECK: [OK] q_roped: {{.*}}corr=0.99
+// CHECK: [OK] k_roped: {{.*}}corr=0.99
+// CHECK: [OK] output: {{.*}}corr=0.99
+//
+// Pipeline reaches end of prefill and emits at least one decode token.
+// CHECK: NPU prefill done
+// CHECK: Tokens/second

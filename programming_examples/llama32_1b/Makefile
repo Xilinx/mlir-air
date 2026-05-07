@@ -29,6 +29,15 @@ N_TOKENS ?= 1000
 PROMPT   ?= What is the capital of France?
 MODEL    ?= instruct
 
+# WEIGHTS=hf (default)        — load real Meta weights from HuggingFace
+# WEIGHTS=synthetic           — deterministic random weights (no HF, for CI)
+WEIGHTS ?= hf
+ifeq ($(WEIGHTS),synthetic)
+  WEIGHTS_FLAG := --synthetic-weights
+else
+  WEIGHTS_FLAG :=
+endif
+
 .PHONY: help compile run profile verify chat clean
 
 # ============================================================
@@ -75,17 +84,17 @@ compile:
 ## Run unified inference
 run:
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
-		--run-only --n-tokens $(N_TOKENS) --prompt "$(PROMPT)" --model $(MODEL)
+		--run-only --n-tokens $(N_TOKENS) --prompt "$(PROMPT)" --model $(MODEL) $(WEIGHTS_FLAG)
 
 ## Run with detailed profiling breakdown
 profile:
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
-		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" --model $(MODEL)
+		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" --model $(MODEL) $(WEIGHTS_FLAG)
 
 ## Run with CPU reference verification
 verify:
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
-		--run-only --n-tokens $(N_TOKENS) --verify --profile --prompt "$(PROMPT)" --model $(MODEL)
+		--run-only --n-tokens $(N_TOKENS) --verify --profile --prompt "$(PROMPT)" --model $(MODEL) $(WEIGHTS_FLAG)
 
 ## Interactive chat: prepare runtime once, then loop on prompts
 chat:

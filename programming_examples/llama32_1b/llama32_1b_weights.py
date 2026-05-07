@@ -315,6 +315,57 @@ def load_weights(
 
 
 # ---------------------------------------------------------------------------
+# Synthetic-weights builder (CI smoke / verify without HuggingFace download)
+# ---------------------------------------------------------------------------
+
+
+def synthetic_weights(
+    config: Optional[LlamaConfig] = None,
+    seed: int = 42,
+    scale: float = 0.02,
+) -> "LlamaWeights":
+    """Build a LlamaWeights object filled with deterministic random values.
+
+    The same RNG seed produces identical weights for the NPU and CPU reference
+    paths, so `--verify` mode can compare them numerically without ever
+    touching HuggingFace. Output magnitudes match HF Llama's init scale
+    (~0.02) so activations stay within BF16 dynamic range.
+    """
+    if config is None:
+        config = LlamaConfig()
+
+    rng = np.random.default_rng(seed)
+
+    def _rand(shape):
+        return (rng.standard_normal(shape).astype(np.float32) * scale).astype(bfloat16)
+
+    def _ones(shape):
+        return np.ones(shape, dtype=bfloat16)
+
+    embed = _rand((config.vocab_size, config.emb_dim))
+    layers = [
+        LayerWeights(
+            attn_norm=_ones((config.emb_dim,)),
+            wq=_rand((config.emb_dim, config.emb_dim)),
+            wk=_rand((config.emb_dim, config.n_kv_heads * config.head_dim)),
+            wv=_rand((config.emb_dim, config.n_kv_heads * config.head_dim)),
+            wo=_rand((config.emb_dim, config.emb_dim)),
+            ffn_norm=_ones((config.emb_dim,)),
+            w_gate=_rand((config.emb_dim, config.hidden_dim)),
+            w_up=_rand((config.emb_dim, config.hidden_dim)),
+            w_down=_rand((config.hidden_dim, config.emb_dim)),
+        )
+        for _ in range(config.n_layers)
+    ]
+    return LlamaWeights(
+        embed_table=embed,
+        layers=layers,
+        final_norm=_ones((config.emb_dim,)),
+        lm_head=embed,  # tied
+    )
+
+
+# ---------------------------------------------------------------------------
 # RoPE look-up table generation
 # ---------------------------------------------------------------------------
 

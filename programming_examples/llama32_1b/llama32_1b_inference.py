@@ -35,7 +35,12 @@ from ml_dtypes import bfloat16
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from llama32_1b_weights import LlamaConfig, load_weights, generate_rope_lut
+from llama32_1b_weights import (
+    LlamaConfig,
+    load_weights,
+    synthetic_weights,
+    generate_rope_lut,
+)
 from llama32_1b.kernel_builder.cache import KernelCache
 from llama32_1b.kernel_builder.external_kernels import compile_all_external_kernels
 from llama32_1b_prefill import (
@@ -76,6 +81,21 @@ def _delta_text(tokenizer: Any, ids: list[int], state: _StreamState) -> str:
     delta = decoded[state.printed_len :]
     state.printed_len = len(decoded)
     return delta
+
+
+class _SyntheticTokenizer:
+    """Stub tokenizer used with --synthetic-weights (no HuggingFace dependency).
+
+    The synthetic path skips real tokenization entirely (token IDs come from a
+    deterministic numpy array); this stub satisfies the few attribute lookups
+    the pipeline still does — eos_token_id (decode-loop stop) and decode()
+    (verify/profile prints).
+    """
+
+    eos_token_id = -1  # never matches real token ids; decode loop runs full N
+
+    def decode(self, ids, skip_special_tokens=False):  # noqa: ARG002
+        return f"<synth:{list(ids)}>" if isinstance(ids, list) else f"<synth:{ids}>"
 
 
 # ---------------------------------------------------------------------------
@@ -671,17 +691,22 @@ def build_session(args) -> Session:
         prefill_cache.load_manifest()
         decode_cache.load_manifest()
 
-    model_id = (
-        "meta-llama/Llama-3.2-1B-Instruct"
-        if args.model == "instruct"
-        else "meta-llama/Llama-3.2-1B"
-    )
-    print(f"\nLoading weights ({model_id})...")
-    weights = load_weights(model_id)
+    if args.synthetic_weights:
+        print("\nUsing synthetic random weights (skipping HuggingFace download).")
+        weights = synthetic_weights(config)
+        tokenizer = _SyntheticTokenizer()
+    else:
+        model_id = (
+            "meta-llama/Llama-3.2-1B-Instruct"
+            if args.model == "instruct"
+            else "meta-llama/Llama-3.2-1B"
+        )
+        print(f"\nLoading weights ({model_id})...")
+        weights = load_weights(model_id)
 
-    from transformers import AutoTokenizer
+        from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
 
     rope_lut_bf16 = generate_rope_lut(
         config=config,
@@ -881,7 +906,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Drop into a REPL after runtime prep. Loops on prompts; each is independent.",
     )
+    parser.add_argument(
+        "--synthetic-weights",
+        action="store_true",
+        help="Use deterministic random weights instead of HuggingFace weights "
+        "(no download / no auth). Intended for CI smoke + verify tests.",
+    )
     args = parser.parse_args()
+
+    if args.synthetic_weights and args.interactive:
+        parser.error("--synthetic-weights cannot be combined with --interactive")
 
     if args.interactive:
         if args.compile_only:
@@ -910,6 +944,26 @@ if __name__ == "__main__":
 
     if args.interactive:
         repl_loop(session, args)
+    elif args.synthetic_weights:
+        # Bypass real tokenization: feed a deterministic token-id sequence
+        # straight into generate(). Output text is not meaningful — the value
+        # of this path is the --verify correlation against the CPU reference.
+        token_ids = (
+            np.arange(session.seq_len, dtype=np.int64) % session.config.vocab_size
+        ).tolist()
+        generate(
+            token_ids,
+            session.weights,
+            session.config,
+            session.prefill_cache,
+            session.decode_cache,
+            session.rope_lut_bf16,
+            tokenizer=session.tokenizer,
+            n_tokens=args.n_tokens,
+            profile=args.profile,
+            verify=args.verify,
+            cpu_attn=args.cpu_attn,
+        )
     else:
         generated, prompt_len_actual = run_once(
             session,
