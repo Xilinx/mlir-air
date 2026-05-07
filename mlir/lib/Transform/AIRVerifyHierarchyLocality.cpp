@@ -15,6 +15,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
@@ -141,6 +142,99 @@ static std::optional<int64_t> staticInt(Value v) {
   return getConstantIntValue(v);
 }
 
+// True if `v` is provably zero. Recognizes:
+//   - arith.constant 0
+//   - block argument that is a hierarchy iteration variable whose
+//     iteration-space size is statically 1 (only one value: 0)
+//   - block argument that is a kernel arg of a hierarchy op whose tied
+//     operand isProvablyZero (passthrough)
+//   - affine.apply with constant map evaluating to 0 OR with all-zero inputs
+//     and a map of the form (...) -> sum of c_i * x_i (no constant term)
+//   - arith.addi/subi where both operands are provably zero
+//   - arith.muli where at least one operand is provably zero
+static bool isProvablyZero(Value v) {
+  if (!v)
+    return false;
+  if (auto c = staticInt(v))
+    return *c == 0;
+  if (auto ba = dyn_cast<BlockArgument>(v)) {
+    Operation *parent = ba.getOwner()->getParentOp();
+    auto H = dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent);
+    if (!H)
+      return false;
+    ArrayRef<BlockArgument> ids = H.getIds();
+    auto idIt = llvm::find(ids, ba);
+    if (idIt != ids.end()) {
+      unsigned i = std::distance(ids.begin(), idIt);
+      auto sz = staticInt(H.getSizeOperands()[i]);
+      return sz && *sz == 1;
+    }
+    ArrayRef<BlockArgument> kargs = H.getKernelArguments();
+    auto kIt = llvm::find(kargs, ba);
+    if (kIt != kargs.end()) {
+      unsigned i = std::distance(kargs.begin(), kIt);
+      return isProvablyZero(H.getKernelOperand(i));
+    }
+    return false;
+  }
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return false;
+  if (auto add = dyn_cast<arith::AddIOp>(def))
+    return isProvablyZero(add.getLhs()) && isProvablyZero(add.getRhs());
+  if (auto sub = dyn_cast<arith::SubIOp>(def))
+    return isProvablyZero(sub.getLhs()) && isProvablyZero(sub.getRhs());
+  if (auto mul = dyn_cast<arith::MulIOp>(def))
+    return isProvablyZero(mul.getLhs()) || isProvablyZero(mul.getRhs());
+  if (auto cast = dyn_cast<arith::IndexCastOp>(def))
+    return isProvablyZero(cast.getIn());
+  if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
+    for (Value in : apply.getOperands())
+      if (!isProvablyZero(in))
+        return false;
+    // All inputs are zero → result is the affine map evaluated at zeros.
+    AffineMap map = apply.getAffineMap();
+    if (map.getNumResults() != 1)
+      return false;
+    SmallVector<int64_t> zeroDims(map.getNumDims(), 0);
+    SmallVector<int64_t> zeroSyms(map.getNumSymbols(), 0);
+    std::function<std::optional<int64_t>(AffineExpr)> eval =
+        [&](AffineExpr e) -> std::optional<int64_t> {
+      if (auto c = dyn_cast<AffineConstantExpr>(e))
+        return c.getValue();
+      if (auto d = dyn_cast<AffineDimExpr>(e))
+        return zeroDims[d.getPosition()];
+      if (auto s = dyn_cast<AffineSymbolExpr>(e))
+        return zeroSyms[s.getPosition()];
+      if (auto bin = dyn_cast<AffineBinaryOpExpr>(e)) {
+        auto lhs = eval(bin.getLHS());
+        auto rhs = eval(bin.getRHS());
+        if (!lhs || !rhs)
+          return std::nullopt;
+        switch (bin.getKind()) {
+        case AffineExprKind::Add:
+          return *lhs + *rhs;
+        case AffineExprKind::Mul:
+          return *lhs * *rhs;
+        case AffineExprKind::Mod:
+          return *rhs == 0 ? std::nullopt : std::optional<int64_t>(*lhs % *rhs);
+        case AffineExprKind::FloorDiv:
+          return *rhs == 0 ? std::nullopt : std::optional<int64_t>(*lhs / *rhs);
+        case AffineExprKind::CeilDiv:
+          return *rhs == 0 ? std::nullopt
+                           : std::optional<int64_t>((*lhs + *rhs - 1) / *rhs);
+        default:
+          return std::nullopt;
+        }
+      }
+      return std::nullopt;
+    };
+    auto val = eval(map.getResult(0));
+    return val && *val == 0;
+  }
+  return false;
+}
+
 // Resolve `v` to a (BlockArgument, multiplier) pair if `v` is an affine-style
 // expression of exactly one block argument with a positive constant scaling
 // factor, otherwise return nullopt. Walks through:
@@ -155,8 +249,26 @@ static std::optional<std::pair<BlockArgument, int64_t>>
 asLinearInOneBlockArg(Value v) {
   if (!v)
     return std::nullopt;
-  if (auto ba = dyn_cast<BlockArgument>(v))
+  if (auto ba = dyn_cast<BlockArgument>(v)) {
+    // If this block argument is a kernel argument of an inner hierarchy op
+    // (e.g., %arg10 in `air.segment ... args(%arg10 = %launch_iv)`), trace
+    // back through the tied kernel operand. This lets us prove that an
+    // offset like `affine.apply (%segment_arg * 64)` is actually a function
+    // of the OUTER launch IV, when checking from the launch's perspective.
+    Operation *parent = ba.getOwner()->getParentOp();
+    if (auto innerH =
+            dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent)) {
+      ArrayRef<BlockArgument> kernelArgs = innerH.getKernelArguments();
+      auto it = llvm::find(kernelArgs, ba);
+      if (it != kernelArgs.end()) {
+        unsigned idx = std::distance(kernelArgs.begin(), it);
+        Value tiedOperand = innerH.getKernelOperand(idx);
+        // Recurse on the operand passed in from the outer scope.
+        return asLinearInOneBlockArg(tiedOperand);
+      }
+    }
     return std::make_pair(ba, int64_t{1});
+  }
 
   Operation *def = v.getDefiningOp();
   if (!def)
@@ -168,18 +280,21 @@ asLinearInOneBlockArg(Value v) {
   if (auto add = dyn_cast<arith::AddIOp>(def)) {
     auto l = asLinearInOneBlockArg(add.getLhs());
     auto r = asLinearInOneBlockArg(add.getRhs());
-    auto lc = staticInt(add.getLhs());
-    auto rc = staticInt(add.getRhs());
-    if (l && rc)
+    bool rConst =
+        staticInt(add.getRhs()).has_value() || isProvablyZero(add.getRhs());
+    bool lConst =
+        staticInt(add.getLhs()).has_value() || isProvablyZero(add.getLhs());
+    if (l && rConst)
       return l;
-    if (r && lc)
+    if (r && lConst)
       return r;
     return std::nullopt;
   }
   if (auto sub = dyn_cast<arith::SubIOp>(def)) {
     auto l = asLinearInOneBlockArg(sub.getLhs());
-    auto rc = staticInt(sub.getRhs());
-    if (l && rc)
+    bool rConst =
+        staticInt(sub.getRhs()).has_value() || isProvablyZero(sub.getRhs());
+    if (l && rConst)
       return l;
     return std::nullopt;
   }
@@ -377,6 +492,38 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
     sizesVal.push_back(nullptr);
     sizesStatic.push_back(s);
   };
+
+  // Read-only accesses don't need disjointness across iterations: multiple
+  // readers of the same memory range is not a race. Only writes require
+  // per-iteration partitioning. AIR-specific read-only terminals:
+  //   - air.channel.put on its memref (reads src, sends to channel)
+  //   - air.dma_memcpy_nd on its src side
+  // For other ops, query MemoryEffectOpInterface and skip the access if
+  // it's read-only.
+  if (auto chan = dyn_cast<xilinx::air::ChannelPutOp>(op)) {
+    if (chan.getMemref() == t.consumed)
+      return {CheckResult::Disjoint, {}, op};
+  }
+  if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
+    if (dma.getSrc() == t.consumed)
+      return {CheckResult::Disjoint, {}, op};
+  }
+  if (auto memEffectOp = dyn_cast<MemoryEffectOpInterface>(op)) {
+    SmallVector<MemoryEffects::EffectInstance, 4> effects;
+    memEffectOp.getEffectsOnValue(t.consumed, effects);
+    if (!effects.empty()) {
+      bool hasWrite = false;
+      for (auto &eff : effects) {
+        if (isa<MemoryEffects::Write>(eff.getEffect()) ||
+            isa<MemoryEffects::Free>(eff.getEffect())) {
+          hasWrite = true;
+          break;
+        }
+      }
+      if (!hasWrite)
+        return {CheckResult::Disjoint, {}, op};
+    }
+  }
 
   if (auto chan = dyn_cast<xilinx::air::ChannelInterface>(op)) {
     if (chan.getMemref() == t.consumed) {
