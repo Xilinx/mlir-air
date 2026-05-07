@@ -11,6 +11,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
@@ -488,6 +489,47 @@ static std::optional<int64_t> hierarchyIvExtent(BlockArgument iv) {
     return std::nullopt;
   unsigned i = std::distance(ids.begin(), it);
   return staticInt(H.getSizeOperands()[i]);
+}
+
+// True if `v` transitively depends on any of `ivs` through a chain of pure
+// index-arithmetic ops and hierarchy passthrough kernel args. Conservative:
+// only descends through arith index ops and affine.apply (does NOT descend
+// through memref.load or other side-effecting ops). Used both for the
+// channel-index per-PE replication signal and for detecting func.call
+// scalar operands that carry the iv as a partition hint.
+static bool dependsOnAnyIv(Value v, ArrayRef<BlockArgument> ivs) {
+  llvm::SmallPtrSet<Value, 8> visited;
+  std::function<bool(Value)> rec = [&](Value v) -> bool {
+    if (!v || !visited.insert(v).second)
+      return false;
+    if (auto ba = dyn_cast<BlockArgument>(v)) {
+      if (llvm::is_contained(ivs, ba))
+        return true;
+      Operation *parent = ba.getOwner()->getParentOp();
+      if (auto innerH =
+              dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent)) {
+        ArrayRef<BlockArgument> kargs = innerH.getKernelArguments();
+        auto it = llvm::find(kargs, ba);
+        if (it != kargs.end()) {
+          unsigned i = std::distance(kargs.begin(), it);
+          return rec(innerH.getKernelOperand(i));
+        }
+      }
+      return false;
+    }
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return false;
+    if (!isa<arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::DivSIOp,
+             arith::DivUIOp, arith::RemSIOp, arith::RemUIOp, arith::IndexCastOp,
+             affine::AffineApplyOp>(def))
+      return false;
+    for (Value op : def->getOperands())
+      if (rec(op))
+        return true;
+    return false;
+  };
+  return rec(v);
 }
 
 // True if `op` is a hierarchy op that lies strictly inside `outerH.getBody()`.
@@ -1034,42 +1076,8 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
   // `arith.divsi %iv, %c2` come up in practice).
   if (auto chan = dyn_cast<xilinx::air::ChannelInterface>(op)) {
     if (chan.getMemref() == t.consumed) {
-      llvm::SmallPtrSet<Value, 8> visited;
-      std::function<bool(Value)> dependsOnAnyIv = [&](Value v) -> bool {
-        if (!v || !visited.insert(v).second)
-          return false;
-        if (auto ba = dyn_cast<BlockArgument>(v)) {
-          if (llvm::is_contained(ivs, ba))
-            return true;
-          // Trace through hierarchy passthrough kernel args to outer-IV.
-          Operation *parent = ba.getOwner()->getParentOp();
-          if (auto innerH =
-                  dyn_cast_if_present<xilinx::air::HierarchyInterface>(
-                      parent)) {
-            ArrayRef<BlockArgument> kargs = innerH.getKernelArguments();
-            auto it = llvm::find(kargs, ba);
-            if (it != kargs.end()) {
-              unsigned i = std::distance(kargs.begin(), it);
-              return dependsOnAnyIv(innerH.getKernelOperand(i));
-            }
-          }
-          return false;
-        }
-        Operation *def = v.getDefiningOp();
-        if (!def)
-          return false;
-        // Conservative: only descend through pure ops with index-y semantics.
-        if (!isa<arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::DivSIOp,
-                 arith::DivUIOp, arith::RemSIOp, arith::RemUIOp,
-                 arith::IndexCastOp, affine::AffineApplyOp>(def))
-          return false;
-        for (Value op : def->getOperands())
-          if (dependsOnAnyIv(op))
-            return true;
-        return false;
-      };
       for (Value idx : chan.getIndices()) {
-        if (dependsOnAnyIv(idx))
+        if (dependsOnAnyIv(idx, ivs))
           return {CheckResult::Disjoint, {}, op};
       }
     }
@@ -1373,6 +1381,30 @@ static LogicalResult verifyOne(xilinx::air::HierarchyInterface H, bool strict) {
             perPeReplicated = true;
             break;
           }
+        }
+      }
+      // External kernel func.call sinks: the call is opaque, but if any
+      // non-memref operand of the call depends on a herd IV, that scalar
+      // is presumably used by the kernel as a partition offset/index. AIE
+      // external kernels follow this convention: the per-PE offset is
+      // passed as an i32 RTP-style argument computed from the herd IV
+      // (e.g., `arith.muli %iv, %size : i32`). Treat this as a per-PE
+      // replication signal so the verifier doesn't reject a working
+      // example just because the partition is encoded in a kernel arg
+      // instead of a memref offset.
+      if (auto call = dyn_cast<func::CallOp>(t.op)) {
+        bool anyIvDep = false;
+        for (Value arg : call.getOperands()) {
+          if (isa<MemRefType>(arg.getType()))
+            continue;
+          if (dependsOnAnyIv(arg, ivs)) {
+            anyIvDep = true;
+            break;
+          }
+        }
+        if (anyIvDep) {
+          perPeReplicated = true;
+          break;
         }
       }
     }
