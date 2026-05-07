@@ -5,6 +5,7 @@ import os
 import sys
 
 from air.ir import *
+import air.passmanager
 from air.dialects.affine import apply as affine_apply
 from air.dialects.linalg import fill
 from air.dialects.air import *
@@ -559,8 +560,26 @@ if __name__ == "__main__":
         args.arch,
     )
 
-    # Vectorization - only run if direct codegen mode is enabled
+    # M1c: replace the prior transform-script with the C++ matmul codegen
+    # pipeline. See MATMUL_CODEGEN_PIPELINE_PLAN.md.
     if args.direct_codegen:
+        pipeline = "builtin.module(" + ",".join([
+            "func.func(canonicalize,cse,air-fold-unit-extent-dims)",
+            "func.func(air-matmul-tile-for-vectorize{matmul-tile-sizes=2,2,1,0,0,0 matmul-unroll-tile-sizes=1,1,0,0,0,0 matmul-unroll-factor=2 fill-tile-sizes=0,0,1,1})",
+            "func.func(air-herd-vectorize)",
+            "func.func(canonicalize,cse,fold-memref-alias-ops,air-fold-unit-extent-dims)",
+            "func.func(air-eliminate-redundant-vector-transfers)",
+            "func.func(air-vector-cast-for-emulation{target-element-type=i32 input-indices=2 output-indices=0})",
+            "func.func(air-hoist-loop-invariant-transfers)",
+            "func.func(air-flatten-for-iter-args)",
+            "func.func(air-hoist-vector-transfer-pointers)",
+            "func.func(air-hoist-cast-pairs)",
+            "func.func(canonicalize,cse,fold-memref-alias-ops,air-fold-unit-extent-dims)",
+        ]) + ")"
+        pm = air.passmanager.PassManager.parse(pipeline,
+                                               context=mlir_module.context)
+        pm.run(mlir_module.operation)
+    if False:
         transform_ir_string = """
             module attributes {transform.with_named_sequence} {
               transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
@@ -679,8 +698,8 @@ if __name__ == "__main__":
             }
             }
         """
-        transform_ir = Module.parse(transform_ir_string, context=mlir_module.context)
-        run_transform(transform_ir, mlir_module)
+        # legacy disabled while debugging M1c; see if False above
+        pass
     if args.print_module_only:
         print(mlir_module)
         exit(0)

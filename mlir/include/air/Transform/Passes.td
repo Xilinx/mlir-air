@@ -1107,6 +1107,547 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
   ];
 }
 
+def AIRMatmulPackAndTranspose: Pass<"air-matmul-pack-and-transpose", "func::FuncOp"> {
+  let summary = "Pack a linalg.matmul and transpose its operand layouts";
+  let constructor = "xilinx::air::createAIRMatmulPackAndTransposePass()";
+  let description = [{
+    Replaces the first `linalg.matmul` in the function with a packed
+    `linalg.generic` produced by `linalg::pack` with `pack-sizes`.
+    Optionally applies `linalg::packTranspose` to the LHS, RHS and
+    accumulator pack/unpack ops with caller-supplied outer/inner perms.
+
+    M0 of the C++ matmul codegen pipeline. See
+    MATMUL_CODEGEN_PIPELINE_PLAN.md.
+  }];
+  let options = [
+    ListOption<"clPackSizes", "pack-sizes", "int64_t",
+               "Per-iterator pack sizes passed to linalg::pack",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clLhsOuterPerm", "lhs-outer-perm", "int64_t",
+               "Outer-dim permutation for the LHS pack op",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clLhsInnerPerm", "lhs-inner-perm", "int64_t",
+               "Inner-dim permutation for the LHS pack op",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clRhsOuterPerm", "rhs-outer-perm", "int64_t",
+               "Outer-dim permutation for the RHS pack op",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clRhsInnerPerm", "rhs-inner-perm", "int64_t",
+               "Inner-dim permutation for the RHS pack op",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clAccOuterPerm", "acc-outer-perm", "int64_t",
+               "Outer-dim permutation for the accumulator pack op",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clAccInnerPerm", "acc-inner-perm", "int64_t",
+               "Inner-dim permutation for the accumulator pack op",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clPackedMatmulMarker", "packed-matmul-marker", "std::string",
+           /*default=*/"\"packed_matmul\"",
+           "Attribute name annotated on the resulting packed linalg op">
+  ];
+}
+
+def AIRMatmulTileL3ToL2Copies: Pass<"air-matmul-tile-l3-to-l2-copies", "func::FuncOp"> {
+  let summary = "Convert L3->L2 memref.copies to linalg.copies and tile the K dim";
+  let constructor = "xilinx::air::createAIRMatmulTileL3ToL2CopiesPass()";
+  let description = [{
+    For the first `linalg.matmul` in the function:
+      1. Convert any `memref.copy` feeding the LHS or RHS operand into
+         `linalg.copy` (via the existing
+         `ConvertMemrefCopyToLinalgCopyPattern`).
+      2. Tile the LHS copy by [0, k_l2_tile] and the RHS copy by
+         [k_l2_tile, 0] using `scf::tileUsingSCF`. LHS and RHS are detected
+         by matmul operand index after walking through `bufferization.to_tensor`.
+      3. Annotate the LHS tiled loop with `copy_a_loop` and the RHS with
+         `copy_b_loop` (so downstream sibling-fusion passes can find them).
+
+    M0 of the C++ matmul codegen pipeline. See
+    MATMUL_CODEGEN_PIPELINE_PLAN.md.
+  }];
+  let options = [
+    Option<"clKL2Tile", "k-l2-tile", "int64_t", /*default=*/"16",
+           "Tile size on the K dimension for L3->L2 copies">,
+    Option<"clCopyALoopMarker", "copy-a-loop-marker", "std::string",
+           /*default=*/"\"copy_a_loop\"",
+           "Attribute name annotated on the LHS-copy scf.for loop">,
+    Option<"clCopyBLoopMarker", "copy-b-loop-marker", "std::string",
+           /*default=*/"\"copy_b_loop\"",
+           "Attribute name annotated on the RHS-copy scf.for loop">
+  ];
+}
+
+def AIRMatmulTileForVectorize: Pass<"air-matmul-tile-for-vectorize", "func::FuncOp"> {
+  let summary = "Tile packed matmul linalg.generics and fills for vectorization";
+  let constructor = "xilinx::air::createAIRMatmulTileForVectorizePass()";
+  let description = [{
+    Tiles each `linalg.generic` packed-matmul body inside an `air.herd` by
+    `matmul-tile-sizes` (defaults to [2,2,1,0,0,0]) using `scf.for`, then
+    optionally tiles a second time by `matmul-unroll-tile-sizes` (defaults to
+    [1,1,0,0,0,0]) and unrolls the resulting two innermost `scf.for` loops by
+    `matmul-unroll-factor` (default 2).
+
+    Tiles each `linalg.fill` similarly by `fill-tile-sizes` (default
+    [1,1,0,0]).
+
+    The pass is targeted at the post-pack, post-bufferize, post-herd state;
+    it walks linalg ops directly without depending on attribute markers.
+
+    M1a of the C++ matmul codegen pipeline. See MATMUL_CODEGEN_PIPELINE_PLAN.md.
+  }];
+  let options = [
+    ListOption<"clMatmulTileSizes", "matmul-tile-sizes", "int64_t",
+               "First-level tile sizes for the packed matmul linalg.generic",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clMatmulUnrollTileSizes", "matmul-unroll-tile-sizes", "int64_t",
+               "Second-level tile sizes (the two innermost loops are unrolled)",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clMatmulUnrollFactor", "matmul-unroll-factor", "uint64_t",
+           /*default=*/"2",
+           "Unroll factor applied to the two innermost loops after the second tiling">,
+    ListOption<"clFillTileSizes", "fill-tile-sizes", "int64_t",
+               "Tile sizes for linalg.fill",
+               "llvm::cl::ZeroOrMore">
+  ];
+}
+
+def AIRFoldUnitExtentDims: Pass<"air-fold-unit-extent-dims", "func::FuncOp"> {
+  let summary = "Fold unit-extent dimensions in linalg ops (memref-aware)";
+  let constructor = "xilinx::air::createAIRFoldUnitExtentDimsPass()";
+  let description = [{
+    Mirrors the C++ logic backing `transform.air.fold_unit_extent_dims`. Folds
+    unit-extent dims using upstream `linalg::populateFoldUnitExtentDimsPatterns`,
+    overriding the collapse function for strided memrefs to use rank-reducing
+    `memref.subview` (so the fold tolerates linalg ops with subview outputs
+    inside `air.herd` regions).
+  }];
+}
+
+def AIREliminateRedundantVectorTransfers: Pass<"air-eliminate-redundant-vector-transfers", "func::FuncOp"> {
+  let summary = "Deduplicate vector.transfer_read with no intervening writes";
+  let constructor = "xilinx::air::createAIREliminateRedundantVectorTransfersPass()";
+  let description = [{
+    Mirrors `transform.air.eliminate_redundant_vector_transfers`. For each pair
+    of vector.transfer_read operations on the same memref with equivalent
+    indices and no intervening writes, replace the second with the first.
+  }];
+}
+
+def AIRFlattenForIterArgs: Pass<"air-flatten-for-iter-args", "func::FuncOp"> {
+  let summary = "Flatten vector-typed iter_args of scf.for to 1D";
+  let constructor = "xilinx::air::createAIRFlattenForIterArgsPass()";
+  let description = [{
+    Mirrors `transform.air.flatten_for_iter_args`. For each scf.for inside an
+    air.herd, replaces vector-typed iter_args with their 1D-flattened form,
+    inserting vector.shape_cast at the loop entry/exit and inside the loop
+    body to convert back to the original shape.
+  }];
+}
+
+def AIRHoistLoopInvariantTransfers: Pass<"air-hoist-loop-invariant-transfers", "func::FuncOp"> {
+  let summary = "Hoist loop-invariant accumulator transfer_read/write pairs";
+  let constructor = "xilinx::air::createAIRHoistLoopInvariantTransfersPass()";
+  let description = [{
+    Mirrors `transform.air.hoist_loop_invariant_transfers`. For each air.herd,
+    selects the outermost scf.for inside it (typically the K-reduction loop)
+    and iteratively hoists matched vector.transfer_read/transfer_write pairs
+    whose indices do not depend on the loop induction variable, threading the
+    accumulator through a new iter_arg.
+  }];
+}
+
+def AIRHoistVectorTransferPointers: Pass<"air-hoist-vector-transfer-pointers", "func::FuncOp"> {
+  let summary = "Hoist loop-invariant subview pointer chains for vector transfers";
+  let constructor = "xilinx::air::createAIRHoistVectorTransferPointersPass()";
+  let description = [{
+    Mirrors `transform.air.hoist_vector_transfer_pointers`. For each
+    innermost scf.for inside an air.herd, hoists subview/affine.apply chains
+    that compute vector.transfer_read/write base pointers when those chains
+    do not depend on the loop induction variable.
+  }];
+}
+
+def AIRVectorCastForEmulation: Pass<"air-vector-cast-for-emulation", "func::FuncOp"> {
+  let summary = "Cast vector.contract operand/result element types for AIE emulation";
+  let constructor = "xilinx::air::createAIRVectorCastForEmulationPass()";
+  let description = [{
+    Walks all vector.contract ops in the function and casts selected
+    operand/result vector element types to `target-element-type`. Used for:
+      * BFP16 mmul emulation on AIE2P (cast inputs 0,1 to bf16; cast acc 2 +
+        output 0 to f32)
+      * accumulator-only emulation on AIE2 bf16 / i8 (cast acc 2 + output 0
+        to f32 / i32)
+
+    M1b of the C++ matmul codegen pipeline. See MATMUL_CODEGEN_PIPELINE_PLAN.md.
+  }];
+  let options = [
+    Option<"clTargetElementType", "target-element-type", "std::string",
+           /*default=*/"\"f32\"",
+           "Element type to cast to: 'f32', 'bf16', 'i32', 'i16', 'i8'.">,
+    ListOption<"clInputIndices", "input-indices", "int64_t",
+               "Operand indices of vector.contract whose element types should be cast",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clOutputIndices", "output-indices", "int64_t",
+               "Result indices of vector.contract whose element types should be cast",
+               "llvm::cl::ZeroOrMore">
+  ];
+}
+
+def AIRHoistCastPairs: Pass<"air-hoist-cast-pairs", "func::FuncOp"> {
+  let summary = "Iteratively hoist matched extf/truncf or extsi/extui/trunci "
+                "pairs surrounding loop iter_args out of the loop";
+  let constructor = "xilinx::air::createAIRHoistCastPairsPass()";
+  let description = [{
+    For each innermost scf.for inside an air.herd, repeatedly find a matched
+    extension/truncation pair surrounding a loop iter_arg and hoist them
+    out (extend init before the loop, change the iter_arg type to wide,
+    truncate the loop result after). Runs to fixed-point. Replaces the 4×
+    hand-unrolled `transform.air.hoist_cast_pair` chain in the existing
+    transform scripts.
+
+    M1b of the C++ matmul codegen pipeline. See MATMUL_CODEGEN_PIPELINE_PLAN.md.
+  }];
+  let options = [
+    Option<"clMaxIterations", "max-iterations", "int64_t",
+           /*default=*/"32",
+           "Safety cap on fixed-point iterations.">
+  ];
+}
+
+def AIRMatmulTileKAndFusePacks : Pass<"air-matmul-tile-k-and-fuse-packs",
+                                       "func::FuncOp"> {
+  let summary = "Phase 4: tile the K reduction dim of the packed matmul and "
+                "fuse the LHS/RHS pack producers into the new scf.for.";
+  let constructor = "xilinx::air::createAIRMatmulTileKAndFusePacksPass()";
+  let description = [{
+    Locates the linalg op annotated `packed_matmul`, tiles it on the K
+    iterator at `k-iter-index` using `scf::tileUsingSCF` (LoopType::ForOp),
+    annotates the new outer scf.for with `k-reduction-loop-marker`, then
+    fuses the two operand-producing `linalg.pack` ops (LHS and RHS) into
+    the loop via `scf::tileAndFuseProducerOfSlice`. Annotates the fused
+    packs with `lhs-pack-in-k-marker` / `rhs-pack-in-k-marker` so Phase 5
+    can find them.
+
+    Replaces the `tile_using_for [0,0,2] + fuse_into_containing_op` pair in
+    the legacy transform script. M2 Phase 4. M4 invokes this pass twice
+    (outer K-tile at iter index 2, inner K-tile at iter index 5) for the
+    two-pack-level flow.
+  }];
+  let options = [
+    Option<"clKTileFactor", "k-tile-factor", "int64_t", /*default=*/"2",
+           "Tile size on the (already-packed) K iterator.">,
+    Option<"clKIterIndex", "k-iter-index", "int64_t", /*default=*/"2",
+           "Index of the K iterator to tile (after pack: m,n,k => idx 2; "
+           "after two pack levels with outer L2 + inner L1 K iters, the "
+           "inner K is typically at idx 5).">,
+    Option<"clPackedMatmulMarker", "packed-matmul-marker", "std::string",
+           /*default=*/"\"packed_matmul\"",
+           "Attribute name on the packed matmul op produced by "
+           "air-matmul-pack-and-transpose.">,
+    Option<"clKReductionLoopMarker", "k-reduction-loop-marker", "std::string",
+           /*default=*/"\"k_reduction_loop\"",
+           "Attribute name written on the new K-reduction scf.for. Set to a "
+           "different name (e.g. `k_reduction_loop_inner`) for the second "
+           "invocation in the M4 two-pack-level flow.">,
+    Option<"clLhsPackMarker", "lhs-pack-in-k-marker", "std::string",
+           /*default=*/"\"lhs_pack_in_k\"",
+           "Marker on the LHS pack op after fusion into the K-reduction loop.">,
+    Option<"clRhsPackMarker", "rhs-pack-in-k-marker", "std::string",
+           /*default=*/"\"rhs_pack_in_k\"",
+           "Marker on the RHS pack op after fusion into the K-reduction loop.">,
+    Option<"clLhsL2PackMarker", "lhs-l2-pack-in-k-marker", "std::string",
+           /*default=*/"\"lhs_l2_pack_in_k\"",
+           "Marker on the LHS L2-pack producer after chain-fusion into the "
+           "K-reduction loop. Used by the M4 two-pack-level flow to locate "
+           "the L2 packs for L2-input bufferization.">,
+    Option<"clRhsL2PackMarker", "rhs-l2-pack-in-k-marker", "std::string",
+           /*default=*/"\"rhs_l2_pack_in_k\"",
+           "Marker on the RHS L2-pack producer after chain-fusion.">
+  ];
+}
+
+def AIRMatmulTileCores : Pass<"air-matmul-tile-cores", "func::FuncOp"> {
+  let summary = "Phase 5: tile the per-K-iteration packed matmul over cores "
+                "via scf.forall and fuse the input packs into the forall.";
+  let constructor = "xilinx::air::createAIRMatmulTileCoresPass()";
+  let description = [{
+    Finds the `packed_matmul`-marked linalg op (now tiled on K by Phase 4),
+    tiles it with `scf::tileUsingSCF` (LoopType::ForallOp) using the
+    requested core-tile sizes, annotates the new scf.forall with
+    `compute-forall-marker` and the per-core matmul body with
+    `matmul-compute-marker`. Then fuses the two `lhs_pack_in_k` /
+    `rhs_pack_in_k`-marked packs into the new forall and re-annotates them
+    with `lhs-l1-pack-marker` / `rhs-l1-pack-marker` (so
+    `air-matmul-bufferize-l1-inputs` can find them). M2 Phase 5.
+  }];
+  let options = [
+    Option<"clTileSizes", "tile-sizes", "std::string", /*default=*/"\"8,4,0\"",
+           "Comma-separated tile sizes on the packed-matmul iterators "
+           "(outer dims of the packed iteration space).">,
+    Option<"clPackedMatmulMarker", "packed-matmul-marker", "std::string",
+           /*default=*/"\"packed_matmul\"",
+           "Attribute name on the packed matmul op.">,
+    Option<"clLhsPackInKMarker", "lhs-pack-in-k-marker", "std::string",
+           /*default=*/"\"lhs_pack_in_k\"",
+           "Marker on the LHS pack op produced by Phase 4.">,
+    Option<"clRhsPackInKMarker", "rhs-pack-in-k-marker", "std::string",
+           /*default=*/"\"rhs_pack_in_k\"",
+           "Marker on the RHS pack op produced by Phase 4.">,
+    Option<"clComputeForallMarker", "compute-forall-marker", "std::string",
+           /*default=*/"\"compute_forall\"",
+           "Marker on the new compute scf.forall.">,
+    Option<"clMatmulComputeMarker", "matmul-compute-marker", "std::string",
+           /*default=*/"\"matmul_compute\"",
+           "Marker on the per-core packed matmul body.">,
+    Option<"clLhsL1PackMarker", "lhs-l1-pack-marker", "std::string",
+           /*default=*/"\"fused_lhs_l1_pack\"",
+           "Marker on the fully-fused LHS pack inside the compute forall.">,
+    Option<"clRhsL1PackMarker", "rhs-l1-pack-marker", "std::string",
+           /*default=*/"\"fused_rhs_l1_pack\"",
+           "Marker on the fully-fused RHS pack inside the compute forall.">
+  ];
+}
+
+def AIRMatmulTileLaunchTile : Pass<"air-matmul-tile-launch-tile",
+                                    "func::FuncOp"> {
+  let summary = "M4 Phase 0: tile_using_forall on the linalg.matmul to "
+                "create the outer launch-tile forall, then fuse the "
+                "linalg.fill producer of the accumulator into that forall.";
+  let constructor = "xilinx::air::createAIRMatmulTileLaunchTilePass()";
+  let description = [{
+    Locates the first linalg.matmul, tiles it with `scf::tileUsingSCF`
+    (LoopType::ForallOp) using `tile-sizes`, annotates the new scf.forall
+    with `launch-tile-forall-marker`, then fuses the linalg.fill producer
+    of the matmul's accumulator into the forall via
+    `scf::tileAndFuseProducerOfSlice`. This produces a launch-tile-sized
+    inner matmul + fill suitable for downstream packing/tiling.
+
+    Used by the test-37 two-pack-level flow. M4a Phase 0.
+  }];
+  let options = [
+    Option<"clTileSizes", "tile-sizes", "std::string",
+           /*default=*/"\"256,256\"",
+           "Comma-separated tile sizes for the launch-tile forall.">,
+    Option<"clLaunchTileForallMarker", "launch-tile-forall-marker",
+           "std::string", /*default=*/"\"launch_tile_forall\"",
+           "Marker on the new outer scf.forall.">
+  ];
+}
+
+def AIRMatmulSetCodegenConfig : Pass<"air-matmul-set-codegen-config",
+                                      "func::FuncOp"> {
+  let summary = "M3 heuristic: write the #air.matmul_codegen_config dict "
+                "attribute on the first linalg.matmul.";
+  let constructor = "xilinx::air::createAIRMatmulSetCodegenConfigPass()";
+  let description = [{
+    Walks for the first `linalg.matmul` in the function and writes the
+    `air.matmul_codegen_config` discardable DictionaryAttr on it. The dict
+    carries: pack_sizes, lhs/rhs/acc outer/inner perms, tile_l3_l2_k,
+    tile_k_factor, tile_cores, prologue/epilogue_tile, vector_tile,
+    vector_unroll_tile, vector_unroll_factor, fill_vector_tile,
+    plus the mode flags bfp16_emulation / fuse_output_truncf /
+    bf16_output_hoist_pairs / three_herd_prologue_epilogue.
+
+    M3a heuristic: hardcoded type+target lookup table (no L1-fit solver yet).
+    See MATMUL_CODEGEN_PIPELINE_PLAN.md. Each downstream M2 pass reads the
+    dict at its key when present and falls back to its pass-options
+    otherwise.
+  }];
+  let options = [
+    Option<"clTargetDevice", "target-device", "std::string",
+           /*default=*/"\"aie2p\"",
+           "Target device: \"aie2\" or \"aie2p\".">,
+    Option<"clHerdM", "herd-m", "int64_t", /*default=*/"4",
+           "Compute herd M dimension.">,
+    Option<"clHerdN", "herd-n", "int64_t", /*default=*/"4",
+           "Compute herd N dimension.">,
+    Option<"clTileL3L2K", "tile-l3-l2-k", "int64_t", /*default=*/"0",
+           "L2 K-tile size; 0 = auto-derive from element types "
+           "(64 for bf16/i8, 16 for f32 inputs).">,
+    Option<"clBfp16Emulation", "bfp16-emulation", "bool",
+           /*default=*/"false",
+           "Set the bfp16-emulation mode flag (test-54-style f32 in/out).">,
+    Option<"clThreeHerd", "three-herd", "bool", /*default=*/"true",
+           "Set three-herd prologue/epilogue mode flag (tests 53/54).">
+  ];
+}
+
+def AIRMatmulPrologueEpilogue : Pass<"air-matmul-prologue-epilogue",
+                                      "func::FuncOp"> {
+  let summary = "Phase 6 prologue/epilogue: generalize+interchange the matmul "
+                "fill op and tile both fill and unpack into per-core foralls.";
+  let constructor = "xilinx::air::createAIRMatmulPrologueEpiloguePass()";
+  let description = [{
+    Materializes the prologue and epilogue herds for a packed matmul flow.
+    Steps:
+      1. Find linalg.fill (still in tensor form, post-pack so on a 4D
+         packed tensor). Generalize it to linalg.generic; annotate
+         `init-fill-marker`.
+      2. Interchange iterators (default `[1,0,2,3]`, i.e. swap M/N outer
+         dims to match the post-pack outer_perm).
+      3. Tile the interchanged fill with `scf::tileUsingSCF`
+         (LoopType::ForallOp) using `prologue-tile-sizes`; annotate the
+         forall with `prologue-forall-marker`.
+      4. Find linalg.unpack and tile with `scf::tileUsingSCF`
+         (LoopType::ForallOp) using `epilogue-tile-sizes`; annotate the
+         forall with `epilogue-forall-marker`.
+
+    Used by tests 53/54 (three-herd flow). Skipped for tests/flows that
+    don't need a separate prologue/epilogue. M2 Phase 6 prologue/epilogue.
+  }];
+  let options = [
+    Option<"clPrologueTileSizes", "prologue-tile-sizes", "std::string",
+           /*default=*/"\"8,4\"",
+           "Comma-separated tile sizes for the prologue (fill) forall.">,
+    Option<"clEpilogueTileSizes", "epilogue-tile-sizes", "std::string",
+           /*default=*/"\"64,32\"",
+           "Comma-separated tile sizes for the epilogue (unpack) forall.">,
+    Option<"clFillIteratorInterchange", "fill-iterator-interchange",
+           "std::string", /*default=*/"\"1,0,2,3\"",
+           "Iterator-permutation vector applied to the generalized fill "
+           "before tiling. Empty disables interchange.">,
+    Option<"clInitFillMarker", "init-fill-marker", "std::string",
+           /*default=*/"\"init_fill\"",
+           "Marker on the generalized fill op.">,
+    Option<"clPrologueForallMarker", "prologue-forall-marker", "std::string",
+           /*default=*/"\"prologue_forall\"",
+           "Marker on the prologue scf.forall.">,
+    Option<"clEpilogueForallMarker", "epilogue-forall-marker", "std::string",
+           /*default=*/"\"epilogue_forall\"",
+           "Marker on the epilogue scf.forall.">
+  ];
+}
+
+def AIRMatmulBufferizeOutputL2 : Pass<"air-matmul-bufferize-output-l2",
+                                       "func::FuncOp"> {
+  let summary = "Phase 2: bufferize the matmul accumulator init "
+                "(linalg.fill) into an L2 (memory_space=1) allocation.";
+  let constructor = "xilinx::air::createAIRMatmulBufferizeOutputL2Pass()";
+  let description = [{
+    Locates the first linalg.fill in the function (the matmul accumulator
+    initializer) and calls `linalg::bufferizeToAllocation` with
+    `bufferizeDestinationOnly=true`, `emitDealloc=true`,
+    `memcpyOp=LinalgCopy`, and the requested memory space. M2 Phase 2.
+  }];
+  let options = [
+    Option<"clMemorySpace", "memory-space", "int64_t", /*default=*/"1",
+           "Target memory space for the L2 allocation (1 = MemTile).">
+  ];
+}
+
+def AIRMatmulBufferizeL1Output : Pass<"air-matmul-bufferize-l1-output",
+                                       "func::FuncOp"> {
+  let summary = "Phase 3 tail: bufferize the L1 output pack of the packed "
+                "matmul into a L1 (memory_space=2) allocation.";
+  let constructor = "xilinx::air::createAIRMatmulBufferizeL1OutputPass()";
+  let description = [{
+    Looks up the linalg op annotated `packed_matmul` (set by
+    `air-matmul-pack-and-transpose`), finds the producer of its DPS init
+    operand (the output linalg.pack), and bufferizes it into the requested
+    memory space. M2 Phase 3 tail.
+  }];
+  let options = [
+    Option<"clMemorySpace", "memory-space", "int64_t", /*default=*/"2",
+           "Target memory space for the L1 allocation (2 = compute tile).">,
+    Option<"clPackedMatmulMarker", "packed-matmul-marker", "std::string",
+           /*default=*/"\"packed_matmul\"",
+           "Attribute name on the packed matmul op produced by "
+           "air-matmul-pack-and-transpose.">
+  ];
+}
+
+def AIRMatmulBufferizeL1Inputs : Pass<"air-matmul-bufferize-l1-inputs",
+                                       "func::FuncOp"> {
+  let summary = "Phase 6a: bufferize the L1 input packs (LHS, RHS) of the "
+                "tiled-into-cores packed matmul into L1 allocations. Also "
+                "reusable for M4 L2-input bufferization via the marker / "
+                "memory-space / memcpy-op options.";
+  let constructor = "xilinx::air::createAIRMatmulBufferizeL1InputsPass()";
+  let description = [{
+    Looks up linalg ops annotated `lhs-marker` and `rhs-marker`
+    (default `fused_lhs_l1_pack` / `fused_rhs_l1_pack`, set by
+    `air-matmul-tile-cores`) and bufferizes each into the requested memory
+    space using the requested memcpy op. M2 Phase 6a; reused at M4 for the
+    L2-input path with `memory-space=1 memcpy-op=linalg-copy
+    lhs-marker=fused_lhs_l2_pack rhs-marker=fused_rhs_l2_pack`.
+  }];
+  let options = [
+    Option<"clMemorySpace", "memory-space", "int64_t", /*default=*/"2",
+           "Target memory space for the allocation (1 = MemTile / L2; "
+           "2 = compute tile / L1).">,
+    Option<"clLhsMarker", "lhs-marker", "std::string",
+           /*default=*/"\"fused_lhs_l1_pack\"",
+           "Attribute name on the fused LHS pack to bufferize.">,
+    Option<"clRhsMarker", "rhs-marker", "std::string",
+           /*default=*/"\"fused_rhs_l1_pack\"",
+           "Attribute name on the fused RHS pack to bufferize.">,
+    Option<"clMemcpyOp", "memcpy-op", "std::string",
+           /*default=*/"\"materialize\"",
+           "Memcpy op to use: `materialize` (= `MaterializeInDestination`, "
+           "default for L1) or `linalg-copy` (= `LinalgCopy`, used for L2 "
+           "in the M4 two-pack-level flow).">
+  ];
+}
+
+def AIRMatmulCleanupBufferize : Pass<"air-matmul-cleanup-bufferize",
+                                     "func::FuncOp"> {
+  let summary = "Post-bufferization cleanup: remove uninitialized copies, "
+                "eliminate cascade memcpy chains.";
+  let constructor = "xilinx::air::createAIRMatmulCleanupBufferizePass()";
+  let description = [{
+    Applies, in order: (a) `OptimizeCopyOpPattern` to drop copies whose source
+    is uninitialized (or replace with linalg.fill if source is only filled),
+    (b) `EliminateIntermediateMemrefPattern` to collapse cascade
+    air.dma_memcpy_nd chains via an intermediate buffer.
+
+    Replaces the `transform.air.remove_uninitialized_copy` +
+    `transform.air.eliminate_cascade_memcpy` tail of Phase 7. M2.
+  }];
+}
+
+def AIRMatmulFusePingpongLoops : Pass<"air-matmul-fuse-pingpong-loops",
+                                       "func::FuncOp"> {
+  let summary = "Phase 8: normalize K-reduction loop bounds, then sibling-fuse "
+                "the L3->L2 copy loops into the K-reduction loop for L2 ping-"
+                "pong buffering.";
+  let constructor = "xilinx::air::createAIRMatmulFusePingpongLoopsPass()";
+  let description = [{
+    Looks up the scf.for loops annotated `copy_a_loop`, `copy_b_loop`, and
+    `k_reduction_loop` (set by Phase 1 / Phase 4). Calls
+    `foldAffineApplyIntoLoopBounds` to normalize the K-reduction loop bounds,
+    then applies `mlir::scf::fuseIndependentSiblingForLoops` to bring the
+    copy loops into the K-reduction loop. Replaces Phase 8.
+  }];
+}
+
+def AIRHoistStaticAlloc : Pass<"air-hoist-static-alloc", "func::FuncOp"> {
+  let summary = "Hoist statically-bound memref.alloc ops out of nested loops "
+                "to the function entry block.";
+  let constructor = "xilinx::air::createAIRHoistStaticAllocPass()";
+  let description = [{
+    Walks `memref.alloc` ops in the function. For each alloc that is not
+    already in the entry block AND whose dynamic sizes are empty (or all
+    uses are subview-replaceable), hoist it to the entry block. Wraps the
+    `hoistStaticallyBoundAllocationsInFunc<memref::AllocOp>` helper used
+    by `transform.air.hoist_static_alloc`. Required by the M4 K-peel flow
+    (test 37) so the L1 acc alloc lives outside the K-reduction loop.
+  }];
+}
+
+def AIRMatmulFuseOutputTruncf : Pass<"air-matmul-fuse-output-truncf",
+                                      "func::FuncOp"> {
+  let summary = "Phase 2 (test 53): fuse a truncf-only linalg.generic into "
+                "its matmul producer, lowering accumulator type to bf16.";
+  let constructor = "xilinx::air::createAIRMatmulFuseOutputTruncfPass()";
+  let description = [{
+    For each linalg.generic that contains only an arith.truncf and consumes a
+    matmul result, calls `runFuseTruncfLinalg` to fuse it into the matmul.
+    The fused result is replaced with a `linalg.matmul` of the truncated
+    output element type so that downstream pack/specialize succeeds.
+
+    Used by tests with bf16 output (e.g. test 53 / prog_ex bf16-out flow).
+  }];
+}
+
 def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
   let summary = "Hoist dma ops into perfectly nested loop";
   let constructor = "xilinx::air::createAIRLoopFusion()";

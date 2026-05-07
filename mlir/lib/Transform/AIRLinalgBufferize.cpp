@@ -337,6 +337,16 @@ DiagnosedSilenceableFailure transform::AIRHoistStaticAllocOp::applyToOne(
   return DiagnosedSilenceableFailure::success();
 }
 
+namespace xilinx {
+namespace air {
+void hoistStaticAllocsInFunc(::mlir::RewriterBase &rewriter,
+                             ::mlir::FunctionOpInterface funcOp) {
+  ::hoistStaticallyBoundAllocationsInFunc<mlir::memref::AllocOp>(rewriter,
+                                                                 funcOp);
+}
+} // namespace air
+} // namespace xilinx
+
 void transform::AIRHoistStaticAllocOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   transform::onlyReadsHandle(getTargetMutable(), effects);

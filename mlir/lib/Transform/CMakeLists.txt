@@ -23,6 +23,12 @@ list(APPEND TRANSFORM_SOURCES
   AIRLinalgCodegen.cpp
   AIRLinalgOpStats.cpp
   AIRLoopMergingPass.cpp
+  AIRMatmulBufferizationPasses.cpp
+  AIRMatmulCodegenHelpers.cpp
+  AIRMatmulPackAndTranspose.cpp
+  AIRMatmulTileL3ToL2Copies.cpp
+  AIRMatmulTilePasses.cpp
+  AIRMatmulVectorizePasses.cpp
 )
 if(AIR_ENABLE_AIE)
   list(APPEND TRANSFORM_SOURCES

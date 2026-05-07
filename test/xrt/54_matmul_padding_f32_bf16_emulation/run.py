@@ -39,6 +39,29 @@ parser.add_argument(
 parser.add_argument("-v", "--verbose", action="store_true")
 parser.add_argument("-p", "--print-module-only", action="store_true")
 parser.add_argument(
+    "--use-cpp-pipeline",
+    action="store_true",
+    help="Replace the transform_aie2p.mlir transform script with the C++ "
+    "matmul codegen pipeline (M2 of MATMUL_CODEGEN_PIPELINE_PLAN.md).",
+)
+parser.add_argument(
+    "--use-codegen-config",
+    action="store_true",
+    help="Use M3 air-matmul-set-codegen-config heuristic (auto-derive pack/"
+    "tile/vector params from element types + target). Implies "
+    "--use-cpp-pipeline. The hand-tuned pass-options are dropped from the "
+    "pipeline string; the heuristic-attached attribute drives all consumer "
+    "passes.",
+)
+parser.add_argument(
+    "--profile-iters",
+    type=int,
+    default=0,
+    help="If > 0, after the verify run also do a separate compile+load and "
+    "time this many kernel invocations (with 5 warmup iters). One-line A/B "
+    "between --use-cpp-pipeline and the legacy transform.",
+)
+parser.add_argument(
     "--compile-mode",
     type=str,
     choices=["compile-only", "compile-and-run"],
@@ -163,11 +186,60 @@ with air.ir.Context() as ctx, Location.unknown():
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
-    # Apply transform script
-    with open(transform_path, "r") as f:
-        transform_ir_string = f.read()
-    transform_ir = Module.parse(transform_ir_string, context=air_module.context)
-    run_transform(transform_ir, air_module)
+    if args.use_codegen_config:
+        args.use_cpp_pipeline = True
+    if args.use_cpp_pipeline:
+        # Drive matmul codegen via the C++ pass pipeline. The heuristic pass
+        # `air-matmul-set-codegen-config` (M3) attaches an attribute on the
+        # linalg.matmul that downstream consumer passes read for tile/pack/
+        # vector parameters; no per-pass options needed in the pipeline.
+        # See MATMUL_CODEGEN_PIPELINE_PLAN.md.
+        phases = [
+            "func.func(air-matmul-set-codegen-config{"
+            f"target-device=aie2p herd-m={HERD_M} herd-n={HERD_N} "
+            "bfp16-emulation=true})",
+            "func.func(air-matmul-tile-l3-to-l2-copies)",
+            "func.func(air-matmul-bufferize-output-l2)",
+            "func.func(air-matmul-pack-and-transpose)",
+            "func.func(air-matmul-bufferize-l1-output)",
+            "func.func(air-matmul-tile-k-and-fuse-packs)",
+            "func.func(air-matmul-tile-cores)",
+            "func.func(canonicalize,cse)",
+            "func.func(air-matmul-bufferize-l1-inputs)",
+            "func.func(air-matmul-prologue-epilogue)",
+            "func.func(canonicalize,cse)",
+            "one-shot-bufferize{bufferize-function-boundaries=1 "
+            "unknown-type-conversion=identity-layout-map "
+            "function-boundary-type-conversion=identity-layout-map}",
+            "func.func(canonicalize,cse,canonicalize)",
+            "func.func(air-matmul-cleanup-bufferize)",
+            "func.func(air-matmul-fuse-pingpong-loops)",
+            "func.func(air-matmul-tile-for-vectorize)",
+            "func.func(scf-forall-to-parallel)",
+            "air-par-to-herd",
+            "func.func(air-herd-vectorize)",
+            "func.func(canonicalize,cse,fold-memref-alias-ops)",
+            "func.func(air-fold-unit-extent-dims)",
+            "func.func(air-eliminate-redundant-vector-transfers)",
+            "func.func(air-vector-cast-for-emulation{"
+            "target-element-type=f32 input-indices=2 output-indices=0})",
+            "func.func(air-vector-cast-for-emulation{"
+            "target-element-type=bf16 input-indices=0,1})",
+            "func.func(air-hoist-loop-invariant-transfers)",
+            "func.func(air-flatten-for-iter-args)",
+            "func.func(air-hoist-vector-transfer-pointers)",
+            "func.func(canonicalize,cse,fold-memref-alias-ops,"
+            "air-fold-unit-extent-dims)",
+        ]
+        cpp_pipeline = "builtin.module(" + ",".join(phases) + ")"
+        pm = air.passmanager.PassManager.parse(cpp_pipeline)
+        pm.run(air_module.operation)
+    else:
+        # Apply transform script
+        with open(transform_path, "r") as f:
+            transform_ir_string = f.read()
+        transform_ir = Module.parse(transform_ir_string, context=air_module.context)
+        run_transform(transform_ir, air_module)
 
     if args.print_module_only:
         print(air_module)
@@ -275,14 +347,10 @@ with air.ir.Context() as ctx, Location.unknown():
             bf16_emulation=True,
             debug_ir=True,
         )
-        exit(
-            runner.run_test(
-                air_module,
-                inputs=[input_a, input_b],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=0.1,
-            )
-        )
+        rc = runner.run_test(air_module, inputs=[input_a, input_b], stochastic_expected_outputs=[sampled_data], rtol=0.1)
+        if args.profile_iters > 0 and rc == 0:
+            runner.benchmark(air_module, inputs=[input_a, input_b], stochastic_expected_outputs=[sampled_data], iters=args.profile_iters, label=("cpp" if args.use_cpp_pipeline else "legacy"))
+        exit(rc)
     elif args.compile_mode == "compile-only":
         backend = XRTBackend(
             verbose=args.verbose,

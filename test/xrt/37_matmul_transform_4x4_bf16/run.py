@@ -46,6 +46,18 @@ parser.add_argument(
     help="Transform script path",
 )
 parser.add_argument(
+    "--use-cpp-pipeline",
+    action="store_true",
+    help="Replace the legacy transform script with the C++ matmul codegen "
+    "pipeline (M4 two-pack-level flow). See MATMUL_CODEGEN_PIPELINE_PLAN.md.",
+)
+parser.add_argument(
+    "--profile-iters",
+    type=int,
+    default=0,
+    help="If >0, also benchmark on HW for this many iters (after correctness).",
+)
+parser.add_argument(
     "--M",
     type=int,
     default=512,
@@ -125,11 +137,90 @@ with open("air_input.mlir", "w") as f:
 ## Tiling
 ################################################
 
-# Load the MLIR transform IR from an external file
-with open(args.transform_script, "r") as f:
-    transform_ir_string = f.read()
-transform_ir = Module.parse(transform_ir_string, context=context)
-run_transform(transform_ir, air_module)
+if args.use_cpp_pipeline:
+    # M4: two-pack-level matmul codegen via the C++ pass pipeline.
+    # See MATMUL_CODEGEN_PIPELINE_PLAN.md. Hand-tuned options match the
+    # legacy transform_aie2p.mlir values for tests with M=512/N=512/K=1024.
+    phases = [
+        # Phase 0: outer launch tile.
+        "func.func(air-matmul-tile-launch-tile{tile-sizes=256,256})",
+        # L2 pack.
+        "func.func(air-matmul-pack-and-transpose{pack-sizes=64,64,64 "
+        "lhs-outer-perm=0,1 lhs-inner-perm=0,1 "
+        "rhs-outer-perm=1,0 rhs-inner-perm=1,0 "
+        "acc-outer-perm=0,1 acc-inner-perm=0,1})",
+        "func.func(canonicalize,cse)",
+        # Bufferize the L2 fill (matmul accumulator init).
+        "func.func(air-matmul-bufferize-output-l2)",
+        # L1 pack on top of the L2-packed generic.
+        "func.func(air-matmul-pack-and-transpose{pack-sizes=0,0,0,8,8,8 "
+        "lhs-outer-perm=0,1,3,2 "
+        "rhs-outer-perm=0,1,3,2 rhs-inner-perm=1,0 "
+        "acc-outer-perm=0,1,3,2})",
+        # Bufferize the L1 output pack (pack_c) into L1.
+        "func.func(air-matmul-bufferize-l1-output)",
+        # Outer K-tile (K_L2/64 = 16 chunks, tile by 1). Chain-fuses both
+        # L1 (immediate matmul operand) and L2 (grandparent) packs into the
+        # K-loop, marking the L2 packs with `lhs_l2_pack_in_k` /
+        # `rhs_l2_pack_in_k` for the next bufferize step.
+        "func.func(air-matmul-tile-k-and-fuse-packs{"
+        "k-tile-factor=1 k-iter-index=2})",
+        # Promote LHS/RHS L2 packs into L2 buffers.
+        "func.func(air-matmul-bufferize-l1-inputs{memory-space=1 "
+        "memcpy-op=linalg-copy lhs-marker=lhs_l2_pack_in_k "
+        "rhs-marker=rhs_l2_pack_in_k})",
+        "func.func(canonicalize,cse)",
+        # Per-core tile (forall over outer M_L2 × N_L2 = 4×4 cores).
+        "func.func(air-matmul-tile-cores{tile-sizes=1,1,0,0,0,0,0,0,0})",
+        "func.func(canonicalize,cse)",
+        # Inner K-tile (k_L2/8 = 8 chunks, tile by 8 — one packed-K mmul).
+        "func.func(air-matmul-tile-k-and-fuse-packs{"
+        "k-tile-factor=8 k-iter-index=5 "
+        "k-reduction-loop-marker=k_reduction_loop_inner "
+        "lhs-pack-in-k-marker=fused_lhs_l1_pack "
+        "rhs-pack-in-k-marker=fused_rhs_l1_pack})",
+        # Bufferize the L1 input packs.
+        "func.func(air-matmul-bufferize-l1-inputs)",
+        "func.func(canonicalize,cse)",
+        "func.func(air-hoist-static-alloc)",
+        # Prologue/epilogue (post-pack 4D shapes; tile [1, 1]).
+        "func.func(air-matmul-prologue-epilogue{"
+        "prologue-tile-sizes=1,1 epilogue-tile-sizes=1,1 "
+        "fill-iterator-interchange=})",
+        "func.func(canonicalize,cse)",
+        "one-shot-bufferize{bufferize-function-boundaries=1 "
+        "unknown-type-conversion=identity-layout-map "
+        "function-boundary-type-conversion=identity-layout-map}",
+        "func.func(canonicalize,cse,canonicalize)",
+        "func.func(air-matmul-cleanup-bufferize)",
+        # Vectorize tile (9-iter matmul, all dims tiled by 1; fill 4-iter).
+        "func.func(air-matmul-tile-for-vectorize{"
+        "matmul-tile-sizes=1,1,1,1,1,1,0,0,0 "
+        "matmul-unroll-tile-sizes=0,0,0,0,0,0,0,0,0 "
+        "matmul-unroll-factor=1 fill-tile-sizes=1,1,1,1})",
+    ]
+    import os, re
+    dump_dir = os.environ.get("AIR_DUMP_PHASES", "")
+    if dump_dir:
+        os.makedirs(dump_dir, exist_ok=True)
+        for i, phase in enumerate(phases):
+            pm = air.passmanager.PassManager.parse(
+                "builtin.module(" + phase + ")", context=context)
+            pm.run(air_module.operation)
+            m = re.search(r"[a-z][a-z0-9-]*", phase.split("(", 1)[-1])
+            short = (m.group(0) if m else f"phase{i}").replace(")", "")
+            with open(f"{dump_dir}/p{i:02d}_{short}.mlir", "w") as f:
+                f.write(str(air_module))
+    else:
+        pm = air.passmanager.PassManager.parse(
+            "builtin.module(" + ",".join(phases) + ")", context=context)
+        pm.run(air_module.operation)
+else:
+    # Load the MLIR transform IR from an external file
+    with open(args.transform_script, "r") as f:
+        transform_ir_string = f.read()
+    transform_ir = Module.parse(transform_ir_string, context=context)
+    run_transform(transform_ir, air_module)
 
 with open("air_tiled.mlir", "w") as f:
     f.write(str(air_module))
@@ -200,14 +291,21 @@ if args.compile_mode == "compile-and-run":
         output_format=args.output_format,
         instance_name="forward",
     )
-    exit(
-        runner.run_test(
+    rc = runner.run_test(
+        air_module,
+        inputs=[input_a, input_b],
+        stochastic_expected_outputs=[sampled_data],
+        rtol=1e-1,
+    )
+    if args.profile_iters > 0 and rc == 0:
+        runner.benchmark(
             air_module,
             inputs=[input_a, input_b],
             stochastic_expected_outputs=[sampled_data],
-            rtol=1e-1,
+            iters=args.profile_iters,
+            label=("cpp" if args.use_cpp_pipeline else "legacy"),
         )
-    )
+    exit(rc)
 
 elif args.compile_mode == "compile-only":
     ###### Compile only

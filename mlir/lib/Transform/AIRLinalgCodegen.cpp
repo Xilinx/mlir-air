@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRLinalgCodegen.h"
+#include "air/Transform/AIRMatmulCodegenHelpers.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
 #if AIR_ENABLE_AIE
@@ -2510,41 +2511,34 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
   SmallVector<Operation *> fusedOps;
   SmallVector<Operation *> producerOps =
       llvm::to_vector(state.getPayloadOps(getProducerOp()));
-  // If nothing to fuse, propagate success.
   if (producerOps.empty()) {
     results.set(llvm::cast<OpResult>(getFusedOp()),
                 SmallVector<mlir::Operation *>{});
     return DiagnosedSilenceableFailure::success();
   }
-  if (producerOps.size() != 1) {
+  if (producerOps.size() != 1)
     return emitDefiniteFailure()
            << "requires exactly one producer_op handle (got "
            << producerOps.size() << ")";
-  }
   Operation *producerOp = producerOps.front();
 
   SmallVector<Operation *> containingOps =
       llvm::to_vector(state.getPayloadOps(getContainingOp()));
-  if (containingOps.size() != 1) {
+  if (containingOps.size() != 1)
     return emitDefiniteFailure()
            << "requires exactly one containing_op handle (got "
            << containingOps.size() << ")";
-  }
   Operation *containingOp = containingOps.front();
 
-  linalg::LinalgOp producerLinalgOp =
-      dyn_cast_if_present<linalg::LinalgOp>(producerOp);
-  if (!producerLinalgOp) {
+  auto producerLinalgOp = dyn_cast_if_present<linalg::LinalgOp>(producerOp);
+  if (!producerLinalgOp)
     return emitDefiniteFailure() << "requires producer_op to be LinalgOp";
-  }
-  if (producerLinalgOp.getNumDpsInits() != 1) {
+  if (producerLinalgOp.getNumDpsInits() != 1)
     return emitDefiniteFailure()
            << "requires producer_op to have exactly one init operand (got "
            << producerLinalgOp.getNumDpsInits() << ")";
-  }
 
   auto initOperand = producerLinalgOp.getDpsInits()[0];
-  // The containing op may be a user of producerOp: use isAncestor.
   int64_t numUsesInContainingOp =
       llvm::count_if(initOperand.getUsers(), [&](Operation *op) {
         return containingOp->isAncestor(op);
@@ -2556,22 +2550,18 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
     return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
   }
 
-  // Default diagnostic, to be complemented with more failure information.
-  Diagnostic diag(producerOp->getLoc(), DiagnosticSeverity::Remark);
-  diag << "could not fuse " << *producerOp << " into " << *containingOp;
-
   Operation *tiled =
-      tileAndFuseFirstExtractUse(rewriter, diag, producerOp, containingOp);
+      xilinx::air::runFuseIntoContainingMemref(producerOp, containingOp,
+                                               rewriter);
   if (tiled) {
-    LLVM_DEBUG(llvm::dbgs() << "\nFused a direct extract use\n"
-                            << *containingOp);
     fusedOps.push_back(tiled);
     rewriter.eraseOp(producerOp);
-
     results.set(llvm::cast<OpResult>(getFusedOp()), fusedOps);
     return DiagnosedSilenceableFailure::success();
   }
 
+  Diagnostic diag(producerOp->getLoc(), DiagnosticSeverity::Remark);
+  diag << "could not fuse " << *producerOp << " into " << *containingOp;
   results.set(llvm::cast<OpResult>(getFusedOp()), ArrayRef<Operation *>());
   return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
 }
@@ -2579,144 +2569,6 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
 //===----------------------------------------------------------------------===//
 // HoistLoopInvariantTransfersOp / HoistAllAccumulatorTransfersOp
 //===----------------------------------------------------------------------===//
-
-// Forward declaration (defined in EliminateRedundantVectorTransfersOp section)
-static bool areEquivalentIndices(Value idx1, Value idx2);
-
-/// Check if a value depends on the given loop induction variable
-static bool dependsOnLoopIV(Value val, Value loopIV) {
-  if (val == loopIV)
-    return true;
-
-  // Check if the value is defined by an affine.apply that uses the loop IV
-  if (auto affineOp = val.getDefiningOp<affine::AffineApplyOp>()) {
-    for (Value operand : affineOp.getMapOperands()) {
-      if (dependsOnLoopIV(operand, loopIV))
-        return true;
-    }
-  }
-
-  // Check for arithmetic operations
-  if (auto defOp = val.getDefiningOp()) {
-    for (Value operand : defOp->getOperands()) {
-      if (dependsOnLoopIV(operand, loopIV))
-        return true;
-    }
-  }
-
-  return false;
-}
-
-/// Recursively clone an operation and its operands, using current insertion
-/// point. Only clones operations that are inside the loop being hoisted from.
-static Value cloneOpAndOperands(Operation *op, Value loopIV, scf::ForOp loopOp,
-                                RewriterBase &rewriter, IRMapping &mapping) {
-  // If already mapped, return the mapped value
-  if (!op->getResults().empty())
-    if (mapping.contains(op->getResult(0)))
-      return mapping.lookup(op->getResult(0));
-
-  // Clone operand-producing operations first
-  for (Value operand : op->getOperands()) {
-    if (operand == loopIV)
-      continue; // Can't clone loop IV
-
-    if (mapping.contains(operand))
-      continue; // Already cloned
-
-    // BlockArguments from enclosing loops are still in scope after hoisting -
-    // use directly
-    if (isa<BlockArgument>(operand) && operand != loopIV)
-      continue; // BlockArguments from outer loops are still accessible
-
-    Operation *defOp = operand.getDefiningOp();
-    if (!defOp)
-      continue;
-
-    // If the defining operation is outside the loop we're hoisting from,
-    // it's already in scope - use directly without cloning
-    if (!loopOp->isAncestor(defOp))
-      continue;
-
-    if (!dependsOnLoopIV(operand, loopIV)) {
-      Value clonedOperand =
-          cloneOpAndOperands(defOp, loopIV, loopOp, rewriter, mapping);
-      mapping.map(operand, clonedOperand);
-    }
-  }
-
-  // Clone this operation at the current insertion point (don't reset it!)
-  Operation *cloned = rewriter.clone(*op, mapping);
-  if (cloned->getResults().empty())
-    return nullptr;
-  else
-    return cloned->getResult(0);
-}
-
-/// Hoist a single transfer read/write pair out of a loop. The read is cloned
-/// before the loop, the write is cloned after the loop, and an iter_arg is
-/// added to carry the accumulator value through the loop body.
-/// Returns the new ForOp on success.
-static FailureOr<scf::ForOp>
-hoistTransferPairFromLoop(vector::TransferReadOp readOp,
-                          vector::TransferWriteOp writeOp, scf::ForOp loopOp,
-                          RewriterBase &rewriter) {
-  Value loopIV = loopOp.getInductionVar();
-
-  // Clone the read and its operands before the loop
-  rewriter.setInsertionPoint(loopOp);
-  IRMapping readMapping;
-  Value clonedReadResult =
-      cloneOpAndOperands(readOp, loopIV, loopOp, rewriter, readMapping);
-
-  // Capture writeVector before replaceWithAdditionalYields
-  Value writeVector = writeOp.getVector();
-  auto yieldValuesFn =
-      [&](OpBuilder &b, Location loc,
-          ArrayRef<BlockArgument> newBbArgs) -> SmallVector<Value> {
-    BlockArgument readIterArg = newBbArgs.back();
-    rewriter.replaceAllUsesWith(readOp.getResult(), readIterArg);
-    SmallVector<Value> yieldValues;
-    yieldValues.push_back(writeVector);
-    return yieldValues;
-  };
-
-  FailureOr<LoopLikeOpInterface> newLoopResult =
-      cast<LoopLikeOpInterface>(loopOp.getOperation())
-          .replaceWithAdditionalYields(rewriter, ValueRange{clonedReadResult},
-                                       true, yieldValuesFn);
-  if (failed(newLoopResult))
-    return failure();
-
-  auto newLoop = cast<scf::ForOp>(newLoopResult->getOperation());
-  rewriter.eraseOp(readOp);
-
-  // Clone the write operation after the loop using the yielded value
-  Value valueToWrite = newLoop.getResults().back();
-  IRMapping writeMapping;
-  writeMapping.map(writeVector, valueToWrite);
-
-  rewriter.setInsertionPointAfter(newLoop);
-
-  for (Value index : writeOp.getIndices()) {
-    Operation *defOp = index.getDefiningOp();
-    if (!defOp || dependsOnLoopIV(index, loopIV))
-      continue;
-    if (!newLoop->isProperAncestor(defOp))
-      continue;
-    if (!writeMapping.contains(index)) {
-      Value clonedIndex =
-          cloneOpAndOperands(defOp, loopIV, newLoop, rewriter, writeMapping);
-      if (clonedIndex)
-        writeMapping.map(index, clonedIndex);
-    }
-  }
-
-  rewriter.clone(*writeOp.getOperation(), writeMapping);
-  rewriter.eraseOp(writeOp);
-
-  return newLoop;
-}
 
 DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
     transform::TransformRewriter &rewriter,
@@ -2732,86 +2584,16 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
            << "requires exactly one scope_op and one loop_op handle";
   }
 
-  auto scopeOp = scopeOps[0];
   auto loopOp = dyn_cast_if_present<scf::ForOp>(loopOps[0]);
-  if (!loopOp) {
+  if (!loopOp)
     return emitDefiniteFailure() << "loop_op must be an scf.for";
-  }
 
-  if (!scopeOp->isProperAncestor(loopOp)) {
-    return emitDefiniteFailure() << "loop must be inside the scope operation";
-  }
+  auto newLoop = xilinx::air::runHoistLoopInvariantTransfers(scopeOps[0],
+                                                             loopOp, rewriter);
+  if (failed(newLoop))
+    return emitDefiniteFailure() << "hoist-loop-invariant-transfers failed";
 
-  // Iteratively discover and hoist one loop-invariant transfer pair at a time.
-  // After each hoist, the loop is replaced with a new loop, so we re-discover
-  // pairs in the new loop to avoid stale Operation* pointers.
-  scf::ForOp currentLoop = loopOp;
-
-  while (true) {
-    Value loopIV = currentLoop.getInductionVar();
-
-    // Find one loop-invariant write and its paired read
-    vector::TransferWriteOp foundWrite = nullptr;
-    vector::TransferReadOp foundRead = nullptr;
-
-    currentLoop->walk([&](vector::TransferWriteOp writeOp) {
-      if (foundWrite)
-        return;
-      if (writeOp->getParentOfType<scf::ForOp>() != currentLoop)
-        return;
-
-      // Check all write indices are loop-invariant
-      bool allInvariant = true;
-      for (Value index : writeOp.getIndices()) {
-        if (dependsOnLoopIV(index, loopIV)) {
-          allInvariant = false;
-          break;
-        }
-      }
-      if (!allInvariant)
-        return;
-
-      // Find paired read with same memref and matching loop-invariant indices
-      currentLoop->walk([&](vector::TransferReadOp readOp) {
-        if (foundRead)
-          return;
-        if (readOp->getParentOfType<scf::ForOp>() != currentLoop)
-          return;
-        if (readOp.getBase() != writeOp.getBase())
-          return;
-
-        for (Value index : readOp.getIndices()) {
-          if (dependsOnLoopIV(index, loopIV))
-            return;
-        }
-
-        if (readOp.getIndices().size() != writeOp.getIndices().size())
-          return;
-        for (auto [ri, wi] :
-             llvm::zip(readOp.getIndices(), writeOp.getIndices())) {
-          if (!areEquivalentIndices(ri, wi))
-            return;
-        }
-
-        foundRead = readOp;
-      });
-
-      if (foundRead)
-        foundWrite = writeOp;
-    });
-
-    if (!foundWrite || !foundRead)
-      break; // No more pairs to hoist
-
-    FailureOr<scf::ForOp> newLoop =
-        hoistTransferPairFromLoop(foundRead, foundWrite, currentLoop, rewriter);
-    if (failed(newLoop)) {
-      return emitDefiniteFailure() << "failed to hoist transfer pair";
-    }
-    currentLoop = *newLoop;
-  }
-
-  SmallVector<Operation *> resultOps = {currentLoop.getOperation()};
+  SmallVector<Operation *> resultOps = {newLoop->getOperation()};
   results.set(llvm::cast<OpResult>(getResult()), resultOps);
   return DiagnosedSilenceableFailure::success();
 }
@@ -3044,26 +2826,13 @@ DiagnosedSilenceableFailure transform::RemoveUninitializedCopyOp::apply(
   }
 
   SmallVector<Operation *> transformedOps;
-
   for (Operation *target : targets) {
     auto funcOp = dyn_cast_if_present<func::FuncOp>(target);
-    if (!funcOp) {
+    if (!funcOp)
       return emitDefiniteFailure() << "target must be a func.func operation";
-    }
-
-    MLIRContext *ctx = funcOp.getContext();
-    RewritePatternSet patterns(ctx);
-
-    // Apply unified copy optimization pattern that:
-    // 1. Removes copy operations with uninitialized sources
-    // 2. Replaces copy operations with fill when source is only filled
-    patterns.insert<OptimizeCopyOpPattern<memref::CopyOp>,
-                    OptimizeCopyOpPattern<linalg::CopyOp>>(ctx);
-    (void)applyPatternsGreedily(funcOp, std::move(patterns));
-
+    (void)xilinx::air::runRemoveUninitializedCopy(funcOp);
     transformedOps.push_back(funcOp);
   }
-
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
 }
@@ -3085,20 +2854,10 @@ DiagnosedSilenceableFailure transform::EliminateCascadeMemcpyOp::apply(
   }
 
   SmallVector<Operation *> transformedOps;
-
   for (Operation *target : targets) {
-    MLIRContext *ctx = target->getContext();
-    RewritePatternSet patterns(ctx);
-
-    // Use the existing EliminateIntermediateMemrefPattern
-    patterns.insert<xilinx::air::EliminateIntermediateMemrefPattern>(ctx);
-
-    // Apply the pattern to eliminate cascade memcpy operations
-    (void)applyPatternsGreedily(target, std::move(patterns));
-
+    (void)xilinx::air::runEliminateCascadeMemcpy(target);
     transformedOps.push_back(target);
   }
-
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
 }
@@ -3120,20 +2879,10 @@ DiagnosedSilenceableFailure transform::ConvertMemrefCopyToLinalgCopyOp::apply(
   }
 
   SmallVector<Operation *> transformedOps;
-
   for (Operation *target : targets) {
-    MLIRContext *ctx = target->getContext();
-    RewritePatternSet patterns(ctx);
-
-    // Use the ConvertMemrefCopyToLinalgCopyPattern
-    patterns.insert<xilinx::air::ConvertMemrefCopyToLinalgCopyPattern>(ctx);
-
-    // Apply the pattern to convert memref.copy to linalg.copy operations
-    (void)applyPatternsGreedily(target, std::move(patterns));
-
+    (void)xilinx::air::runConvertMemrefCopyToLinalgCopy(target);
     transformedOps.push_back(target);
   }
-
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
 }
@@ -4087,37 +3836,10 @@ transform::FuseTruncfLinalgOp::apply(transform::TransformRewriter &rewriter,
                                     "is consumed by truncf_op";
   }
 
-  // Perform the fusion: create a fused generic, then replace it with a
-  // linalg.matmul that has the fused output type (bf16). LLVM 23's
-  // specialize rejects generics with output casts, so we bypass it by
-  // directly creating the matmul with the fused type.
-  FailureOr<linalg::GenericOp> fusedOp =
-      fuseTruncfIntoProducer(rewriter, producerLinalgOp, truncfLinalgOp);
-  if (failed(fusedOp)) {
+  FailureOr<Operation *> fusedOp = xilinx::air::runFuseTruncfLinalg(
+      producerLinalgOp, truncfLinalgOp, rewriter);
+  if (failed(fusedOp))
     return emitDefiniteFailure() << "failed to fuse the operations";
-  }
-
-  // LLVM 23: specialize rejects generics with output casts (truncf→yield).
-  // If the fused op has 2D+ inputs (matmul-compatible), replace with a
-  // linalg.matmul directly, bypassing specialize. The matmul body auto-
-  // generates in the output element type (bf16), and Phase 12 adds
-  // extf/truncf pairs for f32 accumulation during vectorization.
-  auto inputType =
-      dyn_cast<RankedTensorType>(fusedOp->getDpsInputs()[0].getType());
-  if (inputType && inputType.getRank() >= 2) {
-    rewriter.setInsertionPoint(*fusedOp);
-    auto matmulOp = linalg::MatmulOp::create(
-        rewriter, fusedOp->getLoc(), fusedOp->getResultTypes(),
-        ValueRange{fusedOp->getDpsInputs()[0], fusedOp->getDpsInputs()[1]},
-        ValueRange{fusedOp->getDpsInits()[0]});
-    rewriter.replaceOp(*fusedOp, matmulOp->getResults());
-
-    SmallVector<Operation *> resultOps = {matmulOp.getOperation()};
-    results.set(llvm::cast<OpResult>(getFusedOp()), resultOps);
-    return DiagnosedSilenceableFailure::success();
-  }
-
-  // For non-matmul cases (1D, etc.), return the generic as-is.
   SmallVector<Operation *> resultOps = {*fusedOp};
   results.set(llvm::cast<OpResult>(getFusedOp()), resultOps);
   return DiagnosedSilenceableFailure::success();
@@ -4134,15 +3856,6 @@ void transform::FuseTruncfLinalgOp::getEffects(
 //===----------------------------------------------------------------------===//
 // VectorTypeCastOp
 //===----------------------------------------------------------------------===//
-
-/// Calculate the total number of elements in a vector type
-static int64_t getVectorNumElements(VectorType vecType) {
-  int64_t numElements = 1;
-  for (int64_t dim : vecType.getShape()) {
-    numElements *= dim;
-  }
-  return numElements;
-}
 
 /// Helper function to create cast operations for both scalar and vector types
 static Value createTypeCast(OpBuilder &builder, Location loc, Value input,
@@ -4227,7 +3940,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
     if (auto vectorType = dyn_cast_if_present<VectorType>(operand.getType())) {
       hasAnyVectors = true;
-      if (getVectorNumElements(vectorType) != 1) {
+      if (xilinx::air::getVectorNumElements(vectorType) != 1) {
         allVectorsAreSingleElement = false;
       }
     }
@@ -4236,7 +3949,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   for (auto [idx, result] : llvm::enumerate(op->getResults())) {
     if (auto vectorType = dyn_cast_if_present<VectorType>(result.getType())) {
       hasAnyVectors = true;
-      if (getVectorNumElements(vectorType) != 1) {
+      if (xilinx::air::getVectorNumElements(vectorType) != 1) {
         allVectorsAreSingleElement = false;
       }
     }
@@ -4387,6 +4100,55 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   return newOp;
 }
 
+// Free C++ entry point used by both transform.air.vector_type_cast and the
+// air-vector-cast-for-emulation pass.
+LogicalResult xilinx::air::runVectorTypeCastOnTarget(
+    Operation *target, Type targetElementType, ArrayRef<int64_t> inputIndices,
+    ArrayRef<int64_t> outputIndices, RewriterBase &rewriter) {
+  bool hasVectorTypes = false;
+  for (Value operand : target->getOperands())
+    if (isa<VectorType>(operand.getType())) {
+      hasVectorTypes = true;
+      break;
+    }
+  if (!hasVectorTypes) {
+    for (Value result : target->getResults())
+      if (isa<VectorType>(result.getType())) {
+        hasVectorTypes = true;
+        break;
+      }
+  }
+  if (!hasVectorTypes)
+    return target->emitError("target operation must have vector operands or "
+                             "results, but operation '")
+           << target->getName() << "' operates on scalar types";
+
+  bool needsTransformation = false;
+  for (Value operand : target->getOperands())
+    if (auto vt = dyn_cast_if_present<VectorType>(operand.getType()))
+      if (vt.getElementType() != targetElementType) {
+        needsTransformation = true;
+        break;
+      }
+  if (!needsTransformation) {
+    for (Value result : target->getResults())
+      if (auto vt = dyn_cast_if_present<VectorType>(result.getType()))
+        if (vt.getElementType() != targetElementType) {
+          needsTransformation = true;
+          break;
+        }
+  }
+  if (!needsTransformation)
+    return success();
+
+  // applyVectorTypeCastToOp may return failure for "skip" cases (e.g. all
+  // vectors size-1). Treat that as success-with-no-change.
+  SmallVector<int64_t> in(inputIndices.begin(), inputIndices.end());
+  SmallVector<int64_t> out(outputIndices.begin(), outputIndices.end());
+  (void)applyVectorTypeCastToOp(target, targetElementType, in, out, rewriter);
+  return success();
+}
+
 DiagnosedSilenceableFailure
 transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
                                    transform::TransformResults &results,
@@ -4401,84 +4163,19 @@ transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
   }
 
   Type targetElementType = getTargetElementType();
-
-  // Extract input and output indices from attributes
   SmallVector<int64_t> inputIndicesToCast =
       extractFromIntegerArrayAttr<int64_t>(getInputIndices());
   SmallVector<int64_t> outputIndicesToCast =
       extractFromIntegerArrayAttr<int64_t>(getOutputIndices());
 
   SmallVector<Operation *> transformedOps;
-
   for (Operation *target : targets) {
-    // Check if this operation has vector operands or results
-    bool hasVectorTypes = false;
-    for (Value operand : target->getOperands()) {
-      if (isa<VectorType>(operand.getType())) {
-        hasVectorTypes = true;
-        break;
-      }
-    }
-    if (!hasVectorTypes) {
-      for (Value result : target->getResults()) {
-        if (isa<VectorType>(result.getType())) {
-          hasVectorTypes = true;
-          break;
-        }
-      }
-    }
-
-    if (!hasVectorTypes) {
-      return emitDefiniteFailure()
-             << "target operation must have vector operands or results, but "
-                "operation '"
-             << target->getName()
-             << "' operates on scalar types. Vector type casting "
-             << "can only be applied to operations that work with vector "
-                "types.";
-    }
-
-    // Check if this operation has vector types that need casting
-    bool needsTransformation = false;
-    for (Value operand : target->getOperands()) {
-      if (auto vectorType =
-              dyn_cast_if_present<VectorType>(operand.getType())) {
-        if (vectorType.getElementType() != targetElementType) {
-          needsTransformation = true;
-          break;
-        }
-      }
-    }
-    if (!needsTransformation) {
-      for (Value result : target->getResults()) {
-        if (auto vectorType =
-                dyn_cast_if_present<VectorType>(result.getType())) {
-          if (vectorType.getElementType() != targetElementType) {
-            needsTransformation = true;
-            break;
-          }
-        }
-      }
-    }
-
-    if (needsTransformation) {
-      // Apply transformation directly to the target operation with selective
-      // casting
-      FailureOr<Operation *> castedOpOnVector =
-          applyVectorTypeCastToOp(target, targetElementType, inputIndicesToCast,
-                                  outputIndicesToCast, rewriter);
-      if (failed(castedOpOnVector)) {
-        // Operation was skipped (e.g., all vectors are single-element)
-        // This is not an error, just add the original operation unchanged
-        transformedOps.push_back(target);
-      } else {
-        transformedOps.push_back(*castedOpOnVector);
-      }
-    } else {
-      transformedOps.push_back(target);
-    }
+    if (failed(xilinx::air::runVectorTypeCastOnTarget(
+            target, targetElementType, inputIndicesToCast, outputIndicesToCast,
+            rewriter)))
+      return emitDefiniteFailure() << "vector_type_cast failed";
+    transformedOps.push_back(target);
   }
-
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
 }
@@ -4486,125 +4183,6 @@ transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
 //===----------------------------------------------------------------------===//
 // EliminateRedundantVectorTransfersOp
 //===----------------------------------------------------------------------===//
-
-/// Check if two values are semantically equivalent indices
-static bool areEquivalentIndices(Value idx1, Value idx2) {
-  // Direct SSA value equality
-  if (idx1 == idx2)
-    return true;
-
-  // Check if both are results of affine.apply with the same map and operands
-  auto affineOp1 = idx1.getDefiningOp<affine::AffineApplyOp>();
-  auto affineOp2 = idx2.getDefiningOp<affine::AffineApplyOp>();
-
-  if (affineOp1 && affineOp2) {
-    // Check if they use the same affine map
-    if (affineOp1.getAffineMap() != affineOp2.getAffineMap())
-      return false;
-
-    // Check if they have the same number of operands
-    if (affineOp1.getMapOperands().size() != affineOp2.getMapOperands().size())
-      return false;
-
-    // Check if all operands are identical
-    for (auto [op1, op2] :
-         llvm::zip(affineOp1.getMapOperands(), affineOp2.getMapOperands())) {
-      if (op1 != op2)
-        return false;
-    }
-
-    return true;
-  }
-
-  // Check if both are constants with the same value
-  auto constOp1 = idx1.getDefiningOp<arith::ConstantIndexOp>();
-  auto constOp2 = idx2.getDefiningOp<arith::ConstantIndexOp>();
-
-  if (constOp1 && constOp2) {
-    return constOp1.value() == constOp2.value();
-  }
-
-  return false;
-}
-
-/// Check if two vector.transfer_read operations read from the same location
-static bool areIdenticalReads(vector::TransferReadOp read1,
-                              vector::TransferReadOp read2) {
-  // Check if they read from the same memref
-  if (read1.getBase() != read2.getBase())
-    return false;
-
-  // Check if they have the same number of indices
-  if (read1.getIndices().size() != read2.getIndices().size())
-    return false;
-
-  // Check if all indices are semantically equivalent
-  for (auto [idx1, idx2] : llvm::zip(read1.getIndices(), read2.getIndices())) {
-    if (!areEquivalentIndices(idx1, idx2))
-      return false;
-  }
-
-  // Check if they have the same result type
-  auto vec1Ty = llvm::cast<VectorType>(read1.getVector().getType());
-  auto vec2Ty = llvm::cast<VectorType>(read2.getVector().getType());
-  if (vec1Ty != vec2Ty)
-    return false;
-
-  return true;
-}
-
-/// Check if there are any writes to the memref between two operations
-static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
-                                  vector::TransferReadOp secondRead) {
-  Value sourceMemref = firstRead.getBase();
-
-  // Get the block containing both reads
-  Block *block = firstRead->getBlock();
-  if (block != secondRead->getBlock())
-    return true; // Conservative: assume writes if in different blocks
-
-  // Find the operations between the two reads
-  auto firstIt = firstRead->getIterator();
-  auto secondIt = secondRead->getIterator();
-
-  // Iterate from first read to second read
-  for (auto it = ++firstIt; it != secondIt; ++it) {
-    Operation *op = &(*it);
-
-    // Check if this operation writes to the source memref
-    auto memInterface = dyn_cast_if_present<MemoryEffectOpInterface>(op);
-    if (!memInterface) {
-      // Conservative: if we can't determine effects, assume it might write
-      if (!op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
-        continue;
-      return true;
-    }
-
-    SmallVector<MemoryEffects::EffectInstance> effects;
-    memInterface.getEffects(effects);
-
-    for (auto &effect : effects) {
-      if (!isa<MemoryEffects::Write>(effect.getEffect()))
-        continue;
-
-      Value effectValue = effect.getValue();
-      if (!effectValue)
-        return true; // Unknown write target, be conservative
-
-      // Check if the write is to the same memref or a view of it
-      if (effectValue == sourceMemref)
-        return true;
-
-      // Check if the effect value is derived from the same memref
-      if (auto subview = effectValue.getDefiningOp<memref::SubViewOp>()) {
-        if (subview.getSource() == sourceMemref)
-          return true;
-      }
-    }
-  }
-
-  return false;
-}
 
 DiagnosedSilenceableFailure
 transform::EliminateRedundantVectorTransfersOp::apply(
@@ -4621,49 +4199,11 @@ transform::EliminateRedundantVectorTransfersOp::apply(
 
   SmallVector<Operation *> transformedOps;
   int eliminatedCount = 0;
-
   for (Operation *target : targets) {
-    // Collect all vector.transfer_read operations in this target
-    SmallVector<vector::TransferReadOp> transferReads;
-    target->walk([&](vector::TransferReadOp readOp) {
-      transferReads.push_back(readOp);
-    });
-
-    // Track which reads have been eliminated
-    llvm::SmallDenseSet<Operation *> eliminated;
-
-    // Compare each pair of reads
-    for (size_t i = 0; i < transferReads.size(); ++i) {
-      if (eliminated.contains(transferReads[i]))
-        continue;
-
-      for (size_t j = i + 1; j < transferReads.size(); ++j) {
-        if (eliminated.contains(transferReads[j]))
-          continue;
-
-        vector::TransferReadOp firstRead = transferReads[i];
-        vector::TransferReadOp secondRead = transferReads[j];
-
-        // Check if the reads are identical
-        if (!areIdenticalReads(firstRead, secondRead))
-          continue;
-
-        // Check if there are writes between them
-        if (hasWritesBetweenReads(firstRead, secondRead))
-          continue;
-
-        // Replace the second read with the result of the first read
-        rewriter.replaceAllUsesWith(secondRead.getResult(),
-                                    firstRead.getResult());
-        rewriter.eraseOp(secondRead);
-        eliminated.insert(secondRead);
-        eliminatedCount++;
-      }
-    }
-
+    eliminatedCount +=
+        xilinx::air::runEliminateRedundantVectorTransfers(target, rewriter);
     transformedOps.push_back(target);
   }
-
   if (eliminatedCount > 0) {
     LLVM_DEBUG(llvm::dbgs() << "Eliminated " << eliminatedCount
                             << " redundant vector.transfer_read operations\n");
@@ -4691,141 +4231,14 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
   }
 
   SmallVector<Operation *> transformedOps;
-
   for (Operation *target : targets) {
     auto forOp = dyn_cast_if_present<scf::ForOp>(target);
-    if (!forOp) {
+    if (!forOp)
       return emitDefiniteFailure() << "target must be an scf.for operation";
-    }
-
-    Location loc = forOp.getLoc();
-
-    // Collect vector-typed iter_args
-    SmallVector<unsigned> vectorIterArgIndices;
-    SmallVector<VectorType> originalVectorTypes;
-    SmallVector<VectorType> flattenedVectorTypes;
-
-    for (auto [idx, iterArg] : llvm::enumerate(forOp.getInitArgs())) {
-      if (auto vecType = dyn_cast_if_present<VectorType>(iterArg.getType())) {
-        vectorIterArgIndices.push_back(idx);
-        originalVectorTypes.push_back(vecType);
-
-        // Create flattened vector type
-        int64_t numElements = getVectorNumElements(vecType);
-        VectorType flatType =
-            VectorType::get({numElements}, vecType.getElementType());
-        flattenedVectorTypes.push_back(flatType);
-      }
-    }
-
-    // If no vector iter_args, nothing to do
-    if (vectorIterArgIndices.empty()) {
-      transformedOps.push_back(target);
-      continue;
-    }
-
-    // Step 1: Insert vector.shape_cast operations before the loop to flatten
-    // init values
-    rewriter.setInsertionPoint(forOp);
-    SmallVector<Value> newInitArgs(forOp.getInitArgs().begin(),
-                                   forOp.getInitArgs().end());
-
-    for (auto [idx, vecIdx] : llvm::enumerate(vectorIterArgIndices)) {
-      Value initArg = forOp.getInitArgs()[vecIdx];
-      auto shapeCast = vector::ShapeCastOp::create(
-          rewriter, loc, flattenedVectorTypes[idx], initArg);
-      newInitArgs[vecIdx] = shapeCast.getResult();
-    }
-
-    // Step 2: Create new result types (flattened for vector types)
-    SmallVector<Type> newResultTypes;
-    for (auto [idx, resultType] : llvm::enumerate(forOp.getResultTypes())) {
-      auto it = llvm::find(vectorIterArgIndices, idx);
-      if (it != vectorIterArgIndices.end()) {
-        size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
-        newResultTypes.push_back(flattenedVectorTypes[vecIdx]);
-      } else {
-        newResultTypes.push_back(resultType);
-      }
-    }
-
-    // Step 3: Create new scf.for with flattened iter_args
-    auto newForOp =
-        scf::ForOp::create(rewriter, loc, forOp.getLowerBound(),
-                           forOp.getUpperBound(), forOp.getStep(), newInitArgs);
-
-    // Step 4: Clone the loop body and insert shape_cast operations
-    Block *oldBody = forOp.getBody();
-    Block *newBody = newForOp.getBody();
-
-    rewriter.setInsertionPointToStart(newBody);
-    IRMapping mapping;
-
-    // Map the induction variable
-    mapping.map(oldBody->getArgument(0), newBody->getArgument(0));
-
-    // For vector iter_args, insert shape_cast to convert back to original shape
-    for (auto [idx, vecIdx] : llvm::enumerate(vectorIterArgIndices)) {
-      BlockArgument newArg = newBody->getArgument(vecIdx + 1);
-      auto shapeCast = vector::ShapeCastOp::create(
-          rewriter, loc, originalVectorTypes[idx], newArg);
-      mapping.map(oldBody->getArgument(vecIdx + 1), shapeCast.getResult());
-    }
-
-    // Map non-vector iter_args directly
-    for (auto [idx, arg] :
-         llvm::enumerate(oldBody->getArguments().drop_front(1))) {
-      if (llvm::find(vectorIterArgIndices, idx) == vectorIterArgIndices.end()) {
-        mapping.map(arg, newBody->getArgument(idx + 1));
-      }
-    }
-
-    // Clone operations from old body (except the terminator)
-    for (Operation &op : oldBody->without_terminator()) {
-      rewriter.clone(op, mapping);
-    }
-
-    // Step 5: Handle the yield operation
-    auto oldYield = cast<scf::YieldOp>(oldBody->getTerminator());
-    SmallVector<Value> newYieldOperands;
-
-    for (auto [idx, yieldValue] : llvm::enumerate(oldYield.getOperands())) {
-      auto it = llvm::find(vectorIterArgIndices, idx);
-      if (it != vectorIterArgIndices.end()) {
-        // Flatten the yielded vector value
-        size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
-        Value mappedValue = mapping.lookup(yieldValue);
-        auto shapeCast = vector::ShapeCastOp::create(
-            rewriter, loc, flattenedVectorTypes[vecIdx], mappedValue);
-        newYieldOperands.push_back(shapeCast.getResult());
-      } else {
-        newYieldOperands.push_back(mapping.lookup(yieldValue));
-      }
-    }
-
-    scf::YieldOp::create(rewriter, loc, newYieldOperands);
-
-    // Step 6: Insert shape_cast operations after the loop to convert results
-    // back
-    rewriter.setInsertionPointAfter(newForOp);
-    SmallVector<Value> finalResults;
-
-    for (auto [idx, result] : llvm::enumerate(newForOp.getResults())) {
-      auto it = llvm::find(vectorIterArgIndices, idx);
-      if (it != vectorIterArgIndices.end()) {
-        size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
-        auto shapeCast = vector::ShapeCastOp::create(
-            rewriter, loc, originalVectorTypes[vecIdx], result);
-        finalResults.push_back(shapeCast.getResult());
-      } else {
-        finalResults.push_back(result);
-      }
-    }
-
-    // Replace uses of the old loop's results
-    rewriter.replaceOp(forOp, finalResults);
-
-    transformedOps.push_back(newForOp.getOperation());
+    auto newLoop = xilinx::air::runFlattenForIterArgs(forOp, rewriter);
+    if (failed(newLoop))
+      return emitDefiniteFailure() << "flatten-for-iter-args failed";
+    transformedOps.push_back(newLoop->getOperation());
   }
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
@@ -4835,32 +4248,6 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
 //===----------------------------------------------------------------------===//
 // HoistVectorTransferPointersOp
 //===----------------------------------------------------------------------===//
-
-namespace {
-/// Check if a value depends on the given loop induction variable
-bool dependsOnLoopIVForHoist(Value val, Value loopIV) {
-  if (val == loopIV)
-    return true;
-
-  // Check if the value is defined by an affine.apply that uses the loop IV
-  if (auto affineOp = val.getDefiningOp<affine::AffineApplyOp>()) {
-    for (Value operand : affineOp.getMapOperands()) {
-      if (dependsOnLoopIVForHoist(operand, loopIV))
-        return true;
-    }
-  }
-
-  // Check for arithmetic operations
-  if (auto defOp = val.getDefiningOp()) {
-    for (Value operand : defOp->getOperands()) {
-      if (dependsOnLoopIVForHoist(operand, loopIV))
-        return true;
-    }
-  }
-
-  return false;
-}
-} // namespace
 
 DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
     transform::TransformRewriter &rewriter,
@@ -4875,310 +4262,18 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
   }
 
   SmallVector<Operation *> transformedOps;
-
   for (Operation *target : targets) {
     auto forOp = dyn_cast_if_present<scf::ForOp>(target);
-    if (!forOp) {
+    if (!forOp)
       return emitDefiniteFailure() << "target must be an scf.for operation";
-    }
-
-    Value loopIV = forOp.getInductionVar();
-    Location loc = forOp.getLoc();
-    OpBuilder::InsertionGuard guard(rewriter);
-
-    // Collect all vector transfer operations with IV-dependent indices
-    struct TransferOpInfo {
-      Operation *op;
-      Value base;
-      MemRefType memrefType;
-      VectorType vectorType;
-      SmallVector<Value> indices;
-      int64_t constantStride; // Total constant stride per iteration
-      bool hasIVDependentIndices;
-    };
-
-    SmallVector<TransferOpInfo> transferOps;
-
-    for (Operation &op : forOp.getBody()->without_terminator()) {
-      auto transferOp = dyn_cast_if_present<VectorTransferOpInterface>(&op);
-      if (!transferOp)
-        continue;
-
-      Value base = transferOp.getBase();
-      auto memrefType = dyn_cast_if_present<MemRefType>(base.getType());
-      if (!memrefType)
-        continue;
-
-      VectorType vectorType;
-      if (auto readOp = dyn_cast_if_present<vector::TransferReadOp>(&op)) {
-        vectorType = readOp.getVectorType();
-      } else if (auto writeOp =
-                     dyn_cast_if_present<vector::TransferWriteOp>(&op)) {
-        vectorType = writeOp.getVectorType();
-      } else {
-        continue;
-      }
-
-      SmallVector<Value> indices(transferOp.getIndices().begin(),
-                                 transferOp.getIndices().end());
-
-      // Check if any indices depend on loop IV and compute constant stride
-      bool hasIVDependentIndices = false;
-      int64_t constantStride = 0;
-
-      for (size_t dimIdx = 0; dimIdx < indices.size(); ++dimIdx) {
-        Value idx = indices[dimIdx];
-        if (dependsOnLoopIVForHoist(idx, loopIV)) {
-          hasIVDependentIndices = true;
-
-          // Calculate the stride for this dimension
-          int64_t dimStride = 1;
-          for (size_t j = dimIdx + 1;
-               j < static_cast<size_t>(memrefType.getRank()); ++j) {
-            dimStride *= memrefType.getShape()[j];
-          }
-
-          // For now, assume the IV coefficient is 1 (i.e., the index is IV or
-          // IV + const) This is the total stride increment per loop iteration
-          constantStride += dimStride;
-        }
-      }
-
-      transferOps.push_back({&op, base, memrefType, vectorType, indices,
-                             constantStride, hasIVDependentIndices});
-    }
-
-    // Prepare to add iter_args for each transfer operation with IV-dependent
-    // indices
-    SmallVector<Value> newInitArgs;
-    SmallVector<Value> flatMemrefs;
-
-    for (const auto &info : transferOps) {
-      if (!info.hasIVDependentIndices)
-        continue;
-
-      // Flatten the memref if needed
-      rewriter.setInsertionPoint(forOp);
-      Value flatMemref = info.base;
-      if (info.memrefType.getRank() > 1) {
-        int64_t totalSize = 1;
-        for (int64_t dim : info.memrefType.getShape()) {
-          if (dim == ShapedType::kDynamic)
-            return emitDefiniteFailure()
-                   << "dynamic memref shapes not supported";
-          totalSize *= dim;
-        }
-
-        MemRefType flatMemrefType =
-            MemRefType::get({totalSize}, info.memrefType.getElementType(),
-                            AffineMap(), info.memrefType.getMemorySpace());
-
-        SmallVector<ReassociationIndices> reassociation;
-        ReassociationIndices allDims;
-        for (size_t i = 0; i < static_cast<size_t>(info.memrefType.getRank());
-             ++i) {
-          allDims.push_back(i);
-        }
-        reassociation.push_back(allDims);
-
-        flatMemref = memref::CollapseShapeOp::create(
-            rewriter, loc, flatMemrefType, info.base, reassociation);
-      }
-      flatMemrefs.push_back(flatMemref);
-
-      // Compute base pointer (with zeros for IV-dependent parts)
-      int64_t rank = info.memrefType.getRank();
-      AffineExpr linearExpr = rewriter.getAffineConstantExpr(0);
-      int64_t stride = 1;
-      for (int64_t i = rank - 1; i >= 0; --i) {
-        linearExpr = linearExpr + rewriter.getAffineDimExpr(i) * stride;
-        if (i > 0)
-          stride *= info.memrefType.getShape()[i];
-      }
-      auto linearMap = AffineMap::get(rank, 0, linearExpr);
-
-      SmallVector<Value> baseIndices;
-      IRMapping indexMapping;
-      for (Value idx : info.indices) {
-        if (!dependsOnLoopIVForHoist(idx, loopIV)) {
-          if (auto defOp = idx.getDefiningOp()) {
-            Value clonedIdx = cloneOpAndOperands(defOp, loopIV, forOp, rewriter,
-                                                 indexMapping);
-            if (clonedIdx)
-              baseIndices.push_back(clonedIdx);
-            else
-              baseIndices.push_back(idx);
-          } else {
-            baseIndices.push_back(idx);
-          }
-        } else {
-          baseIndices.push_back(
-              arith::ConstantIndexOp::create(rewriter, loc, 0));
-        }
-      }
-
-      Value basePointer =
-          affine::AffineApplyOp::create(rewriter, loc, linearMap, baseIndices);
-
-      newInitArgs.push_back(basePointer);
-    }
-
-    // If there are no IV-dependent transfers, just process them normally
-    if (newInitArgs.empty()) {
-      // Process all transfers without using iter_args
-      for (const auto &info : transferOps) {
-        rewriter.setInsertionPoint(info.op);
-
-        // Flatten vector type
-        int64_t numElements = getVectorNumElements(info.vectorType);
-        VectorType flatVectorType =
-            VectorType::get({numElements}, info.vectorType.getElementType());
-
-        // Use the base directly
-        rewriter.setInsertionPoint(forOp);
-        Value flatMemref = info.base;
-        if (info.memrefType.getRank() > 1) {
-          int64_t totalSize = 1;
-          for (int64_t dim : info.memrefType.getShape()) {
-            totalSize *= dim;
-          }
-          MemRefType flatMemrefType =
-              MemRefType::get({totalSize}, info.memrefType.getElementType(),
-                              AffineMap(), info.memrefType.getMemorySpace());
-          SmallVector<ReassociationIndices> reassociation;
-          ReassociationIndices allDims;
-          for (size_t i = 0; i < static_cast<size_t>(info.memrefType.getRank());
-               ++i) {
-            allDims.push_back(i);
-          }
-          reassociation.push_back(allDims);
-          flatMemref = memref::CollapseShapeOp::create(
-              rewriter, loc, flatMemrefType, info.base, reassociation);
-        }
-
-        // Compute pointer from indices
-        int64_t rank = info.memrefType.getRank();
-        AffineExpr linearExpr = rewriter.getAffineConstantExpr(0);
-        int64_t stride = 1;
-        for (int64_t i = rank - 1; i >= 0; --i) {
-          linearExpr = linearExpr + rewriter.getAffineDimExpr(i) * stride;
-          if (i > 0)
-            stride *= info.memrefType.getShape()[i];
-        }
-        auto linearMap = AffineMap::get(rank, 0, linearExpr);
-
-        rewriter.setInsertionPoint(info.op);
-        Value currentPointer = affine::AffineApplyOp::create(
-            rewriter, loc, linearMap, info.indices);
-
-        // Transform the transfer operation
-        AffineMap identityMap1D = AffineMap::get(
-            1, 0, rewriter.getAffineDimExpr(0), rewriter.getContext());
-        auto inBoundsAttr = rewriter.getBoolArrayAttr({true});
-
-        if (auto readOp =
-                dyn_cast_if_present<vector::TransferReadOp>(info.op)) {
-          Value flatRead = vector::TransferReadOp::create(
-              rewriter, loc, flatVectorType, flatMemref,
-              ValueRange{currentPointer}, AffineMapAttr::get(identityMap1D),
-              readOp.getPadding(),
-              /*mask=*/Value(), inBoundsAttr);
-          Value shapedRead = vector::ShapeCastOp::create(
-              rewriter, loc, info.vectorType, flatRead);
-          rewriter.replaceOp(readOp, shapedRead);
-        } else if (auto writeOp =
-                       dyn_cast_if_present<vector::TransferWriteOp>(info.op)) {
-          Value flatValue = vector::ShapeCastOp::create(
-              rewriter, loc, flatVectorType, writeOp.getVector());
-          rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
-              writeOp, flatValue, flatMemref, ValueRange{currentPointer},
-              AffineMapAttr::get(identityMap1D), /*mask=*/Value(),
-              inBoundsAttr);
-        }
-      }
-      transformedOps.push_back(forOp);
-      continue;
-    }
-
-    // Use replaceWithAdditionalYields to add pointer iter_args
-    auto yieldValuesFn =
-        [&](OpBuilder &b, Location yieldLoc,
-            ArrayRef<BlockArgument> newBbArgs) -> SmallVector<Value> {
-      SmallVector<Value> yieldValues;
-
-      // Process each transfer operation with IV-dependent indices
-      size_t iterArgIdx = 0;
-      for (size_t i = 0; i < transferOps.size(); ++i) {
-        const auto &info = transferOps[i];
-        if (!info.hasIVDependentIndices)
-          continue;
-
-        BlockArgument ptrIterArg =
-            newBbArgs[newBbArgs.size() - newInitArgs.size() + iterArgIdx];
-        Value flatMemref = flatMemrefs[iterArgIdx];
-
-        // Flatten vector type
-        int64_t numElements = getVectorNumElements(info.vectorType);
-        VectorType flatVectorType =
-            VectorType::get({numElements}, info.vectorType.getElementType());
-
-        // Transform the transfer operation to use the iter_arg pointer
-        b.setInsertionPoint(info.op);
-
-        AffineMap identityMap1D =
-            AffineMap::get(1, 0, b.getAffineDimExpr(0), b.getContext());
-        auto inBoundsAttr = b.getBoolArrayAttr({true});
-
-        if (auto readOp =
-                dyn_cast_if_present<vector::TransferReadOp>(info.op)) {
-          Value flatRead = vector::TransferReadOp::create(
-              b, loc, flatVectorType, flatMemref, ValueRange{ptrIterArg},
-              AffineMapAttr::get(identityMap1D), readOp.getPadding(),
-              /*mask=*/Value(), inBoundsAttr);
-          Value shapedRead =
-              vector::ShapeCastOp::create(b, loc, info.vectorType, flatRead);
-          rewriter.replaceOp(readOp, shapedRead);
-        } else if (auto writeOp =
-                       dyn_cast_if_present<vector::TransferWriteOp>(info.op)) {
-          Value flatValue = vector::ShapeCastOp::create(b, loc, flatVectorType,
-                                                        writeOp.getVector());
-          rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
-              writeOp, flatValue, flatMemref, ValueRange{ptrIterArg},
-              AffineMapAttr::get(identityMap1D), /*mask=*/Value(),
-              inBoundsAttr);
-        }
-
-        // Compute next pointer value: current_ptr + constant_stride
-        Value strideConst =
-            arith::ConstantIndexOp::create(b, yieldLoc, info.constantStride);
-        Value nextPtr =
-            arith::AddIOp::create(b, yieldLoc, ptrIterArg, strideConst);
-        yieldValues.push_back(nextPtr);
-
-        iterArgIdx++;
-      }
-
-      return yieldValues;
-    };
-
-    // Create new loop with additional iter_args for pointers
-    FailureOr<LoopLikeOpInterface> newLoopResult =
-        cast<LoopLikeOpInterface>(forOp.getOperation())
-            .replaceWithAdditionalYields(
-                rewriter, newInitArgs, // new init operands (base pointers)
-                true,                  // replace uses in loop
-                yieldValuesFn);
-
-    if (failed(newLoopResult)) {
-      return emitDefiniteFailure() << "failed to add pointer iter_args to loop";
-    }
-
-    transformedOps.push_back(newLoopResult->getOperation());
+    if (failed(xilinx::air::runHoistVectorTransferPointers(forOp, rewriter)))
+      return emitDefiniteFailure() << "hoist-vector-transfer-pointers failed";
+    transformedOps.push_back(forOp.getOperation());
   }
-
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
 }
+
 
 //===----------------------------------------------------------------------===//
 // HoistCastPairOp
@@ -5197,290 +4292,20 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
       llvm::to_vector(state.getPayloadOps(getLoopOp()));
 
   if (extensionOps.size() != 1 || truncationOps.size() != 1 ||
-      loopOps.size() != 1) {
+      loopOps.size() != 1)
     return emitDefiniteFailure() << "requires exactly one extension_op, "
                                     "truncation_op, and loop_op handle";
-  }
 
-  Operation *extensionOp = extensionOps[0];
-  Operation *truncationOp = truncationOps[0];
   auto loopOp = dyn_cast_if_present<scf::ForOp>(loopOps[0]);
-
-  if (!loopOp) {
+  if (!loopOp)
     return emitDefiniteFailure() << "loop_op handle must be scf.for";
-  }
 
-  // Determine extension/truncation operation types and get input/output values
-  Value extensionInput, extensionOutput;
-  Value truncationInput, truncationOutput;
-  bool isFloatingPoint = false;
+  auto newLoop = xilinx::air::runHoistCastPair(
+      extensionOps[0], truncationOps[0], loopOp, rewriter);
+  if (failed(newLoop))
+    return emitDefiniteFailure() << "hoist-cast-pair failed";
 
-  if (auto extsiOp = dyn_cast_if_present<arith::ExtSIOp>(extensionOp)) {
-    extensionInput = extsiOp.getIn();
-    extensionOutput = extsiOp.getOut();
-    auto trunciOp = dyn_cast_if_present<arith::TruncIOp>(truncationOp);
-    if (!trunciOp) {
-      return emitDefiniteFailure()
-             << "arith.extsi must be paired with arith.trunci";
-    }
-    truncationInput = trunciOp.getIn();
-    truncationOutput = trunciOp.getOut();
-  } else if (auto extuiOp = dyn_cast_if_present<arith::ExtUIOp>(extensionOp)) {
-    extensionInput = extuiOp.getIn();
-    extensionOutput = extuiOp.getOut();
-    auto trunciOp = dyn_cast_if_present<arith::TruncIOp>(truncationOp);
-    if (!trunciOp) {
-      return emitDefiniteFailure()
-             << "arith.extui must be paired with arith.trunci";
-    }
-    truncationInput = trunciOp.getIn();
-    truncationOutput = trunciOp.getOut();
-  } else if (auto extfOp = dyn_cast_if_present<arith::ExtFOp>(extensionOp)) {
-    extensionInput = extfOp.getIn();
-    extensionOutput = extfOp.getOut();
-    auto truncfOp = dyn_cast_if_present<arith::TruncFOp>(truncationOp);
-    if (!truncfOp) {
-      return emitDefiniteFailure()
-             << "arith.extf must be paired with arith.truncf";
-    }
-    truncationInput = truncfOp.getIn();
-    truncationOutput = truncfOp.getOut();
-    isFloatingPoint = true;
-  } else {
-    return emitDefiniteFailure() << "extension operation must be arith.extsi, "
-                                    "arith.extui, or arith.extf";
-  }
-
-  // Verify extension and truncation are in the loop
-  if (!loopOp->isProperAncestor(extensionOp) ||
-      !loopOp->isProperAncestor(truncationOp)) {
-    return emitDefiniteFailure()
-           << "extension and truncation operations must be inside the loop";
-  }
-
-  // Find which iter_arg the extension operates on
-  BlockArgument iterArg = nullptr;
-  int64_t iterArgIndex = -1;
-  vector::ShapeCastOp shapeCastBeforeExtension = nullptr;
-
-  // The extension input might be the iter_arg directly, or derived from it
-  // through shape_cast
-  if (auto blockArg = dyn_cast_if_present<BlockArgument>(extensionInput)) {
-    if (blockArg.getOwner() == loopOp.getBody() &&
-        blockArg.getArgNumber() > 0) {
-      iterArg = blockArg;
-      iterArgIndex = blockArg.getArgNumber() - 1;
-    }
-  } else if (auto shapeCastOp =
-                 extensionInput.getDefiningOp<vector::ShapeCastOp>()) {
-    Value shapeCastSource = shapeCastOp.getSource();
-    if (auto blockArg = dyn_cast_if_present<BlockArgument>(shapeCastSource)) {
-      if (blockArg.getOwner() == loopOp.getBody() &&
-          blockArg.getArgNumber() > 0) {
-        iterArg = blockArg;
-        iterArgIndex = blockArg.getArgNumber() - 1;
-        shapeCastBeforeExtension = shapeCastOp;
-      }
-    }
-  }
-
-  if (!iterArg) {
-    return emitDefiniteFailure() << "extension must operate on a loop iter_arg "
-                                    "(directly or through shape_cast)";
-  }
-
-  // Find the value that gets yielded (should come from truncation, possibly
-  // through shape_cast)
-  vector::ShapeCastOp shapeCastAfterTruncation = nullptr;
-
-  auto yieldOp = cast<scf::YieldOp>(loopOp.getBody()->getTerminator());
-  bool truncationIsYielded = false;
-  int64_t yieldIndex = -1;
-
-  for (auto [idx, yieldValue] : llvm::enumerate(yieldOp.getOperands())) {
-    if (yieldValue == truncationOutput) {
-      truncationIsYielded = true;
-      yieldIndex = idx;
-      break;
-    } else if (auto shapeCast =
-                   yieldValue.getDefiningOp<vector::ShapeCastOp>()) {
-      if (shapeCast.getSource() == truncationOutput) {
-        truncationIsYielded = true;
-        yieldIndex = idx;
-        shapeCastAfterTruncation = shapeCast;
-        break;
-      }
-    }
-  }
-
-  if (!truncationIsYielded || yieldIndex != iterArgIndex) {
-    return emitDefiniteFailure() << "truncation result must be yielded at the "
-                                    "same position as the extension iter_arg";
-  }
-
-  Location loc = loopOp.getLoc();
-
-  // Step 1: Hoist extension before the loop (don't hoist shape_cast yet)
-  rewriter.setInsertionPoint(loopOp);
-  Value initValue = loopOp.getInitArgs()[iterArgIndex];
-
-  // Get the wide element type from the extension output
-  Type wideElemType =
-      cast<VectorType>(extensionOutput.getType()).getElementType();
-  Type wideInitType = VectorType::get(
-      cast<VectorType>(initValue.getType()).getShape(), wideElemType);
-
-  // Extend the init value directly (in narrow flat form)
-  Value extendedInit;
-  if (isFloatingPoint) {
-    extendedInit =
-        arith::ExtFOp::create(rewriter, loc, wideInitType, initValue);
-  } else if (isa<arith::ExtSIOp>(extensionOp)) {
-    extendedInit =
-        arith::ExtSIOp::create(rewriter, loc, wideInitType, initValue);
-  } else {
-    extendedInit =
-        arith::ExtUIOp::create(rewriter, loc, wideInitType, initValue);
-  }
-
-  // Step 2: Create new loop with wide type for this iter_arg
-  SmallVector<Value> newInitArgs(loopOp.getInitArgs().begin(),
-                                 loopOp.getInitArgs().end());
-  newInitArgs[iterArgIndex] = extendedInit;
-
-  auto newLoopOp =
-      scf::ForOp::create(rewriter, loc, loopOp.getLowerBound(),
-                         loopOp.getUpperBound(), loopOp.getStep(), newInitArgs);
-
-  // Step 3: Clone the loop body with proper type adjustments
-  Block *oldBody = loopOp.getBody();
-  Block *newBody = newLoopOp.getBody();
-
-  rewriter.setInsertionPointToStart(newBody);
-  IRMapping mapping;
-
-  // Map the induction variable
-  mapping.map(oldBody->getArgument(0), newBody->getArgument(0));
-
-  // Map iter_args
-  for (auto [idx, oldArg] :
-       llvm::enumerate(oldBody->getArguments().drop_front(1))) {
-    mapping.map(oldArg, newBody->getArgument(idx + 1));
-  }
-
-  // Clone operations from old body, adjusting types as needed
-  for (Operation &op : oldBody->without_terminator()) {
-    // Skip extension - its result will be mapped to the wide iter_arg or wide
-    // shape_cast
-    if (&op == extensionOp) {
-      if (shapeCastBeforeExtension) {
-        // Map extension result to the shape_cast result (which we'll create
-        // below) Don't map yet - we'll map it when we encounter the shape_cast
-      } else {
-        // No shape_cast: map extension result directly to the wide iter_arg
-        mapping.map(extensionOutput, newBody->getArgument(iterArgIndex + 1));
-      }
-      continue;
-    }
-
-    // Skip truncation - we'll handle the yielded value specially
-    if (&op == truncationOp) {
-      continue;
-    }
-
-    // Handle shape_cast before extension - clone it with wide element type
-    if (shapeCastBeforeExtension &&
-        &op == shapeCastBeforeExtension.getOperation()) {
-      auto narrowVecType =
-          cast<VectorType>(shapeCastBeforeExtension.getResult().getType());
-      auto wideVecType =
-          VectorType::get(narrowVecType.getShape(), wideElemType);
-
-      Value mappedSource = mapping.lookup(shapeCastBeforeExtension.getSource());
-      auto newShapeCast =
-          vector::ShapeCastOp::create(rewriter, loc, wideVecType, mappedSource);
-      mapping.map(shapeCastBeforeExtension.getResult(),
-                  newShapeCast.getResult());
-      mapping.map(extensionOutput, newShapeCast.getResult());
-      continue;
-    }
-
-    // Handle shape_cast after truncation - clone it with wide element type for
-    // the yield
-    if (shapeCastAfterTruncation &&
-        &op == shapeCastAfterTruncation.getOperation()) {
-      // We'll handle this in the yield processing
-      continue;
-    }
-
-    // Clone all other operations normally
-    rewriter.clone(op, mapping);
-  }
-
-  // Step 4: Update the yield to yield the wide value
-  auto oldYield = cast<scf::YieldOp>(oldBody->getTerminator());
-  SmallVector<Value> newYieldOperands;
-
-  for (auto [idx, yieldValue] : llvm::enumerate(oldYield.getOperands())) {
-    if ((int64_t)idx == iterArgIndex) {
-      // Get the wide value (truncation input)
-      Value wideValue = mapping.lookup(truncationInput);
-
-      // If there was a shape_cast after truncation, we need to create a wide
-      // version of it
-      if (shapeCastAfterTruncation) {
-        auto narrowVecType =
-            cast<VectorType>(shapeCastAfterTruncation.getResult().getType());
-        auto wideVecType =
-            VectorType::get(narrowVecType.getShape(), wideElemType);
-
-        auto newShapeCast =
-            vector::ShapeCastOp::create(rewriter, loc, wideVecType, wideValue);
-        newYieldOperands.push_back(newShapeCast.getResult());
-      } else {
-        newYieldOperands.push_back(wideValue);
-      }
-    } else {
-      newYieldOperands.push_back(mapping.lookup(yieldValue));
-    }
-  }
-
-  scf::YieldOp::create(rewriter, loc, newYieldOperands);
-
-  // Step 5: Hoist truncation after the loop
-  rewriter.setInsertionPointAfter(newLoopOp);
-  Value wideResult = newLoopOp.getResults()[iterArgIndex];
-
-  // Get the narrow element type from the original init value
-  auto narrowElemType =
-      cast<VectorType>(loopOp.getInitArgs()[iterArgIndex].getType())
-          .getElementType();
-  auto narrowResultType = VectorType::get(
-      cast<VectorType>(wideResult.getType()).getShape(), narrowElemType);
-
-  // Create the appropriate truncation operation based on type
-  Value narrowResult;
-  if (isFloatingPoint) {
-    narrowResult =
-        arith::TruncFOp::create(rewriter, loc, narrowResultType, wideResult);
-  } else {
-    narrowResult =
-        arith::TruncIOp::create(rewriter, loc, narrowResultType, wideResult);
-  }
-
-  // Step 6: Replace uses of the old loop
-  SmallVector<Value> finalResults;
-  for (auto [idx, result] : llvm::enumerate(newLoopOp.getResults())) {
-    if ((int64_t)idx == iterArgIndex) {
-      finalResults.push_back(narrowResult);
-    } else {
-      finalResults.push_back(result);
-    }
-  }
-
-  rewriter.replaceOp(loopOp, finalResults);
-
-  SmallVector<Operation *> resultOps = {newLoopOp.getOperation()};
+  SmallVector<Operation *> resultOps = {newLoop->getOperation()};
   results.set(llvm::cast<OpResult>(getResult()), resultOps);
   return DiagnosedSilenceableFailure::success();
 }
@@ -5511,38 +4336,8 @@ transform::FoldUnitExtentDimsOp::apply(transform::TransformRewriter &rewriter,
     auto funcOp = dyn_cast_if_present<func::FuncOp>(target);
     if (!funcOp)
       return emitDefiniteFailure() << "target must be a func.func operation";
-
-    MLIRContext *ctx = funcOp.getContext();
-
-    // LLVM 23's collapseValue rejects memrefs with non-identity layouts
-    // (strided memrefs from subview ops). Override collapseFn to use
-    // rank-reducing subviews for strided memrefs, allowing the fold to
-    // handle linalg ops with subview outputs inside air.herd regions.
-    RewritePatternSet foldPatterns(ctx);
-    linalg::ControlDropUnitDims options;
-    options.collapseFn =
-        [](RewriterBase &rewriter, Location loc, Value operand,
-           ArrayRef<int64_t> targetShape,
-           ArrayRef<ReassociationIndices> reassociation,
-           const linalg::ControlDropUnitDims &control) -> FailureOr<Value> {
-      if (auto memrefType = dyn_cast<MemRefType>(operand.getType())) {
-        if (!memrefType.getLayout().isIdentity()) {
-          return memref::SubViewOp::rankReduceIfNeeded(rewriter, loc, operand,
-                                                       targetShape);
-        }
-        MemRefLayoutAttrInterface layout;
-        auto targetType =
-            MemRefType::get(targetShape, memrefType.getElementType(), layout,
-                            memrefType.getMemorySpace());
-        return memref::CollapseShapeOp::create(rewriter, loc, targetType,
-                                               operand, reassociation)
-            .getResult();
-      }
-      return failure();
-    };
-    linalg::populateFoldUnitExtentDimsPatterns(foldPatterns, options);
-    (void)applyPatternsGreedily(funcOp, std::move(foldPatterns));
-
+    if (failed(xilinx::air::runFoldUnitExtentDimsOnFunc(funcOp)))
+      return emitDefiniteFailure() << "fold-unit-extent-dims failed";
     transformedOps.push_back(funcOp);
   }
 
@@ -5817,25 +4612,13 @@ transform::NormalizeForBoundsOp::apply(transform::TransformRewriter &rewriter,
   }
 
   SmallVector<Operation *> transformedOps;
-
   for (Operation *target : targets) {
     auto forOp = dyn_cast_if_present<scf::ForOp>(target);
-    if (!forOp) {
+    if (!forOp)
       return emitDefiniteFailure() << "target must be an scf.for operation";
-    }
-
-    // Use the utility function from AIRDependencyScheduleOpt to fold
-    // affine.apply into loop bounds
-    auto newForOp = xilinx::air::foldAffineApplyIntoLoopBounds(forOp, rewriter);
-    if (succeeded(newForOp)) {
-      // Use the returned ForOp (which may be a new operation)
-      transformedOps.push_back(*newForOp);
-    } else {
-      // No transformation was applied, return the original op
-      transformedOps.push_back(forOp);
-    }
+    transformedOps.push_back(
+        xilinx::air::runNormalizeForBounds(forOp, rewriter).getOperation());
   }
-
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
 #else
@@ -5855,6 +4638,100 @@ std::unique_ptr<Pass> createAIRLinalgCodegenPass() {
 
 std::unique_ptr<Pass> createAIRPipelineReducePass() {
   return std::make_unique<AIRPipelineReducePass>();
+}
+
+//===----------------------------------------------------------------------===//
+// Group A helpers (M2). Defined here because the patterns/static helpers they
+// wrap have internal linkage in this TU. Declared in AIRMatmulCodegenHelpers.h
+// so both the transform.air.* op apply()s and the air-matmul-* C++ passes can
+// call them.
+//===----------------------------------------------------------------------===//
+
+LogicalResult runRemoveUninitializedCopy(func::FuncOp funcOp) {
+  MLIRContext *ctx = funcOp.getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<::OptimizeCopyOpPattern<memref::CopyOp>,
+                  ::OptimizeCopyOpPattern<linalg::CopyOp>>(ctx);
+  return success(succeeded(applyPatternsGreedily(funcOp, std::move(patterns))));
+}
+
+LogicalResult runEliminateCascadeMemcpy(Operation *target) {
+  MLIRContext *ctx = target->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<EliminateIntermediateMemrefPattern>(ctx);
+  return success(succeeded(applyPatternsGreedily(target, std::move(patterns))));
+}
+
+LogicalResult runConvertMemrefCopyToLinalgCopy(Operation *target) {
+  MLIRContext *ctx = target->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<ConvertMemrefCopyToLinalgCopyPattern>(ctx);
+  return success(succeeded(applyPatternsGreedily(target, std::move(patterns))));
+}
+
+Operation *runFuseIntoContainingMemref(Operation *producerOp,
+                                       Operation *containingOp,
+                                       RewriterBase &rewriter) {
+  Diagnostic diag(producerOp->getLoc(), DiagnosticSeverity::Remark);
+  return ::tileAndFuseFirstExtractUse(rewriter, diag, producerOp, containingOp);
+}
+
+bool containsOnlyTruncfOp(linalg::LinalgOp linalgOp) {
+  return ::containsOnlyTruncfOp(linalgOp);
+}
+
+bool producesResultForOp(linalg::LinalgOp producerOp,
+                         linalg::LinalgOp truncfOp) {
+  return ::producesResultForOp(producerOp, truncfOp);
+}
+
+FailureOr<Operation *> runFuseTruncfLinalg(linalg::LinalgOp producerOp,
+                                           linalg::LinalgOp truncfOp,
+                                           RewriterBase &rewriter) {
+  if (!::containsOnlyTruncfOp(truncfOp))
+    return failure();
+  if (!::producesResultForOp(producerOp, truncfOp))
+    return failure();
+  FailureOr<linalg::GenericOp> fusedOp =
+      ::fuseTruncfIntoProducer(rewriter, producerOp, truncfOp);
+  if (failed(fusedOp))
+    return failure();
+
+  // Discardable attrs on the producer (e.g. `air.matmul_codegen_config` from
+  // M3) must survive the rewrite — copy them onto the fused/replacement op so
+  // downstream consumer passes can still find them.
+  auto propagateDiscardable = [&](Operation *src, Operation *dst) {
+    for (NamedAttribute a : src->getDiscardableAttrs())
+      if (!dst->hasAttr(a.getName()))
+        dst->setAttr(a.getName(), a.getValue());
+  };
+  propagateDiscardable(producerOp.getOperation(), fusedOp->getOperation());
+
+  // For matmul-shaped fusions (2D+ inputs), replace with linalg.matmul of the
+  // truncated output type so that downstream specialize/pack works. For other
+  // shapes, return the fused generic.
+  auto inputType =
+      dyn_cast<RankedTensorType>(fusedOp->getDpsInputs()[0].getType());
+  if (inputType && inputType.getRank() >= 2) {
+    rewriter.setInsertionPoint(*fusedOp);
+    auto matmulOp = linalg::MatmulOp::create(
+        rewriter, fusedOp->getLoc(), fusedOp->getResultTypes(),
+        ValueRange{fusedOp->getDpsInputs()[0], fusedOp->getDpsInputs()[1]},
+        ValueRange{fusedOp->getDpsInits()[0]});
+    propagateDiscardable(fusedOp->getOperation(), matmulOp.getOperation());
+    rewriter.replaceOp(*fusedOp, matmulOp->getResults());
+    return matmulOp.getOperation();
+  }
+  return fusedOp->getOperation();
+}
+
+scf::ForOp runNormalizeForBounds(scf::ForOp forOp, RewriterBase &rewriter) {
+#if AIR_ENABLE_AIE
+  auto newForOp = xilinx::air::foldAffineApplyIntoLoopBounds(forOp, rewriter);
+  if (succeeded(newForOp))
+    return *newForOp;
+#endif
+  return forOp;
 }
 
 } // namespace air
