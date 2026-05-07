@@ -1168,6 +1168,31 @@ def AIRShrinkMemrefSizesByAccess: Pass<"air-shrink-memref-sizes-by-access", "fun
   }];
 }
 
+def AIRVerifyHierarchyLocality :
+    Pass<"air-verify-hierarchy-locality", "ModuleOp"> {
+  let summary = "Verify locality of kernel operands at the hierarchy's "
+                "matching memory level.";
+  let constructor =
+      "xilinx::air::createAIRVerifyHierarchyLocalityPass()";
+  let description = [{
+    For each air.launch / air.segment / air.herd, verify that every kernel
+    operand whose memref memory space equals the hierarchy's matching memory
+    level (launch=L3, segment=L2, herd=L1) is either defined inside the
+    hierarchy body, or has access regions over the iteration space that are
+    statically provable as pairwise disjoint.
+
+    The pass is read-only: on failure it emits a diagnostic at the hierarchy
+    op and signals pass failure. Behavior is gated by the `strict` option:
+    when access analysis cannot decide, strict=true reports an error,
+    strict=false reports a warning and continues.
+  }];
+  let options = [
+    Option<"strict", "strict", "bool", /*default=*/"true",
+           "When access analysis is inconclusive, fail (true) "
+           "or warn-and-continue (false).">
+  ];
+}
+
 def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "ModuleOp"> {
   let summary = "Canonicalize the dependency graph";
   let constructor = "xilinx::air::createAIRDependencyCanonicalizePass()";
