@@ -276,29 +276,42 @@ FailureOr<scf::ForOp> runFlattenForIterArgs(scf::ForOp forOp,
 // runHoistLoopInvariantTransfers
 //===----------------------------------------------------------------------===//
 
-Value cloneOpAndOperands(Operation *op, Value loopIV, scf::ForOp loopOp,
-                         RewriterBase &rewriter, IRMapping &mapping) {
+static Value cloneOpAndOperands(Operation *op, Value loopIV, scf::ForOp loopOp,
+                                RewriterBase &rewriter, IRMapping &mapping) {
   if (!op->getResults().empty())
     if (mapping.contains(op->getResult(0)))
       return mapping.lookup(op->getResult(0));
+
+  // Producer slice filter: only clone ops that live inside the loop, are not
+  // already mapped, and don't transitively depend on the IV. The top-level
+  // loop below pre-walks `op`'s operands; this filter is what prunes the
+  // backward slice that air::cloneOpAndOperands then computes per-operand.
+  auto canClone = [loopIV, loopOp, &mapping](Operation *o) {
+    if (!loopOp->isAncestor(o))
+      return false;
+    if (o->getResults().empty())
+      return false;
+    if (mapping.contains(o->getResult(0)))
+      return false;
+    return !dependsOnLoopIV(o->getResult(0), loopIV);
+  };
 
   for (Value operand : op->getOperands()) {
     if (operand == loopIV)
       continue;
     if (mapping.contains(operand))
       continue;
-    if (isa<BlockArgument>(operand) && operand != loopIV)
+    if (isa<BlockArgument>(operand))
       continue; // Outer-loop block args still in scope.
     Operation *defOp = operand.getDefiningOp();
-    if (!defOp)
-      continue;
-    if (!loopOp->isAncestor(defOp))
+    if (!defOp || !loopOp->isAncestor(defOp))
       continue; // Defined outside the loop, already in scope.
-    if (!dependsOnLoopIV(operand, loopIV)) {
-      Value clonedOperand =
-          cloneOpAndOperands(defOp, loopIV, loopOp, rewriter, mapping);
-      mapping.map(operand, clonedOperand);
-    }
+    if (dependsOnLoopIV(operand, loopIV))
+      continue;
+    Operation *clonedDef =
+        xilinx::air::cloneOpAndOperands(rewriter, mapping, defOp, canClone);
+    if (!clonedDef->getResults().empty())
+      mapping.map(operand, clonedDef->getResult(0));
   }
 
   Operation *cloned = rewriter.clone(*op, mapping);

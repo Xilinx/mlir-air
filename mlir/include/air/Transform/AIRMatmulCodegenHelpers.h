@@ -37,15 +37,6 @@ namespace air {
 bool hasWritesBetweenReads(::mlir::vector::TransferReadOp firstRead,
                            ::mlir::vector::TransferReadOp secondRead);
 
-/// Recursively clone `op` and the chain of operand-producers that live
-/// inside `loopOp` and don't depend on `loopIV`, mapping cloned values
-/// through `mapping`. Operands defined outside `loopOp` are reused. Returns
-/// the cloned result Value (or null if `op` produces no results).
-::mlir::Value cloneOpAndOperands(::mlir::Operation *op, ::mlir::Value loopIV,
-                                 ::mlir::scf::ForOp loopOp,
-                                 ::mlir::RewriterBase &rewriter,
-                                 ::mlir::IRMapping &mapping);
-
 //===----------------------------------------------------------------------===//
 // Free functions backing both transform.air.* ops and air-matmul-* passes.
 //===----------------------------------------------------------------------===//
