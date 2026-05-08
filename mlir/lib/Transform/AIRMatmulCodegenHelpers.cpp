@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRMatmulCodegenHelpers.h"
+#include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -43,17 +44,10 @@ static bool areEquivalentIndices(Value idx1, Value idx2) {
 bool dependsOnLoopIV(Value val, Value loopIV) {
   if (val == loopIV)
     return true;
-  if (auto affineOp = val.getDefiningOp<affine::AffineApplyOp>()) {
-    for (Value operand : affineOp.getMapOperands())
-      if (dependsOnLoopIV(operand, loopIV))
-        return true;
-  }
-  if (auto defOp = val.getDefiningOp()) {
-    for (Value operand : defOp->getOperands())
-      if (dependsOnLoopIV(operand, loopIV))
-        return true;
-  }
-  return false;
+  SmallVector<Value, 1> deps;
+  std::vector<Operation *> opHist;
+  xilinx::air::traceDependentInductionVar({val}, deps, opHist);
+  return llvm::is_contained(deps, loopIV);
 }
 
 bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
