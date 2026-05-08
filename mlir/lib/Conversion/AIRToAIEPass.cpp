@@ -225,7 +225,6 @@ void setAIEDeviceDataLayout(OpBuilder &builder, AIE::DeviceOp aie_dev) {
 
 LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
                               air::HerdOp h,
-                              std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
                               AIRToAIEConversionOptions &options) {
   builder.setInsertionPointToStart(aie_device.getBody());
 
@@ -298,7 +297,19 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         core = AIE::CoreOp::create(builder, hloc, tile);
         if (options.stack_size != 1024)
           core.setStackSize(options.stack_size);
-        tileToHerdMap[tile] = h;
+        // Persist herd metadata as aie.core attributes so downstream code
+        // doesn't need a tileToHerdMap to recover (RFC #1567 Stage C #3).
+        // air.herd_local_id stores the per-cell (x, y) within the herd;
+        // air.herd_size stores the herd's (x_size, y_size); air.herd_name
+        // stores the herd's symbol name when available.
+        core->setAttr("air.herd_local_id",
+                      builder.getDenseI64ArrayAttr(
+                          {static_cast<int64_t>(x), static_cast<int64_t>(y)}));
+        core->setAttr("air.herd_size",
+                      builder.getDenseI64ArrayAttr({herd_size_x, herd_size_y}));
+        if (auto sym =
+                h->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+          core->setAttr("air.herd_name", sym);
         if (auto a = h->getAttrOfType<StringAttr>("link_with"))
           core->setAttr("link_with", a);
       }
@@ -1229,7 +1240,6 @@ LogicalResult createAIEModulesAndOutlineCores(
     ModuleOp module,
     std::vector<std::tuple<AIE::DeviceOp, air::HerdOp,
                            AIRToAIEConversionOptions>> &aie_modules,
-    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
     AIRToAIEConversionOptions &options) {
 
   SmallVector<air::SegmentOp> segments;
@@ -1343,8 +1353,7 @@ LogicalResult createAIEModulesAndOutlineCores(
     auto h = std::get<1>(p);
     auto device_options = std::get<2>(p);
     OpBuilder builder(aie_dev);
-    if (failed(outlineAIECores(builder, aie_dev, h, tileToHerdMap,
-                               device_options)))
+    if (failed(outlineAIECores(builder, aie_dev, h, device_options)))
       return failure();
   }
   // Outline any L1 memref allocs used by herds but located outside of any herd
@@ -1869,11 +1878,8 @@ void lowerScfAirTokens(AIE::DeviceOp m) {
 struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
-  AllocL1BuffersPattern(MLIRContext *ctx,
-                        std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
-                        uint64_t &bufferId)
-      : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap),
-        BufferId(bufferId) {}
+  AllocL1BuffersPattern(MLIRContext *ctx, uint64_t &bufferId)
+      : OpRewritePattern(ctx), BufferId(bufferId) {}
 
   LogicalResult matchAndRewrite(memref::AllocOp alloc,
                                 PatternRewriter &rewriter) const override {
@@ -1892,27 +1898,30 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     if (!air::isL1(memrefTy))
       return failure();
 
-    auto herd = tileToHerdMap[tile];
-    int64_t col_offset = 0;
-    int64_t row_offset = 0;
-    if (herd) {
-      auto c = herd.getColOffset();
-      auto r = herd.getRowOffset();
-      col_offset = c ? *c : 0;
-      row_offset = r ? *r : 0;
+    // Read herd-local (x, y) from the aie.core attribute set at outline
+    // time (RFC #1567 Stage C #3). Fall back to physical coords when the
+    // attribute isn't present (e.g. cores not produced by outlineAIECores).
+    int64_t herd_local_x = tile.getCol();
+    int64_t herd_local_y = tile.getRow();
+    if (auto idAttr =
+            core->getAttrOfType<DenseI64ArrayAttr>("air.herd_local_id")) {
+      auto ids = idAttr.asArrayRef();
+      if (ids.size() == 2) {
+        herd_local_x = ids[0];
+        herd_local_y = ids[1];
+      }
     }
 
     auto buffer = allocateBufferOp(
         BufferId, memrefTy, tile,
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-        tile.getCol() - col_offset, tile.getRow() - row_offset);
+        herd_local_x, herd_local_y);
 
     rewriter.replaceOp(alloc, buffer->getResults());
     return success();
   }
 
 private:
-  std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
   uint64_t &BufferId;
 };
 
@@ -1977,12 +1986,10 @@ private:
   std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
 };
 
-void allocL1Buffers(AIE::DeviceOp m,
-                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
-                    uint64_t &BufferId) {
+void allocL1Buffers(AIE::DeviceOp m, uint64_t &BufferId) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
+  patterns.insert<AllocL1BuffersPattern>(ctx, BufferId);
   // AllocL1TensorsPattern
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
@@ -3055,7 +3062,6 @@ public:
   // Returns failure() if any transformation stage fails.
   LogicalResult
   runDevicePipeline(AIE::DeviceOp device, ModuleOp module, air::HerdOp herd,
-                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
                     std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
                     AIRToAIEConversionOptions &options, bool useObjFifo,
                     PipelineStage stopAfter = PipelineStage::Complete) {
@@ -3130,10 +3136,10 @@ public:
       allocL2Buffers(device, bufferToMemtileMap, BufferId);
       if (failed(lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap)))
         return failure();
-      allocL1Buffers(device, tileToHerdMap, BufferId);
+      allocL1Buffers(device, BufferId);
     } else {
       specializeL2MemrefsIntoMemtiles(device);
-      allocL1Buffers(device, tileToHerdMap, BufferId);
+      allocL1Buffers(device, BufferId);
       allocL2Buffers(device, bufferToMemtileMap, BufferId);
     }
     if (stopAfter == PipelineStage::AfterAllocBuffers)
@@ -4961,19 +4967,19 @@ public:
       OpBuilder builder, air::MemcpyInterface memcpyOpIf,
       llvm::SetVector<Operation *> &allocs_to_remap,
       const AIE::AIETargetModel &targetModel,
-      air::TileDMAAllocator &tileDmaAlloc, int x, int y) {
+      air::TileDMAAllocator &tileDmaAlloc, AIE::TileOp tile) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
-    auto dma_alloc = tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf);
+    auto dma_alloc = tileDmaAlloc.lookupDMAAllocation(tile, memcpyOpIf);
     if (failed(dma_alloc)) {
       return memcpyOpIf->emitOpError("failed to look up dma allocation.");
     }
     auto tile_channel = dma_alloc.value().dma_channel;
-    auto bufferOp = tileDmaAlloc.getBuffer(BufferId, x, y, memcpyOpIf);
+    auto bufferOp = tileDmaAlloc.getBuffer(BufferId, tile, memcpyOpIf);
     if (failed(bufferOp)) {
       return memcpyOpIf->emitOpError("failed to get buffer.");
     }
-    auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, x, y,
+    auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, tile,
                                             bufferOp.value().getOperation(),
                                             /*lockRaceConditionFix*/ false);
     if (failed(locks))
@@ -5084,7 +5090,7 @@ public:
                                        std::vector<Operation *>>
                            dma_memcpys,
                        dmaAllocatorTy dmaAlloc, mlir::Location loc, memOpTy mem,
-                       int x, int y, bool lockRaceConditionFix = false) {
+                       AIE::TileOp tile, bool lockRaceConditionFix = false) {
 
     llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
                     std::vector<Operation *>>
@@ -5176,17 +5182,17 @@ public:
             next_bd->insertBefore(end_bb);
             AIE::NextBDOp::create(b, loc, next_bd);
           }
-          auto bufferOp = dmaAlloc.getBuffer(BufferId, x, y, memcpyOp);
+          auto bufferOp = dmaAlloc.getBuffer(BufferId, tile, memcpyOp);
           if (failed(bufferOp)) {
             memcpyOp->emitOpError("failed to get buffer.");
             return failure();
           }
-          auto locks = dmaAlloc.getLockForDMA(memcpyOp, x, y,
+          auto locks = dmaAlloc.getLockForDMA(memcpyOp, tile,
                                               bufferOp.value().getOperation(),
                                               lockRaceConditionFix);
           if (failed(locks))
             return memcpyOp->emitOpError("failed to get lock for dma.");
-          auto newBD = generateDmaBd<bufferOpTy>(loc, dir, locks.value(), x, y,
+          auto newBD = generateDmaBd<bufferOpTy>(loc, dir, locks.value(), tile,
                                                  targetModel, bd, memcpyOp,
                                                  bufferOp.value(), chan);
           // Attribute task_id is necessary to ensure that BDs do not get shared
@@ -5224,7 +5230,7 @@ public:
   template <typename bufferOpTy>
   FailureOr<AIE::DMABDOp>
   generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
-                std::pair<AIE::LockOp, AIE::LockOp> locks, int x, int y,
+                std::pair<AIE::LockOp, AIE::LockOp> locks, AIE::TileOp tile,
                 const AIE::AIETargetModel &targetModel, Block *bd,
                 air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan) {
     bool UsesSemaphoreLocks =
@@ -5289,10 +5295,8 @@ public:
                            lockAqValue);
 
     // Packet flow routing: get packet flow id.
-    auto aie_device = bufferOp->template getParentOfType<AIE::DeviceOp>();
-    auto tileOp = air::getPhysTileOpOrNull(aie_device, x, y);
     auto pktFlowOp = getExistingPacketFlowOpFromDevice(
-        tileOp, AIE::WireBundle::DMA, chan, memcpyOp);
+        tile, AIE::WireBundle::DMA, chan, memcpyOp);
     AIE::PacketInfoAttr pktInfoAttr = nullptr;
     if (isMM2S && pktFlowOp) {
       auto packetID = pktFlowOp.getID();
@@ -6041,15 +6045,13 @@ public:
 
     for (AIE::CoreOp core : cores) {
       AIE::TileOp tile = core.getTileOp();
-      auto x = tile.getCol();
-      auto y = tile.getRow();
 
       // emit the acquire and release of the L1 buffer locks
       // lock_allocation_list lock_allocs;
       llvm::SetVector<Operation *> allocs_to_remap;
 
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         for (auto o : alloc.memcpyOps) {
           if (!o)
@@ -6059,13 +6061,13 @@ public:
             return o->emitOpError("does not have air::MemcpyInterface");
           if (failed(allocateCoreLocksPerMemcpyOp(rewriter, memcpyOpIf,
                                                   allocs_to_remap, target_model,
-                                                  tileDmaAlloc, x, y))) {
+                                                  tileDmaAlloc, tile))) {
             return o->emitOpError("failed to allocate core locks");
           }
         }
       }
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         for (auto o : alloc.memcpyOps) {
           if (!o)
@@ -6075,7 +6077,7 @@ public:
             return o->emitOpError("does not have air::MemcpyInterface");
           if (failed(allocateCoreLocksPerMemcpyOp(rewriter, memcpyOpIf,
                                                   allocs_to_remap, target_model,
-                                                  tileDmaAlloc, x, y))) {
+                                                  tileDmaAlloc, tile))) {
             return o->emitOpError("failed to allocate core locks");
           }
         }
@@ -6106,7 +6108,7 @@ public:
           tile_dma_memcpys;
 
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
             alloc.dma_channel.direction, alloc.dma_channel.channel};
@@ -6115,7 +6117,7 @@ public:
         }
       }
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
             alloc.dma_channel.direction, alloc.dma_channel.channel};
@@ -6136,7 +6138,7 @@ public:
       if (failed(generateDmaBdProgram<air::TileDMAAllocator, AIE::BufferOp,
                                       AIE::MemOp>(
               rewriter, target_model, tile_dma_memcpys, tileDmaAlloc, loc, mem,
-              x, y))) {
+              tile))) {
         mem->emitOpError("failed to generate dma bd program.");
         return failure();
       }
@@ -6146,7 +6148,7 @@ public:
       for (auto *allocList : {&core_cascade_alloc.cascade_put_allocs,
                               &core_cascade_alloc.cascade_get_allocs}) {
         for (auto &alloc : *allocList) {
-          if (!alloc.foundAlloc(x, y))
+          if (!alloc.foundAlloc(tile))
             continue;
           for (auto o : alloc.memcpyOps) {
             if (!o)
@@ -6199,16 +6201,13 @@ public:
       shimtiles.clear();
 
     for (auto tile : shimtiles) {
-      auto x = tile.getCol();
-      auto y = tile.getRow();
-
       // Collect memcpy ops wrt each DMA channel
       llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
                       std::vector<Operation *>>
           shim_dma_memcpys;
 
       for (auto &alloc : shimDmaAlloc.mm2s_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -6217,7 +6216,7 @@ public:
         }
       }
       for (auto &alloc : shimDmaAlloc.s2mm_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -6240,7 +6239,7 @@ public:
       if (failed(generateDmaBdProgram<air::ShimDMAAllocator,
                                       AIE::ExternalBufferOp, AIE::ShimDMAOp>(
               rewriter, target_model, shim_dma_memcpys, shimDmaAlloc, loc,
-              shimDMA, x, y))) {
+              shimDMA, tile))) {
         shimDMA->emitOpError("failed to generate dma bd program.");
         return failure();
       }
@@ -6249,9 +6248,6 @@ public:
     // Generate L2 DMA program
 
     for (auto tile : memTileTiles) {
-      auto x = tile.getCol();
-      auto y = tile.getRow();
-
       // Collect memcpy ops wrt each DMA channel from chessboard; make aie.mem
       // dmabd program
       llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
@@ -6259,7 +6255,7 @@ public:
           memtile_dma_memcpys;
 
       for (auto &alloc : memTileDmaAlloc.mm2s_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -6268,7 +6264,7 @@ public:
         }
       }
       for (auto &alloc : memTileDmaAlloc.s2mm_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -6291,7 +6287,7 @@ public:
       if (failed(generateDmaBdProgram<air::MemTileDMAAllocator, AIE::BufferOp,
                                       AIE::MemTileDMAOp>(
               rewriter, target_model, memtile_dma_memcpys, memTileDmaAlloc, loc,
-              memTileDMA, x, y, options.use_lock_race_condition_fix))) {
+              memTileDMA, tile, options.use_lock_race_condition_fix))) {
         memTileDMA->emitOpError("failed to generate dma bd program.");
         return failure();
       }
@@ -6385,7 +6381,6 @@ public:
     auto ctx = m->getContext();
 
     RewritePatternSet patterns(ctx);
-    std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
     std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
 
     auto device = AIE::symbolizeAIEDevice(clDevice);
@@ -6441,8 +6436,7 @@ public:
       // Pre-pipeline: renumber memcpy ops at module level
       air::renumberMemcpyIfOps(&m.getRegion());
 
-      if (failed(createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap,
-                                                 options))) {
+      if (failed(createAIEModulesAndOutlineCores(m, aie_modules, options))) {
         signalPassFailure();
         return;
       }
@@ -6463,9 +6457,9 @@ public:
         seen.insert(d);
 
         // Run shared pipeline with the specified breakpoint
-        if (failed(runDevicePipeline(d, parentModule, h, tileToHerdMap,
-                                     bufferToMemtileMap, device_options,
-                                     clUseObjFifo, stopStage))) {
+        if (failed(runDevicePipeline(d, parentModule, h, bufferToMemtileMap,
+                                     device_options, clUseObjFifo,
+                                     stopStage))) {
           signalPassFailure();
           return;
         }
@@ -6482,8 +6476,8 @@ public:
     if (clTestPatterns.find("lower-air-execute") != std::string::npos)
       patterns.insert<LowerAIRExecutePattern>(ctx);
     if (clTestPatterns.find("alloc-l1-buffers") != std::string::npos)
-      patterns.insert<AllocL1BuffersPattern, AllocL1BuffersPattern>(
-          ctx, tileToHerdMap, BufferId);
+      patterns.insert<AllocL1BuffersPattern, AllocL1BuffersPattern>(ctx,
+                                                                    BufferId);
     if (clTestPatterns.find("specialize-affine-if") != std::string::npos)
       patterns.insert<SpecializeAffineIfPattern>(ctx);
     if (clTestPatterns.find("specialize-scf-if") != std::string::npos)
@@ -6551,7 +6545,6 @@ public:
         std::tuple<AIE::DeviceOp, air::HerdOp, AIRToAIEConversionOptions>>
         aie_devices;
 
-    std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
     std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
@@ -6570,8 +6563,7 @@ public:
         /* .use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
         /* .device = */ *device,
         /* .stack_size = */ clStackSize};
-    if (failed(createAIEModulesAndOutlineCores(module, aie_devices,
-                                               tileToHerdMap, options))) {
+    if (failed(createAIEModulesAndOutlineCores(module, aie_devices, options))) {
       signalPassFailure();
       return;
     }
@@ -6638,7 +6630,7 @@ public:
           signalPassFailure();
           return;
         }
-        allocL1Buffers(device, tileToHerdMap, BufferId);
+        allocL1Buffers(device, BufferId);
       } else {
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ true,
@@ -6653,7 +6645,7 @@ public:
             device->hasAttr("segment_unroll_y"))
           removeOrphanedChannels(device);
         specializeL2MemrefsIntoMemtiles(device);
-        allocL1Buffers(device, tileToHerdMap, BufferId);
+        allocL1Buffers(device, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
         air::renumberMemcpyIfOps(&device.getRegion(),
                                  chan_renumber_reverse_map);
@@ -7091,7 +7083,6 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
       /* .device = */ *device};
   std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
   p.walk([&](air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
-  std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
     air::HerdOp h = std::get<1>(p);
@@ -7102,7 +7093,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     setAIEDeviceDataLayout(rewriter, devOp);
     AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter,
                                     devOp.getLoc());
-    if (failed(outlineAIECores(rewriter, devOp, h, tileToHerdMap, options)))
+    if (failed(outlineAIECores(rewriter, devOp, h, options)))
       return failure();
 
     auto ctx = aie_module->getContext();
@@ -7110,7 +7101,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     patterns.insert<SpecializeAffineIfPattern>(ctx);
     patterns.insert<SpecializeScfIfPattern>(ctx);
     patterns.insert<LowerAIRExecutePattern>(ctx);
-    patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
+    patterns.insert<AllocL1BuffersPattern>(ctx, BufferId);
     air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
     (void)applyPatternsGreedily(aie_module, std::move(patterns));
   }
