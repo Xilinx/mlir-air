@@ -41,7 +41,7 @@ static bool areEquivalentIndices(Value idx1, Value idx2) {
   return xilinx::air::isEquivalentTo(def1, def2);
 }
 
-bool dependsOnLoopIV(Value val, Value loopIV) {
+static bool dependsOnLoopIV(Value val, Value loopIV) {
   if (val == loopIV)
     return true;
   SmallVector<Value, 1> deps;

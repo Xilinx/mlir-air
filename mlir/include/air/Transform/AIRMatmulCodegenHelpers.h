@@ -37,10 +37,6 @@ namespace air {
 bool hasWritesBetweenReads(::mlir::vector::TransferReadOp firstRead,
                            ::mlir::vector::TransferReadOp secondRead);
 
-/// True if `val` transitively depends on `loopIV` via affine.apply or any
-/// other defining op.
-bool dependsOnLoopIV(::mlir::Value val, ::mlir::Value loopIV);
-
 /// Recursively clone `op` and the chain of operand-producers that live
 /// inside `loopOp` and don't depend on `loopIV`, mapping cloned values
 /// through `mapping`. Operands defined outside `loopOp` are reused. Returns
