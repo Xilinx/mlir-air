@@ -27,6 +27,7 @@ def build_module(n, tile_n, np_dtype_in, np_dtype_out, vector_size=16):
     xrt_dtype_out = type_mapper(np_dtype_out)
     num_tiles = 2
     assert n % (tile_n * num_tiles) == 0
+    assert tile_n % vector_size == 0
     VECTOR_SIZE = vector_size
     index_type = IndexType.get()
 
