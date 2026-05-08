@@ -29,9 +29,6 @@ namespace air {
 // are defined; others arrive as their consuming runFoo functions land.
 //===----------------------------------------------------------------------===//
 
-// True if two index values are semantically the same: direct SSA equality,
-// or their defining ops match per `air::isEquivalentTo` (which also accepts
-// distinct constant SSAs that fold to the same int value).
 static bool areEquivalentIndices(Value idx1, Value idx2) {
   if (idx1 == idx2)
     return true;
