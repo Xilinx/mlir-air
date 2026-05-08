@@ -709,7 +709,7 @@ if __name__ == "__main__":
             }
             }
         """
-        # legacy disabled while debugging M1c; see if False above
+        # legacy transform-script kept for reference; see `if False` above
         pass
     if args.print_module_only:
         print(mlir_module)

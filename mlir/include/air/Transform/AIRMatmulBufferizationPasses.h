@@ -5,9 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// M2 (Group A tail) passes: bufferization, post-bufferize cleanup, ping-pong
-// loop fusion, and bf16-output truncf fusion. See
-// MATMUL_CODEGEN_PIPELINE_PLAN.md.
+// Free-function bodies invoked by the air-matmul-codegen orchestrator:
+// bufferization to L1/L2 allocations, post-bufferize cleanup, ping-pong
+// loop fusion, and bf16-output truncf fusion.
 //
 //===----------------------------------------------------------------------===//
 

@@ -30,9 +30,8 @@ parser.add_argument(
 parser.add_argument(
     "--use-cpp-pipeline",
     action="store_true",
-    help="Replace the legacy transform script with the C++ matmul codegen "
-    "pipeline (M5 — Triton-XDNA single-pack bf16-out flow). See "
-    "MATMUL_CODEGEN_PIPELINE_PLAN.md.",
+    help="Replace the legacy transform script with the air-matmul-codegen "
+    "orchestrator (single-pack bf16-out flow).",
 )
 parser.add_argument(
     "--profile-iters",

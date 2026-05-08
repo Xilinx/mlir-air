@@ -5,10 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// M1a passes of the matmul codegen pipeline. See
-// MATMUL_CODEGEN_PIPELINE_PLAN.md. These wrap (by copy) the C++ logic backing
-// the existing transform.air.* ops in AIRLinalgCodegen.cpp, exposing it as
-// ordinary func-level passes.
+// Vectorization-prep free functions invoked by the air-matmul-codegen
+// orchestrator: tile-for-vectorize and the vec-prep composite (eliminate-
+// redundant-transfers, vector-cast-for-emulation, hoist-loop-invariant,
+// flatten-for-iter-args, hoist-vector-transfer-pointers, hoist-cast-pairs).
+// air-fold-unit-extent-dims is also exposed as a standalone pass for
+// programming-example pipelines that use it outside the matmul flow.
 //
 //===----------------------------------------------------------------------===//
 

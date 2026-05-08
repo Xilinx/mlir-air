@@ -32,9 +32,6 @@ namespace air {
 // Pure utilities used by multiple codegen helpers.
 //===----------------------------------------------------------------------===//
 
-/// Total element count of a (possibly multi-dim) vector type.
-int64_t getVectorNumElements(::mlir::VectorType vecType);
-
 /// True if the two index values are semantically the same (direct equality,
 /// matching affine.apply, or matching arith.constant).
 bool areEquivalentIndices(::mlir::Value idx1, ::mlir::Value idx2);
@@ -121,8 +118,8 @@ runHoistCastPair(::mlir::Operation *extensionOp,
                  ::mlir::RewriterBase &rewriter);
 
 //===----------------------------------------------------------------------===//
-// Group A helpers (M2): bufferization & fusion utilities used by the
-// air-matmul-* passes that drive the linalg-input flow.
+// Bufferization & fusion utilities used by the air-matmul-codegen
+// orchestrator phases.
 //===----------------------------------------------------------------------===//
 
 /// Apply OptimizeCopyOpPattern to remove copies whose source is uninitialized

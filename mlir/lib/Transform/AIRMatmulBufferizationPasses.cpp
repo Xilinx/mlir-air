@@ -5,9 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// M2 (Group A tail) passes. Each pass wraps a small subset of the legacy
-// transform-script Phases 2/7/8: post-bufferize cleanup, ping-pong sibling
-// fusion, and bf16-output truncf fusion.
+// Bufferization phases of the air-matmul-codegen orchestrator: bufferize-
+// output-l2, bufferize-l1-inputs, bufferize-l1-output, post-bufferize
+// cleanup, ping-pong sibling fusion, and bf16-output truncf fusion.
 //
 //===----------------------------------------------------------------------===//
 

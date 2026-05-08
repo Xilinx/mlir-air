@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// M2 Phase 4 / Phase 5 passes. Each tiles the packed matmul (on K, then on
-// the per-core forall) and fuses the LHS/RHS L1 pack producers into the new
-// loop. Markers wired so downstream passes (bufferize-l1-inputs,
-// fuse-pingpong-loops) can find their targets.
+// Tiling phases of the air-matmul-codegen orchestrator: launch-tile,
+// tile-k-and-fuse-packs, tile-cores, prologue-epilogue. Each tiles the
+// (packed) matmul on a different axis and fuses its operand-producing
+// pack ops into the new loop. Markers wired so downstream phases
+// (bufferize-l1-inputs, fuse-pingpong-loops) can find their targets.
 //
 //===----------------------------------------------------------------------===//
 
@@ -235,10 +236,10 @@ LogicalResult runTileKAndFusePacksImpl(
   LoopLikeOpInterface kLoop = tilingResult->loops.front();
   kLoop->setAttr(kReductionLoopMarker, rewriter.getUnitAttr());
 
-  // Fuse pack_a and pack_b into the K loop. Annotate. For M4 two-pack-
-  // level flows where the matmul's immediate operand pack (L1) has a
-  // grandparent pack (L2) feeding it, recursively fuse the producer
-  // chain so the L2 pack ends up at K-loop scope too.
+  // Fuse pack_a and pack_b into the K loop. Annotate. For two-pack-level
+  // flows where the matmul's immediate operand pack (L1) has a grandparent
+  // pack (L2) feeding it, recursively fuse the producer chain so the L2
+  // pack ends up at K-loop scope too.
   auto fuseChain = [&](Operation *pack, StringRef l1Marker,
                        StringRef l2Marker) {
     bool producerHadL1Marker = pack && pack->hasAttr(l1Marker);
@@ -324,8 +325,8 @@ LogicalResult runPrologueEpilogueImpl(
     StringRef prologueForallMarker, StringRef epilogueForallMarker,
     bool hoistStaticAllocFirst, RewriterBase &rewriter) {
   // Optional pre-step: hoist statically-bound memref.alloc ops out of
-  // nested loops to the function entry block. Used by the M4 / two-pack
-  // flow.
+  // nested loops to the function entry block. Used by two-pack-level flows
+  // so the L1 acc alloc lives outside the K-reduction loop (K-peel flow).
   if (hoistStaticAllocFirst)
     runHoistStaticAllocImpl(f, rewriter);
 
@@ -412,7 +413,7 @@ LogicalResult runPrologueEpilogueImpl(
 }
 
 //===----------------------------------------------------------------------===//
-// runTileLaunchTileImpl (M4 Phase 0)
+// runTileLaunchTileImpl
 //===----------------------------------------------------------------------===//
 
 LogicalResult runTileLaunchTileImpl(func::FuncOp f, ArrayRef<int64_t> tileSizes,

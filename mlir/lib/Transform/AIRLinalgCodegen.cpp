@@ -3939,7 +3939,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
     if (auto vectorType = dyn_cast_if_present<VectorType>(operand.getType())) {
       hasAnyVectors = true;
-      if (xilinx::air::getVectorNumElements(vectorType) != 1) {
+      if (vectorType.getNumElements() != 1) {
         allVectorsAreSingleElement = false;
       }
     }
@@ -3948,7 +3948,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   for (auto [idx, result] : llvm::enumerate(op->getResults())) {
     if (auto vectorType = dyn_cast_if_present<VectorType>(result.getType())) {
       hasAnyVectors = true;
-      if (xilinx::air::getVectorNumElements(vectorType) != 1) {
+      if (vectorType.getNumElements() != 1) {
         allVectorsAreSingleElement = false;
       }
     }
@@ -4639,10 +4639,10 @@ std::unique_ptr<Pass> createAIRPipelineReducePass() {
 }
 
 //===----------------------------------------------------------------------===//
-// Group A helpers (M2). Defined here because the patterns/static helpers they
-// wrap have internal linkage in this TU. Declared in AIRMatmulCodegenHelpers.h
-// so both the transform.air.* op apply()s and the air-matmul-* C++ passes can
-// call them.
+// Bufferization & fusion helpers shared between the transform.air.* op
+// apply()s in this TU and the air-matmul-codegen orchestrator phases.
+// Defined here because the patterns/static helpers they wrap have internal
+// linkage in this TU. Declared in AIRMatmulCodegenHelpers.h.
 //===----------------------------------------------------------------------===//
 
 LogicalResult runRemoveUninitializedCopy(func::FuncOp funcOp) {
@@ -4695,9 +4695,9 @@ FailureOr<Operation *> runFuseTruncfLinalg(linalg::LinalgOp producerOp,
   if (failed(fusedOp))
     return failure();
 
-  // Discardable attrs on the producer (e.g. `air.matmul_codegen_config` from
-  // M3) must survive the rewrite — copy them onto the fused/replacement op so
-  // downstream consumer passes can still find them.
+  // Discardable attrs on the producer (e.g. `air.matmul_codegen_config`
+  // attached by an external producer) must survive the rewrite — copy them
+  // onto the fused/replacement op so downstream consumer passes can find them.
   auto propagateDiscardable = [&](Operation *src, Operation *dst) {
     for (NamedAttribute a : src->getDiscardableAttrs())
       if (!dst->hasAttr(a.getName()))

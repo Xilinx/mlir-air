@@ -194,10 +194,10 @@ with air.ir.Context() as ctx, Location.unknown():
     pm.run(air_module.operation)
 
     if args.use_cpp_pipeline:
-        # Drive bf16-out matmul codegen via the C++ pass pipeline. All
-        # tile/pack/vector parameters are passed explicitly per-pass; the
-        # automatic heuristic that derives these from the matmul shape lives
-        # in a follow-up PR. See MATMUL_CODEGEN_PIPELINE_PLAN.md.
+        # Drive bf16-out matmul codegen via the air-matmul-codegen
+        # orchestrator. All tile/pack/vector parameters are passed explicitly;
+        # the automatic heuristic that derives these from the matmul shape
+        # lives in a follow-up PR.
         # Per-launch-tile shape is M_TILE=128, N_TILE=256, K=K_FULL.
         # Hand-picked values matching the previously-validated heuristic:
         # K=784 forces L2-K-tile = 16 (largest power-of-2 divisor of 784

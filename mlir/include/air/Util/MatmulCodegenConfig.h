@@ -6,11 +6,13 @@
 //===----------------------------------------------------------------------===//
 //
 // Carrier attribute + reader/writer helpers for the matmul codegen pipeline.
-// `air-matmul-set-codegen-config` writes the attribute on each linalg.matmul
-// (or marker-attributed LinalgOp); the M2 codegen passes consume it. The
-// attribute is a `DictionaryAttr` named "air.matmul_codegen_config" with
-// the following keys (any field may be missing — consumers fall back to
-// their pass-options when a key is absent):
+// External producers (autotuners, future heuristic passes) write the
+// attribute on each linalg.matmul (or marker-attributed LinalgOp). The
+// air-matmul-codegen orchestrator currently does NOT read this attribute
+// (per-phase options are passed explicitly by the caller); this header
+// remains so the schema and helpers are available to the future heuristic.
+// The attribute is a `DictionaryAttr` named "air.matmul_codegen_config"
+// with the following keys (any field may be missing):
 //
 //   tile_l3_l2_k      : i64
 //   pack_sizes        : ArrayAttr<i64>     (length 3)
@@ -29,12 +31,10 @@
 //   vector_unroll_tile: ArrayAttr<i64>
 //   vector_unroll_factor : i64
 //   fill_vector_tile  : ArrayAttr<i64>
-//   bfp16_emulation             : bool   (test 54)
-//   fuse_output_truncf          : bool   (test 53)
-//   bf16_output_hoist_pairs     : bool   (test 53)
+//   bfp16_emulation             : bool
+//   fuse_output_truncf          : bool
+//   bf16_output_hoist_pairs     : bool
 //   three_herd_prologue_epilogue: bool
-//
-// See MATMUL_CODEGEN_PIPELINE_PLAN.md for derivation rules and target tables.
 //
 //===----------------------------------------------------------------------===//
 

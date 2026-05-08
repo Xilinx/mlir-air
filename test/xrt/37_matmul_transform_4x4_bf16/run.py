@@ -48,8 +48,8 @@ parser.add_argument(
 parser.add_argument(
     "--use-cpp-pipeline",
     action="store_true",
-    help="Replace the legacy transform script with the C++ matmul codegen "
-    "pipeline (M4 two-pack-level flow). See MATMUL_CODEGEN_PIPELINE_PLAN.md.",
+    help="Replace the legacy transform script with the air-matmul-codegen "
+    "orchestrator (two-pack-level flow).",
 )
 parser.add_argument(
     "--profile-iters",

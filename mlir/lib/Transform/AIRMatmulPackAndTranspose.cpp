@@ -127,7 +127,7 @@ runPackAndTransposeImpl(func::FuncOp f, ArrayRef<int64_t> packSizes,
                         RewriterBase &rewriter) {
   // Find the first linalg.matmul; if none, fall back to the first
   // linalg.generic carrying the `packed_matmul` marker (= already-packed
-  // matmul, eligible for a second pack level on M4 two-pack flow).
+  // matmul, eligible for a second pack level in two-pack flows).
   linalg::LinalgOp target;
   f.walk([&](linalg::MatmulOp op) {
     target = cast<linalg::LinalgOp>(op.getOperation());
@@ -148,8 +148,8 @@ runPackAndTransposeImpl(func::FuncOp f, ArrayRef<int64_t> packSizes,
     return success();
   }
 
-  // Validate pack-sizes vs op iterator count. M2 first-pack expects 3
-  // (matmul m,n,k); M4 second-pack on an already-packed op expects 6
+  // Validate pack-sizes vs op iterator count. First-pack expects 3
+  // (matmul m,n,k); second-pack on an already-packed op expects 6
   // (m,n,k outer + m,n,k inner) and may include zeros to leave outer
   // dims unpacked.
   int64_t numIters = target.getNumLoops();

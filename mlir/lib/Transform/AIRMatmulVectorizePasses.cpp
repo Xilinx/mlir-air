@@ -5,9 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// M1a passes of the matmul codegen pipeline. Each pass is a thin wrapper that
-// walks a func::FuncOp and dispatches to a runFoo helper in
-// AIRMatmulCodegenHelpers; the same helper is shared with the corresponding
+// Vectorization-prep phases of the air-matmul-codegen orchestrator:
+// tile-for-vectorize and the vec-prep composite. Each free function walks
+// a func::FuncOp and dispatches to a runFoo helper in
+// AIRMatmulCodegenHelpers; the helpers are shared with the corresponding
 // transform.air.* op apply() in AIRLinalgCodegen.cpp.
 //
 //===----------------------------------------------------------------------===//
@@ -352,9 +353,9 @@ LogicalResult runTileForVectorizeImpl(func::FuncOp func,
       return failure();
 
   // Phase 1: tile each linalg.generic packed-matmul body by matmulTileSizes.
-  // Accept ops that either (a) live inside an air.herd (M1 iron-built flow)
-  // or (b) carry the `matmul_compute` marker (M2 linalg-input flow runs
-  // this pass BEFORE the forall->herd materialization).
+  // Accept ops that either (a) live inside an air.herd (iron-built flow)
+  // or (b) carry the `matmul_compute` marker (linalg-input flow runs this
+  // pass BEFORE the forall->herd materialization).
   SmallVector<mlir::linalg::GenericOp> matmulGenerics;
   func.walk([&](mlir::linalg::GenericOp op) {
     bool inHerd = op->getParentOfType<xilinx::air::HerdOp>() != nullptr;
@@ -408,7 +409,7 @@ LogicalResult runTileForVectorizeImpl(func::FuncOp func,
   }
 
   // Phase 2: tile each linalg.fill (or linalg.generic carrying the
-  // `init_fill` marker, set by the M2 prologue-epilogue pass after
+  // `init_fill` marker, set by the prologue-epilogue phase after
   // generalize+interchange) by fillTileSizes.
   SmallVector<mlir::Operation *> fills;
   func.walk([&](mlir::linalg::FillOp f) {

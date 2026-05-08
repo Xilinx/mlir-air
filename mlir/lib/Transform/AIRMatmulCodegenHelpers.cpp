@@ -28,13 +28,6 @@ namespace air {
 // are defined; others arrive as their consuming runFoo functions land.
 //===----------------------------------------------------------------------===//
 
-int64_t getVectorNumElements(VectorType vecType) {
-  int64_t numElements = 1;
-  for (int64_t dim : vecType.getShape())
-    numElements *= dim;
-  return numElements;
-}
-
 bool areEquivalentIndices(Value idx1, Value idx2) {
   if (idx1 == idx2)
     return true;
@@ -221,7 +214,7 @@ FailureOr<scf::ForOp> runFlattenForIterArgs(scf::ForOp forOp,
     if (auto vecType = dyn_cast_if_present<VectorType>(iterArg.getType())) {
       vectorIterArgIndices.push_back(idx);
       originalVectorTypes.push_back(vecType);
-      int64_t numElements = getVectorNumElements(vecType);
+      int64_t numElements = vecType.getNumElements();
       flattenedVectorTypes.push_back(
           VectorType::get({numElements}, vecType.getElementType()));
     }
@@ -590,7 +583,7 @@ LogicalResult runHoistVectorTransferPointers(scf::ForOp forOp,
   if (newInitArgs.empty()) {
     for (const auto &info : transferOps) {
       rewriter.setInsertionPoint(info.op);
-      int64_t numElements = getVectorNumElements(info.vectorType);
+      int64_t numElements = info.vectorType.getNumElements();
       VectorType flatVectorType =
           VectorType::get({numElements}, info.vectorType.getElementType());
 
@@ -666,7 +659,7 @@ LogicalResult runHoistVectorTransferPointers(scf::ForOp forOp,
           newBbArgs[newBbArgs.size() - newInitArgs.size() + iterArgIdx];
       Value flatMemref = flatMemrefs[iterArgIdx];
 
-      int64_t numElements = getVectorNumElements(info.vectorType);
+      int64_t numElements = info.vectorType.getNumElements();
       VectorType flatVectorType =
           VectorType::get({numElements}, info.vectorType.getElementType());
       b.setInsertionPoint(info.op);

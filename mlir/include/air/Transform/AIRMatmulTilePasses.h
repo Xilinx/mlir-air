@@ -5,10 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// M2 Phase 4 / Phase 5: tile-k-and-fuse-packs and tile-cores. Drive the
-// reduction-loop and per-core forall tiling of the packed matmul, plus
-// fusion of the LHS/RHS L1 pack producers into the new loops. See
-// MATMUL_CODEGEN_PIPELINE_PLAN.md.
+// Free-function bodies invoked by the air-matmul-codegen orchestrator:
+// launch-tile, tile-k-and-fuse-packs, tile-cores, and prologue/epilogue
+// tiling. Each drives a discrete tiling step on the packed matmul (and,
+// where applicable, fuses the LHS/RHS pack producers into the new loop).
 //
 //===----------------------------------------------------------------------===//
 

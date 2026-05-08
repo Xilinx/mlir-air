@@ -179,10 +179,10 @@ with air.ir.Context() as ctx, Location.unknown():
     pm.run(air_module.operation)
 
     if args.use_cpp_pipeline:
-        # Drive matmul codegen via the C++ pass pipeline. All tile/pack/vector
-        # parameters are passed explicitly per-pass; the automatic heuristic
-        # that derives these from the matmul shape lives in a follow-up PR.
-        # See MATMUL_CODEGEN_PIPELINE_PLAN.md.
+        # Drive matmul codegen via the air-matmul-codegen orchestrator. All
+        # tile/pack/vector parameters are passed explicitly; the automatic
+        # heuristic that derives these from the matmul shape lives in a
+        # follow-up PR.
         # f32 in/out + BFP16 emulation: no truncf-fuse, no hoist-cast-pairs;
         # two `air-vector-cast-for-emulation` invocations (acc → f32, then
         # operands → bf16). Per-launch-tile shape is LT_M × K × LT_N.
