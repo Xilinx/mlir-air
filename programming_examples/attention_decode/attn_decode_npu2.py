@@ -1211,17 +1211,32 @@ def build_module(
                     xb_l1_data = AllocOp(l1MemrefTyXb, [], [])
                     zero_const_xb = arith.ConstantOp(xrt_dtype_out, 0.0)
                     linalg.fill(zero_const_xb, outs=[xb_l1_data])
-                    # attn_2_group: kept extern. Inline attempts:
-                    # (1) collapse_shape + load: read returned -99 fill (memory-
-                    #     effect tracking miss through softmax buffer alias).
-                    # (2) 2D direct load: same issue.
-                    # (3) scf.for iter_args (carry 8 accs): IR looks correct
-                    #     (memref.subview strides fixed [1,1]), but at runtime
-                    #     produces single-iter result — accumulation across
-                    #     iterations doesn't materialize. Replacing fma with
-                    #     arith.addf in iter_args body crashes aircc.
-                    # Conclusion: vector iter_args + L1 channel.get + AIE2P
-                    # lowering interact badly here. Hot path, keep extern.
+                    # Inline attn_2_group: xb[g, :] += softmax[g, i] * V[:].
+                    # bf16-only; precision is sufficient because each iter adds
+                    # one scaled V row and softmax weights sum to 1, bounding
+                    # accumulation magnitude.
+                    a2_vl = 32
+                    a2_n_chunks = n // a2_vl
+                    a2_vec_bf_t = VectorType.get([a2_vl], xrt_dtype_out)
+                    a2_id_map = AffineMapAttr.get(AffineMap.get_identity(1))
+                    a2_2d_to_1d = AffineMapAttr.get(
+                        AffineMap.get(2, 0, [AffineDimExpr.get(1)])
+                    )
+                    a2_c0 = arith.ConstantOp.create_index(0)
+                    a2_g_idx = [
+                        arith.ConstantOp.create_index(g)
+                        for g in range(GROUP_SIZE)
+                    ]
+                    a2_offs = [
+                        arith.ConstantOp.create_index(c * a2_vl)
+                        for c in range(a2_n_chunks)
+                    ]
+                    a2_cst0 = arith.ConstantOp(xrt_dtype_out, 0.0)
+                    # Hoist xb subviews (constant per g, used every iter).
+                    a2_sub_xb = [
+                        subview(xb_l1_data.result, [g, 0], [1, n], [1, 1])
+                        for g in range(GROUP_SIZE)
+                    ]
                     for i in range_(0, pos_p1):
                         ChannelGet(
                             "aL2ToL1",
@@ -1231,16 +1246,40 @@ def build_module(
                             strides=[],
                             indices=[_tx],
                         )
-                        i32_iv = arith.index_cast(T.i32(), i)
-                        CallOp(
-                            attn2_func,
-                            [
-                                softmax_l1_data,
-                                l1_shared_bd_buf_data,
-                                i32_iv,
-                                xb_l1_data,
-                            ],
-                        )
+                        v_chunks = []
+                        for c in range(a2_n_chunks):
+                            v_chunks.append(
+                                transfer_read(
+                                    a2_vec_bf_t,
+                                    l1_shared_bd_buf_data.result,
+                                    [a2_offs[c]],
+                                    a2_id_map,
+                                    a2_cst0,
+                                    [True],
+                                )
+                            )
+                        for g in range(GROUP_SIZE):
+                            # Direct 2D load on softmax_l1_data (no subview).
+                            s_bf = load(softmax_l1_data, [a2_g_idx[g], i])
+                            s_v_bf = BroadcastOp(a2_vec_bf_t, s_bf).result
+                            for c in range(a2_n_chunks):
+                                xb_bf = transfer_read(
+                                    a2_vec_bf_t,
+                                    a2_sub_xb[g],
+                                    [a2_c0, a2_offs[c]],
+                                    a2_2d_to_1d,
+                                    a2_cst0,
+                                    [True],
+                                )
+                                acc_bf = vector_fma(s_v_bf, v_chunks[c], xb_bf)
+                                transfer_write(
+                                    None,
+                                    acc_bf,
+                                    a2_sub_xb[g],
+                                    [a2_c0, a2_offs[c]],
+                                    a2_2d_to_1d,
+                                    [True],
+                                )
                         yield_([])
 
                     ChannelPut(
