@@ -7,9 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRLinalgCodegen.h"
-#include "air/Transform/AIRMatmulCodegenHelpers.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
+#include "air/Transform/AIRMatmulCodegenHelpers.h"
 #if AIR_ENABLE_AIE
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #endif
@@ -2550,9 +2550,8 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
     return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
   }
 
-  Operation *tiled =
-      xilinx::air::runFuseIntoContainingMemref(producerOp, containingOp,
-                                               rewriter);
+  Operation *tiled = xilinx::air::runFuseIntoContainingMemref(
+      producerOp, containingOp, rewriter);
   if (tiled) {
     fusedOps.push_back(tiled);
     rewriter.eraseOp(producerOp);
@@ -4273,7 +4272,6 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
 }
-
 
 //===----------------------------------------------------------------------===//
 // HoistCastPairOp

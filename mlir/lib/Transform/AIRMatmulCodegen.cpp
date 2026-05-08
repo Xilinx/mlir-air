@@ -61,8 +61,7 @@ static constexpr llvm::StringLiteral kInitFill = "init_fill";
 static constexpr llvm::StringLiteral kPrologueForall = "prologue_forall";
 static constexpr llvm::StringLiteral kEpilogueForall = "epilogue_forall";
 
-class AIRMatmulCodegen
-    : public impl::AIRMatmulCodegenBase<AIRMatmulCodegen> {
+class AIRMatmulCodegen : public impl::AIRMatmulCodegenBase<AIRMatmulCodegen> {
 public:
   AIRMatmulCodegen() = default;
   AIRMatmulCodegen(const AIRMatmulCodegenOptions &opts)
@@ -141,8 +140,7 @@ public:
     // (l1-pack-sizes empty) AND when bufferize-last-pack-output is true.
     // Two-pack-level flows defer L1 output bufferization to Phase D (L1 pack).
     if (!clL2PackSizes.empty()) {
-      bool bufferizeL2OutputToL1 =
-          singlePackLevel && clBufferizeLastPackOutput;
+      bool bufferizeL2OutputToL1 = singlePackLevel && clBufferizeLastPackOutput;
       if (failed(runPackAndTransposeImpl(
               f, clL2PackSizes, clL2LhsOuterPerm, clL2LhsInnerPerm,
               clL2RhsOuterPerm, clL2RhsInnerPerm, clL2AccOuterPerm,
@@ -183,9 +181,9 @@ public:
       // (single-pack-level flow doesn't have L2 packs to bufferize here).
       if (!clL1PackSizes.empty()) {
         if (failed(runBufferizeL1InputsImpl(f, /*memSpace=*/1,
-                                             /*memcpyOp=*/"linalg-copy",
-                                             kLhsL2PackInK, kRhsL2PackInK,
-                                             rewriter)))
+                                            /*memcpyOp=*/"linalg-copy",
+                                            kLhsL2PackInK, kRhsL2PackInK,
+                                            rewriter)))
           return fail();
       }
       if (!canonicalizeCse())
@@ -211,23 +209,25 @@ public:
         return fail();
     }
 
-    // ---------- Phase J: bufferize L1 inputs (skip if no tile-cores) ----------
+    // ---------- Phase J: bufferize L1 inputs (skip if no tile-cores)
+    // ----------
     if (!clCoreTile.empty()) {
       if (failed(runBufferizeL1InputsImpl(f, /*memSpace=*/2,
-                                           /*memcpyOp=*/"materialize",
-                                           kFusedLhsL1Pack, kFusedRhsL1Pack,
-                                           rewriter)))
+                                          /*memcpyOp=*/"materialize",
+                                          kFusedLhsL1Pack, kFusedRhsL1Pack,
+                                          rewriter)))
         return fail();
       if (!canonicalizeCse())
         return fail();
     }
 
-    // ---------- Phase K: prologue/epilogue (skip if both tiles empty) ----------
+    // ---------- Phase K: prologue/epilogue (skip if both tiles empty)
+    // ----------
     if (!clPrologueTile.empty() || !clEpilogueTile.empty()) {
-      if (failed(runPrologueEpilogueImpl(
-              f, clPrologueTile, clEpilogueTile, clFillIterPerm, kInitFill,
-              kPrologueForall, kEpilogueForall, clHoistStaticAllocFirst,
-              rewriter)))
+      if (failed(runPrologueEpilogueImpl(f, clPrologueTile, clEpilogueTile,
+                                         clFillIterPerm, kInitFill,
+                                         kPrologueForall, kEpilogueForall,
+                                         clHoistStaticAllocFirst, rewriter)))
         return fail();
       if (!canonicalizeCse())
         return fail();
@@ -270,11 +270,9 @@ public:
               clVecPrepCast1TargetElementType, clVecPrepCast1InputIndices,
               clVecPrepCast1OutputIndices, clVecPrepCast2TargetElementType,
               clVecPrepCast2InputIndices, clVecPrepCast2OutputIndices,
-              clVecPrepHoistLoopInvariantTransfers,
-              clVecPrepFlattenForIterArgs,
-              clVecPrepHoistVectorTransferPointers,
-              clVecPrepHoistCastPairs, clVecPrepHoistCastPairsMaxIterations,
-              rewriter)))
+              clVecPrepHoistLoopInvariantTransfers, clVecPrepFlattenForIterArgs,
+              clVecPrepHoistVectorTransferPointers, clVecPrepHoistCastPairs,
+              clVecPrepHoistCastPairsMaxIterations, rewriter)))
         return fail();
     }
 

@@ -1107,7 +1107,7 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
   ];
 }
 
-def AIRFoldUnitExtentDims: Pass<"air-fold-unit-extent-dims", "func::FuncOp"> {
+def AIRFoldUnitExtentDims : Pass<"air-fold-unit-extent-dims", "func::FuncOp"> {
   let summary = "Fold unit-extent dimensions in linalg ops (memref-aware)";
   let constructor = "xilinx::air::createAIRFoldUnitExtentDimsPass()";
   let description = [{
@@ -1151,193 +1151,202 @@ def AIRMatmulCodegen : Pass<"air-matmul-codegen", "ModuleOp"> {
     only the tile/pack stages leave M empty and N=false.
   }];
   let options = [
-    // ---- Phase A: launch tile ----
-    ListOption<"clLaunchTile", "launch-tile", "int64_t",
-               "Tile sizes for the outer launch-tile scf.forall. Skipped if "
-               "empty.", "llvm::cl::ZeroOrMore">,
+      // ---- Phase A: launch tile ----
+      ListOption<"clLaunchTile", "launch-tile", "int64_t",
+                 "Tile sizes for the outer launch-tile scf.forall. Skipped if "
+                 "empty.",
+                 "llvm::cl::ZeroOrMore">,
 
-    // ---- Phase B: L2 pack ----
-    ListOption<"clL2PackSizes", "l2-pack-sizes", "int64_t",
-               "Per-iterator pack sizes for the L2 pack. Skipped if empty.",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clL2LhsOuterPerm", "l2-lhs-outer-perm", "int64_t",
-               "L2 LHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clL2LhsInnerPerm", "l2-lhs-inner-perm", "int64_t",
-               "L2 LHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clL2RhsOuterPerm", "l2-rhs-outer-perm", "int64_t",
-               "L2 RHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clL2RhsInnerPerm", "l2-rhs-inner-perm", "int64_t",
-               "L2 RHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clL2AccOuterPerm", "l2-acc-outer-perm", "int64_t",
-               "L2 accumulator outer-dim perm.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clL2AccInnerPerm", "l2-acc-inner-perm", "int64_t",
-               "L2 accumulator inner-dim perm.", "llvm::cl::ZeroOrMore">,
+      // ---- Phase B: L2 pack ----
+      ListOption<"clL2PackSizes", "l2-pack-sizes", "int64_t",
+                 "Per-iterator pack sizes for the L2 pack. Skipped if empty.",
+                 "llvm::cl::ZeroOrMore">,
+      ListOption<"clL2LhsOuterPerm", "l2-lhs-outer-perm", "int64_t",
+                 "L2 LHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
+      ListOption<"clL2LhsInnerPerm", "l2-lhs-inner-perm", "int64_t",
+                 "L2 LHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
+      ListOption<"clL2RhsOuterPerm", "l2-rhs-outer-perm", "int64_t",
+                 "L2 RHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
+      ListOption<"clL2RhsInnerPerm", "l2-rhs-inner-perm", "int64_t",
+                 "L2 RHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
+      ListOption<"clL2AccOuterPerm", "l2-acc-outer-perm", "int64_t",
+                 "L2 accumulator outer-dim perm.", "llvm::cl::ZeroOrMore">,
+      ListOption<"clL2AccInnerPerm", "l2-acc-inner-perm", "int64_t",
+                 "L2 accumulator inner-dim perm.", "llvm::cl::ZeroOrMore">,
 
-    // ---- Phase C: bufferize output L2 alloc ----
-    Option<"clBufferizeOutputL2", "bufferize-output-l2", "bool",
-           /*default=*/"false",
-           "Bufferize the matmul accumulator init (linalg.fill) into an L2 "
-           "allocation.">,
-    Option<"clBufferizeOutputL2MemorySpace",
-           "bufferize-output-l2-memory-space", "int64_t", /*default=*/"1",
-           "Memory space for the L2 accumulator allocation.">,
-    Option<"clFuseOutputTruncfFirst", "fuse-output-truncf-first", "bool",
-           /*default=*/"false",
-           "Pre-step: fuse a single-truncf linalg.generic consumer of the "
-           "matmul into the matmul before bufferizing. Used by bf16-out flows.">,
-    Option<"clTileL3ToL2Copies", "tile-l3-to-l2-copies", "bool",
-           /*default=*/"false",
-           "Pre-step: convert memref.copy L3->L2 stagings to linalg.copy and "
-           "tile each by k-l2-tile. Used by Triton-style flows.">,
-    Option<"clKL2Tile", "k-l2-tile", "int64_t", /*default=*/"16",
-           "K-tile size for L3->L2 copies (only when tile-l3-to-l2-copies=true).">,
+      // ---- Phase C: bufferize output L2 alloc ----
+      Option<"clBufferizeOutputL2", "bufferize-output-l2", "bool",
+             /*default=*/"false",
+             "Bufferize the matmul accumulator init (linalg.fill) into an L2 "
+             "allocation.">,
+      Option<"clBufferizeOutputL2MemorySpace",
+             "bufferize-output-l2-memory-space", "int64_t", /*default=*/"1",
+             "Memory space for the L2 accumulator allocation.">,
+      Option<
+          "clFuseOutputTruncfFirst", "fuse-output-truncf-first", "bool",
+          /*default=*/"false",
+          "Pre-step: fuse a single-truncf linalg.generic consumer of the "
+          "matmul into the matmul before bufferizing. Used by bf16-out flows.">,
+      Option<"clTileL3ToL2Copies", "tile-l3-to-l2-copies", "bool",
+             /*default=*/"false",
+             "Pre-step: convert memref.copy L3->L2 stagings to linalg.copy and "
+             "tile each by k-l2-tile. Used by Triton-style flows.">,
+      Option<"clKL2Tile", "k-l2-tile", "int64_t", /*default=*/"16",
+             "K-tile size for L3->L2 copies (only when "
+             "tile-l3-to-l2-copies=true).">,
 
-    // ---- Phase D: L1 pack ----
-    ListOption<"clL1PackSizes", "l1-pack-sizes", "int64_t",
-               "Per-iterator pack sizes for the L1 pack. Skipped if empty. "
-               "When set, the L1 pack output is also bufferized to L1.",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clL1LhsOuterPerm", "l1-lhs-outer-perm", "int64_t",
-               "L1 LHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clL1LhsInnerPerm", "l1-lhs-inner-perm", "int64_t",
-               "L1 LHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clL1RhsOuterPerm", "l1-rhs-outer-perm", "int64_t",
-               "L1 RHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clL1RhsInnerPerm", "l1-rhs-inner-perm", "int64_t",
-               "L1 RHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clL1AccOuterPerm", "l1-acc-outer-perm", "int64_t",
-               "L1 accumulator outer-dim perm.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clL1AccInnerPerm", "l1-acc-inner-perm", "int64_t",
-               "L1 accumulator inner-dim perm.", "llvm::cl::ZeroOrMore">,
-    Option<"clL1OutputMemorySpace", "l1-output-memory-space", "int64_t",
-           /*default=*/"2",
-           "Memory space for the bufferized L1 pack output.">,
-    Option<"clBufferizeLastPackOutput", "bufferize-last-pack-output", "bool",
-           /*default=*/"true",
-           "Bufferize the LAST pack's output (L1 pack if l1-pack-sizes is set, "
-           "otherwise the L2 pack) into L1 memory. Set false to leave the "
-           "pack output as a tensor (e.g. for inspecting raw pack semantics).">,
+      // ---- Phase D: L1 pack ----
+      ListOption<"clL1PackSizes", "l1-pack-sizes", "int64_t",
+                 "Per-iterator pack sizes for the L1 pack. Skipped if empty. "
+                 "When set, the L1 pack output is also bufferized to L1.",
+                 "llvm::cl::ZeroOrMore">,
+      ListOption<"clL1LhsOuterPerm", "l1-lhs-outer-perm", "int64_t",
+                 "L1 LHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
+      ListOption<"clL1LhsInnerPerm", "l1-lhs-inner-perm", "int64_t",
+                 "L1 LHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
+      ListOption<"clL1RhsOuterPerm", "l1-rhs-outer-perm", "int64_t",
+                 "L1 RHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
+      ListOption<"clL1RhsInnerPerm", "l1-rhs-inner-perm", "int64_t",
+                 "L1 RHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
+      ListOption<"clL1AccOuterPerm", "l1-acc-outer-perm", "int64_t",
+                 "L1 accumulator outer-dim perm.", "llvm::cl::ZeroOrMore">,
+      ListOption<"clL1AccInnerPerm", "l1-acc-inner-perm", "int64_t",
+                 "L1 accumulator inner-dim perm.", "llvm::cl::ZeroOrMore">,
+      Option<"clL1OutputMemorySpace", "l1-output-memory-space", "int64_t",
+             /*default=*/"2",
+             "Memory space for the bufferized L1 pack output.">,
+      Option<
+          "clBufferizeLastPackOutput", "bufferize-last-pack-output", "bool",
+          /*default=*/"true",
+          "Bufferize the LAST pack's output (L1 pack if l1-pack-sizes is set, "
+          "otherwise the L2 pack) into L1 memory. Set false to leave the "
+          "pack output as a tensor (e.g. for inspecting raw pack semantics).">,
 
-    // ---- Phase E: outer K-tile ----
-    Option<"clOuterKTileFactor", "outer-k-tile-factor", "int64_t",
-           /*default=*/"0",
-           "K-tile size for the outer K reduction loop. Skipped if 0.">,
-    Option<"clOuterKIterIndex", "outer-k-iter-index", "int64_t",
-           /*default=*/"2",
-           "K iterator index for the outer K-tile (default 2 = standard "
-           "post-pack [m,n,k]).">,
+      // ---- Phase E: outer K-tile ----
+      Option<"clOuterKTileFactor", "outer-k-tile-factor", "int64_t",
+             /*default=*/"0",
+             "K-tile size for the outer K reduction loop. Skipped if 0.">,
+      Option<"clOuterKIterIndex", "outer-k-iter-index", "int64_t",
+             /*default=*/"2",
+             "K iterator index for the outer K-tile (default 2 = standard "
+             "post-pack [m,n,k]).">,
 
-    // ---- Phase H: tile cores ----
-    ListOption<"clCoreTile", "core-tile", "int64_t",
-               "Per-iterator tile sizes for the per-core scf.forall. Skipped "
-               "if empty.", "llvm::cl::ZeroOrMore">,
+      // ---- Phase H: tile cores ----
+      ListOption<"clCoreTile", "core-tile", "int64_t",
+                 "Per-iterator tile sizes for the per-core scf.forall. Skipped "
+                 "if empty.",
+                 "llvm::cl::ZeroOrMore">,
 
-    // ---- Phase I: inner K-tile ----
-    Option<"clInnerKTileFactor", "inner-k-tile-factor", "int64_t",
-           /*default=*/"0",
-           "K-tile size for the inner K reduction loop. Skipped if 0.">,
-    Option<"clInnerKIterIndex", "inner-k-iter-index", "int64_t",
-           /*default=*/"5",
-           "K iterator index for the inner K-tile (default 5 = two-pack-level "
-           "inner K position).">,
+      // ---- Phase I: inner K-tile ----
+      Option<"clInnerKTileFactor", "inner-k-tile-factor", "int64_t",
+             /*default=*/"0",
+             "K-tile size for the inner K reduction loop. Skipped if 0.">,
+      Option<
+          "clInnerKIterIndex", "inner-k-iter-index", "int64_t",
+          /*default=*/"5",
+          "K iterator index for the inner K-tile (default 5 = two-pack-level "
+          "inner K position).">,
 
-    // ---- Phase K: prologue/epilogue ----
-    ListOption<"clPrologueTile", "prologue-tile", "int64_t",
-               "Tile sizes for the prologue (fill) forall.",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clEpilogueTile", "epilogue-tile", "int64_t",
-               "Tile sizes for the epilogue (unpack) forall.",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clFillIterPerm", "fill-iter-perm", "int64_t",
-               "Iterator-permutation vector applied to the generalized fill "
-               "before tiling. Empty disables interchange.",
-               "llvm::cl::ZeroOrMore">,
-    Option<"clHoistStaticAllocFirst", "hoist-static-alloc-first", "bool",
-           /*default=*/"false",
-           "Pre-step: hoist statically-bound memref.alloc ops out of nested "
-           "loops to function entry. Used by the two-pack-level flow.">,
+      // ---- Phase K: prologue/epilogue ----
+      ListOption<"clPrologueTile", "prologue-tile", "int64_t",
+                 "Tile sizes for the prologue (fill) forall.",
+                 "llvm::cl::ZeroOrMore">,
+      ListOption<"clEpilogueTile", "epilogue-tile", "int64_t",
+                 "Tile sizes for the epilogue (unpack) forall.",
+                 "llvm::cl::ZeroOrMore">,
+      ListOption<"clFillIterPerm", "fill-iter-perm", "int64_t",
+                 "Iterator-permutation vector applied to the generalized fill "
+                 "before tiling. Empty disables interchange.",
+                 "llvm::cl::ZeroOrMore">,
+      Option<"clHoistStaticAllocFirst", "hoist-static-alloc-first", "bool",
+             /*default=*/"false",
+             "Pre-step: hoist statically-bound memref.alloc ops out of nested "
+             "loops to function entry. Used by the two-pack-level flow.">,
 
-    // ---- Phase L: one-shot bufferize ----
-    Option<"clOneShotBufferize", "one-shot-bufferize", "bool",
-           /*default=*/"false",
-           "Run upstream one-shot-bufferize (function-boundary, "
-           "identity-layout) after the tile/pack stages and before the "
-           "vectorize stages.">,
+      // ---- Phase L: one-shot bufferize ----
+      Option<"clOneShotBufferize", "one-shot-bufferize", "bool",
+             /*default=*/"false",
+             "Run upstream one-shot-bufferize (function-boundary, "
+             "identity-layout) after the tile/pack stages and before the "
+             "vectorize stages.">,
 
-    // ---- Phase M: tile for vectorize ----
-    ListOption<"clMatmulVecTile", "matmul-vec-tile", "int64_t",
-               "First-level tile sizes for the packed matmul body. Skipped "
-               "if empty.", "llvm::cl::ZeroOrMore">,
-    ListOption<"clMatmulUnrollVecTile", "matmul-unroll-vec-tile", "int64_t",
-               "Second-level tile sizes (the two innermost loops are "
-               "unrolled).", "llvm::cl::ZeroOrMore">,
-    Option<"clMatmulUnrollFactor", "matmul-unroll-factor", "uint64_t",
-           /*default=*/"2",
-           "Unroll factor applied to the two innermost loops.">,
-    ListOption<"clFillVecTile", "fill-vec-tile", "int64_t",
-               "Tile sizes for linalg.fill in the vectorize stage.",
-               "llvm::cl::ZeroOrMore">,
-    Option<"clPostBufferizeCleanupFirst", "post-bufferize-cleanup-first",
-           "bool", /*default=*/"false",
-           "Pre-step: run post-bufferize cleanup (remove uninitialized "
-           "copies, eliminate cascade memcpys, sibling-fuse pingpong loops).">,
+      // ---- Phase M: tile for vectorize ----
+      ListOption<"clMatmulVecTile", "matmul-vec-tile", "int64_t",
+                 "First-level tile sizes for the packed matmul body. Skipped "
+                 "if empty.",
+                 "llvm::cl::ZeroOrMore">,
+      ListOption<"clMatmulUnrollVecTile", "matmul-unroll-vec-tile", "int64_t",
+                 "Second-level tile sizes (the two innermost loops are "
+                 "unrolled).",
+                 "llvm::cl::ZeroOrMore">,
+      Option<"clMatmulUnrollFactor", "matmul-unroll-factor", "uint64_t",
+             /*default=*/"2",
+             "Unroll factor applied to the two innermost loops.">,
+      ListOption<"clFillVecTile", "fill-vec-tile", "int64_t",
+                 "Tile sizes for linalg.fill in the vectorize stage.",
+                 "llvm::cl::ZeroOrMore">,
+      Option<
+          "clPostBufferizeCleanupFirst", "post-bufferize-cleanup-first", "bool",
+          /*default=*/"false",
+          "Pre-step: run post-bufferize cleanup (remove uninitialized "
+          "copies, eliminate cascade memcpys, sibling-fuse pingpong loops).">,
 
-    // ---- Phase N: vec-prep composite ----
-    Option<"clDoVecPrep", "do-vec-prep", "bool", /*default=*/"true",
-           "Run the vec-prep composite (fold-unit-extent + eliminate-redundant "
-           "+ optional vector-cast + hoist-loop-invariant + flatten-iter + "
-           "hoist-pointers + optional hoist-cast-pairs).">,
-    Option<"clVecPrepFoldUnitExtentDims", "vec-prep-fold-unit-extent-dims",
-           "bool", /*default=*/"true", "vec-prep: run fold-unit-extent-dims.">,
-    Option<"clVecPrepEliminateRedundantVectorTransfers",
-           "vec-prep-eliminate-redundant-vector-transfers", "bool",
-           /*default=*/"true",
-           "vec-prep: run eliminate-redundant-vector-transfers.">,
-    Option<"clVecPrepCast1TargetElementType",
-           "vec-prep-cast1-target-element-type", "std::string",
-           /*default=*/"\"\"",
-           "vec-prep: first vector-cast target element type ('' = skip).">,
-    ListOption<"clVecPrepCast1InputIndices", "vec-prep-cast1-input-indices",
-               "int64_t",
-               "vec-prep: first vector-cast input operand indices.",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clVecPrepCast1OutputIndices", "vec-prep-cast1-output-indices",
-               "int64_t",
-               "vec-prep: first vector-cast output operand indices.",
-               "llvm::cl::ZeroOrMore">,
-    Option<"clVecPrepCast2TargetElementType",
-           "vec-prep-cast2-target-element-type", "std::string",
-           /*default=*/"\"\"",
-           "vec-prep: second vector-cast target element type ('' = skip).">,
-    ListOption<"clVecPrepCast2InputIndices", "vec-prep-cast2-input-indices",
-               "int64_t",
-               "vec-prep: second vector-cast input operand indices.",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clVecPrepCast2OutputIndices", "vec-prep-cast2-output-indices",
-               "int64_t",
-               "vec-prep: second vector-cast output operand indices.",
-               "llvm::cl::ZeroOrMore">,
-    Option<"clVecPrepHoistLoopInvariantTransfers",
-           "vec-prep-hoist-loop-invariant-transfers", "bool",
-           /*default=*/"true",
-           "vec-prep: hoist loop-invariant transfer_read/write pairs.">,
-    Option<"clVecPrepFlattenForIterArgs", "vec-prep-flatten-for-iter-args",
-           "bool", /*default=*/"true",
-           "vec-prep: flatten vector-typed iter_args to 1D.">,
-    Option<"clVecPrepHoistVectorTransferPointers",
-           "vec-prep-hoist-vector-transfer-pointers", "bool",
-           /*default=*/"true",
-           "vec-prep: linearize loop-invariant transfer pointer chains.">,
-    Option<"clVecPrepHoistCastPairs", "vec-prep-hoist-cast-pairs", "bool",
-           /*default=*/"false",
-           "vec-prep: iteratively hoist matched ext/trunc pairs.">,
-    Option<"clVecPrepHoistCastPairsMaxIterations",
-           "vec-prep-hoist-cast-pairs-max-iterations", "int64_t",
-           /*default=*/"32",
-           "vec-prep: fixed-point cap when vec-prep-hoist-cast-pairs=true.">
-  ];
+      // ---- Phase N: vec-prep composite ----
+      Option<
+          "clDoVecPrep", "do-vec-prep", "bool", /*default=*/"true",
+          "Run the vec-prep composite (fold-unit-extent + eliminate-redundant "
+          "+ optional vector-cast + hoist-loop-invariant + flatten-iter + "
+          "hoist-pointers + optional hoist-cast-pairs).">,
+      Option<"clVecPrepFoldUnitExtentDims", "vec-prep-fold-unit-extent-dims",
+             "bool", /*default=*/"true",
+             "vec-prep: run fold-unit-extent-dims.">,
+      Option<"clVecPrepEliminateRedundantVectorTransfers",
+             "vec-prep-eliminate-redundant-vector-transfers", "bool",
+             /*default=*/"true",
+             "vec-prep: run eliminate-redundant-vector-transfers.">,
+      Option<"clVecPrepCast1TargetElementType",
+             "vec-prep-cast1-target-element-type", "std::string",
+             /*default=*/"\"\"",
+             "vec-prep: first vector-cast target element type ('' = skip).">,
+      ListOption<"clVecPrepCast1InputIndices", "vec-prep-cast1-input-indices",
+                 "int64_t",
+                 "vec-prep: first vector-cast input operand indices.",
+                 "llvm::cl::ZeroOrMore">,
+      ListOption<"clVecPrepCast1OutputIndices", "vec-prep-cast1-output-indices",
+                 "int64_t",
+                 "vec-prep: first vector-cast output operand indices.",
+                 "llvm::cl::ZeroOrMore">,
+      Option<"clVecPrepCast2TargetElementType",
+             "vec-prep-cast2-target-element-type", "std::string",
+             /*default=*/"\"\"",
+             "vec-prep: second vector-cast target element type ('' = skip).">,
+      ListOption<"clVecPrepCast2InputIndices", "vec-prep-cast2-input-indices",
+                 "int64_t",
+                 "vec-prep: second vector-cast input operand indices.",
+                 "llvm::cl::ZeroOrMore">,
+      ListOption<"clVecPrepCast2OutputIndices", "vec-prep-cast2-output-indices",
+                 "int64_t",
+                 "vec-prep: second vector-cast output operand indices.",
+                 "llvm::cl::ZeroOrMore">,
+      Option<"clVecPrepHoistLoopInvariantTransfers",
+             "vec-prep-hoist-loop-invariant-transfers", "bool",
+             /*default=*/"true",
+             "vec-prep: hoist loop-invariant transfer_read/write pairs.">,
+      Option<"clVecPrepFlattenForIterArgs", "vec-prep-flatten-for-iter-args",
+             "bool", /*default=*/"true",
+             "vec-prep: flatten vector-typed iter_args to 1D.">,
+      Option<"clVecPrepHoistVectorTransferPointers",
+             "vec-prep-hoist-vector-transfer-pointers", "bool",
+             /*default=*/"true",
+             "vec-prep: linearize loop-invariant transfer pointer chains.">,
+      Option<"clVecPrepHoistCastPairs", "vec-prep-hoist-cast-pairs", "bool",
+             /*default=*/"false",
+             "vec-prep: iteratively hoist matched ext/trunc pairs.">,
+      Option<"clVecPrepHoistCastPairsMaxIterations",
+             "vec-prep-hoist-cast-pairs-max-iterations", "int64_t",
+             /*default=*/"32",
+             "vec-prep: fixed-point cap when vec-prep-hoist-cast-pairs=true.">];
 }
-
 
 def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
   let summary = "Hoist dma ops into perfectly nested loop";

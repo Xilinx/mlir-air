@@ -68,8 +68,7 @@ bool dependsOnLoopIV(::mlir::Value val, ::mlir::Value loopIV);
 
 /// Greedily fold unit-extent dims in linalg ops on `funcOp`, using a
 /// memref-aware collapse function (rank-reducing subview for strided memrefs).
-::mlir::LogicalResult
-runFoldUnitExtentDimsOnFunc(::mlir::func::FuncOp funcOp);
+::mlir::LogicalResult runFoldUnitExtentDimsOnFunc(::mlir::func::FuncOp funcOp);
 
 /// Walk all vector.transfer_read in `target` and replace each pair of
 /// identical reads with no intervening writes by the first read. Returns
@@ -82,8 +81,7 @@ int runEliminateRedundantVectorTransfers(::mlir::Operation *target,
 /// body to convert back to the original shape. Returns the (possibly new)
 /// scf.for, or `forOp` unchanged if there were no vector iter_args.
 ::mlir::FailureOr<::mlir::scf::ForOp>
-runFlattenForIterArgs(::mlir::scf::ForOp forOp,
-                      ::mlir::RewriterBase &rewriter);
+runFlattenForIterArgs(::mlir::scf::ForOp forOp, ::mlir::RewriterBase &rewriter);
 
 /// Iteratively hoist matched vector.transfer_read/write pairs whose indices
 /// are loop-invariant out of `loopOp` (which must live inside `scopeOp`),
@@ -107,12 +105,10 @@ runHoistVectorTransferPointers(::mlir::scf::ForOp forOp,
 /// vector.contract inputs to bf16 + accumulator/output to f32.
 /// Returns success even when the op needs no change; returns failure on
 /// validation errors (target has no vector types, etc).
-::mlir::LogicalResult
-runVectorTypeCastOnTarget(::mlir::Operation *target,
-                          ::mlir::Type targetElementType,
-                          ::llvm::ArrayRef<int64_t> inputIndices,
-                          ::llvm::ArrayRef<int64_t> outputIndices,
-                          ::mlir::RewriterBase &rewriter);
+::mlir::LogicalResult runVectorTypeCastOnTarget(
+    ::mlir::Operation *target, ::mlir::Type targetElementType,
+    ::llvm::ArrayRef<int64_t> inputIndices,
+    ::llvm::ArrayRef<int64_t> outputIndices, ::mlir::RewriterBase &rewriter);
 
 /// Hoist an extension/truncation pair surrounding a loop iter_arg out of
 /// `loopOp`: extend the init value before the loop, change the iter_arg to
@@ -132,8 +128,7 @@ runHoistCastPair(::mlir::Operation *extensionOp,
 /// Apply OptimizeCopyOpPattern to remove copies whose source is uninitialized
 /// (or only filled), replacing them with linalg.fill. Operates greedily on
 /// `funcOp`.
-::mlir::LogicalResult
-runRemoveUninitializedCopy(::mlir::func::FuncOp funcOp);
+::mlir::LogicalResult runRemoveUninitializedCopy(::mlir::func::FuncOp funcOp);
 
 /// Apply EliminateIntermediateMemrefPattern to collapse cascade memcpy
 /// sequences (intermediate memref alloc + double copy) on `target`.
@@ -148,10 +143,9 @@ runConvertMemrefCopyToLinalgCopy(::mlir::Operation *target);
 /// Tile-and-fuse `producerOp` (a LinalgOp with one DPS init) into the first
 /// memref.subview use found inside `containingOp` (typically an scf.for/forall
 /// body). Returns the tiled fused op on success, nullptr on failure.
-::mlir::Operation *
-runFuseIntoContainingMemref(::mlir::Operation *producerOp,
-                            ::mlir::Operation *containingOp,
-                            ::mlir::RewriterBase &rewriter);
+::mlir::Operation *runFuseIntoContainingMemref(::mlir::Operation *producerOp,
+                                               ::mlir::Operation *containingOp,
+                                               ::mlir::RewriterBase &rewriter);
 
 /// True iff `linalgOp`'s body contains exactly one non-terminator op and that
 /// op is arith.truncf. Used to identify "truncf-only" linalg ops eligible for

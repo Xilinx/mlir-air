@@ -178,9 +178,8 @@ LogicalResult runFoldUnitExtentDimsOnFunc(func::FuncOp funcOp) {
 int runEliminateRedundantVectorTransfers(Operation *target,
                                          RewriterBase &rewriter) {
   SmallVector<vector::TransferReadOp> transferReads;
-  target->walk([&](vector::TransferReadOp readOp) {
-    transferReads.push_back(readOp);
-  });
+  target->walk(
+      [&](vector::TransferReadOp readOp) { transferReads.push_back(readOp); });
 
   llvm::SmallDenseSet<Operation *> eliminated;
   int eliminatedCount = 0;
@@ -196,7 +195,8 @@ int runEliminateRedundantVectorTransfers(Operation *target,
         continue;
       if (hasWritesBetweenReads(firstRead, secondRead))
         continue;
-      rewriter.replaceAllUsesWith(secondRead.getResult(), firstRead.getResult());
+      rewriter.replaceAllUsesWith(secondRead.getResult(),
+                                  firstRead.getResult());
       rewriter.eraseOp(secondRead);
       eliminated.insert(secondRead);
       ++eliminatedCount;
@@ -354,10 +354,10 @@ namespace {
 /// Hoist a single transfer_read/transfer_write pair out of `loopOp`. The
 /// read is cloned before the loop, the write is cloned after the loop, and
 /// the accumulator value flows through a new iter_arg.
-FailureOr<scf::ForOp>
-hoistTransferPairFromLoop(vector::TransferReadOp readOp,
-                          vector::TransferWriteOp writeOp, scf::ForOp loopOp,
-                          RewriterBase &rewriter) {
+FailureOr<scf::ForOp> hoistTransferPairFromLoop(vector::TransferReadOp readOp,
+                                                vector::TransferWriteOp writeOp,
+                                                scf::ForOp loopOp,
+                                                RewriterBase &rewriter) {
   Value loopIV = loopOp.getInductionVar();
 
   rewriter.setInsertionPoint(loopOp);
@@ -411,9 +411,9 @@ hoistTransferPairFromLoop(vector::TransferReadOp readOp,
 
 } // namespace
 
-FailureOr<scf::ForOp>
-runHoistLoopInvariantTransfers(Operation *scopeOp, scf::ForOp loopOp,
-                               RewriterBase &rewriter) {
+FailureOr<scf::ForOp> runHoistLoopInvariantTransfers(Operation *scopeOp,
+                                                     scf::ForOp loopOp,
+                                                     RewriterBase &rewriter) {
   if (!scopeOp->isProperAncestor(loopOp))
     return loopOp->emitError("loop must be inside the scope operation");
 
@@ -624,8 +624,8 @@ LogicalResult runHoistVectorTransferPointers(scf::ForOp forOp,
       auto linearMap = AffineMap::get(rank, 0, linearExpr);
 
       rewriter.setInsertionPoint(info.op);
-      Value currentPointer = affine::AffineApplyOp::create(
-          rewriter, loc, linearMap, info.indices);
+      Value currentPointer =
+          affine::AffineApplyOp::create(rewriter, loc, linearMap, info.indices);
 
       AffineMap identityMap1D = AffineMap::get(
           1, 0, rewriter.getAffineDimExpr(0), rewriter.getContext());
@@ -784,8 +784,8 @@ FailureOr<scf::ForOp> runHoistCastPair(Operation *extensionOp,
     }
   }
   if (!iterArg)
-    return extensionOp->emitError(
-        "extension must operate on a loop iter_arg (directly or via shape_cast)");
+    return extensionOp->emitError("extension must operate on a loop iter_arg "
+                                  "(directly or via shape_cast)");
 
   // The yielded value must come from the truncation (possibly via shape_cast)
   // and feed the same iter_arg position.
@@ -866,8 +866,7 @@ FailureOr<scf::ForOp> runHoistCastPair(Operation *extensionOp,
           cast<VectorType>(shapeCastBeforeExtension.getResult().getType());
       auto wideVecType =
           VectorType::get(narrowVecType.getShape(), wideElemType);
-      Value mappedSource =
-          mapping.lookup(shapeCastBeforeExtension.getSource());
+      Value mappedSource = mapping.lookup(shapeCastBeforeExtension.getSource());
       auto newShapeCast =
           vector::ShapeCastOp::create(rewriter, loc, wideVecType, mappedSource);
       mapping.map(shapeCastBeforeExtension.getResult(),

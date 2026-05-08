@@ -61,8 +61,9 @@ inline llvm::StringRef getMatmulCodegenConfigAttrName() {
 std::optional<::mlir::DictionaryAttr>
 findMatmulCodegenConfig(::mlir::func::FuncOp funcOp);
 
-/// Helper: extract an `ArrayAttr<i64>` field from `cfg` as `SmallVector<int64_t>`.
-/// Returns an empty vector if the field is missing or the wrong type.
+/// Helper: extract an `ArrayAttr<i64>` field from `cfg` as
+/// `SmallVector<int64_t>`. Returns an empty vector if the field is missing or
+/// the wrong type.
 ::llvm::SmallVector<int64_t> getI64Array(::mlir::DictionaryAttr cfg,
                                          ::llvm::StringRef key);
 
@@ -71,7 +72,8 @@ int64_t getI64(::mlir::DictionaryAttr cfg, ::llvm::StringRef key,
                int64_t defaultVal);
 
 /// Helper: extract a bool field from `cfg`. Returns `defaultVal` if missing.
-bool getBool(::mlir::DictionaryAttr cfg, ::llvm::StringRef key, bool defaultVal);
+bool getBool(::mlir::DictionaryAttr cfg, ::llvm::StringRef key,
+             bool defaultVal);
 
 /// Build (and write) a DictionaryAttr config onto the first linalg.matmul (or
 /// op marked `markerName`) in `funcOp`. Existing entries in `dict` overwrite
@@ -85,7 +87,7 @@ bool writeMatmulCodegenConfig(::mlir::func::FuncOp funcOp,
 /// entries with null attrs. Convenience wrapper around DictionaryAttr::get.
 ::mlir::DictionaryAttr
 buildMatmulCodegenConfig(::mlir::MLIRContext *ctx,
-                        ::llvm::ArrayRef<::mlir::NamedAttribute> entries);
+                         ::llvm::ArrayRef<::mlir::NamedAttribute> entries);
 
 } // namespace air
 } // namespace xilinx

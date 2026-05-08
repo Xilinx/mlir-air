@@ -14,8 +14,7 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
-std::optional<DictionaryAttr>
-findMatmulCodegenConfig(func::FuncOp funcOp) {
+std::optional<DictionaryAttr> findMatmulCodegenConfig(func::FuncOp funcOp) {
   StringRef name = getMatmulCodegenConfigAttrName();
   std::optional<DictionaryAttr> found;
   funcOp.walk([&](Operation *op) {
