@@ -192,7 +192,14 @@ class XRTRunner:
                 stochastic_expected_outputs is not None
             ), "benchmark needs either output_shapes_dtypes or stochastic_expected_outputs"
             output_shapes_dtypes = [
-                (o["shape"], o["values"][0].dtype if hasattr(o["values"], "__len__") else o["values"].dtype)
+                (
+                    o["shape"],
+                    (
+                        o["values"][0].dtype
+                        if hasattr(o["values"], "__len__")
+                        else o["values"].dtype
+                    ),
+                )
                 for o in stochastic_expected_outputs
             ]
         output_placeholders = [
