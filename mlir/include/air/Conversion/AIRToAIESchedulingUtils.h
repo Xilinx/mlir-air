@@ -201,8 +201,7 @@ public:
 
   FailureOr<allocation_info_t>
   allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col, int row,
-                     std::vector<Operation *> &dma_ops,
-                     std::string colAllocConstraint = "same_column");
+                     std::vector<Operation *> &dma_ops);
 
   FailureOr<allocation_info_t>
   allocNewDmaChannel(air::MemcpyInterface &memcpyOp,

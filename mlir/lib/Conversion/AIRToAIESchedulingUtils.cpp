@@ -1014,9 +1014,10 @@ air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
   }
 }
 
-FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
-    air::MemcpyInterface &memcpyOp, int col, int row,
-    std::vector<Operation *> &dma_ops, std::string colAllocConstraint) {
+FailureOr<air::allocation_info_t>
+air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
+                                          int col, int row,
+                                          std::vector<Operation *> &dma_ops) {
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
   if (failed(isMM2S))
     return failure();
@@ -1043,12 +1044,6 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   }
   AIE::TileOp tile = nullptr;
   int colIdx = 0;
-  if (colAllocConstraint == "same_column") {
-    // Attempt to use shim dma channels within the same column.
-    auto it = find(dma_columns.begin(), dma_columns.end(), col);
-    if (it != dma_columns.end())
-      colIdx = it - dma_columns.begin();
-  }
   int dma_col = dma_columns[colIdx];
 
   // For packet-flow ops, reuse an existing physical channel on this shim tile
