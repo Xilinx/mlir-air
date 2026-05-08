@@ -13,6 +13,7 @@
 
 #include "air/Transform/AIRMatmulCodegen.h"
 #include "air/Transform/AIRMatmulBufferizationPasses.h"
+#include "air/Transform/AIRMatmulCodegenHelpers.h"
 #include "air/Transform/AIRMatmulPackAndTranspose.h"
 #include "air/Transform/AIRMatmulTilePasses.h"
 #include "air/Transform/AIRMatmulVectorizePasses.h"
@@ -109,6 +110,11 @@ public:
         pm.addPass(createCSEPass());
       });
     };
+
+    // ---------- Phase 0: pre-fold unit-extent dims (opt-in) ----------
+    if (clDoPreFoldUnitExtentDims)
+      if (failed(runFoldUnitExtentDimsOnFunc(f)))
+        return fail();
 
     // Phase C placement: single-pack flows (no L1 pack) run bufferize-output-l2
     // BEFORE Phase A and Phase B — required by the tile-l3-to-l2-copies and

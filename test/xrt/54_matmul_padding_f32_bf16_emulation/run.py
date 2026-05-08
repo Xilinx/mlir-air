@@ -225,8 +225,7 @@ with air.ir.Context() as ctx, Location.unknown():
             "vec-prep-cast2-target-element-type=bf16 "
             "vec-prep-cast2-input-indices=0,1"
             "}",
-            "func.func(canonicalize,cse,fold-memref-alias-ops,"
-            "air-fold-unit-extent-dims)",
+            "func.func(canonicalize,cse,fold-memref-alias-ops)",
         ]
         cpp_pipeline = "builtin.module(" + ",".join(phases) + ")"
         pm = air.passmanager.PassManager.parse(cpp_pipeline)

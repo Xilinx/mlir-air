@@ -169,8 +169,7 @@ with air.ir.Context() as ctx, Location.unknown():
             "vec-prep-cast1-input-indices=2 "
             "vec-prep-cast1-output-indices=0"
             "}, "
-            "func.func(canonicalize,cse,fold-memref-alias-ops,"
-            "air-fold-unit-extent-dims)"
+            "func.func(canonicalize,cse,fold-memref-alias-ops)"
             ")"
         )
         pm = air.passmanager.PassManager.parse(cpp_pipeline)

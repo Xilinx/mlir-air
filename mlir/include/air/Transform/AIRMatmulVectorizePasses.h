@@ -9,8 +9,6 @@
 // orchestrator: tile-for-vectorize and the vec-prep composite (eliminate-
 // redundant-transfers, vector-cast-for-emulation, hoist-loop-invariant,
 // flatten-for-iter-args, hoist-vector-transfer-pointers, hoist-cast-pairs).
-// air-fold-unit-extent-dims is also exposed as a standalone pass for
-// programming-example pipelines that use it outside the matmul flow.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,8 +25,6 @@
 
 namespace xilinx {
 namespace air {
-
-std::unique_ptr<mlir::Pass> createAIRFoldUnitExtentDimsPass();
 
 mlir::LogicalResult runTileForVectorizeImpl(
     mlir::func::FuncOp f, llvm::ArrayRef<int64_t> matmulTileSizes,

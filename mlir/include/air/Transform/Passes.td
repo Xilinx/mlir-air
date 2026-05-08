@@ -1107,19 +1107,6 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
   ];
 }
 
-def AIRFoldUnitExtentDims : Pass<"air-fold-unit-extent-dims", "func::FuncOp"> {
-  let summary = "Fold unit-extent dimensions in linalg ops (memref-aware)";
-  let constructor = "xilinx::air::createAIRFoldUnitExtentDimsPass()";
-  let description = [{
-    Mirrors the C++ logic backing `transform.air.fold_unit_extent_dims`. Folds
-    unit-extent dims using upstream `linalg::populateFoldUnitExtentDimsPatterns`,
-    overriding the collapse function for strided memrefs to use rank-reducing
-    `memref.subview` (so the fold tolerates linalg ops with subview outputs
-    inside `air.herd` regions). Standalone utility used by programming-example
-    pipelines around `air-matmul-codegen`.
-  }];
-}
-
 def AIRMatmulCodegen : Pass<"air-matmul-codegen", "ModuleOp"> {
   let summary = "Single public matmul codegen pass. Orchestrates internal "
                 "phases (launch tile, packs, K-tile, core tile, "
@@ -1151,6 +1138,13 @@ def AIRMatmulCodegen : Pass<"air-matmul-codegen", "ModuleOp"> {
     only the tile/pack stages leave M empty and N=false.
   }];
   let options = [
+      // ---- Phase 0: optional pre-fold of unit-extent dims ----
+      Option<"clDoPreFoldUnitExtentDims", "do-pre-fold-unit-extent-dims",
+             "bool", /*default=*/"false",
+             "Phase 0: run fold-unit-extent-dims on the function before any "
+             "other phase. Used as initial IR cleanup when invoking the "
+             "orchestrator on IRON-emitted IR with stray unit dims.">,
+
       // ---- Phase A: launch tile ----
       ListOption<"clLaunchTile", "launch-tile", "int64_t",
                  "Tile sizes for the outer launch-tile scf.forall. Skipped if "

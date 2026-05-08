@@ -40,24 +40,6 @@ namespace air {
 
 namespace {
 
-class AIRFoldUnitExtentDims
-    : public impl::AIRFoldUnitExtentDimsBase<AIRFoldUnitExtentDims> {
-public:
-  AIRFoldUnitExtentDims() = default;
-  void runOnOperation() override {
-    if (failed(runFoldUnitExtentDimsOnFunc(getOperation())))
-      return signalPassFailure();
-  }
-};
-
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRFoldUnitExtentDimsPass() {
-  return std::make_unique<AIRFoldUnitExtentDims>();
-}
-
-namespace {
-
 // True if the herd contains at least one vector.contract — i.e., it's a
 // compute herd, not a fill/epilogue herd. Mirrors the script's targeting of
 // `herd2_1` specifically (the compute herd).
