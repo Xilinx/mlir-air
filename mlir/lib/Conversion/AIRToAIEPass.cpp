@@ -225,7 +225,6 @@ void setAIEDeviceDataLayout(OpBuilder &builder, AIE::DeviceOp aie_dev) {
 
 LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
                               air::HerdOp h,
-                              std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
                               AIRToAIEConversionOptions &options) {
   builder.setInsertionPointToStart(aie_device.getBody());
 
@@ -298,7 +297,19 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         core = AIE::CoreOp::create(builder, hloc, tile);
         if (options.stack_size != 1024)
           core.setStackSize(options.stack_size);
-        tileToHerdMap[tile] = h;
+        // Persist herd metadata as aie.core attributes so downstream code
+        // doesn't need a tileToHerdMap to recover (RFC #1567 Stage C #3).
+        // air.herd_local_id stores the per-cell (x, y) within the herd;
+        // air.herd_size stores the herd's (x_size, y_size); air.herd_name
+        // stores the herd's symbol name when available.
+        core->setAttr("air.herd_local_id",
+                      builder.getDenseI64ArrayAttr(
+                          {static_cast<int64_t>(x), static_cast<int64_t>(y)}));
+        core->setAttr("air.herd_size",
+                      builder.getDenseI64ArrayAttr({herd_size_x, herd_size_y}));
+        if (auto sym =
+                h->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+          core->setAttr("air.herd_name", sym);
         if (auto a = h->getAttrOfType<StringAttr>("link_with"))
           core->setAttr("link_with", a);
       }
@@ -1229,7 +1240,6 @@ LogicalResult createAIEModulesAndOutlineCores(
     ModuleOp module,
     std::vector<std::tuple<AIE::DeviceOp, air::HerdOp,
                            AIRToAIEConversionOptions>> &aie_modules,
-    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
     AIRToAIEConversionOptions &options) {
 
   SmallVector<air::SegmentOp> segments;
@@ -1343,8 +1353,7 @@ LogicalResult createAIEModulesAndOutlineCores(
     auto h = std::get<1>(p);
     auto device_options = std::get<2>(p);
     OpBuilder builder(aie_dev);
-    if (failed(outlineAIECores(builder, aie_dev, h, tileToHerdMap,
-                               device_options)))
+    if (failed(outlineAIECores(builder, aie_dev, h, device_options)))
       return failure();
   }
   // Outline any L1 memref allocs used by herds but located outside of any herd
@@ -1869,11 +1878,8 @@ void lowerScfAirTokens(AIE::DeviceOp m) {
 struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
-  AllocL1BuffersPattern(MLIRContext *ctx,
-                        std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
-                        uint64_t &bufferId)
-      : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap),
-        BufferId(bufferId) {}
+  AllocL1BuffersPattern(MLIRContext *ctx, uint64_t &bufferId)
+      : OpRewritePattern(ctx), BufferId(bufferId) {}
 
   LogicalResult matchAndRewrite(memref::AllocOp alloc,
                                 PatternRewriter &rewriter) const override {
@@ -1892,27 +1898,30 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     if (!air::isL1(memrefTy))
       return failure();
 
-    auto herd = tileToHerdMap[tile];
-    int64_t col_offset = 0;
-    int64_t row_offset = 0;
-    if (herd) {
-      auto c = herd.getColOffset();
-      auto r = herd.getRowOffset();
-      col_offset = c ? *c : 0;
-      row_offset = r ? *r : 0;
+    // Read herd-local (x, y) from the aie.core attribute set at outline
+    // time (RFC #1567 Stage C #3). Fall back to physical coords when the
+    // attribute isn't present (e.g. cores not produced by outlineAIECores).
+    int64_t herd_local_x = tile.getCol();
+    int64_t herd_local_y = tile.getRow();
+    if (auto idAttr =
+            core->getAttrOfType<DenseI64ArrayAttr>("air.herd_local_id")) {
+      auto ids = idAttr.asArrayRef();
+      if (ids.size() == 2) {
+        herd_local_x = ids[0];
+        herd_local_y = ids[1];
+      }
     }
 
     auto buffer = allocateBufferOp(
         BufferId, memrefTy, tile,
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-        tile.getCol() - col_offset, tile.getRow() - row_offset);
+        herd_local_x, herd_local_y);
 
     rewriter.replaceOp(alloc, buffer->getResults());
     return success();
   }
 
 private:
-  std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
   uint64_t &BufferId;
 };
 
@@ -1977,12 +1986,10 @@ private:
   std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
 };
 
-void allocL1Buffers(AIE::DeviceOp m,
-                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
-                    uint64_t &BufferId) {
+void allocL1Buffers(AIE::DeviceOp m, uint64_t &BufferId) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
+  patterns.insert<AllocL1BuffersPattern>(ctx, BufferId);
   // AllocL1TensorsPattern
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
@@ -3055,7 +3062,6 @@ public:
   // Returns failure() if any transformation stage fails.
   LogicalResult
   runDevicePipeline(AIE::DeviceOp device, ModuleOp module, air::HerdOp herd,
-                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
                     std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
                     AIRToAIEConversionOptions &options, bool useObjFifo,
                     PipelineStage stopAfter = PipelineStage::Complete) {
@@ -3130,10 +3136,10 @@ public:
       allocL2Buffers(device, bufferToMemtileMap, BufferId);
       if (failed(lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap)))
         return failure();
-      allocL1Buffers(device, tileToHerdMap, BufferId);
+      allocL1Buffers(device, BufferId);
     } else {
       specializeL2MemrefsIntoMemtiles(device);
-      allocL1Buffers(device, tileToHerdMap, BufferId);
+      allocL1Buffers(device, BufferId);
       allocL2Buffers(device, bufferToMemtileMap, BufferId);
     }
     if (stopAfter == PipelineStage::AfterAllocBuffers)
@@ -6375,7 +6381,6 @@ public:
     auto ctx = m->getContext();
 
     RewritePatternSet patterns(ctx);
-    std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
     std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
 
     auto device = AIE::symbolizeAIEDevice(clDevice);
@@ -6431,8 +6436,7 @@ public:
       // Pre-pipeline: renumber memcpy ops at module level
       air::renumberMemcpyIfOps(&m.getRegion());
 
-      if (failed(createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap,
-                                                 options))) {
+      if (failed(createAIEModulesAndOutlineCores(m, aie_modules, options))) {
         signalPassFailure();
         return;
       }
@@ -6453,9 +6457,9 @@ public:
         seen.insert(d);
 
         // Run shared pipeline with the specified breakpoint
-        if (failed(runDevicePipeline(d, parentModule, h, tileToHerdMap,
-                                     bufferToMemtileMap, device_options,
-                                     clUseObjFifo, stopStage))) {
+        if (failed(runDevicePipeline(d, parentModule, h, bufferToMemtileMap,
+                                     device_options, clUseObjFifo,
+                                     stopStage))) {
           signalPassFailure();
           return;
         }
@@ -6472,8 +6476,8 @@ public:
     if (clTestPatterns.find("lower-air-execute") != std::string::npos)
       patterns.insert<LowerAIRExecutePattern>(ctx);
     if (clTestPatterns.find("alloc-l1-buffers") != std::string::npos)
-      patterns.insert<AllocL1BuffersPattern, AllocL1BuffersPattern>(
-          ctx, tileToHerdMap, BufferId);
+      patterns.insert<AllocL1BuffersPattern, AllocL1BuffersPattern>(ctx,
+                                                                    BufferId);
     if (clTestPatterns.find("specialize-affine-if") != std::string::npos)
       patterns.insert<SpecializeAffineIfPattern>(ctx);
     if (clTestPatterns.find("specialize-scf-if") != std::string::npos)
@@ -6541,7 +6545,6 @@ public:
         std::tuple<AIE::DeviceOp, air::HerdOp, AIRToAIEConversionOptions>>
         aie_devices;
 
-    std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
     std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
@@ -6560,8 +6563,7 @@ public:
         /* .use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
         /* .device = */ *device,
         /* .stack_size = */ clStackSize};
-    if (failed(createAIEModulesAndOutlineCores(module, aie_devices,
-                                               tileToHerdMap, options))) {
+    if (failed(createAIEModulesAndOutlineCores(module, aie_devices, options))) {
       signalPassFailure();
       return;
     }
@@ -6628,7 +6630,7 @@ public:
           signalPassFailure();
           return;
         }
-        allocL1Buffers(device, tileToHerdMap, BufferId);
+        allocL1Buffers(device, BufferId);
       } else {
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ true,
@@ -6643,7 +6645,7 @@ public:
             device->hasAttr("segment_unroll_y"))
           removeOrphanedChannels(device);
         specializeL2MemrefsIntoMemtiles(device);
-        allocL1Buffers(device, tileToHerdMap, BufferId);
+        allocL1Buffers(device, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
         air::renumberMemcpyIfOps(&device.getRegion(),
                                  chan_renumber_reverse_map);
@@ -7081,7 +7083,6 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
       /* .device = */ *device};
   std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
   p.walk([&](air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
-  std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
     air::HerdOp h = std::get<1>(p);
@@ -7092,7 +7093,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     setAIEDeviceDataLayout(rewriter, devOp);
     AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter,
                                     devOp.getLoc());
-    if (failed(outlineAIECores(rewriter, devOp, h, tileToHerdMap, options)))
+    if (failed(outlineAIECores(rewriter, devOp, h, options)))
       return failure();
 
     auto ctx = aie_module->getContext();
@@ -7100,7 +7101,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     patterns.insert<SpecializeAffineIfPattern>(ctx);
     patterns.insert<SpecializeScfIfPattern>(ctx);
     patterns.insert<LowerAIRExecutePattern>(ctx);
-    patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
+    patterns.insert<AllocL1BuffersPattern>(ctx, BufferId);
     air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
     (void)applyPatternsGreedily(aie_module, std::move(patterns));
   }

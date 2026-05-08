@@ -36,7 +36,9 @@
 // NPU: aie.device(npu1)
 // NPU-NOT: air.launch
 // NPU-NOT: air.segment
-// NPU-NOT: air.herd
+// Match air.herd op (not air.herd_local_id / air.herd_size / air.herd_name
+// attributes that may now appear on aie.core after RFC #1567 Stage C #3).
+// NPU-NOT: {{air\.herd[^_]}}
 
 module {
   func.func @copy(%arg0: memref<4096xui8>, %arg1: memref<4096xui8>) {
