@@ -101,9 +101,6 @@ struct allocation_info_t {
   std::vector<Operation *> memcpyOps;
   bool valid();
   AIE::TileOp getDmaTile();
-  // TileOp-keyed overloads (RFC #1567 Stage C #1). Identify allocations by
-  // their owning AIE::TileOp pointer rather than by (col, row) coordinates so
-  // bookkeeping does not depend on physical placement.
   bool foundAlloc(AIE::TileOp tile);
   bool foundAlloc(AIE::TileOp tile, air::MemcpyInterface memcpyOp);
   bool foundAlloc(AIE::TileOp tile, air::ChannelOp channel_op);
@@ -113,12 +110,10 @@ struct allocation_info_t {
   bool foundAlloc(air::ChannelOp channel_op);
   bool foundAlloc(AIE::DMAChannel channel);
 
-  // Column-keyed overloads — used only by ShimDMAAllocator's pre-tile
-  // column-search path that picks a shim column before any TileOp exists.
-  // All other call sites use the TileOp-keyed overloads above.
-  bool foundAlloc(int32_t col, int32_t row);
-  bool foundAlloc(int32_t col, int32_t row, AIE::DMAChannel channel);
-  bool foundPacketFlowAllocInTile(int32_t col, int32_t row);
+  // Column-keyed; row is implied (shim is always row 0).
+  bool foundAllocInColumn(int32_t col);
+  bool foundAllocInColumn(int32_t col, AIE::DMAChannel channel);
+  bool foundPacketFlowAllocInColumn(int32_t col);
 
   bool operator==(const allocation_info_t &other) const {
     return dma_tile == other.dma_tile && col == other.col && row == other.row &&
@@ -236,12 +231,7 @@ public:
   simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                         allocation_info_t &existing_alloc);
 
-  // For MemTileDMAAllocator and CascadeAllocator the tile is derived from
-  // the memcpyOp's buffer (the buffer's defining op is the tile-bound
-  // BufferOp); the AIE::TileOp parameter is accepted only to keep the
-  // signature uniform with TileDMAAllocator/ShimDMAAllocator so the
-  // generateDmaBdProgram template can call any of them. Pass nullptr
-  // when no tile is yet known.
+  // tile derived from memcpyOp's buffer; param kept for signature uniformity.
   FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
 
@@ -254,16 +244,13 @@ class CascadeAllocator {
 
 public:
   CascadeAllocator() = delete;
-  // CascadeAllocator constructor: only core-to-core (L1-level) cascade
-  // connection supported.
   CascadeAllocator(AIE::DeviceOp device)
       : device(device), dmaMemorySpace(air::MemorySpace::L1) {}
   FailureOr<allocation_info_t> coreCascadeAlloc(air::MemcpyInterface &memcpyOp);
   FailureOr<allocation_info_t> allocNewCascade(air::MemcpyInterface &memcpyOp,
                                                AIE::TileOp tile);
 
-  // Tile parameter is unused (derived from memcpyOp's buffer); kept for
-  // signature uniformity with TileDMAAllocator/ShimDMAAllocator.
+  // tile derived from memcpyOp's buffer; param kept for signature uniformity.
   FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
 

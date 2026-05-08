@@ -610,12 +610,8 @@ bool xilinx::air::allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
   return false;
 }
 
-bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row) {
-  if (!getDmaTile())
-    return false;
-  if (col == getDmaTile().getCol() && row == getDmaTile().getRow())
-    return true;
-  return false;
+bool xilinx::air::allocation_info_t::foundAllocInColumn(int32_t col) {
+  return getDmaTile() && getDmaTile().getCol() == col;
 }
 
 bool xilinx::air::allocation_info_t::foundAlloc(AIE::DMAChannel channel) {
@@ -626,9 +622,9 @@ bool xilinx::air::allocation_info_t::foundAlloc(AIE::DMAChannel channel) {
     return false;
 }
 
-bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row,
-                                                AIE::DMAChannel channel) {
-  return foundAlloc(col, row) && foundAlloc(channel);
+bool xilinx::air::allocation_info_t::foundAllocInColumn(
+    int32_t col, AIE::DMAChannel channel) {
+  return foundAllocInColumn(col) && foundAlloc(channel);
 }
 
 bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile,
@@ -639,10 +635,9 @@ bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile,
     return false;
 }
 
-// Found existence of a packet flow allocation in provided coordinates.
-bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(int32_t col,
-                                                                int32_t row) {
-  if (!foundAlloc(col, row))
+// Is there a packet-flow allocation owned by a tile in the given column?
+bool xilinx::air::allocation_info_t::foundPacketFlowAllocInColumn(int32_t col) {
+  if (!foundAllocInColumn(col))
     return false;
   for (auto o : memcpyOps) {
     auto memcpy_op = dyn_cast_if_present<air::MemcpyInterface>(o);
@@ -650,7 +645,7 @@ bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(int32_t col,
       continue;
     auto chanTypeRes = air::getChannelType(memcpy_op);
     if (succeeded(chanTypeRes))
-      return chanTypeRes.value().str() == "npu_dma_packet";
+      return chanTypeRes.value() == "npu_dma_packet";
   }
   return false;
 }
@@ -687,7 +682,7 @@ bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(
       continue;
     auto chanTypeRes = air::getChannelType(memcpy_op);
     if (succeeded(chanTypeRes))
-      return chanTypeRes.value().str() == "npu_dma_packet";
+      return chanTypeRes.value() == "npu_dma_packet";
   }
   return false;
 }
@@ -960,7 +955,7 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   bool isPacketFlowOp = false;
   auto chanTypeRes = getChannelType(memcpyOp);
   if (succeeded(chanTypeRes)) {
-    isPacketFlowOp = chanTypeRes.value().str() == "npu_dma_packet";
+    isPacketFlowOp = chanTypeRes.value() == "npu_dma_packet";
   }
 
   // Search for existing dma channel allocation
@@ -1034,7 +1029,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   bool isPacketFlowOp = false;
   auto chanTypeRes = getChannelType(memcpyOp);
   if (succeeded(chanTypeRes)) {
-    isPacketFlowOp = chanTypeRes.value().str() == "npu_dma_packet";
+    isPacketFlowOp = chanTypeRes.value() == "npu_dma_packet";
   }
 
   // Search for existing dma channel allocation
@@ -1064,7 +1059,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   // one.
   if (isPacketFlowOp) {
     for (auto &t : *allocs) {
-      if (t.foundPacketFlowAllocInTile(dma_col, 0)) {
+      if (t.foundPacketFlowAllocInColumn(dma_col)) {
         auto tileRes = air::createTileViaPlacer(
             device, AIE::AIETileType::ShimNOCTile, dma_col,
             /*row_hint=*/std::nullopt);
@@ -1096,7 +1091,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   int dma_channel = 0;
   int colTripCount = 0;
   while (any_of(allocs->begin(), allocs->end(), [&](air::allocation_info_t &a) {
-    return a.foundAlloc(dma_col, 0, AIE::DMAChannel{dir, dma_channel});
+    return a.foundAllocInColumn(dma_col, AIE::DMAChannel{dir, dma_channel});
   })) {
     dma_channel++;
     if (dma_channel >= shim_dma_channels) {
@@ -1258,7 +1253,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   bool isPacketFlowOp = false;
   auto chanTypeRes = getChannelType(memcpyOp);
   if (succeeded(chanTypeRes)) {
-    isPacketFlowOp = chanTypeRes.value().str() == "npu_dma_packet";
+    isPacketFlowOp = chanTypeRes.value() == "npu_dma_packet";
   }
 
   // Search for existing dma channel allocation
