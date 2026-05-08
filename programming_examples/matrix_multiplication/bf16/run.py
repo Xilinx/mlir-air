@@ -591,16 +591,14 @@ if __name__ == "__main__":
             "func.func(air-matmul-tile-for-vectorize{matmul-tile-sizes=2,2,1,0,0,0 matmul-unroll-tile-sizes=1,1,0,0,0,0 matmul-unroll-factor=2 fill-tile-sizes=0,0,1,1})",
             "func.func(air-herd-vectorize)",
             "func.func(canonicalize,cse,fold-memref-alias-ops,air-fold-unit-extent-dims)",
-            "func.func(air-eliminate-redundant-vector-transfers)",
-            "func.func(air-vector-cast-for-emulation{target-element-type=f32 input-indices=2 output-indices=0})",
-            "func.func(air-hoist-loop-invariant-transfers)",
-            "func.func(air-flatten-for-iter-args)",
-            "func.func(air-hoist-vector-transfer-pointers)",
+            # Vec-prep composite: eliminate-redundant + cast(f32) + hoist-loop +
+            # flatten + hoist-pointers + (bf16-out: hoist-cast-pairs).
+            "func.func(air-matmul-codegen-vec-prep{"
+            "do-fold-unit-extent-dims=false "
+            "cast1-target-element-type=f32 cast1-input-indices=2 "
+            "cast1-output-indices=0 "
+            f"do-hoist-cast-pairs={'true' if OUTPUT_DATATYPE == bfloat16 else 'false'}}})",
         ]
-        if OUTPUT_DATATYPE == bfloat16:
-            # bf16-output case needs the 4× hoist_cast_pair chain that the
-            # legacy script unrolled by hand.
-            steps.append("func.func(air-hoist-cast-pairs)")
         steps.append(
             "func.func(canonicalize,cse,fold-memref-alias-ops,air-fold-unit-extent-dims)"
         )

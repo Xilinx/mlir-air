@@ -50,12 +50,7 @@ void xilinx::air::registerTransformPasses() {
   registerAIRMatmulTileL3ToL2Copies();
   registerAIRMatmulTileForVectorize();
   registerAIRFoldUnitExtentDims();
-  registerAIREliminateRedundantVectorTransfers();
-  registerAIRFlattenForIterArgs();
-  registerAIRHoistLoopInvariantTransfers();
-  registerAIRHoistVectorTransferPointers();
-  registerAIRVectorCastForEmulation();
-  registerAIRHoistCastPairs();
+  registerAIRMatmulCodegenVecPrep();
   registerAIRMatmulTileLaunchTile();
   registerAIRMatmulTileKAndFusePacks();
   registerAIRMatmulTileCores();

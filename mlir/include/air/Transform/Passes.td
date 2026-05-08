@@ -1218,98 +1218,82 @@ def AIRFoldUnitExtentDims: Pass<"air-fold-unit-extent-dims", "func::FuncOp"> {
     unit-extent dims using upstream `linalg::populateFoldUnitExtentDimsPatterns`,
     overriding the collapse function for strided memrefs to use rank-reducing
     `memref.subview` (so the fold tolerates linalg ops with subview outputs
-    inside `air.herd` regions).
+    inside `air.herd` regions). Kept standalone (in addition to being part of
+    `air-matmul-codegen-vec-prep`) because programming-example pipelines use
+    it outside the vec-prep block too.
   }];
 }
 
-def AIREliminateRedundantVectorTransfers: Pass<"air-eliminate-redundant-vector-transfers", "func::FuncOp"> {
-  let summary = "Deduplicate vector.transfer_read with no intervening writes";
-  let constructor = "xilinx::air::createAIREliminateRedundantVectorTransfersPass()";
+def AIRMatmulCodegenVecPrep
+    : Pass<"air-matmul-codegen-vec-prep", "func::FuncOp"> {
+  let summary = "Composite vec-prep stage of the matmul codegen pipeline. "
+                "Bundles fold-unit-extent-dims, eliminate-redundant-vector-"
+                "transfers, up to 2 vector-cast-for-emulation invocations, "
+                "hoist-loop-invariant-transfers, flatten-for-iter-args, "
+                "hoist-vector-transfer-pointers, and (optionally) "
+                "hoist-cast-pairs in fixed order.";
+  let constructor = "xilinx::air::createAIRMatmulCodegenVecPrepPass()";
   let description = [{
-    Mirrors `transform.air.eliminate_redundant_vector_transfers`. For each pair
-    of vector.transfer_read operations on the same memref with equivalent
-    indices and no intervening writes, replace the second with the first.
-  }];
-}
+    Replaces the 7 individually-registered M1 vec-prep passes
+    (`air-fold-unit-extent-dims`, `air-eliminate-redundant-vector-transfers`,
+    `air-vector-cast-for-emulation`, `air-hoist-loop-invariant-transfers`,
+    `air-flatten-for-iter-args`, `air-hoist-vector-transfer-pointers`,
+    `air-hoist-cast-pairs`) with a single composite. The internal order is
+    fixed (matches the order all M2/M5 tests + prog_ex use); per-step
+    enablement is controlled via `do-...` boolean options. The 0-2
+    `vector-cast-for-emulation` invocations are configured via the
+    `cast1-*` and `cast2-*` option groups (empty `target-element-type`
+    means skip that cast).
 
-def AIRFlattenForIterArgs: Pass<"air-flatten-for-iter-args", "func::FuncOp"> {
-  let summary = "Flatten vector-typed iter_args of scf.for to 1D";
-  let constructor = "xilinx::air::createAIRFlattenForIterArgsPass()";
-  let description = [{
-    Mirrors `transform.air.flatten_for_iter_args`. For each scf.for inside an
-    air.herd, replaces vector-typed iter_args with their 1D-flattened form,
-    inserting vector.shape_cast at the loop entry/exit and inside the loop
-    body to convert back to the original shape.
-  }];
-}
-
-def AIRHoistLoopInvariantTransfers: Pass<"air-hoist-loop-invariant-transfers", "func::FuncOp"> {
-  let summary = "Hoist loop-invariant accumulator transfer_read/write pairs";
-  let constructor = "xilinx::air::createAIRHoistLoopInvariantTransfersPass()";
-  let description = [{
-    Mirrors `transform.air.hoist_loop_invariant_transfers`. For each air.herd,
-    selects the outermost scf.for inside it (typically the K-reduction loop)
-    and iteratively hoists matched vector.transfer_read/transfer_write pairs
-    whose indices do not depend on the loop induction variable, threading the
-    accumulator through a new iter_arg.
-  }];
-}
-
-def AIRHoistVectorTransferPointers: Pass<"air-hoist-vector-transfer-pointers", "func::FuncOp"> {
-  let summary = "Hoist loop-invariant subview pointer chains for vector transfers";
-  let constructor = "xilinx::air::createAIRHoistVectorTransferPointersPass()";
-  let description = [{
-    Mirrors `transform.air.hoist_vector_transfer_pointers`. For each
-    innermost scf.for inside an air.herd, hoists subview/affine.apply chains
-    that compute vector.transfer_read/write base pointers when those chains
-    do not depend on the loop induction variable.
-  }];
-}
-
-def AIRVectorCastForEmulation: Pass<"air-vector-cast-for-emulation", "func::FuncOp"> {
-  let summary = "Cast vector.contract operand/result element types for AIE emulation";
-  let constructor = "xilinx::air::createAIRVectorCastForEmulationPass()";
-  let description = [{
-    Walks all vector.contract ops in the function and casts selected
-    operand/result vector element types to `target-element-type`. Used for:
-      * BFP16 mmul emulation on AIE2P (cast inputs 0,1 to bf16; cast acc 2 +
-        output 0 to f32)
-      * accumulator-only emulation on AIE2 bf16 / i8 (cast acc 2 + output 0
-        to f32 / i32)
-
-    M1b of the C++ matmul codegen pipeline. See MATMUL_CODEGEN_PIPELINE_PLAN.md.
+    Pass bodies remain accessible as plain C++ functions
+    (`runFoldUnitExtentDimsOnFunc`, `runEliminateRedundantVectorTransfers`,
+    `runVectorTypeCastOnTarget`, `runHoistLoopInvariantTransfers`,
+    `runFlattenForIterArgs`, `runHoistVectorTransferPointers`,
+    `runHoistCastPair`) for direct call.
   }];
   let options = [
-    Option<"clTargetElementType", "target-element-type", "std::string",
-           /*default=*/"\"f32\"",
-           "Element type to cast to: 'f32', 'bf16', 'i32', 'i16', 'i8'.">,
-    ListOption<"clInputIndices", "input-indices", "int64_t",
-               "Operand indices of vector.contract whose element types should be cast",
+    Option<"clDoFoldUnitExtentDims", "do-fold-unit-extent-dims", "bool",
+           /*default=*/"true",
+           "Run air::runFoldUnitExtentDimsOnFunc as the first step.">,
+    Option<"clDoEliminateRedundantVectorTransfers",
+           "do-eliminate-redundant-vector-transfers", "bool",
+           /*default=*/"true",
+           "Run air::runEliminateRedundantVectorTransfers after fold-unit.">,
+    Option<"clCast1TargetElementType", "cast1-target-element-type",
+           "std::string", /*default=*/"\"\"",
+           "Empty = skip first vector-cast invocation. Otherwise: 'f32', "
+           "'bf16', 'i32', 'i16', 'i8'.">,
+    ListOption<"clCast1InputIndices", "cast1-input-indices", "int64_t",
+               "Operand indices to cast (first cast).",
                "llvm::cl::ZeroOrMore">,
-    ListOption<"clOutputIndices", "output-indices", "int64_t",
-               "Result indices of vector.contract whose element types should be cast",
-               "llvm::cl::ZeroOrMore">
-  ];
-}
-
-def AIRHoistCastPairs: Pass<"air-hoist-cast-pairs", "func::FuncOp"> {
-  let summary = "Iteratively hoist matched extf/truncf or extsi/extui/trunci "
-                "pairs surrounding loop iter_args out of the loop";
-  let constructor = "xilinx::air::createAIRHoistCastPairsPass()";
-  let description = [{
-    For each innermost scf.for inside an air.herd, repeatedly find a matched
-    extension/truncation pair surrounding a loop iter_arg and hoist them
-    out (extend init before the loop, change the iter_arg type to wide,
-    truncate the loop result after). Runs to fixed-point. Replaces the 4×
-    hand-unrolled `transform.air.hoist_cast_pair` chain in the existing
-    transform scripts.
-
-    M1b of the C++ matmul codegen pipeline. See MATMUL_CODEGEN_PIPELINE_PLAN.md.
-  }];
-  let options = [
-    Option<"clMaxIterations", "max-iterations", "int64_t",
-           /*default=*/"32",
-           "Safety cap on fixed-point iterations.">
+    ListOption<"clCast1OutputIndices", "cast1-output-indices", "int64_t",
+               "Result indices to cast (first cast).",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clCast2TargetElementType", "cast2-target-element-type",
+           "std::string", /*default=*/"\"\"",
+           "Empty = skip second vector-cast invocation.">,
+    ListOption<"clCast2InputIndices", "cast2-input-indices", "int64_t",
+               "Operand indices to cast (second cast).",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clCast2OutputIndices", "cast2-output-indices", "int64_t",
+               "Result indices to cast (second cast).",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clDoHoistLoopInvariantTransfers",
+           "do-hoist-loop-invariant-transfers", "bool", /*default=*/"true",
+           "Hoist loop-invariant transfer_read/write pairs into iter_args.">,
+    Option<"clDoFlattenForIterArgs", "do-flatten-for-iter-args", "bool",
+           /*default=*/"true",
+           "Flatten vector-typed iter_args to 1D.">,
+    Option<"clDoHoistVectorTransferPointers",
+           "do-hoist-vector-transfer-pointers", "bool", /*default=*/"true",
+           "Linearize loop-invariant transfer pointer chains.">,
+    Option<"clDoHoistCastPairs", "do-hoist-cast-pairs", "bool",
+           /*default=*/"false",
+           "Iteratively hoist matched ext/trunc pairs surrounding iter_args. "
+           "Used by bf16-out flows.">,
+    Option<"clHoistCastPairsMaxIterations",
+           "hoist-cast-pairs-max-iterations", "int64_t", /*default=*/"32",
+           "Fixed-point iteration cap when do-hoist-cast-pairs=true.">
   ];
 }
 

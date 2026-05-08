@@ -568,12 +568,7 @@ if __name__ == "__main__":
             "func.func(air-matmul-tile-for-vectorize{matmul-tile-sizes=2,2,1,0,0,0 matmul-unroll-tile-sizes=1,1,0,0,0,0 matmul-unroll-factor=2 fill-tile-sizes=0,0,1,1})",
             "func.func(air-herd-vectorize)",
             "func.func(canonicalize,cse,fold-memref-alias-ops,air-fold-unit-extent-dims)",
-            "func.func(air-eliminate-redundant-vector-transfers)",
-            "func.func(air-vector-cast-for-emulation{target-element-type=i32 input-indices=2 output-indices=0})",
-            "func.func(air-hoist-loop-invariant-transfers)",
-            "func.func(air-flatten-for-iter-args)",
-            "func.func(air-hoist-vector-transfer-pointers)",
-            "func.func(air-hoist-cast-pairs)",
+            "func.func(air-matmul-codegen-vec-prep{do-fold-unit-extent-dims=false cast1-target-element-type=i32 cast1-input-indices=2 cast1-output-indices=0 do-hoist-cast-pairs=true})",
             "func.func(canonicalize,cse,fold-memref-alias-ops,air-fold-unit-extent-dims)",
         ]) + ")"
         pm = air.passmanager.PassManager.parse(pipeline,

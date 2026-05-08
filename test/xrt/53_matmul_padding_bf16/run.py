@@ -236,14 +236,9 @@ with air.ir.Context() as ctx, Location.unknown():
             "air-par-to-herd",
             "func.func(air-herd-vectorize)",
             "func.func(canonicalize,cse,fold-memref-alias-ops)",
-            "func.func(air-fold-unit-extent-dims)",
-            "func.func(air-eliminate-redundant-vector-transfers)",
-            "func.func(air-vector-cast-for-emulation{"
-            "target-element-type=f32 input-indices=2 output-indices=0})",
-            "func.func(air-hoist-loop-invariant-transfers)",
-            "func.func(air-flatten-for-iter-args)",
-            "func.func(air-hoist-vector-transfer-pointers)",
-            "func.func(air-hoist-cast-pairs)",
+            "func.func(air-matmul-codegen-vec-prep{"
+            "cast1-target-element-type=f32 cast1-input-indices=2 "
+            "cast1-output-indices=0 do-hoist-cast-pairs=true})",
             "func.func(canonicalize,cse,fold-memref-alias-ops,"
             "air-fold-unit-extent-dims)",
         ]

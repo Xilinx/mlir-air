@@ -28,19 +28,9 @@ createAIRMatmulTileForVectorizePass(const AIRMatmulTileForVectorizeOptions &);
 
 std::unique_ptr<mlir::Pass> createAIRFoldUnitExtentDimsPass();
 
-std::unique_ptr<mlir::Pass> createAIREliminateRedundantVectorTransfersPass();
-
-std::unique_ptr<mlir::Pass> createAIRFlattenForIterArgsPass();
-
-std::unique_ptr<mlir::Pass> createAIRHoistLoopInvariantTransfersPass();
-
-std::unique_ptr<mlir::Pass> createAIRHoistVectorTransferPointersPass();
-
-std::unique_ptr<mlir::Pass> createAIRVectorCastForEmulationPass();
+std::unique_ptr<mlir::Pass> createAIRMatmulCodegenVecPrepPass();
 std::unique_ptr<mlir::Pass>
-createAIRVectorCastForEmulationPass(const AIRVectorCastForEmulationOptions &);
-
-std::unique_ptr<mlir::Pass> createAIRHoistCastPairsPass();
+createAIRMatmulCodegenVecPrepPass(const AIRMatmulCodegenVecPrepOptions &);
 
 } // namespace air
 } // namespace xilinx

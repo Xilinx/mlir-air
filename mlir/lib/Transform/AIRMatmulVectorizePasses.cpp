@@ -38,15 +38,10 @@ namespace air {
 
 namespace {
 
-//===----------------------------------------------------------------------===//
-// AIRFoldUnitExtentDims
-//===----------------------------------------------------------------------===//
-
 class AIRFoldUnitExtentDims
     : public impl::AIRFoldUnitExtentDimsBase<AIRFoldUnitExtentDims> {
 public:
   AIRFoldUnitExtentDims() = default;
-
   void runOnOperation() override {
     if (failed(runFoldUnitExtentDimsOnFunc(getOperation())))
       return signalPassFailure();
@@ -59,82 +54,8 @@ std::unique_ptr<mlir::Pass> createAIRFoldUnitExtentDimsPass() {
   return std::make_unique<AIRFoldUnitExtentDims>();
 }
 
-//===----------------------------------------------------------------------===//
-// AIREliminateRedundantVectorTransfers
-//===----------------------------------------------------------------------===//
-
 namespace {
 
-class AIREliminateRedundantVectorTransfers
-    : public impl::AIREliminateRedundantVectorTransfersBase<
-          AIREliminateRedundantVectorTransfers> {
-public:
-  AIREliminateRedundantVectorTransfers() = default;
-
-  void runOnOperation() override {
-    IRRewriter rewriter(&getContext());
-    (void)runEliminateRedundantVectorTransfers(getOperation(), rewriter);
-  }
-};
-
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIREliminateRedundantVectorTransfersPass() {
-  return std::make_unique<AIREliminateRedundantVectorTransfers>();
-}
-
-//===----------------------------------------------------------------------===//
-// AIRFlattenForIterArgs
-//===----------------------------------------------------------------------===//
-
-namespace {
-
-class AIRFlattenForIterArgs
-    : public impl::AIRFlattenForIterArgsBase<AIRFlattenForIterArgs> {
-public:
-  AIRFlattenForIterArgs() = default;
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<mlir::scf::SCFDialect, mlir::vector::VectorDialect>();
-  }
-
-  void runOnOperation() override {
-    IRRewriter rewriter(&getContext());
-    // Collect first to avoid invalidation when scf.for is replaced.
-    SmallVector<mlir::scf::ForOp> targets;
-    getOperation().walk([&](mlir::scf::ForOp forOp) {
-      // Only target loops with at least one vector-typed iter_arg; runFlatten
-      // is a no-op otherwise but we skip them to keep IR diff minimal.
-      for (Value v : forOp.getInitArgs())
-        if (isa<VectorType>(v.getType())) {
-          targets.push_back(forOp);
-          break;
-        }
-    });
-    for (mlir::scf::ForOp forOp : targets) {
-      auto res = runFlattenForIterArgs(forOp, rewriter);
-      if (failed(res)) {
-        forOp->emitError("flatten-for-iter-args failed");
-        return signalPassFailure();
-      }
-    }
-  }
-};
-
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRFlattenForIterArgsPass() {
-  return std::make_unique<AIRFlattenForIterArgs>();
-}
-
-//===----------------------------------------------------------------------===//
-// AIRHoistLoopInvariantTransfers
-//===----------------------------------------------------------------------===//
-
-namespace {
-
-// Find the outermost scf.for that lives directly inside `scope`'s region
-// (i.e., not nested within another scf.for). Returns nullptr if none.
 // True if the herd contains at least one vector.contract — i.e., it's a
 // compute herd, not a fill/epilogue herd. Mirrors the script's targeting of
 // `herd2_1` specifically (the compute herd).
@@ -147,208 +68,119 @@ static bool herdHasVectorContract(xilinx::air::HerdOp herd) {
   return found;
 }
 
-[[maybe_unused]] static mlir::scf::ForOp findOutermostForIn(Operation *scope) {
-  mlir::scf::ForOp result;
-  scope->walk([&](mlir::scf::ForOp forOp) {
-    if (result)
-      return WalkResult::skip();
-    // Skip nested-within-other-for cases — the outermost-in-scope is the
-    // first one whose nearest enclosing scf.for is outside `scope`.
-    auto parentFor = forOp->getParentOfType<mlir::scf::ForOp>();
-    if (!parentFor || !scope->isProperAncestor(parentFor)) {
-      result = forOp;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
+// Per-step bodies. Extracted from the previously-individual AIR passes; now
+// invoked in fixed order from the AIRMatmulCodegenVecPrep composite below.
+
+static LogicalResult runFlattenForIterArgsStep(func::FuncOp func,
+                                                IRRewriter &rewriter) {
+  SmallVector<mlir::scf::ForOp> targets;
+  func.walk([&](mlir::scf::ForOp forOp) {
+    for (Value v : forOp.getInitArgs())
+      if (isa<VectorType>(v.getType())) {
+        targets.push_back(forOp);
+        break;
+      }
   });
-  return result;
+  for (mlir::scf::ForOp forOp : targets) {
+    auto res = runFlattenForIterArgs(forOp, rewriter);
+    if (failed(res))
+      return forOp->emitError("flatten-for-iter-args failed");
+  }
+  return success();
 }
 
-class AIRHoistLoopInvariantTransfers
-    : public impl::AIRHoistLoopInvariantTransfersBase<
-          AIRHoistLoopInvariantTransfers> {
-public:
-  AIRHoistLoopInvariantTransfers() = default;
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<mlir::scf::SCFDialect, mlir::vector::VectorDialect>();
-  }
-
-  void runOnOperation() override {
-    IRRewriter rewriter(&getContext());
-    // Target every innermost scf.for inside each herd: an scf.for is
-    // "innermost" if its body contains no nested scf.for. The helper checks
-    // that vector.transfer_read/write pairs live in the loop's immediate
-    // body, so we must call it on the loop where the transfers actually are.
-    SmallVector<mlir::scf::ForOp> innermost;
-    getOperation().walk([&](xilinx::air::HerdOp herd) {
-      herd->walk([&](mlir::scf::ForOp forOp) {
-        bool hasInnerFor = false;
-        for (Operation &nested : forOp.getBody()->without_terminator()) {
-          if (isa<mlir::scf::ForOp>(nested)) {
-            hasInnerFor = true;
-            break;
-          }
-          // Check one level deeper too (scf.for nested in another scf op
-          // counts as inner).
-          nested.walk([&](mlir::scf::ForOp) { hasInnerFor = true; });
-          if (hasInnerFor)
-            break;
+static LogicalResult runHoistLoopInvariantTransfersStep(func::FuncOp func,
+                                                        IRRewriter &rewriter) {
+  // Innermost scf.for inside each herd; the helper requires vector.transfer
+  // pairs in the loop's immediate body.
+  SmallVector<mlir::scf::ForOp> innermost;
+  func.walk([&](xilinx::air::HerdOp herd) {
+    herd->walk([&](mlir::scf::ForOp forOp) {
+      bool hasInnerFor = false;
+      for (Operation &nested : forOp.getBody()->without_terminator()) {
+        if (isa<mlir::scf::ForOp>(nested)) {
+          hasInnerFor = true;
+          break;
         }
-        if (!hasInnerFor)
-          innermost.push_back(forOp);
-      });
-    });
-    for (mlir::scf::ForOp loopOp : innermost) {
-      auto scopeOp = loopOp->getParentOfType<xilinx::air::HerdOp>();
-      auto res =
-          runHoistLoopInvariantTransfers(scopeOp, loopOp, rewriter);
-      if (failed(res)) {
-        loopOp->emitError("hoist-loop-invariant-transfers failed");
-        return signalPassFailure();
+        nested.walk([&](mlir::scf::ForOp) { hasInnerFor = true; });
+        if (hasInnerFor)
+          break;
       }
-    }
+      if (!hasInnerFor)
+        innermost.push_back(forOp);
+    });
+  });
+  for (mlir::scf::ForOp loopOp : innermost) {
+    auto scopeOp = loopOp->getParentOfType<xilinx::air::HerdOp>();
+    auto res = runHoistLoopInvariantTransfers(scopeOp, loopOp, rewriter);
+    if (failed(res))
+      return loopOp->emitError("hoist-loop-invariant-transfers failed");
   }
-};
-
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRHoistLoopInvariantTransfersPass() {
-  return std::make_unique<AIRHoistLoopInvariantTransfers>();
+  return success();
 }
 
-//===----------------------------------------------------------------------===//
-// AIRHoistVectorTransferPointers
-//===----------------------------------------------------------------------===//
-
-namespace {
-
-class AIRHoistVectorTransferPointers
-    : public impl::AIRHoistVectorTransferPointersBase<
-          AIRHoistVectorTransferPointers> {
-public:
-  AIRHoistVectorTransferPointers() = default;
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<mlir::scf::SCFDialect, mlir::vector::VectorDialect>();
-  }
-
-  void runOnOperation() override {
-    IRRewriter rewriter(&getContext());
-    // Target every innermost scf.for inside each herd. The helper iterates
-    // forOp.getBody()->without_terminator() looking for vector.transfer ops
-    // — only effective when called on the loop where the transfers live.
-    SmallVector<mlir::scf::ForOp> innermost;
-    getOperation().walk([&](xilinx::air::HerdOp herd) {
-      // Only target compute herds (containing vector.contract). Skipping
-      // fill/epilogue herds preserves their 6D memref access patterns so
-      // downstream `air-shrink-memref-sizes-by-access` can split L1 buffers
-      // across cores; flattening the fill herd's access via this pass would
-      // produce a 1D access pattern shrink can't analyze.
-      if (!herdHasVectorContract(herd))
-        return;
-      herd->walk([&](mlir::scf::ForOp forOp) {
-        bool hasInnerFor = false;
-        for (Operation &nested : forOp.getBody()->without_terminator()) {
-          if (isa<mlir::scf::ForOp>(nested)) {
-            hasInnerFor = true;
-            break;
-          }
-          nested.walk([&](mlir::scf::ForOp) { hasInnerFor = true; });
-          if (hasInnerFor)
-            break;
+static LogicalResult runHoistVectorTransferPointersStep(func::FuncOp func,
+                                                        IRRewriter &rewriter) {
+  // Compute-herd-only filter: skip fill/epilogue herds so downstream
+  // air-shrink-memref-sizes-by-access can still split L1 buffers per-core.
+  SmallVector<mlir::scf::ForOp> innermost;
+  func.walk([&](xilinx::air::HerdOp herd) {
+    if (!herdHasVectorContract(herd))
+      return;
+    herd->walk([&](mlir::scf::ForOp forOp) {
+      bool hasInnerFor = false;
+      for (Operation &nested : forOp.getBody()->without_terminator()) {
+        if (isa<mlir::scf::ForOp>(nested)) {
+          hasInnerFor = true;
+          break;
         }
-        if (!hasInnerFor)
-          innermost.push_back(forOp);
-      });
+        nested.walk([&](mlir::scf::ForOp) { hasInnerFor = true; });
+        if (hasInnerFor)
+          break;
+      }
+      if (!hasInnerFor)
+        innermost.push_back(forOp);
     });
-    for (mlir::scf::ForOp forOp : innermost) {
-      if (failed(runHoistVectorTransferPointers(forOp, rewriter))) {
-        forOp->emitError("hoist-vector-transfer-pointers failed");
-        return signalPassFailure();
-      }
-    }
+  });
+  for (mlir::scf::ForOp forOp : innermost) {
+    if (failed(runHoistVectorTransferPointers(forOp, rewriter)))
+      return forOp->emitError("hoist-vector-transfer-pointers failed");
   }
-};
-
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRHoistVectorTransferPointersPass() {
-  return std::make_unique<AIRHoistVectorTransferPointers>();
+  return success();
 }
 
-//===----------------------------------------------------------------------===//
-// AIRVectorCastForEmulation
-//===----------------------------------------------------------------------===//
-
-namespace {
-
-class AIRVectorCastForEmulation
-    : public impl::AIRVectorCastForEmulationBase<AIRVectorCastForEmulation> {
-public:
-  AIRVectorCastForEmulation() = default;
-  AIRVectorCastForEmulation(const AIRVectorCastForEmulationOptions &opts)
-      : AIRVectorCastForEmulationBase(opts) {}
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<mlir::vector::VectorDialect>();
+static LogicalResult runVectorCastForEmulationStep(func::FuncOp func,
+                                                   StringRef targetElementType,
+                                                   ArrayRef<int64_t> inIdx,
+                                                   ArrayRef<int64_t> outIdx,
+                                                   IRRewriter &rewriter) {
+  if (targetElementType.empty())
+    return success(); // skip
+  MLIRContext *ctx = func.getContext();
+  Type targetTy = llvm::StringSwitch<Type>(targetElementType)
+                      .Case("f32", Float32Type::get(ctx))
+                      .Case("bf16", BFloat16Type::get(ctx))
+                      .Case("f16", Float16Type::get(ctx))
+                      .Case("i32", IntegerType::get(ctx, 32))
+                      .Case("i16", IntegerType::get(ctx, 16))
+                      .Case("i8", IntegerType::get(ctx, 8))
+                      .Default(Type());
+  if (!targetTy)
+    return func->emitError("unknown target-element-type '")
+           << targetElementType << "'";
+  SmallVector<mlir::vector::ContractionOp> targets;
+  func.walk([&](mlir::vector::ContractionOp c) { targets.push_back(c); });
+  for (mlir::vector::ContractionOp c : targets) {
+    if (failed(runVectorTypeCastOnTarget(c.getOperation(), targetTy, inIdx,
+                                          outIdx, rewriter)))
+      return c->emitError("vector_type_cast failed");
   }
-
-  void runOnOperation() override {
-    MLIRContext *ctx = &getContext();
-    Type targetTy =
-        llvm::StringSwitch<Type>(clTargetElementType)
-            .Case("f32", Float32Type::get(ctx))
-            .Case("bf16", BFloat16Type::get(ctx))
-            .Case("f16", Float16Type::get(ctx))
-            .Case("i32", IntegerType::get(ctx, 32))
-            .Case("i16", IntegerType::get(ctx, 16))
-            .Case("i8", IntegerType::get(ctx, 8))
-            .Default(Type());
-    if (!targetTy) {
-      getOperation()->emitError("unknown target-element-type '")
-          << clTargetElementType << "'";
-      return signalPassFailure();
-    }
-
-    SmallVector<int64_t> inIdx(clInputIndices.begin(), clInputIndices.end());
-    SmallVector<int64_t> outIdx(clOutputIndices.begin(), clOutputIndices.end());
-
-    IRRewriter rewriter(ctx);
-    SmallVector<mlir::vector::ContractionOp> targets;
-    getOperation().walk(
-        [&](mlir::vector::ContractionOp c) { targets.push_back(c); });
-    for (mlir::vector::ContractionOp c : targets) {
-      if (failed(runVectorTypeCastOnTarget(c.getOperation(), targetTy, inIdx,
-                                            outIdx, rewriter))) {
-        c->emitError("vector_type_cast failed");
-        return signalPassFailure();
-      }
-    }
-  }
-};
-
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRVectorCastForEmulationPass() {
-  return std::make_unique<AIRVectorCastForEmulation>();
+  return success();
 }
-
-std::unique_ptr<mlir::Pass> createAIRVectorCastForEmulationPass(
-    const AIRVectorCastForEmulationOptions &opts) {
-  return std::make_unique<AIRVectorCastForEmulation>(opts);
-}
-
-//===----------------------------------------------------------------------===//
-// AIRHoistCastPairs (fixed-point wrapper around runHoistCastPair)
-//===----------------------------------------------------------------------===//
-
-namespace {
 
 // For each vector iter_arg of `forOp`, look for an extension that operates
 // on it (directly or through a single shape_cast) and a truncation whose
-// result is yielded back at the same iter_arg position. Returns the first
-// such pair.
+// result is yielded back at the same iter_arg position.
 static bool findNextPair(mlir::Operation *funcOp, mlir::Operation *&extOp,
                           mlir::Operation *&truncOp,
                           mlir::scf::ForOp &loopOp) {
@@ -363,14 +195,11 @@ static bool findNextPair(mlir::Operation *funcOp, mlir::Operation *&extOp,
           dyn_cast<mlir::scf::YieldOp>(forOp.getBody()->getTerminator());
       if (!yieldOp)
         return WalkResult::advance();
-      // For each vector-typed iter_arg, search for a matching ext/trunc pair.
       mlir::Block *body = forOp.getBody();
       for (auto [argIdx, blockArg] :
            llvm::enumerate(body->getArguments().drop_front(1))) {
         if (!isa<mlir::VectorType>(blockArg.getType()))
           continue;
-        // Find an extension whose input is `blockArg` (directly or via a
-        // single shape_cast).
         mlir::Operation *foundExt = nullptr;
         for (mlir::Operation *user : blockArg.getUsers()) {
           if (isa<mlir::arith::ExtFOp, mlir::arith::ExtSIOp,
@@ -392,8 +221,6 @@ static bool findNextPair(mlir::Operation *funcOp, mlir::Operation *&extOp,
         }
         if (!foundExt)
           continue;
-        // Find the truncation whose output is yielded at the same iter_arg
-        // position (directly or via a single shape_cast).
         mlir::Value yieldedVal = yieldOp.getOperand((unsigned)argIdx);
         mlir::Operation *foundTrunc = yieldedVal.getDefiningOp();
         if (auto sc = dyn_cast_if_present<mlir::vector::ShapeCastOp>(foundTrunc))
@@ -414,10 +241,32 @@ static bool findNextPair(mlir::Operation *funcOp, mlir::Operation *&extOp,
   return found;
 }
 
-class AIRHoistCastPairs
-    : public impl::AIRHoistCastPairsBase<AIRHoistCastPairs> {
+static LogicalResult runHoistCastPairsStep(func::FuncOp func,
+                                           int64_t maxIterations,
+                                           IRRewriter &rewriter) {
+  int64_t budget = maxIterations;
+  while (budget-- > 0) {
+    mlir::Operation *extOp = nullptr;
+    mlir::Operation *truncOp = nullptr;
+    mlir::scf::ForOp loopOp;
+    if (!findNextPair(func.getOperation(), extOp, truncOp, loopOp))
+      return success();
+    auto res = runHoistCastPair(extOp, truncOp, loopOp, rewriter);
+    if (failed(res))
+      return func->emitError("hoist-cast-pair failed");
+  }
+  func->emitWarning(
+      "air-matmul-codegen-vec-prep hit hoist-cast-pairs-max-iterations cap; "
+      "remaining pairs not hoisted");
+  return success();
+}
+
+class AIRMatmulCodegenVecPrep
+    : public impl::AIRMatmulCodegenVecPrepBase<AIRMatmulCodegenVecPrep> {
 public:
-  AIRHoistCastPairs() = default;
+  AIRMatmulCodegenVecPrep() = default;
+  AIRMatmulCodegenVecPrep(const AIRMatmulCodegenVecPrepOptions &opts)
+      : AIRMatmulCodegenVecPrepBase(opts) {}
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<mlir::arith::ArithDialect, mlir::scf::SCFDialect,
@@ -425,52 +274,54 @@ public:
   }
 
   void runOnOperation() override {
+    func::FuncOp func = getOperation();
     IRRewriter rewriter(&getContext());
-    int64_t budget = clMaxIterations;
-    while (budget-- > 0) {
-      mlir::Operation *extOp = nullptr;
-      mlir::Operation *truncOp = nullptr;
-      mlir::scf::ForOp loopOp;
-      if (!findNextPair(getOperation(), extOp, truncOp, loopOp))
-        return;
-      auto res = runHoistCastPair(extOp, truncOp, loopOp, rewriter);
-      if (failed(res)) {
-        getOperation()->emitError("hoist-cast-pair failed");
+
+    if (clDoFoldUnitExtentDims)
+      if (failed(runFoldUnitExtentDimsOnFunc(func)))
         return signalPassFailure();
-      }
-    }
-    getOperation()->emitWarning(
-        "air-hoist-cast-pairs hit max-iterations cap; remaining pairs not "
-        "hoisted");
+    if (clDoEliminateRedundantVectorTransfers)
+      (void)runEliminateRedundantVectorTransfers(func, rewriter);
+    SmallVector<int64_t> cast1In(clCast1InputIndices.begin(),
+                                  clCast1InputIndices.end());
+    SmallVector<int64_t> cast1Out(clCast1OutputIndices.begin(),
+                                   clCast1OutputIndices.end());
+    if (failed(runVectorCastForEmulationStep(func, clCast1TargetElementType,
+                                             cast1In, cast1Out, rewriter)))
+      return signalPassFailure();
+    SmallVector<int64_t> cast2In(clCast2InputIndices.begin(),
+                                  clCast2InputIndices.end());
+    SmallVector<int64_t> cast2Out(clCast2OutputIndices.begin(),
+                                   clCast2OutputIndices.end());
+    if (failed(runVectorCastForEmulationStep(func, clCast2TargetElementType,
+                                             cast2In, cast2Out, rewriter)))
+      return signalPassFailure();
+    if (clDoHoistLoopInvariantTransfers)
+      if (failed(runHoistLoopInvariantTransfersStep(func, rewriter)))
+        return signalPassFailure();
+    if (clDoFlattenForIterArgs)
+      if (failed(runFlattenForIterArgsStep(func, rewriter)))
+        return signalPassFailure();
+    if (clDoHoistVectorTransferPointers)
+      if (failed(runHoistVectorTransferPointersStep(func, rewriter)))
+        return signalPassFailure();
+    if (clDoHoistCastPairs)
+      if (failed(runHoistCastPairsStep(func, clHoistCastPairsMaxIterations,
+                                       rewriter)))
+        return signalPassFailure();
   }
 };
 
 } // namespace
 
-std::unique_ptr<mlir::Pass> createAIRHoistCastPairsPass() {
-  return std::make_unique<AIRHoistCastPairs>();
+std::unique_ptr<mlir::Pass> createAIRMatmulCodegenVecPrepPass() {
+  return std::make_unique<AIRMatmulCodegenVecPrep>();
 }
 
-// Stubs for the remaining 5 passes (M1a-2..6) — implemented in a follow-up.
-// Defined here so the pass registration in Passes.td/.cpp links.
-
-#define UNIMPL_PASS(ClassName, CreateName)                                     \
-  namespace {                                                                  \
-  class ClassName : public impl::ClassName##Base<ClassName> {                  \
-  public:                                                                      \
-    ClassName() = default;                                                     \
-    void runOnOperation() override {                                           \
-      getOperation()->emitError(#CreateName " is not yet implemented");        \
-      signalPassFailure();                                                     \
-    }                                                                          \
-  };                                                                           \
-  }                                                                            \
-  std::unique_ptr<mlir::Pass> create##ClassName##Pass() {                      \
-    return std::make_unique<ClassName>();                                      \
-  }
-
-
-#undef UNIMPL_PASS
+std::unique_ptr<mlir::Pass> createAIRMatmulCodegenVecPrepPass(
+    const AIRMatmulCodegenVecPrepOptions &opts) {
+  return std::make_unique<AIRMatmulCodegenVecPrep>(opts);
+}
 
 namespace {
 
