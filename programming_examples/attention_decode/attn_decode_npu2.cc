@@ -32,50 +32,6 @@
 static constexpr unsigned VEC = 16;
 
 //------------------------------------------------------------------------------
-// vecmat: c[offset:offset+n] += a[k] @ b[k, n]. Tile sizes baked at compile.
-// Same template body as mha.cc — uses portable aie_api ops.
-//------------------------------------------------------------------------------
-template <typename T_in, typename T_out, unsigned k, unsigned n, unsigned s,
-          unsigned t>
-static void vecmat_vectorized(int offset, T_in *__restrict a,
-                              T_in *__restrict b, T_out *__restrict c) {
-  static_assert(n % t == 0 && k % 2 == 0);
-  static_assert(s == 8);
-  static_assert(k % s == 0);
-  static_assert(std::is_same<T_in, bfloat16>::value);
-
-  // c[offset:offset+n] += a[k] @ b[k, n]. Per col stripe (t cols), load c
-  // ONCE, accumulate over all k rows in the f32 accumulator, store ONCE.
-  // The previous version load-modify-stored c every (k/s) row iters per
-  // col stripe — at TILE_K=128 that's 16x extra LMS + bf16<->f32
-  // conversions per col, dominant overhead in this memory-bound GEMV.
-  T_out *__restrict c_ptr = c + offset;
-  for (int col = 0; col < (int)n; col += t) {
-    aie::accum<accfloat, t> c_acc;
-    c_acc.from_vector(aie::load_v<t>(c_ptr));
-
-    const T_in *__restrict a_ptr1 = a;
-    const T_in *__restrict b_ptr1 = b;
-    for (int row = 0; row < (int)k; row += s)
-      chess_prepare_for_pipelining chess_loop_range(1, ) {
-        aie::vector<T_in, s> a_vec = aie::load_v<s>(a_ptr1);
-        a_ptr1 += s;
-        for (int i = 0; i < (int)s; i++)
-          chess_flatten_loop {
-            aie::vector<T_in, t> b_vec = aie::load_v<t>(b_ptr1);
-            b_ptr1 += n;
-            aie::vector<T_in, t> s0 = aie::broadcast<T_in, t>(a_vec[i]);
-            c_acc = mac(c_acc, s0, b_vec);
-          }
-      }
-
-    aie::store_v(c_ptr, c_acc.template to_vector<T_out>());
-    b += t;
-    c_ptr += t;
-  }
-}
-
-//------------------------------------------------------------------------------
 // sinf_cosf_poly_bf16: ported from rope_sincos/rope.cc. Native n=16 vectors
 // for AIE2P; processes N elements via N/n iterations.
 //------------------------------------------------------------------------------
@@ -272,54 +228,15 @@ static void shuffle_apply_rope_padded(int offset,
 }
 
 //------------------------------------------------------------------------------
-// softmax_bf16 using aie::exp2 (no LUT). exp(x) = exp2(x * log2(e)).
-// num_elems is ignored — the caller (mha.py) pre-fills the [SEQ_LEN] input
-// with -99 beyond pos+1 so we can process the entire SEQ_LEN buffer
-// uniformly. Out-of-range entries contribute ~0 to the sum.
+// softmax_group: replaced with inline-MLIR 3-pass softmax in
+// attn_decode_npu2.py (uses linalg.fill, vector.transfer_*, math.exp,
+// vector.reduction). The .cc impl is no longer needed.
 //------------------------------------------------------------------------------
 #ifndef SEQ_LEN
 #define SEQ_LEN 128
 #endif
 
 static_assert(SEQ_LEN % 16 == 0, "SEQ_LEN must be multiple of 16");
-
-static void softmax_bf16_impl(const bfloat16 *__restrict in, int /*num_elems*/,
-                              bfloat16 *__restrict out) {
-  constexpr unsigned V = 16;
-  constexpr int N = SEQ_LEN;
-  // Pass 1: vector max reduction
-  aie::vector<bfloat16, V> max_vec =
-      aie::broadcast<bfloat16, V>((bfloat16)-1e30f);
-  for (int i = 0; i < N; i += V) {
-    aie::vector<bfloat16, V> v = aie::load_v<V>(in + i);
-    max_vec = aie::max(max_vec, v);
-  }
-  bfloat16 max_val = aie::reduce_max(max_vec);
-
-  // Pass 2: exp(x - max), accumulate sum
-  const float LOG2E = 1.4426950408889634f;
-  aie::vector<bfloat16, V> log2e_vec = aie::broadcast<bfloat16, V>(LOG2E);
-  aie::vector<bfloat16, V> max_bcast = aie::broadcast<bfloat16, V>(max_val);
-  aie::accum<accfloat, V> sum_acc = aie::zeros<accfloat, V>();
-  for (int i = 0; i < N; i += V) {
-    aie::vector<bfloat16, V> v = aie::load_v<V>(in + i);
-    aie::vector<bfloat16, V> diff = aie::sub(v, max_bcast);
-    aie::vector<bfloat16, V> e =
-        aie::exp2<bfloat16>(aie::mul(diff, log2e_vec).to_vector<float>());
-    aie::store_v(out + i, e);
-    sum_acc = aie::add(sum_acc, e);
-  }
-  float total = aie::reduce_add(sum_acc.template to_vector<float>());
-
-  // Pass 3: divide by sum
-  float inv = 1.0f / total;
-  aie::vector<bfloat16, V> inv_bcast = aie::broadcast<bfloat16, V>(inv);
-  for (int i = 0; i < N; i += V) {
-    aie::vector<bfloat16, V> v = aie::load_v<V>(out + i);
-    aie::store_v(out + i,
-                 aie::mul(v, inv_bcast).template to_vector<bfloat16>());
-  }
-}
 
 //------------------------------------------------------------------------------
 // simple_rms_bf16 helpers (templates, kept outside extern "C"). Body matches
@@ -415,24 +332,10 @@ static_assert(DIM_K % TILE_K == 0, "DIM_K must be a multiple of TILE_K");
 
 extern "C" {
 
-void linalg_fill_bf16(int offset, bfloat16 *c) {
-  STUB_RET;
-  bfloat16 *p = c + offset;
-  aie::vector<bfloat16, 16> z = aie::zeros<bfloat16, 16>();
-  for (int i = 0; i < DIM_N; i += 16)
-    aie::store_v(p + i, z);
-}
-
-// Inner-k chunked GEMV. x_offset is in elements (caller passes
-// chunk_idx * TILE_K). Reads a[x_offset..x_offset+TILE_K] @ b[TILE_K, DIM_N]
-// and accumulates into c[offset..offset+DIM_N]. Caller must zero c (via
-// linalg_fill_bf16) before the first chunk in a given GEMV head.
-void vecmat_bf16_bf16(int x_offset, int offset, bfloat16 *a, bfloat16 *b,
-                      bfloat16 *c) {
-  STUB_RET;
-  vecmat_vectorized<bfloat16, bfloat16, TILE_K, DIM_N, 8, 16>(
-      offset, a + x_offset, b, c);
-}
+// vecmat_bf16_bf16: replaced with inline-MLIR vecmat in attn_decode_npu2.py
+// (handwritten broadcast-bf16+extf+f32-fma pattern, after matvec_cascade.py).
+// Costs ~78us extra per token vs the chess-pipelined extern, accepted to
+// remove the largest extern dependency.
 
 // dk=64 => 32-elem buffers, native n=16 vectors. No padding needed.
 void freq_pos_bf16_32_16(int pos, bfloat16 *outputs) {
@@ -471,28 +374,20 @@ void xrms_demux_bf16(const bfloat16 *padded, bfloat16 *x_raw, bfloat16 *w_rms,
     aie::store_v(w_rms + i, aie::load_v<VL>(w_src + i));
 }
 
-// Vectorized fills to replace per-element scf.for stores in the herd
-// body — those unroll into thousands of scalar stores in the AIE2P core
-// ELF, exceeding the 16 KB program memory.
-void fill_neg99_bf16(bfloat16 *p, int32_t total_elems) {
+// Fused copy-and-scale for Q: pre-scales Q by 1/sqrt(DIM_N) once per token
+// so the per-K-row attn_1_group skips the (bf16)(scalar * 0.125f) tail
+// computation (saves 4 scalar muls + bf16 conversions per attn_1 call).
+// 32-lane to match attn_1's vector width.
+void copy_scale_q_bf16(const bfloat16 *src, bfloat16 *dst,
+                       int32_t total_elems) {
   STUB_RET;
-  aie::vector<bfloat16, 16> v = aie::broadcast<bfloat16, 16>((bfloat16)-99);
-  for (int i = 0; i < total_elems; i += 16)
-    aie::store_v(p + i, v);
-}
-
-void fill_zero_bf16(bfloat16 *p, int32_t total_elems) {
-  STUB_RET;
-  aie::vector<bfloat16, 16> v = aie::zeros<bfloat16, 16>();
-  for (int i = 0; i < total_elems; i += 16)
-    aie::store_v(p + i, v);
-}
-
-void vector_copy_n_bf16(const bfloat16 *src, bfloat16 *dst,
-                        int32_t total_elems) {
-  STUB_RET;
-  for (int i = 0; i < total_elems; i += 16)
-    aie::store_v(dst + i, aie::load_v<16>(src + i));
+  aie::vector<bfloat16, 32> scale =
+      aie::broadcast<bfloat16, 32>((bfloat16)0.125f);
+  for (int i = 0; i < total_elems; i += 32) {
+    aie::vector<bfloat16, 32> v = aie::load_v<32>(src + i);
+    auto acc = aie::mul(v, scale);
+    aie::store_v(dst + i, acc.template to_vector<bfloat16>());
+  }
 }
 
 //------------------------------------------------------------------------------
@@ -513,56 +408,41 @@ void vector_copy_n_bf16(const bfloat16 *src, bfloat16 *dst,
 void attn_1_group(const bfloat16 *Q, const bfloat16 *k_row, int pos,
                   bfloat16 *attn_out) {
   STUB_RET;
-  // (a) hoist the 4 K-row loads — k_row is shared across all GROUP_SIZE
-  // Q heads (~12 redundant loads/call eliminated), (b) give the compiler
-  // 4 independent acc chains (one per Q head) so it can interleave macs
-  // instead of serializing per g, (c) accumulate then reduce ONCE per g.
+  // 32-lane (512-bit) vectors: AIE2P registers are 512-bit so bf16<32>
+  // fits natively. Halves K loads (4→2) and macs per Q head (4→2) vs
+  // 16-lane. accum<accfloat,32> = 1024-bit accumulator. 4 independent
+  // acc chains (one per Q head) so the compiler can interleave macs.
   static_assert(GROUP_SIZE == 4 && DIM_N == 64,
                 "attn_1_group unrolled for GROUP_SIZE=4, DIM_N=64");
-  aie::vector<bfloat16, 16> k0 = aie::load_v<16>(k_row + 0);
-  aie::vector<bfloat16, 16> k1 = aie::load_v<16>(k_row + 16);
-  aie::vector<bfloat16, 16> k2 = aie::load_v<16>(k_row + 32);
-  aie::vector<bfloat16, 16> k3 = aie::load_v<16>(k_row + 48);
+  aie::vector<bfloat16, 32> k0 = aie::load_v<32>(k_row + 0);
+  aie::vector<bfloat16, 32> k1 = aie::load_v<32>(k_row + 32);
 
-  aie::accum<accfloat, 16> a0 = aie::zeros<accfloat, 16>();
-  aie::accum<accfloat, 16> a1 = aie::zeros<accfloat, 16>();
-  aie::accum<accfloat, 16> a2 = aie::zeros<accfloat, 16>();
-  aie::accum<accfloat, 16> a3 = aie::zeros<accfloat, 16>();
+  // Fully unrolled per-Q-head: 4 independent acc chains for VLIW
+  // interleaving, no if-else dispatch chain.
+  aie::accum<accfloat, 32> a0 = aie::zeros<accfloat, 32>();
+  aie::accum<accfloat, 32> a1 = aie::zeros<accfloat, 32>();
+  aie::accum<accfloat, 32> a2 = aie::zeros<accfloat, 32>();
+  aie::accum<accfloat, 32> a3 = aie::zeros<accfloat, 32>();
 
-  for (int g = 0; g < 4; g++) {
-    const bfloat16 *q_g = Q + g * DIM_N;
-    aie::accum<accfloat, 16> acc = aie::zeros<accfloat, 16>();
-    acc = aie::mac(acc, aie::load_v<16>(q_g + 0), k0);
-    acc = aie::mac(acc, aie::load_v<16>(q_g + 16), k1);
-    acc = aie::mac(acc, aie::load_v<16>(q_g + 32), k2);
-    acc = aie::mac(acc, aie::load_v<16>(q_g + 48), k3);
-    if (g == 0)
-      a0 = acc;
-    else if (g == 1)
-      a1 = acc;
-    else if (g == 2)
-      a2 = acc;
-    else
-      a3 = acc;
-  }
+  a0 = aie::mac(a0, aie::load_v<32>(Q + 0 * DIM_N + 0), k0);
+  a1 = aie::mac(a1, aie::load_v<32>(Q + 1 * DIM_N + 0), k0);
+  a2 = aie::mac(a2, aie::load_v<32>(Q + 2 * DIM_N + 0), k0);
+  a3 = aie::mac(a3, aie::load_v<32>(Q + 3 * DIM_N + 0), k0);
+  a0 = aie::mac(a0, aie::load_v<32>(Q + 0 * DIM_N + 32), k1);
+  a1 = aie::mac(a1, aie::load_v<32>(Q + 1 * DIM_N + 32), k1);
+  a2 = aie::mac(a2, aie::load_v<32>(Q + 2 * DIM_N + 32), k1);
+  a3 = aie::mac(a3, aie::load_v<32>(Q + 3 * DIM_N + 32), k1);
 
+  // Q is pre-scaled by 1/sqrt(DIM_N)=0.125 in copy_scale_q_bf16 once per
+  // token, so no per-call scalar multiply here.
   attn_out[0 * SEQ_LEN + pos] =
-      (bfloat16)(aie::reduce_add(a0.to_vector<float>()) * 0.125f);
+      (bfloat16)(aie::reduce_add(a0.to_vector<float>()));
   attn_out[1 * SEQ_LEN + pos] =
-      (bfloat16)(aie::reduce_add(a1.to_vector<float>()) * 0.125f);
+      (bfloat16)(aie::reduce_add(a1.to_vector<float>()));
   attn_out[2 * SEQ_LEN + pos] =
-      (bfloat16)(aie::reduce_add(a2.to_vector<float>()) * 0.125f);
+      (bfloat16)(aie::reduce_add(a2.to_vector<float>()));
   attn_out[3 * SEQ_LEN + pos] =
-      (bfloat16)(aie::reduce_add(a3.to_vector<float>()) * 0.125f);
-}
-
-// softmax_group: per-row softmax over [GROUP_SIZE, SEQ_LEN]. Same -inf-padding
-// assumption as softmax_bf16 (caller pre-fills [pos+1..SEQ_LEN-1] with -99).
-void softmax_group(const bfloat16 *attn_in, int num_elems, bfloat16 *attn_out) {
-  STUB_RET;
-  for (int g = 0; g < GROUP_SIZE; g++) {
-    softmax_bf16_impl(attn_in + g * SEQ_LEN, num_elems, attn_out + g * SEQ_LEN);
-  }
+      (bfloat16)(aie::reduce_add(a3.to_vector<float>()));
 }
 
 // attn_2_group:
@@ -574,31 +454,55 @@ void softmax_group(const bfloat16 *attn_in, int num_elems, bfloat16 *attn_out) {
 void attn_2_group(const bfloat16 *softmax, const bfloat16 *v_row, int pos,
                   bfloat16 *xb_out) {
   STUB_RET;
-  // Issue all 4 (DIM_N/16) loads first, then all 4 macs, then all 4
-  // stores — gives the AIE2P VLIW scheduler 4 independent dependency
-  // chains to interleave instead of a serialized load-mac-store per j.
-  static_assert(DIM_N == 64, "attn_2_group unrolled for DIM_N=64");
-  for (int g = 0; g < GROUP_SIZE; g++) {
-    bfloat16 weight = softmax[g * SEQ_LEN + pos];
-    aie::vector<bfloat16, 16> wB = aie::broadcast<bfloat16, 16>(weight);
-    bfloat16 *out_g = xb_out + g * DIM_N;
+  // Fully unrolled across all 4 Q heads with V loads hoisted (shared across
+  // the group) and 8 independent acc chains for VLIW interleaving. Old
+  // for-loop reloaded v_row inside each g iter (8 redundant loads/call).
+  static_assert(GROUP_SIZE == 4 && DIM_N == 64,
+                "attn_2_group unrolled for GROUP_SIZE=4, DIM_N=64");
+  aie::vector<bfloat16, 32> v0 = aie::load_v<32>(v_row + 0);
+  aie::vector<bfloat16, 32> v1 = aie::load_v<32>(v_row + 32);
 
-    aie::accum<accfloat, 16> a0, a1, a2, a3;
-    a0.from_vector(aie::load_v<16>(out_g + 0));
-    a1.from_vector(aie::load_v<16>(out_g + 16));
-    a2.from_vector(aie::load_v<16>(out_g + 32));
-    a3.from_vector(aie::load_v<16>(out_g + 48));
+  aie::vector<bfloat16, 32> w0 =
+      aie::broadcast<bfloat16, 32>(softmax[0 * SEQ_LEN + pos]);
+  aie::vector<bfloat16, 32> w1 =
+      aie::broadcast<bfloat16, 32>(softmax[1 * SEQ_LEN + pos]);
+  aie::vector<bfloat16, 32> w2 =
+      aie::broadcast<bfloat16, 32>(softmax[2 * SEQ_LEN + pos]);
+  aie::vector<bfloat16, 32> w3 =
+      aie::broadcast<bfloat16, 32>(softmax[3 * SEQ_LEN + pos]);
 
-    a0 = mac(a0, wB, aie::load_v<16>(v_row + 0));
-    a1 = mac(a1, wB, aie::load_v<16>(v_row + 16));
-    a2 = mac(a2, wB, aie::load_v<16>(v_row + 32));
-    a3 = mac(a3, wB, aie::load_v<16>(v_row + 48));
+  bfloat16 *o0 = xb_out + 0 * DIM_N;
+  bfloat16 *o1 = xb_out + 1 * DIM_N;
+  bfloat16 *o2 = xb_out + 2 * DIM_N;
+  bfloat16 *o3 = xb_out + 3 * DIM_N;
 
-    aie::store_v(out_g + 0, a0.template to_vector<bfloat16>());
-    aie::store_v(out_g + 16, a1.template to_vector<bfloat16>());
-    aie::store_v(out_g + 32, a2.template to_vector<bfloat16>());
-    aie::store_v(out_g + 48, a3.template to_vector<bfloat16>());
-  }
+  aie::accum<accfloat, 32> a0_0, a0_1, a1_0, a1_1, a2_0, a2_1, a3_0, a3_1;
+  a0_0.from_vector(aie::load_v<32>(o0 + 0));
+  a1_0.from_vector(aie::load_v<32>(o1 + 0));
+  a2_0.from_vector(aie::load_v<32>(o2 + 0));
+  a3_0.from_vector(aie::load_v<32>(o3 + 0));
+  a0_1.from_vector(aie::load_v<32>(o0 + 32));
+  a1_1.from_vector(aie::load_v<32>(o1 + 32));
+  a2_1.from_vector(aie::load_v<32>(o2 + 32));
+  a3_1.from_vector(aie::load_v<32>(o3 + 32));
+
+  a0_0 = mac(a0_0, w0, v0);
+  a1_0 = mac(a1_0, w1, v0);
+  a2_0 = mac(a2_0, w2, v0);
+  a3_0 = mac(a3_0, w3, v0);
+  a0_1 = mac(a0_1, w0, v1);
+  a1_1 = mac(a1_1, w1, v1);
+  a2_1 = mac(a2_1, w2, v1);
+  a3_1 = mac(a3_1, w3, v1);
+
+  aie::store_v(o0 + 0, a0_0.template to_vector<bfloat16>());
+  aie::store_v(o1 + 0, a1_0.template to_vector<bfloat16>());
+  aie::store_v(o2 + 0, a2_0.template to_vector<bfloat16>());
+  aie::store_v(o3 + 0, a3_0.template to_vector<bfloat16>());
+  aie::store_v(o0 + 32, a0_1.template to_vector<bfloat16>());
+  aie::store_v(o1 + 32, a1_1.template to_vector<bfloat16>());
+  aie::store_v(o2 + 32, a2_1.template to_vector<bfloat16>());
+  aie::store_v(o3 + 32, a3_1.template to_vector<bfloat16>());
 }
 
 void simple_rms_bf16(bfloat16 *x, bfloat16 *w, bfloat16 *y, int32_t N) {
