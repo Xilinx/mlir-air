@@ -164,8 +164,7 @@ static bool isUseReplaceableWithSubview(OpOperand &use) {
              memref::SubViewOp>(user);
 }
 
-template <typename AllocLikeOpType>
-std::optional<Value> hoistOneStaticallyBoundAllocation(
+static std::optional<Value> hoistOneStaticallyBoundAllocation(
     mlir::FunctionOpInterface funcOp, OpBuilder &builder, Location loc,
     MemRefType allocLikeType, ValueRange dynamicSizes,
     std::optional<uint64_t> alignment,
@@ -182,14 +181,9 @@ std::optional<Value> hoistOneStaticallyBoundAllocation(
     OpBuilder::InsertionGuard g(builder);
     builder.setInsertionPointToStart(&funcOp.getFunctionBody().front());
     Value allocation =
-        AllocLikeOpType::create(builder, loc, allocLikeType, alignmentAttr);
-    // For memref.alloc, also insert a dealloc in the entry block terminator
-    // block to preserve semantics (leaks avoided).
-    if (std::is_same<AllocLikeOpType, memref::AllocOp>::value) {
-      builder.setInsertionPoint(
-          funcOp.getFunctionBody().front().getTerminator());
-      memref::DeallocOp::create(builder, loc, allocation);
-    }
+        memref::AllocOp::create(builder, loc, allocLikeType, alignmentAttr);
+    builder.setInsertionPoint(funcOp.getFunctionBody().front().getTerminator());
+    memref::DeallocOp::create(builder, loc, allocation);
     return allocation;
   }
 
@@ -225,7 +219,7 @@ std::optional<Value> hoistOneStaticallyBoundAllocation(
     dispatchIndexOpFoldResults(allocSizes, dynamicSizes, staticShape);
     auto allocationType = allocLikeType.clone(staticShape);
 
-    allocation = AllocLikeOpType::create(builder, loc, allocationType,
+    allocation = memref::AllocOp::create(builder, loc, allocationType,
                                          dynamicSizes, alignmentAttr);
   }
 
@@ -246,54 +240,52 @@ std::optional<Value> hoistOneStaticallyBoundAllocation(
   }
 
   // As above, insert a dealloc at function end.
-  if (std::is_same<AllocLikeOpType, memref::AllocOp>::value) {
-    builder.setInsertionPoint(funcOp.getFunctionBody().front().getTerminator());
-    memref::DeallocOp::create(builder, loc, allocation);
-  }
+  builder.setInsertionPoint(funcOp.getFunctionBody().front().getTerminator());
+  memref::DeallocOp::create(builder, loc, allocation);
 
   return subviewOp;
 }
 
-template <typename AllocLikeOpType>
-std::optional<Value> hoistOneStaticallyBoundAllocation(
+static std::optional<Value> hoistOneStaticallyBoundAllocation(
     mlir::FunctionOpInterface funcOp, OpBuilder &builder,
-    AllocLikeOpType allocLikeOp,
+    memref::AllocOp allocLikeOp,
     std::optional<vector::VscaleRange> vscaleRange) {
   // Convenience overload: set insertion point to the original alloc-like op
   // and forward its properties to the main hoisting routine.
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPoint(allocLikeOp);
-  return hoistOneStaticallyBoundAllocation<AllocLikeOpType>(
+  return hoistOneStaticallyBoundAllocation(
       funcOp, builder, allocLikeOp.getLoc(), allocLikeOp.getType(),
       allocLikeOp.getDynamicSizes(), allocLikeOp.getAlignment(), vscaleRange);
 }
 
-template <typename AllocLikeOpType>
-void hoistStaticallyBoundAllocationsInFunc(
-    RewriterBase &rewriter, mlir::FunctionOpInterface funcOp,
-    std::optional<vector::VscaleRange> vscaleRange = std::nullopt) {
-  SmallVector<AllocLikeOpType> allocLikeOps;
+namespace xilinx {
+namespace air {
 
-  // Collect candidate alloc-like ops that are not already in the entry block
-  // and whose uses are safe to rewrite (or have no dynamic sizes).
-  funcOp.walk([&](AllocLikeOpType allocLikeOp) {
-    if (allocLikeOp->getBlock() == &funcOp.getFunctionBody().front())
+void hoistStaticAllocsInFunc(RewriterBase &rewriter,
+                             mlir::FunctionOpInterface funcOp) {
+  SmallVector<memref::AllocOp> allocOps;
+
+  // Collect candidate allocs that are not already in the entry block and whose
+  // uses are safe to rewrite (or have no dynamic sizes).
+  funcOp.walk([&](memref::AllocOp allocOp) {
+    if (allocOp->getBlock() == &funcOp.getFunctionBody().front())
       return;
-    if (allocLikeOp.getDynamicSizes().empty()) {
-      allocLikeOps.push_back(allocLikeOp);
+    if (allocOp.getDynamicSizes().empty()) {
+      allocOps.push_back(allocOp);
       return;
     }
     // All uses must tolerate replacement by a subview.
-    if (llvm::all_of(allocLikeOp->getUses(), [](OpOperand &use) {
+    if (llvm::all_of(allocOp->getUses(), [](OpOperand &use) {
           return isUseReplaceableWithSubview(use);
         })) {
-      allocLikeOps.push_back(allocLikeOp);
+      allocOps.push_back(allocOp);
       return;
     }
   });
 
   // Hoist each candidate and replace all uses with the hoisted value.
-  for (auto allocLikeOp : allocLikeOps) {
+  for (auto allocLikeOp : allocOps) {
     // Track and remove any deallocs tied to the original allocation; the new
     // hoisted allocation installs its own dealloc in the entry block.
     SmallVector<memref::DeallocOp> deallocOps;
@@ -311,7 +303,7 @@ void hoistStaticallyBoundAllocationsInFunc(
       llvm::dbgs() << " num Uses : " << numUses;
     });
     std::optional<Value> replacement = hoistOneStaticallyBoundAllocation(
-        funcOp, rewriter, allocLikeOp, vscaleRange);
+        funcOp, rewriter, allocLikeOp, /*vscaleRange=*/std::nullopt);
     if (!replacement)
       continue;
     LLVM_DEBUG({
@@ -326,26 +318,16 @@ void hoistStaticallyBoundAllocationsInFunc(
   }
 }
 
+} // namespace air
+} // namespace xilinx
+
 DiagnosedSilenceableFailure transform::AIRHoistStaticAllocOp::applyToOne(
     transform::TransformRewriter &rewriter, mlir::FunctionOpInterface target,
     transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
-  // Apply the hoisting pass to all memref.alloc ops in the target function.
-  // If more alloc-like ops should be supported, template parameterization
-  // allows calling this routine for those as well.
-  hoistStaticallyBoundAllocationsInFunc<memref::AllocOp>(rewriter, target);
+  xilinx::air::hoistStaticAllocsInFunc(rewriter, target);
   return DiagnosedSilenceableFailure::success();
 }
-
-namespace xilinx {
-namespace air {
-void hoistStaticAllocsInFunc(::mlir::RewriterBase &rewriter,
-                             ::mlir::FunctionOpInterface funcOp) {
-  ::hoistStaticallyBoundAllocationsInFunc<mlir::memref::AllocOp>(rewriter,
-                                                                 funcOp);
-}
-} // namespace air
-} // namespace xilinx
 
 void transform::AIRHoistStaticAllocOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
