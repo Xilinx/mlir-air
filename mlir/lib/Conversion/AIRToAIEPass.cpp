@@ -4972,19 +4972,19 @@ public:
       OpBuilder builder, air::MemcpyInterface memcpyOpIf,
       llvm::SetVector<Operation *> &allocs_to_remap,
       const AIE::AIETargetModel &targetModel,
-      air::TileDMAAllocator &tileDmaAlloc, int x, int y) {
+      air::TileDMAAllocator &tileDmaAlloc, AIE::TileOp tile) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
-    auto dma_alloc = tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf);
+    auto dma_alloc = tileDmaAlloc.lookupDMAAllocation(tile, memcpyOpIf);
     if (failed(dma_alloc)) {
       return memcpyOpIf->emitOpError("failed to look up dma allocation.");
     }
     auto tile_channel = dma_alloc.value().dma_channel;
-    auto bufferOp = tileDmaAlloc.getBuffer(BufferId, x, y, memcpyOpIf);
+    auto bufferOp = tileDmaAlloc.getBuffer(BufferId, tile, memcpyOpIf);
     if (failed(bufferOp)) {
       return memcpyOpIf->emitOpError("failed to get buffer.");
     }
-    auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, x, y,
+    auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, tile,
                                             bufferOp.value().getOperation(),
                                             /*lockRaceConditionFix*/ false);
     if (failed(locks))
@@ -5095,7 +5095,7 @@ public:
                                        std::vector<Operation *>>
                            dma_memcpys,
                        dmaAllocatorTy dmaAlloc, mlir::Location loc, memOpTy mem,
-                       int x, int y, bool lockRaceConditionFix = false) {
+                       AIE::TileOp tile, bool lockRaceConditionFix = false) {
 
     llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
                     std::vector<Operation *>>
@@ -5187,17 +5187,17 @@ public:
             next_bd->insertBefore(end_bb);
             AIE::NextBDOp::create(b, loc, next_bd);
           }
-          auto bufferOp = dmaAlloc.getBuffer(BufferId, x, y, memcpyOp);
+          auto bufferOp = dmaAlloc.getBuffer(BufferId, tile, memcpyOp);
           if (failed(bufferOp)) {
             memcpyOp->emitOpError("failed to get buffer.");
             return failure();
           }
-          auto locks = dmaAlloc.getLockForDMA(memcpyOp, x, y,
+          auto locks = dmaAlloc.getLockForDMA(memcpyOp, tile,
                                               bufferOp.value().getOperation(),
                                               lockRaceConditionFix);
           if (failed(locks))
             return memcpyOp->emitOpError("failed to get lock for dma.");
-          auto newBD = generateDmaBd<bufferOpTy>(loc, dir, locks.value(), x, y,
+          auto newBD = generateDmaBd<bufferOpTy>(loc, dir, locks.value(), tile,
                                                  targetModel, bd, memcpyOp,
                                                  bufferOp.value(), chan);
           // Attribute task_id is necessary to ensure that BDs do not get shared
@@ -5235,7 +5235,7 @@ public:
   template <typename bufferOpTy>
   FailureOr<AIE::DMABDOp>
   generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
-                std::pair<AIE::LockOp, AIE::LockOp> locks, int x, int y,
+                std::pair<AIE::LockOp, AIE::LockOp> locks, AIE::TileOp tile,
                 const AIE::AIETargetModel &targetModel, Block *bd,
                 air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan) {
     bool UsesSemaphoreLocks =
@@ -5300,10 +5300,8 @@ public:
                            lockAqValue);
 
     // Packet flow routing: get packet flow id.
-    auto aie_device = bufferOp->template getParentOfType<AIE::DeviceOp>();
-    auto tileOp = air::getPhysTileOpOrNull(aie_device, x, y);
     auto pktFlowOp = getExistingPacketFlowOpFromDevice(
-        tileOp, AIE::WireBundle::DMA, chan, memcpyOp);
+        tile, AIE::WireBundle::DMA, chan, memcpyOp);
     AIE::PacketInfoAttr pktInfoAttr = nullptr;
     if (isMM2S && pktFlowOp) {
       auto packetID = pktFlowOp.getID();
@@ -6052,8 +6050,6 @@ public:
 
     for (AIE::CoreOp core : cores) {
       AIE::TileOp tile = core.getTileOp();
-      auto x = tile.getCol();
-      auto y = tile.getRow();
 
       // emit the acquire and release of the L1 buffer locks
       // lock_allocation_list lock_allocs;
@@ -6070,7 +6066,7 @@ public:
             return o->emitOpError("does not have air::MemcpyInterface");
           if (failed(allocateCoreLocksPerMemcpyOp(rewriter, memcpyOpIf,
                                                   allocs_to_remap, target_model,
-                                                  tileDmaAlloc, x, y))) {
+                                                  tileDmaAlloc, tile))) {
             return o->emitOpError("failed to allocate core locks");
           }
         }
@@ -6086,7 +6082,7 @@ public:
             return o->emitOpError("does not have air::MemcpyInterface");
           if (failed(allocateCoreLocksPerMemcpyOp(rewriter, memcpyOpIf,
                                                   allocs_to_remap, target_model,
-                                                  tileDmaAlloc, x, y))) {
+                                                  tileDmaAlloc, tile))) {
             return o->emitOpError("failed to allocate core locks");
           }
         }
@@ -6147,7 +6143,7 @@ public:
       if (failed(generateDmaBdProgram<air::TileDMAAllocator, AIE::BufferOp,
                                       AIE::MemOp>(
               rewriter, target_model, tile_dma_memcpys, tileDmaAlloc, loc, mem,
-              x, y))) {
+              tile))) {
         mem->emitOpError("failed to generate dma bd program.");
         return failure();
       }
@@ -6210,9 +6206,6 @@ public:
       shimtiles.clear();
 
     for (auto tile : shimtiles) {
-      auto x = tile.getCol();
-      auto y = tile.getRow();
-
       // Collect memcpy ops wrt each DMA channel
       llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
                       std::vector<Operation *>>
@@ -6251,7 +6244,7 @@ public:
       if (failed(generateDmaBdProgram<air::ShimDMAAllocator,
                                       AIE::ExternalBufferOp, AIE::ShimDMAOp>(
               rewriter, target_model, shim_dma_memcpys, shimDmaAlloc, loc,
-              shimDMA, x, y))) {
+              shimDMA, tile))) {
         shimDMA->emitOpError("failed to generate dma bd program.");
         return failure();
       }
@@ -6260,9 +6253,6 @@ public:
     // Generate L2 DMA program
 
     for (auto tile : memTileTiles) {
-      auto x = tile.getCol();
-      auto y = tile.getRow();
-
       // Collect memcpy ops wrt each DMA channel from chessboard; make aie.mem
       // dmabd program
       llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
@@ -6302,7 +6292,7 @@ public:
       if (failed(generateDmaBdProgram<air::MemTileDMAAllocator, AIE::BufferOp,
                                       AIE::MemTileDMAOp>(
               rewriter, target_model, memtile_dma_memcpys, memTileDmaAlloc, loc,
-              memTileDMA, x, y, options.use_lock_race_condition_fix))) {
+              memTileDMA, tile, options.use_lock_race_condition_fix))) {
         memTileDMA->emitOpError("failed to generate dma bd program.");
         return failure();
       }
