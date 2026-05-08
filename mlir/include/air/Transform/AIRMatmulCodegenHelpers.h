@@ -32,11 +32,6 @@ namespace air {
 // Pure utilities used by multiple codegen helpers.
 //===----------------------------------------------------------------------===//
 
-/// True if two vector.transfer_read ops read the same memref location and
-/// produce the same vector type.
-bool areIdenticalReads(::mlir::vector::TransferReadOp read1,
-                       ::mlir::vector::TransferReadOp read2);
-
 /// True if any operation between `firstRead` and `secondRead` (in the same
 /// block) writes to `firstRead`'s base memref.
 bool hasWritesBetweenReads(::mlir::vector::TransferReadOp firstRead,

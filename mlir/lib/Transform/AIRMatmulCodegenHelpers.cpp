@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -37,21 +38,6 @@ static bool areEquivalentIndices(Value idx1, Value idx2) {
   if (!def1 || !def2)
     return false;
   return xilinx::air::isEquivalentTo(def1, def2);
-}
-
-bool areIdenticalReads(vector::TransferReadOp read1,
-                       vector::TransferReadOp read2) {
-  if (read1.getBase() != read2.getBase())
-    return false;
-  if (read1.getIndices().size() != read2.getIndices().size())
-    return false;
-  for (auto [idx1, idx2] : llvm::zip(read1.getIndices(), read2.getIndices())) {
-    if (!areEquivalentIndices(idx1, idx2))
-      return false;
-  }
-  auto vec1Ty = llvm::cast<VectorType>(read1.getVector().getType());
-  auto vec2Ty = llvm::cast<VectorType>(read2.getVector().getType());
-  return vec1Ty == vec2Ty;
 }
 
 bool dependsOnLoopIV(Value val, Value loopIV) {
@@ -168,7 +154,8 @@ int runEliminateRedundantVectorTransfers(Operation *target,
         continue;
       vector::TransferReadOp firstRead = transferReads[i];
       vector::TransferReadOp secondRead = transferReads[j];
-      if (!areIdenticalReads(firstRead, secondRead))
+      if (!OperationEquivalence::isEquivalentTo(
+              firstRead, secondRead, OperationEquivalence::IgnoreLocations))
         continue;
       if (hasWritesBetweenReads(firstRead, secondRead))
         continue;
