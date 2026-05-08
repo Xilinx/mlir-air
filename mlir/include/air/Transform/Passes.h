@@ -29,6 +29,7 @@
 #include "air/Transform/AIRSplitLaunchForPadding.h"
 #include "air/Transform/AIRTilingUtils.h"
 #include "air/Transform/AIRTransformInterpreter.h"
+#include "air/Transform/AIRVerifyHierarchyLocality.h"
 #include "air/Transform/AffineLoopOptPass.h"
 #include "air/Transform/ReturnEliminationPass.h"
 

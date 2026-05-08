@@ -43,6 +43,7 @@ list(APPEND TRANSFORM_SOURCES
   AIRSplitLaunchForPadding.cpp
   AIRTilingUtils.cpp
   AIRTransformInterpreter.cpp
+  AIRVerifyHierarchyLocality.cpp
   AffineLoopOptPass.cpp
   Passes.cpp
   ReturnEliminationPass.cpp
