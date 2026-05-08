@@ -955,9 +955,36 @@ def build_module(
                         )
                         yield_([])
 
-                    # attn_1_group: K rows shared across all GROUP_SIZE Q heads.
-                    # aL2ToL1 only carries K then V rows now (no x, no weights),
-                    # so the Step 3 scf.for + cycling-BD pattern works.
+                    # Inline attn_1_group: dot(Q[g], K) per g via 16-lane bf16
+                    # multiply + f32 fma accumulator (matches the C kernel's
+                    # accum<accfloat, 32> precision; pure bf16 acc loses enough
+                    # precision that dot(Q, K_new) ≈ 0, softmax becomes uniform
+                    # and attn@V degenerates to V[pos]/seq_len). vector<32xf32>
+                    # fma is not legal on AIE2P (16-lane f32 max), so we use
+                    # four 16-lane halves chained into a single f32 accumulator
+                    # per Q head, then reduce + truncf + store.
+                    a1_vl = 16
+                    a1_n_chunks = n // a1_vl  # 64/16 = 4
+                    a1_vec_bf_t = VectorType.get([a1_vl], xrt_dtype_out)
+                    a1_f32 = T.f32()
+                    a1_vec_f32_t = VectorType.get([a1_vl], a1_f32)
+                    a1_id_map = AffineMapAttr.get(AffineMap.get_identity(1))
+                    a1_2d_to_1d = AffineMapAttr.get(
+                        AffineMap.get(2, 0, [AffineDimExpr.get(1)])
+                    )
+                    a1_c0 = arith.ConstantOp.create_index(0)
+                    a1_offs = [
+                        arith.ConstantOp.create_index(c * a1_vl)
+                        for c in range(a1_n_chunks)
+                    ]
+                    a1_cst0 = arith.ConstantOp(xrt_dtype_out, 0.0)
+                    a1_zero_f32_v = arith.ConstantOp(
+                        a1_vec_f32_t,
+                        DenseElementsAttr.get(
+                            np.zeros(a1_vl, dtype=np.float32),
+                            type=a1_vec_f32_t,
+                        ),
+                    )
                     for i in range_(0, pos_p1):
                         ChannelGet(
                             "aL2ToL1",
@@ -967,11 +994,45 @@ def build_module(
                             strides=[],
                             indices=[_tx],
                         )
-                        i32_iv = arith.index_cast(T.i32(), i)
-                        CallOp(
-                            attn_func,
-                            [q_l1_data, l1_shared_bd_buf_data, i32_iv, attn_l1_data],
-                        )
+                        k_chunks_f = []
+                        for c in range(a1_n_chunks):
+                            k_bf = transfer_read(
+                                a1_vec_bf_t,
+                                l1_shared_bd_buf_data.result,
+                                [a1_offs[c]],
+                                a1_id_map,
+                                a1_cst0,
+                                [True],
+                            )
+                            k_chunks_f.append(arith.extf(a1_vec_f32_t, k_bf))
+                        accs = [a1_zero_f32_v.result for _ in range(GROUP_SIZE)]
+                        for g in range(GROUP_SIZE):
+                            sub_q = subview(
+                                q_l1_data.result, [g, 0], [1, n], [1, 1]
+                            )
+                            for c in range(a1_n_chunks):
+                                q_bf = transfer_read(
+                                    a1_vec_bf_t,
+                                    sub_q,
+                                    [a1_c0, a1_offs[c]],
+                                    a1_2d_to_1d,
+                                    a1_cst0,
+                                    [True],
+                                )
+                                q_f = arith.extf(a1_vec_f32_t, q_bf)
+                                accs[g] = vector_fma(
+                                    q_f, k_chunks_f[c], accs[g]
+                                )
+                        for g in range(GROUP_SIZE):
+                            sc_f32 = vector_reduction(a1_f32, "add", accs[g])
+                            sc_bf = arith.truncf(xrt_dtype_out, sc_f32)
+                            sub_o = subview(
+                                attn_l1_data.result,
+                                [g, 0],
+                                [1, seq_len],
+                                [1, 1],
+                            )
+                            store(sc_bf, sub_o, [a1_c0, i])
                         yield_([])
 
                     # Inline-MLIR softmax over [GROUP_SIZE, SEQ_LEN]: per-row
