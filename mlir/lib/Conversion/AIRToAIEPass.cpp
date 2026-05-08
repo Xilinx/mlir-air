@@ -258,29 +258,40 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
     h->setAttr(row_name,
                IntegerAttr::get(IntegerType::get(ctx, 32), row_offset));
 
+  // Compute tiles emit fully constrained (phys_x, phys_y) hints. The herd's
+  // x_loc/y_loc attributes carry deliberate placement intent set by
+  // air-place-herds (or upstream callers); AIR keeps the legacy flow that
+  // explicitly sets physical coordinates rather than letting the placer
+  // pick. The SequentialPlacer is a pass-through here — placement is
+  // byte-identical to direct getPhysTileOp calls.
+  //
+  // The batched createTilesViaPlacer call (one placer invocation per herd
+  // instead of one per cell) is functionally identical to per-cell calls
+  // when hints are fully constrained, but cleaner and consistent with
+  // memtile/shim allocators in stages A/B that already use the batched
+  // API with partial constraints.
+  int64_t numCells = herd_size_y * herd_size_x;
+  SmallVector<std::pair<std::optional<int>, std::optional<int>>> hints;
+  hints.reserve(numCells);
+  for (auto y = 0; y < herd_size_y; y++) {
+    for (auto x = 0; x < herd_size_x; x++) {
+      auto phys_x = x + col_offset;
+      auto phys_y = y + row_offset;
+      hints.push_back({phys_x, phys_y});
+    }
+  }
+  SmallVector<AIE::TileOp> herdTiles;
+  if (failed(air::createTilesViaPlacer(aie_device, AIE::AIETileType::CoreTile,
+                                       hints, herdTiles)))
+    return failure();
+
   for (auto y = 0; y < herd_size_y; y++) {
     for (auto x = 0; x < herd_size_x; x++) {
       auto hloc = h.getLoc();
       IRMapping remap;
       auto phys_x = x + col_offset;
       auto phys_y = y + row_offset;
-
-      // Emit aie.logical_tile<CoreTile>(phys_x, phys_y) and resolve via
-      // mlir-aie's SequentialPlacer (RFC #1567 Stage A milestone 4). For
-      // this milestone we keep both coordinates fully constrained, so the
-      // placer is a pass-through and physical placement is identical to
-      // before. Future milestones can relax to (col, ?) or (?, ?) for
-      // herds whose communication patterns don't require strict adjacency.
-      //
-      // TODO(rfc-1567): Once constraints are relaxed, switch to a single
-      // air::createTilesViaPlacer call up-front so the placer sees all
-      // unconstrained tiles together. With fully-constrained hints the
-      // per-tile invocation here is deterministic and preserves IR order.
-      auto tileRes = air::createTileViaPlacer(
-          aie_device, AIE::AIETileType::CoreTile, phys_x, phys_y);
-      if (failed(tileRes))
-        return failure();
-      auto tile = *tileRes;
+      auto tile = herdTiles[y * herd_size_x + x];
 
       Operation *t = tile.getOperation();
       while (isa_and_present<AIE::TileLike>(t->getNextNode()))
