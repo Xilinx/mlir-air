@@ -108,8 +108,16 @@ struct allocation_info_t {
   bool foundAlloc(int32_t col, int32_t row, AIE::DMAChannel channel);
   bool foundAlloc(int32_t col, int32_t row);
   bool foundAlloc(int32_t col, int32_t row, air::ChannelOp channel_op);
-  bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
   bool foundPacketFlowAllocInTile(int32_t col, int32_t row);
+
+  // TileOp-keyed overloads (RFC #1567 Stage C #1). Identify allocations by
+  // their owning AIE::TileOp pointer rather than by (col, row) coordinates so
+  // bookkeeping does not depend on physical placement.
+  bool foundAlloc(AIE::TileOp tile);
+  bool foundAlloc(AIE::TileOp tile, air::MemcpyInterface memcpyOp);
+  bool foundAlloc(AIE::TileOp tile, air::ChannelOp channel_op);
+  bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
+  bool foundPacketFlowAllocInTile(AIE::TileOp tile);
 
   bool operator==(const allocation_info_t &other) const {
     return dma_tile == other.dma_tile && col == other.col && row == other.row &&

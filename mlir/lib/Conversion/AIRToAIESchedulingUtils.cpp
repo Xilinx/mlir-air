@@ -675,6 +675,43 @@ bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(int32_t col,
   return false;
 }
 
+// TileOp-keyed overloads (RFC #1567 Stage C #1). Pointer-equality on
+// dma_tile replaces (col, row) integer comparison; same answer, no
+// dependence on physical placement coordinates.
+bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile) {
+  return tile && tile == getDmaTile();
+}
+
+bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile,
+                                                air::MemcpyInterface memcpyOp) {
+  if (!foundAlloc(tile))
+    return false;
+  for (auto o : memcpyOps)
+    if (memcpyOp.getOperation() == o)
+      return true;
+  return false;
+}
+
+bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile,
+                                                air::ChannelOp channel_op) {
+  return foundAlloc(tile) && foundAlloc(channel_op);
+}
+
+bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(
+    AIE::TileOp tile) {
+  if (!foundAlloc(tile))
+    return false;
+  for (auto o : memcpyOps) {
+    auto memcpy_op = dyn_cast_if_present<air::MemcpyInterface>(o);
+    if (!memcpy_op)
+      continue;
+    auto chanTypeRes = air::getChannelType(memcpy_op);
+    if (succeeded(chanTypeRes))
+      return chanTypeRes.value().str() == "npu_dma_packet";
+  }
+  return false;
+}
+
 // DMAAllocator impl.
 
 // A simple selection sorting implementation.
@@ -885,17 +922,16 @@ FailureOr<air::allocation_info_t> air::DMAAllocator::allocNewDmaChannel(
       isMM2S.value() ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
   aie_chan.channel = chan;
   for (auto &t : *allocs) {
-    if (t.foundAlloc(tile.getCol(), tile.getRow())) {
+    if (t.foundAlloc(tile)) {
       if (t.dma_channel.direction == aie_chan.direction &&
           t.dma_channel.channel == aie_chan.channel) {
         t.memcpyOps.push_back(memcpyOp.getOperation());
         return t;
       }
     }
-    if (t.foundAlloc(tile.getCol(), tile.getRow(),
-                     getChannelDeclarationThroughSymbol(
-                         dyn_cast_if_present<air::ChannelInterface>(
-                             memcpyOp.getOperation())))) {
+    if (t.foundAlloc(tile, getChannelDeclarationThroughSymbol(
+                               dyn_cast_if_present<air::ChannelInterface>(
+                                   memcpyOp.getOperation())))) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
@@ -1240,16 +1276,15 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   // Search for existing dma channel allocation
   unsigned num_allocs = 0;
   for (auto &t : *allocs) {
-    if (t.foundAlloc(tile.getCol(), tile.getRow()))
+    if (t.foundAlloc(tile))
       num_allocs++;
-    if (t.foundAlloc(tile.getCol(), tile.getRow(), memcpyOp)) {
+    if (t.foundAlloc(tile, memcpyOp)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
     // Search for existing packet-flow allocations on this tile, and try to
     // reuse the channel allocation.
-    if (isPacketFlowOp &&
-        t.foundPacketFlowAllocInTile(tile.getCol(), tile.getRow())) {
+    if (isPacketFlowOp && t.foundPacketFlowAllocInTile(tile)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
@@ -1368,7 +1403,7 @@ air::CascadeAllocator::coreCascadeAlloc(air::MemcpyInterface &memcpyOp) {
 
   // Search for an existing allocation for this tile and memcpyOp
   for (auto &t : *allocs) {
-    if (t.foundAlloc(tile.getCol(), tile.getRow(), memcpyOp))
+    if (t.foundAlloc(tile, memcpyOp))
       return t;
   }
 
@@ -1394,15 +1429,14 @@ air::CascadeAllocator::allocNewCascade(air::MemcpyInterface &memcpyOp,
 
   // Check if allocation already exists for this tile
   for (auto &t : *allocs) {
-    if (t.foundAlloc(tile.getCol(), tile.getRow())) {
+    if (t.foundAlloc(tile)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
     // Also check for an allocation tied to the channel declaration
-    if (t.foundAlloc(tile.getCol(), tile.getRow(),
-                     getChannelDeclarationThroughSymbol(
-                         dyn_cast_if_present<air::ChannelInterface>(
-                             memcpyOp.getOperation())))) {
+    if (t.foundAlloc(tile, getChannelDeclarationThroughSymbol(
+                               dyn_cast_if_present<air::ChannelInterface>(
+                                   memcpyOp.getOperation())))) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
