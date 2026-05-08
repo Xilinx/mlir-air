@@ -21,7 +21,6 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
-#include <functional>
 
 using namespace mlir;
 
@@ -160,101 +159,6 @@ static std::optional<Value> hierarchyKernelArgPassthrough(BlockArgument ba) {
   return H.getKernelOperand(std::distance(kargs.begin(), it));
 }
 
-// True if `v` is provably zero. Recognizes:
-//   - arith.constant 0
-//   - block argument that is a hierarchy iteration variable whose
-//     iteration-space size is statically 1 (only one value: 0)
-//   - block argument that is a kernel arg of a hierarchy op whose tied
-//     operand isProvablyZero (passthrough)
-//   - affine.apply with constant map evaluating to 0 OR with all-zero inputs
-//     and a map of the form (...) -> sum of c_i * x_i (no constant term)
-//   - arith.addi/subi where both operands are provably zero
-//   - arith.muli where at least one operand is provably zero
-//
-// TODO: the embedded AffineExpr eval lambda below and the one in
-// decomposeRecursive (~70 LOC, OffsetDecomp algebra) share recursive
-// structure. They have different return types so a shared
-// AffineExprVisitor<Subclass, RetTy> base would help — pursue if a
-// third evaluator is ever added.
-static bool isProvablyZero(Value v) {
-  if (!v)
-    return false;
-  if (auto c = staticInt(v))
-    return *c == 0;
-  if (auto ba = dyn_cast<BlockArgument>(v)) {
-    if (auto upstream = hierarchyKernelArgPassthrough(ba))
-      return isProvablyZero(*upstream);
-    Operation *parent = ba.getOwner()->getParentOp();
-    auto H = dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent);
-    if (!H)
-      return false;
-    ArrayRef<BlockArgument> ids = H.getIds();
-    auto idIt = llvm::find(ids, ba);
-    if (idIt != ids.end()) {
-      unsigned i = std::distance(ids.begin(), idIt);
-      auto sz = staticInt(H.getSizeOperands()[i]);
-      return sz && *sz == 1;
-    }
-    return false;
-  }
-  Operation *def = v.getDefiningOp();
-  if (!def)
-    return false;
-  if (auto add = dyn_cast<arith::AddIOp>(def))
-    return isProvablyZero(add.getLhs()) && isProvablyZero(add.getRhs());
-  if (auto sub = dyn_cast<arith::SubIOp>(def))
-    return isProvablyZero(sub.getLhs()) && isProvablyZero(sub.getRhs());
-  if (auto mul = dyn_cast<arith::MulIOp>(def))
-    return isProvablyZero(mul.getLhs()) || isProvablyZero(mul.getRhs());
-  if (auto cast = dyn_cast<arith::IndexCastOp>(def))
-    return isProvablyZero(cast.getIn());
-  if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
-    for (Value in : apply.getOperands())
-      if (!isProvablyZero(in))
-        return false;
-    // All inputs are zero → result is the affine map evaluated at zeros.
-    AffineMap map = apply.getAffineMap();
-    if (map.getNumResults() != 1)
-      return false;
-    SmallVector<int64_t> zeroDims(map.getNumDims(), 0);
-    SmallVector<int64_t> zeroSyms(map.getNumSymbols(), 0);
-    std::function<std::optional<int64_t>(AffineExpr)> eval =
-        [&](AffineExpr e) -> std::optional<int64_t> {
-      if (auto c = dyn_cast<AffineConstantExpr>(e))
-        return c.getValue();
-      if (auto d = dyn_cast<AffineDimExpr>(e))
-        return zeroDims[d.getPosition()];
-      if (auto s = dyn_cast<AffineSymbolExpr>(e))
-        return zeroSyms[s.getPosition()];
-      if (auto bin = dyn_cast<AffineBinaryOpExpr>(e)) {
-        auto lhs = eval(bin.getLHS());
-        auto rhs = eval(bin.getRHS());
-        if (!lhs || !rhs)
-          return std::nullopt;
-        switch (bin.getKind()) {
-        case AffineExprKind::Add:
-          return *lhs + *rhs;
-        case AffineExprKind::Mul:
-          return *lhs * *rhs;
-        case AffineExprKind::Mod:
-          return *rhs == 0 ? std::nullopt : std::optional<int64_t>(*lhs % *rhs);
-        case AffineExprKind::FloorDiv:
-          return *rhs == 0 ? std::nullopt : std::optional<int64_t>(*lhs / *rhs);
-        case AffineExprKind::CeilDiv:
-          return *rhs == 0 ? std::nullopt
-                           : std::optional<int64_t>((*lhs + *rhs - 1) / *rhs);
-        default:
-          return std::nullopt;
-        }
-      }
-      return std::nullopt;
-    };
-    auto val = eval(map.getResult(0));
-    return val && *val == 0;
-  }
-  return false;
-}
-
 // Resolve an OpFoldResult-like (Value or constant int) to an int64_t when
 // possible. Returns nullopt if the size is dynamic-and-unresolvable.
 static std::optional<int64_t> resolveSize(Value v,
@@ -323,29 +227,30 @@ static std::optional<int64_t> hierarchyIvExtent(BlockArgument iv) {
 // scalar operands that carry the iv as a partition hint.
 static bool dependsOnAnyIv(Value v, ArrayRef<BlockArgument> ivs) {
   llvm::SmallPtrSet<Value, 8> visited;
-  std::function<bool(Value)> rec = [&](Value v) -> bool {
-    if (!v || !visited.insert(v).second)
-      return false;
-    if (auto ba = dyn_cast<BlockArgument>(v)) {
+  SmallVector<Value> stack;
+  stack.push_back(v);
+  while (!stack.empty()) {
+    Value cur = stack.pop_back_val();
+    if (!cur || !visited.insert(cur).second)
+      continue;
+    if (auto ba = dyn_cast<BlockArgument>(cur)) {
       if (llvm::is_contained(ivs, ba))
         return true;
       if (auto upstream = hierarchyKernelArgPassthrough(ba))
-        return rec(*upstream);
-      return false;
+        stack.push_back(*upstream);
+      continue;
     }
-    Operation *def = v.getDefiningOp();
+    Operation *def = cur.getDefiningOp();
     if (!def)
-      return false;
+      continue;
     if (!isa<arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::DivSIOp,
              arith::DivUIOp, arith::RemSIOp, arith::RemUIOp, arith::IndexCastOp,
              affine::AffineApplyOp>(def))
-      return false;
+      continue;
     for (Value op : def->getOperands())
-      if (rec(op))
-        return true;
-    return false;
-  };
-  return rec(v);
+      stack.push_back(op);
+  }
+  return false;
 }
 
 // True if `op` is a hierarchy op that lies strictly inside `outerH.getBody()`.
@@ -373,6 +278,81 @@ static bool decomposeRecursive(Value v, int64_t coeff,
                                xilinx::air::HierarchyInterface outerH,
                                OffsetDecomp &d);
 
+// Evaluate an AffineExpr over previously-decomposed input slots, producing
+// an OffsetDecomp for the expression's value. Returns nullopt on patterns
+// the analysis can't represent (e.g. iv * iv, mod/div with iv coeffs).
+static std::optional<OffsetDecomp>
+evalAffineExpr(AffineExpr e, ArrayRef<OffsetDecomp> dimVals,
+               ArrayRef<OffsetDecomp> symVals) {
+  if (isa<AffineConstantExpr>(e)) {
+    OffsetDecomp r;
+    return r;
+  }
+  if (auto dim = dyn_cast<AffineDimExpr>(e))
+    return dimVals[dim.getPosition()];
+  if (auto sym = dyn_cast<AffineSymbolExpr>(e))
+    return symVals[sym.getPosition()];
+  auto bin = dyn_cast<AffineBinaryOpExpr>(e);
+  if (!bin)
+    return std::nullopt;
+  auto lhs = evalAffineExpr(bin.getLHS(), dimVals, symVals);
+  auto rhs = evalAffineExpr(bin.getRHS(), dimVals, symVals);
+  if (!lhs || !rhs)
+    return std::nullopt;
+  auto lConst = dyn_cast<AffineConstantExpr>(bin.getLHS());
+  auto rConst = dyn_cast<AffineConstantExpr>(bin.getRHS());
+  switch (bin.getKind()) {
+  case AffineExprKind::Add: {
+    OffsetDecomp out = *lhs;
+    for (auto &kv : rhs->ivCoeffs)
+      out.ivCoeffs[kv.first] += kv.second;
+    out.innerSpan += rhs->innerSpan;
+    return out;
+  }
+  case AffineExprKind::Mul: {
+    if (rConst) {
+      int64_t k = rConst.getValue();
+      OffsetDecomp out;
+      for (auto &kv : lhs->ivCoeffs)
+        out.ivCoeffs[kv.first] = kv.second * k;
+      out.innerSpan = lhs->innerSpan * std::abs(k);
+      return out;
+    }
+    if (lConst) {
+      int64_t k = lConst.getValue();
+      OffsetDecomp out;
+      for (auto &kv : rhs->ivCoeffs)
+        out.ivCoeffs[kv.first] = kv.second * k;
+      out.innerSpan = rhs->innerSpan * std::abs(k);
+      return out;
+    }
+    return std::nullopt;
+  }
+  case AffineExprKind::Mod:
+  case AffineExprKind::FloorDiv:
+  case AffineExprKind::CeilDiv: {
+    if (!rConst)
+      return std::nullopt;
+    int64_t dv = rConst.getValue();
+    if (dv <= 0)
+      return std::nullopt;
+    if (!lhs->ivCoeffs.empty())
+      return std::nullopt;
+    OffsetDecomp out;
+    if (bin.getKind() == AffineExprKind::Mod)
+      out.innerSpan = std::min<int64_t>(lhs->innerSpan, dv - 1);
+    else
+      out.innerSpan = lhs->innerSpan / dv;
+    return out;
+  }
+  case AffineExprKind::Constant:
+  case AffineExprKind::DimId:
+  case AffineExprKind::SymbolId:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
 // Decompose an offset expression into (per-outer-iv coefficients,
 // inner-iteration extra span). See struct OffsetDecomp doc.
 static std::optional<OffsetDecomp>
@@ -392,8 +372,6 @@ static bool decomposeRecursive(Value v, int64_t coeff,
     return true;
   if (staticInt(v).has_value())
     return true; // constant: no iv contribution.
-  if (isProvablyZero(v))
-    return true;
 
   if (auto ba = dyn_cast<BlockArgument>(v)) {
     if (llvm::is_contained(outerIvs, ba)) {
@@ -403,19 +381,29 @@ static bool decomposeRecursive(Value v, int64_t coeff,
     if (auto upstream = hierarchyKernelArgPassthrough(ba))
       return decomposeRecursive(*upstream, coeff, outerIvs, outerH, d);
     Operation *parent = ba.getOwner()->getParentOp();
-    // Inner-hierarchy IV (an air HierarchyInterface ID, NOT outerH itself):
-    // iterates the same range for every outer iteration → contributes
-    // (extent-1) to the per-outer-iteration access span, not to iv linearity.
     if (auto H = dyn_cast_if_present<xilinx::air::HierarchyInterface>(parent)) {
       ArrayRef<BlockArgument> ids = H.getIds();
       auto idIt = llvm::find(ids, ba);
-      if (idIt != ids.end() && H.getOperation() != outerH.getOperation() &&
-          isInnerHierarchyOf(H.getOperation(), outerH)) {
-        auto e = hierarchyIvExtent(ba);
-        if (!e)
+      if (idIt != ids.end()) {
+        // outerH IV that the caller filtered out of `outerIvs` because its
+        // iteration size is statically 1: the only value is 0, contributes
+        // 0 to the offset.
+        if (H.getOperation() == outerH.getOperation()) {
+          auto e = hierarchyIvExtent(ba);
+          if (e && *e == 1)
+            return true;
           return false;
-        d.innerSpan += std::abs(coeff) * (*e > 0 ? *e - 1 : 0);
-        return true;
+        }
+        // Inner-hierarchy IV (NOT outerH itself): iterates the same range
+        // for every outer iteration → contributes (extent-1) to the
+        // per-outer-iteration access span, not to iv linearity.
+        if (isInnerHierarchyOf(H.getOperation(), outerH)) {
+          auto e = hierarchyIvExtent(ba);
+          if (!e)
+            return false;
+          d.innerSpan += std::abs(coeff) * (*e > 0 ? *e - 1 : 0);
+          return true;
+        }
       }
     }
     // scf.for / scf.parallel IV inside outerH body — same treatment as inner
@@ -474,76 +462,7 @@ static bool decomposeRecursive(Value v, int64_t coeff,
       else
         dimVals[localIdx] = std::move(inner);
     }
-    std::function<std::optional<OffsetDecomp>(AffineExpr)> eval =
-        [&](AffineExpr e) -> std::optional<OffsetDecomp> {
-      OffsetDecomp r;
-      if (isa<AffineConstantExpr>(e))
-        return r;
-      if (auto dim = dyn_cast<AffineDimExpr>(e))
-        return dimVals[dim.getPosition()];
-      if (auto sym = dyn_cast<AffineSymbolExpr>(e))
-        return symVals[sym.getPosition()];
-      auto bin = dyn_cast<AffineBinaryOpExpr>(e);
-      if (!bin)
-        return std::nullopt;
-      auto lhs = eval(bin.getLHS());
-      auto rhs = eval(bin.getRHS());
-      if (!lhs || !rhs)
-        return std::nullopt;
-      auto lConst = dyn_cast<AffineConstantExpr>(bin.getLHS());
-      auto rConst = dyn_cast<AffineConstantExpr>(bin.getRHS());
-      switch (bin.getKind()) {
-      case AffineExprKind::Add: {
-        OffsetDecomp out = *lhs;
-        for (auto &kv : rhs->ivCoeffs)
-          out.ivCoeffs[kv.first] += kv.second;
-        out.innerSpan += rhs->innerSpan;
-        return out;
-      }
-      case AffineExprKind::Mul: {
-        if (rConst) {
-          int64_t k = rConst.getValue();
-          OffsetDecomp out;
-          for (auto &kv : lhs->ivCoeffs)
-            out.ivCoeffs[kv.first] = kv.second * k;
-          out.innerSpan = lhs->innerSpan * std::abs(k);
-          return out;
-        }
-        if (lConst) {
-          int64_t k = lConst.getValue();
-          OffsetDecomp out;
-          for (auto &kv : rhs->ivCoeffs)
-            out.ivCoeffs[kv.first] = kv.second * k;
-          out.innerSpan = rhs->innerSpan * std::abs(k);
-          return out;
-        }
-        return std::nullopt;
-      }
-      case AffineExprKind::Mod:
-      case AffineExprKind::FloorDiv:
-      case AffineExprKind::CeilDiv: {
-        if (!rConst)
-          return std::nullopt;
-        int64_t dv = rConst.getValue();
-        if (dv <= 0)
-          return std::nullopt;
-        if (!lhs->ivCoeffs.empty())
-          return std::nullopt;
-        OffsetDecomp out;
-        if (bin.getKind() == AffineExprKind::Mod)
-          out.innerSpan = std::min<int64_t>(lhs->innerSpan, dv - 1);
-        else
-          out.innerSpan = lhs->innerSpan / dv;
-        return out;
-      }
-      case AffineExprKind::Constant:
-      case AffineExprKind::DimId:
-      case AffineExprKind::SymbolId:
-        return std::nullopt;
-      }
-      return std::nullopt;
-    };
-    auto res = eval(map.getResult(0));
+    auto res = evalAffineExpr(map.getResult(0), dimVals, symVals);
     if (!res)
       return false;
     for (auto &kv : res->ivCoeffs)
