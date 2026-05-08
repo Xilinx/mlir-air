@@ -45,6 +45,7 @@ set(CONVERSION_LINK_LIBS
 if(AIR_ENABLE_AIE)
   list(APPEND CONVERSION_LINK_LIBS
     AIE
+    AIETransforms
     AIEX
   )
 endif()
