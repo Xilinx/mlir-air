@@ -18,6 +18,7 @@
 #include "air/Transform/AIRMatmulCodegenHelpers.h"
 #include "air/Util/Util.h"
 
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -250,27 +251,13 @@ static void hoistInterveningDeps(scf::ForOp target, scf::ForOp source) {
   collect(target.getOperation());
   collect(source.getOperation());
 
-  // Iteratively move ops with all-resolved operands above `first`.
-  bool progress = true;
-  while (progress && !toHoist.empty()) {
-    progress = false;
-    for (Operation *op : llvm::to_vector(toHoist)) {
-      bool ready = true;
-      for (Value v : op->getOperands()) {
-        Operation *defOp = v.getDefiningOp();
-        if (defOp && defOp->getBlock() == block &&
-            !defOp->isBeforeInBlock(first) && defOp != first) {
-          ready = false;
-          break;
-        }
-      }
-      if (ready) {
-        op->moveBefore(first);
-        toHoist.remove(op);
-        progress = true;
-      }
-    }
-  }
+  // Sort the to-hoist set topologically and move each above `first` in
+  // dependency order. Operands defined outside `toHoist` are treated as
+  // already-ready by computeTopologicalSorting (incomplete-chain semantics).
+  SmallVector<Operation *> sorted(toHoist.begin(), toHoist.end());
+  (void)mlir::computeTopologicalSorting(sorted);
+  for (Operation *op : sorted)
+    op->moveBefore(first);
 }
 
 class AIRMatmulFusePingpongLoops
