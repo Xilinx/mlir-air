@@ -32,10 +32,6 @@ namespace air {
 // Pure utilities used by multiple codegen helpers.
 //===----------------------------------------------------------------------===//
 
-/// True if the two index values are semantically the same (direct equality,
-/// matching affine.apply, or matching arith.constant).
-bool areEquivalentIndices(::mlir::Value idx1, ::mlir::Value idx2);
-
 /// True if two vector.transfer_read ops read the same memref location and
 /// produce the same vector type.
 bool areIdenticalReads(::mlir::vector::TransferReadOp read1,
