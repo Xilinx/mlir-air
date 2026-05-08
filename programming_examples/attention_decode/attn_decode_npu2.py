@@ -328,7 +328,7 @@ def build_module(
                 # bL3ToL2 packets 1..GEMV_COUNT*chunks: weight chunks. Same
                 # [tile_k, tile_n] packet shape as the xrms head packet —
                 # the memtile S2MM and L1 S2MM are single self-loop BDs.
-                for mm_iter in range(GEMV_COUNT):
+                for mm_iter in range_(0, GEMV_COUNT):
                     ChannelPut(
                         "bL3ToL2",
                         l3_b_data,
@@ -337,6 +337,7 @@ def build_module(
                         strides=[GEMV_COUNT * n * k, n * k, n, 1],
                         indices=[c_tx_i],
                     )
+                    yield_([])
 
                 # KV cache writeback at slot pos_host for this col.
                 ChannelGet(
