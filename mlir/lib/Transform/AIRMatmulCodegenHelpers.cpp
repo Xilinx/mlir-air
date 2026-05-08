@@ -6,13 +6,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRMatmulCodegenHelpers.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
-#include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -36,8 +36,7 @@ bool areEquivalentIndices(Value idx1, Value idx2) {
   Operation *def2 = idx2.getDefiningOp();
   if (!def1 || !def2)
     return false;
-  return OperationEquivalence::isEquivalentTo(
-      def1, def2, OperationEquivalence::IgnoreLocations);
+  return xilinx::air::isEquivalentTo(def1, def2);
 }
 
 bool areIdenticalReads(vector::TransferReadOp read1,
