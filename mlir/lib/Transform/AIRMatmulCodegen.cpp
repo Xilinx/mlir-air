@@ -110,18 +110,13 @@ public:
       });
     };
 
-    // ---------- Phase A: launch tile (skip if empty) ----------
-    if (!clLaunchTile.empty()) {
-      if (failed(runTileLaunchTileImpl(f, clLaunchTile, kLaunchTileForall,
-                                       rewriter)))
-        return fail();
-    }
-
     // Phase C placement: single-pack flows (no L1 pack) run bufferize-output-l2
-    // BEFORE the pack — required by the tile-l3-to-l2-copies and
-    // fuse-output-truncf-first pre-steps, which must operate on un-packed IR.
-    // Two-pack flows run it AFTER L2 pack (so the L2 alloc takes the
-    // packed shape, matching the L1 pack's expected operand layout).
+    // BEFORE Phase A and Phase B — required by the tile-l3-to-l2-copies and
+    // fuse-output-truncf-first pre-steps (which must operate on un-packed IR)
+    // and so that the L2 alloc lands at LAUNCH scope, outside any per-core
+    // forall created by Phase A.
+    // Two-pack flows run Phase C AFTER Phase B (L2 pack) so the L2 alloc
+    // takes the packed shape matching the L1 pack's expected operand layout.
     bool singlePackLevel = clL1PackSizes.empty();
     auto runPhaseC = [&]() -> LogicalResult {
       if (!clBufferizeOutputL2)
@@ -134,6 +129,13 @@ public:
     if (singlePackLevel)
       if (failed(runPhaseC()))
         return fail();
+
+    // ---------- Phase A: launch tile (skip if empty) ----------
+    if (!clLaunchTile.empty()) {
+      if (failed(runTileLaunchTileImpl(f, clLaunchTile, kLaunchTileForall,
+                                       rewriter)))
+        return fail();
+    }
 
     // ---------- Phase B: L2 pack (skip if empty) ----------
     // The L2 pack bufferizes its output to L1 only in single-pack-level flows
@@ -183,6 +185,16 @@ public:
         if (failed(runBufferizeL1InputsImpl(f, /*memSpace=*/1,
                                             /*memcpyOp=*/"linalg-copy",
                                             kLhsL2PackInK, kRhsL2PackInK,
+                                            rewriter)))
+          return fail();
+      } else if (clCoreTile.empty()) {
+        // Phase F': single-pack flow with NO tile-cores (e.g. a launch-tile-
+        // only flow). The L1 packs from Phase E are tagged lhs_pack_in_k /
+        // rhs_pack_in_k and need bufferization to L1 here, since Phase J
+        // (which uses fused_*_l1_pack markers) won't fire.
+        if (failed(runBufferizeL1InputsImpl(f, /*memSpace=*/2,
+                                            /*memcpyOp=*/"materialize",
+                                            kLhsPackInK, kRhsPackInK,
                                             rewriter)))
           return fail();
       }

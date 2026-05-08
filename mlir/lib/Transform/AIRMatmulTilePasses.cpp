@@ -450,6 +450,15 @@ LogicalResult runTileLaunchTileImpl(func::FuncOp f, ArrayRef<int64_t> tileSizes,
   LoopLikeOpInterface forall = tilingResult->loops.front();
   forall->setAttr(launchTileForallMarker, rewriter.getUnitAttr());
 
+  // Tag the inner (per-launch-tile) matmul with `matmul_compute` so that
+  // downstream tile-for-vectorize (which only matches inHerd ops or
+  // `matmul_compute`-tagged ops) can find it in launch-tile-only flows
+  // where there is no separate tile-cores step. The marker is preserved
+  // by linalg::pack (which copies discardable attrs).
+  if (!tilingResult->tiledOps.empty())
+    tilingResult->tiledOps.front()->setAttr("matmul_compute",
+                                            rewriter.getUnitAttr());
+
   if (fillProducer) {
     auto fillOp = dyn_cast<linalg::FillOp>(fillProducer);
     auto forallOp = dyn_cast<scf::ForallOp>(forall.getOperation());

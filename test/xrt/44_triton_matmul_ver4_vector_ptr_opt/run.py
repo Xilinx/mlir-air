@@ -25,7 +25,28 @@ parser.add_argument(
     type=str,
     dest="transform_script",
     default="transform.mlir",
-    help="Transform script path",
+    help="Transform script path (legacy path).",
+)
+parser.add_argument(
+    "--use-cpp-pipeline",
+    action="store_true",
+    help="Replace the legacy transform script with the C++ matmul codegen "
+    "orchestrator (air-matmul-codegen). Pipeline parameters are selected "
+    "from --arch.",
+)
+parser.add_argument(
+    "--arch",
+    type=str,
+    default="aie2p",
+    choices=["aie2", "aie2p"],
+    help="Target arch (only used with --use-cpp-pipeline). Selects mmul "
+    "size: aie2=4x4x8, aie2p=8x8x8.",
+)
+parser.add_argument(
+    "--profile-iters",
+    type=int,
+    default=0,
+    help="If >0, also benchmark on HW for this many iters (after correctness).",
 )
 parser.add_argument(
     "--output-format",
@@ -92,11 +113,74 @@ with air.ir.Context() as ctx, Location.unknown():
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
-    # Load the MLIR transform IR from an external file
-    with open(args.transform_script, "r") as f:
-        transform_ir_string = f.read()
-    transform_ir = Module.parse(transform_ir_string)
-    run_transform(transform_ir, air_module)
+    if args.use_cpp_pipeline:
+        # Single-pack-level f32-out flow via the C++ orchestrator. Mirrors
+        # transform_aie2{,p}.mlir step-for-step. mmul size differs per arch:
+        # aie2p = 8x8x8, aie2 = 4x4x8 (changes pack size + core tile +
+        # prologue tile).
+        if args.arch == "aie2p":
+            mmul_m, mmul_n, mmul_k = 8, 8, 8
+            core_tile_mn = 8  # tile_using_forall [8, 8, 0]
+        else:
+            mmul_m, mmul_n, mmul_k = 4, 4, 8
+            core_tile_mn = 16  # tile_using_forall [16, 16, 0]
+        l2_k = 64  # L2-K tile (matches copy-loop tile size in transform script)
+        k_factor = l2_k // mmul_k  # post-pack inner-K tile factor
+        cpp_pipeline = (
+            "builtin.module("
+            "air-matmul-codegen{"
+            # Phase C: bufferize L2 acc + tile L3->L2 copies. f32 output —
+            # no fuse-output-truncf-first.
+            "bufferize-output-l2=true "
+            f"tile-l3-to-l2-copies=true k-l2-tile={l2_k} "
+            # Phase B: single-pack L2 pack (also bufferizes its output to L1
+            # since l1-pack-sizes is empty).
+            f"l2-pack-sizes={mmul_m},{mmul_n},{mmul_k} "
+            "l2-lhs-outer-perm=1,0 l2-lhs-inner-perm=0,1 "
+            "l2-rhs-outer-perm=1,0 l2-rhs-inner-perm=1,0 "
+            "l2-acc-outer-perm=1,0 l2-acc-inner-perm=0,1 "
+            # Phase E: K-tile factor (single-pack so this is the only K-tile).
+            f"outer-k-tile-factor={k_factor} outer-k-iter-index=2 "
+            # Phase H: per-core tile.
+            f"core-tile={core_tile_mn},{core_tile_mn},0 "
+            # Phase K: prologue / epilogue.
+            f"prologue-tile={core_tile_mn},{core_tile_mn} "
+            "epilogue-tile=64,64 fill-iter-perm=1,0,2,3 "
+            # Phase L: upstream one-shot-bufferize.
+            "one-shot-bufferize=true "
+            # Phase M: tile-for-vectorize.
+            "post-bufferize-cleanup-first=true "
+            "matmul-vec-tile=2,2,1,0,0,0 "
+            "matmul-unroll-vec-tile=1,1,0,0,0,0 "
+            "matmul-unroll-factor=2 fill-vec-tile=1,1,0,0 "
+            # Phase N: vec-prep deferred to second invocation (after herd).
+            "do-vec-prep=false"
+            "}, "
+            "func.func(scf-forall-to-parallel), "
+            "air-par-to-herd, "
+            "func.func(air-herd-vectorize), "
+            "func.func(canonicalize,cse,fold-memref-alias-ops), "
+            # Second orchestrator invocation: vec-prep only. f32 output =>
+            # cast acc to f32 (operand index 2, result index 0). No
+            # hoist-cast-pairs (no bf16 trunc/ext pairs to hoist).
+            "air-matmul-codegen{"
+            "do-vec-prep=true "
+            "vec-prep-cast1-target-element-type=f32 "
+            "vec-prep-cast1-input-indices=2 "
+            "vec-prep-cast1-output-indices=0"
+            "}, "
+            "func.func(canonicalize,cse,fold-memref-alias-ops,"
+            "air-fold-unit-extent-dims)"
+            ")"
+        )
+        pm = air.passmanager.PassManager.parse(cpp_pipeline)
+        pm.run(air_module.operation)
+    else:
+        # Load the MLIR transform IR from an external file
+        with open(args.transform_script, "r") as f:
+            transform_ir_string = f.read()
+        transform_ir = Module.parse(transform_ir_string)
+        run_transform(transform_ir, air_module)
 
     ################################################
     ## Binding scf.parallel to air hierarchies
@@ -140,11 +224,18 @@ with air.ir.Context() as ctx, Location.unknown():
         instance_name="bare_matmul",
         stack_size=2048,
     )
-    exit(
-        runner.run_test(
+    rc = runner.run_test(
+        air_module,
+        inputs=[A, B],
+        expected_outputs=[C],
+        rtol=1e-1,
+    )
+    if args.profile_iters > 0 and rc == 0:
+        runner.benchmark(
             air_module,
             inputs=[A, B],
-            expected_outputs=[C],
-            rtol=1e-1,
+            output_shapes_dtypes=[((M, N), output_type)],
+            iters=args.profile_iters,
+            label=("cpp" if args.use_cpp_pipeline else "legacy"),
         )
-    )
+    exit(rc)
