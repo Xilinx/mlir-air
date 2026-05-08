@@ -1561,6 +1561,7 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="mha_bf16",
             runtime_loop_tiling_sizes=[4, 4],
+            stack_size=0xC00,
         )
         exit(
             runner.run_test(
@@ -1592,6 +1593,7 @@ if __name__ == "__main__":
             output_format=args.output_format,
             runtime_loop_tiling_sizes=[4, 4],
             target_device="npu2",
+            stack_size=0xC00,
         )
         module_function = backend.compile(mlir_module)
 
