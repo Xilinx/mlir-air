@@ -61,16 +61,15 @@ AIE::TileOp air::getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col,
   return nullptr;
 }
 
-// See header for contract. Used by milestones 1 (memtile, inlined),
-// 3 (ShimDMAAllocator), and 4 (compute tiles).
-AIE::TileOp air::createTileViaPlacer(AIE::DeviceOp aie_device,
-                                     AIE::AIETileType tileType,
-                                     std::optional<int> col_hint,
-                                     std::optional<int> row_hint) {
+// See header for contract. Thin single-tile wrapper over createTilesViaPlacer.
+FailureOr<AIE::TileOp> air::createTileViaPlacer(AIE::DeviceOp aie_device,
+                                                AIE::AIETileType tileType,
+                                                std::optional<int> col_hint,
+                                                std::optional<int> row_hint) {
   SmallVector<AIE::TileOp> out;
   std::pair<std::optional<int>, std::optional<int>> hint{col_hint, row_hint};
   if (failed(createTilesViaPlacer(aie_device, tileType, {hint}, out)))
-    return nullptr;
+    return failure();
   return out.front();
 }
 
@@ -1045,8 +1044,12 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   if (isPacketFlowOp) {
     for (auto &t : *allocs) {
       if (t.foundPacketFlowAllocInTile(dma_col, 0)) {
-        tile = air::createTileViaPlacer(device, AIE::AIETileType::ShimNOCTile,
-                                        dma_col, /*row_hint=*/std::nullopt);
+        auto tileRes = air::createTileViaPlacer(
+            device, AIE::AIETileType::ShimNOCTile, dma_col,
+            /*row_hint=*/std::nullopt);
+        if (failed(tileRes))
+          return failure();
+        tile = *tileRes;
         std::vector<int> dma_ops_get_id;
         for (auto op : dma_ops) {
           if (op->hasAttr("id"))
@@ -1088,12 +1091,11 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   if (dma_channel >= shim_dma_channels) {
     return memcpyOp.emitOpError("out of shim dma channels.");
   }
-  tile = air::createTileViaPlacer(device, AIE::AIETileType::ShimNOCTile,
-                                  dma_col, /*row_hint=*/std::nullopt);
-  if (!tile) {
-    return memcpyOp.emitOpError(
-        "failed to get shim tile for the newly allocated shim dma channel.");
-  }
+  auto tileRes = air::createTileViaPlacer(device, AIE::AIETileType::ShimNOCTile,
+                                          dma_col, /*row_hint=*/std::nullopt);
+  if (failed(tileRes))
+    return failure();
+  tile = *tileRes;
   // For shim dma allocations, the col, row and dma_id fields record the other
   // side of the flows, for airrt metadata
   std::vector<int> dma_ops_get_id;

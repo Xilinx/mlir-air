@@ -30,15 +30,16 @@ AIE::TileOp getPhysTileOp(AIE::DeviceOp aie_device, int col, int row);
 
 // Materialize a physical aie.tile by emitting an aie.logical_tile<tileType>
 // with the given hints (use std::nullopt for "?"), running mlir-aie's
-// SequentialPlacer, and resolving the result through getPhysTileOp.
+// SequentialPlacer, and resolving the result through getPhysTileOp. On
+// placement failure, emits a diagnostic on `aie_device` and returns failure.
 //
 // Caller must NOT be inside a greedy PatternRewriter callback; this helper
 // uses plain OpBuilder + replaceAllUsesWith/erase, which would invalidate
 // a greedy worklist's cached use-def edges (see RFC #1567 milestone 2).
-AIE::TileOp createTileViaPlacer(AIE::DeviceOp aie_device,
-                                AIE::AIETileType tileType,
-                                std::optional<int> col_hint,
-                                std::optional<int> row_hint);
+mlir::FailureOr<AIE::TileOp> createTileViaPlacer(AIE::DeviceOp aie_device,
+                                                 AIE::AIETileType tileType,
+                                                 std::optional<int> col_hint,
+                                                 std::optional<int> row_hint);
 
 // Batched variant: emits N aie.logical_tile<tileType> ops (one per hint),
 // runs the placer ONCE, and resolves each into a physical aie.tile. The
