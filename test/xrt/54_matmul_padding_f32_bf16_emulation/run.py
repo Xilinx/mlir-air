@@ -211,8 +211,7 @@ with air.ir.Context() as ctx, Location.unknown():
             "unknown-type-conversion=identity-layout-map "
             "function-boundary-type-conversion=identity-layout-map}",
             "func.func(canonicalize,cse,canonicalize)",
-            "func.func(air-matmul-cleanup-bufferize)",
-            "func.func(air-matmul-fuse-pingpong-loops)",
+            "func.func(air-matmul-post-bufferize-cleanup)",
             "func.func(air-matmul-tile-for-vectorize{"
             "matmul-tile-sizes=2,2,1,0,0,0 "
             "matmul-unroll-tile-sizes=1,1,0,0,0,0 "

@@ -182,17 +182,21 @@ if args.use_cpp_pipeline:
         # Bufferize the L1 input packs.
         "func.func(air-matmul-bufferize-l1-inputs)",
         "func.func(canonicalize,cse)",
-        "func.func(air-hoist-static-alloc)",
         # Prologue/epilogue (post-pack 4D shapes; tile [1, 1]).
+        # `hoist-static-alloc-first=true` runs the static-alloc hoist as the
+        # pre-step (replaces what was the standalone `air-hoist-static-alloc`
+        # pass). M4 K-peel flow needs this so the L1 acc alloc lives outside
+        # the K-reduction loop.
         "func.func(air-matmul-prologue-epilogue{"
         "prologue-tile-sizes=1,1 epilogue-tile-sizes=1,1 "
-        "fill-iterator-interchange=})",
+        "fill-iterator-interchange= "
+        "hoist-static-alloc-first=true})",
         "func.func(canonicalize,cse)",
         "one-shot-bufferize{bufferize-function-boundaries=1 "
         "unknown-type-conversion=identity-layout-map "
         "function-boundary-type-conversion=identity-layout-map}",
         "func.func(canonicalize,cse,canonicalize)",
-        "func.func(air-matmul-cleanup-bufferize)",
+        "func.func(air-matmul-post-bufferize-cleanup)",
         # Vectorize tile (9-iter matmul, all dims tiled by 1; fill 4-iter).
         "func.func(air-matmul-tile-for-vectorize{"
         "matmul-tile-sizes=1,1,1,1,1,1,0,0,0 "

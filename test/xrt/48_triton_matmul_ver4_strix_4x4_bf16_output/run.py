@@ -110,8 +110,8 @@ with air.ir.Context() as ctx, Location.unknown():
         # Per-launch-tile shape is 256x256x256 (single launch tile).
         phases = [
             "func.func(air-matmul-tile-l3-to-l2-copies{k-l2-tile=64})",
-            "func.func(air-matmul-fuse-output-truncf)",
-            "func.func(air-matmul-bufferize-output-l2)",
+            "func.func(air-matmul-bufferize-output-l2{"
+            "fuse-output-truncf-first=true})",
             "func.func(air-matmul-pack-and-transpose{pack-sizes=8,8,8 "
             "lhs-outer-perm=1,0 lhs-inner-perm=0,1 "
             "rhs-outer-perm=1,0 rhs-inner-perm=1,0 "
@@ -129,8 +129,7 @@ with air.ir.Context() as ctx, Location.unknown():
             "unknown-type-conversion=identity-layout-map "
             "function-boundary-type-conversion=identity-layout-map}",
             "func.func(canonicalize,cse,canonicalize)",
-            "func.func(air-matmul-cleanup-bufferize)",
-            "func.func(air-matmul-fuse-pingpong-loops)",
+            "func.func(air-matmul-post-bufferize-cleanup)",
             "func.func(air-matmul-tile-for-vectorize{"
             "matmul-tile-sizes=2,2,1,0,0,0 "
             "matmul-unroll-tile-sizes=1,1,0,0,0,0 "

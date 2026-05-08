@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRMatmulTilePasses.h"
+#include "air/Transform/AIRMatmulBufferizationPasses.h"
 #include "air/Util/MatmulCodegenConfig.h"
 #include "air/Util/Util.h"
 
@@ -400,6 +401,12 @@ public:
   void runOnOperation() override {
     func::FuncOp f = getOperation();
     IRRewriter rewriter(&getContext());
+
+    // Optional pre-step: hoist statically-bound memref.alloc ops out of
+    // nested loops to the function entry block. Used by the M4 / two-pack
+    // flow.
+    if (clHoistStaticAllocFirst)
+      runHoistStaticAllocImpl(f, rewriter);
 
     SmallVector<int64_t> prologueTile = llvm::to_vector(clPrologueTileSizes);
     SmallVector<int64_t> epilogueTile = llvm::to_vector(clEpilogueTileSizes);

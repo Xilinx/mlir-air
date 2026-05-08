@@ -63,10 +63,7 @@ void xilinx::air::registerTransformPasses() {
   registerAIRMatmulBufferizeOutputL2();
   registerAIRMatmulBufferizeL1Output();
   registerAIRMatmulBufferizeL1Inputs();
-  registerAIRMatmulCleanupBufferize();
-  registerAIRMatmulFusePingpongLoops();
-  registerAIRMatmulFuseOutputTruncf();
-  registerAIRHoistStaticAlloc();
+  registerAIRMatmulPostBufferizeCleanup();
   registerAIROverrideMemRefMemorySpace();
   registerAIRPipelineReducePass();
   registerAIRRegularizeLoop();

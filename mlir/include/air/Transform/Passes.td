@@ -1474,7 +1474,13 @@ def AIRMatmulPrologueEpilogue : Pass<"air-matmul-prologue-epilogue",
            "Marker on the prologue scf.forall.">,
     Option<"clEpilogueForallMarker", "epilogue-forall-marker", "std::string",
            /*default=*/"\"epilogue_forall\"",
-           "Marker on the epilogue scf.forall.">
+           "Marker on the epilogue scf.forall.">,
+    Option<"clHoistStaticAllocFirst", "hoist-static-alloc-first", "bool",
+           /*default=*/"false",
+           "Before generating prologue/epilogue, hoist statically-bound "
+           "memref.alloc ops out of nested loops to the function entry "
+           "block. Replaces what was the standalone "
+           "`air-hoist-static-alloc` pass. Used by the M4 / two-pack flow.">
   ];
 }
 
@@ -1491,7 +1497,14 @@ def AIRMatmulBufferizeOutputL2 : Pass<"air-matmul-bufferize-output-l2",
   }];
   let options = [
     Option<"clMemorySpace", "memory-space", "int64_t", /*default=*/"1",
-           "Target memory space for the L2 allocation (1 = MemTile).">
+           "Target memory space for the L2 allocation (1 = MemTile).">,
+    Option<"clFuseOutputTruncfFirst", "fuse-output-truncf-first", "bool",
+           /*default=*/"false",
+           "Before bufferizing, fuse a single-truncf linalg.generic consumer "
+           "of the matmul into the matmul (lowers accumulator type). Must "
+           "run before bufferization so the fill's element type matches the "
+           "post-fuse matmul. Replaces what was the standalone "
+           "`air-matmul-fuse-output-truncf` pass. Used by bf16-out flows.">
   ];
 }
 
@@ -1549,63 +1562,19 @@ def AIRMatmulBufferizeL1Inputs : Pass<"air-matmul-bufferize-l1-inputs",
   ];
 }
 
-def AIRMatmulCleanupBufferize : Pass<"air-matmul-cleanup-bufferize",
-                                     "func::FuncOp"> {
-  let summary = "Post-bufferization cleanup: remove uninitialized copies, "
-                "eliminate cascade memcpy chains.";
-  let constructor = "xilinx::air::createAIRMatmulCleanupBufferizePass()";
+def AIRMatmulPostBufferizeCleanup
+    : Pass<"air-matmul-post-bufferize-cleanup", "func::FuncOp"> {
+  let summary = "Phase 7+8: remove uninitialized copies, eliminate cascade "
+                "memcpys, and sibling-fuse the L3->L2 copy loops into the "
+                "K-reduction loop for L2 ping-pong buffering.";
+  let constructor =
+      "xilinx::air::createAIRMatmulPostBufferizeCleanupPass()";
   let description = [{
-    Applies, in order: (a) `OptimizeCopyOpPattern` to drop copies whose source
-    is uninitialized (or replace with linalg.fill if source is only filled),
-    (b) `EliminateIntermediateMemrefPattern` to collapse cascade
-    air.dma_memcpy_nd chains via an intermediate buffer.
-
-    Replaces the `transform.air.remove_uninitialized_copy` +
-    `transform.air.eliminate_cascade_memcpy` tail of Phase 7. M2.
-  }];
-}
-
-def AIRMatmulFusePingpongLoops : Pass<"air-matmul-fuse-pingpong-loops",
-                                       "func::FuncOp"> {
-  let summary = "Phase 8: normalize K-reduction loop bounds, then sibling-fuse "
-                "the L3->L2 copy loops into the K-reduction loop for L2 ping-"
-                "pong buffering.";
-  let constructor = "xilinx::air::createAIRMatmulFusePingpongLoopsPass()";
-  let description = [{
-    Looks up the scf.for loops annotated `copy_a_loop`, `copy_b_loop`, and
-    `k_reduction_loop` (set by Phase 1 / Phase 4). Calls
-    `foldAffineApplyIntoLoopBounds` to normalize the K-reduction loop bounds,
-    then applies `mlir::scf::fuseIndependentSiblingForLoops` to bring the
-    copy loops into the K-reduction loop. Replaces Phase 8.
-  }];
-}
-
-def AIRHoistStaticAlloc : Pass<"air-hoist-static-alloc", "func::FuncOp"> {
-  let summary = "Hoist statically-bound memref.alloc ops out of nested loops "
-                "to the function entry block.";
-  let constructor = "xilinx::air::createAIRHoistStaticAllocPass()";
-  let description = [{
-    Walks `memref.alloc` ops in the function. For each alloc that is not
-    already in the entry block AND whose dynamic sizes are empty (or all
-    uses are subview-replaceable), hoist it to the entry block. Wraps the
-    `hoistStaticallyBoundAllocationsInFunc<memref::AllocOp>` helper used
-    by `transform.air.hoist_static_alloc`. Required by the M4 K-peel flow
-    (test 37) so the L1 acc alloc lives outside the K-reduction loop.
-  }];
-}
-
-def AIRMatmulFuseOutputTruncf : Pass<"air-matmul-fuse-output-truncf",
-                                      "func::FuncOp"> {
-  let summary = "Phase 2 (test 53): fuse a truncf-only linalg.generic into "
-                "its matmul producer, lowering accumulator type to bf16.";
-  let constructor = "xilinx::air::createAIRMatmulFuseOutputTruncfPass()";
-  let description = [{
-    For each linalg.generic that contains only an arith.truncf and consumes a
-    matmul result, calls `runFuseTruncfLinalg` to fuse it into the matmul.
-    The fused result is replaced with a `linalg.matmul` of the truncated
-    output element type so that downstream pack/specialize succeeds.
-
-    Used by tests with bf16 output (e.g. test 53 / prog_ex bf16-out flow).
+    Combines what were three back-to-back trivial passes
+    (`cleanup-bufferize` and `fuse-pingpong-loops`) into one entry. The
+    sibling-fuse step is a no-op if the IR doesn't carry the
+    `copy_a_loop` / `copy_b_loop` / `k_reduction_loop` markers (e.g. the
+    M4 / two-pack flow which uses a different copy choreography).
   }];
 }
 

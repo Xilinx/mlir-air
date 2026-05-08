@@ -15,6 +15,8 @@
 
 #include "air/Transform/PassDetail.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
@@ -33,13 +35,19 @@ std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeL1InputsPass();
 std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeL1InputsPass(
     const AIRMatmulBufferizeL1InputsOptions &);
 
-std::unique_ptr<mlir::Pass> createAIRMatmulCleanupBufferizePass();
+std::unique_ptr<mlir::Pass> createAIRMatmulPostBufferizeCleanupPass();
 
-std::unique_ptr<mlir::Pass> createAIRMatmulFusePingpongLoopsPass();
-
-std::unique_ptr<mlir::Pass> createAIRMatmulFuseOutputTruncfPass();
-
-std::unique_ptr<mlir::Pass> createAIRHoistStaticAllocPass();
+// Free-function bodies for the now-internal trivial passes. Called either
+// from the combined post-bufferize-cleanup pass or from option-driven
+// option-tail steps in parametric passes (see pack-and-transpose's
+// `fuse-output-truncf-first`, prologue-epilogue's `hoist-static-alloc-first`).
+mlir::LogicalResult
+runFusePingpongLoopsImpl(mlir::func::FuncOp f,
+                         mlir::RewriterBase &rewriter);
+void runFuseOutputTruncfImpl(mlir::func::FuncOp f,
+                             mlir::RewriterBase &rewriter);
+void runHoistStaticAllocImpl(mlir::func::FuncOp f,
+                             mlir::RewriterBase &rewriter);
 
 } // namespace air
 } // namespace xilinx

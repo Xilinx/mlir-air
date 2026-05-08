@@ -77,11 +77,18 @@ public:
 
   void runOnOperation() override {
     func::FuncOp f = getOperation();
+    IRRewriter rewriter(&getContext());
+
+    // Optional pre-step: fuse a single-truncf linalg.generic consumer of the
+    // matmul into the matmul itself before bufferizing the fill, so the
+    // fill's element type matches the post-fuse matmul.
+    if (clFuseOutputTruncfFirst)
+      runFuseOutputTruncfImpl(f, rewriter);
+
     SmallVector<linalg::FillOp> fills;
     f.walk([&](linalg::FillOp op) { fills.push_back(op); });
     if (fills.empty())
       return; // no-op if no fill.
-    IRRewriter rewriter(&getContext());
     for (linalg::FillOp fill : fills) {
       if (!fill.getOperation()->getBlock())
         continue; // erased by a prior iteration's bufferization
@@ -187,31 +194,10 @@ std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeL1InputsPass(
 }
 
 //===----------------------------------------------------------------------===//
-// AIRMatmulCleanupBufferize  (Phase 7 tail)
-//===----------------------------------------------------------------------===//
-
-namespace {
-class AIRMatmulCleanupBufferize
-    : public impl::AIRMatmulCleanupBufferizeBase<AIRMatmulCleanupBufferize> {
-public:
-  AIRMatmulCleanupBufferize() = default;
-
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    if (failed(runRemoveUninitializedCopy(f)))
-      return signalPassFailure();
-    if (failed(runEliminateCascadeMemcpy(f)))
-      return signalPassFailure();
-  }
-};
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulCleanupBufferizePass() {
-  return std::make_unique<AIRMatmulCleanupBufferize>();
-}
-
-//===----------------------------------------------------------------------===//
-// AIRMatmulFusePingpongLoops  (Phase 8)
+// AIRMatmulPostBufferizeCleanup  (Phase 7+8: remove uninitialized copies,
+// eliminate cascade memcpys, then sibling-fuse the K-reduction loop with the
+// L3->L2 copy loops for ping-pong buffering. Combined into one pass since
+// the two halves are always run back-to-back.)
 //===----------------------------------------------------------------------===//
 
 namespace {
@@ -260,122 +246,88 @@ static void hoistInterveningDeps(scf::ForOp target, scf::ForOp source) {
     op->moveBefore(first);
 }
 
-class AIRMatmulFusePingpongLoops
-    : public impl::AIRMatmulFusePingpongLoopsBase<AIRMatmulFusePingpongLoops> {
+class AIRMatmulPostBufferizeCleanup
+    : public impl::AIRMatmulPostBufferizeCleanupBase<
+          AIRMatmulPostBufferizeCleanup> {
 public:
-  AIRMatmulFusePingpongLoops() = default;
+  AIRMatmulPostBufferizeCleanup() = default;
 
   void runOnOperation() override {
     func::FuncOp f = getOperation();
+    if (failed(runRemoveUninitializedCopy(f)))
+      return signalPassFailure();
+    if (failed(runEliminateCascadeMemcpy(f)))
+      return signalPassFailure();
     IRRewriter rewriter(&getContext());
+    if (failed(runFusePingpongLoopsImpl(f, rewriter)))
+      return signalPassFailure();
+  }
+};
+} // namespace
 
-    scf::ForOp copyA = xilinx::air::findOpOfTypeWithAttr<scf::ForOp>(f, "copy_a_loop");
-    scf::ForOp copyB = xilinx::air::findOpOfTypeWithAttr<scf::ForOp>(f, "copy_b_loop");
-    scf::ForOp kRed = xilinx::air::findOpOfTypeWithAttr<scf::ForOp>(f, "k_reduction_loop");
+// Free-function bodies for the prior `fuse-pingpong-loops`,
+// `fuse-output-truncf`, and `hoist-static-alloc` passes. Exposed via
+// AIRMatmulBufferizationPasses.h so they can be called either from the
+// combined post-bufferize-cleanup pass or as option-driven steps inside
+// the parametric passes (pack-and-transpose, prologue-epilogue).
 
-    // No-op if the IR is not in the post-Phase-4 shape (e.g. running on a
-    // function that didn't go through tile-l3-to-l2 + tile-k-and-fuse).
-    if (!copyA || !copyB || !kRed)
+LogicalResult runFusePingpongLoopsImpl(func::FuncOp f, RewriterBase &rewriter) {
+  scf::ForOp copyA =
+      xilinx::air::findOpOfTypeWithAttr<scf::ForOp>(f, "copy_a_loop");
+  scf::ForOp copyB =
+      xilinx::air::findOpOfTypeWithAttr<scf::ForOp>(f, "copy_b_loop");
+  scf::ForOp kRed =
+      xilinx::air::findOpOfTypeWithAttr<scf::ForOp>(f, "k_reduction_loop");
+  if (!copyA || !copyB || !kRed)
+    return success(); // not in the right shape; no-op.
+
+  scf::ForOp normalized = runNormalizeForBounds(kRed, rewriter);
+  hoistInterveningDeps(normalized, copyB);
+  if (copyB->isBeforeInBlock(normalized))
+    copyB->moveBefore(normalized);
+  scf::ForOp afterB =
+      fuseIndependentSiblingForLoops(normalized, copyB, rewriter);
+  if (!afterB)
+    return failure();
+  hoistInterveningDeps(afterB, copyA);
+  if (copyA->isBeforeInBlock(afterB))
+    copyA->moveBefore(afterB);
+  scf::ForOp afterA = fuseIndependentSiblingForLoops(afterB, copyA, rewriter);
+  if (!afterA)
+    return failure();
+  return success();
+}
+
+void runFuseOutputTruncfImpl(func::FuncOp f, RewriterBase &rewriter) {
+  // Collect all (producer, truncf_only_consumer) pairs first; fusing in-
+  // place mutates the IR and would invalidate a live walk.
+  SmallVector<std::pair<linalg::LinalgOp, linalg::LinalgOp>> pairs;
+  f.walk([&](linalg::LinalgOp op) {
+    if (!containsOnlyTruncfOp(op))
       return;
-
-    scf::ForOp normalized = runNormalizeForBounds(kRed, rewriter);
-
-    // Fuse copy_b first, then copy_a, matching the legacy transform script.
-    // `fuseIndependentSiblingForLoops` may place the merged loop at the
-    // earlier of the two source positions; if the source is earlier than the
-    // target, that drags the merged loop above any intervening prologue/
-    // epilogue scf.forall ops. To avoid that, MOVE the source loop to
-    // immediately before the target first, so the merged loop stays at the
-    // target's position. (`hoistInterveningDeps` is still called for any
-    // allocs/casts the source loop body uses.)
-    hoistInterveningDeps(normalized, copyB);
-    if (copyB->isBeforeInBlock(normalized))
-      copyB->moveBefore(normalized);
-    scf::ForOp afterB =
-        fuseIndependentSiblingForLoops(normalized, copyB, rewriter);
-    if (!afterB)
-      return signalPassFailure();
-    hoistInterveningDeps(afterB, copyA);
-    if (copyA->isBeforeInBlock(afterB))
-      copyA->moveBefore(afterB);
-    scf::ForOp afterA =
-        fuseIndependentSiblingForLoops(afterB, copyA, rewriter);
-    if (!afterA)
-      return signalPassFailure();
+    if (op.getNumDpsInputs() != 1)
+      return;
+    auto producerOp = op.getDpsInputs()[0].getDefiningOp<linalg::LinalgOp>();
+    if (!producerOp)
+      return;
+    if (!producesResultForOp(producerOp, op))
+      return;
+    pairs.emplace_back(producerOp, op);
+  });
+  for (auto &p : pairs) {
+    if (!p.first->getBlock() || !p.second->getBlock())
+      continue;
+    (void)runFuseTruncfLinalg(p.first, p.second, rewriter);
   }
-};
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulFusePingpongLoopsPass() {
-  return std::make_unique<AIRMatmulFusePingpongLoops>();
 }
 
-//===----------------------------------------------------------------------===//
-// AIRMatmulFuseOutputTruncf  (Phase 2, test 53 / bf16-out flow)
-//===----------------------------------------------------------------------===//
-
-namespace {
-class AIRMatmulFuseOutputTruncf
-    : public impl::AIRMatmulFuseOutputTruncfBase<AIRMatmulFuseOutputTruncf> {
-public:
-  AIRMatmulFuseOutputTruncf() = default;
-
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    IRRewriter rewriter(&getContext());
-
-    // Collect all (producer, truncf_only_consumer) pairs first; fusing in-
-    // place mutates the IR and would invalidate a live walk.
-    SmallVector<std::pair<linalg::LinalgOp, linalg::LinalgOp>> pairs;
-    f.walk([&](linalg::LinalgOp op) {
-      if (!containsOnlyTruncfOp(op))
-        return;
-      if (op.getNumDpsInputs() != 1)
-        return;
-      auto producerOp =
-          op.getDpsInputs()[0].getDefiningOp<linalg::LinalgOp>();
-      if (!producerOp)
-        return;
-      if (!producesResultForOp(producerOp, op))
-        return;
-      pairs.emplace_back(producerOp, op);
-    });
-
-    for (auto &p : pairs) {
-      // Skip if either op was erased by a prior fusion in this loop.
-      if (!p.first->getBlock() || !p.second->getBlock())
-        continue;
-      (void)runFuseTruncfLinalg(p.first, p.second, rewriter);
-    }
-  }
-};
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulFuseOutputTruncfPass() {
-  return std::make_unique<AIRMatmulFuseOutputTruncf>();
+void runHoistStaticAllocImpl(func::FuncOp f, RewriterBase &rewriter) {
+  hoistStaticAllocsInFunc(rewriter,
+                          cast<mlir::FunctionOpInterface>(f.getOperation()));
 }
 
-//===----------------------------------------------------------------------===//
-// AIRHoistStaticAlloc (M4 helper for the K-peel flow)
-//===----------------------------------------------------------------------===//
-
-namespace {
-class AIRHoistStaticAlloc
-    : public impl::AIRHoistStaticAllocBase<AIRHoistStaticAlloc> {
-public:
-  AIRHoistStaticAlloc() = default;
-
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    IRRewriter rewriter(&getContext());
-    hoistStaticAllocsInFunc(rewriter,
-                            cast<mlir::FunctionOpInterface>(f.getOperation()));
-  }
-};
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRHoistStaticAllocPass() {
-  return std::make_unique<AIRHoistStaticAlloc>();
+std::unique_ptr<mlir::Pass> createAIRMatmulPostBufferizeCleanupPass() {
+  return std::make_unique<AIRMatmulPostBufferizeCleanup>();
 }
 
 } // namespace air
