@@ -93,9 +93,8 @@ profile-decode: compile-attn-decode-kernel build-test-exe-decode
 		--nkv $(NKV) --group-size $(GROUP_SIZE) --n-in $(N_IN) --head-dim $(DK) --lk $(LK) --tile-k $(TILE_K) --tile-n $(TILE_N) \
 		--warmup $(WARMUP) --iterations $(ITERS)
 
-# ELF profile target — preferred for multi-iteration profiling. ELF format
-# has lightweight reset device that resets BD state across host invocations
-# (xclbin format does not, so the design's repeat_count BDs hang on iter 2).
+# ELF profile target — alternative profiler using the ELF runtime path.
+# Both xclbin and ELF formats run multi-iteration cleanly for this design.
 profile-decode-elf: compile-attn-decode-kernel build-test-exe-decode-elf
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py \
