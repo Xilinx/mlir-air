@@ -101,15 +101,6 @@ struct allocation_info_t {
   std::vector<Operation *> memcpyOps;
   bool valid();
   AIE::TileOp getDmaTile();
-  bool foundAlloc(air::ChannelOp channel_op);
-  bool foundAlloc(int32_t col, int32_t row, air::MemcpyInterface memcpyOp);
-  bool foundAlloc(int32_t col, int32_t row, int chan);
-  bool foundAlloc(AIE::DMAChannel channel);
-  bool foundAlloc(int32_t col, int32_t row, AIE::DMAChannel channel);
-  bool foundAlloc(int32_t col, int32_t row);
-  bool foundAlloc(int32_t col, int32_t row, air::ChannelOp channel_op);
-  bool foundPacketFlowAllocInTile(int32_t col, int32_t row);
-
   // TileOp-keyed overloads (RFC #1567 Stage C #1). Identify allocations by
   // their owning AIE::TileOp pointer rather than by (col, row) coordinates so
   // bookkeeping does not depend on physical placement.
@@ -118,6 +109,16 @@ struct allocation_info_t {
   bool foundAlloc(AIE::TileOp tile, air::ChannelOp channel_op);
   bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
   bool foundPacketFlowAllocInTile(AIE::TileOp tile);
+
+  bool foundAlloc(air::ChannelOp channel_op);
+  bool foundAlloc(AIE::DMAChannel channel);
+
+  // Column-keyed overloads — used only by ShimDMAAllocator's pre-tile
+  // column-search path that picks a shim column before any TileOp exists.
+  // All other call sites use the TileOp-keyed overloads above.
+  bool foundAlloc(int32_t col, int32_t row);
+  bool foundAlloc(int32_t col, int32_t row, AIE::DMAChannel channel);
+  bool foundPacketFlowAllocInTile(int32_t col, int32_t row);
 
   bool operator==(const allocation_info_t &other) const {
     return dma_tile == other.dma_tile && col == other.col && row == other.row &&
@@ -158,9 +159,9 @@ public:
       : device(device), dmaMemorySpace(dmaMemorySpace) {}
 
   FailureOr<allocation_info_t>
-  lookupDMAAllocation(int64_t col, int64_t row, air::MemcpyInterface &memcpyOp);
+  lookupDMAAllocation(AIE::TileOp tile, air::MemcpyInterface &memcpyOp);
   FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
-  getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
+  getLockForDMA(air::MemcpyInterface &memcpyOp, AIE::TileOp tile,
                 Operation *bufferOp, bool lockRaceConditionFix = false);
   FailureOr<allocation_info_t>
   allocNewDmaChannel(air::MemcpyInterface &memcpyOp, AIE::TileOp tile, int chan,
@@ -188,10 +189,10 @@ public:
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
   FailureOr<allocation_info_t>
-  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int col, int row,
-                        int chan);
+  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, AIE::TileOp tile,
+                        int chan = -1);
 
-  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
 };
 
@@ -213,8 +214,8 @@ public:
                      allocation_info_t existing_alloc,
                      std::vector<Operation *> &dma_ops);
 
-  FailureOr<AIE::ExternalBufferOp> getBuffer(uint64_t &BufferId, int64_t col,
-                                             int64_t row,
+  FailureOr<AIE::ExternalBufferOp> getBuffer(uint64_t &BufferId,
+                                             AIE::TileOp tile,
                                              air::MemcpyInterface &memcpyOp);
 
   FailureOr<air::allocation_info_t>
@@ -230,12 +231,18 @@ public:
   MemTileDMAAllocator(AIE::DeviceOp device);
 
   FailureOr<allocation_info_t>
-  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int chan);
+  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int chan = -1);
   FailureOr<allocation_info_t>
   simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                         allocation_info_t &existing_alloc);
 
-  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+  // For MemTileDMAAllocator and CascadeAllocator the tile is derived from
+  // the memcpyOp's buffer (the buffer's defining op is the tile-bound
+  // BufferOp); the AIE::TileOp parameter is accepted only to keep the
+  // signature uniform with TileDMAAllocator/ShimDMAAllocator so the
+  // generateDmaBdProgram template can call any of them. Pass nullptr
+  // when no tile is yet known.
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
 
   FailureOr<air::allocation_info_t>
@@ -255,7 +262,9 @@ public:
   FailureOr<allocation_info_t> allocNewCascade(air::MemcpyInterface &memcpyOp,
                                                AIE::TileOp tile);
 
-  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+  // Tile parameter is unused (derived from memcpyOp's buffer); kept for
+  // signature uniformity with TileDMAAllocator/ShimDMAAllocator.
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
 
 protected:

@@ -618,20 +618,6 @@ bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row) {
   return false;
 }
 
-bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row,
-                                                air::MemcpyInterface memcpyOp) {
-  if (foundAlloc(col, row))
-    for (auto o : memcpyOps)
-      if (memcpyOp.getOperation() == o)
-        return true;
-  return false;
-}
-
-bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row,
-                                                int chan) {
-  return foundAlloc(col, row) && (chan == dma_channel.channel);
-}
-
 bool xilinx::air::allocation_info_t::foundAlloc(AIE::DMAChannel channel) {
   if (channel.direction == dma_channel.direction &&
       channel.channel == dma_channel.channel)
@@ -651,12 +637,6 @@ bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile,
     return true;
   else
     return false;
-}
-
-bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row,
-                                                air::ChannelOp channel_op) {
-
-  return foundAlloc(col, row) && foundAlloc(channel_op);
 }
 
 // Found existence of a packet flow allocation in provided coordinates.
@@ -740,7 +720,7 @@ static void selection(std::vector<Operation *> &a) {
 namespace xilinx {
 
 FailureOr<air::allocation_info_t>
-air::DMAAllocator::lookupDMAAllocation(int64_t col, int64_t row,
+air::DMAAllocator::lookupDMAAllocation(AIE::TileOp tile,
                                        air::MemcpyInterface &memcpyOp) {
 
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
@@ -748,7 +728,7 @@ air::DMAAllocator::lookupDMAAllocation(int64_t col, int64_t row,
     return failure();
   auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
   for (auto &t : *allocs) {
-    if (t.foundAlloc(col, row, memcpyOp))
+    if (t.foundAlloc(tile, memcpyOp))
       return t;
   }
   return memcpyOp.emitOpError(
@@ -759,14 +739,17 @@ air::DMAAllocator::lookupDMAAllocation(int64_t col, int64_t row,
 // Allocate a reader/writer lock pair. These may be the same or different
 // locks depending on the target device.
 FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
-air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col,
-                                 int row, Operation *bufferOp,
+air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
+                                 AIE::TileOp tile, Operation *bufferOp,
                                  bool lockRaceConditionFix) {
-  auto alloc = lookupDMAAllocation(col, row, memcpyOp);
+  auto alloc = lookupDMAAllocation(tile, memcpyOp);
   if (failed(alloc))
     return memcpyOp->emitOpError("failed to look up dma allocation.");
   AIE::DMAChannel channel = alloc.value().dma_channel;
-  AIE::TileOp tile = alloc.value().getDmaTile();
+  // Coordinates derived from the tile for predicates like
+  // target_model.isMemTile.
+  int col = tile.getCol();
+  int row = tile.getRow();
   air::ChannelOp air_chan = nullptr;
   if (auto air_chan_op =
           dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation())) {
@@ -961,7 +944,12 @@ void air::DMAAllocator::sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops) {
 //  <description>
 FailureOr<air::allocation_info_t>
 air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
-                                             int col, int row, int chan = -1) {
+                                             AIE::TileOp tile, int chan) {
+  if (!tile) {
+    return memcpyOp.emitOpError(
+        "failed to get a tile. This indicates a potential compilation "
+        "failure.");
+  }
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
   if (failed(isMM2S))
     return failure();
@@ -978,28 +966,25 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   // Search for existing dma channel allocation
   unsigned num_allocs = 0;
   for (auto &t : *allocs) {
-    if (t.foundAlloc(col, row))
+    if (t.foundAlloc(tile))
       num_allocs++;
-    if (t.foundAlloc(col, row, memcpyOp))
+    if (t.foundAlloc(tile, memcpyOp))
       return t;
-    if (t.foundAlloc(col, row, chan)) {
+    if (t.foundAlloc(tile,
+                     AIE::DMAChannel{isMM2S.value() ? AIE::DMAChannelDir::MM2S
+                                                    : AIE::DMAChannelDir::S2MM,
+                                     chan})) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
     // Search for existing packet-flow allocations on this tile, and try to
     // reuse the channel allocation.
-    if (isPacketFlowOp && t.foundPacketFlowAllocInTile(col, row)) {
+    if (isPacketFlowOp && t.foundPacketFlowAllocInTile(tile)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
   }
   // Need to allocate a new one
-  auto tile = getPhysTileOpOrNull(device, col, row);
-  if (!tile) {
-    return memcpyOp.emitOpError(
-        "failed to get a tile at specified col and row. This "
-        "indicates a potential compilation failre.");
-  }
   int tile_dma_channels =
       isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
                      : tile.getNumDestConnections(AIE::WireBundle::DMA);
@@ -1009,7 +994,7 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
 }
 
 FailureOr<AIE::BufferOp>
-air::TileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
+air::TileDMAAllocator::getBuffer(uint64_t, AIE::TileOp tile,
                                  air::MemcpyInterface &memcpyOp) {
   auto isInbound = isTileInbound(memcpyOp, dmaMemorySpace);
   if (failed(isInbound))
@@ -1177,7 +1162,7 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
 }
 
 FailureOr<AIE::ExternalBufferOp>
-air::ShimDMAAllocator::getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
+air::ShimDMAAllocator::getBuffer(uint64_t &BufferId, AIE::TileOp tile,
                                  air::MemcpyInterface &memcpyOp) {
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
   if (failed(isMM2S))
@@ -1191,10 +1176,13 @@ air::ShimDMAAllocator::getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
       air::MemorySpaceAttr::get(memcpyOp->getContext(), dmaMemorySpace);
   memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
                              AffineMap(), memSpaceAttr);
+  // Names use shim coords: tile is the shim NOC tile that owns the external
+  // buffer's DMA program (the L3 buffer itself has no tile, but its name
+  // ties it to the shim that drives it).
   AIE::ExternalBufferOp bufferOp = allocateExternalBufferOp(
       BufferId, memrefTy, device,
       memcpyOp->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-      col, row);
+      tile ? (int)tile.getCol() : -1, tile ? (int)tile.getRow() : -1);
   return bufferOp;
 }
 
@@ -1249,14 +1237,14 @@ air::MemTileDMAAllocator::MemTileDMAAllocator(AIE::DeviceOp device)
 
 FailureOr<air::allocation_info_t>
 air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
-                                                int chan = -1) {
+                                                int chan) {
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
   if (failed(isMM2S))
     return failure();
   auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
 
   const int dummy{0};
-  auto buffer = getBuffer(dummy, -1, -1, memcpyOp);
+  auto buffer = getBuffer(dummy, /*tile=*/nullptr, memcpyOp);
   if (failed(buffer)) {
     return memcpyOp->emitOpError("failed to get buffer.");
   }
@@ -1307,7 +1295,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(
   auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
 
   const int dummy{0};
-  auto buffer = getBuffer(dummy, -1, -1, memcpyOp);
+  auto buffer = getBuffer(dummy, /*tile=*/nullptr, memcpyOp);
   if (failed(buffer)) {
     return memcpyOp->emitOpError("failed to get buffer.");
   }
@@ -1363,7 +1351,7 @@ air::MemTileDMAAllocator::foundFlowReuseOpportunity(
 }
 
 FailureOr<AIE::BufferOp>
-air::MemTileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
+air::MemTileDMAAllocator::getBuffer(uint64_t, AIE::TileOp,
                                     air::MemcpyInterface &memcpyOp) {
   auto isInbound = isTileInbound(memcpyOp, dmaMemorySpace);
   if (failed(isInbound))
@@ -1392,7 +1380,7 @@ air::CascadeAllocator::coreCascadeAlloc(air::MemcpyInterface &memcpyOp) {
 
   // Retrieve the buffer and the tile where this memcpyOp operates
   const int dummy{0};
-  auto buffer = getBuffer(dummy, -1, -1, memcpyOp);
+  auto buffer = getBuffer(dummy, /*tile=*/nullptr, memcpyOp);
   if (failed(buffer)) {
     return memcpyOp->emitOpError("failed to get buffer.");
   }
@@ -1457,7 +1445,7 @@ air::CascadeAllocator::allocNewCascade(air::MemcpyInterface &memcpyOp,
 
 // Retrieves the underlying AIE::BufferOp associated with the given memcpyOp.
 FailureOr<AIE::BufferOp>
-air::CascadeAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
+air::CascadeAllocator::getBuffer(uint64_t, AIE::TileOp,
                                  air::MemcpyInterface &memcpyOp) {
   auto isInbound = isTileInbound(memcpyOp, dmaMemorySpace);
   if (failed(isInbound))
@@ -1630,14 +1618,12 @@ LogicalResult air::simpleDMAChannelAllocation(
               "memcpy op not outlined in an aie.core op.");
         }
         auto tile = core.getTileOp();
-        int x = tile.getCol();
-        int y = tile.getRow();
 
         FailureOr<air::allocation_info_t> alloc_res;
         if (f.memcpyResourceType == "npu_dma_stream" ||
             f.memcpyResourceType == "npu_dma_packet") {
           alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
-              memcpyOpIf, x, y, f.MM2S_alloc.dma_channel.channel);
+              memcpyOpIf, tile, f.MM2S_alloc.dma_channel.channel);
           if (failed(alloc_res))
             return failure();
         } else if (f.memcpyResourceType == "npu_cascade") {
@@ -1661,14 +1647,12 @@ LogicalResult air::simpleDMAChannelAllocation(
                 "memcpy op not outlined in an aie.core op.");
           }
           auto tile = core.getTileOp();
-          int x = tile.getCol();
-          int y = tile.getRow();
 
           FailureOr<air::allocation_info_t> alloc_res;
           if (f.memcpyResourceType == "npu_dma_stream" ||
               f.memcpyResourceType == "npu_dma_packet") {
             alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
-                memcpyOpIf, x, y, f.S2MM_alloc[i].dma_channel.channel);
+                memcpyOpIf, tile, f.S2MM_alloc[i].dma_channel.channel);
             if (failed(alloc_res))
               return failure();
           } else if (f.memcpyResourceType == "npu_cascade") {
