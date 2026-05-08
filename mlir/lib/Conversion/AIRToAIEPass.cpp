@@ -6049,7 +6049,7 @@ public:
       llvm::SetVector<Operation *> allocs_to_remap;
 
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         for (auto o : alloc.memcpyOps) {
           if (!o)
@@ -6065,7 +6065,7 @@ public:
         }
       }
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         for (auto o : alloc.memcpyOps) {
           if (!o)
@@ -6106,7 +6106,7 @@ public:
           tile_dma_memcpys;
 
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
             alloc.dma_channel.direction, alloc.dma_channel.channel};
@@ -6115,7 +6115,7 @@ public:
         }
       }
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
             alloc.dma_channel.direction, alloc.dma_channel.channel};
@@ -6146,7 +6146,7 @@ public:
       for (auto *allocList : {&core_cascade_alloc.cascade_put_allocs,
                               &core_cascade_alloc.cascade_get_allocs}) {
         for (auto &alloc : *allocList) {
-          if (!alloc.foundAlloc(x, y))
+          if (!alloc.foundAlloc(tile))
             continue;
           for (auto o : alloc.memcpyOps) {
             if (!o)
@@ -6208,7 +6208,7 @@ public:
           shim_dma_memcpys;
 
       for (auto &alloc : shimDmaAlloc.mm2s_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -6217,7 +6217,7 @@ public:
         }
       }
       for (auto &alloc : shimDmaAlloc.s2mm_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -6259,7 +6259,7 @@ public:
           memtile_dma_memcpys;
 
       for (auto &alloc : memTileDmaAlloc.mm2s_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -6268,7 +6268,7 @@ public:
         }
       }
       for (auto &alloc : memTileDmaAlloc.s2mm_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
