@@ -138,91 +138,54 @@ with open("air_input.mlir", "w") as f:
 ################################################
 
 if args.use_cpp_pipeline:
-    # M4: two-pack-level matmul codegen via the C++ pass pipeline.
-    # See MATMUL_CODEGEN_PIPELINE_PLAN.md. Hand-tuned options match the
-    # legacy transform_aie2p.mlir values for tests with M=512/N=512/K=1024.
-    phases = [
-        # Phase 0: outer launch tile.
-        "func.func(air-matmul-tile-launch-tile{tile-sizes=256,256})",
-        # L2 pack.
-        "func.func(air-matmul-pack-and-transpose{pack-sizes=64,64,64 "
-        "lhs-outer-perm=0,1 lhs-inner-perm=0,1 "
-        "rhs-outer-perm=1,0 rhs-inner-perm=1,0 "
-        "acc-outer-perm=0,1 acc-inner-perm=0,1})",
-        "func.func(canonicalize,cse)",
-        # Bufferize the L2 fill (matmul accumulator init).
-        "func.func(air-matmul-bufferize-output-l2)",
-        # L1 pack on top of the L2-packed generic. Tail-bufferizes the
-        # output pack (pack_c) into L1 (replaces the former standalone
-        # `air-matmul-bufferize-l1-output` pass).
-        "func.func(air-matmul-pack-and-transpose{pack-sizes=0,0,0,8,8,8 "
-        "lhs-outer-perm=0,1,3,2 "
-        "rhs-outer-perm=0,1,3,2 rhs-inner-perm=1,0 "
-        "acc-outer-perm=0,1,3,2 "
-        "do-bufferize-l1-output=true})",
-        # Outer K-tile (K_L2/64 = 16 chunks, tile by 1). Chain-fuses both
-        # L1 (immediate matmul operand) and L2 (grandparent) packs into the
-        # K-loop, marking the L2 packs with `lhs_l2_pack_in_k` /
-        # `rhs_l2_pack_in_k` for the next bufferize step.
-        "func.func(air-matmul-tile-k-and-fuse-packs{"
-        "k-tile-factor=1 k-iter-index=2})",
-        # Promote LHS/RHS L2 packs into L2 buffers.
-        "func.func(air-matmul-bufferize-l1-inputs{memory-space=1 "
-        "memcpy-op=linalg-copy lhs-marker=lhs_l2_pack_in_k "
-        "rhs-marker=rhs_l2_pack_in_k})",
-        "func.func(canonicalize,cse)",
-        # Per-core tile (forall over outer M_L2 × N_L2 = 4×4 cores).
-        "func.func(air-matmul-tile-cores{tile-sizes=1,1,0,0,0,0,0,0,0})",
-        "func.func(canonicalize,cse)",
-        # Inner K-tile (k_L2/8 = 8 chunks, tile by 8 — one packed-K mmul).
-        "func.func(air-matmul-tile-k-and-fuse-packs{"
-        "k-tile-factor=8 k-iter-index=5 "
-        "k-reduction-loop-marker=k_reduction_loop_inner "
-        "lhs-pack-in-k-marker=fused_lhs_l1_pack "
-        "rhs-pack-in-k-marker=fused_rhs_l1_pack})",
-        # Bufferize the L1 input packs.
-        "func.func(air-matmul-bufferize-l1-inputs)",
-        "func.func(canonicalize,cse)",
-        # Prologue/epilogue (post-pack 4D shapes; tile [1, 1]).
-        # `hoist-static-alloc-first=true` runs the static-alloc hoist as the
-        # pre-step (replaces what was the standalone `air-hoist-static-alloc`
-        # pass). M4 K-peel flow needs this so the L1 acc alloc lives outside
-        # the K-reduction loop.
-        "func.func(air-matmul-prologue-epilogue{"
-        "prologue-tile-sizes=1,1 epilogue-tile-sizes=1,1 "
-        "fill-iterator-interchange= "
-        "hoist-static-alloc-first=true})",
-        "func.func(canonicalize,cse)",
-        "one-shot-bufferize{bufferize-function-boundaries=1 "
-        "unknown-type-conversion=identity-layout-map "
-        "function-boundary-type-conversion=identity-layout-map}",
-        "func.func(canonicalize,cse,canonicalize)",
-        # Vectorize tile (9-iter matmul, all dims tiled by 1; fill 4-iter).
-        # `do-post-bufferize-cleanup-first=true` runs the cleanup as the
-        # pre-step (replaces the former standalone
-        # `air-matmul-post-bufferize-cleanup` pass).
-        "func.func(air-matmul-tile-for-vectorize{"
-        "do-post-bufferize-cleanup-first=true "
-        "matmul-tile-sizes=1,1,1,1,1,1,0,0,0 "
-        "matmul-unroll-tile-sizes=0,0,0,0,0,0,0,0,0 "
-        "matmul-unroll-factor=1 fill-tile-sizes=1,1,1,1})",
-    ]
-    import os, re
-    dump_dir = os.environ.get("AIR_DUMP_PHASES", "")
-    if dump_dir:
-        os.makedirs(dump_dir, exist_ok=True)
-        for i, phase in enumerate(phases):
-            pm = air.passmanager.PassManager.parse(
-                "builtin.module(" + phase + ")", context=context)
-            pm.run(air_module.operation)
-            m = re.search(r"[a-z][a-z0-9-]*", phase.split("(", 1)[-1])
-            short = (m.group(0) if m else f"phase{i}").replace(")", "")
-            with open(f"{dump_dir}/p{i:02d}_{short}.mlir", "w") as f:
-                f.write(str(air_module))
-    else:
-        pm = air.passmanager.PassManager.parse(
-            "builtin.module(" + ",".join(phases) + ")", context=context)
-        pm.run(air_module.operation)
+    # Two-pack-level matmul codegen via the single C++ orchestrator pass.
+    # Hand-tuned options match the legacy transform_aie2p.mlir values for
+    # M=512/N=512/K=1024.
+    pipeline = (
+        "builtin.module(air-matmul-codegen{"
+        # Phase A: outer launch tile.
+        "launch-tile=256,256 "
+        # Phase B: L2 pack.
+        "l2-pack-sizes=64,64,64 "
+        "l2-lhs-outer-perm=0,1 l2-lhs-inner-perm=0,1 "
+        "l2-rhs-outer-perm=1,0 l2-rhs-inner-perm=1,0 "
+        "l2-acc-outer-perm=0,1 l2-acc-inner-perm=0,1 "
+        # Phase C: bufferize L2 accumulator init.
+        "bufferize-output-l2=true "
+        # Phase D: L1 pack on the L2-packed generic; bufferize pack_c to L1.
+        "l1-pack-sizes=0,0,0,8,8,8 "
+        "l1-lhs-outer-perm=0,1,3,2 "
+        "l1-rhs-outer-perm=0,1,3,2 l1-rhs-inner-perm=1,0 "
+        "l1-acc-outer-perm=0,1,3,2 "
+        # Phase E: outer K-tile (factor=1 over K_L2/64 = 16 chunks).
+        # Chain-fuses both L1 and L2 packs into the K-loop; orchestrator
+        # auto-bufferizes the L2 packs into L2 (Phase F).
+        "outer-k-tile-factor=1 outer-k-iter-index=2 "
+        # Phase H: per-core tile (4x4 forall).
+        "core-tile=1,1,0,0,0,0,0,0,0 "
+        # Phase I: inner K-tile (factor=8 over k_L2/8 = 8 chunks).
+        # Orchestrator auto-bufferizes L1 input packs (Phase J).
+        "inner-k-tile-factor=8 inner-k-iter-index=5 "
+        # Phase K: prologue/epilogue. hoist-static-alloc-first hoists the L1
+        # acc alloc out of the K-reduction loop (K-peel flow).
+        "prologue-tile=1,1 epilogue-tile=1,1 hoist-static-alloc-first=true "
+        # Phase L: upstream one-shot-bufferize.
+        "one-shot-bufferize=true "
+        # Phase M: tile-for-vectorize (9-iter matmul tiled by 1; fill 4-iter).
+        # post-bufferize-cleanup-first removes uninitialized copies and
+        # sibling-fuses pingpong loops.
+        "post-bufferize-cleanup-first=true "
+        "matmul-vec-tile=1,1,1,1,1,1,0,0,0 "
+        "matmul-unroll-vec-tile=0,0,0,0,0,0,0,0,0 "
+        "matmul-unroll-factor=1 fill-vec-tile=1,1,1,1 "
+        # Phase N: vec-prep is gated off — this test does not need any of
+        # the vec-prep sub-steps (no vector-cast emulation, no cast-pair
+        # hoist; the simple flatten/hoist passes are not used here).
+        "do-vec-prep=false"
+        "})"
+    )
+    pm = air.passmanager.PassManager.parse(pipeline, context=context)
+    pm.run(air_module.operation)
 else:
     # Load the MLIR transform IR from an external file
     with open(args.transform_script, "r") as f:

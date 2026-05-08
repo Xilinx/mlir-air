@@ -15,29 +15,41 @@
 #ifndef AIR_MATMUL_TILE_PASSES_H
 #define AIR_MATMUL_TILE_PASSES_H
 
-#include "air/Transform/PassDetail.h"
-
-#include "mlir/Pass/Pass.h"
-#include <memory>
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace xilinx {
 namespace air {
 
-std::unique_ptr<mlir::Pass> createAIRMatmulTileKAndFusePacksPass();
-std::unique_ptr<mlir::Pass> createAIRMatmulTileKAndFusePacksPass(
-    const AIRMatmulTileKAndFusePacksOptions &);
+mlir::LogicalResult
+runTileLaunchTileImpl(mlir::func::FuncOp f, llvm::ArrayRef<int64_t> tileSizes,
+                      llvm::StringRef launchTileForallMarker,
+                      mlir::RewriterBase &rewriter);
 
-std::unique_ptr<mlir::Pass> createAIRMatmulTileCoresPass();
-std::unique_ptr<mlir::Pass>
-createAIRMatmulTileCoresPass(const AIRMatmulTileCoresOptions &);
+mlir::LogicalResult runTileKAndFusePacksImpl(
+    mlir::func::FuncOp f, int64_t kTileFactor, int64_t kIterIndex,
+    llvm::StringRef packedMatmulMarker, llvm::StringRef kReductionLoopMarker,
+    llvm::StringRef lhsPackMarker, llvm::StringRef rhsPackMarker,
+    llvm::StringRef lhsL2PackMarker, llvm::StringRef rhsL2PackMarker,
+    mlir::RewriterBase &rewriter);
 
-std::unique_ptr<mlir::Pass> createAIRMatmulPrologueEpiloguePass();
-std::unique_ptr<mlir::Pass> createAIRMatmulPrologueEpiloguePass(
-    const AIRMatmulPrologueEpilogueOptions &);
+mlir::LogicalResult runTileCoresImpl(
+    mlir::func::FuncOp f, llvm::ArrayRef<int64_t> tileSizes,
+    llvm::StringRef packedMatmulMarker, llvm::StringRef lhsPackInKMarker,
+    llvm::StringRef rhsPackInKMarker, llvm::StringRef computeForallMarker,
+    llvm::StringRef matmulComputeMarker, llvm::StringRef lhsL1PackMarker,
+    llvm::StringRef rhsL1PackMarker, mlir::RewriterBase &rewriter);
 
-std::unique_ptr<mlir::Pass> createAIRMatmulTileLaunchTilePass();
-std::unique_ptr<mlir::Pass> createAIRMatmulTileLaunchTilePass(
-    const AIRMatmulTileLaunchTileOptions &);
+mlir::LogicalResult runPrologueEpilogueImpl(
+    mlir::func::FuncOp f, llvm::ArrayRef<int64_t> prologueTileSizes,
+    llvm::ArrayRef<int64_t> epilogueTileSizes,
+    llvm::ArrayRef<int64_t> fillIteratorInterchange,
+    llvm::StringRef initFillMarker, llvm::StringRef prologueForallMarker,
+    llvm::StringRef epilogueForallMarker, bool hoistStaticAllocFirst,
+    mlir::RewriterBase &rewriter);
 
 } // namespace air
 } // namespace xilinx

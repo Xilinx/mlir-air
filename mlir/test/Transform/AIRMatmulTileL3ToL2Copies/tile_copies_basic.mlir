@@ -9,7 +9,7 @@
 // Verifies (1) memref.copy → linalg.copy conversion, (2) per-operand K-tiling,
 // (3) loop annotations.
 
-// RUN: air-opt %s '-air-matmul-bufferize-output-l2=do-tile-l3-to-l2-copies=true k-l2-tile=16' | FileCheck %s
+// RUN: air-opt %s '-air-matmul-codegen=bufferize-output-l2=true tile-l3-to-l2-copies=true k-l2-tile=16 do-vec-prep=false' | FileCheck %s
 
 // CHECK-LABEL: func.func @matmul_with_l3_l2_copies
 // LHS copy (64x784) is tiled by [0, 16] → outer scf.for over K, copy of 64x16 tiles.

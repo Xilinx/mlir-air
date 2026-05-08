@@ -46,16 +46,8 @@ void xilinx::air::registerTransformPasses() {
   registerAIRLoopMergingPass();
   registerAIRLoopPermutation();
   registerAIRLowerHerdParallelPass();
-  registerAIRMatmulPackAndTranspose();
-  registerAIRMatmulTileForVectorize();
   registerAIRFoldUnitExtentDims();
-  registerAIRMatmulCodegenVecPrep();
-  registerAIRMatmulTileLaunchTile();
-  registerAIRMatmulTileKAndFusePacks();
-  registerAIRMatmulTileCores();
-  registerAIRMatmulPrologueEpilogue();
-  registerAIRMatmulBufferizeOutputL2();
-  registerAIRMatmulBufferizeL1Inputs();
+  registerAIRMatmulCodegen();
   registerAIROverrideMemRefMemorySpace();
   registerAIRPipelineReducePass();
   registerAIRRegularizeLoop();

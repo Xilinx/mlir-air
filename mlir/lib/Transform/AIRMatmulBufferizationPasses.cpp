@@ -28,7 +28,6 @@
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Pass/Pass.h"
 
 #define DEBUG_TYPE "air-matmul-bufferization-passes"
 
@@ -46,76 +45,60 @@ namespace {
 /// Bufferize `target` into a new allocation in `memorySpace`.
 /// `bufferizeDestinationOnly=true` so the targeted op itself is not rewritten;
 /// only its destination operand is materialized as a fresh memref alloc.
-static LogicalResult bufferizeOpToAllocation(Operation *target,
-                                             int64_t memorySpace,
-                                             linalg::BufferizeToAllocationOptions
-                                                 ::MemcpyOp memcpyOp,
-                                             RewriterBase &rewriter) {
+static LogicalResult bufferizeOpToAllocation(
+    Operation *target, int64_t memorySpace,
+    linalg::BufferizeToAllocationOptions ::MemcpyOp memcpyOp,
+    RewriterBase &rewriter) {
   linalg::BufferizeToAllocationOptions options;
   options.bufferizeDestinationOnly = true;
   options.emitDealloc = true;
   options.memcpyOp = memcpyOp;
   Attribute memSpaceAttr =
       IntegerAttr::get(IntegerType::get(target->getContext(), 64), memorySpace);
-  Value buffer = linalg::bufferizeToAllocation(rewriter, options, target,
-                                               memSpaceAttr);
+  Value buffer =
+      linalg::bufferizeToAllocation(rewriter, options, target, memSpaceAttr);
   return success(buffer != nullptr);
 }
 
 } // namespace
 
 //===----------------------------------------------------------------------===//
-// AIRMatmulBufferizeOutputL2  (Phase 2)
+// runBufferizeOutputL2Impl  (Phase 2)
 //===----------------------------------------------------------------------===//
 
-namespace {
-class AIRMatmulBufferizeOutputL2
-    : public impl::AIRMatmulBufferizeOutputL2Base<AIRMatmulBufferizeOutputL2> {
-public:
-  AIRMatmulBufferizeOutputL2() = default;
-  AIRMatmulBufferizeOutputL2(const AIRMatmulBufferizeOutputL2Options &opts)
-      : AIRMatmulBufferizeOutputL2Base(opts) {}
+LogicalResult runBufferizeOutputL2Impl(func::FuncOp f, int64_t memorySpace,
+                                       bool fuseOutputTruncfFirst,
+                                       bool doTileL3ToL2Copies, int64_t kL2Tile,
+                                       StringRef copyALoopMarker,
+                                       StringRef copyBLoopMarker,
+                                       RewriterBase &rewriter) {
+  // Optional pre-step 1: convert memref.copy L3->L2 stagings to linalg.copy
+  // and tile by k-l2-tile (with copy_a_loop / copy_b_loop annotations).
+  if (doTileL3ToL2Copies)
+    if (failed(runTileL3ToL2CopiesImpl(f, kL2Tile, copyALoopMarker,
+                                       copyBLoopMarker)))
+      return failure();
 
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    IRRewriter rewriter(&getContext());
+  // Optional pre-step 2: fuse a single-truncf linalg.generic consumer of
+  // the matmul into the matmul itself before bufferizing the fill, so the
+  // fill's element type matches the post-fuse matmul.
+  if (fuseOutputTruncfFirst)
+    runFuseOutputTruncfImpl(f, rewriter);
 
-    // Optional pre-step 1: convert memref.copy L3->L2 stagings to linalg.copy
-    // and tile by k-l2-tile (with copy_a_loop / copy_b_loop annotations).
-    if (clDoTileL3ToL2Copies)
-      if (failed(runTileL3ToL2CopiesImpl(f, clKL2Tile, clCopyALoopMarker,
-                                         clCopyBLoopMarker)))
-        return signalPassFailure();
-
-    // Optional pre-step 2: fuse a single-truncf linalg.generic consumer of
-    // the matmul into the matmul itself before bufferizing the fill, so the
-    // fill's element type matches the post-fuse matmul.
-    if (clFuseOutputTruncfFirst)
-      runFuseOutputTruncfImpl(f, rewriter);
-
-    SmallVector<linalg::FillOp> fills;
-    f.walk([&](linalg::FillOp op) { fills.push_back(op); });
-    if (fills.empty())
-      return; // no-op if no fill.
-    for (linalg::FillOp fill : fills) {
-      if (!fill.getOperation()->getBlock())
-        continue; // erased by a prior iteration's bufferization
-      if (failed(bufferizeOpToAllocation(
-              fill, clMemorySpace,
-              linalg::BufferizeToAllocationOptions::MemcpyOp::LinalgCopy,
-              rewriter)))
-        return signalPassFailure();
-    }
+  SmallVector<linalg::FillOp> fills;
+  f.walk([&](linalg::FillOp op) { fills.push_back(op); });
+  if (fills.empty())
+    return success(); // no-op if no fill.
+  for (linalg::FillOp fill : fills) {
+    if (!fill.getOperation()->getBlock())
+      continue; // erased by a prior iteration's bufferization
+    if (failed(bufferizeOpToAllocation(
+            fill, memorySpace,
+            linalg::BufferizeToAllocationOptions::MemcpyOp::LinalgCopy,
+            rewriter)))
+      return failure();
   }
-};
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeOutputL2Pass() {
-  return std::make_unique<AIRMatmulBufferizeOutputL2>();
-}
-std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeOutputL2Pass(
-    const AIRMatmulBufferizeOutputL2Options &opts) {
-  return std::make_unique<AIRMatmulBufferizeOutputL2>(opts);
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -128,8 +111,7 @@ std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeOutputL2Pass(
 LogicalResult runBufferizeL1OutputImpl(func::FuncOp f, int64_t memorySpace,
                                        StringRef packedMatmulMarker,
                                        RewriterBase &rewriter) {
-  Operation *packedMatmul =
-      xilinx::air::findOpWithAttr(f, packedMatmulMarker);
+  Operation *packedMatmul = xilinx::air::findOpWithAttr(f, packedMatmulMarker);
   if (!packedMatmul)
     return success();
   auto linalgOp = dyn_cast<linalg::LinalgOp>(packedMatmul);
@@ -148,42 +130,25 @@ LogicalResult runBufferizeL1OutputImpl(func::FuncOp f, int64_t memorySpace,
 }
 
 //===----------------------------------------------------------------------===//
-// AIRMatmulBufferizeL1Inputs  (Phase 6a)
+// runBufferizeL1InputsImpl  (Phase 6a)
 //===----------------------------------------------------------------------===//
 
-namespace {
-class AIRMatmulBufferizeL1Inputs
-    : public impl::AIRMatmulBufferizeL1InputsBase<AIRMatmulBufferizeL1Inputs> {
-public:
-  AIRMatmulBufferizeL1Inputs() = default;
-  AIRMatmulBufferizeL1Inputs(const AIRMatmulBufferizeL1InputsOptions &opts)
-      : AIRMatmulBufferizeL1InputsBase(opts) {}
-
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    IRRewriter rewriter(&getContext());
-    auto memcpy = linalg::BufferizeToAllocationOptions::MemcpyOp::
-        MaterializeInDestination;
-    if (StringRef(clMemcpyOp) == "linalg-copy")
-      memcpy = linalg::BufferizeToAllocationOptions::MemcpyOp::LinalgCopy;
-    for (StringRef marker : {StringRef(clLhsMarker), StringRef(clRhsMarker)}) {
-      Operation *target = xilinx::air::findOpWithAttr(f, marker);
-      if (!target)
-        continue;
-      if (failed(bufferizeOpToAllocation(target, clMemorySpace, memcpy,
-                                         rewriter)))
-        return signalPassFailure();
-    }
+LogicalResult runBufferizeL1InputsImpl(func::FuncOp f, int64_t memorySpace,
+                                       StringRef memcpyOp, StringRef lhsMarker,
+                                       StringRef rhsMarker,
+                                       RewriterBase &rewriter) {
+  auto memcpy =
+      linalg::BufferizeToAllocationOptions::MemcpyOp::MaterializeInDestination;
+  if (memcpyOp == "linalg-copy")
+    memcpy = linalg::BufferizeToAllocationOptions::MemcpyOp::LinalgCopy;
+  for (StringRef marker : {lhsMarker, rhsMarker}) {
+    Operation *target = xilinx::air::findOpWithAttr(f, marker);
+    if (!target)
+      continue;
+    if (failed(bufferizeOpToAllocation(target, memorySpace, memcpy, rewriter)))
+      return failure();
   }
-};
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeL1InputsPass() {
-  return std::make_unique<AIRMatmulBufferizeL1Inputs>();
-}
-std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeL1InputsPass(
-    const AIRMatmulBufferizeL1InputsOptions &opts) {
-  return std::make_unique<AIRMatmulBufferizeL1Inputs>(opts);
+  return success();
 }
 
 //===----------------------------------------------------------------------===//

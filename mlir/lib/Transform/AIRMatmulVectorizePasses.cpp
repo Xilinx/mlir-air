@@ -17,7 +17,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRMatmulBufferizationPasses.h"
 #include "air/Transform/AIRMatmulCodegenHelpers.h"
-#include "air/Util/MatmulCodegenConfig.h"
+#include "air/Transform/PassDetail.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -70,10 +70,10 @@ static bool herdHasVectorContract(xilinx::air::HerdOp herd) {
 }
 
 // Per-step bodies. Extracted from the previously-individual AIR passes; now
-// invoked in fixed order from the AIRMatmulCodegenVecPrep composite below.
+// invoked in fixed order from runCodegenVecPrepImpl below.
 
 static LogicalResult runFlattenForIterArgsStep(func::FuncOp func,
-                                                IRRewriter &rewriter) {
+                                               IRRewriter &rewriter) {
   SmallVector<mlir::scf::ForOp> targets;
   func.walk([&](mlir::scf::ForOp forOp) {
     for (Value v : forOp.getInitArgs())
@@ -173,7 +173,7 @@ static LogicalResult runVectorCastForEmulationStep(func::FuncOp func,
   func.walk([&](mlir::vector::ContractionOp c) { targets.push_back(c); });
   for (mlir::vector::ContractionOp c : targets) {
     if (failed(runVectorTypeCastOnTarget(c.getOperation(), targetTy, inIdx,
-                                          outIdx, rewriter)))
+                                         outIdx, rewriter)))
       return c->emitError("vector_type_cast failed");
   }
   return success();
@@ -183,8 +183,7 @@ static LogicalResult runVectorCastForEmulationStep(func::FuncOp func,
 // on it (directly or through a single shape_cast) and a truncation whose
 // result is yielded back at the same iter_arg position.
 static bool findNextPair(mlir::Operation *funcOp, mlir::Operation *&extOp,
-                          mlir::Operation *&truncOp,
-                          mlir::scf::ForOp &loopOp) {
+                         mlir::Operation *&truncOp, mlir::scf::ForOp &loopOp) {
   bool found = false;
   funcOp->walk([&](xilinx::air::HerdOp herd) {
     if (found)
@@ -224,7 +223,8 @@ static bool findNextPair(mlir::Operation *funcOp, mlir::Operation *&extOp,
           continue;
         mlir::Value yieldedVal = yieldOp.getOperand((unsigned)argIdx);
         mlir::Operation *foundTrunc = yieldedVal.getDefiningOp();
-        if (auto sc = dyn_cast_if_present<mlir::vector::ShapeCastOp>(foundTrunc))
+        if (auto sc =
+                dyn_cast_if_present<mlir::vector::ShapeCastOp>(foundTrunc))
           foundTrunc = sc.getSource().getDefiningOp();
         if (!foundTrunc ||
             !isa<mlir::arith::TruncFOp, mlir::arith::TruncIOp>(foundTrunc))
@@ -262,70 +262,6 @@ static LogicalResult runHoistCastPairsStep(func::FuncOp func,
   return success();
 }
 
-class AIRMatmulCodegenVecPrep
-    : public impl::AIRMatmulCodegenVecPrepBase<AIRMatmulCodegenVecPrep> {
-public:
-  AIRMatmulCodegenVecPrep() = default;
-  AIRMatmulCodegenVecPrep(const AIRMatmulCodegenVecPrepOptions &opts)
-      : AIRMatmulCodegenVecPrepBase(opts) {}
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<mlir::arith::ArithDialect, mlir::scf::SCFDialect,
-                    mlir::vector::VectorDialect>();
-  }
-
-  void runOnOperation() override {
-    func::FuncOp func = getOperation();
-    IRRewriter rewriter(&getContext());
-
-    if (clDoFoldUnitExtentDims)
-      if (failed(runFoldUnitExtentDimsOnFunc(func)))
-        return signalPassFailure();
-    if (clDoEliminateRedundantVectorTransfers)
-      (void)runEliminateRedundantVectorTransfers(func, rewriter);
-    SmallVector<int64_t> cast1In(clCast1InputIndices.begin(),
-                                  clCast1InputIndices.end());
-    SmallVector<int64_t> cast1Out(clCast1OutputIndices.begin(),
-                                   clCast1OutputIndices.end());
-    if (failed(runVectorCastForEmulationStep(func, clCast1TargetElementType,
-                                             cast1In, cast1Out, rewriter)))
-      return signalPassFailure();
-    SmallVector<int64_t> cast2In(clCast2InputIndices.begin(),
-                                  clCast2InputIndices.end());
-    SmallVector<int64_t> cast2Out(clCast2OutputIndices.begin(),
-                                   clCast2OutputIndices.end());
-    if (failed(runVectorCastForEmulationStep(func, clCast2TargetElementType,
-                                             cast2In, cast2Out, rewriter)))
-      return signalPassFailure();
-    if (clDoHoistLoopInvariantTransfers)
-      if (failed(runHoistLoopInvariantTransfersStep(func, rewriter)))
-        return signalPassFailure();
-    if (clDoFlattenForIterArgs)
-      if (failed(runFlattenForIterArgsStep(func, rewriter)))
-        return signalPassFailure();
-    if (clDoHoistVectorTransferPointers)
-      if (failed(runHoistVectorTransferPointersStep(func, rewriter)))
-        return signalPassFailure();
-    if (clDoHoistCastPairs)
-      if (failed(runHoistCastPairsStep(func, clHoistCastPairsMaxIterations,
-                                       rewriter)))
-        return signalPassFailure();
-  }
-};
-
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulCodegenVecPrepPass() {
-  return std::make_unique<AIRMatmulCodegenVecPrep>();
-}
-
-std::unique_ptr<mlir::Pass> createAIRMatmulCodegenVecPrepPass(
-    const AIRMatmulCodegenVecPrepOptions &opts) {
-  return std::make_unique<AIRMatmulCodegenVecPrep>(opts);
-}
-
-namespace {
-
 // Tile a TilingInterface op by the given sizes, using scf.for. If `sizes`
 // is shorter than the op's iteration domain rank, pads with zeros (matching
 // `transform.structured.tile_using_for` semantics). Returns the produced
@@ -353,136 +289,142 @@ tileWithScfFor(mlir::Operation *op, ArrayRef<int64_t> sizes,
   return res->loops;
 }
 
-class AIRMatmulTileForVectorize
-    : public impl::AIRMatmulTileForVectorizeBase<AIRMatmulTileForVectorize> {
-public:
-  AIRMatmulTileForVectorize() = default;
-  AIRMatmulTileForVectorize(const AIRMatmulTileForVectorizeOptions &opts)
-      : AIRMatmulTileForVectorizeBase(opts) {}
+} // namespace
 
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<mlir::linalg::LinalgDialect, mlir::scf::SCFDialect>();
-  }
+LogicalResult runCodegenVecPrepImpl(
+    func::FuncOp func, bool doFoldUnitExtentDims,
+    bool doEliminateRedundantVectorTransfers, StringRef cast1TargetElementType,
+    ArrayRef<int64_t> cast1InputIndices, ArrayRef<int64_t> cast1OutputIndices,
+    StringRef cast2TargetElementType, ArrayRef<int64_t> cast2InputIndices,
+    ArrayRef<int64_t> cast2OutputIndices, bool doHoistLoopInvariantTransfers,
+    bool doFlattenForIterArgs, bool doHoistVectorTransferPointers,
+    bool doHoistCastPairs, int64_t hoistCastPairsMaxIterations,
+    RewriterBase &rewriter) {
+  // Several helpers below take IRRewriter & specifically; the upstream
+  // tiling/utility APIs accept RewriterBase but our local helpers were
+  // typed against IRRewriter. Narrow when needed.
+  IRRewriter &irRewriter = static_cast<IRRewriter &>(rewriter);
 
-  void runOnOperation() override {
-    IRRewriter rewriter(&getContext());
+  if (doFoldUnitExtentDims)
+    if (failed(runFoldUnitExtentDimsOnFunc(func)))
+      return failure();
+  if (doEliminateRedundantVectorTransfers)
+    (void)runEliminateRedundantVectorTransfers(func, irRewriter);
+  if (failed(runVectorCastForEmulationStep(func, cast1TargetElementType,
+                                           cast1InputIndices,
+                                           cast1OutputIndices, irRewriter)))
+    return failure();
+  if (failed(runVectorCastForEmulationStep(func, cast2TargetElementType,
+                                           cast2InputIndices,
+                                           cast2OutputIndices, irRewriter)))
+    return failure();
+  if (doHoistLoopInvariantTransfers)
+    if (failed(runHoistLoopInvariantTransfersStep(func, irRewriter)))
+      return failure();
+  if (doFlattenForIterArgs)
+    if (failed(runFlattenForIterArgsStep(func, irRewriter)))
+      return failure();
+  if (doHoistVectorTransferPointers)
+    if (failed(runHoistVectorTransferPointersStep(func, irRewriter)))
+      return failure();
+  if (doHoistCastPairs)
+    if (failed(runHoistCastPairsStep(func, hoistCastPairsMaxIterations,
+                                     irRewriter)))
+      return failure();
+  return success();
+}
 
-    // Optional pre-step: post-bufferize cleanup (remove uninitialized
-    // copies + eliminate cascade memcpys + sibling-fuse pingpong loops).
-    // Replaces the former standalone `air-matmul-post-bufferize-cleanup`
-    // pass.
-    if (clDoPostBufferizeCleanupFirst)
-      if (failed(runPostBufferizeCleanupImpl(getOperation(), rewriter)))
-        return signalPassFailure();
+LogicalResult runTileForVectorizeImpl(func::FuncOp func,
+                                      ArrayRef<int64_t> matmulTileSizes,
+                                      ArrayRef<int64_t> matmulUnrollTileSizes,
+                                      int64_t matmulUnrollFactor,
+                                      ArrayRef<int64_t> fillTileSizes,
+                                      bool doPostBufferizeCleanupFirst,
+                                      RewriterBase &rewriter) {
+  IRRewriter &irRewriter = static_cast<IRRewriter &>(rewriter);
 
-    SmallVector<int64_t> matmulTile = clMatmulTileSizes.empty()
-                                          ? SmallVector<int64_t>{2, 2, 1, 0, 0, 0}
-                                          : llvm::to_vector(clMatmulTileSizes);
-    SmallVector<int64_t> matmulUnroll =
-        clMatmulUnrollTileSizes.empty()
-            ? SmallVector<int64_t>{1, 1, 0, 0, 0, 0}
-            : llvm::to_vector(clMatmulUnrollTileSizes);
-    SmallVector<int64_t> fillTile = clFillTileSizes.empty()
-                                        ? SmallVector<int64_t>{1, 1, 0, 0}
-                                        : llvm::to_vector(clFillTileSizes);
-    int64_t unrollFactor = clMatmulUnrollFactor;
-    if (auto cfg = xilinx::air::findMatmulCodegenConfig(getOperation())) {
-      auto take = [&](StringRef key, SmallVector<int64_t> &dst) {
-        auto v = xilinx::air::getI64Array(*cfg, key);
-        if (!v.empty())
-          dst = std::move(v);
-      };
-      take("vector_tile", matmulTile);
-      take("vector_unroll_tile", matmulUnroll);
-      take("fill_vector_tile", fillTile);
-      unrollFactor = xilinx::air::getI64(*cfg, "vector_unroll_factor",
-                                         unrollFactor);
+  // Optional pre-step: post-bufferize cleanup (remove uninitialized
+  // copies + eliminate cascade memcpys + sibling-fuse pingpong loops).
+  // Replaces the former standalone `air-matmul-post-bufferize-cleanup`
+  // pass.
+  if (doPostBufferizeCleanupFirst)
+    if (failed(runPostBufferizeCleanupImpl(func, rewriter)))
+      return failure();
+
+  // Phase 1: tile each linalg.generic packed-matmul body by matmulTileSizes.
+  // Accept ops that either (a) live inside an air.herd (M1 iron-built flow)
+  // or (b) carry the `matmul_compute` marker (M2 linalg-input flow runs
+  // this pass BEFORE the forall->herd materialization).
+  SmallVector<mlir::linalg::GenericOp> matmulGenerics;
+  func.walk([&](mlir::linalg::GenericOp op) {
+    bool inHerd = op->getParentOfType<xilinx::air::HerdOp>() != nullptr;
+    bool isMatmulCompute = op->hasAttr("matmul_compute");
+    if (!inHerd && !isMatmulCompute)
+      return;
+    if (op.getNumLoops() < (int64_t)matmulTileSizes.size())
+      return;
+    matmulGenerics.push_back(op);
+  });
+  for (mlir::linalg::GenericOp gen : matmulGenerics) {
+    auto loops1 =
+        tileWithScfFor(gen.getOperation(), matmulTileSizes, irRewriter);
+    if (failed(loops1))
+      return failure();
+    // After first tile, find the new inner linalg.generic (the only
+    // descendant of the produced loops).
+    mlir::linalg::GenericOp inner;
+    if (!loops1->empty()) {
+      loops1->back()->walk([&](mlir::linalg::GenericOp g) {
+        inner = g;
+        return WalkResult::interrupt();
+      });
+    } else {
+      inner = gen; // No tiling happened (zero sizes). Skip second tile.
     }
-
-    // Phase 1: tile each linalg.generic packed-matmul body by matmulTile.
-    // Accept ops that either (a) live inside an air.herd (M1 iron-built flow)
-    // or (b) carry the `matmul_compute` marker (M2 linalg-input flow runs
-    // this pass BEFORE the forall->herd materialization).
-    SmallVector<mlir::linalg::GenericOp> matmulGenerics;
-    getOperation().walk([&](mlir::linalg::GenericOp op) {
-      bool inHerd = op->getParentOfType<xilinx::air::HerdOp>() != nullptr;
-      bool isMatmulCompute = op->hasAttr("matmul_compute");
-      if (!inHerd && !isMatmulCompute)
-        return;
-      if (op.getNumLoops() < (int64_t)matmulTile.size())
-        return;
-      matmulGenerics.push_back(op);
-    });
-    for (mlir::linalg::GenericOp gen : matmulGenerics) {
-      auto loops1 = tileWithScfFor(gen.getOperation(), matmulTile, rewriter);
-      if (failed(loops1))
-        return signalPassFailure();
-      // After first tile, find the new inner linalg.generic (the only
-      // descendant of the produced loops).
-      mlir::linalg::GenericOp inner;
-      if (!loops1->empty()) {
-        loops1->back()->walk([&](mlir::linalg::GenericOp g) {
-          inner = g;
-          return WalkResult::interrupt();
-        });
-      } else {
-        inner = gen; // No tiling happened (zero sizes). Skip second tile.
-      }
-      if (!inner)
-        continue;
-      auto loops2 =
-          tileWithScfFor(inner.getOperation(), matmulUnroll, rewriter);
-      if (failed(loops2))
-        return signalPassFailure();
-      // Unroll the two innermost produced loops.
-      // loops2->back() is the innermost; loops2 is in outer→inner order.
-      uint64_t factor = unrollFactor;
-      if (factor > 1) {
-        SmallVector<mlir::scf::ForOp> toUnroll;
-        for (auto loop : *loops2)
-          if (auto sf = dyn_cast<mlir::scf::ForOp>(loop.getOperation()))
-            toUnroll.push_back(sf);
-        // Unroll from innermost outward (last two).
-        for (auto it = toUnroll.rbegin();
-             it != toUnroll.rend() && std::distance(toUnroll.rbegin(), it) < 2;
-             ++it) {
-          if (failed(mlir::loopUnrollByFactor(*it, factor))) {
-            it->emitError("loopUnrollByFactor failed");
-            return signalPassFailure();
-          }
+    if (!inner)
+      continue;
+    auto loops2 =
+        tileWithScfFor(inner.getOperation(), matmulUnrollTileSizes, irRewriter);
+    if (failed(loops2))
+      return failure();
+    // Unroll the two innermost produced loops.
+    // loops2->back() is the innermost; loops2 is in outer→inner order.
+    uint64_t factor = matmulUnrollFactor;
+    if (factor > 1) {
+      SmallVector<mlir::scf::ForOp> toUnroll;
+      for (auto loop : *loops2)
+        if (auto sf = dyn_cast<mlir::scf::ForOp>(loop.getOperation()))
+          toUnroll.push_back(sf);
+      // Unroll from innermost outward (last two).
+      for (auto it = toUnroll.rbegin();
+           it != toUnroll.rend() && std::distance(toUnroll.rbegin(), it) < 2;
+           ++it) {
+        if (failed(mlir::loopUnrollByFactor(*it, factor))) {
+          it->emitError("loopUnrollByFactor failed");
+          return failure();
         }
       }
     }
-
-    // Phase 2: tile each linalg.fill (or linalg.generic carrying the
-    // `init_fill` marker, set by the M2 prologue-epilogue pass after
-    // generalize+interchange) by fillTile.
-    SmallVector<mlir::Operation *> fills;
-    getOperation().walk([&](mlir::linalg::FillOp f) {
-      if (f->getParentOfType<xilinx::air::HerdOp>())
-        fills.push_back(f.getOperation());
-    });
-    getOperation().walk([&](mlir::linalg::GenericOp g) {
-      if (g->hasAttr("init_fill"))
-        fills.push_back(g.getOperation());
-    });
-    for (mlir::Operation *f : fills) {
-      auto loops = tileWithScfFor(f, fillTile, rewriter);
-      if (failed(loops))
-        return signalPassFailure();
-    }
   }
-};
 
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulTileForVectorizePass() {
-  return std::make_unique<AIRMatmulTileForVectorize>();
-}
-
-std::unique_ptr<mlir::Pass> createAIRMatmulTileForVectorizePass(
-    const AIRMatmulTileForVectorizeOptions &opts) {
-  return std::make_unique<AIRMatmulTileForVectorize>(opts);
+  // Phase 2: tile each linalg.fill (or linalg.generic carrying the
+  // `init_fill` marker, set by the M2 prologue-epilogue pass after
+  // generalize+interchange) by fillTileSizes.
+  SmallVector<mlir::Operation *> fills;
+  func.walk([&](mlir::linalg::FillOp f) {
+    if (f->getParentOfType<xilinx::air::HerdOp>())
+      fills.push_back(f.getOperation());
+  });
+  func.walk([&](mlir::linalg::GenericOp g) {
+    if (g->hasAttr("init_fill"))
+      fills.push_back(g.getOperation());
+  });
+  for (mlir::Operation *f : fills) {
+    auto loops = tileWithScfFor(f, fillTileSizes, irRewriter);
+    if (failed(loops))
+      return failure();
+  }
+  return success();
 }
 
 } // namespace air

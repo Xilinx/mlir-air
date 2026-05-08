@@ -14,7 +14,6 @@
 
 #include "air/Transform/AIRMatmulTilePasses.h"
 #include "air/Transform/AIRMatmulBufferizationPasses.h"
-#include "air/Util/MatmulCodegenConfig.h"
 #include "air/Util/Util.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -24,12 +23,11 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/TilingInterface.h"
-#include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/StringRef.h"
 
@@ -46,9 +44,8 @@ namespace {
 
 /// Build OpFoldResult-typed tile sizes (one per iterator dim) from int64s.
 /// Pads with 0 if shorter than `numIters`; truncates if longer.
-static SmallVector<OpFoldResult> buildTileSizes(ArrayRef<int64_t> sizes,
-                                                int64_t numIters,
-                                                MLIRContext *ctx) {
+static SmallVector<OpFoldResult>
+buildTileSizes(ArrayRef<int64_t> sizes, int64_t numIters, MLIRContext *ctx) {
   SmallVector<OpFoldResult> out;
   out.reserve(numIters);
   OpBuilder b(ctx);
@@ -91,8 +88,7 @@ static LogicalResult fuseFillIntoForallSharedOuts(linalg::FillOp fillOp,
   forall.getBody()->walk([&](linalg::LinalgOp op) {
     if (op.getNumDpsInits() != 1)
       return WalkResult::advance();
-    auto es =
-        op.getDpsInits()[0].getDefiningOp<tensor::ExtractSliceOp>();
+    auto es = op.getDpsInits()[0].getDefiningOp<tensor::ExtractSliceOp>();
     if (!es || es.getSource() != blockArg)
       return WalkResult::advance();
     consumer = op;
@@ -107,9 +103,9 @@ static LogicalResult fuseFillIntoForallSharedOuts(linalg::FillOp fillOp,
 
   // Clone a per-iter fill into the body, filling the extract_slice.
   rewriter.setInsertionPoint(consumer);
-  auto newFill = linalg::FillOp::create(rewriter, fillOp.getLoc(),
-                                        ValueRange{fillValue},
-                                        ValueRange{consumerSlice.getResult()});
+  auto newFill =
+      linalg::FillOp::create(rewriter, fillOp.getLoc(), ValueRange{fillValue},
+                             ValueRange{consumerSlice.getResult()});
   rewriter.modifyOpInPlace(consumer, [&]() {
     consumer.getDpsInitsMutable()[0].set(newFill.getResult(0));
   });
@@ -166,207 +162,6 @@ tileAsForallResult(Operation *target, ArrayRef<OpFoldResult> tileSizes,
   return res;
 }
 
-} // namespace
-
-//===----------------------------------------------------------------------===//
-// AIRMatmulTileKAndFusePacks (Phase 4)
-//===----------------------------------------------------------------------===//
-
-namespace {
-class AIRMatmulTileKAndFusePacks
-    : public impl::AIRMatmulTileKAndFusePacksBase<AIRMatmulTileKAndFusePacks> {
-public:
-  AIRMatmulTileKAndFusePacks() = default;
-  AIRMatmulTileKAndFusePacks(const AIRMatmulTileKAndFusePacksOptions &opts)
-      : AIRMatmulTileKAndFusePacksBase(opts) {}
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<linalg::LinalgDialect, scf::SCFDialect,
-                    tensor::TensorDialect>();
-  }
-
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    Operation *packedMatmulOp = xilinx::air::findOpWithAttr(f, clPackedMatmulMarker);
-    if (!packedMatmulOp)
-      return;
-    auto matmul = dyn_cast<linalg::LinalgOp>(packedMatmulOp);
-    if (!matmul) {
-      packedMatmulOp->emitError("packed_matmul op must be a LinalgOp");
-      return signalPassFailure();
-    }
-
-    // Identify pack producers of operand 0 (LHS) and operand 1 (RHS) BEFORE
-    // tiling — tiling rewrites the operands and would invalidate these.
-    Operation *packA = matmul.getDpsInputs()[0].getDefiningOp();
-    Operation *packB = matmul.getDpsInputs()[1].getDefiningOp();
-
-    // Tile on the K iterator. Matmul iterators after pack: m0,n0,k0,m1,n1,k1
-    // (3 outer + 3 inner) for standard pack [m,n,k]. K iterator index = 2.
-    int64_t numIters = matmul.getNumLoops();
-    SmallVector<int64_t> raw(numIters, 0);
-    if (numIters < 3) {
-      packedMatmulOp->emitError(
-          "packed_matmul has fewer than 3 iterators; expected M, N, K");
-      return signalPassFailure();
-    }
-    int64_t kTileFactor = clKTileFactor;
-    if (auto cfg = xilinx::air::findMatmulCodegenConfig(f))
-      kTileFactor = xilinx::air::getI64(*cfg, "tile_k_factor", kTileFactor);
-    int64_t kIdx = std::min<int64_t>(clKIterIndex, numIters - 1);
-    raw[kIdx] = kTileFactor;
-    auto tileSizes = buildTileSizes(raw, numIters, &getContext());
-
-    auto tileable = cast<TilingInterface>(packedMatmulOp);
-    IRRewriter rewriter(&getContext());
-    rewriter.setInsertionPoint(packedMatmulOp);
-    scf::SCFTilingOptions opts;
-    opts.setTileSizes(tileSizes);
-    auto tilingResult = scf::tileUsingSCF(rewriter, tileable, opts);
-    if (failed(tilingResult)) {
-      packedMatmulOp->emitError("scf::tileUsingSCF on K failed");
-      return signalPassFailure();
-    }
-    rewriter.replaceOp(packedMatmulOp, tilingResult->replacements);
-
-    if (tilingResult->loops.empty())
-      return; // K tile of 0; nothing more to do.
-    LoopLikeOpInterface kLoop = tilingResult->loops.front();
-    kLoop->setAttr(clKReductionLoopMarker, rewriter.getUnitAttr());
-
-    // The marker on the matmul body is preserved by tileUsingSCF (it clones
-    // ops and their attributes). Re-find the new packed matmul as a sanity
-    // check; if missing, downstream passes will no-op correctly.
-
-    // Fuse pack_a and pack_b into the K loop. Annotate. For M4 two-pack-
-    // level flows where the matmul's immediate operand pack (L1) has a
-    // grandparent pack (L2) feeding it, recursively fuse the producer
-    // chain so the L2 pack ends up at K-loop scope too (matching the
-    // legacy script's "fuse 4 packs into K-loop" pattern).
-    auto fuseChain = [&](Operation *pack, StringRef l1Marker,
-                         StringRef l2Marker) {
-      // If the producer already carries `l1Marker` from a previous phase
-      // (e.g. tile-cores set `fused_lhs_l1_pack` on the cores-scope pack
-      // before this inner tile-k fuses it again), strip that marker first
-      // so the post-fusion `setAttr` doesn't leave both producer and fused
-      // copy claiming to be the live one — bufferize-l1-inputs would then
-      // pick the orphan and canonicalize would DCE its L1 alloc.
-      bool producerHadL1Marker = pack && pack->hasAttr(l1Marker);
-      Operation *fused = fuseProducerIntoLoop(pack, kLoop, rewriter);
-      if (!fused)
-        return;
-      if (producerHadL1Marker && pack->getBlock())
-        pack->removeAttr(l1Marker);
-      fused->setAttr(l1Marker, rewriter.getUnitAttr());
-      // If the inner (just-fused) pack's source is another linalg.pack
-      // outside the loop, fuse THAT too and mark it with l2Marker. After
-      // fusion the source is typically `tensor.extract_slice(L2 pack)`,
-      // so walk through extract_slice ops to reach the grandparent.
-      if (auto innerPack = dyn_cast<linalg::PackOp>(fused)) {
-        Value src = innerPack.getSource();
-        while (auto es = src.getDefiningOp<tensor::ExtractSliceOp>())
-          src = es.getSource();
-        if (auto gp = src.getDefiningOp<linalg::PackOp>()) {
-          if (!kLoop->isProperAncestor(gp)) {
-            if (Operation *l2Fused =
-                    fuseProducerIntoLoop(gp, kLoop, rewriter))
-              l2Fused->setAttr(l2Marker, rewriter.getUnitAttr());
-          }
-        }
-      }
-    };
-    fuseChain(packA, clLhsPackMarker, clLhsL2PackMarker);
-    fuseChain(packB, clRhsPackMarker, clRhsL2PackMarker);
-  }
-};
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulTileKAndFusePacksPass() {
-  return std::make_unique<AIRMatmulTileKAndFusePacks>();
-}
-std::unique_ptr<mlir::Pass> createAIRMatmulTileKAndFusePacksPass(
-    const AIRMatmulTileKAndFusePacksOptions &opts) {
-  return std::make_unique<AIRMatmulTileKAndFusePacks>(opts);
-}
-
-//===----------------------------------------------------------------------===//
-// AIRMatmulTileCores (Phase 5)
-//===----------------------------------------------------------------------===//
-
-namespace {
-class AIRMatmulTileCores
-    : public impl::AIRMatmulTileCoresBase<AIRMatmulTileCores> {
-public:
-  AIRMatmulTileCores() = default;
-  AIRMatmulTileCores(const AIRMatmulTileCoresOptions &opts)
-      : AIRMatmulTileCoresBase(opts) {}
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<linalg::LinalgDialect, scf::SCFDialect,
-                    tensor::TensorDialect>();
-  }
-
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    Operation *packedMatmulOp = xilinx::air::findOpWithAttr(f, clPackedMatmulMarker);
-    if (!packedMatmulOp)
-      return;
-    auto matmul = dyn_cast<linalg::LinalgOp>(packedMatmulOp);
-    if (!matmul) {
-      packedMatmulOp->emitError("packed_matmul op must be a LinalgOp");
-      return signalPassFailure();
-    }
-
-    SmallVector<int64_t> rawSizes = llvm::to_vector(clTileSizes);
-    if (auto cfg = xilinx::air::findMatmulCodegenConfig(f)) {
-      auto v = xilinx::air::getI64Array(*cfg, "tile_cores");
-      if (!v.empty())
-        rawSizes = std::move(v);
-    }
-    auto tileSizes =
-        buildTileSizes(rawSizes, matmul.getNumLoops(), &getContext());
-
-    IRRewriter rewriter(&getContext());
-    auto tilingResult = tileAsForallResult(packedMatmulOp, tileSizes, rewriter);
-    if (failed(tilingResult)) {
-      packedMatmulOp->emitError("scf::tileUsingSCF (forall) failed");
-      return signalPassFailure();
-    }
-
-    if (tilingResult->loops.empty())
-      return;
-    LoopLikeOpInterface forall = tilingResult->loops.front();
-    forall->setAttr(clComputeForallMarker, rewriter.getUnitAttr());
-
-    // Per-core matmul body: only one tiledOp expected.
-    if (!tilingResult->tiledOps.empty())
-      tilingResult->tiledOps.front()->setAttr(clMatmulComputeMarker,
-                                              rewriter.getUnitAttr());
-
-    // Fuse the K-loop-fused packs into the forall.
-    Operation *lhsPack = xilinx::air::findOpWithAttr(f, clLhsPackInKMarker);
-    Operation *rhsPack = xilinx::air::findOpWithAttr(f, clRhsPackInKMarker);
-    if (Operation *fusedA = fuseProducerIntoLoop(lhsPack, forall, rewriter))
-      fusedA->setAttr(clLhsL1PackMarker, rewriter.getUnitAttr());
-    if (Operation *fusedB = fuseProducerIntoLoop(rhsPack, forall, rewriter))
-      fusedB->setAttr(clRhsL1PackMarker, rewriter.getUnitAttr());
-  }
-};
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulTileCoresPass() {
-  return std::make_unique<AIRMatmulTileCores>();
-}
-std::unique_ptr<mlir::Pass>
-createAIRMatmulTileCoresPass(const AIRMatmulTileCoresOptions &opts) {
-  return std::make_unique<AIRMatmulTileCores>(opts);
-}
-
-//===----------------------------------------------------------------------===//
-// AIRMatmulPrologueEpilogue (Phase 6 prologue/epilogue)
-//===----------------------------------------------------------------------===//
-
-namespace {
 /// Convenience wrapper around `tileAsForallResult` for callers that only need
 /// the new forall loop and accept padded raw int64_t tile sizes.
 static LoopLikeOpInterface tileAsForall(Operation *target,
@@ -377,217 +172,291 @@ static LoopLikeOpInterface tileAsForall(Operation *target,
   auto tileable = dyn_cast<TilingInterface>(target);
   if (!tileable)
     return {};
-  auto folded = buildTileSizes(tileSizes,
-                               tileable.getLoopIteratorTypes().size(),
-                               target->getContext());
+  auto folded = buildTileSizes(
+      tileSizes, tileable.getLoopIteratorTypes().size(), target->getContext());
   auto res = tileAsForallResult(target, folded, rewriter);
   if (failed(res))
     return {};
   return res->loops.empty() ? LoopLikeOpInterface() : res->loops.front();
 }
 
-class AIRMatmulPrologueEpilogue
-    : public impl::AIRMatmulPrologueEpilogueBase<AIRMatmulPrologueEpilogue> {
-public:
-  AIRMatmulPrologueEpilogue() = default;
-  AIRMatmulPrologueEpilogue(const AIRMatmulPrologueEpilogueOptions &opts)
-      : AIRMatmulPrologueEpilogueBase(opts) {}
+} // namespace
 
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<linalg::LinalgDialect, scf::SCFDialect,
-                    tensor::TensorDialect>();
+//===----------------------------------------------------------------------===//
+// runTileKAndFusePacksImpl (Phase 4)
+//===----------------------------------------------------------------------===//
+
+LogicalResult runTileKAndFusePacksImpl(
+    func::FuncOp f, int64_t kTileFactor, int64_t kIterIndex,
+    StringRef packedMatmulMarker, StringRef kReductionLoopMarker,
+    StringRef lhsPackMarker, StringRef rhsPackMarker, StringRef lhsL2PackMarker,
+    StringRef rhsL2PackMarker, RewriterBase &rewriter) {
+  Operation *packedMatmulOp =
+      xilinx::air::findOpWithAttr(f, packedMatmulMarker);
+  if (!packedMatmulOp)
+    return success();
+  auto matmul = dyn_cast<linalg::LinalgOp>(packedMatmulOp);
+  if (!matmul) {
+    packedMatmulOp->emitError("packed_matmul op must be a LinalgOp");
+    return failure();
   }
 
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    IRRewriter rewriter(&getContext());
+  // Identify pack producers of operand 0 (LHS) and operand 1 (RHS) BEFORE
+  // tiling — tiling rewrites the operands and would invalidate these.
+  Operation *packA = matmul.getDpsInputs()[0].getDefiningOp();
+  Operation *packB = matmul.getDpsInputs()[1].getDefiningOp();
 
-    // Optional pre-step: hoist statically-bound memref.alloc ops out of
-    // nested loops to the function entry block. Used by the M4 / two-pack
-    // flow.
-    if (clHoistStaticAllocFirst)
-      runHoistStaticAllocImpl(f, rewriter);
+  // Tile on the K iterator. Matmul iterators after pack: m0,n0,k0,m1,n1,k1
+  // (3 outer + 3 inner) for standard pack [m,n,k]. K iterator index = 2.
+  int64_t numIters = matmul.getNumLoops();
+  SmallVector<int64_t> raw(numIters, 0);
+  if (numIters < 3) {
+    packedMatmulOp->emitError(
+        "packed_matmul has fewer than 3 iterators; expected M, N, K");
+    return failure();
+  }
+  int64_t kIdx = std::min<int64_t>(kIterIndex, numIters - 1);
+  raw[kIdx] = kTileFactor;
+  auto tileSizes = buildTileSizes(raw, numIters, f.getContext());
 
-    SmallVector<int64_t> prologueTile = llvm::to_vector(clPrologueTileSizes);
-    SmallVector<int64_t> epilogueTile = llvm::to_vector(clEpilogueTileSizes);
-    SmallVector<int64_t> fillIterPerm =
-        llvm::to_vector(clFillIteratorInterchange);
-    if (auto cfg = xilinx::air::findMatmulCodegenConfig(f)) {
-      auto take = [&](StringRef key, SmallVector<int64_t> &dst) {
-        auto v = xilinx::air::getI64Array(*cfg, key);
-        if (!v.empty())
-          dst = std::move(v);
-      };
-      take("prologue_tile", prologueTile);
-      take("epilogue_tile", epilogueTile);
-      take("fill_iter_perm", fillIterPerm);
+  auto tileable = cast<TilingInterface>(packedMatmulOp);
+  rewriter.setInsertionPoint(packedMatmulOp);
+  scf::SCFTilingOptions opts;
+  opts.setTileSizes(tileSizes);
+  auto tilingResult = scf::tileUsingSCF(rewriter, tileable, opts);
+  if (failed(tilingResult)) {
+    packedMatmulOp->emitError("scf::tileUsingSCF on K failed");
+    return failure();
+  }
+  rewriter.replaceOp(packedMatmulOp, tilingResult->replacements);
+
+  if (tilingResult->loops.empty())
+    return success(); // K tile of 0; nothing more to do.
+  LoopLikeOpInterface kLoop = tilingResult->loops.front();
+  kLoop->setAttr(kReductionLoopMarker, rewriter.getUnitAttr());
+
+  // Fuse pack_a and pack_b into the K loop. Annotate. For M4 two-pack-
+  // level flows where the matmul's immediate operand pack (L1) has a
+  // grandparent pack (L2) feeding it, recursively fuse the producer
+  // chain so the L2 pack ends up at K-loop scope too.
+  auto fuseChain = [&](Operation *pack, StringRef l1Marker,
+                       StringRef l2Marker) {
+    bool producerHadL1Marker = pack && pack->hasAttr(l1Marker);
+    Operation *fused = fuseProducerIntoLoop(pack, kLoop, rewriter);
+    if (!fused)
+      return;
+    if (producerHadL1Marker && pack->getBlock())
+      pack->removeAttr(l1Marker);
+    fused->setAttr(l1Marker, rewriter.getUnitAttr());
+    if (auto innerPack = dyn_cast<linalg::PackOp>(fused)) {
+      Value src = innerPack.getSource();
+      while (auto es = src.getDefiningOp<tensor::ExtractSliceOp>())
+        src = es.getSource();
+      if (auto gp = src.getDefiningOp<linalg::PackOp>()) {
+        if (!kLoop->isProperAncestor(gp)) {
+          if (Operation *l2Fused = fuseProducerIntoLoop(gp, kLoop, rewriter))
+            l2Fused->setAttr(l2Marker, rewriter.getUnitAttr());
+        }
+      }
     }
+  };
+  fuseChain(packA, lhsPackMarker, lhsL2PackMarker);
+  fuseChain(packB, rhsPackMarker, rhsL2PackMarker);
+  return success();
+}
 
-    // ---- Prologue: generalize+interchange+tile the linalg.fill ----
-    // The prologue must execute BEFORE the compute work. Find the compute
-    // forall (or its ancestor scf.for) and move the fill in front of it
-    // before generalizing/tiling so the resulting prologue forall lands at
-    // the correct position.
-    linalg::FillOp fill;
-    f.walk([&](linalg::FillOp op) {
-      fill = op;
-      return WalkResult::interrupt();
+//===----------------------------------------------------------------------===//
+// runTileCoresImpl (Phase 5)
+//===----------------------------------------------------------------------===//
+
+LogicalResult
+runTileCoresImpl(func::FuncOp f, ArrayRef<int64_t> tileSizes,
+                 StringRef packedMatmulMarker, StringRef lhsPackInKMarker,
+                 StringRef rhsPackInKMarker, StringRef computeForallMarker,
+                 StringRef matmulComputeMarker, StringRef lhsL1PackMarker,
+                 StringRef rhsL1PackMarker, RewriterBase &rewriter) {
+  Operation *packedMatmulOp =
+      xilinx::air::findOpWithAttr(f, packedMatmulMarker);
+  if (!packedMatmulOp)
+    return success();
+  auto matmul = dyn_cast<linalg::LinalgOp>(packedMatmulOp);
+  if (!matmul) {
+    packedMatmulOp->emitError("packed_matmul op must be a LinalgOp");
+    return failure();
+  }
+
+  auto folded = buildTileSizes(tileSizes, matmul.getNumLoops(), f.getContext());
+
+  auto tilingResult = tileAsForallResult(packedMatmulOp, folded, rewriter);
+  if (failed(tilingResult)) {
+    packedMatmulOp->emitError("scf::tileUsingSCF (forall) failed");
+    return failure();
+  }
+
+  if (tilingResult->loops.empty())
+    return success();
+  LoopLikeOpInterface forall = tilingResult->loops.front();
+  forall->setAttr(computeForallMarker, rewriter.getUnitAttr());
+
+  // Per-core matmul body: only one tiledOp expected.
+  if (!tilingResult->tiledOps.empty())
+    tilingResult->tiledOps.front()->setAttr(matmulComputeMarker,
+                                            rewriter.getUnitAttr());
+
+  // Fuse the K-loop-fused packs into the forall.
+  Operation *lhsPack = xilinx::air::findOpWithAttr(f, lhsPackInKMarker);
+  Operation *rhsPack = xilinx::air::findOpWithAttr(f, rhsPackInKMarker);
+  if (Operation *fusedA = fuseProducerIntoLoop(lhsPack, forall, rewriter))
+    fusedA->setAttr(lhsL1PackMarker, rewriter.getUnitAttr());
+  if (Operation *fusedB = fuseProducerIntoLoop(rhsPack, forall, rewriter))
+    fusedB->setAttr(rhsL1PackMarker, rewriter.getUnitAttr());
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// runPrologueEpilogueImpl (Phase 6 prologue/epilogue)
+//===----------------------------------------------------------------------===//
+
+LogicalResult runPrologueEpilogueImpl(
+    func::FuncOp f, ArrayRef<int64_t> prologueTileSizes,
+    ArrayRef<int64_t> epilogueTileSizes,
+    ArrayRef<int64_t> fillIteratorInterchange, StringRef initFillMarker,
+    StringRef prologueForallMarker, StringRef epilogueForallMarker,
+    bool hoistStaticAllocFirst, RewriterBase &rewriter) {
+  // Optional pre-step: hoist statically-bound memref.alloc ops out of
+  // nested loops to the function entry block. Used by the M4 / two-pack
+  // flow.
+  if (hoistStaticAllocFirst)
+    runHoistStaticAllocImpl(f, rewriter);
+
+  // ---- Prologue: generalize+interchange+tile the linalg.fill ----
+  // The prologue must execute BEFORE the compute work. Find the compute
+  // forall (or its ancestor scf.for) and move the fill in front of it
+  // before generalizing/tiling so the resulting prologue forall lands at
+  // the correct position.
+  linalg::FillOp fill;
+  f.walk([&](linalg::FillOp op) {
+    fill = op;
+    return WalkResult::interrupt();
+  });
+  if (fill) {
+    Operation *anchor = nullptr;
+    f.walk([&](scf::ForOp forOp) {
+      if (forOp->hasAttr("k_reduction_loop")) {
+        anchor = forOp.getOperation();
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
     });
-    if (fill) {
-      // Find the K-reduction scf.for (set by Phase 4 tile-k-and-fuse-packs)
-      // or, failing that, the compute_forall scf.forall (set by Phase 5).
-      // Walk up to the same block as the fill and move the fill in front
-      // of that ancestor so the resulting prologue lands BEFORE compute.
-      Operation *anchor = nullptr;
-      f.walk([&](scf::ForOp forOp) {
-        if (forOp->hasAttr("k_reduction_loop")) {
-          anchor = forOp.getOperation();
+    if (!anchor) {
+      f.walk([&](scf::ForallOp forallOp) {
+        if (forallOp->hasAttr("compute_forall")) {
+          anchor = forallOp.getOperation();
           return WalkResult::interrupt();
         }
         return WalkResult::advance();
       });
-      if (!anchor) {
-        f.walk([&](scf::ForallOp forallOp) {
-          if (forallOp->hasAttr("compute_forall")) {
-            anchor = forallOp.getOperation();
-            return WalkResult::interrupt();
-          }
-          return WalkResult::advance();
-        });
-      }
-      if (anchor) {
-        Block *fillBlock = fill->getBlock();
-        while (anchor && anchor->getBlock() != fillBlock)
-          anchor = anchor->getParentOp();
-        if (anchor && !fill->isBeforeInBlock(anchor))
-          fill->moveBefore(anchor);
-      }
-      rewriter.setInsertionPoint(fill);
-      FailureOr<linalg::GenericOp> generic =
-          linalg::generalizeNamedOp(rewriter, fill);
-      if (failed(generic)) {
-        fill->emitError("generalizeNamedOp failed");
-        return signalPassFailure();
-      }
-      generic->getOperation()->setAttr(clInitFillMarker,
-                                       rewriter.getUnitAttr());
+    }
+    if (anchor) {
+      Block *fillBlock = fill->getBlock();
+      while (anchor && anchor->getBlock() != fillBlock)
+        anchor = anchor->getParentOp();
+      if (anchor && !fill->isBeforeInBlock(anchor))
+        fill->moveBefore(anchor);
+    }
+    rewriter.setInsertionPoint(fill);
+    FailureOr<linalg::GenericOp> generic =
+        linalg::generalizeNamedOp(rewriter, fill);
+    if (failed(generic)) {
+      fill->emitError("generalizeNamedOp failed");
+      return failure();
+    }
+    generic->getOperation()->setAttr(initFillMarker, rewriter.getUnitAttr());
 
-      Operation *fillTileTarget = generic->getOperation();
-      // Interchange iterators if a non-empty perm was provided.
-      if (!fillIterPerm.empty()) {
-        SmallVector<unsigned> permUnsigned(fillIterPerm.begin(),
-                                           fillIterPerm.end());
-        FailureOr<linalg::GenericOp> interchanged =
-            linalg::interchangeGenericOp(rewriter, *generic, permUnsigned);
-        if (failed(interchanged)) {
-          generic->getOperation()->emitError("interchangeGenericOp failed");
-          return signalPassFailure();
-        }
-        // Re-stamp the marker on the new op.
-        interchanged->getOperation()->setAttr(clInitFillMarker,
-                                              rewriter.getUnitAttr());
-        fillTileTarget = interchanged->getOperation();
+    Operation *fillTileTarget = generic->getOperation();
+    // Interchange iterators if a non-empty perm was provided.
+    if (!fillIteratorInterchange.empty()) {
+      SmallVector<unsigned> permUnsigned(fillIteratorInterchange.begin(),
+                                         fillIteratorInterchange.end());
+      FailureOr<linalg::GenericOp> interchanged =
+          linalg::interchangeGenericOp(rewriter, *generic, permUnsigned);
+      if (failed(interchanged)) {
+        generic->getOperation()->emitError("interchangeGenericOp failed");
+        return failure();
       }
-
-      LoopLikeOpInterface prologueForall =
-          tileAsForall(fillTileTarget, prologueTile, rewriter);
-      if (prologueForall)
-        prologueForall->setAttr(clPrologueForallMarker, rewriter.getUnitAttr());
+      // Re-stamp the marker on the new op.
+      interchanged->getOperation()->setAttr(initFillMarker,
+                                            rewriter.getUnitAttr());
+      fillTileTarget = interchanged->getOperation();
     }
 
-    // ---- Epilogue: tile the linalg.unpack ----
-    linalg::UnPackOp unpack;
-    f.walk([&](linalg::UnPackOp op) {
-      unpack = op;
-      return WalkResult::interrupt();
-    });
-    if (unpack) {
-      LoopLikeOpInterface epilogueForall =
-          tileAsForall(unpack, epilogueTile, rewriter);
-      if (epilogueForall)
-        epilogueForall->setAttr(clEpilogueForallMarker, rewriter.getUnitAttr());
-    }
+    LoopLikeOpInterface prologueForall =
+        tileAsForall(fillTileTarget, prologueTileSizes, rewriter);
+    if (prologueForall)
+      prologueForall->setAttr(prologueForallMarker, rewriter.getUnitAttr());
   }
-};
-} // namespace
 
-std::unique_ptr<mlir::Pass> createAIRMatmulPrologueEpiloguePass() {
-  return std::make_unique<AIRMatmulPrologueEpilogue>();
-}
-std::unique_ptr<mlir::Pass> createAIRMatmulPrologueEpiloguePass(
-    const AIRMatmulPrologueEpilogueOptions &opts) {
-  return std::make_unique<AIRMatmulPrologueEpilogue>(opts);
+  // ---- Epilogue: tile the linalg.unpack ----
+  linalg::UnPackOp unpack;
+  f.walk([&](linalg::UnPackOp op) {
+    unpack = op;
+    return WalkResult::interrupt();
+  });
+  if (unpack) {
+    LoopLikeOpInterface epilogueForall =
+        tileAsForall(unpack, epilogueTileSizes, rewriter);
+    if (epilogueForall)
+      epilogueForall->setAttr(epilogueForallMarker, rewriter.getUnitAttr());
+  }
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
-// AIRMatmulTileLaunchTile (M4 Phase 0)
+// runTileLaunchTileImpl (M4 Phase 0)
 //===----------------------------------------------------------------------===//
 
-namespace {
-class AIRMatmulTileLaunchTile
-    : public impl::AIRMatmulTileLaunchTileBase<AIRMatmulTileLaunchTile> {
-public:
-  AIRMatmulTileLaunchTile() = default;
-  AIRMatmulTileLaunchTile(const AIRMatmulTileLaunchTileOptions &opts)
-      : AIRMatmulTileLaunchTileBase(opts) {}
+LogicalResult runTileLaunchTileImpl(func::FuncOp f, ArrayRef<int64_t> tileSizes,
+                                    StringRef launchTileForallMarker,
+                                    RewriterBase &rewriter) {
+  linalg::MatmulOp matmul;
+  f.walk([&](linalg::MatmulOp op) {
+    matmul = op;
+    return WalkResult::interrupt();
+  });
+  if (!matmul)
+    return success();
 
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<linalg::LinalgDialect, scf::SCFDialect,
-                    tensor::TensorDialect>();
+  auto folded = buildTileSizes(tileSizes,
+                               cast<TilingInterface>(matmul.getOperation())
+                                   .getLoopIteratorTypes()
+                                   .size(),
+                               f.getContext());
+
+  // Capture the linalg.fill producer of the matmul's accumulator BEFORE
+  // tiling (after which the matmul is rewritten and producer linkage may
+  // shift through extract_slice).
+  Operation *fillProducer =
+      matmul.getOutputs()[0].getDefiningOp<linalg::FillOp>();
+
+  auto tilingResult =
+      tileAsForallResult(matmul.getOperation(), folded, rewriter);
+  if (failed(tilingResult)) {
+    matmul->emitError("scf::tileUsingSCF (forall) on launch-tile failed");
+    return failure();
   }
 
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    linalg::MatmulOp matmul;
-    f.walk([&](linalg::MatmulOp op) {
-      matmul = op;
-      return WalkResult::interrupt();
-    });
-    if (!matmul)
-      return;
+  if (tilingResult->loops.empty())
+    return success();
+  LoopLikeOpInterface forall = tilingResult->loops.front();
+  forall->setAttr(launchTileForallMarker, rewriter.getUnitAttr());
 
-    SmallVector<int64_t> rawSizes = llvm::to_vector(clTileSizes);
-    auto tileSizes = buildTileSizes(rawSizes,
-                                    cast<TilingInterface>(matmul.getOperation())
-                                        .getLoopIteratorTypes()
-                                        .size(),
-                                    &getContext());
-
-    // Capture the linalg.fill producer of the matmul's accumulator BEFORE
-    // tiling (after which the matmul is rewritten and producer linkage may
-    // shift through extract_slice).
-    Operation *fillProducer =
-        matmul.getOutputs()[0].getDefiningOp<linalg::FillOp>();
-
-    IRRewriter rewriter(&getContext());
-    auto tilingResult =
-        tileAsForallResult(matmul.getOperation(), tileSizes, rewriter);
-    if (failed(tilingResult)) {
-      matmul->emitError("scf::tileUsingSCF (forall) on launch-tile failed");
-      return signalPassFailure();
-    }
-
-    if (tilingResult->loops.empty())
-      return;
-    LoopLikeOpInterface forall = tilingResult->loops.front();
-    forall->setAttr(clLaunchTileForallMarker, rewriter.getUnitAttr());
-
-    if (fillProducer) {
-      auto fillOp = dyn_cast<linalg::FillOp>(fillProducer);
-      auto forallOp = dyn_cast<scf::ForallOp>(forall.getOperation());
-      if (fillOp && forallOp)
-        (void)fuseFillIntoForallSharedOuts(fillOp, forallOp, rewriter);
-    }
+  if (fillProducer) {
+    auto fillOp = dyn_cast<linalg::FillOp>(fillProducer);
+    auto forallOp = dyn_cast<scf::ForallOp>(forall.getOperation());
+    if (fillOp && forallOp)
+      (void)fuseFillIntoForallSharedOuts(fillOp, forallOp, rewriter);
   }
-};
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulTileLaunchTilePass() {
-  return std::make_unique<AIRMatmulTileLaunchTile>();
-}
-std::unique_ptr<mlir::Pass> createAIRMatmulTileLaunchTilePass(
-    const AIRMatmulTileLaunchTileOptions &opts) {
-  return std::make_unique<AIRMatmulTileLaunchTile>(opts);
+  return success();
 }
 
 } // namespace air

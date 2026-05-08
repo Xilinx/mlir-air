@@ -583,28 +583,33 @@ if __name__ == "__main__":
         args.direct_codegen,
     )
 
-    # M1c: replace the prior transform-script with the C++ matmul codegen
-    # pipeline. See MATMUL_CODEGEN_PIPELINE_PLAN.md.
+    # Iron-built flow: only the vectorize stages of the C++ orchestrator
+    # (tile-for-vectorize + vec-prep). All earlier phases are skipped.
     if args.direct_codegen:
+        hoist_pairs = "true" if OUTPUT_DATATYPE == bfloat16 else "false"
         steps = [
             "func.func(canonicalize,cse,air-fold-unit-extent-dims)",
-            "func.func(air-matmul-tile-for-vectorize{matmul-tile-sizes=2,2,1,0,0,0 matmul-unroll-tile-sizes=1,1,0,0,0,0 matmul-unroll-factor=2 fill-tile-sizes=0,0,1,1})",
+            "air-matmul-codegen{"
+            "matmul-vec-tile=2,2,1,0,0,0 "
+            "matmul-unroll-vec-tile=1,1,0,0,0,0 "
+            "matmul-unroll-factor=2 fill-vec-tile=0,0,1,1 "
+            "do-vec-prep=false"
+            "}",
             "func.func(air-herd-vectorize)",
             "func.func(canonicalize,cse,fold-memref-alias-ops,air-fold-unit-extent-dims)",
             # Vec-prep composite: eliminate-redundant + cast(f32) + hoist-loop +
             # flatten + hoist-pointers + (bf16-out: hoist-cast-pairs).
-            "func.func(air-matmul-codegen-vec-prep{"
-            "do-fold-unit-extent-dims=false "
-            "cast1-target-element-type=f32 cast1-input-indices=2 "
-            "cast1-output-indices=0 "
-            f"do-hoist-cast-pairs={'true' if OUTPUT_DATATYPE == bfloat16 else 'false'}}})",
+            "air-matmul-codegen{"
+            "do-vec-prep=true vec-prep-fold-unit-extent-dims=false "
+            "vec-prep-cast1-target-element-type=f32 "
+            "vec-prep-cast1-input-indices=2 "
+            "vec-prep-cast1-output-indices=0 "
+            f"vec-prep-hoist-cast-pairs={hoist_pairs}"
+            "}",
+            "func.func(canonicalize,cse,fold-memref-alias-ops,air-fold-unit-extent-dims)",
         ]
-        steps.append(
-            "func.func(canonicalize,cse,fold-memref-alias-ops,air-fold-unit-extent-dims)"
-        )
         pipeline = "builtin.module(" + ",".join(steps) + ")"
-        pm = air.passmanager.PassManager.parse(
-            pipeline, context=mlir_module.context)
+        pm = air.passmanager.PassManager.parse(pipeline, context=mlir_module.context)
         pm.run(mlir_module.operation)
     if False:
         transform_ir_string = (

@@ -7,13 +7,11 @@
 
 #include "air/Transform/AIRMatmulPackAndTranspose.h"
 #include "air/Transform/AIRMatmulBufferizationPasses.h"
-#include "air/Util/MatmulCodegenConfig.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/SmallVector.h"
 
@@ -32,7 +30,7 @@ namespace {
 // Apply pack_transpose to the producer of `linalgOp` operand `operandIdx`.
 // Updates `linalgOp` in-place and returns the new linalg op on success.
 static FailureOr<linalg::LinalgOp>
-applyOperandTranspose(IRRewriter &rewriter, linalg::LinalgOp linalgOp,
+applyOperandTranspose(RewriterBase &rewriter, linalg::LinalgOp linalgOp,
                       int64_t operandIdx, ArrayRef<int64_t> outerPerm,
                       ArrayRef<int64_t> innerPerm) {
   if (outerPerm.empty() && innerPerm.empty())
@@ -58,8 +56,8 @@ applyOperandTranspose(IRRewriter &rewriter, linalg::LinalgOp linalgOp,
   auto res = linalg::packTranspose(rewriter, packOp, linalgOp, maybeUnPack,
                                    outerPerm, innerPerm);
   if (failed(res))
-    return linalgOp->emitError() << "packTranspose failed for operand "
-                                 << operandIdx;
+    return linalgOp->emitError()
+           << "packTranspose failed for operand " << operandIdx;
   return cast<linalg::LinalgOp>(res->transposedLinalgOp.getOperation());
 }
 
@@ -69,8 +67,7 @@ runOnMatmul(linalg::LinalgOp matmulOp, ArrayRef<int64_t> packSizes,
             ArrayRef<int64_t> lhsOuter, ArrayRef<int64_t> lhsInner,
             ArrayRef<int64_t> rhsOuter, ArrayRef<int64_t> rhsInner,
             ArrayRef<int64_t> accOuter, ArrayRef<int64_t> accInner,
-            StringRef marker) {
-  IRRewriter rewriter(matmulOp.getContext());
+            StringRef marker, RewriterBase &rewriter) {
   rewriter.setInsertionPoint(matmulOp);
 
   // Snapshot discardable attrs (e.g. air.matmul_codegen_config) before pack
@@ -118,107 +115,64 @@ runOnMatmul(linalg::LinalgOp matmulOp, ArrayRef<int64_t> packSizes,
   return success();
 }
 
-class AIRMatmulPackAndTranspose
-    : public impl::AIRMatmulPackAndTransposeBase<AIRMatmulPackAndTranspose> {
-
-public:
-  AIRMatmulPackAndTranspose() = default;
-  AIRMatmulPackAndTranspose(const AIRMatmulPackAndTransposeOptions &opts)
-      : AIRMatmulPackAndTransposeBase(opts) {}
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<linalg::LinalgDialect>();
-  }
-
-  void runOnOperation() override {
-    func::FuncOp func = getOperation();
-
-    // Find the first linalg.matmul; if none, fall back to the first
-    // linalg.generic carrying the `packed_matmul` marker (= already-packed
-    // matmul, eligible for a second pack level on M4 two-pack flow).
-    linalg::LinalgOp target;
-    func.walk([&](linalg::MatmulOp op) {
-      target = cast<linalg::LinalgOp>(op.getOperation());
-      return WalkResult::interrupt();
-    });
-    if (!target) {
-      func.walk([&](linalg::GenericOp op) {
-        if (op->hasAttr(clPackedMatmulMarker)) {
-          target = cast<linalg::LinalgOp>(op.getOperation());
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
-    }
-    if (!target) {
-      // No matmul to pack; treat as a no-op (other passes may have already
-      // packed it into a generic without the marker).
-      return;
-    }
-
-    // Override pass-options from the codegen config when present (M3a).
-    SmallVector<int64_t> packSizes(clPackSizes.begin(), clPackSizes.end());
-    SmallVector<int64_t> lhsO(clLhsOuterPerm.begin(), clLhsOuterPerm.end());
-    SmallVector<int64_t> lhsI(clLhsInnerPerm.begin(), clLhsInnerPerm.end());
-    SmallVector<int64_t> rhsO(clRhsOuterPerm.begin(), clRhsOuterPerm.end());
-    SmallVector<int64_t> rhsI(clRhsInnerPerm.begin(), clRhsInnerPerm.end());
-    SmallVector<int64_t> accO(clAccOuterPerm.begin(), clAccOuterPerm.end());
-    SmallVector<int64_t> accI(clAccInnerPerm.begin(), clAccInnerPerm.end());
-    if (auto cfg = xilinx::air::findMatmulCodegenConfig(func)) {
-      auto take = [&](StringRef key, SmallVector<int64_t> &dst) {
-        auto v = xilinx::air::getI64Array(*cfg, key);
-        if (!v.empty())
-          dst = std::move(v);
-      };
-      take("pack_sizes", packSizes);
-      take("lhs_outer_perm", lhsO);
-      take("lhs_inner_perm", lhsI);
-      take("rhs_outer_perm", rhsO);
-      take("rhs_inner_perm", rhsI);
-      take("acc_outer_perm", accO);
-      take("acc_inner_perm", accI);
-    }
-
-    // Validate pack-sizes vs op iterator count. M2 first-pack expects 3
-    // (matmul m,n,k); M4 second-pack on an already-packed op expects 6
-    // (m,n,k outer + m,n,k inner) and may include zeros to leave outer
-    // dims unpacked. Per-operand outer/inner rank is then determined by the
-    // (already-packed) operand shape and the count of non-zero pack sizes
-    // affecting that operand; rather than hand-validating, we let upstream
-    // `linalg::packTranspose` enforce well-formedness when it runs.
-    int64_t numIters = target.getNumLoops();
-    if ((int64_t)packSizes.size() != numIters) {
-      target->emitError() << "pack-sizes has " << packSizes.size()
-                          << " entries; op has " << numIters
-                          << " iterators";
-      return signalPassFailure();
-    }
-
-    if (failed(runOnMatmul(target, packSizes, lhsO, lhsI, rhsO, rhsI, accO,
-                           accI, clPackedMatmulMarker)))
-      return signalPassFailure();
-
-    // Optional tail step: bufferize the output linalg.pack into an L1 (or
-    // configurable memory-space) allocation. Replaces the former standalone
-    // `air-matmul-bufferize-l1-output` pass.
-    if (clDoBufferizeL1Output) {
-      IRRewriter rewriter(&getContext());
-      if (failed(runBufferizeL1OutputImpl(func, clBufferizeL1OutputMemorySpace,
-                                          clPackedMatmulMarker, rewriter)))
-        return signalPassFailure();
-    }
-  }
-};
-
 } // namespace
 
-std::unique_ptr<mlir::Pass> createAIRMatmulPackAndTransposePass() {
-  return std::make_unique<AIRMatmulPackAndTranspose>();
-}
+LogicalResult
+runPackAndTransposeImpl(func::FuncOp f, ArrayRef<int64_t> packSizes,
+                        ArrayRef<int64_t> lhsOuter, ArrayRef<int64_t> lhsInner,
+                        ArrayRef<int64_t> rhsOuter, ArrayRef<int64_t> rhsInner,
+                        ArrayRef<int64_t> accOuter, ArrayRef<int64_t> accInner,
+                        StringRef packedMatmulMarker, bool doBufferizeL1Output,
+                        int64_t bufferizeL1OutputMemorySpace,
+                        RewriterBase &rewriter) {
+  // Find the first linalg.matmul; if none, fall back to the first
+  // linalg.generic carrying the `packed_matmul` marker (= already-packed
+  // matmul, eligible for a second pack level on M4 two-pack flow).
+  linalg::LinalgOp target;
+  f.walk([&](linalg::MatmulOp op) {
+    target = cast<linalg::LinalgOp>(op.getOperation());
+    return WalkResult::interrupt();
+  });
+  if (!target) {
+    f.walk([&](linalg::GenericOp op) {
+      if (op->hasAttr(packedMatmulMarker)) {
+        target = cast<linalg::LinalgOp>(op.getOperation());
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+  }
+  if (!target) {
+    // No matmul to pack; treat as a no-op (other passes may have already
+    // packed it into a generic without the marker).
+    return success();
+  }
 
-std::unique_ptr<mlir::Pass> createAIRMatmulPackAndTransposePass(
-    const AIRMatmulPackAndTransposeOptions &opts) {
-  return std::make_unique<AIRMatmulPackAndTranspose>(opts);
+  // Validate pack-sizes vs op iterator count. M2 first-pack expects 3
+  // (matmul m,n,k); M4 second-pack on an already-packed op expects 6
+  // (m,n,k outer + m,n,k inner) and may include zeros to leave outer
+  // dims unpacked.
+  int64_t numIters = target.getNumLoops();
+  if ((int64_t)packSizes.size() != numIters) {
+    target->emitError() << "pack-sizes has " << packSizes.size()
+                        << " entries; op has " << numIters << " iterators";
+    return failure();
+  }
+
+  if (failed(runOnMatmul(target, packSizes, lhsOuter, lhsInner, rhsOuter,
+                         rhsInner, accOuter, accInner, packedMatmulMarker,
+                         rewriter)))
+    return failure();
+
+  // Optional tail step: bufferize the output linalg.pack into an L1 (or
+  // configurable memory-space) allocation. Replaces the former standalone
+  // `air-matmul-bufferize-l1-output` pass.
+  if (doBufferizeL1Output) {
+    if (failed(runBufferizeL1OutputImpl(f, bufferizeL1OutputMemorySpace,
+                                        packedMatmulMarker, rewriter)))
+      return failure();
+  }
+  return success();
 }
 
 } // namespace air

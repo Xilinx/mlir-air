@@ -1107,95 +1107,6 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
   ];
 }
 
-def AIRMatmulPackAndTranspose: Pass<"air-matmul-pack-and-transpose", "func::FuncOp"> {
-  let summary = "Pack a linalg.matmul and transpose its operand layouts";
-  let constructor = "xilinx::air::createAIRMatmulPackAndTransposePass()";
-  let description = [{
-    Replaces the first `linalg.matmul` in the function with a packed
-    `linalg.generic` produced by `linalg::pack` with `pack-sizes`.
-    Optionally applies `linalg::packTranspose` to the LHS, RHS and
-    accumulator pack/unpack ops with caller-supplied outer/inner perms.
-
-    M0 of the C++ matmul codegen pipeline. See
-    MATMUL_CODEGEN_PIPELINE_PLAN.md.
-  }];
-  let options = [
-    ListOption<"clPackSizes", "pack-sizes", "int64_t",
-               "Per-iterator pack sizes passed to linalg::pack",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clLhsOuterPerm", "lhs-outer-perm", "int64_t",
-               "Outer-dim permutation for the LHS pack op",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clLhsInnerPerm", "lhs-inner-perm", "int64_t",
-               "Inner-dim permutation for the LHS pack op",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clRhsOuterPerm", "rhs-outer-perm", "int64_t",
-               "Outer-dim permutation for the RHS pack op",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clRhsInnerPerm", "rhs-inner-perm", "int64_t",
-               "Inner-dim permutation for the RHS pack op",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clAccOuterPerm", "acc-outer-perm", "int64_t",
-               "Outer-dim permutation for the accumulator pack op",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clAccInnerPerm", "acc-inner-perm", "int64_t",
-               "Inner-dim permutation for the accumulator pack op",
-               "llvm::cl::ZeroOrMore">,
-    Option<"clPackedMatmulMarker", "packed-matmul-marker", "std::string",
-           /*default=*/"\"packed_matmul\"",
-           "Attribute name annotated on the resulting packed linalg op">,
-    Option<"clDoBufferizeL1Output", "do-bufferize-l1-output", "bool",
-           /*default=*/"false",
-           "After packing, bufferize the output linalg.pack into an L1 "
-           "(memory_space=2) allocation. Replaces what was the standalone "
-           "`air-matmul-bufferize-l1-output` pass.">,
-    Option<"clBufferizeL1OutputMemorySpace",
-           "bufferize-l1-output-memory-space", "int64_t", /*default=*/"2",
-           "Target memory space when do-bufferize-l1-output=true.">
-  ];
-}
-
-def AIRMatmulTileForVectorize: Pass<"air-matmul-tile-for-vectorize", "func::FuncOp"> {
-  let summary = "Tile packed matmul linalg.generics and fills for vectorization";
-  let constructor = "xilinx::air::createAIRMatmulTileForVectorizePass()";
-  let description = [{
-    Tiles each `linalg.generic` packed-matmul body inside an `air.herd` by
-    `matmul-tile-sizes` (defaults to [2,2,1,0,0,0]) using `scf.for`, then
-    optionally tiles a second time by `matmul-unroll-tile-sizes` (defaults to
-    [1,1,0,0,0,0]) and unrolls the resulting two innermost `scf.for` loops by
-    `matmul-unroll-factor` (default 2).
-
-    Tiles each `linalg.fill` similarly by `fill-tile-sizes` (default
-    [1,1,0,0]).
-
-    The pass is targeted at the post-pack, post-bufferize, post-herd state;
-    it walks linalg ops directly without depending on attribute markers.
-
-    M1a of the C++ matmul codegen pipeline. See MATMUL_CODEGEN_PIPELINE_PLAN.md.
-  }];
-  let options = [
-    ListOption<"clMatmulTileSizes", "matmul-tile-sizes", "int64_t",
-               "First-level tile sizes for the packed matmul linalg.generic",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clMatmulUnrollTileSizes", "matmul-unroll-tile-sizes", "int64_t",
-               "Second-level tile sizes (the two innermost loops are unrolled)",
-               "llvm::cl::ZeroOrMore">,
-    Option<"clMatmulUnrollFactor", "matmul-unroll-factor", "uint64_t",
-           /*default=*/"2",
-           "Unroll factor applied to the two innermost loops after the second tiling">,
-    ListOption<"clFillTileSizes", "fill-tile-sizes", "int64_t",
-               "Tile sizes for linalg.fill",
-               "llvm::cl::ZeroOrMore">,
-    Option<"clDoPostBufferizeCleanupFirst",
-           "do-post-bufferize-cleanup-first", "bool", /*default=*/"false",
-           "Before tiling, run the post-bufferize cleanup (remove "
-           "uninitialized copies, eliminate cascade memcpy chains, "
-           "sibling-fuse the L3->L2 copy loops into the K-reduction loop "
-           "for L2 ping-pong buffering). Replaces what was the standalone "
-           "`air-matmul-post-bufferize-cleanup` pass.">
-  ];
-}
-
 def AIRFoldUnitExtentDims: Pass<"air-fold-unit-extent-dims", "func::FuncOp"> {
   let summary = "Fold unit-extent dimensions in linalg ops (memref-aware)";
   let constructor = "xilinx::air::createAIRFoldUnitExtentDimsPass()";
@@ -1204,334 +1115,229 @@ def AIRFoldUnitExtentDims: Pass<"air-fold-unit-extent-dims", "func::FuncOp"> {
     unit-extent dims using upstream `linalg::populateFoldUnitExtentDimsPatterns`,
     overriding the collapse function for strided memrefs to use rank-reducing
     `memref.subview` (so the fold tolerates linalg ops with subview outputs
-    inside `air.herd` regions). Kept standalone (in addition to being part of
-    `air-matmul-codegen-vec-prep`) because programming-example pipelines use
-    it outside the vec-prep block too.
+    inside `air.herd` regions). Standalone utility used by programming-example
+    pipelines around `air-matmul-codegen`.
   }];
 }
 
-def AIRMatmulCodegenVecPrep
-    : Pass<"air-matmul-codegen-vec-prep", "func::FuncOp"> {
-  let summary = "Composite vec-prep stage of the matmul codegen pipeline. "
-                "Bundles fold-unit-extent-dims, eliminate-redundant-vector-"
-                "transfers, up to 2 vector-cast-for-emulation invocations, "
-                "hoist-loop-invariant-transfers, flatten-for-iter-args, "
-                "hoist-vector-transfer-pointers, and (optionally) "
-                "hoist-cast-pairs in fixed order.";
-  let constructor = "xilinx::air::createAIRMatmulCodegenVecPrepPass()";
+def AIRMatmulCodegen : Pass<"air-matmul-codegen", "ModuleOp"> {
+  let summary = "Single public matmul codegen pass. Orchestrates internal "
+                "phases (launch tile, packs, K-tile, core tile, "
+                "prologue/epilogue, bufferize-to-alloc, one-shot-bufferize, "
+                "tile-for-vectorize, vec-prep) in fixed order. Each phase is "
+                "skipped when its config is empty / zero / disabled.";
+  let constructor = "xilinx::air::createAIRMatmulCodegenPass()";
   let description = [{
-    Replaces the 7 individually-registered M1 vec-prep passes
-    (`air-fold-unit-extent-dims`, `air-eliminate-redundant-vector-transfers`,
-    `air-vector-cast-for-emulation`, `air-hoist-loop-invariant-transfers`,
-    `air-flatten-for-iter-args`, `air-hoist-vector-transfer-pointers`,
-    `air-hoist-cast-pairs`) with a single composite. The internal order is
-    fixed (matches the order all M2/M5 tests + prog_ex use); per-step
-    enablement is controlled via `do-...` boolean options. The 0-2
-    `vector-cast-for-emulation` invocations are configured via the
-    `cast1-*` and `cast2-*` option groups (empty `target-element-type`
-    means skip that cast).
+    Orchestrates the matmul codegen pipeline as a single pass. Internal
+    phase order (each gated by its config; canonicalize/cse runs between
+    most phases):
 
-    Pass bodies remain accessible as plain C++ functions
-    (`runFoldUnitExtentDimsOnFunc`, `runEliminateRedundantVectorTransfers`,
-    `runVectorTypeCastOnTarget`, `runHoistLoopInvariantTransfers`,
-    `runFlattenForIterArgs`, `runHoistVectorTransferPointers`,
-    `runHoistCastPair`) for direct call.
+      A.  tile-launch-tile (launch-tile)
+      B.  pack-and-transpose (l2-pack-sizes + l2-*-perm)
+      C.  bufferize-output-l2 (bufferize-output-l2 + optional pre-steps)
+      D.  pack-and-transpose (l1-pack-sizes + l1-*-perm; L1-output bufferize)
+      E.  tile-k-and-fuse-packs (outer-k-tile-factor)
+      F.  bufferize-l1-inputs into L2 (auto when D ran)
+      H.  tile-cores (core-tile)
+      I.  tile-k-and-fuse-packs (inner-k-tile-factor)
+      J.  bufferize-l1-inputs into L1 (auto when H ran)
+      K.  prologue-epilogue (prologue-tile / epilogue-tile)
+      L.  one-shot-bufferize (one-shot-bufferize)
+      M.  tile-for-vectorize (matmul-vec-tile)
+      N.  vec-prep composite (do-vec-prep)
+
+    Skipping a phase is the natural way to compose subsets: tests using
+    only the vectorize stages leave A--K empty and L=false; tests using
+    only the tile/pack stages leave M empty and N=false.
   }];
   let options = [
-    Option<"clDoFoldUnitExtentDims", "do-fold-unit-extent-dims", "bool",
-           /*default=*/"true",
-           "Run air::runFoldUnitExtentDimsOnFunc as the first step.">,
-    Option<"clDoEliminateRedundantVectorTransfers",
-           "do-eliminate-redundant-vector-transfers", "bool",
-           /*default=*/"true",
-           "Run air::runEliminateRedundantVectorTransfers after fold-unit.">,
-    Option<"clCast1TargetElementType", "cast1-target-element-type",
-           "std::string", /*default=*/"\"\"",
-           "Empty = skip first vector-cast invocation. Otherwise: 'f32', "
-           "'bf16', 'i32', 'i16', 'i8'.">,
-    ListOption<"clCast1InputIndices", "cast1-input-indices", "int64_t",
-               "Operand indices to cast (first cast).",
+    // ---- Phase A: launch tile ----
+    ListOption<"clLaunchTile", "launch-tile", "int64_t",
+               "Tile sizes for the outer launch-tile scf.forall. Skipped if "
+               "empty.", "llvm::cl::ZeroOrMore">,
+
+    // ---- Phase B: L2 pack ----
+    ListOption<"clL2PackSizes", "l2-pack-sizes", "int64_t",
+               "Per-iterator pack sizes for the L2 pack. Skipped if empty.",
                "llvm::cl::ZeroOrMore">,
-    ListOption<"clCast1OutputIndices", "cast1-output-indices", "int64_t",
-               "Result indices to cast (first cast).",
-               "llvm::cl::ZeroOrMore">,
-    Option<"clCast2TargetElementType", "cast2-target-element-type",
-           "std::string", /*default=*/"\"\"",
-           "Empty = skip second vector-cast invocation.">,
-    ListOption<"clCast2InputIndices", "cast2-input-indices", "int64_t",
-               "Operand indices to cast (second cast).",
-               "llvm::cl::ZeroOrMore">,
-    ListOption<"clCast2OutputIndices", "cast2-output-indices", "int64_t",
-               "Result indices to cast (second cast).",
-               "llvm::cl::ZeroOrMore">,
-    Option<"clDoHoistLoopInvariantTransfers",
-           "do-hoist-loop-invariant-transfers", "bool", /*default=*/"true",
-           "Hoist loop-invariant transfer_read/write pairs into iter_args.">,
-    Option<"clDoFlattenForIterArgs", "do-flatten-for-iter-args", "bool",
-           /*default=*/"true",
-           "Flatten vector-typed iter_args to 1D.">,
-    Option<"clDoHoistVectorTransferPointers",
-           "do-hoist-vector-transfer-pointers", "bool", /*default=*/"true",
-           "Linearize loop-invariant transfer pointer chains.">,
-    Option<"clDoHoistCastPairs", "do-hoist-cast-pairs", "bool",
+    ListOption<"clL2LhsOuterPerm", "l2-lhs-outer-perm", "int64_t",
+               "L2 LHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL2LhsInnerPerm", "l2-lhs-inner-perm", "int64_t",
+               "L2 LHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL2RhsOuterPerm", "l2-rhs-outer-perm", "int64_t",
+               "L2 RHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL2RhsInnerPerm", "l2-rhs-inner-perm", "int64_t",
+               "L2 RHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL2AccOuterPerm", "l2-acc-outer-perm", "int64_t",
+               "L2 accumulator outer-dim perm.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL2AccInnerPerm", "l2-acc-inner-perm", "int64_t",
+               "L2 accumulator inner-dim perm.", "llvm::cl::ZeroOrMore">,
+
+    // ---- Phase C: bufferize output L2 alloc ----
+    Option<"clBufferizeOutputL2", "bufferize-output-l2", "bool",
            /*default=*/"false",
-           "Iteratively hoist matched ext/trunc pairs surrounding iter_args. "
-           "Used by bf16-out flows.">,
-    Option<"clHoistCastPairsMaxIterations",
-           "hoist-cast-pairs-max-iterations", "int64_t", /*default=*/"32",
-           "Fixed-point iteration cap when do-hoist-cast-pairs=true.">
-  ];
-}
-
-def AIRMatmulTileKAndFusePacks : Pass<"air-matmul-tile-k-and-fuse-packs",
-                                       "func::FuncOp"> {
-  let summary = "Phase 4: tile the K reduction dim of the packed matmul and "
-                "fuse the LHS/RHS pack producers into the new scf.for.";
-  let constructor = "xilinx::air::createAIRMatmulTileKAndFusePacksPass()";
-  let description = [{
-    Locates the linalg op annotated `packed_matmul`, tiles it on the K
-    iterator at `k-iter-index` using `scf::tileUsingSCF` (LoopType::ForOp),
-    annotates the new outer scf.for with `k-reduction-loop-marker`, then
-    fuses the two operand-producing `linalg.pack` ops (LHS and RHS) into
-    the loop via `scf::tileAndFuseProducerOfSlice`. Annotates the fused
-    packs with `lhs-pack-in-k-marker` / `rhs-pack-in-k-marker` so Phase 5
-    can find them.
-
-    Replaces the `tile_using_for [0,0,2] + fuse_into_containing_op` pair in
-    the legacy transform script. M2 Phase 4. M4 invokes this pass twice
-    (outer K-tile at iter index 2, inner K-tile at iter index 5) for the
-    two-pack-level flow.
-  }];
-  let options = [
-    Option<"clKTileFactor", "k-tile-factor", "int64_t", /*default=*/"2",
-           "Tile size on the (already-packed) K iterator.">,
-    Option<"clKIterIndex", "k-iter-index", "int64_t", /*default=*/"2",
-           "Index of the K iterator to tile (after pack: m,n,k => idx 2; "
-           "after two pack levels with outer L2 + inner L1 K iters, the "
-           "inner K is typically at idx 5).">,
-    Option<"clPackedMatmulMarker", "packed-matmul-marker", "std::string",
-           /*default=*/"\"packed_matmul\"",
-           "Attribute name on the packed matmul op produced by "
-           "air-matmul-pack-and-transpose.">,
-    Option<"clKReductionLoopMarker", "k-reduction-loop-marker", "std::string",
-           /*default=*/"\"k_reduction_loop\"",
-           "Attribute name written on the new K-reduction scf.for. Set to a "
-           "different name (e.g. `k_reduction_loop_inner`) for the second "
-           "invocation in the M4 two-pack-level flow.">,
-    Option<"clLhsPackMarker", "lhs-pack-in-k-marker", "std::string",
-           /*default=*/"\"lhs_pack_in_k\"",
-           "Marker on the LHS pack op after fusion into the K-reduction loop.">,
-    Option<"clRhsPackMarker", "rhs-pack-in-k-marker", "std::string",
-           /*default=*/"\"rhs_pack_in_k\"",
-           "Marker on the RHS pack op after fusion into the K-reduction loop.">,
-    Option<"clLhsL2PackMarker", "lhs-l2-pack-in-k-marker", "std::string",
-           /*default=*/"\"lhs_l2_pack_in_k\"",
-           "Marker on the LHS L2-pack producer after chain-fusion into the "
-           "K-reduction loop. Used by the M4 two-pack-level flow to locate "
-           "the L2 packs for L2-input bufferization.">,
-    Option<"clRhsL2PackMarker", "rhs-l2-pack-in-k-marker", "std::string",
-           /*default=*/"\"rhs_l2_pack_in_k\"",
-           "Marker on the RHS L2-pack producer after chain-fusion.">
-  ];
-}
-
-def AIRMatmulTileCores : Pass<"air-matmul-tile-cores", "func::FuncOp"> {
-  let summary = "Phase 5: tile the per-K-iteration packed matmul over cores "
-                "via scf.forall and fuse the input packs into the forall.";
-  let constructor = "xilinx::air::createAIRMatmulTileCoresPass()";
-  let description = [{
-    Finds the `packed_matmul`-marked linalg op (now tiled on K by Phase 4),
-    tiles it with `scf::tileUsingSCF` (LoopType::ForallOp) using the
-    requested core-tile sizes, annotates the new scf.forall with
-    `compute-forall-marker` and the per-core matmul body with
-    `matmul-compute-marker`. Then fuses the two `lhs_pack_in_k` /
-    `rhs_pack_in_k`-marked packs into the new forall and re-annotates them
-    with `lhs-l1-pack-marker` / `rhs-l1-pack-marker` (so
-    `air-matmul-bufferize-l1-inputs` can find them). M2 Phase 5.
-  }];
-  let options = [
-    ListOption<"clTileSizes", "tile-sizes", "int64_t",
-               "Tile sizes on the packed-matmul iterators (outer dims of the "
-               "packed iteration space). Default = [8, 4, 0].">,
-    Option<"clPackedMatmulMarker", "packed-matmul-marker", "std::string",
-           /*default=*/"\"packed_matmul\"",
-           "Attribute name on the packed matmul op.">,
-    Option<"clLhsPackInKMarker", "lhs-pack-in-k-marker", "std::string",
-           /*default=*/"\"lhs_pack_in_k\"",
-           "Marker on the LHS pack op produced by Phase 4.">,
-    Option<"clRhsPackInKMarker", "rhs-pack-in-k-marker", "std::string",
-           /*default=*/"\"rhs_pack_in_k\"",
-           "Marker on the RHS pack op produced by Phase 4.">,
-    Option<"clComputeForallMarker", "compute-forall-marker", "std::string",
-           /*default=*/"\"compute_forall\"",
-           "Marker on the new compute scf.forall.">,
-    Option<"clMatmulComputeMarker", "matmul-compute-marker", "std::string",
-           /*default=*/"\"matmul_compute\"",
-           "Marker on the per-core packed matmul body.">,
-    Option<"clLhsL1PackMarker", "lhs-l1-pack-marker", "std::string",
-           /*default=*/"\"fused_lhs_l1_pack\"",
-           "Marker on the fully-fused LHS pack inside the compute forall.">,
-    Option<"clRhsL1PackMarker", "rhs-l1-pack-marker", "std::string",
-           /*default=*/"\"fused_rhs_l1_pack\"",
-           "Marker on the fully-fused RHS pack inside the compute forall.">
-  ];
-}
-
-def AIRMatmulTileLaunchTile : Pass<"air-matmul-tile-launch-tile",
-                                    "func::FuncOp"> {
-  let summary = "M4 Phase 0: tile_using_forall on the linalg.matmul to "
-                "create the outer launch-tile forall, then fuse the "
-                "linalg.fill producer of the accumulator into that forall.";
-  let constructor = "xilinx::air::createAIRMatmulTileLaunchTilePass()";
-  let description = [{
-    Locates the first linalg.matmul, tiles it with `scf::tileUsingSCF`
-    (LoopType::ForallOp) using `tile-sizes`, annotates the new scf.forall
-    with `launch-tile-forall-marker`, then fuses the linalg.fill producer
-    of the matmul's accumulator into the forall via
-    `scf::tileAndFuseProducerOfSlice`. This produces a launch-tile-sized
-    inner matmul + fill suitable for downstream packing/tiling.
-
-    Used by the test-37 two-pack-level flow. M4a Phase 0.
-  }];
-  let options = [
-    ListOption<"clTileSizes", "tile-sizes", "int64_t",
-               "Tile sizes for the launch-tile forall. Default = [256, 256].">,
-    Option<"clLaunchTileForallMarker", "launch-tile-forall-marker",
-           "std::string", /*default=*/"\"launch_tile_forall\"",
-           "Marker on the new outer scf.forall.">
-  ];
-}
-
-def AIRMatmulPrologueEpilogue : Pass<"air-matmul-prologue-epilogue",
-                                      "func::FuncOp"> {
-  let summary = "Phase 6 prologue/epilogue: generalize+interchange the matmul "
-                "fill op and tile both fill and unpack into per-core foralls.";
-  let constructor = "xilinx::air::createAIRMatmulPrologueEpiloguePass()";
-  let description = [{
-    Materializes the prologue and epilogue herds for a packed matmul flow.
-    Steps:
-      1. Find linalg.fill (still in tensor form, post-pack so on a 4D
-         packed tensor). Generalize it to linalg.generic; annotate
-         `init-fill-marker`.
-      2. Interchange iterators (default `[1,0,2,3]`, i.e. swap M/N outer
-         dims to match the post-pack outer_perm).
-      3. Tile the interchanged fill with `scf::tileUsingSCF`
-         (LoopType::ForallOp) using `prologue-tile-sizes`; annotate the
-         forall with `prologue-forall-marker`.
-      4. Find linalg.unpack and tile with `scf::tileUsingSCF`
-         (LoopType::ForallOp) using `epilogue-tile-sizes`; annotate the
-         forall with `epilogue-forall-marker`.
-
-    Used by tests 53/54 (three-herd flow). Skipped for tests/flows that
-    don't need a separate prologue/epilogue. M2 Phase 6 prologue/epilogue.
-  }];
-  let options = [
-    ListOption<"clPrologueTileSizes", "prologue-tile-sizes", "int64_t",
-               "Tile sizes for the prologue (fill) forall. Default = [8, 4].">,
-    ListOption<"clEpilogueTileSizes", "epilogue-tile-sizes", "int64_t",
-               "Tile sizes for the epilogue (unpack) forall. "
-               "Default = [64, 32].">,
-    ListOption<"clFillIteratorInterchange", "fill-iterator-interchange",
-               "int64_t",
-               "Iterator-permutation vector applied to the generalized fill "
-               "before tiling. Empty disables interchange. "
-               "Default = [1, 0, 2, 3].">,
-    Option<"clInitFillMarker", "init-fill-marker", "std::string",
-           /*default=*/"\"init_fill\"",
-           "Marker on the generalized fill op.">,
-    Option<"clPrologueForallMarker", "prologue-forall-marker", "std::string",
-           /*default=*/"\"prologue_forall\"",
-           "Marker on the prologue scf.forall.">,
-    Option<"clEpilogueForallMarker", "epilogue-forall-marker", "std::string",
-           /*default=*/"\"epilogue_forall\"",
-           "Marker on the epilogue scf.forall.">,
-    Option<"clHoistStaticAllocFirst", "hoist-static-alloc-first", "bool",
-           /*default=*/"false",
-           "Before generating prologue/epilogue, hoist statically-bound "
-           "memref.alloc ops out of nested loops to the function entry "
-           "block. Replaces what was the standalone "
-           "`air-hoist-static-alloc` pass. Used by the M4 / two-pack flow.">
-  ];
-}
-
-def AIRMatmulBufferizeOutputL2 : Pass<"air-matmul-bufferize-output-l2",
-                                       "func::FuncOp"> {
-  let summary = "Phase 2: bufferize the matmul accumulator init "
-                "(linalg.fill) into an L2 (memory_space=1) allocation. "
-                "Optionally pre-tiles L3->L2 input copies and fuses an "
-                "output-truncf consumer first.";
-  let constructor = "xilinx::air::createAIRMatmulBufferizeOutputL2Pass()";
-  let description = [{
-    Composite Phase 1+2 step. In order:
-      1. (optional, `do-tile-l3-to-l2-copies=true`) Convert memref.copy ops
-         feeding the matmul to linalg.copy and tile each by the K-tile size
-         on the K dim, annotating with copy-a-loop / copy-b-loop markers
-         for downstream ping-pong fusion. Replaces what was the standalone
-         `air-matmul-tile-l3-to-l2-copies` pass.
-      2. (optional, `fuse-output-truncf-first=true`) Fuse a single-truncf
-         linalg.generic consumer of the matmul into the matmul (lowers
-         accumulator element type). Used by bf16-out flows; must run
-         before bufferization so the fill's element type matches.
-      3. Locate the first linalg.fill (the matmul accumulator init) and
-         bufferize it via `linalg::bufferizeToAllocation` with
-         `bufferizeDestinationOnly=true`, `emitDealloc=true`,
-         `memcpyOp=LinalgCopy`, and the requested memory space.
-  }];
-  let options = [
-    Option<"clMemorySpace", "memory-space", "int64_t", /*default=*/"1",
-           "Target memory space for the L2 allocation (1 = MemTile).">,
+           "Bufferize the matmul accumulator init (linalg.fill) into an L2 "
+           "allocation.">,
+    Option<"clBufferizeOutputL2MemorySpace",
+           "bufferize-output-l2-memory-space", "int64_t", /*default=*/"1",
+           "Memory space for the L2 accumulator allocation.">,
     Option<"clFuseOutputTruncfFirst", "fuse-output-truncf-first", "bool",
            /*default=*/"false",
-           "Fuse a single-truncf linalg.generic consumer of the matmul "
-           "into the matmul before bufferizing. Used by bf16-out flows.">,
-    Option<"clDoTileL3ToL2Copies", "do-tile-l3-to-l2-copies", "bool",
+           "Pre-step: fuse a single-truncf linalg.generic consumer of the "
+           "matmul into the matmul before bufferizing. Used by bf16-out flows.">,
+    Option<"clTileL3ToL2Copies", "tile-l3-to-l2-copies", "bool",
            /*default=*/"false",
-           "Run the (former) air-matmul-tile-l3-to-l2-copies pass first. "
-           "Used by tests with Triton-style memref.copy L3->L2 staging.">,
+           "Pre-step: convert memref.copy L3->L2 stagings to linalg.copy and "
+           "tile each by k-l2-tile. Used by Triton-style flows.">,
     Option<"clKL2Tile", "k-l2-tile", "int64_t", /*default=*/"16",
-           "Tile size on the K dimension for L3->L2 copies (only when "
-           "do-tile-l3-to-l2-copies=true).">,
-    Option<"clCopyALoopMarker", "copy-a-loop-marker", "std::string",
-           /*default=*/"\"copy_a_loop\"",
-           "Attribute name annotated on the LHS-copy scf.for loop.">,
-    Option<"clCopyBLoopMarker", "copy-b-loop-marker", "std::string",
-           /*default=*/"\"copy_b_loop\"",
-           "Attribute name annotated on the RHS-copy scf.for loop.">
+           "K-tile size for L3->L2 copies (only when tile-l3-to-l2-copies=true).">,
+
+    // ---- Phase D: L1 pack ----
+    ListOption<"clL1PackSizes", "l1-pack-sizes", "int64_t",
+               "Per-iterator pack sizes for the L1 pack. Skipped if empty. "
+               "When set, the L1 pack output is also bufferized to L1.",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clL1LhsOuterPerm", "l1-lhs-outer-perm", "int64_t",
+               "L1 LHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL1LhsInnerPerm", "l1-lhs-inner-perm", "int64_t",
+               "L1 LHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL1RhsOuterPerm", "l1-rhs-outer-perm", "int64_t",
+               "L1 RHS outer-dim perm.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL1RhsInnerPerm", "l1-rhs-inner-perm", "int64_t",
+               "L1 RHS inner-dim perm.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL1AccOuterPerm", "l1-acc-outer-perm", "int64_t",
+               "L1 accumulator outer-dim perm.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL1AccInnerPerm", "l1-acc-inner-perm", "int64_t",
+               "L1 accumulator inner-dim perm.", "llvm::cl::ZeroOrMore">,
+    Option<"clL1OutputMemorySpace", "l1-output-memory-space", "int64_t",
+           /*default=*/"2",
+           "Memory space for the bufferized L1 pack output.">,
+    Option<"clBufferizeLastPackOutput", "bufferize-last-pack-output", "bool",
+           /*default=*/"true",
+           "Bufferize the LAST pack's output (L1 pack if l1-pack-sizes is set, "
+           "otherwise the L2 pack) into L1 memory. Set false to leave the "
+           "pack output as a tensor (e.g. for inspecting raw pack semantics).">,
+
+    // ---- Phase E: outer K-tile ----
+    Option<"clOuterKTileFactor", "outer-k-tile-factor", "int64_t",
+           /*default=*/"0",
+           "K-tile size for the outer K reduction loop. Skipped if 0.">,
+    Option<"clOuterKIterIndex", "outer-k-iter-index", "int64_t",
+           /*default=*/"2",
+           "K iterator index for the outer K-tile (default 2 = standard "
+           "post-pack [m,n,k]).">,
+
+    // ---- Phase H: tile cores ----
+    ListOption<"clCoreTile", "core-tile", "int64_t",
+               "Per-iterator tile sizes for the per-core scf.forall. Skipped "
+               "if empty.", "llvm::cl::ZeroOrMore">,
+
+    // ---- Phase I: inner K-tile ----
+    Option<"clInnerKTileFactor", "inner-k-tile-factor", "int64_t",
+           /*default=*/"0",
+           "K-tile size for the inner K reduction loop. Skipped if 0.">,
+    Option<"clInnerKIterIndex", "inner-k-iter-index", "int64_t",
+           /*default=*/"5",
+           "K iterator index for the inner K-tile (default 5 = two-pack-level "
+           "inner K position).">,
+
+    // ---- Phase K: prologue/epilogue ----
+    ListOption<"clPrologueTile", "prologue-tile", "int64_t",
+               "Tile sizes for the prologue (fill) forall.",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clEpilogueTile", "epilogue-tile", "int64_t",
+               "Tile sizes for the epilogue (unpack) forall.",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clFillIterPerm", "fill-iter-perm", "int64_t",
+               "Iterator-permutation vector applied to the generalized fill "
+               "before tiling. Empty disables interchange.",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clHoistStaticAllocFirst", "hoist-static-alloc-first", "bool",
+           /*default=*/"false",
+           "Pre-step: hoist statically-bound memref.alloc ops out of nested "
+           "loops to function entry. Used by the two-pack-level flow.">,
+
+    // ---- Phase L: one-shot bufferize ----
+    Option<"clOneShotBufferize", "one-shot-bufferize", "bool",
+           /*default=*/"false",
+           "Run upstream one-shot-bufferize (function-boundary, "
+           "identity-layout) after the tile/pack stages and before the "
+           "vectorize stages.">,
+
+    // ---- Phase M: tile for vectorize ----
+    ListOption<"clMatmulVecTile", "matmul-vec-tile", "int64_t",
+               "First-level tile sizes for the packed matmul body. Skipped "
+               "if empty.", "llvm::cl::ZeroOrMore">,
+    ListOption<"clMatmulUnrollVecTile", "matmul-unroll-vec-tile", "int64_t",
+               "Second-level tile sizes (the two innermost loops are "
+               "unrolled).", "llvm::cl::ZeroOrMore">,
+    Option<"clMatmulUnrollFactor", "matmul-unroll-factor", "uint64_t",
+           /*default=*/"2",
+           "Unroll factor applied to the two innermost loops.">,
+    ListOption<"clFillVecTile", "fill-vec-tile", "int64_t",
+               "Tile sizes for linalg.fill in the vectorize stage.",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clPostBufferizeCleanupFirst", "post-bufferize-cleanup-first",
+           "bool", /*default=*/"false",
+           "Pre-step: run post-bufferize cleanup (remove uninitialized "
+           "copies, eliminate cascade memcpys, sibling-fuse pingpong loops).">,
+
+    // ---- Phase N: vec-prep composite ----
+    Option<"clDoVecPrep", "do-vec-prep", "bool", /*default=*/"true",
+           "Run the vec-prep composite (fold-unit-extent + eliminate-redundant "
+           "+ optional vector-cast + hoist-loop-invariant + flatten-iter + "
+           "hoist-pointers + optional hoist-cast-pairs).">,
+    Option<"clVecPrepFoldUnitExtentDims", "vec-prep-fold-unit-extent-dims",
+           "bool", /*default=*/"true", "vec-prep: run fold-unit-extent-dims.">,
+    Option<"clVecPrepEliminateRedundantVectorTransfers",
+           "vec-prep-eliminate-redundant-vector-transfers", "bool",
+           /*default=*/"true",
+           "vec-prep: run eliminate-redundant-vector-transfers.">,
+    Option<"clVecPrepCast1TargetElementType",
+           "vec-prep-cast1-target-element-type", "std::string",
+           /*default=*/"\"\"",
+           "vec-prep: first vector-cast target element type ('' = skip).">,
+    ListOption<"clVecPrepCast1InputIndices", "vec-prep-cast1-input-indices",
+               "int64_t",
+               "vec-prep: first vector-cast input operand indices.",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clVecPrepCast1OutputIndices", "vec-prep-cast1-output-indices",
+               "int64_t",
+               "vec-prep: first vector-cast output operand indices.",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clVecPrepCast2TargetElementType",
+           "vec-prep-cast2-target-element-type", "std::string",
+           /*default=*/"\"\"",
+           "vec-prep: second vector-cast target element type ('' = skip).">,
+    ListOption<"clVecPrepCast2InputIndices", "vec-prep-cast2-input-indices",
+               "int64_t",
+               "vec-prep: second vector-cast input operand indices.",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clVecPrepCast2OutputIndices", "vec-prep-cast2-output-indices",
+               "int64_t",
+               "vec-prep: second vector-cast output operand indices.",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clVecPrepHoistLoopInvariantTransfers",
+           "vec-prep-hoist-loop-invariant-transfers", "bool",
+           /*default=*/"true",
+           "vec-prep: hoist loop-invariant transfer_read/write pairs.">,
+    Option<"clVecPrepFlattenForIterArgs", "vec-prep-flatten-for-iter-args",
+           "bool", /*default=*/"true",
+           "vec-prep: flatten vector-typed iter_args to 1D.">,
+    Option<"clVecPrepHoistVectorTransferPointers",
+           "vec-prep-hoist-vector-transfer-pointers", "bool",
+           /*default=*/"true",
+           "vec-prep: linearize loop-invariant transfer pointer chains.">,
+    Option<"clVecPrepHoistCastPairs", "vec-prep-hoist-cast-pairs", "bool",
+           /*default=*/"false",
+           "vec-prep: iteratively hoist matched ext/trunc pairs.">,
+    Option<"clVecPrepHoistCastPairsMaxIterations",
+           "vec-prep-hoist-cast-pairs-max-iterations", "int64_t",
+           /*default=*/"32",
+           "vec-prep: fixed-point cap when vec-prep-hoist-cast-pairs=true.">
   ];
 }
 
-def AIRMatmulBufferizeL1Inputs : Pass<"air-matmul-bufferize-l1-inputs",
-                                       "func::FuncOp"> {
-  let summary = "Phase 6a: bufferize the L1 input packs (LHS, RHS) of the "
-                "tiled-into-cores packed matmul into L1 allocations. Also "
-                "reusable for M4 L2-input bufferization via the marker / "
-                "memory-space / memcpy-op options.";
-  let constructor = "xilinx::air::createAIRMatmulBufferizeL1InputsPass()";
-  let description = [{
-    Looks up linalg ops annotated `lhs-marker` and `rhs-marker`
-    (default `fused_lhs_l1_pack` / `fused_rhs_l1_pack`, set by
-    `air-matmul-tile-cores`) and bufferizes each into the requested memory
-    space using the requested memcpy op. M2 Phase 6a; reused at M4 for the
-    L2-input path with `memory-space=1 memcpy-op=linalg-copy
-    lhs-marker=fused_lhs_l2_pack rhs-marker=fused_rhs_l2_pack`.
-  }];
-  let options = [
-    Option<"clMemorySpace", "memory-space", "int64_t", /*default=*/"2",
-           "Target memory space for the allocation (1 = MemTile / L2; "
-           "2 = compute tile / L1).">,
-    Option<"clLhsMarker", "lhs-marker", "std::string",
-           /*default=*/"\"fused_lhs_l1_pack\"",
-           "Attribute name on the fused LHS pack to bufferize.">,
-    Option<"clRhsMarker", "rhs-marker", "std::string",
-           /*default=*/"\"fused_rhs_l1_pack\"",
-           "Attribute name on the fused RHS pack to bufferize.">,
-    Option<"clMemcpyOp", "memcpy-op", "std::string",
-           /*default=*/"\"materialize\"",
-           "Memcpy op to use: `materialize` (= `MaterializeInDestination`, "
-           "default for L1) or `linalg-copy` (= `LinalgCopy`, used for L2 "
-           "in the M4 two-pack-level flow).">
-  ];
-}
 
 def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
   let summary = "Hoist dma ops into perfectly nested loop";

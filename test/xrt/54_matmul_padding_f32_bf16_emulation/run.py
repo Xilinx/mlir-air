@@ -191,38 +191,40 @@ with air.ir.Context() as ctx, Location.unknown():
         # Per-core tile and prologue: AIE2P f32-in profile = [8, 4, 0].
         epM = max(4 * 8, LT_M // HERD_M)
         epN = max(1, LT_N // HERD_N)
+        # f32 in/out + BFP16 emulation single-pack-level flow via the C++
+        # orchestrator. No truncf-fuse, no hoist-cast-pairs; vec-prep does
+        # two vector-cast invocations (acc -> f32, then operands -> bf16).
         phases = [
-            f"func.func(air-matmul-bufferize-output-l2{{do-tile-l3-to-l2-copies=true k-l2-tile={l2_k}}})",
-            "func.func(air-matmul-pack-and-transpose{pack-sizes=8,8,8 "
-            "lhs-outer-perm=1,0 lhs-inner-perm=0,1 "
-            "rhs-outer-perm=1,0 rhs-inner-perm=1,0 "
-            "acc-outer-perm=1,0 acc-inner-perm=0,1 "
-            "do-bufferize-l1-output=true})",
-            f"func.func(air-matmul-tile-k-and-fuse-packs{{k-tile-factor={k_factor}}})",
-            "func.func(air-matmul-tile-cores{tile-sizes=8,4,0})",
-            "func.func(canonicalize,cse)",
-            "func.func(air-matmul-bufferize-l1-inputs)",
-            "func.func(air-matmul-prologue-epilogue{"
-            f"prologue-tile-sizes=8,4 epilogue-tile-sizes={epM},{epN} "
-            "fill-iterator-interchange=1,0,2,3})",
-            "func.func(canonicalize,cse)",
-            "one-shot-bufferize{bufferize-function-boundaries=1 "
-            "unknown-type-conversion=identity-layout-map "
-            "function-boundary-type-conversion=identity-layout-map}",
-            "func.func(canonicalize,cse,canonicalize)",
-            "func.func(air-matmul-tile-for-vectorize{"
-            "do-post-bufferize-cleanup-first=true "
-            "matmul-tile-sizes=2,2,1,0,0,0 "
-            "matmul-unroll-tile-sizes=1,1,0,0,0,0 "
-            "matmul-unroll-factor=2 fill-tile-sizes=1,1,0,0})",
+            "air-matmul-codegen{"
+            "bufferize-output-l2=true "
+            f"tile-l3-to-l2-copies=true k-l2-tile={l2_k} "
+            "l2-pack-sizes=8,8,8 "
+            "l2-lhs-outer-perm=1,0 l2-lhs-inner-perm=0,1 "
+            "l2-rhs-outer-perm=1,0 l2-rhs-inner-perm=1,0 "
+            "l2-acc-outer-perm=1,0 l2-acc-inner-perm=0,1 "
+            f"outer-k-tile-factor={k_factor} outer-k-iter-index=2 "
+            "core-tile=8,4,0 "
+            f"prologue-tile=8,4 epilogue-tile={epM},{epN} "
+            "fill-iter-perm=1,0,2,3 "
+            "one-shot-bufferize=true "
+            "post-bufferize-cleanup-first=true "
+            "matmul-vec-tile=2,2,1,0,0,0 "
+            "matmul-unroll-vec-tile=1,1,0,0,0,0 "
+            "matmul-unroll-factor=2 fill-vec-tile=1,1,0,0 "
+            "do-vec-prep=false"
+            "}",
             "func.func(scf-forall-to-parallel)",
             "air-par-to-herd",
             "func.func(air-herd-vectorize)",
             "func.func(canonicalize,cse,fold-memref-alias-ops)",
-            "func.func(air-matmul-codegen-vec-prep{"
-            "cast1-target-element-type=f32 cast1-input-indices=2 "
-            "cast1-output-indices=0 "
-            "cast2-target-element-type=bf16 cast2-input-indices=0,1})",
+            "air-matmul-codegen{"
+            "do-vec-prep=true "
+            "vec-prep-cast1-target-element-type=f32 "
+            "vec-prep-cast1-input-indices=2 "
+            "vec-prep-cast1-output-indices=0 "
+            "vec-prep-cast2-target-element-type=bf16 "
+            "vec-prep-cast2-input-indices=0,1"
+            "}",
             "func.func(canonicalize,cse,fold-memref-alias-ops,"
             "air-fold-unit-extent-dims)",
         ]
@@ -342,9 +344,20 @@ with air.ir.Context() as ctx, Location.unknown():
             bf16_emulation=True,
             debug_ir=True,
         )
-        rc = runner.run_test(air_module, inputs=[input_a, input_b], stochastic_expected_outputs=[sampled_data], rtol=0.1)
+        rc = runner.run_test(
+            air_module,
+            inputs=[input_a, input_b],
+            stochastic_expected_outputs=[sampled_data],
+            rtol=0.1,
+        )
         if args.profile_iters > 0 and rc == 0:
-            runner.benchmark(air_module, inputs=[input_a, input_b], stochastic_expected_outputs=[sampled_data], iters=args.profile_iters, label=("cpp" if args.use_cpp_pipeline else "legacy"))
+            runner.benchmark(
+                air_module,
+                inputs=[input_a, input_b],
+                stochastic_expected_outputs=[sampled_data],
+                iters=args.profile_iters,
+                label=("cpp" if args.use_cpp_pipeline else "legacy"),
+            )
         exit(rc)
     elif args.compile_mode == "compile-only":
         backend = XRTBackend(

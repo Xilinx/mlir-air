@@ -24,6 +24,7 @@ list(APPEND TRANSFORM_SOURCES
   AIRLinalgOpStats.cpp
   AIRLoopMergingPass.cpp
   AIRMatmulBufferizationPasses.cpp
+  AIRMatmulCodegen.cpp
   AIRMatmulCodegenHelpers.cpp
   AIRMatmulPackAndTranspose.cpp
   AIRMatmulTileL3ToL2Copies.cpp

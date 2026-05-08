@@ -103,44 +103,47 @@ with air.ir.Context() as ctx, Location.unknown():
     pm.run(air_module.operation)
 
     if args.use_cpp_pipeline:
-        # Drive Triton-XDNA bf16-out matmul codegen via the C++ pass pipeline.
-        # All tile/pack/vector parameters are passed explicitly per-pass; the
-        # automatic heuristic that derives these from the matmul shape lives
-        # in a follow-up PR. See MATMUL_CODEGEN_PIPELINE_PLAN.md (M5).
-        # Per-launch-tile shape is 256x256x256 (single launch tile).
+        # Drive Triton-XDNA bf16-out matmul codegen via the C++ orchestrator.
+        # Single-pack-level flow: one L2 pack (orchestrator auto-bufferizes
+        # its output to L1 since l1-pack-sizes is empty). Per-launch-tile
+        # shape is 256x256x256.
         phases = [
-            "func.func(air-matmul-bufferize-output-l2{"
-            "do-tile-l3-to-l2-copies=true k-l2-tile=64 "
-            "fuse-output-truncf-first=true})",
-            "func.func(air-matmul-pack-and-transpose{pack-sizes=8,8,8 "
-            "lhs-outer-perm=1,0 lhs-inner-perm=0,1 "
-            "rhs-outer-perm=1,0 rhs-inner-perm=1,0 "
-            "acc-outer-perm=1,0 acc-inner-perm=0,1 "
-            "do-bufferize-l1-output=true})",
-            "func.func(air-matmul-tile-k-and-fuse-packs{k-tile-factor=8})",
-            "func.func(air-matmul-tile-cores{tile-sizes=8,8,0})",
-            "func.func(canonicalize,cse)",
-            "func.func(air-matmul-bufferize-l1-inputs)",
-            "func.func(air-matmul-prologue-epilogue{"
-            "prologue-tile-sizes=8,8 epilogue-tile-sizes=64,64 "
-            "fill-iterator-interchange=1,0,2,3})",
-            "func.func(canonicalize,cse)",
-            "one-shot-bufferize{bufferize-function-boundaries=1 "
-            "unknown-type-conversion=identity-layout-map "
-            "function-boundary-type-conversion=identity-layout-map}",
-            "func.func(canonicalize,cse,canonicalize)",
-            "func.func(air-matmul-tile-for-vectorize{"
-            "do-post-bufferize-cleanup-first=true "
-            "matmul-tile-sizes=2,2,1,0,0,0 "
-            "matmul-unroll-tile-sizes=1,1,0,0,0,0 "
-            "matmul-unroll-factor=2 fill-tile-sizes=1,1,0,0})",
+            "air-matmul-codegen{"
+            # Phase C: bufferize L2 acc + pre-steps for bf16-out flow.
+            "bufferize-output-l2=true fuse-output-truncf-first=true "
+            "tile-l3-to-l2-copies=true k-l2-tile=64 "
+            # Phase B: single-pack L2 pack.
+            "l2-pack-sizes=8,8,8 "
+            "l2-lhs-outer-perm=1,0 l2-lhs-inner-perm=0,1 "
+            "l2-rhs-outer-perm=1,0 l2-rhs-inner-perm=1,0 "
+            "l2-acc-outer-perm=1,0 l2-acc-inner-perm=0,1 "
+            # Phase E: K-tile factor=8 (single-pack so this is the only K-tile).
+            "outer-k-tile-factor=8 outer-k-iter-index=2 "
+            # Phase H: per-core tile.
+            "core-tile=8,8,0 "
+            # Phase K: prologue/epilogue.
+            "prologue-tile=8,8 epilogue-tile=64,64 fill-iter-perm=1,0,2,3 "
+            # Phase L: upstream one-shot-bufferize.
+            "one-shot-bufferize=true "
+            # Phase M: tile-for-vectorize.
+            "post-bufferize-cleanup-first=true "
+            "matmul-vec-tile=2,2,1,0,0,0 "
+            "matmul-unroll-vec-tile=1,1,0,0,0,0 "
+            "matmul-unroll-factor=2 fill-vec-tile=1,1,0,0 "
+            # Phase N: vec-prep deferred to second invocation (after herd).
+            "do-vec-prep=false" "}",
             "func.func(scf-forall-to-parallel)",
             "air-par-to-herd",
             "func.func(air-herd-vectorize)",
             "func.func(canonicalize,cse,fold-memref-alias-ops)",
-            "func.func(air-matmul-codegen-vec-prep{"
-            "cast1-target-element-type=f32 cast1-input-indices=2 "
-            "cast1-output-indices=0 do-hoist-cast-pairs=true})",
+            # Second orchestrator invocation: vec-prep only.
+            "air-matmul-codegen{"
+            "do-vec-prep=true "
+            "vec-prep-cast1-target-element-type=f32 "
+            "vec-prep-cast1-input-indices=2 "
+            "vec-prep-cast1-output-indices=0 "
+            "vec-prep-hoist-cast-pairs=true"
+            "}",
             "func.func(canonicalize,cse,fold-memref-alias-ops,"
             "air-fold-unit-extent-dims)",
         ]
@@ -179,6 +182,7 @@ with air.ir.Context() as ctx, Location.unknown():
     pm.run(air_module.operation)
 
     import os
+
     if os.environ.get("AIR_DUMP_FINAL_IR"):
         with open(os.environ["AIR_DUMP_FINAL_IR"], "w") as f:
             f.write(str(air_module))

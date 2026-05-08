@@ -25,6 +25,7 @@
 #include "air/Transform/AIRLoopPermutationPass.h"
 #include "air/Transform/AIRLowerLinalgTensors.h"
 #include "air/Transform/AIRMatmulBufferizationPasses.h"
+#include "air/Transform/AIRMatmulCodegen.h"
 #include "air/Transform/AIRMatmulPackAndTranspose.h"
 #include "air/Transform/AIRMatmulTileL3ToL2Copies.h"
 #include "air/Transform/AIRMatmulTilePasses.h"
