@@ -28,6 +28,30 @@ AIE::TileOp getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col, int row);
 // get tileop using physical coordinates
 AIE::TileOp getPhysTileOp(AIE::DeviceOp aie_device, int col, int row);
 
+// Materialize a physical aie.tile by emitting an aie.logical_tile<tileType>
+// with the given hints (use std::nullopt for "?"), running mlir-aie's
+// SequentialPlacer, and resolving the result through getPhysTileOp. On
+// placement failure, emits a diagnostic on `aie_device` and returns failure.
+//
+// Caller must NOT be inside a greedy PatternRewriter callback; this helper
+// uses plain OpBuilder + replaceAllUsesWith/erase, which would invalidate
+// a greedy worklist's cached use-def edges (see RFC #1567 milestone 2).
+mlir::FailureOr<AIE::TileOp> createTileViaPlacer(AIE::DeviceOp aie_device,
+                                                 AIE::AIETileType tileType,
+                                                 std::optional<int> col_hint,
+                                                 std::optional<int> row_hint);
+
+// Batched variant: emits N aie.logical_tile<tileType> ops (one per hint),
+// runs the placer ONCE, and resolves each into a physical aie.tile. The
+// returned vector parallels `hints`. Use this when multiple unconstrained
+// or partially-constrained logical tiles must be placed together — e.g.,
+// a herd of cores all asking (col, ?), which a per-tile placer would all
+// map to the same row because state doesn't persist across place() calls.
+mlir::LogicalResult createTilesViaPlacer(
+    AIE::DeviceOp aie_device, AIE::AIETileType tileType,
+    llvm::ArrayRef<std::pair<std::optional<int>, std::optional<int>>> hints,
+    llvm::SmallVectorImpl<AIE::TileOp> &outTiles);
+
 AIE::LockOp allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
                            int init = 0, int id = -1,
                            StringAttr name = nullptr);
@@ -77,15 +101,19 @@ struct allocation_info_t {
   std::vector<Operation *> memcpyOps;
   bool valid();
   AIE::TileOp getDmaTile();
-  bool foundAlloc(air::ChannelOp channel_op);
-  bool foundAlloc(int32_t col, int32_t row, air::MemcpyInterface memcpyOp);
-  bool foundAlloc(int32_t col, int32_t row, int chan);
-  bool foundAlloc(AIE::DMAChannel channel);
-  bool foundAlloc(int32_t col, int32_t row, AIE::DMAChannel channel);
-  bool foundAlloc(int32_t col, int32_t row);
-  bool foundAlloc(int32_t col, int32_t row, air::ChannelOp channel_op);
+  bool foundAlloc(AIE::TileOp tile);
+  bool foundAlloc(AIE::TileOp tile, air::MemcpyInterface memcpyOp);
+  bool foundAlloc(AIE::TileOp tile, air::ChannelOp channel_op);
   bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
-  bool foundPacketFlowAllocInTile(int32_t col, int32_t row);
+  bool foundPacketFlowAllocInTile(AIE::TileOp tile);
+
+  bool foundAlloc(air::ChannelOp channel_op);
+  bool foundAlloc(AIE::DMAChannel channel);
+
+  // Column-keyed; row is implied (shim is always row 0).
+  bool foundAllocInColumn(int32_t col);
+  bool foundAllocInColumn(int32_t col, AIE::DMAChannel channel);
+  bool foundPacketFlowAllocInColumn(int32_t col);
 
   bool operator==(const allocation_info_t &other) const {
     return dma_tile == other.dma_tile && col == other.col && row == other.row &&
@@ -126,9 +154,9 @@ public:
       : device(device), dmaMemorySpace(dmaMemorySpace) {}
 
   FailureOr<allocation_info_t>
-  lookupDMAAllocation(int64_t col, int64_t row, air::MemcpyInterface &memcpyOp);
+  lookupDMAAllocation(AIE::TileOp tile, air::MemcpyInterface &memcpyOp);
   FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
-  getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
+  getLockForDMA(air::MemcpyInterface &memcpyOp, AIE::TileOp tile,
                 Operation *bufferOp, bool lockRaceConditionFix = false);
   FailureOr<allocation_info_t>
   allocNewDmaChannel(air::MemcpyInterface &memcpyOp, AIE::TileOp tile, int chan,
@@ -156,10 +184,10 @@ public:
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
   FailureOr<allocation_info_t>
-  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int col, int row,
-                        int chan);
+  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, AIE::TileOp tile,
+                        int chan = -1);
 
-  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
 };
 
@@ -181,8 +209,8 @@ public:
                      allocation_info_t existing_alloc,
                      std::vector<Operation *> &dma_ops);
 
-  FailureOr<AIE::ExternalBufferOp> getBuffer(uint64_t &BufferId, int64_t col,
-                                             int64_t row,
+  FailureOr<AIE::ExternalBufferOp> getBuffer(uint64_t &BufferId,
+                                             AIE::TileOp tile,
                                              air::MemcpyInterface &memcpyOp);
 
   FailureOr<air::allocation_info_t>
@@ -198,12 +226,13 @@ public:
   MemTileDMAAllocator(AIE::DeviceOp device);
 
   FailureOr<allocation_info_t>
-  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int chan);
+  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int chan = -1);
   FailureOr<allocation_info_t>
   simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                         allocation_info_t &existing_alloc);
 
-  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+  // tile derived from memcpyOp's buffer; param kept for signature uniformity.
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
 
   FailureOr<air::allocation_info_t>
@@ -215,15 +244,14 @@ class CascadeAllocator {
 
 public:
   CascadeAllocator() = delete;
-  // CascadeAllocator constructor: only core-to-core (L1-level) cascade
-  // connection supported.
   CascadeAllocator(AIE::DeviceOp device)
       : device(device), dmaMemorySpace(air::MemorySpace::L1) {}
   FailureOr<allocation_info_t> coreCascadeAlloc(air::MemcpyInterface &memcpyOp);
   FailureOr<allocation_info_t> allocNewCascade(air::MemcpyInterface &memcpyOp,
                                                AIE::TileOp tile);
 
-  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+  // tile derived from memcpyOp's buffer; param kept for signature uniformity.
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
 
 protected:

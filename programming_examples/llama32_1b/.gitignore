@@ -1,0 +1,21 @@
+# Build / kernel cache artifacts
+build_peano/
+build_chess/
+__pycache__/
+*.pyc
+kernel_cache/
+air_project/
+.debug/
+
+# Local-only experimental and ad-hoc test directories
+test_swiglu/
+test_swiglu_llama/
+test_swiglu_2048/
+flash_attn_issue/
+
+# Dev-only docs and artifacts (kept locally for development reference;
+# excluded from upstream PR to keep the example focused).
+docs/development_progress/
+docs/report/
+docs/issues/
+test/

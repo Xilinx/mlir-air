@@ -58,5 +58,6 @@ void xilinx::air::registerTransformPasses() {
   registerAIRSplitLaunchForPadding();
   registerAIRTransformInterpreterPass();
   registerAIRUnrollOuterPerfectlyNestedLoopsPass();
+  registerAIRVerifyHierarchyLocality();
 }
 #endif
