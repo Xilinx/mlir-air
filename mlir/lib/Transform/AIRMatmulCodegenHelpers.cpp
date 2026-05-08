@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -31,28 +32,12 @@ namespace air {
 bool areEquivalentIndices(Value idx1, Value idx2) {
   if (idx1 == idx2)
     return true;
-
-  auto affineOp1 = idx1.getDefiningOp<affine::AffineApplyOp>();
-  auto affineOp2 = idx2.getDefiningOp<affine::AffineApplyOp>();
-  if (affineOp1 && affineOp2) {
-    if (affineOp1.getAffineMap() != affineOp2.getAffineMap())
-      return false;
-    if (affineOp1.getMapOperands().size() != affineOp2.getMapOperands().size())
-      return false;
-    for (auto [op1, op2] :
-         llvm::zip(affineOp1.getMapOperands(), affineOp2.getMapOperands())) {
-      if (op1 != op2)
-        return false;
-    }
-    return true;
-  }
-
-  auto constOp1 = idx1.getDefiningOp<arith::ConstantIndexOp>();
-  auto constOp2 = idx2.getDefiningOp<arith::ConstantIndexOp>();
-  if (constOp1 && constOp2)
-    return constOp1.value() == constOp2.value();
-
-  return false;
+  Operation *def1 = idx1.getDefiningOp();
+  Operation *def2 = idx2.getDefiningOp();
+  if (!def1 || !def2)
+    return false;
+  return OperationEquivalence::isEquivalentTo(
+      def1, def2, OperationEquivalence::IgnoreLocations);
 }
 
 bool areIdenticalReads(vector::TransferReadOp read1,
