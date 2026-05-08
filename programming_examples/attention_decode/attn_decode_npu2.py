@@ -569,22 +569,26 @@ def build_module(
                         yield_([])
                     # Inline-MLIR simple RMS norm: y = x * w * rsqrt(mean(x^2) + eps)
                     # x = x_raw_l1 [k], w = w_rms_l1 [k], y = l1_a_data [k]
+                    # Accumulator is f32 (bf16 saturates around ssq~256 with k=2048,
+                    # collapsing rstd; matches the C kernel's accfloat accumulator).
                     rms_vl = 16
                     rms_vec_type = VectorType.get([rms_vl], xrt_dtype_in)
                     f32_type = F32Type.get()
+                    rms_vec_f32_type = VectorType.get([rms_vl], f32_type)
                     rms_acc_l1_type = MemRefType.get(
-                        (rms_vl,), xrt_dtype_in, memory_space=l1_mem_space
+                        (rms_vl,), f32_type, memory_space=l1_mem_space
                     )
                     rms_acc_buf = AllocOp(rms_acc_l1_type, [], [])
                     rms_zero_const = arith.ConstantOp(xrt_dtype_in, 0.0)
+                    rms_zero_f32 = arith.ConstantOp(f32_type, 0.0)
                     rms_eps_const = arith.ConstantOp(xrt_dtype_in, 1e-5)
                     rms_inv_n_const_f32 = arith.ConstantOp(f32_type, 1.0 / float(k))
-                    linalg.fill(rms_zero_const, outs=[rms_acc_buf])
+                    linalg.fill(rms_zero_f32, outs=[rms_acc_buf])
                     rms_c0_idx = arith.ConstantOp.create_index(0)
                     rms_k_idx = arith.ConstantOp.create_index(k)
                     rms_vl_idx = arith.ConstantOp.create_index(rms_vl)
                     rms_id_map = AffineMapAttr.get(AffineMap.get_identity(1))
-                    # Phase 1: ssq = sum(x*x) via vector.fma chain
+                    # Phase 1: ssq = sum(x*x) via vector.fma chain in f32
                     for j in range_(rms_c0_idx, rms_k_idx, rms_vl_idx):
                         sub_x_rms = subview(x_raw_l1.result, [j], [rms_vl], [1])
                         v_x_rms = transfer_read(
@@ -595,15 +599,16 @@ def build_module(
                             rms_zero_const,
                             [True],
                         )
+                        v_x_f32 = arith.extf(rms_vec_f32_type, v_x_rms)
                         v_acc_rms = transfer_read(
-                            rms_vec_type,
+                            rms_vec_f32_type,
                             rms_acc_buf,
                             [rms_c0_idx],
                             rms_id_map,
-                            rms_zero_const,
+                            rms_zero_f32,
                             [True],
                         )
-                        v_acc_new = vector_fma(v_x_rms, v_x_rms, v_acc_rms)
+                        v_acc_new = vector_fma(v_x_f32, v_x_f32, v_acc_rms)
                         transfer_write(
                             None,
                             v_acc_new,
@@ -613,17 +618,16 @@ def build_module(
                             [True],
                         )
                         yield_([])
-                    # Reduce to scalar, compute rstd
+                    # Reduce to scalar, compute rstd (all f32)
                     v_final_rms = transfer_read(
-                        rms_vec_type,
+                        rms_vec_f32_type,
                         rms_acc_buf,
                         [rms_c0_idx],
                         rms_id_map,
-                        rms_zero_const,
+                        rms_zero_f32,
                         [True],
                     )
-                    ssq_bf = vector_reduction(xrt_dtype_in, "add", v_final_rms)
-                    ssq_f32 = arith.extf(f32_type, ssq_bf)
+                    ssq_f32 = vector_reduction(f32_type, "add", v_final_rms)
                     mean_f32 = arith.mulf(ssq_f32, rms_inv_n_const_f32)
                     eps_f32 = arith.extf(f32_type, rms_eps_const)
                     mean_eps_f32 = arith.addf(mean_f32, eps_f32)
@@ -1007,9 +1011,7 @@ def build_module(
                             k_chunks_f.append(arith.extf(a1_vec_f32_t, k_bf))
                         accs = [a1_zero_f32_v.result for _ in range(GROUP_SIZE)]
                         for g in range(GROUP_SIZE):
-                            sub_q = subview(
-                                q_l1_data.result, [g, 0], [1, n], [1, 1]
-                            )
+                            sub_q = subview(q_l1_data.result, [g, 0], [1, n], [1, 1])
                             for c in range(a1_n_chunks):
                                 q_bf = transfer_read(
                                     a1_vec_bf_t,
@@ -1020,9 +1022,7 @@ def build_module(
                                     [True],
                                 )
                                 q_f = arith.extf(a1_vec_f32_t, q_bf)
-                                accs[g] = vector_fma(
-                                    q_f, k_chunks_f[c], accs[g]
-                                )
+                                accs[g] = vector_fma(q_f, k_chunks_f[c], accs[g])
                         for g in range(GROUP_SIZE):
                             sc_f32 = vector_reduction(a1_f32, "add", accs[g])
                             sc_bf = arith.truncf(xrt_dtype_out, sc_f32)
@@ -1043,13 +1043,23 @@ def build_module(
                     # pos (exp(-99-max) ~ 0 contributes nothing to sum).
                     sm_vl = 16
                     sm_vec_type = VectorType.get([sm_vl], xrt_dtype_out)
-                    sm_acc_buf_type = MemRefType.get(
+                    f32_type_sm = F32Type.get()
+                    sm_vec_f32_type = VectorType.get([sm_vl], f32_type_sm)
+                    sm_max_buf_type = MemRefType.get(
                         (sm_vl,), xrt_dtype_out, memory_space=l1_mem_space
+                    )
+                    # sum_buf is f32: bf16 saturates around sum~256 with seq_len=2048,
+                    # collapsing the 1/sum normalizer; matches C softmax_group's
+                    # accfloat sum accumulator. max_buf can stay bf16 (max is
+                    # idempotent, no precision accumulation).
+                    sm_sum_buf_type = MemRefType.get(
+                        (sm_vl,), f32_type_sm, memory_space=l1_mem_space
                     )
                     sm_neg_big = arith.ConstantOp(xrt_dtype_out, -1e30)
                     sm_zero = arith.ConstantOp(xrt_dtype_out, 0.0)
-                    sm_one_const = arith.ConstantOp(xrt_dtype_out, 1.0)
-                    sm_one_vec = BroadcastOp(sm_vec_type, sm_one_const)
+                    sm_zero_f32 = arith.ConstantOp(f32_type_sm, 0.0)
+                    sm_one_f32 = arith.ConstantOp(f32_type_sm, 1.0)
+                    sm_one_vec_f32 = BroadcastOp(sm_vec_f32_type, sm_one_f32)
                     sm_c0 = arith.ConstantOp.create_index(0)
                     sm_seq_idx = arith.ConstantOp.create_index(seq_len)
                     sm_vl_idx = arith.ConstantOp.create_index(sm_vl)
@@ -1057,13 +1067,12 @@ def build_module(
                     sm_2d_to_1d_map = AffineMapAttr.get(
                         AffineMap.get(2, 0, [AffineDimExpr.get(1)])
                     )
-                    f32_type_sm = F32Type.get()
                     sm_group_size_idx = arith.ConstantOp.create_index(GROUP_SIZE)
                     sm_one_step_idx = arith.ConstantOp.create_index(1)
                     # Allocate the two per-row accumulator buffers ONCE,
                     # outside the g loop; reset each g iter via linalg.fill.
-                    sm_max_buf = AllocOp(sm_acc_buf_type, [], [])
-                    sm_sum_buf = AllocOp(sm_acc_buf_type, [], [])
+                    sm_max_buf = AllocOp(sm_max_buf_type, [], [])
+                    sm_sum_buf = AllocOp(sm_sum_buf_type, [], [])
                     for g in range_(sm_c0, sm_group_size_idx, sm_one_step_idx):
                         # Pass 1: max reduce. acc_buf[VL] = -inf, max-update each chunk
                         linalg.fill(sm_neg_big, outs=[sm_max_buf])
@@ -1113,8 +1122,8 @@ def build_module(
                         )
                         v_max_bcast = BroadcastOp(sm_vec_type, max_scalar)
 
-                        # Pass 2: exp(x-max), write back, accumulate sum
-                        linalg.fill(sm_zero, outs=[sm_sum_buf])
+                        # Pass 2: exp(x-max), write back, accumulate sum (in f32)
+                        linalg.fill(sm_zero_f32, outs=[sm_sum_buf])
                         for j in range_(sm_c0, sm_seq_idx, sm_vl_idx):
                             sub_inout = subview(
                                 softmax_l1_data.result,
@@ -1140,17 +1149,21 @@ def build_module(
                                 sm_2d_to_1d_map,
                                 [True],
                             )
+                            v_exp_f32 = arith.extf(sm_vec_f32_type, v_exp)
                             v_sum_cur = transfer_read(
-                                sm_vec_type,
+                                sm_vec_f32_type,
                                 sm_sum_buf,
                                 [sm_c0],
                                 sm_id_map,
-                                sm_zero,
+                                sm_zero_f32,
                                 [True],
                             )
-                            # vector.fma(1.0, v_exp, v_sum_cur) avoids the
-                            # mulf->addf rejection (CLAUDE.md known pitfall).
-                            v_sum_new = vector_fma(sm_one_vec.result, v_exp, v_sum_cur)
+                            # Plain addf: f32 vector.fma with a constant
+                            # operand isn't legalizable to aievec on AIE2P.
+                            # No mulf->addf chain here (the f32 input came
+                            # from extf, not a fresh mulf), so the bf16
+                            # mulf->addf rejection pitfall doesn't apply.
+                            v_sum_new = arith.addf(v_sum_cur, v_exp_f32)
                             transfer_write(
                                 None,
                                 v_sum_new,
@@ -1161,20 +1174,18 @@ def build_module(
                             )
                             yield_([])
                         v_sum_final = transfer_read(
-                            sm_vec_type,
+                            sm_vec_f32_type,
                             sm_sum_buf,
                             [sm_c0],
                             sm_id_map,
-                            sm_zero,
+                            sm_zero_f32,
                             [True],
                         )
-                        sum_scalar_bf = vector_reduction(
-                            xrt_dtype_out, "add", v_sum_final
+                        sum_scalar_f32 = vector_reduction(
+                            f32_type_sm, "add", v_sum_final
                         )
                         # Compute 1/sum in f32 (bf16 div not legalized)
-                        sum_scalar_f32 = arith.extf(f32_type_sm, sum_scalar_bf)
-                        one_f32 = arith.ConstantOp(f32_type_sm, 1.0)
-                        inv_sum_f32 = arith.divf(one_f32, sum_scalar_f32)
+                        inv_sum_f32 = arith.divf(sm_one_f32, sum_scalar_f32)
                         inv_sum_bf = arith.truncf(xrt_dtype_out, inv_sum_f32)
                         v_inv_sum = BroadcastOp(sm_vec_type, inv_sum_bf)
 
@@ -1224,8 +1235,7 @@ def build_module(
                     )
                     a2_c0 = arith.ConstantOp.create_index(0)
                     a2_g_idx = [
-                        arith.ConstantOp.create_index(g)
-                        for g in range(GROUP_SIZE)
+                        arith.ConstantOp.create_index(g) for g in range(GROUP_SIZE)
                     ]
                     a2_offs = [
                         arith.ConstantOp.create_index(c * a2_vl)
