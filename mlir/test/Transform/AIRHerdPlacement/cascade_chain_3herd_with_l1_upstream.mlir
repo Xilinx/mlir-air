@@ -22,8 +22,8 @@
 
 module {
   air.channel @upstream_to_a [1, 1] {broadcast_shape = [8 : index, 1 : index]}
-  air.channel @ab_q [8, 1] {channel_type = "cascade"}
-  air.channel @bc_q [8, 1] {channel_type = "cascade"}
+  air.channel @ab_q [8, 1] {channel_type = "npu_cascade"}
+  air.channel @bc_q [8, 1] {channel_type = "npu_cascade"}
 
   func.func @upstream_then_3_chain() {
     %c1 = arith.constant 1 : index

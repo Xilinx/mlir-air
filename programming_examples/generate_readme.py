@@ -176,6 +176,12 @@ EXAMPLES = [
     },
     {
         "category": "LLM Kernels",
+        "name": "Attention (Decode)",
+        "path": "attention_decode",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "LLM Kernels",
         "name": "SwiGLU",
         "path": "swiglu",
         "datatypes": "bf16",

@@ -34,8 +34,8 @@
 
 module {
   // Intra-device channels for L1-L2 communication (packet flow type)
-  air.channel @chan_intra_a [2, 1] {channel_type = "dma_packet"}
-  air.channel @chan_intra_b [2, 1] {channel_type = "dma_packet"}
+  air.channel @chan_intra_a [2, 1] {channel_type = "npu_dma_packet"}
+  air.channel @chan_intra_b [2, 1] {channel_type = "npu_dma_packet"}
 
   func.func @test_packet_flow_id_reset(%arg0: memref<128xbf16>) {
     %0 = air.launch async () in () args(%input=%arg0) : memref<128xbf16> attributes {id = 1 : i32} {

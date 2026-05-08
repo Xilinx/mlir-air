@@ -388,7 +388,7 @@ module {
 
 // CHECK: [[$SET0:#set[0-9]*]] = affine_set<()[s0] : (s0 - 3 == 0)>
 // CHECK: [[$SET1:#set[0-9]+]] = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
-// CHECK: air.channel @channel_0 [3] {channel_type = "cascade"}
+// CHECK: air.channel @channel_0 [3] {channel_type = "npu_cascade"}
 // CHECK-LABEL: scf_reduce
 // CHECK: air.herd @herd_0  tile (%[[arg0:.*]], %[[arg1:.*]]) in (%{{.*}}=%c4{{.*}}, %{{.*}}=%c1{{.*}})
 // CHECK: %[[alloc_4:.*]] = memref.alloc() : memref<32xi32, 2 : i32>

@@ -102,13 +102,13 @@ def build_module(M_SIZE, N_SIZE):
     add_3_func.attributes["link_with"] = StringAttr.get("extern_func.o")
 
     # AIR channels model hardware FIFOs for inter-stage communication
-    # Default channel_type is "dma_stream", representing data movement performed using DMA streaming interconnects
+    # Default channel_type is "npu_dma_stream", representing data movement performed using DMA streaming interconnects
     channel("L2ToL1Chan1", size=[NUM_COLUMNS, 1])  # L2 to L1, input A
     channel("L2ToL1Chan2", size=[NUM_COLUMNS, 1])  # L2 to L1, input B
     channel("L1ToL1Chan1", size=[NUM_COLUMNS, 1])  # Between herd_0 and herd_1
     channel(
-        "L1ToL1Chan2", size=[NUM_COLUMNS, 1], channel_type="cascade"
-    )  # Between herd_1 and herd_2; channel_type="cascade" means peer-to-peer communication between compute tiles
+        "L1ToL1Chan2", size=[NUM_COLUMNS, 1], channel_type="npu_cascade"
+    )  # Between herd_1 and herd_2; channel_type="npu_cascade" means peer-to-peer communication between compute tiles
     channel("L1ToL2Chan1", size=[NUM_COLUMNS, 1])  # Output from herd_2 to L2
 
     @FuncOp.from_py_func(memrefMxN, memrefMxN, memrefMxN)

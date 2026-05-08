@@ -1094,7 +1094,7 @@ func.func @channel_fold_reinterpret_cast_empty_access(%arg0: memref<*xbf16>) {
 
 // Test cascade channel type (should only fold memref.cast, not full composition)
 
-air.channel @channel_cascade [3] {channel_type = "cascade"}
+air.channel @channel_cascade [3] {channel_type = "npu_cascade"}
 
 // CHECK-LABEL: func.func @channel_cascade_fold_cast_only
 // CHECK-NOT: %[[CAST:.*]] = memref.cast %{{.*}} : memref<256x256xbf16> to memref<256x256xbf16, strided<[256, 1], offset: ?>>

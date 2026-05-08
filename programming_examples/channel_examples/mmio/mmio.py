@@ -1,7 +1,7 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""mmio_add: end-to-end demonstration of `channel_type="mmio"`.
+"""mmio_add: end-to-end demonstration of `channel_type="npu_mmio"`.
 
 A single AIE tile computes `out[i] = a[i] + c[i]` where:
   * `a` is a host input vector delivered to L1 via shim DMA;
@@ -12,7 +12,7 @@ A single AIE tile computes `out[i] = a[i] + c[i]` where:
 
 This is the AIR-Python equivalent of the hand-written
 `/tmp/mmio_bench/aie_q_n*_w*.mlir` benchmark variants. It exercises the
-new `channel_type="mmio"` lowering on real NPU2 hardware.
+new `channel_type="npu_mmio"` lowering on real NPU2 hardware.
 """
 
 import argparse
@@ -61,7 +61,7 @@ def build_module():
 
     # Channels: `mmio` for the constant, ordinary dma_stream for input/out.
     channel("a_in", size=[1])  # default: dma_stream
-    channel("c_mmio", size=[1], channel_type="mmio")
+    channel("c_mmio", size=[1], channel_type="npu_mmio")
     channel("o_out", size=[1])
 
     @FuncOp.from_py_func(l3_ty, l3_ty)

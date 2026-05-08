@@ -192,10 +192,33 @@ LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
 // Find the largest factor of 'num' which is not larger than 'max'.
 int findLargestFactor(int num, int max);
 
+// Largest factor of 'num' that is <= 'max' and a multiple of 'alignment'.
+// Returns 0 when no aligned factor exists, so the caller can emit a
+// diagnostic instead of silently producing misaligned IR. With alignment<=1
+// behaves as findLargestFactor.
+int findLargestAlignedFactor(int num, int max, int alignment);
+
+// Element-count alignment required so that an inner DMA wrap stays a
+// multiple of the AIE shim address granularity. Queries the parent
+// AIE::DeviceOp's target model when reachable (preferred); otherwise falls
+// back to 32 bits (the AIE2 / AIE2P value). Returns 1 when each element
+// already meets or exceeds the granularity (e.g. f32, i32); 2 for bf16/i16;
+// 4 for i8/ui8. 'op' is used both to find the DeviceOp ancestor and to
+// resolve the DataLayout via DataLayout::closest().
+int getDmaInnerElementAlignment(mlir::BaseMemRefType memrefTy,
+                                mlir::Operation *op);
+
 // Canonicalize wrap and stride lists, by removing redundant dimensions.
-LogicalResult canonicalizeWrapAndStrideList(
-    OpBuilder &builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
-    SmallVector<Value> &strides, int memref_volume, int maxSize = -1);
+// 'innerAlignment' constrains the contiguous innermost dim (stride==1) when
+// it must be split: the new inner wrap is forced to be a multiple of
+// 'innerAlignment' elements (e.g. 2 for bf16 on a 4-byte shim BD). Pass 1
+// (the default) when no extra constraint applies.
+LogicalResult canonicalizeWrapAndStrideList(OpBuilder &builder,
+                                            SmallVector<Value> &offsets,
+                                            SmallVector<Value> &sizes,
+                                            SmallVector<Value> &strides,
+                                            int memref_volume, int maxSize = -1,
+                                            int innerAlignment = 1);
 
 // If wrap-and-stride lists are empty, populate them with default data access
 // layout (contiguous, row-major).

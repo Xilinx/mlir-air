@@ -18,8 +18,8 @@
 // CHECK: air.herd @consumer   {{.*}} attributes {{{.*}}x_loc = 0 : i64, y_loc = 2 : i64}
 
 module {
-  air.channel @ab [8, 1] {channel_type = "cascade"}
-  air.channel @bc [8, 1] {channel_type = "cascade"}
+  air.channel @ab [8, 1] {channel_type = "npu_cascade"}
+  air.channel @bc [8, 1] {channel_type = "npu_cascade"}
 
   func.func @three_herd_cascade_chain() {
     %c1 = arith.constant 1 : index

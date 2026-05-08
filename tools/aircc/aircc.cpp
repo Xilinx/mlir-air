@@ -228,6 +228,18 @@ static cl::opt<bool> useLockRaceConditionFix(
     cl::desc("Enable fix for lock race condition (inserts extra dummy BDs)"),
     cl::init(false), cl::cat(airCompilerOptions));
 
+enum PlacedIrVerifyMode { PIV_off, PIV_warn, PIV_error };
+
+static cl::opt<PlacedIrVerifyMode> placedIrVerifiers(
+    "placed-ir-verifiers",
+    cl::desc(
+        "Run AIR verifier passes on the placed IR before lowering to AIE."),
+    cl::values(clEnumValN(PIV_off, "off", "Skip the verifier passes."),
+               clEnumValN(PIV_warn, "warn", "Run; warn on undecidable cases."),
+               clEnumValN(PIV_error, "error",
+                          "Run; error on undecidable cases.")),
+    cl::init(PIV_error), cl::cat(airCompilerOptions));
+
 enum OutputFormatKind { OF_xclbin, OF_txn, OF_elf, OF_none };
 
 static cl::opt<OutputFormatKind> outputFormat(
@@ -1029,6 +1041,15 @@ static LogicalResult runAieCompilation() {
                              "pad-location=memtile})",
                              placedModule.get())))
     return failure();
+
+  // Run AIR verifier passes on the placed IR, gated by --placed-ir-verifiers.
+  if (placedIrVerifiers != PIV_off) {
+    std::string strict = (placedIrVerifiers == PIV_error) ? "true" : "false";
+    std::string pipeline =
+        "builtin.module(air-verify-hierarchy-locality{strict=" + strict + "})";
+    if (failed(runPassPipeline(pipeline, placedModule.get())))
+      return failure();
+  }
 
   // --- AIR to AIE conversion ---
   std::string airToAiePipeline;

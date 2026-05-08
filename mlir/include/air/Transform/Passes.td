@@ -1168,6 +1168,52 @@ def AIRShrinkMemrefSizesByAccess: Pass<"air-shrink-memref-sizes-by-access", "fun
   }];
 }
 
+def AIRVerifyHierarchyLocality :
+    Pass<"air-verify-hierarchy-locality", "ModuleOp"> {
+  let summary = "Verify locality of kernel operands at the hierarchy's "
+                "matching memory level.";
+  let constructor =
+      "xilinx::air::createAIRVerifyHierarchyLocalityPass()";
+  let description = [{
+    Statically detect data races on memrefs that an air.launch /
+    air.segment / air.herd passes to itself as kernel operands.
+
+    Each hierarchy op iterates over an N-dimensional grid (its IVs) and
+    has a "natural" memory level: air.herd corresponds to L1 (per-PE
+    scratchpad), air.segment to L2 (segment-shared), air.launch to L3
+    (host/system). When an operand's memref memory space matches the
+    hierarchy's natural level, every distinct iteration instance must
+    use a *different* memory region — otherwise iterations race on the
+    same buffer.
+
+    For each such operand the pass requires one of:
+
+      (R1) The defining op is inside the hierarchy body. Region cloning
+           during outlining gives each iteration instance its own copy.
+
+      (R2) The operand is defined outside, but its access regions over
+           the iteration space are statically provable as pairwise
+           disjoint (i.e., distinct iv tuples touch disjoint memory).
+
+    Operands at a memory level *different* from the hierarchy's natural
+    level (e.g., an L3 buffer passed into a herd as a fetch source) are
+    not subject to this rule and the pass stays silent on them.
+
+    The pass is read-only: on a violation it emits an op-level
+    diagnostic and signals pass failure; it never mutates IR.
+
+    `strict` controls behavior when the analysis can't decide
+    (e.g., dynamic sizes, opaque func.call): true reports an error,
+    false reports a warning and continues. Definitive races are always
+    reported as errors regardless of `strict`.
+  }];
+  let options = [
+    Option<"strict", "strict", "bool", /*default=*/"true",
+           "When access analysis is inconclusive, fail (true) "
+           "or warn-and-continue (false).">
+  ];
+}
+
 def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "ModuleOp"> {
   let summary = "Canonicalize the dependency graph";
   let constructor = "xilinx::air::createAIRDependencyCanonicalizePass()";

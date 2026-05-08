@@ -5,10 +5,10 @@ module {
   func.func private @add_3_bf16(memref<64x64xbf16, 2 : i32>, memref<64x64xbf16, 2 : i32>) attributes {link_with = "extern_func.o", llvm.emit_c_interface}
 
   // AIR channels model hardware FIFOs for inter-stage communication
-  air.channel @L2ToL1Chan1 [4, 1]         // L2 to L1, input A; default channel_type is "dma_stream", representing data movement performed using DMA streaming interconnects
+  air.channel @L2ToL1Chan1 [4, 1]         // L2 to L1, input A; default channel_type is "npu_dma_stream", representing data movement performed using DMA streaming interconnects
   air.channel @L2ToL1Chan2 [4, 1]         // L2 to L1, input B
   air.channel @L1ToL1Chan1 [4, 1]         // Between herd_0 and herd_1
-  air.channel @L1ToL1Chan2 [4, 1] {channel_type = "cascade"} // Between herd_1 and herd_2; channel_type="cascade" means this channel is expected to map to cascade connections (peer-to-peer communication between compute tiles)
+  air.channel @L1ToL1Chan2 [4, 1] {channel_type = "npu_cascade"} // Between herd_1 and herd_2; channel_type="npu_cascade" means this channel is expected to map to cascade connections (peer-to-peer communication between compute tiles)
   air.channel @L1ToL2Chan1 [4, 1]         // Output from herd_2 to L2
 
   // Top-level function: runtime dispatch over a 4x1 iteration space (not necessarily hardware parallelism)

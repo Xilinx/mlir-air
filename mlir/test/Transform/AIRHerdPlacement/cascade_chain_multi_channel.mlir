@@ -19,12 +19,12 @@
 // CHECK: air.herd @consumer   {{.*}} attributes {{{.*}}x_loc = 0 : i64, y_loc = 2 : i64}
 
 module {
-  air.channel @ab_q [8, 1] {channel_type = "cascade"}
-  air.channel @ab_k [8, 1] {channel_type = "cascade"}
-  air.channel @ab_v [8, 1] {channel_type = "cascade"}
-  air.channel @bc_q [8, 1] {channel_type = "cascade"}
-  air.channel @bc_k [8, 1] {channel_type = "cascade"}
-  air.channel @bc_v [8, 1] {channel_type = "cascade"}
+  air.channel @ab_q [8, 1] {channel_type = "npu_cascade"}
+  air.channel @ab_k [8, 1] {channel_type = "npu_cascade"}
+  air.channel @ab_v [8, 1] {channel_type = "npu_cascade"}
+  air.channel @bc_q [8, 1] {channel_type = "npu_cascade"}
+  air.channel @bc_k [8, 1] {channel_type = "npu_cascade"}
+  air.channel @bc_v [8, 1] {channel_type = "npu_cascade"}
 
   func.func @three_herd_multi_channel() {
     %c1 = arith.constant 1 : index

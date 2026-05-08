@@ -304,6 +304,30 @@ def parse_requirements(filename):
         ]
 
 
+def get_extras_require():
+    # All extras (a.k.a. optional-dependencies) live here because
+    # pyproject.toml lists `optional-dependencies` as dynamic — required
+    # so we can inject the build-time mlir_aie pin into the [aie] extra.
+    extras = {
+        # Mirrors utils/requirements_dev.txt; keep in sync.
+        "dev": ["cmake>=3.30", "pybind11", "nanobind>=2.9", "lit", "psutil"],
+    }
+    # AIR supports multiple backends (AIE, GPU, VCK5000), so backend
+    # dependencies live under per-backend extras rather than as hard
+    # `install_requires`. `pip install mlir_air[aie]` pulls the matching
+    # mlir_aie + Peano; users targeting other backends skip the extra.
+    mlir_aie_version = os.getenv("MLIR_AIE_VERSION", "")
+    if mlir_aie_version:
+        no_rtti_dot = "" if check_env("ENABLE_RTTI", 1) else ".no.rtti"
+        # mlir_aie is pinned to the version this AIR wheel was built and
+        # tested against. llvm-aie (Peano) tracks nightly — no pin.
+        extras["aie"] = [
+            f"mlir_aie=={mlir_aie_version}{no_rtti_dot}",
+            "llvm-aie",
+        ]
+    return extras
+
+
 setup(
     version=get_version(),
     license="MIT",
@@ -318,4 +342,5 @@ setup(
     packages=find_packages(exclude=["wheelhouse", "mlir-air"]),
     python_requires=">=3.10",
     install_requires=parse_requirements(Path(__file__).parent / "requirements.txt"),
+    extras_require=get_extras_require(),
 )

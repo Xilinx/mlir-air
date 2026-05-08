@@ -1179,40 +1179,7 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   return false;
 }
 
-// Find the largest factor of 'num' which is not larger than 'max'. Ref:
-// https://github.com/nod-ai/iree-amd-aie/blob/main/compiler/plugins/target/AMD-AIE/iree-amd-aie/Transforms/AMDAIEUtils.cpp#L334
-int findLargestFactor(int num, int max) {
-  // No factors less than or equal to 0 exist
-  if (max <= 0)
-    return 0;
-
-  // Do O(1) instead of O(sqrt(num)) computation for this common case.
-  if (num <= max) {
-    return num;
-  }
-
-  int largestLowFactor = 1;
-  for (int lowFactor = 2; lowFactor <= max; ++lowFactor) {
-    const int highFactor = num / lowFactor;
-
-    // This early exit is what makes this O(sqrt(num)) instead of O(num).
-    if (highFactor < lowFactor)
-      return largestLowFactor;
-
-    const bool areActuallyFactors = num % lowFactor == 0;
-    if (areActuallyFactors) {
-      // We're certain that here lowFactor <= highFactor, and highFactor is
-      // descending in this loop. So we can return immediately if highFactor
-      // is good.
-      if (highFactor <= max)
-        return highFactor;
-      largestLowFactor = lowFactor;
-    }
-  }
-  return largestLowFactor;
-}
-
-void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
+LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto loc = memcpy_op->getLoc();
   auto ctx = memcpy_op->getContext();
   auto oper_begin = memcpy_op.getOperands().begin();
@@ -1221,13 +1188,30 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   SmallVector<Value> strides(oper_begin + 12, oper_begin + 16);
   OpBuilder builder(memcpy_op);
 
+  auto memrefTy =
+      llvm::dyn_cast<BaseMemRefType>(memcpy_op.getMemref().getType());
+  int innerAlignment =
+      memrefTy ? air::getDmaInnerElementAlignment(memrefTy, memcpy_op) : 1;
+
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
     if (const_wrap >= AIE2_WRAP_UPPER_BOUNDS[i]) {
-      // Found dimension with illegal wrap. Tiling. (Prefers smaller outer
-      // wrap values, as long as stride fits)
-      int a_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1);
+      // Found dimension with illegal wrap. Prefers smaller outer wrap as
+      // long as stride fits. For stride==1, force the inner wrap to a
+      // multiple of innerAlignment elements so its byte size stays aligned
+      // to the shim address granularity (otherwise aie.dma_bd rejects it).
+      int alignment = (const_stride == 1) ? innerAlignment : 1;
+      int a_wrap = air::findLargestAlignedFactor(
+          const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1, alignment);
+      if (a_wrap == 0) {
+        return memcpy_op.emitOpError()
+               << "cannot tile dim " << i << " of size " << const_wrap
+               << " into shim-legal chunks: no factor in [" << alignment << ", "
+               << (AIE2_WRAP_UPPER_BOUNDS[i] - 1) << "] is a multiple of "
+               << alignment
+               << " elements. Reshape the transfer or pad the inner dimension.";
+      }
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
       int new_a_stride = const_stride * a_wrap;
       auto volume = air::getTensorVolume(
@@ -1357,9 +1341,10 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   }
 
   memcpy_op.erase();
+  return success();
 }
 
-void enforceAIE2WrapLimit(ModuleOp module) {
+LogicalResult enforceAIE2WrapLimit(ModuleOp module) {
   // Identify airrt.dma_memcpy_nd ops that violate the AIE2 wrap size
   // constraint.
   SmallVector<airrt::DmaMemcpyNdOp> target_airrt_dmas;
@@ -1374,7 +1359,9 @@ void enforceAIE2WrapLimit(ModuleOp module) {
 
   // Enforce the AIE2 wrap limit by tiling that dimension.
   for (auto memcpy_op : target_airrt_dmas)
-    tileIllegalWrapDim(memcpy_op);
+    if (failed(tileIllegalWrapDim(memcpy_op)))
+      return failure();
+  return success();
 }
 
 struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
@@ -1455,7 +1442,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     generateNpuWaitFromAIRRtWaitAll(module);
 
     // Enforce AIE2 hardware constraints.
-    enforceAIE2WrapLimit(module);
+    if (failed(enforceAIE2WrapLimit(module))) {
+      signalPassFailure();
+      return;
+    }
 
     // Simplify arith ops (from airrt)
     RewritePatternSet canoPatterns_3(ctx);

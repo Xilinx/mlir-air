@@ -1596,14 +1596,14 @@ module {
 #set5 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 - 2 == 0)>
 module {
   air.channel @L3ToL2Chan1 [1, 4]
-  air.channel @L2ToL1Chan1_0 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_packet"}
-  air.channel @L2ToL1Chan1_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_packet"}
-  air.channel @L2ToL1Chan1_2 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_packet"}
-  air.channel @L2ToL1Chan1_3 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_packet"}
-  air.channel @L2ToL1Chan2_0 [1, 1] {broadcast_shape = [4, 1], channel_type = "dma_packet"}
-  air.channel @L2ToL1Chan2_1 [1, 1] {broadcast_shape = [4, 1], channel_type = "dma_packet"}
-  air.channel @L2ToL1Chan2_2 [1, 1] {broadcast_shape = [4, 1], channel_type = "dma_packet"}
-  air.channel @L2ToL1Chan2_3 [1, 1] {broadcast_shape = [4, 1], channel_type = "dma_packet"}
+  air.channel @L2ToL1Chan1_0 [1, 1] {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+  air.channel @L2ToL1Chan1_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+  air.channel @L2ToL1Chan1_2 [1, 1] {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+  air.channel @L2ToL1Chan1_3 [1, 1] {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+  air.channel @L2ToL1Chan2_0 [1, 1] {broadcast_shape = [4, 1], channel_type = "npu_dma_packet"}
+  air.channel @L2ToL1Chan2_1 [1, 1] {broadcast_shape = [4, 1], channel_type = "npu_dma_packet"}
+  air.channel @L2ToL1Chan2_2 [1, 1] {broadcast_shape = [4, 1], channel_type = "npu_dma_packet"}
+  air.channel @L2ToL1Chan2_3 [1, 1] {broadcast_shape = [4, 1], channel_type = "npu_dma_packet"}
   func.func @func20(%arg0: memref<128x64xbf16>, %arg1: memref<64x3072xbf16>, %arg2: memref<3072x64xbf16>, %arg3: memref<128x3072xbf16>, %arg4: memref<128x64xbf16>) {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%arg5, %arg6) in (%arg7=%c1, %arg8=%c1) args(%arg9=%arg0, %arg10=%arg1) : memref<128x64xbf16>, memref<64x3072xbf16> attributes {id = 1 : i32} {
@@ -1781,7 +1781,7 @@ module {
 // RACECONDFIX: @func21
 
 module {
-  air.channel @L1ToL3Pkt [1, 1] {channel_type = "dma_packet"}
+  air.channel @L1ToL3Pkt [1, 1] {channel_type = "npu_dma_packet"}
   func.func @func21(%arg0: memref<64xbf16>) {
     %c1 = arith.constant 1 : index
     %c0 = arith.constant 0 : index

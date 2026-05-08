@@ -92,6 +92,7 @@ jobs:
     outputs:
       AIR_PROJECT_COMMIT: ${{ steps.get_commit.outputs.AIR_PROJECT_COMMIT }}
       DATETIME: ${{ steps.get_commit.outputs.DATETIME }}
+      MLIR_AIE_VERSION: ${{ steps.get_commit.outputs.MLIR_AIE_VERSION }}
     steps:
       - uses: actions/checkout@v4
 
@@ -107,6 +108,11 @@ jobs:
           echo "AIR_PROJECT_COMMIT=${AIR_PROJECT_COMMIT}" | tee -a "$GITHUB_OUTPUT"
           DATETIME=$(date +"%Y%m%d%H")
           echo "DATETIME=${DATETIME}" | tee -a "$GITHUB_OUTPUT"
+          # The pinned mlir-aie wheel version that this AIR commit was built and
+          # tested against. Surfaced into the release body so users install the
+          # matching mlir-aie wheel rather than guessing latest.
+          MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
+          echo "MLIR_AIE_VERSION=${MLIR_AIE_VERSION}" | tee -a "$GITHUB_OUTPUT"
 
   build-repo:
     name: Build and upload mlir_air wheels
@@ -220,7 +226,7 @@ jobs:
             find mlir$NO_RTTI_UNDERSCORE -exec touch -a -m -t 201108231405.14 {} \;
             export MLIR_INSTALL_ABS_PATH=$PWD/mlir$NO_RTTI_UNDERSCORE
 
-            MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
+            export MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
             pip -q download --no-deps --platform manylinux_2_35_x86_64 "mlir_aie==${MLIR_AIE_VERSION}${NO_RTTI_DOT}" \
               -f "$MLIR_AIE_WHEELS_URL"
             unzip -q mlir_aie*.whl
@@ -263,6 +269,40 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           makeLatest: ${{ github.event_name == 'push' }}
+          # Skip body on versioned tag pushes (v*.*.*) so those releases can carry
+          # human-written or auto-generated notes; only populate body for the
+          # rolling latest-* tags.
+          omitBody: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          body: |
+            ## MLIR-AIR Wheels (${{ matrix.ENABLE_RTTI == 'ON' && 'RTTI' || 'no-RTTI' }})
+
+            **Latest commit:** `${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}`
+            **Pinned mlir_aie:** `${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}${{ matrix.ENABLE_RTTI == 'ON' && '' || '.no.rtti' }}`
+            **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.12)
+
+            ### Installation
+
+            AIR supports multiple backends (AIE, GPU, VCK5000); backend dependencies are exposed as pip extras. For the AIE backend, the `[aie]` extra pulls the matching pinned `mlir_aie` and `llvm-aie` from the additional `--find-links` pages:
+
+            ```bash
+            pip install 'mlir_air[aie]' \
+              -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }} \
+              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }} \
+              -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+            ```
+
+            Drop the `[aie]` extra to install AIR core only (e.g. when bringing your own backend).
+
+            ### RTTI / no-RTTI Variants
+
+            Both RTTI-enabled and RTTI-disabled wheels are released for downstream integration convenience:
+
+            - [`latest-air-wheels`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels) — RTTI **on**. Default; use this for standalone development.
+            - [`latest-air-wheels-no-rtti`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels-no-rtti) — RTTI **off**. For integrating MLIR-AIR into a downstream project whose LLVM is built with `-DLLVM_ENABLE_RTTI=OFF`.
+
+            When mixing wheels into a downstream build, all three of `mlir`, `mlir_aie`, and `mlir_air` must agree on RTTI.
+
+            Full setup guide: [docs/buildingRyzenLin.md](https://github.com/Xilinx/mlir-air/blob/main/docs/buildingRyzenLin.md#install-prebuilt-wheels-recommended)
 
   build-windows:
     name: Build and upload mlir_air wheels (Windows)
@@ -379,6 +419,7 @@ jobs:
 
           export AIR_PROJECT_COMMIT=${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}
           export DATETIME=${{ needs.get-air-project-commit.outputs.DATETIME }}
+          export MLIR_AIE_VERSION=${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}
 
           export WHEELHOUSE_DIR="${ROOT}/wheelhouse"
           mkdir -p "$WHEELHOUSE_DIR"
@@ -419,3 +460,37 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           makeLatest: ${{ github.event_name == 'push' }}
+          # Skip body on versioned tag pushes (v*.*.*) so those releases can carry
+          # human-written or auto-generated notes; only populate body for the
+          # rolling latest-* tags.
+          omitBody: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          body: |
+            ## MLIR-AIR Wheels (${{ matrix.ENABLE_RTTI == 'ON' && 'RTTI' || 'no-RTTI' }})
+
+            **Latest commit:** `${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}`
+            **Pinned mlir_aie:** `${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}${{ matrix.ENABLE_RTTI == 'ON' && '' || '.no.rtti' }}`
+            **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.12)
+
+            ### Installation
+
+            AIR supports multiple backends (AIE, GPU, VCK5000); backend dependencies are exposed as pip extras. For the AIE backend, the `[aie]` extra pulls the matching pinned `mlir_aie` and `llvm-aie` from the additional `--find-links` pages:
+
+            ```bash
+            pip install 'mlir_air[aie]' \
+              -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }} \
+              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }} \
+              -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+            ```
+
+            Drop the `[aie]` extra to install AIR core only (e.g. when bringing your own backend).
+
+            ### RTTI / no-RTTI Variants
+
+            Both RTTI-enabled and RTTI-disabled wheels are released for downstream integration convenience:
+
+            - [`latest-air-wheels`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels) — RTTI **on**. Default; use this for standalone development.
+            - [`latest-air-wheels-no-rtti`](https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels-no-rtti) — RTTI **off**. For integrating MLIR-AIR into a downstream project whose LLVM is built with `-DLLVM_ENABLE_RTTI=OFF`.
+
+            When mixing wheels into a downstream build, all three of `mlir`, `mlir_aie`, and `mlir_air` must agree on RTTI.
+
+            Full setup guide: [docs/buildingRyzenLin.md](https://github.com/Xilinx/mlir-air/blob/main/docs/buildingRyzenLin.md#install-prebuilt-wheels-recommended)

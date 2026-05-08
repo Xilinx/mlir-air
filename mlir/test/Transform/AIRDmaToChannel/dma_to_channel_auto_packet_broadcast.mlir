@@ -22,7 +22,7 @@
 // CHECK:       air.channel @channel_2 [1, 1] {broadcast_shape = [8, 1]}
 // CHECK:       air.channel @channel_3 [1, 1] {broadcast_shape = [8, 1]}
 // CHECK:       air.channel @channel_4 [8, 4]
-// CHECK-NOT:   channel_type = "dma_packet"
+// CHECK-NOT:   channel_type = "npu_dma_packet"
 // CHECK-LABEL: func.func @broadcast_4x8_no_upgrade
 
 #set_ty0 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 7 >= 0, s1 == 0)>
@@ -89,12 +89,12 @@ module {
 // Each broadcast channel has broadcast_shape=[2,1]. Pressure:
 // ceil(6/2) = 3 > 2 (per-column limit). All 6 inputs upgraded to dma_packet.
 
-// CHECK:       air.channel @channel_0 {{.*}} {broadcast_shape = [2, 1], channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_1 {{.*}} {broadcast_shape = [2, 1], channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_2 {{.*}} {broadcast_shape = [2, 1], channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_3 {{.*}} {broadcast_shape = [2, 1], channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_4 {{.*}} {broadcast_shape = [2, 1], channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_5 {{.*}} {broadcast_shape = [2, 1], channel_type = "dma_packet"}
+// CHECK:       air.channel @channel_0 {{.*}} {broadcast_shape = [2, 1], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_1 {{.*}} {broadcast_shape = [2, 1], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_2 {{.*}} {broadcast_shape = [2, 1], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_3 {{.*}} {broadcast_shape = [2, 1], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_4 {{.*}} {broadcast_shape = [2, 1], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_5 {{.*}} {broadcast_shape = [2, 1], channel_type = "npu_dma_packet"}
 // CHECK-LABEL: func.func @broadcast_6x2_upgrade
 
 #set2_ty0 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
@@ -179,11 +179,11 @@ module {
 // 2 non-broadcast inputs + 3 broadcast inputs spanning 4 columns.
 // Pressure: 2 + ceil(3/4) = 2 + 1 = 3 > 2. All 5 inputs upgraded.
 
-// CHECK:       air.channel @channel_0 {{.*}} {channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_1 {{.*}} {channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_2 {{.*}} {broadcast_shape = [4, 1], channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_3 {{.*}} {broadcast_shape = [4, 1], channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_4 {{.*}} {broadcast_shape = [4, 1], channel_type = "dma_packet"}
+// CHECK:       air.channel @channel_0 {{.*}} {channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_1 {{.*}} {channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_2 {{.*}} {broadcast_shape = [4, 1], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_3 {{.*}} {broadcast_shape = [4, 1], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_4 {{.*}} {broadcast_shape = [4, 1], channel_type = "npu_dma_packet"}
 // CHECK-LABEL: func.func @mixed_broadcast_upgrade
 
 #set3_bcast = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 == 0)>
@@ -262,7 +262,7 @@ module {
 // CHECK:       air.channel @channel_2 [1, 1] {broadcast_shape = [2, 1]}
 // CHECK:       air.channel @channel_3 [1, 1] {broadcast_shape = [2, 1]}
 // CHECK:       air.channel @channel_4 [8, 4]
-// CHECK-NOT:   channel_type = "dma_packet"
+// CHECK-NOT:   channel_type = "npu_dma_packet"
 // CHECK-LABEL: func.func @mixed_spans_no_upgrade
 
 #set4_wide0 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 7 >= 0, s1 == 0)>
@@ -331,9 +331,9 @@ module {
 // 3 > 2 -> upgrade. Tests that row-only broadcasts aren't incorrectly
 // discounted.
 
-// CHECK:       air.channel @channel_0 {{.*}} {broadcast_shape = [1, 4], channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_1 {{.*}} {broadcast_shape = [1, 4], channel_type = "dma_packet"}
-// CHECK:       air.channel @channel_2 {{.*}} {broadcast_shape = [1, 4], channel_type = "dma_packet"}
+// CHECK:       air.channel @channel_0 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_1 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_2 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
 // CHECK-LABEL: func.func @row_broadcast_upgrade
 
 #set5_row0 = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>

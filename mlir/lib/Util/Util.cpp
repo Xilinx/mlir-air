@@ -9,6 +9,11 @@
 #include "air/Util/Util.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#if AIR_ENABLE_AIE
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIE/IR/AIETargetModel.h"
+#endif
+
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -21,6 +26,7 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
@@ -522,7 +528,7 @@ FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {
   auto chanIfOp =
       dyn_cast_if_present<air::ChannelInterface>(memcpyIfOp.getOperation());
   if (!chanIfOp)
-    return StringRef("dma_stream");
+    return StringRef("npu_dma_stream");
   auto chanOp = getChannelDeclarationThroughSymbol(chanIfOp);
   if (chanOp) {
     return chanOp.getChannelType();
@@ -1126,10 +1132,52 @@ int air::findLargestFactor(int num, int max) {
   return largestLowFactor;
 }
 
+// Fallback shim address-gen granularity when we can't reach an AIE::DeviceOp
+// to query the target model. Matches AIETargetModel::getAddressGenGranularity
+// for AIE2 and AIE2P. The dynamic lookup below is preferred when available so
+// future devices with a different value just work.
+static constexpr unsigned kAIEShimAddrGenBitsFallback = 32;
+
+int air::getDmaInnerElementAlignment(BaseMemRefType memrefTy, Operation *op) {
+  if (!memrefTy || !op)
+    return 1;
+  DataLayout dl = DataLayout::closest(op);
+  unsigned elemBits = dl.getTypeSizeInBits(memrefTy.getElementType());
+  if (elemBits == 0)
+    return 1;
+  unsigned addrGenBits = kAIEShimAddrGenBitsFallback;
+#if AIR_ENABLE_AIE
+  if (auto dev = op->getParentOfType<AIE::DeviceOp>())
+    addrGenBits = dev.getTargetModel().getAddressGenGranularity();
+#endif
+  if (elemBits >= addrGenBits)
+    return 1;
+  return addrGenBits / elemBits;
+}
+
+// Largest factor of 'num' that is <= 'max' and a multiple of 'alignment'.
+// See header for rationale.
+int air::findLargestAlignedFactor(int num, int max, int alignment) {
+  if (alignment <= 1)
+    return findLargestFactor(num, max);
+  if (max < alignment)
+    return 0;
+  int alignedMax = (max / alignment) * alignment;
+  for (int candidate = alignedMax; candidate >= alignment;
+       candidate -= alignment) {
+    if (num % candidate == 0)
+      return candidate;
+  }
+  return 0;
+}
+
 // Canonicalize wrap and stride lists by removing redundant dimensions.
-LogicalResult air::canonicalizeWrapAndStrideList(
-    OpBuilder &builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
-    SmallVector<Value> &strides, int memref_volume, int maxSize) {
+LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
+                                                 SmallVector<Value> &offsets,
+                                                 SmallVector<Value> &sizes,
+                                                 SmallVector<Value> &strides,
+                                                 int memref_volume, int maxSize,
+                                                 int innerAlignment) {
   // AIE2 hardware constraints. TODO: import these info from target model.
   const int AIE2_STRIDE_UPPER_BOUND = 1048576;
   bool listsHaveChanged = false;
@@ -1159,8 +1207,20 @@ LogicalResult air::canonicalizeWrapAndStrideList(
     if (const_wrap <= maxSize)
       continue;
     // Found dimension with illegal wrap. Tiling. (Prefers smaller outer wrap
-    // values, as long as stride fits)
-    int a_wrap = findLargestFactor(const_wrap, maxSize);
+    // values, as long as stride fits.) For the contiguous innermost dim
+    // (stride==1), require the new inner wrap to be a multiple of
+    // innerAlignment elements so the resulting d0 byte size stays aligned to
+    // the shim address granularity (e.g. 4 B for bf16 / i8). Falls back to
+    // findLargestFactor when innerAlignment <= 1 or stride != 1.
+    int a_wrap =
+        (const_stride == 1)
+            ? findLargestAlignedFactor(const_wrap, maxSize, innerAlignment)
+            : findLargestFactor(const_wrap, maxSize);
+    // No aligned factor exists. Leave the dim oversized and let the
+    // downstream shim lowering (tileIllegalWrapDim in AIRRtToNpuPass) emit
+    // the diagnostic with full op context.
+    if (a_wrap == 0)
+      continue;
     int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
     int new_a_stride = const_stride * a_wrap;
     if (memref_volume != 1)

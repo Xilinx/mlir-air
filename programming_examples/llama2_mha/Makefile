@@ -44,5 +44,6 @@ compile-kernel:
 		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
 		exit 1; \
 	fi
+
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
