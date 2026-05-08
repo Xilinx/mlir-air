@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRMatmulPackAndTranspose.h"
+#include "air/Transform/AIRMatmulBufferizationPasses.h"
 #include "air/Util/MatmulCodegenConfig.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -196,6 +197,16 @@ public:
     if (failed(runOnMatmul(target, packSizes, lhsO, lhsI, rhsO, rhsI, accO,
                            accI, clPackedMatmulMarker)))
       return signalPassFailure();
+
+    // Optional tail step: bufferize the output linalg.pack into an L1 (or
+    // configurable memory-space) allocation. Replaces the former standalone
+    // `air-matmul-bufferize-l1-output` pass.
+    if (clDoBufferizeL1Output) {
+      IRRewriter rewriter(&getContext());
+      if (failed(runBufferizeL1OutputImpl(func, clBufferizeL1OutputMemorySpace,
+                                          clPackedMatmulMarker, rewriter)))
+        return signalPassFailure();
+    }
   }
 };
 

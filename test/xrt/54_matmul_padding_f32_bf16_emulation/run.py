@@ -192,13 +192,12 @@ with air.ir.Context() as ctx, Location.unknown():
         epM = max(4 * 8, LT_M // HERD_M)
         epN = max(1, LT_N // HERD_N)
         phases = [
-            f"func.func(air-matmul-tile-l3-to-l2-copies{{k-l2-tile={l2_k}}})",
-            "func.func(air-matmul-bufferize-output-l2)",
+            f"func.func(air-matmul-bufferize-output-l2{{do-tile-l3-to-l2-copies=true k-l2-tile={l2_k}}})",
             "func.func(air-matmul-pack-and-transpose{pack-sizes=8,8,8 "
             "lhs-outer-perm=1,0 lhs-inner-perm=0,1 "
             "rhs-outer-perm=1,0 rhs-inner-perm=1,0 "
-            "acc-outer-perm=1,0 acc-inner-perm=0,1})",
-            "func.func(air-matmul-bufferize-l1-output)",
+            "acc-outer-perm=1,0 acc-inner-perm=0,1 "
+            "do-bufferize-l1-output=true})",
             f"func.func(air-matmul-tile-k-and-fuse-packs{{k-tile-factor={k_factor}}})",
             "func.func(air-matmul-tile-cores{tile-sizes=8,4,0})",
             "func.func(canonicalize,cse)",
@@ -211,8 +210,8 @@ with air.ir.Context() as ctx, Location.unknown():
             "unknown-type-conversion=identity-layout-map "
             "function-boundary-type-conversion=identity-layout-map}",
             "func.func(canonicalize,cse,canonicalize)",
-            "func.func(air-matmul-post-bufferize-cleanup)",
             "func.func(air-matmul-tile-for-vectorize{"
+            "do-post-bufferize-cleanup-first=true "
             "matmul-tile-sizes=2,2,1,0,0,0 "
             "matmul-unroll-tile-sizes=1,1,0,0,0,0 "
             "matmul-unroll-factor=2 fill-tile-sizes=1,1,0,0})",

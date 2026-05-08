@@ -16,6 +16,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRLinalgBufferize.h"
 #include "air/Transform/AIRMatmulCodegenHelpers.h"
+#include "air/Transform/AIRMatmulTileL3ToL2Copies.h"
 #include "air/Util/Util.h"
 
 #include "mlir/Analysis/TopologicalSortUtils.h"
@@ -79,8 +80,15 @@ public:
     func::FuncOp f = getOperation();
     IRRewriter rewriter(&getContext());
 
-    // Optional pre-step: fuse a single-truncf linalg.generic consumer of the
-    // matmul into the matmul itself before bufferizing the fill, so the
+    // Optional pre-step 1: convert memref.copy L3->L2 stagings to linalg.copy
+    // and tile by k-l2-tile (with copy_a_loop / copy_b_loop annotations).
+    if (clDoTileL3ToL2Copies)
+      if (failed(runTileL3ToL2CopiesImpl(f, clKL2Tile, clCopyALoopMarker,
+                                         clCopyBLoopMarker)))
+        return signalPassFailure();
+
+    // Optional pre-step 2: fuse a single-truncf linalg.generic consumer of
+    // the matmul into the matmul itself before bufferizing the fill, so the
     // fill's element type matches the post-fuse matmul.
     if (clFuseOutputTruncfFirst)
       runFuseOutputTruncfImpl(f, rewriter);
@@ -114,44 +122,29 @@ std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeOutputL2Pass(
 // AIRMatmulBufferizeL1Output  (Phase 3 tail)
 //===----------------------------------------------------------------------===//
 
-namespace {
-class AIRMatmulBufferizeL1Output
-    : public impl::AIRMatmulBufferizeL1OutputBase<AIRMatmulBufferizeL1Output> {
-public:
-  AIRMatmulBufferizeL1Output() = default;
-  AIRMatmulBufferizeL1Output(const AIRMatmulBufferizeL1OutputOptions &opts)
-      : AIRMatmulBufferizeL1OutputBase(opts) {}
-
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    Operation *packedMatmul = xilinx::air::findOpWithAttr(f, clPackedMatmulMarker);
-    if (!packedMatmul)
-      return;
-    auto linalgOp = dyn_cast<linalg::LinalgOp>(packedMatmul);
-    if (!linalgOp || linalgOp.getNumDpsInits() != 1) {
-      packedMatmul->emitError("packed_matmul op must be a LinalgOp with one "
-                              "DPS init");
-      return signalPassFailure();
-    }
-    Operation *packC = linalgOp.getDpsInits()[0].getDefiningOp();
-    if (!isa_and_nonnull<linalg::PackOp>(packC))
-      return; // pack already bufferized or absent.
-    IRRewriter rewriter(&getContext());
-    if (failed(bufferizeOpToAllocation(
-            packC, clMemorySpace,
-            linalg::BufferizeToAllocationOptions::MemcpyOp::LinalgCopy,
-            rewriter)))
-      return signalPassFailure();
-  }
-};
-} // namespace
-
-std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeL1OutputPass() {
-  return std::make_unique<AIRMatmulBufferizeL1Output>();
-}
-std::unique_ptr<mlir::Pass> createAIRMatmulBufferizeL1OutputPass(
-    const AIRMatmulBufferizeL1OutputOptions &opts) {
-  return std::make_unique<AIRMatmulBufferizeL1Output>(opts);
+// Free-function body for the former `air-matmul-bufferize-l1-output` pass.
+// Now invoked from `air-matmul-pack-and-transpose` when its
+// `do-bufferize-l1-output` option is set.
+LogicalResult runBufferizeL1OutputImpl(func::FuncOp f, int64_t memorySpace,
+                                       StringRef packedMatmulMarker,
+                                       RewriterBase &rewriter) {
+  Operation *packedMatmul =
+      xilinx::air::findOpWithAttr(f, packedMatmulMarker);
+  if (!packedMatmul)
+    return success();
+  auto linalgOp = dyn_cast<linalg::LinalgOp>(packedMatmul);
+  if (!linalgOp || linalgOp.getNumDpsInits() != 1)
+    return packedMatmul->emitError(
+        "packed_matmul op must be a LinalgOp with one DPS init");
+  Operation *packC = linalgOp.getDpsInits()[0].getDefiningOp();
+  if (!isa_and_nonnull<linalg::PackOp>(packC))
+    return success(); // pack already bufferized or absent.
+  if (failed(bufferizeOpToAllocation(
+          packC, memorySpace,
+          linalg::BufferizeToAllocationOptions::MemcpyOp::LinalgCopy,
+          rewriter)))
+    return failure();
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -246,23 +239,6 @@ static void hoistInterveningDeps(scf::ForOp target, scf::ForOp source) {
     op->moveBefore(first);
 }
 
-class AIRMatmulPostBufferizeCleanup
-    : public impl::AIRMatmulPostBufferizeCleanupBase<
-          AIRMatmulPostBufferizeCleanup> {
-public:
-  AIRMatmulPostBufferizeCleanup() = default;
-
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    if (failed(runRemoveUninitializedCopy(f)))
-      return signalPassFailure();
-    if (failed(runEliminateCascadeMemcpy(f)))
-      return signalPassFailure();
-    IRRewriter rewriter(&getContext());
-    if (failed(runFusePingpongLoopsImpl(f, rewriter)))
-      return signalPassFailure();
-  }
-};
 } // namespace
 
 // Free-function bodies for the prior `fuse-pingpong-loops`,
@@ -326,8 +302,17 @@ void runHoistStaticAllocImpl(func::FuncOp f, RewriterBase &rewriter) {
                           cast<mlir::FunctionOpInterface>(f.getOperation()));
 }
 
-std::unique_ptr<mlir::Pass> createAIRMatmulPostBufferizeCleanupPass() {
-  return std::make_unique<AIRMatmulPostBufferizeCleanup>();
+// Composite of post-bufferize-cleanup: remove uninitialized copies +
+// eliminate cascade memcpys + sibling-fuse pingpong loops. Now invoked
+// from `air-matmul-tile-for-vectorize` when its
+// `do-post-bufferize-cleanup-first` option is set.
+LogicalResult runPostBufferizeCleanupImpl(func::FuncOp f,
+                                          RewriterBase &rewriter) {
+  if (failed(runRemoveUninitializedCopy(f)))
+    return failure();
+  if (failed(runEliminateCascadeMemcpy(f)))
+    return failure();
+  return runFusePingpongLoopsImpl(f, rewriter);
 }
 
 } // namespace air

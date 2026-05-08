@@ -4,10 +4,15 @@
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
+//
+// Free-function body for the former `air-matmul-tile-l3-to-l2-copies` pass.
+// Now invoked from `air-matmul-bufferize-output-l2` when its
+// `do-tile-l3-to-l2-copies` option is set.
+//
+//===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRMatmulTileL3ToL2Copies.h"
 #include "air/Transform/AIRMatmulCodegenHelpers.h"
-#include "air/Util/MatmulCodegenConfig.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -16,7 +21,6 @@
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Interfaces/TilingInterface.h"
-#include "mlir/Pass/Pass.h"
 
 #define DEBUG_TYPE "air-matmul-tile-l3-to-l2-copies"
 
@@ -37,7 +41,6 @@ static linalg::CopyOp findCopyForOperand(Value matmulOperand) {
   if (!toTensor)
     return nullptr;
   Value memref = toTensor.getBuffer();
-  // The linalg.copy targets `memref` as its DPS output.
   for (Operation *user : memref.getUsers()) {
     auto copyOp = dyn_cast<linalg::CopyOp>(user);
     if (!copyOp)
@@ -67,77 +70,41 @@ static LogicalResult tileCopyAndAnnotate(linalg::CopyOp copyOp,
 
   if (marker.empty() || result->loops.empty())
     return success();
-  // Annotate the outermost generated loop with the marker.
   Operation *outerLoop = result->loops.front().getOperation();
   outerLoop->setAttr(marker, rewriter.getUnitAttr());
   return success();
 }
 
-class AIRMatmulTileL3ToL2Copies
-    : public impl::AIRMatmulTileL3ToL2CopiesBase<AIRMatmulTileL3ToL2Copies> {
-
-public:
-  AIRMatmulTileL3ToL2Copies() = default;
-  AIRMatmulTileL3ToL2Copies(const AIRMatmulTileL3ToL2CopiesOptions &opts)
-      : AIRMatmulTileL3ToL2CopiesBase(opts) {}
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<linalg::LinalgDialect, scf::SCFDialect,
-                    bufferization::BufferizationDialect>();
-  }
-
-  void runOnOperation() override {
-    func::FuncOp func = getOperation();
-
-    // Step 1: convert any memref.copy to linalg.copy.
-    if (failed(runConvertMemrefCopyToLinalgCopy(func)))
-      return signalPassFailure();
-
-    // Step 2: locate the first linalg.matmul.
-    linalg::MatmulOp matmul;
-    func.walk([&](linalg::MatmulOp op) {
-      matmul = op;
-      return WalkResult::interrupt();
-    });
-    if (!matmul) {
-      // No matmul; nothing more to do.
-      return;
-    }
-
-    // Step 3: find the LHS and RHS L3-staging copies.
-    linalg::CopyOp copyA = findCopyForOperand(matmul->getOperand(0));
-    linalg::CopyOp copyB = findCopyForOperand(matmul->getOperand(1));
-
-    int64_t kL2Tile = clKL2Tile;
-    if (auto cfg = xilinx::air::findMatmulCodegenConfig(func))
-      kL2Tile = xilinx::air::getI64(*cfg, "tile_l3_l2_k", kL2Tile);
-
-    OpFoldResult zero = OpBuilder(&getContext()).getIndexAttr(0);
-    OpFoldResult kTile = OpBuilder(&getContext()).getIndexAttr(kL2Tile);
-
-    // LHS layout is (M, K): tile dim 1 (= K). RHS layout is (K, N): tile
-    // dim 0 (= K). If a copy isn't found (e.g., upstream already tiled it),
-    // skip silently — re-running the pass should be a no-op.
-    if (copyA) {
-      if (failed(tileCopyAndAnnotate(copyA, {zero, kTile}, clCopyALoopMarker)))
-        return signalPassFailure();
-    }
-    if (copyB) {
-      if (failed(tileCopyAndAnnotate(copyB, {kTile, zero}, clCopyBLoopMarker)))
-        return signalPassFailure();
-    }
-  }
-};
-
 } // namespace
 
-std::unique_ptr<mlir::Pass> createAIRMatmulTileL3ToL2CopiesPass() {
-  return std::make_unique<AIRMatmulTileL3ToL2Copies>();
-}
+LogicalResult runTileL3ToL2CopiesImpl(func::FuncOp func, int64_t kL2Tile,
+                                      StringRef copyAMarker,
+                                      StringRef copyBMarker) {
+  if (failed(runConvertMemrefCopyToLinalgCopy(func)))
+    return failure();
 
-std::unique_ptr<mlir::Pass> createAIRMatmulTileL3ToL2CopiesPass(
-    const AIRMatmulTileL3ToL2CopiesOptions &opts) {
-  return std::make_unique<AIRMatmulTileL3ToL2Copies>(opts);
+  linalg::MatmulOp matmul;
+  func.walk([&](linalg::MatmulOp op) {
+    matmul = op;
+    return WalkResult::interrupt();
+  });
+  if (!matmul)
+    return success(); // no matmul; nothing more to do.
+
+  linalg::CopyOp copyA = findCopyForOperand(matmul->getOperand(0));
+  linalg::CopyOp copyB = findCopyForOperand(matmul->getOperand(1));
+
+  OpBuilder b(func.getContext());
+  OpFoldResult zero = b.getIndexAttr(0);
+  OpFoldResult kTile = b.getIndexAttr(kL2Tile);
+
+  // LHS layout is (M, K): tile dim 1 (= K). RHS layout is (K, N): tile dim
+  // 0 (= K). If a copy isn't found, skip silently — re-running is a no-op.
+  if (copyA && failed(tileCopyAndAnnotate(copyA, {zero, kTile}, copyAMarker)))
+    return failure();
+  if (copyB && failed(tileCopyAndAnnotate(copyB, {kTile, zero}, copyBMarker)))
+    return failure();
+  return success();
 }
 
 } // namespace air

@@ -109,14 +109,14 @@ with air.ir.Context() as ctx, Location.unknown():
         # in a follow-up PR. See MATMUL_CODEGEN_PIPELINE_PLAN.md (M5).
         # Per-launch-tile shape is 256x256x256 (single launch tile).
         phases = [
-            "func.func(air-matmul-tile-l3-to-l2-copies{k-l2-tile=64})",
             "func.func(air-matmul-bufferize-output-l2{"
+            "do-tile-l3-to-l2-copies=true k-l2-tile=64 "
             "fuse-output-truncf-first=true})",
             "func.func(air-matmul-pack-and-transpose{pack-sizes=8,8,8 "
             "lhs-outer-perm=1,0 lhs-inner-perm=0,1 "
             "rhs-outer-perm=1,0 rhs-inner-perm=1,0 "
-            "acc-outer-perm=1,0 acc-inner-perm=0,1})",
-            "func.func(air-matmul-bufferize-l1-output)",
+            "acc-outer-perm=1,0 acc-inner-perm=0,1 "
+            "do-bufferize-l1-output=true})",
             "func.func(air-matmul-tile-k-and-fuse-packs{k-tile-factor=8})",
             "func.func(air-matmul-tile-cores{tile-sizes=8,8,0})",
             "func.func(canonicalize,cse)",
@@ -129,8 +129,8 @@ with air.ir.Context() as ctx, Location.unknown():
             "unknown-type-conversion=identity-layout-map "
             "function-boundary-type-conversion=identity-layout-map}",
             "func.func(canonicalize,cse,canonicalize)",
-            "func.func(air-matmul-post-bufferize-cleanup)",
             "func.func(air-matmul-tile-for-vectorize{"
+            "do-post-bufferize-cleanup-first=true "
             "matmul-tile-sizes=2,2,1,0,0,0 "
             "matmul-unroll-tile-sizes=1,1,0,0,0,0 "
             "matmul-unroll-factor=2 fill-tile-sizes=1,1,0,0})",

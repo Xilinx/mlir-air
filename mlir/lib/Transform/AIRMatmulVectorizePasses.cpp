@@ -15,6 +15,7 @@
 #include "air/Transform/AIRMatmulVectorizePasses.h"
 
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Transform/AIRMatmulBufferizationPasses.h"
 #include "air/Transform/AIRMatmulCodegenHelpers.h"
 #include "air/Util/MatmulCodegenConfig.h"
 
@@ -365,6 +366,14 @@ public:
 
   void runOnOperation() override {
     IRRewriter rewriter(&getContext());
+
+    // Optional pre-step: post-bufferize cleanup (remove uninitialized
+    // copies + eliminate cascade memcpys + sibling-fuse pingpong loops).
+    // Replaces the former standalone `air-matmul-post-bufferize-cleanup`
+    // pass.
+    if (clDoPostBufferizeCleanupFirst)
+      if (failed(runPostBufferizeCleanupImpl(getOperation(), rewriter)))
+        return signalPassFailure();
 
     SmallVector<int64_t> matmulTile = clMatmulTileSizes.empty()
                                           ? SmallVector<int64_t>{2, 2, 1, 0, 0, 0}

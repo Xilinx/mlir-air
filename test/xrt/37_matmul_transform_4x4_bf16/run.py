@@ -152,13 +152,14 @@ if args.use_cpp_pipeline:
         "func.func(canonicalize,cse)",
         # Bufferize the L2 fill (matmul accumulator init).
         "func.func(air-matmul-bufferize-output-l2)",
-        # L1 pack on top of the L2-packed generic.
+        # L1 pack on top of the L2-packed generic. Tail-bufferizes the
+        # output pack (pack_c) into L1 (replaces the former standalone
+        # `air-matmul-bufferize-l1-output` pass).
         "func.func(air-matmul-pack-and-transpose{pack-sizes=0,0,0,8,8,8 "
         "lhs-outer-perm=0,1,3,2 "
         "rhs-outer-perm=0,1,3,2 rhs-inner-perm=1,0 "
-        "acc-outer-perm=0,1,3,2})",
-        # Bufferize the L1 output pack (pack_c) into L1.
-        "func.func(air-matmul-bufferize-l1-output)",
+        "acc-outer-perm=0,1,3,2 "
+        "do-bufferize-l1-output=true})",
         # Outer K-tile (K_L2/64 = 16 chunks, tile by 1). Chain-fuses both
         # L1 (immediate matmul operand) and L2 (grandparent) packs into the
         # K-loop, marking the L2 packs with `lhs_l2_pack_in_k` /
@@ -196,9 +197,12 @@ if args.use_cpp_pipeline:
         "unknown-type-conversion=identity-layout-map "
         "function-boundary-type-conversion=identity-layout-map}",
         "func.func(canonicalize,cse,canonicalize)",
-        "func.func(air-matmul-post-bufferize-cleanup)",
         # Vectorize tile (9-iter matmul, all dims tiled by 1; fill 4-iter).
+        # `do-post-bufferize-cleanup-first=true` runs the cleanup as the
+        # pre-step (replaces the former standalone
+        # `air-matmul-post-bufferize-cleanup` pass).
         "func.func(air-matmul-tile-for-vectorize{"
+        "do-post-bufferize-cleanup-first=true "
         "matmul-tile-sizes=1,1,1,1,1,1,0,0,0 "
         "matmul-unroll-tile-sizes=0,0,0,0,0,0,0,0,0 "
         "matmul-unroll-factor=1 fill-tile-sizes=1,1,1,1})",

@@ -1143,36 +1143,15 @@ def AIRMatmulPackAndTranspose: Pass<"air-matmul-pack-and-transpose", "func::Func
                "llvm::cl::ZeroOrMore">,
     Option<"clPackedMatmulMarker", "packed-matmul-marker", "std::string",
            /*default=*/"\"packed_matmul\"",
-           "Attribute name annotated on the resulting packed linalg op">
-  ];
-}
-
-def AIRMatmulTileL3ToL2Copies: Pass<"air-matmul-tile-l3-to-l2-copies", "func::FuncOp"> {
-  let summary = "Convert L3->L2 memref.copies to linalg.copies and tile the K dim";
-  let constructor = "xilinx::air::createAIRMatmulTileL3ToL2CopiesPass()";
-  let description = [{
-    For the first `linalg.matmul` in the function:
-      1. Convert any `memref.copy` feeding the LHS or RHS operand into
-         `linalg.copy` (via the existing
-         `ConvertMemrefCopyToLinalgCopyPattern`).
-      2. Tile the LHS copy by [0, k_l2_tile] and the RHS copy by
-         [k_l2_tile, 0] using `scf::tileUsingSCF`. LHS and RHS are detected
-         by matmul operand index after walking through `bufferization.to_tensor`.
-      3. Annotate the LHS tiled loop with `copy_a_loop` and the RHS with
-         `copy_b_loop` (so downstream sibling-fusion passes can find them).
-
-    M0 of the C++ matmul codegen pipeline. See
-    MATMUL_CODEGEN_PIPELINE_PLAN.md.
-  }];
-  let options = [
-    Option<"clKL2Tile", "k-l2-tile", "int64_t", /*default=*/"16",
-           "Tile size on the K dimension for L3->L2 copies">,
-    Option<"clCopyALoopMarker", "copy-a-loop-marker", "std::string",
-           /*default=*/"\"copy_a_loop\"",
-           "Attribute name annotated on the LHS-copy scf.for loop">,
-    Option<"clCopyBLoopMarker", "copy-b-loop-marker", "std::string",
-           /*default=*/"\"copy_b_loop\"",
-           "Attribute name annotated on the RHS-copy scf.for loop">
+           "Attribute name annotated on the resulting packed linalg op">,
+    Option<"clDoBufferizeL1Output", "do-bufferize-l1-output", "bool",
+           /*default=*/"false",
+           "After packing, bufferize the output linalg.pack into an L1 "
+           "(memory_space=2) allocation. Replaces what was the standalone "
+           "`air-matmul-bufferize-l1-output` pass.">,
+    Option<"clBufferizeL1OutputMemorySpace",
+           "bufferize-l1-output-memory-space", "int64_t", /*default=*/"2",
+           "Target memory space when do-bufferize-l1-output=true.">
   ];
 }
 
@@ -1206,7 +1185,14 @@ def AIRMatmulTileForVectorize: Pass<"air-matmul-tile-for-vectorize", "func::Func
            "Unroll factor applied to the two innermost loops after the second tiling">,
     ListOption<"clFillTileSizes", "fill-tile-sizes", "int64_t",
                "Tile sizes for linalg.fill",
-               "llvm::cl::ZeroOrMore">
+               "llvm::cl::ZeroOrMore">,
+    Option<"clDoPostBufferizeCleanupFirst",
+           "do-post-bufferize-cleanup-first", "bool", /*default=*/"false",
+           "Before tiling, run the post-bufferize cleanup (remove "
+           "uninitialized copies, eliminate cascade memcpy chains, "
+           "sibling-fuse the L3->L2 copy loops into the K-reduction loop "
+           "for L2 ping-pong buffering). Replaces what was the standalone "
+           "`air-matmul-post-bufferize-cleanup` pass.">
   ];
 }
 
@@ -1471,45 +1457,46 @@ def AIRMatmulPrologueEpilogue : Pass<"air-matmul-prologue-epilogue",
 def AIRMatmulBufferizeOutputL2 : Pass<"air-matmul-bufferize-output-l2",
                                        "func::FuncOp"> {
   let summary = "Phase 2: bufferize the matmul accumulator init "
-                "(linalg.fill) into an L2 (memory_space=1) allocation.";
+                "(linalg.fill) into an L2 (memory_space=1) allocation. "
+                "Optionally pre-tiles L3->L2 input copies and fuses an "
+                "output-truncf consumer first.";
   let constructor = "xilinx::air::createAIRMatmulBufferizeOutputL2Pass()";
   let description = [{
-    Locates the first linalg.fill in the function (the matmul accumulator
-    initializer) and calls `linalg::bufferizeToAllocation` with
-    `bufferizeDestinationOnly=true`, `emitDealloc=true`,
-    `memcpyOp=LinalgCopy`, and the requested memory space. M2 Phase 2.
+    Composite Phase 1+2 step. In order:
+      1. (optional, `do-tile-l3-to-l2-copies=true`) Convert memref.copy ops
+         feeding the matmul to linalg.copy and tile each by the K-tile size
+         on the K dim, annotating with copy-a-loop / copy-b-loop markers
+         for downstream ping-pong fusion. Replaces what was the standalone
+         `air-matmul-tile-l3-to-l2-copies` pass.
+      2. (optional, `fuse-output-truncf-first=true`) Fuse a single-truncf
+         linalg.generic consumer of the matmul into the matmul (lowers
+         accumulator element type). Used by bf16-out flows; must run
+         before bufferization so the fill's element type matches.
+      3. Locate the first linalg.fill (the matmul accumulator init) and
+         bufferize it via `linalg::bufferizeToAllocation` with
+         `bufferizeDestinationOnly=true`, `emitDealloc=true`,
+         `memcpyOp=LinalgCopy`, and the requested memory space.
   }];
   let options = [
     Option<"clMemorySpace", "memory-space", "int64_t", /*default=*/"1",
            "Target memory space for the L2 allocation (1 = MemTile).">,
     Option<"clFuseOutputTruncfFirst", "fuse-output-truncf-first", "bool",
            /*default=*/"false",
-           "Before bufferizing, fuse a single-truncf linalg.generic consumer "
-           "of the matmul into the matmul (lowers accumulator type). Must "
-           "run before bufferization so the fill's element type matches the "
-           "post-fuse matmul. Replaces what was the standalone "
-           "`air-matmul-fuse-output-truncf` pass. Used by bf16-out flows.">
-  ];
-}
-
-def AIRMatmulBufferizeL1Output : Pass<"air-matmul-bufferize-l1-output",
-                                       "func::FuncOp"> {
-  let summary = "Phase 3 tail: bufferize the L1 output pack of the packed "
-                "matmul into a L1 (memory_space=2) allocation.";
-  let constructor = "xilinx::air::createAIRMatmulBufferizeL1OutputPass()";
-  let description = [{
-    Looks up the linalg op annotated `packed_matmul` (set by
-    `air-matmul-pack-and-transpose`), finds the producer of its DPS init
-    operand (the output linalg.pack), and bufferizes it into the requested
-    memory space. M2 Phase 3 tail.
-  }];
-  let options = [
-    Option<"clMemorySpace", "memory-space", "int64_t", /*default=*/"2",
-           "Target memory space for the L1 allocation (2 = compute tile).">,
-    Option<"clPackedMatmulMarker", "packed-matmul-marker", "std::string",
-           /*default=*/"\"packed_matmul\"",
-           "Attribute name on the packed matmul op produced by "
-           "air-matmul-pack-and-transpose.">
+           "Fuse a single-truncf linalg.generic consumer of the matmul "
+           "into the matmul before bufferizing. Used by bf16-out flows.">,
+    Option<"clDoTileL3ToL2Copies", "do-tile-l3-to-l2-copies", "bool",
+           /*default=*/"false",
+           "Run the (former) air-matmul-tile-l3-to-l2-copies pass first. "
+           "Used by tests with Triton-style memref.copy L3->L2 staging.">,
+    Option<"clKL2Tile", "k-l2-tile", "int64_t", /*default=*/"16",
+           "Tile size on the K dimension for L3->L2 copies (only when "
+           "do-tile-l3-to-l2-copies=true).">,
+    Option<"clCopyALoopMarker", "copy-a-loop-marker", "std::string",
+           /*default=*/"\"copy_a_loop\"",
+           "Attribute name annotated on the LHS-copy scf.for loop.">,
+    Option<"clCopyBLoopMarker", "copy-b-loop-marker", "std::string",
+           /*default=*/"\"copy_b_loop\"",
+           "Attribute name annotated on the RHS-copy scf.for loop.">
   ];
 }
 
@@ -1544,22 +1531,6 @@ def AIRMatmulBufferizeL1Inputs : Pass<"air-matmul-bufferize-l1-inputs",
            "default for L1) or `linalg-copy` (= `LinalgCopy`, used for L2 "
            "in the M4 two-pack-level flow).">
   ];
-}
-
-def AIRMatmulPostBufferizeCleanup
-    : Pass<"air-matmul-post-bufferize-cleanup", "func::FuncOp"> {
-  let summary = "Phase 7+8: remove uninitialized copies, eliminate cascade "
-                "memcpys, and sibling-fuse the L3->L2 copy loops into the "
-                "K-reduction loop for L2 ping-pong buffering.";
-  let constructor =
-      "xilinx::air::createAIRMatmulPostBufferizeCleanupPass()";
-  let description = [{
-    Combines what were three back-to-back trivial passes
-    (`cleanup-bufferize` and `fuse-pingpong-loops`) into one entry. The
-    sibling-fuse step is a no-op if the IR doesn't carry the
-    `copy_a_loop` / `copy_b_loop` / `k_reduction_loop` markers (e.g. the
-    M4 / two-pack flow which uses a different copy choreography).
-  }];
 }
 
 def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {

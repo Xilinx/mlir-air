@@ -207,14 +207,12 @@ with air.ir.Context() as ctx, Location.unknown():
         l2_k = K_L2_TILE  # default 16 — must match user's --k-l2-tile.
         k_factor = max(1, l2_k // 8)
         phases = [
-            f"func.func(air-matmul-tile-l3-to-l2-copies{{k-l2-tile={l2_k}}})",
-            "func.func(air-matmul-bufferize-output-l2{"
-            "fuse-output-truncf-first=true})",
+            f"func.func(air-matmul-bufferize-output-l2{{do-tile-l3-to-l2-copies=true k-l2-tile={l2_k} fuse-output-truncf-first=true}})",
             "func.func(air-matmul-pack-and-transpose{pack-sizes=8,8,8 "
             "lhs-outer-perm=1,0 lhs-inner-perm=0,1 "
             "rhs-outer-perm=1,0 rhs-inner-perm=1,0 "
-            "acc-outer-perm=1,0 acc-inner-perm=0,1})",
-            "func.func(air-matmul-bufferize-l1-output)",
+            "acc-outer-perm=1,0 acc-inner-perm=0,1 "
+            "do-bufferize-l1-output=true})",
             f"func.func(air-matmul-tile-k-and-fuse-packs{{k-tile-factor={k_factor}}})",
             "func.func(air-matmul-tile-cores{tile-sizes=8,8,0})",
             "func.func(canonicalize,cse)",
@@ -227,8 +225,8 @@ with air.ir.Context() as ctx, Location.unknown():
             "unknown-type-conversion=identity-layout-map "
             "function-boundary-type-conversion=identity-layout-map}",
             "func.func(canonicalize,cse,canonicalize)",
-            "func.func(air-matmul-post-bufferize-cleanup)",
             "func.func(air-matmul-tile-for-vectorize{"
+            "do-post-bufferize-cleanup-first=true "
             "matmul-tile-sizes=2,2,1,0,0,0 "
             "matmul-unroll-tile-sizes=1,1,0,0,0,0 "
             "matmul-unroll-factor=2 fill-tile-sizes=1,1,0,0})",
