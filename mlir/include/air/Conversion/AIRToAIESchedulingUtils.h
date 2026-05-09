@@ -52,7 +52,7 @@ mlir::LogicalResult createTilesViaPlacer(
     llvm::ArrayRef<std::pair<std::optional<int>, std::optional<int>>> hints,
     llvm::SmallVectorImpl<AIE::TileOp> &outTiles);
 
-AIE::LockOp allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
+AIE::LockOp allocateLockOp(AIE::DeviceOp aie_device, AIE::TileLike tile,
                            int init = 0, int id = -1,
                            StringAttr name = nullptr);
 

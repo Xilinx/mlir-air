@@ -149,12 +149,15 @@ AIE::TileOp air::getPhysTileOp(AIE::DeviceOp aie_device, int col, int row) {
                              col, row);
 }
 
-AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
+AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileLike tile,
                                 int init, int id, StringAttr name) {
   AIE::LockOp lock = nullptr;
   std::set<int> ids;
+  Operation *tileOp = tile.getOperation();
   aie_device.walk([&](AIE::LockOp l) {
-    if (cast<AIE::TileOp>(l.getTile().getDefiningOp()) == tile) {
+    // Pointer-equality on the underlying defining op handles both physical
+    // TileOp and LogicalTileOp uniformly.
+    if (l.getTile().getDefiningOp() == tileOp) {
       auto i = l.getLockIDValue();
       if (i == id)
         lock = l;
@@ -174,11 +177,15 @@ AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
   }
 
   OpBuilder b(aie_device);
-  Operation *t = tile.getOperation();
-  while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+  Operation *t = tileOp;
+  // Walk past contiguous tile defining ops (TileOp or LogicalTileOp) so the
+  // new lock lands after them.
+  while (t->getNextNode() &&
+         isa<AIE::TileOp, AIE::LogicalTileOp>(t->getNextNode()))
     t = t->getNextNode();
   b.setInsertionPointAfter(t);
-  auto lockOp = AIE::LockOp::create(b, tile.getLoc(), tile, new_id, init);
+  auto lockOp = AIE::LockOp::create(b, tileOp->getLoc(), tileOp->getResult(0),
+                                    new_id, init);
   if (name)
     lockOp->setAttr(SymbolTable::getSymbolAttrName(), name);
   return lockOp;
@@ -879,13 +886,8 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
   auto init = std::max(init_pair.first, init_pair.second);
 
   OpBuilder builder(bufferOp);
-  // allocateLockOp still requires a physical TileOp for now (Commit 3 will
-  // make it TileLike-aware). Today this code path only fires after the tile
-  // has been resolved to physical via createTileViaPlacer, so the cast holds.
-  auto physTile = cast<AIE::TileOp>(tile.getOperation());
-  auto rlock = allocateLockOp(device, physTile, 0);
-  auto wlock =
-      UsesSemaphoreLocks ? allocateLockOp(device, physTile, init) : rlock;
+  auto rlock = allocateLockOp(device, tile, 0);
+  auto wlock = UsesSemaphoreLocks ? allocateLockOp(device, tile, init) : rlock;
   lock_allocation_list.push_back({bufferOp, air_chan, channel, rlock, wlock});
   return std::make_pair(rlock, wlock);
 }
@@ -1178,13 +1180,19 @@ air::ShimDMAAllocator::getBuffer(uint64_t &BufferId, AIE::TileOp tile,
       air::MemorySpaceAttr::get(memcpyOp->getContext(), dmaMemorySpace);
   memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
                              AffineMap(), memSpaceAttr);
-  // Names use shim coords: tile is the shim NOC tile that owns the external
-  // buffer's DMA program (the L3 buffer itself has no tile, but its name
-  // ties it to the shim that drives it).
+  // Names use shim coords when known: tile is the shim NOC tile that owns the
+  // external buffer's DMA program (the L3 buffer itself has no tile, but its
+  // name ties it to the shim that drives it). For unplaced shim tiles
+  // (LogicalTileOp(?, ?)) the col/row are -1 in the printed name; the symbol
+  // suffix in generateBufferNameInStringStream still keeps it unique.
+  AIE::TileLike tileLike =
+      dyn_cast_if_present<AIE::TileLike>(tile.getOperation());
+  int shimCol = tileLike ? tileLike.tryGetCol().value_or(-1) : -1;
+  int shimRow = tileLike ? tileLike.tryGetRow().value_or(-1) : -1;
   AIE::ExternalBufferOp bufferOp = allocateExternalBufferOp(
       BufferId, memrefTy, device,
       memcpyOp->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-      tile ? (int)tile.getCol() : -1, tile ? (int)tile.getRow() : -1);
+      shimCol, shimRow);
   return bufferOp;
 }
 
