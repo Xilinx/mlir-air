@@ -6,12 +6,12 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-matmul-codegen='l2-pack-sizes=8,8,8 \
-// RUN:   bufferize-last-pack-output=false do-vec-prep=false' \
+// RUN:   bufferize-last-pack-output=false' \
 // RUN:   | FileCheck %s --check-prefix=NOPERM
 // RUN: air-opt %s -air-matmul-codegen='l2-pack-sizes=8,8,8 \
 // RUN:   l2-lhs-outer-perm=1,0 l2-rhs-outer-perm=1,0 l2-rhs-inner-perm=1,0 \
 // RUN:   l2-acc-outer-perm=1,0 \
-// RUN:   bufferize-last-pack-output=false do-vec-prep=false' \
+// RUN:   bufferize-last-pack-output=false' \
 // RUN:   | FileCheck %s --check-prefix=ALLPERM
 
 // The accumulator pack of a zero-filled empty tensor is folded by the

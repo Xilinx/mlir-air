@@ -33,16 +33,12 @@ mlir::LogicalResult runTileForVectorizeImpl(
     mlir::RewriterBase &rewriter);
 
 mlir::LogicalResult runCodegenVecPrepImpl(
-    mlir::func::FuncOp f, bool doFoldUnitExtentDims,
-    bool doEliminateRedundantVectorTransfers,
-    llvm::StringRef cast1TargetElementType,
+    mlir::func::FuncOp f, llvm::StringRef cast1TargetElementType,
     llvm::ArrayRef<int64_t> cast1InputIndices,
     llvm::ArrayRef<int64_t> cast1OutputIndices,
     llvm::StringRef cast2TargetElementType,
     llvm::ArrayRef<int64_t> cast2InputIndices,
-    llvm::ArrayRef<int64_t> cast2OutputIndices,
-    bool doHoistLoopInvariantTransfers, bool doFlattenForIterArgs,
-    bool doHoistVectorTransferPointers, bool doHoistCastPairs,
+    llvm::ArrayRef<int64_t> cast2OutputIndices, bool doHoistCastPairs,
     int64_t hoistCastPairsMaxIterations, mlir::RewriterBase &rewriter);
 
 } // namespace air

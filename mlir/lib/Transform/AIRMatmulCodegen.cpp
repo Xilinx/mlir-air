@@ -111,10 +111,9 @@ public:
       });
     };
 
-    // ---------- Phase 0: pre-fold unit-extent dims (opt-in) ----------
-    if (clDoPreFoldUnitExtentDims)
-      if (failed(runFoldUnitExtentDimsOnFunc(f)))
-        return fail();
+    // ---------- Phase 0: pre-fold unit-extent dims ----------
+    if (failed(runFoldUnitExtentDimsOnFunc(f)))
+      return fail();
 
     // Phase C placement: single-pack flows (no L1 pack) run bufferize-output-l2
     // BEFORE Phase A and Phase B — required by the tile-l3-to-l2-copies and
@@ -280,19 +279,16 @@ public:
         return fail();
     }
 
-    // ---------- Phase N: vec prep composite (gated; default true) ----------
-    if (clDoVecPrep) {
-      if (failed(runCodegenVecPrepImpl(
-              f, clVecPrepFoldUnitExtentDims,
-              clVecPrepEliminateRedundantVectorTransfers,
-              clVecPrepCast1TargetElementType, clVecPrepCast1InputIndices,
-              clVecPrepCast1OutputIndices, clVecPrepCast2TargetElementType,
-              clVecPrepCast2InputIndices, clVecPrepCast2OutputIndices,
-              clVecPrepHoistLoopInvariantTransfers, clVecPrepFlattenForIterArgs,
-              clVecPrepHoistVectorTransferPointers, clVecPrepHoistCastPairs,
-              clVecPrepHoistCastPairsMaxIterations, rewriter)))
-        return fail();
-    }
+    // ---------- Phase N: vec prep composite (always runs; no-op on
+    //                     pre-vectorize IR as the steps walk for ops that
+    //                     don't exist yet) ----------
+    if (failed(runCodegenVecPrepImpl(
+            f, clVecPrepCast1TargetElementType, clVecPrepCast1InputIndices,
+            clVecPrepCast1OutputIndices, clVecPrepCast2TargetElementType,
+            clVecPrepCast2InputIndices, clVecPrepCast2OutputIndices,
+            clVecPrepHoistCastPairs, clVecPrepHoistCastPairsMaxIterations,
+            rewriter)))
+      return fail();
 
     return success();
   }

@@ -1131,20 +1131,13 @@ def AIRMatmulCodegen : Pass<"air-matmul-codegen", "ModuleOp"> {
       K.  prologue-epilogue (prologue-tile / epilogue-tile)
       L.  one-shot-bufferize (one-shot-bufferize)
       M.  tile-for-vectorize (matmul-vec-tile)
-      N.  vec-prep composite (do-vec-prep)
+      N.  vec-prep composite
 
     Skipping a phase is the natural way to compose subsets: tests using
     only the vectorize stages leave A--K empty and L=false; tests using
     only the tile/pack stages leave M empty and N=false.
   }];
   let options = [
-      // ---- Phase 0: pre-fold of unit-extent dims ----
-      Option<"clDoPreFoldUnitExtentDims", "do-pre-fold-unit-extent-dims",
-             "bool", /*default=*/"true",
-             "Phase 0: run fold-unit-extent-dims on the function before any "
-             "other phase. No-op on already-clean IR; lifts stray unit dims "
-             "in IRON-emitted IR before downstream tile/pack phases.">,
-
       // ---- Phase A: launch tile ----
       ListOption<"clLaunchTile", "launch-tile", "int64_t",
                  "Tile sizes for the outer launch-tile scf.forall. Skipped if "
@@ -1285,19 +1278,8 @@ def AIRMatmulCodegen : Pass<"air-matmul-codegen", "ModuleOp"> {
           "Pre-step: run post-bufferize cleanup (remove uninitialized "
           "copies, eliminate cascade memcpys, sibling-fuse pingpong loops).">,
 
-      // ---- Phase N: vec-prep composite ----
-      Option<
-          "clDoVecPrep", "do-vec-prep", "bool", /*default=*/"true",
-          "Run the vec-prep composite (fold-unit-extent + eliminate-redundant "
-          "+ optional vector-cast + hoist-loop-invariant + flatten-iter + "
-          "hoist-pointers + optional hoist-cast-pairs).">,
-      Option<"clVecPrepFoldUnitExtentDims", "vec-prep-fold-unit-extent-dims",
-             "bool", /*default=*/"true",
-             "vec-prep: run fold-unit-extent-dims.">,
-      Option<"clVecPrepEliminateRedundantVectorTransfers",
-             "vec-prep-eliminate-redundant-vector-transfers", "bool",
-             /*default=*/"true",
-             "vec-prep: run eliminate-redundant-vector-transfers.">,
+      // ---- Phase N: vec-prep composite (always runs; no-op on
+      //               pre-vectorize IR when called between tiling phases) ----
       Option<"clVecPrepCast1TargetElementType",
              "vec-prep-cast1-target-element-type", "std::string",
              /*default=*/"\"\"",
@@ -1322,17 +1304,6 @@ def AIRMatmulCodegen : Pass<"air-matmul-codegen", "ModuleOp"> {
                  "int64_t",
                  "vec-prep: second vector-cast output operand indices.",
                  "llvm::cl::ZeroOrMore">,
-      Option<"clVecPrepHoistLoopInvariantTransfers",
-             "vec-prep-hoist-loop-invariant-transfers", "bool",
-             /*default=*/"true",
-             "vec-prep: hoist loop-invariant transfer_read/write pairs.">,
-      Option<"clVecPrepFlattenForIterArgs", "vec-prep-flatten-for-iter-args",
-             "bool", /*default=*/"true",
-             "vec-prep: flatten vector-typed iter_args to 1D.">,
-      Option<"clVecPrepHoistVectorTransferPointers",
-             "vec-prep-hoist-vector-transfer-pointers", "bool",
-             /*default=*/"true",
-             "vec-prep: linearize loop-invariant transfer pointer chains.">,
       Option<"clVecPrepHoistCastPairs", "vec-prep-hoist-cast-pairs", "bool",
              /*default=*/"false",
              "vec-prep: iteratively hoist matched ext/trunc pairs.">,

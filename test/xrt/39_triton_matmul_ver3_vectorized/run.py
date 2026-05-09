@@ -122,14 +122,13 @@ with air.ir.Context() as ctx, Location.unknown():
             "matmul-vec-tile=1,1,1,0,0,0 "
             "matmul-unroll-factor=1 fill-vec-tile=1,1 "
             # Phase N: no vec-prep (test 39 doesn't run any vec-prep steps).
-            "do-vec-prep=false"
             "}, "
             "func.func(scf-forall-to-parallel), "
             "air-par-to-herd, "
             "func.func(air-herd-vectorize), "
             "func.func(canonicalize,cse,fold-memref-alias-ops), "
-            # Fold-only orchestrator pass for post-vectorize cleanup.
-            "air-matmul-codegen{do-vec-prep=false}"
+            # Cleanup orchestrator pass after vectorization.
+            "air-matmul-codegen{}"
             ")"
         )
         pm = air.passmanager.PassManager.parse(cpp_pipeline)

@@ -123,15 +123,15 @@ with air.ir.Context() as ctx, Location.unknown():
             "matmul-vec-tile=2,2,1,0,0,0 "
             "matmul-unroll-vec-tile=1,1,0,0,0,0 "
             "matmul-unroll-factor=2 fill-vec-tile=1,1,0,0 "
-            # Phase N: vec-prep deferred to second invocation (after herd).
-            "do-vec-prep=false" "}",
+            # Phase N: vec-prep no-op pre-vectorize; real work happens in
+            # the second invocation after herd-vectorize.
+            "}",
             "func.func(scf-forall-to-parallel)",
             "air-par-to-herd",
             "func.func(air-herd-vectorize)",
             "func.func(canonicalize,cse,fold-memref-alias-ops)",
             # Second orchestrator invocation: vec-prep only.
             "air-matmul-codegen{"
-            "do-vec-prep=true "
             "vec-prep-cast1-target-element-type=f32 "
             "vec-prep-cast1-input-indices=2 "
             "vec-prep-cast1-output-indices=0 "

@@ -572,12 +572,10 @@ if __name__ == "__main__":
                     "matmul-vec-tile=2,2,1,0,0,0 "
                     "matmul-unroll-vec-tile=1,1,0,0,0,0 "
                     "matmul-unroll-factor=2 fill-vec-tile=0,0,1,1 "
-                    "do-vec-prep=false"
                     "}",
                     "func.func(air-herd-vectorize)",
                     "func.func(canonicalize,cse,fold-memref-alias-ops)",
                     "air-matmul-codegen{"
-                    "do-vec-prep=true "
                     "vec-prep-cast1-target-element-type=i32 "
                     "vec-prep-cast1-input-indices=2 "
                     "vec-prep-cast1-output-indices=0 "

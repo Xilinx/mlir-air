@@ -175,7 +175,6 @@ if args.use_cpp_pipeline:
         # Phase N: vec-prep is gated off — this test does not need any of
         # the vec-prep sub-steps (no vector-cast emulation, no cast-pair
         # hoist; the simple flatten/hoist passes are not used here).
-        "do-vec-prep=false"
         "})"
     )
     pm = air.passmanager.PassManager.parse(pipeline, context=context)

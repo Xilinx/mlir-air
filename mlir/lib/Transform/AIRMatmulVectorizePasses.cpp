@@ -267,24 +267,16 @@ tileWithScfFor(mlir::Operation *op, ArrayRef<int64_t> sizes,
 } // namespace
 
 LogicalResult runCodegenVecPrepImpl(
-    func::FuncOp func, bool doFoldUnitExtentDims,
-    bool doEliminateRedundantVectorTransfers, StringRef cast1TargetElementType,
+    func::FuncOp func, StringRef cast1TargetElementType,
     ArrayRef<int64_t> cast1InputIndices, ArrayRef<int64_t> cast1OutputIndices,
     StringRef cast2TargetElementType, ArrayRef<int64_t> cast2InputIndices,
-    ArrayRef<int64_t> cast2OutputIndices, bool doHoistLoopInvariantTransfers,
-    bool doFlattenForIterArgs, bool doHoistVectorTransferPointers,
-    bool doHoistCastPairs, int64_t hoistCastPairsMaxIterations,
-    RewriterBase &rewriter) {
-  // Several helpers below take IRRewriter & specifically; the upstream
-  // tiling/utility APIs accept RewriterBase but our local helpers were
-  // typed against IRRewriter. Narrow when needed.
+    ArrayRef<int64_t> cast2OutputIndices, bool doHoistCastPairs,
+    int64_t hoistCastPairsMaxIterations, RewriterBase &rewriter) {
   IRRewriter &irRewriter = static_cast<IRRewriter &>(rewriter);
 
-  if (doFoldUnitExtentDims)
-    if (failed(runFoldUnitExtentDimsOnFunc(func)))
-      return failure();
-  if (doEliminateRedundantVectorTransfers)
-    (void)runEliminateRedundantVectorTransfers(func, irRewriter);
+  if (failed(runFoldUnitExtentDimsOnFunc(func)))
+    return failure();
+  (void)runEliminateRedundantVectorTransfers(func, irRewriter);
   if (failed(runVectorCastForEmulationStep(func, cast1TargetElementType,
                                            cast1InputIndices,
                                            cast1OutputIndices, irRewriter)))
@@ -293,15 +285,12 @@ LogicalResult runCodegenVecPrepImpl(
                                            cast2InputIndices,
                                            cast2OutputIndices, irRewriter)))
     return failure();
-  if (doHoistLoopInvariantTransfers)
-    if (failed(runHoistLoopInvariantTransfersStep(func, irRewriter)))
-      return failure();
-  if (doFlattenForIterArgs)
-    if (failed(runFlattenForIterArgsStep(func, irRewriter)))
-      return failure();
-  if (doHoistVectorTransferPointers)
-    if (failed(runHoistVectorTransferPointersStep(func, irRewriter)))
-      return failure();
+  if (failed(runHoistLoopInvariantTransfersStep(func, irRewriter)))
+    return failure();
+  if (failed(runFlattenForIterArgsStep(func, irRewriter)))
+    return failure();
+  if (failed(runHoistVectorTransferPointersStep(func, irRewriter)))
+    return failure();
   if (doHoistCastPairs)
     if (failed(runHoistCastPairsStep(func, hoistCastPairsMaxIterations,
                                      irRewriter)))

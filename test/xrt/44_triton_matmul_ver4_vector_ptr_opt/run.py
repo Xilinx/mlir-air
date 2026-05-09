@@ -148,7 +148,6 @@ with air.ir.Context() as ctx, Location.unknown():
             "matmul-unroll-vec-tile=1,1,0,0,0,0 "
             "matmul-unroll-factor=2 fill-vec-tile=1,1,0,0 "
             # Phase N: vec-prep deferred to second invocation (after herd).
-            "do-vec-prep=false"
             "}, "
             "func.func(scf-forall-to-parallel), "
             "air-par-to-herd, "
@@ -158,7 +157,6 @@ with air.ir.Context() as ctx, Location.unknown():
             # cast acc to f32 (operand index 2, result index 0). No
             # hoist-cast-pairs (no bf16 trunc/ext pairs to hoist).
             "air-matmul-codegen{"
-            "do-vec-prep=true "
             "vec-prep-cast1-target-element-type=f32 "
             "vec-prep-cast1-input-indices=2 "
             "vec-prep-cast1-output-indices=0"
