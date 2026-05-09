@@ -569,7 +569,6 @@ if __name__ == "__main__":
                 [
                     "func.func(canonicalize,cse)",
                     "air-matmul-codegen{"
-                    "do-pre-fold-unit-extent-dims=true "
                     "matmul-vec-tile=2,2,1,0,0,0 "
                     "matmul-unroll-vec-tile=1,1,0,0,0,0 "
                     "matmul-unroll-factor=2 fill-vec-tile=0,0,1,1 "

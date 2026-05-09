@@ -128,7 +128,8 @@ with air.ir.Context() as ctx, Location.unknown():
             "air-par-to-herd, "
             "func.func(air-herd-vectorize), "
             "func.func(canonicalize,cse,fold-memref-alias-ops), "
-            "air-matmul-codegen{do-pre-fold-unit-extent-dims=true do-vec-prep=false}"
+            # Fold-only orchestrator pass for post-vectorize cleanup.
+            "air-matmul-codegen{do-vec-prep=false}"
             ")"
         )
         pm = air.passmanager.PassManager.parse(cpp_pipeline)

@@ -1138,12 +1138,12 @@ def AIRMatmulCodegen : Pass<"air-matmul-codegen", "ModuleOp"> {
     only the tile/pack stages leave M empty and N=false.
   }];
   let options = [
-      // ---- Phase 0: optional pre-fold of unit-extent dims ----
+      // ---- Phase 0: pre-fold of unit-extent dims ----
       Option<"clDoPreFoldUnitExtentDims", "do-pre-fold-unit-extent-dims",
-             "bool", /*default=*/"false",
+             "bool", /*default=*/"true",
              "Phase 0: run fold-unit-extent-dims on the function before any "
-             "other phase. Used as initial IR cleanup when invoking the "
-             "orchestrator on IRON-emitted IR with stray unit dims.">,
+             "other phase. No-op on already-clean IR; lifts stray unit dims "
+             "in IRON-emitted IR before downstream tile/pack phases.">,
 
       // ---- Phase A: launch tile ----
       ListOption<"clLaunchTile", "launch-tile", "int64_t",
