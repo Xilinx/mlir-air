@@ -184,9 +184,6 @@ pipeline = (
     "builtin.module("
     + ",".join(
         [
-            "func.func(air-collapse-herd)",
-            "canonicalize",
-            "cse",
             "air-place-herds{num-rows=4 num-cols=1 row-anchor=2 col-anchor="
             + str(col_anchor)
             + "}",
