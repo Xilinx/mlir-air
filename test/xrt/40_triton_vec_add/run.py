@@ -114,6 +114,12 @@ vector_size = (
 rtol = cfg["rtol"]
 num_tiles = args.num_tiles
 herd_tile_size = 256 // num_tiles
+# Pick a herd orientation that fits the target. NPU1/NPU2 expose ~4 compute
+# rows per column. If num_tiles <= 4, lay the herd out vertically (1 col x N
+# rows, first_dim=1) so the cores share a column and don't run out of cols
+# at non-zero col anchors. If num_tiles > 4, lay it out horizontally (N x 1)
+# since vertical wouldn't fit in the row budget.
+herd_first_dim = 1 if num_tiles <= 4 else 0
 
 # bf16_emulation only applies to f32 dtype
 bf16_emulation = args.bf16_emulation and args.dtype == "f32"
@@ -175,6 +181,9 @@ with air.ir.Context() as ctx, Location.unknown():
     transform_ir_string = transform_ir_string.replace("@VECTOR_SIZE@", str(vector_size))
     transform_ir_string = transform_ir_string.replace(
         "@HERD_TILE_SIZE@", str(herd_tile_size)
+    )
+    transform_ir_string = transform_ir_string.replace(
+        "@HERD_FIRST_DIM@", str(herd_first_dim)
     )
     transform_ir = Module.parse(transform_ir_string)
     run_transform(transform_ir, air_module)
