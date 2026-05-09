@@ -141,10 +141,11 @@ with air.ir.Context() as ctx, Location.unknown():
         omit_while_true_loop=False,
         runtime_loop_tiling_sizes=[4, 4],
     )
-    rc = runner.run_test(
-        air_module,
-        inputs=[A, B],
-        expected_outputs=[C],
-        rtol=1e-1,
+    exit(
+        runner.run_test(
+            air_module,
+            inputs=[A, B],
+            expected_outputs=[C],
+            rtol=1e-1,
+        )
     )
-    exit(rc)

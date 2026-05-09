@@ -268,13 +268,14 @@ with air.ir.Context() as ctx, Location.unknown():
             "values": sampled_values,
         }
 
-        rc = runner.run_test(
-            air_module,
-            inputs=[A, B],
-            stochastic_expected_outputs=[sampled_data],
-            rtol=max(1e-1, 2e-2 * (K_FULL / K_L2_TILE)),
+        exit(
+            runner.run_test(
+                air_module,
+                inputs=[A, B],
+                stochastic_expected_outputs=[sampled_data],
+                rtol=max(1e-1, 2e-2 * (K_FULL / K_L2_TILE)),
+            )
         )
-        exit(rc)
     elif args.compile_mode == "compile-only":
         backend = XRTBackend(
             verbose=args.verbose,

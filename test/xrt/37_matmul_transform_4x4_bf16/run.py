@@ -203,13 +203,14 @@ if args.compile_mode == "compile-and-run":
         output_format=args.output_format,
         instance_name="forward",
     )
-    rc = runner.run_test(
-        air_module,
-        inputs=[input_a, input_b],
-        stochastic_expected_outputs=[sampled_data],
-        rtol=1e-1,
+    exit(
+        runner.run_test(
+            air_module,
+            inputs=[input_a, input_b],
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-1,
+        )
     )
-    exit(rc)
 
 elif args.compile_mode == "compile-only":
     ###### Compile only

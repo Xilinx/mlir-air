@@ -174,10 +174,11 @@ with air.ir.Context() as ctx, Location.unknown():
             instance_name="bare_matmul",
             # verbose=True,
         )
-        rc = runner.run_test(
-            air_module,
-            inputs=[A, B],
-            expected_outputs=[C],
-            # rtol=1e-1,
+        exit(
+            runner.run_test(
+                air_module,
+                inputs=[A, B],
+                expected_outputs=[C],
+                # rtol=1e-1,
+            )
         )
-        exit(rc)

@@ -303,13 +303,14 @@ with air.ir.Context() as ctx, Location.unknown():
             bf16_emulation=True,
             debug_ir=True,
         )
-        rc = runner.run_test(
-            air_module,
-            inputs=[input_a, input_b],
-            stochastic_expected_outputs=[sampled_data],
-            rtol=0.1,
+        exit(
+            runner.run_test(
+                air_module,
+                inputs=[input_a, input_b],
+                stochastic_expected_outputs=[sampled_data],
+                rtol=0.1,
+            )
         )
-        exit(rc)
     elif args.compile_mode == "compile-only":
         backend = XRTBackend(
             verbose=args.verbose,
