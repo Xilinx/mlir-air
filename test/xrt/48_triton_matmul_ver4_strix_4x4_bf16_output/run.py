@@ -27,12 +27,6 @@ parser.add_argument(
     default="transform.mlir",
     help="Transform script path",
 )
-parser.add_argument(
-    "--use-cpp-pipeline",
-    action="store_true",
-    help="Replace the legacy transform script with the air-matmul-codegen "
-    "orchestrator (single-pack bf16-out flow).",
-)
 args = parser.parse_args()
 
 with air.ir.Context() as ctx, Location.unknown():
@@ -95,59 +89,12 @@ with air.ir.Context() as ctx, Location.unknown():
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
-    if args.use_cpp_pipeline:
-        # Drive Triton-XDNA bf16-out matmul codegen via the C++ orchestrator.
-        # Single-pack-level flow: one L2 pack (orchestrator auto-bufferizes
-        # its output to L1 since l1-pack-sizes is empty). Per-launch-tile
-        # shape is 256x256x256.
-        phases = [
-            "air-matmul-codegen{"
-            # Phase C: bufferize L2 acc + pre-steps for bf16-out flow.
-            "bufferize-output-l2=true fuse-output-truncf-first=true "
-            "tile-l3-to-l2-copies=true k-l2-tile=64 "
-            # Phase B: single-pack L2 pack.
-            "l2-pack-sizes=8,8,8 "
-            "l2-lhs-outer-perm=1,0 l2-lhs-inner-perm=0,1 "
-            "l2-rhs-outer-perm=1,0 l2-rhs-inner-perm=1,0 "
-            "l2-acc-outer-perm=1,0 l2-acc-inner-perm=0,1 "
-            # Phase E: K-tile factor=8 (single-pack so this is the only K-tile).
-            "outer-k-tile-factor=8 outer-k-iter-index=2 "
-            # Phase H: per-core tile.
-            "core-tile=8,8,0 "
-            # Phase K: prologue/epilogue.
-            "prologue-tile=8,8 epilogue-tile=64,64 fill-iter-perm=1,0,2,3 "
-            # Phase L: upstream one-shot-bufferize.
-            "one-shot-bufferize=true "
-            # Phase M: tile-for-vectorize.
-            "post-bufferize-cleanup-first=true "
-            "matmul-vec-tile=2,2,1,0,0,0 "
-            "matmul-unroll-vec-tile=1,1,0,0,0,0 "
-            "matmul-unroll-factor=2 fill-vec-tile=1,1,0,0 "
-            # Phase N: vec-prep no-op pre-vectorize; real work happens in
-            # the second invocation after herd-vectorize.
-            "}",
-            "func.func(scf-forall-to-parallel)",
-            "air-par-to-herd",
-            "func.func(air-herd-vectorize)",
-            "func.func(canonicalize,cse,fold-memref-alias-ops)",
-            # Second orchestrator invocation: vec-prep only.
-            "air-matmul-codegen{"
-            "vec-prep-cast1-target-element-type=f32 "
-            "vec-prep-cast1-input-indices=2 "
-            "vec-prep-cast1-output-indices=0 "
-            "vec-prep-hoist-cast-pairs=true"
-            "}",
-            "func.func(canonicalize,cse,fold-memref-alias-ops)",
-        ]
-        cpp_pipeline = "builtin.module(" + ",".join(phases) + ")"
-        pm = air.passmanager.PassManager.parse(cpp_pipeline)
-        pm.run(air_module.operation)
-    else:
-        # Load the MLIR transform IR from an external file
-        with open(args.transform_script, "r") as f:
-            transform_ir_string = f.read()
-        transform_ir = Module.parse(transform_ir_string)
-        run_transform(transform_ir, air_module)
+    # Drive matmul codegen via the transform script (delegates to the C++
+    # air-matmul-codegen orchestrator via transform.apply_registered_pass).
+    with open(args.transform_script, "r") as f:
+        transform_ir_string = f.read()
+    transform_ir = Module.parse(transform_ir_string)
+    run_transform(transform_ir, air_module)
 
     ################################################
     ## Binding scf.parallel to air hierarchies
