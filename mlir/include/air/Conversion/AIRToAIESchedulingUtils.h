@@ -91,7 +91,12 @@ getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref,
                  air::ChannelOp air_chan);
 
 struct allocation_info_t {
-  AIE::TileOp dma_tile = nullptr;
+  // dma_tile is the SSA value of the (logical or physical) AIE tile that owns
+  // this DMA allocation. Stored as TileLike (op interface) so it works for
+  // both AIE::TileOp (post-placement) and AIE::LogicalTileOp (pre-placement).
+  // Pointer-equality on the underlying Operation* gives the same answer as
+  // (col, row) integer comparison without dependence on physical placement.
+  AIE::TileLike dma_tile = nullptr;
   int64_t col = -1;
   int64_t row = -1;
   AIE::DMAChannel dma_channel = {AIE::DMAChannelDir::MM2S, -1};
@@ -100,23 +105,31 @@ struct allocation_info_t {
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
   bool valid();
-  AIE::TileOp getDmaTile();
-  bool foundAlloc(AIE::TileOp tile);
-  bool foundAlloc(AIE::TileOp tile, air::MemcpyInterface memcpyOp);
-  bool foundAlloc(AIE::TileOp tile, air::ChannelOp channel_op);
-  bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
-  bool foundPacketFlowAllocInTile(AIE::TileOp tile);
+  AIE::TileLike getDmaTile();
+  bool foundAlloc(AIE::TileLike tile);
+  bool foundAlloc(AIE::TileLike tile, air::MemcpyInterface memcpyOp);
+  bool foundAlloc(AIE::TileLike tile, air::ChannelOp channel_op);
+  bool foundAlloc(AIE::TileLike tile, AIE::DMAChannel channel);
+  bool foundPacketFlowAllocInTile(AIE::TileLike tile);
 
   bool foundAlloc(air::ChannelOp channel_op);
   bool foundAlloc(AIE::DMAChannel channel);
 
-  // Column-keyed; row is implied (shim is always row 0).
+  // Column-keyed; row is implied (shim is always row 0). Returns false for
+  // unplaced tiles (tryGetCol() == nullopt) — column-keyed lookups are only
+  // meaningful when the tile has a known column.
   bool foundAllocInColumn(int32_t col);
   bool foundAllocInColumn(int32_t col, AIE::DMAChannel channel);
   bool foundPacketFlowAllocInColumn(int32_t col);
 
   bool operator==(const allocation_info_t &other) const {
-    return dma_tile == other.dma_tile && col == other.col && row == other.row &&
+    // op interface getOperation() isn't const-qualified; cast away the
+    // top-level const for the pointer-equality comparison.
+    auto thisOp =
+        const_cast<allocation_info_t *>(this)->dma_tile.getOperation();
+    auto otherOp =
+        const_cast<allocation_info_t &>(other).dma_tile.getOperation();
+    return thisOp == otherOp && col == other.col && row == other.row &&
            dma_channel == other.dma_channel &&
            tile_channel == other.tile_channel;
   }
@@ -154,13 +167,13 @@ public:
       : device(device), dmaMemorySpace(dmaMemorySpace) {}
 
   FailureOr<allocation_info_t>
-  lookupDMAAllocation(AIE::TileOp tile, air::MemcpyInterface &memcpyOp);
+  lookupDMAAllocation(AIE::TileLike tile, air::MemcpyInterface &memcpyOp);
   FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
-  getLockForDMA(air::MemcpyInterface &memcpyOp, AIE::TileOp tile,
+  getLockForDMA(air::MemcpyInterface &memcpyOp, AIE::TileLike tile,
                 Operation *bufferOp, bool lockRaceConditionFix = false);
   FailureOr<allocation_info_t>
-  allocNewDmaChannel(air::MemcpyInterface &memcpyOp, AIE::TileOp tile, int chan,
-                     int col, int row, std::vector<int> dma_id);
+  allocNewDmaChannel(air::MemcpyInterface &memcpyOp, AIE::TileLike tile,
+                     int chan, int col, int row, std::vector<int> dma_id);
   void sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops);
 
 protected:

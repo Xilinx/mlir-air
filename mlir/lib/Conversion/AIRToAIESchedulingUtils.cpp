@@ -590,9 +590,11 @@ AIE::BufferOp getUnderlyingBufferOp(Value buffer) {
 
 // allocation_info_t impl.
 
-bool xilinx::air::allocation_info_t::valid() { return dma_tile != nullptr; }
+bool xilinx::air::allocation_info_t::valid() {
+  return dma_tile.getOperation() != nullptr;
+}
 
-AIE::TileOp xilinx::air::allocation_info_t::getDmaTile() { return dma_tile; }
+AIE::TileLike xilinx::air::allocation_info_t::getDmaTile() { return dma_tile; }
 
 bool xilinx::air::allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
   if (channel_op) {
@@ -608,7 +610,10 @@ bool xilinx::air::allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
 }
 
 bool xilinx::air::allocation_info_t::foundAllocInColumn(int32_t col) {
-  return getDmaTile() && getDmaTile().getCol() == col;
+  if (!getDmaTile())
+    return false;
+  auto tileCol = getDmaTile().tryGetCol();
+  return tileCol && *tileCol == col;
 }
 
 bool xilinx::air::allocation_info_t::foundAlloc(AIE::DMAChannel channel) {
@@ -624,9 +629,9 @@ bool xilinx::air::allocation_info_t::foundAllocInColumn(
   return foundAllocInColumn(col) && foundAlloc(channel);
 }
 
-bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile,
+bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileLike tile,
                                                 AIE::DMAChannel channel) {
-  if (tile == getDmaTile() && foundAlloc(channel))
+  if (tile.getOperation() == getDmaTile().getOperation() && foundAlloc(channel))
     return true;
   else
     return false;
@@ -647,14 +652,15 @@ bool xilinx::air::allocation_info_t::foundPacketFlowAllocInColumn(int32_t col) {
   return false;
 }
 
-// TileOp-keyed overloads (RFC #1567 Stage C #1). Pointer-equality on
-// dma_tile replaces (col, row) integer comparison; same answer, no
-// dependence on physical placement coordinates.
-bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile) {
-  return tile && tile == getDmaTile();
+// TileLike-keyed overloads (RFC #1567). Pointer-equality on the underlying
+// Operation* of dma_tile replaces (col, row) integer comparison; same answer,
+// no dependence on physical placement coordinates. Works for both AIE::TileOp
+// and AIE::LogicalTileOp.
+bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileLike tile) {
+  return tile && tile.getOperation() == getDmaTile().getOperation();
 }
 
-bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile,
+bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileLike tile,
                                                 air::MemcpyInterface memcpyOp) {
   if (!foundAlloc(tile))
     return false;
@@ -664,13 +670,13 @@ bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile,
   return false;
 }
 
-bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile,
+bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileLike tile,
                                                 air::ChannelOp channel_op) {
   return foundAlloc(tile) && foundAlloc(channel_op);
 }
 
 bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(
-    AIE::TileOp tile) {
+    AIE::TileLike tile) {
   if (!foundAlloc(tile))
     return false;
   for (auto o : memcpyOps) {
@@ -712,7 +718,7 @@ static void selection(std::vector<Operation *> &a) {
 namespace xilinx {
 
 FailureOr<air::allocation_info_t>
-air::DMAAllocator::lookupDMAAllocation(AIE::TileOp tile,
+air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
                                        air::MemcpyInterface &memcpyOp) {
 
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
@@ -732,16 +738,15 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileOp tile,
 // locks depending on the target device.
 FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
 air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
-                                 AIE::TileOp tile, Operation *bufferOp,
+                                 AIE::TileLike tile, Operation *bufferOp,
                                  bool lockRaceConditionFix) {
   auto alloc = lookupDMAAllocation(tile, memcpyOp);
   if (failed(alloc))
     return memcpyOp->emitOpError("failed to look up dma allocation.");
   AIE::DMAChannel channel = alloc.value().dma_channel;
-  // Coordinates derived from the tile for predicates like
-  // target_model.isMemTile.
-  int col = tile.getCol();
-  int row = tile.getRow();
+  // Tile-type predicates derived from TileLike (works for placed and unplaced
+  // tiles alike). Avoids depending on physical (col, row) coordinates.
+  bool tileIsMemTile = tile.isMemTile();
   air::ChannelOp air_chan = nullptr;
   if (auto air_chan_op =
           dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation())) {
@@ -755,7 +760,7 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
     if (air_chan) {
       // AIE2's semaphore locks may share by air.channels
       for (size_t i = 0; i < lock_allocation_list.size(); i++) {
-        if (target_model.isMemTile(col, row)) {
+        if (tileIsMemTile) {
           if (!lockRaceConditionFix) {
             // If memtile, and multiple bds reference the same buffer op, but
             // different DMA channels, then we assume the scenario of having two
@@ -844,7 +849,7 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
         // different DMA channels, then we assume the scenario of having two
         // bds, one S2MM and the other MM2S. This scenario is almost always true
         // due to memtile having no core to communicate data with.
-        else if (target_model.isMemTile(col, row) &&
+        else if (tileIsMemTile &&
                  std::get<0>(lock_allocation_list[i]) == bufferOp) {
           return std::make_pair(std::get<3>(lock_allocation_list[i]),
                                 std::get<4>(lock_allocation_list[i]));
@@ -866,7 +871,7 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
         "failed to materialize src/dst memref into AIE.BufferOp.");
   }
   std::pair<int64_t, int64_t> init_pair;
-  if (target_model.isMemTile(col, row))
+  if (tileIsMemTile)
     init_pair = getLockValuePair(target_model, bufferOp->getResult(0));
   else
     init_pair =
@@ -874,15 +879,20 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
   auto init = std::max(init_pair.first, init_pair.second);
 
   OpBuilder builder(bufferOp);
-  auto rlock = allocateLockOp(device, tile, 0);
-  auto wlock = UsesSemaphoreLocks ? allocateLockOp(device, tile, init) : rlock;
+  // allocateLockOp still requires a physical TileOp for now (Commit 3 will
+  // make it TileLike-aware). Today this code path only fires after the tile
+  // has been resolved to physical via createTileViaPlacer, so the cast holds.
+  auto physTile = cast<AIE::TileOp>(tile.getOperation());
+  auto rlock = allocateLockOp(device, physTile, 0);
+  auto wlock =
+      UsesSemaphoreLocks ? allocateLockOp(device, physTile, init) : rlock;
   lock_allocation_list.push_back({bufferOp, air_chan, channel, rlock, wlock});
   return std::make_pair(rlock, wlock);
 }
 
 // Allocate a new DMA channel
 FailureOr<air::allocation_info_t> air::DMAAllocator::allocNewDmaChannel(
-    air::MemcpyInterface &memcpyOp, AIE::TileOp tile, int chan, int col = -1,
+    air::MemcpyInterface &memcpyOp, AIE::TileLike tile, int chan, int col = -1,
     int row = -1, std::vector<int> dma_id = {}) {
   if (!tile) {
     return memcpyOp.emitOpError("failed to get the AIE tile. This indicates a "
@@ -1717,9 +1727,10 @@ LogicalResult air::simpleDMAChannelAllocation(
           if (!f.S2MM_alloc[i].getDmaTile())
             return memcpyOpIf->emitOpError(
                 "failed to get S2MM tile for L3 allocation.");
+          auto s2mmTile = f.S2MM_alloc[i].getDmaTile();
           auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
-              memcpyOpIf, f.S2MM_alloc[i].getDmaTile().getCol(),
-              f.S2MM_alloc[i].getDmaTile().getRow(), f.S2MM[i]);
+              memcpyOpIf, s2mmTile.tryGetCol().value_or(-1),
+              s2mmTile.tryGetRow().value_or(-1), f.S2MM[i]);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
           f.MM2S_alloc = alloc_res.value();
@@ -1745,9 +1756,10 @@ LogicalResult air::simpleDMAChannelAllocation(
         if (!f.MM2S_alloc.getDmaTile())
           return memcpyOpIf->emitOpError(
               "failed to get MM2S tile for L3 allocation.");
+        auto mm2sTile = f.MM2S_alloc.getDmaTile();
         auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
-            memcpyOpIf, f.MM2S_alloc.getDmaTile().getCol(),
-            f.MM2S_alloc.getDmaTile().getRow(), f.MM2S);
+            memcpyOpIf, mm2sTile.tryGetCol().value_or(-1),
+            mm2sTile.tryGetRow().value_or(-1), f.MM2S);
         if (failed(alloc_res) || !alloc_res->valid())
           return failure();
         f.S2MM_alloc.front() = alloc_res.value();
