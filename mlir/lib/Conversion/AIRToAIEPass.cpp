@@ -629,12 +629,16 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
 }
 
 // Get all tile ops representing memtiles from device op.
-std::vector<AIE::TileOp> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
-  std::vector<AIE::TileOp> memtiles;
-  for (auto t : d.getOps<AIE::TileOp>()) {
-    if (t.isMemTile()) {
-      memtiles.push_back(t);
-    }
+// Return all memtile-typed tile-defining ops in the device, as TileLike.
+// Picks up both physical AIE::TileOp (post-aie-place-tiles) and unplaced
+// AIE::LogicalTileOp emitted by outlineAIEMemtiles. Callers that need a
+// physical TileOp must check the underlying op type before casting.
+std::vector<AIE::TileLike> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
+  std::vector<AIE::TileLike> memtiles;
+  for (auto &op : d.getBody()->getOperations()) {
+    if (auto t = dyn_cast<AIE::TileLike>(op))
+      if (t.isMemTile())
+        memtiles.push_back(t);
   }
   return memtiles;
 }
@@ -1921,8 +1925,9 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
   AllocL2BuffersPattern(
-      MLIRContext *ctx, std::map<memref::AllocOp, AIE::TileOp> &memrefToTileMap,
-      std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+      MLIRContext *ctx,
+      std::map<memref::AllocOp, AIE::TileLike> &memrefToTileMap,
+      std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap,
       uint64_t &bufferId)
       : OpRewritePattern(ctx), memrefToTileMap(memrefToTileMap),
         BufferId(bufferId), bufferToMemtileMap(bufferToMemtileMap) {}
@@ -1949,7 +1954,7 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
       alloc->emitOpError("alloc not found in memrefToTileMap.");
       return failure();
     }
-    AIE::TileOp tile = memrefToTileMap[alloc];
+    AIE::TileLike tile = memrefToTileMap[alloc];
     if (!tile)
       return failure();
 
@@ -1962,10 +1967,14 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
       col_offset = c ? *c : 0;
       row_offset = r ? *r : 0;
     }
+    // For unplaced memtiles (LogicalTileOp before aie-place-tiles runs)
+    // tryGetCol/Row return nullopt; the buffer name suffix falls back to -1.
+    int64_t tileCol = tile.tryGetCol().value_or(0);
+    int64_t tileRow = tile.tryGetRow().value_or(0);
     AIE::BufferOp buffer = allocateBufferOp(
         BufferId, memrefTy, tile,
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-        tile.getCol() - col_offset, tile.getRow() - row_offset);
+        tileCol - col_offset, tileRow - row_offset);
 
     rewriter.replaceOp(alloc, buffer->getResults());
     bufferToMemtileMap[buffer] = tile;
@@ -1973,9 +1982,9 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   }
 
 private:
-  std::map<memref::AllocOp, AIE::TileOp> &memrefToTileMap;
+  std::map<memref::AllocOp, AIE::TileLike> &memrefToTileMap;
   uint64_t &BufferId;
-  std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
+  std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap;
 };
 
 void allocL1Buffers(AIE::DeviceOp m, uint64_t &BufferId) {
@@ -2013,14 +2022,14 @@ bool areReferencedByTheSameAIRChannel(Value memref_a, Value memref_b) {
 
 void L2MemrefToMemTileMap(
     AIE::DeviceOp m,
-    std::map<memref::AllocOp, AIE::TileOp> &memrefToMemTileMap) {
+    std::map<memref::AllocOp, AIE::TileLike> &memrefToMemTileMap) {
   std::vector<memref::AllocOp> allocs;
   m.walk([&](memref::AllocOp alloc) {
     if (air::isL2(llvm::cast<MemRefType>(alloc.getMemref().getType()))) {
       allocs.push_back(alloc);
     }
   });
-  std::vector<AIE::TileOp> memtiles = getMemtilesFromDeviceOp(m);
+  std::vector<AIE::TileLike> memtiles = getMemtilesFromDeviceOp(m);
   if (memtiles.empty()) {
     if (!allocs.empty())
       m.emitWarning("L2 memrefs present but no memtiles available; skipping "
@@ -2071,12 +2080,12 @@ void L2MemrefToMemTileMap(
 }
 
 void allocL2Buffers(AIE::DeviceOp m,
-                    std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+                    std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap,
                     uint64_t &BufferId) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   if (m.getTargetModel().getNumMemTileRows()) {
-    std::map<memref::AllocOp, AIE::TileOp> memrefToTileMap;
+    std::map<memref::AllocOp, AIE::TileLike> memrefToTileMap;
     L2MemrefToMemTileMap(m, memrefToTileMap);
     patterns.insert<AllocL2BuffersPattern>(ctx, memrefToTileMap,
                                            bufferToMemtileMap, BufferId);
@@ -2102,7 +2111,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
   LowerAIRChannelsPattern(
       MLIRContext *ctx, ShimTileAllocator &shimTileAlloc,
-      std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+      std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap,
       std::map<Operation *, AIE::ObjectFifoCreateOp> &linksToComplete)
       : OpRewritePattern(ctx), shimTileAlloc(shimTileAlloc),
         bufferToMemtileMap(bufferToMemtileMap),
@@ -2306,8 +2315,10 @@ private:
     } else if (mem_space == air::MemorySpace::L2) {
       if (bufferToMemtileMap.find(dyn_cast_if_present<AIE::BufferOp>(
               op.getMemref().getDefiningOp())) != bufferToMemtileMap.end()) {
-        *tile = bufferToMemtileMap[dyn_cast_if_present<AIE::BufferOp>(
-            op.getMemref().getDefiningOp())];
+        AIE::TileLike memtile = bufferToMemtileMap[
+            dyn_cast_if_present<AIE::BufferOp>(
+                op.getMemref().getDefiningOp())];
+        *tile = memtile->getResult(0);
       } else {
         return op.emitOpError("missing L2 alloc");
       }
@@ -2398,7 +2409,7 @@ private:
   }
 
   ShimTileAllocator &shimTileAlloc;
-  std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
+  std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap;
   std::map<Operation *, AIE::ObjectFifoCreateOp> &linksToComplete;
 };
 
@@ -2408,7 +2419,7 @@ private:
 // memref deallocs with ObjectFifoReleaseOps.
 LogicalResult
 lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &s,
-                 std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap) {
+                 std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
   std::map<Operation *, AIE::ObjectFifoCreateOp> linksToComplete;
@@ -2893,7 +2904,7 @@ public:
   // Returns failure() if any transformation stage fails.
   LogicalResult
   runDevicePipeline(AIE::DeviceOp device, ModuleOp module, air::HerdOp herd,
-                    std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+                    std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap,
                     AIRToAIEConversionOptions &options, bool useObjFifo,
                     PipelineStage stopAfter = PipelineStage::Complete) {
 
@@ -3784,7 +3795,7 @@ public:
   // memtiles being allocated to) separate memrefs.
   void specializeL2MemrefsIntoMemtiles(AIE::DeviceOp d) {
     // Get all memtiles to place L2 memrefs onto.
-    std::vector<AIE::TileOp> memtiles = getMemtilesFromDeviceOp(d);
+    std::vector<AIE::TileLike> memtiles = getMemtilesFromDeviceOp(d);
     if (memtiles.empty())
       return;
     int maxMemtileSrcConnections =
@@ -6248,7 +6259,7 @@ public:
     auto ctx = m->getContext();
 
     RewritePatternSet patterns(ctx);
-    std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
+    std::map<AIE::BufferOp, AIE::TileLike> bufferToMemtileMap;
 
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
@@ -6412,7 +6423,7 @@ public:
         std::tuple<AIE::DeviceOp, air::HerdOp, AIRToAIEConversionOptions>>
         aie_devices;
 
-    std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
+    std::map<AIE::BufferOp, AIE::TileLike> bufferToMemtileMap;
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
       module.emitOpError("Invalid aie.device option");

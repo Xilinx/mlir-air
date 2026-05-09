@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1" --split-input-file | FileCheck %s
-// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1 use-lock-race-condition-fix=true" --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
+// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1" --aie-place-tiles --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1 use-lock-race-condition-fix=true" --aie-place-tiles --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
 // CHECK-LABEL:   aie.device(npu1) @herd1 {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(0, 2)

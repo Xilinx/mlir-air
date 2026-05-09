@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 generate-shim-dma=true" -canonicalize --split-input-file | FileCheck %s
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 generate-shim-dma=true use-lock-race-condition-fix=true" -canonicalize --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 generate-shim-dma=true" --aie-place-tiles -canonicalize --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 generate-shim-dma=true use-lock-race-condition-fix=true" --aie-place-tiles -canonicalize --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
 // CHECK-LABEL:   aie.device(xcve2802) @herd1 {
 // CHECK:  %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>

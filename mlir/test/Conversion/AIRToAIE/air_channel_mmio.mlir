@@ -16,7 +16,7 @@
 // which makes the data delivery race-free relative to core execution
 // and natively handles any element type (no i32 repack required).
 
-// RUN: air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" | FileCheck %s --check-prefixes=CHECK-SIMPLE,CHECK-MIXED,CHECK-BCAST,CHECK-INDEXED,CHECK-BF16,CHECK-BF16NS,CHECK-I8
+// RUN: air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" --aie-place-tiles | FileCheck %s --check-prefixes=CHECK-SIMPLE,CHECK-MIXED,CHECK-BCAST,CHECK-INDEXED,CHECK-BF16,CHECK-BF16NS,CHECK-I8
 
 // -----
 

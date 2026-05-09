@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" --aie-place-tiles | FileCheck %s
 
 // Prefix + repeating suffix pattern [Q, K, K, K, K] should collapse to a 2-BD
 // circular chain [Q, K], not generate 5 separate BDs.

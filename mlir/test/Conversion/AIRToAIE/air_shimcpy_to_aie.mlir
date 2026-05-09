@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=2 device=xcvc1902" --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=2 device=xcvc1902" --aie-place-tiles --split-input-file | FileCheck %s
 
 // air.dma_memcpy_nd to aie.locks.
 // CHECK: aie.device

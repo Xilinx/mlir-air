@@ -1173,7 +1173,10 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   if (failed(buffer)) {
     return memcpyOp->emitOpError("failed to get buffer.");
   }
-  auto tile = buffer.value().getTileOp();
+  // TileLike instead of TileOp: the underlying tile may be a logical tile
+  // before aie-place-tiles runs.
+  auto tile = dyn_cast_if_present<AIE::TileLike>(
+      buffer.value().getTile().getDefiningOp());
   if (!tile) {
     return buffer.value()->emitOpError("failed to get an AIE tile.");
   }
@@ -1202,7 +1205,10 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       return t;
     }
   }
-  // Need to allocate a new one
+  // Need to allocate a new one. TileLike.getNumSourceConnections /
+  // getNumDestConnections is interface-defined and works for both physical
+  // TileOp and LogicalTileOp (LogicalTileOp consults the targetModel via
+  // its tile_type).
   int memtile_dma_channels =
       isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
                      : tile.getNumDestConnections(AIE::WireBundle::DMA);
@@ -1224,7 +1230,8 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(
   if (failed(buffer)) {
     return memcpyOp->emitOpError("failed to get buffer.");
   }
-  auto tile = buffer.value().getTileOp();
+  auto tile = dyn_cast_if_present<AIE::TileLike>(
+      buffer.value().getTile().getDefiningOp());
   if (!tile) {
     return buffer.value()->emitOpError("failed to get AIE tile.");
   }

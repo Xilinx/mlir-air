@@ -8,7 +8,7 @@
 // Negative tests for channel_type="npu_mmio". Each split runs under `not`
 // so FileCheck sees only that split's diagnostic.
 
-// RUN: not air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" 2>&1 | FileCheck %s
+// RUN: not air-opt %s -split-input-file -air-to-aie="row-offset=2 col-offset=0 device=npu1" --aie-place-tiles 2>&1 | FileCheck %s
 
 // The source data is stamped onto the destination L1 buffer's
 // initial_value, so the put source must be a compile-time constant
