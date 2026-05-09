@@ -37,13 +37,29 @@ module attributes {transform.with_named_sequence} {
     transform.apply_registered_pass "air-herd-vectorize" to %func2
         : (!transform.any_op) -> !transform.any_op
 
-    %func3 = transform.structured.match ops{["func.func"]} in %m2
+    %func3a = transform.structured.match ops{["func.func"]} in %m2
+
         : (!transform.any_op) -> !transform.any_op
-    transform.apply_patterns to %func3 {
-        transform.apply_patterns.canonicalization
-        transform.apply_patterns.memref.fold_memref_alias_ops
-    } : !transform.any_op
-    transform.apply_cse to %func3 : !transform.any_op
+
+    transform.apply_registered_pass "canonicalize" to %func3a
+
+        : (!transform.any_op) -> !transform.any_op
+
+    %func3b = transform.structured.match ops{["func.func"]} in %m2
+
+        : (!transform.any_op) -> !transform.any_op
+
+    transform.apply_registered_pass "cse" to %func3b
+
+        : (!transform.any_op) -> !transform.any_op
+
+    %func3c = transform.structured.match ops{["func.func"]} in %m2
+
+        : (!transform.any_op) -> !transform.any_op
+
+    transform.apply_registered_pass "fold-memref-alias-ops" to %func3c
+
+        : (!transform.any_op) -> !transform.any_op
 
     %m3 = transform.apply_registered_pass "air-matmul-codegen" with options = {
         "vec-prep-cast1-target-element-type" = "i32",
@@ -51,13 +67,29 @@ module attributes {transform.with_named_sequence} {
         "vec-prep-cast1-output-indices" = [0]
     } to %m2 : (!transform.any_op) -> !transform.any_op
 
-    %func4 = transform.structured.match ops{["func.func"]} in %m3
+    %func4a = transform.structured.match ops{["func.func"]} in %m3
+
         : (!transform.any_op) -> !transform.any_op
-    transform.apply_patterns to %func4 {
-        transform.apply_patterns.canonicalization
-        transform.apply_patterns.memref.fold_memref_alias_ops
-    } : !transform.any_op
-    transform.apply_cse to %func4 : !transform.any_op
+
+    transform.apply_registered_pass "canonicalize" to %func4a
+
+        : (!transform.any_op) -> !transform.any_op
+
+    %func4b = transform.structured.match ops{["func.func"]} in %m3
+
+        : (!transform.any_op) -> !transform.any_op
+
+    transform.apply_registered_pass "cse" to %func4b
+
+        : (!transform.any_op) -> !transform.any_op
+
+    %func4c = transform.structured.match ops{["func.func"]} in %m3
+
+        : (!transform.any_op) -> !transform.any_op
+
+    transform.apply_registered_pass "fold-memref-alias-ops" to %func4c
+
+        : (!transform.any_op) -> !transform.any_op
 
     transform.yield
   }
