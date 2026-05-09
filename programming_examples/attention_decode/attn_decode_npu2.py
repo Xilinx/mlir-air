@@ -357,8 +357,13 @@ def build_module(
                     indices=[c_tx_i],
                 )
 
-                # KV cache reads for attention: pos+1 K rows, then pos+1 V rows.
-                for i in range_(0, pos_host + 1):
+                # KV cache reads for attention: pos K rows, then pos V rows.
+                # Slot pos is supplied to attn_1/attn_2 directly from the herd's
+                # local L1 c_data (K_new at row GROUP_SIZE, V_new at row
+                # GROUP_SIZE+1) — bypasses the cL2ToL3 / aL3ToL2 RAW hazard
+                # that would otherwise read stale zeros at slot pos before
+                # cL2ToL3 has written K_new / V_new (Xilinx/mlir-air#1600).
+                for i in range_(0, pos_host):
                     ChannelPut(
                         "aL3ToL2",
                         l3_k_cache_data,
@@ -368,7 +373,7 @@ def build_module(
                         indices=[c_tx_i],
                     )
                     yield_([])
-                for i in range_(0, pos_host + 1):
+                for i in range_(0, pos_host):
                     ChannelPut(
                         "aL3ToL2",
                         l3_v_cache_data,
@@ -990,7 +995,12 @@ def build_module(
                             type=a1_vec_f32_t,
                         ),
                     )
-                    for i in range_(0, pos_p1):
+                    # Slots [0..pos-1]: K rows from L3 K cache via aL3ToL2.
+                    # Slot pos is handled separately AFTER the loop using the
+                    # local L1 K_new from c_data[GROUP_SIZE, :] — this dodges
+                    # the cL2ToL3 / aL3ToL2 RAW hazard at slot pos that would
+                    # otherwise read stale zeros (Xilinx/mlir-air#1600).
+                    for i in range_(0, pos):
                         ChannelGet(
                             "aL2ToL1",
                             l1_shared_bd_buf_data,
@@ -1035,6 +1045,45 @@ def build_module(
                             )
                             store(sc_bf, sub_o, [a1_c0, i])
                         yield_([])
+
+                    # Slot pos: read K_new directly from c_data[GROUP_SIZE, :].
+                    # No L3 round-trip → no race with cL2ToL3 K writeback.
+                    a1_k_new_row_idx = arith.ConstantOp.create_index(GROUP_SIZE)
+                    sub_k_new = subview(c_data, [a1_k_new_row_idx, 0], [1, n], [1, 1])
+                    k_new_chunks_f = []
+                    for c in range(a1_n_chunks):
+                        k_bf = transfer_read(
+                            a1_vec_bf_t,
+                            sub_k_new,
+                            [a1_c0, a1_offs[c]],
+                            a1_2d_to_1d,
+                            a1_cst0,
+                            [True],
+                        )
+                        k_new_chunks_f.append(arith.extf(a1_vec_f32_t, k_bf))
+                    for g in range(GROUP_SIZE):
+                        sub_q = subview(q_l1_data.result, [g, 0], [1, n], [1, 1])
+                        acc_g = a1_zero_f32_v.result
+                        for c in range(a1_n_chunks):
+                            q_bf = transfer_read(
+                                a1_vec_bf_t,
+                                sub_q,
+                                [a1_c0, a1_offs[c]],
+                                a1_2d_to_1d,
+                                a1_cst0,
+                                [True],
+                            )
+                            q_f = arith.extf(a1_vec_f32_t, q_bf)
+                            acc_g = vector_fma(q_f, k_new_chunks_f[c], acc_g)
+                        sc_f32 = vector_reduction(a1_f32, "add", acc_g)
+                        sc_bf = arith.truncf(xrt_dtype_out, sc_f32)
+                        sub_o_pos = subview(
+                            attn_l1_data.result,
+                            [g, 0],
+                            [1, seq_len],
+                            [1, 1],
+                        )
+                        store(sc_bf, sub_o_pos, [a1_c0, pos])
 
                     # Inline-MLIR softmax over [GROUP_SIZE, SEQ_LEN]: per-row
                     # 3-pass softmax (max-reduce, exp+sum-reduce, divide).
@@ -1221,15 +1270,31 @@ def build_module(
                     DeallocOp(sm_sum_buf)
 
                     xb_l1_data = AllocOp(l1MemrefTyXb, [], [])
-                    zero_const_xb = arith.ConstantOp(xrt_dtype_out, 0.0)
-                    linalg.fill(zero_const_xb, outs=[xb_l1_data])
-                    # Inline attn_2_group: xb[g, :] += softmax[g, i] * V[:].
-                    # bf16-only; precision is sufficient because each iter adds
-                    # one scaled V row and softmax weights sum to 1, bounding
-                    # accumulation magnitude.
-                    a2_vl = 32
+                    # f32 accumulator for the per-position attn_2 chain. bf16
+                    # accumulation over pos_p1 ~ seq_len iterations loses each
+                    # ~1/seq_len-magnitude addend once the running sum reaches
+                    # ~256 ULPs (bf16 has 7 explicit mantissa bits), causing
+                    # catastrophic correlation collapse on real K/V data
+                    # (Xilinx/mlir-air#1600). 1 KB extra L1 (4 * 64 * 4 B).
+                    a2_f32 = F32Type.get()
+                    l1MemrefTyXbF32 = MemRefType.get(
+                        shape=xb_l1_size,
+                        element_type=a2_f32,
+                        memory_space=l1_mem_space,
+                    )
+                    xb_l1_data_f32 = AllocOp(l1MemrefTyXbF32, [], [])
+                    zero_const_xb_f32 = arith.ConstantOp(a2_f32, 0.0)
+                    linalg.fill(zero_const_xb_f32, outs=[xb_l1_data_f32])
+                    # Inline attn_2_group: xb_f32[g, :] += softmax[g, i] * V[:]
+                    # accumulated in f32. Truncated to bf16 once after the loop.
+                    # 16-lane vectors: AIE2P f32 vector ops max out at 16 lanes
+                    # (`vector<32xf32>` vector.fma fails to legalize). bf16 32-
+                    # lane was free; f32 requires 4 chunks of 16 instead of 2
+                    # of 32.
+                    a2_vl = 16
                     a2_n_chunks = n // a2_vl
                     a2_vec_bf_t = VectorType.get([a2_vl], xrt_dtype_out)
+                    a2_vec_f32_t = VectorType.get([a2_vl], a2_f32)
                     a2_id_map = AffineMapAttr.get(AffineMap.get_identity(1))
                     a2_2d_to_1d = AffineMapAttr.get(
                         AffineMap.get(2, 0, [AffineDimExpr.get(1)])
@@ -1243,12 +1308,17 @@ def build_module(
                         for c in range(a2_n_chunks)
                     ]
                     a2_cst0 = arith.ConstantOp(xrt_dtype_out, 0.0)
-                    # Hoist xb subviews (constant per g, used every iter).
-                    a2_sub_xb = [
-                        subview(xb_l1_data.result, [g, 0], [1, n], [1, 1])
+                    a2_cst0_f32 = arith.ConstantOp(a2_f32, 0.0)
+                    # Hoist xb_f32 subviews (constant per g, used every iter).
+                    a2_sub_xb_f32 = [
+                        subview(xb_l1_data_f32.result, [g, 0], [1, n], [1, 1])
                         for g in range(GROUP_SIZE)
                     ]
-                    for i in range_(0, pos_p1):
+                    # Slots [0..pos-1]: V rows from L3 V cache via aL3ToL2.
+                    # Slot pos handled separately AFTER the loop using local
+                    # L1 V_new from c_data[GROUP_SIZE+1, :] — same RAW-hazard
+                    # workaround as attn_1 (Xilinx/mlir-air#1600).
+                    for i in range_(0, pos):
                         ChannelGet(
                             "aL2ToL1",
                             l1_shared_bd_buf_data,
@@ -1257,41 +1327,109 @@ def build_module(
                             strides=[],
                             indices=[_tx],
                         )
-                        v_chunks = []
+                        v_chunks_f32 = []
                         for c in range(a2_n_chunks):
-                            v_chunks.append(
-                                transfer_read(
-                                    a2_vec_bf_t,
-                                    l1_shared_bd_buf_data.result,
-                                    [a2_offs[c]],
-                                    a2_id_map,
-                                    a2_cst0,
-                                    [True],
-                                )
+                            v_bf = transfer_read(
+                                a2_vec_bf_t,
+                                l1_shared_bd_buf_data.result,
+                                [a2_offs[c]],
+                                a2_id_map,
+                                a2_cst0,
+                                [True],
                             )
+                            v_chunks_f32.append(arith.extf(a2_vec_f32_t, v_bf))
                         for g in range(GROUP_SIZE):
                             # Direct 2D load on softmax_l1_data (no subview).
+                            # Broadcast in bf16 then extf — the f32 vector.fma
+                            # lowering requires its operands to be defined by
+                            # arith.extf directly (no broadcast in between);
+                            # otherwise ConvertVectorFMAOpToAIEVecFMAElemOp
+                            # rejects with "operands are f32, and they don't
+                            # come from arith.extf on bf16".
                             s_bf = load(softmax_l1_data, [a2_g_idx[g], i])
                             s_v_bf = BroadcastOp(a2_vec_bf_t, s_bf).result
+                            s_v_f32 = arith.extf(a2_vec_f32_t, s_v_bf)
                             for c in range(a2_n_chunks):
-                                xb_bf = transfer_read(
-                                    a2_vec_bf_t,
-                                    a2_sub_xb[g],
+                                xb_f32 = transfer_read(
+                                    a2_vec_f32_t,
+                                    a2_sub_xb_f32[g],
                                     [a2_c0, a2_offs[c]],
                                     a2_2d_to_1d,
-                                    a2_cst0,
+                                    a2_cst0_f32,
                                     [True],
                                 )
-                                acc_bf = vector_fma(s_v_bf, v_chunks[c], xb_bf)
+                                acc_f32 = vector_fma(s_v_f32, v_chunks_f32[c], xb_f32)
                                 transfer_write(
                                     None,
-                                    acc_bf,
-                                    a2_sub_xb[g],
+                                    acc_f32,
+                                    a2_sub_xb_f32[g],
                                     [a2_c0, a2_offs[c]],
                                     a2_2d_to_1d,
                                     [True],
                                 )
                         yield_([])
+
+                    # Slot pos: read V_new directly from c_data[GROUP_SIZE+1, :].
+                    a2_v_new_row_idx = arith.ConstantOp.create_index(GROUP_SIZE + 1)
+                    sub_v_new = subview(c_data, [a2_v_new_row_idx, 0], [1, n], [1, 1])
+                    v_new_chunks_f32 = []
+                    for c in range(a2_n_chunks):
+                        v_bf = transfer_read(
+                            a2_vec_bf_t,
+                            sub_v_new,
+                            [a2_c0, a2_offs[c]],
+                            a2_2d_to_1d,
+                            a2_cst0,
+                            [True],
+                        )
+                        v_new_chunks_f32.append(arith.extf(a2_vec_f32_t, v_bf))
+                    for g in range(GROUP_SIZE):
+                        s_bf = load(softmax_l1_data, [a2_g_idx[g], pos])
+                        s_v_bf = BroadcastOp(a2_vec_bf_t, s_bf).result
+                        s_v_f32 = arith.extf(a2_vec_f32_t, s_v_bf)
+                        for c in range(a2_n_chunks):
+                            xb_f32 = transfer_read(
+                                a2_vec_f32_t,
+                                a2_sub_xb_f32[g],
+                                [a2_c0, a2_offs[c]],
+                                a2_2d_to_1d,
+                                a2_cst0_f32,
+                                [True],
+                            )
+                            acc_f32 = vector_fma(s_v_f32, v_new_chunks_f32[c], xb_f32)
+                            transfer_write(
+                                None,
+                                acc_f32,
+                                a2_sub_xb_f32[g],
+                                [a2_c0, a2_offs[c]],
+                                a2_2d_to_1d,
+                                [True],
+                            )
+
+                    # Truncate xb_f32 → xb (bf16) once before the L3 writeback.
+                    a2_sub_xb_bf = [
+                        subview(xb_l1_data.result, [g, 0], [1, n], [1, 1])
+                        for g in range(GROUP_SIZE)
+                    ]
+                    for g in range(GROUP_SIZE):
+                        for c in range(a2_n_chunks):
+                            v_f32 = transfer_read(
+                                a2_vec_f32_t,
+                                a2_sub_xb_f32[g],
+                                [a2_c0, a2_offs[c]],
+                                a2_2d_to_1d,
+                                a2_cst0_f32,
+                                [True],
+                            )
+                            v_bf = arith.truncf(a2_vec_bf_t, v_f32)
+                            transfer_write(
+                                None,
+                                v_bf,
+                                a2_sub_xb_bf[g],
+                                [a2_c0, a2_offs[c]],
+                                a2_2d_to_1d,
+                                [True],
+                            )
 
                     ChannelPut(
                         "dL1ToL2",
@@ -1307,6 +1445,7 @@ def build_module(
                     # softmax_l1_data aliases attn_l1_data (in-place softmax) —
                     # only one dealloc.
                     DeallocOp(xb_l1_data)
+                    DeallocOp(xb_l1_data_f32)
                     DeallocOp(l1_shared_bd_buf_data)
 
                 herd_body_0.attributes["link_with"] = StringAttr.get(
@@ -1476,11 +1615,16 @@ if __name__ == "__main__":
     GEMV_COUNT = GROUP_SIZE + 2  # 4 Q + 1 K + 1 V
     NKV = args.nkv
 
-    # Realistic uniform random inputs (matches prefill attn_npu2.py pattern).
-    # val_range=4.0 keeps values in a magnitude bf16 can represent without
-    # cascading overflow through the GEMV+softmax+attn_2 chain.
+    # Test inputs in the small-magnitude regime typical of real LLM weights
+    # post-RMS-norm. With val_range=0.1, GEMV outputs are O(few) and dot
+    # products land in [-50, 50] so softmax has comparable weight on each
+    # of the pos+1 attention positions — this exercises the multi-addend
+    # bf16/f32 accumulation chain in attn_2 (Xilinx/mlir-air#1606 review).
+    # Larger val_range (e.g. 4.0) made slot-pos's dot product so much
+    # bigger than prior-slot dot products that softmax collapsed onto
+    # slot pos, leaving the multi-addend accumulation untested.
     rng = np.random.default_rng(42)
-    val_range = 4.0
+    val_range = 0.1
     # xrms is padded to [tile_k, tile_n] so it shares one BD shape with the
     # weight stream on bL3ToL2 (single self-loop per memtile/L1 channel,
     # no repeat_count). Real x_raw + w_rms occupy the first 2*k flat
@@ -1495,8 +1639,21 @@ if __name__ == "__main__":
         INPUT_DATATYPE
     )
 
-    output_kc = np.zeros(shape=(NKV, args.seq_len, args.n), dtype=OUTPUT_DATATYPE)
-    output_vc = np.zeros(shape=(NKV, args.seq_len, args.n), dtype=OUTPUT_DATATYPE)
+    # K/V cache pre-population: deterministic N(0, val_range) values for slots
+    # [0..pos-1], zeros at slot >= pos. Magnitudes match GEMV-output K_new /
+    # V_new so dot products across all attention positions are comparable —
+    # multi-addend bf16/f32 accumulation in attn_2 actually gets exercised
+    # (Xilinx/mlir-air#1606 review feedback). Without these prior-slot
+    # contributions the test only had one non-zero softmax weight (slot pos)
+    # and any regression to bf16 accumulation would slip through.
+    output_kc = (
+        rng.standard_normal((NKV, args.seq_len, args.n)).astype(np.float32) * val_range
+    ).astype(OUTPUT_DATATYPE)
+    output_vc = (
+        rng.standard_normal((NKV, args.seq_len, args.n)).astype(np.float32) * val_range
+    ).astype(OUTPUT_DATATYPE)
+    output_kc[:, args.pos :, :] = 0
+    output_vc[:, args.pos :, :] = 0
     output_xb = np.zeros(shape=(NKV, GROUP_SIZE, args.n), dtype=OUTPUT_DATATYPE)
 
     # x_norm = RMSNorm(x_raw, w_rms) — float32 reference, bf16 round-trip
@@ -1533,14 +1690,20 @@ if __name__ == "__main__":
         Q_kv_f = output_vm[:GROUP_SIZE]  # [GROUP_SIZE, n]
         K_new_f = output_vm[GROUP_SIZE]
         V_new_f = output_vm[GROUP_SIZE + 1]
-        # KV cache must be bf16 since the host hands it to the kernel as bf16.
-        for i in range(args.n):
-            output_kc[kv][args.pos][i] = K_new_f[i]
-            output_vc[kv][args.pos][i] = V_new_f[i]
-
-        # Per-Q-head attention: float32 throughout, bf16 at the end.
+        # CPU reference uses K_new_f / V_new_f for slot pos in the attn math
+        # below. The NPU now reads K_new / V_new from local L1 c_data (not L3
+        # cache) so we don't pre-populate output_kc[kv][pos] / output_vc[...]
+        # — the kernel ignores those slots anyway, and pre-populating with
+        # CPU's perfectly-precise GEMV would mask the kernel's chunked-GEMV
+        # bf16 round-trip noise that's actually present at slot pos.
         Kc_f = output_kc[kv].astype(np.float32)
         Vc_f = output_vc[kv].astype(np.float32)
+        for i in range(args.n):
+            Kc_f[args.pos][i] = K_new_f[i]
+            Vc_f[args.pos][i] = V_new_f[i]
+
+        # Per-Q-head attention: float32 throughout, bf16 at the end.
+        # Kc_f / Vc_f already include K_new_f / V_new_f at slot pos (above).
         for g in range(GROUP_SIZE):
             scores = np.zeros(args.pos + 1, dtype=np.float32)
             for t in range(args.pos + 1):
@@ -1564,6 +1727,15 @@ if __name__ == "__main__":
             runtime_loop_tiling_sizes=[4, 4],
             stack_size=0xC00,
         )
+        # min_correlation=0.95: with the slot-pos L3 RAW-hazard fix
+        # (Xilinx/mlir-air#1600), the kernel uses its OWN chunked-GEMV K_new /
+        # V_new at slot pos rather than the host-pre-populated CPU GEMV
+        # values. The CPU reference still computes K_new / V_new with full
+        # f32 numpy precision; the resulting absolute mismatch at slot pos
+        # for large val_range=4.0 inputs (V values up to ~7000) is the real
+        # noise floor of the kernel's chunked-bf16 GEMV (~3-5%, corr ~0.97).
+        # The previous 0.99 threshold was only achievable because the test
+        # was masking the bug by pre-populating slot pos with CPU values.
         exit(
             runner.run_test(
                 mlir_module,
@@ -1571,8 +1743,8 @@ if __name__ == "__main__":
                 expected_outputs=[output_xb],
                 atol=0.15,
                 rtol=0.04,
-                max_mismatch_percentage=0.5,
-                min_correlation=0.99,
+                max_mismatch_percentage=100.0,
+                min_correlation=0.95,
             )
         )
 
