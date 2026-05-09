@@ -33,12 +33,6 @@ parser.add_argument(
     help="Replace the legacy transform script with the air-matmul-codegen "
     "orchestrator (single-pack bf16-out flow).",
 )
-parser.add_argument(
-    "--profile-iters",
-    type=int,
-    default=0,
-    help="If >0, also benchmark on HW for this many iters (after correctness).",
-)
 args = parser.parse_args()
 
 with air.ir.Context() as ctx, Location.unknown():
@@ -206,12 +200,4 @@ with air.ir.Context() as ctx, Location.unknown():
         expected_outputs=[C],
         rtol=1e-1,
     )
-    if args.profile_iters > 0 and rc == 0:
-        runner.benchmark(
-            air_module,
-            inputs=[A, B],
-            output_shapes_dtypes=[(C.shape, C.dtype)],
-            iters=args.profile_iters,
-            label=("cpp" if args.use_cpp_pipeline else "legacy"),
-        )
     exit(rc)

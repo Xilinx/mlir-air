@@ -46,14 +46,6 @@ parser.add_argument(
     "explicitly per-pass; this PR contains no automatic heuristic.",
 )
 parser.add_argument(
-    "--profile-iters",
-    type=int,
-    default=0,
-    help="If > 0, after the verify run also do a separate compile+load and "
-    "time this many kernel invocations (with 5 warmup iters). One-line A/B "
-    "between --use-cpp-pipeline and the legacy transform.",
-)
-parser.add_argument(
     "--compile-mode",
     type=str,
     choices=["compile-only", "compile-and-run"],
@@ -349,14 +341,6 @@ with air.ir.Context() as ctx, Location.unknown():
             stochastic_expected_outputs=[sampled_data],
             rtol=0.1,
         )
-        if args.profile_iters > 0 and rc == 0:
-            runner.benchmark(
-                air_module,
-                inputs=[input_a, input_b],
-                stochastic_expected_outputs=[sampled_data],
-                iters=args.profile_iters,
-                label=("cpp" if args.use_cpp_pipeline else "legacy"),
-            )
         exit(rc)
     elif args.compile_mode == "compile-only":
         backend = XRTBackend(

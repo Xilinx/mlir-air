@@ -52,13 +52,6 @@ parser.add_argument(
     help="Print module after air-copy-to-dma and exit (debug aid).",
 )
 parser.add_argument(
-    "--profile-iters",
-    type=int,
-    default=0,
-    help="If > 0, after the verify run also do a separate compile+load and "
-    "time this many kernel invocations (with 5 warmup iters).",
-)
-parser.add_argument(
     "--compile-mode",
     type=str,
     choices=["compile-only", "compile-and-run"],
@@ -340,14 +333,6 @@ with air.ir.Context() as ctx, Location.unknown():
             stochastic_expected_outputs=[sampled_data],
             rtol=max(1e-1, 2e-2 * (K_FULL / K_L2_TILE)),
         )
-        if args.profile_iters > 0 and rc == 0:
-            runner.benchmark(
-                air_module,
-                inputs=[A, B],
-                stochastic_expected_outputs=[sampled_data],
-                iters=args.profile_iters,
-                label=("cpp" if args.use_cpp_pipeline else "legacy"),
-            )
         exit(rc)
     elif args.compile_mode == "compile-only":
         backend = XRTBackend(

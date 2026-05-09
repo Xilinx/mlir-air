@@ -52,12 +52,6 @@ parser.add_argument(
     "orchestrator (two-pack-level flow).",
 )
 parser.add_argument(
-    "--profile-iters",
-    type=int,
-    default=0,
-    help="If >0, also benchmark on HW for this many iters (after correctness).",
-)
-parser.add_argument(
     "--M",
     type=int,
     default=512,
@@ -268,14 +262,6 @@ if args.compile_mode == "compile-and-run":
         stochastic_expected_outputs=[sampled_data],
         rtol=1e-1,
     )
-    if args.profile_iters > 0 and rc == 0:
-        runner.benchmark(
-            air_module,
-            inputs=[input_a, input_b],
-            stochastic_expected_outputs=[sampled_data],
-            iters=args.profile_iters,
-            label=("cpp" if args.use_cpp_pipeline else "legacy"),
-        )
     exit(rc)
 
 elif args.compile_mode == "compile-only":

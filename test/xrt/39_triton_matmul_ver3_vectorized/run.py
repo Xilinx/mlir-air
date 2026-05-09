@@ -33,12 +33,6 @@ parser.add_argument(
     help="Replace the legacy transform script with the C++ matmul codegen "
     "orchestrator (air-matmul-codegen). Targets aie2 / NPU1 (mmul=4x4x8).",
 )
-parser.add_argument(
-    "--profile-iters",
-    type=int,
-    default=0,
-    help="If >0, also benchmark on HW for this many iters (after correctness).",
-)
 args = parser.parse_args()
 
 with air.ir.Context() as ctx, Location.unknown():
@@ -191,12 +185,4 @@ with air.ir.Context() as ctx, Location.unknown():
         expected_outputs=[C],
         rtol=1e-3,
     )
-    if args.profile_iters > 0 and rc == 0:
-        runner.benchmark(
-            air_module,
-            inputs=[A, B],
-            output_shapes_dtypes=[((M, N), output_type)],
-            iters=args.profile_iters,
-            label=("cpp" if args.use_cpp_pipeline else "legacy"),
-        )
     exit(rc)

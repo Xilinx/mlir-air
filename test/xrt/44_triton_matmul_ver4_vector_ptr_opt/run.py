@@ -43,12 +43,6 @@ parser.add_argument(
     "size: aie2=4x4x8, aie2p=8x8x8.",
 )
 parser.add_argument(
-    "--profile-iters",
-    type=int,
-    default=0,
-    help="If >0, also benchmark on HW for this many iters (after correctness).",
-)
-parser.add_argument(
     "--output-format",
     type=str,
     dest="output_format",
@@ -229,12 +223,4 @@ with air.ir.Context() as ctx, Location.unknown():
         expected_outputs=[C],
         rtol=1e-1,
     )
-    if args.profile_iters > 0 and rc == 0:
-        runner.benchmark(
-            air_module,
-            inputs=[A, B],
-            output_shapes_dtypes=[((M, N), output_type)],
-            iters=args.profile_iters,
-            label=("cpp" if args.use_cpp_pipeline else "legacy"),
-        )
     exit(rc)

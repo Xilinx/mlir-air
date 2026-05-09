@@ -583,7 +583,7 @@ if __name__ == "__main__":
         args.direct_codegen,
     )
 
-    # Iron-built flow: only the vectorize stages of the C++ orchestrator
+    # Direct-codegen flow: only the vectorize stages of the C++ orchestrator
     # (tile-for-vectorize + vec-prep). All earlier phases are skipped.
     if args.direct_codegen:
         hoist_pairs = "true" if OUTPUT_DATATYPE == bfloat16 else "false"
