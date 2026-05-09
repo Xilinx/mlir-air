@@ -40,13 +40,6 @@ parser.add_argument(
 )
 parser.add_argument("-v", "--verbose", action="store_true")
 parser.add_argument(
-    "--use-cpp-pipeline",
-    action="store_true",
-    help="Replace transform_aie2p.mlir with the C++ matmul codegen pipeline. "
-    "All tile/pack/vector parameters are passed explicitly per-pass; this "
-    "PR contains no automatic heuristic.",
-)
-parser.add_argument(
     "--print-module-only",
     action="store_true",
     help="Print module after air-copy-to-dma and exit (debug aid).",
@@ -186,78 +179,28 @@ with air.ir.Context() as ctx, Location.unknown():
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
-    if args.use_cpp_pipeline:
-        # Drive bf16-out matmul codegen via the air-matmul-codegen
-        # orchestrator. All tile/pack/vector parameters are passed explicitly;
-        # the automatic heuristic that derives these from the matmul shape
-        # lives in a follow-up PR.
-        # Per-launch-tile shape is M_TILE=128, N_TILE=256, K=K_FULL.
-        # Hand-picked values matching the previously-validated heuristic:
-        # K=784 forces L2-K-tile = 16 (largest power-of-2 divisor of 784
-        # that is also a multiple of pack-K=8); 4×4 herd means epilogue
-        # tile is min(per-core-M-span, M/herdM) = min(8*8, 128/4) = 32 —
-        # but the heuristic raised it to 64 to match the per-core mmul.
-        l2_k = K_L2_TILE  # default 16 — must match user's --k-l2-tile.
-        k_factor = max(1, l2_k // 8)
-        # bf16-out single-pack-level flow via the C++ orchestrator. The L2
-        # pack output is auto-bufferized to L1 since l1-pack-sizes is empty.
-        phases = [
-            "air-matmul-codegen{"
-            "bufferize-output-l2=true fuse-output-truncf-first=true "
-            f"tile-l3-to-l2-copies=true k-l2-tile={l2_k} "
-            "l2-pack-sizes=8,8,8 "
-            "l2-lhs-outer-perm=1,0 l2-lhs-inner-perm=0,1 "
-            "l2-rhs-outer-perm=1,0 l2-rhs-inner-perm=1,0 "
-            "l2-acc-outer-perm=1,0 l2-acc-inner-perm=0,1 "
-            f"outer-k-tile-factor={k_factor} outer-k-iter-index=2 "
-            "core-tile=8,8,0 "
-            "prologue-tile=8,8 epilogue-tile=64,64 fill-iter-perm=1,0,2,3 "
-            "one-shot-bufferize=true "
-            "post-bufferize-cleanup-first=true "
-            "matmul-vec-tile=2,2,1,0,0,0 "
-            "matmul-unroll-vec-tile=1,1,0,0,0,0 "
-            "matmul-unroll-factor=2 fill-vec-tile=1,1,0,0 "
-            "}",
-            "func.func(scf-forall-to-parallel)",
-            "air-par-to-herd",
-            "func.func(air-herd-vectorize)",
-            "func.func(canonicalize,cse,fold-memref-alias-ops)",
-            "air-matmul-codegen{"
-            "vec-prep-cast1-target-element-type=f32 "
-            "vec-prep-cast1-input-indices=2 "
-            "vec-prep-cast1-output-indices=0 "
-            "vec-prep-hoist-cast-pairs=true"
-            "}",
-            "func.func(canonicalize,cse,fold-memref-alias-ops)",
-        ]
-        cpp_pipeline = "builtin.module(" + ",".join(phases) + ")"
-        pm = air.passmanager.PassManager.parse(cpp_pipeline)
-        pm.run(air_module.operation)
-    else:
-        with open(args.transform_script, "r") as f:
-            transform_ir_string = f.read()
-        # Parametrize L2 K-tile size in the transform script.
-        if K_L2_TILE != 64:
-            import re
+    # Drive matmul codegen via the transform script (delegates to the C++
+    # air-matmul-codegen orchestrator via transform.apply_registered_pass).
+    # Defaults assume --k-l2-tile=16; rewrite k-l2-tile / outer-k-tile-factor
+    # in the script when the user picks a different value.
+    with open(args.transform_script, "r") as f:
+        transform_ir_string = f.read()
+    if K_L2_TILE != 16:
+        import re
 
-            transform_ir_string = re.sub(
-                r"(tile_using_for %copy1 tile_sizes \[0, )64(\])",
-                rf"\g<1>{K_L2_TILE}\2",
-                transform_ir_string,
-            )
-            transform_ir_string = re.sub(
-                r"(tile_using_for %copy2 tile_sizes \[)64(\])",
-                rf"\g<1>{K_L2_TILE}\2",
-                transform_ir_string,
-            )
-            k_red_tile = K_L2_TILE // 8
-            transform_ir_string = re.sub(
-                r"(tile_using_for %packed_c tile_sizes \[0, 0, )8(\])",
-                rf"\g<1>{k_red_tile}\2",
-                transform_ir_string,
-            )
-        transform_ir = Module.parse(transform_ir_string)
-        run_transform(transform_ir, air_module)
+        transform_ir_string = re.sub(
+            r'("k-l2-tile" = )16(\b)',
+            rf"\g<1>{K_L2_TILE}\g<2>",
+            transform_ir_string,
+        )
+        k_factor = max(1, K_L2_TILE // 8)
+        transform_ir_string = re.sub(
+            r'("outer-k-tile-factor" = )2(\b)',
+            rf"\g<1>{k_factor}\g<2>",
+            transform_ir_string,
+        )
+    transform_ir = Module.parse(transform_ir_string)
+    run_transform(transform_ir, air_module)
 
     ################################################
     ## Binding scf.parallel to air hierarchies
