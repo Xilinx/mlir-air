@@ -67,7 +67,6 @@ struct AIRToAIEConversionOptions {
   bool emit_while;
   bool emit_herd_lock;
   bool generate_shim_dma;
-  bool insert_trace_packet_flow;
   bool use_lock_race_condition_fix;
   AIE::AIEDevice device;
   unsigned stack_size;
@@ -84,7 +83,6 @@ enum class PipelineStage {
   AfterAllocBuffers,      // After allocL1/L2Buffers
   AfterRenumberMemcpy,    // After renumberMemcpyIfOps
   AfterLowerAIRMemcpy,    // After lowerAIRMemcpyOp
-  AfterTracePacketFlow,   // After createTracePacketFlow
   AfterLowerMemRefCopy,   // After lowerMemRefCopyToLoops
   Complete                // Full pipeline including metadata/cleanup
 };
@@ -3000,12 +2998,6 @@ public:
                                                     options)))
       return failure();
     if (stopAfter == PipelineStage::AfterLowerAIRMemcpy)
-      return success();
-
-    // Stage: Trace packet flow
-    if (options.insert_trace_packet_flow)
-      createTracePacketFlow(device);
-    if (stopAfter == PipelineStage::AfterTracePacketFlow)
       return success();
 
     // Stage: Lower L1-to-L1 memref.copy to loops
@@ -6172,48 +6164,6 @@ public:
     return success();
   }
 
-  void createTracePacketFlow(AIE::DeviceOp device) {
-    OpBuilder builder(device);
-    const auto &target_model = device.getTargetModel();
-
-    // Collect existing TileOps
-    DenseMap<AIE::TileID, AIE::TileOp> tiles;
-    for (auto tile : device.getOps<AIE::TileOp>()) {
-      int colIndex = tile.colIndex();
-      int rowIndex = tile.rowIndex();
-      tiles[{colIndex, rowIndex}] = tile;
-    }
-
-    // Create packet flows
-    for (auto srcTile : device.getOps<AIE::TileOp>()) {
-      int srcColIndex = srcTile.colIndex();
-      int srcRowIndex = srcTile.rowIndex();
-      AIE::TileOp destTile;
-
-      if (target_model.isCoreTile(srcColIndex, srcRowIndex) ||
-          target_model.isMemTile(srcColIndex, srcRowIndex)) {
-        int destColIndex = srcColIndex; // todo: allocation?
-        int destRowIndex = 0;
-        if (!tiles[{destColIndex, destRowIndex}]) {
-          builder.setInsertionPointToStart(device.getBody());
-          destTile = AIE::TileOp::create(builder, builder.getUnknownLoc(),
-                                         destColIndex, destRowIndex);
-          tiles[{destColIndex, destRowIndex}] = destTile;
-        } else {
-          destTile = tiles[{destColIndex, destRowIndex}];
-        }
-        int destChan = 1; // todo: allocation?
-
-        builder.setInsertionPoint(device.getBody()->getTerminator());
-        auto keep_pkt_header = builder.getBoolAttr(true);
-        // Trace flows go to shim tiles, so use global shim flow ID
-        (void)createPacketFlowOp(
-            builder, globalShimFlowID, srcTile, AIE::WireBundle::Trace, 0,
-            destTile, AIE::WireBundle::DMA, destChan, keep_pkt_header);
-      }
-    }
-  }
-
   void runTestPatterns() {
 
     auto m = getOperation();
@@ -6244,8 +6194,6 @@ public:
         return PipelineStage::AfterRenumberMemcpy;
       if (testPattern.contains("after-lower-memcpy"))
         return PipelineStage::AfterLowerAIRMemcpy;
-      if (testPattern.contains("after-trace-packet-flow"))
-        return PipelineStage::AfterTracePacketFlow;
       if (testPattern.contains("after-lower-memref-copy"))
         return PipelineStage::AfterLowerMemRefCopy;
       if (testPattern.contains("to-aie-full") ||
@@ -6267,7 +6215,6 @@ public:
           /*.emit_while = */ clEmitWhileLoop,
           /*.emit_herd_lock = */ clEmitHerdLock,
           /*.generate_shim_dma = */ clGenerateShimDMA,
-          /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
           /*.use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
           /*.device = */ *device,
           /*.stack_size = */ clStackSize};
@@ -6398,7 +6345,6 @@ public:
         /* .emit_while = */ clEmitWhileLoop,
         /* .emit_herd_lock = */ clEmitHerdLock,
         /* .generate_shim_dma = */ clGenerateShimDMA,
-        /* .insert_trace_packet_flow = */ clInsertTracePacketFlow,
         /* .use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
         /* .device = */ *device,
         /* .stack_size = */ clStackSize};
@@ -6500,9 +6446,6 @@ public:
         signalPassFailure();
         return;
       }
-
-      if (device_options.insert_trace_packet_flow)
-        createTracePacketFlow(device);
 
       // Lower L1-to-L1 memref.copy to loops before removing remaining copies.
       // AIE cores don't have native memcpy, so L1-to-L1 copies must be
@@ -6917,7 +6860,6 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
       /* .emit_while = */ false,
       /* .emit_herd_lock = */ false,
       /* .generate_shim_dma = */ false,
-      /* .insert_trace_packet_flow = */ false,
       /* .use_lock_race_condition_fix = */ true,
       /* .device = */ *device};
   std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;

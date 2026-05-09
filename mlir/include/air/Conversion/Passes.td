@@ -194,9 +194,6 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
            /*default=*/"false",
            "Choose whether to schedule shim data movement via generating AIE "
            "shim DMA program, or AIR runtime.">,
-    Option<"clInsertTracePacketFlow", "insert-trace-packet-flow", "bool",
-          /*default=*/"false",
-          "Create packet routed traces for cores and memtiles">,
     Option<"clUseLockRaceConditionFix", "use-lock-race-condition-fix", "bool",
           /*default=*/"false",
           "Switch to enable a fix for lock race condition, which protects "
