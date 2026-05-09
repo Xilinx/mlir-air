@@ -61,72 +61,6 @@ AIE::TileOp air::getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col,
   return nullptr;
 }
 
-// See header for contract. Thin single-tile wrapper over createTilesViaPlacer.
-FailureOr<AIE::TileOp> air::createTileViaPlacer(AIE::DeviceOp aie_device,
-                                                AIE::AIETileType tileType,
-                                                std::optional<int> col_hint,
-                                                std::optional<int> row_hint) {
-  SmallVector<AIE::TileOp> out;
-  std::pair<std::optional<int>, std::optional<int>> hint{col_hint, row_hint};
-  if (failed(createTilesViaPlacer(aie_device, tileType, {hint}, out)))
-    return failure();
-  return out.front();
-}
-
-LogicalResult air::createTilesViaPlacer(
-    AIE::DeviceOp aie_device, AIE::AIETileType tileType,
-    ArrayRef<std::pair<std::optional<int>, std::optional<int>>> hints,
-    SmallVectorImpl<AIE::TileOp> &outTiles) {
-  outTiles.clear();
-  if (hints.empty())
-    return success();
-
-  OpBuilder builder(aie_device);
-  builder.setInsertionPointToStart(aie_device.getBody());
-  auto *ctx = builder.getContext();
-
-  // Phase 1: emit all aie.logical_tile ops up-front so the placer sees them
-  // together. Per-tile placement (one place() call per logical tile) would
-  // re-pick the same row for every (col, ?) request because the placer's
-  // nextCompIdx state doesn't persist across calls.
-  SmallVector<AIE::LogicalTileOp> logicals;
-  logicals.reserve(hints.size());
-  for (auto &[col_hint, row_hint] : hints) {
-    IntegerAttr colAttr =
-        col_hint ? IntegerAttr::get(IntegerType::get(ctx, 32), *col_hint)
-                 : IntegerAttr();
-    IntegerAttr rowAttr =
-        row_hint ? IntegerAttr::get(IntegerType::get(ctx, 32), *row_hint)
-                 : IntegerAttr();
-    logicals.push_back(AIE::LogicalTileOp::create(
-        builder, aie_device.getLoc(), tileType, colAttr, rowAttr,
-        /*allocation_scheme=*/StringAttr()));
-  }
-
-  // Phase 2: place all in a single placer invocation.
-  AIE::SequentialPlacer placer;
-  placer.initialize(aie_device.getTargetModel());
-  if (failed(placer.place(aie_device))) {
-    for (auto l : logicals)
-      l.erase();
-    return aie_device.emitError("failed to place logical tiles");
-  }
-
-  // Phase 3: resolve each logical to a physical tile in input order.
-  outTiles.reserve(hints.size());
-  for (auto logical : logicals) {
-    auto placement = placer.getPlacement(logical.getOperation());
-    if (!placement)
-      return logical.emitError("placer returned no placement for logical tile");
-    auto physTile =
-        air::getPhysTileOp(aie_device, placement->col, placement->row);
-    logical.getResult().replaceAllUsesWith(physTile.getResult());
-    logical.erase();
-    outTiles.push_back(physTile);
-  }
-  return success();
-}
-
 // get tileop using physical coordinates
 AIE::TileOp air::getPhysTileOp(AIE::DeviceOp aie_device, int col, int row) {
   auto t = getPhysTileOpOrNull(aie_device, col, row);
@@ -1015,17 +949,12 @@ air::TileDMAAllocator::getBuffer(uint64_t, AIE::TileOp tile,
 
 air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
     : air::DMAAllocator(device, air::MemorySpace::L3) {
-  const auto &aie_target = device.getTargetModel();
   shim_dma_channels = 2;
-  for (int i = 0, e = aie_target.columns(); i < e; i++) {
-    if (aie_target.isShimNOCTile(i, 0))
-      dma_columns.push_back(i);
-  }
 }
 
 FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     air::MemcpyInterface &memcpyOp, int col, int row,
-    std::vector<Operation *> &dma_ops, std::string colAllocConstraint) {
+    std::vector<Operation *> &dma_ops) {
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
   if (failed(isMM2S))
     return failure();
@@ -1041,7 +970,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     isPacketFlowOp = chanTypeRes.value() == "npu_dma_packet";
   }
 
-  // Search for existing dma channel allocation
+  // Search for existing dma channel allocation by air.channel symbol.
   for (auto &t : *allocs) {
     if (t.foundAlloc(getChannelDeclarationThroughSymbol(
             dyn_cast_if_present<air::ChannelInterface>(
@@ -1050,79 +979,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       return t;
     }
   }
-  AIE::TileOp tile = nullptr;
-  int colIdx = 0;
-  if (colAllocConstraint == "same_column") {
-    // Attempt to use shim dma channels within the same column.
-    auto it = find(dma_columns.begin(), dma_columns.end(), col);
-    if (it != dma_columns.end())
-      colIdx = it - dma_columns.begin();
-  }
-  int dma_col = dma_columns[colIdx];
 
-  // For packet-flow ops, reuse an existing physical channel on this shim tile
-  // via time multiplexing. Each logical channel needs its own allocation entry
-  // (for downstream shim_dma_allocation metadata linking) but shares the same
-  // physical DMA channel. We bypass DMAAllocator::allocNewDmaChannel since its
-  // dedup check would merge into the existing entry instead of creating a new
-  // one.
-  if (isPacketFlowOp) {
-    for (auto &t : *allocs) {
-      if (t.foundPacketFlowAllocInColumn(dma_col)) {
-        auto tileRes = air::createTileViaPlacer(
-            device, AIE::AIETileType::ShimNOCTile, dma_col,
-            /*row_hint=*/std::nullopt);
-        if (failed(tileRes))
-          return failure();
-        tile = *tileRes;
-        std::vector<int> dma_ops_get_id;
-        for (auto op : dma_ops) {
-          if (op->hasAttr("id"))
-            dma_ops_get_id.push_back(
-                op->getAttrOfType<IntegerAttr>("id").getInt());
-          else
-            dma_ops_get_id.push_back(-1);
-        }
-        AIE::DMAChannel aie_chan = {dir, t.dma_channel.channel};
-        allocs->push_back({tile,
-                           col,
-                           row,
-                           aie_chan,
-                           t.dma_channel.channel,
-                           /*packet_flow_id=*/-1,
-                           dma_ops_get_id,
-                           {memcpyOp.getOperation()}});
-        return allocs->back();
-      }
-    }
-  }
-
-  int dma_channel = 0;
-  int colTripCount = 0;
-  while (any_of(allocs->begin(), allocs->end(), [&](air::allocation_info_t &a) {
-    return a.foundAllocInColumn(dma_col, AIE::DMAChannel{dir, dma_channel});
-  })) {
-    dma_channel++;
-    if (dma_channel >= shim_dma_channels) {
-      dma_channel = 0;
-      dma_col = dma_columns[colIdx++ % dma_columns.size()];
-      colTripCount++;
-      if (colTripCount > (int)dma_columns.size()) {
-        return memcpyOp->emitOpError(
-            "failed to map to shim dma channels: out of channels.");
-      }
-    }
-  }
-  if (dma_channel >= shim_dma_channels) {
-    return memcpyOp.emitOpError("out of shim dma channels.");
-  }
-  auto tileRes = air::createTileViaPlacer(device, AIE::AIETileType::ShimNOCTile,
-                                          dma_col, /*row_hint=*/std::nullopt);
-  if (failed(tileRes))
-    return failure();
-  tile = *tileRes;
-  // For shim dma allocations, the col, row and dma_id fields record the other
-  // side of the flows, for airrt metadata
   std::vector<int> dma_ops_get_id;
   for (auto op : dma_ops) {
     if (op->hasAttr("id"))
@@ -1130,8 +987,66 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     else
       dma_ops_get_id.push_back(-1);
   }
-  return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, dma_channel, col,
-                                               row, dma_ops_get_id);
+
+  // For packet-flow ops, reuse an existing packet-flow allocation (in the
+  // same direction) to multiplex via packet IDs at the shim DMA level. Each
+  // new entry shares the same logical tile and channel; downstream
+  // shim_dma_allocation metadata is generated per-entry. We bypass
+  // DMAAllocator::allocNewDmaChannel since its dedup check would merge into
+  // the existing entry instead of creating a new one.
+  if (isPacketFlowOp) {
+    for (auto &t : *allocs) {
+      bool isPacketAlloc = false;
+      for (auto o : t.memcpyOps) {
+        auto mc = dyn_cast_if_present<air::MemcpyInterface>(o);
+        if (!mc)
+          continue;
+        auto ct = air::getChannelType(mc);
+        if (succeeded(ct) && ct.value() == "npu_dma_packet") {
+          isPacketAlloc = true;
+          break;
+        }
+      }
+      if (!isPacketAlloc)
+        continue;
+      AIE::DMAChannel aie_chan = {dir, t.dma_channel.channel};
+      allocs->push_back({t.dma_tile, col, row, aie_chan,
+                         t.dma_channel.channel,
+                         /*packet_flow_id=*/-1, dma_ops_get_id,
+                         {memcpyOp.getOperation()}});
+      return allocs->back();
+    }
+  }
+
+  // Round-robin channel assignment across shim_dma_channels (= 2). The
+  // placer's per-tile DMA channel budget spreads LTOs across physical shim
+  // columns; AIR just needs to assign distinct channel indices to LTOs that
+  // could collapse onto the same shim, so the resulting aie.flow ops don't
+  // overlap on a single channel.
+  int dma_channel = (int)allocs->size() % shim_dma_channels;
+
+  // Emit a fresh aie.logical_tile<ShimNOCTile>(?, ?). The placer picks the
+  // physical column from flow adjacency to placed core peers (centroid
+  // placement) and respects per-shim DMA channel capacity.
+  OpBuilder b(device);
+  b.setInsertionPointToStart(device.getBody());
+  // Walk past contiguous tile defining ops so the new LTO sits with peers.
+  for (auto &op : device.getBody()->getOperations()) {
+    if (isa<AIE::TileOp, AIE::LogicalTileOp>(op))
+      b.setInsertionPointAfter(&op);
+    else
+      break;
+  }
+  auto tileLT = AIE::LogicalTileOp::create(
+      b, device.getLoc(), AIE::AIETileType::ShimNOCTile,
+      /*col=*/IntegerAttr(), /*row=*/IntegerAttr(),
+      /*allocation_scheme=*/StringAttr());
+
+  // The col/row int args here record the other side (compute side) of the
+  // flow for airrt metadata; they have nothing to do with the shim's
+  // eventual physical placement.
+  return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tileLT, dma_channel,
+                                               col, row, dma_ops_get_id);
 }
 
 FailureOr<air::allocation_info_t>
