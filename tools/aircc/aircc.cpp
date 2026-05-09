@@ -28,6 +28,7 @@
 
 #if AIR_ENABLE_AIE
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIE/Transforms/AIEPasses.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #endif
 
@@ -955,6 +956,12 @@ static LogicalResult runAieCompilation() {
   // --- Set up MLIR context and parse input ---
   mlir::registerAllPasses();
   xilinx::air::registerAllPasses();
+#if AIR_ENABLE_AIE
+  // Required so we can invoke `aie-place-tiles` from the AIE-side pipeline
+  // below — AIR emits aie.logical_tile<...>(...) for memtiles and shim
+  // tiles, and aie-place-tiles resolves them to physical aie.tile ops.
+  xilinx::AIE::registerAIEPasses();
+#endif
 
   DialectRegistry registry;
   registerAllDialects(registry);
@@ -1056,6 +1063,13 @@ static LogicalResult runAieCompilation() {
   }
 
   // --- AIR to AIE conversion ---
+  // After air-to-aie + air-merge-unrolled-devices the device contains
+  // aie.logical_tile<...>(...) ops for memtiles and shim DMA tiles. Run
+  // mlir-aie's `aie-place-tiles` pass here, before the NPU-side pipeline
+  // below, so airrt-to-npu and the runtime metadata path see fully placed
+  // physical aie.tile ops with no further AIR work needed. (aiecc's own
+  // downstream `runPlacementPipeline` becomes a no-op via its
+  // `hasLogicalTileOps` guard.)
   std::string airToAiePipeline;
   {
     raw_string_ostream os(airToAiePipeline);
@@ -1073,6 +1087,9 @@ static LogicalResult runAieCompilation() {
       os << " stack-size=" << stackSize.getValue();
     os << "}";
     os << ",air-merge-unrolled-devices";
+#if AIR_ENABLE_AIE
+    os << ",aie.device(aie-place-tiles)";
+#endif
     os << ")";
   }
 
