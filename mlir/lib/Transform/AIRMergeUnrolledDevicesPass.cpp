@@ -222,7 +222,9 @@ private:
     IRMapping mapping;
     builder.setInsertionPoint(mergedDevice.getBody()->getTerminator());
 
-    // First pass: clone TileOps with offset and build mapping
+    // First pass: clone TileOps with offset and build mapping. TileOps are
+    // physical (col, row) and dedup-able across unrolled devices when they
+    // collide at the same coordinate.
     for (auto tileOp : srcDevice.getOps<AIE::TileOp>()) {
       int newCol = tileOp.getCol() + colOffset;
       int row = tileOp.getRow();
@@ -245,10 +247,31 @@ private:
       }
     }
 
-    // Second pass: clone all other ops (except terminator)
+    // Second pass: clone LogicalTileOps. These are unplaced (or partially
+    // constrained); we simply translate the column hint by colOffset (if
+    // set) and emit a fresh LTO. The downstream `aie-place-tiles` pass picks
+    // physical coords using the full merged device's adjacency graph, and
+    // can collapse multiple LTOs onto the same physical tile when DMA
+    // capacity permits — so per-coordinate dedup here would be premature
+    // and wrong.
+    for (auto logicalTile : srcDevice.getOps<AIE::LogicalTileOp>()) {
+      auto srcCol = logicalTile.getCol();
+      auto srcRow = logicalTile.getRow();
+      IntegerAttr colAttr = srcCol
+                                ? builder.getI32IntegerAttr(*srcCol + colOffset)
+                                : IntegerAttr();
+      IntegerAttr rowAttr =
+          srcRow ? builder.getI32IntegerAttr(*srcRow) : IntegerAttr();
+      auto newLT = AIE::LogicalTileOp::create(
+          builder, logicalTile.getLoc(), logicalTile.getTileType(), colAttr,
+          rowAttr, logicalTile.getAllocationSchemeAttr());
+      mapping.map(logicalTile.getResult(), newLT.getResult());
+    }
+
+    // Third pass: clone all other ops (except terminator)
     for (auto &op : srcDevice.getBody()->getOperations()) {
-      // Skip TileOps (already handled) and terminator
-      if (isa<AIE::TileOp, AIE::EndOp>(op))
+      // Skip tile defining ops (already handled) and terminator
+      if (isa<AIE::TileOp, AIE::LogicalTileOp, AIE::EndOp>(op))
         continue;
 
       // Skip func.FuncOp declarations that already exist in the merged device
