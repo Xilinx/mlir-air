@@ -397,14 +397,14 @@ def build_module():
     channel("L2ToL1_WtsL1", size=[1, 1])  # To conv1x1_reduce
     channel("L2ToL1_WtsL3", size=[1, 1])  # To conv1x1_skip
     # Broadcast channel for L2 weights to both 3x3 conv cores
-    Channel("L2ToL1_WtsL2", size=[1, 1], broadcast_shape=[2, 1])
+    Channel("L2ToL1_WtsL2", size=[1, 1], broadcast_shape=[1, 2])
 
     # L2 → L1: Input activation to first conv (also feeds skip buffer)
     channel("L2ToL1_ActIn", size=[1, 1])
 
     # L1 ↔ L1: Inter-core dataflow channels
     # Broadcast from 1x1 conv to both 3x3 conv cores
-    Channel("L1ToL1_Conv1ToConv3x3", size=[1, 1], broadcast_shape=[2, 1])
+    Channel("L1ToL1_Conv1ToConv3x3", size=[1, 1], broadcast_shape=[1, 2])
 
     # Skip buffer → final conv (via L2)
     channel("L1ToL1_SkipBufToSkip", size=[1, 1])
@@ -659,10 +659,10 @@ def build_module():
                 # =============================================================
                 @herd(
                     name="conv3x3",
-                    sizes=[2, 1],
+                    sizes=[1, 2],
                     operands=[shared_l1_conv3x3_out.result],
                 )
-                def herd_conv3x3_body(tx, ty, sx, sy, shared_out_full):
+                def herd_conv3x3_body(_dummy_x, tx, _dummy_sx, sx, shared_out_full):
                     c0_h = ConstantOp(index_type, 0)
                     W = TENSOR_IN_W  # 32
                     IC = TENSOR_L2_IN_C  # 64
@@ -682,9 +682,9 @@ def build_module():
                     )
                     padded_row = AllocOp(padded_row_ty, [], [])
 
-                    ChannelGet("L2ToL1_WtsL2", wts, indices=[tx, c0_h])
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[tx, c0_h])
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[tx, c0_h])
+                    ChannelGet("L2ToL1_WtsL2", wts, indices=[c0_h, tx])
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[c0_h, tx])
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[c0_h, tx])
 
                     # Shared output as flat
                     shared_flat_ty = MemRefType.get(
@@ -844,7 +844,7 @@ def build_module():
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
                                     row_buf_0,
-                                    indices=[tx, c0_h],
+                                    indices=[c0_h, tx],
                                 )
                                 yield_([])
                             with InsertionPoint(if_s0.else_block):
@@ -858,7 +858,7 @@ def build_module():
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
                                     row_buf_1,
-                                    indices=[tx, c0_h],
+                                    indices=[c0_h, tx],
                                 )
                                 yield_([])
                             with InsertionPoint(if_s1.else_block):
@@ -872,7 +872,7 @@ def build_module():
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
                                     row_buf_2,
-                                    indices=[tx, c0_h],
+                                    indices=[c0_h, tx],
                                 )
                                 yield_([])
                             with InsertionPoint(if_s2.else_block):
@@ -886,7 +886,7 @@ def build_module():
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
                                     row_buf_3,
-                                    indices=[tx, c0_h],
+                                    indices=[c0_h, tx],
                                 )
                                 yield_([])
                             with InsertionPoint(if_s3.else_block):
