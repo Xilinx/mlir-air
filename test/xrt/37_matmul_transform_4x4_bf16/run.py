@@ -46,12 +46,6 @@ parser.add_argument(
     help="Transform script path",
 )
 parser.add_argument(
-    "--use-cpp-pipeline",
-    action="store_true",
-    help="Replace the legacy transform script with the air-matmul-codegen "
-    "orchestrator (two-pack-level flow).",
-)
-parser.add_argument(
     "--M",
     type=int,
     default=512,
@@ -131,60 +125,14 @@ with open("air_input.mlir", "w") as f:
 ## Tiling
 ################################################
 
-if args.use_cpp_pipeline:
-    # Two-pack-level matmul codegen via the single C++ orchestrator pass.
-    # Hand-tuned options match the legacy transform_aie2p.mlir values for
-    # M=512/N=512/K=1024.
-    pipeline = (
-        "builtin.module(air-matmul-codegen{"
-        # Phase A: outer launch tile.
-        "launch-tile=256,256 "
-        # Phase B: L2 pack.
-        "l2-pack-sizes=64,64,64 "
-        "l2-lhs-outer-perm=0,1 l2-lhs-inner-perm=0,1 "
-        "l2-rhs-outer-perm=1,0 l2-rhs-inner-perm=1,0 "
-        "l2-acc-outer-perm=0,1 l2-acc-inner-perm=0,1 "
-        # Phase C: bufferize L2 accumulator init.
-        "bufferize-output-l2=true "
-        # Phase D: L1 pack on the L2-packed generic; bufferize pack_c to L1.
-        "l1-pack-sizes=0,0,0,8,8,8 "
-        "l1-lhs-outer-perm=0,1,3,2 "
-        "l1-rhs-outer-perm=0,1,3,2 l1-rhs-inner-perm=1,0 "
-        "l1-acc-outer-perm=0,1,3,2 "
-        # Phase E: outer K-tile (factor=1 over K_L2/64 = 16 chunks).
-        # Chain-fuses both L1 and L2 packs into the K-loop; orchestrator
-        # auto-bufferizes the L2 packs into L2 (Phase F).
-        "outer-k-tile-factor=1 outer-k-iter-index=2 "
-        # Phase H: per-core tile (4x4 forall).
-        "core-tile=1,1,0,0,0,0,0,0,0 "
-        # Phase I: inner K-tile (factor=8 over k_L2/8 = 8 chunks).
-        # Orchestrator auto-bufferizes L1 input packs (Phase J).
-        "inner-k-tile-factor=8 inner-k-iter-index=5 "
-        # Phase K: prologue/epilogue. hoist-static-alloc-first hoists the L1
-        # acc alloc out of the K-reduction loop (K-peel flow).
-        "prologue-tile=1,1 epilogue-tile=1,1 hoist-static-alloc-first=true "
-        # Phase L: upstream one-shot-bufferize.
-        "one-shot-bufferize=true "
-        # Phase M: tile-for-vectorize (9-iter matmul tiled by 1; fill 4-iter).
-        # post-bufferize-cleanup-first removes uninitialized copies and
-        # sibling-fuses pingpong loops.
-        "post-bufferize-cleanup-first=true "
-        "matmul-vec-tile=1,1,1,1,1,1,0,0,0 "
-        "matmul-unroll-vec-tile=0,0,0,0,0,0,0,0,0 "
-        "matmul-unroll-factor=1 fill-vec-tile=1,1,1,1 "
-        # Phase N: vec-prep is gated off — this test does not need any of
-        # the vec-prep sub-steps (no vector-cast emulation, no cast-pair
-        # hoist; the simple flatten/hoist passes are not used here).
-        "})"
-    )
-    pm = air.passmanager.PassManager.parse(pipeline, context=context)
-    pm.run(air_module.operation)
-else:
-    # Load the MLIR transform IR from an external file
-    with open(args.transform_script, "r") as f:
-        transform_ir_string = f.read()
-    transform_ir = Module.parse(transform_ir_string, context=context)
-    run_transform(transform_ir, air_module)
+# Drive matmul codegen via the transform script. transform_aie2p.mlir
+# delegates to the C++ air-matmul-codegen orchestrator via
+# transform.apply_registered_pass; transform_aie2.mlir is the legacy
+# hand-rolled NPU1 path.
+with open(args.transform_script, "r") as f:
+    transform_ir_string = f.read()
+transform_ir = Module.parse(transform_ir_string, context=context)
+run_transform(transform_ir, air_module)
 
 with open("air_tiled.mlir", "w") as f:
     f.write(str(air_module))
