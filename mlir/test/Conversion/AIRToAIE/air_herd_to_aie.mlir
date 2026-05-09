@@ -40,9 +40,9 @@ func.func @foo(%arg0: i32) {
 
 // Test that L1-to-L1 memref.copy is lowered to loops with load/store.
 // CHECK: aie.device
-// CHECK: %[[TILE:.*]] = aie.tile(1, 1)
-// CHECK: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
-// CHECK: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK-DAG: %[[TILE:.*]] = aie.tile(1, 1)
+// CHECK-DAG: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK-DAG: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
 // CHECK: aie.core(%[[TILE]]) {
 // CHECK:   scf.for
 // CHECK:     scf.for
@@ -67,9 +67,9 @@ func.func @memref_copy_l1_to_l1() {
 
 // Test that L1-to-L1 memref.copy wrapped in air.execute is lowered to loops.
 // CHECK: aie.device
-// CHECK: %[[TILE:.*]] = aie.tile(1, 1)
-// CHECK: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
-// CHECK: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK-DAG: %[[TILE:.*]] = aie.tile(1, 1)
+// CHECK-DAG: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK-DAG: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
 // CHECK: aie.core(%[[TILE]]) {
 // CHECK:   scf.for
 // CHECK:     scf.for
@@ -97,9 +97,9 @@ func.func @memref_copy_l1_to_l1_in_execute() {
 
 // Test that L1-to-L1 linalg.copy is lowered to loops with load/store.
 // CHECK: aie.device
-// CHECK: %[[TILE:.*]] = aie.tile(1, 1)
-// CHECK: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
-// CHECK: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK-DAG: %[[TILE:.*]] = aie.tile(1, 1)
+// CHECK-DAG: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK-DAG: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
 // CHECK: aie.core(%[[TILE]]) {
 // CHECK:   scf.for
 // CHECK:     scf.for
@@ -124,9 +124,9 @@ func.func @linalg_copy_l1_to_l1() {
 
 // Test that L1-to-L1 linalg.copy wrapped in air.execute is lowered to loops.
 // CHECK: aie.device
-// CHECK: %[[TILE:.*]] = aie.tile(1, 1)
-// CHECK: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
-// CHECK: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK-DAG: %[[TILE:.*]] = aie.tile(1, 1)
+// CHECK-DAG: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK-DAG: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
 // CHECK: aie.core(%[[TILE]]) {
 // CHECK:   scf.for
 // CHECK:     scf.for

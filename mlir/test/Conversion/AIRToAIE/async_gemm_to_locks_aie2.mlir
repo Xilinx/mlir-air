@@ -8,12 +8,12 @@
 // RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" --aie-place-tiles %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) @segment_0 {
-// CHECK:   %[[VAL_0:.*]] = aie.tile(2, 0)
-// CHECK:   %[[VAL_1:.*]] = aie.tile(5, 1)
-// CHECK:   %[[VAL_3:.*]] = aie.tile(5, 3)
-// CHECK:   %[[VAL_4:.*]] = aie.tile(6, 3)
-// CHECK:   %[[VAL_5:.*]] = aie.tile(5, 4)
-// CHECK:   %[[VAL_6:.*]] = aie.tile(6, 4)
+// CHECK-DAG:   %[[VAL_0:.*]] = aie.tile(2, 0)
+// CHECK-DAG:   %[[VAL_1:.*]] = aie.tile(5, 1)
+// CHECK-DAG:   %[[VAL_3:.*]] = aie.tile(5, 3)
+// CHECK-DAG:   %[[VAL_4:.*]] = aie.tile(6, 3)
+// CHECK-DAG:   %[[VAL_5:.*]] = aie.tile(5, 4)
+// CHECK-DAG:   %[[VAL_6:.*]] = aie.tile(6, 4)
 // CHECK:   aie.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
 // CHECK:   aie.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
 // CHECK:   aie.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>

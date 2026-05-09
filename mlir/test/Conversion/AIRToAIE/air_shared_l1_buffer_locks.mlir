@@ -190,7 +190,7 @@ module {
 
 // CHECK-LABEL: aie.device
 // CHECK-DAG: %[[TILE:.*]] = aie.tile(0, 2)
-// CHECK: %[[LOCAL_BUF:.*]] = aie.buffer(%[[TILE]]) {sym_name = "buf{{.*}}"} : memref<16x16xi32, 2>
+// CHECK-DAG: %[[LOCAL_BUF:.*]] = aie.buffer(%[[TILE]]) {sym_name = "buf{{.*}}"} : memref<16x16xi32, 2>
 
 // Local buffers should NOT have prod/cons locks with "shared_l1" prefix
 // CHECK-NOT: shared_l1{{.*}}_prod_lock

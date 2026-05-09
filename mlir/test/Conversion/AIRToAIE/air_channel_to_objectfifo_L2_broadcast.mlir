@@ -8,10 +8,10 @@
 // RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='use-objectfifo=true device=xcve2802' --canonicalize | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) @segment_0 {
-// CHECK:    %[[VAL_0:.*]] = aie.tile(1, 1)
-// CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
-// CHECK:    %[[VAL_3:.*]] = aie.tile(5, 4)
-// CHECK:    %[[VAL_4:.*]] = aie.tile(2, 0)
+// CHECK-DAG:    %[[VAL_0:.*]] = aie.tile(1, 1)
+// CHECK-DAG:    %[[VAL_2:.*]] = aie.tile(5, 3)
+// CHECK-DAG:    %[[VAL_3:.*]] = aie.tile(5, 4)
+// CHECK-DAG:    %[[VAL_4:.*]] = aie.tile(2, 0)
 // CHECK:    aie.objectfifo @air_channel_1(%[[VAL_0]], {%[[VAL_3]], %[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo @air_channel_0(%[[VAL_4]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo.link [@air_channel_0] -> [@air_channel_1]([] [])

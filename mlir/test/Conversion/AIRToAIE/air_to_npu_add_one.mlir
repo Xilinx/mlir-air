@@ -6,24 +6,24 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu1_1col})' --split-input-file | FileCheck %s
-// RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu1_1col use-lock-race-condition-fix=true})' --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
+// RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu1_1col}, aie.device(aie-place-tiles))' --split-input-file | FileCheck %s
+// RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu1_1col use-lock-race-condition-fix=true}, aie.device(aie-place-tiles))' --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
-// CHECK: %[[VAL0:.*]] = aie.tile(0, 1)
-// CHECK: %[[VAL1:.*]] = aie.tile(0, 2)
-// CHECK: %[[VAL2:.*]] = aie.tile(0, 0)
-// CHECK: %[[VAL3:.*]] = aie.lock(%[[VAL0]], 3) {init = 1 : i32}
-// CHECK: %[[VAL4:.*]] = aie.lock(%[[VAL0]], 2) {init = 0 : i32}
-// CHECK: %[[VAL5:.*]] = aie.lock(%[[VAL0]], 1) {init = 1 : i32}
-// CHECK: %[[VAL6:.*]] = aie.lock(%[[VAL0]], 0) {init = 0 : i32}
-// CHECK: %[[VAL7:.*]] = aie.lock(%[[VAL1]], 3) {init = 1 : i32}
-// CHECK: %[[VAL8:.*]] = aie.lock(%[[VAL1]], 2) {init = 0 : i32}
-// CHECK: %[[VAL9:.*]] = aie.lock(%[[VAL1]], 1) {init = 1 : i32}
-// CHECK: %[[VAL10:.*]] = aie.lock(%[[VAL1]], 0) {init = 0 : i32}
-// CHECK: %[[VAL11:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
-// CHECK: %[[VAL12:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
-// CHECK: %[[VAL13:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
-// CHECK: %[[VAL14:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
+// CHECK-DAG: %[[VAL0:.*]] = aie.tile(0, 1)
+// CHECK-DAG: %[[VAL1:.*]] = aie.tile(0, 2)
+// CHECK-DAG: %[[VAL2:.*]] = aie.tile(0, 0)
+// CHECK-DAG: %[[VAL3:.*]] = aie.lock(%[[VAL0]], 3) {init = 1 : i32}
+// CHECK-DAG: %[[VAL4:.*]] = aie.lock(%[[VAL0]], 2) {init = 0 : i32}
+// CHECK-DAG: %[[VAL5:.*]] = aie.lock(%[[VAL0]], 1) {init = 1 : i32}
+// CHECK-DAG: %[[VAL6:.*]] = aie.lock(%[[VAL0]], 0) {init = 0 : i32}
+// CHECK-DAG: %[[VAL7:.*]] = aie.lock(%[[VAL1]], 3) {init = 1 : i32}
+// CHECK-DAG: %[[VAL8:.*]] = aie.lock(%[[VAL1]], 2) {init = 0 : i32}
+// CHECK-DAG: %[[VAL9:.*]] = aie.lock(%[[VAL1]], 1) {init = 1 : i32}
+// CHECK-DAG: %[[VAL10:.*]] = aie.lock(%[[VAL1]], 0) {init = 0 : i32}
+// CHECK-DAG: %[[VAL11:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
+// CHECK-DAG: %[[VAL12:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
+// CHECK-DAG: %[[VAL13:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
+// CHECK-DAG: %[[VAL14:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
 // CHECK: aie.mem(%[[VAL1]]) {
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:
@@ -138,21 +138,21 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 
 // Asynchronous version
 
-// CHECK: %[[VAL0:.*]] = aie.tile(0, 1)
-// CHECK: %[[VAL1:.*]] = aie.tile(0, 2)
-// CHECK: %[[VAL2:.*]] = aie.tile(0, 0)
-// CHECK: %[[VAL3:.*]] = aie.lock(%[[VAL0]], 3) {init = 1 : i32}
-// CHECK: %[[VAL4:.*]] = aie.lock(%[[VAL0]], 2) {init = 0 : i32}
-// CHECK: %[[VAL5:.*]] = aie.lock(%[[VAL0]], 1) {init = 1 : i32}
-// CHECK: %[[VAL6:.*]] = aie.lock(%[[VAL0]], 0) {init = 0 : i32}
-// CHECK: %[[VAL7:.*]] = aie.lock(%[[VAL1]], 3) {init = 1 : i32}
-// CHECK: %[[VAL8:.*]] = aie.lock(%[[VAL1]], 2) {init = 0 : i32}
-// CHECK: %[[VAL9:.*]] = aie.lock(%[[VAL1]], 1) {init = 1 : i32}
-// CHECK: %[[VAL10:.*]] = aie.lock(%[[VAL1]], 0) {init = 0 : i32}
-// CHECK: %[[VAL11:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
-// CHECK: %[[VAL12:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
-// CHECK: %[[VAL13:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
-// CHECK: %[[VAL14:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
+// CHECK-DAG: %[[VAL0:.*]] = aie.tile(0, 1)
+// CHECK-DAG: %[[VAL1:.*]] = aie.tile(0, 2)
+// CHECK-DAG: %[[VAL2:.*]] = aie.tile(0, 0)
+// CHECK-DAG: %[[VAL3:.*]] = aie.lock(%[[VAL0]], 3) {init = 1 : i32}
+// CHECK-DAG: %[[VAL4:.*]] = aie.lock(%[[VAL0]], 2) {init = 0 : i32}
+// CHECK-DAG: %[[VAL5:.*]] = aie.lock(%[[VAL0]], 1) {init = 1 : i32}
+// CHECK-DAG: %[[VAL6:.*]] = aie.lock(%[[VAL0]], 0) {init = 0 : i32}
+// CHECK-DAG: %[[VAL7:.*]] = aie.lock(%[[VAL1]], 3) {init = 1 : i32}
+// CHECK-DAG: %[[VAL8:.*]] = aie.lock(%[[VAL1]], 2) {init = 0 : i32}
+// CHECK-DAG: %[[VAL9:.*]] = aie.lock(%[[VAL1]], 1) {init = 1 : i32}
+// CHECK-DAG: %[[VAL10:.*]] = aie.lock(%[[VAL1]], 0) {init = 0 : i32}
+// CHECK-DAG: %[[VAL11:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
+// CHECK-DAG: %[[VAL12:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
+// CHECK-DAG: %[[VAL13:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
+// CHECK-DAG: %[[VAL14:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
 // CHECK: aie.mem(%[[VAL1]]) {
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:

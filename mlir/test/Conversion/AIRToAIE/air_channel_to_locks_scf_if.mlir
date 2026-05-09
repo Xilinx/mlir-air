@@ -9,14 +9,14 @@
 
 // one-to-one communication using scf.if with arith.cmpi
 // CHECK: aie.device
-// CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
-// CHECK:         %[[VAL_2:.*]] = aie.tile(2, 4)
-// CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 1)
-// CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 0)
-// CHECK:         %[[VAL_5:.*]] = aie.lock(%[[VAL_2]], 1)
-// CHECK:         %[[VAL_6:.*]] = aie.lock(%[[VAL_2]], 0)
-// CHECK:         %[[VAL_7:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_1:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[VAL_2:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 1)
+// CHECK-DAG:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 0)
+// CHECK-DAG:         %[[VAL_5:.*]] = aie.lock(%[[VAL_2]], 1)
+// CHECK-DAG:         %[[VAL_6:.*]] = aie.lock(%[[VAL_2]], 0)
+// CHECK-DAG:         %[[VAL_7:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:    aie.mem(%[[VAL_2]])  {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb2)
@@ -90,14 +90,14 @@ func.func @one_to_one() {
 
 // two-to-two parallel dataflow using scf.if with arith.cmpi
 // CHECK: aie.device
-// CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
-// CHECK:         %[[VAL_2:.*]] = aie.tile(3, 3)
-// CHECK:         %[[VAL_3:.*]] = aie.tile(2, 4)
-// CHECK:         %[[VAL_4:.*]] = aie.tile(3, 4)
-// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_4]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_15:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_16:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_1:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[VAL_2:.*]] = aie.tile(3, 3)
+// CHECK-DAG:         %[[VAL_3:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[VAL_4:.*]] = aie.tile(3, 4)
+// CHECK-DAG:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_4]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_15:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_16:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:         aie.flow(%[[VAL_3]], DMA : 0, %[[VAL_4]], DMA : 0)
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1})' --split-input-file | FileCheck %s --check-prefix=WHOLEARRAY
+// RUN: air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1}, aie.device(aie-place-tiles))' --split-input-file | FileCheck %s --check-prefix=WHOLEARRAY
 
 // 4x4 NPU1 array.
 

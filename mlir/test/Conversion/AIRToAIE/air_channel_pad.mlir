@@ -11,8 +11,8 @@
 // as const_pad_before/const_pad_after in the memtile DMA.
 
 // CHECK: aie.device
-// CHECK:         %[[TILE_L2:.*]] = aie.tile(2, 1)
-// CHECK:         %[[TILE_L1:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[TILE_L2:.*]] = aie.tile(2, 1)
+// CHECK-DAG:         %[[TILE_L1:.*]] = aie.tile(2, 3)
 
 // CHECK:       aie.memtile_dma(%[[TILE_L2]])
 // The MM2S DMA BD from memtile to compute tile should have padding

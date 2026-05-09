@@ -8,14 +8,14 @@
 // RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="row-offset=2 col-offset=0 device=npu1" --aie-place-tiles -canonicalize -cse %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(npu1) @segment_0 {
-// CHECK:   %[[tile_0_0:.*]] = aie.tile(0, 0)
-// CHECK:   %[[tile_1_0:.*]] = aie.tile(1, 0)
-// CHECK:   %[[tile_0_1:.*]] = aie.tile(0, 1)
-// CHECK:   %[[tile_1_1:.*]] = aie.tile(1, 1)
-// CHECK:   %[[tile_0_2:.*]] = aie.tile(0, 2)
-// CHECK:   %[[tile_1_2:.*]] = aie.tile(1, 2)
-// CHECK:   %[[tile_0_3:.*]] = aie.tile(0, 3)
-// CHECK:   %[[tile_1_3:.*]] = aie.tile(1, 3)
+// CHECK-DAG:   %[[tile_0_0:.*]] = aie.tile(0, 0)
+// CHECK-DAG:   %[[tile_1_0:.*]] = aie.tile(1, 0)
+// CHECK-DAG:   %[[tile_0_1:.*]] = aie.tile(0, 1)
+// CHECK-DAG:   %[[tile_1_1:.*]] = aie.tile(1, 1)
+// CHECK-DAG:   %[[tile_0_2:.*]] = aie.tile(0, 2)
+// CHECK-DAG:   %[[tile_1_2:.*]] = aie.tile(1, 2)
+// CHECK-DAG:   %[[tile_0_3:.*]] = aie.tile(0, 3)
+// CHECK-DAG:   %[[tile_1_3:.*]] = aie.tile(1, 3)
 // CHECK-COUNT-8:    aie.lock(%[[tile_1_1]], {{.*}})
 // CHECK-COUNT-2:    aie.lock(%[[tile_0_1]], {{.*}})
 // CHECK-COUNT-6:    aie.lock(%[[tile_0_2]], {{.*}})

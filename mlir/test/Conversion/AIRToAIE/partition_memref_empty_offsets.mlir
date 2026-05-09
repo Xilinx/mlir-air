@@ -17,7 +17,7 @@
 // The L2 buffer should remain as a single unpartitioned buffer on the memtile,
 // because the empty-offset channel.put prevents partitioning.
 // CHECK-LABEL: aie.device(npu1)
-// CHECK:         %[[MEMTILE:.*]] = aie.tile(1, 1)
+// CHECK-DAG:         %[[MEMTILE:.*]] = aie.tile(1, 1)
 // CHECK:         aie.buffer(%[[MEMTILE]]) {{{.*}}} : memref<256x256xbf16, 1>
 // CHECK-NOT:     aie.buffer(%[[MEMTILE]]) {{{.*}}} : memref<{{.*}}xbf16, 1>
 
