@@ -52,6 +52,33 @@ static bool herdHasVectorContract(xilinx::air::HerdOp herd) {
   return found;
 }
 
+// Collect every scf.for that lives inside an air.herd in `func` and has no
+// further scf.for in its subtree. Optional `herdFilter` skips entire herds.
+static SmallVector<mlir::scf::ForOp>
+findInnermostForsInHerds(func::FuncOp func,
+                         function_ref<bool(HerdOp)> herdFilter = nullptr) {
+  SmallVector<mlir::scf::ForOp> innermost;
+  func.walk([&](HerdOp herd) {
+    if (herdFilter && !herdFilter(herd))
+      return;
+    herd->walk([&](mlir::scf::ForOp forOp) {
+      bool hasInnerFor = false;
+      for (Operation &nested : forOp.getBody()->without_terminator()) {
+        if (isa<mlir::scf::ForOp>(nested)) {
+          hasInnerFor = true;
+          break;
+        }
+        nested.walk([&](mlir::scf::ForOp) { hasInnerFor = true; });
+        if (hasInnerFor)
+          break;
+      }
+      if (!hasInnerFor)
+        innermost.push_back(forOp);
+    });
+  });
+  return innermost;
+}
+
 // Per-step bodies. Extracted from the previously-individual AIR passes; now
 // invoked in fixed order from runCodegenVecPrepImpl below.
 
@@ -77,24 +104,7 @@ static LogicalResult runHoistLoopInvariantTransfersStep(func::FuncOp func,
                                                         IRRewriter &rewriter) {
   // Innermost scf.for inside each herd; the helper requires vector.transfer
   // pairs in the loop's immediate body.
-  SmallVector<mlir::scf::ForOp> innermost;
-  func.walk([&](xilinx::air::HerdOp herd) {
-    herd->walk([&](mlir::scf::ForOp forOp) {
-      bool hasInnerFor = false;
-      for (Operation &nested : forOp.getBody()->without_terminator()) {
-        if (isa<mlir::scf::ForOp>(nested)) {
-          hasInnerFor = true;
-          break;
-        }
-        nested.walk([&](mlir::scf::ForOp) { hasInnerFor = true; });
-        if (hasInnerFor)
-          break;
-      }
-      if (!hasInnerFor)
-        innermost.push_back(forOp);
-    });
-  });
-  for (mlir::scf::ForOp loopOp : innermost) {
+  for (mlir::scf::ForOp loopOp : findInnermostForsInHerds(func)) {
     auto scopeOp = loopOp->getParentOfType<xilinx::air::HerdOp>();
     auto res = runHoistLoopInvariantTransfers(scopeOp, loopOp, rewriter);
     if (failed(res))
@@ -107,26 +117,8 @@ static LogicalResult runHoistVectorTransferPointersStep(func::FuncOp func,
                                                         IRRewriter &rewriter) {
   // Compute-herd-only filter: skip fill/epilogue herds so downstream
   // air-shrink-memref-sizes-by-access can still split L1 buffers per-core.
-  SmallVector<mlir::scf::ForOp> innermost;
-  func.walk([&](xilinx::air::HerdOp herd) {
-    if (!herdHasVectorContract(herd))
-      return;
-    herd->walk([&](mlir::scf::ForOp forOp) {
-      bool hasInnerFor = false;
-      for (Operation &nested : forOp.getBody()->without_terminator()) {
-        if (isa<mlir::scf::ForOp>(nested)) {
-          hasInnerFor = true;
-          break;
-        }
-        nested.walk([&](mlir::scf::ForOp) { hasInnerFor = true; });
-        if (hasInnerFor)
-          break;
-      }
-      if (!hasInnerFor)
-        innermost.push_back(forOp);
-    });
-  });
-  for (mlir::scf::ForOp forOp : innermost) {
+  for (mlir::scf::ForOp forOp :
+       findInnermostForsInHerds(func, herdHasVectorContract)) {
     if (failed(runHoistVectorTransferPointers(forOp, rewriter)))
       return forOp->emitError("hoist-vector-transfer-pointers failed");
   }
