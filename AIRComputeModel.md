@@ -618,17 +618,13 @@ The meaning of "contiguous" and the constraints imposed on iteration space
 dimensions depend on the target backend:
 
 - **AIE (NPU)**: A herd defines a logical rectangular array of compute units.
-  The compiler may **reshape** the iteration space (e.g., collapse a 2D herd
-  into a 1D arrangement) via the `AIRCollapseHerdPass`. Reshaping is inhibited
-  automatically when the herd body uses cascade channels (`channel_type =
-  "npu_cascade"`), because cascade connections are topology-dependent and cannot
-  survive reindexing. Explicit placement attributes (`x_loc`, `y_loc`,
-  `x_size`, `y_size`) on the enclosing segment also constrain the legal shapes
-  by fixing the tile footprint. The pass accepts a `max-col-size` option to
-  bound the width of the collapsed arrangement. A dedicated per-herd attribute
-  to disable reshaping independently of these conditions is not yet
-  implemented. The resulting contiguous rectangular region of physical tiles is
-  determined after any reshaping has been applied.
+  The herd's declared 2D shape (`x_size`, `y_size`) is preserved through
+  placement; choose the shape that matches the desired physical footprint
+  (e.g., a single column of 4 tiles is `sizes=[1, 4]`, not `sizes=[4, 1]`).
+  Explicit placement attributes (`x_loc`, `y_loc`, `x_size`, `y_size`) on the
+  enclosing segment further constrain the legal placement region by fixing the
+  tile footprint. The resulting contiguous rectangular region of physical
+  tiles is determined by the herd's declared shape and the segment's anchor.
 
 - **GPU (AMD MI3xx family)**: A herd executes entirely within a single Compute
   Unit (CU), with PE instances mapped to individual warps. The combined

@@ -165,20 +165,6 @@ dependence to the induction variables of any parent spatial loop space. Upon
 successful detection, the DMA shall be annotated by an affine set attribute 
 named 'broadcast_pattern'. 
 
-### `-air-collapse-herd`
-
-_Collapse a multi-dimensional air.herd into a single column._
-
-The pass attempts to collapse the air.herd to the left, attempting to occupy 
-complete columns of AIE tiles. The attempt will stop if the number of tiles in 
-air.herd exceeds the user provided max-col-size option.
-
-#### Options
-
-```
--max-col-size : The maximum column size after collapse, before collapse is cancelled. Disabled by default.
-```
-
 ### `-air-construct-ping-pong-dependency-pattern`
 
 _Transform an scf.for loop into ping-pong pattern_
