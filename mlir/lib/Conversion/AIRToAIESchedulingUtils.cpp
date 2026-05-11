@@ -1083,10 +1083,6 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
       break;
   }
   if (!tileLT) {
-    // Hint the placer with the compute-side column when that column has a
-    // ShimNOC tile in the device. Wide multi-column workloads then spread
-    // shims under each active column rather than clustering near the
-    // centroid. Skipped on devices like AIE1 where ShimNOC is sparse.
     OpBuilder b(device);
     b.setInsertionPointToStart(device.getBody());
     for (auto &op : device.getBody()->getOperations()) {
@@ -1095,14 +1091,9 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
       else
         break;
     }
-    auto *ctx = b.getContext();
-    const auto &tm = device.getTargetModel();
-    IntegerAttr colAttr =
-        (col >= 0 && col < tm.columns() && tm.isShimNOCTile(col, 0))
-            ? IntegerAttr::get(IntegerType::get(ctx, 32), col)
-            : IntegerAttr();
     tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
-                                        AIE::AIETileType::ShimNOCTile, colAttr,
+                                        AIE::AIETileType::ShimNOCTile,
+                                        /*col=*/IntegerAttr(),
                                         /*row=*/IntegerAttr(),
                                         /*allocation_scheme=*/StringAttr());
     dma_channel = 0;
