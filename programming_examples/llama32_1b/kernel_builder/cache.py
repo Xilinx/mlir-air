@@ -45,6 +45,7 @@ def prepare_air_project():
         "attn_npu2.o",
         "mv.o",
         "mv_k8192.o",
+        "attn_decode_npu2.o",
     ]:
         src = Path(obj_name)
         if src.exists():
