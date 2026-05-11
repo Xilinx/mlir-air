@@ -1083,22 +1083,28 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
       break;
   }
   if (!tileLT) {
-    // Need a fresh LTO. Emit aie.logical_tile<ShimNOCTile>(?, ?). The placer
-    // picks the physical column from flow adjacency to placed core peers
-    // (centroid placement) and respects per-shim DMA channel capacity.
+    // Hint the placer with the compute-side column when that column has a
+    // ShimNOC tile in the device. Wide multi-column workloads then spread
+    // shims under each active column rather than clustering near the
+    // centroid. Skipped on devices like AIE1 where ShimNOC is sparse.
     OpBuilder b(device);
     b.setInsertionPointToStart(device.getBody());
-    // Walk past contiguous tile defining ops so the new LTO sits with peers.
     for (auto &op : device.getBody()->getOperations()) {
       if (isa<AIE::TileOp, AIE::LogicalTileOp>(op))
         b.setInsertionPointAfter(&op);
       else
         break;
     }
-    tileLT = AIE::LogicalTileOp::create(
-        b, device.getLoc(), AIE::AIETileType::ShimNOCTile,
-        /*col=*/IntegerAttr(), /*row=*/IntegerAttr(),
-        /*allocation_scheme=*/StringAttr());
+    auto *ctx = b.getContext();
+    const auto &tm = device.getTargetModel();
+    IntegerAttr colAttr =
+        (col >= 0 && col < tm.columns() && tm.isShimNOCTile(col, 0))
+            ? IntegerAttr::get(IntegerType::get(ctx, 32), col)
+            : IntegerAttr();
+    tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
+                                        AIE::AIETileType::ShimNOCTile, colAttr,
+                                        /*row=*/IntegerAttr(),
+                                        /*allocation_scheme=*/StringAttr());
     dma_channel = 0;
   }
 
