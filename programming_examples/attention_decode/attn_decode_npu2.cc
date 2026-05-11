@@ -35,10 +35,7 @@ static constexpr unsigned VEC = 16;
 // sinf_cosf_poly_bf16: ported from rope_sincos/rope.cc. Native n=16 vectors
 // for AIE2P; processes N elements via N/n iterations.
 //------------------------------------------------------------------------------
-// Inputs are f32 (not bf16) to preserve sin/cos input precision at large
-// |ux|. Truncating ux to bf16 here would shift the input by up to 0.5
-// radians at |ux| ~ 600, putting sin/cos onto a totally different point
-// of their oscillation and producing 0.3+ absolute error per element.
+// Inputs in f32: bf16 ux loses sin/cos input precision once |ux| > ~50.
 template <unsigned N, unsigned n, bool isSine>
 static void sinf_cosf_poly_bf16(const float *__restrict inputs,
                                 bfloat16 *__restrict outputs) {
@@ -87,13 +84,7 @@ static void sinf_cosf_poly_bf16(const float *__restrict inputs,
     outc = mac(t1c, r2, t2c.template to_vector<bfloat16>());                   \
   }
 
-    // Range reduction in scalar f32, per-element. Storing ux as bf16
-    // anywhere in this pipeline would shift large |ux| onto a different
-    // point of the sin/cos oscillation (pos=1000, freq=0.6636 -> true
-    // ux=663.6, bf16 ux=664; sin(664)-sin(663.6) ~ 0.3 abs error). And
-    // bf16 of the int quadrant zj for zj>~256 rounds to even (e.g. 637
-    // -> 640), pushing x = ux - zj*pi/2 far outside the polynomial range
-    // [-pi/4, pi/4]. Doing the whole reduction in f32 fixes both.
+    // Range reduction in scalar f32: bf16 zj rounds to even past ~256.
     alignas(aie::vector_decl_align) bfloat16 x_buf[n];
     aie::mask<n> is_odd, is_neg;
     {
@@ -153,13 +144,7 @@ static void sinf_cosf_poly_bf16(const float *__restrict inputs,
 // fits exactly one native n=16 vector pair). rope_base = 500000 matches the
 // HuggingFace LLaMA-3 / LLaMA-3.2 rope_theta config.
 //------------------------------------------------------------------------------
-// Freq table kept in f32 (doubles size 64B -> 128B, negligible). Storing
-// as bf16 + multiplying by bf16 pos rounds the product (e.g., pos=1000,
-// freq[1]=0.663601 -> bf16 ux = 664.0 vs true 663.6). At |ux| > ~50 the
-// 0.4 input shift puts sin/cos onto a different point of their oscillation,
-// producing ~0.3 absolute error per element. Computing pos*freq in f32
-// (and truncating to bf16 only when handing off to the polynomial) closes
-// most of that gap.
+// f32 freq table (bf16 product `pos * freq` loses precision past pos~50).
 alignas(aie::vector_decl_align) static const float freq_table_dk64[32] = {
     1.000000f, 0.663601f, 0.440367f, 0.292228f, 0.193923f, 0.128687f, 0.085397f,
     0.056670f, 0.037606f, 0.024955f, 0.016560f, 0.010990f, 0.007293f, 0.004839f,
@@ -167,18 +152,6 @@ alignas(aie::vector_decl_align) static const float freq_table_dk64[32] = {
     0.000182f, 0.000121f, 0.000080f, 0.000053f, 0.000035f, 0.000023f, 0.000016f,
     0.000010f, 0.000007f, 0.000005f, 0.000003f,
 };
-
-template <unsigned N, unsigned n>
-static void freq_pos_bf16(int pos, const float *freq_table,
-                          bfloat16 *__restrict outputs) {
-  // Compute ux = pos * freq[i] in scalar f32, truncate to bf16 only for
-  // storage (sin/cos polynomial input is bf16). The scalar f32 mul
-  // preserves the exact pos and freq precision; bf16 truncation of the
-  // product is fine at the sin/cos input scale (|ux| up to ~2000).
-  const float pos_f32 = (float)pos;
-  for (unsigned i = 0; i < N; ++i)
-    outputs[i] = (bfloat16)(pos_f32 * freq_table[i]);
-}
 
 //------------------------------------------------------------------------------
 // shuffle_apply_rope: HuggingFace LLaMA half-split RoPE. Pairs are
@@ -342,14 +315,11 @@ extern "C" {
 // dk=64 => 32-elem buffers, native n=16 vectors. No padding needed.
 void freq_pos_bf16_32_16(int pos, bfloat16 *outputs) {
   STUB_RET;
-  // Backwards-compat wrapper: still emits bf16 (used by the .o-only path).
   for (unsigned i = 0; i < 32; ++i)
     outputs[i] = (bfloat16)((float)pos * freq_table_dk64[i]);
 }
 
-// f32-output variant. Used by attn_decode_npu2.py to keep ux precision
-// going into sinf/cosf — bf16 truncation here would shift sin/cos input
-// onto the wrong oscillation point at large pos. See sinf_cosf_poly_bf16.
+// f32-output variant for the inline-MLIR fused decode kernel.
 void freq_pos_f32_32_16(int pos, float *outputs) {
   STUB_RET;
   const float pos_f32 = (float)pos;

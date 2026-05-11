@@ -171,6 +171,20 @@ def compile_mv(tile_m=8):
     _compile_kernel(src, "mv.o", extra_flags=[f"-DDIM_M_OUTPUT={tile_m}"])
 
 
+def compile_attn_decode_npu2(head_dim=64):
+    """Compile attn_decode_npu2.o (RoPE helpers for the fused decode kernel)."""
+    src = _PROJ_ROOT / "attention_decode" / "attn_decode_npu2.cc"
+    _compile_kernel(
+        src,
+        "attn_decode_npu2.o",
+        extra_flags=[
+            f"-DDIM_N={head_dim}",
+            f"-DHEAD_SIZE={head_dim}",
+            "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
+        ],
+    )
+
+
 def compile_all_external_kernels(head_dim=64):
     """Compile all external C++ kernels from source.
 
@@ -181,5 +195,6 @@ def compile_all_external_kernels(head_dim=64):
     compile_silu_and_mul()
     compile_rope()
     compile_attn_npu2(head_dim=head_dim)
+    compile_attn_decode_npu2(head_dim=head_dim)
     compile_mv()
     compile_mv_k8192()

@@ -178,11 +178,7 @@ def build_module(
         element_type=xrt_dtype_out,
         memory_space=l1_mem_space,
     )
-    # f32 freq_pos buffer. The sin/cos polynomial input must be f32 to
-    # avoid bf16 truncation shifting the input by 0.4-3 rad at large
-    # |ux| (decode pos > ~250), which lands sin/cos on a different
-    # oscillation point. See attn_decode_npu2.cc sinf_cosf_poly_bf16
-    # for the full root-cause and three-step precision fix.
+    # f32 freq_pos buffer (sin/cos input precision at high pos).
     l1MemrefTyHSByTwoF32 = MemRefType.get(
         shape=[32],
         element_type=F32Type.get(),
@@ -203,8 +199,6 @@ def build_module(
         ([l1MemrefTyHSByTwoF32, l1MemrefTyHSByTwo], []),
         visibility="private",
     )
-    # f32-output freq_pos: pos × freq[i] computed in scalar f32 to
-    # preserve precision into sin/cos.
     freq_pos_f32_func = FuncOp(
         "freq_pos_f32_32_16",
         ([T.i32(), l1MemrefTyHSByTwoF32], []),
@@ -827,12 +821,6 @@ def build_module(
                     DeallocOp(l1_a_data)
                     DeallocOp(l1_b_data)
 
-                    # f32-output freq_pos via extern .o helper: computes
-                    # f32(pos) * freq_table[i] in scalar f32. The previous
-                    # bf16 inline path quantized both `pos` and the
-                    # product, biasing the sin/cos input by enough at
-                    # high pos to land it on a different oscillation
-                    # point — see attn_decode_npu2.cc sinf_cosf_poly_bf16.
                     l1_freq_pos_data = AllocOp(l1MemrefTyHSByTwoF32, [], [])
                     fp_pos_i32 = arith.index_cast(T.i32(), pos)
                     CallOp(freq_pos_f32_func, [fp_pos_i32, l1_freq_pos_data])
