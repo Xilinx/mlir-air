@@ -140,7 +140,7 @@ module attributes {transform.with_named_sequence} {
     // Convert parallel loops to AIE herd operations for multi-core execution
         %forall_as_herd = transform.structured.match ops{["scf.forall"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %parallel = transform.loop.forall_to_parallel %forall_as_herd  : (!transform.any_op) -> !transform.any_op
-        %herd = transform.air.par_to_herd %parallel : (!transform.any_op) -> !transform.any_op
+        %herd = transform.air.par_to_herd %parallel { first_dim = @HERD_FIRST_DIM@ } : (!transform.any_op) -> !transform.any_op
 
     // Convert memory copies to DMA operations for efficient data movement
         %copies_in_herd = transform.structured.match ops{["memref.copy", "linalg.copy"]} in %herd : (!transform.any_op) -> !transform.any_op

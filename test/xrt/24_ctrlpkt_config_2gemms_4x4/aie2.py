@@ -217,9 +217,6 @@ with air.ir.Context() as ctx, Location.unknown():
         "builtin.module("
         + ",".join(
             [
-                "func.func(air-collapse-herd{max-col-size=4})",
-                "canonicalize",
-                "cse",
                 "air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}",
                 "canonicalize",
                 "cse",

@@ -1319,20 +1319,6 @@ def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-wit
   let constructor = "xilinx::air::createAIRLabelBroadcastChannelWithTilePass()";
 }
 
-def AIRCollapseHerdPass : Pass<"air-collapse-herd", "func::FuncOp"> {
-  let summary = "Collapse a multi-dimensional air.herd into a single column.";
-  let constructor = "xilinx::air::createAIRCollapseHerdPass()";
-  let options = [
-    Option<"clMaxColSize", "max-col-size", "int", /*default=*/"-1",
-           "The maximum column size after collapse, before collapse is cancelled. Disabled by default.">
-  ];
-  let description = [{
-    The pass attempts to collapse the air.herd to the left, attempting to occupy 
-    complete columns of AIE tiles. The attempt will stop if the number of tiles in 
-    air.herd exceeds the user provided max-col-size option.
-  }];
-}
-
 def AIRFuseNestedHerdPass : Pass<"air-fuse-nested-herd", "func::FuncOp"> {
   let summary = "Fuse a perfectly nested pair of air.herd loops into a single air.herd.";
   let constructor = "xilinx::air::createAIRFuseNestedHerdPass()";

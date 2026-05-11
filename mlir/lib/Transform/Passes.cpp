@@ -28,7 +28,6 @@ namespace {
 void xilinx::air::registerTransformPasses() {
   registerAffineLoopOptPass();
   registerAIRAutomaticTiling();
-  registerAIRCollapseHerdPass();
   registerAIRDependency();
   registerAIRDependencyCanonicalize();
   registerAIRDependencyParseGraph();

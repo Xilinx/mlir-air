@@ -1004,9 +1004,7 @@ static LogicalResult runAieCompilation() {
       os << "," << buildOptimizationPipeline();
     }
 
-    // Collapse herd and place
-    os << ",func.func(air-collapse-herd{max-col-size=4})";
-    os << ",canonicalize,cse";
+    // Place herds
     os << ",air-place-herds{";
     os << "num-rows=" << resolvedNumRows;
     os << " num-cols=" << resolvedNumCols;
