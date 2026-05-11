@@ -1065,6 +1065,12 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
         return c;
     return -1;
   };
+  // Only reuse an existing LTO if its col hint matches `col` (the
+  // compute-side column). This preserves baseline's "1 shim per active
+  // compute col" placement under the LTO model: each compute col gets
+  // its own shim LTO (with `(col, ?)` hint), so the placer + bidirectional
+  // sweep (mlir-aie #3064) can spread shims under each compute col rather
+  // than clustering near the centroid.
   for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
     for (auto &t : *side) {
       auto cand = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
@@ -1072,6 +1078,14 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
         continue;
       if (cand.getTileType() != AIE::AIETileType::ShimNOCTile)
         continue;
+      auto candCol = cand.getCol();
+      if (col >= 0) {
+        if (!candCol || (int)*candCol != col)
+          continue;
+      } else {
+        if (candCol)
+          continue;
+      }
       int c = pickChannelForLTO(cand);
       if (c < 0)
         continue;
@@ -1091,9 +1105,14 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
       else
         break;
     }
+    auto *ctx = b.getContext();
+    const auto &tm = device.getTargetModel();
+    IntegerAttr colAttr =
+        (col >= 0 && col < tm.columns() && tm.isShimNOCTile(col, 0))
+            ? IntegerAttr::get(IntegerType::get(ctx, 32), col)
+            : IntegerAttr();
     tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
-                                        AIE::AIETileType::ShimNOCTile,
-                                        /*col=*/IntegerAttr(),
+                                        AIE::AIETileType::ShimNOCTile, colAttr,
                                         /*row=*/IntegerAttr(),
                                         /*allocation_scheme=*/StringAttr());
     dma_channel = 0;
