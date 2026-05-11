@@ -952,9 +952,10 @@ air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
   shim_dma_channels = 2;
 }
 
-FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
-    air::MemcpyInterface &memcpyOp, int col, int row,
-    std::vector<Operation *> &dma_ops) {
+FailureOr<air::allocation_info_t>
+air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
+                                          int col, int row,
+                                          std::vector<Operation *> &dma_ops) {
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
   if (failed(isMM2S))
     return failure();
@@ -1010,9 +1011,13 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       if (!isPacketAlloc)
         continue;
       AIE::DMAChannel aie_chan = {dir, t.dma_channel.channel};
-      allocs->push_back({t.dma_tile, col, row, aie_chan,
+      allocs->push_back({t.dma_tile,
+                         col,
+                         row,
+                         aie_chan,
                          t.dma_channel.channel,
-                         /*packet_flow_id=*/-1, dma_ops_get_id,
+                         /*packet_flow_id=*/-1,
+                         dma_ops_get_id,
                          {memcpyOp.getOperation()}});
       return allocs->back();
     }

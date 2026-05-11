@@ -2315,8 +2315,8 @@ private:
     } else if (mem_space == air::MemorySpace::L2) {
       if (bufferToMemtileMap.find(dyn_cast_if_present<AIE::BufferOp>(
               op.getMemref().getDefiningOp())) != bufferToMemtileMap.end()) {
-        AIE::TileLike memtile = bufferToMemtileMap[
-            dyn_cast_if_present<AIE::BufferOp>(
+        AIE::TileLike memtile =
+            bufferToMemtileMap[dyn_cast_if_present<AIE::BufferOp>(
                 op.getMemref().getDefiningOp())];
         *tile = memtile->getResult(0);
       } else {
@@ -4499,9 +4499,8 @@ public:
         // specifically for MM2S (host-to-AIE) directions.
         if (dir == AIE::DMAChannelDir::MM2S)
           if (failed(labelMemcpyOpsWithPacketFlow(
-                  memcpyIfOp, shim_name_attr,
-                  t.getDmaTile()->getResult(0), t.dma_channel.channel,
-                  t.packet_flow_id)))
+                  memcpyIfOp, shim_name_attr, t.getDmaTile()->getResult(0),
+                  t.dma_channel.channel, t.packet_flow_id)))
             return failure();
       }
 
@@ -5049,12 +5048,12 @@ public:
           // safe. Shim/MemTile may pass an LTO; the cast is unsafe in that
           // case but the body never dereferences the tile value, so the
           // cast<>'s null cast (to nullptr_t) does not blow up.
-          auto bufferOp = dmaAlloc.getBuffer(
-              BufferId,
-              dyn_cast<AIE::TileOp>(tile.getOperation()) ? cast<AIE::TileOp>(
-                                                               tile.getOperation())
-                                                         : nullptr,
-              memcpyOp);
+          auto bufferOp =
+              dmaAlloc.getBuffer(BufferId,
+                                 dyn_cast<AIE::TileOp>(tile.getOperation())
+                                     ? cast<AIE::TileOp>(tile.getOperation())
+                                     : nullptr,
+                                 memcpyOp);
           if (failed(bufferOp)) {
             memcpyOp->emitOpError("failed to get buffer.");
             return failure();
@@ -6104,9 +6103,9 @@ public:
       AIE::ShimDMAOp shimDMA = getShimDMAOp(tile);
       if (!shimDMA) {
         rewriter.setInsertionPoint(device.getBody()->getTerminator());
-        shimDMA = AIE::ShimDMAOp::create(rewriter, rewriter.getUnknownLoc(),
-                                         rewriter.getIndexType(),
-                                         tile->getResult(0));
+        shimDMA =
+            AIE::ShimDMAOp::create(rewriter, rewriter.getUnknownLoc(),
+                                   rewriter.getIndexType(), tile->getResult(0));
       }
 
       auto loc = rewriter.getUnknownLoc();
@@ -6153,10 +6152,9 @@ public:
       AIE::MemTileDMAOp memTileDMA = getMemTileDMAOp(tile);
       if (!memTileDMA) {
         rewriter.setInsertionPoint(device.getBody()->getTerminator());
-        memTileDMA = AIE::MemTileDMAOp::create(rewriter,
-                                               rewriter.getUnknownLoc(),
-                                               rewriter.getIndexType(),
-                                               tile->getResult(0));
+        memTileDMA = AIE::MemTileDMAOp::create(
+            rewriter, rewriter.getUnknownLoc(), rewriter.getIndexType(),
+            tile->getResult(0));
       }
 
       auto loc = rewriter.getUnknownLoc();
