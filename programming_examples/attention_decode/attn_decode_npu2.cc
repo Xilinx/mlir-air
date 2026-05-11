@@ -35,8 +35,12 @@ static constexpr unsigned VEC = 16;
 // sinf_cosf_poly_bf16: ported from rope_sincos/rope.cc. Native n=16 vectors
 // for AIE2P; processes N elements via N/n iterations.
 //------------------------------------------------------------------------------
+// Inputs are f32 (not bf16) to preserve sin/cos input precision at large
+// |ux|. Truncating ux to bf16 here would shift the input by up to 0.5
+// radians at |ux| ~ 600, putting sin/cos onto a totally different point
+// of their oscillation and producing 0.3+ absolute error per element.
 template <unsigned N, unsigned n, bool isSine>
-static void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
+static void sinf_cosf_poly_bf16(const float *__restrict inputs,
                                 bfloat16 *__restrict outputs) {
   constexpr float sin_poly_factors[4] = {
       -0x1.5555555555555p-3, 0x1.1111111110bb3p-7, -0x1.a01a019e83e5cp-13,
@@ -47,13 +51,12 @@ static void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
   const float twobypival = 0x1.45f306dc9c883p-1;
   const float piby2_1val = 0x1.921fb54400000p0;
   for (unsigned i = 0; i < N; i += n) {
-    aie::vector<bfloat16, n> ux = aie::load_v<n>(inputs + i);
-    aie::accum<accfloat, n> ux_acc, x_acc, zp_acc, one_acc;
+    aie::accum<accfloat, n> one_acc;
     aie::accum<accfloat, n> poly_acs, acs0, acs2, out_acs;
     aie::accum<accfloat, n> poly_acc, acc0, acc2, out_acc, output_acc;
     aie::vector<bfloat16, n> x, r, r2, out_abs;
     aie::vector<bfloat16, n> s0, s1, s2, s3, c0, c1, c2, c3;
-    aie::vector<bfloat16, n> twobypi, oneby2, negoneby2, piby2_1, one, negone;
+    aie::vector<bfloat16, n> negoneby2, one, negone;
     s0 = aie::broadcast<bfloat16, n>(sin_poly_factors[0]);
     s1 = aie::broadcast<bfloat16, n>(sin_poly_factors[1]);
     s2 = aie::broadcast<bfloat16, n>(sin_poly_factors[2]);
@@ -62,9 +65,6 @@ static void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
     c1 = aie::broadcast<bfloat16, n>(cos_poly_factors[1]);
     c2 = aie::broadcast<bfloat16, n>(cos_poly_factors[2]);
     c3 = aie::broadcast<bfloat16, n>(cos_poly_factors[3]);
-    twobypi = aie::broadcast<bfloat16, n>(twobypival);
-    piby2_1 = aie::broadcast<bfloat16, n>(piby2_1val);
-    oneby2 = aie::broadcast<bfloat16, n>(0.5);
     negoneby2 = aie::broadcast<bfloat16, n>(-0.5);
     one = aie::broadcast<bfloat16, n>(1.0);
     negone = aie::broadcast<bfloat16, n>(-1.0);
@@ -87,20 +87,24 @@ static void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
     outc = mac(t1c, r2, t2c.template to_vector<bfloat16>());                   \
   }
 
-    // Range reduction with scalar quadrant detection
-    zp_acc.from_vector(oneby2);
-    ux_acc.from_vector(ux);
-    zp_acc = mac(zp_acc, ux, twobypi);
-    aie::vector<bfloat16, n> zp_bf16 = zp_acc.template to_vector<bfloat16>();
-    alignas(aie::vector_decl_align) bfloat16 zp_buf[n];
-    aie::store_v(zp_buf, zp_bf16);
-    alignas(aie::vector_decl_align) bfloat16 z_buf[n];
+    // Range reduction in scalar f32, per-element. Storing ux as bf16
+    // anywhere in this pipeline would shift large |ux| onto a different
+    // point of the sin/cos oscillation (pos=1000, freq=0.6636 -> true
+    // ux=663.6, bf16 ux=664; sin(664)-sin(663.6) ~ 0.3 abs error). And
+    // bf16 of the int quadrant zj for zj>~256 rounds to even (e.g. 637
+    // -> 640), pushing x = ux - zj*pi/2 far outside the polynomial range
+    // [-pi/4, pi/4]. Doing the whole reduction in f32 fixes both.
+    alignas(aie::vector_decl_align) bfloat16 x_buf[n];
     aie::mask<n> is_odd, is_neg;
     {
       uint32_t odd_bits = 0, neg_bits = 0;
+      const float twobypif = (float)twobypival;
+      const float piby2f = (float)piby2_1val;
       for (unsigned j = 0; j < n; j++) {
-        int zj = (int)(float)zp_buf[j];
-        z_buf[j] = (bfloat16)(float)zj;
+        float ux_j = inputs[i + j];
+        float zp_f32 = ux_j * twobypif + 0.5f;
+        int zj = (int)zp_f32;
+        x_buf[j] = (bfloat16)(ux_j - (float)zj * piby2f);
         if (isSine) {
           if (zj & 1)
             odd_bits |= (1u << j);
@@ -116,10 +120,7 @@ static void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
       is_odd = aie::mask<n>::from_uint32(odd_bits);
       is_neg = aie::mask<n>::from_uint32(neg_bits);
     }
-    aie::vector<bfloat16, n> z_rounded = aie::load_v<n>(z_buf);
-    x_acc = msc(ux_acc, piby2_1, z_rounded);
-
-    x = x_acc.template to_vector<bfloat16>();
+    x = aie::load_v<n>(x_buf);
     r = aie::mul(x, x).template to_vector<bfloat16>();
 
     aie::vector<bfloat16, n> t_vec =
@@ -152,30 +153,31 @@ static void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
 // fits exactly one native n=16 vector pair). rope_base = 500000 matches the
 // HuggingFace LLaMA-3 / LLaMA-3.2 rope_theta config.
 //------------------------------------------------------------------------------
-alignas(aie::vector_decl_align) static const bfloat16 freq_table_dk64[32] = {
-    (bfloat16)1.000000f, (bfloat16)0.663601f, (bfloat16)0.440367f,
-    (bfloat16)0.292228f, (bfloat16)0.193923f, (bfloat16)0.128687f,
-    (bfloat16)0.085397f, (bfloat16)0.056670f, (bfloat16)0.037606f,
-    (bfloat16)0.024955f, (bfloat16)0.016560f, (bfloat16)0.010990f,
-    (bfloat16)0.007293f, (bfloat16)0.004839f, (bfloat16)0.003211f,
-    (bfloat16)0.002131f, (bfloat16)0.001414f, (bfloat16)0.000938f,
-    (bfloat16)0.000623f, (bfloat16)0.000413f, (bfloat16)0.000274f,
-    (bfloat16)0.000182f, (bfloat16)0.000121f, (bfloat16)0.000080f,
-    (bfloat16)0.000053f, (bfloat16)0.000035f, (bfloat16)0.000023f,
-    (bfloat16)0.000016f, (bfloat16)0.000010f, (bfloat16)0.000007f,
-    (bfloat16)0.000005f, (bfloat16)0.000003f,
+// Freq table kept in f32 (doubles size 64B -> 128B, negligible). Storing
+// as bf16 + multiplying by bf16 pos rounds the product (e.g., pos=1000,
+// freq[1]=0.663601 -> bf16 ux = 664.0 vs true 663.6). At |ux| > ~50 the
+// 0.4 input shift puts sin/cos onto a different point of their oscillation,
+// producing ~0.3 absolute error per element. Computing pos*freq in f32
+// (and truncating to bf16 only when handing off to the polynomial) closes
+// most of that gap.
+alignas(aie::vector_decl_align) static const float freq_table_dk64[32] = {
+    1.000000f, 0.663601f, 0.440367f, 0.292228f, 0.193923f, 0.128687f, 0.085397f,
+    0.056670f, 0.037606f, 0.024955f, 0.016560f, 0.010990f, 0.007293f, 0.004839f,
+    0.003211f, 0.002131f, 0.001414f, 0.000938f, 0.000623f, 0.000413f, 0.000274f,
+    0.000182f, 0.000121f, 0.000080f, 0.000053f, 0.000035f, 0.000023f, 0.000016f,
+    0.000010f, 0.000007f, 0.000005f, 0.000003f,
 };
 
 template <unsigned N, unsigned n>
-static void freq_pos_bf16(int pos, const bfloat16 *freq_table,
+static void freq_pos_bf16(int pos, const float *freq_table,
                           bfloat16 *__restrict outputs) {
-  aie::vector<bfloat16, n> vecPos =
-      aie::broadcast<bfloat16, n>(aie::to_float<bfloat16>(pos));
-  for (unsigned i = 0; i < N; i += n) {
-    aie::vector<bfloat16, n> v = aie::load_v<n>(freq_table + i);
-    aie::store_v(outputs + i,
-                 aie::mul(vecPos, v).template to_vector<bfloat16>());
-  }
+  // Compute ux = pos * freq[i] in scalar f32, truncate to bf16 only for
+  // storage (sin/cos polynomial input is bf16). The scalar f32 mul
+  // preserves the exact pos and freq precision; bf16 truncation of the
+  // product is fine at the sin/cos input scale (|ux| up to ~2000).
+  const float pos_f32 = (float)pos;
+  for (unsigned i = 0; i < N; ++i)
+    outputs[i] = (bfloat16)(pos_f32 * freq_table[i]);
 }
 
 //------------------------------------------------------------------------------
@@ -340,15 +342,27 @@ extern "C" {
 // dk=64 => 32-elem buffers, native n=16 vectors. No padding needed.
 void freq_pos_bf16_32_16(int pos, bfloat16 *outputs) {
   STUB_RET;
-  freq_pos_bf16<32, VEC>(pos, freq_table_dk64, outputs);
+  // Backwards-compat wrapper: still emits bf16 (used by the .o-only path).
+  for (unsigned i = 0; i < 32; ++i)
+    outputs[i] = (bfloat16)((float)pos * freq_table_dk64[i]);
 }
 
-void sinf_bf16_32_16(const bfloat16 *inputs, bfloat16 *outputs) {
+// f32-output variant. Used by attn_decode_npu2.py to keep ux precision
+// going into sinf/cosf — bf16 truncation here would shift sin/cos input
+// onto the wrong oscillation point at large pos. See sinf_cosf_poly_bf16.
+void freq_pos_f32_32_16(int pos, float *outputs) {
+  STUB_RET;
+  const float pos_f32 = (float)pos;
+  for (unsigned i = 0; i < 32; ++i)
+    outputs[i] = pos_f32 * freq_table_dk64[i];
+}
+
+void sinf_bf16_32_16(const float *inputs, bfloat16 *outputs) {
   STUB_RET;
   sinf_cosf_poly_bf16<32, VEC, true>(inputs, outputs);
 }
 
-void cosf_bf16_32_16(const bfloat16 *inputs, bfloat16 *outputs) {
+void cosf_bf16_32_16(const float *inputs, bfloat16 *outputs) {
   STUB_RET;
   sinf_cosf_poly_bf16<32, VEC, false>(inputs, outputs);
 }

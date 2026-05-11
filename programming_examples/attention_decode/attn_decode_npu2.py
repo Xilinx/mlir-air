@@ -178,6 +178,16 @@ def build_module(
         element_type=xrt_dtype_out,
         memory_space=l1_mem_space,
     )
+    # f32 freq_pos buffer. The sin/cos polynomial input must be f32 to
+    # avoid bf16 truncation shifting the input by 0.4-3 rad at large
+    # |ux| (decode pos > ~250), which lands sin/cos on a different
+    # oscillation point. See attn_decode_npu2.cc sinf_cosf_poly_bf16
+    # for the full root-cause and three-step precision fix.
+    l1MemrefTyHSByTwoF32 = MemRefType.get(
+        shape=[32],
+        element_type=F32Type.get(),
+        memory_space=l1_mem_space,
+    )
     l1MemrefTyVec = MemRefType.get(
         shape=[8],
         element_type=xrt_dtype_out,
@@ -185,12 +195,19 @@ def build_module(
     )
     cosf_poly_func = FuncOp(
         "cosf_bf16_32_16",
-        ([l1MemrefTyHSByTwo, l1MemrefTyHSByTwo], []),
+        ([l1MemrefTyHSByTwoF32, l1MemrefTyHSByTwo], []),
         visibility="private",
     )
     sinf_poly_func = FuncOp(
         "sinf_bf16_32_16",
-        ([l1MemrefTyHSByTwo, l1MemrefTyHSByTwo], []),
+        ([l1MemrefTyHSByTwoF32, l1MemrefTyHSByTwo], []),
+        visibility="private",
+    )
+    # f32-output freq_pos: pos × freq[i] computed in scalar f32 to
+    # preserve precision into sin/cos.
+    freq_pos_f32_func = FuncOp(
+        "freq_pos_f32_32_16",
+        ([T.i32(), l1MemrefTyHSByTwoF32], []),
         visibility="private",
     )
     shuffle_apply_rope_poly_func = FuncOp(
@@ -259,6 +276,7 @@ def build_module(
     for func in [
         cosf_poly_func,
         sinf_poly_func,
+        freq_pos_f32_func,
         shuffle_apply_rope_poly_func,
         attn_func,
         attn2_func,
@@ -809,46 +827,15 @@ def build_module(
                     DeallocOp(l1_a_data)
                     DeallocOp(l1_b_data)
 
-                    l1_freq_pos_data = AllocOp(l1MemrefTyHSByTwo, [], [])
-                    zero_constindex = ConstantOp.create_index(0)
-
-                    # Inline freq_pos_bf16_32_16: l1_freq_pos_data[i] =
-                    # bf16(pos) * freq_table[i] for i in 0..32. Two 16-lane
-                    # arith.mulf chunks with a precomputed dense<vector<16xbf16>>
-                    # constant for each half of freq_table_dk64.
-                    fp_vec_bf16 = VectorType.get([16], xrt_dtype_out)
+                    # f32-output freq_pos via extern .o helper: computes
+                    # f32(pos) * freq_table[i] in scalar f32. The previous
+                    # bf16 inline path quantized both `pos` and the
+                    # product, biasing the sin/cos input by enough at
+                    # high pos to land it on a different oscillation
+                    # point — see attn_decode_npu2.cc sinf_cosf_poly_bf16.
+                    l1_freq_pos_data = AllocOp(l1MemrefTyHSByTwoF32, [], [])
                     fp_pos_i32 = arith.index_cast(T.i32(), pos)
-                    fp_pos_f32 = arith_dialect.sitofp(F32Type.get(), fp_pos_i32)
-                    fp_pos_bf = arith_dialect.truncf(xrt_dtype_out, fp_pos_f32)
-                    fp_pos_v = BroadcastOp(fp_vec_bf16, fp_pos_bf)
-                    fp_freq_lo_attr = DenseElementsAttr.get(
-                        _FREQ_TABLE_DK64_BF16[:16].copy(), type=fp_vec_bf16
-                    )
-                    fp_freq_hi_attr = DenseElementsAttr.get(
-                        _FREQ_TABLE_DK64_BF16[16:].copy(), type=fp_vec_bf16
-                    )
-                    fp_freq_lo = arith_dialect.ConstantOp(fp_vec_bf16, fp_freq_lo_attr)
-                    fp_freq_hi = arith_dialect.ConstantOp(fp_vec_bf16, fp_freq_hi_attr)
-                    fp_out_lo = arith_dialect.mulf(fp_pos_v.result, fp_freq_lo.result)
-                    fp_out_hi = arith_dialect.mulf(fp_pos_v.result, fp_freq_hi.result)
-                    fp_c16 = arith.ConstantOp.create_index(16)
-                    fp_id_map = AffineMapAttr.get(AffineMap.get_identity(1))
-                    transfer_write(
-                        None,
-                        fp_out_lo,
-                        l1_freq_pos_data.result,
-                        [zero_constindex],
-                        fp_id_map,
-                        [True],
-                    )
-                    transfer_write(
-                        None,
-                        fp_out_hi,
-                        l1_freq_pos_data.result,
-                        [fp_c16],
-                        fp_id_map,
-                        [True],
-                    )
+                    CallOp(freq_pos_f32_func, [fp_pos_i32, l1_freq_pos_data])
 
                     l1_sinf_vec = AllocOp(l1MemrefTyHSByTwo, [], [])
                     l1_cosf_vec = AllocOp(l1MemrefTyHSByTwo, [], [])
