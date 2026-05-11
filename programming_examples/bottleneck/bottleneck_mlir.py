@@ -651,8 +651,8 @@ def build_module():
                 # No link_with -- kernel is inline MLIR (vectorized block_matmul)
 
                 # =============================================================
-                # Herd: 3x3 Convolution (2x1 herd: two cores, each half channels)
-                # Core (0,0) processes channels 0-31, Core (1,0) channels 32-63
+                # Herd: 3x3 Convolution (1x2 herd: two cores, each half channels)
+                # Core (0,0) processes channels 0-31, Core (0,1) channels 32-63
                 # Receives L2 weights via broadcast channel to L1
                 # Output written to SHARED L1 buffer (passed as operand)
                 # Uses 4-buffer rotation pattern for proper sliding window
@@ -662,7 +662,7 @@ def build_module():
                     sizes=[1, 2],
                     operands=[shared_l1_conv3x3_out.result],
                 )
-                def herd_conv3x3_body(_dummy_x, tx, _dummy_sx, sx, shared_out_full):
+                def herd_conv3x3_body(tx, ty, sx, sy, shared_out_full):
                     c0_h = ConstantOp(index_type, 0)
                     W = TENSOR_IN_W  # 32
                     IC = TENSOR_L2_IN_C  # 64
@@ -682,9 +682,9 @@ def build_module():
                     )
                     padded_row = AllocOp(padded_row_ty, [], [])
 
-                    ChannelGet("L2ToL1_WtsL2", wts, indices=[c0_h, tx])
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[c0_h, tx])
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[c0_h, tx])
+                    ChannelGet("L2ToL1_WtsL2", wts, indices=[c0_h, ty])
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[c0_h, ty])
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[c0_h, ty])
 
                     # Shared output as flat
                     shared_flat_ty = MemRefType.get(
@@ -712,13 +712,13 @@ def build_module():
                     c_8_idx = ConstantOp(index_type, 8)
                     c_ic = ConstantOp(index_type, IC)
 
-                    tx_i32 = arith.index_cast(i32, tx)
+                    ty_i32 = arith.index_cast(i32, ty)
                     out_byte_offset = arith.index_cast(
                         index_type,
-                        arith.muli(tx_i32, ConstantOp(i32, CONV3X3_OUT_HALF_SIZE)),
+                        arith.muli(ty_i32, ConstantOp(i32, CONV3X3_OUT_HALF_SIZE)),
                     )
-                    # Per-core N offset: tx * (OC_HALF // 8)
-                    n_offset = arith.muli(tx, ConstantOp(index_type, OC_HALF // 8))
+                    # Per-core N offset: ty * (OC_HALF // 8)
+                    n_offset = arith.muli(ty, ConstantOp(index_type, OC_HALF // 8))
 
                     # Flat view for row copy
                     flat_ty = MemRefType.get(
@@ -844,7 +844,7 @@ def build_module():
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
                                     row_buf_0,
-                                    indices=[c0_h, tx],
+                                    indices=[c0_h, ty],
                                 )
                                 yield_([])
                             with InsertionPoint(if_s0.else_block):
@@ -858,7 +858,7 @@ def build_module():
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
                                     row_buf_1,
-                                    indices=[c0_h, tx],
+                                    indices=[c0_h, ty],
                                 )
                                 yield_([])
                             with InsertionPoint(if_s1.else_block):
@@ -872,7 +872,7 @@ def build_module():
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
                                     row_buf_2,
-                                    indices=[c0_h, tx],
+                                    indices=[c0_h, ty],
                                 )
                                 yield_([])
                             with InsertionPoint(if_s2.else_block):
@@ -886,7 +886,7 @@ def build_module():
                                 ChannelGet(
                                     "L1ToL1_Conv1ToConv3x3",
                                     row_buf_3,
-                                    indices=[c0_h, tx],
+                                    indices=[c0_h, ty],
                                 )
                                 yield_([])
                             with InsertionPoint(if_s3.else_block):

@@ -432,8 +432,8 @@ def build_module():
                 herd_conv1_body.attributes["link_with"] = StringAttr.get("conv2dk1.o")
 
                 # =============================================================
-                # Herd: 3x3 Convolution (2x1 herd: two cores, each half channels)
-                # Core (0,0) processes channels 0-31, Core (1,0) channels 32-63
+                # Herd: 3x3 Convolution (1x2 herd: two cores, each half channels)
+                # Core (0,0) processes channels 0-31, Core (0,1) channels 32-63
                 # Receives L2 weights via broadcast channel to L1
                 # Output written to SHARED L1 buffer (passed as operand)
                 # Uses 4-buffer rotation pattern for proper sliding window
@@ -443,7 +443,7 @@ def build_module():
                     sizes=[1, 2],
                     operands=[shared_l1_conv3x3_out.result],
                 )
-                def herd_conv3x3_body(_dummy_x, tx, _dummy_sx, sx, shared_out_full):
+                def herd_conv3x3_body(tx, ty, sx, sy, shared_out_full):
                     c0_h = ConstantOp(index_type, 0)
 
                     # Allocate L1 buffers - 4 rows for sliding window rotation
@@ -454,11 +454,11 @@ def build_module():
 
                     # Receive weights via broadcast (indexed by tile)
                     wts = AllocOp(l1_wts_layer2_ty, [], [])
-                    ChannelGet("L2ToL1_WtsL2", wts, indices=[c0_h, tx])
+                    ChannelGet("L2ToL1_WtsL2", wts, indices=[c0_h, ty])
 
                     # Pre-load first two rows (indexed by tile)
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[c0_h, tx])
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[c0_h, tx])
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[c0_h, ty])
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[c0_h, ty])
 
                     # Constants for conv2dk3 calls
                     width = ConstantOp(i32, TENSOR_IN_W)
@@ -470,13 +470,13 @@ def build_module():
                     row_pos_mid = ConstantOp(i32, 1)  # middle
                     row_pos_bot = ConstantOp(i32, 2)  # bottom edge (pad bottom)
                     scale = ConstantOp(i32, 11)
-                    # chan_offset = tx * 32
+                    # chan_offset = ty * 32
                     half_c_i32 = ConstantOp(i32, TENSOR_L2_OUT_C // 2)
-                    tx_i32 = arith.index_cast(i32, tx)
-                    chan_offset = arith.muli(tx_i32, half_c_i32)
-                    # output_offset = tx * 1024 (byte offset into shared buffer)
+                    ty_i32 = arith.index_cast(i32, ty)
+                    chan_offset = arith.muli(ty_i32, half_c_i32)
+                    # output_offset = ty * 1024 (byte offset into shared buffer)
                     half_size_i32 = ConstantOp(i32, CONV3X3_OUT_HALF_SIZE)
-                    output_offset = arith.muli(tx_i32, half_size_i32)
+                    output_offset = arith.muli(ty_i32, half_size_i32)
 
                     # Output row 0 (top padding): uses [row0, row0, row1]
                     CallOp(
@@ -502,7 +502,7 @@ def build_module():
                     # Process middle rows 1-30 in groups of 4 (7 full groups = 28 rows)
                     for _ in range_(0, 7):
                         ChannelGet(
-                            "L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[c0_h, tx]
+                            "L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[c0_h, ty]
                         )
                         CallOp(
                             conv2dk3_ui8_func,
@@ -525,7 +525,7 @@ def build_module():
                         )
 
                         ChannelGet(
-                            "L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[c0_h, tx]
+                            "L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[c0_h, ty]
                         )
                         CallOp(
                             conv2dk3_ui8_func,
@@ -548,7 +548,7 @@ def build_module():
                         )
 
                         ChannelGet(
-                            "L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[c0_h, tx]
+                            "L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[c0_h, ty]
                         )
                         CallOp(
                             conv2dk3_ui8_func,
@@ -571,7 +571,7 @@ def build_module():
                         )
 
                         ChannelGet(
-                            "L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[c0_h, tx]
+                            "L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[c0_h, ty]
                         )
                         CallOp(
                             conv2dk3_ui8_func,
@@ -595,7 +595,7 @@ def build_module():
                         yield_([])
 
                     # Remaining rows 29-30
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[c0_h, tx])
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[c0_h, ty])
                     CallOp(
                         conv2dk3_ui8_func,
                         [
@@ -616,7 +616,7 @@ def build_module():
                         ],
                     )
 
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[c0_h, tx])
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[c0_h, ty])
                     CallOp(
                         conv2dk3_ui8_func,
                         [
