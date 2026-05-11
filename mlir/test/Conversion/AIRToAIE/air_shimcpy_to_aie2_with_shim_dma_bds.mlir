@@ -9,7 +9,7 @@
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 generate-shim-dma=true use-lock-race-condition-fix=true" --aie-place-tiles -canonicalize --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
 // CHECK-LABEL:   aie.device(xcve2802) @herd1 {
-// CHECK:  %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
+// CHECK-DAG:  %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK-DAG:  %[[VAL_1:.*]] = aie.tile(2, 3)
 // CHECK-DAG:  %[[VAL_2:.*]] = aie.tile(2, 0)
 // CHECK-DAG:  %[[VAL_3:.*]] = aie.lock(%[[VAL_2]], 1) {init = 1 : i32}
@@ -60,8 +60,8 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // -----
 
 // CHECK-LABEL:   aie.device(xcve2802) @herd1 {
-// CHECK: %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
-// CHECK: %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
+// CHECK-DAG: %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
+// CHECK-DAG: %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK-DAG: %[[VAL_2:.*]] = aie.tile(2, 3)
 // CHECK-DAG: %[[VAL_3:.*]] = aie.tile(2, 0)
 // CHECK-DAG: %[[VAL_4:.*]] = aie.lock(%[[VAL_3]], 3) {init = 1 : i32}
@@ -139,8 +139,8 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // air.channel to aie.locks.
 // CHECK-LABEL:   aie.device(xcve2802) @herd1 {
-// CHECK:         %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
-// CHECK:         %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
+// CHECK-DAG:         %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
+// CHECK-DAG:         %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK-DAG:         %[[VAL_2:.*]] = aie.tile(2, 0)
 // CHECK-DAG:         %[[VAL_3:.*]] = aie.lock(%[[VAL_2]], 3) {init = 1 : i32}
 // CHECK-DAG:         %[[VAL_4:.*]] = aie.lock(%[[VAL_2]], 2) {init = 0 : i32}
@@ -225,8 +225,8 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // air.channel to aie.locks.
 // CHECK-LABEL:   aie.device(xcve2802) @segment0 {
-// CHECK:         %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
-// CHECK:         %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
+// CHECK-DAG:         %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
+// CHECK-DAG:         %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK-DAG:         %[[VAL_2:.*]] = aie.tile(2, 1)
 // CHECK-DAG:         %[[VAL_3:.*]] = aie.tile(2, 3)
 // CHECK-DAG:         %[[VAL_4:.*]] = aie.tile(2, 0)

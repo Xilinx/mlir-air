@@ -88,15 +88,31 @@ AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileLike tile,
   AIE::LockOp lock = nullptr;
   std::set<int> ids;
   Operation *tileOp = tile.getOperation();
+  bool tileIsLogical = isa<AIE::LogicalTileOp>(tileOp);
+  // For logical tiles, multiple distinct LTOs can collapse onto the same
+  // physical aie.tile during aie-place-tiles (mem/shim getOrCreate). To avoid
+  // post-collapse lock-ID collisions, AIR walks all locks owned by ANY tile
+  // of the same TileLike type and reserves their IDs as well — over-assigning
+  // IDs is fine; collisions are not. The downstream `aie-assign-lock-ids`
+  // pass would normalize anyway, but assigning conflict-free IDs at AIR-emit
+  // time keeps lit-test CHECKs predictable.
+  AIE::AIETileType tileType = tile.getTileType();
   aie_device.walk([&](AIE::LockOp l) {
-    // Pointer-equality on the underlying defining op handles both physical
-    // TileOp and LogicalTileOp uniformly.
-    if (l.getTile().getDefiningOp() == tileOp) {
-      auto i = l.getLockIDValue();
-      if (i == id)
-        lock = l;
-      ids.insert(i);
+    auto lockTileOp = l.getTile().getDefiningOp();
+    bool ownerMatches = (lockTileOp == tileOp);
+    if (!ownerMatches && tileIsLogical) {
+      auto otherTileLike = dyn_cast_if_present<AIE::TileLike>(lockTileOp);
+      if (otherTileLike && otherTileLike.getTileType() == tileType)
+        ownerMatches = true;
     }
+    if (!ownerMatches)
+      return;
+    if (!l.getLockID().has_value())
+      return;
+    auto i = l.getLockIDValue();
+    if (lockTileOp == tileOp && i == id)
+      lock = l;
+    ids.insert(i);
   });
 
   if (lock)
@@ -1023,29 +1039,68 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
     }
   }
 
-  // Round-robin channel assignment across shim_dma_channels (= 2). The
-  // placer's per-tile DMA channel budget spreads LTOs across physical shim
-  // columns; AIR just needs to assign distinct channel indices to LTOs that
-  // could collapse onto the same shim, so the resulting aie.flow ops don't
-  // overlap on a single channel.
-  int dma_channel = (int)allocs->size() % shim_dma_channels;
-
-  // Emit a fresh aie.logical_tile<ShimNOCTile>(?, ?). The placer picks the
-  // physical column from flow adjacency to placed core peers (centroid
-  // placement) and respects per-shim DMA channel capacity.
-  OpBuilder b(device);
-  b.setInsertionPointToStart(device.getBody());
-  // Walk past contiguous tile defining ops so the new LTO sits with peers.
-  for (auto &op : device.getBody()->getOperations()) {
-    if (isa<AIE::TileOp, AIE::LogicalTileOp>(op))
-      b.setInsertionPointAfter(&op);
-    else
+  // Group up to shim_dma_channels (= 2) channels per direction onto a single
+  // logical shim tile, so each LTO maps to one physical shim with a single
+  // aie.shim_dma op containing all its channels. Otherwise the placer would
+  // collapse multiple LTOs onto one physical shim, producing multiple
+  // aie.shim_dma ops on the same tile. Per-LTO channel demand (≤2 in this
+  // direction) is respected by the placer's channel-budget logic, which then
+  // spreads multiple LTOs across physical shim columns.
+  //
+  // Search BOTH mm2s_allocs and s2mm_allocs for a candidate LTO so the
+  // shim_dma op aggregates both directions on a single tile.
+  AIE::TileLike tileLT = nullptr;
+  int dma_channel = -1;
+  auto pickChannelForLTO = [&](AIE::LogicalTileOp cand) -> int {
+    std::set<int> usedChans;
+    for (auto *side : {&mm2s_allocs, &s2mm_allocs})
+      for (auto &t : *side)
+        if (t.dma_tile.getOperation() == cand.getOperation() &&
+            t.dma_channel.direction == dir)
+          usedChans.insert((int)t.dma_channel.channel);
+    if ((int)usedChans.size() >= shim_dma_channels)
+      return -1;
+    for (int c = 0; c < shim_dma_channels; c++)
+      if (!usedChans.count(c))
+        return c;
+    return -1;
+  };
+  for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
+    for (auto &t : *side) {
+      auto cand = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+      if (!cand)
+        continue;
+      if (cand.getTileType() != AIE::AIETileType::ShimNOCTile)
+        continue;
+      int c = pickChannelForLTO(cand);
+      if (c < 0)
+        continue;
+      tileLT = cand;
+      dma_channel = c;
+      break;
+    }
+    if (tileLT)
       break;
   }
-  auto tileLT = AIE::LogicalTileOp::create(
-      b, device.getLoc(), AIE::AIETileType::ShimNOCTile,
-      /*col=*/IntegerAttr(), /*row=*/IntegerAttr(),
-      /*allocation_scheme=*/StringAttr());
+  if (!tileLT) {
+    // Need a fresh LTO. Emit aie.logical_tile<ShimNOCTile>(?, ?). The placer
+    // picks the physical column from flow adjacency to placed core peers
+    // (centroid placement) and respects per-shim DMA channel capacity.
+    OpBuilder b(device);
+    b.setInsertionPointToStart(device.getBody());
+    // Walk past contiguous tile defining ops so the new LTO sits with peers.
+    for (auto &op : device.getBody()->getOperations()) {
+      if (isa<AIE::TileOp, AIE::LogicalTileOp>(op))
+        b.setInsertionPointAfter(&op);
+      else
+        break;
+    }
+    tileLT = AIE::LogicalTileOp::create(
+        b, device.getLoc(), AIE::AIETileType::ShimNOCTile,
+        /*col=*/IntegerAttr(), /*row=*/IntegerAttr(),
+        /*allocation_scheme=*/StringAttr());
+    dma_channel = 0;
+  }
 
   // The col/row int args here record the other side (compute side) of the
   // flow for airrt metadata; they have nothing to do with the shim's
