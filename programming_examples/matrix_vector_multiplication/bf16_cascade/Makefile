@@ -62,6 +62,35 @@ profile_4col:
 	$(MAKE) profile M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_COLS=4 N_CASCADE=4
 
 build-test-exe:
+	@$(MAKE) build-test-exe-impl SRC=test.cpp OUT=test.exe
+
+# Fused GEMV + residual add: D[M] = A[M,K] @ B[K] + R[M]
+# Note: m_input=2 minimum (m_input=1 → R per-iter = 2 bytes, sub-aligned for AIE DMA)
+M_INPUT_ADD ?= 2
+
+print_add:
+	${powershell} python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) -p --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT_ADD) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
+
+run_add:
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT_ADD) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE) $(if $(DEBUG_IR),--debug-ir)
+
+build-test-add-exe:
+	@$(MAKE) build-test-exe-impl SRC=test_add.cpp OUT=test_add.exe
+
+profile_add: build-test-add-exe
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) --compile-mode compile-and-xclbin --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT_ADD) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_add.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M $(M) -K $(K)
+
+# 8 columns x 4 cascade tiles, fused GEMV+add
+run_add_8col:
+	$(MAKE) run_add M=2048 K=8192 TILE_M=2 M_INPUT_ADD=2 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf
+
+profile_add_8col:
+	$(MAKE) profile_add M=2048 K=8192 TILE_M=2 M_INPUT_ADD=2 HERD_COLS=8 N_CASCADE=4
+
+build-test-exe-impl:
 	@GPP=$$( \
 		for bin in /usr/bin/g++-*; do \
 			ver=$$(echo $$bin | grep -oE '[0-9]+$$'); \
@@ -82,9 +111,9 @@ build-test-exe:
 		echo "Error: AIEOPT_DIR environment variable not set. Please make sure to have sourced utils/env_setup.sh."; \
 		exit 1; \
 	fi; \
-	echo "Using compiler: $$GPP"; \
+	echo "Using compiler: $$GPP for $(SRC) -> $(OUT)"; \
 	mkdir -p $(BUILD_DIR); \
-	cd $(BUILD_DIR) && $$GPP ${srcdir}/test.cpp -o test.exe -std=c++23 -Wall \
+	cd $(BUILD_DIR) && $$GPP ${srcdir}/$(SRC) -o $(OUT) -std=c++23 -Wall \
 		-I$$XILINX_XRT/include -L$$XILINX_XRT/lib \
 		-I$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/include \
 		-L$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/lib \
