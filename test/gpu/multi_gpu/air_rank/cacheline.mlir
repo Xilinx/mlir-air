@@ -1,11 +1,11 @@
-//===- air_sym_with_rank_cacheline.mlir - air.rank wrap of cacheline -----===//
+//===- air_rank/cacheline.mlir - air.rank wrap of handwritten cacheline --===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===-----------------------------------------------------------------------===//
 //
-// High-level version of air_sym_handwritten_cacheline.mlir.
+// High-level version of handwritten/cacheline.mlir.
 //
 // This file is a 1:1 wrap of the cacheline producer/consumer test inside
 // an `air.rank` op:
@@ -20,10 +20,10 @@
 //   - mgpuSymmetricHeapDestroy before each func.return
 //
 // After lowering the IR is functionally equivalent to
-// air_sym_handwritten_cacheline.mlir (same kernels, same launch
-// dispatch, same validation). This file's job is to demonstrate that
-// the user can write the multi-process world declaratively via air.rank
-// and have the pass produce the handwritten reference.
+// handwritten/cacheline.mlir (same kernels, same launch dispatch, same
+// validation). This file's job is to demonstrate that the user can
+// write the multi-process world declaratively via air.rank and have
+// the pass produce the handwritten reference.
 //
 // The kernels and helpers (gpu.module @sym_kernels, @wrap_bytes) are
 // duplicated verbatim from the cacheline test. Only @main differs in
@@ -34,8 +34,8 @@
 // source memref (see AIRTranslateToLLVMPass.cpp). Same constraint as
 // the handwritten cacheline test.
 //
-// Launcher: run.sh with INPUT=rank forks 2 processes. The
-// air-rank-to-mgpu pass converts air.rank to runtime dispatch.
+// Launcher: `make INPUT=cacheline` from this subdir forks 2 processes.
+// The air-rank-to-mgpu pass converts air.rank to runtime dispatch.
 //
 //===-----------------------------------------------------------------------===//
 

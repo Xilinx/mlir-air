@@ -1,4 +1,4 @@
-//===- air_sym_handwritten_atomic.mlir - multi-GPU e2e (atomic flag) ------===//
+//===- handwritten/atomic.mlir - multi-GPU e2e (atomic-flag variant) ------===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -6,7 +6,7 @@
 //===------------------------------------------------------------------===//
 //
 // Symmetric-heap producer/consumer e2e (WORLD_SIZE=2), atomic-flag variant.
-// Sister file: air_sym_handwritten_cacheline.mlir uses cache-line atomicity
+// Sister file: handwritten/cacheline.mlir uses cache-line atomicity
 // instead of LLVM atomics for the cross-rank handoff.
 //
 //   rank 0 launches @producer; rank 1 launches @consumer.
