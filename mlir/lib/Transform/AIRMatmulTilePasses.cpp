@@ -216,8 +216,12 @@ LogicalResult runTileKAndFusePacksImpl(
         "packed_matmul has fewer than 3 iterators; expected M, N, K");
     return failure();
   }
-  int64_t kIdx = std::min<int64_t>(kIterIndex, numIters - 1);
-  raw[kIdx] = kTileFactor;
+  if (kIterIndex < 0 || kIterIndex >= numIters) {
+    packedMatmulOp->emitError("k-iter-index ")
+        << kIterIndex << " out of range [0, " << numIters << ")";
+    return failure();
+  }
+  raw[kIterIndex] = kTileFactor;
   auto tileSizes = buildTileSizes(raw, numIters, f.getContext());
 
   auto tileable = cast<TilingInterface>(packedMatmulOp);

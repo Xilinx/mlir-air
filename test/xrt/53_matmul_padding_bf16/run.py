@@ -13,7 +13,6 @@
 
 import argparse
 import math
-import os
 
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner

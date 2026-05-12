@@ -18,9 +18,11 @@ std::optional<DictionaryAttr> findMatmulCodegenConfig(func::FuncOp funcOp) {
   StringRef name = getMatmulCodegenConfigAttrName();
   std::optional<DictionaryAttr> found;
   funcOp.walk([&](Operation *op) {
-    if (auto attr = op->getAttrOfType<DictionaryAttr>(name)) {
-      found = attr;
-      return WalkResult::interrupt();
+    if (auto attr = op->getDiscardableAttr(name)) {
+      if (auto dict = dyn_cast<DictionaryAttr>(attr)) {
+        found = dict;
+        return WalkResult::interrupt();
+      }
     }
     return WalkResult::advance();
   });
@@ -81,7 +83,7 @@ bool writeMatmulCodegenConfig(func::FuncOp funcOp, DictionaryAttr dict,
   }
   if (!target)
     return false;
-  target->setAttr(name, dict);
+  target->setDiscardableAttr(name, dict);
   return true;
 }
 

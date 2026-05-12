@@ -374,13 +374,14 @@ Operation *cloneOpAndOperands(
 
 bool opOrAncestorIsDominantOver(Operation *a, Operation *b);
 
-// Walk `root` for the first op (any kind) carrying `attrName` as a
-// discardable attribute. Returns nullptr if no match.
+// Walk `root` for the first op (any kind) carrying `attrName` as either an
+// inherent or a discardable attribute (uses Operation::hasAttr, which checks
+// both). Returns nullptr if no match.
 mlir::Operation *findOpWithAttr(mlir::Operation *root,
                                 llvm::StringRef attrName);
 
-// Walk `root` for the first op of type `OpTy` carrying `attrName`.
-// Returns null OpTy if no match.
+// Walk `root` for the first op of type `OpTy` carrying `attrName` as either
+// an inherent or a discardable attribute. Returns null OpTy if no match.
 template <typename OpTy>
 OpTy findOpOfTypeWithAttr(mlir::Operation *root, llvm::StringRef attrName) {
   OpTy found;

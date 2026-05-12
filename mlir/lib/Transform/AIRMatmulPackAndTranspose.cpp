@@ -108,7 +108,7 @@ runOnMatmul(linalg::LinalgOp matmulOp, ArrayRef<int64_t> packSizes,
   // packed/transposed op so downstream consumer passes can read them.
   for (NamedAttribute a : savedAttrs)
     if (!current->hasAttr(a.getName()))
-      current->setAttr(a.getName(), a.getValue());
+      current->setDiscardableAttr(a.getName(), a.getValue());
 
   if (!marker.empty())
     current->setAttr(marker, rewriter.getUnitAttr());

@@ -1134,8 +1134,11 @@ def AIRMatmulCodegen : Pass<"air-matmul-codegen", "ModuleOp"> {
       N.  vec-prep composite
 
     Skipping a phase is the natural way to compose subsets: tests using
-    only the vectorize stages leave A--K empty and L=false; tests using
-    only the tile/pack stages leave M empty and N=false.
+    only the vectorize stages leave A--K empty and one-shot-bufferize=false.
+    Phase L is gated by the one-shot-bufferize option (default true). Phase N
+    (vec-prep composite) always runs but its individual steps walk for
+    vector ops, so it becomes a no-op on pre-vectorize IR; for tests using
+    only the tile/pack stages it is therefore a cheap no-op.
   }];
   let options = [
       // ---- Phase A: launch tile ----

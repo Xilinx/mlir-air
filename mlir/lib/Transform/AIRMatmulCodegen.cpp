@@ -91,6 +91,19 @@ public:
   void runOnOperation() override {
     ModuleOp module = getOperation();
     SmallVector<func::FuncOp> funcs(module.getOps<func::FuncOp>());
+    // Phase L (one-shot bufferize) is module-scoped, so running runOnFunc on
+    // multiple funcs in the same module would have the first call bufferize
+    // the whole module and leave subsequent funcs' tensor-IR phases (A--K)
+    // operating on already-memref IR. All current callers compile a single
+    // top-level matmul kernel per module; reject anything else explicitly so
+    // we get a clear error instead of silent misbehavior.
+    if (clOneShotBufferize && funcs.size() > 1) {
+      module->emitError("air-matmul-codegen with one-shot-bufferize=true does "
+                        "not support modules with more than one func.func; "
+                        "found ")
+          << funcs.size() << " functions";
+      return signalPassFailure();
+    }
     for (func::FuncOp f : funcs)
       if (failed(runOnFunc(f)))
         return;

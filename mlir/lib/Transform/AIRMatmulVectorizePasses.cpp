@@ -249,11 +249,16 @@ tileWithScfFor(mlir::Operation *op, ArrayRef<int64_t> sizes,
     return op->emitError("op does not implement TilingInterface");
   rewriter.setInsertionPoint(op);
   mlir::scf::SCFTilingOptions opts;
+  unsigned numLoops = iface.getLoopIteratorTypes().size();
+  if ((unsigned)sizes.size() > numLoops)
+    return op->emitError("tile sizes (")
+           << sizes.size() << ") exceed iteration domain rank (" << numLoops
+           << ")";
   SmallVector<OpFoldResult> sizeFolds;
+  sizeFolds.reserve(numLoops);
   for (int64_t s : sizes)
     sizeFolds.push_back(rewriter.getIndexAttr(s));
   // Pad with zeros to match iteration domain rank.
-  unsigned numLoops = iface.getLoopIteratorTypes().size();
   while (sizeFolds.size() < numLoops)
     sizeFolds.push_back(rewriter.getIndexAttr(0));
   opts.setTileSizes(sizeFolds);
