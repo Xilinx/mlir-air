@@ -58,6 +58,7 @@ if(AIR_ENABLE_GPU)
     AIRToROCDLPass.cpp
     AIRTranslateToLLVMPass.cpp
     GPUKernelOutlinePass.cpp
+    AIRRankToMgpuPass.cpp
   )
   list(APPEND CONVERSION_LINK_LIBS
     MLIRGPUDialect
