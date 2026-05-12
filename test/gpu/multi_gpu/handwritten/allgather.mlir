@@ -1,4 +1,4 @@
-//===- air_sym_handwritten_allgather.mlir - multi-GPU all-gather (cache line) ===//
+//===- handwritten/allgather.mlir - multi-GPU all-gather (cache-line) ----===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -10,9 +10,9 @@
 // rank ID, which determines both (a) the payload value and (b) which
 // slot of each peer's output buffer to write into.
 //
-// Sister file: air_sym_handwritten_cacheline.mlir is the producer/
-// consumer (1-to-1) version of the same cache-line atomicity mechanism.
-// This file generalizes it to a many-to-many collective.
+// Sister file: handwritten/cacheline.mlir is the producer/consumer
+// (1-to-1) version of the same cache-line atomicity mechanism. This
+// file generalizes it to a many-to-many collective.
 //
 // Layout
 // ======

@@ -1,11 +1,11 @@
-//===- air_sym_with_rank_allgather.mlir - air.rank wrap of allgather -----===//
+//===- air_rank/allgather.mlir - air.rank wrap of handwritten allgather --===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===-----------------------------------------------------------------------===//
 //
-// High-level version of air_sym_handwritten_allgather.mlir.
+// High-level version of handwritten/allgather.mlir.
 //
 // This file is a 1:1 wrap of the SIMD-across-ranks all-gather test inside
 // an `air.rank` op:
@@ -20,9 +20,9 @@
 //   - mgpuSymmetricHeapDestroy before each func.return
 //
 // After lowering the IR is functionally equivalent to
-// air_sym_handwritten_allgather.mlir (same kernel, same launch dispatch,
-// same validation). Sister file: air_sym_with_rank_cacheline.mlir does
-// the analogous wrap of the producer/consumer cacheline test.
+// handwritten/allgather.mlir (same kernel, same launch dispatch, same
+// validation). Sister file: air_rank/cacheline.mlir does the analogous
+// wrap of the producer/consumer cacheline test.
 //
 // The kernel and helpers (gpu.module @sym_kernels, @wrap_bytes) are
 // duplicated verbatim from the handwritten allgather. Only @main differs
@@ -33,7 +33,7 @@
 // source memref (see AIRTranslateToLLVMPass.cpp). Same constraint as
 // the handwritten allgather.
 //
-// Launcher: run.sh with INPUT=rank_allgather forks 2 processes.
+// Launcher: `make INPUT=allgather` from this subdir forks 2 processes.
 //
 //===-----------------------------------------------------------------------===//
 

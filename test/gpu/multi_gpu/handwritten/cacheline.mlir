@@ -1,4 +1,4 @@
-//===- air_sym_handwritten_cacheline.mlir - multi-GPU e2e (cache line) ----===//
+//===- handwritten/cacheline.mlir - multi-GPU e2e (cache-line variant) ----===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -6,8 +6,8 @@
 //===------------------------------------------------------------------===//
 //
 // Symmetric-heap producer/consumer e2e (WORLD_SIZE=2), cache-line variant.
-// Sister file: air_sym_handwritten_atomic.mlir uses LLVM atomicrmw / atomic
-// load with syncscope("") for the cross-rank handoff.
+// Sister file: handwritten/atomic.mlir uses LLVM atomicrmw / atomic load
+// with syncscope("") for the cross-rank handoff.
 //
 //   rank 0 launches @producer; rank 1 launches @consumer.
 //
