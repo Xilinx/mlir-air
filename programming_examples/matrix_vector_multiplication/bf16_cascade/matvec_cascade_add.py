@@ -123,7 +123,6 @@ def build_module(
     xrt_dtype_in = type_mapper(np_dtype_in)
     xrt_dtype_out = type_mapper(np_dtype_out)
     f32_type = F32Type.get()
-    index_type = IndexType.get()
 
     # L3 MemRefTypes
     memrefTyA = MemRefType.get([m, k], xrt_dtype_in)
@@ -175,13 +174,11 @@ def build_module(
         memory_space=l1_mem_space,
     )
     # HEAD's L1 R buffer holds the full tile_m R values for this col —
-    # single bulk transfer per launch iter. tile_m*sizeof(bf16) ≥ 4 bytes
-    # for AIE DMA alignment → tile_m ≥ 2 required (always satisfied since
-    # tile_m must be a multiple of m_input ≥ 1 and we use tile_m ≥ 2 in
-    # practice; explicit assert for safety).
+    # single bulk transfer per launch iter. tile_m*sizeof(bf16) >= 4 bytes
+    # for AIE DMA alignment.
     assert (
         tile_m * np.dtype(np_dtype_in).itemsize >= 4
-    ), f"tile_m ({tile_m}) * sizeof({np_dtype_in}) must be ≥ 4 bytes (AIE DMA alignment)"
+    ), f"tile_m ({tile_m}) * sizeof({np_dtype_in}) must be >= 4 bytes (AIE DMA alignment)"
     l1MemrefTyR = MemRefType.get(
         shape=[tile_m],
         element_type=xrt_dtype_in,

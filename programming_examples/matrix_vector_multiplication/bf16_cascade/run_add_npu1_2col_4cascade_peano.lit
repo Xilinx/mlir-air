@@ -6,5 +6,5 @@
 // RUN: mkdir -p test_add_npu1_2col_4cascade_peano
 // RUN: cd test_add_npu1_2col_4cascade_peano
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run_add M=256 K=512 TILE_M=4 M_INPUT=2 HERD_COLS=2 N_CASCADE=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: make -f %S/Makefile run_add M=256 K=512 TILE_M=4 M_INPUT=1 HERD_COLS=2 N_CASCADE=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: PASS!

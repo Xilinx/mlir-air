@@ -8,5 +8,5 @@
 // RUN: make -f %S/Makefile clean
 //
 // Correctness: D = A·B + R, M=256, K=512, 2 columns x 2 cascade tiles (n_cascade=2 boundary)
-// RUN: make -f %S/Makefile run_add M=256 K=512 TILE_M=4 M_INPUT=2 HERD_COLS=2 N_CASCADE=2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: make -f %S/Makefile run_add M=256 K=512 TILE_M=4 M_INPUT=1 HERD_COLS=2 N_CASCADE=2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: PASS!

@@ -65,9 +65,10 @@ build-test-exe:
 	@$(MAKE) build-test-exe-impl SRC=test.cpp OUT=test.exe
 
 # Fused GEMV + residual add: D[M] = A[M,K] @ B[K] + R[M]
-# Note: M_INPUT=2 minimum for the add variant (M_INPUT=1 → R per-iter = 2
-# bytes, sub-aligned for AIE DMA). Override M_INPUT=2 on the command line
-# (or via run_add_8col / profile_add_8col below).
+# R is staged as one bulk [tile_m] L3->L2 transfer per launch iter, so
+# the AIE DMA 4-byte alignment requirement is on tile_m (asserted in
+# matvec_cascade_add.py): tile_m * sizeof(bf16) >= 4, i.e. tile_m >= 2.
+# M_INPUT (= rows per inner kernel iter) can be any divisor of tile_m.
 
 print_add:
 	${powershell} python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) -p --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
@@ -86,10 +87,10 @@ profile_add: build-test-add-exe
 
 # 8 columns x 4 cascade tiles, fused GEMV+add
 run_add_8col:
-	$(MAKE) run_add M=2048 K=8192 TILE_M=2 M_INPUT=2 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf
+	$(MAKE) run_add M=2048 K=8192 TILE_M=2 M_INPUT=1 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf
 
 profile_add_8col:
-	$(MAKE) profile_add M=2048 K=8192 TILE_M=2 M_INPUT=2 HERD_COLS=8 N_CASCADE=4
+	$(MAKE) profile_add M=2048 K=8192 TILE_M=2 M_INPUT=1 HERD_COLS=8 N_CASCADE=4
 
 build-test-exe-impl:
 	@GPP=$$( \
