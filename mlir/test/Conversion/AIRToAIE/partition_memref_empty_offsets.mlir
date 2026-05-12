@@ -12,7 +12,7 @@
 // empty offsets, partitionMemref should return early instead of crashing on
 // getOffsets().front().
 
-// RUN: air-opt %s -air-to-aie='device=npu1' | FileCheck %s
+// RUN: air-opt %s -air-to-aie='device=npu1' --aie-place-tiles | FileCheck %s
 
 // The L2 buffer should remain as a single unpartitioned buffer on the memtile,
 // because the empty-offset channel.put prevents partitioning.

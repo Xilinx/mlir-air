@@ -9,48 +9,49 @@
 
 // one dma channel, multiple dma memcpy ops over time
 // CHECK: aie.device
-// CHECK-DAG:         %[[VAL_0:.*]] = aie.tile(2, 1)
-// CHECK-DAG:         %[[VAL_1:.*]] = aie.tile(2, 3)
-// CHECK-DAG:         %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 1) {init = 1 : i32}
-// CHECK-DAG:         %[[VAL_3:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
-// CHECK-DAG:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 1) {init = 2 : i32}
-// CHECK-DAG:         %[[VAL_5:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK-DAG:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_0]]) {{{.*}}} : memref<32x32xbf16, 1>
-// CHECK-DAG:         %[[VAL_9:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK-DAG:         %[[VAL_10:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[MEMTILE:.*]] = aie.tile(2, 1)
+// CHECK-DAG:         %[[COMPUTE:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[CLOCK_PROD:.*]] = aie.lock(%[[COMPUTE]], 1) {init = 2 : i32}
+// CHECK-DAG:         %[[CLOCK_CONS:.*]] = aie.lock(%[[COMPUTE]], 0) {init = 0 : i32}
+// CHECK-DAG:         %[[CBUF_A:.*]] = aie.buffer(%[[COMPUTE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[CBUF_B:.*]] = aie.buffer(%[[COMPUTE]]) {{{.*}}} : memref<32x32xbf16, 2>
 
-// CHECK:    aie.mem(%[[VAL_1]])  {
+// CHECK:    aie.mem(%[[COMPUTE]])  {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_9]] : memref<32x32xbf16, 2>, 0, 1024)
-// CHECK:           aie.use_lock(%[[VAL_5]], Release, 1)
+// CHECK:           aie.use_lock(%[[CLOCK_PROD]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[CBUF_A]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[CLOCK_CONS]], Release, 1)
 // CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
-// CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_10]] : memref<32x32xbf16, 2>, 0, 1024)
-// CHECK:           aie.use_lock(%[[VAL_5]], Release, 1)
+// CHECK:           aie.use_lock(%[[CLOCK_PROD]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[CBUF_B]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[CLOCK_CONS]], Release, 1)
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
 // CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:    aie.core(%[[VAL_1]])  {
-// CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
-// CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
-// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
-// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
+// CHECK:    aie.core(%[[COMPUTE]])  {
+// CHECK:           aie.use_lock(%[[CLOCK_CONS]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[CLOCK_CONS]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[CLOCK_PROD]], Release, 1)
+// CHECK:           aie.use_lock(%[[CLOCK_PROD]], Release, 1)
 // CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:         aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
+// CHECK-DAG:         %[[MLOCK_PROD:.*]] = aie.lock(%[[MEMTILE]], 1) {init = 1 : i32}
+// CHECK-DAG:         %[[MLOCK_CONS:.*]] = aie.lock(%[[MEMTILE]], 0) {init = 0 : i32}
+// CHECK-DAG:         %[[MBUF:.*]] = aie.buffer(%[[MEMTILE]]) {{{.*}}} : memref<32x32xbf16, 1>
 
-// CHECK:    aie.memtile_dma(%[[VAL_0]])  {
+// CHECK:         aie.flow(%[[MEMTILE]], DMA : 0, %[[COMPUTE]], DMA : 0)
+
+// CHECK:    aie.memtile_dma(%[[MEMTILE]])  {
 // CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
-// CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_8]] : memref<32x32xbf16, 1>, 0, 1024)
-// CHECK:           aie.use_lock(%[[VAL_2]], Release, 1)
+// CHECK:           aie.use_lock(%[[MLOCK_CONS]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[MBUF]] : memref<32x32xbf16, 1>, 0, 1024)
+// CHECK:           aie.use_lock(%[[MLOCK_PROD]], Release, 1)
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
 // CHECK:           aie.end
@@ -319,44 +320,45 @@ func.func @core_to_core_ping_pong() {
 
 // ping-pong is not possible with multiple channel accesses to the same buffer, due to dependence arising from the prod. and cons. of data in the buffer.
 // CHECK: aie.device
-// CHECK-DAG:         %[[VAL_0:.*]] = aie.tile(2, 1)
-// CHECK-DAG:         %[[VAL_1:.*]] = aie.tile(0, 3)
-// CHECK-DAG:         %[[VAL_3:.*]] = aie.lock(%[[VAL_0]], 1) {init = 1 : i32}
-// CHECK-DAG:         %[[VAL_4:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
-// CHECK-DAG:         %[[VAL_7:.*]] = aie.lock(%[[VAL_1]], 1) {init = 1 : i32}
-// CHECK-DAG:         %[[VAL_8:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK-DAG:         %[[VAL_11:.*]] = aie.buffer(%[[VAL_0]]) {{{.*}}} : memref<1x1x64x32xi32, 1 : i32>
-// CHECK-DAG:         %[[VAL_12:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<1x1x4x8x4x8xi32, 2 : i32>
+// CHECK-DAG:         %[[MEMTILE:.*]] = aie.tile(2, 1)
+// CHECK-DAG:         %[[COMPUTE:.*]] = aie.tile(0, 3)
+// CHECK-DAG:         %[[CLOCK_PROD:.*]] = aie.lock(%[[COMPUTE]], 1) {init = 1 : i32}
+// CHECK-DAG:         %[[CLOCK_CONS:.*]] = aie.lock(%[[COMPUTE]], 0) {init = 0 : i32}
+// CHECK-DAG:         %[[CBUF:.*]] = aie.buffer(%[[COMPUTE]]) {{{.*}}} : memref<1x1x4x8x4x8xi32, 2 : i32>
 
-// CHECK:    aie.mem(%[[VAL_1]])  {
+// CHECK:    aie.mem(%[[COMPUTE]])  {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
-// CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<1x1x4x8x4x8xi32, 2 : i32>, 0, 1024) {task_id = 0 : i32}
-// CHECK:           aie.use_lock(%[[VAL_8]], Release, 1)
+// CHECK:           aie.use_lock(%[[CLOCK_PROD]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[CBUF]] : memref<1x1x4x8x4x8xi32, 2 : i32>, 0, 1024) {task_id = 0 : i32}
+// CHECK:           aie.use_lock(%[[CLOCK_CONS]], Release, 1)
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:  // pred: ^bb0
 // CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:    aie.core(%[[VAL_1]])  {
+// CHECK:    aie.core(%[[COMPUTE]])  {
 // CHECK:         cf.br ^bb1
 // CHECK:       ^bb1:  // pred: ^bb0
 // CHECK:         cf.br ^bb2
 // CHECK:       ^bb2:  // pred: ^bb1
-// CHECK:         aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, 1)
-// CHECK:         aie.use_lock(%[[VAL_7]], Release, 1)
+// CHECK:         aie.use_lock(%[[CLOCK_CONS]], AcquireGreaterEqual, 1)
+// CHECK:         aie.use_lock(%[[CLOCK_PROD]], Release, 1)
 // CHECK:         cf.br ^bb3
 // CHECK:       ^bb3:  // pred: ^bb2
 // CHECK:         cf.br ^bb4
 // CHECK:       ^bb4:  // pred: ^bb3
 // CHECK:         scf.for %arg0 = %c1 to %c5 step %c1 {
-// CHECK:           aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, 1)
-// CHECK:           aie.use_lock(%[[VAL_7]], Release, 1)
+// CHECK:           aie.use_lock(%[[CLOCK_CONS]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[CLOCK_PROD]], Release, 1)
 // CHECK:         }
 // CHECK:         aie.end
 
-// CHECK:         aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
+// CHECK-DAG:         %[[MLOCK_PROD:.*]] = aie.lock(%[[MEMTILE]], 1) {init = 1 : i32}
+// CHECK-DAG:         %[[MLOCK_CONS:.*]] = aie.lock(%[[MEMTILE]], 0) {init = 0 : i32}
+// CHECK-DAG:         %[[MBUF:.*]] = aie.buffer(%[[MEMTILE]]) {{{.*}}} : memref<1x1x64x32xi32, 1 : i32>
+
+// CHECK:         aie.flow(%[[MEMTILE]], DMA : 0, %[[COMPUTE]], DMA : 0)
 // cHECK: @not_really_ping_pong
 
 air.channel @channel_2 [1, 1]

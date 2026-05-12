@@ -7,13 +7,14 @@
 
 // RUN: air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1}, aie.device(aie-place-tiles))' --split-input-file | FileCheck %s --check-prefix=WHOLEARRAY
 
-// 4x4 NPU1 array.
-
-// WHOLEARRAY: %[[shim_noc_tile_0_0:.*]] = aie.tile(0, 0)
-// WHOLEARRAY: %[[shim_noc_tile_1_0:.*]] = aie.tile(1, 0)
-// WHOLEARRAY: %[[shim_noc_tile_2_0:.*]] = aie.tile(2, 0)
-// WHOLEARRAY: %[[shim_noc_tile_3_0:.*]] = aie.tile(3, 0)
-// WHOLEARRAY: aie.shim_dma_allocation @air_channel_2_0(%[[shim_noc_tile_0_0]], MM2S, 0)
+// 4x4 NPU1 array. The 4 npu_dma_packet channel bundle slots multiplex onto a
+// single shim NOC DMA channel via packet IDs (one packet_flow per slot).
+// WHOLEARRAY-DAG: %[[shim_noc_tile_0_0:.*]] = aie.tile(0, 0)
+// WHOLEARRAY-COUNT-4: aie.packet_flow({{[0-3]}}) {
+// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_0(%[[shim_noc_tile_0_0]], MM2S, 0)
+// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_1(%[[shim_noc_tile_0_0]], MM2S, 0)
+// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_2(%[[shim_noc_tile_0_0]], MM2S, 0)
+// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_3(%[[shim_noc_tile_0_0]], MM2S, 0)
 
 
 #map = affine_map<()[s0] -> (s0 * 256)>

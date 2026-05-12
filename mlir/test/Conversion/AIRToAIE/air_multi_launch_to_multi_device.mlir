@@ -10,7 +10,7 @@
 // This is the pattern needed for reconfigurable designs where different
 // kernels run on the same physical tiles at different times.
 
-// RUN: air-opt %s -air-to-aie='device=npu2' | FileCheck %s
+// RUN: air-opt %s -air-to-aie='device=npu2' --aie-place-tiles | FileCheck %s
 
 // CHECK: aie.device(npu2) @add_three
 // CHECK-DAG:   %[[SHIM3:.*]] = aie.tile(0, 0)
