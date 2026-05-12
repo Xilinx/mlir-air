@@ -1064,12 +1064,12 @@ static LogicalResult runAieCompilation() {
 
   // --- AIR to AIE conversion ---
   // After air-to-aie + air-merge-unrolled-devices the device contains
-  // aie.logical_tile<...>(...) ops for memtiles and shim DMA tiles. Run
-  // mlir-aie's `aie-place-tiles` pass here, before the NPU-side pipeline
-  // below, so airrt-to-npu and the runtime metadata path see fully placed
-  // physical aie.tile ops with no further AIR work needed. (aiecc's own
-  // downstream `runPlacementPipeline` becomes a no-op via its
-  // `hasLogicalTileOps` guard.)
+  // aie.logical_tile<...>(...) ops for memtiles and shim DMA tiles. We
+  // intentionally do NOT resolve those LTOs here — the aieModule we save
+  // (and pass to aiecc) is left with LTOs so aiecc's own placement
+  // pipeline runs aie-place-tiles with the full objfifo/flow connectivity
+  // visible. The npuModule clone below picks up its own copy of place-
+  // tiles before airrt-to-npu (which needs physical shim cols).
   std::string airToAiePipeline;
   {
     raw_string_ostream os(airToAiePipeline);
@@ -1087,9 +1087,6 @@ static LogicalResult runAieCompilation() {
       os << " stack-size=" << stackSize.getValue();
     os << "}";
     os << ",air-merge-unrolled-devices";
-#if AIR_ENABLE_AIE
-    os << ",aie.device(aie-place-tiles)";
-#endif
     os << ")";
   }
 
@@ -1143,6 +1140,14 @@ static LogicalResult runAieCompilation() {
     {
       raw_string_ostream os(npuPipeline);
       os << "builtin.module(";
+      // airrt-to-npu (and the shim BD/DMA metadata readers it relies on)
+      // needs physical aie.tile col indices. The aieModule we cloned from
+      // still has aie.logical_tile<...> ops for shim/memtile, so resolve
+      // them here on the npuModule. (The aieModule we hand to aiecc keeps
+      // its LTOs so aiecc's own place-tiles can run with full context.)
+#if AIR_ENABLE_AIE
+      os << "aie.device(aie-place-tiles),";
+#endif
       os << shimBdPass;
       os << ",canonicalize,cse";
       os << ",air-to-std";
