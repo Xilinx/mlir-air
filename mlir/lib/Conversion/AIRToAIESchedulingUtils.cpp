@@ -966,6 +966,10 @@ air::TileDMAAllocator::getBuffer(uint64_t, AIE::TileOp tile,
 air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
     : air::DMAAllocator(device, air::MemorySpace::L3) {
   shim_dma_channels = 2;
+  const auto &tm = device.getTargetModel();
+  for (int i = 0, e = tm.columns(); i < e; i++)
+    if (tm.isShimNOCTile(i, 0))
+      dma_columns.push_back(i);
 }
 
 FailureOr<air::allocation_info_t>
@@ -1039,64 +1043,86 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
     }
   }
 
-  // Group up to shim_dma_channels (= 2) channels per direction onto a single
-  // logical shim tile, so each LTO maps to one physical shim with a single
-  // aie.shim_dma op containing all its channels. Otherwise the placer would
-  // collapse multiple LTOs onto one physical shim, producing multiple
-  // aie.shim_dma ops on the same tile. Per-LTO channel demand (≤2 in this
-  // direction) is respected by the placer's channel-budget logic, which then
-  // spreads multiple LTOs across physical shim columns.
-  //
-  // Search BOTH mm2s_allocs and s2mm_allocs for a candidate LTO so the
-  // shim_dma op aggregates both directions on a single tile.
+  // Capacity-aware (col, channel) selection — restored to the pre-Path-B
+  // semantics. The original allocNewDmaChannel walked
+  // (compute_col, ch=0) -> (compute_col, ch=1) -> (next_col, ch=0) -> ...
+  // and stopped at the first unused (col, channel) pair. With Path B the
+  // tile is now an aie.logical_tile<ShimNOCTile>(col, ?) (the placer picks
+  // the row), but the col hint must match what the placer will satisfy:
+  // otherwise downstream airrt-to-npu reads a hint that disagrees with the
+  // placer's eventual physical col, and NPU instructions target the wrong
+  // shim. We mirror the original loop so each LTO's col hint is the col
+  // a capacity-aware placer would pick on its own.
   AIE::TileLike tileLT = nullptr;
   int dma_channel = -1;
-  auto pickChannelForLTO = [&](AIE::LogicalTileOp cand) -> int {
-    std::set<int> usedChans;
-    for (auto *side : {&mm2s_allocs, &s2mm_allocs})
-      for (auto &t : *side)
-        if (t.dma_tile.getOperation() == cand.getOperation() &&
-            t.dma_channel.direction == dir)
-          usedChans.insert((int)t.dma_channel.channel);
-    if ((int)usedChans.size() >= shim_dma_channels)
-      return -1;
-    for (int c = 0; c < shim_dma_channels; c++)
-      if (!usedChans.count(c))
-        return c;
-    return -1;
-  };
-  // Only reuse an existing LTO if its col hint matches `col` (the
-  // compute-side column). This preserves baseline's "1 shim per active
-  // compute col" placement under the LTO model: each compute col gets
-  // its own shim LTO (with `(col, ?)` hint), so the placer + bidirectional
-  // sweep (mlir-aie #3064) can spread shims under each compute col rather
-  // than clustering near the centroid.
-  for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
-    for (auto &t : *side) {
-      auto cand = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
-      if (!cand)
-        continue;
-      if (cand.getTileType() != AIE::AIETileType::ShimNOCTile)
-        continue;
-      auto candCol = cand.getCol();
-      if (col >= 0) {
-        if (!candCol || (int)*candCol != col)
+
+  auto isUsedAtColCh = [&](int candidateCol, int ch) -> bool {
+    for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
+      for (auto &t : *side) {
+        if (t.dma_channel.direction != dir)
           continue;
-      } else {
-        if (candCol)
+        if ((int)t.dma_channel.channel != ch)
           continue;
+        auto cand = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+        if (!cand)
+          continue;
+        if (cand.getTileType() != AIE::AIETileType::ShimNOCTile)
+          continue;
+        auto candCol = cand.getCol();
+        if (candCol && (int)*candCol == candidateCol)
+          return true;
       }
-      int c = pickChannelForLTO(cand);
-      if (c < 0)
-        continue;
-      tileLT = cand;
-      dma_channel = c;
-      break;
     }
-    if (tileLT)
-      break;
+    return false;
+  };
+  auto findLTOAtCol = [&](int candidateCol) -> AIE::LogicalTileOp {
+    for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
+      for (auto &t : *side) {
+        auto cand = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+        if (!cand)
+          continue;
+        if (cand.getTileType() != AIE::AIETileType::ShimNOCTile)
+          continue;
+        auto candCol = cand.getCol();
+        if (candCol && (int)*candCol == candidateCol)
+          return cand;
+      }
+    }
+    return nullptr;
+  };
+
+  // Find the first (col, channel) pair not yet used. Start at compute col
+  // (so shim sits near its core) and rotate through ShimNOC cols.
+  int chosenCol = -1;
+  int chosenCh = -1;
+  if (!dma_columns.empty()) {
+    int startIdx = 0;
+    if (col >= 0) {
+      auto it = std::find(dma_columns.begin(), dma_columns.end(), col);
+      if (it != dma_columns.end())
+        startIdx = it - dma_columns.begin();
+    }
+    for (int hops = 0; hops < (int)dma_columns.size() && chosenCol < 0;
+         hops++) {
+      int c = dma_columns[(startIdx + hops) % dma_columns.size()];
+      for (int ch = 0; ch < shim_dma_channels; ch++) {
+        if (!isUsedAtColCh(c, ch)) {
+          chosenCol = c;
+          chosenCh = ch;
+          break;
+        }
+      }
+    }
   }
-  if (!tileLT) {
+  if (chosenCol < 0)
+    return memcpyOp.emitOpError("out of shim DMA channels");
+
+  // Reuse the existing LTO at chosenCol if one is there; otherwise create
+  // a new LTO. Reusing keeps the per-physical-shim aie.shim_dma op
+  // aggregated (one shim_dma per tile rather than several).
+  if (auto existing = findLTOAtCol(chosenCol)) {
+    tileLT = existing;
+  } else {
     OpBuilder b(device);
     b.setInsertionPointToStart(device.getBody());
     for (auto &op : device.getBody()->getOperations()) {
@@ -1106,17 +1132,14 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
         break;
     }
     auto *ctx = b.getContext();
-    const auto &tm = device.getTargetModel();
     IntegerAttr colAttr =
-        (col >= 0 && col < tm.columns() && tm.isShimNOCTile(col, 0))
-            ? IntegerAttr::get(IntegerType::get(ctx, 32), col)
-            : IntegerAttr();
+        IntegerAttr::get(IntegerType::get(ctx, 32), chosenCol);
     tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
                                         AIE::AIETileType::ShimNOCTile, colAttr,
                                         /*row=*/IntegerAttr(),
                                         /*allocation_scheme=*/StringAttr());
-    dma_channel = 0;
   }
+  dma_channel = chosenCh;
 
   // The col/row int args here record the other side (compute side) of the
   // flow for airrt metadata; they have nothing to do with the shim's

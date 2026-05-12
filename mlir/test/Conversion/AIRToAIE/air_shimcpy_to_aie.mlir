@@ -501,7 +501,7 @@ func.func @func7(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>, %arg2 : mem
 // With AIE1, multi-dimensional buffer descriptor is not supported.
 // CHECK: aie.device
 // CHECK-DAG:         %[[VAL_0:.*]] = aie.tile(5, 4)
-// CHECK-DAG:         %[[VAL_1:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:         %[[VAL_1:.*]] = aie.logical_tile<ShimNOCTile>(2, ?)
 // CHECK-DAG:         %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 1) {init = 0 : i32}
 // CHECK-DAG:         %[[VAL_3:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
 // CHECK-DAG:         %[[VAL_4:.*]] = aie.buffer(%[[VAL_0]]) {{{.*}}} : memref<16x8xi32, 2>

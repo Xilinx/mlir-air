@@ -190,6 +190,14 @@ public:
   // honored.
   int shim_dma_channels;
 
+  // ShimNOC-capable physical cols on this device, in increasing order.
+  // allocNewDmaChannel uses this for capacity-aware col rotation: when the
+  // current candidate col already has its DMA channels exhausted, the next
+  // col in the list is tried. This pre-Path-B behavior keeps AIR's col hint
+  // in agreement with the placement aie-place-tiles will pick (the placer
+  // respects the hint, but only insofar as channel capacity permits).
+  std::vector<int> dma_columns;
+
   ShimDMAAllocator(AIE::DeviceOp device);
 
   // Allocate a new shim DMA channel. The shim tile is emitted as an
