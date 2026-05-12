@@ -42,8 +42,30 @@ fi
 LLVM_LIB_DIR="${LLVM_INSTALL_DIR:-$(dirname "$(which mlir-opt)")/..}/lib"
 AIRGPU_LIB="${MLIR_AIR_INSTALL_DIR:-$(dirname "$(which air-opt)")/..}/lib/libairgpu.so"
 
-echo "Step 1a: Expand air.translate ops"
-air-opt "$SCRIPT_DIR/air_sym_handwritten.mlir" --air-translate-to-llvm \
+# Two parallel kernel-driven examples — same outer test harness, two
+# different cross-rank synchronization mechanisms:
+#   atomic    — LLVM atomicrmw release / atomic load acquire with
+#               syncscope("") (= AMDGPUUsage System scope = cross-device).
+#               Spec-defined ordering contract; pinned by
+#               sym_atomic_syncscope.mlir.
+#   cacheline — Cache-line atomicity: producer writes 32 i32 (one 128-byte
+#               line) in a single vec store with the flag in-band at lane
+#               31; consumer spins via gpu.shuffle of lane 31. Trades the
+#               LLVM contract for a microarchitectural one (relies on the
+#               XGMI fabric publishing peer cache lines whole).
+INPUT="${INPUT:-cacheline}"
+case "$INPUT" in
+  atomic|cacheline)
+    SRC_MLIR="$SCRIPT_DIR/air_sym_handwritten_${INPUT}.mlir"
+    ;;
+  *)
+    echo "Unknown INPUT=$INPUT; expected 'atomic' or 'cacheline'" >&2
+    exit 1
+    ;;
+esac
+
+echo "Step 1a: Expand air.translate ops ($INPUT variant)"
+air-opt "$SRC_MLIR" --air-translate-to-llvm \
     -o "$TMPDIR/sym_post_translate.mlir"
 
 echo "Step 1b: Compile gpu.module to AMDGPU binary + finalize host"

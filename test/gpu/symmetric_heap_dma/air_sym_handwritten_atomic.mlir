@@ -1,17 +1,24 @@
-//===- air_sym_handwritten.mlir - hand-written multi-GPU e2e test --------===//
+//===- air_sym_handwritten_atomic.mlir - multi-GPU e2e (atomic flag) ------===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===------------------------------------------------------------------===//
 //
-// Symmetric-heap producer/consumer e2e (WORLD_SIZE=2):
+// Symmetric-heap producer/consumer e2e (WORLD_SIZE=2), atomic-flag variant.
+// Sister file: air_sym_handwritten_cacheline.mlir uses cache-line atomicity
+// instead of LLVM atomics for the cross-rank handoff.
+//
 //   rank 0 launches @producer; rank 1 launches @consumer.
 //   producer writes 42.0 into rank 1's `data` over XGMI; per-warp flags
-//   (4 i32, in rank 1's HBM) signal completion via release atomicrmw.
+//   (4 i32, in rank 1's HBM) signal completion via release atomicrmw with
+//   syncscope("") (= LLVM System scope = cross-device on AMDGPU).
 //   consumer's lane 0 acquires on its flag, then all 64 lanes copy
 //   the local data slot to verify_buf for host check.
 //   Block: 1 grid × 256 threads = 4 warps × 64 lanes.
+//
+// Synchronization contract is spec-defined: see sym_atomic_syncscope.mlir
+// for the FileCheck contract test that pins the lowering behavior.
 //
 // Launcher: run.sh forks N processes with RANK / WORLD_SIZE / LOCAL_RANK.
 //
