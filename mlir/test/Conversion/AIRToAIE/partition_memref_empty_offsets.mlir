@@ -12,10 +12,6 @@
 // empty offsets, partitionMemref should return early instead of crashing on
 // getOffsets().front().
 
-// XFAIL: *
-// TODO(RFC #1567): Path B placer-driven flow changes tile-emission shape;
-// CHECK patterns codify pre-Path-B AIR behavior. Update by inspecting
-// air-opt -air-to-aie --aie-place-tiles output. Hardware CI is the real gate.
 // RUN: air-opt %s -air-to-aie='device=npu1' | FileCheck %s
 
 // The L2 buffer should remain as a single unpartitioned buffer on the memtile,

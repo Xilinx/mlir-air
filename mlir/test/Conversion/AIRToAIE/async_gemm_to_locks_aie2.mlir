@@ -5,10 +5,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-// XFAIL: *
-// TODO(RFC #1567): Path B placer-driven flow changes tile-emission shape;
-// CHECK patterns codify pre-Path-B AIR behavior. Update by inspecting
-// air-opt -air-to-aie --aie-place-tiles output. Hardware CI is the real gate.
 // RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" --aie-place-tiles %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) @segment_0 {
