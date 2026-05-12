@@ -698,6 +698,62 @@ Effects: `MemoryEffects::Effect{}`
 
 
 
+### `air.translate` (xilinx::air::TranslateOp)
+
+_Re-express a symmetric-heap memref in another rank's address space_
+
+Syntax:
+
+```
+operation ::= `air.translate` $source `,` $from_rank `,` $to_rank `,` $heap_bases
+              attr-dict `:` type($source) `,` type($heap_bases)
+```
+
+Produces a memref of the same type as `$source` whose underlying
+pointer references the corresponding allocation on `$to_rank`. The
+`$source` memref is assumed to live on `$from_rank`'s symmetric heap.
+The translation is the pointer rebase
+
+    peer_va = bases[to_rank] + (source_ptr - bases[from_rank])
+
+where `$heap_bases` is a 1-D memref of `index`-typed pointer values
+(per-rank symmetric-heap base addresses) obtained from the
+`mgpuGetHeapBases()` runtime hook. The host typically wraps the raw
+runtime pointer as a `memref<?xindex>` once and threads it through
+`gpu.launch_func` as a kernel argument. No data is moved; this op
+produces a value-level "view" of peer memory.
+
+Folds to `$source` when `$from_rank` and `$to_rank` are statically
+equal.
+
+Both ranks must address the same collective allocation on the
+symmetric heap (i.e. `$source` must trace back to a
+`memref.alloc {air.symmetric}`). Using this op outside that contract
+is undefined.
+
+Traits: `AlwaysSpeculatableImplTrait`
+
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+
+Effects: `MemoryEffects::Effect{}`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `source` | memref of any type values |
+| `from_rank` | index |
+| `to_rank` | index |
+| `heap_bases` | 1D memref of index values |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | memref of any type values |
+
+
+
 ### `air.universe.alloc` (xilinx::air::UniverseAllocOp)
 
 _Allocate a universe of devices_
