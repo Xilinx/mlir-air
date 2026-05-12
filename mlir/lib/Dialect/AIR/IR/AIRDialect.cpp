@@ -3598,6 +3598,20 @@ ParseResult air::CustomOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
+//
+// TranslateOp
+//
+
+OpFoldResult air::TranslateOp::fold(FoldAdaptor adaptor) {
+  if (getFromRank() == getToRank())
+    return getSource();
+  auto fromAttr = dyn_cast_if_present<IntegerAttr>(adaptor.getFromRank());
+  auto toAttr = dyn_cast_if_present<IntegerAttr>(adaptor.getToRank());
+  if (fromAttr && toAttr && fromAttr.getValue() == toAttr.getValue())
+    return getSource();
+  return {};
+}
+
 } // namespace xilinx
 
 #include "air/Dialect/AIR/AIROpInterfaces.cpp.inc"

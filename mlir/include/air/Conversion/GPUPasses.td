@@ -21,6 +21,23 @@ def ConvertAIRToROCDL : Pass<"air-to-rocdl", "ModuleOp"> {
   let options = [];
 }
 
+def AIRTranslateToLLVM : Pass<"air-translate-to-llvm", "ModuleOp"> {
+  let summary = "Lower air.translate to memref.reinterpret_cast + LLVM-dialect address arithmetic";
+  let description = [{
+    Expands each `air.translate` op into the pointer-rebase computation:
+    `bases[to_rank] - bases[from_rank]`, converted from bytes to elements
+    of the source memref's element type, then applied as a new offset
+    via `memref.reinterpret_cast`. The expansion is pure arithmetic; it
+    works identically on host functions and inside `gpu.func`.
+  }];
+  let constructor = "xilinx::air::createAIRTranslateToLLVMPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::LLVM::LLVMDialect"
+  ];
+}
+
 def ConvertGPUKernelOutline : Pass<"air-gpu-outlining", "ModuleOp"> {
   let summary = "Outline GPU Kernel Func from GPU Launch";
   let constructor = "xilinx::air::createGPUKernelOutlinePass()";
@@ -30,6 +47,109 @@ def ConvertGPUKernelOutline : Pass<"air-gpu-outlining", "ModuleOp"> {
     "gpu::GPUDialect", "ROCDL::ROCDLDialect", "LLVM::LLVMDialect"
   ];
   let options = [];
+}
+
+def AIRGpuChannelToMgpu : Pass<"air-gpu-channel-to-mgpu", "ModuleOp"> {
+  let summary = "Lower air.channel.put/get of channel_type=\"gpu_symmetric_heap\" "
+                "to host-side mgpuMemcpy (peer-VA) + mgpuBarrier";
+  let constructor = "xilinx::air::createAIRGpuChannelToMgpuPass()";
+  let description = [{
+    For each `air.channel @C [...] {channel_type = "gpu_symmetric_heap"}`,
+    pair its single `air.channel.put` and single `air.channel.get`. The put
+    becomes `mgpuBarrier()` (publish: data is already in the symmetric heap
+    via the put's `air.symmetric` source memref). The get becomes
+    `mgpuBarrier()` followed by `mgpuMemcpy(dst, peer_va(put_src), size)`
+    where the peer rank is the get's first index operand and the peer VA is
+    computed via `mgpuGetHeapBases()`.
+
+    Restrictions in this initial version:
+      - One put and one get per channel symbol.
+      - Both put and get at host scope (no `gpu.launch`/`gpu.func`).
+      - put's source memref must be `air.symmetric`-tagged.
+      - get's destination memref must be in `memory_space=0`.
+      - "Entire memref" form only on both sides.
+      - get must take exactly one index operand (the peer rank).
+  }];
+  let dependentDialects = [
+    "func::FuncDialect", "arith::ArithDialect", "memref::MemRefDialect",
+    "LLVM::LLVMDialect"
+  ];
+}
+
+def AIRCrossRankDmaToMgpu : Pass<"air-cross-rank-dma-to-mgpu", "ModuleOp"> {
+  let summary = "Lower air.dma_memcpy_nd with src_rank/dst_rank to mgpuMemcpy "
+                "with peer-VA addressing through mgpuGetHeapBases()";
+  let constructor = "xilinx::air::createAIRCrossRankDmaToMgpuPass()";
+  let description = [{
+    For each `air.dma_memcpy_nd` op carrying a `src_rank` or `dst_rank`
+    integer attribute, emit a host-side `mgpuMemcpy` whose peer-side pointer
+    is computed as `mgpuGetHeapBases()[peer] + (local_ptr - local_base)`.
+
+    Restrictions in this initial version:
+      - Both `src` and `dst` memrefs must be in `memory_space=0`.
+      - The op must be at host scope (not inside any `gpu.launch`/`gpu.func`).
+      - "Entire memref" form only: `[]` `[]` `[]` for both sides — no
+        custom offsets / sizes / strides.
+
+    Lower this pass *before* `air-symmetric-alloc-to-mgpu` so that pointer
+    extraction (`memref.extract_aligned_pointer_as_index`) sees plain
+    memrefs rather than already-cast LLVM struct values.
+  }];
+  let dependentDialects = [
+    "func::FuncDialect", "arith::ArithDialect", "memref::MemRefDialect",
+    "LLVM::LLVMDialect"
+  ];
+}
+
+def AIRSymmetricAllocToMgpu : Pass<"air-symmetric-alloc-to-mgpu", "ModuleOp"> {
+  let summary = "Lower memref.alloc {air.symmetric} to mgpuSymmetricAlloc and "
+                "memref.dealloc of the result to mgpuSymmetricFree";
+  let constructor = "xilinx::air::createAIRSymmetricAllocToMgpuPass()";
+  let description = [{
+    Replaces each `memref.alloc` carrying the unit attribute `air.symmetric`
+    with a call to `mgpuSymmetricAlloc(size_in_bytes, stream)` returning
+    `!llvm.ptr`, then builds an LLVM memref descriptor (struct) wrapping that
+    pointer and projects it back to the original memref type via
+    `builtin.unrealized_conversion_cast` so downstream uses keep working.
+
+    For every `memref.dealloc` whose operand traces back (through a single
+    `unrealized_conversion_cast`) to such a symmetric alloc, the pass emits
+    `mgpuSymmetricFree(ptr, stream)` and erases the dealloc.
+
+    Should run before `convert-to-llvm`. Does nothing if no `air.symmetric`
+    allocations are present.
+  }];
+  let dependentDialects = [
+    "func::FuncDialect", "arith::ArithDialect", "LLVM::LLVMDialect"
+  ];
+}
+
+def AIRRankToMgpu : Pass<"air-rank-to-mgpu", "ModuleOp"> {
+  let summary = "Lower air.rank to mgpu* runtime calls (multi-GPU process model)";
+  let constructor = "xilinx::air::createAIRRankToMgpuPass()";
+  let description = [{
+    Each `air.rank` op is replaced by inlining its body in place, with rank
+    IDs computed from `mgpuGetRank()` (delinearized into the rank's N-D
+    iteration space) and rank sizes substituted from the static size operands.
+
+    The pass also inserts `mgpuSymmetricHeapInit(heap_size)` at the entry of
+    the enclosing `func.func` (default 256 MB; configurable via the
+    `heap-size` option) and `mgpuSymmetricHeapDestroy()` before each
+    `func.return` in that function.
+
+    This replaces `air-rank-to-launch` for the GPU pipeline. Unlike
+    `air-rank-to-launch` (which serializes ranks via `scf.for`), this pass
+    assumes each process executes the whole rank body once and runtime
+    coordinates across processes via env vars (RANK / WORLD_SIZE / LOCAL_RANK)
+    and the symmetric-heap fabric.
+  }];
+  let options = [
+    Option<"heapSize", "heap-size", "uint64_t", "/*default=*/268435456",
+           "Symmetric heap size in bytes (default: 256 MB)">
+  ];
+  let dependentDialects = [
+    "func::FuncDialect", "arith::ArithDialect"
+  ];
 }
 
 #endif // AIR_CONVERSION_GPU_PASSES

@@ -179,6 +179,16 @@ static cl::opt<std::string>
                cl::desc("GPU runtime for ROCDL target (HIP or OpenCL)"),
                cl::init("HIP"), cl::cat(airCompilerOptions));
 
+static cl::opt<bool> multiGpu(
+    "multi-gpu",
+    cl::desc(
+        "When --target=gpu, lower air.rank / air.symmetric memref / cross-rank "
+        "air.dma_memcpy_nd / gpu_symmetric_heap air.channel ops to mgpu* "
+        "runtime calls. Produces host-only LLVM IR; the result must be run "
+        "as N processes (RANK / WORLD_SIZE / LOCAL_RANK env vars) linked "
+        "against libairgpu.so. See test/gpu/symmetric_heap_dma/run.sh."),
+    cl::init(false), cl::cat(airCompilerOptions));
+
 static cl::opt<bool>
     omitWhileTrueLoop("omit-while-true-loop",
                       cl::desc("Do not add while(true) loop around per-core "
@@ -718,6 +728,72 @@ static OwningOpRef<ModuleOp> cloneModule(ModuleOp moduleOp) {
 //===----------------------------------------------------------------------===//
 // GPU Compilation Pipeline
 //===----------------------------------------------------------------------===//
+
+// Multi-GPU host-only compilation pipeline. Lowers the high-level multi-GPU
+// abstractions (air.rank, air.symmetric memref, cross-rank air.dma_memcpy_nd,
+// gpu_symmetric_heap air.channel) to mgpu* runtime calls + standard LLVM.
+// Output is host-only LLVM IR meant to be run as N processes via mlir-runner
+// with RANK / WORLD_SIZE / LOCAL_RANK env vars set.
+static LogicalResult runMultiGpuCompilation() {
+  SmallString<256> baseName(sys::path::stem(inputFilename));
+
+  auto airOpt = sys::findProgramByName("air-opt");
+  auto mlirOpt = sys::findProgramByName("mlir-opt");
+  if (!airOpt) {
+    llvm::errs() << "Error: could not find air-opt in PATH\n";
+    return failure();
+  }
+  if (!mlirOpt) {
+    llvm::errs() << "Error: could not find mlir-opt in PATH\n";
+    return failure();
+  }
+
+  if (verbose) {
+    llvm::outs() << "Multi-GPU compilation for " << inputFilename << "\n";
+    llvm::outs() << "  Tmpdir: " << tmpDir << "\n";
+  }
+
+  // Step 1: Lower multi-GPU abstractions to mgpu* runtime calls.
+  // Order: cross-rank-DMA / channel first (they reference air.symmetric
+  // allocs that survive Phase 4), then symmetric-alloc, then rank.
+  SmallString<256> step1(tmpDir);
+  sys::path::append(step1, baseName + "_mgpu.mlir");
+  if (failed(runCommand({*airOpt, inputFilename,
+                          "-air-cross-rank-dma-to-mgpu",
+                          "-air-gpu-channel-to-mgpu",
+                          "-air-symmetric-alloc-to-mgpu",
+                          "-air-rank-to-mgpu", "-o", step1.str().str()})))
+    return failure();
+
+  // Step 2: Standard LLVM lowering.
+  std::string finalOutput;
+  if (!outputFilename.empty()) {
+    finalOutput = outputFilename;
+  } else {
+    SmallString<256> tmp(tmpDir);
+    sys::path::append(tmp, baseName + "_final.mlir");
+    finalOutput = tmp.str().str();
+  }
+  std::string llvmPipeline =
+      "--pass-pipeline=builtin.module(func.func(convert-scf-to-cf),"
+      "convert-to-llvm,reconcile-unrealized-casts)";
+  if (failed(runCommand(
+          {*mlirOpt, step1.str().str(), llvmPipeline, "-o", finalOutput})))
+    return failure();
+
+  if (verbose)
+    llvm::outs() << "Multi-GPU compilation complete! Output: " << finalOutput
+                 << "\n"
+                 << "Run with: bash test/gpu/symmetric_heap_dma/run.sh "
+                    "(RANK/WORLD_SIZE/LOCAL_RANK env vars per process)\n";
+
+  if (outputFilename.empty()) {
+    auto bufOrErr = MemoryBuffer::getFile(finalOutput);
+    if (bufOrErr)
+      llvm::outs() << (*bufOrErr)->getBuffer();
+  }
+  return success();
+}
 
 static LogicalResult runGpuCompilation() {
   SmallString<256> baseName(sys::path::stem(inputFilename));
@@ -1694,6 +1770,8 @@ int main(int argc, char **argv) {
 
   // Dispatch based on target
   if (target.getValue() == "gpu") {
+    if (multiGpu)
+      return failed(runMultiGpuCompilation()) ? 1 : 0;
     return failed(runGpuCompilation()) ? 1 : 0;
   } else {
     return failed(runAieCompilation()) ? 1 : 0;
