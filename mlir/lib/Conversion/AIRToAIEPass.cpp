@@ -2452,10 +2452,13 @@ lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &s,
   patterns.insert<LowerAIRChannelsPattern>(ctx, s, bufferToMemtileMap,
                                            linksToComplete);
   (void)applyPatternsGreedily(d, std::move(patterns));
-  // Now that the rewriter has settled, resolve the logical shim tiles emitted
-  // during pattern matching into physical aie.tile via the placer. Doing this
-  // outside the pattern driver avoids invalidating the worklist.
-  return s.resolveLogicalShimTiles(d);
+  // Leave shim LTOs unresolved here. Downstream `aie-place-tiles` (invoked
+  // from aircc after air-merge-unrolled-devices) sees the full set of
+  // aie.objectfifo connections and resolves shim/memtile LTOs together via
+  // the same Adjacency-driven placer that mlir-aie's native ObjectFifo
+  // flow uses. Doing it in-AIR with SequentialPlacer would lose that
+  // objfifo-aware placement context.
+  return success();
 }
 
 struct SpecializeChannelBundlePattern
@@ -6408,21 +6411,9 @@ public:
     if (patterns.getNativePatterns().size())
       (void)applyPatternsGreedily(m, std::move(patterns));
 
-    // Resolve any aie.logical_tile<ShimNOCTile> ops emitted by the test-path
-    // LowerAIRChannelsPattern. The production path goes through
-    // lowerAIRChannels() which already calls this; here we mirror it for the
-    // test runner.
-    if (clTestPatterns.find("lower-air-channels") != std::string::npos) {
-      WalkResult walkRes = m.walk([&](AIE::DeviceOp d) {
-        if (failed(shimTileAlloc.resolveLogicalShimTiles(d)))
-          return WalkResult::interrupt();
-        return WalkResult::advance();
-      });
-      if (walkRes.wasInterrupted()) {
-        signalPassFailure();
-        return;
-      }
-    }
+    // Shim LTOs emitted by the test-path LowerAIRChannelsPattern are left
+    // unresolved here, matching the production path. Downstream
+    // `aie-place-tiles` resolves them with full objfifo connectivity.
   }
 
   void runOnOperation() override {
