@@ -90,20 +90,31 @@ AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileLike tile,
   Operation *tileOp = tile.getOperation();
   bool tileIsLogical = isa<AIE::LogicalTileOp>(tileOp);
   // For logical tiles, multiple distinct LTOs can collapse onto the same
-  // physical aie.tile during aie-place-tiles (mem/shim getOrCreate). To avoid
-  // post-collapse lock-ID collisions, AIR walks all locks owned by ANY tile
-  // of the same TileLike type and reserves their IDs as well — over-assigning
-  // IDs is fine; collisions are not. The downstream `aie-assign-lock-ids`
-  // pass would normalize anyway, but assigning conflict-free IDs at AIR-emit
-  // time keeps lit-test CHECKs predictable.
+  // physical aie.tile during aie-place-tiles only when they share the same
+  // (col, tile_type) — different cols always resolve to different physical
+  // tiles. Reserve IDs across same-col same-type LTOs so post-collapse
+  // assignments don't collide. Reserving across ALL same-type LTOs (across
+  // every col) blows the per-tile lock budget in workloads like
+  // bf16_cascade where 8 memtile LTOs each need 10 locks: union'd IDs
+  // become 0..79, but the per-tile max is 63.
   AIE::AIETileType tileType = tile.getTileType();
+  std::optional<int32_t> tileCol;
+  if (tileIsLogical)
+    tileCol = cast<AIE::LogicalTileOp>(tileOp).getCol();
   aie_device.walk([&](AIE::LockOp l) {
     auto lockTileOp = l.getTile().getDefiningOp();
     bool ownerMatches = (lockTileOp == tileOp);
     if (!ownerMatches && tileIsLogical) {
-      auto otherTileLike = dyn_cast_if_present<AIE::TileLike>(lockTileOp);
-      if (otherTileLike && otherTileLike.getTileType() == tileType)
-        ownerMatches = true;
+      auto otherLT = dyn_cast_if_present<AIE::LogicalTileOp>(lockTileOp);
+      if (otherLT && otherLT.getTileType() == tileType) {
+        // Only reserve across LTOs that COULD share a physical tile post-
+        // collapse: same col hint (or both unhinted, since aie-place-tiles
+        // may put both at the same col). Differently-hinted LTOs always
+        // resolve to different cols.
+        auto otherCol = otherLT.getCol();
+        if (tileCol == otherCol)
+          ownerMatches = true;
+      }
     }
     if (!ownerMatches)
       return;
