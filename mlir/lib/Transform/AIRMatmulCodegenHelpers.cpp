@@ -38,6 +38,21 @@ static bool areEquivalentIndices(Value idx1, Value idx2) {
   Operation *def2 = idx2.getDefiningOp();
   if (!def1 || !def2)
     return false;
+  // affine.apply with the same map AND same operands is value-equivalent.
+  // air::isEquivalentTo's lite check (constants only) misses this case.
+  if (auto a1 = dyn_cast<mlir::affine::AffineApplyOp>(def1)) {
+    if (auto a2 = dyn_cast<mlir::affine::AffineApplyOp>(def2)) {
+      if (a1.getAffineMap() != a2.getAffineMap())
+        return false;
+      if (a1.getMapOperands().size() != a2.getMapOperands().size())
+        return false;
+      for (auto [op1, op2] :
+           llvm::zip(a1.getMapOperands(), a2.getMapOperands()))
+        if (op1 != op2)
+          return false;
+      return true;
+    }
+  }
   return xilinx::air::isEquivalentTo(def1, def2);
 }
 
@@ -148,8 +163,26 @@ int runEliminateRedundantVectorTransfers(Operation *target,
         continue;
       vector::TransferReadOp firstRead = transferReads[i];
       vector::TransferReadOp secondRead = transferReads[j];
-      if (!OperationEquivalence::isEquivalentTo(
-              firstRead, secondRead, OperationEquivalence::IgnoreLocations))
+      // Value-aware equivalence (matches the transform-op path in
+      // AIRLinalgCodegen.cpp::areIdenticalReads). OperationEquivalence is
+      // strict on operand SSA equality, which misses two reads whose indices
+      // are computed by distinct-but-identical affine.apply ops or two
+      // iter_args with the same initial value.
+      if (firstRead.getBase() != secondRead.getBase())
+        continue;
+      if (firstRead.getIndices().size() != secondRead.getIndices().size())
+        continue;
+      bool indicesMatch = true;
+      for (auto [idx1, idx2] :
+           llvm::zip(firstRead.getIndices(), secondRead.getIndices())) {
+        if (!areEquivalentIndices(idx1, idx2)) {
+          indicesMatch = false;
+          break;
+        }
+      }
+      if (!indicesMatch)
+        continue;
+      if (firstRead.getVector().getType() != secondRead.getVector().getType())
         continue;
       if (hasWritesBetweenReads(firstRead, secondRead))
         continue;
