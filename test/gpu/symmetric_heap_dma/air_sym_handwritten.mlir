@@ -132,7 +132,10 @@ module attributes {gpu.container_module} {
           scf.yield
         }
       }
-      gpu.barrier  // lanes 1..63 wait for lane 0's spin to terminate
+      // No gpu.barrier: on AMDGPU lanes within a wave execute in SIMT
+      // lockstep, so lanes 1..63 cannot leave the scf.if before lane 0
+      // does, and the wave-shared L1 means lane 0's syncscope("") acquire
+      // makes the producer's writes visible to the whole wave.
       %v = memref.load %data[%tid] : memref<256xf32>
       memref.store %v, %verify_buf[%tid] : memref<256xf32>
       gpu.return
