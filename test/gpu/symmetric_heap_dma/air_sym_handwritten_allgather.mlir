@@ -211,7 +211,6 @@ module attributes {gpu.container_module} {
     // Pinned to W=2: output memref must be static-shape because of the
     // current air.translate verifier. See file-level comment.
     %c2_i32 = arith.constant 2 : i32
-    %is_w2 = arith.cmpi eq, %world, %c2_i32 : i32
     %not_w2 = arith.cmpi ne, %world, %c2_i32 : i32
     scf.if %not_w2 {
       func.call @exit(%c1_i32) : (i32) -> ()
