@@ -1010,11 +1010,12 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
   }
 
   // For packet-flow ops, reuse an existing packet-flow allocation (in the
-  // same direction) to multiplex via packet IDs at the shim DMA level. Each
-  // new entry shares the same logical tile and channel; downstream
-  // shim_dma_allocation metadata is generated per-entry. We bypass
-  // DMAAllocator::allocNewDmaChannel since its dedup check would merge into
-  // the existing entry instead of creating a new one.
+  // same direction AND on a shim LTO whose col hint matches the compute
+  // col) to multiplex via packet IDs at the shim DMA level. Each new entry
+  // shares the same logical tile and channel; downstream shim_dma_allocation
+  // metadata is generated per-entry. Reusing across compute cols would
+  // funnel every herd's packet flows onto a single shim — the packet
+  // routing pipeline can't disambiguate that many IDs on one port.
   if (isPacketFlowOp) {
     for (auto &t : *allocs) {
       bool isPacketAlloc = false;
@@ -1030,6 +1031,20 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
       }
       if (!isPacketAlloc)
         continue;
+      // Restrict reuse to allocs whose tile is the LTO at this compute
+      // col. Without this guard, a second compute col's packet flow would
+      // glom onto the first col's shim alloc (because we accept any
+      // packet alloc), producing one shim with N packet IDs instead of
+      // N shims with 1 packet ID each — which the routing pass rejects
+      // with "false packet id match".
+      if (col >= 0) {
+        auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+        if (!lt)
+          continue;
+        auto ltCol = lt.getCol();
+        if (!ltCol || (int)*ltCol != col)
+          continue;
+      }
       AIE::DMAChannel aie_chan = {dir, t.dma_channel.channel};
       allocs->push_back({t.dma_tile,
                          col,
