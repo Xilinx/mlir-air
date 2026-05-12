@@ -1,6 +1,7 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 import argparse
+import math
 import os
 import sys
 
@@ -8,7 +9,7 @@ from air.ir import *
 from air.dialects.affine import apply as affine_apply
 from air.dialects.linalg import fill
 from air.dialects.air import *
-from air.dialects.arith import ConstantOp
+from air.dialects.arith import ConstantOp, MulIOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
@@ -52,10 +53,12 @@ def build_module(
     np_dtype_out,
     arch="aie2",
 ):
-    assert m % tile_m == 0
+    # M, N must already be padded up to (tile_m * herd_m) / (tile_n * herd_n)
+    # by the caller (see padded-shape computation in __main__).
+    assert m % (tile_m * herd_m) == 0
+    assert n % (tile_n * herd_n) == 0
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
-    assert n % tile_n == 0
     a_size = [m, k]
     b_size = [k, n]
     c_size = [m, n]
@@ -197,29 +200,15 @@ def build_module(
                 # semantics.
                 l1_c_data = AllocOp(l1MemrefTyCHerd, [], [])
 
-                # Affine map for launch iv
-                launch_ix_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_m * herd_m),
-                        )
-                    ],
-                )
-                launch_iy_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_n * herd_n),
-                        )
-                    ],
-                )
-                launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
-                launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
+                # arith.muli on launch block IDs is the form
+                # air-split-launch-for-padding looks for when partitioning
+                # the launch into interior + tail tiles based on
+                # air.actual_sizes (see inferTileSize in
+                # mlir/lib/Transform/AIRSplitLaunchForPadding.cpp).
+                launch_tile_m_const = ConstantOp.create_index(tile_m * herd_m).result
+                launch_tile_n_const = ConstantOp.create_index(tile_n * herd_n).result
+                launch_offset_x = MulIOp(launch_ivx_s, launch_tile_m_const).result
+                launch_offset_y = MulIOp(launch_ivy_s, launch_tile_n_const).result
 
                 @herd(
                     name="herd_0",
@@ -544,10 +533,19 @@ if __name__ == "__main__":
             print("Peano is needed for direct code generation mode.", file=sys.stderr)
             sys.exit(1)
 
+    # Hardware padding: round M, N up to a multiple of the launch tile.
+    # Aircc's air-split-launch-for-padding partitions the launch into
+    # interior + tail tiles when air.actual_sizes is set on air.launch.
+    launch_tile_m = args.tile_m * args.herd_m
+    launch_tile_n = args.tile_n * args.herd_n
+    m_padded = math.ceil(args.m / launch_tile_m) * launch_tile_m
+    n_padded = math.ceil(args.n / launch_tile_n) * launch_tile_n
+    needs_padding = (args.m != m_padded) or (args.n != n_padded)
+
     mlir_module = build_module(
-        args.m,
+        m_padded,
         args.k,
-        args.n,
+        n_padded,
         args.tile_m,
         args.tile_k_l2,
         args.tile_k_l1,
@@ -558,6 +556,21 @@ if __name__ == "__main__":
         OUTPUT_DATATYPE,
         args.arch,
     )
+
+    if needs_padding:
+        with mlir_module.context, Location.unknown():
+            actual_sizes_attr = Attribute.parse(f"array<i64: {args.m}, {args.n}, 1>")
+        found = [None]
+
+        def _visit(op):
+            if op.operation.name == "air.launch":
+                op.operation.attributes["air.actual_sizes"] = actual_sizes_attr
+                found[0] = op
+                return WalkResult.INTERRUPT
+            return WalkResult.ADVANCE
+
+        mlir_module.operation.walk(_visit)
+        assert found[0] is not None, "no air.launch op produced by build_module"
 
     # Vectorization - only run if direct codegen mode is enabled
     if args.direct_codegen:
@@ -685,10 +698,16 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, args.m * args.k, dtype=np.int64).reshape(args.m, args.k) % 7
-    input_a = input_a.astype(INPUT_DATATYPE)
-    input_b = np.arange(0, args.k * args.n, dtype=np.int64).reshape(args.k, args.n) % 7
-    input_b = input_b.astype(INPUT_DATATYPE)
+    # Buffers allocated at the padded shape; tail rows/cols stay zero so
+    # the matmul output's tail is also zero (and is not validated).
+    input_a = np.zeros((m_padded, args.k), dtype=INPUT_DATATYPE)
+    input_a[: args.m, :] = (
+        np.arange(0, args.m * args.k, dtype=np.int64).reshape(args.m, args.k) % 7
+    ).astype(INPUT_DATATYPE)
+    input_b = np.zeros((args.k, n_padded), dtype=INPUT_DATATYPE)
+    input_b[:, : args.n] = (
+        np.arange(0, args.k * args.n, dtype=np.int64).reshape(args.k, args.n) % 7
+    ).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
 
@@ -716,9 +735,10 @@ if __name__ == "__main__":
             dtype=OUTPUT_DATATYPE,
         )
 
-        # Store as a dictionary
+        # Output comes back at the padded shape; only validate the
+        # [0:M, 0:N] interior.
         sampled_data = {
-            "shape": (args.m, args.n),
+            "shape": (m_padded, n_padded),
             "indices": sampled_indices,
             "values": sampled_values,
         }

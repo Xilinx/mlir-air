@@ -11,7 +11,7 @@ import air.passmanager
 from air.dialects.affine import apply as affine_apply
 from air.dialects.linalg import fill
 from air.dialects.air import *
-from air.dialects.arith import ConstantOp
+from air.dialects.arith import ConstantOp, MulIOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
@@ -56,10 +56,13 @@ def build_module(
     arch="aie2",
     direct_codegen=False,
 ):
-    assert m % tile_m == 0
+    # M, N must already be padded up to (tile_m * herd_m) / (tile_n * herd_n)
+    # by the caller (see padded-shape computation in __main__).  K must be a
+    # full multiple of the L2 tile.
+    assert m % (tile_m * herd_m) == 0
+    assert n % (tile_n * herd_n) == 0
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
-    assert n % tile_n == 0
     a_size = [m, k]
     b_size = [k, n]
     c_size = [m, n]
@@ -203,29 +206,17 @@ def build_module(
                 # semantics.
                 l1_c_data = AllocOp(l1MemrefTyCHerd, [], [])
 
-                # Affine map for launch iv
-                launch_ix_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_m * herd_m),
-                        )
-                    ],
-                )
-                launch_iy_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_n * herd_n),
-                        )
-                    ],
-                )
-                launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
-                launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
+                # arith.muli of the launch block ID is the form
+                # air-split-launch-for-padding looks for when partitioning
+                # the launch into interior + tail tiles based on
+                # air.actual_sizes (see inferTileSize in
+                # mlir/lib/Transform/AIRSplitLaunchForPadding.cpp).  Using
+                # affine.apply here would prevent that pass from inferring
+                # the launch tile size and would break hardware padding.
+                launch_tile_m_const = ConstantOp.create_index(tile_m * herd_m).result
+                launch_tile_n_const = ConstantOp.create_index(tile_n * herd_n).result
+                launch_offset_x = MulIOp(launch_ivx_s, launch_tile_m_const).result
+                launch_offset_y = MulIOp(launch_ivy_s, launch_tile_n_const).result
 
                 @herd(
                     name="herd_0",
@@ -567,10 +558,20 @@ if __name__ == "__main__":
             print("Peano is needed for direct code generation mode.", file=sys.stderr)
             sys.exit(1)
 
+    # Hardware padding: round M, N up to a multiple of the launch tile
+    # (tile_m * herd_m, tile_n * herd_n).  The IR is built for the padded
+    # shape; aircc's air-split-launch-for-padding partitions the launch into
+    # interior + tail tiles when air.actual_sizes is set on air.launch.
+    launch_tile_m = args.tile_m * args.herd_m
+    launch_tile_n = args.tile_n * args.herd_n
+    m_padded = math.ceil(args.m / launch_tile_m) * launch_tile_m
+    n_padded = math.ceil(args.n / launch_tile_n) * launch_tile_n
+    needs_padding = (args.m != m_padded) or (args.n != n_padded)
+
     mlir_module = build_module(
-        args.m,
+        m_padded,
         args.k,
-        args.n,
+        n_padded,
         args.tile_m,
         args.tile_k_l2,
         args.tile_k_l1,
@@ -582,6 +583,25 @@ if __name__ == "__main__":
         args.arch,
         args.direct_codegen,
     )
+
+    # Attach air.actual_sizes to the air.launch op iff the user-requested
+    # shape needs padding.  Aircc's air-split-launch-for-padding pass reads
+    # this and is a no-op when the attribute is absent (so aligned shapes
+    # produce byte-identical IR to before this change).
+    if needs_padding:
+        with mlir_module.context, Location.unknown():
+            actual_sizes_attr = Attribute.parse(f"array<i64: {args.m}, {args.n}, 1>")
+        found = [None]
+
+        def _visit(op):
+            if op.operation.name == "air.launch":
+                op.operation.attributes["air.actual_sizes"] = actual_sizes_attr
+                found[0] = op
+                return WalkResult.INTERRUPT
+            return WalkResult.ADVANCE
+
+        mlir_module.operation.walk(_visit)
+        assert found[0] is not None, "no air.launch op produced by build_module"
 
     # Direct-codegen flow: only the vectorize stages of the C++ orchestrator
     # (tile-for-vectorize + vec-prep). All earlier phases are skipped.
@@ -616,13 +636,25 @@ if __name__ == "__main__":
     # Variance-normalized inputs following PyTorch's
     # random_matrix_with_scaled_reduction_dim: randn / sqrt(K).
     # This keeps output variance ~1 regardless of K, so relative
-    # tolerance behaves consistently across matrix sizes.
+    # tolerance behaves consistently across matrix sizes.  Buffers are
+    # allocated at the padded shape (m_padded, k) / (k, n_padded) so the
+    # kernel can read/write whole launch tiles.  When padding is needed,
+    # the tail rows/columns are zero so the resulting output tail is also
+    # zero and contributes no error to interior tiles.
     scale = 1.0 / math.sqrt(args.k)
-    input_a = (np.random.randn(args.m, args.k) * scale).astype(INPUT_DATATYPE)
-    input_b = (np.random.randn(args.k, args.n) * scale).astype(INPUT_DATATYPE)
+    input_a = np.zeros((m_padded, args.k), dtype=INPUT_DATATYPE)
+    input_a[: args.m, :] = (np.random.randn(args.m, args.k) * scale).astype(
+        INPUT_DATATYPE
+    )
+    input_b = np.zeros((args.k, n_padded), dtype=INPUT_DATATYPE)
+    input_b[:, : args.n] = (np.random.randn(args.k, args.n) * scale).astype(
+        INPUT_DATATYPE
+    )
 
     if args.compile_mode == "compile-and-run":
         # Stochastically sample results and pass to XRTRunner for verification.
+        # Indices are clamped to the actual M, N (no point checking the
+        # zero-padded tail).
         num_samples = 100
         sampled_indices = np.vstack(
             [
@@ -646,8 +678,10 @@ if __name__ == "__main__":
             dtype=OUTPUT_DATATYPE,
         )
 
+        # Output buffer comes back at the padded shape; we only validate
+        # entries in the [0:M, 0:N] interior.
         sampled_data = {
-            "shape": (args.m, args.n),
+            "shape": (m_padded, n_padded),
             "indices": sampled_indices,
             "values": sampled_values,
         }
