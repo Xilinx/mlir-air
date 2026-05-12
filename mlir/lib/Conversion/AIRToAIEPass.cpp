@@ -2219,8 +2219,34 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     if (!datatype)
       return failure();
 
-    // create objFifo
-    rewriter.setInsertionPoint(*(device.getOps<AIE::CoreOp>().begin()));
+    // create objFifo. Path B emits MemTile (and ShimNOC) as
+    // aie.logical_tile, and those LTOs can sit anywhere in the device body
+    // (e.g. after the cores) once the __L2_tmp anchor buffers are erased
+    // and the greedy rewriter has reordered things. Hoist any out-of-order
+    // tile-likes to the front of the body so the producer/consumer tile
+    // operands always dominate the objfifo, then insert the objfifo right
+    // after the last tile-like op.
+    Block *body = device.getBody();
+    Operation *firstNonTile = nullptr;
+    SmallVector<Operation *> tilesToHoist;
+    for (auto &op : *body) {
+      if (!isa<AIE::TileOp, AIE::LogicalTileOp>(op)) {
+        if (!firstNonTile)
+          firstNonTile = &op;
+      } else if (firstNonTile) {
+        tilesToHoist.push_back(&op);
+      }
+    }
+    for (auto *t : tilesToHoist)
+      t->moveBefore(firstNonTile);
+
+    rewriter.setInsertionPointToStart(body);
+    for (auto &op : body->getOperations()) {
+      if (isa<AIE::TileOp, AIE::LogicalTileOp>(op))
+        rewriter.setInsertionPointAfter(&op);
+      else
+        break;
+    }
     AIE::ObjectFifoCreateOp objFifo = createObjectFifo(
         rewriter, datatype, producerTile, consumers,
         channel.getBufferResources(), "air_" + channel.getName().str());

@@ -10,8 +10,8 @@
 // CHECK-LABEL:   aie.device(xcvc1902) {
 // CHECK-DAG:   %[[VAL_0:.*]] = aie.tile(1, 1)
 // CHECK-DAG:   %[[VAL_1:.*]] = aie.tile(2, 0)
-// CHECK:   aie.objectfifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:   aie.objectfifo @[[VAL_3:.*]](%[[VAL_1]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK-DAG:   aie.objectfifo @[[VAL_3:[a-zA-Z_0-9]+]](%[[VAL_1]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK-DAG:   aie.objectfifo @[[VAL_2:[a-zA-Z_0-9]+]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:   %[[VAL_4:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:     affine.for %[[VAL_5:.*]] = 0 to 4096 step 32 {
 // CHECK:       %[[VAL_6:.*]] = aie.objectfifo.acquire @[[VAL_3]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
