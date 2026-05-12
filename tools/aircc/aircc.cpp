@@ -1087,6 +1087,15 @@ static LogicalResult runAieCompilation() {
       os << " stack-size=" << stackSize.getValue();
     os << "}";
     os << ",air-merge-unrolled-devices";
+#if AIR_ENABLE_AIE
+    // AIR emits unhinted shim/memtile aie.logical_tile ops. Run
+    // aie-place-tiles here so the saved aieModule already has physical
+    // aie.tile ops; aiecc's runPlacementPipeline will see no logical
+    // tiles and no-op via its hasLogicalTileOps guard.
+    // merge-logical-tiles=false keeps the placer from collapsing AIR's
+    // pre-aggregated logical tiles onto shared physical tiles.
+    os << ",aie.device(aie-place-tiles{merge-logical-tiles=false})";
+#endif
     os << ")";
   }
 

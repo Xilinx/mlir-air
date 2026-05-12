@@ -88,40 +88,17 @@ AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileLike tile,
   AIE::LockOp lock = nullptr;
   std::set<int> ids;
   Operation *tileOp = tile.getOperation();
-  bool tileIsLogical = isa<AIE::LogicalTileOp>(tileOp);
-  // For logical tiles, multiple distinct LTOs can collapse onto the same
-  // physical aie.tile during aie-place-tiles only when they share the same
-  // (col, tile_type) — different cols always resolve to different physical
-  // tiles. Reserve IDs across same-col same-type LTOs so post-collapse
-  // assignments don't collide. Reserving across ALL same-type LTOs (across
-  // every col) blows the per-tile lock budget in workloads like
-  // bf16_cascade where 8 memtile LTOs each need 10 locks: union'd IDs
-  // become 0..79, but the per-tile max is 63.
-  AIE::AIETileType tileType = tile.getTileType();
-  std::optional<int32_t> tileCol;
-  if (tileIsLogical)
-    tileCol = cast<AIE::LogicalTileOp>(tileOp).getCol();
+  // Each (logical or physical) tile owns its own lock-ID space. The
+  // aie-place-tiles pass is invoked with merge-ltos=false from aircc, so
+  // distinct LTOs never collapse onto a shared physical tile — no need
+  // to reserve IDs across other LTOs.
   aie_device.walk([&](AIE::LockOp l) {
-    auto lockTileOp = l.getTile().getDefiningOp();
-    bool ownerMatches = (lockTileOp == tileOp);
-    if (!ownerMatches && tileIsLogical) {
-      auto otherLT = dyn_cast_if_present<AIE::LogicalTileOp>(lockTileOp);
-      if (otherLT && otherLT.getTileType() == tileType) {
-        // Only reserve across LTOs that COULD share a physical tile post-
-        // collapse: same col hint (or both unhinted, since aie-place-tiles
-        // may put both at the same col). Differently-hinted LTOs always
-        // resolve to different cols.
-        auto otherCol = otherLT.getCol();
-        if (tileCol == otherCol)
-          ownerMatches = true;
-      }
-    }
-    if (!ownerMatches)
+    if (l.getTile().getDefiningOp() != tileOp)
       return;
     if (!l.getLockID().has_value())
       return;
     auto i = l.getLockIDValue();
-    if (lockTileOp == tileOp && i == id)
+    if (i == id)
       lock = l;
     ids.insert(i);
   });
@@ -977,10 +954,6 @@ air::TileDMAAllocator::getBuffer(uint64_t, AIE::TileOp tile,
 air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
     : air::DMAAllocator(device, air::MemorySpace::L3) {
   shim_dma_channels = 2;
-  const auto &tm = device.getTargetModel();
-  for (int i = 0, e = tm.columns(); i < e; i++)
-    if (tm.isShimNOCTile(i, 0))
-      dma_columns.push_back(i);
 }
 
 FailureOr<air::allocation_info_t>
@@ -1020,48 +993,70 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
       dma_ops_get_id.push_back(-1);
   }
 
-  // For packet-flow ops, reuse an existing packet-flow allocation (in the
-  // same direction AND on a shim LTO whose col hint matches the compute
-  // col) to multiplex via packet IDs at the shim DMA level. Each new entry
-  // shares the same logical tile and channel; downstream shim_dma_allocation
-  // metadata is generated per-entry. Reusing across compute cols would
-  // funnel every herd's packet flows onto a single shim — the packet
-  // routing pipeline can't disambiguate that many IDs on one port.
-  if (isPacketFlowOp) {
-    for (auto &t : *allocs) {
-      bool isPacketAlloc = false;
-      for (auto o : t.memcpyOps) {
-        auto mc = dyn_cast_if_present<air::MemcpyInterface>(o);
-        if (!mc)
+  // Bucket key: compute col. All flows from the same herd col share an
+  // unhinted shim LTO. aie-place-tiles assigns the physical col; the
+  // merge-ltos=false pass option (set by aircc) keeps each LTO on its
+  // own physical tile.
+  auto walkBucketLTOs = [&](auto fn) {
+    llvm::SmallPtrSet<Operation *, 8> seen;
+    for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
+      for (auto &t : *side) {
+        if (t.col != col)
           continue;
-        auto ct = air::getChannelType(mc);
-        if (succeeded(ct) && ct.value() == "npu_dma_packet") {
-          isPacketAlloc = true;
-          break;
+        auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+        if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
+          continue;
+        if (!seen.insert(lt.getOperation()).second)
+          continue;
+        if (fn(lt))
+          return;
+      }
+    }
+  };
+
+  auto channelsUsedOn = [&](AIE::LogicalTileOp lt) {
+    std::set<int> used;
+    for (auto *side : {&mm2s_allocs, &s2mm_allocs})
+      for (auto &t : *side)
+        if (t.dma_tile.getOperation() == lt.getOperation() &&
+            t.dma_channel.direction == dir)
+          used.insert((int)t.dma_channel.channel);
+    return used;
+  };
+
+  // For packet flows: reuse the bucket's existing packet channel if any.
+  if (isPacketFlowOp) {
+    AIE::LogicalTileOp packetLT = nullptr;
+    int packetCh = -1;
+    walkBucketLTOs([&](AIE::LogicalTileOp lt) {
+      for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
+        for (auto &t : *side) {
+          if (t.dma_tile.getOperation() != lt.getOperation())
+            continue;
+          if (t.dma_channel.direction != dir)
+            continue;
+          for (auto o : t.memcpyOps) {
+            auto mc = dyn_cast_if_present<air::MemcpyInterface>(o);
+            if (!mc)
+              continue;
+            auto ct = air::getChannelType(mc);
+            if (succeeded(ct) && ct.value() == "npu_dma_packet") {
+              packetLT = lt;
+              packetCh = (int)t.dma_channel.channel;
+              return true;
+            }
+          }
         }
       }
-      if (!isPacketAlloc)
-        continue;
-      // Restrict reuse to allocs whose tile is the LTO at this compute
-      // col. Without this guard, a second compute col's packet flow would
-      // glom onto the first col's shim alloc (because we accept any
-      // packet alloc), producing one shim with N packet IDs instead of
-      // N shims with 1 packet ID each — which the routing pass rejects
-      // with "false packet id match".
-      if (col >= 0) {
-        auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
-        if (!lt)
-          continue;
-        auto ltCol = lt.getCol();
-        if (!ltCol || (int)*ltCol != col)
-          continue;
-      }
-      AIE::DMAChannel aie_chan = {dir, t.dma_channel.channel};
-      allocs->push_back({t.dma_tile,
+      return false;
+    });
+    if (packetLT) {
+      AIE::DMAChannel aie_chan = {dir, packetCh};
+      allocs->push_back({packetLT,
                          col,
                          row,
                          aie_chan,
-                         t.dma_channel.channel,
+                         packetCh,
                          /*packet_flow_id=*/-1,
                          dma_ops_get_id,
                          {memcpyOp.getOperation()}});
@@ -1069,86 +1064,17 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
     }
   }
 
-  // Capacity-aware (col, channel) selection — restored to the pre-Path-B
-  // semantics. The original allocNewDmaChannel walked
-  // (compute_col, ch=0) -> (compute_col, ch=1) -> (next_col, ch=0) -> ...
-  // and stopped at the first unused (col, channel) pair. With Path B the
-  // tile is now an aie.logical_tile<ShimNOCTile>(col, ?) (the placer picks
-  // the row), but the col hint must match what the placer will satisfy:
-  // otherwise downstream airrt-to-npu reads a hint that disagrees with the
-  // placer's eventual physical col, and NPU instructions target the wrong
-  // shim. We mirror the original loop so each LTO's col hint is the col
-  // a capacity-aware placer would pick on its own.
-  AIE::TileLike tileLT = nullptr;
-  int dma_channel = -1;
-
-  auto isUsedAtColCh = [&](int candidateCol, int ch) -> bool {
-    for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
-      for (auto &t : *side) {
-        if (t.dma_channel.direction != dir)
-          continue;
-        if ((int)t.dma_channel.channel != ch)
-          continue;
-        auto cand = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
-        if (!cand)
-          continue;
-        if (cand.getTileType() != AIE::AIETileType::ShimNOCTile)
-          continue;
-        auto candCol = cand.getCol();
-        if (candCol && (int)*candCol == candidateCol)
-          return true;
-      }
+  // Find a bucket LTO with a free channel in this direction; else open
+  // a new unhinted shim LTO.
+  AIE::LogicalTileOp tileLT = nullptr;
+  walkBucketLTOs([&](AIE::LogicalTileOp lt) {
+    if ((int)channelsUsedOn(lt).size() < shim_dma_channels) {
+      tileLT = lt;
+      return true;
     }
     return false;
-  };
-  auto findLTOAtCol = [&](int candidateCol) -> AIE::LogicalTileOp {
-    for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
-      for (auto &t : *side) {
-        auto cand = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
-        if (!cand)
-          continue;
-        if (cand.getTileType() != AIE::AIETileType::ShimNOCTile)
-          continue;
-        auto candCol = cand.getCol();
-        if (candCol && (int)*candCol == candidateCol)
-          return cand;
-      }
-    }
-    return nullptr;
-  };
-
-  // Find the first (col, channel) pair not yet used. Start at compute col
-  // (so shim sits near its core) and rotate through ShimNOC cols.
-  int chosenCol = -1;
-  int chosenCh = -1;
-  if (!dma_columns.empty()) {
-    int startIdx = 0;
-    if (col >= 0) {
-      auto it = std::find(dma_columns.begin(), dma_columns.end(), col);
-      if (it != dma_columns.end())
-        startIdx = it - dma_columns.begin();
-    }
-    for (int hops = 0; hops < (int)dma_columns.size() && chosenCol < 0;
-         hops++) {
-      int c = dma_columns[(startIdx + hops) % dma_columns.size()];
-      for (int ch = 0; ch < shim_dma_channels; ch++) {
-        if (!isUsedAtColCh(c, ch)) {
-          chosenCol = c;
-          chosenCh = ch;
-          break;
-        }
-      }
-    }
-  }
-  if (chosenCol < 0)
-    return memcpyOp.emitOpError("out of shim DMA channels");
-
-  // Reuse the existing LTO at chosenCol if one is there; otherwise create
-  // a new LTO. Reusing keeps the per-physical-shim aie.shim_dma op
-  // aggregated (one shim_dma per tile rather than several).
-  if (auto existing = findLTOAtCol(chosenCol)) {
-    tileLT = existing;
-  } else {
+  });
+  if (!tileLT) {
     OpBuilder b(device);
     b.setInsertionPointToStart(device.getBody());
     for (auto &op : device.getBody()->getOperations()) {
@@ -1157,19 +1083,24 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
       else
         break;
     }
-    auto *ctx = b.getContext();
-    IntegerAttr colAttr =
-        IntegerAttr::get(IntegerType::get(ctx, 32), chosenCol);
     tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
-                                        AIE::AIETileType::ShimNOCTile, colAttr,
+                                        AIE::AIETileType::ShimNOCTile,
+                                        /*col=*/IntegerAttr(),
                                         /*row=*/IntegerAttr(),
                                         /*allocation_scheme=*/StringAttr());
   }
-  dma_channel = chosenCh;
 
-  // The col/row int args here record the other side (compute side) of the
-  // flow for airrt metadata; they have nothing to do with the shim's
-  // eventual physical placement.
+  auto usedChans = channelsUsedOn(tileLT);
+  int dma_channel = -1;
+  for (int ch = 0; ch < shim_dma_channels; ch++) {
+    if (!usedChans.count(ch)) {
+      dma_channel = ch;
+      break;
+    }
+  }
+  if (dma_channel < 0)
+    return memcpyOp.emitOpError("out of shim DMA channels");
+
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tileLT, dma_channel,
                                                col, row, dma_ops_get_id);
 }

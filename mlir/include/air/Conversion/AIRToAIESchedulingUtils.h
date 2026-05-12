@@ -184,32 +184,18 @@ class ShimDMAAllocator : public DMAAllocator {
 
 public:
   // Per-shim DMA channel count (2 MM2S + 2 S2MM on all current targets).
-  // Used by allocNewDmaChannel for round-robin channel-index assignment;
-  // the placer's per-tile DMA channel budget then spreads logical shim
-  // tiles across physical shim columns so channel demand per column is
-  // honored.
+  // Caps how many channels AIR may pack onto one shim LTO before opening
+  // a new LTO; aie-place-tiles (with merge-ltos=false) then maps each LTO
+  // to its own physical shim col.
   int shim_dma_channels;
-
-  // ShimNOC-capable physical cols on this device, in increasing order.
-  // allocNewDmaChannel uses this for capacity-aware col rotation: when the
-  // current candidate col already has its DMA channels exhausted, the next
-  // col in the list is tried. This pre-Path-B behavior keeps AIR's col hint
-  // in agreement with the placement aie-place-tiles will pick (the placer
-  // respects the hint, but only insofar as channel capacity permits).
-  std::vector<int> dma_columns;
 
   ShimDMAAllocator(AIE::DeviceOp device);
 
   // Allocate a new shim DMA channel. The shim tile is emitted as an
-  // unconstrained aie.logical_tile<ShimNOCTile>(?, ?); mlir-aie's
-  // aie-place-tiles pass picks the physical column from flow adjacency to
-  // placed core peers and respects per-shim DMA channel capacity. The col
-  // and row int args record the OTHER side (compute side) of the flow
-  // for airrt metadata; they have nothing to do with the shim's eventual
-  // physical placement. (RFC #1567: subsumes the deletion of the
-  // `colAllocConstraint == "same_column"` heuristic, formerly attempted
-  // standalone in #1605 — that PR couldn't compile multi-column workloads
-  // because shim tiles were still pre-pinned via createTileViaPlacer.)
+  // unconstrained aie.logical_tile<ShimNOCTile>(?, ?). aie-place-tiles
+  // assigns the physical column from flow adjacency to placed core peers.
+  // The col and row int args record the OTHER side (compute side) of the
+  // flow for airrt metadata.
   FailureOr<allocation_info_t>
   allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col, int row,
                      std::vector<Operation *> &dma_ops);

@@ -842,15 +842,17 @@ LogicalResult outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
     return false;
   };
 
+  // Emit one unhinted memtile LTO per logical memtile slot the segment
+  // needs; aie-place-tiles assigns the col. The merge-ltos=false pass
+  // option (set by aircc) keeps each LTO on its own physical memtile.
   SmallVector<AIE::LogicalTileOp> logicalMemTiles;
-  auto *ctx = builder.getContext();
   for (auto x = 0; x < seg_size_x; x++) {
     auto phys_x = x + col_offset;
     if (!colHasMemTile(phys_x))
       continue;
-    auto colAttr = IntegerAttr::get(IntegerType::get(ctx, 32), phys_x);
     logicalMemTiles.push_back(AIE::LogicalTileOp::create(
-        builder, aie_device.getLoc(), AIE::AIETileType::MemTile, colAttr,
+        builder, aie_device.getLoc(), AIE::AIETileType::MemTile,
+        /*col=*/IntegerAttr(),
         /*row=*/IntegerAttr(),
         /*allocation_scheme=*/StringAttr()));
   }
