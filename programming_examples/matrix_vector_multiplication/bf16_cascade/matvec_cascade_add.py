@@ -107,12 +107,12 @@ def build_module(
 
     bytes_per_elem_in = np.dtype(np_dtype_in).itemsize
     bytes_per_elem_out = np.dtype(np_dtype_out).itemsize
-    # Per-(col, cascade_row) L2 chunk buffer (m_input * k_chunk bf16),
-    # plus one R buffer per col.
-    ar_l2_chunk_bytes = m_input * k_chunk * bytes_per_elem_in
+    # L2 budget: per col, 1 bulk A buffer (tile_m*k bf16) + 1 R buffer
+    # (tile_m bf16). Plus a single bulk D buffer (herd_cols*tile_m).
+    a_bulk_bytes = tile_m * k * bytes_per_elem_in
+    r_bytes = tile_m * bytes_per_elem_in
+    l2_per_col = a_bulk_bytes + r_bytes
     d_l2_bytes = herd_cols * tile_m * bytes_per_elem_out
-    # Per col: 1 R chunk buf + n_cascade A chunk bufs (each m_input*k_chunk).
-    l2_per_col = (1 + n_cascade) * ar_l2_chunk_bytes
     L2_CAPACITY = 512 * 1024
     assert herd_cols * l2_per_col + d_l2_bytes <= L2_CAPACITY, (
         f"L2 capacity exceeded: per-col={l2_per_col}B × {herd_cols} cols "
@@ -131,12 +131,21 @@ def build_module(
     memrefTyR = MemRefType.get([m], xrt_dtype_in)
     memrefTyD = MemRefType.get([m], xrt_dtype_out)
 
-    # L2 chunk buffers: shape [m_input, k_chunk] (sized for A; R fills
-    # only first m_input cells). Per-fill separate buffers — see segment
-    # body below for the rationale.
+    # L2 staging:
+    #   bulk A per col: [tile_m, k] — single L3->L2 fill per launch iter
+    #     (matches matvec_cascade.py reference). Multiple memtile MM2S
+    #     read distinct K-slices.
+    #   R per col: [tile_m] — single L3->L2 fill per launch iter, one
+    #     memtile MM2S to (col, HEAD) only.
+    # 2 BDs total per col on shim ar_L3toL2 (R + A bulk) → tiling=2 fits.
     l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
-    l2MemrefTyARchunk = MemRefType.get(
-        shape=[m_input, k_chunk],
+    l2MemrefTyAbulk = MemRefType.get(
+        shape=[tile_m, k],
+        element_type=xrt_dtype_in,
+        memory_space=l2_mem_space,
+    )
+    l2MemrefTyR = MemRefType.get(
+        shape=[tile_m],
         element_type=xrt_dtype_in,
         memory_space=l2_mem_space,
     )
@@ -148,8 +157,10 @@ def build_module(
 
     # L1 MemRefTypes
     l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    # L1 A holds the full tile_m rows for this (col, ty) — single bulk
+    # transfer per launch iter.
     l1MemrefTyA = MemRefType.get(
-        shape=[m_input, k_chunk],
+        shape=[tile_m, k_chunk],
         element_type=xrt_dtype_in,
         memory_space=l1_mem_space,
     )
@@ -163,14 +174,16 @@ def build_module(
         element_type=xrt_dtype_out,
         memory_space=l1_mem_space,
     )
-    # Per j_m iter, HEAD's L1 R buffer holds m_input elements (one per
-    # output row computed this iter). m_input * sizeof(bf16) must be
-    # ≥ 4 bytes for AIE DMA alignment → m_input ≥ 2 required.
+    # HEAD's L1 R buffer holds the full tile_m R values for this col —
+    # single bulk transfer per launch iter. tile_m*sizeof(bf16) ≥ 4 bytes
+    # for AIE DMA alignment → tile_m ≥ 2 required (always satisfied since
+    # tile_m must be a multiple of m_input ≥ 1 and we use tile_m ≥ 2 in
+    # practice; explicit assert for safety).
     assert (
-        m_input * np.dtype(np_dtype_in).itemsize >= 4
-    ), f"m_input ({m_input}) * sizeof({np_dtype_in}) must be ≥ 4 bytes (AIE DMA alignment)"
+        tile_m * np.dtype(np_dtype_in).itemsize >= 4
+    ), f"tile_m ({tile_m}) * sizeof({np_dtype_in}) must be ≥ 4 bytes (AIE DMA alignment)"
     l1MemrefTyR = MemRefType.get(
-        shape=[m_input],
+        shape=[tile_m],
         element_type=xrt_dtype_in,
         memory_space=l1_mem_space,
     )
@@ -225,42 +238,39 @@ def build_module(
             )
             launch_offset_m_l = affine_apply(launch_ivx_map, [launch_ivx])
 
-            # L3-side puts on ar_L3toL2[col]: per j_m iter, R then per-ty A
-            # Order MUST match memtile-side gets in segment body.
+            # L3-side puts on ar_L3toL2[col]: 1 R + 1 A bulk per launch iter.
+            # Order: R first, then A bulk (segment-side reads in same order).
             for col in range(herd_cols):
                 c_col_idx_l = arith.ConstantOp.create_index(col)
-                for j_m_v in range(tile_m // m_input):
-                    add_map = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(col * tile_m + j_m_v * m_input),
-                            )
-                        ],
-                    )
-                    r_off = affine_apply(add_map, [launch_offset_m_l])
-                    ChannelPut(
-                        "ar_L3toL2",
-                        l3_r_data,
-                        indices=[c_col_idx_l],
-                        offsets=[r_off],
-                        sizes=[m_input],
-                        strides=[1],
-                    )
-                    # Reverse order so HEAD's K-slice is sent right after R
-                    # (segment-side memtile loop reads in same reverse order).
-                    for ty_v in reversed(range(n_cascade)):
-                        a_off_m = affine_apply(add_map, [launch_offset_m_l])
-                        ChannelPut(
-                            "ar_L3toL2",
-                            l3_a_data,
-                            indices=[c_col_idx_l],
-                            offsets=[a_off_m, ty_v * k_chunk],
-                            sizes=[m_input, k_chunk],
-                            strides=[k, 1],
+                col_off_map = AffineMap.get(
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_add(
+                            AffineSymbolExpr.get(0),
+                            AffineConstantExpr.get(col * tile_m),
                         )
+                    ],
+                )
+                col_off = affine_apply(col_off_map, [launch_offset_m_l])
+                # R bulk: tile_m elements for this col
+                ChannelPut(
+                    "ar_L3toL2",
+                    l3_r_data,
+                    indices=[c_col_idx_l],
+                    offsets=[col_off],
+                    sizes=[tile_m],
+                    strides=[1],
+                )
+                # A bulk: tile_m × k for this col
+                ChannelPut(
+                    "ar_L3toL2",
+                    l3_a_data,
+                    indices=[c_col_idx_l],
+                    offsets=[col_off, 0],
+                    sizes=[tile_m, k],
+                    strides=[k, 1],
+                )
 
             @segment(
                 name="matvec_cascade_add_seg",
@@ -271,65 +281,58 @@ def build_module(
                 l3_b_data_s,
                 l3_d_data_s,
             ):
-                # Per-fill L2 buffers: one R buffer per col + one A buffer
-                # per (col, cascade_row). Required so each S2MM/MM2S BD
-                # pair owns its own L2 buffer; sharing one L2 buffer
-                # across BD pairs with independent lock pairs lets later
-                # fills overwrite the buffer before earlier reads drain.
-                r_l2_bufs = [
-                    AllocOp(l2MemrefTyARchunk, [], []) for _ in range(herd_cols)
-                ]
-                a_l2_bufs = [
-                    [AllocOp(l2MemrefTyARchunk, [], []) for _ in range(n_cascade)]
-                    for _ in range(herd_cols)
-                ]
+                # L2: bulk A buffer per col + small R buffer per col + bulk D.
+                # Each buffer has a single L3->L2 writer (no shared-buffer
+                # race possible).
+                a_l2_bufs = [AllocOp(l2MemrefTyAbulk, [], []) for _ in range(herd_cols)]
+                r_l2_bufs = [AllocOp(l2MemrefTyR, [], []) for _ in range(herd_cols)]
                 l2_d_data = AllocOp(l2MemrefTyD, [], [])
 
-                # Memtile streaming: R to (col, HEAD), A_r to (col, r).
+                # Memtile streaming per col: 1 R get + 1 A bulk get from L3,
+                # then per-(col, ty) MM2S puts of A slices and 1 R put to HEAD.
                 c_head_idx = arith.ConstantOp.create_index(n_cascade - 1)
                 for col in range(herd_cols):
                     c_col_idx = arith.ConstantOp.create_index(col)
                     r_l2 = r_l2_bufs[col].result
-                    for j_m_v in range(tile_m // m_input):
-                        # R: GET → r_l2 (separate buffer), PUT → (col, HEAD)
-                        ChannelGet(
-                            "ar_L3toL2",
-                            r_l2,
-                            indices=[c_col_idx],
-                            offsets=[0, 0],
-                            sizes=[1, m_input],
-                            strides=[k_chunk, 1],
-                        )
+                    a_l2 = a_l2_bufs[col].result
+                    # R: GET tile_m elements from L3 → r_l2
+                    ChannelGet(
+                        "ar_L3toL2",
+                        r_l2,
+                        indices=[c_col_idx],
+                        offsets=[0],
+                        sizes=[tile_m],
+                        strides=[1],
+                    )
+                    # R: PUT r_l2 → (col, HEAD)
+                    ChannelPut(
+                        "ar_L2toL1",
+                        r_l2,
+                        indices=[c_col_idx, c_head_idx],
+                        offsets=[0],
+                        sizes=[tile_m],
+                        strides=[1],
+                    )
+                    # A bulk: GET tile_m × k from L3 → a_l2
+                    ChannelGet(
+                        "ar_L3toL2",
+                        a_l2,
+                        indices=[c_col_idx],
+                        offsets=[0, 0],
+                        sizes=[tile_m, k],
+                        strides=[k, 1],
+                    )
+                    # A slices: PUT per ty (each MM2S reads its k_chunk slice)
+                    for ty_v in range(n_cascade):
+                        c_ty_idx = arith.ConstantOp.create_index(ty_v)
                         ChannelPut(
                             "ar_L2toL1",
-                            r_l2,
-                            indices=[c_col_idx, c_head_idx],
-                            offsets=[0, 0],
-                            sizes=[1, m_input],
-                            strides=[k_chunk, 1],
+                            a_l2,
+                            indices=[c_col_idx, c_ty_idx],
+                            offsets=[0, ty_v * k_chunk],
+                            sizes=[tile_m, k_chunk],
+                            strides=[k, 1],
                         )
-                        # A per cascade row: GET → its own a_l2 buffer.
-                        # Reverse order keeps HEAD's A adjacent to R in the
-                        # L3-side put stream (compiler pairs adjacent puts).
-                        for ty_v in reversed(range(n_cascade)):
-                            c_ty_idx = arith.ConstantOp.create_index(ty_v)
-                            a_l2 = a_l2_bufs[col][ty_v].result
-                            ChannelGet(
-                                "ar_L3toL2",
-                                a_l2,
-                                indices=[c_col_idx],
-                                offsets=[0, 0],
-                                sizes=[m_input, k_chunk],
-                                strides=[k_chunk, 1],
-                            )
-                            ChannelPut(
-                                "ar_L2toL1",
-                                a_l2,
-                                indices=[c_col_idx, c_ty_idx],
-                                offsets=[0, 0],
-                                sizes=[m_input, k_chunk],
-                                strides=[k_chunk, 1],
-                            )
 
                 # L1 buffers (passed into herd as operands)
                 l1_a_data = AllocOp(l1MemrefTyA, [], [])
@@ -449,9 +452,28 @@ def build_module(
                         f32_type,
                     )
 
-                    # Hot loop: per j_m iter, HEAD receives R + A; other
-                    # cascade tiles just receive A. Cascade pipeline runs
-                    # with R added at HEAD's init accumulator.
+                    # Bulk receives outside the j_m loop (one BD each per
+                    # launch iter): HEAD-only R, plus A slice for this
+                    # (col, ty). Both fill their own L1 buffers and are
+                    # consumed across all j_m iters.
+                    if_head_r = affine.AffineIfOp(head_set, cond_operands=[ty])
+                    with InsertionPoint(if_head_r.then_block):
+                        ChannelGet(
+                            "ar_L2toL1",
+                            _l1_r,
+                            indices=[tx, ty],
+                        )
+                        affine.AffineYieldOp([])
+
+                    ChannelGet(
+                        "ar_L2toL1",
+                        _l1_a,
+                        indices=[tx, ty],
+                    )
+
+                    # Hot loop: per j_m iter, compute partial dot from
+                    # rows [j_m*m_input : (j_m+1)*m_input] of _l1_a (which
+                    # holds the full tile_m rows for this (col, ty)).
                     for j_m in range_(0, tile_m // m_input):
                         j_m_map = AffineMap.get(
                             0,
@@ -464,22 +486,16 @@ def build_module(
                             ],
                         )
                         j_m_offset = affine_apply(j_m_map, [j_m])
-
-                        # R receive: HEAD only, point-to-point
-                        if_head_r = affine.AffineIfOp(head_set, cond_operands=[ty])
-                        with InsertionPoint(if_head_r.then_block):
-                            ChannelGet(
-                                "ar_L2toL1",
-                                _l1_r,
-                                indices=[tx, ty],
-                            )
-                            affine.AffineYieldOp([])
-
-                        # A receive: each tile gets its own
-                        ChannelGet(
-                            "ar_L2toL1",
-                            _l1_a,
-                            indices=[tx, ty],
+                        # Map (j_m_offset, row) → row index in _l1_a (= j_m_offset + row)
+                        abs_row_map = AffineMap.get(
+                            0,
+                            2,
+                            [
+                                AffineExpr.get_add(
+                                    AffineSymbolExpr.get(0),
+                                    AffineSymbolExpr.get(1),
+                                )
+                            ],
                         )
 
                         # === Cascade compute ===
@@ -492,8 +508,9 @@ def build_module(
                         with InsertionPoint(if_first.then_block):
                             # HEAD: partial + R → scratch → cascade
                             for row in range_(0, m_input):
-                                partial_sum = compute_partial_dot(row, *dot_args)
-                                sub_r = subview(_l1_r, [row], [1], [1])
+                                abs_row = affine_apply(abs_row_map, [j_m_offset, row])
+                                partial_sum = compute_partial_dot(abs_row, *dot_args)
+                                sub_r = subview(_l1_r, [abs_row], [1], [1])
                                 r_val_bf16 = memref_load(sub_r, [c0])
                                 r_val_f32 = arith.extf(f32_type, r_val_bf16)
                                 init_acc = arith.addf(partial_sum, r_val_f32)
@@ -523,15 +540,17 @@ def build_module(
                                 )
 
                                 for row in range_(0, m_input):
-                                    partial_sum = compute_partial_dot(row, *dot_args)
+                                    abs_row = affine_apply(
+                                        abs_row_map, [j_m_offset, row]
+                                    )
+                                    partial_sum = compute_partial_dot(
+                                        abs_row, *dot_args
+                                    )
                                     sub_recv = subview(_l1_recv, [row], [1], [1])
                                     recv_val = memref_load(sub_recv, [c0])
                                     total_f32 = arith.addf(recv_val, partial_sum)
                                     total_bf16 = arith.truncf(xrt_dtype_out, total_f32)
-                                    out_idx = affine_apply(
-                                        row_out_map, [j_m_offset, row]
-                                    )
-                                    sub_d_out = subview(_l1_d, [out_idx], [1], [1])
+                                    sub_d_out = subview(_l1_d, [abs_row], [1], [1])
                                     memref_store(total_bf16, sub_d_out, [c0])
                                     yield_([])
 
@@ -546,7 +565,12 @@ def build_module(
                                 )
 
                                 for row in range_(0, m_input):
-                                    partial_sum = compute_partial_dot(row, *dot_args)
+                                    abs_row = affine_apply(
+                                        abs_row_map, [j_m_offset, row]
+                                    )
+                                    partial_sum = compute_partial_dot(
+                                        abs_row, *dot_args
+                                    )
                                     sub_recv = subview(_l1_recv, [row], [1], [1])
                                     recv_val = memref_load(sub_recv, [c0])
                                     total = arith.addf(recv_val, partial_sum)
@@ -609,9 +633,8 @@ def build_module(
 
                 for r_l2 in r_l2_bufs:
                     DeallocOp(r_l2)
-                for col_bufs in a_l2_bufs:
-                    for a_l2 in col_bufs:
-                        DeallocOp(a_l2)
+                for a_l2 in a_l2_bufs:
+                    DeallocOp(a_l2)
                 DeallocOp(l2_d_data)
                 DeallocOp(l1_a_data)
                 DeallocOp(l1_b_data)
@@ -688,11 +711,9 @@ if __name__ == "__main__":
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
-            # Per-col ar_L3toL2 carries 1 R + n_cascade A puts per launch
-            # iter. Shim DMA limit = 4 BDs queued per channel; tiling=[1,1]
-            # keeps it at (1+n_cascade) ≤ 4 for n_cascade up to 3, and at
-            # n_cascade=4 the BDs fit just within the limit.
-            runtime_loop_tiling_sizes=[1, 1],
+            # Per-col ar_L3toL2 carries 1 R + 1 A bulk per launch iter.
+            # Shim DMA BD queue limit = 4 → tiling=2 keeps it at 4 BDs.
+            runtime_loop_tiling_sizes=[2, 2],
             output_format=args.output_format,
             instance_name="matvec_cascade_add_bf16",
             debug_ir=args.debug_ir,
@@ -712,7 +733,7 @@ if __name__ == "__main__":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[1, 1],
+            runtime_loop_tiling_sizes=[2, 2],
             output_format=args.output_format,
             use_lock_race_condition_fix=True,
         )
