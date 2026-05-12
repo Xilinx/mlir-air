@@ -1140,14 +1140,14 @@ static LogicalResult runAieCompilation() {
     {
       raw_string_ostream os(npuPipeline);
       os << "builtin.module(";
-      // airrt-to-npu (and the shim BD/DMA metadata readers it relies on)
-      // needs physical aie.tile col indices. The aieModule we cloned from
-      // still has aie.logical_tile<...> ops for shim/memtile, so resolve
-      // them here on the npuModule. (The aieModule we hand to aiecc keeps
-      // its LTOs so aiecc's own place-tiles can run with full context.)
-#if AIR_ENABLE_AIE
-      os << "aie.device(aie-place-tiles),";
-#endif
+      // No aie-place-tiles here. AIR sets a col hint on every shim
+      // aie.logical_tile (matching the compute-side col), and the
+      // downstream aiecc placer respects those hints — so airrt-to-npu's
+      // LTO-aware getColFromTileValue() reads the same col aiecc will
+      // pick. Calling the placer here too would mean two independent
+      // placement runs (this one + aiecc's), and any drift between them
+      // produces NPU instructions targeting different shim cols than the
+      // cores aiecc actually places. Place once, in aiecc only.
       os << shimBdPass;
       os << ",canonicalize,cse";
       os << ",air-to-std";

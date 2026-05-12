@@ -39,6 +39,24 @@
 
 using namespace mlir;
 
+// Path B: airrt-to-npu runs before aie-place-tiles (which now lives only in
+// aiecc). Read the shim col from either a physical aie.tile or, if the
+// shim hasn't been placed yet, the col hint on aie.logical_tile<...>(col,?).
+// AIR sets that hint to the compute-side col so the placer's hint-respecting
+// behavior gives the same physical col here as it will downstream.
+// Returns -1 if neither is available.
+static int getColFromTileValue(mlir::Value tile) {
+  if (!tile)
+    return -1;
+  mlir::Operation *def = tile.getDefiningOp();
+  if (auto t = llvm::dyn_cast_or_null<xilinx::AIE::TileOp>(def))
+    return t.getCol();
+  if (auto lto = llvm::dyn_cast_or_null<xilinx::AIE::LogicalTileOp>(def))
+    if (auto col = lto.tryGetCol())
+      return *col;
+  return -1;
+}
+
 // Helper function to check if an aie.device contains core/memtile DMAs with
 // repeat_count > 0. This indicates that the DMA engine state needs to be reset
 // after each launch to avoid stale repeat counters affecting the next launch.
@@ -1940,10 +1958,19 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           auto objFifo = device.lookupSymbol<AIE::ObjectFifoCreateOp>(metadata);
           if (objFifo) {
             for (auto consumerTileOp : objFifo.getConsumerTiles()) {
-              auto consTileOp = consumerTileOp.getDefiningOp<AIE::TileOp>();
-              if (consTileOp && consTileOp.isShimTile()) {
-                isS2MM = true;
-                break;
+              auto *def = consumerTileOp.getDefiningOp();
+              if (auto t = llvm::dyn_cast_or_null<AIE::TileOp>(def)) {
+                if (t.isShimTile()) {
+                  isS2MM = true;
+                  break;
+                }
+              } else if (auto lto =
+                             llvm::dyn_cast_or_null<AIE::LogicalTileOp>(def)) {
+                if (lto.getTileType() == AIE::AIETileType::ShimNOCTile ||
+                    lto.getTileType() == AIE::AIETileType::ShimPLTile) {
+                  isS2MM = true;
+                  break;
+                }
               }
             }
           }
@@ -2031,17 +2058,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // within THIS device only
       DenseMap<StringRef, StringRef> uniqueAllocMap;
       for (auto alloc : allocs) {
-        AIE::TileOp shimtile = alloc.getTileOp();
         std::tuple<bool, int, int> allocInfo = {
             alloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
-            alloc.getChannelIndex(), shimtile.getCol()};
+            alloc.getChannelIndex(), getColFromTileValue(alloc.getTile())};
 
         auto it =
             llvm::find_if(uniqueAllocs, [&](AIE::ShimDMAAllocationOp ualloc) {
-              AIE::TileOp shimtile = ualloc.getTileOp();
               std::tuple<bool, int, int> uallocInfo = {
                   ualloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
-                  ualloc.getChannelIndex(), shimtile.getCol()};
+                  ualloc.getChannelIndex(),
+                  getColFromTileValue(ualloc.getTile())};
               return allocInfo == uallocInfo;
             });
         if (it != uniqueAllocs.end()) {
@@ -2482,20 +2508,24 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (d) {
         if (auto infoOp = AIE::ShimDMAAllocationOp::getForSymbol(
                 d, dma.getMetadata().getRootReference())) {
-          AIE::TileOp shimtile = infoOp.getTileOp();
-          col = shimtile.getCol();
+          col = getColFromTileValue(infoOp.getTile());
         } else if (auto objFifoCreateOp = getObjectFifoCreateOpForSymbol(
                        objectFifoCreateOps,
                        dma.getMetadata().getLeafReference().getValue())) {
-          auto prodTileOp =
-              objFifoCreateOp->getProducerTile().getDefiningOp<AIE::TileOp>();
-          if (prodTileOp.isShimTile())
-            col = prodTileOp.colIndex();
+          auto isShim = [](mlir::Value v) -> bool {
+            if (auto t = llvm::dyn_cast_or_null<AIE::TileOp>(v.getDefiningOp()))
+              return t.isShimTile();
+            if (auto lto = llvm::dyn_cast_or_null<AIE::LogicalTileOp>(
+                    v.getDefiningOp()))
+              return lto.getTileType() == AIE::AIETileType::ShimNOCTile ||
+                     lto.getTileType() == AIE::AIETileType::ShimPLTile;
+            return false;
+          };
+          if (isShim(objFifoCreateOp->getProducerTile()))
+            col = getColFromTileValue(objFifoCreateOp->getProducerTile());
           for (auto consumerTileOp : objFifoCreateOp->getConsumerTiles()) {
-            auto consTileOp = consumerTileOp.getDefiningOp<AIE::TileOp>();
-            if (consTileOp.isShimTile()) {
-              col = consTileOp.colIndex();
-            }
+            if (isShim(consumerTileOp))
+              col = getColFromTileValue(consumerTileOp);
           }
         }
       }
