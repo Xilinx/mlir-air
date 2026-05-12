@@ -93,11 +93,11 @@ module attributes {gpu.container_module} {
 
       %is_lane0 = arith.cmpi eq, %lane, %c0 : index
       scf.if %is_lane0 {
-        // Default syncscope = LLVM System = cross-device on AMDGPU.
+        // syncscope("") = LLVM System scope = cross-device on AMDGPU.
         // See sym_atomic_syncscope.mlir for the contract test.
         %slot_ptr = func.call @flag_slot_ptr(%peer_flags, %wid)
             : (memref<4xi32>, index) -> !llvm.ptr
-        %old = llvm.atomicrmw xchg %slot_ptr, %c1_i32 release
+        %old = llvm.atomicrmw xchg %slot_ptr, %c1_i32 syncscope("") release
             : !llvm.ptr, i32
       }
       gpu.return
@@ -124,8 +124,8 @@ module attributes {gpu.container_module} {
             : (memref<4xi32>, index) -> !llvm.ptr
         // Spin: flag == 0.
         scf.while : () -> () {
-          %v = llvm.load %slot_ptr atomic acquire {alignment = 4 : i64}
-              : !llvm.ptr -> i32
+          %v = llvm.load %slot_ptr atomic syncscope("") acquire
+              {alignment = 4 : i64} : !llvm.ptr -> i32
           %not_ready = arith.cmpi eq, %v, %c0_i32 : i32
           scf.condition(%not_ready)
         } do {
