@@ -52,8 +52,6 @@ module attributes {gpu.container_module} {
       "[mlir] rank 1 (consumer): cross-rank kernel write PASS (verify[0]=%.1f)\0A\00") {addr_space = 0 : i32}
   llvm.mlir.global internal constant @msg_fail(
       "[mlir] rank 1 (consumer): MISMATCH at idx=%ld got=%.1f expected=42.0\0A\00") {addr_space = 0 : i32}
-  llvm.mlir.global internal constant @msg_only1(
-      "[mlir] rank %d: world_size=1, kernel test requires 2 ranks; skipping\0A\00") {addr_space = 0 : i32}
   llvm.mlir.global internal constant @msg_done(
       "[mlir] rank %d: ALL PASSED\0A\00") {addr_space = 0 : i32}
 
@@ -233,94 +231,87 @@ module attributes {gpu.container_module} {
     %world_idx = arith.index_cast %world_i64 : i64 to index
     %bases = memref.view %bases_bytes[%c0_view][%world_idx] : memref<?xi8> to memref<?xindex>
 
-    %is_solo = arith.cmpi sle, %world, %c1_i32 : i32
-    scf.if %is_solo {
-      %fmt_only1 = llvm.mlir.addressof @msg_only1 : !llvm.ptr
-      llvm.call @printf(%fmt_only1, %rank)
-          vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr, i32) -> i32
+    // Rank 0 = producer, rank 1 = consumer. Ranks > 1 idle.
+    // (Future: extend to all-pairs producer/consumer mesh.)
+    // Precondition: world >= 2 — enforced by run.sh, not re-checked here.
+    %is_producer = arith.cmpi eq, %rank, %c0_i32 : i32
+    scf.if %is_producer {
+      gpu.launch_func @sym_kernels::@producer
+          blocks  in (%c1, %c1, %c1)
+          threads in (%c256, %c1, %c1)
+          args(%data_m  : memref<256xf32>,
+               %flags_m : memref<4xi32>,
+               %bases   : memref<?xindex>)
+      %fmt_p = llvm.mlir.addressof @msg_pass_p : !llvm.ptr
+      llvm.call @printf(%fmt_p)
+          vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr) -> i32
     } else {
-      // Rank 0 = producer, rank 1 = consumer. Other ranks (W>2) idle.
-      // (Future: extend to all-pairs producer/consumer mesh.)
-      %is_producer = arith.cmpi eq, %rank, %c0_i32 : i32
-      scf.if %is_producer {
-        gpu.launch_func @sym_kernels::@producer
+      %is_consumer = arith.cmpi eq, %rank, %c1_i32 : i32
+      scf.if %is_consumer {
+        %verify_ptr = func.call @mgpuMemAlloc(%c1024_bytes, %nullptr, %false)
+            : (i64, !llvm.ptr, i1) -> !llvm.ptr
+        %verify_bytes = func.call @wrap_bytes(%verify_ptr, %c1024_bytes) : (!llvm.ptr, i64) -> memref<?xi8>
+        %verify_m = memref.view %verify_bytes[%c0_view][] : memref<?xi8> to memref<256xf32>
+        gpu.launch_func @sym_kernels::@consumer
             blocks  in (%c1, %c1, %c1)
             threads in (%c256, %c1, %c1)
             args(%data_m  : memref<256xf32>,
-                 %flags_m : memref<4xi32>,
-                 %bases   : memref<?xindex>)
-        %fmt_p = llvm.mlir.addressof @msg_pass_p : !llvm.ptr
-        llvm.call @printf(%fmt_p)
-            vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr) -> i32
-      } else {
-        // Rank 1 = consumer; ranks > 1 idle.
-        %is_consumer = arith.cmpi eq, %rank, %c1_i32 : i32
-        scf.if %is_consumer {
-          %verify_ptr = func.call @mgpuMemAlloc(%c1024_bytes, %nullptr, %false)
-              : (i64, !llvm.ptr, i1) -> !llvm.ptr
-          %verify_bytes = func.call @wrap_bytes(%verify_ptr, %c1024_bytes) : (!llvm.ptr, i64) -> memref<?xi8>
-          %verify_m = memref.view %verify_bytes[%c0_view][] : memref<?xi8> to memref<256xf32>
-          gpu.launch_func @sym_kernels::@consumer
-              blocks  in (%c1, %c1, %c1)
-              threads in (%c256, %c1, %c1)
-              args(%data_m  : memref<256xf32>,
-                   %verify_m: memref<256xf32>,
-                   %flags_m : memref<4xi32>)
+                 %verify_m: memref<256xf32>,
+                 %flags_m : memref<4xi32>)
 
-          // D2H readback verify_buf and check ALL 256 elements == 42.0.
-          // (Checking only element 0 would mask a bug where warps 1..3
-          // didn't write their slice. exit(1) on mismatch makes the
-          // multi-process driver see a non-zero exit code.)
-          %hb = memref.alloc() : memref<256xf32>
-          %hb_intptr = memref.extract_aligned_pointer_as_index %hb : memref<256xf32> -> index
-          %hb_int = arith.index_cast %hb_intptr : index to i64
-          %hb_ptr = llvm.inttoptr %hb_int : i64 to !llvm.ptr
-          func.call @mgpuMemcpy(%hb_ptr, %verify_ptr, %c1024_bytes, %nullptr)
-              : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> ()
+        // D2H readback verify_buf and check ALL 256 elements == 42.0.
+        // (Checking only element 0 would mask a bug where warps 1..3
+        // didn't write their slice. exit(1) on mismatch makes the
+        // multi-process driver see a non-zero exit code.)
+        %hb = memref.alloc() : memref<256xf32>
+        %hb_intptr = memref.extract_aligned_pointer_as_index %hb : memref<256xf32> -> index
+        %hb_int = arith.index_cast %hb_intptr : index to i64
+        %hb_ptr = llvm.inttoptr %hb_int : i64 to !llvm.ptr
+        func.call @mgpuMemcpy(%hb_ptr, %verify_ptr, %c1024_bytes, %nullptr)
+            : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> ()
 
-          %c0_idx = arith.constant 0 : index
-          %c1_idx = arith.constant 1 : index
-          %c256_idx = arith.constant 256 : index
-          %expected = arith.constant 42.0 : f32
+        %c0_idx = arith.constant 0 : index
+        %c1_idx = arith.constant 1 : index
+        %c256_idx = arith.constant 256 : index
+        %expected = arith.constant 42.0 : f32
 
-          // Count mismatches; print msg_fail on the first.
-          %nfail = scf.for %i = %c0_idx to %c256_idx step %c1_idx
-                          iter_args(%nfail_acc = %c0_i32) -> (i32) {
-            %v = memref.load %hb[%i] : memref<256xf32>
-            %ne = arith.cmpf une, %v, %expected : f32
-            %new_nfail = scf.if %ne -> i32 {
-              %is_first = arith.cmpi eq, %nfail_acc, %c0_i32 : i32
-              scf.if %is_first {
-                %fmt_fail = llvm.mlir.addressof @msg_fail : !llvm.ptr
-                %i_i64 = arith.index_cast %i : index to i64
-                %v_64 = arith.extf %v : f32 to f64
-                %e_64 = arith.extf %expected : f32 to f64
-                llvm.call @printf(%fmt_fail, %rank, %i_i64, %v_64, %e_64)
-                    vararg(!llvm.func<i32 (ptr, ...)>)
-                    : (!llvm.ptr, i32, i64, f64, f64) -> i32
-              }
-              %inc = arith.addi %nfail_acc, %c1_i32 : i32
-              scf.yield %inc : i32
-            } else {
-              scf.yield %nfail_acc : i32
+        // Count mismatches; print msg_fail on the first.
+        %nfail = scf.for %i = %c0_idx to %c256_idx step %c1_idx
+                        iter_args(%nfail_acc = %c0_i32) -> (i32) {
+          %v = memref.load %hb[%i] : memref<256xf32>
+          %ne = arith.cmpf une, %v, %expected : f32
+          %new_nfail = scf.if %ne -> i32 {
+            %is_first = arith.cmpi eq, %nfail_acc, %c0_i32 : i32
+            scf.if %is_first {
+              %fmt_fail = llvm.mlir.addressof @msg_fail : !llvm.ptr
+              %i_i64 = arith.index_cast %i : index to i64
+              %v_64 = arith.extf %v : f32 to f64
+              %e_64 = arith.extf %expected : f32 to f64
+              llvm.call @printf(%fmt_fail, %rank, %i_i64, %v_64, %e_64)
+                  vararg(!llvm.func<i32 (ptr, ...)>)
+                  : (!llvm.ptr, i32, i64, f64, f64) -> i32
             }
-            scf.yield %new_nfail : i32
-          }
-
-          %ok_all = arith.cmpi eq, %nfail, %c0_i32 : i32
-          scf.if %ok_all {
-            %fmt_c = llvm.mlir.addressof @msg_pass_c : !llvm.ptr
-            %v0 = memref.load %hb[%c0_idx] : memref<256xf32>
-            %v0_64 = arith.extf %v0 : f32 to f64
-            llvm.call @printf(%fmt_c, %v0_64)
-                vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr, f64) -> i32
+            %inc = arith.addi %nfail_acc, %c1_i32 : i32
+            scf.yield %inc : i32
           } else {
-            func.call @exit(%c1_i32) : (i32) -> ()
+            scf.yield %nfail_acc : i32
           }
-
-          memref.dealloc %hb : memref<256xf32>
-          func.call @mgpuMemFree(%verify_ptr, %nullptr) : (!llvm.ptr, !llvm.ptr) -> ()
+          scf.yield %new_nfail : i32
         }
+
+        %ok_all = arith.cmpi eq, %nfail, %c0_i32 : i32
+        scf.if %ok_all {
+          %fmt_c = llvm.mlir.addressof @msg_pass_c : !llvm.ptr
+          %v0 = memref.load %hb[%c0_idx] : memref<256xf32>
+          %v0_64 = arith.extf %v0 : f32 to f64
+          llvm.call @printf(%fmt_c, %v0_64)
+              vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr, f64) -> i32
+        } else {
+          func.call @exit(%c1_i32) : (i32) -> ()
+        }
+
+        memref.dealloc %hb : memref<256xf32>
+        func.call @mgpuMemFree(%verify_ptr, %nullptr) : (!llvm.ptr, !llvm.ptr) -> ()
       }
     }
 

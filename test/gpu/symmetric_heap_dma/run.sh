@@ -24,6 +24,14 @@ NUM_RANKS=${1:-2}
 TMPDIR="${TMPDIR:-/tmp/air_sym_dma}"
 mkdir -p "$TMPDIR"
 
+# Cross-rank symmetric-heap test fundamentally requires a producer + a
+# consumer process. Refuse single-process launches loudly rather than
+# letting the kernel silently no-op or hang.
+if [ "$NUM_RANKS" -lt 2 ]; then
+  echo "ERROR: NUM_RANKS=$NUM_RANKS; this test requires >= 2 ranks (producer + consumer)." >&2
+  exit 1
+fi
+
 # Refuse to run if there aren't enough physically distinct GPUs for one
 # rank per GPU. Colocating ranks on a single GPU would make XGMI/peer-VA
 # transparently fall back to local memory and produce false-positive PASSes.
