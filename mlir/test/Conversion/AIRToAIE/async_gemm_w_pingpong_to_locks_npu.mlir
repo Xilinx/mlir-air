@@ -5,13 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="row-offset=2 col-offset=0 device=npu1" --aie-place-tiles -canonicalize -cse %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="row-offset=2 col-offset=0 device=npu1" -canonicalize -cse %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(npu1) @segment_0 {
-// CHECK-DAG:   %[[tile_0_0:.*]] = aie.tile(0, 0)
-// CHECK-DAG:   %[[tile_1_0:.*]] = aie.tile(1, 0)
-// CHECK-DAG:   %[[tile_0_1:.*]] = aie.tile(0, 1)
-// CHECK-DAG:   %[[tile_1_1:.*]] = aie.tile(1, 1)
+// CHECK-DAG:   %[[tile_0_0:.*]] = aie.logical_tile<ShimNOCTile>(0, ?)
+// CHECK-DAG:   %[[tile_1_0:.*]] = aie.logical_tile<ShimNOCTile>(1, ?)
 // CHECK-DAG:   %[[tile_0_2:.*]] = aie.tile(0, 2)
 // CHECK-DAG:   %[[tile_1_2:.*]] = aie.tile(1, 2)
 // CHECK-DAG:   %[[tile_0_3:.*]] = aie.tile(0, 3)
@@ -21,6 +19,9 @@
 // CHECK-COUNT-6:    aie.lock(%[[tile_0_3]], {{.*}})
 // CHECK-COUNT-6:    aie.lock(%[[tile_1_3]], {{.*}})
 // CHECK-COUNT-20:    aie.buffer({{.*}}) {{{.*}}} : memref<32x32xi32, 2>
+// CHECK:    aie.core
+// CHECK-DAG:   %[[tile_0_1:.*]] = aie.logical_tile<MemTile>(0, ?)
+// CHECK-DAG:   %[[tile_1_1:.*]] = aie.logical_tile<MemTile>(1, ?)
 // CHECK:    aie.flow(%[[tile_0_0]], DMA : 0, %[[tile_0_1]], DMA : 0)
 // CHECK:    aie.flow(%[[tile_1_0]], DMA : 0, %[[tile_1_1]], DMA : 0)
 // CHECK:    aie.flow(%[[tile_0_1]], DMA : 0, %[[tile_0_0]], DMA : 0)

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" --aie-place-tiles | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
 // 4-buffer rotation should generate single circular BD chain, not terminated sequences.
 // This tests the N-buffer rotation detection in getRepeatCounts().

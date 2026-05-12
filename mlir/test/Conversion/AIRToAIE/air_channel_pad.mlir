@@ -5,13 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" --aie-place-tiles | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
 // Test that padding attributes on air.channel.put propagate to aie.dma_bd
 // as const_pad_before/const_pad_after in the memtile DMA.
 
 // CHECK: aie.device
-// CHECK-DAG:         %[[TILE_L2:.*]] = aie.tile(2, 1)
+// CHECK-DAG:         %[[TILE_L2:.*]] = aie.logical_tile<MemTile>(2, ?)
 // CHECK-DAG:         %[[TILE_L1:.*]] = aie.tile(2, 3)
 
 // CHECK:       aie.memtile_dma(%[[TILE_L2]])

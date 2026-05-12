@@ -24,12 +24,12 @@
 //   alloc_2 (affinity col 5) -> memtile col 7
 //   alloc_3 (affinity col 5) -> memtile col 5
 
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=5 device=xcve2802 use-objectfifo=false" --aie-place-tiles | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=5 device=xcve2802 use-objectfifo=false" | FileCheck %s
 
 // Memtile tiles at row 1 (xcve2802 memtile row)
-// CHECK-DAG:  %[[MT5:.*]] = aie.tile(5, 1)
-// CHECK-DAG:  %[[MT6:.*]] = aie.tile(6, 1)
-// CHECK-DAG:  %[[MT7:.*]] = aie.tile(7, 1)
+// CHECK-DAG:  %[[MT5:.*]] = aie.logical_tile<MemTile>(5, ?)
+// CHECK-DAG:  %[[MT6:.*]] = aie.logical_tile<MemTile>(6, ?)
+// CHECK-DAG:  %[[MT7:.*]] = aie.logical_tile<MemTile>(7, ?)
 
 // alloc_0 (ch_a, affinity col 6) -> memtile col 5 (round-robin)
 // CHECK-DAG:  aie.buffer(%[[MT5]]) {{{.*}}} : memref<32xi32, 1>

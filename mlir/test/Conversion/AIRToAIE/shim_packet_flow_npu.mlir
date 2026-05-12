@@ -6,11 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1_1col}, aie.device(aie-place-tiles))' --split-input-file -verify-diagnostics | FileCheck %s
+// RUN: air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1_1col})' --split-input-file -verify-diagnostics | FileCheck %s
 
-// CHECK-DAG: %[[VAL0:.*]] = aie.tile(0, 1)
+// CHECK-DAG: %[[VAL0:.*]] = aie.logical_tile<MemTile>(0, ?)
 // CHECK-DAG: %[[VAL1:.*]] = aie.tile(0, 2)
-// CHECK-DAG: %[[VAL2:.*]] = aie.tile(0, 0)
+// CHECK-DAG: %[[VAL2:.*]] = aie.logical_tile<ShimNOCTile>(0, ?)
 // CHECK: aie.packet_flow(0) {
 // CHECK:   aie.packet_source<%[[VAL2]], DMA : 0>
 // CHECK:   aie.packet_dest<%[[VAL0]], DMA : 0>
@@ -67,9 +67,9 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 
 // Asynchronous version
 
-// CHECK-DAG: %[[VAL0:.*]] = aie.tile(0, 1)
+// CHECK-DAG: %[[VAL0:.*]] = aie.logical_tile<MemTile>(0, ?)
 // CHECK-DAG: %[[VAL1:.*]] = aie.tile(0, 2)
-// CHECK-DAG: %[[VAL2:.*]] = aie.tile(0, 0)
+// CHECK-DAG: %[[VAL2:.*]] = aie.logical_tile<ShimNOCTile>(0, ?)
 // CHECK: aie.packet_flow(0) {
 // CHECK:   aie.packet_source<%[[VAL2]], DMA : 0>
 // CHECK:   aie.packet_dest<%[[VAL0]], DMA : 0>

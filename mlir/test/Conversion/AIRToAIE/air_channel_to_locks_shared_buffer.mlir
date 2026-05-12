@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" --aie-place-tiles --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" --split-input-file | FileCheck %s
 
 // Two outbound channel.put ops sharing the same L1 staging buffer on the same
 // DMA channel. Unlike ping-pong (where different buffers alternate), here the
@@ -14,7 +14,6 @@
 // second put from overwriting the buffer before the DMA reads the first.
 
 // CHECK: aie.device
-// CHECK-DAG:         %[[TILE_MT:.*]] = aie.tile(2, 1)
 // CHECK-DAG:         %[[TILE:.*]] = aie.tile(2, 3)
 
 // One lock pair for the compute tile's MM2S channel (wlock init=1, rlock init=0)

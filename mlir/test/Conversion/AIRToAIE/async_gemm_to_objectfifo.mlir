@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-to-aie="use-objectfifo=true row-offset=3 col-offset=5" --aie-place-tiles %s | FileCheck %s
+// RUN: air-opt -air-to-aie="use-objectfifo=true row-offset=3 col-offset=5" %s | FileCheck %s
 
 // CHECK-LABEL: aie.device
 // CHECK-DAG:   %[[VAL_0:.*]] = aie.tile(5, 3)

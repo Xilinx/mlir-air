@@ -5,11 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" --aie-place-tiles --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" --split-input-file | FileCheck %s
 
 // one dma channel, multiple dma memcpy ops over time
 // CHECK: aie.device
-// CHECK-DAG:         %[[MEMTILE:.*]] = aie.tile(2, 1)
 // CHECK-DAG:         %[[COMPUTE:.*]] = aie.tile(2, 3)
 // CHECK-DAG:         %[[CLOCK_PROD:.*]] = aie.lock(%[[COMPUTE]], 1) {init = 2 : i32}
 // CHECK-DAG:         %[[CLOCK_CONS:.*]] = aie.lock(%[[COMPUTE]], 0) {init = 0 : i32}
@@ -40,6 +39,7 @@
 // CHECK:           aie.end
 // CHECK:         }
 
+// CHECK-DAG:         %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(2, ?)
 // CHECK-DAG:         %[[MLOCK_PROD:.*]] = aie.lock(%[[MEMTILE]], 1) {init = 1 : i32}
 // CHECK-DAG:         %[[MLOCK_CONS:.*]] = aie.lock(%[[MEMTILE]], 0) {init = 0 : i32}
 // CHECK-DAG:         %[[MBUF:.*]] = aie.buffer(%[[MEMTILE]]) {{{.*}}} : memref<32x32xbf16, 1>
@@ -320,7 +320,6 @@ func.func @core_to_core_ping_pong() {
 
 // ping-pong is not possible with multiple channel accesses to the same buffer, due to dependence arising from the prod. and cons. of data in the buffer.
 // CHECK: aie.device
-// CHECK-DAG:         %[[MEMTILE:.*]] = aie.tile(2, 1)
 // CHECK-DAG:         %[[COMPUTE:.*]] = aie.tile(0, 3)
 // CHECK-DAG:         %[[CLOCK_PROD:.*]] = aie.lock(%[[COMPUTE]], 1) {init = 1 : i32}
 // CHECK-DAG:         %[[CLOCK_CONS:.*]] = aie.lock(%[[COMPUTE]], 0) {init = 0 : i32}
@@ -354,6 +353,7 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         }
 // CHECK:         aie.end
 
+// CHECK-DAG:         %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(2, ?)
 // CHECK-DAG:         %[[MLOCK_PROD:.*]] = aie.lock(%[[MEMTILE]], 1) {init = 1 : i32}
 // CHECK-DAG:         %[[MLOCK_CONS:.*]] = aie.lock(%[[MEMTILE]], 0) {init = 0 : i32}
 // CHECK-DAG:         %[[MBUF:.*]] = aie.buffer(%[[MEMTILE]]) {{{.*}}} : memref<1x1x64x32xi32, 1 : i32>

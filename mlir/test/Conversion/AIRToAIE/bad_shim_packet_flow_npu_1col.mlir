@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: not air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1_1col}, aie.device(aie-place-tiles))' --split-input-file 2>&1 | FileCheck %s
+// RUN: not air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1_1col})' --split-input-file 2>&1 | FileCheck %s
 
 // 4x4 NPU1 array on 1-column device. Should fail because the design
 // requires more columns than the device provides.

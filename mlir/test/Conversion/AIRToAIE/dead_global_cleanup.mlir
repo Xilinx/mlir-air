@@ -13,7 +13,7 @@
 // RUN: air-opt %s -air-to-aie='test-patterns=to-aie-mlir' | FileCheck %s --check-prefix=INTERMEDIATE
 
 // The full pipeline should remove them:
-// RUN: air-opt %s -air-to-aie="use-objectfifo=false row-offset=1 col-offset=1 device=xcvc1902 generate-shim-dma=true" --aie-place-tiles | FileCheck %s --check-prefix=CLEAN
+// RUN: air-opt %s -air-to-aie="use-objectfifo=false row-offset=1 col-offset=1 device=xcvc1902 generate-shim-dma=true" | FileCheck %s --check-prefix=CLEAN
 
 // Intermediate stage must have the globals (created by outlineAIECores):
 // INTERMEDIATE: memref.global{{.*}}__air_herd_arg
