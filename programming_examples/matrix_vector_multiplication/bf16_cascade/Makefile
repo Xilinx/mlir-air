@@ -65,30 +65,31 @@ build-test-exe:
 	@$(MAKE) build-test-exe-impl SRC=test.cpp OUT=test.exe
 
 # Fused GEMV + residual add: D[M] = A[M,K] @ B[K] + R[M]
-# Note: m_input=2 minimum (m_input=1 → R per-iter = 2 bytes, sub-aligned for AIE DMA)
-M_INPUT_ADD ?= 2
+# Note: M_INPUT=2 minimum for the add variant (M_INPUT=1 → R per-iter = 2
+# bytes, sub-aligned for AIE DMA). Override M_INPUT=2 on the command line
+# (or via run_add_8col / profile_add_8col below).
 
 print_add:
-	${powershell} python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) -p --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT_ADD) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
+	${powershell} python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) -p --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
 
 run_add:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT_ADD) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE) $(if $(DEBUG_IR),--debug-ir)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE) $(if $(DEBUG_IR),--debug-ir)
 
 build-test-add-exe:
 	@$(MAKE) build-test-exe-impl SRC=test_add.cpp OUT=test_add.exe
 
 profile_add: build-test-add-exe
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) --compile-mode compile-and-xclbin --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT_ADD) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) --compile-mode compile-and-xclbin --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_add.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M $(M) -K $(K)
 
 # 8 columns x 4 cascade tiles, fused GEMV+add
 run_add_8col:
-	$(MAKE) run_add M=2048 K=8192 TILE_M=2 M_INPUT_ADD=2 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf
+	$(MAKE) run_add M=2048 K=8192 TILE_M=2 M_INPUT=2 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf
 
 profile_add_8col:
-	$(MAKE) profile_add M=2048 K=8192 TILE_M=2 M_INPUT_ADD=2 HERD_COLS=8 N_CASCADE=4
+	$(MAKE) profile_add M=2048 K=8192 TILE_M=2 M_INPUT=2 HERD_COLS=8 N_CASCADE=4
 
 build-test-exe-impl:
 	@GPP=$$( \

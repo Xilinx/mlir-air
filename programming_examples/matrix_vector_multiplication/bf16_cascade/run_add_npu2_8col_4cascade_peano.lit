@@ -8,6 +8,6 @@
 // RUN: make -f %S/Makefile clean
 //
 // Correctness: D = A·B + R, M=2048, K=8192, 8 columns x 4 cascade tiles
-// (m_input=2 minimum: m_input=1 makes R per-iter sub-aligned for AIE DMA)
-// RUN: make -f %S/Makefile run_add M=2048 K=8192 TILE_M=2 M_INPUT_ADD=2 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// (M_INPUT=2 minimum: M_INPUT=1 makes R per-iter sub-aligned for AIE DMA)
+// RUN: make -f %S/Makefile run_add M=2048 K=8192 TILE_M=2 M_INPUT=2 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: PASS!
