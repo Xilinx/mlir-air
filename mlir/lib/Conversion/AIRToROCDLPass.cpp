@@ -412,22 +412,44 @@ struct ConvertAIRToROCDLPass
 
     // Create a pattern rewriter to apply transformations to each function
     PatternRewriter rewriter(moduleOp.getContext());
-    // Create a set of patterns for transformation
+    // Create a set of patterns for transformation. Freeze once so the same
+    // pattern set can be reused across multiple launches in the module
+    // (FrozenRewritePatternSet is shareable; the underlying mutable
+    // RewritePatternSet would be consumed by std::move on first use).
     RewritePatternSet patterns(&getContext());
     patterns.add<AffineApplyToSubPattern, DMAMemcpyToSubPattern,
                  SCFForToSubPattern>(&getContext());
+    FrozenRewritePatternSet frozenPatterns(std::move(patterns));
+
+    // Helper: get the i'th size operand of a launch/herd, or a freshly
+    // materialized index constant 1 if the dim is absent. air.launch and
+    // air.herd support N-D iteration spaces, but the gpu.launch op this
+    // pass produces always wants X, Y, Z grid + block dims, so missing
+    // higher dims default to 1 (single iteration in that axis).
+    auto sizeOrOne = [&](OperandRange sizes, unsigned i,
+                         Operation *insertBefore) -> Value {
+      if (i < sizes.size())
+        return sizes[i];
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPoint(insertBefore);
+      return arith::ConstantOp::create(builder, insertBefore->getLoc(),
+                                       builder.getIndexAttr(1));
+    };
+
     // Traverse the module and look for air.launch and air.herd ops.
     module.walk([&](air::LaunchOp launchOp) {
       launchOp.walk([&](air::SegmentOp segmentOp) {
         segmentOp.walk([&](Operation *childOp) {
           if (auto herdOp = dyn_cast_if_present<xilinx::air::HerdOp>(childOp)) {
 
-            gridXVal = launchOp.getSizeOperands()[0];
-            gridYVal = launchOp.getSizeOperands()[1];
-            blkIdx.push_back(herdOp.getSizeOperands()[0]);
-            blkIdx.push_back(herdOp.getSizeOperands()[1]);
-            gridIdx.push_back(launchOp.getSizeOperands()[0]);
-            gridIdx.push_back(launchOp.getSizeOperands()[1]);
+            auto launchSizes = launchOp.getSizeOperands();
+            auto herdSizes = herdOp.getSizeOperands();
+            gridXVal = sizeOrOne(launchSizes, 0, launchOp);
+            gridYVal = sizeOrOne(launchSizes, 1, launchOp);
+            blkIdx.push_back(sizeOrOne(herdSizes, 0, herdOp));
+            blkIdx.push_back(sizeOrOne(herdSizes, 1, herdOp));
+            gridIdx.push_back(gridXVal);
+            gridIdx.push_back(gridYVal);
           }
         });
         gpu::LaunchOp gpuLaunchOp =
@@ -436,7 +458,7 @@ struct ConvertAIRToROCDLPass
         auto blockArgs = gpuLaunchBlock.getArguments();
 
         gpuArgs.assign(blockArgs.begin(), blockArgs.end());
-        (void)applyPatternsGreedily(launchOp, std::move(patterns));
+        (void)applyPatternsGreedily(launchOp, frozenPatterns);
         deleteAirHerd(segmentOp, builder, gpuLaunchOp);
         deleteAirSegment(launchOp, builder, gpuLaunchOp);
       });

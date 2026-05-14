@@ -64,6 +64,10 @@ void walkAsyncTokenConsumers(Operation *root,
 #include "air/Dialect/AIR/AIREnums.h.inc"
 #include "air/Dialect/AIR/AIROpInterfaces.h.inc"
 
+// include TableGen generated Attribute definitions
+#define GET_ATTRDEF_CLASSES
+#include "air/Dialect/AIR/AIRAttrs.h.inc"
+
 // include TableGen generated Op definitions
 #define GET_OP_CLASSES
 #include "air/Dialect/AIR/AIR.h.inc"
