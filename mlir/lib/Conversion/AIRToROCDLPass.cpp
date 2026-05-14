@@ -439,6 +439,15 @@ struct ConvertAIRToROCDLPass
     // Traverse the module and look for air.launch and air.herd ops.
     module.walk([&](air::LaunchOp launchOp) {
       launchOp.walk([&](air::SegmentOp segmentOp) {
+        // Reset grid/block-dim collections for each (launch, segment)
+        // pair. These are class members (not local) so without an
+        // explicit clear they would carry stale operands from previous
+        // launches in the same module — which then dangle into the new
+        // gpu.launch op as use-after-frees.
+        blkIdx.clear();
+        gridIdx.clear();
+        gridXVal = nullptr;
+        gridYVal = nullptr;
         segmentOp.walk([&](Operation *childOp) {
           if (auto herdOp = dyn_cast_if_present<xilinx::air::HerdOp>(childOp)) {
 
@@ -461,21 +470,41 @@ struct ConvertAIRToROCDLPass
         (void)applyPatternsGreedily(launchOp, frozenPatterns);
         deleteAirHerd(segmentOp, builder, gpuLaunchOp);
         deleteAirSegment(launchOp, builder, gpuLaunchOp);
-      });
-    });
 
-    module.walk([&](gpu::LaunchOp gpuLaunchOp) {
-      module.walk([&](air::LaunchOp launchOp) {
+        // Move the (now-flattened) air.launch body into this specific
+        // gpu.launch's body. Pairing must be 1:1 — a previous nested-walk
+        // implementation pairwise-merged every gpu.launch with every
+        // air.launch in the module, which folded multi-launch programs
+        // into a single gpu.launch and dangled launch block args.
+        //
+        // Replace launch's block args with the launch's outer kernel
+        // operands BEFORE moving the body. Without this, after the body
+        // moves into gpu.launch and air.launch is erased, the moved ops
+        // still reference air.launch's destroyed block args
+        // (use-after-free during block destruction).
         Block &launchBlock = launchOp.getRegion().front();
-        mlir::Block &block = gpuLaunchOp.getBody().front();
+        unsigned numLaunchKernelArgs = launchOp.getNumKernelOperands();
+        // Block args layout: [tile_ids..., size_ids..., kernel_args...].
+        // Tile ids and sizes are not used by the moved body in the
+        // patterns we lower today (compute uses gpu.thread_id directly
+        // after deleteAirHerd remap). Kernel-arg block args sit at the
+        // tail of the block-arg list.
+        unsigned numNonKernelArgs =
+            launchBlock.getNumArguments() - numLaunchKernelArgs;
+        for (unsigned i = 0; i < numLaunchKernelArgs; ++i) {
+          Value outerVal = launchOp.getKernelOperand(i);
+          launchBlock.getArgument(numNonKernelArgs + i)
+              .replaceAllUsesWith(outerVal);
+        }
+
+        mlir::Block &gpuBlock = gpuLaunchOp.getBody().front();
         for (auto &operation :
              llvm::make_early_inc_range(launchBlock.without_terminator())) {
-          // Iterate over each operand of the operation
-          mlir::Operation &lastOp = block.back();
+          mlir::Operation &lastOp = gpuBlock.back();
           operation.moveBefore(&lastOp);
         }
+        hoistAlloc(gpuLaunchOp, builder);
       });
-      hoistAlloc(gpuLaunchOp, builder);
     });
     module.walk([&](air::DmaMemcpyNdOp dmaOp) {
       convertDMAToGPUMemcpy(dmaOp, builder);

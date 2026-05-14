@@ -395,25 +395,54 @@ Same pattern as phases 3/4 verification:
 
 ### What's still blocked
 
-5. **`air-to-rocdl` multi-launch use-after-free**: when the test has
-   *two* `air.launch` ops in the same module (one in each branch of an
-   `scf.if %is_producer { producer-launch } else { consumer-launch }`
-   dispatch), the pass crashes during block destruction with
-   `Cannot destroy a value that still has uses!`. The pattern's
-   `deleteAirHerd` / `deleteAirSegment` helpers appear to leave dangling
-   references when there are multiple launches with overlapping
-   herd/segment structures.
+5. **`air-to-rocdl` multi-launch use-after-free** — **FIXED in commit on
+   this branch.** Three compounding bugs were identified via a minimal
+   reproducer (two empty `air.launch` ops with `air.segment` + `air.herd`
+   bodies):
 
-   This is a deeper restructuring issue in `AIRToROCDLPass.cpp`
-   (`runOnOperation()` loop around lines 420-443). The pass was clearly
-   designed for the 4Kx4K matmul shape (single launch + single segment +
-   one or two herds) and has implicit assumptions baked into the
-   delete-helpers' iteration order.
+   - `blkIdx`/`gridIdx` are class-level vectors that accumulated across
+     iterations of the launch walk; the second launch ended up using the
+     first launch's herd-size operands. Fixed by clearing them at the top
+     of each (launch, segment) pair.
+   - The post-conversion body-move loop used a *nested* walk
+     (`module.walk(gpuLaunch) { module.walk(airLaunch) { move } }`) which
+     pairwise-matched every gpu.launch with every air.launch in the
+     module, folding multi-launch programs into the first gpu.launch.
+     Fixed by performing the body move *inside* the first walk where the
+     1:1 pairing is established.
+   - The body-move did not replace the air.launch's own block args
+     (kernel operands) with their outer values before moving the body
+     into gpu.launch. After air.launch was later erased, the moved ops
+     dangled into the destroyed block args. Fixed with the same
+     `replaceAllUsesWith` pattern that `deleteAirHerd` /
+     `deleteAirSegment` use.
 
-   Fix probably involves: collect all launches first, convert each to
-   gpu.launch, defer the deletes until after all conversions, walk the
-   delete order more carefully so child uses are dropped before parent
-   ops are erased.
+   Reproducer: `/tmp/multi_launch_repro.mlir` (two air.launches with
+   memref.store inside each herd) now lowers cleanly to two distinct
+   gpu.launch ops with correct operand routing.
+
+6. **Pipeline progresses past air-to-rocdl, hangs at runtime** — the
+   air_hierarchy/cacheline e2e now compiles all the way through to a
+   GPU binary (after sed-stripping `#air.symmetric_heap` from the
+   pre-mlir-opt IR; see Makefile note), but at runtime the consumer's
+   spin loop never observes the producer's flag. Likely root cause: the
+   air-to-rocdl lowering's hoist-body-out-of-herd pattern doesn't
+   correctly preserve the cooperative cache-line write semantics the
+   handwritten kernel relies on. Specifically, the `air.herd tile (%tx,
+   %ty) in (%ntx, %nty)` block args get replaced with `gpu.thread_id`
+   (one per dim), but the herd's body uses `gpu.thread_id x` directly to
+   get a lane id 0..63 — and the lowering's ntx=1 nty=1 may not actually
+   produce the right wave shape on the GPU side.
+
+   This needs deeper investigation: dump the post-air-to-rocdl IR, check
+   that the gpu.launch's block dim X is set to 64 (one wave) rather than
+   to the herd's (1, 1) tile sizes. Probably need to teach air-to-rocdl
+   that on GPU, the herd's PE iteration space maps to *warps within a
+   block*, not threads — so the gpu.launch's threads-per-block dim
+   should be ntx*nty*64 (warps × wave size), not ntx*nty.
+
+   Independent of the `#air.symmetric_heap` design and the multi-launch
+   fixes already landed.
 
 ### What this unblocks for phase 6
 

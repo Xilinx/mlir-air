@@ -66,10 +66,18 @@ $(TMPDIR):
 #   air-translate-to-llvm — expands air.translate to memref descriptor rebase
 #   air-to-rocdl + air-gpu-outlining — converts air.launch/segment/herd
 #                                      into gpu.launch_func + gpu.func
+#
+# After all AIR passes are done, the #air.symmetric_heap memref
+# memory_space tag has served its purpose (it told the herd verifier
+# direct L3 access was OK; the runtime calls + descriptor cast handle
+# the actual XGMI access). Strip it so mlir-opt + convert-to-llvm see
+# plain memrefs that they know how to lower. (sed-strip is a temporary
+# expedient; a proper AIR pass to do this strip is TODO.)
 $(POST_LOWER): $(SRC_MLIR) | $(TMPDIR)
 	@echo "Step 1a: AIR-level lowering ($(INPUT))"
 	air-opt $< -air-rank-to-mgpu --air-translate-to-llvm \
-	    -air-to-rocdl -air-gpu-outlining -o $@
+	    -air-to-rocdl -air-gpu-outlining -o $@.with_air_tag
+	sed 's/, #air\.symmetric_heap//g' $@.with_air_tag > $@
 
 # Step 1b: standard MLIR GPU compile chain. Same pipeline as
 # ../handwritten/Makefile (the lowered output is structurally a superset
