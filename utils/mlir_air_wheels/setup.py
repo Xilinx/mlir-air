@@ -8,7 +8,6 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from pprint import pprint
 from setuptools import Extension, setup, find_packages
 from setuptools.command.build_ext import build_ext
 from setuptools.command.develop import develop
@@ -201,7 +200,7 @@ class CMakeBuild(build_ext):
         # Add XRT support if available
         if os.getenv("XRT_ROOT"):
             xrt_dir = Path(os.getenv("XRT_ROOT")).absolute()
-            cmake_args.append(f"-DXRT_ROOT={xrt_dir}")
+            cmake_args.append(f"-DXRT_ROOT={_cmake_path(xrt_dir)}")
             cmake_args.append("-DENABLE_RUN_XRT_TESTS=ON")
 
         if shutil.which("ccache"):
@@ -241,7 +240,9 @@ class CMakeBuild(build_ext):
         elif not build_temp.exists():
             build_temp.mkdir(parents=True)
 
-        print("ENV", pprint(os.environ), file=sys.stderr)
+        print(f"cmake source: {_cmake_path(cmake_source_dir)}", file=sys.stderr)
+        print(f"cmake build:  {_cmake_path(build_temp)}", file=sys.stderr)
+        print(f"cmake install:{_cmake_path(install_dir)}", file=sys.stderr)
         print("cmake", " ".join(cmake_args), file=sys.stderr)
 
         subprocess.run(
@@ -300,7 +301,9 @@ def parse_requirements(filename):
     with open(filename) as f:
         lines = f.read().splitlines()
         return [
-            line.strip() for line in lines if line.strip() and not line.startswith("#")
+            line.strip()
+            for line in lines
+            if line.strip() and not line.strip().startswith("#")
         ]
 
 

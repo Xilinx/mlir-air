@@ -27,6 +27,13 @@ concurrency:
   group: ci-build-air-wheels-${{ github.event.number || github.sha }}
   cancel-in-progress: true
 
+# Keep wheel matrix jobs from failing on transient package-download issues.
+env:
+  PIP_RETRIES: "3"
+  PIP_RESUME_RETRIES: "3"
+  PIP_TIMEOUT: "60"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
 jobs:
   check-new-commits:
     name: Check for new commits since last release
@@ -184,6 +191,10 @@ jobs:
           base_image: quay.io/pypa/manylinux_2_34_x86_64:latest
           githubToken: ${{ github.token }}
           env: |
+            PIP_RETRIES: ${{ env.PIP_RETRIES }}
+            PIP_RESUME_RETRIES: ${{ env.PIP_RESUME_RETRIES }}
+            PIP_TIMEOUT: ${{ env.PIP_TIMEOUT }}
+            PIP_DISABLE_PIP_VERSION_CHECK: ${{ env.PIP_DISABLE_PIP_VERSION_CHECK }}
             AIR_WHEEL_VERSION: ${{ (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) && github.ref_name || '""' }}
           run: |
             git config --global --add safe.directory $PWD
@@ -218,7 +229,7 @@ jobs:
             else
               MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/"
             fi
-            
+
             VERSION=$(utils/clone-llvm.sh --get-wheel-version)
             pip -q download --no-deps "mlir$NO_RTTI==$VERSION" \
               -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
@@ -236,7 +247,7 @@ jobs:
             export WHEELHOUSE_DIR=$PWD/wheelhouse
             export AIR_PROJECT_COMMIT=${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}
             export DATETIME=${{ needs.get-air-project-commit.outputs.DATETIME }}
-            
+
             rm -rf $WHEELHOUSE_DIR/mlir_air*.whl
             rm -rf $WHEELHOUSE_DIR/repaired_wheel/*
 
@@ -278,7 +289,7 @@ jobs:
 
             **Latest commit:** `${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}`
             **Pinned mlir_aie:** `${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}${{ matrix.ENABLE_RTTI == 'ON' && '' || '.no.rtti' }}`
-            **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.12)
+            **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.14)
 
             ### Installation
 
@@ -337,8 +348,18 @@ jobs:
 
           - python_version: "3.12"
             ENABLE_RTTI: OFF
-          # Python 3.13+ requires numpy>=2.0 which is incompatible with
-          # our numpy<2.0 pin.  Expand once the pin is lifted.
+
+          - python_version: "3.13"
+            ENABLE_RTTI: ON
+
+          - python_version: "3.13"
+            ENABLE_RTTI: OFF
+
+          - python_version: "3.14"
+            ENABLE_RTTI: ON
+
+          - python_version: "3.14"
+            ENABLE_RTTI: OFF
 
     steps:
       - uses: actions/checkout@v4
@@ -469,7 +490,7 @@ jobs:
 
             **Latest commit:** `${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}`
             **Pinned mlir_aie:** `${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}${{ matrix.ENABLE_RTTI == 'ON' && '' || '.no.rtti' }}`
-            **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.12)
+            **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.14)
 
             ### Installation
 
