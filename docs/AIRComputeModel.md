@@ -627,11 +627,14 @@ dimensions depend on the target backend:
   tiles is determined by the herd's declared shape and the segment's anchor.
 
 - **GPU (AMD MI3xx family)**: A herd executes entirely within a single Compute
-  Unit (CU), with PE instances mapped to individual warps. The combined
-  resource requirements (register file, LDS, wavefront slots) of all PE
-  instances must fit within one CU. On MI3xx devices a CU provides fewer than
-  32 wavefront slots, so the total number of PE instances (`%Nx × %Ny`) is
-  correspondingly limited.
+  Unit (CU). PE instances map directly to GPU threads within the workgroup
+  (see §4.1 for the precise mapping: `air.herd tile (%x,%y) in (%bx,%by)` →
+  `blockDim = (bx, by, 1)`, `(%x,%y)` → `(threadIdx.x, threadIdx.y)`).
+  Iterations within the herd that need to communicate cooperatively at
+  wave granularity (e.g. via `gpu.shuffle`) should pick a herd iteration
+  space that is a multiple of the target wavefront width (64 on MI3xx).
+  The combined resource requirements (register file, LDS, wavefront
+  slots) of the resulting workgroup must fit within one CU.
 
 #### Synchrony
 
