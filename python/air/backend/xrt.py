@@ -19,6 +19,8 @@ import os
 import shutil
 import subprocess
 
+from air.tools import resolve_tool
+
 from ml_dtypes import bfloat16
 
 # Device name mappings aligned with mlir-aie (hostruntime.py, lit_config_helpers.py)
@@ -356,15 +358,13 @@ class XRTBackend(AirBackend):
             with open("air.mlir", "w") as f:
                 f.write(module_str)
 
-            # Invoke the C++ aircc binary
-            aircc_exe = shutil.which("aircc")
-            if not aircc_exe:
-                raise AirBackendError(
-                    "aircc binary not found in PATH. "
-                    "Ensure mlir-air is installed and aircc is on PATH."
-                )
+            # Invoke the C++ aircc binary. Prefer the tool bundled in the wheel.
+            try:
+                aircc_exe = resolve_tool("aircc")
+            except RuntimeError as exc:
+                raise AirBackendError(str(exc)) from exc
             result = subprocess.run(
-                [aircc_exe] + aircc_options,
+                [str(aircc_exe)] + aircc_options,
                 capture_output=True,
                 text=True,
             )

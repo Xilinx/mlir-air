@@ -23,4 +23,5 @@ build-backend = "setuptools.build_meta"
 [project.scripts]
 air-opt = "air.tools:air_opt"
 air-translate = "air.tools:air_translate"
-aircc = "air.compiler.aircc.main:main"
+aircc = "air.tools:aircc"
+air-runner = "air.tools:air_runner"
