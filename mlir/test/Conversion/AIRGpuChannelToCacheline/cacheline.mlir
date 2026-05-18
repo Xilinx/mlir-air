@@ -24,15 +24,16 @@
 // CHECK: memref.load
 // CHECK: arith.select
 // CHECK: memref.store
+// Get expansion: zero-result scf.while + memref.atomic_rmw addi (upstream
+// idiom; see mlir/test/Integration/GPU/CUDA/concurrent-kernels.mlir).
+// The atomic_rmw's Write effect keeps the spin alive past DCE in
+// subsequent passes, and encodes "observable read" semantics in the IR.
 // CHECK: scf.while
 // CHECK: scf.if
-// CHECK: memref.load
+// CHECK: memref.atomic_rmw addi
 // CHECK: gpu.shuffle idx
 // CHECK: arith.cmpi ne
 // CHECK: scf.condition
-// Sink store keeps the spin alive past DCE in subsequent passes.
-// CHECK: scf.if
-// CHECK: memref.store
 air.channel @C [1] {channel_type = "gpu_symmetric_heap"}
 func.func @cacheline_pair(%data_outer: memref<32xi32, #air.symmetric_heap>,
                           %bases_outer: memref<?xindex, #air.symmetric_heap>) {

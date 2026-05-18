@@ -248,23 +248,32 @@ module attributes {gpu.container_module} {
 
                 %active = arith.cmpi ult, %tx, %c32_h : index
 
-                %final_v = scf.while (%dummy = %c0_i32_h) : (i32) -> i32 {
+                // Spin: zero-result scf.while + memref.atomic_rmw — upstream
+                // idiom from mlir/test/Integration/GPU/CUDA/concurrent-
+                // kernels.mlir. atomic_rmw addi %c0 is a load with Write+
+                // Read effects + atomic ordering, which (a) survives DCE in
+                // air-to-rocdl's applyPatternsGreedily and (b) encodes
+                // "observable across producers" in the IR.
+                scf.while : () -> () {
                   %v = scf.if %active -> i32 {
-                    %loaded = memref.load %hdata[%tx]
-                        : memref<32xi32, #air.symmetric_heap>
+                    %loaded = memref.atomic_rmw addi %c0_i32_h, %hdata[%tx]
+                        : (i32, memref<32xi32, #air.symmetric_heap>) -> i32
                     scf.yield %loaded : i32
                   } else {
                     scf.yield %c0_i32_h : i32
                   }
                   %flag, %valid = gpu.shuffle idx %v, %c31_i32_h, %c64_i32_h : i32
                   %not_ready = arith.cmpi ne, %flag, %c1_i32_h : i32
-                  scf.condition(%not_ready) %v : i32
+                  scf.condition(%not_ready)
                 } do {
-                ^bb0(%v_iter : i32):
-                  scf.yield %v_iter : i32
+                  scf.yield
                 }
 
+                // Lane-by-lane readback to the consumer-owned verify buffer
+                // for host check.
                 scf.if %active {
+                  %final_v = memref.load %hdata[%tx]
+                      : memref<32xi32, #air.symmetric_heap>
                   memref.store %final_v, %hvb[%tx]
                       : memref<32xi32, #air.symmetric_heap>
                 }

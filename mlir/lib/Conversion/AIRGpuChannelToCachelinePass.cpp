@@ -141,6 +141,18 @@ static void expandPutToCachelineWrite(OpBuilder &b, air::ChannelPutOp put,
 }
 
 // Emit the get-side spin loop inside the herd body, replacing the get op.
+//
+// Shape mirrors the upstream MLIR pattern for cross-kernel polling
+// (mlir/test/Integration/GPU/CUDA/concurrent-kernels.mlir): a zero-result
+// `scf.while` whose body uses `memref.atomic_rmw` for the observable read.
+// The `addi %c0` is functionally a load — same returned value — but the
+// atomic_rmw op carries both Read and Write memory effects, which:
+//   1. Prevent the greedy rewriter in `air-to-rocdl` from DCEing the spin
+//      (the Write effect breaks the all-reads check in
+//      `wouldOpBeTriviallyDead`).
+//   2. Encode "this read must be observable across producers" in the IR,
+//      so subsequent lowering passes don't need to be trusted to keep a
+//      plain `memref.load` observable.
 static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get,
                                      Value tileX) {
   Location loc = get.getLoc();
@@ -160,18 +172,17 @@ static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get,
   Value active =
       arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult, tileX, c32);
 
-  // scf.while: before-region computes whether to keep looping; after-region
-  // is a no-op pass-through of the carried value.
-  auto whileOp = scf::WhileOp::create(
-      b, loc, TypeRange{i32Ty}, ValueRange{c0I32},
+  scf::WhileOp::create(
+      b, loc, TypeRange{}, ValueRange{},
       /*beforeBuilder=*/
       [&](OpBuilder &beforeB, Location l, ValueRange beforeArgs) {
         auto innerIf = scf::IfOp::create(beforeB, l, TypeRange{i32Ty}, active,
                                          /*withElseRegion=*/true);
         {
           OpBuilder thenB = innerIf.getThenBodyBuilder();
-          Value loaded =
-              memref::LoadOp::create(thenB, l, dst, ValueRange{tileX});
+          Value loaded = memref::AtomicRMWOp::create(
+              thenB, l, i32Ty, arith::AtomicRMWKind::addi, c0I32, dst,
+              ValueRange{tileX});
           scf::YieldOp::create(thenB, l, ValueRange{loaded});
         }
         {
@@ -184,24 +195,12 @@ static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get,
         Value flag = shuffle.getResult(0);
         Value notReady = arith::CmpIOp::create(
             beforeB, l, arith::CmpIPredicate::ne, flag, c1I32);
-        scf::ConditionOp::create(beforeB, l, notReady, ValueRange{v});
+        scf::ConditionOp::create(beforeB, l, notReady, ValueRange{});
       },
       /*afterBuilder=*/
       [&](OpBuilder &afterB, Location l, ValueRange afterArgs) {
-        scf::YieldOp::create(afterB, l, ValueRange{afterArgs[0]});
+        scf::YieldOp::create(afterB, l, ValueRange{});
       });
-
-  // Sink: write `%final_v` back to %dst[%tileX] for active lanes. The store
-  // value is identical to what %dst[%tileX] already holds (the spun-on
-  // value), so this is semantically a no-op — but it creates an observable
-  // side effect that prevents the greedy rewriter in air-to-rocdl from
-  // DCEing the entire spin (the scf.while's result is otherwise unused, and
-  // the DCE doesn't credit the memref.load read effects inside the body as
-  // sufficient to keep the loop alive).
-  Value finalV = whileOp.getResult(0);
-  auto sinkIf = scf::IfOp::create(b, loc, active, /*withElseRegion=*/false);
-  OpBuilder sinkB = sinkIf.getThenBodyBuilder();
-  memref::StoreOp::create(sinkB, loc, finalV, dst, ValueRange{tileX});
 
   get.erase();
 }

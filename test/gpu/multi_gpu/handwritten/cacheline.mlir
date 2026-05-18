@@ -145,22 +145,32 @@ module attributes {gpu.container_module} {
       // lane 31, so their input is irrelevant) and do no memory work.
       // The loop's exit predicate is wave-uniform (flag is a broadcast),
       // so all lanes break together.
-      %final_v = scf.while (%dummy = %c0_i32) : (i32) -> i32 {
+      // Spin: zero-result scf.while + memref.atomic_rmw — upstream idiom
+      // from mlir/test/Integration/GPU/CUDA/concurrent-kernels.mlir.
+      // `atomic_rmw addi %c0` is functionally a load (returns the current
+      // value, adds 0) but encodes Write+Read effects + atomic ordering,
+      // which (a) keeps the spin alive past DCE in any subsequent greedy
+      // rewriter pass and (b) makes "observable across producers" an IR-
+      // level fact rather than a lowering-time assumption.
+      scf.while : () -> () {
         %v = scf.if %active -> i32 {
-          %loaded = memref.load %data[%tid] : memref<32xi32>
+          %loaded = memref.atomic_rmw addi %c0_i32, %data[%tid]
+              : (i32, memref<32xi32>) -> i32
           scf.yield %loaded : i32
         } else {
           scf.yield %c0_i32 : i32
         }
         %flag, %valid = gpu.shuffle idx %v, %c31_i32, %c64_i32 : i32
         %not_ready = arith.cmpi ne, %flag, %c1_i32 : i32
-        scf.condition(%not_ready) %v : i32
+        scf.condition(%not_ready)
       } do {
-      ^bb0(%v_iter : i32):
-        scf.yield %v_iter : i32
+        scf.yield
       }
 
+      // Final readback for verify_buf (lane-by-lane copy of the now-stable
+      // data slot into the consumer-owned verify buffer for host check).
       scf.if %active {
+        %final_v = memref.load %data[%tid] : memref<32xi32>
         memref.store %final_v, %verify_buf[%tid] : memref<32xi32>
       }
       gpu.return
