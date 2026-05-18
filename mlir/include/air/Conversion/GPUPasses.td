@@ -75,6 +75,50 @@ def AIRSymmetricAllocToMgpu : Pass<"air-symmetric-alloc-to-mgpu", "ModuleOp"> {
   ];
 }
 
+def AIRGpuChannelToCacheline : Pass<"air-gpu-channel-to-cacheline", "ModuleOp"> {
+  let summary = "Lower air.channel ops with channel_type = \"gpu_symmetric_heap\" "
+                "to the cache-line atomicity pattern inside their enclosing herd "
+                "bodies";
+  let constructor = "xilinx::air::createAIRGpuChannelToCachelinePass()";
+  let description = [{
+    For each `air.channel` op with attribute `channel_type = "gpu_symmetric_heap"`,
+    finds the matching `air.channel.put` and `air.channel.get` (initial scope:
+    exactly one of each) and expands them into the kernel-driven cacheline
+    pattern that the handwritten `test/gpu/multi_gpu/handwritten/cacheline.mlir`
+    reference uses:
+
+    * **put** -> `air.translate %src, %producer_rank, %consumer_rank, %bases`
+      + cooperative `memref.store` (lanes 0..30 write payload, lane 31 writes
+      the sync flag = 1).
+    * **get** -> `scf.while` spin loop that loads `%dst[lane]` and broadcasts
+      lane 31 via `gpu.shuffle idx ..., 31, 64` until the flag is observed.
+
+    The pass requires:
+    * Both put and get must live inside `air.herd` bodies.
+    * The producer and consumer ranks must be derivable from an enclosing
+      `scf.if (arith.cmpi eq %rid, %const)` rank-dispatch nest.
+    * The enclosing herd must thread a `memref<?xindex, #air.symmetric_heap>`
+      (the heap_bases table) through its kernel args.
+    * The put's source memref and the get's destination memref must be
+      `memref<32xi32, #air.symmetric_heap>` (initial-PR shape constraint;
+      generalising is a follow-up).
+
+    Erases the `air.channel` symbol after expansion.
+
+    Should run before `air-rank-to-mgpu`, `air-translate-to-llvm`,
+    `air-to-rocdl`, and `air-gpu-outlining`. After the full chain runs, the
+    resulting IR is functionally equivalent to the handwritten cacheline
+    reference.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::gpu::GPUDialect",
+    "xilinx::air::airDialect"
+  ];
+}
+
 def AIRRankToMgpu : Pass<"air-rank-to-mgpu", "ModuleOp"> {
   let summary = "Lower air.rank to mgpu* runtime calls (multi-GPU process model)";
   let constructor = "xilinx::air::createAIRRankToMgpuPass()";
