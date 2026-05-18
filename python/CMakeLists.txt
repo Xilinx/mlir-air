@@ -38,6 +38,14 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
     ADD_TO_PARENT AirPythonSources
   )
 
+  # Console-script shims that exec the native air-* binaries in the wheel.
+  declare_mlir_python_sources(AirPythonSources.Tools
+    ADD_TO_PARENT AirPythonSources
+    ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
+    SOURCES
+      tools/__init__.py
+  )
+
   declare_mlir_dialect_python_bindings(
     ADD_TO_PARENT AirPythonSources.Dialects
     ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
