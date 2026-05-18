@@ -6366,7 +6366,8 @@ public:
       : AIROptimizeShimDMABDsBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect>();
+    registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect,
+                    affine::AffineDialect>();
   }
 
   void runOnOperation() override {
@@ -6424,9 +6425,84 @@ public:
     };
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(shimFors.front());
-    SmallVector<Value> optTileSizes = convertVecOfIntToVecOfValue(
-        rewriter,
-        SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
+
+    // Hardware constant: shim DMA channel start-queue depth. Defined as
+    // XAIE_DMA_MAX_QUEUE_SIZE = 4 in aie-rt/driver/src/dma/xaie_dma.c. This
+    // bounds how many BD-start requests can be in flight per channel before
+    // the host stalls; exceeding it at runtime causes ERT_CMD_STATE_TIMEOUT.
+    constexpr unsigned kShimDmaQueueDepth = 4;
+
+    // Two air.channel ops in the same loop body map to equivalent BD
+    // descriptors after wrap-and-stride folding iff their memref and full
+    // offsets/sizes/strides match. Mirrors the predicate used by
+    // air::getRepeatCounts in AIRToAIESchedulingUtils.cpp.
+    auto chansMappedToEquivalentBDs = [](air::ChannelInterface chanA,
+                                         air::ChannelInterface chanB) {
+      if (chanA.getMemref() != chanB.getMemref())
+        return false;
+      if (chanA.getOffsets().size() != chanB.getOffsets().size() ||
+          chanA.getSizes().size() != chanB.getSizes().size() ||
+          chanA.getStrides().size() != chanB.getStrides().size())
+        return false;
+      auto zipped = llvm::zip_equal(
+          llvm::concat<Value>(chanA.getOffsets(), chanA.getSizes(),
+                              chanA.getStrides()),
+          llvm::concat<Value>(chanB.getOffsets(), chanB.getSizes(),
+                              chanB.getStrides()));
+      return llvm::all_of(zipped, [](std::tuple<Value, Value> p) {
+        return isEqualConstantIntOrValue(std::get<0>(p), std::get<1>(p));
+      });
+    };
+
+    // Per-loop auto-derived tile size = floor(K / B_L) clamped by trip
+    // count, where B_L = max distinct BD patterns per shim channel in
+    // the loop body. Returns a single-dim tile vector targeting only the
+    // outermost surviving loop (inner loops untiled, since the queue
+    // budget applies to the product of all in-flight BDs).
+    auto computeAutoTileSize = [&chansMappedToEquivalentBDs](
+                                   scf::ForOp forOp) -> SmallVector<unsigned> {
+      llvm::MapVector<StringRef, SmallVector<air::ChannelInterface>>
+          opsByChannel;
+      forOp.getBody()->walk([&](air::ChannelInterface chanOp) {
+        auto chanDecl = air::getChannelDeclarationThroughSymbol(chanOp);
+        if (!chanDecl)
+          return;
+        opsByChannel[chanDecl.getSymName()].push_back(chanOp);
+      });
+      unsigned maxDistinctPerChannel = 1;
+      for (auto &kv : opsByChannel) {
+        SmallVector<air::ChannelInterface> uniques;
+        for (auto op : kv.second) {
+          bool seen = false;
+          for (auto u : uniques) {
+            if (chansMappedToEquivalentBDs(op, u)) {
+              seen = true;
+              break;
+            }
+          }
+          if (!seen)
+            uniques.push_back(op);
+        }
+        maxDistinctPerChannel =
+            std::max(maxDistinctPerChannel, (unsigned)uniques.size());
+      }
+      unsigned tile = std::max(1u, kShimDmaQueueDepth / maxDistinctPerChannel);
+      if (auto trip = air::getStaticScfForTripCountAsInt(forOp))
+        tile = std::min(tile, (unsigned)*trip);
+      return {tile};
+    };
+
+    // Tile-size source: clTileSizes wins if non-empty (explicit user
+    // override). Else if auto-derive is enabled, use the BD-queue cost
+    // model. Else fall through with empty tile sizes (today's default
+    // behavior: tiling block is skipped but downstream pass logic runs).
+    bool useUserTileSizes = !clTileSizes.empty();
+    SmallVector<Value> optTileSizes;
+    if (useUserTileSizes) {
+      optTileSizes = convertVecOfIntToVecOfValue(
+          rewriter,
+          SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
+    }
     // Helper function getting the actual tiling sizes based on the specified
     // loop band's depth and trip counts.
     auto getActualTileSizesPerScfRoot = [](OpBuilder &b, scf::ForOp root,
@@ -6450,10 +6526,21 @@ public:
     // Tile each for loop band operated by shim dma bds.
     llvm::SetVector<scf::ForOp> forLoopsToUnroll;
     for (auto forOp : shimFors) {
-      if (optTileSizes.empty())
+      // Resolve per-loop tile sizes: user override if present, else
+      // auto-derived from the BD-queue cost model, else skip (preserve
+      // today's default behavior — no tiling).
+      SmallVector<Value> perLoopTileSizes;
+      if (useUserTileSizes) {
+        perLoopTileSizes = optTileSizes;
+      } else if (clAutoDeriveTileSizes) {
+        rewriter.setInsertionPoint(forOp);
+        perLoopTileSizes =
+            convertVecOfIntToVecOfValue(rewriter, computeAutoTileSize(forOp));
+      }
+      if (perLoopTileSizes.empty())
         break;
       SmallVector<Value> actualTileSizes =
-          getActualTileSizesPerScfRoot(rewriter, forOp, optTileSizes);
+          getActualTileSizesPerScfRoot(rewriter, forOp, perLoopTileSizes);
       auto tiledLoops = tilePerfectlyNested(forOp, ArrayRef(actualTileSizes));
 
       // Fixup loop-carried deps in tiled loops

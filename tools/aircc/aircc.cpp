@@ -1093,24 +1093,20 @@ static LogicalResult runAieCompilation() {
     {
       raw_string_ostream os(shimBdPass);
       os << "func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue();
-      // Default tiling sizes [4, 4] unless overridden.
-      // If flag was explicitly passed with no values, disable tiling.
-      std::vector<unsigned> tilingSizes;
-      if (!runtimeLoopTilingSizesPresent) {
-        tilingSizes = {}; // Default: no tiling when flag not used
-      } else {
-        tilingSizes.assign(runtimeLoopTilingSizes.begin(),
-                           runtimeLoopTilingSizes.end());
-        // Flag present but empty = disable tiling (no sizes)
-      }
-      if (!tilingSizes.empty()) {
+      // Tile-size source: explicit user values via
+      // --air-runtime-loop-tiling-sizes win when given; otherwise the pass
+      // auto-derives per-loop from the BD-queue cost model.
+      if (runtimeLoopTilingSizesPresent && !runtimeLoopTilingSizes.empty()) {
         os << " shim-dma-tile-sizes=";
-        for (size_t i = 0; i < tilingSizes.size(); ++i) {
+        for (size_t i = 0; i < runtimeLoopTilingSizes.size(); ++i) {
           if (i > 0)
             os << ",";
-          os << tilingSizes[i];
+          os << runtimeLoopTilingSizes[i];
         }
+      } else if (!runtimeLoopTilingSizesPresent) {
+        os << " auto-derive-tile-sizes=true";
       }
+      // If flag was present but empty, neither option is set -> no tiling.
       os << "})";
     }
 
