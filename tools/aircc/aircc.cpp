@@ -206,12 +206,15 @@ static cl::opt<bool>
 
 static cl::list<unsigned> runtimeLoopTilingSizes(
     "air-runtime-loop-tiling-sizes",
-    cl::desc("Tiling factors for runtime host affine loop nest. "
-             "Omit to disable tiling; provide one or more values to enable."),
+    cl::desc("Per-loop shim DMA tile sizes; pass once per nesting dim. "
+             "Omit to let the BD-queue cost model choose per loop."),
     cl::cat(airCompilerOptions));
 
-// Track whether the flag was present on the command line at all
-static bool runtimeLoopTilingSizesPresent = false;
+static cl::opt<bool> noAutoDeriveTileSizes(
+    "no-air-auto-derive-tile-sizes",
+    cl::desc("Disable the BD-queue cost-model default; when set with no "
+             "--air-runtime-loop-tiling-sizes, run no shim DMA tiling."),
+    cl::init(false), cl::cat(airCompilerOptions));
 
 static cl::opt<bool> omitAutoBroadcast(
     "omit-auto-broadcast",
@@ -1093,20 +1096,17 @@ static LogicalResult runAieCompilation() {
     {
       raw_string_ostream os(shimBdPass);
       os << "func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue();
-      // Tile-size source: explicit user values via
-      // --air-runtime-loop-tiling-sizes win when given; otherwise the pass
-      // auto-derives per-loop from the BD-queue cost model.
-      if (runtimeLoopTilingSizesPresent && !runtimeLoopTilingSizes.empty()) {
+      // User-supplied sizes win; else cost-model default unless opted out.
+      if (!runtimeLoopTilingSizes.empty()) {
         os << " shim-dma-tile-sizes=";
         for (size_t i = 0; i < runtimeLoopTilingSizes.size(); ++i) {
           if (i > 0)
             os << ",";
           os << runtimeLoopTilingSizes[i];
         }
-      } else if (!runtimeLoopTilingSizesPresent) {
+      } else if (!noAutoDeriveTileSizes) {
         os << " auto-derive-tile-sizes=true";
       }
-      // If flag was present but empty, neither option is set -> no tiling.
       os << "})";
     }
 
@@ -1683,10 +1683,6 @@ int main(int argc, char **argv) {
   // argparse nargs="?" const="all".
   if (omitPingpong.getNumOccurrences() > 0 && omitPingpong.getValue().empty())
     omitPingpong.setValue("all");
-
-  // Track whether --air-runtime-loop-tiling-sizes was explicitly passed
-  runtimeLoopTilingSizesPresent =
-      runtimeLoopTilingSizes.getNumOccurrences() > 0;
 
   // Dispatch based on target
   if (target.getValue() == "gpu") {
