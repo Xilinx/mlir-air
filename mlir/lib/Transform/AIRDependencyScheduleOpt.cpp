@@ -6429,46 +6429,24 @@ public:
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(shimFors.front());
 
-    // tile = min(trip, floor(K / max_per_channel_distinct_BDs)).
-    // TODO: doesn't model ping-pong (doubles in-flight BDs) yet.
-    const unsigned shimQueueDepth = air::getShimDmaStartQueueDepth(targetModel);
+    // Auto-derive returns tile=1 for every level of the perfectly-nested
+    // shim loop band. The per-channel BD-descriptor pool (halved by ping-
+    // pong) is the binding constraint, not the start-queue depth K=4 that
+    // the original `tile = floor(K/B)` formula budgeted against. Without
+    // a way to reliably predict wrap-and-stride foldability of the
+    // unrolled body, tile=1 is the only universally safe choice --
+    // empirically the only one that both compiles and runs correctly on
+    // the Strix/Phoenix e2e suite. Strip-mining every level by 1 is a
+    // no-op on iteration count but still invokes tilePerfectlyNested +
+    // the post-tile fixup that downstream lowering depends on (the
+    // pre-PR no-tile path skipped this and exhausted the BD allocator
+    // on test/xrt/14_conv2d_i8_extern_vec).
     auto computeAutoTileSize =
-        [shimQueueDepth](scf::ForOp forOp) -> SmallVector<unsigned> {
-      llvm::MapVector<StringRef, SmallVector<air::ChannelInterface>>
-          opsByChannel;
-      forOp.getBody()->walk([&](air::ChannelInterface chanOp) {
-        auto chanDecl = air::getChannelDeclarationThroughSymbol(chanOp);
-        if (!chanDecl)
-          return;
-        opsByChannel[chanDecl.getSymName()].push_back(chanOp);
-      });
-      unsigned maxDistinctPerChannel = 1;
-      for (auto &kv : opsByChannel) {
-        SmallVector<air::ChannelInterface> uniques;
-        for (auto op : kv.second) {
-          bool seen = false;
-          for (auto u : uniques) {
-            if (air::chansMappedToEquivalentBDs(op, u)) {
-              seen = true;
-              break;
-            }
-          }
-          if (!seen)
-            uniques.push_back(op);
-        }
-        maxDistinctPerChannel =
-            std::max(maxDistinctPerChannel, (unsigned)uniques.size());
-      }
-      if (maxDistinctPerChannel > shimQueueDepth)
-        forOp->emitRemark()
-            << "shim DMA BD-queue cost model: per-channel distinct BDs ("
-            << maxDistinctPerChannel
-            << ") exceeds queue depth K=" << shimQueueDepth
-            << "; tile clamped to 1";
-      unsigned tile = std::max(1u, shimQueueDepth / maxDistinctPerChannel);
-      if (auto trip = air::getStaticScfForTripCountAsInt(forOp))
-        tile = std::min(tile, (unsigned)*trip);
-      return {tile};
+        [](scf::ForOp forOp) -> SmallVector<unsigned> {
+      SmallVector<scf::ForOp> perfectlyNested;
+      getPerfectlyNestedLoops(perfectlyNested, forOp);
+      unsigned depth = std::max((size_t)1, perfectlyNested.size());
+      return SmallVector<unsigned>(depth, 1);
     };
 
     // User-supplied tile sizes win over auto-derive.

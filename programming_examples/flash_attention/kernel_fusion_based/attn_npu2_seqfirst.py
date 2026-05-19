@@ -1295,13 +1295,10 @@ if __name__ == "__main__":
         sdpa_output_hf.transpose(1, 0, 2).reshape(lq, num_heads * dv).copy()
     )
 
-    # Seq-first: output is 2D [lq, num_heads*dv], so tiling is [1, 1]
-    tiling = [1, 1]
     backend_opts = dict(
         omit_while_true_loop=False,
         omit_pingpong="all",
         verbose=args.verbose,
-        runtime_loop_tiling_sizes=tiling,
         output_format=args.output_format,
         instance_name="attention_bf16",
         target_device="npu2",

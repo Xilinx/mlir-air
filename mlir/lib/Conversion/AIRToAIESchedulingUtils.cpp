@@ -267,12 +267,6 @@ bool air::chansMappedToEquivalentBDs(air::ChannelInterface chanA,
   });
 }
 
-unsigned
-air::getShimDmaStartQueueDepth(const AIE::AIETargetModel &targetModel) {
-  (void)targetModel;
-  return 4;
-}
-
 // Given a vector of memcpy operations, return a map of their repeat counts,
 // relative to a common ancestor region.
 llvm::MapVector<int, llvm::SetVector<Operation *>>

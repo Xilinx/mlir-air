@@ -104,6 +104,5 @@ backend = XRTBackend(
     lower_linalg_to_func="kernel.o",
     omit_pingpong=True,
     use_lock_race_condition_fix=True,
-    runtime_loop_tiling_sizes=[4, 4],
 )
 module_function = backend.compile(module)

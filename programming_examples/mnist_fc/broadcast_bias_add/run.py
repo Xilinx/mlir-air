@@ -360,7 +360,6 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format="elf" if needs_padding else "xclbin",
             instance_name="broadcast_bias_add",
-            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
@@ -376,7 +375,6 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format="elf" if needs_padding else "xclbin",
-            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

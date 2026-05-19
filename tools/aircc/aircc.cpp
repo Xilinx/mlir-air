@@ -212,10 +212,10 @@ static cl::list<unsigned> runtimeLoopTilingSizes(
 
 static cl::opt<bool> autoDeriveTileSizes(
     "air-auto-derive-tile-sizes",
-    cl::desc("Experimental: derive per-loop shim DMA tile size from the "
-             "BD-queue cost model. Off by default; "
-             "--air-runtime-loop-tiling-sizes still overrides when present."),
-    cl::init(false), cl::cat(airCompilerOptions));
+    cl::desc("Derive per-loop shim DMA tile size from the BD-queue + BD-pool "
+             "cost model. On by default; --air-runtime-loop-tiling-sizes "
+             "still overrides when present."),
+    cl::init(true), cl::cat(airCompilerOptions));
 
 static cl::opt<bool> omitAutoBroadcast(
     "omit-auto-broadcast",

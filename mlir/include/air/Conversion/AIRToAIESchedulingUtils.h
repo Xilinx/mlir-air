@@ -79,10 +79,6 @@ int64_t get1DOffset(SmallVector<Value> memcpy_offsets,
 bool chansMappedToEquivalentBDs(air::ChannelInterface chanA,
                                 air::ChannelInterface chanB);
 
-// Per-channel shim DMA start-queue depth (libxaie XAIE_DMA_MAX_QUEUE_SIZE).
-// TODO: route through targetModel once mlir-aie exposes it.
-unsigned getShimDmaStartQueueDepth(const AIE::AIETargetModel &targetModel);
-
 // Given a vector of memcpy operations, return a map of their repeat counts,
 // relative to a common ancestor region.
 llvm::MapVector<int, llvm::SetVector<Operation *>>

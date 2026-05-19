@@ -5,16 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Auto-derive: tile = 1 if B<=1 (no queue pressure to manage), else
-// min(trip, floor(K/B)) with K=4. B = max distinct BD patterns per shim
-// channel in the loop body. User override and default-off paths converge
-// to the same final IR for these inputs after downstream wrap-and-stride
+// Auto-derive returns tile=1 for every level of the perfectly-nested
+// shim loop band. The user-override and default-off paths converge to
+// the same final IR for these inputs after downstream wrap-and-stride
 // folding; the three RUN lines guard against mode-specific regressions.
 
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 auto-derive-tile-sizes=true" | FileCheck %s
-// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 shim-dma-tile-sizes=2,2" | FileCheck %s
+// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 shim-dma-tile-sizes=1,1" | FileCheck %s
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1" | FileCheck %s
-// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 auto-derive-tile-sizes=true" 2>&1 >/dev/null | FileCheck %s --check-prefix=REMARK
 
 module {
 
@@ -150,9 +148,7 @@ module {
     return
   }
 
-  // B=5 > K=4: tile clamped to 1, 40 puts after unroll. Auto mode also
-  // emits a remark (verified by the REMARK-prefixed RUN above).
-  // REMARK: remark:{{.*}}distinct BDs (5){{.*}}K=4{{.*}}clamped to 1
+  // B=5 with auto-derive tile=1: 40 puts after downstream unroll.
   // CHECK-LABEL: func.func @b5_above_queue_depth
   // CHECK-COUNT-40: air.channel.put async{{.*}}@ch_b5
   // CHECK-NOT: air.channel.put async{{.*}}@ch_b5
