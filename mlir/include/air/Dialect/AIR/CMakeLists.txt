@@ -10,6 +10,8 @@ mlir_tablegen(AIROpInterfaces.h.inc -gen-op-interface-decls)
 mlir_tablegen(AIROpInterfaces.cpp.inc -gen-op-interface-defs)
 mlir_tablegen(AIREnums.h.inc -gen-enum-decls)
 mlir_tablegen(AIREnums.cpp.inc -gen-enum-defs)
+mlir_tablegen(AIRAttrs.h.inc -gen-attrdef-decls -attrdefs-dialect=air)
+mlir_tablegen(AIRAttrs.cpp.inc -gen-attrdef-defs -attrdefs-dialect=air)
 add_public_tablegen_target(MLIRAIROpInterfacesIncGen)
 add_dependencies(air-headers MLIRAIROpInterfacesIncGen)
 

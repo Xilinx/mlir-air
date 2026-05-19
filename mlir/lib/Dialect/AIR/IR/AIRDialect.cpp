@@ -35,10 +35,17 @@ using namespace mlir;
 #include "air/Dialect/AIR/AIRDialect.cpp.inc"
 #include "air/Dialect/AIR/AIREnums.cpp.inc"
 
+#define GET_ATTRDEF_CLASSES
+#include "air/Dialect/AIR/AIRAttrs.cpp.inc"
+
 namespace xilinx {
 
 void air::airDialect::initialize() {
   addTypes<AsyncTokenType, UniverseType>();
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "air/Dialect/AIR/AIRAttrs.cpp.inc"
+      >();
   addOperations<
 #define GET_OP_LIST
 #include "air/Dialect/AIR/AIR.cpp.inc"
@@ -1602,6 +1609,12 @@ static LogicalResult verifyAllocMemorySpace(OpT op,
   WalkResult result =
       op.getBody().walk([&](memref::AllocOp allocOp) -> WalkResult {
         auto memrefType = allocOp.getType();
+        // Symmetric-heap allocations are always permitted regardless of the
+        // enclosing scope's per-level constraint — they target HBM via the
+        // GPU runtime, not the NPU memory hierarchy.
+        if (isa_and_nonnull<air::SymmetricHeapMemorySpaceAttr>(
+                memrefType.getMemorySpace()))
+          return WalkResult::advance();
         unsigned memorySpace = memrefType.getMemorySpaceAsInt();
 
         // Verify that the memory space is at least as local as the minimum.
@@ -1660,6 +1673,11 @@ static Value getDirectlyAccessedMemref(Operation *op) {
 /// can only access their local L1 memory directly; non-local memory must be
 /// staged via DMA. This checks low-level load/store and vector transfer ops
 /// but not higher-level ops (linalg, memref.copy) that are lowered later.
+///
+/// Memrefs whose `memory_space` is `#air.symmetric_heap` are exempt: that
+/// attribute marks GPU symmetric-heap (HBM) memory, which any kernel thread
+/// can address directly via XGMI. The NPU per-level access constraint does
+/// not apply.
 static LogicalResult
 verifyComputeMemoryAccess(air::HerdOp op, air::MemorySpace minMemorySpace) {
   auto minVal = static_cast<uint32_t>(minMemorySpace);
@@ -1669,6 +1687,11 @@ verifyComputeMemoryAccess(air::HerdOp op, air::MemorySpace minMemorySpace) {
       return WalkResult::advance();
     auto memrefType = dyn_cast<MemRefType>(memref.getType());
     if (!memrefType)
+      return WalkResult::advance();
+    // Skip the per-level check for symmetric-heap memrefs (GPU only): they
+    // live in HBM and are reachable from kernel threads by direct addressing.
+    if (isa_and_nonnull<air::SymmetricHeapMemorySpaceAttr>(
+            memrefType.getMemorySpace()))
       return WalkResult::advance();
     unsigned memorySpace = memrefType.getMemorySpaceAsInt();
     if (memorySpace < minVal) {
