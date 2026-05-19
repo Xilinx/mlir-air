@@ -119,17 +119,34 @@ module {
 
           gpu.barrier
 
-          // Phase 2 + Compute
-          air.herd @herd_0 tile (%tx, %ty) in (%ntx=%c256, %nty=%c1) args(%hAs=%As, %hBs=%Bs, %ha=%a_reg, %hb=%b_reg, %hacc=%acc) : memref<128x8xf32, 1>, memref<8x128xf32, 1>, memref<8xf32, 2>, memref<8xf32, 2>, memref<64xf32, 2> {
+          // Phase 2 + Compute.
+          // Per AIRComputeModel.md §2.3/§4.1: PE = wavefront, so herd
+          // tile ids name warps (not threads). We declare 4 PEs which
+          // gives us 4 wavefronts × 64 lanes/wave = 256 effective work
+          // items on MI3xx — same total parallelism as the original
+          // herd-of-256, just expressed at warp granularity. Each work
+          // item owns one 8×8 sub-tile of the 128×128 output (16×16 grid
+          // of sub-tiles).
+          %c4 = arith.constant 4 : index
+          air.herd @herd_0 tile (%tx, %ty) in (%ntx=%c4, %nty=%c1) args(%hAs=%As, %hBs=%Bs, %ha=%a_reg, %hb=%b_reg, %hacc=%acc) : memref<128x8xf32, 1>, memref<8x128xf32, 1>, memref<8xf32, 2>, memref<8xf32, 2>, memref<64xf32, 2> {
             %c0_h = arith.constant 0 : index
             %c1_h = arith.constant 1 : index
             %c8_h = arith.constant 8 : index
             %c16_h = arith.constant 16 : index
+            %c64_h = arith.constant 64 : index
 
-            // This thread's 8x8 sub-tile within the 128x128 output tile
-            // tx in [0..255] -> 16x16 grid of 8x8 tiles
-            %tile_row_idx = arith.remsi %tx, %c16_h : index
-            %tile_col_idx = arith.divsi %tx, %c16_h : index
+            // Effective per-work-item index across (4 PEs × 64 lanes).
+            //   %tx       in [0..3]   = PE (warp) id within block
+            //   gpu.lane_id in [0..63] = lane within PE (wavefront)
+            //   %gtid     in [0..255] = effective work-item id
+            %lane = gpu.lane_id
+            %pe_base = arith.muli %tx, %c64_h : index
+            %gtid = arith.addi %pe_base, %lane : index
+
+            // This work-item's 8x8 sub-tile within the 128x128 output tile.
+            // gtid in [0..255] -> 16x16 grid of 8x8 tiles
+            %tile_row_idx = arith.remsi %gtid, %c16_h : index
+            %tile_col_idx = arith.divsi %gtid, %c16_h : index
             %row_start = arith.muli %tile_row_idx, %c8_h : index
             %col_start = arith.muli %tile_col_idx, %c8_h : index
 
@@ -159,16 +176,23 @@ module {
           }
         }
 
-        // Phase 3: L1 -> L3 writeback
-        // Each thread writes its 8x8 sub-tile from acc back to global C
-        air.herd @writeback tile (%tx, %ty) in (%ntx=%c256, %nty=%c1) args(%wacc=%acc, %wC=%arg14, %wrow=%row_off, %wcol=%col_off) : memref<64xf32, 2>, memref<4096x4096xf32>, index, index {
+        // Phase 3: L1 -> L3 writeback.
+        // Same shape as the compute herd: 4 PEs × 64 lanes = 256 work
+        // items, each writing its own 8×8 sub-tile.
+        %c4_w = arith.constant 4 : index
+        air.herd @writeback tile (%tx, %ty) in (%ntx=%c4_w, %nty=%c1) args(%wacc=%acc, %wC=%arg14, %wrow=%row_off, %wcol=%col_off) : memref<64xf32, 2>, memref<4096x4096xf32>, index, index {
           %c0_w = arith.constant 0 : index
           %c8_w = arith.constant 8 : index
           %c16_w = arith.constant 16 : index
           %c4096_w = arith.constant 4096 : index
           %c1_w = arith.constant 1 : index
-          %tr = arith.remsi %tx, %c16_w : index
-          %tc = arith.divsi %tx, %c16_w : index
+          %c64_w = arith.constant 64 : index
+          // Effective work-item id: PE * 64 + lane (0..255).
+          %lane = gpu.lane_id
+          %pe_base = arith.muli %tx, %c64_w : index
+          %gtid = arith.addi %pe_base, %lane : index
+          %tr = arith.remsi %gtid, %c16_w : index
+          %tc = arith.divsi %gtid, %c16_w : index
           %dr = arith.muli %tr, %c8_w : index
           %dc = arith.muli %tc, %c8_w : index
           %dst_r = arith.addi %wrow, %dr : index

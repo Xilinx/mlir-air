@@ -14,6 +14,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassOptions.h"
@@ -28,6 +29,8 @@ using namespace mlir;
 #define GEN_PASS_DEF_CONVERTAIRTOROCDL
 #define GEN_PASS_DEF_CONVERTGPUKERNELOUTLINE
 #define GEN_PASS_DEF_AIRRANKTOMGPU
+#define GEN_PASS_DEF_AIRSYMMETRICALLOCTOMGPU
+#define GEN_PASS_DEF_AIRGPUCHANNELTOCACHELINE
 #include "air/Conversion/GPUPasses.h.inc"
 
 } // namespace air
