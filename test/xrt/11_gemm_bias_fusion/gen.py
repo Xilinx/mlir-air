@@ -190,6 +190,8 @@ with air.ir.Context() as ctx, Location.unknown():
     backend = XRTBackend(
         air_loop_fusion=True,
         omit_auto_broadcast=True,
-        channel_multiplexing=["L1",],
+        channel_multiplexing=[
+            "L1",
+        ],
     )
     backend.compile(air_module)
