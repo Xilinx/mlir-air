@@ -157,6 +157,19 @@ struct AIRSymmetricAllocToMgpuPass
         signalPassFailure();
         return;
       }
+      // buildMemrefDescriptor below assumes identity (row-major,
+      // innermost-stride-1, zero-offset) layout. Reject anything else
+      // explicitly — a strided / non-identity layout would silently get a
+      // wrong descriptor (the helper hard-codes row-major strides from the
+      // shape and offset=0) and miscompile.
+      if (!memrefTy.getLayout().isIdentity()) {
+        alloc.emitOpError(
+            "memref.alloc with #air.symmetric_heap memory_space requires an "
+            "identity layout (row-major, no offset); strided/affine layouts "
+            "are not supported");
+        signalPassFailure();
+        return;
+      }
       Value nullPtr = LLVM::ZeroOp::create(builder, loc, ptrTy);
       Value ptr = func::CallOp::create(builder, loc, allocFn,
                                        ValueRange{sizeBytes, nullPtr})
