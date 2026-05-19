@@ -31,10 +31,32 @@ using namespace xilinx;
 
 namespace {
 
+// True if `v` is the rank-id block argument of an enclosing `air.rank` op
+// (`air.rank (%rid) in (%rsize = N) {...}` → %rid). The cacheline pass uses
+// this to confirm that the cmpi inside an enclosing scf.if is actually
+// dispatching on rank, not on lane or some other index.
+static bool isRankIdOfEnclosingAirRank(Value v) {
+  auto blockArg = dyn_cast<BlockArgument>(v);
+  if (!blockArg)
+    return false;
+  auto rankOp = dyn_cast<air::RankOp>(blockArg.getOwner()->getParentOp());
+  if (!rankOp)
+    return false;
+  // `getIds()` returns the rank's induction-var block args (one per
+  // iteration dim). Match any of them.
+  for (BlockArgument id : rankOp.getIds())
+    if (id == blockArg)
+      return true;
+  return false;
+}
+
 // Walk op->getParentOp() chain looking for an enclosing scf::IfOp whose
-// condition is an `arith.cmpi eq, %v, %const : index` pattern. Returns
-// the constant operand of the cmpi. Returns std::nullopt if no matching
-// enclosing if is found.
+// condition is an `arith.cmpi eq, %rid, %const : index` pattern, where
+// `%rid` is a rank-id of an enclosing `air.rank` op. Returns the constant
+// operand of the cmpi.
+//
+// Without the %rid check we would also accept e.g. `cmpi eq %lane, %c0`
+// inside the herd body, mis-inferring "rank 0" from a lane-zero predicate.
 static std::optional<int64_t> inferRankFromEnclosingIf(Operation *op) {
   Operation *cur = op->getParentOp();
   while (cur) {
@@ -42,21 +64,22 @@ static std::optional<int64_t> inferRankFromEnclosingIf(Operation *op) {
       Value cond = ifOp.getCondition();
       if (auto cmp = cond.getDefiningOp<arith::CmpIOp>()) {
         if (cmp.getPredicate() == arith::CmpIPredicate::eq) {
-          Value rhs = cmp.getRhs();
-          if (auto cst = rhs.getDefiningOp<arith::ConstantOp>()) {
-            if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue())) {
-              if (isa<IndexType>(intAttr.getType()))
-                return intAttr.getInt();
-            }
-          }
-          // also try lhs in case the user wrote the comparison flipped
-          Value lhs = cmp.getLhs();
-          if (auto cst = lhs.getDefiningOp<arith::ConstantOp>()) {
-            if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue())) {
-              if (isa<IndexType>(intAttr.getType()))
-                return intAttr.getInt();
-            }
-          }
+          // Try (rid, const) and (const, rid) orderings.
+          auto extract = [](Value rid, Value constSide) -> std::optional<int64_t> {
+            if (!isRankIdOfEnclosingAirRank(rid))
+              return std::nullopt;
+            auto cst = constSide.getDefiningOp<arith::ConstantOp>();
+            if (!cst)
+              return std::nullopt;
+            auto intAttr = dyn_cast<IntegerAttr>(cst.getValue());
+            if (!intAttr || !isa<IndexType>(intAttr.getType()))
+              return std::nullopt;
+            return intAttr.getInt();
+          };
+          if (auto v = extract(cmp.getLhs(), cmp.getRhs()))
+            return v;
+          if (auto v = extract(cmp.getRhs(), cmp.getLhs()))
+            return v;
         }
       }
     }
@@ -74,6 +97,11 @@ static BlockArgument findUniqueBasesArg(air::HerdOp herd) {
   for (BlockArgument arg : herd.getKernelArguments()) {
     auto memrefTy = dyn_cast<MemRefType>(arg.getType());
     if (!memrefTy)
+      continue;
+    // Bases is a 1-D index memref on the symmetric heap. Without the rank
+    // check, a higher-rank index memref would also match and downstream
+    // air.translate creation/verification would later fail.
+    if (memrefTy.getRank() != 1)
       continue;
     if (!isa<IndexType>(memrefTy.getElementType()))
       continue;
@@ -166,7 +194,8 @@ static void expandPutToCachelineWrite(OpBuilder &b, air::ChannelPutOp put,
 //
 // Per the AIR compute model (PE = wavefront), lane index inside the PE
 // comes from `gpu.lane_id`; the gpu.shuffle width matches the wavefront.
-static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get) {
+static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get,
+                                     uint64_t waveSize) {
   Location loc = get.getLoc();
   b.setInsertionPoint(get);
   Value dst = get.getDst();
@@ -179,8 +208,10 @@ static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get) {
       arith::ConstantOp::create(b, loc, i32Ty, b.getI32IntegerAttr(1));
   Value c31I32 =
       arith::ConstantOp::create(b, loc, i32Ty, b.getI32IntegerAttr(31));
-  Value c64I32 =
-      arith::ConstantOp::create(b, loc, i32Ty, b.getI32IntegerAttr(64));
+  // Wave width for gpu.shuffle. Must match the wave-size air-to-rocdl
+  // uses; configurable via the pass option (default 64 for ROCDL).
+  Value waveWidthI32 = arith::ConstantOp::create(
+      b, loc, i32Ty, b.getI32IntegerAttr(static_cast<int32_t>(waveSize)));
 
   Value lane = gpu::LaneIdOp::create(b, loc, /*upperBound=*/IntegerAttr{});
   Value active =
@@ -204,7 +235,8 @@ static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get) {
           scf::YieldOp::create(elseB, l, ValueRange{c0I32});
         }
         Value v = innerIf.getResult(0);
-        auto shuffle = gpu::ShuffleOp::create(beforeB, l, v, c31I32, c64I32,
+        auto shuffle = gpu::ShuffleOp::create(beforeB, l, v, c31I32,
+                                              waveWidthI32,
                                               gpu::ShuffleMode::IDX);
         Value flag = shuffle.getResult(0);
         Value notReady = arith::CmpIOp::create(
@@ -310,7 +342,7 @@ struct AIRGpuChannelToCachelinePass
       // the expansion, not from the herd tile ids.
       expandPutToCachelineWrite(builder, put, *producerRank, *consumerRank,
                                 putBases);
-      expandGetToCachelineSpin(builder, get);
+      expandGetToCachelineSpin(builder, get, waveSize);
       chan.erase();
     }
   }

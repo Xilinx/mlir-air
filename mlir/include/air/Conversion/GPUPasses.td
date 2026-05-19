@@ -102,6 +102,13 @@ def AIRGpuChannelToCacheline : Pass<"air-gpu-channel-to-cacheline", "ModuleOp"> 
                 "to the cache-line atomicity pattern inside their enclosing herd "
                 "bodies";
   let constructor = "xilinx::air::createAIRGpuChannelToCachelinePass()";
+  let options = [
+    Option<"waveSize", "wave-size", "uint64_t", "/*default=*/64",
+           "Wavefront width for the target GPU. Used as the `gpu.shuffle` "
+           "width in the cacheline spin loop. Must match the wave-size "
+           "used by `air-to-rocdl` (32 on NVIDIA, 64 on AMD MI3xx) and "
+           "must be >= 32 (the cacheline memref shape).">
+  ];
   let description = [{
     For each `air.channel` op with attribute `channel_type = "gpu_symmetric_heap"`,
     finds the matching `air.channel.put` and `air.channel.get` (initial scope:
