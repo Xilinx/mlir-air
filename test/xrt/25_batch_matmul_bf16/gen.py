@@ -162,5 +162,7 @@ with air.ir.Context() as ctx, Location.unknown():
     backend = XRTBackend(
         lower_linalg_to_func="mm.o",
         air_loop_fusion=True,
+        # TODO: drop once cost model handles this pattern on CI Strix versions.
+        runtime_loop_tiling_sizes=[1, 1],
     )
     backend.compile(air_module)

@@ -193,5 +193,7 @@ with air.ir.Context() as ctx, Location.unknown():
         channel_multiplexing=[
             "L1",
         ],
+        # TODO: drop once cost model handles this pattern on CI Strix versions.
+        runtime_loop_tiling_sizes=[2, 2],
     )
     backend.compile(air_module)

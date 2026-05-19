@@ -65,6 +65,7 @@ class XRTRunner:
         omit_pingpong: str = "",
         lower_linalg_to_func: bool = False,
         air_loop_fusion: bool = False,
+        runtime_loop_tiling_sizes: list[int] = [],
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
@@ -89,6 +90,7 @@ class XRTRunner:
             omit_pingpong: configure aircc to omit the generation of ping-pong buffering for specific memory levels. Supported values: "", "L1", "L2", "all". Empty string means no omission (default).
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
+            runtime_loop_tiling_sizes: override the per-loop shim DMA tile size that aircc otherwise derives from the BD-queue cost model. Empty list means use the cost model.
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
@@ -119,6 +121,7 @@ class XRTRunner:
             self.omit_pingpong = omit_pingpong
         self.lower_linalg_to_func = lower_linalg_to_func
         self.air_loop_fusion = air_loop_fusion
+        self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
@@ -170,6 +173,7 @@ class XRTRunner:
             omit_pingpong=self.omit_pingpong,
             lower_linalg_to_func=self.lower_linalg_to_func,
             air_loop_fusion=self.air_loop_fusion,
+            runtime_loop_tiling_sizes=self.runtime_loop_tiling_sizes,
             omit_auto_broadcast=self.omit_auto_broadcast,
             channel_multiplexing=self.channel_multiplexing,
             use_lock_race_condition_fix=self.use_lock_race_condition_fix,

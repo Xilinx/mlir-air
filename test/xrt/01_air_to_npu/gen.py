@@ -159,6 +159,8 @@ C = np.matmul(A, B)
 runner = XRTRunner(
     air_loop_fusion=True,
     omit_while_true_loop=False,
+    # TODO: drop once cost model handles this pattern on CI Strix versions.
+    runtime_loop_tiling_sizes=[4, 4],
     use_lock_race_condition_fix=True,
     trace_offset=opts.trace_offset,
     trace_size=opts.trace_size,

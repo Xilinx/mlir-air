@@ -139,5 +139,7 @@ backend = XRTBackend(
     air_loop_fusion=True,
     lower_linalg_to_func="mm.o",
     use_lock_race_condition_fix=True,
+    # TODO: drop once cost model handles this pattern on CI Strix versions.
+    runtime_loop_tiling_sizes=[1, 1],
 )
 backend.compile(air_module)
