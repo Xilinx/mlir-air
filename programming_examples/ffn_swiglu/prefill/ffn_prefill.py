@@ -327,6 +327,10 @@ if __name__ == "__main__":
         omit_pingpong=True,
         output_format=args.output_format,
         instance_name="ffn_swiglu",
+        # TODO: cost model picks tile=1 which passes locally but segfaults on
+        # CI Strix HW. Restore explicit value until the env difference is
+        # diagnosed.
+        runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
         runner.run_test(
