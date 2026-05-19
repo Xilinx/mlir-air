@@ -948,7 +948,7 @@ Optimize the logical data movement by transforming them, represented as air.chan
 
 ```
 -device              : AIE device to target.
--shim-dma-tile-sizes : Shim dma tiling sizes, tiling shim dma bds into smaller repeating ones
+-shim-dma-tile-sizes : Shim dma tiling sizes. Empty defaults to tiling every level by 1.
 ```
 
 ### `-air-override-memref-memory-space`
