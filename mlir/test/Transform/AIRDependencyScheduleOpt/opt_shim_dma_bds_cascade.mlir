@@ -1,4 +1,4 @@
-//===- opt_shim_dma_bds_cascade_default.mlir -----------------*- MLIR -*-===//
+//===- opt_shim_dma_bds_cascade.mlir ----------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
