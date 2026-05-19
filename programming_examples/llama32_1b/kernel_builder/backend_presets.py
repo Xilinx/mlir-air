@@ -39,11 +39,8 @@ O_FFN_BACKEND = {
 GEMV_K2048_BACKEND = {
     "omit_while_true_loop": False,
     "omit_pingpong": "",
-    "use_lock_race_condition_fix": False,
-    # tile=1 from the default-tile-1 cost model makes the multi-launch
-    # llama32_1b compile time out at 600s on CI. Confirmed across two CI
-    # runs (commits 0d03a530 and b3b6b5af).
     "runtime_loop_tiling_sizes": [16, 16],
+    "use_lock_race_condition_fix": False,
 }
 
 RGR_BACKEND = {

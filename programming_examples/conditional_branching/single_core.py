@@ -192,6 +192,7 @@ if __name__ == "__main__":
         verbose=args.verbose,
         output_format=args.output_format,
         instance_name="conditional_branch",
+        runtime_loop_tiling_sizes=[4, 4],
     )
     res0 = runner.run_test(
         mlir_module,

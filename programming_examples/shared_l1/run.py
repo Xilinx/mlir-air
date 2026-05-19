@@ -406,6 +406,7 @@ def main():
     runner = XRTRunner(
         omit_while_true_loop=False,
         verbose=False,
+        runtime_loop_tiling_sizes=[1, 1],
         output_format=args.output_format,
         instance_name="func1",
         debug_ir=True,

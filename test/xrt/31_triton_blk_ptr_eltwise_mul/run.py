@@ -110,6 +110,7 @@ with air.ir.Context() as ctx, Location.unknown():
         use_lock_race_condition_fix=True,
         output_format=args.output_format,
         instance_name="kernel",
+        runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
         runner.run_test(

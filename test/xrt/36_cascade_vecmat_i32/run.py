@@ -171,6 +171,7 @@ with air.ir.Context() as ctx, Location.unknown():
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
@@ -185,6 +186,7 @@ with air.ir.Context() as ctx, Location.unknown():
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(air_module)
 

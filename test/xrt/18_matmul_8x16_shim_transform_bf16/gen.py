@@ -113,5 +113,6 @@ pm.run(air_module.operation)
 backend = XRTBackend(
     air_loop_fusion=True,
     lower_linalg_to_func="kernel.o",
+    runtime_loop_tiling_sizes=[2, 2],
 )
 backend.compile(air_module)

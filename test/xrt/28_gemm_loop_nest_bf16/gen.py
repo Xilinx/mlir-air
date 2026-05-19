@@ -125,5 +125,6 @@ with air.ir.Context() as ctx, Location.unknown():
         omit_pingpong=True,
         lower_linalg_to_func="mm.o",
         use_lock_race_condition_fix=True,
+        runtime_loop_tiling_sizes=[4, 4],
     )
     backend.compile(air_module)
