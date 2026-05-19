@@ -203,9 +203,7 @@ with air.ir.Context() as ctx, Location.unknown():
     if args.compile_only:
         # Compile-only mode: generate xclbin and instruction binary without validation
         print("Compile-only mode: generating xclbin and instruction binary...")
-        backend = XRTBackend(
-            omit_while_true_loop=False
-        )
+        backend = XRTBackend(omit_while_true_loop=False)
         module_function = backend.compile(air_module)
         backend.unload()
         print("Compilation complete. Generated files:")
