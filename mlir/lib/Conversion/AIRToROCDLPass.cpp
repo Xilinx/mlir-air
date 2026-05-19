@@ -639,10 +639,14 @@ struct ConvertAIRToROCDLPass
     Value blockZVal = arith::ConstantOp::create(
         builder, loc, builder.getIndexAttr(blockSizeZ));
 
-    Operation *blockXValOp = blkIdx[0].getDefiningOp();
-    blockXValOp->moveBefore(launchOp);
-    Operation *blockYValOp = blkIdx[1].getDefiningOp();
-    blockYValOp->moveBefore(launchOp);
+    // blkIdx[i] may be a BlockArgument (herd size operand passed in as an
+    // SSA value rather than a constant declared in scope); getDefiningOp()
+    // is null in that case and the value already dominates launchOp from
+    // the enclosing scope — no move needed.
+    if (Operation *blockXValOp = blkIdx[0].getDefiningOp())
+      blockXValOp->moveBefore(launchOp);
+    if (Operation *blockYValOp = blkIdx[1].getDefiningOp())
+      blockYValOp->moveBefore(launchOp);
 
     // Per AIR compute model §2.3: PE = wavefront. blockDim.x = herd.Nx *
     // wave_size so the herd's PE count becomes a warp count, not a thread
