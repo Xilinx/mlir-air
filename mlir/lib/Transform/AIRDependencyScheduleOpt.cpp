@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRDependencyScheduleOpt.h"
-#include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
