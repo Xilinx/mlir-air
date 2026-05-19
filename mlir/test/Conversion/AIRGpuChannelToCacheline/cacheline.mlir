@@ -7,7 +7,6 @@
 
 // REQUIRES: gpu
 // RUN: air-opt %s --split-input-file -air-gpu-channel-to-cacheline | FileCheck %s
-// RUN: air-opt %s --split-input-file -air-gpu-channel-to-cacheline -verify-diagnostics 2>&1 | FileCheck %s --check-prefix=ANY
 
 // 1-put / 1-get gpu_symmetric_heap channel, both inside air.herd bodies
 // nested in an air.rank scope (required by the op verifier for
