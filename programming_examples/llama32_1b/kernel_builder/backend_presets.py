@@ -40,10 +40,6 @@ GEMV_K2048_BACKEND = {
     "omit_while_true_loop": False,
     "omit_pingpong": "",
     "use_lock_race_condition_fix": False,
-    # TODO: cost model picks tile=1 which causes the multi-launch llama32_1b
-    # compile to time out (>600s). Restore explicit value until the cost
-    # model can handle this workload.
-    "runtime_loop_tiling_sizes": [16, 16],
 }
 
 RGR_BACKEND = {
