@@ -1,0 +1,47 @@
+//===- opt_shim_dma_bds_cascade_default.mlir -----------------*- MLIR -*-===//
+//
+// Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
+// Reproducer for the original failure: cascade-style launch (two distinct
+// shim BD patterns per iter on one channel — R + A_bulk on different
+// memrefs, not collapsible via repeat_count) exhausted the per-tile BD
+// allocator under the previous module-wide tile=[16,16] preset. With the
+// new default of tile=1 per level, the same IR compiles and emits
+// 8 iters * 2 puts = 16 channel.puts on @cascade.
+
+// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu2" | FileCheck %s
+
+module {
+  air.channel @cascade [1]
+
+  // CHECK-LABEL: func.func @cascade_two_BDs_per_iter
+  // CHECK-COUNT-16: air.channel.put async{{.*}}@cascade
+  // CHECK-NOT: air.channel.put async{{.*}}@cascade
+  // CHECK: air.wait_all{{.*}}{air.launch_end}
+  func.func @cascade_two_BDs_per_iter(%arg0: memref<512xbf16>,
+                                      %arg1: memref<512xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%i) in (%n=%c1)
+        args(%a=%arg0, %b=%arg1) : memref<512xbf16>, memref<512xbf16> {
+      %c0 = arith.constant 0 : index
+      %c8 = arith.constant 8 : index
+      %c64 = arith.constant 64 : index
+      %c1_0 = arith.constant 1 : index
+      %tok0 = air.wait_all async
+      %1 = scf.for %j = %c0 to %c8 step %c1_0
+          iter_args(%tok = %tok0) -> (!air.async.token) {
+        %2 = air.channel.put async [%tok] @cascade[]
+            (%a[%j, %c0] [%c1_0, %c64] [%c64, %c1_0])
+            {metadata = @airMemcpyR} : (memref<512xbf16>)
+        %3 = air.channel.put async [%2] @cascade[]
+            (%b[%j, %c0] [%c1_0, %c64] [%c64, %c1_0])
+            {metadata = @airMemcpyA} : (memref<512xbf16>)
+        scf.yield %3 : !air.async.token
+      }
+    }
+    return
+  }
+}
