@@ -6459,6 +6459,11 @@ public:
         maxDistinctPerChannel =
             std::max(maxDistinctPerChannel, (unsigned)uniques.size());
       }
+      // B<=1: queue is not the bottleneck. Tiling can only reorder, not
+      // shrink BD pressure; empirically that perturbs downstream lowering
+      // and breaks the data path on some workloads.
+      if (maxDistinctPerChannel <= 1)
+        return {1};
       if (maxDistinctPerChannel > shimQueueDepth)
         forOp->emitRemark()
             << "shim DMA BD-queue cost model: per-channel distinct BDs ("

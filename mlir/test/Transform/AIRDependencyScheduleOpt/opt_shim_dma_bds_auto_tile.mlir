@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Auto-derive: tile = min(trip, floor(K/B)), K=4, B = max distinct BD patterns
-// per shim channel. User override and default-off paths converge to the same
-// final IR for these inputs after downstream wrap-and-stride folding; the
-// three RUN lines guard against mode-specific regressions.
+// Auto-derive: tile = 1 if B<=1 (no queue pressure to manage), else
+// min(trip, floor(K/B)) with K=4. B = max distinct BD patterns per shim
+// channel in the loop body. User override and default-off paths converge
+// to the same final IR for these inputs after downstream wrap-and-stride
+// folding; the three RUN lines guard against mode-specific regressions.
 
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 auto-derive-tile-sizes=true" | FileCheck %s
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 shim-dma-tile-sizes=2,2" | FileCheck %s
@@ -17,7 +18,7 @@
 
 module {
 
-  // B=1, trip=8: tile=4; wrap-and-stride absorbs the loop.
+  // B=1, trip=8: tile=1 (B<=1 short-circuit); wrap-and-stride absorbs the loop.
   // CHECK-LABEL: func.func @b1_one_put_per_iter
   // CHECK-COUNT-1: air.channel.put async{{.*}}@ch_b1
   // CHECK-NOT: air.channel.put async{{.*}}@ch_b1
@@ -98,7 +99,7 @@ module {
     return
   }
 
-  // Trip clamp: B=1, trip=2: tile=2; loop absorbed.
+  // B=1 short-circuit (trip=2): tile=1; loop absorbed.
   // CHECK-LABEL: func.func @trip_clamp_b1_trip2
   // CHECK-COUNT-1: air.channel.put async{{.*}}@ch_tc
   // CHECK-NOT: air.channel.put async{{.*}}@ch_tc
@@ -187,9 +188,9 @@ module {
     return
   }
 
-  // Two sibling shim for loops in one launch, different B per loop:
-  // exercises per-loop tile resolution (regression guard against the
-  // prior module-wide tiling behavior).
+  // Two sibling shim for loops in one launch: first has B=1 (tile=1
+  // short-circuit), second has B=2 (tile=2). Exercises per-loop tile
+  // resolution.
   // CHECK-LABEL: func.func @two_shim_loops_per_launch
   // CHECK-COUNT-1: air.channel.put async{{.*}}@ch_ml_a
   // CHECK-NOT: air.channel.put async{{.*}}@ch_ml_a

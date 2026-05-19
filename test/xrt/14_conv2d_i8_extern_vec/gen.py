@@ -121,7 +121,5 @@ with air.ir.Context() as ctx, Location.unknown():
         trace_offset=opts.trace_offset,
         trace_size=opts.trace_size,
         use_lock_race_condition_fix=True,
-        # TODO: drop once cost model handles this pattern on CI Strix versions.
-        runtime_loop_tiling_sizes=[1, 1],
     )
     backend.compile(air_module)

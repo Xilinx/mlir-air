@@ -234,8 +234,6 @@ with air.ir.Context() as ctx, Location.unknown():
         omit_while_true_loop=False,
         use_lock_race_condition_fix=True,
         bf16_emulation=bf16_emulation,
-        # TODO: drop once cost model handles this pattern on CI Strix versions.
-        runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
         runner.run_test(
