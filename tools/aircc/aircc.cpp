@@ -206,12 +206,9 @@ static cl::opt<bool>
 
 static cl::list<unsigned> runtimeLoopTilingSizes(
     "air-runtime-loop-tiling-sizes",
-    cl::desc("Tiling factors for runtime host affine loop nest. "
-             "Omit to disable tiling; provide one or more values to enable."),
+    cl::desc("Per-loop shim DMA tile sizes; pass once per nesting dim. "
+             "Omit to let the BD-queue cost model choose per loop."),
     cl::cat(airCompilerOptions));
-
-// Track whether the flag was present on the command line at all
-static bool runtimeLoopTilingSizesPresent = false;
 
 static cl::opt<bool> omitAutoBroadcast(
     "omit-auto-broadcast",
@@ -1093,22 +1090,12 @@ static LogicalResult runAieCompilation() {
     {
       raw_string_ostream os(shimBdPass);
       os << "func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue();
-      // Default tiling sizes [4, 4] unless overridden.
-      // If flag was explicitly passed with no values, disable tiling.
-      std::vector<unsigned> tilingSizes;
-      if (!runtimeLoopTilingSizesPresent) {
-        tilingSizes = {}; // Default: no tiling when flag not used
-      } else {
-        tilingSizes.assign(runtimeLoopTilingSizes.begin(),
-                           runtimeLoopTilingSizes.end());
-        // Flag present but empty = disable tiling (no sizes)
-      }
-      if (!tilingSizes.empty()) {
+      if (!runtimeLoopTilingSizes.empty()) {
         os << " shim-dma-tile-sizes=";
-        for (size_t i = 0; i < tilingSizes.size(); ++i) {
+        for (size_t i = 0; i < runtimeLoopTilingSizes.size(); ++i) {
           if (i > 0)
             os << ",";
-          os << tilingSizes[i];
+          os << runtimeLoopTilingSizes[i];
         }
       }
       os << "})";
@@ -1687,10 +1674,6 @@ int main(int argc, char **argv) {
   // argparse nargs="?" const="all".
   if (omitPingpong.getNumOccurrences() > 0 && omitPingpong.getValue().empty())
     omitPingpong.setValue("all");
-
-  // Track whether --air-runtime-loop-tiling-sizes was explicitly passed
-  runtimeLoopTilingSizesPresent =
-      runtimeLoopTilingSizes.getNumOccurrences() > 0;
 
   // Dispatch based on target
   if (target.getValue() == "gpu") {

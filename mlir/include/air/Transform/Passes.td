@@ -1134,7 +1134,7 @@ def AIROptimizeShimDMABDs: Pass<"air-opt-shim-dma-bds", "func::FuncOp"> {
           /*default=*/"\"xcvc1902\"",
            "AIE device to target.">,
     ListOption<"clTileSizes", "shim-dma-tile-sizes", "unsigned",
-               "Shim dma tiling sizes, tiling shim dma bds into smaller repeating ones",
+               "Shim dma tiling sizes. Empty defaults to tiling every level by 1.",
                "llvm::cl::ZeroOrMore">,
   ];
 }

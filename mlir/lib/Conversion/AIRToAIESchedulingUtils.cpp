@@ -259,8 +259,8 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
     memcpyIOps.insert(o);
   }
 
-  // Check if all of memcpy_ops only map to one same dma bd. If true, then
-  // return that there is only one single repeat count, i.e. a single bd task.
+  // Two channel ops map to the same shim BD iff memref + offsets/sizes/
+  // strides all match.
   auto chansMappedToEquivalentBDs = [](air::ChannelInterface chanA,
                                        air::ChannelInterface chanB) {
     if (chanA.getMemref() != chanB.getMemref())
@@ -274,12 +274,9 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
                             chanA.getStrides()),
         llvm::concat<Value>(chanB.getOffsets(), chanB.getSizes(),
                             chanB.getStrides()));
-    bool wrapsAndStridesAllEquivalent =
-        llvm::all_of(zipped_operands, [](std::tuple<Value, Value> pair) {
-          return isEqualConstantIntOrValue(std::get<0>(pair),
-                                           std::get<1>(pair));
-        });
-    return wrapsAndStridesAllEquivalent;
+    return llvm::all_of(zipped_operands, [](std::tuple<Value, Value> pair) {
+      return isEqualConstantIntOrValue(std::get<0>(pair), std::get<1>(pair));
+    });
   };
 
   // Check if two channel operations are part of an N-buffer rotation pattern.

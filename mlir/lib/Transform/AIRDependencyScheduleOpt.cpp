@@ -6366,7 +6366,9 @@ public:
       : AIROptimizeShimDMABDsBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect>();
+    // affine: post-tile wrap-and-stride canonicalization creates affine.apply.
+    registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect,
+                    affine::AffineDialect>();
   }
 
   void runOnOperation() override {
@@ -6382,10 +6384,11 @@ public:
       signalPassFailure();
       return;
     }
+    const auto &targetModel = AIE::getTargetModel(*device);
 
     // AIE1 architecture doesn't support multi-dimensional dma bds. Tiling shim
     // dma for AIE1 does not optimize the schedule.
-    if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
+    if (isa<AIE::AIE1TargetModel>(targetModel)) {
       // AIE1 has no multi-dimensional DMA at shim. No need to tile. Apply dma
       // folding and finish.
       applyAIRL3DmaFoldingPatterns(func, *device);
@@ -6424,9 +6427,18 @@ public:
     };
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(shimFors.front());
-    SmallVector<Value> optTileSizes = convertVecOfIntToVecOfValue(
-        rewriter,
-        SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
+
+    // Empty shim-dma-tile-sizes defaults to tiling every level by 1.
+    // tile=1 is an iteration-count no-op but still invokes
+    // tilePerfectlyNested + the post-tile fixup that downstream lowering
+    // depends on (skipping it exhausts the BD allocator on workloads
+    // like test/xrt/14_conv2d_i8_extern_vec).
+    SmallVector<Value> optTileSizes;
+    if (!clTileSizes.empty()) {
+      optTileSizes = convertVecOfIntToVecOfValue(
+          rewriter,
+          SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
+    }
     // Helper function getting the actual tiling sizes based on the specified
     // loop band's depth and trip counts.
     auto getActualTileSizesPerScfRoot = [](OpBuilder &b, scf::ForOp root,
@@ -6447,13 +6459,24 @@ public:
       }
       return actualTileSizes;
     };
-    // Tile each for loop band operated by shim dma bds.
+    // Tile each shim-dma for loop band.
     llvm::SetVector<scf::ForOp> forLoopsToUnroll;
     for (auto forOp : shimFors) {
-      if (optTileSizes.empty())
-        break;
+      SmallVector<Value> perLoopTileSizes;
+      if (!optTileSizes.empty()) {
+        perLoopTileSizes = optTileSizes;
+      } else {
+        // Default: vector of 1s matching perfectly-nested depth.
+        SmallVector<scf::ForOp> nested;
+        getPerfectlyNestedLoops(nested, forOp);
+        unsigned depth = std::max((size_t)1, nested.size());
+        rewriter.setInsertionPoint(forOp);
+        perLoopTileSizes = convertVecOfIntToVecOfValue(
+            rewriter, SmallVector<unsigned>(depth, 1));
+      }
+      assert(!perLoopTileSizes.empty());
       SmallVector<Value> actualTileSizes =
-          getActualTileSizesPerScfRoot(rewriter, forOp, optTileSizes);
+          getActualTileSizesPerScfRoot(rewriter, forOp, perLoopTileSizes);
       auto tiledLoops = tilePerfectlyNested(forOp, ArrayRef(actualTileSizes));
 
       // Fixup loop-carried deps in tiled loops

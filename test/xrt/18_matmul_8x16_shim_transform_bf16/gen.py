@@ -5,7 +5,6 @@ from air.backend.xrt import XRTBackend
 from air.ir import *
 import air.passmanager
 
-
 ################################################
 ## Input SCF and Linalg IR
 ################################################

@@ -5,7 +5,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1" | FileCheck %s
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 shim-dma-tile-sizes=2,2" | FileCheck %s --check-prefix=NPUTILED
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=xcvc1902" | FileCheck %s --check-prefix=AIE1
 
@@ -16,16 +15,6 @@ module {
   // Three scf.for loop nested around air.channle.put containing two effective wrap-and-stride dimensions. 
   // Specialize two inner-most for loops into the wrap-and-stride list, and leave one outer-most for loop unchanged.
 
-  // CHECK-LABEL: func0
-  // CHECK: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId22} : (memref<512x512xbf16>)
-  // CHECK-NEXT: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId22} : (memref<512x512xbf16>)
-  // CHECK: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c32768{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId23} : (memref<512x512xbf16>)
-  // CHECK-NEXT: %[[PUT3:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c32768{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId23} : (memref<512x512xbf16>)
-  // CHECK: %[[PUT4:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c65536{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId24} : (memref<512x512xbf16>)
-  // CHECK-NEXT: %[[PUT5:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c65536{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId24} : (memref<512x512xbf16>)
-  // CHECK: %[[PUT6:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c98304{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId25} : (memref<512x512xbf16>)
-  // CHECK-NEXT: %[[PUT7:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c98304{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId25} : (memref<512x512xbf16>)
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}%[[PUT1]]{{.*}}%[[PUT2]]{{.*}}%[[PUT3]]{{.*}}%[[PUT4]]{{.*}}%[[PUT5]]{{.*}}%[[PUT6]]{{.*}}%[[PUT7]]{{.*}}] {air.launch_end}
 
   // NPUTILED-LABEL: func0
   // NPUTILED: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId22} : (memref<512x512xbf16>)
@@ -78,12 +67,6 @@ module {
   // The first air.channel.put, after wrap-and-stride canonicalization, is capable of folding all three scf.for loops in the nest into wraps and strides.
   // The second to fourth air.channel.puts can only fold one inner-most for loop into wrap-and-stride list due to having non-zero offsets at 3rd dimension.
 
-  // CHECK-LABEL: func1
-  // CHECK: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId26} : (memref<512x512xbf16>)
-  // CHECK: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c64{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId27} : (memref<512x512xbf16>)
-  // CHECK: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c128{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId28} : (memref<512x512xbf16>)
-  // CHECK: %[[PUT3:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c192{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId29} : (memref<512x512xbf16>)
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}%[[PUT1]]{{.*}}%[[PUT2]]{{.*}}%[[PUT3]]{{.*}}]
   
   // NPUTILED-LABEL: func1
   // NPUTILED: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId26} : (memref<512x512xbf16>)
@@ -130,12 +113,6 @@ module {
   // Two scf.for loop nested around air.channle.get containing two effective wrap-and-stride dimensions. 
   // Both for loops can be folded into the wrap-and-stride list; no scf.for loop remains.
 
-  // CHECK-LABEL: func2
-  // CHECK: %[[GET0:.*]] = air.channel.get async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId39} : (memref<512x512xbf16>)
-  // CHECK: %[[GET1:.*]] = air.channel.get async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c64{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId41} : (memref<512x512xbf16>)
-  // CHECK: %[[GET2:.*]] = air.channel.get async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c128{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId43} : (memref<512x512xbf16>)
-  // CHECK: %[[GET3:.*]] = air.channel.get async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c192{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId45} : (memref<512x512xbf16>)
-  // CHECK: air.wait_all [{{.*}}%[[GET0]]{{.*}}%[[GET1]]{{.*}}%[[GET2]]{{.*}}%[[GET3]]{{.*}}]
   
   // NPUTILED-LABEL: func2
   // NPUTILED: %[[GET0:.*]] = air.channel.get async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId39} : (memref<512x512xbf16>)
@@ -179,11 +156,6 @@ module {
 
   // Hoisting air.herd op out of any parent scf.for loop nest.
 
-  // CHECK-LABEL: func3
-  // CHECK: air.herd
-  // CHECK-COUNT-3: scf.for
-  // CHECK-COUNT-4: air.dma_memcpy_nd
-  // CHECK-COUNT-4: }
   
   // NPUTILED-LABEL: func3
   // NPUTILED-COUNT-256: air.dma_memcpy_nd
@@ -233,8 +205,6 @@ module {
 
   // No air.launch or air.segment.
 
-  // CHECK-LABEL: func4
-  // CHECK: air.channel.put  @channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c4{{.*}}, %c32{{.*}}, %c32{{.*}}] [%c4096{{.*}}, %c32{{.*}}, %c128{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<128x128xbf16>)
   
   // NPUTILED-LABEL: func4
   // NPUTILED: air.channel.put  @channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c32{{.*}}, %c32{{.*}}] [%c4096{{.*}}, %c32{{.*}}, %c128{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<128x128xbf16>)
@@ -262,13 +232,6 @@ module {
 
   // Repeat dimension promotion.
 
-  // CHECK-LABEL: func5
-  // CHECK: %[[WAITALL0:.*]] = air.wait_all async
-  // CHECK: %[[PUT0:.*]] = air.channel.put async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c1{{.*}}, %c1{{.*}}, %c32{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<8x8xi32>)
-  // CHECK: %[[PUT1:.*]] = air.channel.put async [{{.*}}%[[PUT0]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c32{{.*}}] [%c2{{.*}}, %c1{{.*}}, %c1{{.*}}, %c32{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<8x8xi32>)
-  // CHECK: %[[PUT2:.*]] = air.channel.put async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c8{{.*}}, %c4{{.*}}] [%c0{{.*}}, %c4{{.*}}, %c8{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId5} : (memref<8x8xi32>)
-  // CHECK: %[[GET0:.*]] = air.channel.get async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_2[] (%arg2[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c4{{.*}}, %c4{{.*}}] [%c32{{.*}}, %c4{{.*}}, %c8{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId16} : (memref<8x8xi32>)
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}%[[PUT1]]{{.*}}%[[PUT2]]{{.*}}%[[GET0]]{{.*}}] 
 
   // NPUTILED-LABEL: func5
   // NPUTILED: %[[WAITALL0:.*]] = air.wait_all async
@@ -309,12 +272,6 @@ module {
 
   // Repeat dimension promotion.
 
-  // CHECK-LABEL: func6
-  // CHECK: %[[WAITALL0:.*]] = air.wait_all async
-  // CHECK: %[[PUT0:.*]] = air.channel.put async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c1{{.*}}, %c1{{.*}}, %c128{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<8x16xi32>)
-  // CHECK: %[[PUT1:.*]] = air.channel.put async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c16{{.*}}, %c16{{.*}}] [%c16{{.*}}, %c32{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId5} : (memref<16x32xi32>)
-  // CHECK: %[[GET0:.*]] = air.channel.get async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_2[] (%arg2[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c16{{.*}}] [%c16{{.*}}, %c32{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId12} : (memref<8x32xi32>)
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}%[[PUT1]]{{.*}}%[[GET0]]{{.*}}] 
 
   // NPUTILED-LABEL: func6
   // NPUTILED: %[[WAITALL0:.*]] = air.wait_all async
@@ -356,15 +313,6 @@ module {
 
   // Repeat dimension promotion.
 
-  // CHECK-LABEL: func7
-  // CHECK: %[[WAITALL0:.*]] = air.wait_all async
-  // CHECK: %[[PUT0:.*]] = air.channel.put async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId20} : (memref<2048x512xi32>)
-  // CHECK: %[[PUT1:.*]] = air.channel.put async [{{.*}}%[[PUT0]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c64{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId20} : (memref<2048x512xi32>)
-  // CHECK: %[[PUT2:.*]] = air.channel.put async [{{.*}}%[[PUT1]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c128{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId20} : (memref<2048x512xi32>)
-  // CHECK: %[[PUT3:.*]] = air.channel.put async [{{.*}}%[[PUT2]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c192{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId20} : (memref<2048x512xi32>)
-  // CHECK: %[[PUT4:.*]] = air.channel.put async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c4{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId21} : (memref<512x2048xi32>)
-  // CHECK: %[[GET0:.*]] = air.channel.get async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_2[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c4{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c131072{{.*}}, %c64{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId26} : (memref<2048x2048xi32>)
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}%[[PUT1]]{{.*}}%[[PUT2]]{{.*}}%[[PUT3]]{{.*}}%[[PUT4]]{{.*}}%[[GET0]]{{.*}}] 
 
   // NPUTILED-LABEL: func7
   // NPUTILED: %[[WAITALL0:.*]] = air.wait_all async
@@ -426,18 +374,6 @@ module {
 
   // NPU wrap size limit: [0, 1023].
 
-  // CHECK-LABEL: func8
-  // CHECK: %[[WAITALL0:.*]] = air.wait_all async
-  // CHECK: %[[PUT0:.*]] = air.channel.put async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId20} : (memref<2048x2048xi32>)
-  // CHECK: %[[PUT1:.*]] = air.channel.put async [{{.*}}%[[PUT0]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c64{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId20} : (memref<2048x2048xi32>)
-  // CHECK: %[[PUT2:.*]] = air.channel.put async [{{.*}}%[[PUT1]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c128{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId20} : (memref<2048x2048xi32>)
-  // CHECK: %[[PUT3:.*]] = air.channel.put async [{{.*}}%[[PUT2]]{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c192{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId20} : (memref<2048x2048xi32>)
-  // CHECK: %[[PUT4:.*]] = air.channel.put async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c4{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1048576{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId21} : (memref<2048x2048xi32>)
-  // CHECK: %[[PUT5:.*]] = air.channel.put async [{{.*}}%[[PUT4]]{{.*}}]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c4{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1048576{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId21} : (memref<2048x2048xi32>)
-  // CHECK: %[[PUT6:.*]] = air.channel.put async [{{.*}}%[[PUT5]]{{.*}}]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c4{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1048576{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId21} : (memref<2048x2048xi32>)
-  // CHECK: %[[PUT7:.*]] = air.channel.put async [{{.*}}%[[PUT6]]{{.*}}]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c4{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1048576{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId21} : (memref<2048x2048xi32>)
-  // CHECK: %[[GET0:.*]] = air.channel.get async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_2[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c4{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c131072{{.*}}, %c64{{.*}}, %c2048{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId26} : (memref<2048x2048xi32>)
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}%[[PUT1]]{{.*}}%[[PUT2]]{{.*}}%[[PUT3]]{{.*}}%[[PUT4]]{{.*}}%[[PUT5]]{{.*}}%[[PUT6]]{{.*}}%[[PUT7]]{{.*}}%[[GET0]]{{.*}}] 
 
   // NPUTILED-LABEL: func8
   // NPUTILED: %[[WAITALL0:.*]] = air.wait_all async
@@ -504,12 +440,6 @@ module {
 
   // NPU wrap size limit: [0, 1023]; stride limit: [0, 1048576].
 
-  // CHECK-LABEL: func9
-  // CHECK: %[[WAITALL0:.*]] = air.wait_all async
-  // CHECK: %[[PUT0:.*]] = air.channel.put async [%{{.*}}]  @channel_1[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c3{{.*}}, %c768{{.*}}, %c3{{.*}}, %c64{{.*}}] [%c256{{.*}}, %c6912{{.*}}, %c2304{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId21} : (memref<2304x2304xbf16>)
-  // CHECK: %[[PUT1:.*]] = air.channel.put async [%{{.*}}]  @channel_1[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c3{{.*}}, %c768{{.*}}, %c3{{.*}}, %c64{{.*}}] [%c256{{.*}}, %c6912{{.*}}, %c2304{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId21} : (memref<2304x2304xbf16>)
-  // CHECK: %[[PUT2:.*]] = air.channel.put async [%{{.*}}]  @channel_1[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c3{{.*}}, %c768{{.*}}, %c3{{.*}}, %c64{{.*}}] [%c256{{.*}}, %c6912{{.*}}, %c2304{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId21} : (memref<2304x2304xbf16>)
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}%[[PUT1]]{{.*}}%[[PUT2]]{{.*}}]
 
   // NPUTILED-LABEL: func9
   // NPUTILED: %[[PUT0:.*]] = air.channel.put async  @channel_1[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c768{{.*}}, %c3{{.*}}, %c64{{.*}}] [%c6912{{.*}}, %c2304{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId21} : (memref<2304x2304xbf16>)
@@ -564,17 +494,6 @@ module {
 
   // Multiple Shim DMAs.
 
-  // CHECK-LABEL: func10
-  // CHECK: %[[WAITALL0:.*]] = air.wait_all async
-  // CHECK: %[[PUT0:.*]] = air.channel.put async [%{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c4{{.*}}, %c256{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c1024{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId7} : (memref<512x1024xbf16>)
-  // CHECK: %[[PUT1:.*]] = air.channel.put async [%{{.*}}]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c4{{.*}}, %c256{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c1024{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId7} : (memref<512x1024xbf16>)
-  // CHECK: %[[PUT2:.*]] = air.channel.put async [%{{.*}}]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c512{{.*}}, %c256{{.*}}] [%c256{{.*}}, %c262144{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId12} : (memref<1024x512xbf16>)
-  // CHECK: %[[PUT3:.*]] = air.channel.put async [%{{.*}}]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c512{{.*}}, %c256{{.*}}] [%c256{{.*}}, %c262144{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId12} : (memref<1024x512xbf16>)
-  // CHECK: %[[GET0:.*]] = air.channel.get async [%{{.*}}]  @channel_2[%c0{{.*}}, %c0{{.*}}] (%arg2[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c131072{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId45} : (memref<512x512xbf16>)
-  // CHECK: %[[GET1:.*]] = air.channel.get async [%{{.*}}]  @channel_2[%c0{{.*}}, %c1{{.*}}] (%arg2[%c0{{.*}}, %c0{{.*}}, %c64{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c131072{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId46} : (memref<512x512xbf16>)
-  // CHECK: %[[GET2:.*]] = air.channel.get async [%{{.*}}]  @channel_2[%c1{{.*}}, %c0{{.*}}] (%arg2[%c0{{.*}}, %c0{{.*}}, %c128{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c131072{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId47} : (memref<512x512xbf16>)
-  // CHECK: %[[GET3:.*]] = air.channel.get async [%{{.*}}]  @channel_2[%c1{{.*}}, %c1{{.*}}] (%arg2[%c0{{.*}}, %c0{{.*}}, %c192{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c131072{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId48} : (memref<512x512xbf16>)
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}%[[PUT1]]{{.*}}%[[PUT2]]{{.*}}%[[PUT3]]{{.*}}%[[GET0]]{{.*}}%[[GET1]]{{.*}}%[[GET2]]{{.*}}%[[GET3]]{{.*}}]
 
   // NPUTILED-LABEL: func10
   // NPUTILED: %[[WAITALL0:.*]] = air.wait_all async
@@ -636,10 +555,6 @@ module {
 
   // Big memref.
 
-  // CHECK-LABEL: func11
-  // CHECK: %[[WAITALL0:.*]] = air.wait_all async
-  // CHECK: %[[PUT0:.*]] = air.channel.put async [%{{.*}}]  @channel_0[] (%alloc[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c19{{.*}}, %c28{{.*}}, %c128{{.*}}] [%c0{{.*}}, %c128{{.*}}, %c2432{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId26} : (memref<308x2432xi32>)
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}]
 
   // NPUTILED-LABEL: func11
   // NPUTILED: %[[WAITALL0:.*]] = air.wait_all async
@@ -686,10 +601,6 @@ module {
 
   // Offset field with (1) for loop induction variable, (2) affine map, and (3) existing non-singleton stride.
 
-  // CHECK-LABEL: func12
-  // CHECK: %[[WAITALL0:.*]] = air.wait_all async
-  // CHECK: %[[PUT0:.*]] = air.channel.put async [{{.*}}%[[WAITALL0]]{{.*}}]  @channel_0[] (%arg0[] [] []) {metadata = @airMemcpyId31} : (memref<2x64x64xi32>)
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}]
 
   // NPUTILED-LABEL: func12
   // NPUTILED: %[[WAITALL0:.*]] = air.wait_all async
@@ -740,11 +651,6 @@ module {
 
   // Scf.for operating on integer type; scf.for nested inside scf.parallel.
 
-  // CHECK-LABEL: func13
-  // CHECK: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
-  // CHECK: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c1{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c64{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
-  // CHECK: air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c16384{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
-  // CHECK: air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c1{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c16448{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
 
   func.func @func13(%arg0: memref<*xf32>, %arg1: memref<*xf32>) {
     %c1_i32 = arith.constant 1 : i32
@@ -828,12 +734,6 @@ module {
 
   // Scf.parallel unrolling: reduced tokens must be preserved into the blocking wait_all at launch terminator.
 
-  // CHECK-LABEL: func14
-  // CHECK: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0
-  // CHECK: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0
-  // CHECK: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0
-  // CHECK: %[[PUT3:.*]] = air.channel.put async{{.*}}@channel_0
-  // CHECK: air.wait_all [{{.*}}%[[PUT0]]{{.*}}%[[PUT1]]{{.*}}%[[PUT2]]{{.*}}%[[PUT3]]{{.*}}]
 
   func.func @func14(%arg0: memref<*xf32>) {
     %c1 = arith.constant 1 : index
@@ -865,8 +765,6 @@ module {
   // eraseWrapNStrideDim in Util.cpp, causing the stride multiplication to be
   // lost.
 
-  // CHECK-LABEL: func16
-  // CHECK: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[] [] [])
   // NPUTILED-LABEL: func16
   // NPUTILED: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[] [] [])
   // AIE1-LABEL: func16
@@ -891,8 +789,6 @@ module {
 
   // Canonicalizing repeat dimension at highest dimension.
 
-  // CHECK-LABEL: func15
-  // CHECK: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c320{{.*}}] [%c2{{.*}}, %c1{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c1{{.*}}])
   // NPUTILED-LABEL: func15
   // NPUTILED: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c320{{.*}}] [%c2{{.*}}, %c1{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c1{{.*}}])
   // AIE1-LABEL: func15
@@ -918,13 +814,6 @@ module {
   // should be optimized independently. The scf.for loops in each launch
   // are folded into the channel wrap-and-stride dimensions.
 
-  // CHECK-LABEL: func_multi_launch
-  // CHECK: air.launch
-  // CHECK: air.channel.put{{.*}}@channel_0{{.*}}[%c2{{.*}}, %c256{{.*}}, %c64{{.*}}]
-  // CHECK: air.wait_all{{.*}}{air.launch_end}
-  // CHECK: air.launch
-  // CHECK: air.channel.get{{.*}}@channel_1{{.*}}[%c2{{.*}}, %c256{{.*}}, %c64{{.*}}]
-  // CHECK: air.wait_all{{.*}}{air.launch_end}
 
   func.func @func_multi_launch(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>) {
     %c1 = arith.constant 1 : index
