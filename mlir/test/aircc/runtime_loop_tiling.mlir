@@ -5,20 +5,20 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Verify aircc forwards --air-runtime-loop-tiling-sizes correctly:
-//   - absent → auto-derive-tile-sizes=true (cost-model picks per loop)
-//   - one or more =N → shim-dma-tile-sizes=N,... (user override)
-//   - --no-air-auto-derive-tile-sizes → neither flag (no tiling)
+// Verify aircc forwards tile-size CLI flags correctly:
+//   - default → neither pass option set (no shim DMA tiling)
+//   - --air-runtime-loop-tiling-sizes=N → shim-dma-tile-sizes=N,... (user override)
+//   - --air-auto-derive-tile-sizes → auto-derive-tile-sizes=true (cost model, opt-in)
 // Smoke: aircc must complete cleanly in all three modes through placed IR.
 
-// RUN: rm -rf %t && mkdir -p %t/auto %t/override %t/noauto
-// RUN: aircc %s --device=npu1 --tmpdir=%t/auto --output-format=none 2>&1 || true
+// RUN: rm -rf %t && mkdir -p %t/default %t/override %t/auto
+// RUN: aircc %s --device=npu1 --tmpdir=%t/default --output-format=none 2>&1 || true
 // RUN: aircc %s --device=npu1 --tmpdir=%t/override --output-format=none --air-runtime-loop-tiling-sizes=2 --air-runtime-loop-tiling-sizes=2 2>&1 || true
-// RUN: aircc %s --device=npu1 --tmpdir=%t/noauto --output-format=none --no-air-auto-derive-tile-sizes 2>&1 || true
+// RUN: aircc %s --device=npu1 --tmpdir=%t/auto --output-format=none --air-auto-derive-tile-sizes 2>&1 || true
 
-// RUN: FileCheck %s --input-file=%t/auto/placed.runtime_loop_tiling.mlir --check-prefix=PLACED
+// RUN: FileCheck %s --input-file=%t/default/placed.runtime_loop_tiling.mlir --check-prefix=PLACED
 // RUN: FileCheck %s --input-file=%t/override/placed.runtime_loop_tiling.mlir --check-prefix=PLACED
-// RUN: FileCheck %s --input-file=%t/noauto/placed.runtime_loop_tiling.mlir --check-prefix=PLACED
+// RUN: FileCheck %s --input-file=%t/auto/placed.runtime_loop_tiling.mlir --check-prefix=PLACED
 
 // PLACED: air.channel
 

@@ -125,6 +125,7 @@ with air.ir.Context() as ctx, Location.unknown():
     runner = XRTRunner(
         omit_while_true_loop=False,
         use_lock_race_condition_fix=True,
+        runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
         runner.run_test(

@@ -120,6 +120,7 @@ with air.ir.Context() as ctx, Location.unknown():
         lower_linalg_to_func="conv.o",
         trace_offset=opts.trace_offset,
         trace_size=opts.trace_size,
+        runtime_loop_tiling_sizes=[1, 1],
         use_lock_race_condition_fix=True,
     )
     backend.compile(air_module)

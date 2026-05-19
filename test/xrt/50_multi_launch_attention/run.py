@@ -79,6 +79,7 @@ with Context() as ctx, Location.unknown():
         instance_name="attention",  # matches func.func @attention
         omit_while_true_loop=False,
         verbose=False,
+        runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
         runner.run_test(

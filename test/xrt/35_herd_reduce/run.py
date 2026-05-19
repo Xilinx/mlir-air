@@ -129,6 +129,7 @@ with air.ir.Context() as ctx, Location.unknown():
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="scf1",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
@@ -145,6 +146,7 @@ with air.ir.Context() as ctx, Location.unknown():
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="scf1",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
 

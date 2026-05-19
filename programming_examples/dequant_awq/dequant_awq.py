@@ -155,6 +155,7 @@ if __name__ == "__main__":
             omit_pingpong=True,
             output_format=args.output_format,
             instance_name="dequant",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
@@ -170,6 +171,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_pingpong=True,
             output_format=args.output_format,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

@@ -274,6 +274,7 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="vector_select",
             bf16_emulation=bf16_emulation,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
@@ -291,6 +292,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             bf16_emulation=bf16_emulation,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
 

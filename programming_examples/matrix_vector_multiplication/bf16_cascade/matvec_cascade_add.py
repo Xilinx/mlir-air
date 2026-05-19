@@ -710,6 +710,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             # Per-col ar_L3toL2 carries 1 R + 1 A bulk per launch iter.
             # Shim DMA BD queue limit = 4 → tiling=2 keeps it at 4 BDs.
+            runtime_loop_tiling_sizes=[2, 2],
             output_format=args.output_format,
             instance_name="matvec_cascade_add_bf16",
             debug_ir=args.debug_ir,
@@ -729,6 +730,7 @@ if __name__ == "__main__":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            runtime_loop_tiling_sizes=[2, 2],
             output_format=args.output_format,
             use_lock_race_condition_fix=True,
         )

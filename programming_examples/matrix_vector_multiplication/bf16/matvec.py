@@ -377,6 +377,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             omit_pingpong=True,
+            runtime_loop_tiling_sizes=[4, 4],
             output_format=args.output_format,
             instance_name="matvec_bf16",
             debug_ir=args.debug_ir,
@@ -397,6 +398,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             omit_pingpong=True,
+            runtime_loop_tiling_sizes=[4, 4],
             use_lock_race_condition_fix=True,
         )
         module_function = backend.compile(mlir_module)

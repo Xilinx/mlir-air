@@ -1699,6 +1699,7 @@ if __name__ == "__main__":
             omit_pingpong=True,
             output_format=args.output_format,
             instance_name="mha_bf16",
+            runtime_loop_tiling_sizes=[4, 4],
             stack_size=0xC00,
         )
         # min_correlation=0.95: with the slot-pos L3 RAW-hazard fix
@@ -1738,6 +1739,7 @@ if __name__ == "__main__":
             instance_name=args.instance_name,
             kernel_id=args.kernel_id,
             output_format=args.output_format,
+            runtime_loop_tiling_sizes=[4, 4],
             target_device="npu2",
             stack_size=0xC00,
         )

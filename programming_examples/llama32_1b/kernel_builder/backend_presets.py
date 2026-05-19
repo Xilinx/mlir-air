@@ -39,6 +39,7 @@ O_FFN_BACKEND = {
 GEMV_K2048_BACKEND = {
     "omit_while_true_loop": False,
     "omit_pingpong": "",
+    "runtime_loop_tiling_sizes": [16, 16],
     "use_lock_race_condition_fix": False,
 }
 

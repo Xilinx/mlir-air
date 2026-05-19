@@ -1316,10 +1316,12 @@ if __name__ == "__main__":
         .copy()
     )
 
+    tiling = [1, 1, 1] if dv_chunks_host > 1 else [1, 1]
     runner = XRTRunner(
         omit_while_true_loop=False,
         omit_pingpong="all",
         verbose=args.verbose,
+        runtime_loop_tiling_sizes=tiling,
         output_format=args.output_format,
         instance_name="attention_bf16",
         target_device="npu1",
@@ -1342,6 +1344,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             omit_pingpong="all",
             verbose=args.verbose,
+            runtime_loop_tiling_sizes=tiling,
             output_format=args.output_format,
             instance_name="attention_bf16",
             target_device="npu1",
