@@ -882,36 +882,24 @@ four-level mapping with nested segments is used to achieve full-device occupancy
 
 ### 4.1 Hierarchy mapping
 
-A **PE is one wavefront** on GPU (the same role an AIE tile plays on NPU): the
-smallest independently-scheduled SIMD unit. So the herd's iteration space names
-warps, not threads; the herd body executes once per warp. Lanes inside a warp
-are accessed via `gpu.lane_id` and are implicit in wave-cooperative ops.
-
 | AIR concept | GPU concept |
 |-------------|------------|
 | `air.launch (%bx,%by) in (%gbx,%gby)` | `gpu.launch` grid: `gridDim = (gbx, gby, 1)` |
-| Launch index `(%bx, %by)` | `(blockIdx.x, blockIdx.y)` |
-| `air.segment` body | Workgroup body — one workgroup on one CU; owns L2 (LDS) allocations and persists across enclosed herd invocations |
-| `air.herd tile (%x,%y) in (%bx,%by)` | An inline parallel block of `bx × by` wavefronts within the workgroup. Materialised as `blockDim = (bx * wave_size, by, 1)` (so blockDim.x = #warps × wavefront width) |
+| `air.segment` | Workgroup (thread block); the segment body runs within a single `gpu.launch` |
+| `air.herd tile (%x,%y) in (%bx,%by)` | Thread block dimensions: `blockDim = (bx * wave_size, by, 1)`, with each PE materialised as one wavefront |
 | Herd tile index `(%x, %y)` | warp-id within block: `(threadIdx.x / wave_size, threadIdx.y)` |
-| Lane within a PE | `gpu.lane_id` (= `threadIdx.x % wave_size`) |
+| Launch index `(%bx, %by)` | `(blockIdx.x, blockIdx.y)` |
 
-The `air.launch` iteration space becomes the **grid** (number of workgroups).
-The `air.segment` body becomes the **workgroup body** — the GPU kernel runs once
-per workgroup, owning the workgroup's LDS. The `air.herd` body becomes an inline
-parallel block inside the kernel, executed by `bx × by` wavefronts; the herd is
-not a separate kernel.
+The `air.launch` iteration space becomes the **grid** (number of thread blocks), and
+the `air.herd` iteration space becomes the **block** (number of wavefronts per block).
+The `air.segment` body is the thread-block body: code that runs once per workgroup before
+and after the per-PE `air.herd` body.
 
-Multiple herds may appear sequentially within one segment body (e.g., inside an
-`scf.for`); each is a distinct parallel compute action that shares the segment's
-LDS allocations.
-
-After translation the hierarchy is flattened: `air.segment` and `air.herd` are
-erased and their bodies are moved into the enclosing `gpu.launch` region. The
-`air-gpu-outlining` pass then extracts the `gpu.launch` body into a `gpu.func`
-kernel and injects the appropriate `gpu.BlockIdOp`, `gpu.ThreadIdOp`,
-`gpu.GridDimOp`, and `gpu.BlockDimOp` intrinsics. `wave_size` defaults to 64
-for ROCDL targets and is configurable via the `air-to-rocdl` pass option.
+After translation the hierarchy is flattened: `air.segment` and `air.herd` are erased
+and their bodies are moved into the enclosing `gpu.launch` region. The
+`air-gpu-outlining` pass then extracts the `gpu.launch` body into a `gpu.func` kernel
+and injects the appropriate `gpu.BlockIdOp`, `gpu.ThreadIdOp`, `gpu.GridDimOp`, and
+`gpu.BlockDimOp` intrinsics.
 
 ### 4.2 Device-scale mapping via nested segments (MI3xx)
 
@@ -958,17 +946,13 @@ segment and herd iteration space mechanisms.
 | AIR memory space | Enum | GPU address space | GPU scope |
 |-----------------|------|------------------|-----------|
 | L3 (space 0) | `MemorySpace::L3` | 0 (generic/global) | Device global memory (HBM) |
-| L2 (space 1) | `MemorySpace::L2` | 3 (local) | Segment (workgroup) — LDS shared across all PEs in the segment |
-| L1 (space 2) | `MemorySpace::L1` | 5 (private) | PE-scope — VGPRs / private scratch on the wavefront executing this PE |
+| L2 (space 1) | `MemorySpace::L2` | 3 (local) | Workgroup (LDS/shared memory) |
+| L1 (space 2) | `MemorySpace::L1` | 5 (private) | Per-thread private memory (VGPRs/scratch) |
 
-`memref.alloc` ops in L2 space are hoisted to `gpu.launch` **workgroup
-attributions** (shared among all threads/warps in the workgroup, addressable by
-all PEs of the segment). `memref.alloc` ops in L1 space become **private
-attributions** — under MLIR's GPU dialect "private" maps to per-thread, so the
-allocation is replicated across the wavefront's lanes; an N-element L1 memref
-gives the PE N×wave_size physical storage cells, with lane-local indexing for
-per-lane state. Explicit `memref.dealloc` ops are removed because GPU
-attributions have implicit kernel-scoped lifetimes.
+`memref.alloc` ops in L2 space are hoisted to `gpu.launch` **workgroup attributions**
+(shared among all threads in the block). `memref.alloc` ops in L1 space become
+**private attributions** (one copy per thread). Explicit `memref.dealloc` ops are
+removed because GPU attributions have implicit kernel-scoped lifetimes.
 
 ### 4.4 Data movement on GPU
 
@@ -984,9 +968,7 @@ loads into shared memory and subsequent compute.
 
 ### 4.5 Example: 4k×4k matrix multiplication
 
-The GPU test in `test/gpu/4k_4k_mul/air_sync.mlir` illustrates the model.
-Each workgroup computes a 128×128 output tile using 4 PEs (= 4 wavefronts = 256
-threads on MI3xx), with each lane within a PE handling an 8×8 sub-tile:
+The GPU test in `test/gpu/4k_4k_mul/air_sync.mlir` illustrates the model:
 
 ```mlir
 // 32×32 grid of segments, one per 128×128 output tile
@@ -994,22 +976,22 @@ air.launch (%bx, %by) in (%nbx=%c32, %nby=%c32)
     args(%A=%arg0, %B=%arg1, %C=%arg2) : … {
 
   air.segment @forward_0 args(%bx=%bx, %by=%by, %A=%A, %B=%B, %C=%C) : … {
-    // Segment body: runs once per workgroup, owns LDS
+    // Segment body: runs once per workgroup
+    // L2 allocations — shared memory tiles
     %As = memref.alloc() : memref<128x8xf32, 1>   // L2 → LDS
     %Bs = memref.alloc() : memref<8x128xf32, 1>   // L2 → LDS
 
     scf.for %k = 0 to 4096 step 8 {
-      // Cooperative load: all threads in the workgroup participate
+      // Load A and B tiles into shared memory (DMA equivalent: global → LDS)
+      // Uses gpu.thread_id to distribute loads across threads
       …
       gpu.barrier
 
-      // 4 PEs (warps), each lane within a PE owns an 8×8 sub-tile of C
+      // 4 herd tiles (PEs = wavefronts) compute the outer product;
+      // 4 PEs × 64 lanes/PE = 256 work items on MI3xx.
       air.herd @herd_0 tile (%tx, %ty) in (%ntx=%c4, %nty=%c1)
                args(%As=%As, %Bs=%Bs, …) : … {
-        %lane = gpu.lane_id   // 0..wave_size-1
-        // Effective per-thread index across 4 PEs × wave_size lanes:
-        //   %tid = %tx * wave_size + %lane    (0..255)
-        // L1 accumulation: per-PE memref, accessed per-lane
+        // L1 accumulation registers (VGPRs)
         %acc = memref.alloc() : memref<64xf32, 2>  // L1 → private/VGPRs
         …
         gpu.barrier
@@ -1022,11 +1004,10 @@ air.launch (%bx, %by) in (%nbx=%c32, %nby=%c32)
 
 The mapping:
 - `air.launch` → `gpu.launch` with `gridDim = (32, 32, 1)`
-- `air.segment` body → the GPU kernel body (one workgroup per block, owns LDS)
-- `air.herd tile (%tx, .) in (%c4, %c1)` → 4 PEs = 4 wavefronts → `blockDim = (4 * wave_size, 1, 1)` = `(256, 1, 1)` on MI3xx. `%tx` = warp-id-in-block (0..3); `gpu.lane_id` = lane-in-warp (0..63)
+- `air.segment` → workgroup body (executed once per thread block)
+- `air.herd tile (%tx, .) in (%c4, %c1)` → `blockDim = (4 * wave_size, 1, 1)`; `%tx` is the warp-id within the block; lane index inside the PE comes from `gpu.lane_id`
 - L2 memrefs (space 1) → LDS (shared memory)
-- L1 memrefs (space 2) → VGPRs / private scratch (per-thread under MLIR's GPU dialect; effectively per-lane state for the PE)
-- Total PE count `4 × 1 = 4 ≤ 32` satisfies the wavefront-slot budget per §2.3.
+- L1 memrefs (space 2) → VGPRs / private scratch
 
 ### 4.6 Compilation pipeline
 
@@ -1052,10 +1033,10 @@ See [buildingGPU.md](buildingGPU.md) for build instructions and the complete
 
 | Concept | NPU (AIE) | GPU (ROCDL) |
 |---------|-----------|-------------|
-| `air.launch` iteration point | Device-level work unit | One GPU workgroup (thread block) |
-| `air.segment` | Rectangle of AIE tiles + memory tiles | Workgroup body — owns LDS, runs on one CU |
-| `air.herd` tile (one PE) | Single AIE compute tile | Single GPU wavefront (warp) |
-| L1 (space 2) | 32 KB tile-local data memory | Per-PE (per-warp) VGPRs / private scratch |
+| `air.launch` iteration point | Device-level work unit | One GPU thread block |
+| `air.segment` | Rectangle of AIE tiles + memory tiles | Thread block workgroup body |
+| `air.herd` tile | Single AIE compute tile | Single GPU wavefront |
+| L1 (space 2) | 32 KB tile-local data memory | Thread-private VGPRs / scratch |
 | L2 (space 1) | Memory tiles / URAMs | LDS (shared memory, ~64 KB / CU) |
 | L3 (space 0) | DDR via NOC | HBM via global memory |
 | `dma_memcpy_nd` (intra-rank) | AIE Shim/Tile DMA engines | SCF load/store loops |
