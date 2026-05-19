@@ -51,6 +51,17 @@ MLIR_AIR_INSTALL_DIR ?= $(shell dirname "$$(dirname "$$(command -v air-opt)")" 2
 LLVM_LIB_DIR         ?= $(LLVM_INSTALL_DIR)/lib
 AIRGPU_LIB           ?= $(MLIR_AIR_INSTALL_DIR)/lib/libairgpu.so
 
+# Auto-detect the GPU chip target. Override via `make GFX_TARGET=gfx942`
+# for cross-compilation or on heterogeneous systems.
+# Detection order:
+#   1. amdgpu-arch (ROCm's clang tool; ships at /opt/rocm/llvm/bin/).
+#   2. KFD topology: gfx_target_version is major*10000 + minor*100 + step,
+#      and the gfx name is gfx<major><minor><step> (e.g. 90500 -> gfx950,
+#      90402 -> gfx942). Holds for the MI3xx family this test targets.
+GFX_TARGET ?= $(or \
+    $(shell { command -v amdgpu-arch || echo /opt/rocm/llvm/bin/amdgpu-arch; } | xargs -r -I{} {} 2>/dev/null | head -1), \
+    $(shell awk '/^gfx_target_version [1-9]/{v=$$2; printf "gfx%d%d%d", v/10000, (v%10000)/100, v%100; exit}' /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null))
+
 # Reject unknown INPUT at parse time so a typo errors immediately
 # instead of running through a half-broken pipeline.
 ifeq ($(filter $(INPUT),cacheline atomic allgather),)
@@ -76,7 +87,7 @@ $(POST_TRANSLATE): $(SRC_MLIR) | $(TMPDIR)
 $(LOWERED): $(POST_TRANSLATE)
 	@echo "Step 1b: Compile gpu.module to AMDGPU binary + finalize host"
 	mlir-opt $< \
-	    --pass-pipeline='builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-scf-to-cf,convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary,func.func(gpu-async-region,convert-scf-to-cf),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
+	    --pass-pipeline='builtin.module(rocdl-attach-target{chip=$(GFX_TARGET) O=3},gpu.module(convert-scf-to-cf,convert-gpu-to-rocdl{chipset=$(GFX_TARGET) runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary,func.func(gpu-async-region,convert-scf-to-cf),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
 	    -o $@
 
 # Refuse to launch if NUM_RANKS < 2 (no peer to talk to), if fewer
@@ -85,6 +96,13 @@ $(LOWERED): $(POST_TRANSLATE)
 # install paths are missing (mlir-runner would fail at dlopen with a
 # more cryptic message).
 check-preconditions:
+	@if [ -z "$(GFX_TARGET)" ]; then                                           \
+	  echo "ERROR: Could not auto-detect GFX_TARGET (chip name like gfx950)." \
+	       >&2;                                                                \
+	  echo "       Install ROCm so /opt/rocm/llvm/bin/amdgpu-arch exists, or" \
+	       "set GFX_TARGET=gfx<NNN> explicitly." >&2;                          \
+	  exit 1;                                                                  \
+	fi
 	@if [ ! -d "$(LLVM_LIB_DIR)" ]; then                                       \
 	  echo "ERROR: LLVM_LIB_DIR=$(LLVM_LIB_DIR) does not exist." >&2;         \
 	  echo "       Source utils/env_setup_gpu.sh or set LLVM_INSTALL_DIR."    \
