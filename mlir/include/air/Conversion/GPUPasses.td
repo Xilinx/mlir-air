@@ -34,7 +34,7 @@ def ConvertAIRToROCDL : Pass<"air-to-rocdl", "ModuleOp"> {
   }];
   let dependentDialects = [
     "gpu::GPUDialect", "ROCDL::ROCDLDialect", "LLVM::LLVMDialect",
-    "mlir::arith::ArithDialect"
+    "arith::ArithDialect"
   ];
   let options = [
     Option<"waveSize", "wave-size", "uint64_t", "/*default=*/64",
