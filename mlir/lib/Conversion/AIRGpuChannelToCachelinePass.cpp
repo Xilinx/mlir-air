@@ -65,7 +65,8 @@ static std::optional<int64_t> inferRankFromEnclosingIf(Operation *op) {
       if (auto cmp = cond.getDefiningOp<arith::CmpIOp>()) {
         if (cmp.getPredicate() == arith::CmpIPredicate::eq) {
           // Try (rid, const) and (const, rid) orderings.
-          auto extract = [](Value rid, Value constSide) -> std::optional<int64_t> {
+          auto extract = [](Value rid,
+                            Value constSide) -> std::optional<int64_t> {
             if (!isRankIdOfEnclosingAirRank(rid))
               return std::nullopt;
             auto cst = constSide.getDefiningOp<arith::ConstantOp>();
@@ -235,9 +236,8 @@ static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get,
           scf::YieldOp::create(elseB, l, ValueRange{c0I32});
         }
         Value v = innerIf.getResult(0);
-        auto shuffle = gpu::ShuffleOp::create(beforeB, l, v, c31I32,
-                                              waveWidthI32,
-                                              gpu::ShuffleMode::IDX);
+        auto shuffle = gpu::ShuffleOp::create(
+            beforeB, l, v, c31I32, waveWidthI32, gpu::ShuffleMode::IDX);
         Value flag = shuffle.getResult(0);
         Value notReady = arith::CmpIOp::create(
             beforeB, l, arith::CmpIPredicate::ne, flag, c1I32);
