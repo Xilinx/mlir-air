@@ -6441,8 +6441,7 @@ public:
     // the post-tile fixup that downstream lowering depends on (the
     // pre-PR no-tile path skipped this and exhausted the BD allocator
     // on test/xrt/14_conv2d_i8_extern_vec).
-    auto computeAutoTileSize =
-        [](scf::ForOp forOp) -> SmallVector<unsigned> {
+    auto computeAutoTileSize = [](scf::ForOp forOp) -> SmallVector<unsigned> {
       SmallVector<scf::ForOp> perfectlyNested;
       getPerfectlyNestedLoops(perfectlyNested, forOp);
       unsigned depth = std::max((size_t)1, perfectlyNested.size());
