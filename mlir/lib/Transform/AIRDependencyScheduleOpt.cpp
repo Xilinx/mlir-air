@@ -6429,29 +6429,13 @@ public:
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(shimFors.front());
 
-    // Auto-derive returns tile=1 for every level of the perfectly-nested
-    // shim loop band. The per-channel BD-descriptor pool (halved by ping-
-    // pong) is the binding constraint, not the start-queue depth K=4 that
-    // the original `tile = floor(K/B)` formula budgeted against. Without
-    // a way to reliably predict wrap-and-stride foldability of the
-    // unrolled body, tile=1 is the only universally safe choice --
-    // empirically the only one that both compiles and runs correctly on
-    // the Strix/Phoenix e2e suite. Strip-mining every level by 1 is a
-    // no-op on iteration count but still invokes tilePerfectlyNested +
-    // the post-tile fixup that downstream lowering depends on (the
-    // pre-PR no-tile path skipped this and exhausted the BD allocator
-    // on test/xrt/14_conv2d_i8_extern_vec).
-    auto computeAutoTileSize = [](scf::ForOp forOp) -> SmallVector<unsigned> {
-      SmallVector<scf::ForOp> perfectlyNested;
-      getPerfectlyNestedLoops(perfectlyNested, forOp);
-      unsigned depth = std::max((size_t)1, perfectlyNested.size());
-      return SmallVector<unsigned>(depth, 1);
-    };
-
-    // User-supplied tile sizes win over auto-derive.
-    bool useUserTileSizes = !clTileSizes.empty();
+    // Empty shim-dma-tile-sizes defaults to tiling every level by 1.
+    // tile=1 is an iteration-count no-op but still invokes
+    // tilePerfectlyNested + the post-tile fixup that downstream lowering
+    // depends on (skipping it exhausts the BD allocator on workloads
+    // like test/xrt/14_conv2d_i8_extern_vec).
     SmallVector<Value> optTileSizes;
-    if (useUserTileSizes) {
+    if (!clTileSizes.empty()) {
       optTileSizes = convertVecOfIntToVecOfValue(
           rewriter,
           SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
@@ -6478,17 +6462,18 @@ public:
     };
     // Tile each shim-dma for loop band.
     llvm::SetVector<scf::ForOp> forLoopsToUnroll;
-    const bool tileEachLoop = useUserTileSizes || clAutoDeriveTileSizes;
     for (auto forOp : shimFors) {
-      if (!tileEachLoop)
-        break;
       SmallVector<Value> perLoopTileSizes;
-      if (useUserTileSizes) {
+      if (!optTileSizes.empty()) {
         perLoopTileSizes = optTileSizes;
       } else {
+        // Default: vector of 1s matching perfectly-nested depth.
+        SmallVector<scf::ForOp> nested;
+        getPerfectlyNestedLoops(nested, forOp);
+        unsigned depth = std::max((size_t)1, nested.size());
         rewriter.setInsertionPoint(forOp);
-        perLoopTileSizes =
-            convertVecOfIntToVecOfValue(rewriter, computeAutoTileSize(forOp));
+        perLoopTileSizes = convertVecOfIntToVecOfValue(
+            rewriter, SmallVector<unsigned>(depth, 1));
       }
       assert(!perLoopTileSizes.empty());
       SmallVector<Value> actualTileSizes =

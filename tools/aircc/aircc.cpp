@@ -210,13 +210,6 @@ static cl::list<unsigned> runtimeLoopTilingSizes(
              "Omit to let the BD-queue cost model choose per loop."),
     cl::cat(airCompilerOptions));
 
-static cl::opt<bool> autoDeriveTileSizes(
-    "air-auto-derive-tile-sizes",
-    cl::desc("Derive per-loop shim DMA tile size from the BD-queue + BD-pool "
-             "cost model. On by default; --air-runtime-loop-tiling-sizes "
-             "still overrides when present."),
-    cl::init(true), cl::cat(airCompilerOptions));
-
 static cl::opt<bool> omitAutoBroadcast(
     "omit-auto-broadcast",
     cl::desc("Omit air-broadcast-detection / specialize-dma-broadcast"),
@@ -1097,7 +1090,6 @@ static LogicalResult runAieCompilation() {
     {
       raw_string_ostream os(shimBdPass);
       os << "func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue();
-      // User-supplied sizes win; else cost-model only when opt-in flag set.
       if (!runtimeLoopTilingSizes.empty()) {
         os << " shim-dma-tile-sizes=";
         for (size_t i = 0; i < runtimeLoopTilingSizes.size(); ++i) {
@@ -1105,8 +1097,6 @@ static LogicalResult runAieCompilation() {
             os << ",";
           os << runtimeLoopTilingSizes[i];
         }
-      } else if (autoDeriveTileSizes) {
-        os << " auto-derive-tile-sizes=true";
       }
       os << "})";
     }

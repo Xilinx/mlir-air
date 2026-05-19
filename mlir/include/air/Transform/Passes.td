@@ -1134,11 +1134,8 @@ def AIROptimizeShimDMABDs: Pass<"air-opt-shim-dma-bds", "func::FuncOp"> {
           /*default=*/"\"xcvc1902\"",
            "AIE device to target.">,
     ListOption<"clTileSizes", "shim-dma-tile-sizes", "unsigned",
-               "Shim dma tiling sizes, tiling shim dma bds into smaller repeating ones",
+               "Shim dma tiling sizes. Empty defaults to tiling every level by 1.",
                "llvm::cl::ZeroOrMore">,
-    Option<"clAutoDeriveTileSizes", "auto-derive-tile-sizes", "bool",
-           /*default=*/"false",
-           "If true, auto-derive per-loop shim DMA tile sizes from the BD-queue cost model (tile = K/B where K = XAIE_DMA_MAX_QUEUE_SIZE = 4, B = max distinct BD patterns per shim channel per iter). Ignored on loops where shim-dma-tile-sizes is explicitly set.">,
   ];
 }
 
