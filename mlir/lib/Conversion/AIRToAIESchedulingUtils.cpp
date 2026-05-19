@@ -249,24 +249,6 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
   return one_d_offset;
 }
 
-bool air::chansMappedToEquivalentBDs(air::ChannelInterface chanA,
-                                     air::ChannelInterface chanB) {
-  if (chanA.getMemref() != chanB.getMemref())
-    return false;
-  if (chanA.getOffsets().size() != chanB.getOffsets().size() ||
-      chanA.getSizes().size() != chanB.getSizes().size() ||
-      chanA.getStrides().size() != chanB.getStrides().size())
-    return false;
-  auto zipped_operands =
-      llvm::zip_equal(llvm::concat<Value>(chanA.getOffsets(), chanA.getSizes(),
-                                          chanA.getStrides()),
-                      llvm::concat<Value>(chanB.getOffsets(), chanB.getSizes(),
-                                          chanB.getStrides()));
-  return llvm::all_of(zipped_operands, [](std::tuple<Value, Value> pair) {
-    return isEqualConstantIntOrValue(std::get<0>(pair), std::get<1>(pair));
-  });
-}
-
 // Given a vector of memcpy operations, return a map of their repeat counts,
 // relative to a common ancestor region.
 llvm::MapVector<int, llvm::SetVector<Operation *>>
@@ -276,6 +258,26 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   for (auto o : memcpy_ops) {
     memcpyIOps.insert(o);
   }
+
+  // Two channel ops map to the same shim BD iff memref + offsets/sizes/
+  // strides all match.
+  auto chansMappedToEquivalentBDs = [](air::ChannelInterface chanA,
+                                       air::ChannelInterface chanB) {
+    if (chanA.getMemref() != chanB.getMemref())
+      return false;
+    if (chanA.getOffsets().size() != chanB.getOffsets().size() ||
+        chanA.getSizes().size() != chanB.getSizes().size() ||
+        chanA.getStrides().size() != chanB.getStrides().size())
+      return false;
+    auto zipped_operands = llvm::zip_equal(
+        llvm::concat<Value>(chanA.getOffsets(), chanA.getSizes(),
+                            chanA.getStrides()),
+        llvm::concat<Value>(chanB.getOffsets(), chanB.getSizes(),
+                            chanB.getStrides()));
+    return llvm::all_of(zipped_operands, [](std::tuple<Value, Value> pair) {
+      return isEqualConstantIntOrValue(std::get<0>(pair), std::get<1>(pair));
+    });
+  };
 
   // Check if two channel operations are part of an N-buffer rotation pattern.
   // They are part of the same rotation if:
@@ -317,10 +319,11 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
         dmaA, dmaB, OperationEquivalence::IgnoreLocations);
   };
   auto memcpyIMappedToEquivalentBDs =
-      [dmasMappedToEquivalentBDs](Operation *opA, Operation *opB) {
+      [chansMappedToEquivalentBDs, dmasMappedToEquivalentBDs](Operation *opA,
+                                                              Operation *opB) {
         if (auto chanA = dyn_cast_if_present<air::ChannelInterface>(opA))
           if (auto chanB = dyn_cast_if_present<air::ChannelInterface>(opB))
-            return air::chansMappedToEquivalentBDs(chanA, chanB);
+            return chansMappedToEquivalentBDs(chanA, chanB);
         if (auto dmaA = dyn_cast_if_present<air::DmaMemcpyNdOp>(opA))
           if (auto dmaB = dyn_cast_if_present<air::DmaMemcpyNdOp>(opB))
             return dmasMappedToEquivalentBDs(dmaA, dmaB);

@@ -74,11 +74,6 @@ bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 int64_t get1DOffset(SmallVector<Value> memcpy_offsets,
                     SmallVector<Value> memcpy_strides);
 
-// Two channel ops map to the same shim BD iff memref + offsets/sizes/strides
-// all match.
-bool chansMappedToEquivalentBDs(air::ChannelInterface chanA,
-                                air::ChannelInterface chanB);
-
 // Given a vector of memcpy operations, return a map of their repeat counts,
 // relative to a common ancestor region.
 llvm::MapVector<int, llvm::SetVector<Operation *>>
