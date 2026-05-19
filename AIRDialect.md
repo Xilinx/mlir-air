@@ -817,6 +817,15 @@ Interfaces: `air_AsyncOpInterface`
 
 
 
+## Attributes
+
+### SymmetricHeapMemorySpaceAttr
+
+_Symmetric-heap memory space (cross-rank XGMI-accessible HBM)_
+
+Syntax: `#air.symmetric_heap`
+
+
 ## Type constraints
 
 ### async token type
