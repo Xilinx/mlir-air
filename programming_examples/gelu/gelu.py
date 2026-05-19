@@ -212,7 +212,6 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="gelu",
-            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
@@ -229,7 +228,6 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

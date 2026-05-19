@@ -263,7 +263,6 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format="xclbin",
             instance_name="argmax",
-            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
@@ -280,7 +279,6 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format="xclbin",
-            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

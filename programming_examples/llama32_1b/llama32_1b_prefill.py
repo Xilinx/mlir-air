@@ -139,7 +139,6 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
                 "verbose": cache.verbose,
                 "omit_while_true_loop": not enable_shared_buffers,
                 "omit_pingpong": "all",
-                "runtime_loop_tiling_sizes": [1, 1],
                 "output_format": "elf",
                 "instance_name": "attention_bf16",
             },
@@ -173,7 +172,6 @@ def _attn_backend_kwargs(head_dim):
     return {
         "omit_while_true_loop": not enable_shared_buffers,
         "omit_pingpong": "all",
-        "runtime_loop_tiling_sizes": [1, 1],
         "output_format": "elf",
         "instance_name": "attention_bf16",
     }

@@ -202,7 +202,6 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="vector_ori",
-            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
@@ -217,7 +216,6 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
         )
         backend.compile(mlir_module)
         backend.unload()

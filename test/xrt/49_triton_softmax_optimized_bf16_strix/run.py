@@ -267,7 +267,6 @@ with air.ir.Context() as ctx, Location.unknown():
             debug_ir=args.debug_aircc,
             output_format=args.output_format,
             instance_name="softmax_kernel",
-            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(air_module)
         backend.unload()
@@ -292,7 +291,6 @@ with air.ir.Context() as ctx, Location.unknown():
             debug_ir=args.debug_aircc,
             output_format=args.output_format,
             instance_name="softmax_kernel",
-            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(

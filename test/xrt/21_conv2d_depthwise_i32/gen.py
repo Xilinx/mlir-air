@@ -98,6 +98,5 @@ with air.ir.Context() as ctx, Location.unknown():
 
     backend = XRTBackend(
         air_loop_fusion=True,
-        runtime_loop_tiling_sizes=[2, 4],
     )
     backend.compile(air_module)

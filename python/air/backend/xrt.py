@@ -64,7 +64,6 @@ class XRTBackend(AirBackend):
         omit_pingpong: str = "",
         lower_linalg_to_func: str = None,
         air_loop_fusion: bool = False,
-        runtime_loop_tiling_sizes: list[int] = [],
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
@@ -89,7 +88,6 @@ class XRTBackend(AirBackend):
             omit_pingpong: configure aircc to omit the generation of ping-pong buffering for specific memory levels. Supported values: "", "L1", "L2", "all". Empty string means no omission (default).
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
-            runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
@@ -120,7 +118,6 @@ class XRTBackend(AirBackend):
             self.omit_pingpong = omit_pingpong
         self.lower_linalg_to_func = lower_linalg_to_func
         self.air_loop_fusion = air_loop_fusion
-        self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
@@ -277,9 +274,6 @@ class XRTBackend(AirBackend):
             else:
                 aircc_options += ["-o", output_binary]
                 aircc_options += ["-i", insts]
-
-            for s in self.runtime_loop_tiling_sizes:
-                aircc_options += [f"--air-runtime-loop-tiling-sizes={s}"]
 
             if self.verbose:
                 aircc_options = aircc_options + ["-v"]

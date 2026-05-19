@@ -196,7 +196,6 @@ if args.compile_mode == "compile-and-run":
     runner = XRTRunner(
         verbose=args.verbose,
         omit_while_true_loop=False,
-        runtime_loop_tiling_sizes=[4, 4],
         output_format=args.output_format,
         instance_name="forward",
     )
@@ -216,7 +215,6 @@ elif args.compile_mode == "compile-only":
         omit_while_true_loop=False,
         output_format=args.output_format,
         instance_name="forward",
-        runtime_loop_tiling_sizes=[4, 4],
     )
     module_function = backend.compile(air_module)
 

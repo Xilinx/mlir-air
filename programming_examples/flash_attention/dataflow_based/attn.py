@@ -804,7 +804,6 @@ if __name__ == "__main__":
         omit_while_true_loop=False,
         omit_pingpong=True,
         verbose=False,
-        runtime_loop_tiling_sizes=[1, 1],
         output_format=args.output_format,
         instance_name="attention_bf16",
     )

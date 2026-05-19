@@ -204,7 +204,7 @@ with air.ir.Context() as ctx, Location.unknown():
         # Compile-only mode: generate xclbin and instruction binary without validation
         print("Compile-only mode: generating xclbin and instruction binary...")
         backend = XRTBackend(
-            omit_while_true_loop=False, runtime_loop_tiling_sizes=[4, 4]
+            omit_while_true_loop=False
         )
         module_function = backend.compile(air_module)
         backend.unload()
@@ -222,7 +222,6 @@ with air.ir.Context() as ctx, Location.unknown():
         ###### Compile and test
         runner = XRTRunner(
             omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(

@@ -769,7 +769,6 @@ if __name__ == "__main__":
         runner_kwargs = {
             "verbose": args.verbose,
             "omit_while_true_loop": False,
-            "runtime_loop_tiling_sizes": [2, 2],
             "stack_size": 2048,
         }
         # Only use external kernel library if NOT in direct codegen mode
@@ -792,7 +791,6 @@ if __name__ == "__main__":
         backend_kwargs = {
             "verbose": args.verbose,
             "omit_while_true_loop": False,
-            "runtime_loop_tiling_sizes": [2, 2],
             "stack_size": 2048,
         }
         # Only use external kernel library if NOT in direct codegen mode
@@ -814,7 +812,6 @@ if __name__ == "__main__":
             "target_device": target_device,  # Explicit target based on arch (no xrt dependencies)
             "output_format": "none",  # Skip xclbin generation (no xrt dependencies)
             "omit_while_true_loop": False,
-            "runtime_loop_tiling_sizes": [2, 2],
             "stack_size": 2048,
         }
         # Only use external kernel library if NOT in direct codegen mode

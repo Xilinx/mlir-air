@@ -241,7 +241,6 @@ with air.ir.Context() as ctx, Location.unknown():
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
             output_format="elf" if needs_padding else "xclbin",
             instance_name="matmul_bf16",
         )
@@ -272,7 +271,6 @@ with air.ir.Context() as ctx, Location.unknown():
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(air_module)
         backend.unload()

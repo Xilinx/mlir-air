@@ -816,7 +816,6 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format="elf",
             instance_name="mnist_fc",
-            runtime_loop_tiling_sizes=[1, 1],
         )
         exit(
             runner.run_test(
@@ -842,7 +841,6 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format="elf",
-            runtime_loop_tiling_sizes=[1, 1],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

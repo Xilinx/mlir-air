@@ -161,6 +161,5 @@ with air.ir.Context() as ctx, Location.unknown():
 
     backend = XRTBackend(
         air_loop_fusion=True,
-        runtime_loop_tiling_sizes=[8, 1],  # Note: [4, 4] gives numeric error. Why?
     )
     backend.compile(air_module)
