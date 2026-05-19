@@ -158,16 +158,10 @@ module attributes {gpu.container_module} {
       %is_producer = arith.cmpi eq, %rid, %c0_idx : index
       scf.if %is_producer {
         // ---- Producer: AIR hierarchy nest -----------------------------
-        // 1 block, 1 segment, 64 herd PEs (one full MI3xx wavefront).
-        // Per AIRComputeModel.md §4.1 the herd iteration space maps
-        // directly to gpu blockDim and herd tile ids to thread ids — so
-        // `air.herd tile (%tx, %ty) in (%ntx=64, %nty=1)` lowers to
-        // `gpu.launch threads in (64,1,1)` with `%tx = threadIdx.x`.
-        // We use 64 (the wavefront size) so the consumer's
-        // `gpu.shuffle width=64` can see every producer lane.
-        // Only lanes 0..31 do real work; lanes 32..63 are idle but live.
-        // Declare size constants locally to avoid cross-scf.if-region uses
-        // that the air.rank inliner doesn't track through nested cloning.
+        // Per AIRComputeModel.md §2.3 / §4.1 a PE is one wavefront. So
+        // a herd of (1, 1) gives us exactly one wave (64 threads on MI3xx).
+        // Lanes inside the PE are accessed via `gpu.lane_id`; lanes 0..30
+        // publish payload, lane 31 publishes the sync flag = 1.
         %p_c1 = arith.constant 1 : index
         air.launch (%bx) in (%nx = %p_c1)
             args(%ldata = %data_m, %lbases = %bases)
@@ -177,8 +171,7 @@ module attributes {gpu.container_module} {
               : memref<32xi32, #air.symmetric_heap>,
                 memref<?xindex, #air.symmetric_heap> {
             %p_c1_s = arith.constant 1 : index
-            %p_c64_s = arith.constant 64 : index
-            air.herd tile (%tx, %ty) in (%ntx = %p_c64_s, %nty = %p_c1_s)
+            air.herd tile (%tx, %ty) in (%ntx = %p_c1_s, %nty = %p_c1_s)
                 args(%hdata = %sdata, %hbases = %sbases)
                 : memref<32xi32, #air.symmetric_heap>,
                   memref<?xindex, #air.symmetric_heap> {
@@ -189,17 +182,18 @@ module attributes {gpu.container_module} {
               %from = arith.constant 0 : index
               %to   = arith.constant 1 : index
 
-              %active = arith.cmpi ult, %tx, %c32_h : index
+              %lane = gpu.lane_id
+              %lane_i32 = arith.index_cast %lane : index to i32
+              %active = arith.cmpi ult, %lane, %c32_h : index
               %peer_data = air.translate %hdata, %from, %to, %hbases
                   : memref<32xi32, #air.symmetric_heap>,
                     memref<?xindex, #air.symmetric_heap>
 
               scf.if %active {
-                %is_flag  = arith.cmpi eq, %tx, %c31_h : index
-                %tid_i32  = arith.index_cast %tx : index to i32
-                %payload  = arith.addi %tid_i32, %c100_i32_h : i32
+                %is_flag  = arith.cmpi eq, %lane, %c31_h : index
+                %payload  = arith.addi %lane_i32, %c100_i32_h : i32
                 %val      = arith.select %is_flag, %c1_i32_h, %payload : i32
-                memref.store %val, %peer_data[%tx]
+                memref.store %val, %peer_data[%lane]
                     : memref<32xi32, #air.symmetric_heap>
               }
               air.herd_terminator
@@ -223,9 +217,9 @@ module attributes {gpu.container_module} {
               to memref<32xi32, #air.symmetric_heap>
 
           // ---- Consumer: AIR hierarchy nest ---------------------------
-          // Same shape as producer: 1×1 launch, 64×1 herd → blockDim
-          // (64,1,1), one full wavefront so that the gpu.shuffle below
-          // (width=64) can read the producer's flag lane.
+          // Same shape as producer: 1×1 launch, 1×1 herd → one PE = one
+          // wave (64 threads on MI3xx). Lane id within the PE is from
+          // gpu.lane_id; gpu.shuffle width=64 sees every producer lane.
           %c_c1 = arith.constant 1 : index
           air.launch (%bx) in (%nx = %c_c1)
               args(%ldata = %data_m, %lvb = %verify_m)
@@ -235,8 +229,7 @@ module attributes {gpu.container_module} {
                 : memref<32xi32, #air.symmetric_heap>,
                   memref<32xi32, #air.symmetric_heap> {
               %c_c1_s = arith.constant 1 : index
-              %c_c64_s = arith.constant 64 : index
-              air.herd tile (%tx, %ty) in (%ntx = %c_c64_s, %nty = %c_c1_s)
+              air.herd tile (%tx, %ty) in (%ntx = %c_c1_s, %nty = %c_c1_s)
                   args(%hdata = %sdata, %hvb = %svb)
                   : memref<32xi32, #air.symmetric_heap>,
                     memref<32xi32, #air.symmetric_heap> {
@@ -246,7 +239,8 @@ module attributes {gpu.container_module} {
                 %c64_i32_h = arith.constant 64 : i32
                 %c32_h     = arith.constant 32 : index
 
-                %active = arith.cmpi ult, %tx, %c32_h : index
+                %lane = gpu.lane_id
+                %active = arith.cmpi ult, %lane, %c32_h : index
 
                 // Spin: zero-result scf.while + memref.atomic_rmw — upstream
                 // idiom from mlir/test/Integration/GPU/CUDA/concurrent-
@@ -256,7 +250,7 @@ module attributes {gpu.container_module} {
                 // "observable across producers" in the IR.
                 scf.while : () -> () {
                   %v = scf.if %active -> i32 {
-                    %loaded = memref.atomic_rmw addi %c0_i32_h, %hdata[%tx]
+                    %loaded = memref.atomic_rmw addi %c0_i32_h, %hdata[%lane]
                         : (i32, memref<32xi32, #air.symmetric_heap>) -> i32
                     scf.yield %loaded : i32
                   } else {
@@ -272,9 +266,9 @@ module attributes {gpu.container_module} {
                 // Lane-by-lane readback to the consumer-owned verify buffer
                 // for host check.
                 scf.if %active {
-                  %final_v = memref.load %hdata[%tx]
+                  %final_v = memref.load %hdata[%lane]
                       : memref<32xi32, #air.symmetric_heap>
-                  memref.store %final_v, %hvb[%tx]
+                  memref.store %final_v, %hvb[%lane]
                       : memref<32xi32, #air.symmetric_heap>
                 }
                 air.herd_terminator

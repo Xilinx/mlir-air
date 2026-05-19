@@ -575,7 +575,15 @@ struct ConvertAIRToROCDLPass
           Block &herdBlock = herdOp.getRegion().front();
           Location loc = herdOp.getLoc();
 
-          // Remap herd block arguments before moving ops out.
+          // Remap herd block arguments per the AIR compute model
+          // (docs/AIRComputeModel.md §2.3 + §4): a PE is one wavefront, so
+          // the herd's tile ids name warps, not threads:
+          //   tile_x   = thread_id_x / wave_size  (= warp-id within block)
+          //   tile_y   = thread_id_y               (block-y is unscaled)
+          //   size_x   = block_dim_x / wave_size
+          //   size_y   = block_dim_y
+          // Lane within a PE is available via gpu.lane_id inside the herd
+          // body; user code uses it directly for wave-cooperative ops.
           // Block args layout: [tile_x, tile_y, size_x, size_y, kernel_args...]
           builder.setInsertionPoint(herdOp);
           Value tidx = gpu::ThreadIdOp::create(
@@ -586,10 +594,15 @@ struct ConvertAIRToROCDLPass
               builder, loc, builder.getIndexType(), gpu::Dimension::x);
           Value bdimy = gpu::BlockDimOp::create(
               builder, loc, builder.getIndexType(), gpu::Dimension::y);
+          Value waveSizeC = arith::ConstantOp::create(
+              builder, loc, builder.getIndexAttr(waveSize));
+          Value warpIdX = arith::DivUIOp::create(builder, loc, tidx, waveSizeC);
+          Value numWarpsX =
+              arith::DivUIOp::create(builder, loc, bdimx, waveSizeC);
 
-          herdBlock.getArgument(0).replaceAllUsesWith(tidx);
+          herdBlock.getArgument(0).replaceAllUsesWith(warpIdX);
           herdBlock.getArgument(1).replaceAllUsesWith(tidy);
-          herdBlock.getArgument(2).replaceAllUsesWith(bdimx);
+          herdBlock.getArgument(2).replaceAllUsesWith(numWarpsX);
           herdBlock.getArgument(3).replaceAllUsesWith(bdimy);
 
           // Remap kernel operands to the values passed from enclosing scope.
@@ -631,10 +644,17 @@ struct ConvertAIRToROCDLPass
     Operation *blockYValOp = blkIdx[1].getDefiningOp();
     blockYValOp->moveBefore(launchOp);
 
+    // Per AIR compute model §2.3: PE = wavefront. blockDim.x = herd.Nx *
+    // wave_size so the herd's PE count becomes a warp count, not a thread
+    // count. blockDim.y stays at herd.Ny (PEs are 1D in the wave dim).
+    Value waveSizeC =
+        arith::ConstantOp::create(builder, loc, builder.getIndexAttr(waveSize));
+    Value blockXVal = arith::MulIOp::create(builder, loc, blkIdx[0], waveSizeC);
+
     // Create the gpu.launch operation
     auto gpuLaunchOp =
         gpu::LaunchOp::create(builder, loc, gridXVal, gridYVal, gridZVal,
-                              blkIdx[0], blkIdx[1], blockZVal);
+                              blockXVal, blkIdx[1], blockZVal);
 
     // Get thread indices for use within the gpu.launch body
     OpBuilder::InsertionGuard guard(builder);

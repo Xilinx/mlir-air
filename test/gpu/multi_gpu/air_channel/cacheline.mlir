@@ -157,9 +157,10 @@ module attributes {gpu.container_module} {
           air.segment args(%sdata = %ldata, %sbases = %lbases)
               : memref<32xi32, #air.symmetric_heap>,
                 memref<?xindex, #air.symmetric_heap> {
+            // Per §2.3 / §4.1: PE = wave. A (1,1) herd gives us one PE =
+            // one wavefront. Lane index inside the PE is gpu.lane_id.
             %p_c1_s = arith.constant 1 : index
-            %p_c64_s = arith.constant 64 : index
-            air.herd tile (%tx, %ty) in (%ntx = %p_c64_s, %nty = %p_c1_s)
+            air.herd tile (%tx, %ty) in (%ntx = %p_c1_s, %nty = %p_c1_s)
                 args(%hdata = %sdata, %hbases = %sbases)
                 : memref<32xi32, #air.symmetric_heap>,
                   memref<?xindex, #air.symmetric_heap> {
@@ -171,13 +172,14 @@ module attributes {gpu.container_module} {
               // Fill producer's local %hdata[lane] with payload `lane + 100`
               // for lanes 0..30; leave lane 31 alone (the put expansion
               // overwrites it with the sync flag).
-              %active = arith.cmpi ult, %tx, %c32_h : index
-              %not_flag = arith.cmpi ne, %tx, %c31_h : index
+              %lane = gpu.lane_id
+              %lane_i32 = arith.index_cast %lane : index to i32
+              %active = arith.cmpi ult, %lane, %c32_h : index
+              %not_flag = arith.cmpi ne, %lane, %c31_h : index
               %do_fill = arith.andi %active, %not_flag : i1
               scf.if %do_fill {
-                %tid_i32  = arith.index_cast %tx : index to i32
-                %payload  = arith.addi %tid_i32, %c100_h : i32
-                memref.store %payload, %hdata[%tx]
+                %payload  = arith.addi %lane_i32, %c100_h : i32
+                memref.store %payload, %hdata[%lane]
                     : memref<32xi32, #air.symmetric_heap>
               }
 
@@ -206,8 +208,7 @@ module attributes {gpu.container_module} {
                 : memref<32xi32, #air.symmetric_heap>,
                   memref<?xindex, #air.symmetric_heap> {
               %c_c1_s = arith.constant 1 : index
-              %c_c64_s = arith.constant 64 : index
-              air.herd tile (%tx, %ty) in (%ntx = %c_c64_s, %nty = %c_c1_s)
+              air.herd tile (%tx, %ty) in (%ntx = %c_c1_s, %nty = %c_c1_s)
                   args(%hdata = %sdata, %hbases = %sbases)
                   : memref<32xi32, #air.symmetric_heap>,
                     memref<?xindex, #air.symmetric_heap> {

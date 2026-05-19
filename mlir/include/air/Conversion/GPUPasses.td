@@ -14,11 +14,33 @@ def ConvertAIRToROCDL : Pass<"air-to-rocdl", "ModuleOp"> {
   let summary = "Lower AIR dialect to ROCDL dialect";
   let constructor = "xilinx::air::createAIRToROCDLPass()";
   let description = [{
+    Lowers `air.launch`/`air.segment`/`air.herd` into `gpu.launch` per the
+    AIR compute model (docs/AIRComputeModel.md §2.3, §4):
+
+      - `air.launch (bx,by) in (gbx,gby)` → `gpu.launch gridDim = (gbx,gby,1)`
+      - `air.segment` body → `gpu.launch` body (one workgroup on one CU)
+      - `air.herd tile (x,y) in (Nx,Ny)` → an inline parallel block. PE = one
+        wavefront, so `blockDim = (Nx * wave_size, Ny, 1)` and the herd tile
+        ids map to warp-id-within-block:
+          tile_x → `gpu.thread_id x / wave_size`
+          tile_y → `gpu.thread_id y`
+          size_x → `gpu.block_dim x / wave_size`
+          size_y → `gpu.block_dim y`
+
+    Lane index within a PE is accessible via `gpu.lane_id` inside the herd
+    body, so wave-cooperative ops (`gpu.shuffle`, ballots) work naturally
+    without the user having to size the herd in units of the wavefront
+    width.
   }];
   let dependentDialects = [
-    "gpu::GPUDialect", "ROCDL::ROCDLDialect", "LLVM::LLVMDialect"
+    "gpu::GPUDialect", "ROCDL::ROCDLDialect", "LLVM::LLVMDialect",
+    "mlir::arith::ArithDialect"
   ];
-  let options = [];
+  let options = [
+    Option<"waveSize", "wave-size", "uint64_t", "/*default=*/64",
+           "Wavefront width for the target GPU (64 on MI3xx, 32 on NVIDIA). "
+           "Determines the multiplier between herd Nx and gpu.blockDim.x.">
+  ];
 }
 
 def AIRTranslateToLLVM : Pass<"air-translate-to-llvm", "ModuleOp"> {

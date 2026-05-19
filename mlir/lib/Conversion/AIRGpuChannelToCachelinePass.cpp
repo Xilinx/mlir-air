@@ -109,13 +109,19 @@ static bool isCachelineMemref(Type ty) {
 
 // Emit the put-side cacheline write inside the herd body, replacing
 // the put op.
+//
+// Per the AIR compute model (PE = wavefront), the herd body executes once
+// per PE; lanes within the PE are addressed via `gpu.lane_id`. So the
+// cooperative cacheline write is across the 64 lanes of one PE, with
+// lanes 0..30 writing payload and lane 31 writing the sync flag.
 static void expandPutToCachelineWrite(OpBuilder &b, air::ChannelPutOp put,
                                       int64_t fromRank, int64_t toRank,
-                                      Value bases, Value tileX) {
+                                      Value bases) {
   Location loc = put.getLoc();
   b.setInsertionPoint(put);
   Value src = put.getSrc();
   auto memrefTy = cast<MemRefType>(src.getType());
+  auto i32Ty = b.getI32Type();
 
   Value fromIdx = arith::ConstantOp::create(b, loc, b.getIndexAttr(fromRank));
   Value toIdx = arith::ConstantOp::create(b, loc, b.getIndexAttr(toRank));
@@ -125,17 +131,21 @@ static void expandPutToCachelineWrite(OpBuilder &b, air::ChannelPutOp put,
   Value c32 = arith::ConstantOp::create(b, loc, b.getIndexAttr(32));
   Value c31 = arith::ConstantOp::create(b, loc, b.getIndexAttr(31));
   Value c1I32 =
-      arith::ConstantOp::create(b, loc, b.getI32Type(), b.getI32IntegerAttr(1));
+      arith::ConstantOp::create(b, loc, i32Ty, b.getI32IntegerAttr(1));
+
+  // Lane id within the PE (0..wavesize-1). gpu.lane_id returns Index.
+  Value lane = gpu::LaneIdOp::create(b, loc, /*upperBound=*/IntegerAttr{});
+
   Value active =
-      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult, tileX, c32);
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult, lane, c32);
 
   auto ifOp = scf::IfOp::create(b, loc, active, /*withElseRegion=*/false);
   OpBuilder thenB = ifOp.getThenBodyBuilder();
-  Value payload = memref::LoadOp::create(thenB, loc, src, ValueRange{tileX});
+  Value payload = memref::LoadOp::create(thenB, loc, src, ValueRange{lane});
   Value isFlag =
-      arith::CmpIOp::create(thenB, loc, arith::CmpIPredicate::eq, tileX, c31);
+      arith::CmpIOp::create(thenB, loc, arith::CmpIPredicate::eq, lane, c31);
   Value val = arith::SelectOp::create(thenB, loc, isFlag, c1I32, payload);
-  memref::StoreOp::create(thenB, loc, val, peer, ValueRange{tileX});
+  memref::StoreOp::create(thenB, loc, val, peer, ValueRange{lane});
 
   put.erase();
 }
@@ -145,16 +155,18 @@ static void expandPutToCachelineWrite(OpBuilder &b, air::ChannelPutOp put,
 // Shape mirrors the upstream MLIR pattern for cross-kernel polling
 // (mlir/test/Integration/GPU/CUDA/concurrent-kernels.mlir): a zero-result
 // `scf.while` whose body uses `memref.atomic_rmw` for the observable read.
-// The `addi %c0` is functionally a load — same returned value — but the
-// atomic_rmw op carries both Read and Write memory effects, which:
+// `addi %c0` is functionally a load (returns the prior value, adds 0) but
+// the atomic_rmw op carries both Read and Write memory effects, which:
 //   1. Prevent the greedy rewriter in `air-to-rocdl` from DCEing the spin
 //      (the Write effect breaks the all-reads check in
 //      `wouldOpBeTriviallyDead`).
 //   2. Encode "this read must be observable across producers" in the IR,
 //      so subsequent lowering passes don't need to be trusted to keep a
 //      plain `memref.load` observable.
-static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get,
-                                     Value tileX) {
+//
+// Per the AIR compute model (PE = wavefront), lane index inside the PE
+// comes from `gpu.lane_id`; the gpu.shuffle width matches the wavefront.
+static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get) {
   Location loc = get.getLoc();
   b.setInsertionPoint(get);
   Value dst = get.getDst();
@@ -169,8 +181,10 @@ static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get,
       arith::ConstantOp::create(b, loc, i32Ty, b.getI32IntegerAttr(31));
   Value c64I32 =
       arith::ConstantOp::create(b, loc, i32Ty, b.getI32IntegerAttr(64));
+
+  Value lane = gpu::LaneIdOp::create(b, loc, /*upperBound=*/IntegerAttr{});
   Value active =
-      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult, tileX, c32);
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult, lane, c32);
 
   scf::WhileOp::create(
       b, loc, TypeRange{}, ValueRange{},
@@ -182,7 +196,7 @@ static void expandGetToCachelineSpin(OpBuilder &b, air::ChannelGetOp get,
           OpBuilder thenB = innerIf.getThenBodyBuilder();
           Value loaded = memref::AtomicRMWOp::create(
               thenB, l, i32Ty, arith::AtomicRMWKind::addi, c0I32, dst,
-              ValueRange{tileX});
+              ValueRange{lane});
           scf::YieldOp::create(thenB, l, ValueRange{loaded});
         }
         {
@@ -291,14 +305,12 @@ struct AIRGpuChannelToCachelinePass
         return signalPassFailure();
       }
 
-      // tileX = first herd block arg (`%tx`), used as the lane id.
-      Value tileX = putHerd.getIds()[0];
-      Value tileXGet = getHerd.getIds()[0];
-
-      // 7-8. Expand put and get; erase the channel symbol.
+      // Per AIR compute model (PE = wavefront), the herd body runs once
+      // per PE; lane index within the PE comes from `gpu.lane_id` inside
+      // the expansion, not from the herd tile ids.
       expandPutToCachelineWrite(builder, put, *producerRank, *consumerRank,
-                                putBases, tileX);
-      expandGetToCachelineSpin(builder, get, tileXGet);
+                                putBases);
+      expandGetToCachelineSpin(builder, get);
       chan.erase();
     }
   }

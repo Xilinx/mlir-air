@@ -19,7 +19,10 @@
 
 // CHECK-LABEL: @cacheline_pair
 // CHECK-NOT: air.channel @C
+// Put expansion: per-lane via gpu.lane_id (AIR model: PE = wavefront, so
+// the herd body runs once per PE and lanes are addressed via gpu.lane_id).
 // CHECK: air.translate
+// CHECK: gpu.lane_id
 // CHECK: scf.if
 // CHECK: memref.load
 // CHECK: arith.select
@@ -28,6 +31,7 @@
 // idiom; see mlir/test/Integration/GPU/CUDA/concurrent-kernels.mlir).
 // The atomic_rmw's Write effect keeps the spin alive past DCE in
 // subsequent passes, and encodes "observable read" semantics in the IR.
+// CHECK: gpu.lane_id
 // CHECK: scf.while
 // CHECK: scf.if
 // CHECK: memref.atomic_rmw addi
