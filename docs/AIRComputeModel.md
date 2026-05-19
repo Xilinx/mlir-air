@@ -631,10 +631,7 @@ dimensions depend on the target backend:
   resource requirements (register file, LDS, wavefront slots) of all PE
   instances must fit within one CU. On MI3xx devices a CU provides fewer than
   32 wavefront slots, so the total number of PE instances (`%Nx × %Ny`) is
-  correspondingly limited. The lane index within a PE is accessible via
-  `gpu.lane_id` inside the herd body; wave-cooperative ops (`gpu.shuffle`,
-  ballots, subgroup reductions) operate within one PE naturally because a
-  PE *is* one wavefront.
+  correspondingly limited.
 
 #### Synchrony
 
