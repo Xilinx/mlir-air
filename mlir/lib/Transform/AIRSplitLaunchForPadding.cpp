@@ -58,16 +58,28 @@ static unsigned traceFuncArgIdx(Value memref) {
   return UINT_MAX;
 }
 
-// Collect tile-size candidates from arith.muli uses of blockIdx.
+// Collect tile-size candidates from arith.muli uses of blockIdx. Traces
+// through arith.index_cast chains, which the canonicalizer no longer folds
+// away after llvm/llvm-project#189042 (it used to incorrectly drop
+// index → iN → index round-trips even when iN is narrower than index).
 static void collectTileSizeCandidates(Value blockIdx,
                                       SmallVectorImpl<int64_t> &candidates) {
-  for (auto &use : blockIdx.getUses()) {
-    if (auto mulOp = dyn_cast<arith::MulIOp>(use.getOwner())) {
-      Value other =
-          (mulOp.getLhs() == blockIdx) ? mulOp.getRhs() : mulOp.getLhs();
-      if (auto constVal = getConstantIntValue(other))
-        if (*constVal > 0)
-          candidates.push_back(*constVal);
+  SmallVector<Value> worklist{blockIdx};
+  SmallPtrSet<Value, 8> visited{blockIdx};
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    for (auto &use : v.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto mulOp = dyn_cast<arith::MulIOp>(user)) {
+        Value other = (mulOp.getLhs() == v) ? mulOp.getRhs() : mulOp.getLhs();
+        if (auto constVal = getConstantIntValue(other))
+          if (*constVal > 0)
+            candidates.push_back(*constVal);
+      } else if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(user)) {
+        Value result = user->getResult(0);
+        if (visited.insert(result).second)
+          worklist.push_back(result);
+      }
     }
   }
 }
