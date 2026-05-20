@@ -13,7 +13,7 @@
 // so the launch S2MM count is 4. Splitting 2× would lift it to 8 > cap=4 and
 // must be rejected via the S2MM-direction branch of the cap check.
 
-// CHECK-COUNT-4: remark: air-split-l2-memref: skipping split (factor=2) on memref @chan_out to avoid pushing launch S2MM endpoint count from 4 to 8 (cap=4)
+// CHECK-COUNT-4: remark: air-split-l2-memref: skipping split (factor=2) on L2 alloc via channel @chan_out to avoid pushing launch S2MM endpoint count from 4 to 8 (cap=4)
 // CHECK: air.channel @chan_out [4]
 // CHECK-NOT: air.channel @chan_out [2, 4]
 // CHECK-LABEL: func.func @test_s2mm

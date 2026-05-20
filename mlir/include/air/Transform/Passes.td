@@ -1545,9 +1545,9 @@ def AIRSplitL2MemrefForBufferConstraintPass : Pass<"air-split-l2-memref", "func:
     Option<"clNumTilesPerL2Tile", "tiles-per-l2-tile", "unsigned", /*default=*/"4",
            "Number of compute tiles per L2 memory tile. Used to estimate if an air.segment shall allocate to multiple L2 memory tiles, and therefore requires L2 memref splitting.">,
     Option<"clMaxLaunchChannelsMM2S", "max-launch-channels-mm2s", "unsigned", /*default=*/"0",
-           "Per-launch cap on the number of distinct launch-scope channel endpoints in the MM2S direction (puts whose memref operand is an air.launch arg). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).">,
+           "Per-launch cap on the number of distinct launch-scope channel endpoints in the MM2S direction (air.channel.put ops directly under air.launch, i.e. not nested in any air.segment). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).">,
     Option<"clMaxLaunchChannelsS2MM", "max-launch-channels-s2mm", "unsigned", /*default=*/"0",
-           "Per-launch cap on the number of distinct launch-scope channel endpoints in the S2MM direction (gets whose memref operand is an air.launch arg). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).">,
+           "Per-launch cap on the number of distinct launch-scope channel endpoints in the S2MM direction (air.channel.get ops directly under air.launch, i.e. not nested in any air.segment). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).">,
   ];
 }
 

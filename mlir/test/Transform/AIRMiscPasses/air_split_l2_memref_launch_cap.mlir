@@ -10,12 +10,15 @@
 // chan_in [4] has 4 launch-level puts (1/col). Splitting the L2 buf 2x would
 // prepend a 2 to the channel shape, doubling launch-level MM2S endpoint count
 // from 4 → 8. With cap=4 set, the pass must emit a skip remark for every
-// candidate alloc and leave chan_in unchanged. The cumulative-tracking logic
-// records committedFactor[chan_in] = max(1, 2) = 2 on the first attempted
-// (skipped) alloc so later allocs sharing chan_in see the same total, not a
-// 2^N inflation. Legacy behavior (cap=0) is covered by air_split_l2_memref.mlir.
+// candidate alloc and leave chan_in unchanged. Cumulative tracking only
+// commits a factor AFTER an alloc is recorded in the split plan, so skipped
+// allocs do not raise the running total — each of the 4 sharing allocs sees
+// the same pre=4, hypTotal=8 view and is independently rejected. Cumulative
+// tracking matters in the NOSKIP regime: it caps the per-symbol multiplier
+// at max(1, 2) = 2 instead of 2^4. Legacy behavior (cap=0) is covered by
+// air_split_l2_memref.mlir.
 
-// CHECK-COUNT-4: remark: air-split-l2-memref: skipping split (factor=2) on memref @chan_in to avoid pushing launch MM2S endpoint count from 4 to 8 (cap=4)
+// CHECK-COUNT-4: remark: air-split-l2-memref: skipping split (factor=2) on L2 alloc via channel @chan_in to avoid pushing launch MM2S endpoint count from 4 to 8 (cap=4)
 // CHECK: air.channel @chan_in [4]
 // CHECK-NOT: air.channel @chan_in [2, 4]
 // CHECK-LABEL: func.func @test

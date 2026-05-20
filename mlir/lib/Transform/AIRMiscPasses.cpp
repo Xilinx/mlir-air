@@ -2230,11 +2230,13 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
 
     // Launch-level endpoint cap. Splitting tiles the single-channel side from
     // 1 → tilingFactor instances per memref. When that channel has any
-    // launch-level ops (memref operand is an air.launch arg), tiling multiplies
-    // the per-launch endpoint count for that direction. Skip the split when
-    // doing so would push the total past the user-supplied cap. The cap
-    // expresses the AIR-level budget for launch-arg-touching channels in one
-    // launch; backends map it to their own resource (e.g. shim DMAs for AIE).
+    // launch-level put/get ops (here: ChannelInterface ops directly under
+    // air.launch, i.e. not nested in any air.segment — the structural proxy
+    // used in `getRawLaunchEndpoints`), tiling multiplies the per-launch
+    // endpoint count for that direction. Skip the split when doing so would
+    // push the total past the user-supplied cap. The cap expresses the
+    // AIR-level budget for launch-scope channels in one launch; backends map
+    // it to their own resource (e.g. shim DMAs for AIE).
     // Track commit (a few lines below) so cumulative splits across allocs
     // sharing one channel symbol are accounted for.
     StringRef pendingCommitSym;
@@ -2285,7 +2287,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
           unsigned hypTotal = currentTotal + thisRaw * (newFactor - currFactor);
           if (hypTotal > cap) {
             allocOp->emitRemark("air-split-l2-memref: skipping split (factor=")
-                << tilingFactor << ") on memref @" << singleSym
+                << tilingFactor << ") on L2 alloc via channel @" << singleSym
                 << " to avoid pushing launch "
                 << (launchDirIsMM2S ? "MM2S" : "S2MM")
                 << " endpoint count from " << currentTotal << " to " << hypTotal
