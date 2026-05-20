@@ -54,3 +54,31 @@ def test_rank():
                 @herd(name="hrd", sizes=[2, 2])
                 def herd_body(x, y, sx, sy):
                     AddIOp(x, y)
+
+
+# Regression: attributes= kwarg on Launch/Segment/Herd must be attached to
+# the underlying op (previously accepted but silently dropped).
+# CHECK-LABEL: TEST: test_attributes_kwarg
+# CHECK: air.launch
+# CHECK-SAME: {air.shim_dma_tile_sizes = array<i64: 0>, launch_tag = "L"}
+# CHECK: air.segment @seg
+# CHECK-SAME: {segment_tag = "S"}
+# CHECK: air.herd @hrd
+# CHECK-SAME: {herd_tag = "H"}
+@constructAndPrintInFunc
+@module_builder
+def test_attributes_kwarg():
+    @launch(
+        attributes={
+            "air.shim_dma_tile_sizes": DenseI64ArrayAttr.get([0]),
+            "launch_tag": StringAttr.get("L"),
+        }
+    )
+    def launch_body():
+        @segment(name="seg", attributes={"segment_tag": StringAttr.get("S")})
+        def segment_body():
+            @herd(
+                name="hrd", sizes=[1, 1], attributes={"herd_tag": StringAttr.get("H")}
+            )
+            def herd_body(x, y, sx, sy):
+                AddIOp(x, y)

@@ -6428,9 +6428,8 @@ public:
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(shimFors.front());
 
-    // `=0` sentinel: skip tiling globally; rely on the wrap-stride fold
-    // to produce multi-D BDs. See Passes.td. Any `0` mixed with other
-    // sizes would hit assert(max > 0) in findLargestFactor below -- reject
+    // `=0` sentinel: skip tiling globally. Any `0` mixed with other sizes
+    // would hit assert(max > 0) in findLargestFactor below -- reject
     // explicitly so the user gets a diagnostic instead of an assert.
     bool tilingDisabled = clTileSizes.size() == 1 && clTileSizes[0] == 0;
     if (!tilingDisabled && llvm::is_contained(clTileSizes, 0u)) {
@@ -6449,8 +6448,6 @@ public:
           rewriter,
           SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
     }
-    // Helper function getting the actual tiling sizes based on the specified
-    // loop band's depth and trip counts.
     auto getActualTileSizesPerScfRoot = [](OpBuilder &b, scf::ForOp root,
                                            SmallVector<Value> optTileSizes) {
       OpBuilder::InsertionGuard guard(b);
@@ -6469,8 +6466,16 @@ public:
       }
       return actualTileSizes;
     };
-    // Tile each shim-dma for loop band. Launches NOT in `tiledLaunches`
-    // need the end-of-launch wait_all fallback further down.
+    // Tile-size vector of length = root's perfectly-nested depth, filled
+    // with `value`. Used by the default (value=1) and attribute auto-expand.
+    auto tileSizesByDepth = [&](scf::ForOp root, unsigned value) {
+      SmallVector<scf::ForOp> nested;
+      getPerfectlyNestedLoops(nested, root);
+      unsigned depth = std::max((size_t)1, nested.size());
+      rewriter.setInsertionPoint(root);
+      return convertVecOfIntToVecOfValue(rewriter,
+                                         SmallVector<unsigned>(depth, value));
+    };
     llvm::SetVector<scf::ForOp> forLoopsToUnroll;
     llvm::SetVector<air::LaunchOp> tiledLaunches;
     if (tilingDisabled)
@@ -6485,27 +6490,20 @@ public:
       if (!optTileSizes.empty()) {
         perLoopTileSizes = optTileSizes;
       } else if (launchAttr) {
-        SmallVector<unsigned> attrSizes;
-        for (int64_t v : launchAttr.asArrayRef())
-          attrSizes.push_back(static_cast<unsigned>(v));
+        ArrayRef<int64_t> attrSizes = launchAttr.asArrayRef();
         if (attrSizes.size() == 1) {
           if (attrSizes[0] == 0)
-            continue; // sentinel: skip tiling for this launch.
-          SmallVector<scf::ForOp> nested;
-          getPerfectlyNestedLoops(nested, forOp);
-          unsigned depth = std::max((size_t)1, nested.size());
-          attrSizes.assign(depth, attrSizes[0]);
+            continue; // per-launch skip-tile sentinel.
+          perLoopTileSizes =
+              tileSizesByDepth(forOp, static_cast<unsigned>(attrSizes[0]));
+        } else {
+          rewriter.setInsertionPoint(forOp);
+          perLoopTileSizes = convertVecOfIntToVecOfValue(
+              rewriter,
+              SmallVector<unsigned>(attrSizes.begin(), attrSizes.end()));
         }
-        rewriter.setInsertionPoint(forOp);
-        perLoopTileSizes = convertVecOfIntToVecOfValue(rewriter, attrSizes);
       } else {
-        // Default: vector of 1s matching perfectly-nested depth.
-        SmallVector<scf::ForOp> nested;
-        getPerfectlyNestedLoops(nested, forOp);
-        unsigned depth = std::max((size_t)1, nested.size());
-        rewriter.setInsertionPoint(forOp);
-        perLoopTileSizes = convertVecOfIntToVecOfValue(
-            rewriter, SmallVector<unsigned>(depth, 1));
+        perLoopTileSizes = tileSizesByDepth(forOp, 1);
       }
       assert(!perLoopTileSizes.empty());
       if (enclosingLaunch)
@@ -6599,12 +6597,10 @@ public:
     // Apply DMA folding.
     applyAIRL3DmaFoldingPatterns(func, *device);
 
-    // Fallback end-of-block wait_all: func body when nothing tiled anywhere
-    // (no-launch case), plus every async launch whose shim fors did NOT get
-    // tiled above (avoids fire-and-forget DMAs across launch transitions).
-    // Use generateWaitAllToTerminateBlock so we gather ALL dangling async
-    // tokens in the block, not just channel ops directly at block scope --
-    // tokens produced by surviving scf.for loops would otherwise be missed.
+    // Fallback end-of-block wait_all: func body when nothing tiled anywhere,
+    // plus every async launch whose shim fors did NOT get tiled. Uses
+    // generateWaitAllToTerminateBlock to gather all dangling async tokens
+    // (tokens inside surviving scf.fors would be missed otherwise).
     SmallVector<Block *> blocksToFixup;
     if (forLoopsToUnroll.empty())
       blocksToFixup.push_back(&func.getBody().front());
