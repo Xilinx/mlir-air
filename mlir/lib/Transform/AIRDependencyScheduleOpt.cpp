@@ -6476,9 +6476,28 @@ public:
     if (tilingDisabled)
       shimFors.clear();
     for (auto forOp : shimFors) {
+      auto enclosingLaunch = forOp->getParentOfType<air::LaunchOp>();
       SmallVector<Value> perLoopTileSizes;
+      DenseI64ArrayAttr launchAttr =
+          enclosingLaunch ? enclosingLaunch->getAttrOfType<DenseI64ArrayAttr>(
+                                "air.shim_dma_tile_sizes")
+                          : nullptr;
       if (!optTileSizes.empty()) {
         perLoopTileSizes = optTileSizes;
+      } else if (launchAttr) {
+        SmallVector<unsigned> attrSizes;
+        for (int64_t v : launchAttr.asArrayRef())
+          attrSizes.push_back(static_cast<unsigned>(v));
+        if (attrSizes.size() == 1) {
+          if (attrSizes[0] == 0)
+            continue; // sentinel: skip tiling for this launch.
+          SmallVector<scf::ForOp> nested;
+          getPerfectlyNestedLoops(nested, forOp);
+          unsigned depth = std::max((size_t)1, nested.size());
+          attrSizes.assign(depth, attrSizes[0]);
+        }
+        rewriter.setInsertionPoint(forOp);
+        perLoopTileSizes = convertVecOfIntToVecOfValue(rewriter, attrSizes);
       } else {
         // Default: vector of 1s matching perfectly-nested depth.
         SmallVector<scf::ForOp> nested;
@@ -6489,8 +6508,8 @@ public:
             rewriter, SmallVector<unsigned>(depth, 1));
       }
       assert(!perLoopTileSizes.empty());
-      if (auto launchOp = forOp->getParentOfType<air::LaunchOp>())
-        tiledLaunches.insert(launchOp);
+      if (enclosingLaunch)
+        tiledLaunches.insert(enclosingLaunch);
       SmallVector<Value> actualTileSizes =
           getActualTileSizesPerScfRoot(rewriter, forOp, perLoopTileSizes);
       auto tiledLoops = tilePerfectlyNested(forOp, ArrayRef(actualTileSizes));
