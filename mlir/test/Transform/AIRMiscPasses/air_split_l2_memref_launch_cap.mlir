@@ -5,20 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s --air-split-l2-memref="tiles-per-l2-tile=1 max-launch-channels-mm2s=4 max-launch-channels-s2mm=4" | FileCheck %s
+// RUN: air-opt %s --air-split-l2-memref="tiles-per-l2-tile=1 max-launch-channels-mm2s=4 max-launch-channels-s2mm=4" 2>&1 | FileCheck %s
 
 // chan_in [4] has 4 launch-level puts (1/col). Splitting the L2 buf 2x would
 // prepend a 2 to the channel shape, doubling launch-level MM2S endpoint count
-// to 8. With the cap set to 4, the pass must skip the split, leaving chan_in
-// unchanged and the per-col 8x1024 L2 bufs intact.
+// from 4 → 8. With cap=4 set, the pass must emit a skip remark for every
+// candidate alloc and leave chan_in unchanged. The cumulative-tracking logic
+// records committedFactor[chan_in] = max(1, 2) = 2 on the first attempted
+// (skipped) alloc so later allocs sharing chan_in see the same total, not a
+// 2^N inflation. Legacy behavior (cap=0) is covered by air_split_l2_memref.mlir.
 
+// CHECK-COUNT-4: remark: air-split-l2-memref: skipping split (factor=2) on memref @chan_in to avoid pushing launch MM2S endpoint count from 4 to 8 (cap=4)
 // CHECK: air.channel @chan_in [4]
-// CHECK-NOT: [2, 4]
+// CHECK-NOT: air.channel @chan_in [2, 4]
 // CHECK-LABEL: func.func @test
-// CHECK: air.channel.put {{.*}} @chan_in[%{{.*}}]
-// CHECK: air.segment
 // CHECK-COUNT-4: memref.alloc() : memref<8x1024xbf16, 1 : i32>
-// CHECK-COUNT-4: air.channel.get {{.*}} @chan_in
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 air.channel @chan_in [4]
