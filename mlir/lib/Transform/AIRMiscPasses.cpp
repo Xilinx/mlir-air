@@ -2181,6 +2181,86 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       if (isSplittingChannelPutsOnHerd())
         continue;
 
+    // Launch-level endpoint cap. Splitting tiles the single-channel side from
+    // 1 → tilingFactor instances per memref. When that channel has any
+    // launch-level ops (memref operand is an air.launch arg), tiling multiplies
+    // the per-launch endpoint count for that direction. Skip the split when
+    // doing so would push the total past the user-supplied cap. The cap
+    // expresses the AIR-level budget for launch-arg-touching channels in one
+    // launch; backends map it to their own resource (e.g. shim DMAs for AIE).
+    if (clMaxLaunchChannelsMM2S != 0 || clMaxLaunchChannelsS2MM != 0) {
+      auto launch = allocOp->getParentOfType<air::LaunchOp>();
+      air::ChannelOp singleChan = nullptr;
+      // Single side of the memref → opposite side is what appears on the
+      // channel's launch-level endpoints:
+      //   memref S2MM (gets-into-memref) single → channel puts at launch
+      //                                            → launch MM2S direction
+      //   memref MM2S (puts-from-memref) single → channel gets at launch
+      //                                            → launch S2MM direction
+      bool launchDirIsMM2S = false;
+      if (getChanCount(MM2SChannels) > 1 && getChanCount(S2MMChannels) == 1) {
+        singleChan = S2MMChannels.begin()->first;
+        launchDirIsMM2S = true;
+      } else if (getChanCount(S2MMChannels) > 1 &&
+                 getChanCount(MM2SChannels) == 1) {
+        singleChan = MM2SChannels.begin()->first;
+        launchDirIsMM2S = false;
+      }
+      unsigned cap =
+          launchDirIsMM2S ? clMaxLaunchChannelsMM2S : clMaxLaunchChannelsS2MM;
+      if (launch && singleChan && cap != 0) {
+        // Canonicalize an endpoint as "channelSym(,constIdx)*". Non-constant
+        // indices fall back to a per-op identity so dynamic-index ops each
+        // count as distinct endpoints.
+        auto endpointKey = [](air::ChannelInterface op) -> std::string {
+          std::string k = op.getChanName().str();
+          for (auto idx : op.getIndices()) {
+            if (auto c = getConstantIntValue(idx))
+              k += ",c" + std::to_string(*c);
+            else
+              k += ",d" + std::to_string(reinterpret_cast<uintptr_t>(
+                              idx.getAsOpaquePointer()));
+          }
+          return k;
+        };
+        llvm::StringSet<> endpointsAll;
+        llvm::StringSet<> endpointsThisChan;
+        StringRef singleSym = singleChan.getSymName();
+        launch.walk([&](Operation *op) {
+          air::ChannelInterface ci = dyn_cast<air::ChannelInterface>(op);
+          if (!ci)
+            return WalkResult::advance();
+          // Launch-level = not nested in any segment within this launch.
+          if (op->getParentOfType<air::SegmentOp>())
+            return WalkResult::advance();
+          bool isPut = isa<air::ChannelPutOp>(op);
+          if (isPut != launchDirIsMM2S)
+            return WalkResult::advance();
+          std::string k = endpointKey(ci);
+          endpointsAll.insert(k);
+          if (ci.getChanName() == singleSym)
+            endpointsThisChan.insert(k);
+          return WalkResult::advance();
+        });
+        // If the single-channel side has no launch-level ops, splitting it
+        // is free at the launch level (e.g. memtile↔compute only). Allow.
+        if (!endpointsThisChan.empty()) {
+          unsigned pre = endpointsAll.size();
+          unsigned postThisChan = tilingFactor * endpointsThisChan.size();
+          unsigned post = pre - endpointsThisChan.size() + postThisChan;
+          if (post > cap) {
+            allocOp->emitRemark(
+                "air-split-l2-memref: skipping split (factor=")
+                << tilingFactor << ") on memref to avoid pushing launch "
+                << (launchDirIsMM2S ? "MM2S" : "S2MM")
+                << " endpoint count from " << pre << " to " << post
+                << " (cap=" << cap << ")";
+            continue;
+          }
+        }
+      }
+    }
+
     llvm::MapVector<int, SmallVector<infoEntryTy>> infoEntryMap;
     std::optional<int> splitDimOffset = std::nullopt;
     std::optional<int> splitDimSize = std::nullopt;

@@ -834,7 +834,25 @@ static std::string buildOptimizationPipeline() {
 
   // L2 splitting (skip for npu_1col)
   if (deviceName.getValue().find("npu_1col") == std::string::npos) {
-    os << ",func.func(air-split-l2-memref),canonicalize,cse";
+    // Per-direction launch-arg channel caps. The split pass may multiply the
+    // number of launch-scope (L3-touching) channel endpoints; the AIE backend
+    // can only map up to (num_cols * 2) per direction (2 MM2S + 2 S2MM per
+    // shim col). Pass the cap so the split bails before exceeding it.
+    int splitNumCols = numCols;
+    if (splitNumCols < 0) {
+      if (deviceName.getValue().find("npu1") != std::string::npos)
+        splitNumCols = 4;
+      else if (deviceName.getValue() == "npu2_4col")
+        splitNumCols = 4;
+      else if (deviceName.getValue().find("npu2") != std::string::npos)
+        splitNumCols = 8;
+      else
+        splitNumCols = 0; // 0 → disables the cap (legacy behavior)
+    }
+    os << ",func.func(air-split-l2-memref{"
+       << "max-launch-channels-mm2s=" << splitNumCols * 2 << " "
+       << "max-launch-channels-s2mm=" << splitNumCols * 2 << "})"
+       << ",canonicalize,cse";
     os << ",air-isolate-async-dma-loop-nests{scope=launch},canonicalize,cse";
   }
 
