@@ -6428,13 +6428,19 @@ public:
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(shimFors.front());
 
+    // Sentinel `shim-dma-tile-sizes=0`: globally disable tiling for every
+    // launch. Loops pass through un-tiled and the post-pass wrap-stride
+    // fold collapses them into multi-D BD descriptors. Useful as a kill
+    // switch when the default would over-tile (creating too many BDs).
+    bool tilingDisabled = clTileSizes.size() == 1 && clTileSizes[0] == 0;
+
     // Empty shim-dma-tile-sizes defaults to tiling every level by 1.
     // tile=1 is an iteration-count no-op but still invokes
     // tilePerfectlyNested + the post-tile fixup that downstream lowering
     // depends on (skipping it exhausts the BD allocator on workloads
     // like test/xrt/14_conv2d_i8_extern_vec).
     SmallVector<Value> optTileSizes;
-    if (!clTileSizes.empty()) {
+    if (!clTileSizes.empty() && !tilingDisabled) {
       optTileSizes = convertVecOfIntToVecOfValue(
           rewriter,
           SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
@@ -6461,7 +6467,15 @@ public:
     };
     // Tile each shim-dma for loop band.
     llvm::SetVector<scf::ForOp> forLoopsToUnroll;
+    // Track launches whose shim fors actually got tiled. Launches that did
+    // not (e.g. those whose shim DMAs sit directly in the launch body
+    // without an enclosing scf.for) still need the end-of-launch wait_all
+    // fallback below, otherwise their DMAs never get tied off and the outer
+    // multi-launch transition can drop in-flight S2MM writes.
+    llvm::SetVector<air::LaunchOp> tiledLaunches;
     for (auto forOp : shimFors) {
+      if (tilingDisabled)
+        continue;
       SmallVector<Value> perLoopTileSizes;
       if (!optTileSizes.empty()) {
         perLoopTileSizes = optTileSizes;
@@ -6475,6 +6489,8 @@ public:
             rewriter, SmallVector<unsigned>(depth, 1));
       }
       assert(!perLoopTileSizes.empty());
+      if (auto launchOp = forOp->getParentOfType<air::LaunchOp>())
+        tiledLaunches.insert(launchOp);
       SmallVector<Value> actualTileSizes =
           getActualTileSizesPerScfRoot(rewriter, forOp, perLoopTileSizes);
       auto tiledLoops = tilePerfectlyNested(forOp, ArrayRef(actualTileSizes));
@@ -6564,15 +6580,22 @@ public:
     // Apply DMA folding.
     applyAIRL3DmaFoldingPatterns(func, *device);
 
-    if (forLoopsToUnroll.empty()) {
-      // If no loop unrolling was performed, gather all air.channel_put/get
-      // tokens from block, and generate a blocking wait all.
-      SmallVector<Block *> funcAndLaunchBlocks(1, &func.getBody().front());
-      func.walk([&funcAndLaunchBlocks](air::LaunchOp launch) {
-        if (air::isAsyncOp(launch))
-          funcAndLaunchBlocks.push_back(&launch.getRegion().front());
-      });
-      for (auto blk : funcAndLaunchBlocks) {
+    // Emit an end-of-block air.wait_all gathering channel tokens for:
+    //   * the func body (only when nothing in the whole module was tiled,
+    //     preserving the original fallback for the no-launch case), and
+    //   * every air.LaunchOp whose shim fors were NOT tiled above.
+    // Without per-launch coverage, a module that mixes tiled and un-tiled
+    // launches gets no wait_all in the un-tiled ones, leaving their DMAs
+    // fire-and-forget across multi-launch transitions.
+    SmallVector<Block *> blocksToFixup;
+    if (forLoopsToUnroll.empty())
+      blocksToFixup.push_back(&func.getBody().front());
+    func.walk([&blocksToFixup, &tiledLaunches](air::LaunchOp launch) {
+      if (air::isAsyncOp(launch) && !tiledLaunches.contains(launch))
+        blocksToFixup.push_back(&launch.getRegion().front());
+    });
+    if (!blocksToFixup.empty()) {
+      for (auto blk : blocksToFixup) {
         {
           OpBuilder::InsertionGuard guard(rewriter);
           SmallVector<Value> chanTokens;
