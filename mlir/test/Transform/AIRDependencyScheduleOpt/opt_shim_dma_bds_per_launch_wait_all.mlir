@@ -8,12 +8,17 @@
 // Per-launch coverage of the `air.launch_end` wait_all fallback in
 // `air-opt-shim-dma-bds`. Each async launch must end with EXACTLY ONE such
 // wait_all, whether it came from the tiling fixup (tiled path) or from the
-// end-of-block fallback (sentinel / no-for path).
+// end-of-block fallback (sentinel / no-for path). Positive CHECKs require
+// the wait_all to carry at least one operand (`[%...]`); a regression to
+// the old empty-operand fallback would fail them.
 
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 shim-dma-tile-sizes=0" \
 // RUN:   | FileCheck %s --check-prefix=SENTINEL
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1" \
 // RUN:   | FileCheck %s --check-prefix=DEFAULT
+// RUN: not air-opt %s -air-opt-shim-dma-bds="device=npu1 shim-dma-tile-sizes=0,1" \
+// RUN:   2>&1 | FileCheck %s --check-prefix=REJECT
+// REJECT: shim-dma-tile-sizes=0 is only valid as a single-value sentinel
 
 module {
 
@@ -24,12 +29,12 @@ module {
 
   // SENTINEL-LABEL: func.func @sentinel_two_launches
   // SENTINEL:       air.launch
-  // SENTINEL:       air.wait_all{{.*}}{air.launch_end}
+  // SENTINEL:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
   // SENTINEL-NOT:   air.wait_all{{.*}}{air.launch_end}
   // SENTINEL:       air.launch
-  // SENTINEL:       air.wait_all{{.*}}{air.launch_end}
+  // SENTINEL:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
   // SENTINEL-NOT:   air.wait_all{{.*}}{air.launch_end}
-  // SENTINEL:       air.wait_all{{.*}}{air.launch_end}
+  // SENTINEL:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
   // SENTINEL-NOT:   air.wait_all{{.*}}{air.launch_end}
   // SENTINEL:       return
   func.func @sentinel_two_launches(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>) {
@@ -68,10 +73,10 @@ module {
 
   // DEFAULT-LABEL: func.func @mixed_tiled_and_no_for
   // DEFAULT:       air.launch
-  // DEFAULT:       air.wait_all{{.*}}{air.launch_end}
+  // DEFAULT:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
   // DEFAULT-NOT:   air.wait_all{{.*}}{air.launch_end}
   // DEFAULT:       air.launch
-  // DEFAULT:       air.wait_all{{.*}}{air.launch_end}
+  // DEFAULT:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
   // DEFAULT-NOT:   air.wait_all{{.*}}{air.launch_end}
   // DEFAULT:       return
   func.func @mixed_tiled_and_no_for(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>) {
@@ -106,7 +111,7 @@ module {
 
   // DEFAULT-LABEL: func.func @tiled_only_no_double_launch_end
   // DEFAULT:       air.launch
-  // DEFAULT:       air.wait_all{{.*}}{air.launch_end}
+  // DEFAULT:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
   // DEFAULT-NOT:   air.wait_all{{.*}}{air.launch_end}
   // DEFAULT:       return
   func.func @tiled_only_no_double_launch_end(%arg0: memref<512x512xbf16>) {

@@ -6429,8 +6429,16 @@ public:
     rewriter.setInsertionPoint(shimFors.front());
 
     // `=0` sentinel: skip tiling globally; rely on the wrap-stride fold
-    // to produce multi-D BDs. See Passes.td.
+    // to produce multi-D BDs. See Passes.td. Any `0` mixed with other
+    // sizes would hit assert(max > 0) in findLargestFactor below -- reject
+    // explicitly so the user gets a diagnostic instead of an assert.
     bool tilingDisabled = clTileSizes.size() == 1 && clTileSizes[0] == 0;
+    if (!tilingDisabled && llvm::is_contained(clTileSizes, 0u)) {
+      func.emitError("shim-dma-tile-sizes=0 is only valid as a single-value "
+                     "sentinel; got a list containing 0");
+      signalPassFailure();
+      return;
+    }
 
     // Empty defaults to per-level tile=1 below. Even tile=1 must run, as
     // the post-tile fixup is required by downstream lowering (skipping
@@ -6575,6 +6583,9 @@ public:
     // Fallback end-of-block wait_all: func body when nothing tiled anywhere
     // (no-launch case), plus every async launch whose shim fors did NOT get
     // tiled above (avoids fire-and-forget DMAs across launch transitions).
+    // Use generateWaitAllToTerminateBlock so we gather ALL dangling async
+    // tokens in the block, not just channel ops directly at block scope --
+    // tokens produced by surviving scf.for loops would otherwise be missed.
     SmallVector<Block *> blocksToFixup;
     if (forLoopsToUnroll.empty())
       blocksToFixup.push_back(&func.getBody().front());
@@ -6584,18 +6595,8 @@ public:
     });
     for (auto blk : blocksToFixup) {
       OpBuilder::InsertionGuard guard(rewriter);
-      SmallVector<Value> chanTokens;
-      for (auto chan : blk->getOps<air::ChannelInterface>())
-        if (air::isAsyncOp(chan))
-          chanTokens.push_back(air::getAsyncTokenFromOp(chan));
-
-      if (blk->mightHaveTerminator())
-        rewriter.setInsertionPoint(blk->getTerminator());
-      else
-        rewriter.setInsertionPointToEnd(blk);
-      auto launchEndWaitAll =
-          air::WaitAllOp::create(rewriter, rewriter.getUnknownLoc(),
-                                 /*result_type*/ Type(), chanTokens);
+      auto launchEndWaitAll = air::generateWaitAllToTerminateBlock(
+          *blk, rewriter, /*isBlocking=*/true);
       launchEndWaitAll->setAttr("air.launch_end", rewriter.getUnitAttr());
     }
   }
