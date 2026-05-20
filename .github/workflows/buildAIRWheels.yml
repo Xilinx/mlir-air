@@ -298,7 +298,7 @@ jobs:
             ```bash
             pip install 'mlir_air[aie]' \
               -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }} \
-              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }} \
+              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti-2' }} \
               -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
             ```
 
@@ -407,7 +407,7 @@ jobs:
           NO_RTTI_DOT=""
           if [ x"${{ matrix.ENABLE_RTTI }}" == x"OFF" ]; then
             NO_RTTI_DOT=".no.rtti"
-            MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti"
+            MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2"
           else
             MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/"
           fi
@@ -499,7 +499,7 @@ jobs:
             ```bash
             pip install 'mlir_air[aie]' \
               -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }} \
-              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti' }} \
+              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-3' || 'latest-wheels-no-rtti-2' }} \
               -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
             ```
 
