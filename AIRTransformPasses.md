@@ -1392,7 +1392,9 @@ _Split L2 memref into smaller buffers to better fit with the data movement harwa
 #### Options
 
 ```
--tiles-per-l2-tile : Number of compute tiles per L2 memory tile. Used to estimate if an air.segment shall allocate to multiple L2 memory tiles, and therefore requires L2 memref splitting.
+-tiles-per-l2-tile        : Number of compute tiles per L2 memory tile. Used to estimate if an air.segment shall allocate to multiple L2 memory tiles, and therefore requires L2 memref splitting.
+-max-launch-channels-mm2s : Per-launch cap on the number of distinct launch-scope channel endpoints in the MM2S direction (air.channel.put ops directly under air.launch, i.e. not nested in any air.segment). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).
+-max-launch-channels-s2mm : Per-launch cap on the number of distinct launch-scope channel endpoints in the S2MM direction (air.channel.get ops directly under air.launch, i.e. not nested in any air.segment). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).
 ```
 
 ### `-air-split-launch-for-padding`
