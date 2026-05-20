@@ -2090,6 +2090,53 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   // the memref being accessed by multiple unique channel puts/gets.
   llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy> targetMemrefsToInfoMap;
 
+  // Launch-level endpoint cap state. Each approved split multiplies the
+  // post-split endpoint count on the single-channel-side symbol. Track those
+  // multipliers across iterations so the cap check sees the cumulative effect
+  // (otherwise N allocs sharing one symbol can each pass an isolated check yet
+  // collectively overflow the cap).
+  // rawLaunchEndpoints[launch][{symRef, isPut}] = distinct launch-level
+  //   (sym, indices) endpoint count in the IR before any splits.
+  // committedFactor[{launch, symRef}] = cumulative multiplier from approved
+  //   splits affecting `symRef` in this launch (defaults to 1).
+  llvm::DenseMap<air::LaunchOp,
+                 llvm::DenseMap<std::pair<StringRef, unsigned>, unsigned>>
+      rawLaunchEndpoints;
+  llvm::DenseMap<std::pair<air::LaunchOp, StringRef>, unsigned> committedFactor;
+  auto getRawLaunchEndpoints = [&rawLaunchEndpoints](air::LaunchOp launch)
+      -> const llvm::DenseMap<std::pair<StringRef, unsigned>, unsigned> & {
+    auto cached = rawLaunchEndpoints.find(launch);
+    if (cached != rawLaunchEndpoints.end())
+      return cached->second;
+    // Per (sym, isPut) bucket: collected SmallVector<Value> indices, deduped
+    // by SSA identity. Same pattern as `push_back_if_unique` used elsewhere
+    // in this file.
+    llvm::DenseMap<std::pair<StringRef, unsigned>,
+                   SmallVector<SmallVector<Value, 4>, 4>>
+        seenIndices;
+    launch.walk([&](air::ChannelInterface ci) {
+      // Launch-level = not nested in any segment within this launch.
+      if (ci->getParentOfType<air::SegmentOp>())
+        return WalkResult::advance();
+      unsigned isPut = isa<air::ChannelPutOp>(ci.getOperation()) ? 1u : 0u;
+      auto key = std::make_pair(ci.getChanName(), isPut);
+      SmallVector<Value, 4> idx(ci.getIndices().begin(), ci.getIndices().end());
+      auto &bucket = seenIndices[key];
+      if (!llvm::is_contained(bucket, idx))
+        bucket.push_back(std::move(idx));
+      return WalkResult::advance();
+    });
+    auto &out = rawLaunchEndpoints[launch];
+    for (auto &kv : seenIndices)
+      out[kv.first] = kv.second.size();
+    return out;
+  };
+  auto effectiveFactor = [&committedFactor](air::LaunchOp launch,
+                                            StringRef sym) -> unsigned {
+    auto it = committedFactor.find({launch, sym});
+    return it == committedFactor.end() ? 1u : it->second;
+  };
+
   // If there is an affine.apply operating on offsets[offsetDim], then
   // log the affine.map.
   auto getAffineMapOnMemrefSplitDim = [](air::ChannelInterface chanOp,
@@ -2180,6 +2227,81 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     if (getChanCount(S2MMChannels) == 1)
       if (isSplittingChannelPutsOnHerd())
         continue;
+
+    // Launch-level endpoint cap. Splitting tiles the single-channel side from
+    // 1 → tilingFactor instances per memref. When that channel has any
+    // launch-level put/get ops (here: ChannelInterface ops directly under
+    // air.launch, i.e. not nested in any air.segment — the structural proxy
+    // used in `getRawLaunchEndpoints`), tiling multiplies the per-launch
+    // endpoint count for that direction. Skip the split when doing so would
+    // push the total past the user-supplied cap. The cap expresses the
+    // AIR-level budget for launch-scope channels in one launch; backends map
+    // it to their own resource (e.g. shim DMAs for AIE).
+    // Track commit (a few lines below) so cumulative splits across allocs
+    // sharing one channel symbol are accounted for.
+    StringRef pendingCommitSym;
+    air::LaunchOp pendingCommitLaunch;
+    unsigned pendingCommitFactor = 1;
+    if (clMaxLaunchChannelsMM2S != 0 || clMaxLaunchChannelsS2MM != 0) {
+      auto launch = allocOp->getParentOfType<air::LaunchOp>();
+      air::ChannelOp singleChan = nullptr;
+      // Single side of the memref → opposite side is what appears on the
+      // channel's launch-level endpoints:
+      //   memref S2MM (gets-into-memref) single → channel puts at launch
+      //                                            → launch MM2S direction
+      //   memref MM2S (puts-from-memref) single → channel gets at launch
+      //                                            → launch S2MM direction
+      bool launchDirIsMM2S = false;
+      if (getChanCount(MM2SChannels) > 1 && getChanCount(S2MMChannels) == 1) {
+        singleChan = S2MMChannels.begin()->first;
+        launchDirIsMM2S = true;
+      } else if (getChanCount(S2MMChannels) > 1 &&
+                 getChanCount(MM2SChannels) == 1) {
+        singleChan = MM2SChannels.begin()->first;
+        launchDirIsMM2S = false;
+      }
+      unsigned cap =
+          launchDirIsMM2S ? clMaxLaunchChannelsMM2S : clMaxLaunchChannelsS2MM;
+      if (launch && singleChan && cap != 0) {
+        StringRef singleSym = singleChan.getSymName();
+        unsigned launchDirKey = launchDirIsMM2S ? 1u : 0u;
+        const auto &rawEndpoints = getRawLaunchEndpoints(launch);
+        auto thisRawIt = rawEndpoints.find({singleSym, launchDirKey});
+        unsigned thisRaw =
+            thisRawIt == rawEndpoints.end() ? 0u : thisRawIt->second;
+        // If the single-channel side has no launch-level ops, splitting it
+        // is free at the launch level (e.g. memtile↔compute only). Allow.
+        if (thisRaw > 0) {
+          unsigned currentTotal = 0;
+          for (auto &kv : rawEndpoints)
+            if (kv.first.second == launchDirKey)
+              currentTotal +=
+                  kv.second * effectiveFactor(launch, kv.first.first);
+          unsigned currFactor = effectiveFactor(launch, singleSym);
+          // Splitting a memref reshapes its single-side channel symbol once;
+          // multiple allocs sharing that symbol are tiled in lockstep, so the
+          // symbol's effective multiplier is max(currFactor, tilingFactor),
+          // not a product. Only the delta over what's already committed adds
+          // to the launch-level endpoint count.
+          unsigned newFactor = std::max(currFactor, (unsigned)tilingFactor);
+          unsigned hypTotal = currentTotal + thisRaw * (newFactor - currFactor);
+          if (hypTotal > cap) {
+            allocOp->emitRemark("air-split-l2-memref: skipping split (factor=")
+                << tilingFactor << ") on L2 alloc via channel @" << singleSym
+                << " to avoid pushing launch "
+                << (launchDirIsMM2S ? "MM2S" : "S2MM")
+                << " endpoint count from " << currentTotal << " to " << hypTotal
+                << " (cap=" << cap << ")";
+            continue;
+          }
+          // Plan commit; finalize once the alloc is recorded in the split
+          // plan below.
+          pendingCommitLaunch = launch;
+          pendingCommitSym = singleSym;
+          pendingCommitFactor = newFactor;
+        }
+      }
+    }
 
     llvm::MapVector<int, SmallVector<infoEntryTy>> infoEntryMap;
     std::optional<int> splitDimOffset = std::nullopt;
@@ -2288,6 +2410,10 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
                                            infoEntryMap};
       }
     }
+    // Commit the planned cap multiplier now that this alloc is recorded.
+    if (pendingCommitLaunch)
+      committedFactor[{pendingCommitLaunch, pendingCommitSym}] =
+          pendingCommitFactor;
   }
   return targetMemrefsToInfoMap;
 }

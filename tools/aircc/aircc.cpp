@@ -803,7 +803,7 @@ static LogicalResult runGpuCompilation() {
 //===----------------------------------------------------------------------===//
 
 /// Build the AIR optimization pass pipeline string.
-static std::string buildOptimizationPipeline() {
+static std::string buildOptimizationPipeline(int resolvedNumCols) {
   std::string pipeline;
   raw_string_ostream os(pipeline);
 
@@ -834,7 +834,16 @@ static std::string buildOptimizationPipeline() {
 
   // L2 splitting (skip for npu_1col)
   if (deviceName.getValue().find("npu_1col") == std::string::npos) {
-    os << ",func.func(air-split-l2-memref),canonicalize,cse";
+    // Per-direction launch-arg channel cap. The split pass may multiply the
+    // number of launch-scope (L3-touching) channel endpoints; the AIE shim
+    // budget is (num_cols * 2) per direction (2 MM2S + 2 S2MM per shim col).
+    // resolvedNumCols already encodes per-device defaults; a non-positive
+    // value disables the cap (legacy behavior).
+    unsigned cap = resolvedNumCols > 0 ? unsigned(resolvedNumCols) * 2 : 0;
+    os << ",func.func(air-split-l2-memref{"
+       << "max-launch-channels-mm2s=" << cap << " "
+       << "max-launch-channels-s2mm=" << cap << "})"
+       << ",canonicalize,cse";
     os << ",air-isolate-async-dma-loop-nests{scope=launch},canonicalize,cse";
   }
 
@@ -998,7 +1007,7 @@ static LogicalResult runAieCompilation() {
 
     // Add optimization passes for NPU targets
     if (deviceName.getValue().find("npu") != std::string::npos) {
-      os << "," << buildOptimizationPipeline();
+      os << "," << buildOptimizationPipeline(resolvedNumCols);
     }
 
     // Place herds
