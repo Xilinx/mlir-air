@@ -79,12 +79,7 @@ jobs:
       - name: Get llvm-aie
         run: |
           source air-venv/bin/activate
-          # TEMPORARY: pin to last known-good nightly while
-          # Xilinx/llvm-aie#1005 (findPrologueEpilogue assert) is in review.
-          # Nightlies from 2026-05-16 onwards crash llc on legitimate
-          # non-pipelined single-MBB loops in 9+ xrt tests. Revert to
-          # unpinned `llvm-aie` once #1005 lands and a new nightly publishes.
-          python3 -m pip install --upgrade --force-reinstall "llvm-aie==21.0.0.2026051501+f4933ef7" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          python3 -m pip install --upgrade --force-reinstall llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
       - name: Build and test mlir-air
         run: |

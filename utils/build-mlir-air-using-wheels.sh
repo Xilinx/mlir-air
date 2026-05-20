@@ -50,11 +50,8 @@ export PATH=${MLIR_AIE_INSTALL_DIR}/bin:${PATH}
 export PYTHONPATH=${MLIR_AIE_INSTALL_DIR}/python:${PYTHONPATH}
 export LD_LIBRARY_PATH=${MLIR_AIE_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}
 
-# Install llvm-aie. TEMPORARY: pinned to last known-good nightly while
-# Xilinx/llvm-aie#1005 (findPrologueEpilogue assert) is in review.
-# Nightlies from 2026-05-16 onwards crash llc on non-pipelined single-MBB
-# loops. Revert to unpinned `llvm-aie` once #1005 lands.
-python3 -m pip install --upgrade --force-reinstall "llvm-aie==21.0.0.2026051501+f4933ef7" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+# Install llvm-aie
+python3 -m pip install --upgrade --force-reinstall llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 PEANO_INSTALL_DIR="$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
 echo "WHL_LLVM_AIE DIR: $PEANO_INSTALL_DIR"
 
