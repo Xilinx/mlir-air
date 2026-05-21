@@ -1818,16 +1818,41 @@ LogicalResult air::simpleDMAChannelAllocation(
       }
     }
   }
-  for (auto &f : memcpy_flows) {
-    // MMIO channels are not allocated to any shim DMA resource.
+  // Detect L3 MM2S puts whose air.channel decl carries `broadcast_shape`.
+  // These are column-flexible — their far side is a fan-out to many cores,
+  // so they can land on any shim col with free MM2S. Other L3 flows are
+  // column-rigid (paired to a specific memtile LTO or a placed core).
+  auto isBroadcastL3MM2S = [](const MemcpyBundleAsFlow &f) {
+    if (f.MM2S_memspace != air::MemorySpace::L3)
+      return false;
+    for (auto o : f.MM2S) {
+      auto chanIf = dyn_cast_if_present<air::ChannelInterface>(o);
+      if (!chanIf)
+        continue;
+      auto decl = getChannelDeclarationThroughSymbol(chanIf);
+      if (decl && decl->hasAttr("broadcast_shape"))
+        return true;
+    }
+    return false;
+  };
+
+  // L3 shim allocation is bin-packing onto a fixed set of ShimNOC cols
+  // (hard cap = device.getNumShimNOCCols(), per-bin cap = 2 MM2S + 2 S2MM).
+  // Process flows in rigidity-decreasing order so that rigid flows establish
+  // the bins and flexible flows pack into the gaps:
+  //   pass 1 — rigid (non-broadcast L3 MM2S + all L3 S2MM)
+  //   pass 2 — flexible (broadcast L3 MM2S), reusing existing bins via the
+  //            broadcast cross-bucket fallback in ShimDMAAllocator
+  // This avoids the order-of-allocation pitfall where a flexible flow opens
+  // its own bin before the complementary-direction rigid bin has been
+  // created, exceeding the device's ShimNOC col count.
+  auto allocateL3 = [&](MemcpyBundleAsFlow &f) -> LogicalResult {
     if (f.memcpyResourceType == "npu_mmio")
-      continue;
+      return success();
     if (f.MM2S_memspace == air::MemorySpace::L3) {
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.MM2S) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-          // Report error if the data movement lowers to neither dma stream
-          // (aie.flow) nor dma packet flow (aie.packet_flow).
           if (f.memcpyResourceType != "npu_dma_stream" &&
               f.memcpyResourceType != "npu_dma_packet")
             return memcpyOpIf->emitOpError(
@@ -1847,7 +1872,6 @@ LogicalResult air::simpleDMAChannelAllocation(
       }
     }
     if (f.S2MM_memspace == air::MemorySpace::L3) {
-      // L3 shim tiles assumed to not be target for broadcast
       if (f.S2MM.size() > 1) {
         return f.S2MM.front().front()->emitOpError(
             "found multiple inputs for an aie.flow. Fan-in for aie.flow isn't "
@@ -1855,8 +1879,6 @@ LogicalResult air::simpleDMAChannelAllocation(
       }
       for (auto o : f.S2MM.front()) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-        // Report error if the data movement lowers to neither dma stream
-        // (aie.flow) nor dma packet flow (aie.packet_flow).
         if (f.memcpyResourceType != "npu_dma_stream" &&
             f.memcpyResourceType != "npu_dma_packet")
           return memcpyOpIf->emitOpError(
@@ -1874,7 +1896,18 @@ LogicalResult air::simpleDMAChannelAllocation(
         f.S2MM_alloc.front() = alloc_res.value();
       }
     }
-  }
+    return success();
+  };
+  // Pass 1: rigid flows.
+  for (auto &f : memcpy_flows)
+    if (!isBroadcastL3MM2S(f))
+      if (failed(allocateL3(f)))
+        return failure();
+  // Pass 2: flexible (broadcast) flows.
+  for (auto &f : memcpy_flows)
+    if (isBroadcastL3MM2S(f))
+      if (failed(allocateL3(f)))
+        return failure();
   return success();
 }
 
