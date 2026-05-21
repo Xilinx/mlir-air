@@ -92,6 +92,20 @@ struct allocation_info_t {
   std::vector<Operation *> memcpyOps;
   bool valid();
   AIE::TileLike getDmaTile();
+  // The underlying tile-defining Operation*. Identity equality on this
+  // pointer is the canonical "same tile" check (works for both physical
+  // TileOp and unplaced LogicalTileOp). Const-qualified because the op
+  // interface accessor isn't const; the const_cast is contained here so
+  // callers don't have to repeat it.
+  Operation *getDmaTileOp() const {
+    return const_cast<allocation_info_t *>(this)->dma_tile.getOperation();
+  }
+  // The SSA Value of the tile (i.e. its result(0)). Convenience for call
+  // sites that need a Value for an aie.* op operand. Returns null if
+  // dma_tile is null.
+  mlir::Value getDmaTileValue() {
+    return dma_tile ? dma_tile->getResult(0) : mlir::Value();
+  }
   bool foundAlloc(AIE::TileLike tile);
   bool foundAlloc(AIE::TileLike tile, air::MemcpyInterface memcpyOp);
   bool foundAlloc(AIE::TileLike tile, air::ChannelOp channel_op);
@@ -109,14 +123,8 @@ struct allocation_info_t {
   bool foundPacketFlowAllocInColumn(int32_t col);
 
   bool operator==(const allocation_info_t &other) const {
-    // op interface getOperation() isn't const-qualified; cast away the
-    // top-level const for the pointer-equality comparison.
-    auto thisOp =
-        const_cast<allocation_info_t *>(this)->dma_tile.getOperation();
-    auto otherOp =
-        const_cast<allocation_info_t &>(other).dma_tile.getOperation();
-    return thisOp == otherOp && col == other.col && row == other.row &&
-           dma_channel == other.dma_channel &&
+    return getDmaTileOp() == other.getDmaTileOp() && col == other.col &&
+           row == other.row && dma_channel == other.dma_channel &&
            tile_channel == other.tile_channel;
   }
 };

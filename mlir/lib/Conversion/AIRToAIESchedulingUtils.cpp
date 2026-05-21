@@ -537,7 +537,7 @@ AIE::BufferOp getUnderlyingBufferOp(Value buffer) {
 // allocation_info_t impl.
 
 bool xilinx::air::allocation_info_t::valid() {
-  return dma_tile.getOperation() != nullptr;
+  return getDmaTileOp() != nullptr;
 }
 
 AIE::TileLike xilinx::air::allocation_info_t::getDmaTile() { return dma_tile; }
@@ -577,7 +577,7 @@ bool xilinx::air::allocation_info_t::foundAllocInColumn(
 
 bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileLike tile,
                                                 AIE::DMAChannel channel) {
-  if (tile.getOperation() == getDmaTile().getOperation() && foundAlloc(channel))
+  if (tile.getOperation() == getDmaTileOp() && foundAlloc(channel))
     return true;
   else
     return false;
@@ -603,7 +603,7 @@ bool xilinx::air::allocation_info_t::foundPacketFlowAllocInColumn(int32_t col) {
 // no dependence on physical placement coordinates. Works for both AIE::TileOp
 // and AIE::LogicalTileOp.
 bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileLike tile) {
-  return tile && tile.getOperation() == getDmaTile().getOperation();
+  return tile && tile.getOperation() == getDmaTileOp();
 }
 
 bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileLike tile,
@@ -1029,7 +1029,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       for (auto &t : *side) {
         if (!sameBucket(t))
           continue;
-        auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+        auto lt = dyn_cast<AIE::LogicalTileOp>(t.getDmaTileOp());
         if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
           continue;
         if (!seen.insert(lt.getOperation()).second)
@@ -1044,7 +1044,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     std::set<int> used;
     for (auto *side : {&mm2s_allocs, &s2mm_allocs})
       for (auto &t : *side)
-        if (t.dma_tile.getOperation() == lt.getOperation() &&
+        if (t.getDmaTileOp() == lt.getOperation() &&
             t.dma_channel.direction == dir)
           used.insert((int)t.dma_channel.channel);
     return used;
@@ -1057,7 +1057,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
       for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
         for (auto &t : *side) {
-          if (t.dma_tile.getOperation() != lt.getOperation())
+          if (t.getDmaTileOp() != lt.getOperation())
             continue;
           if (t.dma_channel.direction != dir)
             continue;
@@ -1109,7 +1109,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     llvm::SmallPtrSet<Operation *, 8> seen;
     for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
       for (auto &t : *side) {
-        auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+        auto lt = dyn_cast<AIE::LogicalTileOp>(t.getDmaTileOp());
         if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
           continue;
         if (!seen.insert(lt.getOperation()).second)
@@ -1160,7 +1160,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       auto shimTargetJ = [&](AIE::LogicalTileOp shim) -> int {
         for (auto *side : {&mm2s_allocs, &s2mm_allocs})
           for (auto &t : *side) {
-            if (t.dma_tile.getOperation() != shim.getOperation())
+            if (t.getDmaTileOp() != shim.getOperation())
               continue;
             if (!t.otherSideLTO)
               continue;
@@ -1209,13 +1209,9 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   // `allocs->back()`; in both cases the matching record lives in
   // mm2s_allocs/s2mm_allocs and we update both copies (returned + stored)
   // to keep walkBucketLTOs's view consistent.
-  // getOperation() isn't const-qualified on the op interface; cast away
-  // const for the pointer-equality compare.
-  Operation *baseOp =
-      const_cast<allocation_info_t &>(*baseRes).dma_tile.getOperation();
+  Operation *baseOp = baseRes->getDmaTileOp();
   auto matchesReturned = [&](allocation_info_t &t) {
-    return t.dma_tile.getOperation() == baseOp &&
-           t.dma_channel == baseRes->dma_channel;
+    return t.getDmaTileOp() == baseOp && t.dma_channel == baseRes->dma_channel;
   };
   for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
     for (auto &t : *side) {

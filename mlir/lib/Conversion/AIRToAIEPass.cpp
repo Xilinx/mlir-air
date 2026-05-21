@@ -3976,11 +3976,10 @@ public:
             auto it = llvm::find(shimFlowOpToFlowIdMap, f.air_flow_op);
             int flowID = std::distance(shimFlowOpToFlowIdMap.begin(), it);
             auto pktFlowOp = getPacketFlowOp(
-                aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
+                aie_device, f.MM2S_alloc.getDmaTileValue(),
                 AIE::WireBundle::DMA,
                 (uint32_t)f.MM2S_alloc.dma_channel.channel,
-                f.S2MM_alloc[i].getDmaTile()->getResult(0),
-                AIE::WireBundle::DMA,
+                f.S2MM_alloc[i].getDmaTileValue(), AIE::WireBundle::DMA,
                 (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
             // Update global shim flow ID following the local packet assignment.
             globalShimFlowID = std::max(globalShimFlowID, flowID);
@@ -3989,8 +3988,7 @@ public:
             // (createPacketFlowOp post-increments flowID by reference).
             int storedFlowID = pktFlowOp ? pktFlowOp.getID() : flowID;
             for (auto &sa : shim_dma_alloc.mm2s_allocs) {
-              if (sa.getDmaTile().getOperation() ==
-                      f.MM2S_alloc.getDmaTile().getOperation() &&
+              if (sa.getDmaTileOp() == f.MM2S_alloc.getDmaTileOp() &&
                   sa.dma_channel == f.MM2S_alloc.dma_channel &&
                   sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
                   sa.dma_id == f.MM2S_alloc.dma_id) {
@@ -4004,28 +4002,27 @@ public:
             auto it = llvm::find(intraDeviceFlowOpToFlowIdMap, f.air_flow_op);
             int flowID =
                 std::distance(intraDeviceFlowOpToFlowIdMap.begin(), it);
-            getPacketFlowOp(aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-                            AIE::WireBundle::DMA,
-                            (uint32_t)f.MM2S_alloc.dma_channel.channel,
-                            f.S2MM_alloc[i].getDmaTile()->getResult(0),
-                            AIE::WireBundle::DMA,
-                            (uint32_t)f.S2MM_alloc[i].dma_channel.channel,
-                            flowID);
+            getPacketFlowOp(
+                aie_device, f.MM2S_alloc.getDmaTileValue(),
+                AIE::WireBundle::DMA,
+                (uint32_t)f.MM2S_alloc.dma_channel.channel,
+                f.S2MM_alloc[i].getDmaTileValue(), AIE::WireBundle::DMA,
+                (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
             // Update intra-device flow ID following the local packet
             // assignment.
             intraDeviceFlowID = std::max(intraDeviceFlowID, flowID);
           }
         } else if (f.memcpyResourceType == "npu_dma_stream")
-          getFlowOp(
-              aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-              AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
-              f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-              (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+          getFlowOp(aie_device, f.MM2S_alloc.getDmaTileValue(),
+                    AIE::WireBundle::DMA,
+                    (uint32_t)f.MM2S_alloc.dma_channel.channel,
+                    f.S2MM_alloc[i].getDmaTileValue(), AIE::WireBundle::DMA,
+                    (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
         else if (f.memcpyResourceType == "npu_cascade") {
           getCascadeFlowOp(
-              aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-              AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
-              f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
+              aie_device, f.MM2S_alloc.getDmaTileValue(), AIE::WireBundle::DMA,
+              (uint32_t)f.MM2S_alloc.dma_channel.channel,
+              f.S2MM_alloc[i].getDmaTileValue(), AIE::WireBundle::DMA,
               (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
         }
       }
@@ -4494,8 +4491,7 @@ public:
         if (!SymbolTable::lookupSymbolIn(deviceOp, shim_name)) {
           auto shimAllocationOp = AIE::ShimDMAAllocationOp::create(
               builder, builder.getUnknownLoc(), shim_name_attr,
-              t.getDmaTile()->getResult(0),
-              AIE::DMAChannelDirAttr::get(ctx, dir),
+              t.getDmaTileValue(), AIE::DMAChannelDirAttr::get(ctx, dir),
               builder.getI64IntegerAttr(t.dma_channel.channel),
               /*plio*/ builder.getBoolAttr(false),
               /*packet*/ nullptr);
@@ -4530,7 +4526,7 @@ public:
         // specifically for MM2S (host-to-AIE) directions.
         if (dir == AIE::DMAChannelDir::MM2S)
           if (failed(labelMemcpyOpsWithPacketFlow(
-                  memcpyIfOp, shim_name_attr, t.getDmaTile()->getResult(0),
+                  memcpyIfOp, shim_name_attr, t.getDmaTileValue(),
                   t.dma_channel.channel, t.packet_flow_id)))
             return failure();
       }
