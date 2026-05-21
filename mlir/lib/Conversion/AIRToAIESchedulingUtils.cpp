@@ -1135,6 +1135,53 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       else
         break;
     }
+    // Order shim LTOs to mirror the IR order of their target memtile LTO.
+    // SequentialPlacer packs both pools in IR order from col 0, so without
+    // this the k-th shim ends up at col k but its connected memtile may be
+    // at a different col, producing cross-column flows that overload the
+    // switchbox on narrow devices (NPU1, 4 cols). Insertion point is moved
+    // to just before the first existing shim LTO whose target memtile has
+    // a strictly larger IR index than this flow's target memtile.
+    auto otherSideMem = dyn_cast_or_null<AIE::LogicalTileOp>(otherSideOp);
+    if (otherSideMem &&
+        otherSideMem.getTileType() == AIE::AIETileType::MemTile) {
+      SmallVector<AIE::LogicalTileOp> memtileLTOs;
+      for (auto &op : device.getBody()->getOperations())
+        if (auto lt = dyn_cast<AIE::LogicalTileOp>(op))
+          if (lt.getTileType() == AIE::AIETileType::MemTile)
+            memtileLTOs.push_back(lt);
+      int targetJ = -1;
+      for (int i = 0; i < (int)memtileLTOs.size(); i++) {
+        if (memtileLTOs[i].getOperation() == otherSideOp) {
+          targetJ = i;
+          break;
+        }
+      }
+      auto shimTargetJ = [&](AIE::LogicalTileOp shim) -> int {
+        for (auto *side : {&mm2s_allocs, &s2mm_allocs})
+          for (auto &t : *side) {
+            if (t.dma_tile.getOperation() != shim.getOperation())
+              continue;
+            if (!t.otherSideLTO)
+              continue;
+            for (int i = 0; i < (int)memtileLTOs.size(); i++)
+              if (memtileLTOs[i].getOperation() == t.otherSideLTO)
+                return i;
+          }
+        return std::numeric_limits<int>::max();
+      };
+      if (targetJ >= 0) {
+        for (auto &op : device.getBody()->getOperations()) {
+          auto lt = dyn_cast<AIE::LogicalTileOp>(op);
+          if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
+            continue;
+          if (shimTargetJ(lt) > targetJ) {
+            b.setInsertionPoint(lt);
+            break;
+          }
+        }
+      }
+    }
     tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
                                         AIE::AIETileType::ShimNOCTile,
                                         /*col=*/IntegerAttr(),
