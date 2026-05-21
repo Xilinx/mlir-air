@@ -8,9 +8,10 @@
 // RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="row-offset=2 col-offset=0 device=npu1" -canonicalize -cse %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(npu1) @segment_0 {
-// AIR groups both shim flows onto a single shim LTO (channels 0/1 share one
-// physical shim DMA); two memtile LTOs (one per memtile column).
-// CHECK-DAG:   %[[shim:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// One shim LTO per memtile LTO (Path B buckets shim allocations by the
+// far-side LTO Operation* identity, so each memtile gets a dedicated shim).
+// CHECK-DAG:   %[[shim_a:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:   %[[shim_b:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
 // CHECK-DAG:   %[[tile_0_2:.*]] = aie.tile(0, 2)
 // CHECK-DAG:   %[[tile_1_2:.*]] = aie.tile(1, 2)
 // CHECK-DAG:   %[[tile_0_3:.*]] = aie.tile(0, 3)
@@ -23,9 +24,9 @@
 // CHECK:    aie.core
 // CHECK-DAG:   %[[mt_a:.*]] = aie.logical_tile<MemTile>(?, ?)
 // CHECK-DAG:   %[[mt_b:.*]] = aie.logical_tile<MemTile>(?, ?)
-// CHECK:    aie.flow(%[[shim]], DMA : 0, %[[mt_a]], DMA : 0)
-// CHECK:    aie.flow(%[[shim]], DMA : 1, %[[mt_b]], DMA : 0)
-// CHECK:    aie.flow(%[[mt_a]], DMA : 0, %[[shim]], DMA : 0)
+// CHECK:    aie.flow(%[[shim_a]], DMA : 0, %[[mt_a]], DMA : 0)
+// CHECK:    aie.flow(%[[shim_b]], DMA : 0, %[[mt_b]], DMA : 0)
+// CHECK:    aie.flow(%[[mt_a]], DMA : 0, %[[shim_a]], DMA : 0)
 // CHECK:    aie.flow(%[[mt_a]], DMA : 1, %[[tile_0_2]], DMA : 0)
 // CHECK:    aie.flow(%[[mt_a]], DMA : 2, %[[tile_0_3]], DMA : 0)
 // CHECK:    aie.flow(%[[mt_a]], DMA : 3, %[[tile_1_2]], DMA : 0)

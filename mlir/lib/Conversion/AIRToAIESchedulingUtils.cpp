@@ -861,10 +861,15 @@ FailureOr<air::allocation_info_t> air::DMAAllocator::allocNewDmaChannel(
       return t;
     }
   }
-  air::allocation_info_t output = {tile,   col,
-                                   row,    aie_chan,
-                                   chan,   /*packet_flow_id=*/-1,
-                                   dma_id, {memcpyOp.getOperation()}};
+  air::allocation_info_t output = {tile,
+                                   col,
+                                   row,
+                                   aie_chan,
+                                   chan,
+                                   /*packet_flow_id=*/-1,
+                                   /*otherSideLTO=*/nullptr,
+                                   dma_id,
+                                   {memcpyOp.getOperation()}};
   allocs->push_back(output);
   return output;
 }
@@ -958,7 +963,8 @@ air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
 
 FailureOr<air::allocation_info_t>
 air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
-                                          int col, int row,
+                                          AIE::TileLike otherSide, int col,
+                                          int row,
                                           std::vector<Operation *> &dma_ops) {
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
   if (failed(isMM2S))
@@ -993,15 +999,25 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
       dma_ops_get_id.push_back(-1);
   }
 
-  // Bucket key: compute col. All flows from the same herd col share an
-  // unhinted shim LTO. aie-place-tiles assigns the physical col; the
-  // merge-ltos=false pass option (set by aircc) keeps each LTO on its
-  // own physical tile.
+  // Bucket key: the far-side col when known, else the far-side LTO's
+  // Operation*. Col is authoritative whenever it's known (>= 0) because two
+  // flows targeting the same physical col should share one shim so the shim
+  // can sit adjacent to that col. When the far side is an unhinted LTO
+  // (col == -1 under Path B) we fall back to Operation* identity, so each
+  // distinct unhinted LTO still gets its own shim LTO — preventing the pre-
+  // fix collapse where every memtile-side flow piled into one col=-1 bucket
+  // and produced too-few shim LTOs (cross-column routing failure).
+  Operation *otherSideOp = otherSide ? otherSide.getOperation() : nullptr;
+  auto sameBucket = [&](const allocation_info_t &t) {
+    if (col >= 0)
+      return t.col == col;
+    return t.otherSideLTO == otherSideOp;
+  };
   auto walkBucketLTOs = [&](auto fn) {
     llvm::SmallPtrSet<Operation *, 8> seen;
     for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
       for (auto &t : *side) {
-        if (t.col != col)
+        if (!sameBucket(t))
           continue;
         auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
         if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
@@ -1058,6 +1074,7 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
                          aie_chan,
                          packetCh,
                          /*packet_flow_id=*/-1,
+                         /*otherSideLTO=*/otherSideOp,
                          dma_ops_get_id,
                          {memcpyOp.getOperation()}});
       return allocs->back();
@@ -1101,8 +1118,31 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
   if (dma_channel < 0)
     return memcpyOp.emitOpError("out of shim DMA channels");
 
-  return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tileLT, dma_channel,
-                                               col, row, dma_ops_get_id);
+  auto baseRes = air::DMAAllocator::allocNewDmaChannel(
+      memcpyOp, tileLT, dma_channel, col, row, dma_ops_get_id);
+  if (failed(baseRes))
+    return baseRes;
+  // Stamp the bucket key on the record the base allocator just pushed.
+  // The base allocator returns either the matched reused entry or
+  // `allocs->back()`; in both cases the matching record lives in
+  // mm2s_allocs/s2mm_allocs and we update both copies (returned + stored)
+  // to keep walkBucketLTOs's view consistent.
+  // getOperation() isn't const-qualified on the op interface; cast away
+  // const for the pointer-equality compare.
+  Operation *baseOp =
+      const_cast<allocation_info_t &>(*baseRes).dma_tile.getOperation();
+  auto matchesReturned = [&](allocation_info_t &t) {
+    return t.dma_tile.getOperation() == baseOp &&
+           t.dma_channel == baseRes->dma_channel;
+  };
+  for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
+    for (auto &t : *side) {
+      if (matchesReturned(t))
+        t.otherSideLTO = otherSideOp;
+    }
+  }
+  baseRes->otherSideLTO = otherSideOp;
+  return baseRes;
 }
 
 FailureOr<air::allocation_info_t>
@@ -1425,6 +1465,7 @@ air::CascadeAllocator::allocNewCascade(air::MemcpyInterface &memcpyOp,
                                    /*aie_chan*/ AIE::DMAChannel(),
                                    /*chan*/ -1,
                                    /*packet_flow_id=*/-1,
+                                   /*otherSideLTO=*/nullptr,
                                    /*dma_id*/ std::vector<int>{},
                                    {memcpyOp.getOperation()}};
   allocs->push_back(output);
@@ -1715,7 +1756,7 @@ LogicalResult air::simpleDMAChannelAllocation(
                 "failed to get S2MM tile for L3 allocation.");
           auto s2mmTile = f.S2MM_alloc[i].getDmaTile();
           auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
-              memcpyOpIf, s2mmTile.tryGetCol().value_or(-1),
+              memcpyOpIf, s2mmTile, s2mmTile.tryGetCol().value_or(-1),
               s2mmTile.tryGetRow().value_or(-1), f.S2MM[i]);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
@@ -1744,7 +1785,7 @@ LogicalResult air::simpleDMAChannelAllocation(
               "failed to get MM2S tile for L3 allocation.");
         auto mm2sTile = f.MM2S_alloc.getDmaTile();
         auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
-            memcpyOpIf, mm2sTile.tryGetCol().value_or(-1),
+            memcpyOpIf, mm2sTile, mm2sTile.tryGetCol().value_or(-1),
             mm2sTile.tryGetRow().value_or(-1), f.MM2S);
         if (failed(alloc_res) || !alloc_res->valid())
           return failure();

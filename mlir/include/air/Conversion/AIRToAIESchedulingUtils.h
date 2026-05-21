@@ -78,6 +78,16 @@ struct allocation_info_t {
   AIE::DMAChannel dma_channel = {AIE::DMAChannelDir::MM2S, -1};
   int64_t tile_channel = -1;
   int packet_flow_id = -1; // Packet flow ID assigned during flow creation
+  // The other-side LTO (Operation*) of the flow this allocation belongs to.
+  // For a shim allocation, this is the memtile (or compute-core) LTO at the
+  // far end of the flow; for tile/memtile allocations it is unused. Used as
+  // the shim DMA bucket key so that one shim LTO never bundles flows whose
+  // far-side LTOs differ — keying on TileLike Operation* identity is lossless
+  // even when the far-side LTO is unplaced and its col is unknown (Path B,
+  // RFC #1567). Pre-Path-B the bucket keyed on `col`, which was a lossless
+  // proxy because each LTO had a unique col; with unhinted LTOs every flow
+  // collapsed to col=-1 and one shim LTO swallowed every memtile-side flow.
+  Operation *otherSideLTO = nullptr;
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
   bool valid();
@@ -194,11 +204,14 @@ public:
   // Allocate a new shim DMA channel. The shim tile is emitted as an
   // unconstrained aie.logical_tile<ShimNOCTile>(?, ?). aie-place-tiles
   // assigns the physical column from flow adjacency to placed core peers.
-  // The col and row int args record the OTHER side (compute side) of the
-  // flow for airrt metadata.
+  // `otherSide` is the LTO (or physical tile) at the OTHER end of the flow
+  // (memtile or core); its Operation* identity is the bucket key used to
+  // group shim allocations so flows targeting distinct far-side LTOs land
+  // on distinct shim LTOs. col/row are kept for airrt metadata only and
+  // may be -1 when otherSide is an unhinted LTO.
   FailureOr<allocation_info_t>
-  allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col, int row,
-                     std::vector<Operation *> &dma_ops);
+  allocNewDmaChannel(air::MemcpyInterface &memcpyOp, AIE::TileLike otherSide,
+                     int col, int row, std::vector<Operation *> &dma_ops);
 
   FailureOr<allocation_info_t>
   allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
