@@ -1134,8 +1134,10 @@ def AIROptimizeShimDMABDs: Pass<"air-opt-shim-dma-bds", "func::FuncOp"> {
           /*default=*/"\"xcvc1902\"",
            "AIE device to target.">,
     ListOption<"clTileSizes", "shim-dma-tile-sizes", "unsigned",
-               "Shim dma tiling sizes. Empty: tile every level by 1. "
-               "Single value 0: disable tiling (rely on wrap-stride fold).",
+               "Shim dma tiling sizes (global; single value 0 disables). "
+               "When empty, falls back to per-launch "
+               "`air.shim_dma_tile_sizes` attribute, then to default "
+               "(tile every level by 1).",
                "llvm::cl::ZeroOrMore">,
   ];
 }

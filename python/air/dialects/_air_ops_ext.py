@@ -72,6 +72,8 @@ class Launch(LaunchOp):
             launch_operands=operands,
             sym_name=name,
         )
+        for k, v in (attributes or {}).items():
+            self.operation.attributes[k] = v
         operand_types = [s.type for s in sizes] * 2 + get_region_operand_types(operands)
         self.regions[0].blocks.append(*operand_types)
 
@@ -98,6 +100,8 @@ class Segment(SegmentOp):
             segment_operands=operands,
             sym_name=name,
         )
+        for k, v in (attributes or {}).items():
+            self.operation.attributes[k] = v
         operand_types = [s.type for s in sizes] * 2 + get_region_operand_types(operands)
         self.regions[0].blocks.append(*operand_types)
 
@@ -126,6 +130,8 @@ class Herd(HerdOp):
             sym_name=name,
             link_with=link_with,
         )
+        for k, v in (attributes or {}).items():
+            self.operation.attributes[k] = v
         operand_types = [s.type for s in sizes] * 2 + get_region_operand_types(operands)
         self.regions[0].blocks.append(*operand_types)
 
