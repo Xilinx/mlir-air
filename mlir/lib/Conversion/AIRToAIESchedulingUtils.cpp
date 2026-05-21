@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/SmallSet.h"
 
+#include <limits>
 #include <mutex>
 #include <set>
 
@@ -961,11 +962,9 @@ air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
   shim_dma_channels = 2;
 }
 
-FailureOr<air::allocation_info_t>
-air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
-                                          AIE::TileLike otherSide, int col,
-                                          int row,
-                                          std::vector<Operation *> &dma_ops) {
+FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
+    air::MemcpyInterface &memcpyOp, AIE::TileLike otherSide, int col, int row,
+    std::vector<Operation *> &dma_ops) {
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
   if (failed(isMM2S))
     return failure();
@@ -997,6 +996,17 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
       dma_ops_get_id.push_back(op->getAttrOfType<IntegerAttr>("id").getInt());
     else
       dma_ops_get_id.push_back(-1);
+  }
+
+  // L3-direct broadcasts (channel decl carries `broadcast_shape`) bucket
+  // by their first-dest's incidental col/Op, which gives each broadcast
+  // its own shim LTO and overflows the ShimNOC col count. Spread them
+  // across existing shim LTOs instead (see fallback below).
+  bool isBroadcastL3Put = false;
+  if (auto chanIf =
+          dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation())) {
+    if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf))
+      isBroadcastL3Put = chanDecl->hasAttr("broadcast_shape");
   }
 
   // Bucket key: the far-side col when known, else the far-side LTO's
@@ -1091,6 +1101,31 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
     }
     return false;
   });
+  // Broadcast fallback: reuse the sparsest existing shim LTO across all
+  // buckets before opening a new one.
+  if (!tileLT && isBroadcastL3Put && !isPacketFlowOp) {
+    AIE::LogicalTileOp best = nullptr;
+    int bestUsed = std::numeric_limits<int>::max();
+    llvm::SmallPtrSet<Operation *, 8> seen;
+    for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
+      for (auto &t : *side) {
+        auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+        if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
+          continue;
+        if (!seen.insert(lt.getOperation()).second)
+          continue;
+        int used = (int)channelsUsedOn(lt).size();
+        if (used >= shim_dma_channels)
+          continue;
+        if (used < bestUsed) {
+          best = lt;
+          bestUsed = used;
+        }
+      }
+    }
+    if (best)
+      tileLT = best;
+  }
   if (!tileLT) {
     OpBuilder b(device);
     b.setInsertionPointToStart(device.getBody());
