@@ -948,7 +948,7 @@ Optimize the logical data movement by transforming them, represented as air.chan
 
 ```
 -device              : AIE device to target.
--shim-dma-tile-sizes : Shim dma tiling sizes. Empty defaults to tiling every level by 1.
+-shim-dma-tile-sizes : Shim dma tiling sizes. Empty: tile every level by 1. Single value 0: disable tiling (rely on wrap-stride fold).
 ```
 
 ### `-air-override-memref-memory-space`
