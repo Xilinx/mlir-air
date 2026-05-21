@@ -15,7 +15,7 @@
 // AIR emits a ShimNOCTile LTO with column hint 0; compute tile is placed
 // directly. The downstream aie-place-tiles pass resolves the LTO.
 // CHECK: aie.device(npu2) @add_three
-// CHECK-DAG:   %[[SHIM3:.*]] = aie.logical_tile<ShimNOCTile>(0, ?)
+// CHECK-DAG:   %[[SHIM3:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
 // CHECK-DAG:   %[[TILE3:.*]] = aie.tile(0, 2)
 // CHECK:   aie.lock(%[[TILE3]]
 // CHECK:   aie.buffer(%[[TILE3]])
@@ -32,7 +32,7 @@
 // CHECK: }
 
 // CHECK: aie.device(npu2) @add_two
-// CHECK-DAG:   %[[SHIM2:.*]] = aie.logical_tile<ShimNOCTile>(0, ?)
+// CHECK-DAG:   %[[SHIM2:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
 // CHECK-DAG:   %[[TILE2:.*]] = aie.tile(0, 2)
 // CHECK:   aie.lock(%[[TILE2]]
 // CHECK:   aie.buffer(%[[TILE2]])

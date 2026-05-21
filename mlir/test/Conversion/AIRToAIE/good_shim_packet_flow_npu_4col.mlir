@@ -8,19 +8,24 @@
 // RUN: air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1})' --split-input-file | FileCheck %s --check-prefix=WHOLEARRAY
 
 // 4x4 NPU1 array. Each npu_dma_packet channel bundle slot routes to a
-// distinct compute column (channel_2[i, 0] feeds col i via L2 broadcast),
-// so each slot gets its own shim NOC LTO at its compute col. Multiplexing
-// across compute cols would funnel every herd's packet flow onto one
-// shim — the routing pass cannot disambiguate that many IDs on one port.
-// WHOLEARRAY-DAG: %[[shim_noc_tile_0:.*]] = aie.logical_tile<ShimNOCTile>(0, ?)
-// WHOLEARRAY-DAG: %[[shim_noc_tile_1:.*]] = aie.logical_tile<ShimNOCTile>(1, ?)
-// WHOLEARRAY-DAG: %[[shim_noc_tile_2:.*]] = aie.logical_tile<ShimNOCTile>(2, ?)
-// WHOLEARRAY-DAG: %[[shim_noc_tile_3:.*]] = aie.logical_tile<ShimNOCTile>(3, ?)
+// distinct compute column (channel_2[i, 0] feeds col i via L2 broadcast).
+// Path B: AIR groups all four packet flows onto a single shim LTO; the
+// placer (aie-place-tiles) is then free to spread the LTO across columns
+// for routing capacity. This test checks the AIR-level invariants only:
+//   - 1 shim LTO carrying all 4 packet flows on MM2S channel 0
+//   - 4 memtile LTOs (one per compute column for the broadcasts)
+//   - 4 packet_flow ops emitted, IDs 0..3
+//   - all 4 shim_dma_allocations bound to that shim LTO on MM2S 0
+// WHOLEARRAY-DAG: %[[shim:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// WHOLEARRAY-DAG: aie.logical_tile<MemTile>(?, ?)
+// WHOLEARRAY-DAG: aie.logical_tile<MemTile>(?, ?)
+// WHOLEARRAY-DAG: aie.logical_tile<MemTile>(?, ?)
+// WHOLEARRAY-DAG: aie.logical_tile<MemTile>(?, ?)
 // WHOLEARRAY-COUNT-4: aie.packet_flow({{[0-3]}}) {
-// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_0(%[[shim_noc_tile_0]], MM2S, 0)
-// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_1(%[[shim_noc_tile_1]], MM2S, 0)
-// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_2(%[[shim_noc_tile_2]], MM2S, 0)
-// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_3(%[[shim_noc_tile_3]], MM2S, 0)
+// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_0(%[[shim]], MM2S, 0)
+// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_1(%[[shim]], MM2S, 0)
+// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_2(%[[shim]], MM2S, 0)
+// WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_3(%[[shim]], MM2S, 0)
 
 
 #map = affine_map<()[s0] -> (s0 * 256)>

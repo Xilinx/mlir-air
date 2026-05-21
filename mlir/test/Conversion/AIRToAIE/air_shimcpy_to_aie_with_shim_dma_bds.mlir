@@ -11,7 +11,7 @@
 // CHECK: aie.device
 // CHECK-DAG:         %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK-DAG:         %[[VAL_1:.*]] = aie.tile(2, 2)
-// CHECK-DAG:         %[[VAL_2:.*]] = aie.logical_tile<ShimNOCTile>(2, ?)
+// CHECK-DAG:         %[[VAL_2:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
 // CHECK-DAG:         %[[VAL_3:.*]] = aie.lock(%[[VAL_2]], 0)
 // CHECK-DAG:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 0)
 // CHECK-DAG:         %[[VAL_5:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<1024xi32, 2>
@@ -62,7 +62,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK-DAG:         %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK-DAG:         %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK-DAG:         %[[VAL_2:.*]] = aie.tile(2, 2)
-// CHECK-DAG:         %[[VAL_3:.*]] = aie.logical_tile<ShimNOCTile>(2, ?)
+// CHECK-DAG:         %[[VAL_3:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
 // CHECK-DAG:         %[[VAL_4:.*]] = aie.lock(%[[VAL_3]], 1) {init = 0 : i32}
 // CHECK-DAG:         %[[VAL_5:.*]] = aie.lock(%[[VAL_3]], 0) {init = 0 : i32}
 // CHECK-DAG:         %[[VAL_6:.*]] = aie.lock(%[[VAL_2]], 1) {init = 0 : i32}
@@ -141,7 +141,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: aie.device
 // CHECK-DAG:         %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK-DAG:         %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
-// CHECK-DAG:         %[[VAL_2:.*]] = aie.logical_tile<ShimNOCTile>(2, ?)
+// CHECK-DAG:         %[[VAL_2:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
 // CHECK-DAG:         %[[VAL_3:.*]] = aie.lock(%[[VAL_2]], 1)
 // CHECK-DAG:         %[[VAL_4:.*]] = aie.lock(%[[VAL_2]], 0)
 // CHECK-DAG:         %[[VAL_5:.*]] = aie.tile(2, 2)

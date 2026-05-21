@@ -39,7 +39,7 @@
 // CHECK:           aie.end
 // CHECK:         }
 
-// CHECK-DAG:         %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(2, ?)
+// CHECK-DAG:         %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(?, ?)
 // CHECK-DAG:         %[[MLOCK_PROD:.*]] = aie.lock(%[[MEMTILE]], 1) {init = 1 : i32}
 // CHECK-DAG:         %[[MLOCK_CONS:.*]] = aie.lock(%[[MEMTILE]], 0) {init = 0 : i32}
 // CHECK-DAG:         %[[MBUF:.*]] = aie.buffer(%[[MEMTILE]]) {{{.*}}} : memref<32x32xbf16, 1>
@@ -353,7 +353,7 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         }
 // CHECK:         aie.end
 
-// CHECK-DAG:         %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(2, ?)
+// CHECK-DAG:         %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(?, ?)
 // CHECK-DAG:         %[[MLOCK_PROD:.*]] = aie.lock(%[[MEMTILE]], 1) {init = 1 : i32}
 // CHECK-DAG:         %[[MLOCK_CONS:.*]] = aie.lock(%[[MEMTILE]], 0) {init = 0 : i32}
 // CHECK-DAG:         %[[MBUF:.*]] = aie.buffer(%[[MEMTILE]]) {{{.*}}} : memref<1x1x64x32xi32, 1 : i32>

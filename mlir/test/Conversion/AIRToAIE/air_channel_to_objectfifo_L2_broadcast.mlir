@@ -10,7 +10,7 @@
 // CHECK-LABEL:   aie.device(xcve2802) @segment_0 {
 // CHECK-DAG:    %[[CORE_5_3:.*]] = aie.tile(5, 3)
 // CHECK-DAG:    %[[CORE_5_4:.*]] = aie.tile(5, 4)
-// CHECK-DAG:    %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(1, ?)
+// CHECK-DAG:    %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(?, ?)
 // CHECK-DAG:    %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
 // CHECK:    aie.objectfifo @air_channel_0(%[[SHIM]], {%[[MEMTILE]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo.link [@air_channel_0] -> [@air_channel_1]([] [])

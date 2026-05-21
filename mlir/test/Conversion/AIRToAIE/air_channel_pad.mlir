@@ -11,7 +11,7 @@
 // as const_pad_before/const_pad_after in the memtile DMA.
 
 // CHECK: aie.device
-// CHECK-DAG:         %[[TILE_L2:.*]] = aie.logical_tile<MemTile>(2, ?)
+// CHECK-DAG:         %[[TILE_L2:.*]] = aie.logical_tile<MemTile>(?, ?)
 // CHECK-DAG:         %[[TILE_L1:.*]] = aie.tile(2, 3)
 
 // CHECK:       aie.memtile_dma(%[[TILE_L2]])

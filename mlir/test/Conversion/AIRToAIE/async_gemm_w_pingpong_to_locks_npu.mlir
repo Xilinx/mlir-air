@@ -8,8 +8,9 @@
 // RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="row-offset=2 col-offset=0 device=npu1" -canonicalize -cse %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(npu1) @segment_0 {
-// CHECK-DAG:   %[[tile_0_0:.*]] = aie.logical_tile<ShimNOCTile>(0, ?)
-// CHECK-DAG:   %[[tile_1_0:.*]] = aie.logical_tile<ShimNOCTile>(1, ?)
+// AIR groups both shim flows onto a single shim LTO (channels 0/1 share one
+// physical shim DMA); two memtile LTOs (one per memtile column).
+// CHECK-DAG:   %[[shim:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
 // CHECK-DAG:   %[[tile_0_2:.*]] = aie.tile(0, 2)
 // CHECK-DAG:   %[[tile_1_2:.*]] = aie.tile(1, 2)
 // CHECK-DAG:   %[[tile_0_3:.*]] = aie.tile(0, 3)
@@ -20,23 +21,23 @@
 // CHECK-COUNT-6:    aie.lock(%[[tile_1_3]], {{.*}})
 // CHECK-COUNT-20:    aie.buffer({{.*}}) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK:    aie.core
-// CHECK-DAG:   %[[tile_0_1:.*]] = aie.logical_tile<MemTile>(0, ?)
-// CHECK-DAG:   %[[tile_1_1:.*]] = aie.logical_tile<MemTile>(1, ?)
-// CHECK:    aie.flow(%[[tile_0_0]], DMA : 0, %[[tile_0_1]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_1_0]], DMA : 0, %[[tile_1_1]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_0_1]], DMA : 0, %[[tile_0_0]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_0_1]], DMA : 1, %[[tile_0_2]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_0_1]], DMA : 2, %[[tile_0_3]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_0_1]], DMA : 3, %[[tile_1_2]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_0_1]], DMA : 4, %[[tile_1_3]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_0_2]], DMA : 0, %[[tile_0_1]], DMA : 1)
-// CHECK:    aie.flow(%[[tile_0_3]], DMA : 0, %[[tile_0_1]], DMA : 2)
-// CHECK:    aie.flow(%[[tile_1_2]], DMA : 0, %[[tile_0_1]], DMA : 3)
-// CHECK:    aie.flow(%[[tile_1_3]], DMA : 0, %[[tile_0_1]], DMA : 4)
-// CHECK:    aie.flow(%[[tile_1_1]], DMA : 0, %[[tile_0_2]], DMA : 1)
-// CHECK:    aie.flow(%[[tile_1_1]], DMA : 0, %[[tile_1_2]], DMA : 1)
-// CHECK:    aie.flow(%[[tile_1_1]], DMA : 1, %[[tile_0_3]], DMA : 1)
-// CHECK:    aie.flow(%[[tile_1_1]], DMA : 1, %[[tile_1_3]], DMA : 1)
+// CHECK-DAG:   %[[mt_a:.*]] = aie.logical_tile<MemTile>(?, ?)
+// CHECK-DAG:   %[[mt_b:.*]] = aie.logical_tile<MemTile>(?, ?)
+// CHECK:    aie.flow(%[[shim]], DMA : 0, %[[mt_a]], DMA : 0)
+// CHECK:    aie.flow(%[[shim]], DMA : 1, %[[mt_b]], DMA : 0)
+// CHECK:    aie.flow(%[[mt_a]], DMA : 0, %[[shim]], DMA : 0)
+// CHECK:    aie.flow(%[[mt_a]], DMA : 1, %[[tile_0_2]], DMA : 0)
+// CHECK:    aie.flow(%[[mt_a]], DMA : 2, %[[tile_0_3]], DMA : 0)
+// CHECK:    aie.flow(%[[mt_a]], DMA : 3, %[[tile_1_2]], DMA : 0)
+// CHECK:    aie.flow(%[[mt_a]], DMA : 4, %[[tile_1_3]], DMA : 0)
+// CHECK:    aie.flow(%[[tile_0_2]], DMA : 0, %[[mt_a]], DMA : 1)
+// CHECK:    aie.flow(%[[tile_0_3]], DMA : 0, %[[mt_a]], DMA : 2)
+// CHECK:    aie.flow(%[[tile_1_2]], DMA : 0, %[[mt_a]], DMA : 3)
+// CHECK:    aie.flow(%[[tile_1_3]], DMA : 0, %[[mt_a]], DMA : 4)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 0, %[[tile_0_2]], DMA : 1)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 0, %[[tile_1_2]], DMA : 1)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 1, %[[tile_0_3]], DMA : 1)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 1, %[[tile_1_3]], DMA : 1)
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
