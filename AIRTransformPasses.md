@@ -948,7 +948,7 @@ Optimize the logical data movement by transforming them, represented as air.chan
 
 ```
 -device              : AIE device to target.
--shim-dma-tile-sizes : Shim dma tiling sizes (global; single value 0 disables). When empty, falls back to per-launch `air.shim_dma_tile_sizes` attribute, then to default (tile every level by 1).
+-shim-dma-tile-sizes : Shim dma tiling sizes (global override). Wins over per-launch attribute when non-empty. A single value of 0 (sentinel) disables tiling for all launches. When empty, each `air.launch` op may carry an `air.shim_dma_tile_sizes = array<i64: ...>` attribute to opt in to tiling for that launch only (single value 0 = skip this launch, single value N = auto-expand to perfectly-nested depth, multi-value = use literally). Default when neither global nor per-launch is set: skip tiling (wrap-stride fold collapses loops into multi-D BD descriptors).
 ```
 
 ### `-air-override-memref-memory-space`
