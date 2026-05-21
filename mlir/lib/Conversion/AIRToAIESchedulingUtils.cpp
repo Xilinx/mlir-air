@@ -259,8 +259,9 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
     memcpyIOps.insert(o);
   }
 
-  // Two channel ops map to the same shim BD iff memref + offsets/sizes/
-  // strides all match.
+  // Fast path: if all memcpy_ops map to an equivalent BD (same memref and
+  // matching offsets/sizes/strides), collapse them into a single BD task
+  // (one repeat-count entry).
   auto chansMappedToEquivalentBDs = [](air::ChannelInterface chanA,
                                        air::ChannelInterface chanB) {
     if (chanA.getMemref() != chanB.getMemref())
@@ -274,9 +275,12 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
                             chanA.getStrides()),
         llvm::concat<Value>(chanB.getOffsets(), chanB.getSizes(),
                             chanB.getStrides()));
-    return llvm::all_of(zipped_operands, [](std::tuple<Value, Value> pair) {
-      return isEqualConstantIntOrValue(std::get<0>(pair), std::get<1>(pair));
-    });
+    bool wrapsAndStridesAllEquivalent =
+        llvm::all_of(zipped_operands, [](std::tuple<Value, Value> pair) {
+          return isEqualConstantIntOrValue(std::get<0>(pair),
+                                           std::get<1>(pair));
+        });
+    return wrapsAndStridesAllEquivalent;
   };
 
   // Check if two channel operations are part of an N-buffer rotation pattern.

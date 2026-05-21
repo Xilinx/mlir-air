@@ -206,8 +206,9 @@ static cl::opt<bool>
 
 static cl::list<unsigned> runtimeLoopTilingSizes(
     "air-runtime-loop-tiling-sizes",
-    cl::desc("Per-loop shim DMA tile sizes; pass once per nesting dim. "
-             "Omit to let the BD-queue cost model choose per loop."),
+    cl::desc("Tiling factors for the shim DMA BD optimization pass "
+             "(forwarded to air-opt-shim-dma-bds as shim-dma-tile-sizes). "
+             "Omit to disable tiling; provide one or more values to enable."),
     cl::cat(airCompilerOptions));
 
 static cl::opt<bool> omitAutoBroadcast(
