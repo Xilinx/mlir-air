@@ -66,16 +66,18 @@ module {
     return
   }
 
-  // Mixed: launch A has a shim scf.for (gets tiled under default tile=1, so
-  // the launch_end wait_all comes from the tiling fixup). Launch B has only
-  // direct channel ops (no scf.for at shim), so it falls through to the
-  // per-launch fallback. Each must still end up with exactly one launch_end.
+  // Mixed: both launches go through the per-launch fallback under the
+  // post-#1616-revert default (no auto-tiling). The func body itself also
+  // ends with a launch_end wait_all (gathering both launch tokens). Three
+  // total launch_ends, no more (no per-launch duplication).
 
   // DEFAULT-LABEL: func.func @mixed_tiled_and_no_for
   // DEFAULT:       air.launch
   // DEFAULT:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
   // DEFAULT-NOT:   air.wait_all{{.*}}{air.launch_end}
   // DEFAULT:       air.launch
+  // DEFAULT:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
+  // DEFAULT-NOT:   air.wait_all{{.*}}{air.launch_end}
   // DEFAULT:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
   // DEFAULT-NOT:   air.wait_all{{.*}}{air.launch_end}
   // DEFAULT:       return
@@ -103,14 +105,15 @@ module {
     return
   }
 
-  // Tiled-only sanity check: under default tile=1, the single launch's shim
-  // scf.for goes through the tiling fixup, which inserts the launch_end
-  // wait_all. The per-launch fallback MUST skip this launch, so the count
-  // stays at one (a regression that re-added the fallback unconditionally
-  // would produce two).
+  // Single-launch sanity check: under the post-#1616-revert default, the
+  // launch goes through the per-launch fallback (one launch_end inside the
+  // launch body) and the func body itself gets a launch_end wait_all that
+  // gathers the launch token. Two total, no more.
 
   // DEFAULT-LABEL: func.func @tiled_only_no_double_launch_end
   // DEFAULT:       air.launch
+  // DEFAULT:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
+  // DEFAULT-NOT:   air.wait_all{{.*}}{air.launch_end}
   // DEFAULT:       air.wait_all{{.*\[%[^]]+\].*}}{air.launch_end}
   // DEFAULT-NOT:   air.wait_all{{.*}}{air.launch_end}
   // DEFAULT:       return

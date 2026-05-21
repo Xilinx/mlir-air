@@ -89,7 +89,7 @@ class XRTBackend(AirBackend):
             omit_pingpong: configure aircc to omit the generation of ping-pong buffering for specific memory levels. Supported values: "", "L1", "L2", "all". Empty string means no omission (default).
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
-            runtime_loop_tiling_sizes: override the per-loop shim DMA tile size that aircc otherwise derives from the BD-queue cost model. Empty list means use the cost model.
+            runtime_loop_tiling_sizes: tile sizes forwarded to aircc as --air-runtime-loop-tiling-sizes, which the shim DMA BD optimization pass (air-opt-shim-dma-bds) consumes as shim-dma-tile-sizes. Omit or pass an empty list to skip tiling.
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.

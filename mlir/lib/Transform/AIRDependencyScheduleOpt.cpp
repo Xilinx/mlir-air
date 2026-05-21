@@ -6366,9 +6366,8 @@ public:
       : AIROptimizeShimDMABDsBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    // affine: post-tile wrap-and-stride canonicalization creates affine.apply.
     registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect,
-                    affine::AffineDialect>();
+                    mlir::affine::AffineDialect>();
   }
 
   void runOnOperation() override {
@@ -6384,11 +6383,10 @@ public:
       signalPassFailure();
       return;
     }
-    const auto &targetModel = AIE::getTargetModel(*device);
 
     // AIE1 architecture doesn't support multi-dimensional dma bds. Tiling shim
     // dma for AIE1 does not optimize the schedule.
-    if (isa<AIE::AIE1TargetModel>(targetModel)) {
+    if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
       // AIE1 has no multi-dimensional DMA at shim. No need to tile. Apply dma
       // folding and finish.
       applyAIRL3DmaFoldingPatterns(func, *device);
@@ -6428,9 +6426,11 @@ public:
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(shimFors.front());
 
-    // `=0` sentinel: skip tiling globally. Any `0` mixed with other sizes
-    // would hit assert(max > 0) in findLargestFactor below -- reject
-    // explicitly so the user gets a diagnostic instead of an assert.
+    // Sentinel `shim-dma-tile-sizes=0`: globally disable tiling for every
+    // launch. Loops pass through un-tiled and the post-pass wrap-stride
+    // fold collapses them into multi-D BD descriptors. Useful as a kill
+    // switch when a per-launch attribute is preferred for selective
+    // re-enabling.
     bool tilingDisabled = clTileSizes.size() == 1 && clTileSizes[0] == 0;
     if (!tilingDisabled && llvm::is_contained(clTileSizes, 0u)) {
       func.emitError("shim-dma-tile-sizes=0 is only valid as a single-value "
@@ -6439,9 +6439,6 @@ public:
       return;
     }
 
-    // Empty defaults to per-level tile=1 below. Even tile=1 must run, as
-    // the post-tile fixup is required by downstream lowering (skipping
-    // exhausts the BD allocator on e.g. test/xrt/14_conv2d_i8_extern_vec).
     SmallVector<Value> optTileSizes;
     if (!tilingDisabled && !clTileSizes.empty()) {
       optTileSizes = convertVecOfIntToVecOfValue(
@@ -6467,7 +6464,7 @@ public:
       return actualTileSizes;
     };
     // Tile-size vector of length = root's perfectly-nested depth, filled
-    // with `value`. Used by the default (value=1) and attribute auto-expand.
+    // with `value`. Used by the per-launch attribute auto-expand path.
     auto tileSizesByDepth = [&](scf::ForOp root, unsigned value) {
       SmallVector<scf::ForOp> nested;
       getPerfectlyNestedLoops(nested, root);
@@ -6482,6 +6479,14 @@ public:
       shimFors.clear();
     for (auto forOp : shimFors) {
       auto enclosingLaunch = forOp->getParentOfType<air::LaunchOp>();
+      // Per-loop tile decision flow:
+      //   1. global CLI non-empty -> use as tile sizes
+      //   2. else: per-launch `air.shim_dma_tile_sizes` attribute:
+      //         single value 0  -> skip tiling for this launch
+      //         single value N  -> auto-expand to perfectly-nested depth
+      //         multi-value     -> use literally
+      //   3. else: skip tiling (wrap-stride fold collapses loops into
+      //      multi-D BD descriptors -- pre-#1616 default behavior).
       SmallVector<Value> perLoopTileSizes;
       DenseI64ArrayAttr launchAttr =
           enclosingLaunch ? enclosingLaunch->getAttrOfType<DenseI64ArrayAttr>(
@@ -6524,7 +6529,8 @@ public:
               SmallVector<unsigned>(attrSizes.begin(), attrSizes.end()));
         }
       } else {
-        perLoopTileSizes = tileSizesByDepth(forOp, 1);
+        // No CLI, no attribute -> skip tiling (pre-#1616 default).
+        continue;
       }
       assert(!perLoopTileSizes.empty());
       if (enclosingLaunch)
