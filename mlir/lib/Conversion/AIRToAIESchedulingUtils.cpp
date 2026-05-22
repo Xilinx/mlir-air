@@ -1150,10 +1150,9 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     if (otherSideMem &&
         otherSideMem.getTileType() == AIE::AIETileType::MemTile) {
       SmallVector<AIE::LogicalTileOp> memtileLTOs;
-      for (auto &op : device.getBody()->getOperations())
-        if (auto lt = dyn_cast<AIE::LogicalTileOp>(op))
-          if (lt.getTileType() == AIE::AIETileType::MemTile)
-            memtileLTOs.push_back(lt);
+      for (auto lt : device.getBody()->getOps<AIE::LogicalTileOp>())
+        if (lt.getTileType() == AIE::AIETileType::MemTile)
+          memtileLTOs.push_back(lt);
       int targetJ = -1;
       for (int i = 0; i < (int)memtileLTOs.size(); i++) {
         if (memtileLTOs[i].getOperation() == otherSideOp) {
@@ -1175,9 +1174,8 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
         return std::numeric_limits<int>::max();
       };
       if (targetJ >= 0) {
-        for (auto &op : device.getBody()->getOperations()) {
-          auto lt = dyn_cast<AIE::LogicalTileOp>(op);
-          if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
+        for (auto lt : device.getBody()->getOps<AIE::LogicalTileOp>()) {
+          if (lt.getTileType() != AIE::AIETileType::ShimNOCTile)
             continue;
           if (shimTargetJ(lt) > targetJ) {
             b.setInsertionPoint(lt);

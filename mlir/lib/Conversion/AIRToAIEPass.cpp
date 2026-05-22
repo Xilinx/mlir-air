@@ -635,11 +635,9 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
 // physical TileOp must check the underlying op type before casting.
 std::vector<AIE::TileLike> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
   std::vector<AIE::TileLike> memtiles;
-  for (auto &op : d.getBody()->getOperations()) {
-    if (auto t = dyn_cast<AIE::TileLike>(op))
-      if (t.isMemTile())
-        memtiles.push_back(t);
-  }
+  for (auto t : d.getBody()->getOps<AIE::TileLike>())
+    if (t.isMemTile())
+      memtiles.push_back(t);
   return memtiles;
 }
 
