@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 
 #include <limits>
@@ -1034,28 +1035,25 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   };
   auto walkBucketLTOs = [&](auto fn) {
     llvm::SmallPtrSet<Operation *, 8> seen;
-    for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
-      for (auto &t : *side) {
-        if (!sameBucket(t))
-          continue;
-        auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
-        if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
-          continue;
-        if (!seen.insert(lt.getOperation()).second)
-          continue;
-        if (fn(lt))
-          return;
-      }
+    for (auto &t : llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
+      if (!sameBucket(t))
+        continue;
+      auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+      if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
+        continue;
+      if (!seen.insert(lt.getOperation()).second)
+        continue;
+      if (fn(lt))
+        return;
     }
   };
 
   auto channelsUsedOn = [&](AIE::LogicalTileOp lt) {
     std::set<int> used;
-    for (auto *side : {&mm2s_allocs, &s2mm_allocs})
-      for (auto &t : *side)
-        if (t.dma_tile.getOperation() == lt.getOperation() &&
-            t.dma_channel.direction == dir)
-          used.insert((int)t.dma_channel.channel);
+    for (auto &t : llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs))
+      if (t.dma_tile.getOperation() == lt.getOperation() &&
+          t.dma_channel.direction == dir)
+        used.insert((int)t.dma_channel.channel);
     return used;
   };
 
@@ -1064,22 +1062,21 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     AIE::LogicalTileOp packetLT = nullptr;
     int packetCh = -1;
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
-      for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
-        for (auto &t : *side) {
-          if (t.dma_tile.getOperation() != lt.getOperation())
+      for (auto &t :
+           llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
+        if (t.dma_tile.getOperation() != lt.getOperation())
+          continue;
+        if (t.dma_channel.direction != dir)
+          continue;
+        for (auto o : t.memcpyOps) {
+          auto mc = dyn_cast_if_present<air::MemcpyInterface>(o);
+          if (!mc)
             continue;
-          if (t.dma_channel.direction != dir)
-            continue;
-          for (auto o : t.memcpyOps) {
-            auto mc = dyn_cast_if_present<air::MemcpyInterface>(o);
-            if (!mc)
-              continue;
-            auto ct = air::getChannelType(mc);
-            if (succeeded(ct) && ct.value() == "npu_dma_packet") {
-              packetLT = lt;
-              packetCh = (int)t.dma_channel.channel;
-              return true;
-            }
+          auto ct = air::getChannelType(mc);
+          if (succeeded(ct) && ct.value() == "npu_dma_packet") {
+            packetLT = lt;
+            packetCh = (int)t.dma_channel.channel;
+            return true;
           }
         }
       }
@@ -1116,20 +1113,18 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     AIE::LogicalTileOp best = nullptr;
     int bestUsed = std::numeric_limits<int>::max();
     llvm::SmallPtrSet<Operation *, 8> seen;
-    for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
-      for (auto &t : *side) {
-        auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
-        if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
-          continue;
-        if (!seen.insert(lt.getOperation()).second)
-          continue;
-        int used = (int)channelsUsedOn(lt).size();
-        if (used >= shim_dma_channels)
-          continue;
-        if (used < bestUsed) {
-          best = lt;
-          bestUsed = used;
-        }
+    for (auto &t : llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
+      auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+      if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
+        continue;
+      if (!seen.insert(lt.getOperation()).second)
+        continue;
+      int used = (int)channelsUsedOn(lt).size();
+      if (used >= shim_dma_channels)
+        continue;
+      if (used < bestUsed) {
+        best = lt;
+        bestUsed = used;
       }
     }
     if (best)
@@ -1167,16 +1162,16 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
         }
       }
       auto shimTargetJ = [&](AIE::LogicalTileOp shim) -> int {
-        for (auto *side : {&mm2s_allocs, &s2mm_allocs})
-          for (auto &t : *side) {
-            if (t.dma_tile.getOperation() != shim.getOperation())
-              continue;
-            if (!t.otherSideLTO)
-              continue;
-            for (int i = 0; i < (int)memtileLTOs.size(); i++)
-              if (memtileLTOs[i].getOperation() == t.otherSideLTO)
-                return i;
-          }
+        for (auto &t :
+             llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
+          if (t.dma_tile.getOperation() != shim.getOperation())
+            continue;
+          if (!t.otherSideLTO)
+            continue;
+          for (int i = 0; i < (int)memtileLTOs.size(); i++)
+            if (memtileLTOs[i].getOperation() == t.otherSideLTO)
+              return i;
+        }
         return std::numeric_limits<int>::max();
       };
       if (targetJ >= 0) {
@@ -1226,11 +1221,9 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     return t.dma_tile.getOperation() == baseOp &&
            t.dma_channel == baseRes->dma_channel;
   };
-  for (auto *side : {&mm2s_allocs, &s2mm_allocs}) {
-    for (auto &t : *side) {
-      if (matchesReturned(t))
-        t.otherSideLTO = otherSideOp;
-    }
+  for (auto &t : llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
+    if (matchesReturned(t))
+      t.otherSideLTO = otherSideOp;
   }
   baseRes->otherSideLTO = otherSideOp;
   return baseRes;
