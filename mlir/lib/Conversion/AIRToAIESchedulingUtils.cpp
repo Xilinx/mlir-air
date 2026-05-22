@@ -960,17 +960,14 @@ air::TileDMAAllocator::getBuffer(uint64_t, AIE::TileOp tile,
 
 // Collect the integer "id" attribute from each dma op (or -1 if missing).
 // Used to populate allocation_info_t::dma_id when recording a new shim
-// alloc entry.
+// alloc entry. Returned as std::vector<int> to match the downstream
+// allocation_info_t::dma_id field type.
 static std::vector<int> collectDmaIds(ArrayRef<Operation *> dma_ops) {
-  std::vector<int> ids;
-  ids.reserve(dma_ops.size());
-  for (auto *op : dma_ops) {
-    if (op->hasAttr("id"))
-      ids.push_back(op->getAttrOfType<IntegerAttr>("id").getInt());
-    else
-      ids.push_back(-1);
-  }
-  return ids;
+  auto idOrSentinel = llvm::map_range(dma_ops, [](Operation *op) -> int {
+    auto idAttr = op->getAttrOfType<IntegerAttr>("id");
+    return idAttr ? (int)idAttr.getInt() : -1;
+  });
+  return {idOrSentinel.begin(), idOrSentinel.end()};
 }
 
 air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
