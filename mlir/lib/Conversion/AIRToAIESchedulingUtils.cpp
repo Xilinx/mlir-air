@@ -957,6 +957,21 @@ air::TileDMAAllocator::getBuffer(uint64_t, AIE::TileOp tile,
 
 // ShimDMAAllocator impl.
 
+// Collect the integer "id" attribute from each dma op (or -1 if missing).
+// Used to populate allocation_info_t::dma_id when recording a new shim
+// alloc entry.
+static std::vector<int> collectDmaIds(ArrayRef<Operation *> dma_ops) {
+  std::vector<int> ids;
+  ids.reserve(dma_ops.size());
+  for (auto *op : dma_ops) {
+    if (op->hasAttr("id"))
+      ids.push_back(op->getAttrOfType<IntegerAttr>("id").getInt());
+    else
+      ids.push_back(-1);
+  }
+  return ids;
+}
+
 air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
     : air::DMAAllocator(device, air::MemorySpace::L3) {
   shim_dma_channels = 2;
@@ -990,13 +1005,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     }
   }
 
-  std::vector<int> dma_ops_get_id;
-  for (auto op : dma_ops) {
-    if (op->hasAttr("id"))
-      dma_ops_get_id.push_back(op->getAttrOfType<IntegerAttr>("id").getInt());
-    else
-      dma_ops_get_id.push_back(-1);
-  }
+  std::vector<int> dma_ops_get_id = collectDmaIds(dma_ops);
 
   // L3-direct broadcasts (channel decl carries `broadcast_shape`) bucket
   // by their first-dest's incidental col/Op, which gives each broadcast
@@ -1236,13 +1245,7 @@ air::ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
     return failure();
   auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
 
-  std::vector<int> dma_ops_get_id;
-  for (auto op : dma_ops) {
-    if (op->hasAttr("id"))
-      dma_ops_get_id.push_back(op->getAttrOfType<IntegerAttr>("id").getInt());
-    else
-      dma_ops_get_id.push_back(-1);
-  }
+  std::vector<int> dma_ops_get_id = collectDmaIds(dma_ops);
 
   for (auto &t : *allocs) {
     if (t.foundAlloc(existing_alloc.getDmaTile(), existing_alloc.dma_channel)) {
