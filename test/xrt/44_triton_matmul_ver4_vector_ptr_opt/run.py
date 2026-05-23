@@ -25,7 +25,7 @@ parser.add_argument(
     type=str,
     dest="transform_script",
     default="transform.mlir",
-    help="Transform script path",
+    help="Transform script path (legacy path).",
 )
 parser.add_argument(
     "--output-format",
@@ -92,7 +92,8 @@ with air.ir.Context() as ctx, Location.unknown():
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
-    # Load the MLIR transform IR from an external file
+    # Drive matmul codegen via the transform script (which delegates to the
+    # C++ air-matmul-codegen orchestrator via transform.apply_registered_pass).
     with open(args.transform_script, "r") as f:
         transform_ir_string = f.read()
     transform_ir = Module.parse(transform_ir_string)

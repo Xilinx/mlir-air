@@ -1,14 +1,16 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 import argparse
+import math
 import os
 import sys
 
 from air.ir import *
+import air.passmanager
 from air.dialects.affine import apply as affine_apply
 from air.dialects.linalg import fill
 from air.dialects.air import *
-from air.dialects.arith import ConstantOp
+from air.dialects.arith import ConstantOp, MulIOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
@@ -52,10 +54,12 @@ def build_module(
     np_dtype_out,
     arch="aie2",
 ):
-    assert m % tile_m == 0
+    # M, N must already be padded up to (tile_m * herd_m) / (tile_n * herd_n)
+    # by the caller (see padded-shape computation in __main__).
+    assert m % (tile_m * herd_m) == 0
+    assert n % (tile_n * herd_n) == 0
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
-    assert n % tile_n == 0
     a_size = [m, k]
     b_size = [k, n]
     c_size = [m, n]
@@ -197,29 +201,15 @@ def build_module(
                 # semantics.
                 l1_c_data = AllocOp(l1MemrefTyCHerd, [], [])
 
-                # Affine map for launch iv
-                launch_ix_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_m * herd_m),
-                        )
-                    ],
-                )
-                launch_iy_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_n * herd_n),
-                        )
-                    ],
-                )
-                launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
-                launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
+                # arith.muli on launch block IDs is the form
+                # air-split-launch-for-padding looks for when partitioning
+                # the launch into interior + tail tiles based on
+                # air.actual_sizes (see inferTileSize in
+                # mlir/lib/Transform/AIRSplitLaunchForPadding.cpp).
+                launch_tile_m_const = ConstantOp.create_index(tile_m * herd_m).result
+                launch_tile_n_const = ConstantOp.create_index(tile_n * herd_n).result
+                launch_offset_x = MulIOp(launch_ivx_s, launch_tile_m_const).result
+                launch_offset_y = MulIOp(launch_ivy_s, launch_tile_n_const).result
 
                 @herd(
                     name="herd_0",
@@ -544,10 +534,19 @@ if __name__ == "__main__":
             print("Peano is needed for direct code generation mode.", file=sys.stderr)
             sys.exit(1)
 
+    # Hardware padding: round M, N up to a multiple of the launch tile.
+    # Aircc's air-split-launch-for-padding partitions the launch into
+    # interior + tail tiles when air.actual_sizes is set on air.launch.
+    launch_tile_m = args.tile_m * args.herd_m
+    launch_tile_n = args.tile_n * args.herd_n
+    m_padded = math.ceil(args.m / launch_tile_m) * launch_tile_m
+    n_padded = math.ceil(args.n / launch_tile_n) * launch_tile_n
+    needs_padding = (args.m != m_padded) or (args.n != n_padded)
+
     mlir_module = build_module(
-        args.m,
+        m_padded,
         args.k,
-        args.n,
+        n_padded,
         args.tile_m,
         args.tile_k_l2,
         args.tile_k_l1,
@@ -559,136 +558,63 @@ if __name__ == "__main__":
         args.arch,
     )
 
-    # Vectorization - only run if direct codegen mode is enabled
+    if needs_padding:
+        with mlir_module.context, Location.unknown():
+            actual_sizes_attr = Attribute.parse(f"array<i64: {args.m}, {args.n}, 1>")
+        found = [None]
+
+        def _visit(op):
+            if op.operation.name == "air.launch":
+                op.operation.attributes["air.actual_sizes"] = actual_sizes_attr
+                found[0] = op
+                return WalkResult.INTERRUPT
+            return WalkResult.ADVANCE
+
+        mlir_module.operation.walk(_visit)
+        assert found[0] is not None, "no air.launch op produced by build_module"
+
+    # Direct-codegen flow: only the vectorize stages of the C++ orchestrator
+    # (tile-for-vectorize + vec-prep). All earlier phases are skipped.
     if args.direct_codegen:
-        transform_ir_string = """
-            module attributes {transform.with_named_sequence} {
-              transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
-
-                %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                transform.apply_patterns to %func0 {
-                    transform.apply_patterns.linalg.tiling_canonicalization
-                    transform.apply_patterns.scf.for_loop_canonicalization
-                    transform.apply_patterns.canonicalization
-                } : !transform.any_op
-                %func_fold_1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %func_folded_1 = transform.air.fold_unit_extent_dims %func_fold_1 : (!transform.any_op) -> !transform.any_op
-
-
-                %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-                %inner_most_matmul, %vec_loops:3 =
-                  transform.structured.tile_using_for %matmul tile_sizes [2, 2, 1, 0, 0, 0]
-                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)  
-                %inner_most_matmul_to_unroll, %vec_loops_to_unroll:2 =
-                  transform.structured.tile_using_for %inner_most_matmul tile_sizes [1, 1, 0, 0, 0, 0]
-                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)  
-                transform.loop.unroll %vec_loops_to_unroll#1 {factor = 2} : !transform.any_op
-                transform.loop.unroll %vec_loops_to_unroll#0 {factor = 2} : !transform.any_op
-
-                %linalg_fills = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %inner_most_fills, %vec_fill_loops:2 =
-                  transform.structured.tile_using_for %linalg_fills tile_sizes [0, 0, 1, 1]
-                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-
-
-                %herds = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %vectorized_herds = transform.air.herd_vectorize %herds : (!transform.any_op) -> !transform.any_op
-                
-                %herd1, %herd2, %herd3 = transform.split_handle %vectorized_herds : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                %scf_fors = transform.structured.match ops{["scf.for"]} in %herd2 : (!transform.any_op) -> !transform.any_op
-
-                %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                transform.apply_patterns to %func1 {
-                    transform.apply_patterns.linalg.tiling_canonicalization
-                    transform.apply_patterns.scf.for_loop_canonicalization
-                    transform.apply_patterns.canonicalization
-                    transform.apply_patterns.memref.fold_memref_alias_ops
-                } : !transform.any_op
-                %func_fold_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %func_folded_2 = transform.air.fold_unit_extent_dims %func_fold_2 : (!transform.any_op) -> !transform.any_op
-
-                // Eliminate redundant vector.transfer_read operations
-                %func1_rematch = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1_rematch : (!transform.any_op) -> !transform.any_op
-                
-                // Hoist loop-invariant vector transfers out of innermost loop
-                %herds_1 = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                
-                %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-                %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-                
-                %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = i32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
-                
-                // Hoist all accumulator transfer pairs from the innermost loop
-                %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
-
-                %innermost_for_updated_4 = transform.air.flatten_for_iter_args %innermost_for_updated_3 : (!transform.any_op) -> !transform.any_op
-                %innermost_for_updated_5 = transform.air.hoist_vector_transfer_pointers %innermost_for_updated_4 : (!transform.any_op) -> !transform.any_op
-
-                %fors_to_hoist_ptrs = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-                %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-
-                // Hoist the 4 extsi/trunci pairs from the innermost loop
-                // Pattern: each iter has (2 i8→i16, 1 i16→i32) so total 12 extsi ops
-                // i16→i32 extsi ops are at indices 2, 5, 8, 11 (0-indexed)
-                %all_extsi_loop = transform.structured.match ops{["arith.extsi"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
-                %all_trunci_loop = transform.structured.match ops{["arith.trunci"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
-                
-                // Split to get individual operations (12 extsi total)
-                %e0, %e1, %extsi_i16_1, %e3, %e4, %extsi_i16_2, %e6, %e7, %extsi_i16_3, %e9, %e10, %extsi_i16_4 = transform.split_handle %all_extsi_loop {num_result_handles = 12} : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                
-                // The 4 trunci ops correspond to the 4 vector.contract results
-                %trunci_1, %trunci_2, %trunci_3, %trunci_4 = transform.split_handle %all_trunci_loop {num_result_handles = 4} : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                
-                // Hoist first pair (arg29 - index 2)
-                %for1_1_hoisted_1 = transform.air.hoist_cast_pair %extsi_i16_1, %trunci_1, %innermost_for1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
-                // Re-match and hoist second pair (arg30 - was index 5, now 4 after first hoist)
-                %all_extsi_loop_2 = transform.structured.match ops{["arith.extsi"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
-                %all_trunci_loop_2 = transform.structured.match ops{["arith.trunci"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
-                %e2_0, %e2_1, %e2_2, %e2_3, %extsi_i16_2_new, %e2_5, %e2_6, %e2_7, %e2_8, %e2_9, %e2_10 = transform.split_handle %all_extsi_loop_2 {num_result_handles = 11} : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                %trunci_2_1, %trunci_2_2, %trunci_2_3 = transform.split_handle %all_trunci_loop_2 {num_result_handles = 3} : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                %for1_1_hoisted_2 = transform.air.hoist_cast_pair %extsi_i16_2_new, %trunci_2_1, %for1_1_hoisted_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
-                // Re-match and hoist third pair (arg31 - was index 8, now 6 after two hoists)
-                %all_extsi_loop_3 = transform.structured.match ops{["arith.extsi"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
-                %all_trunci_loop_3 = transform.structured.match ops{["arith.trunci"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
-                %e3_0, %e3_1, %e3_2, %e3_3, %e3_4, %e3_5, %extsi_i16_3_new, %e3_7, %e3_8, %e3_9 = transform.split_handle %all_extsi_loop_3 {num_result_handles = 10} : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                %trunci_3_1, %trunci_3_2 = transform.split_handle %all_trunci_loop_3 {num_result_handles = 2} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-                %for1_1_hoisted_3 = transform.air.hoist_cast_pair %extsi_i16_3_new, %trunci_3_1, %for1_1_hoisted_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
-                // Re-match and hoist fourth pair (arg32 - was index 11, now 8 after three hoists)
-                %all_extsi_loop_4 = transform.structured.match ops{["arith.extsi"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
-                %all_trunci_loop_4 = transform.structured.match ops{["arith.trunci"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
-                // Now should have 8 i8→i16 extsi and 1 i16→i32 extsi remaining (9 total)
-                %e4_0, %e4_1, %e4_2, %e4_3, %e4_4, %e4_5, %e4_6, %e4_7, %extsi_i16_4_final = transform.split_handle %all_extsi_loop_4 {num_result_handles = 9} : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                %for1_1_hoisted_final = transform.air.hoist_cast_pair %extsi_i16_4_final, %all_trunci_loop_4, %for1_1_hoisted_3 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-
-                %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                transform.apply_patterns to %func2 {
-                    transform.apply_patterns.linalg.tiling_canonicalization
-                    transform.apply_patterns.scf.for_loop_canonicalization
-                    transform.apply_patterns.canonicalization
-                    transform.apply_patterns.memref.fold_memref_alias_ops
-                } : !transform.any_op
-                %func_fold_3 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %func_folded_3 = transform.air.fold_unit_extent_dims %func_fold_3 : (!transform.any_op) -> !transform.any_op
-              transform.yield
-            }
-            }
-        """
-        transform_ir = Module.parse(transform_ir_string, context=mlir_module.context)
-        run_transform(transform_ir, mlir_module)
+        pipeline = (
+            "builtin.module("
+            + ",".join(
+                [
+                    "func.func(canonicalize,cse)",
+                    "air-matmul-codegen{"
+                    "matmul-vec-tile=2,2,1,0,0,0 "
+                    "matmul-unroll-vec-tile=1,1,0,0,0,0 "
+                    "matmul-unroll-factor=2 fill-vec-tile=0,0,1,1 "
+                    "}",
+                    "func.func(air-herd-vectorize)",
+                    "func.func(canonicalize,cse,fold-memref-alias-ops)",
+                    "air-matmul-codegen{"
+                    "vec-prep-cast1-target-element-type=i32 "
+                    "vec-prep-cast1-input-indices=2 "
+                    "vec-prep-cast1-output-indices=0 "
+                    "vec-prep-hoist-cast-pairs=true"
+                    "}",
+                    "func.func(canonicalize,cse,fold-memref-alias-ops)",
+                ]
+            )
+            + ")"
+        )
+        pm = air.passmanager.PassManager.parse(pipeline, context=mlir_module.context)
+        pm.run(mlir_module.operation)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, args.m * args.k, dtype=np.int64).reshape(args.m, args.k) % 7
-    input_a = input_a.astype(INPUT_DATATYPE)
-    input_b = np.arange(0, args.k * args.n, dtype=np.int64).reshape(args.k, args.n) % 7
-    input_b = input_b.astype(INPUT_DATATYPE)
+    # Buffers allocated at the padded shape; tail rows/cols stay zero so the
+    # matmul output's tail is also zero (and is not validated).
+    input_a = np.zeros((m_padded, args.k), dtype=INPUT_DATATYPE)
+    input_a[: args.m, :] = (
+        np.arange(0, args.m * args.k, dtype=np.int64).reshape(args.m, args.k) % 7
+    ).astype(INPUT_DATATYPE)
+    input_b = np.zeros((args.k, n_padded), dtype=INPUT_DATATYPE)
+    input_b[:, : args.n] = (
+        np.arange(0, args.k * args.n, dtype=np.int64).reshape(args.k, args.n) % 7
+    ).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
 
@@ -716,9 +642,10 @@ if __name__ == "__main__":
             dtype=OUTPUT_DATATYPE,
         )
 
-        # Store as a dictionary
+        # Output comes back at the padded shape; only validate the
+        # [0:M, 0:N] interior.
         sampled_data = {
-            "shape": (args.m, args.n),
+            "shape": (m_padded, n_padded),
             "indices": sampled_indices,
             "values": sampled_values,
         }

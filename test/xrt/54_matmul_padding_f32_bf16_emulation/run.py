@@ -163,9 +163,37 @@ with air.ir.Context() as ctx, Location.unknown():
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
-    # Apply transform script
+    # Drive matmul codegen via the transform script (delegates to the C++
+    # air-matmul-codegen orchestrator via transform.apply_registered_pass).
+    # Defaults assume k-l2-tile=16 / herd=4x4 / TILE_M=64 / TILE_N=32 ->
+    # LT_M=256, LT_N=128, epilogue=64x32. Rewrite k-l2-tile +
+    # outer-k-tile-factor + epilogue-tile when those derived values differ.
     with open(transform_path, "r") as f:
         transform_ir_string = f.read()
+    epM = max(4 * 8, LT_M // HERD_M)
+    epN = max(1, LT_N // HERD_N)
+    if K_L2_TILE != 16:
+        import re
+
+        transform_ir_string = re.sub(
+            r'("k-l2-tile" = )16(\b)',
+            rf"\g<1>{K_L2_TILE}\g<2>",
+            transform_ir_string,
+        )
+        k_factor = max(1, K_L2_TILE // 8)
+        transform_ir_string = re.sub(
+            r'("outer-k-tile-factor" = )2(\b)',
+            rf"\g<1>{k_factor}\g<2>",
+            transform_ir_string,
+        )
+    if (epM, epN) != (64, 32):
+        import re
+
+        transform_ir_string = re.sub(
+            r'("epilogue-tile" = )\[64, 32\]',
+            rf"\g<1>[{epM}, {epN}]",
+            transform_ir_string,
+        )
     transform_ir = Module.parse(transform_ir_string, context=air_module.context)
     run_transform(transform_ir, air_module)
 

@@ -7,10 +7,11 @@ import sys
 from ml_dtypes import bfloat16
 
 from air.ir import *
+import air.passmanager
 from air.dialects.affine import apply as affine_apply
 from air.dialects.linalg import fill
 from air.dialects.air import *
-from air.dialects.arith import ConstantOp
+from air.dialects.arith import ConstantOp, MulIOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
@@ -55,10 +56,13 @@ def build_module(
     arch="aie2",
     direct_codegen=False,
 ):
-    assert m % tile_m == 0
+    # M, N must already be padded up to (tile_m * herd_m) / (tile_n * herd_n)
+    # by the caller (see padded-shape computation in __main__).  K must be a
+    # full multiple of the L2 tile.
+    assert m % (tile_m * herd_m) == 0
+    assert n % (tile_n * herd_n) == 0
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
-    assert n % tile_n == 0
     a_size = [m, k]
     b_size = [k, n]
     c_size = [m, n]
@@ -202,29 +206,17 @@ def build_module(
                 # semantics.
                 l1_c_data = AllocOp(l1MemrefTyCHerd, [], [])
 
-                # Affine map for launch iv
-                launch_ix_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_m * herd_m),
-                        )
-                    ],
-                )
-                launch_iy_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_n * herd_n),
-                        )
-                    ],
-                )
-                launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
-                launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
+                # arith.muli of the launch block ID is the form
+                # air-split-launch-for-padding looks for when partitioning
+                # the launch into interior + tail tiles based on
+                # air.actual_sizes (see inferTileSize in
+                # mlir/lib/Transform/AIRSplitLaunchForPadding.cpp).  Using
+                # affine.apply here would prevent that pass from inferring
+                # the launch tile size and would break hardware padding.
+                launch_tile_m_const = ConstantOp.create_index(tile_m * herd_m).result
+                launch_tile_n_const = ConstantOp.create_index(tile_n * herd_n).result
+                launch_offset_x = MulIOp(launch_ivx_s, launch_tile_m_const).result
+                launch_offset_y = MulIOp(launch_ivy_s, launch_tile_n_const).result
 
                 @herd(
                     name="herd_0",
@@ -566,10 +558,20 @@ if __name__ == "__main__":
             print("Peano is needed for direct code generation mode.", file=sys.stderr)
             sys.exit(1)
 
+    # Hardware padding: round M, N up to a multiple of the launch tile
+    # (tile_m * herd_m, tile_n * herd_n).  The IR is built for the padded
+    # shape; aircc's air-split-launch-for-padding partitions the launch into
+    # interior + tail tiles when air.actual_sizes is set on air.launch.
+    launch_tile_m = args.tile_m * args.herd_m
+    launch_tile_n = args.tile_n * args.herd_n
+    m_padded = math.ceil(args.m / launch_tile_m) * launch_tile_m
+    n_padded = math.ceil(args.n / launch_tile_n) * launch_tile_n
+    needs_padding = (args.m != m_padded) or (args.n != n_padded)
+
     mlir_module = build_module(
-        args.m,
+        m_padded,
         args.k,
-        args.n,
+        n_padded,
         args.tile_m,
         args.tile_k_l2,
         args.tile_k_l1,
@@ -582,136 +584,51 @@ if __name__ == "__main__":
         args.direct_codegen,
     )
 
-    # Vectorization - only run if direct codegen mode is enabled
+    # Attach air.actual_sizes to the air.launch op iff the user-requested
+    # shape needs padding.  Aircc's air-split-launch-for-padding pass reads
+    # this and is a no-op when the attribute is absent (so aligned shapes
+    # produce byte-identical IR to before this change).
+    if needs_padding:
+        with mlir_module.context, Location.unknown():
+            actual_sizes_attr = Attribute.parse(f"array<i64: {args.m}, {args.n}, 1>")
+        found = [None]
+
+        def _visit(op):
+            if op.operation.name == "air.launch":
+                op.operation.attributes["air.actual_sizes"] = actual_sizes_attr
+                found[0] = op
+                return WalkResult.INTERRUPT
+            return WalkResult.ADVANCE
+
+        mlir_module.operation.walk(_visit)
+        assert found[0] is not None, "no air.launch op produced by build_module"
+
+    # Direct-codegen flow: only the vectorize stages of the C++ orchestrator
+    # (tile-for-vectorize + vec-prep). All earlier phases are skipped.
     if args.direct_codegen:
-        transform_ir_string = (
-            """
-            module attributes {transform.with_named_sequence} {
-              transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
-
-                %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                transform.apply_patterns to %func0 {
-                    transform.apply_patterns.linalg.tiling_canonicalization
-                    transform.apply_patterns.scf.for_loop_canonicalization
-                    transform.apply_patterns.canonicalization
-                } : !transform.any_op
-                %func_fold_1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %func_folded_1 = transform.air.fold_unit_extent_dims %func_fold_1 : (!transform.any_op) -> !transform.any_op
-
-
-                %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-
-                %inner_most_matmul, %vec_loops:3 =
-                  transform.structured.tile_using_for %matmul tile_sizes [2, 2, 1, 0, 0, 0]
-                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)  
-                %inner_most_matmul_to_unroll, %vec_loops_to_unroll:2 =
-                  transform.structured.tile_using_for %inner_most_matmul tile_sizes [1, 1, 0, 0, 0, 0]
-                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)  
-                transform.loop.unroll %vec_loops_to_unroll#1 {factor = 2} : !transform.any_op
-                transform.loop.unroll %vec_loops_to_unroll#0 {factor = 2} : !transform.any_op
-
-                %linalg_fills = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %inner_most_fills, %vec_fill_loops:2 =
-                  transform.structured.tile_using_for %linalg_fills tile_sizes [0, 0, 1, 1]
-                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-
-                %herds = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %vectorized_herds = transform.air.herd_vectorize %herds : (!transform.any_op) -> !transform.any_op
-                
-                %herd1, %herd2, %herd3 = transform.split_handle %vectorized_herds : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                %scf_fors = transform.structured.match ops{["scf.for"]} in %herd2 : (!transform.any_op) -> !transform.any_op
-
-                %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                transform.apply_patterns to %func1 {
-                    transform.apply_patterns.linalg.tiling_canonicalization
-                    transform.apply_patterns.scf.for_loop_canonicalization
-                    transform.apply_patterns.canonicalization
-                    transform.apply_patterns.memref.fold_memref_alias_ops
-                } : !transform.any_op
-                %func_fold_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %func_folded_2 = transform.air.fold_unit_extent_dims %func_fold_2 : (!transform.any_op) -> !transform.any_op
-
-                // Eliminate redundant vector.transfer_read operations
-                %func1_rematch = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1_rematch : (!transform.any_op) -> !transform.any_op
-                
-                // Hoist loop-invariant vector transfers out of innermost loop
-                %herds_1 = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %vectorized_herds_1 = transform.air.herd_vectorize %herds_1 : (!transform.any_op) -> !transform.any_op
-                %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %vectorized_herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                
-                %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-                %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-                
-                %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = f32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
-
-                // Hoist all accumulator transfer pairs from the innermost loop
-                %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
-
-                %innermost_for_updated_4 = transform.air.flatten_for_iter_args %innermost_for_updated_3 : (!transform.any_op) -> !transform.any_op
-                %innermost_for_updated_5 = transform.air.hoist_vector_transfer_pointers %innermost_for_updated_4 : (!transform.any_op) -> !transform.any_op
-
-                %fors_to_hoist_ptrs = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-                %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-
-                """
-            + (
-                """
-                // Hoist the 4 extf/truncf pairs from the innermost loop
-                // (only applicable when output is bf16, producing paired extf/truncf ops)
-                %all_extf_loop = transform.structured.match ops{["arith.extf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
-                %all_truncf_loop = transform.structured.match ops{["arith.truncf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
-
-                // Split to get individual operations (4 extf total)
-                %extf_bf16_1, %extf_bf16_2, %extf_bf16_3, %extf_bf16_4 = transform.split_handle %all_extf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-
-                // The 4 truncf ops correspond to the 4 vector.contract results
-                %truncf_1, %truncf_2, %truncf_3, %truncf_4 = transform.split_handle %all_truncf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-
-                // Hoist first pair
-                %for1_1_hoisted_1 = transform.air.hoist_cast_pair %extf_bf16_1, %truncf_1, %innermost_for1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-
-                // Re-match and hoist second pair
-                %all_extf_loop_2 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
-                %all_truncf_loop_2 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
-                %extf_bf16_2_new, %e2_5, %e2_6 = transform.split_handle %all_extf_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                %truncf_2_1, %truncf_2_2, %truncf_2_3 = transform.split_handle %all_truncf_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                %for1_1_hoisted_2 = transform.air.hoist_cast_pair %extf_bf16_2_new, %truncf_2_1, %for1_1_hoisted_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-
-                // Re-match and hoist third pair
-                %all_extf_loop_3 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
-                %all_truncf_loop_3 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
-                %extf_bf16_3_new, %e3_7 = transform.split_handle %all_extf_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-                %truncf_3_1, %truncf_3_2 = transform.split_handle %all_truncf_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-                %for1_1_hoisted_3 = transform.air.hoist_cast_pair %extf_bf16_3_new, %truncf_3_1, %for1_1_hoisted_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-
-                // Re-match and hoist fourth pair
-                %all_extf_loop_4 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
-                %all_truncf_loop_4 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
-                %for1_1_hoisted_final = transform.air.hoist_cast_pair %all_extf_loop_4, %all_truncf_loop_4, %for1_1_hoisted_3 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                """
-                if OUTPUT_DATATYPE == bfloat16
-                else ""
-            )
-            + """
-
-                %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                transform.apply_patterns to %func2 {
-                    transform.apply_patterns.linalg.tiling_canonicalization
-                    transform.apply_patterns.scf.for_loop_canonicalization
-                    transform.apply_patterns.canonicalization
-                    transform.apply_patterns.memref.fold_memref_alias_ops
-                } : !transform.any_op
-                %func_fold_3 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %func_folded_3 = transform.air.fold_unit_extent_dims %func_fold_3 : (!transform.any_op) -> !transform.any_op
-              transform.yield
-            }
-            }
-        """
-        )
-        transform_ir = Module.parse(transform_ir_string, context=mlir_module.context)
-        run_transform(transform_ir, mlir_module)
+        hoist_pairs = "true" if OUTPUT_DATATYPE == bfloat16 else "false"
+        steps = [
+            "func.func(canonicalize,cse)",
+            "air-matmul-codegen{"
+            "matmul-vec-tile=2,2,1,0,0,0 "
+            "matmul-unroll-vec-tile=1,1,0,0,0,0 "
+            "matmul-unroll-factor=2 fill-vec-tile=0,0,1,1 "
+            "}",
+            "func.func(air-herd-vectorize)",
+            "func.func(canonicalize,cse,fold-memref-alias-ops)",
+            # Vec-prep composite: eliminate-redundant + cast(f32) + hoist-loop +
+            # flatten + hoist-pointers + (bf16-out: hoist-cast-pairs).
+            "air-matmul-codegen{"
+            "vec-prep-cast1-target-element-type=f32 "
+            "vec-prep-cast1-input-indices=2 "
+            "vec-prep-cast1-output-indices=0 "
+            f"vec-prep-hoist-cast-pairs={hoist_pairs}"
+            "}",
+            "func.func(canonicalize,cse,fold-memref-alias-ops)",
+        ]
+        pipeline = "builtin.module(" + ",".join(steps) + ")"
+        pm = air.passmanager.PassManager.parse(pipeline, context=mlir_module.context)
+        pm.run(mlir_module.operation)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -719,13 +636,25 @@ if __name__ == "__main__":
     # Variance-normalized inputs following PyTorch's
     # random_matrix_with_scaled_reduction_dim: randn / sqrt(K).
     # This keeps output variance ~1 regardless of K, so relative
-    # tolerance behaves consistently across matrix sizes.
+    # tolerance behaves consistently across matrix sizes.  Buffers are
+    # allocated at the padded shape (m_padded, k) / (k, n_padded) so the
+    # kernel can read/write whole launch tiles.  When padding is needed,
+    # the tail rows/columns are zero so the resulting output tail is also
+    # zero and contributes no error to interior tiles.
     scale = 1.0 / math.sqrt(args.k)
-    input_a = (np.random.randn(args.m, args.k) * scale).astype(INPUT_DATATYPE)
-    input_b = (np.random.randn(args.k, args.n) * scale).astype(INPUT_DATATYPE)
+    input_a = np.zeros((m_padded, args.k), dtype=INPUT_DATATYPE)
+    input_a[: args.m, :] = (np.random.randn(args.m, args.k) * scale).astype(
+        INPUT_DATATYPE
+    )
+    input_b = np.zeros((args.k, n_padded), dtype=INPUT_DATATYPE)
+    input_b[:, : args.n] = (np.random.randn(args.k, args.n) * scale).astype(
+        INPUT_DATATYPE
+    )
 
     if args.compile_mode == "compile-and-run":
         # Stochastically sample results and pass to XRTRunner for verification.
+        # Indices are clamped to the actual M, N (no point checking the
+        # zero-padded tail).
         num_samples = 100
         sampled_indices = np.vstack(
             [
@@ -749,8 +678,10 @@ if __name__ == "__main__":
             dtype=OUTPUT_DATATYPE,
         )
 
+        # Output buffer comes back at the padded shape; we only validate
+        # entries in the [0:M, 0:N] interior.
         sampled_data = {
-            "shape": (args.m, args.n),
+            "shape": (m_padded, n_padded),
             "indices": sampled_indices,
             "values": sampled_values,
         }

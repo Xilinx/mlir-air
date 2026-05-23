@@ -125,7 +125,10 @@ with open("air_input.mlir", "w") as f:
 ## Tiling
 ################################################
 
-# Load the MLIR transform IR from an external file
+# Drive matmul codegen via the transform script. transform_aie2p.mlir
+# delegates to the C++ air-matmul-codegen orchestrator via
+# transform.apply_registered_pass; transform_aie2.mlir is the legacy
+# hand-rolled NPU1 path.
 with open(args.transform_script, "r") as f:
     transform_ir_string = f.read()
 transform_ir = Module.parse(transform_ir_string, context=context)

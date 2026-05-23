@@ -39,6 +39,11 @@ parser.add_argument(
 )
 parser.add_argument("-v", "--verbose", action="store_true")
 parser.add_argument(
+    "--print-module-only",
+    action="store_true",
+    help="Print module after air-copy-to-dma and exit (debug aid).",
+)
+parser.add_argument(
     "--compile-mode",
     type=str,
     choices=["compile-only", "compile-and-run"],
@@ -173,26 +178,24 @@ with air.ir.Context() as ctx, Location.unknown():
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
+    # Drive matmul codegen via the transform script (delegates to the C++
+    # air-matmul-codegen orchestrator via transform.apply_registered_pass).
+    # Defaults assume --k-l2-tile=16; rewrite k-l2-tile / outer-k-tile-factor
+    # in the script when the user picks a different value.
     with open(args.transform_script, "r") as f:
         transform_ir_string = f.read()
-    # Parametrize L2 K-tile size in the transform script.
-    if K_L2_TILE != 64:
+    if K_L2_TILE != 16:
         import re
 
         transform_ir_string = re.sub(
-            r"(tile_using_for %copy1 tile_sizes \[0, )64(\])",
-            rf"\g<1>{K_L2_TILE}\2",
+            r'("k-l2-tile" = )16(\b)',
+            rf"\g<1>{K_L2_TILE}\g<2>",
             transform_ir_string,
         )
+        k_factor = max(1, K_L2_TILE // 8)
         transform_ir_string = re.sub(
-            r"(tile_using_for %copy2 tile_sizes \[)64(\])",
-            rf"\g<1>{K_L2_TILE}\2",
-            transform_ir_string,
-        )
-        k_red_tile = K_L2_TILE // 8
-        transform_ir_string = re.sub(
-            r"(tile_using_for %packed_c tile_sizes \[0, 0, )8(\])",
-            rf"\g<1>{k_red_tile}\2",
+            r'("outer-k-tile-factor" = )2(\b)',
+            rf"\g<1>{k_factor}\g<2>",
             transform_ir_string,
         )
     transform_ir = Module.parse(transform_ir_string)
@@ -217,6 +220,10 @@ with air.ir.Context() as ctx, Location.unknown():
     )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
+
+    if args.print_module_only:
+        print(air_module)
+        exit(0)
 
     ###############################################
     # Compile and run
