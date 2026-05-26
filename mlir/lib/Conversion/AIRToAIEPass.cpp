@@ -1994,6 +1994,111 @@ void allocL1Buffers(AIE::DeviceOp m, uint64_t &BufferId) {
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
 
+// Chase a Value back to its underlying AIE::BufferOp through view-like ops
+// (subview, collapse_shape, expand_shape, reinterpret_cast, cast).
+static AIE::BufferOp findUnderlyingBufferOp(Value v) {
+  Value cur = v;
+  while (cur) {
+    if (auto bo = cur.getDefiningOp<AIE::BufferOp>())
+      return bo;
+    if (auto viewOp = cur.getDefiningOp<ViewLikeOpInterface>()) {
+      cur = viewOp.getViewSource();
+      continue;
+    }
+    return nullptr;
+  }
+  return nullptr;
+}
+
+// Distribute mem_bank assignments on L1 BufferOps so that buffers passed as
+// different positional arguments of the same extern (link_with) kernel call
+// land in different memory banks. Without this, the downstream
+// aie-assign-buffer-addresses pass can place all arguments of a kernel call
+// in the same bank, causing AIE2P bank arbitration to serialize the kernel's
+// parallel vector loads (e.g., matvec reading A and B simultaneously). The
+// "No memory bank assigned" Peano warning on such kernels is symptomatic of
+// this — bank contention can cause the kernel to stall or hang at runtime.
+//
+// Algorithm: for each core, walk extern kernel calls in program order.
+// Greedy-assign banks to each call's memref args so all args of any one
+// call sit on distinct banks (cycling through the 4 L1 banks of AIE2P). A
+// buffer reused across calls keeps its first assignment. Existing
+// (upstream-set) mem_bank attrs are preserved.
+void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
+  // AIE2/AIE2P compute tile L1 has 4 banks of 16KB each.
+  const int kMaxBanks = 4;
+  MLIRContext *ctx = device.getContext();
+  auto i32Ty = IntegerType::get(ctx, 32);
+
+  for (auto core : device.getOps<AIE::CoreOp>()) {
+    // Per-buffer bank assignment for this core (stable across calls).
+    DenseMap<AIE::BufferOp, int> bufBank;
+
+    core.walk([&](func::CallOp callOp) {
+      auto callee =
+          dyn_cast_or_null<func::FuncOp>(SymbolTable::lookupNearestSymbolFrom(
+              callOp, callOp.getCalleeAttr()));
+      if (!callee || !callee->hasAttr("link_with"))
+        return;
+
+      // Collect underlying BufferOps for the call's memref operands.
+      SmallVector<AIE::BufferOp> args;
+      for (Value operand : callOp.getOperands()) {
+        if (!isa<MemRefType>(operand.getType()))
+          continue;
+        if (auto bo = findUnderlyingBufferOp(operand))
+          args.push_back(bo);
+      }
+      if (args.size() < 2)
+        return;
+
+      // Banks already taken by this call's args (either from a prior call
+      // or from an upstream-set attribute).
+      llvm::SmallSet<int, 4> taken;
+      for (auto bo : args) {
+        auto it = bufBank.find(bo);
+        if (it != bufBank.end())
+          taken.insert(it->second);
+        else if (auto existing = bo.getMemBank())
+          taken.insert(*existing);
+      }
+
+      // Assign banks to args not yet pinned, picking the smallest bank
+      // not yet used by another arg of this same call.
+      for (auto bo : args) {
+        if (bufBank.count(bo))
+          continue;
+        if (bo.getMemBank().has_value()) {
+          bufBank[bo] = *bo.getMemBank();
+          continue;
+        }
+        int chosen = -1;
+        for (int b = 0; b < kMaxBanks; ++b) {
+          if (!taken.count(b)) {
+            chosen = b;
+            break;
+          }
+        }
+        // If the call has more memref args than available banks, fall back
+        // to round-robin from 0 (constraint can't be satisfied with 4 banks).
+        if (chosen < 0)
+          chosen = 0;
+        bufBank[bo] = chosen;
+        taken.insert(chosen);
+      }
+    });
+
+    // Apply the chosen banks back to BufferOps.
+    for (auto &kv : bufBank) {
+      AIE::BufferOp bo = kv.first;
+      int bank = kv.second;
+      if (bo.getMemBank().has_value())
+        continue;
+      bo.setMemBankAttr(IntegerAttr::get(i32Ty, bank));
+    }
+  }
+}
+
 bool areReferencedByTheSameAIRChannel(Value memref_a, Value memref_b) {
   for (auto user_a : memref_a.getUsers()) {
     for (auto user_b : memref_b.getUsers()) {
@@ -2981,6 +3086,7 @@ public:
       allocL1Buffers(device, BufferId);
       allocL2Buffers(device, bufferToMemtileMap, BufferId);
     }
+    assignBanksForExternKernelCalls(device);
     if (stopAfter == PipelineStage::AfterAllocBuffers)
       return success();
 
@@ -6470,6 +6576,7 @@ public:
           return;
         }
         allocL1Buffers(device, BufferId);
+        assignBanksForExternKernelCalls(device);
       } else {
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ true,
@@ -6486,6 +6593,7 @@ public:
         specializeL2MemrefsIntoMemtiles(device);
         allocL1Buffers(device, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
+        assignBanksForExternKernelCalls(device);
         air::renumberMemcpyIfOps(&device.getRegion(),
                                  chan_renumber_reverse_map);
         if (failed(lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc,
