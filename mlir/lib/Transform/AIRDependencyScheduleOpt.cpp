@@ -1590,42 +1590,75 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                     std::string omitMemorySpace)
       : OpRewritePattern(ctx), omitMemorySpace(omitMemorySpace) {}
 
+  // Single predicate shared between the rewriter's main check and the
+  // nested-loop suppression below. A loop is a ping-pong labeling candidate
+  // iff:
+  //   - it is not already labeled (no "unroll" attr), and
+  //   - it has at least one direct-child air.execute containing memref.alloc,
+  //     and
+  //   - if omitMemorySpace is set, none of those allocs live in that space
+  //     (matches the original "skip if any alloc matches omit" semantics).
+  // `allocsOut`, if non-null, is populated with the matched alloc ops when
+  // the loop is a candidate, so callers can avoid re-walking.
+  static bool isPingPongCandidate(scf::ForOp forOp, StringRef omitMemorySpace,
+                                  SmallVectorImpl<Operation *> *allocsOut) {
+    if (forOp->hasAttr("unroll"))
+      return false;
+    SmallVector<Operation *> allocs;
+    for (auto exec : forOp.getOps<air::ExecuteOp>()) {
+      for (auto alloc : exec.getOps<memref::AllocOp>()) {
+        auto ty = llvm::cast<MemRefType>(alloc.getType());
+        if (!omitMemorySpace.empty()) {
+          if (omitMemorySpace == "L1" && air::isL1(ty))
+            return false;
+          if (omitMemorySpace == "L2" && air::isL2(ty))
+            return false;
+        }
+        allocs.push_back(alloc.getOperation());
+      }
+    }
+    if (allocs.empty())
+      return false;
+    if (allocsOut)
+      *allocsOut = std::move(allocs);
+    return true;
+  }
+
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
 
-    // Check if the loop has been labelled
-    if (for_op->hasAttr("unroll"))
-      return failure();
-
-    // Check if the loop has child air.execute event containing memref.alloc
     SmallVector<Operation *> alloc_ops;
-    for (auto child_exec : for_op.getOps<air::ExecuteOp>()) {
-      for (auto child_alloc : child_exec.getOps<memref::AllocOp>()) {
-        alloc_ops.push_back(child_alloc.getOperation());
-      }
-    }
-    if (alloc_ops.empty())
+    if (!isPingPongCandidate(for_op, omitMemorySpace, &alloc_ops))
       return failure();
 
-    // Check if we should skip this loop based on memory space
-    if (!omitMemorySpace.empty()) {
-      bool shouldSkip = false;
-      for (auto op : alloc_ops) {
-        auto alloc_op = dyn_cast_if_present<memref::AllocOp>(op);
-        if (!alloc_op)
-          continue;
-        auto memref_type = llvm::cast<MemRefType>(alloc_op.getType());
-
-        // Check if this alloc's memory space matches the omit criteria
-        if ((omitMemorySpace == "L1" && air::isL1(memref_type)) ||
-            (omitMemorySpace == "L2" && air::isL2(memref_type))) {
-          shouldSkip = true;
-          break;
-        }
-      }
-      if (shouldSkip)
-        return failure();
-    }
+    // Skip outer loop if any nested scf.for in the same async scope is itself
+    // a labeling candidate (or already labeled). This avoids cascading
+    // pingpong unrolls, e.g. matvec-add where the outer M-loop has a per-iter
+    // partial alloc and the inner K-loop has per-iter A/B allocs: labeling
+    // both would expand the inner body 2x for the outer pingpong AND 2x for
+    // the inner pingpong, producing 4 buffer instances for A/B instead of 2.
+    // Only the deepest qualifying loop in any nest gets labeled. Sibling fors
+    // at the same depth are labeled independently. Nested loops inside an
+    // air.herd / air.segment / air.launch are in a different scope and do not
+    // count, so the walk stops at those boundaries.
+    bool hasLabelableNestedFor = false;
+    for_op.getBody()->walk<WalkOrder::PreOrder>(
+        [&](Operation *op) -> WalkResult {
+          if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(op))
+            return WalkResult::skip();
+          auto innerFor = dyn_cast<scf::ForOp>(op);
+          if (!innerFor)
+            return WalkResult::advance();
+          if (innerFor->hasAttr("unroll") ||
+              isPingPongCandidate(innerFor, omitMemorySpace,
+                                  /*allocsOut=*/nullptr)) {
+            hasLabelableNestedFor = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+    if (hasLabelableNestedFor)
+      return failure();
 
     // Label the scf.for loop and all its child memref.allocs
     int unroll_factor = 2; // Unroll factor hardened as 2. TODO: add support for
