@@ -2055,7 +2055,12 @@ void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
         if (!bo || !air::isL1(cast<BaseMemRefType>(bo.getType())))
           continue;
         auto size = getBufferByteSize(bo);
-        if (!size || *size > bankSize)
+        // Match the budget check in the main pinning loop. A buffer above
+        // the per-bank pin budget will never actually be pinned, so don't
+        // mark it pinnable here or the unpinned-big-buffer count below
+        // will under-report and over-aggressive pins will starve the
+        // allocator.
+        if (!size || *size > bankPinBudget)
           continue;
         localArgs.push_back(bo);
       }
@@ -2070,19 +2075,36 @@ void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
     // available memory" (e.g. xrt/26_vecmat_i8 has two 16KB unpinned
     // operands; xrt/18_matmul has one).
     unsigned needFullBanks = 0;
+    uint64_t totalL1Demand = 0;
     device.walk([&](AIE::BufferOp bo) {
       if (bo.getTileOp() != tile)
         return;
-      if (pinnableSet.count(bo))
-        return;
       if (!air::isL1(cast<BaseMemRefType>(bo.getType())))
+        return;
+      auto size = getBufferByteSize(bo);
+      if (!size)
+        return;
+      totalL1Demand += *size;
+      if (pinnableSet.count(bo))
         return;
       if (bo.getMemBank().has_value())
         return;
-      auto size = getBufferByteSize(bo);
-      if (size && *size >= bankSize / 2)
+      // A buffer spans ceil(size / bankSize) banks (e.g. a 36KB buffer on a
+      // 16KB-bank tile needs 3 banks). Anything ≥ bankSize/2 also benefits
+      // from a full bank to itself, so count that as 1.
+      if (*size >= bankSize)
+        needFullBanks += (*size + bankSize - 1) / bankSize;
+      else if (*size >= bankSize / 2)
         ++needFullBanks;
     });
+
+    // If the tile is highly loaded (≥ 75% of L1 capacity), pinning anything
+    // risks fragmenting the layout enough that the downstream allocator
+    // can't fit the remaining unpinned buffers. Skip pinning entirely on
+    // pressured tiles (e.g. flash_attention/dataflow_based tile_2_2 with
+    // ~14 buffers totalling ~50KB out of 64KB).
+    if (totalL1Demand * 4 >= targetModel.getLocalMemorySize() * 3)
+      continue;
     unsigned maxBanksToTouch =
         numBanks > needFullBanks ? numBanks - needFullBanks : 0;
     // Even when there are no big unpinned buffers, keep at least one bank
