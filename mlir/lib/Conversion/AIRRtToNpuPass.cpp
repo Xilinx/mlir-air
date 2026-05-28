@@ -1164,11 +1164,14 @@ const int AIE2_STRIDE_UPPER_BOUND = 1048576;
 const int AIE2_DIM_COUNT = 4;
 
 bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
-  SmallVector<Value> wrap_list;
-  wrap_list.push_back(dma.getLength3());
-  wrap_list.push_back(dma.getLength2());
-  wrap_list.push_back(dma.getLength1());
-  wrap_list.push_back(dma.getLength0());
+  // Linear shim BDs (contiguous row-major + optional outer dummies/repeat)
+  // use the wide buffer_length register and bypass the per-dim 10-bit limit.
+  SmallVector<Value> wrap_list{dma.getLength3(), dma.getLength2(),
+                               dma.getLength1(), dma.getLength0()};
+  SmallVector<Value> stride_list{dma.getStride3(), dma.getStride2(),
+                                 dma.getStride1(), dma.getStride0()};
+  if (air::isContiguousRowMajorOrRepeated(wrap_list, stride_list))
+    return false;
   for (unsigned i = 0; i < wrap_list.size(); i++) {
     if (auto const_val = getConstantIntValue(wrap_list[i])) {
       // Detected wrap that goes beyond the AIE2 hardware limit.

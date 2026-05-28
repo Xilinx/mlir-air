@@ -1501,15 +1501,53 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
     if (stepsize && *stepsize == 1)
       return true;
   }
-  unsigned stride_factor = 1;
+  uint64_t stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
     auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
+    // Conservative: a non-constant wrap or stride can't be proven default.
+    if (!stepsize || !wrap)
+      return false;
     if (*wrap == 1 && *stepsize == 0)
       continue; // dummy dimension.
-    if (*stepsize != stride_factor)
+    if (static_cast<uint64_t>(*stepsize) != stride_factor)
       return false;
-    stride_factor *= *wrap;
+    stride_factor *= static_cast<uint64_t>(*wrap);
+  }
+  return true;
+}
+
+// True when the wraps/strides lower to a single linear shim BD: a contiguous
+// row-major body, optionally preceded by outer size==1 dummies or outer
+// stride==0 dims (the latter fold into the BD repeat_count). Inner stride==0
+// with size>1 is rejected -- it cannot fold into one linear BD.
+bool air::isContiguousRowMajorOrRepeated(SmallVector<Value> sizes,
+                                         SmallVector<Value> strides) {
+  if (sizes.size() != strides.size())
+    return false;
+  if (sizes.empty())
+    return true;
+  int firstBodyDim = 0;
+  for (; firstBodyDim < static_cast<int>(sizes.size()); ++firstBodyDim) {
+    auto sz = mlir::getConstantIntValue(sizes[firstBodyDim]);
+    auto st = mlir::getConstantIntValue(strides[firstBodyDim]);
+    if (!sz || !st)
+      return false;
+    if (*sz == 1 || *st == 0)
+      continue;
+    break;
+  }
+  uint64_t stride_factor = 1;
+  for (int i = static_cast<int>(sizes.size()) - 1; i >= firstBodyDim; --i) {
+    auto sz = mlir::getConstantIntValue(sizes[i]);
+    auto st = mlir::getConstantIntValue(strides[i]);
+    if (!sz || !st)
+      return false;
+    if (*sz == 1)
+      continue;
+    if (static_cast<uint64_t>(*st) != stride_factor)
+      return false;
+    stride_factor *= static_cast<uint64_t>(*sz);
   }
   return true;
 }
