@@ -13,6 +13,7 @@
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
+#include <limits>
 #include <numeric>
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
@@ -2003,12 +2004,19 @@ static std::optional<uint64_t> getBufferByteSize(AIE::BufferOp bo) {
 // different positional arguments of the same extern ("link_with") kernel call
 // land in different memory banks, avoiding bank-arbitration stalls on parallel
 // vector loads (e.g. matvec reading A and B simultaneously) that the downstream
-// aie-assign-buffer-addresses pass otherwise allows. Only buffers that fit in
-// a single bank are pinned — over-bank-sized buffers must remain free for the
-// downstream allocator to spread across banks (pinning them produces "would
-// override existing mem_bank" failures). Existing mem_bank attrs and buffer
-// reuse across calls are preserved. AIE1 has no per-tile bank model the AIR
-// pass can reason about, so this is gated on AIE2/AIE2p.
+// aie-assign-buffer-addresses pass otherwise allows.
+//
+// Bin-packing rules per tile:
+//   * Buffers larger than one bank are never pinned (the AIE allocator must
+//     remain free to spread them across banks).
+//   * Each bank's pinned load is capped to leave headroom for unpinned and
+//     pre-allocated buffers (stack, rtp, etc.); skip the pin if it would
+//     exceed the cap.
+//   * Among permitted banks, pick the least-loaded one to balance across the
+//     tile. Distinct args of the same call must land in distinct banks.
+//   * Existing mem_bank attrs and buffer reuse across calls are preserved.
+//
+// Gated on AIE2/AIE2p; AIE1's memory model isn't modeled here.
 void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
   const auto &targetModel = device.getTargetModel();
   auto arch = targetModel.getTargetArch();
@@ -2023,9 +2031,15 @@ void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
     if (numBanks < 2)
       continue;
     uint64_t bankSize = targetModel.getLocalMemorySize() / numBanks;
+    // Leave 1/4 of each bank free for unpinned buffers and stack/rtp the
+    // downstream allocator will place after us. Without headroom, our pins
+    // can force "would override existing mem_bank" failures when the
+    // allocator can't fit the remaining buffers anywhere.
+    uint64_t bankPinBudget = bankSize - bankSize / 4;
 
     // MapVector keeps insertion order so the writeback below is deterministic.
     llvm::MapVector<AIE::BufferOp, int> bufBank;
+    SmallVector<uint64_t> bankLoad(numBanks, 0);
 
     core.walk([&](func::CallOp callOp) {
       auto callee = dyn_cast_or_null<func::FuncOp>(
@@ -2033,63 +2047,59 @@ void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
       if (!callee || !callee->hasAttr("link_with"))
         return;
 
-      SmallVector<AIE::BufferOp> args;
+      SmallVector<std::pair<AIE::BufferOp, uint64_t>> args;
       for (Value operand : callOp.getOperands()) {
         if (!isa<MemRefType>(operand.getType()))
           continue;
         auto bo = air::getUnderlyingBufferOp(operand);
         if (!bo)
           continue;
-        // mem_bank is meaningful only for tile-local (L1) buffers.
         if (!air::isL1(cast<BaseMemRefType>(bo.getType())))
           continue;
-        // Pinning a buffer larger than a single bank is unsatisfiable; leave
-        // it free for the downstream allocator to spread across banks.
         auto size = getBufferByteSize(bo);
         if (!size || *size > bankSize)
           continue;
-        args.push_back(bo);
+        args.emplace_back(bo, *size);
       }
       if (args.size() < 2)
         return;
 
-      llvm::SmallSet<int, 4> taken;
-      for (auto bo : args) {
-        auto it = bufBank.find(bo);
-        if (it != bufBank.end())
-          taken.insert(it->second);
+      // Banks consumed by args already pinned (this call or earlier calls).
+      llvm::SmallSet<int, 4> takenThisCall;
+      for (auto &[bo, _] : args) {
+        if (auto it = bufBank.find(bo); it != bufBank.end())
+          takenThisCall.insert(it->second);
         else if (auto existing = bo.getMemBank())
-          taken.insert(*existing);
+          takenThisCall.insert(*existing);
       }
 
-      // The constraint can't be satisfied if a single call has more memref
-      // args than the tile has banks; warn once and fall through to a true
-      // round-robin so we at least spread the overflow.
-      if (args.size() > numBanks)
-        core.emitWarning()
-            << "extern kernel call to '" << callee.getName() << "' has "
-            << args.size() << " memref args but only " << numBanks
-            << " L1 banks are available; bank contention is unavoidable";
-
-      unsigned rrIdx = 0;
-      for (auto bo : args) {
+      for (auto &[bo, size] : args) {
         if (bufBank.count(bo))
           continue;
         if (auto existing = bo.getMemBank()) {
           bufBank[bo] = *existing;
           continue;
         }
+        // Choose the least-loaded bank that still has room and isn't taken
+        // by another arg of this same call.
         int chosen = -1;
+        uint64_t minLoad = std::numeric_limits<uint64_t>::max();
         for (unsigned b = 0; b < numBanks; ++b) {
-          if (!taken.count(b)) {
+          if (takenThisCall.count(b))
+            continue;
+          if (bankLoad[b] + size > bankPinBudget)
+            continue;
+          if (bankLoad[b] < minLoad) {
+            minLoad = bankLoad[b];
             chosen = b;
-            break;
           }
         }
         if (chosen < 0)
-          chosen = rrIdx++ % numBanks;
+          continue; // can't pin without violating the budget; let allocator
+                    // decide
         bufBank[bo] = chosen;
-        taken.insert(chosen);
+        bankLoad[chosen] += size;
+        takenThisCall.insert(chosen);
       }
     });
 
