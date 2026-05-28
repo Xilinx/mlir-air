@@ -570,25 +570,24 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
                         unique_write_buffers.size());
 }
 
-// Helper function that tries to retrieve the underlying AIE::BufferOp by
-// unwrapping common memref wrappers (cast or subview)
-AIE::BufferOp getUnderlyingBufferOp(Value buffer) {
-  // Case 1: Directly defined by an AIE::BufferOp
-  if (auto bufferOp = buffer.getDefiningOp<AIE::BufferOp>())
-    return bufferOp;
-
-  // Case 2: Defined by a cast (e.g., memref.cast)
-  if (auto castOp = buffer.getDefiningOp<CastOpInterface>())
-    if (auto innerBuffer = castOp->getOperand(0).getDefiningOp<AIE::BufferOp>())
-      return innerBuffer;
-
-  // Case 3: Defined by a view-like op (e.g., memref.subview)
-  if (auto viewLikeOp = buffer.getDefiningOp<ViewLikeOpInterface>())
-    if (auto innerBuffer =
-            viewLikeOp->getOperand(0).getDefiningOp<AIE::BufferOp>())
-      return innerBuffer;
-
-  // No underlying BufferOp found
+// Walk a Value back to its underlying AIE::BufferOp through chains of
+// view-like (subview, expand/collapse_shape, reinterpret_cast) and cast
+// (memref.cast) ops. Returns nullptr if the chain doesn't terminate at a
+// BufferOp.
+AIE::BufferOp air::getUnderlyingBufferOp(Value buffer) {
+  while (buffer) {
+    if (auto bufferOp = buffer.getDefiningOp<AIE::BufferOp>())
+      return bufferOp;
+    if (auto viewLikeOp = buffer.getDefiningOp<ViewLikeOpInterface>()) {
+      buffer = viewLikeOp.getViewSource();
+      continue;
+    }
+    if (auto castOp = buffer.getDefiningOp<CastOpInterface>()) {
+      buffer = castOp->getOperand(0);
+      continue;
+    }
+    return nullptr;
+  }
   return nullptr;
 }
 
@@ -997,7 +996,7 @@ air::TileDMAAllocator::getBuffer(uint64_t, AIE::TileOp tile,
     return failure();
   Value buffer =
       isInbound.value() ? (memcpyOp.getDstMemref()) : (memcpyOp.getSrcMemref());
-  auto bufferOp = getUnderlyingBufferOp(buffer);
+  auto bufferOp = air::getUnderlyingBufferOp(buffer);
   if (!bufferOp)
     return failure();
   return bufferOp;
@@ -1354,7 +1353,7 @@ air::MemTileDMAAllocator::getBuffer(uint64_t, AIE::TileOp,
     return failure();
   Value buffer =
       isInbound.value() ? (memcpyOp.getDstMemref()) : (memcpyOp.getSrcMemref());
-  auto bufferOp = getUnderlyingBufferOp(buffer);
+  auto bufferOp = air::getUnderlyingBufferOp(buffer);
   if (!bufferOp)
     return failure();
   return bufferOp;
@@ -1452,7 +1451,7 @@ air::CascadeAllocator::getBuffer(uint64_t, AIE::TileOp,
       isInbound.value() ? (memcpyOp.getDstMemref()) : (memcpyOp.getSrcMemref());
 
   // Resolve the actual underlying buffer op
-  auto bufferOp = getUnderlyingBufferOp(buffer);
+  auto bufferOp = air::getUnderlyingBufferOp(buffer);
   if (!bufferOp)
     return failure();
   return bufferOp;

@@ -1986,74 +1986,73 @@ private:
   std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
 };
 
-void allocL1Buffers(AIE::DeviceOp m, uint64_t &BufferId) {
-  auto ctx = m->getContext();
-  RewritePatternSet patterns(ctx);
-  patterns.insert<AllocL1BuffersPattern>(ctx, BufferId);
-  // AllocL1TensorsPattern
-  (void)applyPatternsGreedily(m, std::move(patterns));
-}
-
-// Chase a Value back to its underlying AIE::BufferOp through view-like ops
-// (subview, collapse_shape, expand_shape, reinterpret_cast, cast).
-static AIE::BufferOp findUnderlyingBufferOp(Value v) {
-  Value cur = v;
-  while (cur) {
-    if (auto bo = cur.getDefiningOp<AIE::BufferOp>())
-      return bo;
-    if (auto viewOp = cur.getDefiningOp<ViewLikeOpInterface>()) {
-      cur = viewOp.getViewSource();
-      continue;
-    }
-    return nullptr;
-  }
-  return nullptr;
+// Byte size of a memref-typed BufferOp; nullopt if the element type has no
+// static bitwidth.
+static std::optional<uint64_t> getBufferByteSize(AIE::BufferOp bo) {
+  auto memrefTy = dyn_cast<MemRefType>(bo.getType());
+  if (!memrefTy || !memrefTy.hasStaticShape())
+    return std::nullopt;
+  auto elemTy = memrefTy.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return std::nullopt;
+  return (uint64_t)memrefTy.getNumElements() * elemTy.getIntOrFloatBitWidth() /
+         8;
 }
 
 // Distribute mem_bank assignments on L1 BufferOps so that buffers passed as
-// different positional arguments of the same extern (link_with) kernel call
-// land in different memory banks. Without this, the downstream
-// aie-assign-buffer-addresses pass can place all arguments of a kernel call
-// in the same bank, causing AIE2P bank arbitration to serialize the kernel's
-// parallel vector loads (e.g., matvec reading A and B simultaneously). The
-// "No memory bank assigned" Peano warning on such kernels is symptomatic of
-// this — bank contention can cause the kernel to stall or hang at runtime.
-//
-// Algorithm: for each core, walk extern kernel calls in program order.
-// Greedy-assign banks to each call's memref args so all args of any one
-// call sit on distinct banks (cycling through the 4 L1 banks of AIE2P). A
-// buffer reused across calls keeps its first assignment. Existing
-// (upstream-set) mem_bank attrs are preserved.
+// different positional arguments of the same extern ("link_with") kernel call
+// land in different memory banks, avoiding bank-arbitration stalls on parallel
+// vector loads (e.g. matvec reading A and B simultaneously) that the downstream
+// aie-assign-buffer-addresses pass otherwise allows. Only buffers that fit in
+// a single bank are pinned — over-bank-sized buffers must remain free for the
+// downstream allocator to spread across banks (pinning them produces "would
+// override existing mem_bank" failures). Existing mem_bank attrs and buffer
+// reuse across calls are preserved. AIE1 has no per-tile bank model the AIR
+// pass can reason about, so this is gated on AIE2/AIE2p.
 void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
-  // AIE2/AIE2P compute tile L1 has 4 banks of 16KB each.
-  const int kMaxBanks = 4;
-  MLIRContext *ctx = device.getContext();
-  auto i32Ty = IntegerType::get(ctx, 32);
+  const auto &targetModel = device.getTargetModel();
+  auto arch = targetModel.getTargetArch();
+  if (arch != AIE::AIEArch::AIE2 && arch != AIE::AIEArch::AIE2p)
+    return;
+
+  auto i32Ty = IntegerType::get(device.getContext(), 32);
 
   for (auto core : device.getOps<AIE::CoreOp>()) {
-    // Per-buffer bank assignment for this core (stable across calls).
-    DenseMap<AIE::BufferOp, int> bufBank;
+    AIE::TileOp tile = core.getTileOp();
+    unsigned numBanks = targetModel.getNumBanks(tile.getCol(), tile.getRow());
+    if (numBanks < 2)
+      continue;
+    uint64_t bankSize = targetModel.getLocalMemorySize() / numBanks;
+
+    // MapVector keeps insertion order so the writeback below is deterministic.
+    llvm::MapVector<AIE::BufferOp, int> bufBank;
 
     core.walk([&](func::CallOp callOp) {
-      auto callee =
-          dyn_cast_or_null<func::FuncOp>(SymbolTable::lookupNearestSymbolFrom(
-              callOp, callOp.getCalleeAttr()));
+      auto callee = dyn_cast_or_null<func::FuncOp>(
+          SymbolTable::lookupNearestSymbolFrom(callOp, callOp.getCalleeAttr()));
       if (!callee || !callee->hasAttr("link_with"))
         return;
 
-      // Collect underlying BufferOps for the call's memref operands.
       SmallVector<AIE::BufferOp> args;
       for (Value operand : callOp.getOperands()) {
         if (!isa<MemRefType>(operand.getType()))
           continue;
-        if (auto bo = findUnderlyingBufferOp(operand))
-          args.push_back(bo);
+        auto bo = air::getUnderlyingBufferOp(operand);
+        if (!bo)
+          continue;
+        // mem_bank is meaningful only for tile-local (L1) buffers.
+        if (!air::isL1(cast<BaseMemRefType>(bo.getType())))
+          continue;
+        // Pinning a buffer larger than a single bank is unsatisfiable; leave
+        // it free for the downstream allocator to spread across banks.
+        auto size = getBufferByteSize(bo);
+        if (!size || *size > bankSize)
+          continue;
+        args.push_back(bo);
       }
       if (args.size() < 2)
         return;
 
-      // Banks already taken by this call's args (either from a prior call
-      // or from an upstream-set attribute).
       llvm::SmallSet<int, 4> taken;
       for (auto bo : args) {
         auto it = bufBank.find(bo);
@@ -2063,40 +2062,53 @@ void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
           taken.insert(*existing);
       }
 
-      // Assign banks to args not yet pinned, picking the smallest bank
-      // not yet used by another arg of this same call.
+      // The constraint can't be satisfied if a single call has more memref
+      // args than the tile has banks; warn once and fall through to a true
+      // round-robin so we at least spread the overflow.
+      if (args.size() > numBanks)
+        core.emitWarning()
+            << "extern kernel call to '" << callee.getName() << "' has "
+            << args.size() << " memref args but only " << numBanks
+            << " L1 banks are available; bank contention is unavoidable";
+
+      unsigned rrIdx = 0;
       for (auto bo : args) {
         if (bufBank.count(bo))
           continue;
-        if (bo.getMemBank().has_value()) {
-          bufBank[bo] = *bo.getMemBank();
+        if (auto existing = bo.getMemBank()) {
+          bufBank[bo] = *existing;
           continue;
         }
         int chosen = -1;
-        for (int b = 0; b < kMaxBanks; ++b) {
+        for (unsigned b = 0; b < numBanks; ++b) {
           if (!taken.count(b)) {
             chosen = b;
             break;
           }
         }
-        // If the call has more memref args than available banks, fall back
-        // to round-robin from 0 (constraint can't be satisfied with 4 banks).
         if (chosen < 0)
-          chosen = 0;
+          chosen = rrIdx++ % numBanks;
         bufBank[bo] = chosen;
         taken.insert(chosen);
       }
     });
 
-    // Apply the chosen banks back to BufferOps.
     for (auto &kv : bufBank) {
       AIE::BufferOp bo = kv.first;
-      int bank = kv.second;
       if (bo.getMemBank().has_value())
         continue;
-      bo.setMemBankAttr(IntegerAttr::get(i32Ty, bank));
+      bo.setMemBankAttr(IntegerAttr::get(i32Ty, kv.second));
     }
   }
+}
+
+void allocL1Buffers(AIE::DeviceOp m, uint64_t &BufferId) {
+  auto ctx = m->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<AllocL1BuffersPattern>(ctx, BufferId);
+  // AllocL1TensorsPattern
+  (void)applyPatternsGreedily(m, std::move(patterns));
+  assignBanksForExternKernelCalls(m);
 }
 
 bool areReferencedByTheSameAIRChannel(Value memref_a, Value memref_b) {
@@ -3086,7 +3098,6 @@ public:
       allocL1Buffers(device, BufferId);
       allocL2Buffers(device, bufferToMemtileMap, BufferId);
     }
-    assignBanksForExternKernelCalls(device);
     if (stopAfter == PipelineStage::AfterAllocBuffers)
       return success();
 
@@ -6576,7 +6587,6 @@ public:
           return;
         }
         allocL1Buffers(device, BufferId);
-        assignBanksForExternKernelCalls(device);
       } else {
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ true,
@@ -6593,7 +6603,6 @@ public:
         specializeL2MemrefsIntoMemtiles(device);
         allocL1Buffers(device, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
-        assignBanksForExternKernelCalls(device);
         air::renumberMemcpyIfOps(&device.getRegion(),
                                  chan_renumber_reverse_map);
         if (failed(lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc,

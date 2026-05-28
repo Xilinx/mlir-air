@@ -61,6 +61,11 @@ generateBufferNameInStringStream(StringRef prefix, uint64_t &BufferId,
                                  mlir::StringAttr attr = nullptr, int x = -1,
                                  int y = -1);
 
+// Walks a Value back to its underlying AIE::BufferOp through chains of
+// view-like ops (subview, expand/collapse_shape, reinterpret_cast) and
+// memref.cast. Returns nullptr if the chain doesn't terminate at a BufferOp.
+AIE::BufferOp getUnderlyingBufferOp(mlir::Value buffer);
+
 AIE::ExternalBufferOp allocateExternalBufferOp(uint64_t &BufferId,
                                                MemRefType memrefTy,
                                                AIE::DeviceOp device,
