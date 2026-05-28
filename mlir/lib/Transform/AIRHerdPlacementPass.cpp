@@ -464,6 +464,98 @@ private:
     return westToEast || northToSouth;
   }
 
+  // Read the (x_loc, y_loc) pin off a Herd by inspecting every wrapped
+  // air.herd op. Returns std::nullopt if no pin is set. If sibling ops
+  // (multiple HerdOps sharing one symbolic name) carry mismatched pins
+  // an op-error is emitted on the second op and std::nullopt is returned.
+  // Coordinates are kept in int64_t to match the IntegerAttr width.
+  std::optional<std::pair<int64_t, int64_t>>
+  getHerdPin(const std::unique_ptr<Herd> &h) {
+    std::optional<std::pair<int64_t, int64_t>> pin;
+    for (air::HerdOp op : h->getHerdOps()) {
+      auto col = op.getColOffset();
+      auto row = op.getRowOffset();
+      if (!col || !row) {
+        if (pin) {
+          op->emitOpError("disagrees with sibling air.herd '")
+              << h->getName(0)
+              << "': one carries x_loc/y_loc, another does not";
+          return std::nullopt;
+        }
+        continue;
+      }
+      std::pair<int64_t, int64_t> here{static_cast<int64_t>(*col),
+                                       static_cast<int64_t>(*row)};
+      if (pin && *pin != here) {
+        op->emitOpError("disagrees with sibling air.herd '")
+            << h->getName(0) << "': x_loc/y_loc (" << here.first << ", "
+            << here.second << ") vs (" << pin->first << ", " << pin->second
+            << ")";
+        return std::nullopt;
+      }
+      pin = here;
+    }
+    return pin;
+  }
+
+  // Pre-place any user-pinned herds (those with both x_loc and y_loc set)
+  // before the placer runs. Pinned herds are moved from `unplaced` to
+  // `placed` and their cells marked occupied so subsequent placement
+  // routes around them. If a pin is illegal (out of segment bounds or
+  // overlapping an already-pinned cell), a warning is emitted naming the
+  // herd, the original physical coordinates, and the segment extent, and
+  // the herd falls through to the regular placer.
+  void extractPinnedHerds(std::unique_ptr<Segment> &segment,
+                          std::vector<std::unique_ptr<Herd>> &unplaced,
+                          std::vector<std::unique_ptr<Herd>> &placed) {
+    std::vector<std::unique_ptr<Herd>> remaining;
+    remaining.reserve(unplaced.size());
+    const int32_t anchorCol = segment->getAnchorPointCol();
+    const int32_t anchorRow = segment->getAnchorPointRow();
+    const int32_t segCols = segment->getNumCols();
+    const int32_t segRows = segment->getNumRows();
+    for (auto &h : unplaced) {
+      auto pin = getHerdPin(h);
+      if (!pin) {
+        remaining.push_back(std::move(h));
+        continue;
+      }
+      const int64_t physX = pin->first;
+      const int64_t physY = pin->second;
+      const int64_t relX = physX - anchorCol;
+      const int64_t relY = physY - anchorRow;
+
+      // Bounds check before narrowing so out-of-range pins are reported
+      // distinctly from overlaps with already-placed pins.
+      auto reportIllegal = [&](StringRef reason) {
+        h->getHerdOp(0)->emitWarning()
+            << "ignoring user-pinned x_loc/y_loc (" << physX << ", " << physY
+            << ") on air.herd '" << h->getName(0) << "': " << reason
+            << " (segment anchor (" << anchorCol << ", " << anchorRow
+            << "), extent " << segCols << "x" << segRows << "); "
+            << "falling back to automatic placement";
+      };
+      if (relX < 0 || relY < 0 || relX + h->getNumCols() > segCols ||
+          relY + h->getNumRows() > segRows) {
+        reportIllegal("position is outside the segment");
+        remaining.push_back(std::move(h));
+        continue;
+      }
+      const int32_t pinX = static_cast<int32_t>(relX);
+      const int32_t pinY = static_cast<int32_t>(relY);
+      if (!segment->isLegalPlacement(h, pinY, pinX)) {
+        reportIllegal("position overlaps a previously-pinned herd");
+        remaining.push_back(std::move(h));
+        continue;
+      }
+      segment->placeHerd(h, pinY, pinX);
+      h->setLocX(pinX);
+      h->setLocY(pinY);
+      placed.push_back(std::move(h));
+    }
+    unplaced = std::move(remaining);
+  }
+
   void placeHerdsInSegment(
       std::vector<std::unique_ptr<Herd>> &unplacedHerds,
       std::unique_ptr<Segment> &segment,
@@ -471,6 +563,14 @@ private:
       std::vector<SharedL1Connection> sharedL1Connections = {}) {
 
     std::vector<std::unique_ptr<Herd>> placedHerds;
+
+    // Honor pre-set x_loc/y_loc attributes on herds: pinned herds are
+    // claimed first so the neighbor-aware placer routes unpinned herds
+    // around them. (The func-level path in runOnOperation() takes the
+    // opposite stance and skips pinned herds entirely, on the assumption
+    // that they live outside the placement region; segment-scoped pins
+    // here are inside, so we reserve their cells.)
+    extractPinnedHerds(segment, unplacedHerds, placedHerds);
 
     // If there are cascade or shared L1 connections, use neighbor-aware
     // placement
