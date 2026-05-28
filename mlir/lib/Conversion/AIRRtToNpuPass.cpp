@@ -1163,52 +1163,18 @@ const std::vector<int> AIE2_WRAP_UPPER_BOUNDS = {64, 1024, 1024, 1024};
 const int AIE2_STRIDE_UPPER_BOUND = 1048576;
 const int AIE2_DIM_COUNT = 4;
 
-// Returns true if the airrt.dma_memcpy_nd describes a contiguous row-major
-// access (innermost stride=1, every outer stride equals product of inner
-// sizes, ignoring size-1 dummy dims). Such a transfer can be emitted as a
-// linear shim BD that uses the wide buffer_length register, bypassing the
-// per-dim wrap-size limit (see mlir-aie LinearizeContiguousBDTransfer +
-// isContiguousBDTransfer, which exempt shim contiguous BDs from the 10-bit
-// dim-size limit).
-bool isContiguousAirrtDma(airrt::DmaMemcpyNdOp dma) {
-  SmallVector<Value> wraps{dma.getLength3(), dma.getLength2(),
-                           dma.getLength1(), dma.getLength0()};
-  SmallVector<Value> strides{dma.getStride3(), dma.getStride2(),
-                             dma.getStride1(), dma.getStride0()};
-  // Innermost stride must be 1.
-  auto innerStride = getConstantIntValue(strides.back());
-  if (!innerStride || *innerStride != 1)
-    return false;
-  // Each outer stride must equal the product of all inner sizes (skipping
-  // size-1 dummy dims, whose stride is irrelevant since they are never
-  // stepped).
-  uint64_t product = 1;
-  for (int i = static_cast<int>(wraps.size()) - 1; i >= 1; --i) {
-    auto curSize = getConstantIntValue(wraps[i]);
-    if (!curSize)
-      return false;
-    product *= static_cast<uint64_t>(*curSize);
-    auto prevSize = getConstantIntValue(wraps[i - 1]);
-    auto prevStride = getConstantIntValue(strides[i - 1]);
-    if (!prevSize || !prevStride)
-      return false;
-    if (*prevSize > 1 && static_cast<uint64_t>(*prevStride) != product)
-      return false;
-  }
-  return true;
-}
-
 bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
-  // Contiguous shim transfers are lowered to linear-mode BDs using the wide
-  // buffer_length register; they are not subject to the per-dim wrap-size
-  // limit. Skip tiling for those.
-  if (isContiguousAirrtDma(dma))
+  // Shim DMAs that lower to a single linear BD (contiguous row-major,
+  // optionally with outer size==1 dummies or outer stride==0 broadcasts that
+  // fold into repeat_count) use the wide buffer_length register and are not
+  // subject to the per-dim 10-bit wrap-size limit. Skip tiling for those.
+  // Mirrors mlir-aie's LinearizeContiguousBDTransfer / isContiguousBDTransfer.
+  SmallVector<Value> wrap_list{dma.getLength3(), dma.getLength2(),
+                               dma.getLength1(), dma.getLength0()};
+  SmallVector<Value> stride_list{dma.getStride3(), dma.getStride2(),
+                                 dma.getStride1(), dma.getStride0()};
+  if (air::isContiguousRowMajorOrBroadcast(wrap_list, stride_list))
     return false;
-  SmallVector<Value> wrap_list;
-  wrap_list.push_back(dma.getLength3());
-  wrap_list.push_back(dma.getLength2());
-  wrap_list.push_back(dma.getLength1());
-  wrap_list.push_back(dma.getLength0());
   for (unsigned i = 0; i < wrap_list.size(); i++) {
     if (auto const_val = getConstantIntValue(wrap_list[i])) {
       // Detected wrap that goes beyond the AIE2 hardware limit.

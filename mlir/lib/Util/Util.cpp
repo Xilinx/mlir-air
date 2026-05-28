@@ -1501,15 +1501,74 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
     if (stepsize && *stepsize == 1)
       return true;
   }
-  unsigned stride_factor = 1;
+  uint64_t stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
     auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
+    // Conservative: a non-constant wrap or stride can't be proven default.
+    if (!stepsize || !wrap)
+      return false;
     if (*wrap == 1 && *stepsize == 0)
       continue; // dummy dimension.
-    if (*stepsize != stride_factor)
+    if (static_cast<uint64_t>(*stepsize) != stride_factor)
       return false;
-    stride_factor *= *wrap;
+    stride_factor *= static_cast<uint64_t>(*wrap);
+  }
+  return true;
+}
+
+// Check if the wraps and strides describe a shim BD that lowers to a single
+// linear stream using the wide buffer_length register. This is true when:
+//   - the inner (fast-varying) dims form a contiguous row-major access, and
+//   - any remaining outer dims are either size==1 dummies or stride==0
+//     broadcasts (which the shim BD emitter folds into repeat_count).
+// Such a transfer is NOT subject to the per-dim 10-bit wrap-size limit, since
+// the linear body is emitted via buffer_length and the outer stride==0 dim
+// becomes the BD repeat_count.
+//
+// Examples that return true:
+//   sizes=[1,1,1,2048] strides=[0,0,0,1]            (plain contiguous)
+//   sizes=[N,1,1,2048] strides=[0,*,*,1]            (broadcast K=2048)
+//   sizes=[N,M,K]      strides=[0,K,1]              (broadcast of contiguous
+//   body)
+// Examples that return false:
+//   sizes=[N,M,1,K]    strides=[X,K,*,1] X!=M*K     (non-contiguous outer)
+//   sizes=[N,M,K]      strides=[?,0,1]   M>1        (middle broadcast, not a
+//                                                   single linear BD)
+bool air::isContiguousRowMajorOrBroadcast(SmallVector<Value> sizes,
+                                          SmallVector<Value> strides) {
+  if (sizes.size() != strides.size())
+    return false;
+  if (sizes.empty())
+    return true;
+  // Skip outer size==1 dummies and stride==0 broadcast dims. The shim BD
+  // emitter folds these (dummies drop; broadcasts become repeat_count).
+  int firstBodyDim = 0;
+  for (; firstBodyDim < static_cast<int>(sizes.size()); ++firstBodyDim) {
+    auto sz = mlir::getConstantIntValue(sizes[firstBodyDim]);
+    auto st = mlir::getConstantIntValue(strides[firstBodyDim]);
+    if (!sz || !st)
+      return false;
+    if (*sz == 1)
+      continue; // dummy
+    if (*st == 0)
+      continue; // outer broadcast / repeat
+    break;
+  }
+  // Remaining inner dims must form a contiguous row-major linear BD. Inner
+  // dummies (size==1) are still allowed; inner broadcasts (stride==0 with
+  // size>1) are not -- they cannot fold into a single linear BD.
+  uint64_t stride_factor = 1;
+  for (int i = static_cast<int>(sizes.size()) - 1; i >= firstBodyDim; --i) {
+    auto sz = mlir::getConstantIntValue(sizes[i]);
+    auto st = mlir::getConstantIntValue(strides[i]);
+    if (!sz || !st)
+      return false;
+    if (*sz == 1)
+      continue; // inner dummy: stride irrelevant
+    if (static_cast<uint64_t>(*st) != stride_factor)
+      return false;
+    stride_factor *= static_cast<uint64_t>(*sz);
   }
   return true;
 }
