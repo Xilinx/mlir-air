@@ -570,24 +570,20 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
                         unique_write_buffers.size());
 }
 
-// Walk a Value back to its underlying AIE::BufferOp through chains of
-// view-like (subview, expand/collapse_shape, reinterpret_cast) and cast
-// (memref.cast) ops. Returns nullptr if the chain doesn't terminate at a
-// BufferOp.
+// Helper that tries to retrieve the underlying AIE::BufferOp by unwrapping
+// common memref wrappers (cast or subview). Single-level only — recursing
+// changes what existing callers (lock and DMA placement) see and silently
+// shifts lock scope, which broke runtime correctness in xrt/40_triton_vec_add.
 AIE::BufferOp air::getUnderlyingBufferOp(Value buffer) {
-  while (buffer) {
-    if (auto bufferOp = buffer.getDefiningOp<AIE::BufferOp>())
-      return bufferOp;
-    if (auto viewLikeOp = buffer.getDefiningOp<ViewLikeOpInterface>()) {
-      buffer = viewLikeOp.getViewSource();
-      continue;
-    }
-    if (auto castOp = buffer.getDefiningOp<CastOpInterface>()) {
-      buffer = castOp->getOperand(0);
-      continue;
-    }
-    return nullptr;
-  }
+  if (auto bufferOp = buffer.getDefiningOp<AIE::BufferOp>())
+    return bufferOp;
+  if (auto castOp = buffer.getDefiningOp<CastOpInterface>())
+    if (auto innerBuffer = castOp->getOperand(0).getDefiningOp<AIE::BufferOp>())
+      return innerBuffer;
+  if (auto viewLikeOp = buffer.getDefiningOp<ViewLikeOpInterface>())
+    if (auto innerBuffer =
+            viewLikeOp->getOperand(0).getDefiningOp<AIE::BufferOp>())
+      return innerBuffer;
   return nullptr;
 }
 
