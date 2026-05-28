@@ -87,6 +87,12 @@ module {
 // be labeled; otherwise cascading pingpong unrolls would create 2x2 = 4
 // buffer instances for A/B instead of the intended 2.
 
+// Both allocs are L1 (memspace 2). Under DEFAULT (no omit) the outer loop is
+// a candidate and the inner is too, so the outer is suppressed and only the
+// inner gets labeled. Under OMIT_L2 the omit filter doesn't reject either
+// alloc, so the result is the same as DEFAULT. Under OMIT_L1 both loops are
+// filtered out and neither is labeled.
+
 // DEFAULT-LABEL: func.func @test_nested
 // DEFAULT: scf.for {{.*}} iter_args
 // DEFAULT-NOT: } {unroll
@@ -94,7 +100,18 @@ module {
 // DEFAULT:     memref.alloc() {hoist_alloc = true} : memref<32x32xbf16, 2>
 // DEFAULT:   } {unroll = 2 : i32}
 // DEFAULT-NOT: } {unroll
-// CHECK: }
+
+// OMIT_L2-LABEL: func.func @test_nested
+// OMIT_L2: scf.for {{.*}} iter_args
+// OMIT_L2-NOT: } {unroll
+// OMIT_L2:   scf.for {{.*}} iter_args
+// OMIT_L2:     memref.alloc() {hoist_alloc = true} : memref<32x32xbf16, 2>
+// OMIT_L2:   } {unroll = 2 : i32}
+// OMIT_L2-NOT: } {unroll
+
+// OMIT_L1-LABEL: func.func @test_nested
+// OMIT_L1-NOT: hoist_alloc
+// OMIT_L1-NOT: unroll
 
 module {
   func.func @test_nested(%arg0: memref<256x1024xbf16>) {
