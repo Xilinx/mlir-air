@@ -2036,10 +2036,16 @@ void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
     // can force "would override existing mem_bank" failures when the
     // allocator can't fit the remaining buffers anywhere.
     uint64_t bankPinBudget = bankSize - bankSize / 4;
+    // Always keep at least one bank entirely untouched so the downstream
+    // allocator has room for a full-bank-sized unpinned buffer (e.g. a 16KB
+    // output tile). Without this, tiles that mix a few small pinnable args
+    // with one large unpinned operand hit "exceeded available memory".
+    unsigned maxBanksToTouch = numBanks - 1;
 
     // MapVector keeps insertion order so the writeback below is deterministic.
     llvm::MapVector<AIE::BufferOp, int> bufBank;
     SmallVector<uint64_t> bankLoad(numBanks, 0);
+    llvm::SmallSet<int, 4> touchedBanks;
 
     core.walk([&](func::CallOp callOp) {
       auto callee = dyn_cast_or_null<func::FuncOp>(
@@ -2078,10 +2084,12 @@ void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
           continue;
         if (auto existing = bo.getMemBank()) {
           bufBank[bo] = *existing;
+          touchedBanks.insert(*existing);
           continue;
         }
         // Choose the least-loaded bank that still has room and isn't taken
-        // by another arg of this same call.
+        // by another arg of this same call. Don't touch a brand-new bank if
+        // doing so would leave zero banks untouched.
         int chosen = -1;
         uint64_t minLoad = std::numeric_limits<uint64_t>::max();
         for (unsigned b = 0; b < numBanks; ++b) {
@@ -2089,16 +2097,18 @@ void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
             continue;
           if (bankLoad[b] + size > bankPinBudget)
             continue;
+          if (!touchedBanks.count(b) && touchedBanks.size() >= maxBanksToTouch)
+            continue;
           if (bankLoad[b] < minLoad) {
             minLoad = bankLoad[b];
             chosen = b;
           }
         }
         if (chosen < 0)
-          continue; // can't pin without violating the budget; let allocator
-                    // decide
+          continue; // can't pin safely; let the allocator decide
         bufBank[bo] = chosen;
         bankLoad[chosen] += size;
+        touchedBanks.insert(chosen);
         takenThisCall.insert(chosen);
       }
     });
