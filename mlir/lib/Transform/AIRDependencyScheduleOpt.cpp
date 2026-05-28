@@ -1581,6 +1581,27 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                     std::string omitMemorySpace)
       : OpRewritePattern(ctx), omitMemorySpace(omitMemorySpace) {}
 
+  // Helper: does `forOp` have a direct child air.execute containing a
+  // memref.alloc that matches the omitMemorySpace filter? (Same predicate
+  // used in matchAndRewrite below; factored out so we can ask the question
+  // for descendants without recursing into the rewriter.)
+  static bool hasLabelableAllocChild(scf::ForOp forOp,
+                                     StringRef omitMemorySpace) {
+    for (auto exec : forOp.getOps<air::ExecuteOp>()) {
+      for (auto alloc : exec.getOps<memref::AllocOp>()) {
+        auto ty = llvm::cast<MemRefType>(alloc.getType());
+        if (omitMemorySpace.empty())
+          return true;
+        if (omitMemorySpace == "L1" && air::isL1(ty))
+          continue;
+        if (omitMemorySpace == "L2" && air::isL2(ty))
+          continue;
+        return true;
+      }
+    }
+    return false;
+  }
+
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
 
@@ -1617,6 +1638,30 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
       if (shouldSkip)
         return failure();
     }
+
+    // Skip outer loop if any nested scf.for is itself a labeling candidate
+    // (already labeled, or has a direct air.execute alloc child that matches
+    // the omitMemorySpace filter). This avoids cascading pingpong unrolls in
+    // nested loops, e.g. matvec-add where the outer M-loop has a per-iter
+    // partial alloc and the inner K-loop has per-iter A/B allocs: labeling
+    // both would expand the inner body 2x for the outer pingpong AND 2x for
+    // the inner pingpong, producing 4 buffer instances for A/B instead of 2.
+    // Only the deepest qualifying loop in any nest gets labeled.
+    //
+    // This rule fires only when a nested for loop has its own alloc-children
+    // (or unroll attr). If the nested for has no allocs, the outer remains a
+    // candidate. Sibling for loops at the same depth are labeled independently.
+    bool hasLabelableNestedFor = false;
+    for_op.getBody()->walk([&](scf::ForOp innerFor) {
+      if (innerFor == for_op)
+        return WalkResult::advance();
+      if (innerFor->hasAttr("unroll") ||
+          hasLabelableAllocChild(innerFor, omitMemorySpace))
+        hasLabelableNestedFor = true;
+      return WalkResult::advance();
+    });
+    if (hasLabelableNestedFor)
+      return failure();
 
     // Label the scf.for loop and all its child memref.allocs
     int unroll_factor = 2; // Unroll factor hardened as 2. TODO: add support for
