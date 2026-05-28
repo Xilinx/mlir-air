@@ -1216,47 +1216,56 @@ struct ConstructPingPongDependencyPattern
     SmallVector<Operation *> pong_consumer_fronts;
     SmallVector<Operation *> pong_consumer_backs;
 
-    new_loop_op.getBody()->walk([&](Operation *op) {
-      if (op->hasAttr("ping_pong") || op->hasAttr("unrolled_iteration")) {
-        auto ping_pong_id =
-            op->hasAttr("ping_pong")
-                ? (op->getAttrOfType<IntegerAttr>("ping_pong").getUInt())
-                : (op->getAttrOfType<IntegerAttr>("unrolled_iteration")
-                       .getInt());
-        // "Ping" producer fronts
-        if (op->hasAttr("async_front") && ping_pong_id == 0) {
-          ping_producer_fronts.push_back(op);
-        }
-        // "Pong" producer fronts
-        else if (op->hasAttr("async_front") && ping_pong_id == 1) {
-          pong_producer_fronts.push_back(op);
-        }
-        // "Ping" consumer backs
-        else if (op->hasAttr("async_back") && ping_pong_id == 0) {
-          ping_consumer_backs.push_back(op);
-        }
-        // "Pong" consumer backs
-        else if (op->hasAttr("async_back") && ping_pong_id == 1) {
-          pong_consumer_backs.push_back(op);
-        }
-        // "Ping" producer backs
-        if (op->hasAttr("producer") && ping_pong_id == 0) {
-          ping_producer_backs.push_back(op);
-        }
-        // "Pong" producer backs
-        if (op->hasAttr("producer") && ping_pong_id == 1) {
-          pong_producer_backs.push_back(op);
-        }
-        // "Ping" consumer fronts
-        if (op->hasAttr("consumer") && ping_pong_id == 0) {
-          ping_consumer_fronts.push_back(op);
-        }
-        // "Pong" consumer fronts
-        if (op->hasAttr("consumer") && ping_pong_id == 1) {
-          pong_consumer_fronts.push_back(op);
-        }
-      }
-    });
+    // Classify a single op by its ping_pong / async_front / async_back /
+    // producer / consumer annotations into the appropriate bucket. Shared
+    // between the inner-scf.for branch and the general branch below to keep
+    // the two paths in lockstep — any future bucket / attr change is made
+    // exactly once.
+    auto classifyOp = [&](Operation *op) {
+      if (!op->hasAttr("ping_pong") && !op->hasAttr("unrolled_iteration"))
+        return;
+      auto ping_pong_id =
+          op->hasAttr("ping_pong")
+              ? (op->getAttrOfType<IntegerAttr>("ping_pong").getUInt())
+              : (op->getAttrOfType<IntegerAttr>("unrolled_iteration").getInt());
+      if (op->hasAttr("async_front") && ping_pong_id == 0)
+        ping_producer_fronts.push_back(op);
+      else if (op->hasAttr("async_front") && ping_pong_id == 1)
+        pong_producer_fronts.push_back(op);
+      else if (op->hasAttr("async_back") && ping_pong_id == 0)
+        ping_consumer_backs.push_back(op);
+      else if (op->hasAttr("async_back") && ping_pong_id == 1)
+        pong_consumer_backs.push_back(op);
+      if (op->hasAttr("producer") && ping_pong_id == 0)
+        ping_producer_backs.push_back(op);
+      if (op->hasAttr("producer") && ping_pong_id == 1)
+        pong_producer_backs.push_back(op);
+      if (op->hasAttr("consumer") && ping_pong_id == 0)
+        ping_consumer_fronts.push_back(op);
+      if (op->hasAttr("consumer") && ping_pong_id == 1)
+        pong_consumer_fronts.push_back(op);
+    };
+
+    // Walk new_loop_op's body, but do NOT descend into nested scf.for ops:
+    // the greedy rewriter may have already pp-transformed an inner scf.for,
+    // in which case its body carries the inner loop's own ping_pong /
+    // producer / consumer / async_front / async_back annotations. Picking
+    // those up here would wire an outer-scope sink to an inner-region SSA
+    // value, producing "operand #0 does not dominate this use". The inner
+    // scf.for op itself is still classified — it may legitimately be a
+    // producer / consumer of the outer-level buffer — we only prune its
+    // body. Pre-order is required: WalkResult::skip prunes regions not yet
+    // visited, so under post-order the body has already been walked by the
+    // time the parent's callback fires.
+    new_loop_op.getBody()->walk<WalkOrder::PreOrder>(
+        [&](Operation *op) -> WalkResult {
+          classifyOp(op);
+          // Block::walk starts inside the body, so new_loop_op itself is
+          // never visited — every scf.for we see here is a nested one.
+          if (isa<scf::ForOp>(op))
+            return WalkResult::skip();
+          return WalkResult::advance();
+        });
 
     // Part 2: Connect producers
     for (auto sink : ping_producer_fronts) {
