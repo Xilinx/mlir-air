@@ -7,21 +7,11 @@
 
 // RUN: air-opt -airrt-to-npu -split-input-file -verify-diagnostics %s | FileCheck %s
 
-// Shim BDs that describe a contiguous row-major access (innermost stride==1,
-// every outer stride == product of inner sizes, ignoring size==1 dummy dims)
-// lower to a single linear-mode BD via the wide buffer_length register and
-// are NOT subject to the per-dim 10-bit wrap-size limit. The wrap-tile pass
-// (violatesAIE2WrapLimit) must therefore skip them, even when an inner
-// dimension exceeds 1023.
-//
-// The corresponding outer stride==0 broadcast pattern (size > 1 outer dim
-// with stride 0, optionally interleaved with size==1 dummies, over a
-// contiguous inner body) is also a single linear BD: the broadcast folds
-// into the shim BD repeat_count. It too must skip wrap-tiling, regardless of
-// inner size.
+// Linear shim BDs (contiguous row-major body, optionally preceded by outer
+// size==1 dummies or outer stride==0 repeat dims) lower to a single
+// buffer_length transfer and bypass the per-dim 10-bit wrap-size limit.
 
-// Plain contiguous bf16, inner 131136 (>> 1023). Must emit a single linear
-// BD, not the (683, 192) tiled form.
+// Plain contiguous bf16, inner 131136 (>> 1023): single BD, no tiling.
 
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: aie.dma_bd(%arg0 : memref<131136xbf16>, 0, 131136, [<size = 131136, stride = 1>])
@@ -49,9 +39,8 @@ module {
 
 // -----
 
-// Plain contiguous bf16, inner 2049. Has no even factor <= 1023, so prior
-// to the linear-BD skip this case errored out in tileIllegalWrapDim. Now it
-// passes through as a single linear BD.
+// bf16 length 2049 has no even factor <= 1023. Previously errored in
+// tileIllegalWrapDim; now passes through as a single linear BD.
 
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: aie.dma_bd(%arg0 : memref<2049xbf16>, 0, 2049, [<size = 2049, stride = 1>])
@@ -79,10 +68,8 @@ module {
 
 // -----
 
-// Broadcast pattern: outermost size==8, stride==0; middle dims are size==1
-// dummies; inner stride==1 with size 2048 (> 1023). The shim BD folds the
-// outer broadcast into repeat_count and emits a single linear BD of size
-// 2048. Must NOT be tiled.
+// Outer repeat: size==8 stride==0 outer, dummy mids, inner 2048 stride==1.
+// Folds into repeat_count=7 + one linear BD of 2048. Must NOT be tiled.
 
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: aie.dma_bd(%arg0 : memref<2048xbf16>, 0, 2048, [<size = 2048, stride = 1>])
@@ -112,8 +99,7 @@ module {
 
 // -----
 
-// NPU2: same plain-contiguous linearization on AIE2P device. Guards against
-// device divergence in the skip-tiling logic.
+// NPU2: same linearization on AIE2P. Guards against device divergence.
 
 // CHECK-LABEL: aie.device(npu2)
 // CHECK: aie.dma_bd(%arg0 : memref<131136xbf16>, 0, 131136, [<size = 131136, stride = 1>])

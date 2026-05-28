@@ -236,13 +236,12 @@ void copyPaddingAttributes(Operation *src, Operation *dst);
 // access pattern.
 bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
                                 SmallVector<Value> memcpy_strides);
-// Check if the wraps and strides describe a shim BD that lowers to a single
-// linear stream using the wide buffer_length register: a contiguous row-major
-// body, optionally with any number of outer size==1 dummies or stride==0
-// broadcast dims (which the shim BD emitter folds into repeat_count). Such a
-// transfer is NOT subject to the per-dim 10-bit wrap-size limit.
-bool isContiguousRowMajorOrBroadcast(SmallVector<Value> sizes,
-                                     SmallVector<Value> strides);
+// True when the wraps/strides lower to a single linear shim BD: contiguous
+// row-major body, optionally preceded by outer size==1 dummies or outer
+// stride==0 (BD repeat) dims. Such a transfer is exempt from the per-dim
+// 10-bit wrap-size limit.
+bool isContiguousRowMajorOrRepeated(SmallVector<Value> sizes,
+                                    SmallVector<Value> strides);
 // Check if the volume of sizes equals the volume of the memref.
 // Return true if equal, and return false if any size value is not constant,
 // or memref shape isn't static.

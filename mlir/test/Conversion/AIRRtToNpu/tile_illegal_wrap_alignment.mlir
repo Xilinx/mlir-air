@@ -7,12 +7,10 @@
 
 // RUN: air-opt -airrt-to-npu -split-input-file -verify-diagnostics %s | FileCheck %s
 
-// All test cases below use a *non-contiguous* outer dim (stride != inner
-// volume) so the shim BD cannot collapse to a single linear-mode transfer.
-// The oversized inner wrap (>= 1024) therefore exercises the alignment-aware
-// splitter in tileIllegalWrapDim. (Plain contiguous and outer-broadcast
-// patterns are covered separately in linear_shim_bd.mlir, where they are
-// expected to bypass tiling entirely.)
+// All cases below use a non-contiguous outer dim so the shim BD cannot
+// collapse to a single linear transfer; the oversized inner wrap (>= 1024)
+// then exercises the alignment-aware splitter. Linear-BD cases are covered
+// in linear_shim_bd.mlir.
 
 // When tileIllegalWrapDim splits a wrap that exceeds the shim 10-bit limit
 // (1023), the new innermost size in bytes must remain a multiple of the shim
