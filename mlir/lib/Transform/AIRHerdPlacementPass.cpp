@@ -472,6 +472,45 @@ private:
 
     std::vector<std::unique_ptr<Herd>> placedHerds;
 
+    // Honor pre-set x_loc/y_loc attributes on herds. A herd with both
+    // attributes set is treated as user-pinned: its grid cells are marked
+    // occupied so subsequent (unpinned) herds avoid them, and its
+    // attributes are preserved unchanged. This lets users express
+    // explicit per-tile placement (matching the handwritten reference
+    // patterns) and have the neighbor-aware placer route around them
+    // when picking spots for unpinned herds.
+    {
+      std::vector<std::unique_ptr<Herd>> remaining;
+      remaining.reserve(unplacedHerds.size());
+      for (auto &h : unplacedHerds) {
+        auto firstHerdOp = h->getHerdOp(0);
+        auto colAttr = firstHerdOp->getAttrOfType<IntegerAttr>(
+            xilinx::air::HerdOp::getColOffsetAttrName());
+        auto rowAttr = firstHerdOp->getAttrOfType<IntegerAttr>(
+            xilinx::air::HerdOp::getRowOffsetAttrName());
+        if (colAttr && rowAttr) {
+          int32_t pinX = static_cast<int32_t>(colAttr.getInt()) -
+                         segment->getAnchorPointCol();
+          int32_t pinY = static_cast<int32_t>(rowAttr.getInt()) -
+                         segment->getAnchorPointRow();
+          if (segment->isLegalPlacement(h, pinY, pinX)) {
+            segment->placeHerd(h, pinY, pinX);
+            h->setLocX(pinX);
+            h->setLocY(pinY);
+            placedHerds.push_back(std::move(h));
+            continue;
+          }
+          // Pre-set position is illegal (out of bounds or overlapping a
+          // previous pin); fall through to the placer.
+          firstHerdOp->emitWarning()
+              << "ignoring user-pinned x_loc/y_loc (" << pinX << ", " << pinY
+              << ") for herd because the placement is illegal";
+        }
+        remaining.push_back(std::move(h));
+      }
+      unplacedHerds = std::move(remaining);
+    }
+
     // If there are cascade or shared L1 connections, use neighbor-aware
     // placement
     if (!cascadeConnections.empty() || !sharedL1Connections.empty()) {
