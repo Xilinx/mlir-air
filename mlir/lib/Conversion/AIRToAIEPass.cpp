@@ -2036,11 +2036,61 @@ void assignBanksForExternKernelCalls(AIE::DeviceOp device) {
     // can force "would override existing mem_bank" failures when the
     // allocator can't fit the remaining buffers anywhere.
     uint64_t bankPinBudget = bankSize - bankSize / 4;
-    // Always keep at least one bank entirely untouched so the downstream
-    // allocator has room for a full-bank-sized unpinned buffer (e.g. a 16KB
-    // output tile). Without this, tiles that mix a few small pinnable args
-    // with one large unpinned operand hit "exceeded available memory".
-    unsigned maxBanksToTouch = numBanks - 1;
+
+    // Pre-scan: identify the buffers we *would* consider pinning (memref
+    // operands of any link_with call with ≥ 2 such args, fitting in a
+    // single bank). Everything else on the tile is unpinned and competes
+    // for bank room with our pins.
+    llvm::DenseSet<AIE::BufferOp> pinnableSet;
+    core.walk([&](func::CallOp callOp) {
+      auto callee = dyn_cast_or_null<func::FuncOp>(
+          SymbolTable::lookupNearestSymbolFrom(callOp, callOp.getCalleeAttr()));
+      if (!callee || !callee->hasAttr("link_with"))
+        return;
+      SmallVector<AIE::BufferOp> localArgs;
+      for (Value operand : callOp.getOperands()) {
+        if (!isa<MemRefType>(operand.getType()))
+          continue;
+        auto bo = air::getUnderlyingBufferOp(operand);
+        if (!bo || !air::isL1(cast<BaseMemRefType>(bo.getType())))
+          continue;
+        auto size = getBufferByteSize(bo);
+        if (!size || *size > bankSize)
+          continue;
+        localArgs.push_back(bo);
+      }
+      if (localArgs.size() >= 2)
+        for (auto bo : localArgs)
+          pinnableSet.insert(bo);
+    });
+
+    // Reserve one full bank per unpinned L1 buffer ≥ bankSize/2. Those
+    // need a near-full bank to themselves; if our pins fragment every
+    // bank, they have nowhere to go and the allocator hits "exceeded
+    // available memory" (e.g. xrt/26_vecmat_i8 has two 16KB unpinned
+    // operands; xrt/18_matmul has one).
+    unsigned needFullBanks = 0;
+    device.walk([&](AIE::BufferOp bo) {
+      if (bo.getTileOp() != tile)
+        return;
+      if (pinnableSet.count(bo))
+        return;
+      if (!air::isL1(cast<BaseMemRefType>(bo.getType())))
+        return;
+      if (bo.getMemBank().has_value())
+        return;
+      auto size = getBufferByteSize(bo);
+      if (size && *size >= bankSize / 2)
+        ++needFullBanks;
+    });
+    unsigned maxBanksToTouch =
+        numBanks > needFullBanks ? numBanks - needFullBanks : 0;
+    // Even when there are no big unpinned buffers, keep at least one bank
+    // untouched as a safety margin for stack + small unpinned buffers.
+    if (maxBanksToTouch >= numBanks)
+      maxBanksToTouch = numBanks - 1;
+    if (maxBanksToTouch == 0)
+      continue;
 
     // MapVector keeps insertion order so the writeback below is deterministic.
     llvm::MapVector<AIE::BufferOp, int> bufBank;
