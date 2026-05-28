@@ -1181,7 +1181,11 @@ bool isContiguousAirrtDma(airrt::DmaMemcpyNdOp dma) {
     return false;
   // Each outer stride must equal the product of all inner sizes (skipping
   // size-1 dummy dims, whose stride is irrelevant since they are never
-  // stepped).
+  // stepped). An outer dim with stride=0 is a pure replay (broadcast-like
+  // transfers e.g. shim->compute broadcasts of a B vector replayed each
+  // outer iter) — the underlying data layout is still contiguous, so it
+  // qualifies for linear-mode BD lowering (the inner contiguous block is
+  // sent once per replay tick via the wide buffer_length register).
   uint64_t product = 1;
   for (int i = static_cast<int>(wraps.size()) - 1; i >= 1; --i) {
     auto curSize = getConstantIntValue(wraps[i]);
@@ -1192,7 +1196,8 @@ bool isContiguousAirrtDma(airrt::DmaMemcpyNdOp dma) {
     auto prevStride = getConstantIntValue(strides[i - 1]);
     if (!prevSize || !prevStride)
       return false;
-    if (*prevSize > 1 && static_cast<uint64_t>(*prevStride) != product)
+    if (*prevSize > 1 && static_cast<uint64_t>(*prevStride) != product &&
+        *prevStride != 0)
       return false;
   }
   return true;
