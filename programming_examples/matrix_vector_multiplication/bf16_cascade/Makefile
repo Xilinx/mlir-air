@@ -106,6 +106,7 @@ compile-mv-bf16:
 		exit 1; \
 	fi
 	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} \
+		-DDIM_M=$(TILE_M_2T) -DDIM_K=$(K_CHUNK_2T) \
 		-c ${srcdir}/mv_bf16.cc -o $(BUILD_DIR)/mv_bf16.o
 
 print_2tile_add:

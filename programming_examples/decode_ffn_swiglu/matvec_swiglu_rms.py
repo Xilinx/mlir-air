@@ -900,6 +900,7 @@ def build_module(
                 DeallocOp(l2_d_data)
                 DeallocOp(l1_a_data)
                 DeallocOp(l1_b_data)
+                DeallocOp(l1_rms_in_data)
                 DeallocOp(l1_d_data)
                 DeallocOp(l1_scratch)
                 DeallocOp(l1_recv)
