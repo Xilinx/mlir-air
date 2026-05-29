@@ -157,7 +157,7 @@ def run_decode_block(
         rope_lut_bf16: (max_seq, head_dim) RoPE LUT
 
     Returns:
-        output: (emb_dim,) — block output
+        output: (emb_dim,) — block output.
     """
     emb_dim = config.emb_dim
     n_heads = config.n_heads
@@ -232,15 +232,19 @@ def run_decode_block(
     v_cache_layer[:, current_pos, :] = v.reshape(n_kv_heads, head_dim)
 
     # --- CPU Attention ---
-    attn_out = decode_attention_cpu(
-        q_roped.flatten(),
-        k_cache_layer,
-        v_cache_layer,
-        current_pos,
-        n_heads,
-        n_kv_heads,
-        head_dim,
-    )
+    # Single-query attention against the growing K/V cache. CPU-side because
+    # at head_dim=64 the NPU FA kernel's per-call overhead dominates the
+    # single-query workload.
+    with cache.profiler.time_cpu("decode_attention_cpu"):
+        attn_out = decode_attention_cpu(
+            q_roped.flatten(),
+            k_cache_layer,
+            v_cache_layer,
+            current_pos,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+        )
 
     # --- Call 2: o_gemv_ffn (8 launches, 15 args) ---
     # O GEMV + Add + RMSNorm + Gate/Up GEMV + SiLU*mul + Down GEMV + Add
@@ -281,6 +285,4 @@ def run_decode_block(
         static_indices={0, 7, 9, 12},
         intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14},
     )
-    output = results[14].astype(bfloat16)
-
-    return output
+    return results[14].astype(bfloat16)

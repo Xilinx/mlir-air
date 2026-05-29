@@ -26,16 +26,7 @@ N_TOKENS ?= 1000
 PROMPT   ?= What is the capital of France?
 MODEL    ?= instruct
 
-# WEIGHTS=hf (default)        — load real Meta weights from HuggingFace
-# WEIGHTS=synthetic           — deterministic random weights (no HF, for CI)
-WEIGHTS ?= hf
-ifeq ($(WEIGHTS),synthetic)
-  WEIGHTS_FLAG := --synthetic-weights
-else
-  WEIGHTS_FLAG :=
-endif
-
-.PHONY: help compile run profile verify chat clean
+.PHONY: help compile run profile chat verify diagnosis clean
 
 # ============================================================
 # Help
@@ -53,21 +44,23 @@ help:
 	@echo "  make profile          Run with profiling breakdown"
 	@echo ""
 	@echo "More targets:"
-	@echo "  make verify           With CPU reference verification"
+	@echo "  make verify           Top-k token-level inclusion gate vs HF bf16 (8 prompts × 32 tokens, k=5)"
+	@echo "  make diagnosis        Per-layer ffn_out cosine + max_abs vs HF bf16 (single prompt, informational)"
 	@echo ""
 	@echo "Maintenance:"
-	@echo "  make clean            Remove all build artifacts"
+	@echo "  make clean            Remove all build artifacts and verify reports"
 	@echo ""
 	@echo "Options (override with make VAR=value):"
-	@echo "  N_TOKENS=1000         Max decode tokens (instruct model stops early on EOT)"
-	@echo "  PROMPT=\"...\"          Input prompt text"
+	@echo "  N_TOKENS=1000         Max decode tokens for run/profile/chat (instruct stops early on EOT)"
+	@echo "  PROMPT=\"...\"          Input prompt text (run/profile/diagnosis)"
 	@echo "  MODEL=base|instruct   Model variant (default: instruct)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make run N_TOKENS=50"
 	@echo "  make run MODEL=base PROMPT=\"The capital of France is\" N_TOKENS=200"
 	@echo "  make profile PROMPT=\"How does photosynthesis work?\""
-	@echo "  make verify N_TOKENS=10"
+	@echo "  make verify MODEL=base"
+	@echo "  make diagnosis PROMPT=\"The capital of France is\""
 
 # ============================================================
 # Unified Pipeline (NPU prefill + NPU decode)
@@ -81,31 +74,39 @@ compile:
 ## Run unified inference
 run:
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
-		--run-only --n-tokens $(N_TOKENS) --prompt "$(PROMPT)" --model $(MODEL) $(WEIGHTS_FLAG)
+		--run-only --n-tokens $(N_TOKENS) --prompt "$(PROMPT)" --model $(MODEL)
 
 ## Run with detailed profiling breakdown
 profile:
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
-		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" --model $(MODEL) $(WEIGHTS_FLAG)
-
-## Run with CPU reference verification
-verify:
-	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
-		--run-only --n-tokens $(N_TOKENS) --verify --profile --prompt "$(PROMPT)" --model $(MODEL) $(WEIGHTS_FLAG)
+		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" --model $(MODEL)
 
 ## Interactive chat: prepare runtime once, then loop on prompts
 chat:
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
-		--run-only --interactive --n-tokens $(N_TOKENS) --model $(MODEL) $(WEIGHTS_FLAG)
+		--run-only --interactive --n-tokens $(N_TOKENS) --model $(MODEL)
 
 ## Compile and run in one step
 all: compile profile
+
+## Run the top-k token-level inclusion gate (NPU vs HF bf16, 8 prompts × 32 tokens, k=5)
+verify:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(srcdir)/verify/verify_runner.py \
+		--prompts topk_token --model $(MODEL)
+
+## Run the diagnosis lens (per-layer ffn_out cosine vs HF bf16, single prompt, informational)
+diagnosis:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(srcdir)/verify/verify_runner.py \
+		--prompts single --prompt "$(PROMPT)" --model $(MODEL)
 
 # ============================================================
 # Clean
 # ============================================================
 
-## Remove all build artifacts
+## Remove all build artifacts and verify reports
 clean:
 	rm -r $(BUILD_DIR) 2>/dev/null || true
-	@echo "Build directory removed. Run 'make compile' to rebuild."
+	rm -rf $(srcdir)/verify/reports
+	@echo "Build directory and verify/reports/ removed. Run 'make compile' to rebuild."

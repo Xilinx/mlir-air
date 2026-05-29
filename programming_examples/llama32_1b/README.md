@@ -6,8 +6,8 @@ End-to-end LLAMA-3.2-1B (1B parameter, BF16) inference running on AMD NPU2 (AIE2
 
 | Phase | Time | vs IRON |
 |-------|------|---------|
-| Prefill (2048 tokens) | 1.27s wall | **2.17x faster** |
-| Decode | 92ms/token (10.8 tok/s) | **4.0x faster** |
+| Prefill / TTFT (2048 tokens) | 1.27s wall | **2.17x faster** |
+| Decode / TPOT (steady-state) | 92ms/token (10.8 tok/s) | **4.0x faster** |
 
 ## Prerequisites
 
@@ -51,7 +51,8 @@ make run MODEL=base PROMPT="In 1969, the first man to walk on" N_TOKENS=200
 # Run with profiling breakdown
 make profile
 
-# Run with correctness verification
+# Run the top-k token-level correctness gate (NPU vs HF transformers bf16,
+# 8 prompts × 32 greedy tokens, k=5; ~4 min). See docs/VERIFICATION.html.
 make verify
 ```
 
@@ -61,8 +62,12 @@ make verify
 |-----|-------------|
 | [Architecture](ARCHITECTURE.md) | Per-layer kernel sequence, runtime flow, key design patterns |
 | [Usage Guide](docs/usage.md) | All `make` targets, command-line options, file structure |
-| [Performance Profile](docs/profile.md) | Kernel timing breakdown, BO categories, memory model |
-| [Implementation Guide](docs/explain.md) | How kernels are built, compiled, and stitched together |
+| [Implementation Guide](docs/IMPLEMENTATION_GUIDE.html) | Long-form production codebase walkthrough: model math (Part A), NPU mapping (Part B), verification (Part C), future work (Part D) |
+| [Verification](docs/VERIFICATION.html) | `make verify` (top-k token gate) + `make diagnosis` (per-layer cosine) — design, gates, reproduction |
+| [Ablation Study](docs/ABLATION_STUDY.html) | 4-cell dispatch ablation quantifying each optimization's contribution (decode 2.83×, prefill 1.56×) |
+| [Performance Profile (textual)](docs/profile.md) | Kernel timing breakdown, BO categories, memory model |
+| [Performance Profile (visualization)](docs/PROFILE.html) | End-to-end dataflow diagram with per-step measured timing; BO Write / NPU Run / BO Read concept walkthrough |
+| [Kernel Walkthrough](docs/explain.md) | How individual kernels are built, compiled, and stitched together |
 | [Known Issues](docs/issues.md) | BF16 precision, fixed seq_len, no sampling |
 
 ## Key Files
@@ -73,7 +78,7 @@ make verify
 | `llama32_1b_prefill.py` | Standalone prefill (with profiler report) |
 | `llama32_1b_decode.py` | Standalone decode |
 | `llama32_1b_weights.py` | Weight loading from HuggingFace safetensors |
-| `llama32_1b_reference.py` | CPU F32 reference implementation |
+| `llama32_1b_cpu_helpers.py` | NumPy helpers shared by production + verify: `rms_norm` (LM-head GEMV final norm), `attention_reference` (prefill `cpu_attn=True` fallback), `softmax` (used by `attention_reference`). |
 | `kernel_builder/` | Shared utilities: MLIR stitching, kernel cache, external kernel compilation |
 | `multi_launch_builder/` | Multi-launch ELF builders (one per fused kernel) |
-| `Makefile` | Build/run/profile/verify targets |
+| `Makefile` | Build / run / profile / chat / verify / diagnosis targets |

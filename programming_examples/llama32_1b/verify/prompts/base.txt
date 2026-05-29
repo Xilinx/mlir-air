@@ -1,0 +1,15 @@
+# Prompts used by `make verify MODEL=base` (Llama-3.2-1B base, no instruction
+# tuning). Each prompt is intentionally an incomplete sentence — the base
+# model continues raw text rather than answering instructions, so the
+# topic is set up by leaving the model with a clear "next phrase".
+# Topics deliberately mirror instruct.txt so base vs Instruct behavior
+# can be compared on adjacent rows.
+# One prompt per line. Lines starting with '#' or empty are ignored.
+GPU stands for
+The capital of France is
+Artificial intelligence is a branch of computer science that
+A neural network consists of
+Once upon a time, there was a robot who dreamed about
+The COVID-19 pandemic, which began in late 2019,
+The Mona Lisa was painted by
+The French translation of "The early bird catches the worm" is
