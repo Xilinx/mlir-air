@@ -102,41 +102,64 @@ What happens internally:
 
 ### `make profile`
 
-Same as `make run` but prints per-token timing and kernel breakdown.
+Same as `make run` but enables the otherwise-disabled `Profiler` so the
+end-to-end inference path is broken down into per-XRT-call and per-CPU-op
+wall times. Production code path is identical to `make run`.
 
 ```bash
 make profile
-make profile N_TOKENS=10
+make profile N_TOKENS=30 PROMPT="Explain photosynthesis in detail."
 ```
 
-Example output (with `N_TOKENS=10`):
-```
-NPU prefill done in 1.27s. First token: 12366
+After the model output, the report prints (per phase: prefill / decode):
 
-Decoding 10 tokens (token 1 to 10)...
-  Token 1: id=13, time=92ms
-  Token 2: id=1102, time=91ms
-  ...
-  Token 10: id=578, time=92ms
+1. **END-TO-END DATAFLOW** — architecture-aware summary in dataflow order
+   (tokenize → eos_pad → embed → 16×(rms_gemms_rope + flash_attn + o_ffn +
+   kv_cache_extract) → final_norm → lm_head_gemv → per-query total).
+   Mirrors the SVGs in [`PROFILE.html`](PROFILE.html).
+2. **Wall-Time Attribution** — totals: NPU XRT vs CPU host ops vs layer-loop.
+3. **Per-Layer Execution** — one row per prefill layer; aggregated avg/min/max
+   per layer across tokens for decode.
+4. **NPU XRT Call Breakdown** — each multi-launch ELF, wall time per call.
+5. **CPU Op Breakdown** — each tracked CPU host op (embed, kv_cache_extract,
+   final_rms_norm, tokenize, eos_pad, decode_attention_cpu).
+6. **Fine-Grained NPU Breakdown** — each XRT call split into
+   `BO Write` / `NPU Run` / `BO Read` (concept explained in PROFILE.html
+   Part C).
+7. **Per-Token Wall Trend** (decode only) — token 1 / middle / last wall
+   + first→last drift %, so you can spot any KV-cache-growth-driven slowdown.
 
-Generated 10 tokens in 0.92s
-Tokens/second: 10.87
-Time/token: 92ms
-```
+For reproduction commands + visual dataflow + concept walkthrough see
+[`PROFILE.html`](PROFILE.html).
 
 ### `make verify`
 
-Runs inference and compares every intermediate result against a CPU F32 reference.
-Useful for validating correctness after kernel changes.
+Top-k token-level inclusion gate against HuggingFace transformers in **bf16**
+(same dtype as NPU). Greedy-decodes 8 pre-selected prompts × 32 tokens; at
+each step, both runners' chosen tokens must appear in the OTHER side's top-5.
+Pass/fail signal for end-to-end production correctness (~4 min). Mirrors
+vLLM's `check_logprobs_close` method.
 
 ```bash
-make verify N_TOKENS=10
+make verify                     # default MODEL=instruct
+make verify MODEL=base          # base checkpoint, continuation prompts
 ```
 
-Checks:
-- Per-layer KV cache correlation (NPU vs CPU)
-- Logits correlation at prediction position
-- Top-1 token match
+Token count and `k` are fixed by the gate (32 / 5) — not user-tunable.
+
+### `make diagnosis`
+
+Per-layer `ffn_out` cosine + max_abs error vs HF bf16 for a single prompt.
+Informational only (never fails the run); reach for it when `make verify`
+flags a regression and you need to localize which layer drifted.
+
+```bash
+make diagnosis                                            # uses default PROMPT
+make diagnosis PROMPT="The capital of France is"
+```
+
+See [VERIFICATION.html](VERIFICATION.html) for the full design rationale,
+gate criteria, and report layout.
 
 ### `make clean`
 
@@ -175,7 +198,7 @@ llama32_1b/
 ├── llama32_1b_prefill.py               ← Prefill-only pipeline
 ├── llama32_1b_decode.py                ← Decode-only pipeline
 ├── llama32_1b_weights.py               ← Weight loading from safetensors
-├── llama32_1b_reference.py             ← CPU F32 reference
+├── llama32_1b_cpu_helpers.py           ← Small NumPy helpers: rms_norm, attention_reference, softmax
 │
 ├── kernel_builder/                 ← Shared kernel infrastructure
 │   ├── stitching.py                ← MLIR text stitching for multi-launch ELFs
@@ -212,5 +235,7 @@ llama32_1b/
 **Slow first token**: The NPU enters power-save after ~10s idle. The warmup pass
 handles this automatically. If running manually, ensure `prepare_runtime()` is called.
 
-**Wrong results**: Run `make verify` to compare against CPU reference. Check that
-`.o` files are fresh (`make clean` then `make compile`).
+**Wrong results**: Run `make verify` to gate against HuggingFace transformers
+bf16 (top-k token inclusion). If verify fails, run `make diagnosis` to
+localize which layer drifted. Check that `.o` files are fresh
+(`make clean` then `make compile`).

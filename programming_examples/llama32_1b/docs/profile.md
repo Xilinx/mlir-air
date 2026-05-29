@@ -6,15 +6,27 @@
 
 | Phase | AIR (NPU2) | IRON | Speedup |
 |-------|------------|------|---------|
-| **Prefill** (seq_len=2048) | **1.27s wall** | 2.744s | **2.17x** |
-| **Decode** (steady-state) | **92ms/token (10.8 tok/s)** | 370ms/token (2.7 tok/s) | **4.0x** |
+| **Prefill / TTFT** (seq_len=2048) | **1.27s wall** | 2.744s | **2.17x** |
+| **Decode / TPOT** (steady-state) | **92ms/token (10.8 tok/s)** | 370ms/token (2.7 tok/s) | **4.0x** |
 
-- **Wall time**: End-to-end from embedding to LM Head argmax (includes minimal
-  Python host overhead — KV-cache extraction, embedding lookup, numpy views)
+- **TTFT** (time-to-first-token): end-to-end from `make run` invocation to
+  first decoded token — includes tokenize + EOS-pad + embed + 16 layers
+  + final RMSNorm + LM head GEMV. Matches the vLLM / TGI / TRT-LLM TTFT
+  definition. With tokenize added back in, current measured TTFT is
+  ~1.28&nbsp;s (the 1.27&nbsp;s row above is the NPU-only fraction used
+  in the IRON comparison, since IRON does not bundle the tokenizer).
+- **TPOT** (time-per-output-token): steady-state per-token decode latency
+  (excludes prefill / first-token cost). Drift across 30 decode tokens is
+  <1% — see `Per-Token Wall Trend` in `make profile` output.
 - **IRON baseline**: measured against the IRON reference at commit
   [`2b62dc7`](https://github.com/amd/IRON/commit/2b62dc77ecc72f0fa8fb3381b05579ab84778d27)
   of `amd/IRON`, same NPU2 hardware (Strix), same LLAMA-3.2-1B BF16 model,
   same `seq_len=2048`.
+
+For the visual end-to-end dataflow with per-step measured timing and the
+BO Write / NPU Run / BO Read concept walkthrough, see
+[`PROFILE.html`](PROFILE.html). This file is the textual reference
+(per-kernel tables, optimization history, vs IRON comparison).
 
 **Recent optimizations** (vs. an earlier 1.54s wall headline):
 1. Last-token-only LM Head: drop full-sequence NPU rmsnorm + 8-partition GEMM
@@ -88,13 +100,15 @@ Key differences favoring AIR:
 
 ## Prefill Breakdown (seq_len=2048, 16 layers)
 
-### Wall Time Breakdown: 1.27s
+### Wall Time Breakdown: 1.27s (NPU-only) / ~1.28s TTFT
 
 | Component | Time | Notes |
 |-----------|------|-------|
-| **Kernel time** (sum of `load_and_run`) | ~1.16s | BO Write + NPU Run + BO Read (49 kernel calls: 16×3 transformer + 1 lm_head_gemv) |
-| **Python host overhead** | ~0.11s | KV cache extraction, embedding lookup, CPU rmsnorm, numpy views |
-| **Total wall time** | **1.27s** | |
+| **NPU XRT calls** (sum of `load_and_run`) | ~1.12s | BO Write + NPU Run + BO Read across 49 calls: 16×3 transformer + 1 lm_head_gemv |
+| **CPU host ops** (profiled) | ~37ms | tokenize + eos_pad + embed_lookup + 16×kv_cache_extract + final_rms_norm |
+| **Python / numpy scheduling** | ~125ms | Per-layer dict access, numpy view setup, loop overhead (`layer-loop wall − inside-layer NPU − inside-layer CPU`) |
+| **Total TTFT** (incl. tokenize) | **~1.28s** | matches `make run` Time-to-First-Token line |
+| Total wall (NPU-only fraction, vs IRON) | ~1.27s | excludes tokenize; the row used in the IRON comparison |
 
 Overhead reduced from 0.67s → 0.24s by:
 - Suppressing print I/O in non-profile mode (4 prints × 16 layers)
@@ -104,29 +118,41 @@ Overhead reduced from 0.67s → 0.24s by:
 - Skipping intermediate dict storage when not verifying
 - Removing redundant `.astype(bfloat16)` on already-bf16 kernel results
 
-### Per-Kernel Timing
+### Per-Kernel Timing (NPU XRT calls only)
 
-| Kernel | Launches | Per-call | x Calls | Total | % |
+| Kernel | Launches | Per-call | x Calls | Total | % of NPU |
 |--------|----------|----------|---------|-------|---|
-| **o_ffn** | 8 | 41ms | 16 | **656ms** | **51%** |
-| **flash_attn** | 1 | 22ms | 16 | **352ms** | **27%** |
-| **lm_head** | 8 | 171ms | 1 | **171ms** | **13%** |
-| **rms_gemms_rope** | 6 | 8ms | 16 | **128ms** | **10%** |
-| rmsnorm | 1 | 3ms | 1 | 3ms | <1% |
+| **o_ffn** | 8 (stitched) | 41.0ms | 16 | **656ms** | **59%** |
+| **flash_attn** | 1 (separate ELF) | 21.6ms | 16 | **346ms** | **31%** |
+| **rms_gemms_rope** | 6 (stitched) | 7.3ms | 16 | **117ms** | **10%** |
+| **lm_head_gemv** | 8 partitions (stitched) | 13.6ms | 1 | **14ms** | **1%** |
 
-### Host vs NPU Breakdown (kernel time only)
+Per-CPU-op:
+
+| CPU op | Per-call | x Calls | Total |
+|--------|----------|---------|-------|
+| tokenize | ~10 ms | 1 | ~10 ms |
+| eos_pad | <0.1 ms | 1 | <0.1 ms |
+| embed_lookup | 5.8 ms | 1 | 5.8 ms |
+| kv_cache_extract | 1.1 ms | 16 | 17.6 ms |
+| final_rms_norm | 3.1 ms | 1 | 3.1 ms |
+
+### Host vs NPU Breakdown (XRT calls only — `cache.load_and_run` internals)
 
 | | BO Write | NPU Run | BO Read | Total |
 |---|----------|---------|---------|-------|
-| **Sum** | 48ms | 1237ms | 9ms | 1294ms |
-| **%** | **4%** | **96%** | **1%** | 100% |
+| **Sum** | 46ms | 1062ms | 5ms | 1113ms |
+| **%** | **4%** | **95%** | **0%** | 100% |
+
+(BO Read is zero-copy view construction — see PROFILE.html Part C for what
+these three segments actually measure.)
 
 ### Per-Layer Data Flow
 
 ```
 Layer input: x_bf16 (2048x2048, 8MB)
 
-┌─ KERNEL 1: rms_gemms_rope (8ms/layer) ─────────────────────────┐
+┌─ KERNEL 1: rms_gemms_rope (7.3ms/layer) ───────────────────────┐
 │                                                                 │
 │  WRITE: x_in (8MB)              ← activation, changes/layer    │
 │  SKIP:  norm_w, wq, wk, wv     ← STATIC (per-layer BO)        │
@@ -142,7 +168,7 @@ Layer input: x_bf16 (2048x2048, 8MB)
 │  READ: v (2MB), q_roped (8MB), k_roped (2MB)                   │
 └────────────────────────────┬────────────────────────────────────┘
                              ▼
-┌─ KERNEL 2: flash_attn (22ms/layer) ────────────────────────────┐
+┌─ KERNEL 2: flash_attn (21.6ms/layer) ──────────────────────────┐
 │                                                                 │
 │  WRITE: q_roped (8MB), k_roped (2MB), v (2MB)                  │
 │  SKIP:  attn_out                ← INTERMEDIATE                  │
@@ -173,8 +199,11 @@ Layer input: x_bf16 (2048x2048, 8MB)
 └─────────────────────────────────────────────────────────────────┘
 
 × 16 layers, then:
-  rmsnorm (3ms): Final layer normalization
-  lm_head (171ms): 8-partition GEMM → vocab logits → argmax → first token
+  final_rms_norm (CPU, 3.1ms): RMSNorm on single prediction-position row
+  lm_head_gemv (NPU, 13.6ms): 8-partition GEMV → vocab logits → argmax → first token
+                              (reuses the decode-side 8-partition ELF; see
+                               A7 in IMPLEMENTATION_GUIDE.html for why
+                               full-seq GEMM was dropped in favor of single-row GEMV)
 ```
 
 ---

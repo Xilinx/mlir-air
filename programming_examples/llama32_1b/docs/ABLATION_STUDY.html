@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Llama-3.2-1B on AMD NPU2 — Ablation Study</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1f2937; --muted: #6b7280; --accent: #2563eb;
+    --code-bg: #1e293b; --code-fg: #e2e8f0;
+    --code-keyword: #c084fc; --code-string: #86efac; --code-comment: #64748b;
+    --code-fn: #fbbf24; --code-num: #f97316;
+    --card-bg: #ffffff; --card-border: #e5e7eb;
+    --pill-a: #fee2e2; --pill-b: #fef3c7; --pill-c: #ddd6fe; --pill-d: #d1fae5;
+    --part-1: #fdf2f8; --part-2: #eff6ff; --part-3: #fff7ed; --part-4: #f0fdf4; --part-5: #fef3c7; --part-6: #faf5ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--fg); line-height: 1.6;
+    margin: 0; padding: 2rem; max-width: 1200px; margin-left: auto; margin-right: auto;
+  }
+  h1 { font-size: 1.8rem; margin: 0 0 0.5rem; color: #0f172a; font-weight: 700; }
+  h2 { font-size: 1.45rem; margin-top: 3rem; padding: 0.5rem 1rem; border-radius: 6px; }
+  h2.part-header { font-size: 1.6rem; padding: 0.75rem 1rem; }
+  h2.part-1 { background: var(--part-1); border-left: 6px solid #db2777; }
+  h2.part-2 { background: var(--part-2); border-left: 6px solid #2563eb; }
+  h2.part-3 { background: var(--part-3); border-left: 6px solid #ea580c; }
+  h2.part-4 { background: var(--part-4); border-left: 6px solid #15803d; }
+  h2.part-5 { background: var(--part-5); border-left: 6px solid #d97706; }
+  h2.part-6 { background: var(--part-6); border-left: 6px solid #7e22ce; }
+  /* Planned (not-yet-measured) section card */
+  .planned-card {
+    background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;
+    padding: 1rem 1.2rem; margin: 1rem 0;
+  }
+  .planned-card .planned-tag {
+    display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
+    background: #fde68a; color: #92400e; font-size: 0.78rem; font-weight: 700;
+    margin-right: 0.6rem;
+  }
+  h3 { font-size: 1.2rem; margin-top: 2rem; color: #1f2937; }
+  h4 { font-size: 1rem; margin-top: 1.5rem; color: #374151; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin-bottom: 2rem; }
+
+  /* Left sidebar nav */
+  .nav {
+    position: fixed; left: 0; top: 0; bottom: 0; width: 260px;
+    background: var(--card-bg); border-right: 1px solid var(--card-border);
+    padding: 1.2rem 1.2rem 1.2rem 1.4rem;
+    overflow-y: auto; z-index: 10;
+    box-shadow: 2px 0 6px rgba(0,0,0,0.04);
+  }
+  body { padding-left: 290px; }
+  .nav h4 { margin: 0 0 0.6rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .nav .nav-part {
+    display: block; margin: 1rem 0 0.3rem;
+    font-size: 0.72rem; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .nav .nav-part:first-of-type { margin-top: 0.3rem; }
+  .nav a {
+    display: block; color: var(--accent); text-decoration: none;
+    font-size: 0.85rem; line-height: 1.4;
+    padding: 0.3rem 0.5rem; border-radius: 4px;
+  }
+  .nav a:hover { background: #eef2ff; text-decoration: none; }
+  .nav-toggle {
+    position: absolute; top: 0.6rem; right: 0.6rem;
+    background: #f1f5f9; border: 1px solid var(--card-border);
+    border-radius: 4px; padding: 0.2rem 0.55rem;
+    font-size: 0.72rem; font-weight: 600; color: var(--muted);
+    cursor: pointer; line-height: 1.2;
+  }
+  .nav-toggle:hover { background: #e2e8f0; color: var(--fg); }
+  #nav-show {
+    display: none;
+    position: fixed; top: 0.6rem; left: 0.8rem; z-index: 11;
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: 999px; padding: 0.35rem 0.95rem;
+    font-size: 0.78rem; font-weight: 600; color: var(--accent);
+    cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  }
+  #nav-show:hover { background: #eef2ff; }
+  body.nav-hidden { padding-left: 2rem; }
+  body.nav-hidden .nav { display: none; }
+  body.nav-hidden #nav-show { display: inline-block; }
+  @media (max-width: 900px) {
+    body { padding-left: 2rem; }
+    .nav { box-shadow: 4px 0 12px rgba(0,0,0,0.12); }
+  }
+
+  /* Tables and code */
+  table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; }
+  th, td { padding: 0.5rem 0.7rem; text-align: left; border-bottom: 1px solid var(--card-border); vertical-align: top; }
+  th { background: #f1f5f9; font-weight: 600; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  tr.headline-row td { background: #fef3c7; font-weight: 600; }
+
+  /* Comparison table for per-kernel-group breakdown — two side-by-side kernel sections */
+  table.cmp-table { table-layout: fixed; margin-top: 0.8rem; }
+  table.cmp-table col.col-cell    { width: 14%; }
+  table.cmp-table col.col-section { width: 43%; }
+  table.cmp-table th, table.cmp-table td {
+    padding: 0.55rem 0.8rem; vertical-align: middle;
+  }
+  table.cmp-table th.section-head {
+    background: #e0e7ff; color: #1e3a8a; text-align: center;
+    border-bottom: 2px solid #c7d2fe; font-weight: 700;
+    border-left: 1px solid var(--card-border);
+  }
+  table.cmp-table th.section-head:first-of-type { border-left: none; }
+  table.cmp-table th.subhead {
+    background: #f8fafc; font-weight: 600; font-size: 0.85rem;
+    text-align: center; color: var(--muted);
+    border-bottom: 1px solid var(--card-border);
+  }
+  table.cmp-table th.subhead.dispatches { border-left: 1px solid var(--card-border); }
+  table.cmp-table th.cell-head { background: #f1f5f9; text-align: left; }
+  table.cmp-table td.dispatches {
+    text-align: center; font-variant-numeric: tabular-nums;
+    color: #475569; border-left: 1px solid var(--card-border);
+  }
+  table.cmp-table td.wall {
+    text-align: right; font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, monospace;
+  }
+  table.cmp-table td.cell-label { font-weight: 600; }
+  table.cmp-table tr.production-row td { background: #ecfdf5; }
+  table.cmp-table tr.production-row td.dispatches,
+  table.cmp-table tr.production-row td.wall { font-weight: 700; color: #065f46; }
+  table.cmp-table tr.speedup-row td {
+    background: #fef3c7; font-weight: 700; text-align: center;
+    border-top: 2px solid #f0c674; padding: 0.7rem 0.8rem;
+  }
+  table.cmp-table tr.speedup-row td.label { text-align: left; }
+  table.cmp-table tr.speedup-row td.dispatches,
+  table.cmp-table tr.speedup-row td.wall {
+    border-left: 1px solid #f0c674;
+  }
+
+  /* Dispatch-flow diagram */
+  svg.flow-svg {
+    display: block; max-width: 720px; width: 100%; height: auto;
+    margin: 1rem auto; background: #fdfdfb;
+    border: 1px solid var(--card-border); border-radius: 8px;
+  }
+  svg.flow-svg .elf-box-prefill { fill: #eef2ff; stroke: #6366f1; stroke-width: 1.5; }
+  svg.flow-svg .elf-box-decode  { fill: #faf5ff; stroke: #8b5cf6; stroke-width: 1.5; }
+  svg.flow-svg .cpu-box         { fill: #f1f5f9; stroke: #6b7280; stroke-width: 1.5; stroke-dasharray: 4 3; }
+  svg.flow-svg .ablation-box    { fill: none; stroke: #f59e0b; stroke-width: 2.5; stroke-dasharray: 6 4; }
+  svg.flow-svg text.title       { font: 700 13px sans-serif; fill: #0f172a; }
+  svg.flow-svg text.sublabel    { font: 11px sans-serif; fill: #475569; }
+  svg.flow-svg text.row-label   { font: 700 12px sans-serif; fill: #1e293b; text-transform: uppercase; letter-spacing: 0.04em; }
+  svg.flow-svg text.count       { font: 700 11px ui-monospace, monospace; fill: #d97706; }
+  svg.flow-svg text.tag         { font: 600 10px sans-serif; fill: #b45309; }
+  svg.flow-svg .arr             { stroke: #475569; stroke-width: 1.4; fill: none; }
+
+  pre {
+    background: var(--code-bg); color: var(--code-fg);
+    padding: 1rem 1.2rem; border-radius: 6px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  code {
+    background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 3px;
+    font-size: 0.92em; font-family: ui-monospace, monospace; color: #0f172a;
+  }
+  .file-ref {
+    display: inline-block; background: #e0e7ff; color: #3730a3;
+    padding: 0.1rem 0.5rem; border-radius: 4px;
+    font-family: ui-monospace, monospace; font-size: 0.85em; font-weight: 600;
+  }
+  .kw { color: var(--code-keyword); }
+  .str { color: var(--code-string); }
+  .com { color: var(--code-comment); font-style: italic; }
+  .fn { color: var(--code-fn); }
+  .num { color: var(--code-num); }
+
+  .pill {
+    display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px;
+    font-size: 0.8rem; font-weight: 600;
+  }
+  .pill-a { background: var(--pill-a); color: #991b1b; }
+  .pill-b { background: var(--pill-b); color: #92400e; }
+  .pill-c { background: var(--pill-c); color: #5b21b6; }
+  .pill-d { background: var(--pill-d); color: #065f46; }
+
+  .highlight {
+    background: #fef9e8; border: 1px solid #f0c674; border-radius: 8px;
+    padding: 1rem 1.2rem; margin: 1.2rem 0;
+  }
+  .highlight-warn {
+    background: #fee2e2; border: 1px solid #f87171; border-radius: 8px;
+    padding: 1rem 1.2rem; margin: 1.2rem 0;
+  }
+  .highlight-info {
+    background: #dbeafe; border: 1px solid #60a5fa; border-radius: 8px;
+    padding: 1rem 1.2rem; margin: 1.2rem 0;
+  }
+  .small { color: var(--muted); font-size: 0.9rem; }
+  .ladder {
+    display: flex; gap: 0.8rem; flex-wrap: wrap; margin: 1.5rem 0;
+  }
+  .ladder .step {
+    flex: 1; min-width: 220px;
+    border: 2px solid var(--card-border); border-radius: 8px;
+    padding: 0.9rem 1rem; background: var(--card-bg);
+  }
+  .ladder .step.a { border-color: #f87171; }
+  .ladder .step.b { border-color: #fbbf24; }
+  .ladder .step.c { border-color: #a78bfa; }
+  .ladder .step.d { border-color: #34d399; }
+  .ladder .step h5 { margin: 0 0 0.3rem; font-size: 1rem; }
+  .ladder .step p { margin: 0.3rem 0; font-size: 0.88rem; }
+</style>
+</head>
+<body>
+
+<div class="nav" id="nav">
+  <button type="button" class="nav-toggle" id="nav-toggle" title="Hide sidebar (press h)">Hide ←</button>
+  <div class="nav-body">
+    <h4>Navigation</h4>
+    <a href="#background">Background — what's running on the NPU</a>
+
+    <span class="nav-part">Part 1 — High level</span>
+    <a href="#question">1.1 The question</a>
+    <a href="#ladder">1.2 The 4-cell ladder</a>
+    <a href="#two-studies">1.3 Two studies (decode + prefill)</a>
+
+    <span class="nav-part">Part 2 — Methodology</span>
+    <a href="#unit">2.1 Unit of measurement</a>
+    <a href="#validation">2.2 Bit-exact validation gate</a>
+    <a href="#inputs">2.3 Synthetic deterministic inputs</a>
+    <a href="#timing">2.4 Timing + environment</a>
+
+    <span class="nav-part">Part 3 — Decode (full per-token)</span>
+    <a href="#decode-scope">3.1 Scope + design decisions</a>
+    <a href="#decode-results">3.2 Results</a>
+
+    <span class="nav-part">Part 4 — Prefill (full 16-layer)</span>
+    <a href="#prefill-scope">4.1 Scope</a>
+    <a href="#prefill-results">4.2 Results</a>
+
+    <span class="nav-part">Part 5 — Reading the results</span>
+    <a href="#crosscompare">5.1 Decode vs. prefill</a>
+    <a href="#repro">5.2 Reproducing</a>
+    <a href="#limitations">5.3 Limitations + how to extend</a>
+    <a href="#filemap">5.4 File map</a>
+  </div>
+</div>
+<button type="button" id="nav-show" title="Show sidebar (press h)">☰ Nav</button>
+
+<script>
+  (function() {
+    const STATE_KEY = "llama-ablation-nav-state";
+    const toggle = document.getElementById("nav-toggle");
+    const showBtn = document.getElementById("nav-show");
+    function apply(state) { document.body.classList.toggle("nav-hidden", state === "hidden"); }
+    function setState(state) {
+      try { localStorage.setItem(STATE_KEY, state); } catch (e) {}
+      apply(state);
+    }
+    toggle.addEventListener("click", function() { setState("hidden"); });
+    showBtn.addEventListener("click", function() { setState("open"); });
+    document.addEventListener("keydown", function(e) {
+      if (e.key === "h" && !e.ctrlKey && !e.metaKey && !e.altKey &&
+          !["INPUT","TEXTAREA"].includes(document.activeElement.tagName)) {
+        const hidden = document.body.classList.contains("nav-hidden");
+        setState(hidden ? "open" : "hidden");
+      }
+    });
+    let saved = "open";
+    try { saved = localStorage.getItem(STATE_KEY) || "open"; } catch (e) {}
+    apply(saved);
+  })();
+</script>
+
+<h1>Llama-3.2-1B on AMD NPU2 — Ablation Study</h1>
+<p class="subtitle">Quantifying which dispatch optimizations contribute how much to the production runtime. Companion to <a href="IMPLEMENTATION_GUIDE.html">IMPLEMENTATION_GUIDE.html</a> Part B3-B7 (the four gaps).</p>
+
+<div class="highlight-info">
+  <strong>What this document is.</strong> A walkthrough of the 4-cell ablation study covering <em>what we measured</em> and <em>what the cells differ on</em>. Two studies: decode (full per-token) and prefill (full 16-layer). If you just want the punchline numbers, jump to <a href="#decode-results">decode results</a>, <a href="#prefill-results">prefill results</a>, or <a href="#crosscompare">cross-comparison</a>.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="background">Background — what's running on the NPU</h2>
+
+<p>Llama-3.2-1B is a 1.24 B-parameter decoder-only transformer (16 layers, emb=2048, n_heads=32, n_kv_heads=8, head_dim=64, hidden=8192, BF16). On AMD NPU2 it runs as 6 production ELFs orchestrated from a Python host. Each ELF is one or more <code>air.launch</code>s stitched into a single <code>xrt.run()</code>. Per pass:</p>
+
+<svg class="flow-svg" viewBox="0 0 720 380" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-h" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <!-- Prefill row -->
+  <text x="20" y="26" class="row-label">Prefill — per layer</text>
+  <text x="20" y="42" class="sublabel">3 NPU calls per layer × 16 layers + 1 LM head = <tspan class="count">49 NPU calls/pass</tspan></text>
+
+  <g>
+    <rect x="20"  y="56" width="180" height="60" rx="6" class="elf-box-prefill"/>
+    <text x="110" y="78" text-anchor="middle" class="title">rms_gemms_rope.elf</text>
+    <text x="110" y="96" text-anchor="middle" class="sublabel">6 stitched launches</text>
+    <text x="110" y="110" text-anchor="middle" class="sublabel">RMSNorm + Q/K/V GEMM + 2× RoPE</text>
+
+    <line x1="200" y1="86" x2="245" y2="86" class="arr" marker-end="url(#arr-h)"/>
+
+    <rect x="245" y="56" width="150" height="60" rx="6" class="elf-box-prefill"/>
+    <text x="320" y="78" text-anchor="middle" class="title">flash_attn.elf</text>
+    <text x="320" y="96" text-anchor="middle" class="sublabel">1 launch (un-mergeable)</text>
+    <text x="320" y="110" text-anchor="middle" class="sublabel">FA causal GQA</text>
+
+    <line x1="395" y1="86" x2="440" y2="86" class="arr" marker-end="url(#arr-h)"/>
+
+    <rect x="440" y="56" width="180" height="60" rx="6" class="elf-box-prefill"/>
+    <text x="530" y="78" text-anchor="middle" class="title">o_ffn.elf</text>
+    <text x="530" y="96" text-anchor="middle" class="sublabel">8 stitched launches</text>
+    <text x="530" y="110" text-anchor="middle" class="sublabel">O GEMM + Add + RMSNorm + SwiGLU + Add</text>
+
+    <text x="640" y="90" class="sublabel">→ loop L+1</text>
+  </g>
+
+  <!-- Decode row -->
+  <text x="20" y="170" class="row-label">Decode — per token, per layer</text>
+  <text x="20" y="186" class="sublabel">2 NPU calls + 1 CPU step per layer × 16 + 1 LM head = <tspan class="count">33 NPU calls/token</tspan></text>
+
+  <g>
+    <rect x="20"  y="200" width="180" height="60" rx="6" class="elf-box-decode"/>
+    <text x="110" y="222" text-anchor="middle" class="title">rms_gemv_rope.elf</text>
+    <text x="110" y="240" text-anchor="middle" class="sublabel">6 stitched launches</text>
+    <text x="110" y="254" text-anchor="middle" class="sublabel">RMSNorm + Q/K/V GEMV + 2× RoPE</text>
+
+    <line x1="200" y1="230" x2="245" y2="230" class="arr" marker-end="url(#arr-h)"/>
+
+    <rect x="245" y="200" width="150" height="60" rx="6" class="cpu-box"/>
+    <text x="320" y="222" text-anchor="middle" class="title">decode_attn (CPU)</text>
+    <text x="320" y="240" text-anchor="middle" class="sublabel">single-query GQA</text>
+    <text x="320" y="254" text-anchor="middle" class="sublabel">+ KV cache append</text>
+
+    <line x1="395" y1="230" x2="440" y2="230" class="arr" marker-end="url(#arr-h)"/>
+
+    <rect x="440" y="200" width="180" height="60" rx="6" class="elf-box-decode"/>
+    <text x="530" y="222" text-anchor="middle" class="title">o_gemv_ffn.elf</text>
+    <text x="530" y="240" text-anchor="middle" class="sublabel">8 stitched launches</text>
+    <text x="530" y="254" text-anchor="middle" class="sublabel">O GEMV + Add + RMSNorm + SwiGLU + Add</text>
+
+    <text x="640" y="234" class="sublabel">→ loop L+1</text>
+  </g>
+
+  <!-- LM head -->
+  <line x1="360" y1="290" x2="360" y2="310" class="arr" marker-end="url(#arr-h)"/>
+  <text x="370" y="303" class="sublabel">after 16 layers</text>
+  <rect x="245" y="310" width="230" height="46" rx="6" class="elf-box-prefill"/>
+  <text x="360" y="332" text-anchor="middle" class="title">lm_head_gemv.elf — shared by both phases</text>
+  <text x="360" y="348" text-anchor="middle" class="sublabel">8-partition GEMV in 1 xrt.run() → argmax</text>
+</svg>
+
+<p>Three observations matter for the ablation that follows:</p>
+<ul>
+  <li><strong>Production already uses multi-launch ELF stitching.</strong> Each box above hides 1, 6, or 8 sub-launches but appears to the host as a single <code>xrt.run()</code>. The naive baseline (Cell A) instead launches every sub-kernel as its own <code>xrt.run()</code> — so a naive prefill issues 240 dispatches per pass instead of 48, and a naive decode issues ~96 dispatches per token instead of 33.</li>
+  <li><strong>FlashAttention sits between two stitchable groups.</strong> FA is its own ELF (un-mergeable into the surrounding rms_gemms_rope or o_ffn — see <a href="IMPLEMENTATION_GUIDE.html#stitching">IMPLEMENTATION_GUIDE B5</a>). So even Cell D has 3 dispatches per prefill layer, not 1.</li>
+  <li><strong>Decode uses CPU attention.</strong> Per-token attention has small enough work to be cheaper on CPU than on the NPU FA path at head_dim=64. So decode's per-layer dispatch is 2 NPU calls + 1 CPU step.</li>
+</ul>
+
+<p>The ablation runs three studies on this dispatch picture:</p>
+
+<table>
+  <tr><th>Study</th><th>Scope</th><th>Headline result</th></tr>
+  <tr>
+    <td><b>Decode</b> (Part 3)</td>
+    <td>Both decode kernel-groups + CPU attention + LM head, full per-token loop (the full decode row above)</td>
+    <td>Cell D = 90.65 ms/token; A→D = <strong>2.83×</strong></td>
+  </tr>
+  <tr>
+    <td><b>Prefill</b> (Part 4)</td>
+    <td>Both prefill kernel-groups + FA, 16 layers (the full prefill row above)</td>
+    <td>Cell D = 1.13 s ≈ <code>profile.md</code>'s 1.27 s; A→D = <strong>1.56×</strong></td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="part-header part-1">Part 1 — High level: what are we measuring?</h2>
+
+<h2 id="question">1.1 The question</h2>
+
+<p>The production runtime achieves <strong>1.27 s prefill</strong> (per <a href="profile.md"><code>profile.md</code></a>) and a per-token decode latency much smaller than a naive implementation. The <a href="IMPLEMENTATION_GUIDE.html#gaps">IMPLEMENTATION_GUIDE B3</a> argues that this comes from solving four "gaps" between standalone kernels and end-to-end inference:</p>
+
+<table>
+  <tr><th>Gap</th><th>Section in IMPLEMENTATION_GUIDE</th></tr>
+  <tr><td>#1 — XRT dispatch overhead (multi-launch ELF stitching)</td><td><a href="IMPLEMENTATION_GUIDE.html#stitching">B5</a></td></tr>
+  <tr><td>#2 — Per-call BO management, weights pre-loaded once (per-layer weight BOs)</td><td><a href="IMPLEMENTATION_GUIDE.html#anatomy">B6</a> + <a href="IMPLEMENTATION_GUIDE.html#kernelcache">B7</a></td></tr>
+  <tr><td>#3 — Intermediate buffers shared across separate xrt.run() calls (only relevant in the un-merged baseline)</td><td><a href="IMPLEMENTATION_GUIDE.html#anatomy">B6</a></td></tr>
+  <tr><td>#4 — KernelCache compile-once + per-process caching (not in this ablation; held constant)</td><td><a href="IMPLEMENTATION_GUIDE.html#kernelcache">B7</a></td></tr>
+</table>
+
+<p>"We built X, Y, Z, and inference got faster" doesn't tell us how much each individual change matters. The ablation builds a 4-cell ladder that adds the optimizations <strong>one at a time</strong> on top of a naive baseline, so each cell isolates the marginal contribution of a single optimization.</p>
+
+<!-- ============================================================ -->
+<h2 id="ladder">1.2 The 4-cell ladder (A → B → C → D)</h2>
+
+<p>Each cell runs the SAME computation on the SAME input. Only the <strong>dispatch strategy</strong> changes. The cells are cumulative: each one keeps the previous cell's optimizations and adds one more.</p>
+
+<div class="ladder">
+  <div class="step a">
+    <h5><span class="pill pill-a">Cell A</span> Naive baseline</h5>
+    <p><b>One <code>xrt.run()</code> per sub-kernel.</b> Every call writes every input slot to device, runs the kernel, reads every output back. KernelCache invoked with <code>naive=True</code> so the index-set optimizations are disabled.</p>
+    <p><b>Adds:</b> nothing (baseline)</p>
+  </div>
+  <div class="step b">
+    <h5><span class="pill pill-b">Cell B</span> + per-layer weight BOs (gap #2)</h5>
+    <p>Same N <code>xrt.run()</code>s as A, but weights pre-loaded once into per-layer BOs. <code>static_input_indices</code> tells KernelCache to skip the host write for those slots on every call.</p>
+    <p><b>Adds:</b> gap #2 alone</p>
+  </div>
+  <div class="step c">
+    <h5><span class="pill pill-c">Cell C</span> + shared intermediate BOs (gap #3)</h5>
+    <p>Still N separate <code>xrt.run()</code>s, but each producer's output BO is <em>aliased</em> to the next consumer's input BO via <code>_share_bo</code>. So the host doesn't transport intermediates between calls — they stay in the same DDR region.</p>
+    <p><b>Adds:</b> gap #3 alone</p>
+  </div>
+  <div class="step d">
+    <h5><span class="pill pill-d">Cell D</span> + multi-launch merging (gap #1) = production</h5>
+    <p>One merged ELF containing all N <code>air.launch</code>s. ONE <code>xrt.run()</code> drives them all. Intermediates flow through DDR via NPU DMA, never through the host. This is exactly what production uses.</p>
+    <p><b>Adds:</b> gap #1 alone</p>
+  </div>
+</div>
+
+<p>Reading the deltas:</p>
+<ul>
+  <li><strong>A → B</strong> = isolated effect of gap #2 (per-layer weight BOs)</li>
+  <li><strong>B → C</strong> = isolated effect of gap #3 (shared intermediate BOs)</li>
+  <li><strong>C → D</strong> = isolated effect of gap #1 (multi-launch merging) — the "pure merging" delta</li>
+  <li><strong>A → D</strong> = total speedup of all three together</li>
+</ul>
+
+<div class="highlight">
+  <strong>Why this ordering matters for fair attribution.</strong> Gap #1 (merging) and gap #3 (BO sharing) are alternative ways to keep intermediates on device. If you measured C→D in isolation (without first applying B and C), you might conflate the two. The ladder ordering A→B→C→D ensures gap #1's marginal effect (C→D) measures ONLY the host-orchestration savings beyond what BO-sharing already provides — i.e., the cost of N kernel dispatches vs. 1.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="two-studies">1.3 Two studies — decode and prefill</h2>
+
+<p>The 4-cell ladder is applied at two scopes — one per inference phase:</p>
+
+<table>
+  <tr><th></th><th>Decode (Part 3)</th><th>Prefill (Part 4)</th></tr>
+  <tr><td><b>Scope</b></td><td>BOTH decode kernel-groups (<code>rms_gemv_rope</code>, <code>o_gemv_ffn</code>) + CPU attention + LM head + per-token loop × 16 layers</td><td>BOTH prefill kernel-groups (<code>rms_gemms_rope</code>, <code>o_ffn</code>) + FlashAttention + 16-layer wrapper</td></tr>
+  <tr><td><b>Per-cell wall time</b></td><td>~90-260 ms per token</td><td>~1.1-1.8 s per pass</td></tr>
+  <tr><td><b>Cell D matches…</b></td><td><code>profile.md</code>'s per-token decode latency</td><td><code>profile.md</code>'s 1.27 s prefill headline</td></tr>
+  <tr><td><b>Why both</b></td><td>Decode is dispatch-overhead-bound (per-call NPU work is small)</td><td>Prefill has large per-call NPU work; the SAME optimizations may behave differently — we want to <em>find out</em>, not assume</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="part-header part-2">Part 2 — Methodology</h2>
+
+<h2 id="unit">2.1 The unit of measurement</h2>
+
+<p>Each plan measures something different:</p>
+
+<table>
+  <tr><th>Study</th><th>What's timed</th><th>Where the timer wraps</th><th>What's NOT in the number</th></tr>
+  <tr>
+    <td>Decode (Part 3)</td>
+    <td>One full per-token loop: 16 layers × (rms_gemv_rope + CPU attention + o_gemv_ffn) + final RMSNorm + lm_head_gemv + argmax</td>
+    <td><code>t_total_start</code> in <code>cells/per_token_loop.py</code> immediately before layer 0; elapsed at the end of argmax</td>
+    <td>Compile time, BO allocation (counted as preload), KV-cache initialization (counted as preload)</td>
+  </tr>
+  <tr>
+    <td>Prefill (Part 4)</td>
+    <td>16 layers of dispatch: per layer, <code>rms_gemms_rope</code> + FA + <code>o_ffn</code>. Includes host-side data threading between launches</td>
+    <td><code>t_total_start</code> in <code>multi_layer.py:run_16_layer_prefill</code> immediately before the first layer; elapsed at the end of the last layer's <code>o_ffn</code></td>
+    <td>Embedding lookup, final RMSNorm + LM Head GEMV, KV-cache extraction transposes (~150 ms residual; accounts for the gap between Cell D's 1.13 s and <code>profile.md</code>'s 1.27 s)</td>
+  </tr>
+</table>
+
+<p><strong>Concrete: what is one "Cell D timing"?</strong> Decode Cell D's median is <strong>90.65 ms</strong> — the wall time of one full per-token loop with all production optimizations enabled (each layer's two NPU calls merged, weights resident in per-layer BOs). Cell A's median is <strong>256.69 ms</strong> — the same loop but every sub-launch as its own <code>xrt.run()</code> with full host I/O, and weights re-uploaded each call. Same total computation, different dispatch strategy.</p>
+
+<!-- ============================================================ -->
+<h2 id="validation">2.2 Bit-exact validation gate — guarantees same computation</h2>
+
+<p><strong>Every cell must produce byte-identical outputs to a committed golden fixture before its timing is reported.</strong> A cell that "ran faster" by accidentally running a different (wrong) computation is suppressed before it can show up in the report.</p>
+
+<h3>The mechanism</h3>
+
+<p>Each plan has a <code>golden/</code> directory holding <code>.npz</code> files written by Cell D on a fixed deterministic input. Before timing begins, every cell runs once with the same input and the output bytes are compared to the golden:</p>
+
+<pre><code><span class="com"># validate.py — the gate</span>
+<span class="kw">def</span> <span class="fn">validate_against_golden</span>(cell_outputs: <span class="fn">dict</span>, golden_dir: <span class="fn">str</span>):
+    npz = np.<span class="fn">load</span>(<span class="fn">os</span>.path.<span class="fn">join</span>(golden_dir, <span class="str">"golden_rms_gemv_rope.npz"</span>))
+    <span class="kw">for</span> key <span class="kw">in</span> npz.files:
+        gv = npz[key]
+        cv = cell_outputs[key]
+        <span class="kw">if</span> cv.shape != gv.shape:
+            <span class="kw">raise</span> <span class="fn">GoldenMismatch</span>(<span class="str">f"{key}: shape mismatch ..."</span>)
+        <span class="kw">if</span> cv.dtype.itemsize != gv.dtype.itemsize:
+            <span class="kw">raise</span> <span class="fn">GoldenMismatch</span>(<span class="str">f"{key}: dtype size mismatch ..."</span>)
+        <span class="kw">if</span> cv.<span class="fn">tobytes</span>() != gv.<span class="fn">tobytes</span>():           <span class="com"># EXACT byte equality, no tolerance</span>
+            <span class="kw">raise</span> <span class="fn">GoldenMismatch</span>(<span class="str">f"{key}: byte mismatch"</span>)</code></pre>
+
+<p>Cells that fail the gate have their timing <strong>suppressed in the report</strong>, so a numerically-different "fast" cell can't sneak its way into the headline.</p>
+
+<h3>Why bit-exact, not tolerance-based?</h3>
+
+<p>BF16 numerics already have ~3-4 decimal digits of variability vs. F32. If we used a numerical tolerance like "max relative error &lt; 1e-3", a cell could silently introduce a computation difference that changes BF16 outputs in the 4th-5th significant digit, fall under the tolerance threshold, and be falsely accepted. <strong>The 4 cells should be doing IDENTICAL computation</strong> — only dispatch differs. The kernel binaries are even the same when applicable. So the outputs <em>should</em> be byte-identical, and a deviation is a methodology bug to investigate (not a numerical artifact to tolerate).</p>
+
+<p>Empirically all 4 cells DO produce bit-identical outputs for both decode and prefill. This is independent confirmation that the dispatch differences are purely orchestration changes — none of them re-tile or re-vectorize the kernels in any way.</p>
+
+<!-- ============================================================ -->
+<h2 id="inputs">2.3 Synthetic deterministic inputs</h2>
+
+<p>Inputs come from <span class="file-ref">golden/regen_golden.py:_synthetic_inputs(CONFIG)</span> with <code>numpy.random.seed(42)</code>. No HuggingFace weights are loaded.</p>
+
+<p><strong>Why synthetic, not real weights?</strong></p>
+<ul>
+  <li><b>Reproducibility.</b> Anyone with a fresh checkout can regenerate the goldens and run the ablation without needing the ~5 GB Llama-3.2-1B weight download or HuggingFace credentials.</li>
+  <li><b>Determinism.</b> A fixed seed makes the same kernel produce the same outputs across runs and machines, so bit-exact validation is meaningful.</li>
+  <li><b>Doesn't matter for dispatch ablation.</b> The 4 cells differ in <em>how</em> data flows between kernels, not <em>what</em> the data means semantically. A weight tensor of N(0,1) values exercises the same DMA paths and the same MMA instructions as a real Llama weight tensor.</li>
+</ul>
+
+<p><strong>Limitation:</strong> the dispatch-overhead conclusions transfer to real weights, but a numerical-precision study (e.g., "does our quantization match HuggingFace's outputs to within X tolerance") would need real weights and is out of scope for this ablation.</p>
+
+<!-- ============================================================ -->
+<h2 id="timing">2.4 Timing protocol + environment</h2>
+
+<p>From <span class="file-ref">run_ablation.py:_time_cell</span>:</p>
+
+<pre><code><span class="kw">def</span> <span class="fn">_time_cell</span>(run_fn, n_trials, *args):
+    <span class="str">"""Run n_trials, drop trial 1 (warmup), median + (min, max) of remaining."""</span>
+    times = []
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(n_trials):
+        out = <span class="fn">run_fn</span>(*args)
+        times.<span class="fn">append</span>(out[<span class="str">"_wall_s"</span>])
+    keep = times[<span class="num">1</span>:]                  <span class="com"># drop warmup</span>
+    keep_sorted = <span class="fn">sorted</span>(keep)
+    <span class="kw">return</span> {
+        <span class="str">"median_s"</span>: keep_sorted[<span class="fn">len</span>(keep_sorted) // <span class="num">2</span>],
+        <span class="str">"min_s"</span>: <span class="fn">min</span>(keep), <span class="str">"max_s"</span>: <span class="fn">max</span>(keep),
+        <span class="str">"all_trials_s"</span>: times,
+    }</code></pre>
+
+<table>
+  <tr><th>Choice</th><th>Why</th></tr>
+  <tr><td>5 trials per cell</td><td>Enough samples to see variance; small enough to keep total run time ≤ 10 minutes</td></tr>
+  <tr><td>Drop trial 1 (warmup)</td><td>First call after a fresh KernelCache load incurs one-time JIT-style XRT context warmup, instruction-cache fill, and BO-allocation costs. Trial 2+ are at steady state — what we actually want to measure</td></tr>
+  <tr><td>Report median + (min, max)</td><td>Median is robust to one-off outliers (a kernel scheduling hiccup, a host CPU preemption). Reporting min/max exposes the variance so the reader can judge whether the median is meaningful</td></tr>
+</table>
+
+<p>In practice the within-cell range is small (Decode Cell D: 90.57-90.69 ms; Prefill Cell A: 1.751-1.755 s — under 0.5% of mean). The cell-to-cell deltas are much larger than within-cell noise, so 4 timed trials give statistically meaningful conclusions.</p>
+
+<p><strong>Environment isolation.</strong> The host is multi-tenant — concurrent NPU jobs would corrupt timing. Every run acquires <code>flock -x -w 1800 /tmp/mlir-air-npu.lock</code> before touching the NPU; other NPU jobs block on the same lock for the duration.</p>
+
+<!-- ============================================================ -->
+<h2 class="part-header part-3">Part 3 — Decode (full per-token end-to-end)</h2>
+
+<h2 id="decode-scope">3.1 Scope + design decisions</h2>
+
+<p>The 4-cell ladder applied to the production decode path: 16 layers × (<code>rms_gemv_rope</code> NPU + <code>decode_attention_cpu</code> CPU + <code>o_gemv_ffn</code> NPU) + final RMSNorm + <code>lm_head_gemv</code> NPU + argmax. CPU attention and LM head are held INVARIANT across cells (only the NPU dispatch changes between A/B/C/D). Goal: reproduce <code>profile.md</code>'s per-token decode latency with Cell D and decompose the optimization contributions.</p>
+
+<h3>Design decisions made before implementation</h3>
+
+<table>
+  <tr><th>Question</th><th>Decision</th><th>Why</th></tr>
+  <tr>
+    <td>Tokens per timed trial?</td>
+    <td><strong>1 decode token per trial × 5 trials</strong> at fixed <code>current_pos = 7</code></td>
+    <td>Multi-token timing has position-dependent <code>decode_attention_cpu</code> work (CPU attention reads <code>[0:current_pos+1]</code> of the cache, growing each token). Single-token-at-fixed-position keeps the CPU work CONSTANT across trials and across cells, isolating dispatch overhead. Within-cell variance &lt; 0.5%.</td>
+  </tr>
+  <tr>
+    <td>LM head treatment?</td>
+    <td><strong>Held INVARIANT</strong> (production-merged 8-partition GEMV in every cell)</td>
+    <td>Mirrors prefill's treatment of FlashAttention. Reported as a separate "fixed cost per token" line (~13.6 ms/token) so it's visible but doesn't bias cell-to-cell deltas.</td>
+  </tr>
+  <tr>
+    <td>KV cache state?</td>
+    <td><strong>Deterministic synthetic pre-fill</strong> of 7 tokens (seed=42), reset between trials</td>
+    <td>Each trial starts from byte-identical cache state. <code>tests/test_kv_cache_state.py</code> verifies determinism.</td>
+  </tr>
+  <tr>
+    <td><code>decode_attention_cpu</code> attribution?</td>
+    <td><strong>Counted in per-token total + reported separately as "CPU floor"</strong></td>
+    <td>It's CPU-side and invariant. Hiding it would mislead readers; reporting it separately keeps cell-to-cell deltas clean.</td>
+  </tr>
+  <tr>
+    <td>Production CPU attention vs experimental NPU FA?</td>
+    <td><strong>Production CPU-attention path only</strong></td>
+    <td>That's what <code>profile.md</code>'s decode latency reflects. NPU FA decode path exists for Llama-3B (head_dim=128) but isn't used at head_dim=64.</td>
+  </tr>
+</table>
+
+<h3>Validation</h3>
+
+<p>Same bit-exact gate as Part 4: every cell's per-kernel-group output must match the committed Cell D goldens (<code>golden_rms_gemv_rope_decode.npz</code>, <code>golden_o_gemv_ffn_decode.npz</code>) on the seed=42 synthetic input. <strong>All 4 cells passed validation in the production run.</strong></p>
+
+<!-- ============================================================ -->
+<h2 id="decode-results">3.2 Results</h2>
+
+<h3>Per-token total wall time</h3>
+
+<table>
+  <tr><th>Cell</th><th>Median</th><th>Range</th><th>Δ vs prev</th><th>Speedup</th></tr>
+  <tr><td><span class="pill pill-a">A</span> Naive no-merge</td><td class="num">256.69 ms</td><td class="num">[256.20, 257.89]</td><td>—</td><td>(baseline)</td></tr>
+  <tr><td><span class="pill pill-b">B</span> + per-layer weight BOs (#2)</td><td class="num">116.92 ms</td><td class="num">[114.71, 117.73]</td><td>+139.77 ms</td><td><b>2.20×</b></td></tr>
+  <tr><td><span class="pill pill-c">C</span> + shared intermediate BOs (#3)</td><td class="num">113.77 ms</td><td class="num">[112.95, 114.30]</td><td>+3.15 ms</td><td>1.03×</td></tr>
+  <tr><td><span class="pill pill-d">D</span> + multi-launch merging (#1)</td><td class="num">90.65 ms</td><td class="num">[90.57, 90.69]</td><td>+23.12 ms</td><td><b>1.26×</b></td></tr>
+  <tr class="headline-row"><td colspan="3"><b>A → D total</b></td><td><b>−166.04 ms</b></td><td><b>2.83×</b></td></tr>
+</table>
+
+<p class="small">5 trials per cell, drop trial 1 (warmup), median + (min, max) over remaining 4. All 4 cells produced bit-identical outputs vs. committed Cell D goldens.</p>
+
+<h3>Per-kernel-group medians (single call)</h3>
+
+<p class="small">Same format as the per-token total wall table above — Δ vs prev cell + speedup. Two stacked tables, one per kernel-group. Cells A/B/C dispatch each sub-launch as a separate <code>xrt.run()</code> (6 for <code>rms_gemv_rope</code>, 8 for <code>o_gemv_ffn</code>); Cell D collapses each kernel-group into one merged <code>xrt.run()</code>.</p>
+
+<h4><code>rms_gemv_rope</code> (6 sub-launches → 1 merged in D)</h4>
+
+<table>
+  <tr><th>Cell</th><th>Median</th><th>Δ vs prev</th><th>Speedup vs prev</th></tr>
+  <tr><td><span class="pill pill-a">A</span> Naive (6 separate)</td><td class="num">2.40 ms</td><td>—</td><td>(baseline)</td></tr>
+  <tr><td><span class="pill pill-b">B</span> + per-layer weight BOs (#2)</td><td class="num">1.48 ms</td><td class="num">−0.92 ms</td><td><b>1.62×</b></td></tr>
+  <tr><td><span class="pill pill-c">C</span> + shared intermediate BOs (#3)</td><td class="num">1.44 ms</td><td class="num">−0.04 ms</td><td>1.03×</td></tr>
+  <tr><td><span class="pill pill-d">D</span> + multi-launch merging (#1, 1 merged)</td><td class="num">0.87 ms</td><td class="num">−0.57 ms</td><td><b>1.66×</b></td></tr>
+  <tr class="headline-row"><td colspan="2"><b>A → D total</b></td><td><b>−1.53 ms</b></td><td><b>2.76×</b></td></tr>
+</table>
+
+<h4><code>o_gemv_ffn</code> (8 sub-launches → 1 merged in D)</h4>
+
+<table>
+  <tr><th>Cell</th><th>Median</th><th>Δ vs prev</th><th>Speedup vs prev</th></tr>
+  <tr><td><span class="pill pill-a">A</span> Naive (8 separate)</td><td class="num">12.45 ms</td><td>—</td><td>(baseline)</td></tr>
+  <tr><td><span class="pill pill-b">B</span> + per-layer weight BOs (#2)</td><td class="num">4.62 ms</td><td class="num">−7.83 ms</td><td><b>2.69×</b></td></tr>
+  <tr><td><span class="pill pill-c">C</span> + shared intermediate BOs (#3)</td><td class="num">4.51 ms</td><td class="num">−0.11 ms</td><td>1.02×</td></tr>
+  <tr><td><span class="pill pill-d">D</span> + multi-launch merging (#1, 1 merged)</td><td class="num">3.67 ms</td><td class="num">−0.84 ms</td><td><b>1.23×</b></td></tr>
+  <tr class="headline-row"><td colspan="2"><b>A → D total</b></td><td><b>−8.78 ms</b></td><td><b>3.39×</b></td></tr>
+</table>
+
+<h3>Component breakdown (Cell D)</h3>
+
+<table>
+  <tr><th>Component</th><th>Wall time</th><th>Note</th></tr>
+  <tr><td>16 × <code>rms_gemv_rope.elf</code></td><td class="num">~14 ms</td><td>0.87 ms × 16</td></tr>
+  <tr><td>16 × <code>o_gemv_ffn.elf</code></td><td class="num">~59 ms</td><td>3.67 ms × 16</td></tr>
+  <tr><td>16 × <code>decode_attention_cpu</code> (CPU floor, invariant)</td><td class="num">3.68 ms</td><td>Same in every cell</td></tr>
+  <tr><td>1 × <code>lm_head_gemv.elf</code> (production-merged, invariant)</td><td class="num">13.62 ms</td><td>8-partition GEMV in 1 xrt.run, held INVARIANT</td></tr>
+  <tr><td><b>Total per-token wall</b></td><td class="num"><b>90.65 ms</b></td><td>Sum (within rounding)</td></tr>
+</table>
+
+<h3>Findings</h3>
+
+<ul>
+  <li><strong>#2 (per-layer weight BOs) DOMINATES — 2.20× alone.</strong> Per-layer weight BOs save ~140 ms per token of avoided host→device weight upload. Decode is dispatch/weight-upload bound (per-call NPU work is small relative to weight DMA cost), so eliminating that DMA is the single biggest lever.</li>
+  <li><strong>#3 (shared intermediate BOs) contributes ~zero — 1.03×.</strong> Decode intermediates are KB-scale (4-8 KB each); at that size the host round-trip cost is dominated by sync + dispatch fixed overhead, not byte transfer. BO aliasing only removes byte transfer, so its benefit is invisible. (Compare prefill's 1.31× in Part 4 — there, MB-scale intermediates make the same optimization the dominant gain.)</li>
+  <li><strong>#1 (multi-launch merging) gives 1.26×.</strong> Smaller as a fraction of the total because per-token wall includes ~17 ms of invariant fixed cost (LM head + CPU attention) that aren't ablation-affected.</li>
+  <li><strong>Total A→D = 2.83×</strong>, dominated by #2 (per-layer weight BOs). Both NPU kernel-groups (<code>rms_gemv_rope</code> and <code>o_gemv_ffn</code>) benefit from the same optimization for the same reason.</li>
+  <li><strong>All 4 cells produce bit-identical outputs</strong> for both <code>rms_gemv_rope</code> and <code>o_gemv_ffn</code> against committed goldens.</li>
+</ul>
+
+
+<!-- ============================================================ -->
+<h2 class="part-header part-4">Part 4 — Prefill (full 16-layer)</h2>
+
+<h2 id="prefill-scope">4.1 Scope</h2>
+
+<p>The 4-cell ladder applied to the production prefill path: 16 layers × (<code>rms_gemms_rope</code> NPU + FlashAttention NPU + <code>o_ffn</code> NPU). FlashAttention is held INVARIANT across cells (it's un-mergeable into the surrounding kernel-groups, see <a href="IMPLEMENTATION_GUIDE.html#stitching">B5</a>). Goal: reproduce <code>profile.md</code>'s <strong>1.27 s prefill</strong> headline with Cell D and decompose the optimization contributions.</p>
+
+<p class="small">Per-call shapes are very different from decode: prefill operates at seq=2048, so a Q-GEMM output is <code>[2048, 2048] = 8 MB bf16</code>, and a Gate/Up GEMM output is <code>[2048, 8192] = 32 MB bf16</code>. Per-call NPU compute is in tens of milliseconds, not hundreds of microseconds — the bottleneck physics is fundamentally different from decode.</p>
+
+<p><strong>Dispatch counts per prefill pass:</strong> Cells A/B/C launch every sub-kernel as a separate <code>xrt.run()</code> — 6+1+8 = 15 dispatches per layer × 16 layers = <strong>240 <code>xrt.run()</code> per pass</strong>. Cell D collapses each kernel-group into one merged ELF: 1+1+1 = 3 dispatches per layer × 16 = <strong>48 per pass</strong>. The 5× dispatch reduction is what optimization #1 buys; it's measured by the C → D delta.</p>
+
+<p class="small">The 16-layer wrapper that threads <code>o_ffn</code> output → next layer's <code>rms_gemms_rope</code> input is in <span class="file-ref">cells/multi_layer.py</span>. The same wrapper is used by all 4 cells; only the per-kernel-group dispatch function changes.</p>
+
+<!-- ============================================================ -->
+<h2 id="prefill-results">4.2 Results</h2>
+
+<h3>16-layer total wall time — direct comparison to <code>profile.md</code>'s 1.27 s</h3>
+
+<table>
+  <tr><th>Cell</th><th>Median (s)</th><th>Range</th><th>Δ vs prev</th><th>Speedup</th><th>vs <code>profile.md</code> 1.27 s</th></tr>
+  <tr><td><span class="pill pill-a">A</span> Naive</td><td class="num">1.754</td><td class="num">[1.751, 1.755]</td><td>—</td><td>(baseline)</td><td>1.38× slower</td></tr>
+  <tr><td><span class="pill pill-b">B</span> + per-layer weight BOs (#2)</td><td class="num">1.589</td><td class="num">[1.584, 1.594]</td><td>+0.165 s</td><td><b>1.10×</b></td><td>1.25× slower</td></tr>
+  <tr><td><span class="pill pill-c">C</span> + shared intermediate BOs (#3)</td><td class="num">1.212</td><td class="num">[1.212, 1.222]</td><td>+0.377 s</td><td><b>1.31×</b></td><td>0.95× faster</td></tr>
+  <tr><td><span class="pill pill-d">D</span> + multi-launch merging (#1)</td><td class="num">1.125</td><td class="num">[1.124, 1.127]</td><td>+0.087 s</td><td><b>1.08×</b></td><td>0.89× faster</td></tr>
+  <tr class="headline-row"><td colspan="3"><b>A → D total</b></td><td><b>−0.629 s</b></td><td><b>1.56×</b></td><td>All three combined</td></tr>
+</table>
+
+<p><strong>Cell D = 1.125 s</strong> — close to <code>profile.md</code>'s 1.27 s. The ~150 ms gap is host-side work outside the dispatch loop (embedding lookup, final RMSNorm, LM Head GEMV, KV-cache extraction transposes).</p>
+
+<h3>Per-kernel-group medians (single call)</h3>
+
+<p class="small">Same format as the 16-layer total wall table above. Two stacked tables, one per kernel-group. Cells A/B/C dispatch each sub-launch as a separate <code>xrt.run()</code> (6 for <code>rms_gemms_rope</code>, 8 for <code>o_ffn</code>); Cell D collapses each kernel-group into one merged <code>xrt.run()</code>.</p>
+
+<h4><code>rms_gemms_rope</code> (6 sub-launches → 1 merged in D)</h4>
+
+<table>
+  <tr><th>Cell</th><th>Median</th><th>Δ vs prev</th><th>Speedup vs prev</th></tr>
+  <tr><td><span class="pill pill-a">A</span> Naive (6 separate)</td><td class="num">14.99 ms</td><td>—</td><td>(baseline)</td></tr>
+  <tr><td><span class="pill pill-b">B</span> + per-layer weight BOs (#2)</td><td class="num">12.52 ms</td><td class="num">−2.47 ms</td><td>1.20×</td></tr>
+  <tr><td><span class="pill pill-c">C</span> + shared intermediate BOs (#3)</td><td class="num">9.77 ms</td><td class="num">−2.75 ms</td><td><b>1.28×</b></td></tr>
+  <tr><td><span class="pill pill-d">D</span> + multi-launch merging (#1, 1 merged)</td><td class="num">7.43 ms</td><td class="num">−2.34 ms</td><td><b>1.31×</b></td></tr>
+  <tr class="headline-row"><td colspan="2"><b>A → D total</b></td><td><b>−7.56 ms</b></td><td><b>2.02×</b></td></tr>
+</table>
+
+<h4><code>o_ffn</code> (8 sub-launches → 1 merged in D)</h4>
+
+<table>
+  <tr><th>Cell</th><th>Median</th><th>Δ vs prev</th><th>Speedup vs prev</th></tr>
+  <tr><td><span class="pill pill-a">A</span> Naive (8 separate)</td><td class="num">75.05 ms</td><td>—</td><td>(baseline)</td></tr>
+  <tr><td><span class="pill pill-b">B</span> + per-layer weight BOs (#2)</td><td class="num">64.67 ms</td><td class="num">−10.38 ms</td><td>1.16×</td></tr>
+  <tr><td><span class="pill pill-c">C</span> + shared intermediate BOs (#3)</td><td class="num">45.01 ms</td><td class="num">−19.66 ms</td><td><b>1.44×</b></td></tr>
+  <tr><td><span class="pill pill-d">D</span> + multi-launch merging (#1, 1 merged)</td><td class="num">40.99 ms</td><td class="num">−4.02 ms</td><td>1.10×</td></tr>
+  <tr class="headline-row"><td colspan="2"><b>A → D total</b></td><td><b>−34.06 ms</b></td><td><b>1.83×</b></td></tr>
+</table>
+
+<p class="small"><b>Sanity check vs the 16-layer table:</b> Cell D — <code>16 × (7.43 + 40.99) = 775 ms</code> for the two kernel-groups + ~22 ms × 16 = ~350 ms for FA = ~1.12 s, matches the 1.125 s 16-layer wall. Cell A — <code>16 × (14.99 + 75.05) = 1441 ms</code> + 350 ms FA = ~1.79 s, close to the 1.754 s 16-layer wall.</p>
+
+<h3>Findings</h3>
+
+<ul>
+  <li><strong>#3 (shared intermediate BOs) DOMINATES — 1.31× alone.</strong> OPPOSITE of decode (where #3 ≈ 1.0×). Why: prefill intermediates are LARGE (8 MB GEMM output, 32 MB FFN intermediate), so the bandwidth saved by aliasing BOs across separate <code>xrt.run()</code> calls is substantial.</li>
+  <li><strong>#2 (per-layer weight BOs) is small — 1.10×.</strong> Weights are still ~14 MB each, but per-call NPU compute is now ~10-50 ms (vs. &lt; 1 ms in decode). The fraction of total time that's weight-DMA-bound shrinks dramatically.</li>
+  <li><strong>Pure multi-launch merging (#1) is small — 1.08×.</strong> Same reason: dispatch overhead matters proportionally less when each kernel has tens of ms of NPU work.</li>
+  <li><strong>Total A → D = 1.56×</strong> — smaller than decode's 2.83× because dispatch-related overheads are a smaller share of total wall time at prefill scale.</li>
+  <li><strong>All 4 cells produce bit-identical outputs against committed goldens for both kernel-groups.</strong></li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 class="part-header part-5">Part 5 — Reading the results, reproducing, and limitations</h2>
+
+<h2 id="crosscompare">5.1 Cross-comparison: decode vs. prefill</h2>
+
+<p>The single most surprising finding is how dramatically the contribution of each optimization SHIFTS between phases:</p>
+
+<table>
+  <tr><th>Optimization</th><th>Decode (Part 3)</th><th>Prefill (Part 4)</th><th>Why</th></tr>
+  <tr><td>#1 — Multi-launch merging</td><td class="num">1.26×</td><td class="num">1.08×</td><td>Decode per-call NPU work small → dispatch overhead matters more; prefill per-call work in tens of ms → dispatch is small fraction</td></tr>
+  <tr><td>#2 — Per-layer weight BOs</td><td class="num"><b>2.20×</b></td><td class="num">1.10×</td><td>Decode weights dominate per-call cost (small compute, ~14 MB weights per call); prefill compute dominates (large compute amortizes the weight upload)</td></tr>
+  <tr><td>#3 — Shared intermediate BOs</td><td class="num">1.03×</td><td class="num"><b>1.31×</b></td><td>Decode intermediates are KB-scale → host-hop dominated by sync/dispatch overhead, byte-transfer saving invisible. Prefill MB-scale intermediates → byte-transfer saving real</td></tr>
+  <tr><td><b>A → D total</b></td><td class="num"><b>2.83×</b></td><td class="num"><b>1.56×</b></td><td>Decode is dispatch-bound; prefill is more compute-bound</td></tr>
+</table>
+
+<div class="highlight">
+  <strong>The key insight:</strong> the same 4-cell ladder yields a near-3× speedup for decode but only ~1.5× for prefill. The dominant optimization <em>flips</em> between phases — <strong>#2 (per-layer weight BOs) for decode, #3 (shared intermediate BOs) for prefill</strong>. Targeting the wrong one would yield a fraction of the available speedup.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="repro">5.2 Reproducing</h2>
+
+<h3>Decode (Part 3)</h3>
+
+<pre><code><span class="kw">cd</span> programming_examples/llama32_1b/ablation/decode
+make clean
+make all                <span class="com"># compile + run all 4 cells, generate report</span></code></pre>
+
+<p>Expected: Cell D per-token median ≈ 90 ms; A → D speedup ≈ 2.8×.</p>
+
+<h3>Prefill (Part 4)</h3>
+
+<pre><code><span class="kw">cd</span> programming_examples/llama32_1b/ablation/prefill
+make clean
+make all</code></pre>
+
+<p>Expected: Cell D 16-layer total wall ≈ 1.1-1.2 s — within ~10% of <code>profile.md</code>'s 1.27 s production headline.</p>
+
+<h3>Validation gate (no NPU touch)</h3>
+
+<pre><code>python3 -m pytest tests/ -v</code></pre>
+
+<p>Useful as a smoke check before queuing on the shared NPU lock.</p>
+
+<!-- ============================================================ -->
+<h2 id="limitations">5.3 Limitations + how to extend</h2>
+
+<table>
+  <tr><th>Limitation</th><th>Mitigation / how to extend</th></tr>
+  <tr>
+    <td>Synthetic weights only (numpy seed=42)</td>
+    <td>Dispatch ablation is independent of weight values — same DMA paths, same MMAs. To verify, swap in HuggingFace weights and confirm the per-cell deltas are within noise.</td>
+  </tr>
+  <tr>
+    <td>FlashAttention held invariant in prefill (Part 4)</td>
+    <td>FA is un-mergeable into the surrounding kernel-groups (compiler pass complexity, see <a href="IMPLEMENTATION_GUIDE.html#stitching">B5</a>), so varying it across cells would be unfair. A follow-up could ablate aliasing FA's input BOs to <code>rms_gemms_rope</code>'s output BOs (cross-kernel-group BO sharing).</td>
+  </tr>
+  <tr>
+    <td>Prefill harness doesn't include LM head, embedding, KV-cache transpose</td>
+    <td>That's why prefill Cell D = 1.125 s while <code>profile.md</code> = 1.27 s. The ~150 ms residual is host-side work outside the dispatch loop. (Decode harness DOES include LM head + final RMSNorm + argmax, so its Cell D matches profile.md directly.)</td>
+  </tr>
+  <tr>
+    <td>Single decode token at fixed position</td>
+    <td>By design (Part 3.1) — keeps CPU attention work constant. Multi-token decode would have position-dependent CPU time that would mask dispatch ablation. To extend, run a per-position sweep separately.</td>
+  </tr>
+  <tr>
+    <td>BF16 bit-exactness as the validation gate</td>
+    <td>Catches dispatch-induced computation differences but doesn't validate that the kernels themselves are numerically correct (i.e. agree with HuggingFace transformers bf16). That validation is the production <code>make verify</code> top-k token gate (see <a href="VERIFICATION.html">VERIFICATION.html</a>); not duplicated here.</td>
+  </tr>
+  <tr>
+    <td>5 trials per cell</td>
+    <td>Within-cell variance is small (≤1% of mean) and inter-cell deltas are large (10s of percent), so 5 trials is enough for the conclusions stated. For finer-grained claims (e.g. "is gap #3 contributing exactly zero or just &lt;1% in decode"), more trials would tighten the confidence interval.</td>
+  </tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="filemap">5.4 File map</h2>
+
+<table>
+  <tr><th>Path</th><th>Purpose</th></tr>
+  <tr><td><span class="file-ref">programming_examples/llama32_1b/ablation/decode/</span></td><td>Full per-token decode harness (Part 3). Self-contained: specs, standalone builders, cells A-D, per_token_loop, KV cache helpers, goldens, orchestrator, Makefile, README, 8 unit tests. Re-uses Plan 1's parameterized infrastructure where possible.</td></tr>
+  <tr><td><span class="file-ref">programming_examples/llama32_1b/ablation/prefill/</span></td><td>Full prefill harness (Part 4). Specs, standalone builders, cells A-D, multi_layer wrapper, FA invariant runner, goldens, orchestrator, Makefile, README, 8 unit tests.</td></tr>
+</table>
+
+<h3>Companion documents</h3>
+
+<table>
+  <tr><th>Doc</th><th>Where it fits</th></tr>
+  <tr><td><a href="IMPLEMENTATION_GUIDE.html">IMPLEMENTATION_GUIDE.html</a></td><td>Sister document — describes the production codebase and the four gaps. This ablation quantifies them.</td></tr>
+  <tr><td><a href="profile.md"><code>profile.md</code></a></td><td>Source of the 1.27 s prefill headline reproduced by Cell D in Part 4.</td></tr>
+  <tr><td><code>../ablation/docs/specs/</code> + <code>plans/</code></td><td>Pre-implementation specs and step-by-step plans for each study (prefill 2026-05-07, decode 2026-05-12).</td></tr>
+</table>
+
+<div class="highlight">
+  <strong>Quick recap.</strong> Two ablation studies (decode + prefill), both implemented and measured with the same 4-cell ladder (A naive → B + weight BOs → C + intermediate BOs → D production-merged). Each cell verified bit-exact against a committed golden; timed as median over 4 trials (drop warmup); NPU exclusive-locked.
+  <ul>
+    <li><strong>Decode</strong> (Part 3, full per-token end-to-end): A→D = <strong>2.83×</strong>, Cell D = <strong>90.65 ms/token</strong>, dominated by per-layer weight BOs (#2) at 2.20× alone.</li>
+    <li><strong>Prefill</strong> (Part 4, 16-layer end-to-end): A→D = <strong>1.56×</strong>, Cell D = <strong>1.13 s</strong> ≈ <code>profile.md</code>'s 1.27 s within 10%, dominated by shared intermediate BOs (#3) at 1.31× alone.</li>
+  </ul>
+  The most actionable finding: <em>which</em> optimization dominates flips between decode and prefill. <strong>For decode: target #2 (per-layer weight BOs).</strong> <strong>For prefill: target #3 (shared intermediate BOs).</strong> Targeting the wrong one would yield a fraction of the available speedup.
+</div>
+
+</body>
+</html>

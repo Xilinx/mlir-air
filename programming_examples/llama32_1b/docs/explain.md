@@ -249,8 +249,9 @@ The kernel exports the same `@rope` function name and signature as upstream,
 so no MLIR or multi-launch builder changes are needed. It is compiled to `rope.o`
 in `external_kernels.py:compile_rope()`.
 
-The CPU reference (`llama32_1b_reference.py:apply_rope()`) uses the same half-split
-convention, ensuring NPU and CPU produce identical results.
+The NPU output is then gated against HuggingFace transformers in bf16
+(`make verify` — see [`VERIFICATION.html`](VERIFICATION.html)),
+which exercises the same half-split RoPE convention end-to-end.
 
 ---
 
