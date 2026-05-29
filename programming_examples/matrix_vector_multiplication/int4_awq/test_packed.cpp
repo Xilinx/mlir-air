@@ -10,9 +10,11 @@
 // Per-tile PACKED layout (uint8): [ Q | S(bf16) | Z(uint8) ].
 
 #include "cxxopts.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <iostream>
 #include <limits>
@@ -75,9 +77,25 @@ int main(int argc, const char *argv[]) {
   xrt::bo bo_d = xrt::ext::bo{device, D_SIZE};
 
   {
-    uint8_t *p = bo_packed.map<uint8_t *>();
-    for (size_t i = 0; i < PACKED_SIZE; i++)
-      p[i] = (uint8_t)(rand() & 0xFF);
+    // Fill each per-tile slab as valid AWQ data so the profile loop runs
+    // on inputs that the kernel can actually process (random bytes in the
+    // S region would produce bf16 NaN/Inf which destabilizes timing).
+    uint8_t *base = bo_packed.map<uint8_t *>();
+    for (size_t t = 0; t < n_tiles_total; t++) {
+      uint8_t *p = base + t * TILE_BYTES;
+      // Q: any uint8 pattern is a valid pair of uint4 nibbles.
+      for (size_t i = 0; i < Q_BYTES; i++)
+        p[i] = (uint8_t)(rand() & 0xFF);
+      // S: bf16 in [0.005, 0.02] (matches the Python correctness reference).
+      DT_BF16 *s = reinterpret_cast<DT_BF16 *>(p + Q_BYTES);
+      size_t s_elems = S_BYTES / sizeof(DT_BF16);
+      for (size_t i = 0; i < s_elems; i++)
+        s[i] = DT_BF16(0.005f + 0.015f * ((float)rand() / RAND_MAX));
+      // Z: uint4 (stored uint8) in [7, 9), per Python reference.
+      uint8_t *z = p + Q_BYTES + S_BYTES;
+      for (size_t i = 0; i < Z_BYTES; i++)
+        z[i] = (uint8_t)(7 + (rand() & 1));
+    }
   }
   {
     DT_BF16 *p = bo_b.map<DT_BF16 *>();

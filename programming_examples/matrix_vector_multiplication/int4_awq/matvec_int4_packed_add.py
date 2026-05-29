@@ -103,7 +103,10 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8, M_PER_LAUNCH=N
         packed_l2 = MemRefType.get([tile_bytes], i8_ty, memory_space=l2_ms)
         packed_l1 = MemRefType.get([tile_bytes], i8_ty, memory_space=l1_ms)
         B_l1 = MemRefType.get([K_CHUNK], bf16_ty, memory_space=l1_ms)
-        R_full_l1 = MemRefType.get([M], bf16_ty, memory_space=l1_ms)
+        # addr_h loads only the current launch's slab of R, not all of M, so
+        # the per-outer offset arithmetic inside the herd is launch-relative
+        # (otherwise multi-launch runs read R from launch 0 every time).
+        R_full_l1 = MemRefType.get([M_per_core * N_CORES], bf16_ty, memory_space=l1_ms)
         partial_l1 = MemRefType.get([CASCADE_WIDTH], bf16_ty, memory_space=l1_ms)
         partial_slice_ty = MemRefType.get([M_TILE], bf16_ty, memory_space=l1_ms)
         D_l1 = MemRefType.get([M_TILE], bf16_ty, memory_space=l1_ms)
@@ -193,11 +196,13 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8, M_PER_LAUNCH=N
                     sizes=[M_div_m_per_core, K_div_k, K_CHUNK],
                     strides=[0, K_CHUNK, 1],
                 )
+                # Broadcast only the current launch's slab of R; addr_h's
+                # core_base + iter_off offset is then launch-relative.
                 ChannelPut(
                     "inR",
                     r,
-                    offsets=[0],
-                    sizes=[M],
+                    offsets=[launch_off],
+                    sizes=[M_PER_LAUNCH],
                     strides=[1],
                 )
 
