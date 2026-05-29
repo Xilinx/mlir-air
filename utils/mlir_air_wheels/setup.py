@@ -321,11 +321,11 @@ def get_extras_require():
     # mlir_aie + Peano; users targeting other backends skip the extra.
     mlir_aie_version = os.getenv("MLIR_AIE_VERSION", "")
     if mlir_aie_version:
-        no_rtti_dot = "" if check_env("ENABLE_RTTI", 1) else ".no.rtti"
+        mlir_aie_pkg = "mlir_aie" if check_env("ENABLE_RTTI", 1) else "mlir_aie_no_rtti"
         # mlir_aie is pinned to the version this AIR wheel was built and
         # tested against. llvm-aie (Peano) tracks nightly — no pin.
         extras["aie"] = [
-            f"mlir_aie=={mlir_aie_version}{no_rtti_dot}",
+            f"{mlir_aie_pkg}=={mlir_aie_version}",
             "llvm-aie",
         ]
     return extras
@@ -343,7 +343,7 @@ setup(
     },
     zip_safe=False,
     packages=find_packages(exclude=["wheelhouse", "mlir-air"]),
-    python_requires=">=3.10",
+    python_requires=">=3.11",
     install_requires=parse_requirements(Path(__file__).parent / "requirements.txt"),
     extras_require=get_extras_require(),
 )

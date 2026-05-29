@@ -137,12 +137,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - python_version: "3.10"
-            ENABLE_RTTI: ON
-
-          - python_version: "3.10"
-            ENABLE_RTTI: OFF
-
           - python_version: "3.11"
             ENABLE_RTTI: ON
 
@@ -220,11 +214,9 @@ jobs:
 
             NO_RTTI=""
             NO_RTTI_UNDERSCORE=""
-            NO_RTTI_DOT=""
             if [ x"$ENABLE_RTTI" == x"OFF" ]; then
               NO_RTTI="-no-rtti"
               NO_RTTI_UNDERSCORE="_no_rtti"
-              NO_RTTI_DOT=".no.rtti"
               MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2"
             else
               MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/"
@@ -238,10 +230,10 @@ jobs:
             export MLIR_INSTALL_ABS_PATH=$PWD/mlir$NO_RTTI_UNDERSCORE
 
             export MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
-            pip -q download --no-deps --platform manylinux_2_35_x86_64 "mlir_aie==${MLIR_AIE_VERSION}${NO_RTTI_DOT}" \
+            pip -q download --no-deps --platform manylinux_2_35_x86_64 "mlir_aie${NO_RTTI_UNDERSCORE}==${MLIR_AIE_VERSION}" \
               -f "$MLIR_AIE_WHEELS_URL"
             unzip -q mlir_aie*.whl
-            export MLIR_AIE_INSTALL_PATH=$PWD/mlir_aie
+            export MLIR_AIE_INSTALL_PATH=$PWD/mlir_aie${NO_RTTI_UNDERSCORE}
 
             export MLIR_AIR_SOURCE_DIR=$PWD
             export WHEELHOUSE_DIR=$PWD/wheelhouse
@@ -288,8 +280,8 @@ jobs:
             ## MLIR-AIR Wheels (${{ matrix.ENABLE_RTTI == 'ON' && 'RTTI' || 'no-RTTI' }})
 
             **Latest commit:** `${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}`
-            **Pinned mlir_aie:** `${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}${{ matrix.ENABLE_RTTI == 'ON' && '' || '.no.rtti' }}`
-            **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.14)
+            **Pinned mlir_aie:** `${{ matrix.ENABLE_RTTI == 'ON' && 'mlir_aie' || 'mlir_aie_no_rtti' }}==${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}`
+            **Platforms:** Linux x86_64 (Python 3.11–3.14), Windows AMD64 (Python 3.11–3.14)
 
             ### Installation
 
@@ -331,12 +323,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - python_version: "3.10"
-            ENABLE_RTTI: ON
-
-          - python_version: "3.10"
-            ENABLE_RTTI: OFF
-
           - python_version: "3.11"
             ENABLE_RTTI: ON
 
@@ -404,9 +390,9 @@ jobs:
       - name: Get mlir-aie
         shell: bash
         run: |
-          NO_RTTI_DOT=""
+          NO_RTTI_UNDERSCORE=""
           if [ x"${{ matrix.ENABLE_RTTI }}" == x"OFF" ]; then
-            NO_RTTI_DOT=".no.rtti"
+            NO_RTTI_UNDERSCORE="_no_rtti"
             MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2"
           else
             MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/"
@@ -414,14 +400,14 @@ jobs:
 
           MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
           pip -q download --no-deps --platform win_amd64 \
-            "mlir_aie==${MLIR_AIE_VERSION}${NO_RTTI_DOT}" \
+            "mlir_aie${NO_RTTI_UNDERSCORE}==${MLIR_AIE_VERSION}" \
             -f "$MLIR_AIE_WHEELS_URL"
           # Extract to a short path alongside MLIR
           MLIR_AIE_EXTRACT=/c/tmp/airwhls/a
           rm -rf "$MLIR_AIE_EXTRACT"
           mkdir -p /c/tmp/airwhls
           python -m zipfile -e mlir_aie*.whl /c/tmp/airwhls
-          mv /c/tmp/airwhls/mlir_aie "$MLIR_AIE_EXTRACT"
+          mv "/c/tmp/airwhls/mlir_aie${NO_RTTI_UNDERSCORE}" "$MLIR_AIE_EXTRACT"
 
       - name: Build wheel
         shell: bash
@@ -489,8 +475,8 @@ jobs:
             ## MLIR-AIR Wheels (${{ matrix.ENABLE_RTTI == 'ON' && 'RTTI' || 'no-RTTI' }})
 
             **Latest commit:** `${{ needs.get-air-project-commit.outputs.AIR_PROJECT_COMMIT }}`
-            **Pinned mlir_aie:** `${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}${{ matrix.ENABLE_RTTI == 'ON' && '' || '.no.rtti' }}`
-            **Platforms:** Linux x86_64 (Python 3.10–3.14), Windows AMD64 (Python 3.10–3.14)
+            **Pinned mlir_aie:** `${{ matrix.ENABLE_RTTI == 'ON' && 'mlir_aie' || 'mlir_aie_no_rtti' }}==${{ needs.get-air-project-commit.outputs.MLIR_AIE_VERSION }}`
+            **Platforms:** Linux x86_64 (Python 3.11–3.14), Windows AMD64 (Python 3.11–3.14)
 
             ### Installation
 
