@@ -137,7 +137,12 @@ jobs:
           # ninja check-air-e2e-chess
 
           # Programming examples set 1: peano tests (retry once on failure for flaky NPU tests)
-          ninja check-programming-examples-peano || ninja check-programming-examples-peano
+          # HF_TOKEN exposes the repository secret for tests requiring gated
+          # Hugging Face model downloads (e.g. llama32_1b/run_npu2_verify.lit).
+          # Tests without REQUIRES: hf_token are unaffected.
+          HF_TOKEN="${{ secrets.HF_TOKEN }}" \
+            ninja check-programming-examples-peano || \
+            HF_TOKEN="${{ secrets.HF_TOKEN }}" ninja check-programming-examples-peano
 
           # Chess tests disabled to reduce CI time. Uncomment to re-enable:
           # ninja check-programming-examples-chess
