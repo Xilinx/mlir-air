@@ -1,0 +1,44 @@
+{
+  "config": {
+    "seq_len": 2048,
+    "emb_dim": 2048,
+    "kv_dim": 512,
+    "n_heads": 32,
+    "n_kv_heads": 8,
+    "head_dim": 64,
+    "hidden_dim": 8192
+  },
+  "rms_gemms_rope": {
+    "input_hashes": {
+      "x_in": "fcbc90cb84de3921",
+      "norm_w": "2b68a598666f46b7",
+      "wq": "644b193c8ad8deb2",
+      "wk": "d99f752b4ef2e7cb",
+      "wv": "170cf86e99d6e81c",
+      "lut_q": "ea89e3700fc1f79c",
+      "lut_k": "1af9035ca8e4cb69"
+    },
+    "output_hashes": {
+      "normed": "97c83313d0086b24",
+      "q": "841e787880869d03",
+      "k": "970a6cbd94eed6fd",
+      "v": "a9a28b1b08840976",
+      "q_roped": "0bc1552da337d5e2",
+      "k_roped": "b53a3553b0c34dbb"
+    }
+  },
+  "o_ffn": {
+    "input_hashes": {
+      "attn_out": "c142255ffc76363f",
+      "wo": "f79d9f01ecb1f849",
+      "x_residual": "fcbc90cb84de3921",
+      "ffn_norm_w": "662073a56ab4cafe",
+      "w_gate": "ae0272f05a315b90",
+      "w_up": "f16ac32ad33c9d4a",
+      "w_down": "3017d3b502e1c327"
+    },
+    "output_hashes": {
+      "output": "c87c94798ef2a94b"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "config": {
+    "emb_dim": 2048,
+    "kv_dim": 512,
+    "n_heads": 32,
+    "n_kv_heads": 8,
+    "head_dim": 64,
+    "hidden_dim": 8192,
+    "n_layers": 16,
+    "max_seq": 2048,
+    "vocab_size": 128256
+  },
+  "prompt_len": 7,
+  "current_pos": 7,
+  "seed": 42,
+  "layer_idx": 0,
+  "rms_gemv_rope_outputs": {
+    "normed": "a97e976415483974",
+    "q": "8eb0329b8a682062",
+    "k": "858e3700aa681e8f",
+    "v": "3614ed9453d88a31",
+    "q_roped": "206a8aedfaf6fc25",
+    "k_roped": "a30ed65232069ab6"
+  },
+  "o_gemv_ffn_outputs": {
+    "output": "0f3cd9c0cfc685bb"
+  }
+}
