@@ -171,6 +171,20 @@ def compile_mv(tile_m=8):
     _compile_kernel(src, "mv.o", extra_flags=[f"-DDIM_M_OUTPUT={tile_m}"])
 
 
+def compile_mv_int4_bf16(m_tile=8, k_chunk=2048, gs=128):
+    """Compile mv_int4_bf16.o (int4-AWQ GEMV micro-kernel) from source."""
+    src = _PROJ_ROOT / "matrix_vector_multiplication" / "int4_awq" / "mv_int4_bf16.cc"
+    _compile_kernel(
+        src,
+        "mv_int4_bf16.o",
+        extra_flags=[
+            f"-DDIM_M={m_tile}",
+            f"-DDIM_K={k_chunk}",
+            f"-DDIM_GS={gs}",
+        ],
+    )
+
+
 def compile_attn_decode_npu2(head_dim=64):
     """Compile attn_decode_npu2.o (RoPE helpers for the fused decode kernel)."""
     src = _PROJ_ROOT / "attention_decode" / "attn_decode_npu2.cc"
