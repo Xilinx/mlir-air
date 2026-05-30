@@ -33,7 +33,7 @@ def prepare_air_project():
     # Copy compiled .o files to air_project/ for aiecc to find. Must include
     # every external symbol referenced by `link_with` in the kernel modules:
     # - mv.o            : K=2048 GEMVs (rms_gemv_rope, o_gemv_ffn, lm_head_gemv)
-    # - mv_k8192.o      : K=8192 Down GEMV (renamed entry point in o_gemv_ffn)
+    # - mv_bf16.o       : 2-tile matvec+add (o_gemv_ffn stages 1 and 3)
     # - rope.o          : RoPE (prefill + decode rms_*_rope)
     # - silu_and_mul.o  : SwiGLU (prefill o_ffn, decode o_gemv_ffn)
     # - attn.o          : flash attention (prefill, when --cpu-attn=False)
@@ -44,7 +44,7 @@ def prepare_air_project():
         "attn.o",
         "attn_npu2.o",
         "mv.o",
-        "mv_k8192.o",
+        "mv_bf16.o",
         "attn_decode_npu2.o",
     ]:
         src = Path(obj_name)

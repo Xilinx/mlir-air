@@ -17,6 +17,8 @@ OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
+PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
 
 # GEMV dimensions: C[M] = A[M,K] @ B[K]
 # tile_m=2 with 8 cols and K=8192: A_L2 = 8*2*8192*2 = 256KB < 512KB
@@ -91,6 +93,31 @@ run_add_8col:
 
 profile_add_8col:
 	$(MAKE) profile_add M=2048 K=8192 TILE_M=2 M_INPUT=1 HERD_COLS=8 N_CASCADE=4
+
+# Two-tile-per-col matvec + residual add: D[M] = A[M,K] @ B[K] + R[M]
+# matvec_2tile_add.py links mv_bf16.o for its zero/matvec/partial+r kernels.
+TILE_M_2T   ?= 8
+K_CHUNK_2T  ?= 512
+
+compile-mv-bf16:
+	mkdir -p $(BUILD_DIR)
+	@if [ -z "$(PEANO_INSTALL_DIR)" ]; then \
+		echo "Error: PEANO_INSTALL_DIR not set (source utils/env_setup.sh)."; \
+		exit 1; \
+	fi
+	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} \
+		-DDIM_M=$(TILE_M_2T) -DDIM_K=$(K_CHUNK_2T) \
+		-c ${srcdir}/mv_bf16.cc -o $(BUILD_DIR)/mv_bf16.o
+
+print_2tile_add:
+	${powershell} python3 ${srcdir}/matvec_2tile_add.py $(OUTPUT_FORMAT_FLAG) -p \
+		--m $(M) --k $(K) --tile-m $(TILE_M_2T) --k-chunk $(K_CHUNK_2T) --herd-cols $(HERD_COLS)
+
+run_2tile_add: compile-mv-bf16
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
+	  ${powershell} python3 ${srcdir}/matvec_2tile_add.py $(OUTPUT_FORMAT_FLAG) \
+		--m $(M) --k $(K) --tile-m $(TILE_M_2T) --k-chunk $(K_CHUNK_2T) --herd-cols $(HERD_COLS)
 
 build-test-exe-impl:
 	@GPP=$$( \
