@@ -478,9 +478,7 @@ def build_rms_qkv_int4_rope_module(
 
     channels_str = "\n  ".join(channels_all)
 
-    combined = (
-        "\n".join(maps_all)
-        + f"""
+    combined = "\n".join(maps_all) + f"""
 module {{
   {channels_str}
   {privates_str}
@@ -509,7 +507,6 @@ module {{
   }}
 }}
 """
-    )
 
     with Context() as ctx:
         module = Module.parse(combined, ctx)
