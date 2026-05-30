@@ -151,6 +151,20 @@ def compile_attn_npu2(head_dim=64):
         shutil.copy2("attn_npu2.o", "attn.o")
 
 
+def compile_mv_k8192():
+    """Compile mv_k8192.o with renamed GEMV symbols for K=8192 decode merge."""
+    src = _PROJ_ROOT / "matrix_vector_multiplication" / "bf16" / "mv.cc"
+    _compile_kernel(
+        src,
+        "mv_k8192.o",
+        extra_flags=[
+            "-DDIM_M_OUTPUT=2",
+            "-Dmatvec_vectorized_bf16_bf16=dg_matvec_vectorized_bf16_bf16",
+            "-Dlinalg_fill_bf16=dg_linalg_fill_bf16",
+        ],
+    )
+
+
 def compile_mv(tile_m=8):
     """Compile mv.o (standard GEMV kernel) from source."""
     src = _PROJ_ROOT / "matrix_vector_multiplication" / "bf16" / "mv.cc"
@@ -171,13 +185,6 @@ def compile_mv_int4_bf16(m_tile=8, k_chunk=2048, gs=128):
     )
 
 
-def compile_mv_bf16():
-    """Compile mv_bf16.o for the 2-tile matvec+add primitive used by
-    o_gemv_ffn stages 1 and 3."""
-    src = _PROJ_ROOT / "matrix_vector_multiplication" / "bf16_cascade" / "mv_bf16.cc"
-    _compile_kernel(src, "mv_bf16.o")
-
-
 def compile_attn_decode_npu2(head_dim=64):
     """Compile attn_decode_npu2.o (RoPE helpers for the fused decode kernel)."""
     src = _PROJ_ROOT / "attention_decode" / "attn_decode_npu2.cc"
@@ -192,16 +199,25 @@ def compile_attn_decode_npu2(head_dim=64):
     )
 
 
-def compile_all_external_kernels(head_dim=64):
+def compile_all_external_kernels(head_dim=64, quant="bf16"):
     """Compile all external C++ kernels from source.
 
     Call this before kernel compilation to ensure all .o files are fresh.
     Each kernel is only compiled if its .o doesn't already exist.
     Delete build_peano/*.o to force recompilation.
+
+    Args:
+        head_dim: attention head dimension (RoPE / attn kernel macros).
+        quant: "bf16" (default) or "awq". When "awq" the int4 GEMV micro-kernel
+            (`mv_int4_bf16.o`) is built so the int4 decode ELFs can link it.
+            bf16-specific GEMV objects (mv.o, mv_k8192.o) are still built so
+            mixed paths (e.g. bf16 prefill alongside int4 decode) keep working.
     """
     compile_silu_and_mul()
     compile_rope()
     compile_attn_npu2(head_dim=head_dim)
     compile_attn_decode_npu2(head_dim=head_dim)
     compile_mv()
-    compile_mv_bf16()
+    compile_mv_k8192()
+    if quant == "awq":
+        compile_mv_int4_bf16()

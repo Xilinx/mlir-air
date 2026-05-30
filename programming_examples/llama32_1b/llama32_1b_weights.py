@@ -20,6 +20,7 @@ Usage:
 """
 
 import os
+import sys
 import glob as glob_module
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -122,6 +123,18 @@ _HF_LAYER_MAP = {
     "mlp.gate_proj.weight": ("w_gate", True),
     "mlp.up_proj.weight": ("w_up", True),
     "mlp.down_proj.weight": ("w_down", True),
+}
+
+# AutoAWQ stores each Linear as three tensors. Field name = the dataclass
+# field that owns the bf16 dequant (used by the CPU prefill placeholder).
+_HF_AWQ_LINEARS = {
+    "self_attn.q_proj": "wq",
+    "self_attn.k_proj": "wk",
+    "self_attn.v_proj": "wv",
+    "self_attn.o_proj": "wo",
+    "mlp.gate_proj": "w_gate",
+    "mlp.up_proj": "w_up",
+    "mlp.down_proj": "w_down",
 }
 
 
@@ -316,6 +329,219 @@ def load_weights(
         # LLAMA-3.2-1B (and other small Llamas) tie lm_head to embed_tokens
         # — the checkpoint omits lm_head.weight by design and the runtime
         # is expected to compute logits = h @ embed_table.T.
+        print("  Tied embeddings: reusing embed_table as lm_head.")
+        lm_head = embed_table
+
+    return LlamaWeights(
+        embed_table=embed_table,
+        layers=layers,
+        final_norm=final_norm,
+        lm_head=lm_head,
+    )
+
+
+# ---------------------------------------------------------------------------
+# HuggingFace AutoAWQ loader
+# ---------------------------------------------------------------------------
+
+# Mapping LayerWeights field name -> per-layer packed-BO attribute name.
+# Packed BOs are dynamically attached to each LayerWeights instance (same
+# pattern inference.py uses for ._wq_t etc.), keyed by the dataclass field
+# to avoid extending the dataclass schema. The decode-side runtime reads
+# `layer._wq_packed`, `layer._wo_packed`, etc. The fused FFN ELF
+# (o_gemv_ffn_int4) wants gate+up as ONE row-interleaved packed BO and
+# is exposed separately as `_wgateup_packed`.
+_AWQ_PACKED_ATTR = {
+    "wq": "_wq_packed",
+    "wk": "_wk_packed",
+    "wv": "_wv_packed",
+    "wo": "_wo_packed",
+    "w_down": "_wdown_packed",
+}
+# w_gate and w_up are NOT in _AWQ_PACKED_ATTR — they go through a row-level
+# interleave first (gate[i] -> row 2i, up[i] -> row 2i+1) before packing,
+# so the int4 FFN ELF can consume them in one BO.
+
+
+def load_weights_awq(
+    model_name_or_path: str,
+    config: Optional[LlamaConfig] = None,
+    group_size: int = 128,
+    m_tile: int = 8,
+    k_chunk: int = 2048,
+    n_cores: int = 8,
+) -> LlamaWeights:
+    """Load a HuggingFace AutoAWQ Llama checkpoint.
+
+    For each Linear, stashes BOTH:
+      - the bf16 dequant on the existing LayerWeights field (wq/wk/.../w_down),
+        for the CPU prefill placeholder via reference.transformer_block;
+      - the per-tile packed uint8 BO on `_<field>_packed`, for the NPU int4
+        decode ELFs (rms_qkv_int4_rope and o_gemv_ffn_int4).
+
+    Args:
+        model_name_or_path: local dir or HF model id of an AutoAWQ checkpoint.
+        config: model hyperparameters (defaults to Llama-3.2-1B).
+        group_size: AWQ group size (typical 128). Must match the checkpoint.
+        m_tile, k_chunk, n_cores: GEMV packed-BO tiling parameters; defaults
+            match the int4 decode ELF builders.
+
+    Returns:
+        LlamaWeights with packed-BO attributes attached.
+    """
+    from safetensors import safe_open
+    from awq_repacker import dequant_to_bf16, repack_for_gemv, repack_hf_awq_linear
+
+    sys.path.insert(
+        0,
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..",
+            "matrix_vector_multiplication",
+            "int4_awq",
+        ),
+    )
+    from matvec_int4_packed import pack_inputs as _pack_inputs
+
+    if config is None:
+        config = LlamaConfig()
+
+    safetensor_files = _resolve_safetensor_files(model_name_or_path)
+
+    key_to_file = {}
+    for filepath in safetensor_files:
+        with safe_open(filepath, framework="numpy") as f:
+            for key in f.keys():
+                key_to_file[key] = filepath
+
+    # --- Embedding table ---
+    embed_key = "model.embed_tokens.weight"
+    if embed_key not in key_to_file:
+        raise KeyError(f"Missing weight: {embed_key}")
+    with safe_open(key_to_file[embed_key], framework="numpy") as f:
+        embed_table = _load_tensor(f, embed_key, bfloat16)
+
+    # --- Per-layer ---
+    layers: List[LayerWeights] = []
+    for layer_idx in range(config.n_layers):
+        # Non-quantized: layernorms.
+        attn_norm_key = f"model.layers.{layer_idx}.input_layernorm.weight"
+        ffn_norm_key = f"model.layers.{layer_idx}.post_attention_layernorm.weight"
+        with safe_open(key_to_file[attn_norm_key], framework="numpy") as f:
+            attn_norm = _load_tensor(f, attn_norm_key, bfloat16)
+        with safe_open(key_to_file[ffn_norm_key], framework="numpy") as f:
+            ffn_norm = _load_tensor(f, ffn_norm_key, bfloat16)
+
+        # Each quantized Linear: load qweight/qzeros/scales, then both
+        # (a) dequant to bf16 -> existing LayerWeights field, for CPU prefill,
+        # (b) repack-and-pack -> packed BO, for NPU int4 decode.
+        # gate/up are special: their NPU packed BO must be ONE interleaved
+        # matrix (gate row 0, up row 0, gate row 1, ...) so the int4 ELF2
+        # (matvec_int4_swiglu_rms) can consume them in one input slot.
+        linear_bf16 = {}
+        linear_packed = {}
+        gate_quants = up_quants = None
+        for hf_prefix, field_name in _HF_AWQ_LINEARS.items():
+            base = f"model.layers.{layer_idx}.{hf_prefix}"
+            qw_key, qz_key, s_key = (
+                f"{base}.qweight",
+                f"{base}.qzeros",
+                f"{base}.scales",
+            )
+            for k in (qw_key, qz_key, s_key):
+                if k not in key_to_file:
+                    raise KeyError(
+                        f"Missing AWQ tensor: {k} (is this an AutoAWQ checkpoint?)"
+                    )
+            with safe_open(key_to_file[qw_key], framework="numpy") as f:
+                qw = f.get_tensor(qw_key)
+            with safe_open(key_to_file[qz_key], framework="numpy") as f:
+                qz = f.get_tensor(qz_key)
+            with safe_open(key_to_file[s_key], framework="numpy") as f:
+                sc = f.get_tensor(s_key)
+            if qw.dtype != np.int32:
+                qw = qw.astype(np.int32)
+            if qz.dtype != np.int32:
+                qz = qz.astype(np.int32)
+            # (a) bf16 dequant for CPU prefill: shape [in, out] (matches
+            # transformer_block's wq[in, out] convention — no transpose).
+            linear_bf16[field_name] = dequant_to_bf16(qw, qz, sc, group_size)
+            # (b) packed BO for NPU decode; gate/up are deferred until both
+            # are loaded so we can interleave them at the nibble level.
+            if field_name == "w_gate":
+                gate_quants = repack_hf_awq_linear(qw, qz, sc, group_size)
+            elif field_name == "w_up":
+                up_quants = repack_hf_awq_linear(qw, qz, sc, group_size)
+            else:
+                linear_packed[field_name] = repack_for_gemv(
+                    qw,
+                    qz,
+                    sc,
+                    group_size,
+                    M_TILE=m_tile,
+                    K_CHUNK=k_chunk,
+                    N_CORES=n_cores,
+                )
+
+        # Interleave gate/up at the (A_q, A_s, A_z) level: row 2i = gate[i],
+        # row 2i+1 = up[i]. Then pack into one BO sized [2*hidden, emb] for
+        # arg7 of o_gemv_ffn_int4.
+        if gate_quants is None or up_quants is None:
+            raise RuntimeError(
+                "Could not find both mlp.gate_proj and mlp.up_proj AWQ tensors"
+            )
+        g_q, g_s, g_z = gate_quants
+        u_q, u_s, u_z = up_quants
+        h_out, k_half = g_q.shape  # h_out = hidden_dim, k_half = K/2
+        if u_q.shape != (h_out, k_half):
+            raise RuntimeError("gate_proj and up_proj have different shapes")
+        gu_q = np.empty((2 * h_out, k_half), dtype=np.uint8)
+        gu_q[0::2] = g_q
+        gu_q[1::2] = u_q
+        n_groups = g_s.shape[0]
+        gu_s = np.empty((n_groups, 2 * h_out), dtype=g_s.dtype)
+        gu_s[:, 0::2] = g_s
+        gu_s[:, 1::2] = u_s
+        gu_z = np.empty((n_groups, 2 * h_out), dtype=np.uint8)
+        gu_z[:, 0::2] = g_z
+        gu_z[:, 1::2] = u_z
+        M_gateup = 2 * h_out
+        K_full = k_half * 2
+        gateup_packed = _pack_inputs(
+            gu_q,
+            gu_s,
+            gu_z,
+            M_gateup,
+            K_full,
+            group_size,
+            m_tile,
+            k_chunk,
+            n_cores,
+            M_gateup,
+        )
+
+        layer = LayerWeights(
+            attn_norm=attn_norm,
+            ffn_norm=ffn_norm,
+            **linear_bf16,
+        )
+        for field_name, packed in linear_packed.items():
+            setattr(layer, _AWQ_PACKED_ATTR[field_name], packed)
+        layer._wgateup_packed = gateup_packed
+        layers.append(layer)
+
+        if (layer_idx + 1) % 4 == 0 or layer_idx == 0:
+            print(f"  AWQ layer {layer_idx + 1}/{config.n_layers} loaded")
+
+    # --- Final norm and lm_head (both bf16 in this checkpoint) ---
+    norm_key = "model.norm.weight"
+    with safe_open(key_to_file[norm_key], framework="numpy") as f:
+        final_norm = _load_tensor(f, norm_key, bfloat16)
+    lm_head_key = "lm_head.weight"
+    if lm_head_key in key_to_file:
+        with safe_open(key_to_file[lm_head_key], framework="numpy") as f:
+            lm_head = _load_tensor(f, lm_head_key, bfloat16)
+    else:
         print("  Tied embeddings: reusing embed_table as lm_head.")
         lm_head = embed_table
 

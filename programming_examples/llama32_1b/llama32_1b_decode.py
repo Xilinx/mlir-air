@@ -28,6 +28,8 @@ from kernel_builder.backend_presets import (
     RGR_BACKEND,
     OGF_BACKEND,
     LM_GEMV_BACKEND,
+    RGR_INT4_BACKEND,
+    OGF_INT4_BACKEND,
 )
 
 # ---------------------------------------------------------------------------
@@ -35,11 +37,18 @@ from kernel_builder.backend_presets import (
 # ---------------------------------------------------------------------------
 
 
-def compile_decode_kernels(cache, config):
-    """Compile the 3 merged decode kernels."""
+def compile_decode_kernels(cache, config, quant: str = "bf16"):
+    """Compile the 3 merged decode kernels.
+
+    Args:
+        cache: KernelCache.
+        config: LlamaConfig.
+        quant: "bf16" (default, existing behavior) or "awq" (int4-AWQ ELFs:
+            rms_qkv_int4_rope + o_gemv_ffn_int4 from PR #1633 / #1637).
+    """
     from kernel_builder.external_kernels import compile_all_external_kernels
 
-    compile_all_external_kernels(head_dim=config.head_dim)
+    compile_all_external_kernels(head_dim=config.head_dim, quant=quant)
 
     emb_dim = config.emb_dim
     n_heads = config.n_heads
@@ -49,31 +58,62 @@ def compile_decode_kernels(cache, config):
     kv_dim = n_kv_heads * head_dim
 
     print(f"\n{'='*60}")
-    print(f"Compiling decode kernels (2-call merged pipeline)...")
+    print(f"Compiling decode kernels (quant={quant})...")
     print(f"{'='*60}\n")
 
-    # 1. rms_gemv_rope: RMSNorm + QKV GEMV + RoPE Q+K (6 launches, 13 args)
-    from multi_launch_builder.rms_gemv_rope_multi import (
-        build_rms_gemv_rope_module,
-    )
+    if quant == "awq":
+        # 1. rms_qkv_int4_rope: RMSNorm + int4 QKV GEMV + RoPE Q+K (6 launches, 13 args)
+        from multi_launch_builder.rms_qkv_int4_rope_multi import (
+            build_rms_qkv_int4_rope_module,
+        )
 
-    cache.compile_and_cache(
-        "rms_gemv_rope",
-        build_rms_gemv_rope_module(emb_dim, kv_dim, n_heads, n_kv_heads, head_dim),
-        {"verbose": cache.verbose, **RGR_BACKEND},
-    )
+        cache.compile_and_cache(
+            "rms_qkv_int4_rope",
+            build_rms_qkv_int4_rope_module(
+                emb_dim=emb_dim,
+                kv_dim=kv_dim,
+                n_heads=n_heads,
+                n_kv_heads=n_kv_heads,
+                head_dim=head_dim,
+            ),
+            {"verbose": cache.verbose, **RGR_INT4_BACKEND},
+        )
 
-    # 2. o_gemv_ffn: 3-launch (matvec_2tile_add + matvec_swiglu_rms +
-    #                matvec_2tile_add). Post-attention residual is routed
-    #                through a row-0 subview of arg6 (the packed RMSNorm
-    #                input buffer); see o_gemv_ffn_multi.py for the ABI.
-    from multi_launch_builder.o_gemv_ffn_multi import build_o_gemv_ffn_module
+        # 2. o_gemv_ffn_int4: 3-launch full-int4 (matvec_int4_packed_add +
+        #    matvec_int4_swiglu_rms + matvec_int4_packed_add). Same arg6-row0
+        #    residual routing as the bf16 baseline.
+        from multi_launch_builder.o_gemv_ffn_int4_multi import (
+            build_o_gemv_ffn_int4_module,
+        )
 
-    cache.compile_and_cache(
-        "o_gemv_ffn",
-        build_o_gemv_ffn_module(emb_dim, hidden_dim),
-        {"verbose": cache.verbose, **OGF_BACKEND},
-    )
+        cache.compile_and_cache(
+            "o_gemv_ffn_int4",
+            build_o_gemv_ffn_int4_module(emb_dim=emb_dim, hidden_dim=hidden_dim),
+            {"verbose": cache.verbose, **OGF_INT4_BACKEND},
+        )
+    else:
+        # 1. rms_gemv_rope: RMSNorm + QKV GEMV + RoPE Q+K (6 launches, 13 args)
+        from multi_launch_builder.rms_gemv_rope_multi import (
+            build_rms_gemv_rope_module,
+        )
+
+        cache.compile_and_cache(
+            "rms_gemv_rope",
+            build_rms_gemv_rope_module(emb_dim, kv_dim, n_heads, n_kv_heads, head_dim),
+            {"verbose": cache.verbose, **RGR_BACKEND},
+        )
+
+        # 2. o_gemv_ffn: 3-launch (matvec_2tile_add + matvec_swiglu_rms +
+        #                matvec_2tile_add). Post-attention residual is routed
+        #                through a row-0 subview of arg6 (the packed RMSNorm
+        #                input buffer); see o_gemv_ffn_multi.py for the ABI.
+        from multi_launch_builder.o_gemv_ffn_multi import build_o_gemv_ffn_module
+
+        cache.compile_and_cache(
+            "o_gemv_ffn",
+            build_o_gemv_ffn_module(emb_dim, hidden_dim),
+            {"verbose": cache.verbose, **OGF_BACKEND},
+        )
 
     # 3. LM Head GEMV multi-launch: 8-partition GEMV in one ELF
     from multi_launch_builder.lm_head_gemv_multi import (
@@ -145,6 +185,7 @@ def run_decode_block(
     v_cache_layer,
     current_pos,
     rope_lut_bf16,
+    quant: str = "bf16",
 ):
     """Run one transformer block for a single decode token.
 
@@ -188,14 +229,21 @@ def run_decode_block(
 
     # --- Call 1: rms_gemv_rope (6 launches, 13 args) ---
     # RMSNorm + Q/K/V GEMV + RoPE Q + RoPE K
+    # Int4 path uses the same arg slots; only the weight types change
+    # (slots 3/5/7: packed-int4 uint8 BO instead of bf16 matrix).
     x_in = x_bf16.flatten().astype(bfloat16)
     w_norm = layer_weights.attn_norm.reshape(emb_dim).astype(bfloat16)
     normed_buf = np.zeros(emb_dim, dtype=bfloat16)
-    wq = layer_weights._wq_t
+    if quant == "awq":
+        wq = layer_weights._wq_packed
+        wk = layer_weights._wk_packed
+        wv = layer_weights._wv_packed
+    else:
+        wq = layer_weights._wq_t
+        wk = layer_weights._wk_t
+        wv = layer_weights._wv_t
     q_buf = np.zeros(emb_dim, dtype=bfloat16)
-    wk = layer_weights._wk_t
     k_buf = np.zeros(kv_dim, dtype=bfloat16)
-    wv = layer_weights._wv_t
     v_buf = np.zeros(kv_dim, dtype=bfloat16)
 
     # RoPE LUT for current position
@@ -205,17 +253,19 @@ def run_decode_block(
     q_roped_buf = np.zeros(emb_dim, dtype=bfloat16)
     k_roped_buf = np.zeros(kv_dim, dtype=bfloat16)
 
+    rgr_name = "rms_qkv_int4_rope" if quant == "awq" else "rms_gemv_rope"
+    rgr_backend = RGR_INT4_BACKEND if quant == "awq" else RGR_BACKEND
     results = _run(
-        "rms_gemv_rope",
-        RGR_BACKEND,
+        rgr_name,
+        rgr_backend,
         x_in,  # arg0
         w_norm,  # arg1
         normed_buf,  # arg2 (intermediate)
-        wq,  # arg3 (static)
+        wq,  # arg3 (static, packed-i8 in int4 mode)
         q_buf,  # arg4 (intermediate)
-        wk,  # arg5 (static)
+        wk,  # arg5 (static, packed-i8 in int4 mode)
         k_buf,  # arg6 (intermediate)
-        wv,  # arg7 (static)
+        wv,  # arg7 (static, packed-i8 in int4 mode)
         v_buf,  # arg8 (intermediate/output)
         lut_q,  # arg9
         lut_k,  # arg10
@@ -249,34 +299,42 @@ def run_decode_block(
     #        stage 1 in-kernel, row 1 = ffn_norm_w pre-loaded by host).
     # arg7 = interleaved w_gateup [2*hidden_dim, emb_dim]. arg2/4/5/8/9/10/13
     #        are dead ABI placeholders; pass small zero buffers.
-    wo = layer_weights._wo_t
+    # Int4 path: slots 0/7/12 hold packed-i8 BOs; bf16 dead-slot ABI unchanged.
     x_residual = x_bf16.flatten().astype(bfloat16)
     swiglu_buf = np.zeros(hidden_dim, dtype=bfloat16)
-    w_down = layer_weights._wdown_t
     output_buf = np.zeros(emb_dim, dtype=bfloat16)
+    if quant == "awq":
+        wo = layer_weights._wo_packed
+        w_gateup = layer_weights._wgateup_packed
+        w_down = layer_weights._wdown_packed
+    else:
+        wo = layer_weights._wo_t
+        w_gateup = layer_weights._wgateup_t
+        w_down = layer_weights._wdown_t
 
     arg6 = layer_weights._packed_rms_buf  # [2, emb_dim]
-    arg7 = layer_weights._wgateup_t  # [2*hidden, emb_dim]
     z_emb = np.zeros(emb_dim, dtype=bfloat16)
     z_hidden = np.zeros(hidden_dim, dtype=bfloat16)
     z_hidden_emb = np.zeros((hidden_dim, emb_dim), dtype=bfloat16)
 
+    ogf_name = "o_gemv_ffn_int4" if quant == "awq" else "o_gemv_ffn"
+    ogf_backend = OGF_INT4_BACKEND if quant == "awq" else OGF_BACKEND
     results = _run(
-        "o_gemv_ffn",
-        OGF_BACKEND,
-        wo,  # arg0  wo               (static)
+        ogf_name,
+        ogf_backend,
+        wo,  # arg0  wo               (static, packed-i8 in int4)
         attn_out,  # arg1  attn_out         (input)
         z_emb,  # arg2  (dead)
         x_residual,  # arg3  x_residual       (input)
         z_emb,  # arg4  (dead — was res1 bus)
         z_emb,  # arg5  (dead — ffn_norm_w now in arg6[1])
         arg6,  # arg6  packed RMS input (static)
-        arg7,  # arg7  w_gateup         (static)
+        w_gateup,  # arg7  w_gateup         (static, packed-i8 in int4)
         z_hidden,  # arg8  (dead)
         z_hidden_emb,  # arg9  (dead — wup folded into arg7)
         z_hidden,  # arg10 (dead)
         swiglu_buf,  # arg11 swiglu           (intermediate)
-        w_down,  # arg12 wdown            (static)
+        w_down,  # arg12 wdown            (static, packed-i8 in int4)
         z_emb,  # arg13 (dead)
         output_buf,  # arg14 output           (output)
         output_indices=[14],

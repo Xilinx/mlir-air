@@ -63,3 +63,23 @@ LM_GEMV_BACKEND = {
     "instance_name": "lm_head_gemv",
     **GEMV_K2048_BACKEND,
 }
+
+# ---------------------------------------------------------------------------
+# Decode (int4-AWQ ELFs — same kwarg shape, distinct instance names so the
+# kernel cache files don't collide with the bf16 ones)
+# ---------------------------------------------------------------------------
+
+RGR_INT4_BACKEND = {
+    "output_format": "elf",
+    "instance_name": "rms_qkv_int4_rope",
+    "stack_size": 4096,
+    **GEMV_K2048_BACKEND,
+}
+
+OGF_INT4_BACKEND = {
+    "output_format": "elf",
+    "instance_name": "o_gemv_ffn_int4",
+    "omit_pingpong": "all",
+    "stack_size": 4096,
+    **{k: v for k, v in GEMV_K2048_BACKEND.items() if k != "omit_pingpong"},
+}

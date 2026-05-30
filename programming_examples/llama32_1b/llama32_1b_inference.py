@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from llama32_1b_weights import (
     LlamaConfig,
     load_weights,
+    load_weights_awq,
     synthetic_weights,
     generate_rope_lut,
 )
@@ -46,6 +47,8 @@ from kernel_builder.backend_presets import (
     LM_GEMV_BACKEND,
     RGR_BACKEND,
     OGF_BACKEND,
+    RGR_INT4_BACKEND,
+    OGF_INT4_BACKEND,
 )
 from llama32_1b_prefill import (
     compile_all_kernels,
@@ -110,10 +113,11 @@ class Session:
     seq_len: int  # padded prompt length (today: 2048)
     weights: Any  # LlamaWeights, mutated by prepare_runtime()
     tokenizer: Any  # transformers AutoTokenizer
-    prefill_cache: Any  # KernelCache
+    prefill_cache: Any  # KernelCache (None in awq mode — CPU prefill placeholder)
     decode_cache: Any  # KernelCache
     rope_lut_bf16: np.ndarray  # (max_seq, head_dim) bfloat16
     model_variant: str  # "base" | "instruct"
+    quant: str = "bf16"  # "bf16" or "awq"
 
 
 # Decode LM Head constants
@@ -133,6 +137,7 @@ def prepare_runtime(
     config,
     seq_len,
     rope_lut_bf16,
+    quant: str = "bf16",
 ):
     """One-time runtime initialization. Called before any timed inference.
 
@@ -166,11 +171,13 @@ def prepare_runtime(
     kv_dim = n_kv_heads * head_dim
 
     # 1. Compile external C++ kernels from source
-    compile_all_external_kernels(head_dim=head_dim)
+    compile_all_external_kernels(head_dim=head_dim, quant=quant)
 
     # 2. Pre-transpose all decode GEMV weights
     #    GEMV kernel expects A[M,K] but HuggingFace stores (out_features, in_features)
-    if not hasattr(weights, "_decode_weights_transposed"):
+    # In awq mode the decode ELFs consume packed BOs (already on LayerWeights
+    # as _wq_packed etc.) so the bf16 transpose isn't needed.
+    if quant == "bf16" and not hasattr(weights, "_decode_weights_transposed"):
         print("  Pre-transposing weights for GEMV...")
         for lw in weights.layers:
             lw._wq_t = np.ascontiguousarray(
@@ -200,13 +207,17 @@ def prepare_runtime(
     for i, lw in enumerate(weights.layers):
         lw._layer_idx = i
 
-    # 4. Pre-load prefill weights into per-layer BOs
-    preload_prefill_weights(weights, config, prefill_cache, seq_len, rope_lut_bf16)
+    # 4. Pre-load prefill weights into per-layer BOs.
+    # AWQ path skips this entirely — prefill runs on CPU as a placeholder
+    # until the int4 prefill ELFs land. Saves several seconds of compile
+    # time and ~110 MB of bf16 prefill weights on the device.
+    if quant == "bf16":
+        preload_prefill_weights(weights, config, prefill_cache, seq_len, rope_lut_bf16)
 
     # 5. Pre-load decode weights into per-layer BOs
     #    (lm_head_gemv 8-partition weights here are also reused by prefill's
     #    last-token projection — refactored from full-seq GEMM for ~150 ms savings)
-    _preload_decode_weights(decode_cache, weights, config)
+    _preload_decode_weights(decode_cache, weights, config, quant=quant)
 
     # Note: NPU warmup pass not needed here — the NPU prefill keeps
     # the NPU active. Only needed in llama32_1b_decode.py where CPU prefill
@@ -216,12 +227,15 @@ def prepare_runtime(
     print(f"  Runtime prepared in {t_prep:.1f}s")
 
 
-def _preload_decode_weights(decode_cache, weights, config):
+def _preload_decode_weights(decode_cache, weights, config, quant: str = "bf16"):
     """Pre-load all decode transformer block weights into per-layer BOs.
 
     Mirrors the preloading pattern from llama32_1b_decode.py: writes all weight
     data once before timing starts. During inference, static_input_indices
     skips weight re-writes.
+
+    In quant="awq" mode, uses the int4 decode ELFs (rms_qkv_int4_rope +
+    o_gemv_ffn_int4) and packed-BO weights from LayerWeights._wq_packed etc.
     """
     if hasattr(weights, "_decode_weights_preloaded_to_bos"):
         return
@@ -242,18 +256,33 @@ def _preload_decode_weights(decode_cache, weights, config):
     for layer_idx in range(config.n_layers):
         lw = weights.layers[layer_idx]
 
-        # rms_gemv_rope: allocate + write weights
+        # rms_gemv_rope / rms_qkv_int4_rope: allocate + write weights.
+        # ABI is identical (13 args, same arg slots, same output_indices and
+        # static set) — only slots 3/5/7's *type* changes (bf16 [in,out] vs
+        # packed-i8 [total_tiles, tile_bytes]).
+        if quant == "awq":
+            rgr_name = "rms_qkv_int4_rope"
+            rgr_backend = RGR_INT4_BACKEND
+            wq_static, wk_static, wv_static = (
+                lw._wq_packed,
+                lw._wk_packed,
+                lw._wv_packed,
+            )
+        else:
+            rgr_name = "rms_gemv_rope"
+            rgr_backend = RGR_BACKEND
+            wq_static, wk_static, wv_static = lw._wq_t, lw._wk_t, lw._wv_t
         decode_cache.load_and_run(
-            "rms_gemv_rope",
-            RGR_BACKEND,
+            rgr_name,
+            rgr_backend,
             np.zeros(emb_dim, dtype=bfloat16),  # x_in
             lw.attn_norm.reshape(emb_dim).astype(bfloat16),  # norm_w
             np.zeros(emb_dim, dtype=bfloat16),  # normed
-            lw._wq_t,  # wq
+            wq_static,  # wq  (bf16 [in,out] or packed-i8)
             np.zeros(emb_dim, dtype=bfloat16),  # q
-            lw._wk_t,  # wk
+            wk_static,  # wk
             np.zeros(kv_dim, dtype=bfloat16),  # k
-            lw._wv_t,  # wv
+            wv_static,  # wv
             np.zeros(kv_dim, dtype=bfloat16),  # v
             rope_lut_q_dummy,  # lut_q
             rope_lut_k_dummy,  # lut_k
@@ -262,23 +291,24 @@ def _preload_decode_weights(decode_cache, weights, config):
             output_indices=[8, 11, 12],
             static_input_indices={1, 3, 5, 7},
             intermediate_indices={2, 4, 6, 8, 11, 12},
-            bo_key=f"rms_gemv_rope_L{layer_idx}",
+            bo_key=f"{rgr_name}_L{layer_idx}",
         )
 
         # o_gemv_ffn (3-stage): build the interleaved w_gateup [2*hidden, emb]
-        # and the packed [2, emb] RMSNorm-input buffer (row 1 = ffn_norm_w,
-        # row 0 left zero for stage 1 to overwrite per token). Stashed on
-        # LayerWeights for reuse across all decode tokens. Frees the original
-        # _wgate_t/_wup_t once the interleaved copy is in place — they're
-        # otherwise unused after this preload (~1 GB host RAM saved).
-        wgate = lw._wgate_t
-        wup = lw._wup_t
-        wgateup = np.empty((2 * hidden_dim, emb_dim), dtype=bfloat16)
-        wgateup[0::2] = wgate
-        wgateup[1::2] = wup
-        lw._wgateup_t = wgateup
-        del lw._wgate_t
-        del lw._wup_t
+        # (bf16 only — int4 path already produced it in load_weights_awq) and
+        # the packed [2, emb] RMSNorm-input buffer (row 1 = ffn_norm_w, row 0
+        # left zero for stage 1 to overwrite per token). Stashed on LayerWeights
+        # for reuse across all decode tokens.
+        if quant == "bf16":
+            wgate = lw._wgate_t
+            wup = lw._wup_t
+            wgateup = np.empty((2 * hidden_dim, emb_dim), dtype=bfloat16)
+            wgateup[0::2] = wgate
+            wgateup[1::2] = wup
+            lw._wgateup_t = wgateup
+            # ~1 GB host RAM saved across the 16 layers.
+            del lw._wgate_t
+            del lw._wup_t
 
         packed = np.empty((2, emb_dim), dtype=bfloat16)
         packed[0] = 0.0
@@ -289,28 +319,40 @@ def _preload_decode_weights(decode_cache, weights, config):
         z_hidden = np.zeros(hidden_dim, dtype=bfloat16)
         z_hidden_emb = np.zeros((hidden_dim, emb_dim), dtype=bfloat16)
 
+        if quant == "awq":
+            ogf_name = "o_gemv_ffn_int4"
+            ogf_backend = OGF_INT4_BACKEND
+            wo_static, wgu_static, wd_static = (
+                lw._wo_packed,
+                lw._wgateup_packed,
+                lw._wdown_packed,
+            )
+        else:
+            ogf_name = "o_gemv_ffn"
+            ogf_backend = OGF_BACKEND
+            wo_static, wgu_static, wd_static = lw._wo_t, lw._wgateup_t, lw._wdown_t
         decode_cache.load_and_run(
-            "o_gemv_ffn",
-            OGF_BACKEND,
-            lw._wo_t,  # arg0 wo (static)
-            z_emb,  # arg1 attn_out
-            z_emb,  # arg2 (dead)
-            z_emb,  # arg3 x_residual
-            z_emb,  # arg4 (dead)
-            z_emb,  # arg5 (dead)
+            ogf_name,
+            ogf_backend,
+            wo_static,  # arg0  wo               (static)
+            z_emb,  # arg1  attn_out
+            z_emb,  # arg2  (dead)
+            z_emb,  # arg3  x_residual
+            z_emb,  # arg4  (dead)
+            z_emb,  # arg5  (dead)
             lw._packed_rms_buf,  # arg6 packed (static)
-            lw._wgateup_t,  # arg7 w_gateup (static)
-            z_hidden,  # arg8 (dead)
-            z_hidden_emb,  # arg9 (dead)
+            wgu_static,  # arg7  w_gateup         (static)
+            z_hidden,  # arg8  (dead)
+            z_hidden_emb,  # arg9  (dead)
             z_hidden,  # arg10 (dead)
             z_hidden,  # arg11 swiglu
-            lw._wdown_t,  # arg12 wdown (static)
+            wd_static,  # arg12 wdown            (static)
             z_emb,  # arg13 (dead)
             z_emb,  # arg14 output
             output_indices=[14],
             static_input_indices={0, 6, 7, 12},
             intermediate_indices={2, 4, 5, 8, 9, 10, 11, 13, 14},
-            bo_key=f"o_gemv_ffn_L{layer_idx}",
+            bo_key=f"{ogf_name}_L{layer_idx}",
         )
 
     # LM Head GEMV weights (8 partitions)
@@ -556,6 +598,7 @@ def generate(
     verify=False,
     cpu_attn=True,
     on_token=None,
+    quant: str = "bf16",
 ):
     """Run NPU prefill + NPU decode generation.
 
@@ -575,21 +618,36 @@ def generate(
         print(f"LLAMA Inference: prompt_len={seq_len}, n_tokens={n_tokens}")
         print(f"{'='*60}\n")
 
-    # --- Phase 1: NPU Prefill ---
-    prefill_token, k_cache, v_cache, prompt_len = run_npu_prefill(
-        prompt_tokens,
-        weights,
-        config,
-        prefill_cache,
-        decode_cache,
-        rope_lut_bf16,
-        max_seq,
-        tokenizer=tokenizer,
-        cpu_attn=cpu_attn,
-        profile=profile,
-        verify=verify,
-        quiet=streaming,
-    )
+    # --- Phase 1: Prefill ---
+    # bf16: NPU prefill ELFs. awq: CPU prefill placeholder (no int4 prefill
+    # ELFs yet — see cpu_prefill.run_cpu_prefill).
+    if quant == "awq":
+        from cpu_prefill import run_cpu_prefill
+
+        prefill_token, k_cache, v_cache, prompt_len = run_cpu_prefill(
+            prompt_tokens,
+            weights,
+            config,
+            rope_lut_bf16,
+            max_seq,
+            tokenizer=tokenizer,
+            quiet=streaming,
+        )
+    else:
+        prefill_token, k_cache, v_cache, prompt_len = run_npu_prefill(
+            prompt_tokens,
+            weights,
+            config,
+            prefill_cache,
+            decode_cache,
+            rope_lut_bf16,
+            max_seq,
+            tokenizer=tokenizer,
+            cpu_attn=cpu_attn,
+            profile=profile,
+            verify=verify,
+            quiet=streaming,
+        )
 
     # --- Phase 2: NPU Decode ---
     generated_tokens = [prefill_token]  # Token 0 = from prefill
@@ -620,6 +678,7 @@ def generate(
                 v_cache[layer_idx],
                 current_pos,
                 rope_lut_bf16,
+                quant=quant,
             )
 
         # Final RMSNorm (CPU)
@@ -697,26 +756,51 @@ def build_session(args) -> Session:
     config = LlamaConfig()
     seq_len = 2048
 
-    prefill_cache = KernelCache("prefill_kernel_cache", verbose=args.verbose)
-    decode_cache = KernelCache("decode_kernel_cache", verbose=args.verbose)
+    quant = getattr(args, "quant", "bf16")
+    # bf16: NPU prefill + NPU decode. awq: CPU prefill placeholder + NPU int4
+    # decode (no prefill cache needed; the int4 prefill ELFs land in a future
+    # PR — see cpu_prefill.py).
+    prefill_cache = (
+        KernelCache("prefill_kernel_cache", verbose=args.verbose)
+        if quant == "bf16"
+        else None
+    )
+    decode_cache_dir = (
+        "decode_kernel_cache" if quant == "bf16" else "decode_kernel_cache_int4"
+    )
+    decode_cache = KernelCache(decode_cache_dir, verbose=args.verbose)
 
     if not args.run_only:
-        print("Compiling prefill kernels...")
-        compile_all_kernels(prefill_cache, config, seq_len, cpu_attn=args.cpu_attn)
+        if quant == "bf16":
+            print("Compiling prefill kernels...")
+            compile_all_kernels(prefill_cache, config, seq_len, cpu_attn=args.cpu_attn)
+        else:
+            print("AWQ mode: prefill runs on CPU, skipping NPU prefill compile.")
         print("\nCompiling decode kernels...")
-        compile_decode_kernels(decode_cache, config)
+        compile_decode_kernels(decode_cache, config, quant=quant)
 
     if args.compile_only:
         sys.exit(0)
 
     if args.run_only:
-        prefill_cache.load_manifest()
+        if prefill_cache is not None:
+            prefill_cache.load_manifest()
         decode_cache.load_manifest()
 
     if args.synthetic_weights:
         print("\nUsing synthetic random weights (skipping HuggingFace download).")
         weights = synthetic_weights(config)
         tokenizer = _SyntheticTokenizer()
+    elif quant == "awq":
+        model_id = args.model_path or (
+            "amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead"
+        )
+        print(f"\nLoading AWQ weights ({model_id})...")
+        weights = load_weights_awq(model_id, config=config)
+
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
     else:
         model_id = (
             "meta-llama/Llama-3.2-1B-Instruct"
@@ -736,7 +820,13 @@ def build_session(args) -> Session:
     ).astype(bfloat16)
 
     prepare_runtime(
-        prefill_cache, decode_cache, weights, config, seq_len, rope_lut_bf16
+        prefill_cache,
+        decode_cache,
+        weights,
+        config,
+        seq_len,
+        rope_lut_bf16,
+        quant=quant,
     )
 
     return Session(
@@ -748,6 +838,7 @@ def build_session(args) -> Session:
         decode_cache=decode_cache,
         rope_lut_bf16=rope_lut_bf16,
         model_variant=args.model,
+        quant=quant,
     )
 
 
@@ -776,7 +867,11 @@ def run_once(
     (generated_token_ids, prompt_len_actual)."""
     tokens = _tokenize_prompt(session, prompt_text)
     prompt_len_actual = len(tokens)
-    if len(tokens) < session.seq_len:
+    # bf16 NPU prefill is shape-static at session.seq_len, so the prompt must
+    # be EOS-padded out to that length. CPU prefill (awq mode) runs at the
+    # raw prompt length — skipping the pad collapses a 2048² CPU-side
+    # attention from minutes to ~2 s for short prompts.
+    if session.quant == "bf16" and len(tokens) < session.seq_len:
         tokens = tokens + [session.tokenizer.eos_token_id] * (
             session.seq_len - len(tokens)
         )
@@ -794,6 +889,7 @@ def run_once(
         verify=verify,
         cpu_attn=cpu_attn,
         on_token=on_token,
+        quant=session.quant,
     )
     return generated, prompt_len_actual
 
@@ -924,6 +1020,21 @@ if __name__ == "__main__":
         help="Model variant: instruct (Q&A, default) or base (completion)",
     )
     parser.add_argument(
+        "--quant",
+        type=str,
+        choices=["bf16", "awq"],
+        default="bf16",
+        help="Weight precision. 'awq': int4-AWQ NPU decode with CPU prefill "
+        "placeholder; 'bf16' (default): bf16 NPU prefill + decode.",
+    )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=None,
+        help="AWQ-mode override for the HF model id / local dir. Default: "
+        "amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead.",
+    )
+    parser.add_argument(
         "--interactive",
         action="store_true",
         help="Drop into a REPL after runtime prep. Loops on prompts; each is independent.",
@@ -938,6 +1049,11 @@ if __name__ == "__main__":
 
     if args.synthetic_weights and args.interactive:
         parser.error("--synthetic-weights cannot be combined with --interactive")
+    if args.synthetic_weights and args.quant == "awq":
+        parser.error(
+            "--synthetic-weights only generates bf16 weights; rerun with "
+            "--quant=bf16 or drop --synthetic-weights for an AWQ checkpoint."
+        )
 
     if args.interactive:
         if args.compile_only:
