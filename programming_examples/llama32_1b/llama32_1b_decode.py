@@ -63,8 +63,10 @@ def compile_decode_kernels(cache, config):
         {"verbose": cache.verbose, **RGR_BACKEND},
     )
 
-    # 2. o_gemv_ffn: O GEMV + Add + RMSNorm + Gate/Up GEMV + SiLU*mul
-    #                + Down GEMV + Add (8 launches, 15 args)
+    # 2. o_gemv_ffn: 3-launch (matvec_2tile_add + matvec_swiglu_rms +
+    #                matvec_2tile_add). Post-attention residual is routed
+    #                through a row-0 subview of arg6 (the packed RMSNorm
+    #                input buffer); see o_gemv_ffn_multi.py for the ABI.
     from multi_launch_builder.o_gemv_ffn_multi import build_o_gemv_ffn_module
 
     cache.compile_and_cache(
@@ -242,44 +244,44 @@ def run_decode_block(
         head_dim,
     )
 
-    # --- Call 2: o_gemv_ffn (8 launches, 15 args) ---
-    # O GEMV + Add + RMSNorm + Gate/Up GEMV + SiLU*mul + Down GEMV + Add
+    # --- Call 2: o_gemv_ffn (3 stages, 15-arg ABI) ---
+    # arg6 = packed [2, emb_dim] RMSNorm input (row 0 = res1 written by
+    #        stage 1 in-kernel, row 1 = ffn_norm_w pre-loaded by host).
+    # arg7 = interleaved w_gateup [2*hidden_dim, emb_dim]. arg2/4/5/8/9/10/13
+    #        are dead ABI placeholders; pass small zero buffers.
     wo = layer_weights._wo_t
-    proj_buf = np.zeros(emb_dim, dtype=bfloat16)
     x_residual = x_bf16.flatten().astype(bfloat16)
-    res1_buf = np.zeros(emb_dim, dtype=bfloat16)
-    w_norm2 = layer_weights.ffn_norm.reshape(emb_dim).astype(bfloat16)
-    normed2_buf = np.zeros(emb_dim, dtype=bfloat16)
-    w_gate = layer_weights._wgate_t
-    gate_buf = np.zeros(hidden_dim, dtype=bfloat16)
-    w_up = layer_weights._wup_t
-    up_buf = np.zeros(hidden_dim, dtype=bfloat16)
     swiglu_buf = np.zeros(hidden_dim, dtype=bfloat16)
     w_down = layer_weights._wdown_t
-    down_buf = np.zeros(emb_dim, dtype=bfloat16)
     output_buf = np.zeros(emb_dim, dtype=bfloat16)
+
+    arg6 = layer_weights._packed_rms_buf  # [2, emb_dim]
+    arg7 = layer_weights._wgateup_t  # [2*hidden, emb_dim]
+    z_emb = np.zeros(emb_dim, dtype=bfloat16)
+    z_hidden = np.zeros(hidden_dim, dtype=bfloat16)
+    z_hidden_emb = np.zeros((hidden_dim, emb_dim), dtype=bfloat16)
 
     results = _run(
         "o_gemv_ffn",
         OGF_BACKEND,
-        wo,  # arg0 (static)
-        attn_out,  # arg1
-        proj_buf,  # arg2 (intermediate)
-        x_residual,  # arg3
-        res1_buf,  # arg4 (intermediate)
-        w_norm2,  # arg5
-        normed2_buf,  # arg6 (intermediate)
-        w_gate,  # arg7 (static)
-        gate_buf,  # arg8 (intermediate)
-        w_up,  # arg9 (static)
-        up_buf,  # arg10 (intermediate)
-        swiglu_buf,  # arg11 (intermediate)
-        w_down,  # arg12 (static)
-        down_buf,  # arg13 (intermediate)
-        output_buf,  # arg14 (intermediate/output)
+        wo,  # arg0  wo               (static)
+        attn_out,  # arg1  attn_out         (input)
+        z_emb,  # arg2  (dead)
+        x_residual,  # arg3  x_residual       (input)
+        z_emb,  # arg4  (dead — was res1 bus)
+        z_emb,  # arg5  (dead — ffn_norm_w now in arg6[1])
+        arg6,  # arg6  packed RMS input (static)
+        arg7,  # arg7  w_gateup         (static)
+        z_hidden,  # arg8  (dead)
+        z_hidden_emb,  # arg9  (dead — wup folded into arg7)
+        z_hidden,  # arg10 (dead)
+        swiglu_buf,  # arg11 swiglu           (intermediate)
+        w_down,  # arg12 wdown            (static)
+        z_emb,  # arg13 (dead)
+        output_buf,  # arg14 output           (output)
         output_indices=[14],
-        static_indices={0, 7, 9, 12},
-        intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14},
+        static_indices={0, 6, 7, 12},
+        intermediate_indices={2, 4, 5, 8, 9, 10, 11, 13, 14},
     )
     output = results[14].astype(bfloat16)
 
