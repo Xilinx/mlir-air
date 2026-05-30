@@ -227,12 +227,13 @@ def build_o_gemv_ffn_int4_module(
 
     all_maps = s1_maps + s2_maps + s3_maps
 
-    combined = (
-        "\n".join(all_maps)
-        + f"""
+    maps_block = "\n".join(all_maps)
+    chans_block = "\n".join("  " + c for c in all_chans)
+    privs_block = "\n".join("  " + p for p in all_privs)
+    combined = f"""{maps_block}
 module {{
-{chr(10).join('  ' + c for c in all_chans)}
-{chr(10).join('  ' + p for p in all_privs)}
+{chans_block}
+{privs_block}
   func.func @o_gemv_ffn_int4(
     %arg0: memref<{tq}x{tile_bytes}xi8>,
     %arg1: memref<{emb_dim}xbf16>,
@@ -261,7 +262,6 @@ module {{
   }}
 }}
 """
-    )
     with Context() as ctx:
         return Module.parse(combined, ctx)
 
