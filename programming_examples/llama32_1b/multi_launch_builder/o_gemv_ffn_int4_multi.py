@@ -3,8 +3,8 @@
 
 """o_gemv_ffn_int4 — full-int4 ELF2 for the LLAMA decode block.
 
-3-launch ELF derived from o_gemv_ffn_int4p1_multi.py. ALL three weight
-matrices (wo, gate+up, wdown) are int4-AWQ packed BOs:
+3-launch ELF derived from the bf16 baseline o_gemv_ffn_multi.py. ALL three
+weight matrices (wo, gate+up, wdown) are int4-AWQ packed BOs:
 
   Stage 1 (matvec_int4_packed_add):  res1 = dequant(wo) @ attn_out + x_residual
                                      into arg6[0]
