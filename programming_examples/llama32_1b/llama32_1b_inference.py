@@ -258,28 +258,51 @@ def _preload_decode_weights(decode_cache, weights, config):
             bo_key=f"rms_gemv_rope_L{layer_idx}",
         )
 
-        # o_gemv_ffn: allocate + write weights
+        # o_gemv_ffn (3-stage): build the interleaved w_gateup [2*hidden, emb]
+        # and the packed [2, emb] RMSNorm-input buffer (row 1 = ffn_norm_w,
+        # row 0 left zero for stage 1 to overwrite per token). Stashed on
+        # LayerWeights for reuse across all decode tokens. Frees the original
+        # _wgate_t/_wup_t once the interleaved copy is in place — they're
+        # otherwise unused after this preload (~1 GB host RAM saved).
+        wgate = lw._wgate_t
+        wup = lw._wup_t
+        wgateup = np.empty((2 * hidden_dim, emb_dim), dtype=bfloat16)
+        wgateup[0::2] = wgate
+        wgateup[1::2] = wup
+        lw._wgateup_t = wgateup
+        del lw._wgate_t
+        del lw._wup_t
+
+        packed = np.empty((2, emb_dim), dtype=bfloat16)
+        packed[0] = 0.0
+        packed[1] = lw.ffn_norm.reshape(emb_dim).astype(bfloat16)
+        lw._packed_rms_buf = packed
+
+        z_emb = np.zeros(emb_dim, dtype=bfloat16)
+        z_hidden = np.zeros(hidden_dim, dtype=bfloat16)
+        z_hidden_emb = np.zeros((hidden_dim, emb_dim), dtype=bfloat16)
+
         decode_cache.load_and_run(
             "o_gemv_ffn",
             OGF_BACKEND,
-            lw._wo_t,  # wo
-            np.zeros(emb_dim, dtype=bfloat16),  # attn_out
-            np.zeros(emb_dim, dtype=bfloat16),  # proj
-            np.zeros(emb_dim, dtype=bfloat16),  # x_residual
-            np.zeros(emb_dim, dtype=bfloat16),  # res1
-            lw.ffn_norm.reshape(emb_dim).astype(bfloat16),  # ffn_norm_w
-            np.zeros(emb_dim, dtype=bfloat16),  # normed2
-            lw._wgate_t,  # wgate
-            np.zeros(hidden_dim, dtype=bfloat16),  # gate
-            lw._wup_t,  # wup
-            np.zeros(hidden_dim, dtype=bfloat16),  # up
-            np.zeros(hidden_dim, dtype=bfloat16),  # swiglu
-            lw._wdown_t,  # wdown
-            np.zeros(emb_dim, dtype=bfloat16),  # down
-            np.zeros(emb_dim, dtype=bfloat16),  # output
+            lw._wo_t,  # arg0 wo (static)
+            z_emb,  # arg1 attn_out
+            z_emb,  # arg2 (dead)
+            z_emb,  # arg3 x_residual
+            z_emb,  # arg4 (dead)
+            z_emb,  # arg5 (dead)
+            lw._packed_rms_buf,  # arg6 packed (static)
+            lw._wgateup_t,  # arg7 w_gateup (static)
+            z_hidden,  # arg8 (dead)
+            z_hidden_emb,  # arg9 (dead)
+            z_hidden,  # arg10 (dead)
+            z_hidden,  # arg11 swiglu
+            lw._wdown_t,  # arg12 wdown (static)
+            z_emb,  # arg13 (dead)
+            z_emb,  # arg14 output
             output_indices=[14],
-            static_input_indices={0, 5, 7, 9, 12},
-            intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14},
+            static_input_indices={0, 6, 7, 12},
+            intermediate_indices={2, 4, 5, 8, 9, 10, 11, 13, 14},
             bo_key=f"o_gemv_ffn_L{layer_idx}",
         )
 
