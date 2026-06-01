@@ -105,7 +105,7 @@ void matvec_int4_bf16_packed(uint8_t *packed, bfloat16 *b, bfloat16 *c) {
   uint8_t *a_q = packed;
   bfloat16 *a_s = reinterpret_cast<bfloat16 *>(packed + Q_BYTES);
   uint8_t *a_z = packed + Q_BYTES + S_BYTES;
-  matvec_int4_bf16_impl<DIM_M, DIM_K, DIM_GS, 32>(a_q, a_s, a_z, b, c);
+  matvec_int4_bf16_impl<DIM_M, DIM_K, DIM_GS, 64>(a_q, a_s, a_z, b, c);
 }
 
 void zero_vectorized_bf16(bfloat16 *c) { zero_impl<DIM_M>(c); }
