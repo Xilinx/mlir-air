@@ -71,6 +71,7 @@ class Profiler:
         self.kernel_breakdowns = (
             {}
         )  # name -> list of {write_ms, kernel_ms, read_ms, ...}
+        self.phase_times = {}  # phase_name -> list of ms (caller-supplied)
 
     def record_compile(self, name, duration):
         if self.enabled:
@@ -79,6 +80,10 @@ class Profiler:
     def record_kernel(self, name, duration):
         if self.enabled:
             self.kernel_times.setdefault(name, []).append(duration)
+
+    def record_phase(self, phase_name, ms):
+        if self.enabled:
+            self.phase_times.setdefault(phase_name, []).append(ms)
 
     def record_breakdown(
         self, name, write_ms, kernel_ms, read_ms, n_written, bytes_written, n_readback
@@ -187,6 +192,20 @@ class Profiler:
                 print(
                     f"  {'%':20s} {total_write/grand_total*100:7.0f}%  {total_kernel/grand_total*100:7.0f}%  {total_read/grand_total*100:7.0f}%"
                 )
+
+        if self.phase_times:
+            print(f"\n--- Decode Phase Breakdown (avg per call) ---")
+            print(f"  {'Phase':40s} {'avg':>10s} {'total':>10s}  {'count':>6s}")
+            print(f"  {'─'*40} {'─'*10} {'─'*10}  {'─'*6}")
+            grand = 0.0
+            for name in sorted(self.phase_times.keys()):
+                xs = self.phase_times[name]
+                avg = sum(xs) / len(xs)
+                tot = sum(xs)
+                grand += tot
+                print(f"  {name:40s} {avg:8.3f}ms {tot:8.1f}ms  {len(xs):6d}")
+            print(f"  {'─'*40} {'─'*10} {'─'*10}  {'─'*6}")
+            print(f"  {'TOTAL phase time':40s} {'':10s} {grand:8.1f}ms")
 
 
 class KernelCache:

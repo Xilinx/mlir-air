@@ -65,8 +65,8 @@ LM_GEMV_BACKEND = {
 }
 
 # ---------------------------------------------------------------------------
-# Decode (int4-AWQ ELFs — same kwarg shape, distinct instance names so the
-# kernel cache files don't collide with the bf16 ones)
+# Decode (int4-AWQ ELFs). Inherit ping-pong + runtime_loop_tiling from
+# GEMV_K2048_BACKEND; dropping ping-pong regressed e2e 12.4 -> 7.8 tok/s.
 # ---------------------------------------------------------------------------
 
 RGR_INT4_BACKEND = {

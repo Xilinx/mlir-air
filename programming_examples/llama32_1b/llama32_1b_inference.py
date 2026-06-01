@@ -740,6 +740,9 @@ def generate(
         print(f"Tokens/second: {n_generated / t_decode:.2f}")
         print(f"Time/token: {t_decode / n_generated * 1000:.0f}ms")
 
+    if profile and decode_cache is not None:
+        decode_cache.profiler.report()
+
     return generated_tokens
 
 
@@ -768,7 +771,12 @@ def build_session(args) -> Session:
     decode_cache_dir = (
         "decode_kernel_cache" if quant == "bf16" else "decode_kernel_cache_int4"
     )
-    decode_cache = KernelCache(decode_cache_dir, verbose=args.verbose)
+    from kernel_builder.cache import Profiler
+
+    decode_profiler = Profiler(enabled=getattr(args, "profile", False))
+    decode_cache = KernelCache(
+        decode_cache_dir, verbose=args.verbose, profiler=decode_profiler
+    )
 
     if not args.run_only:
         if quant == "bf16":

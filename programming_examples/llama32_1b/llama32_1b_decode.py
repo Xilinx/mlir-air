@@ -15,6 +15,7 @@ Usage:
 
 import os
 import sys
+import time
 
 import numpy as np
 from ml_dtypes import bfloat16
@@ -171,6 +172,20 @@ def decode_attention_cpu(
     return out.reshape(-1).astype(bfloat16)
 
 
+# Cache of dead-ABI placeholders passed to o_gemv_ffn. Reallocating the
+# 32 MB hidden×emb buffer per call was costing ~15 ms/token.
+_DEAD_PLACEHOLDERS = {}
+
+
+def _dead_buf(shape, dtype=bfloat16):
+    key = (shape if isinstance(shape, tuple) else (shape,), dtype)
+    buf = _DEAD_PLACEHOLDERS.get(key)
+    if buf is None:
+        buf = np.zeros(shape, dtype=dtype)
+        _DEAD_PLACEHOLDERS[key] = buf
+    return buf
+
+
 # ---------------------------------------------------------------------------
 # Single decode transformer block
 # ---------------------------------------------------------------------------
@@ -227,10 +242,14 @@ def run_decode_block(
             **kwargs,
         )
 
+    prof = getattr(cache, "profiler", None)
+    record = prof.record_phase if (prof is not None and prof.enabled) else None
+
     # --- Call 1: rms_gemv_rope (6 launches, 13 args) ---
     # RMSNorm + Q/K/V GEMV + RoPE Q + RoPE K
     # Int4 path uses the same arg slots; only the weight types change
     # (slots 3/5/7: packed-int4 uint8 BO instead of bf16 matrix).
+    t0 = time.perf_counter() if record else 0.0
     x_in = x_bf16.flatten().astype(bfloat16)
     w_norm = layer_weights.attn_norm.reshape(emb_dim).astype(bfloat16)
     normed_buf = np.zeros(emb_dim, dtype=bfloat16)
@@ -255,6 +274,10 @@ def run_decode_block(
 
     rgr_name = "rms_qkv_int4_rope" if quant == "awq" else "rms_gemv_rope"
     rgr_backend = RGR_INT4_BACKEND if quant == "awq" else RGR_BACKEND
+    if record:
+        t_rgr_setup = (time.perf_counter() - t0) * 1000
+        record("1_rgr_setup", t_rgr_setup)
+        t0 = time.perf_counter()
     results = _run(
         rgr_name,
         rgr_backend,
@@ -275,6 +298,9 @@ def run_decode_block(
         static_indices={3, 5, 7},
         intermediate_indices={2, 4, 6, 8, 11, 12},
     )
+    if record:
+        record("2_rgr_call", (time.perf_counter() - t0) * 1000)
+        t0 = time.perf_counter()
     v = results[8].astype(bfloat16)
     q_roped = results[11].reshape(n_heads, head_dim).astype(bfloat16)
     k_roped = results[12].reshape(n_kv_heads, head_dim).astype(bfloat16)
@@ -282,6 +308,9 @@ def run_decode_block(
     # Update KV cache
     k_cache_layer[:, current_pos, :] = k_roped
     v_cache_layer[:, current_pos, :] = v.reshape(n_kv_heads, head_dim)
+    if record:
+        record("3_rgr_post_kv_update", (time.perf_counter() - t0) * 1000)
+        t0 = time.perf_counter()
 
     # --- CPU Attention ---
     attn_out = decode_attention_cpu(
@@ -293,6 +322,9 @@ def run_decode_block(
         n_kv_heads,
         head_dim,
     )
+    if record:
+        record("4_cpu_attention", (time.perf_counter() - t0) * 1000)
+        t0 = time.perf_counter()
 
     # --- Call 2: o_gemv_ffn (3 stages, 15-arg ABI) ---
     # arg6 = packed [2, emb_dim] RMSNorm input (row 0 = res1 written by
@@ -313,12 +345,15 @@ def run_decode_block(
         w_down = layer_weights._wdown_t
 
     arg6 = layer_weights._packed_rms_buf  # [2, emb_dim]
-    z_emb = np.zeros(emb_dim, dtype=bfloat16)
-    z_hidden = np.zeros(hidden_dim, dtype=bfloat16)
-    z_hidden_emb = np.zeros((hidden_dim, emb_dim), dtype=bfloat16)
+    z_emb = _dead_buf(emb_dim)
+    z_hidden = _dead_buf(hidden_dim)
+    z_hidden_emb = _dead_buf((hidden_dim, emb_dim))
 
     ogf_name = "o_gemv_ffn_int4" if quant == "awq" else "o_gemv_ffn"
     ogf_backend = OGF_INT4_BACKEND if quant == "awq" else OGF_BACKEND
+    if record:
+        record("5_ogf_setup", (time.perf_counter() - t0) * 1000)
+        t0 = time.perf_counter()
     results = _run(
         ogf_name,
         ogf_backend,
@@ -341,6 +376,11 @@ def run_decode_block(
         static_indices={0, 6, 7, 12},
         intermediate_indices={2, 4, 5, 8, 9, 10, 11, 13, 14},
     )
+    if record:
+        record("6_ogf_call", (time.perf_counter() - t0) * 1000)
+        t0 = time.perf_counter()
     output = results[14].astype(bfloat16)
+    if record:
+        record("7_ogf_post", (time.perf_counter() - t0) * 1000)
 
     return output
