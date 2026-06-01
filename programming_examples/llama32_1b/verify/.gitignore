@@ -1,0 +1,7 @@
+reports/
+__pycache__/
+*.pyc
+# External-kernel objects spilled by compile_all_external_kernels into cwd
+*.o
+# Calibration backup file
+thresholds.json.bak

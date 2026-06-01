@@ -35,6 +35,14 @@ def _get_aie_include_dir():
         p = Path(aie_opt).resolve().parent.parent / "include"
         if (p / "aie_api" / "aie.hpp").exists():
             return str(p)
+    # Explicit override: MLIR_AIE_INSTALL_DIR env var (useful in git worktrees
+    # where the local-dev relative path below resolves to the worktree root
+    # rather than the main repo root).
+    mlir_aie_dir = os.environ.get("MLIR_AIE_INSTALL_DIR", "")
+    if mlir_aie_dir:
+        p = Path(mlir_aie_dir) / "include"
+        if (p / "aie_api" / "aie.hpp").exists():
+            return str(p)
     # Fallback: explicit local dev install path.
     p = (
         Path(__file__).resolve().parent.parent.parent.parent
@@ -47,7 +55,7 @@ def _get_aie_include_dir():
         return str(p)
     raise RuntimeError(
         "Cannot find aie_api/aie.hpp include directory "
-        "(no aie-opt on PATH and no my_install/mlir-aie/install)"
+        "(no aie-opt on PATH, no MLIR_AIE_INSTALL_DIR, no my_install/mlir-aie/install)"
     )
 
 
