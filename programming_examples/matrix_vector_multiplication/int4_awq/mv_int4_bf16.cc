@@ -218,19 +218,31 @@ void mm_int4_bf16_mmul_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
               aie::load_v<MMUL::size_B>(b_pack + (n_b * KB + k_b) * (s * t));
           C_g.mac(A, B);
         }
-        // Spill C_g row-by-row via extract<t> (proven pattern from
-        // the working pre-MMUL kernel). Scale fold in scalar f32.
-        aie::vector<float, r * t> c_g_vec = C_g.template to_vector<float>();
-        alignas(32) float c_g_buf[r * t];
+        // Vectorized post-MMUL scale fold: convert C_g to bf16, multiply
+        // by bf16 scale broadcast (mul → f32 accum, no extra truncate),
+        // lift to f32 vec, accumulate row-by-row into c_acc_buf.
+        aie::vector<bfloat16, r * t> c_g_bf16 =
+            C_g.template to_vector<bfloat16>();
+        // Build bf16 scale broadcast: (m_i, n_i) row-major, scale per n_i.
+        // Load 8 scales into a vec<bf16, 8> and tile across r rows.
+        alignas(32) bfloat16 scale_row_buf[t];
+        for (unsigned n_i = 0; n_i < t; n_i++)
+          scale_row_buf[n_i] = a_s[g * n_tile + n_b * t + n_i];
+        aie::vector<bfloat16, t> scale_row = aie::load_v<t>(scale_row_buf);
+        alignas(32) bfloat16 scale_tile_buf[r * t];
+        for (unsigned m_i = 0; m_i < r; m_i++)
+          aie::store_v(scale_tile_buf + m_i * t, scale_row);
+        aie::vector<bfloat16, r * t> scale_tile =
+            aie::load_v<r * t>(scale_tile_buf);
+        aie::accum<accfloat, r * t> scaled_acc = aie::mul(c_g_bf16, scale_tile);
+        aie::vector<float, r * t> scaled_f32 =
+            scaled_acc.template to_vector<float>();
+        // Accumulate into c_acc_buf row by row (vector load + add + store).
         for (unsigned m_i = 0; m_i < r; m_i++) {
-          aie::vector<float, t> row = c_g_vec.template extract<t>(m_i);
-          aie::store_v(c_g_buf + m_i * t, row);
-        }
-        for (unsigned m_i = 0; m_i < r; m_i++) {
-          for (unsigned n_i = 0; n_i < t; n_i++) {
-            float scale_f = (float)a_s[g * n_tile + n_b * t + n_i];
-            c_acc_buf[m_i * t + n_i] += c_g_buf[m_i * t + n_i] * scale_f;
-          }
+          aie::vector<float, t> inc = scaled_f32.template extract<t>(m_i);
+          aie::vector<float, t> old = aie::load_v<t>(c_acc_buf + m_i * t);
+          aie::vector<float, t> sum = aie::add(old, inc);
+          aie::store_v(c_acc_buf + m_i * t, sum);
         }
       }
 
