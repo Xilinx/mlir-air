@@ -79,7 +79,6 @@ RGR_INT4_BACKEND = {
 OGF_INT4_BACKEND = {
     "output_format": "elf",
     "instance_name": "o_gemv_ffn_int4",
-    "omit_pingpong": "all",
     "stack_size": 4096,
-    **{k: v for k, v in GEMV_K2048_BACKEND.items() if k != "omit_pingpong"},
+    **GEMV_K2048_BACKEND,
 }
