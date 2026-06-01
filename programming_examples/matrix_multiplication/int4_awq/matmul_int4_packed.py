@@ -105,14 +105,23 @@ def cpu_reference(W_q, W_s, W_z, A):
 
 
 @module_builder
-def build_module(
-    m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd_n
-):
+def build_module(m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd_n):
     assert m % (tile_m * herd_m) == 0
     assert n % (tile_n * herd_n) == 0
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
     assert tile_k_l1 % gs == 0
+    # Kernel-side static_assert constraints from mv_int4_bf16.cc:
+    #   mm_int4_bf16_mmul_impl: tile_m/n/k_chunk % 8 (mmul dims), gs % R=32
+    #   zero_vectorized_bf16_mn: (tile_m * tile_n) % VW=32
+    assert (
+        tile_m % 8 == 0 and tile_n % 8 == 0 and tile_k_l1 % 8 == 0
+    ), "tile_m, tile_n, tile_k_l1 must each be multiples of 8 (mmul tile size)"
+    assert gs % 32 == 0, "gs must be a multiple of dequant inner-vector width 32"
+    assert (tile_m * tile_n) % 32 == 0, (
+        f"tile_m*tile_n ({tile_m}*{tile_n}={tile_m * tile_n}) must be a multiple "
+        f"of vector width 32 for zero_vectorized_bf16_mn"
+    )
 
     _, _, _, tile_bytes = packed_tile_bytes(tile_n, tile_k_l1, gs)
     k_per_l2 = tile_k_l2 // tile_k_l1
@@ -172,37 +181,53 @@ def build_module(
                 l2_c = AllocOp(C_l2_ty, [], [])
 
                 ix_to_row = AffineMap.get(
-                    0, 1,
-                    [AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(tile_m * herd_m))],
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0),
+                            AffineConstantExpr.get(tile_m * herd_m),
+                        )
+                    ],
                 )
                 iy_to_n_outer = AffineMap.get(
-                    0, 1,
-                    [AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(herd_n))],
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0), AffineConstantExpr.get(herd_n)
+                        )
+                    ],
                 )
                 row_off = affine_apply(ix_to_row, [li_s])
                 n_outer_off = affine_apply(iy_to_n_outer, [lj_s])
 
                 k_l2_to_k = AffineMap.get(
-                    0, 1,
-                    [AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(tile_k_l2))],
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0), AffineConstantExpr.get(tile_k_l2)
+                        )
+                    ],
                 )
                 k_l2_to_chunk = AffineMap.get(
-                    0, 1,
-                    [AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(k_per_l2))],
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0), AffineConstantExpr.get(k_per_l2)
+                        )
+                    ],
                 )
                 k_chunk_off_l1_map = AffineMap.get(
-                    0, 1,
-                    [AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(tile_k_l1))],
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0), AffineConstantExpr.get(tile_k_l1)
+                        )
+                    ],
                 )
 
                 for i in for_(0, k // tile_k_l2):
@@ -210,13 +235,15 @@ def build_module(
                     k_chunk_off = affine_apply(k_l2_to_chunk, [i])
 
                     dma_memcpy_nd(
-                        l2_a, l3_a_s,
+                        l2_a,
+                        l3_a_s,
                         src_offsets=[0, 0, row_off, k_l2_off],
                         src_sizes=[herd_m, 1, tile_m, tile_k_l2],
                         src_strides=[k * tile_m, tile_k_l2, k, 1],
                     )
                     dma_memcpy_nd(
-                        l2_b, l3_b_s,
+                        l2_b,
+                        l3_b_s,
                         src_offsets=[0, n_outer_off, k_chunk_off, 0],
                         src_sizes=[1, herd_n, k_per_l2, tile_bytes],
                         src_strides=[
@@ -240,7 +267,8 @@ def build_module(
                         for j in for_(0, k_per_l2):
                             k1_off = affine_apply(k_chunk_off_l1_map, [j])
                             dma_memcpy_nd(
-                                _l1_a, _l2a,
+                                _l1_a,
+                                _l2a,
                                 src_offsets=[_tx, 0, 0, k1_off],
                                 src_sizes=[1, 1, tile_m, tile_k_l1],
                                 src_strides=[
@@ -251,7 +279,8 @@ def build_module(
                                 ],
                             )
                             dma_memcpy_nd(
-                                _l1_b, _l2b,
+                                _l1_b,
+                                _l2b,
                                 src_offsets=[0, _ty, j, 0],
                                 src_sizes=[1, 1, 1, tile_bytes],
                                 src_strides=[
@@ -264,7 +293,8 @@ def build_module(
                             CallOp(matmul_func, [_l1_b, _l1_a, _l1_c])
                             yield_([])
                         dma_memcpy_nd(
-                            _l2c, _l1_c,
+                            _l2c,
+                            _l1_c,
                             dst_offsets=[_tx, _ty, 0, 0],
                             dst_sizes=[1, 1, tile_m, tile_n],
                             dst_strides=[
@@ -281,14 +311,19 @@ def build_module(
                     yield_([])
 
                 col_off_map = AffineMap.get(
-                    0, 1,
-                    [AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(tile_n * herd_n))],
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0),
+                            AffineConstantExpr.get(tile_n * herd_n),
+                        )
+                    ],
                 )
                 col_off = affine_apply(col_off_map, [lj_s])
                 dma_memcpy_nd(
-                    l3_c_s, l2_c,
+                    l3_c_s,
+                    l2_c,
                     dst_offsets=[row_off, col_off],
                     dst_sizes=[herd_m * tile_m, herd_n * tile_n],
                     dst_strides=[n, 1],
@@ -330,9 +365,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     module = build_module(
-        args.m, args.k, args.n, args.gs,
-        args.tile_m, args.tile_k_l2, args.tile_k_l1, args.tile_n,
-        args.herd_m, args.herd_n,
+        args.m,
+        args.k,
+        args.n,
+        args.gs,
+        args.tile_m,
+        args.tile_k_l2,
+        args.tile_k_l1,
+        args.tile_n,
+        args.herd_m,
+        args.herd_n,
     )
     if args.print_module_only:
         print(module)
@@ -357,7 +399,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format="xclbin",
             runtime_loop_tiling_sizes=[2, 2],
-        stack_size=16384,
+            stack_size=16384,
         )
         backend.compile(module)
         backend.unload()
@@ -375,6 +417,8 @@ if __name__ == "__main__":
             module,
             inputs=[A, PACKED],
             expected_outputs=[C_ref],
-            rtol=0.1, atol=0.05, min_correlation=0.999,
+            rtol=0.1,
+            atol=0.05,
+            min_correlation=0.999,
         )
     )

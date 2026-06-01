@@ -157,7 +157,8 @@ void mm_int4_bf16_mmul_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
   for (unsigned g = 0; g < NG; g++) {
     for (unsigned n = 0; n < n_tile; n++) {
       bfloat16 sc = a_s[g * n_tile + n];
-      aie::vector<int8, R> zv = aie::broadcast<int8, R>((int8_t)a_z[g * n_tile + n]);
+      aie::vector<int8, R> zv =
+          aie::broadcast<int8, R>((int8_t)a_z[g * n_tile + n]);
       aie::vector<bfloat16, R> sv = aie::broadcast<bfloat16, R>(sc);
       unsigned n_b = n / t;
       unsigned n_i = n % t;
