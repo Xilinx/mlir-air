@@ -249,6 +249,18 @@ def main():
     )
     args = p.parse_args()
 
+    # The HF reference runner always loads the real checkpoint, so verifying
+    # against synthetic NPU weights compares apples to oranges and would
+    # always FAIL. Reject up front rather than emit meaningless reports.
+    if args.weights == "synthetic":
+        print(
+            "[verify] --weights synthetic is not supported: the HF reference "
+            "runner only loads real checkpoints, so the comparison would be "
+            "meaningless. Use --weights hf.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     from llama32_1b_weights import LlamaConfig
 
     config = LlamaConfig()
@@ -301,6 +313,11 @@ def main():
     # ---- Diagnosis path: single prompt, per-layer ffn_out only ----
     if not in_verify_mode:
         prompt_tokens, _ = _tokenize(args.prompt, model_name)
+        # NpuRunner truncates to max_seq internally; truncate here too so the
+        # HF runner sees the same context and the per-layer diagnosis stays
+        # apples-to-apples on long prompts.
+        if len(prompt_tokens) > max_seq:
+            prompt_tokens = prompt_tokens[:max_seq]
         _run_diagnosis(npu, hf, prompt_tokens, report, config.n_layers)
         Path(args.report_dir).mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -337,6 +354,9 @@ def main():
         short = (prompt[:60] + "…") if len(prompt) > 60 else prompt
         print(f"[verify] prompt {pi + 1}/{len(prompts)}: {short!r}")
         ptoks, tokenizer = _tokenize(prompt, model_name)
+        # Same context for both runners — see the diagnosis path above.
+        if len(ptoks) > max_seq:
+            ptoks = ptoks[:max_seq]
         print(f"[verify]   NPU greedy decode ({GATE_N_TOKENS} tokens)...")
         npu_chosen, npu_topk = _generate_with_topk(npu, ptoks, GATE_N_TOKENS, GATE_K)
         print(f"[verify]   HF greedy decode ({GATE_N_TOKENS} tokens)...")

@@ -340,7 +340,7 @@ from llama32_1b_decode    import compile_decode_kernels, run_decode_block</code>
 <h3>One <code>make verify</code> run, end to end</h3>
 
 <div class="flow">
-  <div class="step"><strong>Step 1.</strong> Load prompts from <code>verify/prompts/{instruct,base}.txt</code> (selected by <code>MODEL</code>). <code>make verify</code> uses the first 4 (fast CI gate); <code>make verify-full</code> uses all 8.</div>
+  <div class="step"><strong>Step 1.</strong> Load prompts from <code>verify/prompts/{instruct,base}.txt</code> (selected by <code>MODEL</code>). <code>make verify</code> uses the first 2 (fast CI gate); <code>make verify-full</code> uses all 8.</div>
   <div class="arrow">&darr;</div>
   <div class="step split">
     <div><strong>NpuRunner</strong> (production prefill + decode kernels, NPU FA on): greedy-decode 32 tokens, capturing <code>chosen[i]</code> + <code>topk[i]</code> (top-5 IDs) per step.</div>
