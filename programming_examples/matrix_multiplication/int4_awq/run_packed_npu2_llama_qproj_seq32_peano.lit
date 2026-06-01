@@ -8,5 +8,5 @@
 // RUN: make -f %S/Makefile clean
 //
 // Llama-3.2-1B Q-projection at prefill seq=32: A[32,2048] @ dequant(W)[2048,2048].
-// RUN: make -f %S/Makefile run_packed M=32 K=2048 N=2048 N_CORES=8 OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: make -f %S/Makefile run_packed M=32 K=2048 N=2048 HERD_M=2 HERD_N=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: PASS!

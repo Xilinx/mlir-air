@@ -7,6 +7,6 @@
 // RUN: cd test_int4_gemm_npu2_small_peano
 // RUN: make -f %S/Makefile clean
 //
-// int4-AWQ GEMM smoke: M=32, K=128, N=64 (exercises M_div>1 + N_div>1).
-// RUN: make -f %S/Makefile run_packed M=32 K=128 N=64 OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// int4-AWQ GEMM smoke: M=64 K=128 N=128 on a 2x4 herd.
+// RUN: make -f %S/Makefile run_packed M=64 K=128 N=128 HERD_M=2 HERD_N=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: PASS!
