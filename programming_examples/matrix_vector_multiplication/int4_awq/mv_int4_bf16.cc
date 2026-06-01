@@ -111,70 +111,103 @@ static void zero_mn_impl(bfloat16 *__restrict c) {
     aie::store_v(c + i, zv);
 }
 
-// int4-AWQ GEMM inner kernel. Loop nest is (mi, g, i, n) so each
-// activation load a_vec(mi, g, i) is reused across all n_tile output
-// columns instead of being reloaded per n. Per-group zero-point broadcast
-// zv(g, n) and per-(mi, n) accumulator acc[n] are likewise hoisted out of
-// the inner i loop, leaving just load-packed + unpack + sub + cvt + mac
-// in the hot path.
+// int4-AWQ GEMM inner kernel using aie::mmul<8,8,8,bf16,bf16,accfloat>.
+// Phase 1: pack row-major A into a_pack and dequant W (with per-group bf16
+// scale folded in) into b_pack — both in the operand layouts that the bf16
+// GEMM kernel's MMUL loop expects (K-major A, N-major B).
+// Phase 2: MMUL loop yields f32 accumulators; convert to bf16 and add to
+// the existing row-major c.
 template <unsigned m_tile, unsigned n_tile, unsigned k_chunk, unsigned gs,
-          unsigned r>
-void mm_int4_bf16_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
-                       uint8_t *__restrict a_z, bfloat16 *__restrict a,
-                       bfloat16 *__restrict c) {
-  ::aie::set_rounding(aie::rounding_mode::conv_even);
-  static_assert(gs % r == 0, "group size must be multiple of inner vector r");
-  constexpr unsigned NSUB = gs / r;
+          unsigned R = 32>
+void mm_int4_bf16_mmul_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
+                            uint8_t *__restrict a_z, bfloat16 *__restrict a,
+                            bfloat16 *__restrict c) {
+  constexpr unsigned r = 8, s = 8, t = 8;
+  constexpr unsigned MB = m_tile / r;
+  constexpr unsigned NB = n_tile / t;
+  constexpr unsigned KB = k_chunk / s;
   constexpr unsigned NG = k_chunk / gs;
+  static_assert(m_tile % r == 0, "m_tile must be multiple of 8");
+  static_assert(n_tile % t == 0, "n_tile must be multiple of 8");
+  static_assert(k_chunk % s == 0, "k_chunk must be multiple of 8");
+  static_assert(gs % R == 0, "gs must be multiple of R");
 
-  for (unsigned mi = 0; mi < m_tile; mi++) {
-    // Per-(mi, n) accumulator spans all K-groups; reduce_add at the end.
-    aie::accum<accfloat, r> acc[n_tile];
-    for (unsigned n = 0; n < n_tile; n++)
-      acc[n].from_vector(aie::zeros<float, r>());
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
 
-    for (unsigned g = 0; g < NG; g++) {
-      // Hoist per-(g, n) zero-point broadcasts out of the i loop.
-      aie::vector<int8, r> zv[n_tile];
-      for (unsigned n = 0; n < n_tile; n++)
-        zv[n] = aie::broadcast<int8, r>((int8_t)a_z[g * n_tile + n]);
+  using MMUL = aie::mmul<r, s, t, bfloat16, bfloat16, accauto>;
 
-      // Per-(mi, g, n) intra-group accumulator over the NSUB sub-blocks.
-      aie::accum<accfloat, r> g_acc[n_tile];
-      for (unsigned n = 0; n < n_tile; n++)
-        g_acc[n].from_vector(aie::zeros<float, r>());
+  alignas(32) bfloat16 a_pack[KB * MB * r * s];
+  alignas(32) bfloat16 b_pack[NB * KB * s * t];
 
-#pragma clang loop unroll(full)
-      for (unsigned i = 0; i < NSUB; i++) {
-        // Single a_vec load per (mi, g, i) reused across all n_tile cols.
-        aie::vector<bfloat16, r> a_vec =
-            aie::load_v<r>(a + mi * k_chunk + g * gs + i * r);
-        const unsigned off = (g * gs + i * r) / 2;
-
-        for (unsigned n = 0; n < n_tile; n++) {
-          const uint8_t *__restrict aq_n = a_q + n * (k_chunk / 2);
-          aie::vector<uint8, r / 2> packed = aie::load_v<r / 2>(aq_n + off);
-          aie::vector<int8, r> w_int8 =
-              packed.template cast_to<uint4>().template unpack_sign<int8>(
-                  false);
-          w_int8 = aie::sub(w_int8, zv[n]);
-          aie::vector<bfloat16, r> w_bf16 = aie::to_float<bfloat16>(w_int8, 0);
-          g_acc[n] = aie::mac(g_acc[n], w_bf16, a_vec);
-        }
-      }
-
-      // Fold per-group bf16 scale into the per-(mi, n) running accumulator.
-      for (unsigned n = 0; n < n_tile; n++) {
-        bfloat16 sa = a_s[g * n_tile + n];
-        aie::vector<bfloat16, r> g_bf16 =
-            g_acc[n].template to_vector<bfloat16>();
-        acc[n] = aie::mac(acc[n], g_bf16, sa);
+  // Pack A row-major [m_tile][k_chunk] → [KB][MB][r][s].
+  for (unsigned k_b = 0; k_b < KB; k_b++) {
+    for (unsigned m_b = 0; m_b < MB; m_b++) {
+      bfloat16 *dst = a_pack + (k_b * MB + m_b) * (r * s);
+      for (unsigned m_i = 0; m_i < r; m_i++) {
+        aie::vector<bfloat16, s> v =
+            aie::load_v<s>(a + (m_b * r + m_i) * k_chunk + k_b * s);
+        aie::store_v(dst + m_i * s, v);
       }
     }
+  }
 
+  // Dequant W (with scale fold) → [NB][KB][s][t]. One (g, n, i) iteration
+  // produces R K-values for fixed n that scatter across R/s k-blocks at
+  // stride t within each k-block.
+  for (unsigned g = 0; g < NG; g++) {
     for (unsigned n = 0; n < n_tile; n++) {
-      float s = aie::reduce_add(acc[n].template to_vector<float>());
-      c[mi * n_tile + n] = (bfloat16)((float)c[mi * n_tile + n] + s);
+      bfloat16 sc = a_s[g * n_tile + n];
+      aie::vector<int8, R> zv = aie::broadcast<int8, R>((int8_t)a_z[g * n_tile + n]);
+      aie::vector<bfloat16, R> sv = aie::broadcast<bfloat16, R>(sc);
+      unsigned n_b = n / t;
+      unsigned n_i = n % t;
+      const uint8_t *__restrict aq_n = a_q + n * (k_chunk / 2);
+
+      for (unsigned i = 0; i < gs / R; i++) {
+        unsigned k_base = g * gs + i * R;
+        aie::vector<uint8, R / 2> pk = aie::load_v<R / 2>(aq_n + k_base / 2);
+        aie::vector<int8, R> w_i8 =
+            pk.template cast_to<uint4>().template unpack_sign<int8>(false);
+        w_i8 = aie::sub(w_i8, zv);
+        aie::vector<bfloat16, R> w_bf16 = aie::to_float<bfloat16>(w_i8, 0);
+        aie::vector<bfloat16, R> w_scaled =
+            aie::mul(w_bf16, sv).template to_vector<bfloat16>();
+
+        unsigned k_b_base = k_base / s;
+        bfloat16 *base = b_pack + n_b * (KB * s * t) + n_i;
+#pragma clang loop unroll(full)
+        for (unsigned j = 0; j < R; j++) {
+          unsigned k_b = k_b_base + j / s;
+          unsigned k_i = j % s;
+          base[k_b * (s * t) + k_i * t] = w_scaled[j];
+        }
+      }
+    }
+  }
+
+  // MMUL: one accumulator per (m_b, n_b) tile, reduced across KB k-blocks.
+  for (unsigned m_b = 0; m_b < MB; m_b++) {
+    for (unsigned n_b = 0; n_b < NB; n_b++) {
+      MMUL C;
+#pragma clang loop unroll(full)
+      for (unsigned k_b = 0; k_b < KB; k_b++) {
+        aie::vector<bfloat16, MMUL::size_A> A =
+            aie::load_v<MMUL::size_A>(a_pack + (k_b * MB + m_b) * (r * s));
+        aie::vector<bfloat16, MMUL::size_B> B =
+            aie::load_v<MMUL::size_B>(b_pack + (n_b * KB + k_b) * (s * t));
+        if (k_b == 0)
+          C.mul(A, B);
+        else
+          C.mac(A, B);
+      }
+      aie::vector<bfloat16, r * t> ctile = C.template to_vector<bfloat16>();
+      for (unsigned m_i = 0; m_i < r; m_i++) {
+        aie::vector<bfloat16, t> row = ctile.template extract<t>(m_i);
+        bfloat16 *cdst = c + (m_b * r + m_i) * n_tile + n_b * t;
+        aie::vector<bfloat16, t> c_old = aie::load_v<t>(cdst);
+        aie::vector<bfloat16, t> c_new = aie::add(row, c_old);
+        aie::store_v(cdst, c_new);
+      }
     }
   }
 }
@@ -212,7 +245,7 @@ void matmul_int4_bf16_packed(uint8_t *packed, bfloat16 *a, bfloat16 *c) {
   uint8_t *a_q = packed;
   bfloat16 *a_s = reinterpret_cast<bfloat16 *>(packed + Q_BYTES);
   uint8_t *a_z = packed + Q_BYTES + S_BYTES;
-  mm_int4_bf16_impl<DIM_M, DIM_N, DIM_K, DIM_GS, 32>(a_q, a_s, a_z, a, c);
+  mm_int4_bf16_mmul_impl<DIM_M, DIM_N, DIM_K, DIM_GS>(a_q, a_s, a_z, a, c);
 }
 
 void partial_plus_r_bf16(bfloat16 *partial, bfloat16 *r_full, int offset,
