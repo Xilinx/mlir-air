@@ -888,6 +888,9 @@ def build_session(args) -> Session:
         compile_decode_kernels(decode_cache, config)
 
     if args.compile_only:
+        # Stable end-of-compile marker for CI (run_npu2_compile.lit FileCheck).
+        # Do not change without also updating the lit CHECK line.
+        print("\nCompilation passed.")
         sys.exit(0)
 
     if args.run_only:
