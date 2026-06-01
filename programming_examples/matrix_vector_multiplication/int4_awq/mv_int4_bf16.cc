@@ -111,9 +111,12 @@ static void zero_mn_impl(bfloat16 *__restrict c) {
     aie::store_v(c + i, zv);
 }
 
-// int4-AWQ GEMM inner kernel. Same inline dequant+MAC chain as the GEMV,
-// extended to m_tile activation rows. Each (mi, n) accumulates a full
-// K-chunk's contribution into c[mi, n].
+// int4-AWQ GEMM inner kernel. Loop nest is (mi, g, i, n) so each
+// activation load a_vec(mi, g, i) is reused across all n_tile output
+// columns instead of being reloaded per n. Per-group zero-point broadcast
+// zv(g, n) and per-(mi, n) accumulator acc[n] are likewise hoisted out of
+// the inner i loop, leaving just load-packed + unpack + sub + cvt + mac
+// in the hot path.
 template <unsigned m_tile, unsigned n_tile, unsigned k_chunk, unsigned gs,
           unsigned r>
 void mm_int4_bf16_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
@@ -125,38 +128,52 @@ void mm_int4_bf16_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
   constexpr unsigned NG = k_chunk / gs;
 
   for (unsigned mi = 0; mi < m_tile; mi++) {
-    for (unsigned n = 0; n < n_tile; n++) {
-      aie::accum<accfloat, r> acc;
-      acc.from_vector(aie::zeros<float, r>());
-      const uint8_t *__restrict aq_n = a_q + n * (k_chunk / 2);
+    // Per-(mi, n) accumulator spans all K-groups; reduce_add at the end.
+    aie::accum<accfloat, r> acc[n_tile];
+    for (unsigned n = 0; n < n_tile; n++)
+      acc[n].from_vector(aie::zeros<float, r>());
 
-      for (unsigned g = 0; g < NG; g++) {
-        aie::vector<int8, r> zv =
-            aie::broadcast<int8, r>((int8_t)a_z[g * n_tile + n]);
-        bfloat16 sa = a_s[g * n_tile + n];
+    for (unsigned g = 0; g < NG; g++) {
+      // Hoist per-(g, n) zero-point broadcasts out of the i loop.
+      aie::vector<int8, r> zv[n_tile];
+      for (unsigned n = 0; n < n_tile; n++)
+        zv[n] = aie::broadcast<int8, r>((int8_t)a_z[g * n_tile + n]);
 
-        aie::accum<accfloat, r> g_acc;
-        g_acc.from_vector(aie::zeros<float, r>());
+      // Per-(mi, g, n) intra-group accumulator over the NSUB sub-blocks.
+      aie::accum<accfloat, r> g_acc[n_tile];
+      for (unsigned n = 0; n < n_tile; n++)
+        g_acc[n].from_vector(aie::zeros<float, r>());
 
 #pragma clang loop unroll(full)
-        for (unsigned i = 0; i < NSUB; i++) {
-          const unsigned off = (g * gs + i * r) / 2;
+      for (unsigned i = 0; i < NSUB; i++) {
+        // Single a_vec load per (mi, g, i) reused across all n_tile cols.
+        aie::vector<bfloat16, r> a_vec =
+            aie::load_v<r>(a + mi * k_chunk + g * gs + i * r);
+        const unsigned off = (g * gs + i * r) / 2;
+
+        for (unsigned n = 0; n < n_tile; n++) {
+          const uint8_t *__restrict aq_n = a_q + n * (k_chunk / 2);
           aie::vector<uint8, r / 2> packed = aie::load_v<r / 2>(aq_n + off);
           aie::vector<int8, r> w_int8 =
               packed.template cast_to<uint4>().template unpack_sign<int8>(
                   false);
-          w_int8 = aie::sub(w_int8, zv);
+          w_int8 = aie::sub(w_int8, zv[n]);
           aie::vector<bfloat16, r> w_bf16 = aie::to_float<bfloat16>(w_int8, 0);
-          aie::vector<bfloat16, r> a_vec =
-              aie::load_v<r>(a + mi * k_chunk + g * gs + i * r);
-          g_acc = aie::mac(g_acc, w_bf16, a_vec);
+          g_acc[n] = aie::mac(g_acc[n], w_bf16, a_vec);
         }
-
-        aie::vector<bfloat16, r> g_bf16 = g_acc.template to_vector<bfloat16>();
-        acc = aie::mac(acc, g_bf16, sa);
       }
 
-      float s = aie::reduce_add(acc.template to_vector<float>());
+      // Fold per-group bf16 scale into the per-(mi, n) running accumulator.
+      for (unsigned n = 0; n < n_tile; n++) {
+        bfloat16 sa = a_s[g * n_tile + n];
+        aie::vector<bfloat16, r> g_bf16 =
+            g_acc[n].template to_vector<bfloat16>();
+        acc[n] = aie::mac(acc[n], g_bf16, sa);
+      }
+    }
+
+    for (unsigned n = 0; n < n_tile; n++) {
+      float s = aie::reduce_add(acc[n].template to_vector<float>());
       c[mi * n_tile + n] = (bfloat16)((float)c[mi * n_tile + n] + s);
     }
   }

@@ -104,6 +104,17 @@ def pack_inputs(W_q, W_s, W_z, M, K, N, GS, M_TILE, N_TILE, K_CHUNK, N_CORES):
 
 
 def build_module(M, K, N, GS=128, M_TILE=16, N_TILE=16, K_CHUNK=128, N_CORES=4):
+    # Kernel-side static_assert constraints (mm_int4_bf16_impl uses r=32 inner
+    # vector and zero_mn_impl uses VW=32). Surface them at module-build time
+    # so unsupported tilings fail with a Python message, not a C++ template
+    # error during compile-kernel.
+    _R = 32
+    assert GS % _R == 0, f"GS ({GS}) must be a multiple of inner vector width {_R}"
+    assert (M_TILE * N_TILE) % _R == 0, (
+        f"M_TILE*N_TILE ({M_TILE}*{N_TILE}={M_TILE * N_TILE}) must be a "
+        f"multiple of vector width {_R} for zero_vectorized_bf16_mn"
+    )
+
     assert M % M_TILE == 0
     M_div = M // M_TILE
     assert N % N_CORES == 0
