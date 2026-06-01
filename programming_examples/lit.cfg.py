@@ -124,6 +124,16 @@ config.substitutions.append(("%run_on_npu2%", run_on_npu2))
 config.substitutions.append(("%xrt_flags", xrt_flags))
 config.substitutions.append(("%XRT_DIR", config.xrt_dir))
 
+# Tests that download Hugging Face Hub gated models (e.g. meta-llama/*) need
+# HF_TOKEN to be set. Mark `hf_token` as available only when the env var is
+# present so REQUIRES: hf_token tests skip cleanly on machines without it.
+if os.environ.get("HF_TOKEN"):
+    config.available_features.add("hf_token")
+    llvm_config.with_environment("HF_TOKEN", os.environ["HF_TOKEN"])
+    print("HF_TOKEN found in environment; hf_token feature enabled.")
+else:
+    print("HF_TOKEN not set; hf_token feature disabled.")
+
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
 llvm_config.use_default_substitutions()
