@@ -41,12 +41,7 @@ if _PROG_EXAMPLES not in sys.path:
     sys.path.insert(0, _PROG_EXAMPLES)
 
 from llama32_1b_weights import LlamaConfig, load_weights, generate_rope_lut
-from llama32_1b_reference import (
-    rms_norm as rms_norm_ref,
-    apply_rope as apply_rope_ref,
-    attention_reference,
-    ffn_full_reference,
-)
+from llama32_1b_cpu_helpers import attention_reference
 from kernel_builder.cache import KernelCache, Profiler
 from kernel_builder.backend_presets import (
     SIMPLE_BACKEND,
@@ -167,16 +162,13 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
 # ---------------------------------------------------------------------------
 
 
-def _attn_backend_kwargs(head_dim):
-    lkp = head_dim
-    enable_shared_buffers = lkp == head_dim
-    return {
-        "omit_while_true_loop": not enable_shared_buffers,
-        "omit_pingpong": "all",
-        "runtime_loop_tiling_sizes": [1, 1],
-        "output_format": "elf",
-        "instance_name": "attention_bf16",
-    }
+_ATTN_BACKEND_KWARGS = {
+    "omit_while_true_loop": False,
+    "omit_pingpong": "all",
+    "runtime_loop_tiling_sizes": [1, 1],
+    "output_format": "elf",
+    "instance_name": "attention_bf16",
+}
 
 
 def run_transformer_block(
@@ -186,7 +178,6 @@ def run_transformer_block(
     config,
     cache,
     layer_idx=0,
-    verify=False,
     cpu_attn=True,
     verbose=False,
 ):
@@ -199,7 +190,6 @@ def run_transformer_block(
         config: LlamaConfig
         cache: KernelCache instance (kernels must be pre-compiled)
         layer_idx: Layer index for logging
-        verify: If True, compare each intermediate against CPU reference
         cpu_attn: If True, use CPU attention fallback instead of NPU kernel
         verbose: If True, print per-step progress
 
@@ -220,23 +210,6 @@ def run_transformer_block(
     # arrays on every call — the BO data is already pre-loaded via static_input_indices)
     _arg_cache = getattr(run_transformer_block, "_arg_cache", {})
     run_transformer_block._arg_cache = _arg_cache
-
-    def _compare(name, npu_result, cpu_ref=None):
-        """Compare NPU result against a per-step CPU reference."""
-        intermediates[name] = npu_result
-        if cpu_ref is not None:
-            npu_f32 = npu_result.astype(np.float32).flatten()
-            ref_f32 = np.asarray(cpu_ref, dtype=np.float32).flatten()
-            if npu_f32.shape == ref_f32.shape:
-                abs_err = np.max(np.abs(npu_f32 - ref_f32))
-                denom = np.maximum(np.abs(ref_f32), 1e-6)
-                rel_err = np.mean(np.abs(npu_f32 - ref_f32) / denom)
-                corr = np.corrcoef(npu_f32, ref_f32)[0, 1] if len(npu_f32) > 1 else 1.0
-                status = "OK" if corr > 0.99 else "WARN"
-                print(
-                    f"    [{status}] {name}: max_err={abs_err:.4f}, "
-                    f"mean_rel={rel_err:.4f}, corr={corr:.6f}"
-                )
 
     if verbose:
         print(f"  Layer {layer_idx}: Running transformer block...")
@@ -281,28 +254,11 @@ def run_transformer_block(
     v = results[8].reshape(seq_len, kv_dim)
     q_roped = results[11].reshape(seq_len, n_heads * head_dim)
     k_roped = results[12].reshape(seq_len, n_kv_heads * head_dim)
-    # Store v and k_roped — needed by caller for KV cache extraction
+    # Store per-probe intermediates — used by KV-cache extraction (v, k_roped)
+    # AND by verify/runners/npu_runner.py to capture per-probe NPU outputs.
     intermediates["v"] = v
     intermediates["k_roped"] = k_roped
-    if verify:
-        normed_ref = rms_norm_ref(x_bf16.astype(np.float32), layer_weights.attn_norm)
-        ref_v = normed_ref @ np.asarray(layer_weights.wv, dtype=np.float32)
-        _compare("v", v, ref_v)
-        ref_q = normed_ref @ np.asarray(layer_weights.wq, dtype=np.float32)
-        ref_k = normed_ref @ np.asarray(layer_weights.wk, dtype=np.float32)
-        lut_f32 = rope_lut_bf16[:seq_len].astype(np.float32)
-        q_heads_f32 = ref_q.reshape(seq_len, n_heads, head_dim)
-        ref_q_roped = np.empty_like(q_heads_f32)
-        for h in range(n_heads):
-            ref_q_roped[:, h, :] = apply_rope_ref(q_heads_f32[:, h, :], lut_f32)
-        _compare("q_roped", q_roped, ref_q_roped.reshape(seq_len, n_heads * head_dim))
-        k_heads_f32 = ref_k.reshape(seq_len, n_kv_heads, head_dim)
-        ref_k_roped = np.empty_like(k_heads_f32)
-        for h in range(n_kv_heads):
-            ref_k_roped[:, h, :] = apply_rope_ref(k_heads_f32[:, h, :], lut_f32)
-        _compare(
-            "k_roped", k_roped, ref_k_roped.reshape(seq_len, n_kv_heads * head_dim)
-        )
+    intermediates["q_roped"] = q_roped
 
     # 7. Flash Attention GQA
     if cpu_attn:
@@ -310,13 +266,14 @@ def run_transformer_block(
             print(
                 f"    Step 7: Attention GQA [CPU fallback] ({n_heads}Q/{n_kv_heads}KV heads)"
             )
-        attn_out = attention_reference(
-            q_roped.astype(np.float32),
-            k_roped.astype(np.float32),
-            v.astype(np.float32),
-            n_heads,
-            n_kv_heads,
-        ).astype(bfloat16)
+        with cache.profiler.time_cpu("prefill_cpu_attention"):
+            attn_out = attention_reference(
+                q_roped.astype(np.float32),
+                k_roped.astype(np.float32),
+                v.astype(np.float32),
+                n_heads,
+                n_kv_heads,
+            ).astype(bfloat16)
     else:
         if verbose:
             print(
@@ -326,16 +283,16 @@ def run_transformer_block(
         k_attn = np.ascontiguousarray(k_roped)
         v_attn = np.ascontiguousarray(v)
         attn_output = np.zeros((seq_len, n_heads * head_dim), dtype=bfloat16)
-        attn_bk = _attn_backend_kwargs(head_dim)
         results = cache.load_and_run(
             "flash_attn",
-            attn_bk,
+            _ATTN_BACKEND_KWARGS,
             q_attn,
             k_attn,
             v_attn,
             attn_output,
         )
         attn_out = results[-1].reshape(seq_len, n_heads * head_dim)
+    intermediates["attn_out"] = attn_out
 
     # 8-15. O GEMM + Residual Add + FFN [8-launch multi-launch ELF]
     if verbose:
@@ -386,19 +343,7 @@ def run_transformer_block(
         bo_key=_offn_key,
     )
     output_bf16 = results[14].reshape(seq_len, emb_dim)
-    if verify:
-        proj_ref = attn_out.astype(np.float32) @ np.asarray(
-            layer_weights.wo, dtype=np.float32
-        )
-        res1_ref = x_bf16.astype(np.float32) + proj_ref
-        ref = ffn_full_reference(
-            res1_ref.astype(bfloat16),
-            layer_weights.ffn_norm,
-            layer_weights.w_gate,
-            layer_weights.w_up,
-            layer_weights.w_down,
-        ).reshape(seq_len, emb_dim)
-        _compare("output", output_bf16, ref)
+    intermediates["ffn_out"] = output_bf16
 
     return output_bf16, intermediates
 
