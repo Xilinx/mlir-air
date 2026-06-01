@@ -47,7 +47,7 @@ compile-kernel:
 		exit 1; \
 	fi
 	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} \
-		-DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_GS=$(GS) \
+		-DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K_CHUNK=$(TILE_K_L1) -DDIM_GS=$(GS) \
 		-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 \
 		-c $(INT4_SRCDIR)/mv_int4_bf16.cc -o $(BUILD_DIR)/mv_int4_bf16.o
 
