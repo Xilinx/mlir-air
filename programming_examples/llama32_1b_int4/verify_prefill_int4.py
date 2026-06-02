@@ -90,6 +90,9 @@ def _compile_mv_int4_bf16_matmul(tile_m=16, tile_n=16, k_chunk=128, gs=128):
     )
 
 
+_INT4_TILE_N = 16  # overridden by --tile-n
+
+
 def _prepare_air_project_int4():
     """Replacement for cache.prepare_air_project: wipe + repopulate
     air_project/ with `mv_int4_bf16.o` (GEMM flags), `rope.o`, and
@@ -99,7 +102,7 @@ def _prepare_air_project_int4():
         shutil.rmtree(air_proj)
     air_proj.mkdir(parents=True, exist_ok=True)
 
-    _compile_mv_int4_bf16_matmul()
+    _compile_mv_int4_bf16_matmul(tile_n=_INT4_TILE_N)
     compile_rope()
     compile_silu_and_mul()
 
@@ -434,7 +437,12 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--profile", action="store_true",
                     help="Enable per-layer / per-kernel timing instrumentation.")
+    ap.add_argument("--tile-n", type=int, default=16,
+                    help="int4 GEMM tile_n (16/32/64). Larger reduces launch_n "
+                    "iter count; AIE2P caps the kernel at 64.")
     args = ap.parse_args()
+    global _INT4_TILE_N
+    _INT4_TILE_N = args.tile_n
 
     config = LlamaConfig()
     seq_len = args.seq_len
@@ -452,7 +460,7 @@ def main():
     t0 = time.time()
     weights_bf16, layers_packed = load_awq_weights(
         args.model, config=config, gs=args.gs,
-        n_tile=16, k_chunk=128, seq_len=seq_len,
+        n_tile=args.tile_n, k_chunk=128, seq_len=seq_len,
     )
     print(f"  loaded + dequant + packed in {time.time()-t0:.1f}s")
 
@@ -475,7 +483,7 @@ def main():
             build_rms_gemms_rope_int4_module(
                 seq_len=seq_len, emb_dim=emb_dim, kv_dim=kv_dim,
                 n_heads=config.n_heads, n_kv_heads=n_kv_heads,
-                head_dim=head_dim, gs=args.gs,
+                head_dim=head_dim, gs=args.gs, tile_n=args.tile_n,
             ),
             {"verbose": args.verbose, **RMS_GEMMS_ROPE_INT4_BACKEND},
         )
@@ -484,7 +492,7 @@ def main():
             "o_ffn_int4",
             build_o_ffn_int4_module(
                 seq_len=seq_len, emb_dim=emb_dim, hidden_dim=hidden_dim,
-                gs=args.gs,
+                gs=args.gs, tile_n=args.tile_n,
             ),
             {"verbose": args.verbose, **O_FFN_INT4_BACKEND},
         )
