@@ -33,7 +33,7 @@ def prepare_air_project():
     # Copy compiled .o files to air_project/ for aiecc to find. Must include
     # every external symbol referenced by `link_with` in the kernel modules:
     # - mv.o            : K=2048 GEMVs (rms_gemv_rope, o_gemv_ffn, lm_head_gemv)
-    # - mv_k8192.o      : K=8192 Down GEMV (renamed entry point in o_gemv_ffn)
+    # - mv_bf16.o       : 2-tile matvec+add (o_gemv_ffn stages 1 and 3)
     # - rope.o          : RoPE (prefill + decode rms_*_rope)
     # - silu_and_mul.o  : SwiGLU (prefill o_ffn, decode o_gemv_ffn)
     # - attn.o          : flash attention (prefill, when --cpu-attn=False)
@@ -44,7 +44,7 @@ def prepare_air_project():
         "attn.o",
         "attn_npu2.o",
         "mv.o",
-        "mv_k8192.o",
+        "mv_bf16.o",
         "attn_decode_npu2.o",
     ]:
         src = Path(obj_name)
@@ -58,7 +58,8 @@ class Profiler:
     def __init__(self, enabled=False):
         self.enabled = enabled
         self.compile_times = {}  # name -> seconds
-        self.kernel_times = {}  # name -> list of seconds
+        self.kernel_times = {}  # NPU XRT call: name -> list of seconds
+        self.cpu_times = {}  # CPU op: name -> list of seconds
         self.layer_times = []  # list of (layer_idx, seconds)
         self.kernel_breakdowns = (
             {}
@@ -71,6 +72,15 @@ class Profiler:
     def record_kernel(self, name, duration):
         if self.enabled:
             self.kernel_times.setdefault(name, []).append(duration)
+
+    def record_cpu(self, name, duration):
+        """Record a CPU host-side operation's wall time. Use for things like
+        embed lookup, KV-cache extract, CPU attention fallback, final RMSNorm
+        — anything that is not an `xrt.run()` but consumes inference wall
+        time. Reported in a separate section from NPU XRT calls so the two
+        are easy to compare."""
+        if self.enabled:
+            self.cpu_times.setdefault(name, []).append(duration)
 
     def record_breakdown(
         self, name, write_ms, kernel_ms, read_ms, n_written, bytes_written, n_readback
@@ -89,12 +99,45 @@ class Profiler:
 
     def start_layer(self):
         if self.enabled:
-            return time.time()
+            return time.perf_counter()
         return None
 
     def end_layer(self, layer_idx, t0):
         if self.enabled and t0 is not None:
-            self.layer_times.append((layer_idx, time.time() - t0))
+            self.layer_times.append((layer_idx, time.perf_counter() - t0))
+
+    def time_cpu(self, name):
+        """Context manager: `with prof.time_cpu("embed_lookup"): ...`
+        Records the elapsed wall time as a CPU op named `name`. Safe to
+        use whether enabled or disabled (zero overhead when disabled)."""
+        prof = self
+
+        class _Ctx:
+            def __enter__(self_inner):
+                self_inner.t0 = time.perf_counter() if prof.enabled else None
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                if self_inner.t0 is not None:
+                    prof.record_cpu(name, time.perf_counter() - self_inner.t0)
+                return False
+
+        return _Ctx()
+
+    def per_token_walls_ms(self, n_layers):
+        """Sum every consecutive `n_layers` layer-time entries into one
+        per-token wall (in ms). Returns [] if not enabled or no data.
+        Used by the dataflow summary to expose decode slowdown trends."""
+        if not self.enabled or not self.layer_times:
+            return []
+        if len(self.layer_times) % n_layers != 0:
+            # Shouldn't happen in a clean run; bail rather than mis-bucket.
+            return []
+        out = []
+        for tok_start in range(0, len(self.layer_times), n_layers):
+            chunk = self.layer_times[tok_start : tok_start + n_layers]
+            out.append(sum(t for _, t in chunk) * 1000.0)
+        return out
 
     def report(self):
         if not self.enabled:
@@ -103,6 +146,36 @@ class Profiler:
         print(f"\n{'='*60}")
         print("PROFILING REPORT")
         print(f"{'='*60}")
+
+        # Top-level phase summary: total wall time attributed to NPU XRT
+        # calls vs CPU host ops vs the layer envelope. Sums won't add up
+        # exactly (layer envelope is the wall budget; NPU + CPU are the
+        # accounted-for parts inside it; remainder is python scheduling /
+        # numpy view setup / loop overhead). Useful as a sanity check.
+        if self.kernel_times or self.cpu_times or self.layer_times:
+            npu_total_ms = sum(t * 1000 for v in self.kernel_times.values() for t in v)
+            cpu_total_ms = sum(t * 1000 for v in self.cpu_times.values() for t in v)
+            layer_total_ms = sum(t * 1000 for _, t in self.layer_times)
+            npu_count = sum(len(v) for v in self.kernel_times.values())
+            cpu_count = sum(len(v) for v in self.cpu_times.values())
+            print(f"\n--- Wall-Time Attribution ---")
+            if npu_count:
+                print(
+                    f"  NPU XRT calls         {npu_total_ms:9.2f}ms  ({npu_count} calls)"
+                )
+            if cpu_count:
+                print(
+                    f"  CPU host ops          {cpu_total_ms:9.2f}ms  ({cpu_count} calls)"
+                )
+            if self.layer_times:
+                accounted = npu_total_ms + cpu_total_ms
+                # CPU ops happen both inside and outside the layer envelope;
+                # so layer_total_ms is the inside-layer wall budget, and the
+                # remainder vs (NPU+CPU) inside layers is python overhead.
+                print(
+                    f"  Layer-loop wall       {layer_total_ms:9.2f}ms  "
+                    f"({len(self.layer_times)} layer-invocations)"
+                )
 
         if self.compile_times:
             print(f"\n--- Compilation Phase ---")
@@ -115,34 +188,71 @@ class Profiler:
             )
 
         if self.layer_times:
-            print(f"\n--- Per-Layer Execution ---")
+            # Group by layer_idx. Prefill: each idx appears once -> one row per
+            # layer. Decode: each idx appears once per token -> aggregate with
+            # avg / min / max / count.
+            from collections import defaultdict
+
+            grouped = defaultdict(list)
             for idx, t in self.layer_times:
-                print(f"  Layer {idx:3d}: {t:8.2f}s")
-            total_layers = sum(t for _, t in self.layer_times)
-            print(f"  {'Total prefill':40s} {total_layers:8.2f}s")
+                grouped[idx].append(t * 1000.0)  # ms
+            multi_invocation = any(len(v) > 1 for v in grouped.values())
+            print(f"\n--- Per-Layer Execution ---")
+            if multi_invocation:
+                for idx in sorted(grouped):
+                    ts = grouped[idx]
+                    print(
+                        f"  Layer {idx:3d}: avg={sum(ts)/len(ts):7.2f}ms  "
+                        f"min={min(ts):7.2f}ms  max={max(ts):7.2f}ms  (x{len(ts)})"
+                    )
+            else:
+                for idx in sorted(grouped):
+                    print(f"  Layer {idx:3d}: {grouped[idx][0]:7.2f}ms")
+            total_ms = sum(t * 1000.0 for _, t in self.layer_times)
+            print(f"  {'Total layer-time':40s} {total_ms:8.2f}ms")
 
         if self.kernel_times:
-            print(f"\n--- Kernel Breakdown (avg per invocation) ---")
+            print(f"\n--- NPU XRT Call Breakdown (avg per invocation) ---")
             total_avg = 0
             for name, times in sorted(self.kernel_times.items()):
-                avg = sum(times) / len(times)
-                total_avg += avg * len(times)
-                mn = min(times)
-                mx = max(times)
-                count = len(times)
+                times_ms = [t * 1000.0 for t in times]
+                avg = sum(times_ms) / len(times_ms)
+                total_avg += avg * len(times_ms)
+                count = len(times_ms)
                 print(
-                    f"  {name:40s} avg={avg:6.3f}s  "
-                    f"min={mn:6.3f}s  max={mx:6.3f}s  (x{count})"
+                    f"  {name:40s} avg={avg:7.2f}ms  "
+                    f"min={min(times_ms):7.2f}ms  max={max(times_ms):7.2f}ms  (x{count})"
                 )
             if self.layer_times:
                 n_layers = len(self.layer_times)
-                print(f"  {'Total kernel time':40s} {total_avg:8.2f}s")
+                print(f"  {'Total kernel time':40s} {total_avg:8.2f}ms")
                 print(
-                    f"  {'Avg per layer (kernel time)':40s} {total_avg/n_layers:8.2f}s"
+                    f"  {'Avg per layer (kernel time)':40s} {total_avg/n_layers:8.2f}ms"
                 )
 
+        if self.cpu_times:
+            print(f"\n--- CPU Op Breakdown (avg per invocation) ---")
+            total_cpu_ms = 0
+            for name, times in sorted(self.cpu_times.items()):
+                times_ms = [t * 1000.0 for t in times]
+                avg = sum(times_ms) / len(times_ms)
+                total_cpu_ms += avg * len(times_ms)
+                count = len(times_ms)
+                print(
+                    f"  {name:40s} avg={avg:7.2f}ms  "
+                    f"min={min(times_ms):7.2f}ms  max={max(times_ms):7.2f}ms  (x{count})"
+                )
+            print(f"  {'Total CPU op time':40s} {total_cpu_ms:8.2f}ms")
+
         if self.kernel_breakdowns:
-            print(f"\n--- Fine-Grained Breakdown (avg per invocation) ---")
+            print(f"\n--- Fine-Grained NPU Breakdown (avg per invocation) ---")
+            print(
+                f"  Three-segment timing of each XRT call:\n"
+                f"    BO Write = host→DDR memcpy of dynamic inputs (weights\n"
+                f"               pre-loaded once via static_input_indices)\n"
+                f"    NPU Run  = xrt.run.start() + wait() — actual NPU exec\n"
+                f"    BO Read  = numpy view construction (zero-copy, ~0)"
+            )
             print(
                 f"  {'Kernel':20s} {'BO Write':>10s} {'NPU Run':>10s} {'BO Read':>10s} {'Total':>10s}  {'Written':>8s} {'Read':>6s}"
             )
@@ -316,8 +426,16 @@ class KernelCache:
             output_indices: Optional list of buffer indices to read back from
                 device. If None, only the last buffer is read back (default).
                 Use for multi-output kernels (e.g. attn_gemms: [2, 4, 6]).
+            static_input_indices: Optional set of buffer indices that are static
+                (e.g. weights, LUTs). On the first call for a given bo_key the BO is
+                written; on subsequent calls the host->device sync is skipped because
+                the kernel reads from the already-resident BO.
             intermediate_indices: Optional set of buffer indices that are
                 intermediate (overwritten by kernel). Skips host->device sync.
+            bo_key: Optional cache key for BO reuse. Calls sharing a bo_key reuse
+                the same xrt.bo objects, which combined with static_input_indices
+                enables write-once-read-many for weights. Default uses the kernel
+                name (one BO set shared across all calls to that kernel).
 
         Returns:
             Tuple of numpy arrays (all kernel outputs)

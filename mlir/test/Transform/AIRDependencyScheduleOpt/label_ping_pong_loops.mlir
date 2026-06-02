@@ -78,3 +78,79 @@ module {
     return
   }
 }
+
+// -----
+
+// Nested for loops where both the outer and inner have direct memref.alloc
+// children (the matvec-add pattern: outer M-loop allocs a partial buffer,
+// inner K-loop allocs A/B chunks). Only the innermost qualifying loop should
+// be labeled; otherwise cascading pingpong unrolls would create 2x2 = 4
+// buffer instances for A/B instead of the intended 2.
+
+// Both allocs are L1 (memspace 2). Under DEFAULT (no omit) the outer loop is
+// a candidate and the inner is too, so the outer is suppressed and only the
+// inner gets labeled. Under OMIT_L2 the omit filter doesn't reject either
+// alloc, so the result is the same as DEFAULT. Under OMIT_L1 both loops are
+// filtered out and neither is labeled.
+
+// DEFAULT-LABEL: func.func @test_nested
+// DEFAULT: scf.for {{.*}} iter_args
+// DEFAULT-NOT: } {unroll
+// DEFAULT:   scf.for {{.*}} iter_args
+// DEFAULT:     memref.alloc() {hoist_alloc = true} : memref<32x32xbf16, 2>
+// DEFAULT:   } {unroll = 2 : i32}
+// DEFAULT-NOT: } {unroll
+
+// OMIT_L2-LABEL: func.func @test_nested
+// OMIT_L2: scf.for {{.*}} iter_args
+// OMIT_L2-NOT: } {unroll
+// OMIT_L2:   scf.for {{.*}} iter_args
+// OMIT_L2:     memref.alloc() {hoist_alloc = true} : memref<32x32xbf16, 2>
+// OMIT_L2:   } {unroll = 2 : i32}
+// OMIT_L2-NOT: } {unroll
+
+// OMIT_L1-LABEL: func.func @test_nested
+// OMIT_L1-NOT: hoist_alloc
+// OMIT_L1-NOT: unroll
+
+module {
+  func.func @test_nested(%arg0: memref<256x1024xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg4) in (%arg6=%c1) attributes {id = 7 : i32} {
+      %1 = air.segment async {
+        %c4 = arith.constant 4 : index
+        %2 = air.herd @herd_0 async tile (%arg21, %arg22) in (%arg23=%c4, %arg24=%c4) {
+          %c0 = arith.constant 0 : index
+          %c1_h = arith.constant 1 : index
+          %c64 = arith.constant 64 : index
+          %c512 = arith.constant 512 : index
+          %c4_a = arith.constant 4 : index
+          %async_token_0 = air.wait_all async
+          %3 = scf.for %arg10 = %c0 to %c512 step %c64 iter_args(%arg11 = %async_token_0) -> (!air.async.token) {
+            // outer-loop direct alloc (partial-like)
+            %async_token_outer, %results_outer = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
+              %alloc_p = memref.alloc() : memref<32x32xbf16, 2>
+              air.execute_terminator %alloc_p : memref<32x32xbf16, 2>
+            }
+            %inner = scf.for %arg12 = %c0 to %c4_a step %c1_h iter_args(%arg13 = %async_token_outer) -> (!air.async.token) {
+              // inner-loop direct alloc (A-chunk-like)
+              %async_token_inner, %results_inner = air.execute [%arg13] -> (memref<32x32xbf16, 2>) {
+                %alloc_a = memref.alloc() : memref<32x32xbf16, 2>
+                air.execute_terminator %alloc_a : memref<32x32xbf16, 2>
+              }
+              %async_token_d = air.execute [%async_token_inner] {
+                memref.dealloc %results_inner : memref<32x32xbf16, 2>
+              }
+              scf.yield %async_token_d : !air.async.token
+            }
+            %async_token_outer_d = air.execute [%inner] {
+              memref.dealloc %results_outer : memref<32x32xbf16, 2>
+            }
+            scf.yield %async_token_outer_d : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}

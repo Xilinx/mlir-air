@@ -1,0 +1,13 @@
+# Prompts used by `make verify MODEL=instruct` (Llama-3.2-1B-Instruct).
+# 7 prompts originally from vllm/tests/prompts/example.txt; prompt 0
+# swapped to "Introduce me what is GPU" (more relevant than the vLLM
+# self-promo line for this project).
+# One prompt per line. Lines starting with '#' or empty are ignored.
+Introduce me what is GPU
+Briefly describe the major milestones in the development of artificial intelligence from 1950 to 2020.
+Compare and contrast artificial intelligence with human intelligence in terms of processing information.
+Describe the basic components of a neural network and how it can be trained.
+Write a short story about a robot that dreams for the first time.
+Analyze the impact of the COVID-19 pandemic on global economic structures and future business models.
+Explain the cultural significance of the Mona Lisa painting, and how its perception might vary in Western versus Eastern societies.
+Translate the following English sentence into Japanese, French, and Swahili: 'The early bird catches the worm.'

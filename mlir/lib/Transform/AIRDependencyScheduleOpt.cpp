@@ -1216,47 +1216,56 @@ struct ConstructPingPongDependencyPattern
     SmallVector<Operation *> pong_consumer_fronts;
     SmallVector<Operation *> pong_consumer_backs;
 
-    new_loop_op.getBody()->walk([&](Operation *op) {
-      if (op->hasAttr("ping_pong") || op->hasAttr("unrolled_iteration")) {
-        auto ping_pong_id =
-            op->hasAttr("ping_pong")
-                ? (op->getAttrOfType<IntegerAttr>("ping_pong").getUInt())
-                : (op->getAttrOfType<IntegerAttr>("unrolled_iteration")
-                       .getInt());
-        // "Ping" producer fronts
-        if (op->hasAttr("async_front") && ping_pong_id == 0) {
-          ping_producer_fronts.push_back(op);
-        }
-        // "Pong" producer fronts
-        else if (op->hasAttr("async_front") && ping_pong_id == 1) {
-          pong_producer_fronts.push_back(op);
-        }
-        // "Ping" consumer backs
-        else if (op->hasAttr("async_back") && ping_pong_id == 0) {
-          ping_consumer_backs.push_back(op);
-        }
-        // "Pong" consumer backs
-        else if (op->hasAttr("async_back") && ping_pong_id == 1) {
-          pong_consumer_backs.push_back(op);
-        }
-        // "Ping" producer backs
-        if (op->hasAttr("producer") && ping_pong_id == 0) {
-          ping_producer_backs.push_back(op);
-        }
-        // "Pong" producer backs
-        if (op->hasAttr("producer") && ping_pong_id == 1) {
-          pong_producer_backs.push_back(op);
-        }
-        // "Ping" consumer fronts
-        if (op->hasAttr("consumer") && ping_pong_id == 0) {
-          ping_consumer_fronts.push_back(op);
-        }
-        // "Pong" consumer fronts
-        if (op->hasAttr("consumer") && ping_pong_id == 1) {
-          pong_consumer_fronts.push_back(op);
-        }
-      }
-    });
+    // Classify a single op by its ping_pong / async_front / async_back /
+    // producer / consumer annotations into the appropriate bucket. Shared
+    // between the inner-scf.for branch and the general branch below to keep
+    // the two paths in lockstep — any future bucket / attr change is made
+    // exactly once.
+    auto classifyOp = [&](Operation *op) {
+      if (!op->hasAttr("ping_pong") && !op->hasAttr("unrolled_iteration"))
+        return;
+      auto ping_pong_id =
+          op->hasAttr("ping_pong")
+              ? (op->getAttrOfType<IntegerAttr>("ping_pong").getUInt())
+              : (op->getAttrOfType<IntegerAttr>("unrolled_iteration").getInt());
+      if (op->hasAttr("async_front") && ping_pong_id == 0)
+        ping_producer_fronts.push_back(op);
+      else if (op->hasAttr("async_front") && ping_pong_id == 1)
+        pong_producer_fronts.push_back(op);
+      else if (op->hasAttr("async_back") && ping_pong_id == 0)
+        ping_consumer_backs.push_back(op);
+      else if (op->hasAttr("async_back") && ping_pong_id == 1)
+        pong_consumer_backs.push_back(op);
+      if (op->hasAttr("producer") && ping_pong_id == 0)
+        ping_producer_backs.push_back(op);
+      if (op->hasAttr("producer") && ping_pong_id == 1)
+        pong_producer_backs.push_back(op);
+      if (op->hasAttr("consumer") && ping_pong_id == 0)
+        ping_consumer_fronts.push_back(op);
+      if (op->hasAttr("consumer") && ping_pong_id == 1)
+        pong_consumer_fronts.push_back(op);
+    };
+
+    // Walk new_loop_op's body, but do NOT descend into nested scf.for ops:
+    // the greedy rewriter may have already pp-transformed an inner scf.for,
+    // in which case its body carries the inner loop's own ping_pong /
+    // producer / consumer / async_front / async_back annotations. Picking
+    // those up here would wire an outer-scope sink to an inner-region SSA
+    // value, producing "operand #0 does not dominate this use". The inner
+    // scf.for op itself is still classified — it may legitimately be a
+    // producer / consumer of the outer-level buffer — we only prune its
+    // body. Pre-order is required: WalkResult::skip prunes regions not yet
+    // visited, so under post-order the body has already been walked by the
+    // time the parent's callback fires.
+    new_loop_op.getBody()->walk<WalkOrder::PreOrder>(
+        [&](Operation *op) -> WalkResult {
+          classifyOp(op);
+          // Block::walk starts inside the body, so new_loop_op itself is
+          // never visited — every scf.for we see here is a nested one.
+          if (isa<scf::ForOp>(op))
+            return WalkResult::skip();
+          return WalkResult::advance();
+        });
 
     // Part 2: Connect producers
     for (auto sink : ping_producer_fronts) {
@@ -1581,42 +1590,75 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                     std::string omitMemorySpace)
       : OpRewritePattern(ctx), omitMemorySpace(omitMemorySpace) {}
 
+  // Single predicate shared between the rewriter's main check and the
+  // nested-loop suppression below. A loop is a ping-pong labeling candidate
+  // iff:
+  //   - it is not already labeled (no "unroll" attr), and
+  //   - it has at least one direct-child air.execute containing memref.alloc,
+  //     and
+  //   - if omitMemorySpace is set, none of those allocs live in that space
+  //     (matches the original "skip if any alloc matches omit" semantics).
+  // `allocsOut`, if non-null, is populated with the matched alloc ops when
+  // the loop is a candidate, so callers can avoid re-walking.
+  static bool isPingPongCandidate(scf::ForOp forOp, StringRef omitMemorySpace,
+                                  SmallVectorImpl<Operation *> *allocsOut) {
+    if (forOp->hasAttr("unroll"))
+      return false;
+    SmallVector<Operation *> allocs;
+    for (auto exec : forOp.getOps<air::ExecuteOp>()) {
+      for (auto alloc : exec.getOps<memref::AllocOp>()) {
+        auto ty = llvm::cast<MemRefType>(alloc.getType());
+        if (!omitMemorySpace.empty()) {
+          if (omitMemorySpace == "L1" && air::isL1(ty))
+            return false;
+          if (omitMemorySpace == "L2" && air::isL2(ty))
+            return false;
+        }
+        allocs.push_back(alloc.getOperation());
+      }
+    }
+    if (allocs.empty())
+      return false;
+    if (allocsOut)
+      *allocsOut = std::move(allocs);
+    return true;
+  }
+
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
 
-    // Check if the loop has been labelled
-    if (for_op->hasAttr("unroll"))
-      return failure();
-
-    // Check if the loop has child air.execute event containing memref.alloc
     SmallVector<Operation *> alloc_ops;
-    for (auto child_exec : for_op.getOps<air::ExecuteOp>()) {
-      for (auto child_alloc : child_exec.getOps<memref::AllocOp>()) {
-        alloc_ops.push_back(child_alloc.getOperation());
-      }
-    }
-    if (alloc_ops.empty())
+    if (!isPingPongCandidate(for_op, omitMemorySpace, &alloc_ops))
       return failure();
 
-    // Check if we should skip this loop based on memory space
-    if (!omitMemorySpace.empty()) {
-      bool shouldSkip = false;
-      for (auto op : alloc_ops) {
-        auto alloc_op = dyn_cast_if_present<memref::AllocOp>(op);
-        if (!alloc_op)
-          continue;
-        auto memref_type = llvm::cast<MemRefType>(alloc_op.getType());
-
-        // Check if this alloc's memory space matches the omit criteria
-        if ((omitMemorySpace == "L1" && air::isL1(memref_type)) ||
-            (omitMemorySpace == "L2" && air::isL2(memref_type))) {
-          shouldSkip = true;
-          break;
-        }
-      }
-      if (shouldSkip)
-        return failure();
-    }
+    // Skip outer loop if any nested scf.for in the same async scope is itself
+    // a labeling candidate (or already labeled). This avoids cascading
+    // pingpong unrolls, e.g. matvec-add where the outer M-loop has a per-iter
+    // partial alloc and the inner K-loop has per-iter A/B allocs: labeling
+    // both would expand the inner body 2x for the outer pingpong AND 2x for
+    // the inner pingpong, producing 4 buffer instances for A/B instead of 2.
+    // Only the deepest qualifying loop in any nest gets labeled. Sibling fors
+    // at the same depth are labeled independently. Nested loops inside an
+    // air.herd / air.segment / air.launch are in a different scope and do not
+    // count, so the walk stops at those boundaries.
+    bool hasLabelableNestedFor = false;
+    for_op.getBody()->walk<WalkOrder::PreOrder>(
+        [&](Operation *op) -> WalkResult {
+          if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(op))
+            return WalkResult::skip();
+          auto innerFor = dyn_cast<scf::ForOp>(op);
+          if (!innerFor)
+            return WalkResult::advance();
+          if (innerFor->hasAttr("unroll") ||
+              isPingPongCandidate(innerFor, omitMemorySpace,
+                                  /*allocsOut=*/nullptr)) {
+            hasLabelableNestedFor = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+    if (hasLabelableNestedFor)
+      return failure();
 
     // Label the scf.for loop and all its child memref.allocs
     int unroll_factor = 2; // Unroll factor hardened as 2. TODO: add support for
@@ -6366,9 +6408,8 @@ public:
       : AIROptimizeShimDMABDsBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    // affine: post-tile wrap-and-stride canonicalization creates affine.apply.
     registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect,
-                    affine::AffineDialect>();
+                    mlir::affine::AffineDialect>();
   }
 
   void runOnOperation() override {
@@ -6384,11 +6425,10 @@ public:
       signalPassFailure();
       return;
     }
-    const auto &targetModel = AIE::getTargetModel(*device);
 
     // AIE1 architecture doesn't support multi-dimensional dma bds. Tiling shim
     // dma for AIE1 does not optimize the schedule.
-    if (isa<AIE::AIE1TargetModel>(targetModel)) {
+    if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
       // AIE1 has no multi-dimensional DMA at shim. No need to tile. Apply dma
       // folding and finish.
       applyAIRL3DmaFoldingPatterns(func, *device);
@@ -6428,9 +6468,11 @@ public:
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(shimFors.front());
 
-    // `=0` sentinel: skip tiling globally. Any `0` mixed with other sizes
-    // would hit assert(max > 0) in findLargestFactor below -- reject
-    // explicitly so the user gets a diagnostic instead of an assert.
+    // Sentinel `shim-dma-tile-sizes=0`: globally disable tiling for every
+    // launch. Loops pass through un-tiled and the post-pass wrap-stride
+    // fold collapses them into multi-D BD descriptors. Useful as a kill
+    // switch when a per-launch attribute is preferred for selective
+    // re-enabling.
     bool tilingDisabled = clTileSizes.size() == 1 && clTileSizes[0] == 0;
     if (!tilingDisabled && llvm::is_contained(clTileSizes, 0u)) {
       func.emitError("shim-dma-tile-sizes=0 is only valid as a single-value "
@@ -6439,9 +6481,6 @@ public:
       return;
     }
 
-    // Empty defaults to per-level tile=1 below. Even tile=1 must run, as
-    // the post-tile fixup is required by downstream lowering (skipping
-    // exhausts the BD allocator on e.g. test/xrt/14_conv2d_i8_extern_vec).
     SmallVector<Value> optTileSizes;
     if (!tilingDisabled && !clTileSizes.empty()) {
       optTileSizes = convertVecOfIntToVecOfValue(
@@ -6467,7 +6506,7 @@ public:
       return actualTileSizes;
     };
     // Tile-size vector of length = root's perfectly-nested depth, filled
-    // with `value`. Used by the default (value=1) and attribute auto-expand.
+    // with `value`. Used by the per-launch attribute auto-expand path.
     auto tileSizesByDepth = [&](scf::ForOp root, unsigned value) {
       SmallVector<scf::ForOp> nested;
       getPerfectlyNestedLoops(nested, root);
@@ -6482,6 +6521,14 @@ public:
       shimFors.clear();
     for (auto forOp : shimFors) {
       auto enclosingLaunch = forOp->getParentOfType<air::LaunchOp>();
+      // Per-loop tile decision flow:
+      //   1. global CLI non-empty -> use as tile sizes
+      //   2. else: per-launch `air.shim_dma_tile_sizes` attribute:
+      //         single value 0  -> skip tiling for this launch
+      //         single value N  -> auto-expand to perfectly-nested depth
+      //         multi-value     -> use literally
+      //   3. else: skip tiling (wrap-stride fold collapses loops into
+      //      multi-D BD descriptors -- pre-#1616 default behavior).
       SmallVector<Value> perLoopTileSizes;
       DenseI64ArrayAttr launchAttr =
           enclosingLaunch ? enclosingLaunch->getAttrOfType<DenseI64ArrayAttr>(
@@ -6524,7 +6571,8 @@ public:
               SmallVector<unsigned>(attrSizes.begin(), attrSizes.end()));
         }
       } else {
-        perLoopTileSizes = tileSizesByDepth(forOp, 1);
+        // No CLI, no attribute -> skip tiling (pre-#1616 default).
+        continue;
       }
       assert(!perLoopTileSizes.empty());
       if (enclosingLaunch)

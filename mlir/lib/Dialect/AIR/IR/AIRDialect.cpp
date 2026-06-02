@@ -2281,7 +2281,7 @@ static bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
     if (stepsize && *stepsize == 1)
       return true;
   }
-  unsigned stride_factor = 1;
+  uint64_t stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
     if (!stepsize)
@@ -2291,9 +2291,9 @@ static bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
       return false;
     if (*wrap == 1 && *stepsize == 0)
       continue; // dummy dimension.
-    if (*stepsize != stride_factor)
+    if (static_cast<uint64_t>(*stepsize) != stride_factor)
       return false;
-    stride_factor *= *wrap;
+    stride_factor *= static_cast<uint64_t>(*wrap);
   }
   return true;
 }

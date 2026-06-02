@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Llama-3.2-1B Verification Subsystem</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1f2937; --muted: #6b7280; --accent: #2563eb;
+    --code-bg: #1e293b; --code-fg: #e2e8f0;
+    --card-bg: #ffffff; --card-border: #e5e7eb;
+    --part-a: #eff6ff; --part-b: #f0fdf4; --part-c: #fef3c7; --part-d: #f5f3ff;
+    --ok: #d1fae5; --warn: #fef3c7; --fail: #fee2e2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--fg); line-height: 1.6;
+    margin: 0; padding: 2rem 2rem 2rem 290px;
+    max-width: 1100px; margin-left: auto; margin-right: auto;
+  }
+  .nav {
+    position: fixed; left: 0; top: 0; bottom: 0; width: 260px;
+    background: var(--card-bg); border-right: 1px solid var(--card-border);
+    padding: 1.2rem 1.2rem 1.2rem 1.4rem;
+    overflow-y: auto; z-index: 10;
+    box-shadow: 2px 0 6px rgba(0,0,0,0.04);
+  }
+  .nav h4 { margin: 0 0 0.6rem; font-size: 0.85rem; text-transform: uppercase;
+            letter-spacing: 0.05em; color: var(--muted); }
+  .nav .nav-part {
+    display: block; margin: 1rem 0 0.3rem;
+    font-size: 0.72rem; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .nav .nav-part:first-of-type { margin-top: 0.3rem; }
+  .nav a {
+    display: block; color: var(--accent); text-decoration: none;
+    font-size: 0.85rem; line-height: 1.4;
+    padding: 0.3rem 0.5rem; border-radius: 4px;
+  }
+  .nav a:hover { background: #eef2ff; text-decoration: none; }
+  .nav-toggle {
+    position: absolute; top: 0.6rem; right: 0.6rem;
+    background: #f1f5f9; border: 1px solid var(--card-border);
+    border-radius: 4px; padding: 0.2rem 0.55rem;
+    font-size: 0.72rem; font-weight: 600; color: var(--muted);
+    cursor: pointer; line-height: 1.2;
+  }
+  .nav-toggle:hover { background: #e2e8f0; color: var(--fg); }
+  #nav-show {
+    display: none;
+    position: fixed; top: 0.6rem; left: 0.8rem; z-index: 11;
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: 999px; padding: 0.35rem 0.95rem;
+    font-size: 0.78rem; font-weight: 600; color: var(--accent);
+    cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  }
+  #nav-show:hover { background: #eef2ff; }
+  body.nav-hidden { padding-left: 2rem; }
+  body.nav-hidden .nav { display: none; }
+  body.nav-hidden #nav-show { display: inline-block; }
+  @media (max-width: 900px) {
+    body { padding-left: 2rem; }
+    .nav { box-shadow: 4px 0 12px rgba(0,0,0,0.12); }
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.3rem; color: #111827; }
+  h2 { font-size: 1.5rem; margin-top: 2.6rem; padding-bottom: 0.4rem;
+       border-bottom: 3px solid var(--accent); color: #111827; }
+  h2.part { font-size: 1.7rem; padding: 0.7rem 1rem; border-radius: 6px;
+            border-bottom: none; margin-top: 3.5rem; }
+  h2.part-a { background: var(--part-a); border-left: 6px solid var(--accent); }
+  h2.part-b { background: var(--part-b); border-left: 6px solid #15803d; }
+  h2.part-c { background: var(--part-c); border-left: 6px solid #d97706; }
+  h2.part-d { background: var(--part-d); border-left: 6px solid #7c3aed; }
+  h3 { font-size: 1.15rem; margin-top: 1.6rem; color: #1f2937; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin-bottom: 1.5rem; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 0.9em;
+         background: #eef2ff; padding: 1px 4px; border-radius: 3px; }
+  pre code { background: none; color: var(--code-fg); padding: 0; }
+  pre { background: var(--code-bg); color: var(--code-fg);
+        padding: 0.9rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: 0.85rem; line-height: 1.45; }
+  table { border-collapse: collapse; margin: 0.7rem 0; width: 100%; font-size: 0.92rem; }
+  th, td { border: 1px solid var(--card-border); padding: 0.4rem 0.7rem;
+           text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .card { background: var(--card-bg); border: 1px solid var(--card-border);
+          border-left: 4px solid var(--accent); border-radius: 6px;
+          padding: 0.9rem 1.1rem; margin: 1rem 0; }
+  .card.warn { border-left-color: #d97706; background: #fffbeb; }
+  .file-ref { font-family: "SF Mono", Menlo, monospace; font-size: 0.85em;
+              color: #6b7280; }
+  .small { font-size: 0.9rem; color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px;
+           font-size: 0.78rem; font-weight: 600; vertical-align: middle; }
+  .badge.ok { background: #d1fae5; color: #065f46; }
+  .badge.warn { background: #fef3c7; color: #92400e; }
+  .tk-ok { color: #15803d; font-weight: 700; margin-right: 0.25rem; }
+  /* Vertical flow of step boxes for the verify-run walkthrough. */
+  .flow { display: flex; flex-direction: column; align-items: stretch;
+          gap: 0; margin: 1rem 0 1.5rem; }
+  .flow .step {
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    border-left: 4px solid var(--accent); border-radius: 6px;
+    padding: 0.6rem 0.9rem; font-size: 0.92rem;
+  }
+  .flow .step strong { color: #111827; }
+  .flow .arrow {
+    align-self: center; color: var(--muted); font-size: 1.4rem;
+    line-height: 1; padding: 0.25rem 0;
+  }
+  .flow .step.split { display: flex; gap: 0.8rem; padding: 0;
+                      background: transparent; border: none; }
+  .flow .step.split > div {
+    flex: 1; background: var(--card-bg); border: 1px solid var(--card-border);
+    border-left: 4px solid #15803d; border-radius: 6px; padding: 0.6rem 0.9rem;
+    font-size: 0.92rem;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav" id="nav">
+  <button type="button" class="nav-toggle" id="nav-toggle" title="Hide sidebar (press h)">Hide &larr;</button>
+  <div class="nav-body">
+    <h4>Navigation</h4>
+
+    <span class="nav-part">Overview</span>
+    <a href="#overview">Two lenses, one bf16 reference</a>
+
+    <span class="nav-part">Part A &mdash; Verify gate</span>
+    <a href="#verify">A. <code>make verify</code> — the correctness gate</a>
+    <a href="#verify-results" style="padding-left:1.2rem; font-size:0.8rem;">&rarr; Latest results (8/8 × 2)</a>
+
+    <span class="nav-part">Part B &mdash; Diagnosis lens</span>
+    <a href="#diagnosis">B. <code>make diagnosis</code> — the inside lens</a>
+    <a href="#diagnosis-results" style="padding-left:1.2rem; font-size:0.8rem;">&rarr; Latest cos table</a>
+
+    <span class="nav-part">Part C &mdash; Why this design works</span>
+    <a href="#impl">C. Three pillars + one-run walkthrough + file map</a>
+
+    <span class="nav-part">Reproduce</span>
+    <a href="#repro">How to reproduce the numbers</a>
+
+    <span class="nav-part">Companion</span>
+    <a href="IMPLEMENTATION_GUIDE.html" style="font-weight:600;">&rarr; IMPLEMENTATION_GUIDE.html</a>
+  </div>
+</div>
+<button type="button" id="nav-show" title="Show navigation (h)">&#9776; Nav</button>
+
+<h1>Llama-3.2-1B Verification Subsystem</h1>
+<p class="subtitle">Two ways to look at the production NPU2 inference pipeline, both comparing against HuggingFace transformers in <strong>bf16</strong>. Companion to <a href="IMPLEMENTATION_GUIDE.html">IMPLEMENTATION_GUIDE.html</a> Part C.</p>
+
+<h2 id="overview">Two lenses, one bf16 reference</h2>
+
+<div class="card">
+<strong><code>make verify [MODEL=instruct|base]</code></strong> &mdash; the industry-standard correctness gate. 2 prompts &times; 32 greedy tokens (fast CI gate; <code>make verify-full</code> runs the full 8-prompt sweep), top-5 set inclusion vs HuggingFace transformers <em>bf16</em> on the NPU end-to-end production path (NPU FlashAttention on, no CPU attention fallback). Lite-mode runners — no inside probing. <strong>~2 minutes / run</strong> (verify-full: ~6 minutes). Default <code>MODEL=instruct</code> matches what production stacks deploy.
+</div>
+
+<div class="card">
+<strong><code>make diagnosis [MODEL=...]</code></strong> &mdash; the inside-probing lens. Single prompt's prefill, per-layer ffn_out cosine + max_abs (NPU vs HF bf16) for all 16 layers. Same end-to-end NPU production path as verify (NPU FlashAttention on). <em>Informational only — diagnosis never fails the run.</em> The verify gate is the correctness signal; this table is what you read by hand when verify flags an issue and you need to localize. <strong>~2 minutes / run.</strong>
+</div>
+
+<div class="card">
+<strong>Why two lenses?</strong> <code>verify</code> answers "would this model deploy" using the exact criterion industry uses to qualify a BF16 LLM for production — discrete top-k judgment that is robust to bf16 ULP noise. <code>diagnosis</code> gives <em>localization</em>: a continuous-cosine table per layer that tells you where the NPU implementation drifts most from HF. The verify gate gates; the diagnosis lens informs.
+</div>
+
+<div class="card">
+<strong>Latest results (2026-05-15):</strong>
+<ul style="margin:0.4rem 0 0;">
+  <li><code>make verify MODEL=instruct</code>: <span class="badge ok">8/8 PASS</span>, ~3m41s</li>
+  <li><code>make verify MODEL=base</code>: <span class="badge ok">8/8 PASS</span>, ~3m39s</li>
+  <li><code>make diagnosis MODEL=instruct</code> (NPU FA on): cos_p5 in [0.926, 0.993], U-shape with single L1-L2 dip and L10 peak.</li>
+  <li><code>make diagnosis MODEL=base</code> (NPU FA on): cos_p5 in [0.929, 0.992], double-dip shape (L1-L3 and L12-L14). Same-checkpoint dependence on prompt + fine-tune is what diagnosis surfaces; both pass verify regardless. See Part B.</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="verify" class="part part-a">A. <code>make verify</code> — the correctness gate</h2>
+
+<h3>The check (mirrors vLLM's <code>check_logprobs_close</code>)</h3>
+
+<ol>
+  <li>Each runner (NPU + HF bf16) greedy-decodes 32 tokens for one prompt, capturing the chosen token + top-5 token IDs at every step.</li>
+  <li>Walk both sequences in lockstep. Same chosen token &rarr; continue. Different chosen tokens &rarr; require both to appear in the OTHER side's top-5; otherwise FAIL. Stop walking after the first divergence.</li>
+  <li>All prompts in the run must pass; any FAIL exits with code 1. <code>make verify</code> runs 2 prompts (fast CI gate); <code>make verify-full</code> runs the full 8.</li>
+</ol>
+
+<p>NPU runs the full production path (GEMV + RMSNorm + RoPE + FlashAttention + LM-head GEMV). Discrete top-k inclusion is robust to bf16 ULP noise: noise routinely flips per-step top-1 between mathematically equivalent implementations but rarely displaces a token from the top-5.</p>
+
+<h3>Two prompt sets, matched to checkpoint behavior</h3>
+
+<table>
+<tr><th>#</th><th>Base (<code>verify/prompts/base.txt</code>)</th><th>Instruct (<code>verify/prompts/instruct.txt</code>)</th></tr>
+<tr><td>0</td><td><code>GPU stands for</code></td><td><code>Introduce me what is GPU</code></td></tr>
+<tr><td>1</td><td><code>The capital of France is</code></td><td><code>Briefly describe the major milestones in the development of artificial intelligence from 1950 to 2020.</code></td></tr>
+<tr><td>2</td><td><code>Artificial intelligence is a branch of computer science that</code></td><td><code>Compare and contrast artificial intelligence with human intelligence in terms of processing information.</code></td></tr>
+<tr><td>3</td><td><code>A neural network consists of</code></td><td><code>Describe the basic components of a neural network and how it can be trained.</code></td></tr>
+<tr><td>4</td><td><code>Once upon a time, there was a robot who dreamed about</code></td><td><code>Write a short story about a robot that dreams for the first time.</code></td></tr>
+<tr><td>5</td><td><code>The COVID-19 pandemic, which began in late 2019,</code></td><td><code>Analyze the impact of the COVID-19 pandemic on global economic structures and future business models.</code></td></tr>
+<tr><td>6</td><td><code>The Mona Lisa was painted by</code></td><td><code>Explain the cultural significance of the Mona Lisa painting, and how its perception might vary in Western versus Eastern societies.</code></td></tr>
+<tr><td>7</td><td><code>The French translation of "The early bird catches the worm" is</code></td><td><code>Translate the following English sentence into Japanese, French, and Swahili: 'The early bird catches the worm.'</code></td></tr>
+</table>
+
+<p>Topics deliberately mirror each other so base-vs-instruct comparisons read naturally row-by-row. Base prompts are intentionally incomplete sentences (the base model continues raw text rather than answering instructions). Instruct prompts are imperative requests (7 verbatim from <code>vllm/tests/prompts/example.txt</code> + 1 swapped for project relevance).</p>
+
+<h3 id="verify-results">Per-prompt results (NPU vs HF bf16, k=5)</h3>
+
+<p>For each prompt we display the first <strong>divergence step</strong> (0-based; step 0 is the prefill prediction, step 1 is the first decode token); each side's chosen token at that step (decoded text, quoted so leading whitespace stays visible) plus its <strong>1-based rank in the OTHER runner's top-5</strong>; and the <em>agreed prefix</em> &mdash; the actual generated text both runners produced identically before splitting.</p>
+
+<h4>Base checkpoint</h4>
+<table>
+<tr><th>#</th><th>Prompt</th><th>Diverge</th><th>NPU choice (rank in HF)</th><th>HF choice (rank in NPU)</th><th>Agreed prefix</th></tr>
+<tr><td>0</td><td><code>GPU stands for</code></td><td class="num">7</td><td><span class="tk-ok">&check;</span> <code>" special" (#2)</code></td><td><span class="tk-ok">&check;</span> <code>" specialized" (#2)</code></td><td><code>" Graphics Processing Unit. It is a"</code></td></tr>
+<tr><td>1</td><td><code>The capital of France is</code></td><td class="num">1</td><td><span class="tk-ok">&check;</span> <code>"," (#2)</code></td><td><span class="tk-ok">&check;</span> <code>"." (#2)</code></td><td><code>" Paris"</code></td></tr>
+<tr><td>2</td><td><code>Artificial intelligence is&hellip;</code></td><td class="num">7</td><td><span class="tk-ok">&check;</span> <code>"," (#2)</code></td><td><span class="tk-ok">&check;</span> <code>"." (#2)</code></td><td><code>" deals with the creation of intelligent machines"</code></td></tr>
+<tr><td>3</td><td><code>A neural network consists of</code></td><td class="num">3</td><td><span class="tk-ok">&check;</span> <code>" nodes" (#2)</code></td><td><span class="tk-ok">&check;</span> <code>" interconnected" (#3)</code></td><td><code>" a set of"</code></td></tr>
+<tr><td>4</td><td><code>Once upon a time, there was a robot&hellip;</code></td><td class="num">7</td><td><span class="tk-ok">&check;</span> <code>" little" (#2)</code></td><td><span class="tk-ok">&check;</span> <code>" robot" (#2)</code></td><td><code>" being a human. He was a"</code></td></tr>
+<tr><td>5</td><td><code>The COVID-19 pandemic&hellip;</code></td><td class="num">9</td><td><span class="tk-ok">&check;</span> <code>"," (#2)</code></td><td><span class="tk-ok">&check;</span> <code>"." (#2)</code></td><td><code>" has had a significant impact on the global economy"</code></td></tr>
+<tr><td>6</td><td><code>The Mona Lisa was painted by</code></td><td class="num">7</td><td><span class="tk-ok">&check;</span> <code>" and" (#2)</code></td><td><span class="tk-ok">&check;</span> <code>"." (#3)</code></td><td><code>" Leonardo da Vinci in 1503"</code></td></tr>
+<tr><td>7</td><td><code>The French translation&hellip;</code></td><td class="num">6</td><td><span class="tk-ok">&check;</span> <code>" prend" (#3)</code></td><td><span class="tk-ok">&check;</span> <code>" g" (#2)</code></td><td><code>" "Le premier oisif"</code></td></tr>
+</table>
+
+<h4>Instruct checkpoint</h4>
+<table>
+<tr><th>#</th><th>Prompt</th><th>Diverge</th><th>NPU choice (rank in HF)</th><th>HF choice (rank in NPU)</th><th>Agreed prefix</th></tr>
+<tr><td>0</td><td><code>Introduce me what is GPU</code></td><td class="num">0</td><td><span class="tk-ok">&check;</span> <code>" acceleration" (#2)</code></td><td><span class="tk-ok">&check;</span> <code>" (" (#2)</code></td><td><em>(no prefix)</em></td></tr>
+<tr><td>1</td><td><code>Briefly describe&hellip;</code></td><td class="num">0</td><td><span class="tk-ok">&check;</span> <code>" Some" (#4)</code></td><td><span class="tk-ok">&check;</span> <code>" Key" (#3)</code></td><td><em>(no prefix)</em></td></tr>
+<tr><td>2</td><td><code>Compare and contrast&hellip;</code></td><td class="num">8</td><td><span class="tk-ok">&check;</span> <code>" (" (#4)</code></td><td><span class="tk-ok">&check;</span> <code>" are" (#2)</code></td><td><code>" Artificial intelligence (AI) and human intelligence"</code></td></tr>
+<tr><td>3</td><td><code>Describe the basic components&hellip;</code></td><td class="num">20</td><td><span class="tk-ok">&check;</span> <code>" multiple" (#2)</code></td><td><span class="tk-ok">&check;</span> <code>" three" (#2)</code></td><td><code>" \n\n## Step 1: Define the basic components of a neural network\nA neural network consists of"</code></td></tr>
+<tr><td>4</td><td><code>Write a short story&hellip;</code></td><td class="num">11</td><td><span class="tk-ok">&check;</span> <code>" model" (#3)</code></td><td><span class="tk-ok">&check;</span> <code>" android" (#2)</code></td><td><code>" It's a robot named Zeta, a highly advanced"</code></td></tr>
+<tr><td>5</td><td><code>Analyze the impact of COVID&hellip;</code></td><td class="num">&mdash;</td><td><span class="tk-ok">&check;</span> <em>(all 32 match)</em></td><td><span class="tk-ok">&check;</span> <em>(all 32 match)</em></td><td><em>(no divergence within sample)</em></td></tr>
+<tr><td>6</td><td><code>Explain the cultural significance&hellip;</code></td><td class="num">29</td><td><span class="tk-ok">&check;</span> <code>" Created" (#4)</code></td><td><span class="tk-ok">&check;</span> <code>" It" (#2)</code></td><td><code>" \n\nThe Mona Lisa, painted by Leonardo da Vinci in the early 16th century, is one of the most famous paintings in the world."</code></td></tr>
+<tr><td>7</td><td><code>Translate the following&hellip;</code></td><td class="num">26</td><td><span class="tk-ok">&check;</span> <code>" Here" (#2)</code></td><td><span class="tk-ok">&check;</span> <code>"The" (#2)</code></td><td><code>" This is a common English idiom that means&hellip;"</code></td></tr>
+</table>
+
+<p class="small">Both checkpoints PASS the gate. Most divergences are <code>#2</code>/<code>#2</code> swaps (both runners agreed on the same two top candidates; bf16 noise picked which ranked first); a few are <code>#3</code>/<code>#4</code>. None hit out-of-top-5. On Instruct, prompts 3, 6, 7 reach 20-29 tokens of agreement before splitting, and prompt 5 had zero divergence in the 32-token sample.</p>
+
+<!-- ============================================================ -->
+<h2 id="diagnosis" class="part part-b">B. <code>make diagnosis</code> — the inside lens</h2>
+
+<h3>What it does</h3>
+
+<p>Single prompt's prefill on NPU + HF bf16, then computes per-position cosine + element-wise abs error for each layer's <code>ffn_out</code> (the block output). For layers 0&hellip;n_layers&minus;2, both sides expose the raw layer output. For layer n_layers&minus;1, both sides expose the post-final-RMSNorm hidden state &mdash; HF surfaces this as <code>hidden_states[n_layers]</code> (post-norm by HF v5.3 convention); NPU produces the equivalent via the same <code>final_norm</code> step it does inside its production LM-head GEMV path. So both L15 cells correspond to "the value the LM-head sees".</p>
+
+<p><strong>Diagnosis is informational only.</strong> No threshold, no pass/fail, no exit code based on the cosine. Verify is the correctness signal; the diagnosis table tells you where the NPU implementation drifts most from HF (which layer, by how much), which is what you want when triaging a real verify failure or weighing a kernel-side optimization.</p>
+
+<h3 id="diagnosis-results">Latest cosine tables (NPU FA on, prompt = "The capital of France is")</h3>
+
+<p>Same prompt, same NPU end-to-end path, both checkpoints. Run side-by-side so the per-layer precision shape can be compared directly.</p>
+
+<h4>Instruct (<code>meta-llama/Llama-3.2-1B-Instruct</code>)</h4>
+<table>
+<tr><th>Layer</th><th>cos_p5</th><th>cos_min</th><th>cos_median</th><th>max_abs</th></tr>
+<tr><td>0</td><td class="num">0.993269</td><td class="num">0.993257</td><td class="num">0.993733</td><td class="num">0.75</td></tr>
+<tr><td>1</td><td class="num">0.926400</td><td class="num">0.908160</td><td class="num">0.990950</td><td class="num">22</td></tr>
+<tr><td>2</td><td class="num">0.927211</td><td class="num">0.908539</td><td class="num">0.988378</td><td class="num">22</td></tr>
+<tr><td>3</td><td class="num">0.940698</td><td class="num">0.927680</td><td class="num">0.988209</td><td class="num">24</td></tr>
+<tr><td>4</td><td class="num">0.951836</td><td class="num">0.940504</td><td class="num">0.987463</td><td class="num">26</td></tr>
+<tr><td>5</td><td class="num">0.959359</td><td class="num">0.950193</td><td class="num">0.988150</td><td class="num">28</td></tr>
+<tr><td>6</td><td class="num">0.965235</td><td class="num">0.958839</td><td class="num">0.988398</td><td class="num">30</td></tr>
+<tr><td>7</td><td class="num">0.969200</td><td class="num">0.964980</td><td class="num">0.988053</td><td class="num">30</td></tr>
+<tr><td>8</td><td class="num">0.975010</td><td class="num">0.973589</td><td class="num">0.989355</td><td class="num">32</td></tr>
+<tr><td>9</td><td class="num">0.981512</td><td class="num">0.980698</td><td class="num">0.990487</td><td class="num">34</td></tr>
+<tr><td>10</td><td class="num">0.983873</td><td class="num">0.983115</td><td class="num">0.990943</td><td class="num">36</td></tr>
+<tr><td>11</td><td class="num">0.981148</td><td class="num">0.978896</td><td class="num">0.990446</td><td class="num">36</td></tr>
+<tr><td>12</td><td class="num">0.976977</td><td class="num">0.973395</td><td class="num">0.990023</td><td class="num">38</td></tr>
+<tr><td>13</td><td class="num">0.975324</td><td class="num">0.970957</td><td class="num">0.989895</td><td class="num">42</td></tr>
+<tr><td>14</td><td class="num">0.971639</td><td class="num">0.966981</td><td class="num">0.990319</td><td class="num">44</td></tr>
+<tr><td>15</td><td class="num">0.970669</td><td class="num">0.966320</td><td class="num">0.987503</td><td class="num">10.83</td></tr>
+</table>
+
+<h4>Base (<code>meta-llama/Llama-3.2-1B</code>)</h4>
+<table>
+<tr><th>Layer</th><th>cos_p5</th><th>cos_min</th><th>cos_median</th><th>max_abs</th></tr>
+<tr><td>0</td><td class="num">0.991912</td><td class="num">0.991241</td><td class="num">0.994038</td><td class="num">1.75</td></tr>
+<tr><td>1</td><td class="num">0.966095</td><td class="num">0.959596</td><td class="num">0.989646</td><td class="num">7</td></tr>
+<tr><td>2</td><td class="num">0.960257</td><td class="num">0.952361</td><td class="num">0.988373</td><td class="num">6</td></tr>
+<tr><td>3</td><td class="num">0.958956</td><td class="num">0.950566</td><td class="num">0.986123</td><td class="num">7</td></tr>
+<tr><td>4</td><td class="num">0.970088</td><td class="num">0.965457</td><td class="num">0.985988</td><td class="num">8</td></tr>
+<tr><td>5</td><td class="num">0.972773</td><td class="num">0.969458</td><td class="num">0.985526</td><td class="num">9</td></tr>
+<tr><td>6</td><td class="num">0.974773</td><td class="num">0.973999</td><td class="num">0.983875</td><td class="num">10</td></tr>
+<tr><td>7</td><td class="num">0.971905</td><td class="num">0.968814</td><td class="num">0.982661</td><td class="num">10</td></tr>
+<tr><td>8</td><td class="num">0.955578</td><td class="num">0.949168</td><td class="num">0.987208</td><td class="num">11</td></tr>
+<tr><td>9</td><td class="num">0.960433</td><td class="num">0.959102</td><td class="num">0.989534</td><td class="num">12</td></tr>
+<tr><td>10</td><td class="num">0.965993</td><td class="num">0.965948</td><td class="num">0.990815</td><td class="num">13</td></tr>
+<tr><td>11</td><td class="num">0.954954</td><td class="num">0.949146</td><td class="num">0.990970</td><td class="num">13</td></tr>
+<tr><td>12</td><td class="num">0.941147</td><td class="num">0.929415</td><td class="num">0.989791</td><td class="num">15</td></tr>
+<tr><td>13</td><td class="num">0.936710</td><td class="num">0.923149</td><td class="num">0.988866</td><td class="num">16</td></tr>
+<tr><td>14</td><td class="num">0.929362</td><td class="num">0.912219</td><td class="num">0.987908</td><td class="num">17</td></tr>
+<tr><td>15</td><td class="num">0.939495</td><td class="num">0.924292</td><td class="num">0.990349</td><td class="num">4.013</td></tr>
+</table>
+
+<h3>How to read it</h3>
+
+<ol>
+  <li><strong>Worst layer on either checkpoint is ~0.93.</strong> Comfortably inside the bf16 noise floor (NPU and HF are both bf16, so this is apples-to-apples). Cosine is direction-only, so the underlying per-position direction agreement is high across all 16 layers.</li>
+  <li><strong>Different fine-tunes have different per-layer shapes.</strong>
+    <ul>
+      <li><strong>Instruct</strong>: high at L0 (0.993), single dip at L1-L2 (~0.927), monotonic climb to a peak at L10 (0.984), gradual decline to ~0.971 by L15.</li>
+      <li><strong>Base</strong>: high at L0 (0.992), early dip at L1-L3 (~0.96), small mid-stack peak at L4-L7 (~0.97), second dip reaching the floor at L12-L14 (~0.93), slight recovery at L15.</li>
+    </ul>
+    Different fine-tuning produces different activation distributions per layer; bf16 round-off interacts with those distributions differently. Both pass verify.
+  </li>
+  <li><strong>Activation magnitude differs sharply between checkpoints.</strong> Base <code>max_abs</code> sits in the 6-17 range; Instruct sits in 22-44. Instruction tuning amplifies certain pathways; the bigger absolute deltas are not a precision problem (cosine is direction-only).</li>
+  <li><strong>L15 is the post-final-norm cell.</strong> <code>max_abs</code> (~10 for Instruct, ~4 for base) is much smaller than mid-stack because <code>final_norm</code> rescales the hidden state to unit-variance-ish magnitude.</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="impl" class="part part-c">C. Why this design verifies production</h2>
+
+<p>Three things have to hold for <code>make verify</code> to be a meaningful correctness signal: the version we test must be the version that ships, the reference we compare against must be trustworthy, and the comparison criterion must be sound for bf16. We address each below.</p>
+
+<h3>1. NpuRunner runs the actual production code</h3>
+
+<p><code>NpuRunner</code> directly imports and invokes the production functions &mdash; no reimplementation:</p>
+
+<pre><code>from llama32_1b_inference import prepare_runtime
+from llama32_1b_prefill   import run_transformer_block as run_prefill_block
+from llama32_1b_decode    import compile_decode_kernels, run_decode_block</code></pre>
+
+<p><code>NpuRunner.__init__</code> compiles the same kernels production compiles and runs the same <code>prepare_runtime</code> setup. <code>NpuRunner.prefill</code> calls <code>run_prefill_block</code> for each of the 16 layers, then runs the production 8-partition LM-head GEMV. <code>NpuRunner.decode_step</code> calls <code>run_decode_block</code>. If NpuRunner produces the right tokens, <code>llama32_1b_inference.py</code> produces the right tokens &mdash; by construction.</p>
+
+<h3>2. HF transformers in bf16 is the right reference</h3>
+
+<table>
+  <tr><th>Criterion</th><th>Choice</th></tr>
+  <tr><td>Canonical</td><td><code>transformers.AutoModelForCausalLM</code> is the reference implementation that Meta + HuggingFace + the open-source LLM ecosystem maintain. Every bf16 LLM deployment (vLLM, llama.cpp, TRT-LLM, &hellip;) is qualified against this codebase.</td></tr>
+  <tr><td>Same dtype</td><td>Loaded as <code>torch_dtype=torch.bfloat16</code>, matching NPU production. Both sides hit the same bf16 round-off characteristics; the comparison is not testing a dtype gap.</td></tr>
+  <tr><td>Same weights</td><td>Both runners load <code>meta-llama/Llama-3.2-1B[-Instruct]</code> from the same HF cache. Identical bytes on disk.</td></tr>
+</table>
+
+<p>HfRunner is ~110 lines that delegate to <code>self.model(input_ids, use_cache=True)</code>. No transformer-block reimplementation, no custom kernel &mdash; the simpler the reference, the harder it is for the reference to be wrong.</p>
+
+<h3>3. Top-k token-level inclusion is the right criterion for bf16</h3>
+
+<p>Continuous metrics (cosine, KL) on bf16 logits are fragile: bf16 ULP noise routinely flips per-step top-1 between two mathematically equivalent implementations. Discrete top-k inclusion is robust &mdash; bf16 noise can flip top-1 but rarely displaces a token from the top-5. <code>compute_topk_set_check</code> in <code>comparators.py</code> mirrors vLLM's <code>tests/models/utils.py::check_logprobs_close</code>; <code>k=5</code> and <code>n_tokens=32</code> are vLLM's defaults for the standard model gate.</p>
+
+<h3>One <code>make verify</code> run, end to end</h3>
+
+<div class="flow">
+  <div class="step"><strong>Step 1.</strong> Load prompts from <code>verify/prompts/{instruct,base}.txt</code> (selected by <code>MODEL</code>). <code>make verify</code> uses the first 2 (fast CI gate); <code>make verify-full</code> uses all 8.</div>
+  <div class="arrow">&darr;</div>
+  <div class="step split">
+    <div><strong>NpuRunner</strong> (production prefill + decode kernels, NPU FA on): greedy-decode 32 tokens, capturing <code>chosen[i]</code> + <code>topk[i]</code> (top-5 IDs) per step.</div>
+    <div><strong>HfRunner</strong> (HF transformers in bf16): same 32-token greedy decode, same <code>chosen[i]</code> + <code>topk[i]</code> capture.</div>
+  </div>
+  <div class="arrow">&darr;</div>
+  <div class="step"><strong>Step 3.</strong> <code>compute_topk_set_check(npu_chosen, npu_topk, hf_chosen, hf_topk, k=5)</code> walks both sequences in lockstep:
+    <ul style="margin:0.4rem 0 0 1.2rem;">
+      <li>Same chosen &rarr; continue.</li>
+      <li>Different chosen &rarr; require both to land in the OTHER side's top-5; status <code>OK</code> or <code>FAIL</code>; stop.</li>
+    </ul>
+  </div>
+  <div class="arrow">&darr;</div>
+  <div class="step"><strong>Step 4.</strong> Repeat steps 2-3 for every prompt in the run; <code>Report.has_failure()</code> returns True iff any record is FAIL.</div>
+  <div class="arrow">&darr;</div>
+  <div class="step"><strong>Step 5.</strong> Write <code>verify_topk_token_*.{json,md}</code>; exit 1 on FAIL else exit 0 (PASS).</div>
+</div>
+
+<h3>What this catches and what it can miss</h3>
+
+<p><strong>Catches</strong> (every step exercises the entire production stack):</p>
+<ul>
+  <li>Kernel correctness regressions in GEMV / GEMM / RMSNorm / RoPE / FlashAttention / LM-head GEMV / embedding lookup &mdash; a wrong implementation shifts logits enough to push a chosen token out of HF's top-5 within 32 steps on at least one of 8 diverse prompts.</li>
+  <li>Pipeline glue regressions: KV-cache layout, weight pre-transpose, per-layer BO tagging, LM-head partition aggregation.</li>
+  <li>Fine-tune-specific behavior: gating Instruct and Base separately catches regressions on either weight distribution.</li>
+</ul>
+
+<p><strong>Can miss:</strong></p>
+<ul>
+  <li>Bugs that only manifest on prompts outside the 8 (the gate is finite; an lm-eval-harness GSM8K extension would broaden coverage).</li>
+  <li>Bugs that bias top-1 in a consistent direction without ever pushing a token out of top-5 (e.g., a uniform scale on every logit).</li>
+  <li>Code paths not exercised by the run (prompts longer than max_seq=2048, etc.).</li>
+</ul>
+
+<h3>File map</h3>
+
+<table>
+  <tr><th>File</th><th>Responsibility</th></tr>
+  <tr><td><code>Makefile</code> (parent)</td><td><code>verify</code> / <code>diagnosis</code> / <code>clean</code> targets. <code>MODEL=base|instruct</code>, <code>PROMPT=…</code> for diagnosis.</td></tr>
+  <tr><td><code>verify/verify_runner.py</code></td><td>Orchestrator. Builds NPU + HF runners, loops prompts, calls the comparator, writes the report, exits 1 on FAIL.</td></tr>
+  <tr><td><code>verify/comparators.py</code></td><td><code>topk_token_ids</code> (top-k with argmax-consistent tie-break), <code>compute_topk_set_check</code> (top-k token-level inclusion, mirrors vLLM's <code>check_logprobs_close</code>), plus diagnosis-only helpers (<code>per_position_cosine</code>, <code>error_metrics</code>, <code>compare_pair</code>).</td></tr>
+  <tr><td><code>verify/report.py</code></td><td>Report accumulator + JSON / markdown dumpers. <code>has_failure()</code> returns True iff any <code>npu_vs_hf</code> record is FAIL.</td></tr>
+  <tr><td><code>verify/runners/npu_runner.py</code></td><td>Imports + invokes the production prefill / decode / LM-head functions.</td></tr>
+  <tr><td><code>verify/runners/hf_runner.py</code></td><td>Loads <code>AutoModelForCausalLM</code> in <code>torch.bfloat16</code>; delegates to <code>model(input_ids, use_cache=True)</code>.</td></tr>
+  <tr><td><code>verify/runners/_records.py</code></td><td><code>PrefillRecord</code> / <code>DecodeStepRecord</code> dataclasses shared by both runners.</td></tr>
+  <tr><td><code>verify/prompts/instruct.txt</code></td><td>8 instruction-style prompts (<code>MODEL=instruct</code>); 7 from <code>vllm/tests/prompts/example.txt</code> + 1 GPU-related swap.</td></tr>
+  <tr><td><code>verify/prompts/base.txt</code></td><td>8 continuation-style prompts (<code>MODEL=base</code>); incomplete sentences matched to base behavior.</td></tr>
+</table>
+
+<p class="small"><strong>Production-side touch points</strong>: <code>llama32_1b_prefill.py::run_transformer_block</code> populates <code>ffn_out</code> in the intermediates dict it already returns; diagnosis (which re-runs prefill layer-by-layer) reads it. Verify never reads any per-layer intermediates — it only consumes the final logits + chosen tokens.</p>
+
+<!-- ============================================================ -->
+<h2 id="repro">How to reproduce these numbers</h2>
+
+<pre><code>cd programming_examples/llama32_1b
+
+make verify MODEL=instruct       <span class="file-ref"># ~3m41s — top-k token-level inclusion gate, NPU vs HF bf16 (NPU FA on)</span>
+make verify MODEL=base           <span class="file-ref"># ~3m39s — base checkpoint, continuation prompts</span>
+
+make diagnosis MODEL=instruct    <span class="file-ref"># ~2m55s — per-layer ffn_out cosine table (NPU FA on)</span>
+make diagnosis MODEL=base        <span class="file-ref"># same lens, base checkpoint</span>
+</code></pre>
+
+<p>Reports land in <code>verify/reports/{verify_topk_token_,diagnosis_}YYYYMMDD-HHMMSS.{json,md}</code> (gitignored). The chosen <code>MODEL</code>, <code>model_name</code>, and (for verify) <code>prompts_file</code> are recorded in the report config so the file is unambiguous.</p>
+
+<hr>
+
+<p class="small">Companion: <a href="IMPLEMENTATION_GUIDE.html">IMPLEMENTATION_GUIDE.html</a> Part C (the original CI smoke that this subsystem extends).</p>
+
+<script>
+  (function() {
+    const STATE_KEY = "llama-verify-nav-state";
+    const toggle = document.getElementById("nav-toggle");
+    const showBtn = document.getElementById("nav-show");
+
+    function apply(state) {
+      document.body.classList.toggle("nav-hidden", state === "hidden");
+    }
+    function setState(state) {
+      try { localStorage.setItem(STATE_KEY, state); } catch (e) {}
+      apply(state);
+    }
+
+    toggle.addEventListener("click", function() { setState("hidden"); });
+    showBtn.addEventListener("click", function() { setState("open"); });
+
+    document.addEventListener("keydown", function(e) {
+      if (e.key === "h" && !e.ctrlKey && !e.metaKey && !e.altKey &&
+          !["INPUT","TEXTAREA"].includes(document.activeElement.tagName)) {
+        const hidden = document.body.classList.contains("nav-hidden");
+        setState(hidden ? "open" : "hidden");
+      }
+    });
+
+    let saved = "open";
+    try { saved = localStorage.getItem(STATE_KEY) || "open"; } catch (e) {}
+    apply(saved);
+  })();
+</script>
+
+</body>
+</html>

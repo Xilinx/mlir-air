@@ -35,6 +35,14 @@ def _get_aie_include_dir():
         p = Path(aie_opt).resolve().parent.parent / "include"
         if (p / "aie_api" / "aie.hpp").exists():
             return str(p)
+    # Explicit override: MLIR_AIE_INSTALL_DIR env var (useful in git worktrees
+    # where the local-dev relative path below resolves to the worktree root
+    # rather than the main repo root).
+    mlir_aie_dir = os.environ.get("MLIR_AIE_INSTALL_DIR", "")
+    if mlir_aie_dir:
+        p = Path(mlir_aie_dir) / "include"
+        if (p / "aie_api" / "aie.hpp").exists():
+            return str(p)
     # Fallback: explicit local dev install path.
     p = (
         Path(__file__).resolve().parent.parent.parent.parent
@@ -47,7 +55,7 @@ def _get_aie_include_dir():
         return str(p)
     raise RuntimeError(
         "Cannot find aie_api/aie.hpp include directory "
-        "(no aie-opt on PATH and no my_install/mlir-aie/install)"
+        "(no aie-opt on PATH, no MLIR_AIE_INSTALL_DIR, no my_install/mlir-aie/install)"
     )
 
 
@@ -151,24 +159,31 @@ def compile_attn_npu2(head_dim=64):
         shutil.copy2("attn_npu2.o", "attn.o")
 
 
-def compile_mv_k8192():
-    """Compile mv_k8192.o with renamed GEMV symbols for K=8192 decode merge."""
-    src = _PROJ_ROOT / "matrix_vector_multiplication" / "bf16" / "mv.cc"
-    _compile_kernel(
-        src,
-        "mv_k8192.o",
-        extra_flags=[
-            "-DDIM_M_OUTPUT=2",
-            "-Dmatvec_vectorized_bf16_bf16=dg_matvec_vectorized_bf16_bf16",
-            "-Dlinalg_fill_bf16=dg_linalg_fill_bf16",
-        ],
-    )
-
-
 def compile_mv(tile_m=8):
     """Compile mv.o (standard GEMV kernel) from source."""
     src = _PROJ_ROOT / "matrix_vector_multiplication" / "bf16" / "mv.cc"
     _compile_kernel(src, "mv.o", extra_flags=[f"-DDIM_M_OUTPUT={tile_m}"])
+
+
+def compile_mv_int4_bf16(m_tile=8, k_chunk=2048, gs=128):
+    """Compile mv_int4_bf16.o (int4-AWQ GEMV micro-kernel) from source."""
+    src = _PROJ_ROOT / "matrix_vector_multiplication" / "int4_awq" / "mv_int4_bf16.cc"
+    _compile_kernel(
+        src,
+        "mv_int4_bf16.o",
+        extra_flags=[
+            f"-DDIM_M={m_tile}",
+            f"-DDIM_K={k_chunk}",
+            f"-DDIM_GS={gs}",
+        ],
+    )
+
+
+def compile_mv_bf16():
+    """Compile mv_bf16.o for the 2-tile matvec+add primitive used by
+    o_gemv_ffn stages 1 and 3."""
+    src = _PROJ_ROOT / "matrix_vector_multiplication" / "bf16_cascade" / "mv_bf16.cc"
+    _compile_kernel(src, "mv_bf16.o")
 
 
 def compile_attn_decode_npu2(head_dim=64):
@@ -197,4 +212,4 @@ def compile_all_external_kernels(head_dim=64):
     compile_attn_npu2(head_dim=head_dim)
     compile_attn_decode_npu2(head_dim=head_dim)
     compile_mv()
-    compile_mv_k8192()
+    compile_mv_bf16()

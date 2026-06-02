@@ -56,6 +56,12 @@ EXAMPLES = [
     },
     {
         "category": "Linear Algebra",
+        "name": "Matrix-Vector Multiplication (AWQ int4)",
+        "path": "matrix_vector_multiplication/int4_awq",
+        "datatypes": "int4 weights / bf16 activations",
+    },
+    {
+        "category": "Linear Algebra",
         "name": "AXPY",
         "path": "axpy",
         "datatypes": "bf16",

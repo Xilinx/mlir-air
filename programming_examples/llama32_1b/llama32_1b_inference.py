@@ -17,7 +17,6 @@ Usage:
     # Run inference with cached kernels:
     python3 ../llama32_1b_inference.py --run-only --n-tokens 10 --profile
     python3 ../llama32_1b_inference.py --run-only --n-tokens 100 --profile
-    python3 ../llama32_1b_inference.py --run-only --n-tokens 5 --verify
     python3 ../llama32_1b_inference.py --run-only --n-tokens 20 --prompt "Once upon a time"
 """
 
@@ -37,10 +36,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from llama32_1b_weights import (
     LlamaConfig,
     load_weights,
-    synthetic_weights,
     generate_rope_lut,
 )
-from kernel_builder.cache import KernelCache
+from kernel_builder.cache import KernelCache, Profiler
 from kernel_builder.external_kernels import compile_all_external_kernels
 from kernel_builder.backend_presets import (
     LM_GEMV_BACKEND,
@@ -80,21 +78,6 @@ def _delta_text(tokenizer: Any, ids: list[int], state: _StreamState) -> str:
     delta = decoded[state.printed_len :]
     state.printed_len = len(decoded)
     return delta
-
-
-class _SyntheticTokenizer:
-    """Stub tokenizer used with --synthetic-weights (no HuggingFace dependency).
-
-    The synthetic path skips real tokenization entirely (token IDs come from a
-    deterministic numpy array); this stub satisfies the few attribute lookups
-    the pipeline still does — eos_token_id (decode-loop stop) and decode()
-    (verify/profile prints).
-    """
-
-    eos_token_id = -1  # never matches real token ids; decode loop runs full N
-
-    def decode(self, ids, skip_special_tokens=False):  # noqa: ARG002
-        return f"<synth:{list(ids)}>" if isinstance(ids, list) else f"<synth:{ids}>"
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +197,10 @@ def prepare_runtime(
 
     t_prep = time.time() - t0
     print(f"  Runtime prepared in {t_prep:.1f}s")
+    # Stash on both profilers for the dataflow summary (one-time cost,
+    # outside per-query wall but useful context).
+    prefill_cache.profiler.preprocessing_s = t_prep
+    decode_cache.profiler.preprocessing_s = t_prep
 
 
 def _preload_decode_weights(decode_cache, weights, config):
@@ -235,6 +222,12 @@ def _preload_decode_weights(decode_cache, weights, config):
     vocab_size = weights.lm_head.shape[0]
 
     print("  Pre-loading decode weights into per-layer BOs...")
+
+    # Suppress profiling during warmup — these BO-allocate / weight-write
+    # calls happen in prepare_runtime (outside the user-visible wall time
+    # for prefill / decode). Mirrors the same guard in preload_prefill_weights.
+    _was_enabled = decode_cache.profiler.enabled
+    decode_cache.profiler.enabled = False
 
     rope_lut_q_dummy = np.zeros(n_heads * head_dim, dtype=bfloat16)
     rope_lut_k_dummy = np.zeros(n_kv_heads * head_dim, dtype=bfloat16)
@@ -265,28 +258,51 @@ def _preload_decode_weights(decode_cache, weights, config):
             bo_key=f"rms_gemv_rope_L{layer_idx}",
         )
 
-        # o_gemv_ffn: allocate + write weights
+        # o_gemv_ffn (3-stage): build the interleaved w_gateup [2*hidden, emb]
+        # and the packed [2, emb] RMSNorm-input buffer (row 1 = ffn_norm_w,
+        # row 0 left zero for stage 1 to overwrite per token). Stashed on
+        # LayerWeights for reuse across all decode tokens. Frees the original
+        # _wgate_t/_wup_t once the interleaved copy is in place — they're
+        # otherwise unused after this preload (~1 GB host RAM saved).
+        wgate = lw._wgate_t
+        wup = lw._wup_t
+        wgateup = np.empty((2 * hidden_dim, emb_dim), dtype=bfloat16)
+        wgateup[0::2] = wgate
+        wgateup[1::2] = wup
+        lw._wgateup_t = wgateup
+        del lw._wgate_t
+        del lw._wup_t
+
+        packed = np.empty((2, emb_dim), dtype=bfloat16)
+        packed[0] = 0.0
+        packed[1] = lw.ffn_norm.reshape(emb_dim).astype(bfloat16)
+        lw._packed_rms_buf = packed
+
+        z_emb = np.zeros(emb_dim, dtype=bfloat16)
+        z_hidden = np.zeros(hidden_dim, dtype=bfloat16)
+        z_hidden_emb = np.zeros((hidden_dim, emb_dim), dtype=bfloat16)
+
         decode_cache.load_and_run(
             "o_gemv_ffn",
             OGF_BACKEND,
-            lw._wo_t,  # wo
-            np.zeros(emb_dim, dtype=bfloat16),  # attn_out
-            np.zeros(emb_dim, dtype=bfloat16),  # proj
-            np.zeros(emb_dim, dtype=bfloat16),  # x_residual
-            np.zeros(emb_dim, dtype=bfloat16),  # res1
-            lw.ffn_norm.reshape(emb_dim).astype(bfloat16),  # ffn_norm_w
-            np.zeros(emb_dim, dtype=bfloat16),  # normed2
-            lw._wgate_t,  # wgate
-            np.zeros(hidden_dim, dtype=bfloat16),  # gate
-            lw._wup_t,  # wup
-            np.zeros(hidden_dim, dtype=bfloat16),  # up
-            np.zeros(hidden_dim, dtype=bfloat16),  # swiglu
-            lw._wdown_t,  # wdown
-            np.zeros(emb_dim, dtype=bfloat16),  # down
-            np.zeros(emb_dim, dtype=bfloat16),  # output
+            lw._wo_t,  # arg0 wo (static)
+            z_emb,  # arg1 attn_out
+            z_emb,  # arg2 (dead)
+            z_emb,  # arg3 x_residual
+            z_emb,  # arg4 (dead)
+            z_emb,  # arg5 (dead)
+            lw._packed_rms_buf,  # arg6 packed (static)
+            lw._wgateup_t,  # arg7 w_gateup (static)
+            z_hidden,  # arg8 (dead)
+            z_hidden_emb,  # arg9 (dead)
+            z_hidden,  # arg10 (dead)
+            z_hidden,  # arg11 swiglu
+            lw._wdown_t,  # arg12 wdown (static)
+            z_emb,  # arg13 (dead)
+            z_emb,  # arg14 output
             output_indices=[14],
-            static_input_indices={0, 5, 7, 9, 12},
-            intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14},
+            static_input_indices={0, 6, 7, 12},
+            intermediate_indices={2, 4, 5, 8, 9, 10, 11, 13, 14},
             bo_key=f"o_gemv_ffn_L{layer_idx}",
         )
 
@@ -314,6 +330,10 @@ def _preload_decode_weights(decode_cache, weights, config):
         static_input_indices={1 + 2 * p for p in range(_LM_N_PARTITIONS)},
         intermediate_indices={2 + 2 * p for p in range(_LM_N_PARTITIONS)},
     )
+
+    # Restore profiler state — subsequent decode_cache.load_and_run calls
+    # (from prefill end + decode loop) record timing as intended.
+    decode_cache.profiler.enabled = _was_enabled
 
     weights._decode_weights_preloaded_to_bos = True
     total_mb = (
@@ -349,13 +369,16 @@ def run_npu_prefill(
     tokenizer,
     cpu_attn=True,
     profile=False,
-    verify=False,
     quiet=False,
 ):
     """Run NPU prefill and extract KV cache for decode.
 
     Returns:
-        prefill_token: int -- first predicted token ID
+        prefill_token: int -- first predicted token ID (= argmax(logits_row))
+        logits_row: (vocab_size,) f32 -- raw NPU LM-head logits at the
+                    prediction position (before argmax). Production
+                    callers can discard with `_`; the verify subsystem
+                    reads this for top-k extraction.
         k_cache: (n_layers, n_kv_heads, max_seq, head_dim) bfloat16
         v_cache: (n_layers, n_kv_heads, max_seq, head_dim) bfloat16
         prompt_len: actual prompt length (before padding)
@@ -369,9 +392,10 @@ def run_npu_prefill(
     k_cache = np.zeros((config.n_layers, n_kv_heads, max_seq, head_dim), dtype=bfloat16)
     v_cache = np.zeros((config.n_layers, n_kv_heads, max_seq, head_dim), dtype=bfloat16)
 
-    # Token embedding
-    embed_f32 = weights.embed_table[token_ids].astype(np.float32)
-    x_bf16 = embed_f32.astype(bfloat16)
+    # Token embedding (CPU gather + dtype casts)
+    with prefill_cache.profiler.time_cpu("embed_lookup"):
+        embed_f32 = weights.embed_table[token_ids].astype(np.float32)
+        x_bf16 = embed_f32.astype(bfloat16)
 
     # ---- TIMED SECTION START ----
     if not quiet:
@@ -380,7 +404,7 @@ def run_npu_prefill(
 
     # Run 16 transformer layers on NPU, collecting KV cache
     for layer_idx in range(config.n_layers):
-        layer_t0 = time.perf_counter() if profile else None
+        t0 = prefill_cache.profiler.start_layer()
 
         x_bf16, intermediates = run_transformer_block(
             x_bf16,
@@ -389,29 +413,27 @@ def run_npu_prefill(
             config,
             prefill_cache,
             layer_idx=layer_idx,
-            verify=verify,
             cpu_attn=cpu_attn,
             verbose=profile,
         )
 
-        # Extract KV cache from intermediates
-        k_roped = intermediates["k_roped"]
-        v_raw = intermediates["v"]
+        # Extract KV cache from intermediates (CPU: reshape + transpose +
+        # cast + slice-assign). 16 invocations per prefill, one per layer.
+        with prefill_cache.profiler.time_cpu("kv_cache_extract"):
+            k_roped = intermediates["k_roped"]
+            v_raw = intermediates["v"]
+            k_cache[layer_idx, :, :seq_len, :] = (
+                k_roped.astype(bfloat16)
+                .reshape(seq_len, n_kv_heads, head_dim)
+                .transpose(1, 0, 2)
+            )
+            v_cache[layer_idx, :, :seq_len, :] = (
+                v_raw.astype(bfloat16)
+                .reshape(seq_len, n_kv_heads, head_dim)
+                .transpose(1, 0, 2)
+            )
 
-        k_cache[layer_idx, :, :seq_len, :] = (
-            k_roped.astype(bfloat16)
-            .reshape(seq_len, n_kv_heads, head_dim)
-            .transpose(1, 0, 2)
-        )
-        v_cache[layer_idx, :, :seq_len, :] = (
-            v_raw.astype(bfloat16)
-            .reshape(seq_len, n_kv_heads, head_dim)
-            .transpose(1, 0, 2)
-        )
-
-        if profile:
-            layer_t = time.perf_counter() - layer_t0
-            print(f"  Layer {layer_idx:2d}: {layer_t*1000:.0f}ms")
+        prefill_cache.profiler.end_layer(layer_idx, t0)
 
     # Final RMSNorm + LM Head — single-position only.
     # Autoregressive generation only needs logits at the last real-token row;
@@ -422,12 +444,14 @@ def run_npu_prefill(
     prompt_len = len([t for t in token_ids if t != tokenizer.eos_token_id])
     pred_pos = prompt_len - 1
 
-    from llama32_1b_reference import rms_norm as _rms_norm
+    from llama32_1b_cpu_helpers import rms_norm
 
-    last_hidden = np.asarray(x_bf16, dtype=np.float32)[pred_pos : pred_pos + 1]
-    last_normed_bf16 = (
-        _rms_norm(last_hidden, weights.final_norm).flatten().astype(bfloat16)
-    )
+    # Final RMSNorm on the single prediction-position row (CPU; <1 ms).
+    with prefill_cache.profiler.time_cpu("final_rms_norm"):
+        last_hidden = np.asarray(x_bf16, dtype=np.float32)[pred_pos : pred_pos + 1]
+        last_normed_bf16 = (
+            rms_norm(last_hidden, weights.final_norm).flatten().astype(bfloat16)
+        )
 
     # NPU LM Head GEMV — reuse the decode-cache 8-partition GEMV ELF
     lm_inputs = [last_normed_bf16]
@@ -450,69 +474,101 @@ def run_npu_prefill(
     if not quiet:
         print(f"NPU prefill done in {t_prefill:.2f}s. First token: {prefill_token}")
 
-    # --- Verification: compare against CPU F32 reference ---
-    if verify:
-        print(f"\n{'='*60}")
-        print("Verification: NPU prefill vs CPU F32 reference")
-        print(f"{'='*60}")
-        from llama32_1b_reference import transformer_block as cpu_block, rms_norm
+    return prefill_token, logits_row, k_cache, v_cache, prompt_len
 
-        rope_lut_f32 = rope_lut_bf16[:seq_len].astype(np.float32)
-        x_cpu = weights.embed_table[token_ids].astype(np.float32)
-        for li in range(config.n_layers):
-            x_cpu, cpu_intermediates = cpu_block(
-                x_cpu, weights.layers[li], rope_lut_f32, config
-            )
-            cpu_k = (
-                cpu_intermediates["k_roped"]
-                .astype(np.float32)
-                .reshape(seq_len, n_kv_heads, head_dim)
-                .transpose(1, 0, 2)
-            )
-            cpu_v = (
-                cpu_intermediates["v"]
-                .astype(np.float32)
-                .reshape(seq_len, n_kv_heads, head_dim)
-                .transpose(1, 0, 2)
-            )
-            npu_k = k_cache[li, :, :seq_len, :].astype(np.float32)
-            npu_v = v_cache[li, :, :seq_len, :].astype(np.float32)
 
-            k_corr = np.corrcoef(npu_k.flatten(), cpu_k.flatten())[0, 1]
-            v_corr = np.corrcoef(npu_v.flatten(), cpu_v.flatten())[0, 1]
-            k_maxerr = np.max(np.abs(npu_k - cpu_k))
-            v_maxerr = np.max(np.abs(npu_v - cpu_v))
-            k_meanerr = np.mean(np.abs(npu_k - cpu_k))
-            v_meanerr = np.mean(np.abs(npu_v - cpu_v))
+# ---------------------------------------------------------------------------
+# Single decode step (one transformer block traversal + LM head)
+# ---------------------------------------------------------------------------
+#
+# Extracted from generate()'s decode loop so the verify subsystem can call
+# the exact same code path production uses, instead of reimplementing the
+# loop body in NpuRunner. Pure compute — no print / timing / streaming
+# state. Caller is responsible for KV-cache positioning (current_pos), for
+# feeding next_token's embedding back as x_decode_bf16 on the next step,
+# and for any per-token bookkeeping (timing, EOS check, streaming).
 
-            k_status = "OK" if k_corr > 0.99 else "WARN"
-            v_status = "OK" if v_corr > 0.99 else "WARN"
-            print(
-                f"  Layer {li:2d} K_cache: [{k_status}] corr={k_corr:.6f}, "
-                f"max_err={k_maxerr:.4f}, mean_err={k_meanerr:.4f}"
-            )
-            print(
-                f"  Layer {li:2d} V_cache: [{v_status}] corr={v_corr:.6f}, "
-                f"max_err={v_maxerr:.4f}, mean_err={v_meanerr:.4f}"
-            )
 
-        # Compare logits
-        x_cpu_normed = rms_norm(x_cpu, weights.final_norm.astype(np.float32))
-        cpu_logits = x_cpu_normed @ weights.lm_head.astype(np.float32).T
-        cpu_pred = int(np.argmax(cpu_logits[pred_pos]))
-        logits_f32_row = logits_row.astype(np.float32)
-        logit_corr = np.corrcoef(logits_f32_row, cpu_logits[pred_pos])[0, 1]
-        logit_maxerr = np.max(np.abs(logits_f32_row - cpu_logits[pred_pos]))
-        logit_meanerr = np.mean(np.abs(logits_f32_row - cpu_logits[pred_pos]))
-        print(
-            f"\n  Logits (pos {pred_pos}): corr={logit_corr:.6f}, "
-            f"max_err={logit_maxerr:.4f}, mean_err={logit_meanerr:.4f}"
+def run_npu_decode_step(
+    x_decode_bf16,
+    weights,
+    config,
+    decode_cache,
+    rope_lut_bf16,
+    k_cache,
+    v_cache,
+    current_pos,
+):
+    """Run one NPU decode step: 16 transformer blocks + final RMSNorm + LM head.
+
+    Args:
+        x_decode_bf16: (emb_dim,) bfloat16 — input embedding for this step.
+        weights, config, decode_cache, rope_lut_bf16: passed through to
+            run_decode_block + the LM-head GEMV.
+        k_cache, v_cache: shape (n_layers, n_kv_heads, max_seq, head_dim).
+            run_decode_block writes into [layer_idx, :, current_pos, :].
+        current_pos: position to write the new K/V at (and to read prior
+            K/V from for attention).
+
+    Returns:
+        next_token: int — argmax of the LM-head logits.
+        logits: (vocab_size,) f32 — raw LM-head logits (production
+            discards with `_`; verify reads for top-k extraction).
+    """
+    from llama32_1b_cpu_helpers import rms_norm
+
+    vocab_size = weights.lm_head.shape[0]
+
+    # 16 transformer blocks on NPU.
+    x = x_decode_bf16.copy()
+    for layer_idx in range(config.n_layers):
+        t0 = decode_cache.profiler.start_layer()
+        x = run_decode_block(
+            x,
+            weights.layers[layer_idx],
+            decode_cache,
+            config,
+            k_cache[layer_idx],
+            v_cache[layer_idx],
+            current_pos,
+            rope_lut_bf16,
         )
-        print(f"  NPU top-1: {prefill_token} ({tokenizer.decode([prefill_token])})")
-        print(f"  CPU top-1: {cpu_pred} ({tokenizer.decode([cpu_pred])})")
-        print(f"  Match: {'YES' if prefill_token == cpu_pred else 'NO'}")
+        decode_cache.profiler.end_layer(layer_idx, t0)
 
-    return prefill_token, k_cache, v_cache, prompt_len
+    # Final RMSNorm (CPU, single row — cheap).
+    with decode_cache.profiler.time_cpu("final_rms_norm"):
+        x_normed = rms_norm(
+            x.astype(np.float32).reshape(1, config.emb_dim),
+            weights.final_norm.astype(np.float32),
+        )
+
+    # NPU LM Head: 8-partition GEMV, single XRT call.
+    x_lm = x_normed.flatten().astype(bfloat16)
+    lm_inputs = [x_lm]
+    lm_output_indices = []
+    for p in range(_LM_N_PARTITIONS):
+        lm_inputs.append(weights._lm_weight_parts_gemv[p])
+        lm_inputs.append(np.zeros(_LM_N_PART, dtype=bfloat16))
+        lm_output_indices.append(2 + 2 * p)
+    lm_results = decode_cache.load_and_run(
+        "lm_head_gemv",
+        LM_GEMV_BACKEND,
+        *lm_inputs,
+        output_indices=lm_output_indices,
+        static_input_indices={1 + 2 * p for p in range(_LM_N_PARTITIONS)},
+        intermediate_indices={2 + 2 * p for p in range(_LM_N_PARTITIONS)},
+    )
+
+    # Assemble logits from 8 partitions.
+    logits = np.zeros(vocab_size, dtype=np.float32)
+    for p in range(_LM_N_PARTITIONS):
+        n_start = p * _LM_N_PART
+        n_end = min(n_start + _LM_N_PART, vocab_size)
+        logits[n_start:n_end] = lm_results[2 + 2 * p][: n_end - n_start].astype(
+            np.float32
+        )
+    next_token = int(np.argmax(logits))
+    return next_token, logits
 
 
 # ---------------------------------------------------------------------------
@@ -530,22 +586,29 @@ def generate(
     tokenizer,
     n_tokens=10,
     profile=False,
-    verify=False,
     cpu_attn=True,
     on_token=None,
+    ttft_start=None,
 ):
     """Run NPU prefill + NPU decode generation.
 
     Token 0 = from prefill, tokens 1+ = from decode.
     Both prefill and decode use NPU LM Head.
-    """
-    from llama32_1b_reference import rms_norm
 
+    `ttft_start`, if provided, is the perf_counter() reading from the
+    caller before tokenization. The Time-To-First-Token (TTFT) message
+    measures from that point to when the first token is decoded — i.e.
+    tokenize + EOS-pad + NPU prefill + LM head. This matches the
+    standard vLLM/TGI/TRT-LLM TTFT definition (end-to-end submit →
+    first token). If not provided, TTFT is measured from the start
+    of NPU prefill only.
+    """
     seq_len = len(prompt_tokens)
-    emb_dim = config.emb_dim
     max_seq = seq_len + n_tokens
-    vocab_size = weights.lm_head.shape[0]
     streaming = on_token is not None
+    ttft_includes_tokenize = ttft_start is not None
+    if ttft_start is None:
+        ttft_start = time.perf_counter()
 
     if not streaming:
         print(f"\n{'='*60}")
@@ -553,7 +616,10 @@ def generate(
         print(f"{'='*60}\n")
 
     # --- Phase 1: NPU Prefill ---
-    prefill_token, k_cache, v_cache, prompt_len = run_npu_prefill(
+    # logits_row is unused in production; verify reads it via run_npu_prefill directly.
+    # quiet=True: the unified TTFT line below covers the user-visible timing;
+    # run_npu_prefill's own "NPU prefill done in X.XXs" would be redundant.
+    prefill_token, _logits_row, k_cache, v_cache, prompt_len = run_npu_prefill(
         prompt_tokens,
         weights,
         config,
@@ -564,9 +630,20 @@ def generate(
         tokenizer=tokenizer,
         cpu_attn=cpu_attn,
         profile=profile,
-        verify=verify,
-        quiet=streaming,
+        quiet=True,
     )
+
+    ttft = time.perf_counter() - ttft_start
+    if not streaming:
+        scope = (
+            "tokenize + EOS-pad + NPU prefill + LM head"
+            if ttft_includes_tokenize
+            else "NPU prefill + LM head"
+        )
+        print(
+            f"Time to first token (TTFT): {ttft:.2f}s ({scope}). "
+            f"First token: {prefill_token}"
+        )
 
     # --- Phase 2: NPU Decode ---
     generated_tokens = [prefill_token]  # Token 0 = from prefill
@@ -583,68 +660,30 @@ def generate(
     t_decode_start = time.time()
 
     for token_idx in range(n_tokens):
-        t_token_start = time.perf_counter()
-
-        # Run 16 transformer blocks on NPU
-        x = x_decode.copy()
-        for layer_idx in range(config.n_layers):
-            x = run_decode_block(
-                x,
-                weights.layers[layer_idx],
-                decode_cache,
-                config,
-                k_cache[layer_idx],
-                v_cache[layer_idx],
-                current_pos,
-                rope_lut_bf16,
-            )
-
-        # Final RMSNorm (CPU)
-        x_normed = rms_norm(
-            x.astype(np.float32).reshape(1, emb_dim),
-            weights.final_norm.astype(np.float32),
+        # One decode step (16 transformer blocks + final RMSNorm + LM head).
+        # Verify subsystem calls the same function — keeps "what we test" and
+        # "what we deploy" identical. Per-layer / per-call timings are
+        # recorded automatically inside cache.load_and_run when the
+        # decode_cache's Profiler is enabled (--profile).
+        next_token, _logits = run_npu_decode_step(
+            x_decode,
+            weights,
+            config,
+            decode_cache,
+            rope_lut_bf16,
+            k_cache,
+            v_cache,
+            current_pos,
         )
-
-        # LM Head (NPU -- 8-partition GEMV, single XRT call)
-        x_lm = x_normed.flatten().astype(bfloat16)
-        lm_inputs = [x_lm]
-        lm_output_indices = []
-        for p in range(_LM_N_PARTITIONS):
-            lm_inputs.append(weights._lm_weight_parts_gemv[p])
-            lm_inputs.append(np.zeros(_LM_N_PART, dtype=bfloat16))
-            lm_output_indices.append(2 + 2 * p)
-        lm_results = decode_cache.load_and_run(
-            "lm_head_gemv",
-            LM_GEMV_BACKEND,
-            *lm_inputs,
-            output_indices=lm_output_indices,
-            static_input_indices={1 + 2 * p for p in range(_LM_N_PARTITIONS)},
-            intermediate_indices={2 + 2 * p for p in range(_LM_N_PARTITIONS)},
-        )
-
-        # Assemble logits from 8 partitions
-        logits = np.zeros((1, vocab_size), dtype=np.float32)
-        for p in range(_LM_N_PARTITIONS):
-            n_start = p * _LM_N_PART
-            n_end = min(n_start + _LM_N_PART, vocab_size)
-            logits[0, n_start:n_end] = lm_results[2 + 2 * p][: n_end - n_start].astype(
-                np.float32
-            )
-        next_token = int(np.argmax(logits[0]))
-
-        t_token = time.perf_counter() - t_token_start
 
         generated_tokens.append(next_token)
         current_pos += 1
-        x_decode = weights.embed_table[next_token].astype(bfloat16)
+        # Embed lookup for next iteration's input (CPU).
+        with decode_cache.profiler.time_cpu("embed_lookup"):
+            x_decode = weights.embed_table[next_token].astype(bfloat16)
 
         if streaming:
             on_token(next_token, _delta_text(tokenizer, generated_tokens, stream_state))
-
-        if profile:
-            print(
-                f"  Token {token_idx + 1}: id={next_token}, time={t_token*1000:.0f}ms"
-            )
 
         # Stop on EOS or EOT (instruct model emits <|eot_id|> = 128009)
         if next_token in (tokenizer.eos_token_id, 128009):
@@ -658,7 +697,183 @@ def generate(
         print(f"Tokens/second: {n_generated / t_decode:.2f}")
         print(f"Time/token: {t_decode / n_generated * 1000:.0f}ms")
 
+    # Fine-grained profiling report. Each Profiler is a noop unless
+    # build_session enabled it for --profile (production path is identical
+    # to make run; verify path also leaves these disabled).
+    if prefill_cache.profiler.enabled or decode_cache.profiler.enabled:
+        _print_dataflow_summary(
+            prefill_cache, decode_cache, config.n_layers, n_generated
+        )
+    if prefill_cache.profiler.enabled:
+        print(f"\n{'='*60}\nPREFILL — detail tables")
+        prefill_cache.profiler.report()
+    if decode_cache.profiler.enabled:
+        print(f"\n{'='*60}\nDECODE ({n_generated} tokens) — detail tables")
+        decode_cache.profiler.report()
+
     return generated_tokens
+
+
+def _avg(times):
+    return sum(times) / len(times) if times else 0.0
+
+
+def _print_dataflow_summary(prefill_cache, decode_cache, n_layers, n_decode_tokens):
+    """Architecture-aware dataflow-ordered summary that mirrors the SVG in
+    docs/PROFILE.html. Generic detail tables (Per-Layer / NPU XRT / CPU Op
+    / Fine-Grained) print after this from each Profiler.report()."""
+    pp = prefill_cache.profiler
+    dp = decode_cache.profiler
+
+    # Convert kernel_times / cpu_times entries to ms averages.
+    def k_avg(prof, name):
+        ts = prof.kernel_times.get(name, [])
+        return _avg(ts) * 1000.0
+
+    def c_avg(prof, name):
+        ts = prof.cpu_times.get(name, [])
+        return _avg(ts) * 1000.0
+
+    def k_count(prof, name):
+        return len(prof.kernel_times.get(name, []))
+
+    def c_count(prof, name):
+        return len(prof.cpu_times.get(name, []))
+
+    print(f"\n{'='*68}")
+    print("END-TO-END DATAFLOW (per make profile, dataflow order)")
+    print(f"{'='*68}")
+
+    # Preprocessing reminder (one-time setup, not per-query).
+    prep_s = getattr(pp, "preprocessing_s", None)
+    if prep_s is not None:
+        print(
+            f"\n  Preprocessing (one-time, prepare_runtime): {prep_s:.1f} s"
+            f"   ← not counted in per-query wall below"
+        )
+
+    # ---- PREFILL ----
+    if pp.enabled:
+        print(f"\n--- PREFILL (per query, seq_len padded) ---")
+        rms_p = k_avg(pp, "rms_gemms_rope")
+        fa_p = k_avg(pp, "flash_attn")
+        offn_p = k_avg(pp, "o_ffn")
+        kv_extract = c_avg(pp, "kv_cache_extract")
+        layer_avg = (
+            sum(t for _, t in pp.layer_times) * 1000.0 / n_layers
+            if pp.layer_times
+            else 0
+        )
+        layer_npu_cpu = rms_p + fa_p + offn_p + kv_extract
+        layer_sched = max(0.0, layer_avg - layer_npu_cpu)
+        tok = c_avg(pp, "tokenize") * c_count(pp, "tokenize")
+        pad = c_avg(pp, "eos_pad") * c_count(pp, "eos_pad")
+        embed = c_avg(pp, "embed_lookup") * c_count(pp, "embed_lookup")
+        final_n = c_avg(pp, "final_rms_norm") * c_count(pp, "final_rms_norm")
+        # LM head is recorded in decode_cache (production runs the prefill-end
+        # LM head through the same 8-partition ELF).
+        lm_total = sum(dp.kernel_times.get("lm_head_gemv", [])) * 1000.0
+        n_lm = k_count(dp, "lm_head_gemv")
+        # Per-token tracking: out of N lm_head calls, 1 is the prefill end
+        # and N-1 are decode tokens. Approximate prefill LM head as the avg.
+        lm_prefill = lm_total / n_lm if n_lm else 0.0
+        layer_total = layer_avg * n_layers
+        e2e = tok + pad + embed + layer_total + final_n + lm_prefill
+
+        col = 38  # label column width
+
+        def row(label, kind, ms, note=""):
+            print(f"  {label:<{col}}{kind:<6}{ms:>8.2f} ms  {note}")
+
+        row("tokenize", "CPU", tok)
+        row("eos_pad", "CPU", pad)
+        row("embed_lookup", "CPU", embed)
+        print(
+            f"  ┌─ Decoder block × {n_layers} (per layer) ─────────────────────────────┐"
+        )
+        row("  rms_gemms_rope.elf", "NPU", rms_p)
+        row("  flash_attn.elf", "NPU", fa_p)
+        row("  o_ffn.elf", "NPU", offn_p)
+        row("  kv_cache_extract", "CPU", kv_extract)
+        row("  python/numpy scheduling", "—", layer_sched)
+        print(f"  │  {'─'*52}")
+        print(f"  │  {'per-layer wall':<{col-3}}{'':<6}{layer_avg:>8.2f} ms")
+        print(f"  └──────────────────────────────────────────────────────────┘")
+        print(
+            f"  {'× ' + str(n_layers) + ' layers':<{col}}{'':<6}{layer_total:>8.2f} ms"
+        )
+        row("final_rms_norm", "CPU", final_n)
+        row("lm_head_gemv.elf", "NPU", lm_prefill)
+        print(f"  {'─'*60}")
+        print(f"  {'End-to-end (prefill, per query)':<{col}}{'':<6}{e2e:>8.2f} ms")
+
+    # ---- DECODE ----
+    if dp.enabled and n_decode_tokens > 0:
+        print(f"\n--- DECODE (avg per token, {n_decode_tokens} tokens) ---")
+        rms_d = k_avg(dp, "rms_gemv_rope")
+        ogf_d = k_avg(dp, "o_gemv_ffn")
+        dec_attn = c_avg(dp, "decode_attention_cpu")
+        embed_d = c_avg(dp, "embed_lookup")
+        final_d = c_avg(dp, "final_rms_norm")
+        lm_d = k_avg(dp, "lm_head_gemv")
+        layer_d = (
+            sum(t for _, t in dp.layer_times) * 1000.0 / (n_layers * n_decode_tokens)
+            if dp.layer_times
+            else 0
+        )
+        layer_d_sub = rms_d + ogf_d + dec_attn
+        layer_d_sched = max(0.0, layer_d - layer_d_sub)
+        e2e_d = embed_d + layer_d * n_layers + final_d + lm_d
+
+        col = 38
+
+        def row(label, kind, ms, note=""):
+            print(f"  {label:<{col}}{kind:<6}{ms:>8.2f} ms  {note}")
+
+        row("embed_lookup", "CPU", embed_d)
+        print(
+            f"  ┌─ Decoder block × {n_layers} (per layer, per token) ─────────────────┐"
+        )
+        row("  rms_gemv_rope.elf", "NPU", rms_d)
+        row("  decode_attention_cpu", "CPU", dec_attn)
+        row("  o_gemv_ffn.elf", "NPU", ogf_d)
+        row("  python/numpy scheduling", "—", layer_d_sched)
+        print(f"  │  {'─'*52}")
+        print(f"  │  {'per-layer wall':<{col-3}}{'':<6}{layer_d:>8.2f} ms")
+        print(f"  └──────────────────────────────────────────────────────────┘")
+        print(
+            f"  {'× ' + str(n_layers) + ' layers':<{col}}{'':<6}{layer_d * n_layers:>8.2f} ms"
+        )
+        row("final_rms_norm", "CPU", final_d)
+        row("lm_head_gemv.elf", "NPU", lm_d)
+        print(f"  {'─'*60}")
+        print(f"  {'End-to-end (per token)':<{col}}{'':<6}{e2e_d:>8.2f} ms")
+
+        # Per-token trend: did wall time grow with token index? (decode CPU
+        # attention is O(current_pos), but with 2048-token prompt the slope
+        # is usually invisible for short generations.)
+        walls = dp.per_token_walls_ms(n_layers)
+        if len(walls) >= 3:
+            avg_w = sum(walls) / len(walls)
+            mn = min(walls)
+            mx = max(walls)
+            # Show first/middle/last samples for the slope.
+            first = walls[0]
+            mid = walls[len(walls) // 2]
+            last = walls[-1]
+            slope = last - first
+            slope_pct = (slope / first * 100.0) if first else 0
+            print(
+                f"\n  Per-token layer-loop wall trend (decode-attention CPU scales with KV cache size):"
+            )
+            print(
+                f"    token  1 = {first:6.2f} ms   token {len(walls)//2 + 1:2d} = {mid:6.2f} ms   "
+                f"token {len(walls):2d} = {last:6.2f} ms"
+            )
+            print(
+                f"    min = {mn:6.2f} ms   max = {mx:6.2f} ms   avg = {avg_w:6.2f} ms   "
+                f"first→last drift = {slope:+.2f} ms ({slope_pct:+.1f}%)"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -674,8 +889,20 @@ def build_session(args) -> Session:
     config = LlamaConfig()
     seq_len = 2048
 
-    prefill_cache = KernelCache("prefill_kernel_cache", verbose=args.verbose)
-    decode_cache = KernelCache("decode_kernel_cache", verbose=args.verbose)
+    # Each cache gets its own Profiler so the final report can separate
+    # prefill from decode phases. Profilers are enabled only under
+    # --profile; otherwise every record_* call is a noop (production
+    # path is identical to make run).
+    prefill_cache = KernelCache(
+        "prefill_kernel_cache",
+        verbose=args.verbose,
+        profiler=Profiler(enabled=args.profile),
+    )
+    decode_cache = KernelCache(
+        "decode_kernel_cache",
+        verbose=args.verbose,
+        profiler=Profiler(enabled=args.profile),
+    )
 
     if not args.run_only:
         print("Compiling prefill kernels...")
@@ -684,28 +911,26 @@ def build_session(args) -> Session:
         compile_decode_kernels(decode_cache, config)
 
     if args.compile_only:
+        # Stable end-of-compile marker for CI (run_npu2_compile.lit FileCheck).
+        # Do not change without also updating the lit CHECK line.
+        print("\nCompilation passed.")
         sys.exit(0)
 
     if args.run_only:
         prefill_cache.load_manifest()
         decode_cache.load_manifest()
 
-    if args.synthetic_weights:
-        print("\nUsing synthetic random weights (skipping HuggingFace download).")
-        weights = synthetic_weights(config)
-        tokenizer = _SyntheticTokenizer()
-    else:
-        model_id = (
-            "meta-llama/Llama-3.2-1B-Instruct"
-            if args.model == "instruct"
-            else "meta-llama/Llama-3.2-1B"
-        )
-        print(f"\nLoading weights ({model_id})...")
-        weights = load_weights(model_id)
+    model_id = (
+        "meta-llama/Llama-3.2-1B-Instruct"
+        if args.model == "instruct"
+        else "meta-llama/Llama-3.2-1B"
+    )
+    print(f"\nLoading weights ({model_id})...")
+    weights = load_weights(model_id)
 
-        from transformers import AutoTokenizer
+    from transformers import AutoTokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
 
     rope_lut_bf16 = generate_rope_lut(
         config=config,
@@ -745,18 +970,25 @@ def run_once(
     *,
     n_tokens: int,
     profile: bool = False,
-    verify: bool = False,
     cpu_attn: bool = True,
     on_token: Optional[Callable[[int, str], None]] = None,
 ) -> tuple[list, int]:
     """Tokenize, pad to seq_len, and call generate(). Returns
     (generated_token_ids, prompt_len_actual)."""
-    tokens = _tokenize_prompt(session, prompt_text)
+    # Tokenize + EOS-pad are part of the per-query critical path (standard
+    # TTFT scope per vLLM/TGI/TRT-LLM), so we time them with the rest of
+    # prefill: ttft_start is captured BEFORE tokenize, then handed to
+    # generate(), which prints the unified "Time to first token (TTFT)"
+    # line covering tokenize + EOS-pad + NPU prefill + LM head.
+    ttft_start = time.perf_counter()
+    with session.prefill_cache.profiler.time_cpu("tokenize"):
+        tokens = _tokenize_prompt(session, prompt_text)
     prompt_len_actual = len(tokens)
-    if len(tokens) < session.seq_len:
-        tokens = tokens + [session.tokenizer.eos_token_id] * (
-            session.seq_len - len(tokens)
-        )
+    with session.prefill_cache.profiler.time_cpu("eos_pad"):
+        if len(tokens) < session.seq_len:
+            tokens = tokens + [session.tokenizer.eos_token_id] * (
+                session.seq_len - len(tokens)
+            )
 
     generated = generate(
         tokens,
@@ -768,9 +1000,9 @@ def run_once(
         tokenizer=session.tokenizer,
         n_tokens=n_tokens,
         profile=profile,
-        verify=verify,
         cpu_attn=cpu_attn,
         on_token=on_token,
+        ttft_start=ttft_start,
     )
     return generated, prompt_len_actual
 
@@ -833,11 +1065,9 @@ def repl_loop(session: Session, args) -> None:
                 session,
                 prompt,
                 n_tokens=args.n_tokens,
-                # profile/verify are forced to False by the --interactive
-                # mutex block in __main__; pass through as the single source
-                # of truth.
+                # profile is forced to False by the --interactive mutex
+                # block in __main__; pass through as the single source of truth.
                 profile=args.profile,
-                verify=args.verify,
                 cpu_attn=args.cpu_attn,
                 on_token=_stream_cb,
             )
@@ -878,11 +1108,6 @@ if __name__ == "__main__":
         help="Enable per-token timing instrumentation",
     )
     parser.add_argument(
-        "--verify",
-        action="store_true",
-        help="Compare against CPU F32 reference",
-    )
-    parser.add_argument(
         "--cpu-attn",
         action="store_true",
         help="Use CPU attention for prefill (default: NPU flash attention)",
@@ -905,16 +1130,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Drop into a REPL after runtime prep. Loops on prompts; each is independent.",
     )
-    parser.add_argument(
-        "--synthetic-weights",
-        action="store_true",
-        help="Use deterministic random weights instead of HuggingFace weights "
-        "(no download / no auth). Intended for CI smoke + verify tests.",
-    )
     args = parser.parse_args()
-
-    if args.synthetic_weights and args.interactive:
-        parser.error("--synthetic-weights cannot be combined with --interactive")
 
     if args.interactive:
         if args.compile_only:
@@ -932,44 +1148,17 @@ if __name__ == "__main__":
                 file=sys.stderr,
             )
             args.profile = False
-        if args.verify:
-            print(
-                "WARNING: --verify is ignored in --interactive mode.",
-                file=sys.stderr,
-            )
-            args.verify = False
 
     session = build_session(args)
 
     if args.interactive:
         repl_loop(session, args)
-    elif args.synthetic_weights:
-        # Bypass real tokenization: feed a deterministic token-id sequence
-        # straight into generate(). Output text is not meaningful — the value
-        # of this path is the --verify correlation against the CPU reference.
-        token_ids = (
-            np.arange(session.seq_len, dtype=np.int64) % session.config.vocab_size
-        ).tolist()
-        generate(
-            token_ids,
-            session.weights,
-            session.config,
-            session.prefill_cache,
-            session.decode_cache,
-            session.rope_lut_bf16,
-            tokenizer=session.tokenizer,
-            n_tokens=args.n_tokens,
-            profile=args.profile,
-            verify=args.verify,
-            cpu_attn=args.cpu_attn,
-        )
     else:
         generated, prompt_len_actual = run_once(
             session,
             args.prompt,
             n_tokens=args.n_tokens,
             profile=args.profile,
-            verify=args.verify,
             cpu_attn=args.cpu_attn,
         )
         _print_one_shot_output(session, args.prompt, generated, prompt_len_actual)

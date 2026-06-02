@@ -124,9 +124,13 @@ module {
     return
   }
 
-  // ATTR-LABEL: func.func @default_no_attr
-  // ATTR: air.wait_all{{.*}}{air.launch_end}
+  // No attribute -> skip tiling (post-#1616-revert default). Per-launch
+  // wait_all fallback gathers ALL channel tokens (multi-operand list).
 
+  // ATTR-LABEL: func.func @default_no_attr
+  // ATTR: air.wait_all [%{{[0-9]+}}, %{{[0-9]+}}{{.*}}air.launch_end
+
+  // CLI=4 wins; tile path -> tail-token wait_all.
   // CLI-LABEL: func.func @default_no_attr
   // CLI: air.wait_all{{.*}}{air.launch_end}
   func.func @default_no_attr(%arg0: memref<512xbf16>, %arg1: memref<512xbf16>) {
