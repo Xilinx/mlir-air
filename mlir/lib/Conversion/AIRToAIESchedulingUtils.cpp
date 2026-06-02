@@ -1590,6 +1590,140 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
 
 namespace xilinx {
 
+bool air::isPacketShimFlow(const air::MemcpyBundleAsFlow &f) {
+  return f.memcpyResourceType == "npu_dma_packet" &&
+         f.MM2S_memspace == air::MemorySpace::L3;
+}
+
+// Identify the unique parent core (== receiver tile) of a flow's S2MM
+// receivers. Returns null if there isn't exactly one. Reordering across
+// flows that target distinct receiver tiles is unsafe -- the bug we fix
+// only manifests when N flows demux into a single tile's S2MM port.
+static AIE::CoreOp uniqueReceiverCore(const air::MemcpyBundleAsFlow &f) {
+  AIE::CoreOp uniq = nullptr;
+  for (int i = 0; i < f.numS2MMAllocs && i < (int)f.S2MM.size(); ++i)
+    for (auto *recvOp : f.S2MM[i]) {
+      auto c = recvOp->getParentOfType<AIE::CoreOp>();
+      if (!c)
+        return nullptr;
+      if (!uniq)
+        uniq = c;
+      else if (uniq != c)
+        return nullptr;
+    }
+  return uniq;
+}
+
+void air::sortPacketShimFlowsByReceiverOrder(
+    std::vector<air::MemcpyBundleAsFlow> &memcpy_flows,
+    AIE::DeviceOp aie_device) {
+  // Group eligible flows by receiver core. Only reorder within groups of
+  // >=2 flows that share a single core -- that's the bug pattern (N flows
+  // demuxing into one tile S2MM port). Reordering across cores would
+  // disturb routing for unrelated flows (dual-herd, multi-column, etc.).
+  llvm::MapVector<AIE::CoreOp, SmallVector<size_t>> groupByCore;
+  for (size_t i = 0; i < memcpy_flows.size(); ++i) {
+    if (!isPacketShimFlow(memcpy_flows[i]))
+      continue;
+    if (auto core = uniqueReceiverCore(memcpy_flows[i]))
+      groupByCore[core].push_back(i);
+  }
+  bool anyGroup = false;
+  for (auto &kv : groupByCore)
+    if (kv.second.size() >= 2) {
+      anyGroup = true;
+      break;
+    }
+  if (!anyGroup)
+    return;
+
+  DenseMap<Operation *, unsigned> walkPos;
+  unsigned pos = 0;
+  Operation *root = aie_device->getParentOfType<ModuleOp>();
+  if (!root)
+    root = aie_device;
+  root->walk([&](Operation *op) { walkPos[op] = pos++; });
+
+  auto firstUsePos = [&](const air::MemcpyBundleAsFlow &f) {
+    unsigned minPos = std::numeric_limits<unsigned>::max();
+    for (int i = 0; i < f.numS2MMAllocs && i < (int)f.S2MM.size(); ++i)
+      for (auto *recvOp : f.S2MM[i]) {
+        auto it = walkPos.find(recvOp);
+        if (it != walkPos.end() && it->second < minPos)
+          minPos = it->second;
+      }
+    return minPos;
+  };
+
+  // Sort each group's subset in place (stable_sort on the subset keeps
+  // the comparator strict-weak).
+  for (auto &kv : groupByCore) {
+    auto &idx = kv.second;
+    if (idx.size() < 2)
+      continue;
+    SmallVector<air::MemcpyBundleAsFlow> group;
+    group.reserve(idx.size());
+    for (auto i : idx)
+      group.push_back(std::move(memcpy_flows[i]));
+    llvm::stable_sort(group, [&](const air::MemcpyBundleAsFlow &a,
+                                 const air::MemcpyBundleAsFlow &b) {
+      return firstUsePos(a) < firstUsePos(b);
+    });
+    for (size_t k = 0; k < idx.size(); ++k)
+      memcpy_flows[idx[k]] = std::move(group[k]);
+  }
+}
+
+void air::reorderL3PacketPutsByFlowOrder(
+    AIE::DeviceOp aie_device,
+    const std::vector<air::MemcpyBundleAsFlow> &memcpy_flows) {
+  // L3 puts live in the launch's func.func outside aie.device, reached via
+  // the parent module. AIRRtToNpuPass emits dma_start_task in IR walk order
+  // of these puts, so IR order must match flow order.
+  auto parentModule = aie_device->getParentOfType<ModuleOp>();
+  if (!parentModule)
+    return;
+
+  DenseMap<StringAttr, SmallVector<air::ChannelPutOp>> putsByChan;
+  parentModule.walk([&](air::ChannelPutOp put) {
+    auto memrefTy = dyn_cast<BaseMemRefType>(put.getMemref().getType());
+    if (!memrefTy || !air::isL3(memrefTy))
+      return;
+    auto chan = air::getChannelDeclarationThroughSymbol(put);
+    if (!chan || chan.getChannelType().str() != "npu_dma_packet")
+      return;
+    putsByChan[chan.getSymNameAttr()].push_back(put);
+  });
+
+  SmallVector<air::ChannelPutOp> sortedPuts;
+  for (auto &f : memcpy_flows) {
+    if (!isPacketShimFlow(f))
+      continue;
+    auto chan = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op);
+    if (!chan)
+      continue;
+    auto it = putsByChan.find(chan.getSymNameAttr());
+    if (it == putsByChan.end())
+      continue;
+    for (auto put : it->second)
+      sortedPuts.push_back(put);
+  }
+
+  // Per-block prev anchors handle launch clones (e.g. main + lightweight
+  // reset device for load_pdi); each clone gets its own moveAfter chain.
+  DenseMap<Block *, Operation *> prevByBlock;
+  for (auto put : sortedPuts) {
+    Block *blk = put->getBlock();
+    auto it = prevByBlock.find(blk);
+    if (it == prevByBlock.end()) {
+      prevByBlock[blk] = put;
+      continue;
+    }
+    put->moveAfter(it->second);
+    prevByBlock[blk] = put;
+  }
+}
+
 // AIR channel to AIE flow scheduling strategy 1: round robin
 // Problem: no awareness wrt channel put and get pattern, leading to deadlocks
 LogicalResult air::simpleDMAChannelAllocation(

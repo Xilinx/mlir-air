@@ -3909,6 +3909,11 @@ public:
       }
     }
 
+    // Align shared-MM2S packet pkt_ids and launch-side L3 put IR order with
+    // the receiver mem chain (herd-source order). See helper docs.
+    air::sortPacketShimFlowsByReceiverOrder(memcpy_flows, aie_device);
+    air::reorderL3PacketPutsByFlowOrder(aie_device, memcpy_flows);
+
     // Step 2: Allocate tile DMA channels, shim DMA channels and shim tiles
     auto r = simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
                                         memtile_dma_alloc, tile_dma_alloc,
