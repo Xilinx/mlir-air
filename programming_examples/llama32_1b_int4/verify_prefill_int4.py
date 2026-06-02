@@ -194,13 +194,14 @@ def _run_layer_int4(
         k_roped = results[12].reshape(seq_len, n_kv_heads * head_dim)
 
     # ---- CPU GQA attention (placeholder for the not-yet-wired NPU stage)
-    attn_out = attention_reference(
-        q_roped.astype(np.float32),
-        k_roped.astype(np.float32),
-        v.astype(np.float32),
-        n_heads,
-        n_kv_heads,
-    ).astype(bfloat16)
+    with cache.profiler.time_cpu("prefill_cpu_attention"):
+        attn_out = attention_reference(
+            q_roped.astype(np.float32),
+            k_roped.astype(np.float32),
+            v.astype(np.float32),
+            n_heads,
+            n_kv_heads,
+        ).astype(bfloat16)
 
     # ---- o_ffn_int4 (15 args)
     n_total = seq_len * emb_dim
@@ -431,6 +432,8 @@ def main():
                     "whether divergence vs HF is in our stitching logic vs "
                     "in the NPU kernels themselves.")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--profile", action="store_true",
+                    help="Enable per-layer / per-kernel timing instrumentation.")
     args = ap.parse_args()
 
     config = LlamaConfig()
@@ -442,7 +445,7 @@ def main():
     kv_dim = n_kv_heads * head_dim
 
     cache = KernelCache(cache_dir=args.cache_dir, verbose=args.verbose,
-                        profiler=Profiler())
+                        profiler=Profiler(enabled=args.profile))
 
     # ---- Load AWQ checkpoint once (both reference + NPU consume this).
     print(f"Loading AWQ checkpoint: {args.model}")
@@ -612,10 +615,12 @@ def main():
     print(f"\nRunning {args.n_layers}-layer NPU int4 prefill...")
     t0 = time.time()
     for li in range(args.n_layers):
+        t_layer = cache.profiler.start_layer()
         x_bf16 = _run_layer_int4(
             x_bf16, weights_bf16.layers[li], layers_packed[li],
             rope_lut_bf16, config, cache, li,
         )
+        cache.profiler.end_layer(li, t_layer)
         print(f"  layer {li+1}/{args.n_layers} done "
               f"({time.time()-t0:.1f}s, ||x||="
               f"{np.linalg.norm(x_bf16.astype(np.float32)):.3f})")
@@ -662,6 +667,9 @@ def main():
         print(f"Top-{args.topk} NPU-vs-CPU-int4 overlap: {npu_cpu_overlap}/{args.topk}")
         if a.std() > 0 and b.std() > 0:
             print(f"NPU-vs-CPU-int4 logit Pearson r: {float(np.corrcoef(a,b)[0,1]):.4f}")
+
+    if cache.profiler.enabled:
+        cache.profiler.report()
 
 
 if __name__ == "__main__":
