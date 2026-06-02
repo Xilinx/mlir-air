@@ -2086,19 +2086,21 @@ void L2MemrefToMemTileMap(
       memref_buckets.push_back(SmallVector<memref::AllocOp>{alloc});
     }
   }
-  // Second stage in memref placement: assign each bucket to a memtile LTO
-  // by its derived consumer column. Buckets with the same target column
-  // share a memtile LTO; the placer (with merge-logical-tiles=false on
-  // shims and per-LTO physical tiles on memtiles) lands each col-X LTO at
-  // physical memtile col X, so the round-trip core->memtile flow stays
-  // intra-column. Without this, round-robin assignment lands buffers on
-  // memtiles in arbitrary columns and aie-create-pathfinder-flows spends
-  // hundreds of seconds routing cross-column traffic (matches the original
-  // matmul_i8 Triton-XDNA#50 latency regression).
+  // Second stage in memref placement: try column-affinity assignment, but
+  // fall back to round-robin when any one column would be saturated.
   //
-  // Buckets whose target col can't be derived (no channel users with
-  // core consumers) fall back to round-robin on whichever LTOs aren't yet
-  // claimed by a col-hinted bucket.
+  // Col-affinity (preferred): each bucket targets the column of its
+  // consumer core. Memtile LTO at col X holds buckets whose consumer
+  // herds are at col X. The placer with merge-logical-tiles=false lands
+  // each col-hinted LTO at its physical memtile, so round-trip
+  // core->memtile flow stays intra-column. Avoids the matmul_i8
+  // Triton-XDNA#50 pathfinder latency regression from cross-col flows.
+  //
+  // Saturation fallback: when all consumer herds share one column (e.g.
+  // flash_attention with 6 herds all defaulting to col 0), concentrating
+  // every bucket onto a single memtile exhausts its 16-lock budget. If
+  // any column would receive more buckets than one memtile can hold,
+  // revert to round-robin across the full LTO pool.
   const auto &targetModel = m.getTargetModel();
   auto colHasMemTile = [&](int col) {
     if (col < 0 || col >= targetModel.columns())
@@ -2127,7 +2129,7 @@ void L2MemrefToMemTileMap(
       if (col == -1)
         col = c;
       else if (col != c)
-        col = -2; // mixed cols across consumer cores
+        col = -2;
       return WalkResult::advance();
     });
     return col < 0 ? -1 : col;
@@ -2152,16 +2154,39 @@ void L2MemrefToMemTileMap(
     return colHasMemTile(consensus) ? consensus : -1;
   };
 
-  // Compute per-bucket col hint.
   SmallVector<int> bucketCols;
   bucketCols.reserve(memref_buckets.size());
-  for (auto &bucket : memref_buckets)
-    bucketCols.push_back(deriveBucketCol(bucket));
+  llvm::DenseMap<int, int> colDemand;
+  for (auto &bucket : memref_buckets) {
+    int col = deriveBucketCol(bucket);
+    bucketCols.push_back(col);
+    if (col >= 0)
+      colDemand[col]++;
+  }
 
-  // Map col -> pre-existing memtile LTO. Use the first pre-emitted LTO
-  // that has no col hint yet, hint it to this col, and reuse it for all
-  // buckets targeting the same col. If no pre-emitted LTO is available,
-  // emit a new one hinted to this col.
+  // Saturation check: each memtile holds ~8 producer/consumer-paired
+  // buffers (16 locks / 2 per bucket). If any column wants more, the
+  // col-affinity path would lock-overflow that memtile.
+  constexpr int kBucketsPerMemtileBudget = 8;
+  bool saturated = false;
+  for (auto &kv : colDemand)
+    if (kv.second > kBucketsPerMemtileBudget) {
+      saturated = true;
+      break;
+    }
+
+  if (saturated) {
+    int memtile_id = 0;
+    for (auto &bucket : memref_buckets) {
+      for (auto bucket_elem : bucket)
+        memrefToMemTileMap[bucket_elem] = memtiles[memtile_id];
+      memtile_id = (memtile_id + 1) % memtiles.size();
+    }
+    return;
+  }
+
+  // Col-affinity assignment: hint pre-emitted LTOs to derived cols and
+  // share one LTO per col. Spill over to round-robin for unhinted buckets.
   OpBuilder builder(m);
   builder.setInsertionPointToStart(m.getBody());
   for (auto &o : m.getBody()->getOperations()) {
@@ -2176,7 +2201,6 @@ void L2MemrefToMemTileMap(
     auto it = colToMemtile.find(col);
     if (it != colToMemtile.end())
       return it->second;
-    // Reuse a pre-emitted LTO that isn't yet claimed.
     for (auto memtile : memtiles) {
       if (claimedLtos.contains(memtile.getOperation()))
         continue;
@@ -2188,7 +2212,6 @@ void L2MemrefToMemTileMap(
       colToMemtile[col] = memtile;
       return memtile;
     }
-    // Emit a fresh col-hinted LTO.
     auto newLto = AIE::LogicalTileOp::create(
         builder, m.getLoc(), AIE::AIETileType::MemTile,
         /*col=*/builder.getI32IntegerAttr(col),
@@ -2201,7 +2224,6 @@ void L2MemrefToMemTileMap(
     return tl;
   };
 
-  // Pass 1: place col-hinted buckets onto col-aligned LTOs.
   SmallVector<size_t> unhintedBuckets;
   for (size_t i = 0; i < memref_buckets.size(); i++) {
     if (bucketCols[i] < 0) {
@@ -2212,8 +2234,6 @@ void L2MemrefToMemTileMap(
     for (auto bucket_elem : memref_buckets[i])
       memrefToMemTileMap[bucket_elem] = memtile;
   }
-  // Pass 2: round-robin unhinted buckets onto any remaining LTOs (or
-  // existing col-hinted ones if no free LTOs left).
   int rr = 0;
   for (size_t bi : unhintedBuckets) {
     AIE::TileLike memtile = nullptr;
