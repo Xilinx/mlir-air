@@ -139,8 +139,10 @@ void mm_int4_bf16_mmul_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
   constexpr unsigned KB = k_chunk / s;
   constexpr unsigned KB_PER_G = gs / s;
   constexpr unsigned NG = k_chunk / gs;
-  static_assert(m_tile % r == 0, "m_tile must be multiple of 8");
-  static_assert(n_tile % t == 0, "n_tile must be multiple of 8");
+  static_assert(m_tile % (2 * r) == 0,
+                "m_tile must be multiple of 16 (2x mmul m for 2x2 expansion)");
+  static_assert(n_tile % (2 * t) == 0,
+                "n_tile must be multiple of 16 (2x mmul n for 2x2 expansion)");
   static_assert(k_chunk % s == 0, "k_chunk must be multiple of 8");
   static_assert(gs % s == 0, "gs must be multiple of mmul k-tile (8)");
   static_assert(gs % R == 0, "gs must be multiple of R");
@@ -164,7 +166,10 @@ void mm_int4_bf16_mmul_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
     }
   }
 
-  // Dequant W (NO scale fold) → [NB][KB][s][t].
+  // Dequant W → b_pack [NB][KB][t][s] = [NB][KB][n_i][k_i]. For fixed
+  // (n_b, n_i, k_b) the 8 k_i positions are contiguous → 8-wide vector
+  // store. mmul reads this with aie::transpose at load (mmul B wants the
+  // [s][t] order which is the transpose of what dequant produces).
   for (unsigned g = 0; g < NG; g++) {
     for (unsigned n = 0; n < n_tile; n++) {
       aie::vector<int8, R> zv =
@@ -181,75 +186,126 @@ void mm_int4_bf16_mmul_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
         w_i8 = aie::sub(w_i8, zv);
         aie::vector<bfloat16, R> w_bf16 = aie::to_float<bfloat16>(w_i8, 0);
 
+        // R=32 spans R/s=4 mmul k blocks. For each block, store 8 contiguous
+        // bf16 to b_pack[n_b][k_b][n_i][k_i = 0..7].
         unsigned k_b_base = k_base / s;
-        bfloat16 *base = b_pack + n_b * (KB * s * t) + n_i;
 #pragma clang loop unroll(full)
-        for (unsigned j = 0; j < R; j++) {
-          unsigned k_b = k_b_base + j / s;
-          unsigned k_i = j % s;
-          base[k_b * (s * t) + k_i * t] = w_bf16[j];
+        for (unsigned j = 0; j < R / s; j++) {
+          unsigned k_b = k_b_base + j;
+          bfloat16 *dst = b_pack + n_b * (KB * t * s) + k_b * (t * s) + n_i * s;
+          aie::vector<bfloat16, s> chunk = w_bf16.template extract<s>(j);
+          aie::store_v(dst, chunk);
         }
       }
     }
   }
 
-  // Per (m_b, n_b): preload c into scalar f32 scratch, per group MMUL +
-  // scale fold + accumulate into scratch, store scratch back.
-  for (unsigned m_b = 0; m_b < MB; m_b++) {
-    for (unsigned n_b = 0; n_b < NB; n_b++) {
-      float *cdst_base = c + (m_b * r) * n_tile + n_b * t;
-      alignas(32) float c_acc_buf[r * t];
+  // 2x2 MMUL expansion: each iteration of the (m_b, n_b) super-tile holds
+  // 4 independent accumulators (C00/C01/C10/C11) so the inner kg loop
+  // issues 4 MACs/iter against 4 different register-file destinations —
+  // no serial dep chain on a single accumulator. Each loaded A and B
+  // vector is reused by 2 MACs.
+  for (unsigned m_b2 = 0; m_b2 < MB; m_b2 += 2) {
+    for (unsigned n_b2 = 0; n_b2 < NB; n_b2 += 2) {
+      float *cdst00 = c + (m_b2 * r) * n_tile + n_b2 * t;
+      float *cdst01 = c + (m_b2 * r) * n_tile + (n_b2 + 1) * t;
+      float *cdst10 = c + ((m_b2 + 1) * r) * n_tile + n_b2 * t;
+      float *cdst11 = c + ((m_b2 + 1) * r) * n_tile + (n_b2 + 1) * t;
+
+      alignas(32) float c_acc_00[r * t];
+      alignas(32) float c_acc_01[r * t];
+      alignas(32) float c_acc_10[r * t];
+      alignas(32) float c_acc_11[r * t];
       for (unsigned m_i = 0; m_i < r; m_i++) {
-        aie::vector<float, t> row = aie::load_v<t>(cdst_base + m_i * n_tile);
-        aie::store_v(c_acc_buf + m_i * t, row);
+        aie::store_v(c_acc_00 + m_i * t, aie::load_v<t>(cdst00 + m_i * n_tile));
+        aie::store_v(c_acc_01 + m_i * t, aie::load_v<t>(cdst01 + m_i * n_tile));
+        aie::store_v(c_acc_10 + m_i * t, aie::load_v<t>(cdst10 + m_i * n_tile));
+        aie::store_v(c_acc_11 + m_i * t, aie::load_v<t>(cdst11 + m_i * n_tile));
       }
 
       for (unsigned g = 0; g < NG; g++) {
-        // Per-group unscaled MMUL. Init accumulator from zeros (bf16-GEMM
-        // pattern, avoids the runtime `first` flag).
         aie::vector<float, r * t> zero_init = aie::zeros<float, r * t>();
-        MMUL C_g(zero_init);
-#pragma clang loop unroll(full)
-        for (unsigned kg = 0; kg < KB_PER_G; kg++) {
-          unsigned k_b = g * KB_PER_G + kg;
-          aie::vector<bfloat16, MMUL::size_A> A =
-              aie::load_v<MMUL::size_A>(a_pack + (k_b * MB + m_b) * (r * s));
-          aie::vector<bfloat16, MMUL::size_B> B =
-              aie::load_v<MMUL::size_B>(b_pack + (n_b * KB + k_b) * (s * t));
-          C_g.mac(A, B);
+        MMUL C00(zero_init), C01(zero_init), C10(zero_init), C11(zero_init);
+
+        const bfloat16 *__restrict pA0 =
+            a_pack + (g * KB_PER_G * MB + m_b2) * (r * s);
+        const bfloat16 *__restrict pA1 =
+            a_pack + (g * KB_PER_G * MB + m_b2 + 1) * (r * s);
+        const bfloat16 *__restrict pB0 =
+            b_pack + (n_b2 * KB + g * KB_PER_G) * (s * t);
+        const bfloat16 *__restrict pB1 =
+            b_pack + ((n_b2 + 1) * KB + g * KB_PER_G) * (s * t);
+
+        chess_prepare_for_pipelining chess_loop_range(1, ) for (unsigned kg = 0;
+                                                                kg < KB_PER_G;
+                                                                kg++) {
+          aie::vector<bfloat16, MMUL::size_A> A0 =
+              aie::load_v<MMUL::size_A>(pA0);
+          pA0 += MB * (r * s);
+          aie::vector<bfloat16, MMUL::size_A> A1 =
+              aie::load_v<MMUL::size_A>(pA1);
+          pA1 += MB * (r * s);
+          // b_pack stores tiles in [t=n_i][s=k_i] order (dequant friendly);
+          // mmul wants [s=k_i][t=n_i], so transpose per load.
+          aie::vector<bfloat16, MMUL::size_B> B0 =
+              aie::transpose(aie::load_v<MMUL::size_B>(pB0), t, s);
+          pB0 += s * t;
+          aie::vector<bfloat16, MMUL::size_B> B1 =
+              aie::transpose(aie::load_v<MMUL::size_B>(pB1), t, s);
+          pB1 += s * t;
+          C00.mac(A0, B0);
+          C01.mac(A0, B1);
+          C10.mac(A1, B0);
+          C11.mac(A1, B1);
         }
-        // Vectorized post-MMUL scale fold: convert C_g to bf16, multiply
-        // by bf16 scale broadcast (mul → f32 accum, no extra truncate),
-        // lift to f32 vec, accumulate row-by-row into c_acc_buf.
-        aie::vector<bfloat16, r * t> c_g_bf16 =
-            C_g.template to_vector<bfloat16>();
-        // Build bf16 scale broadcast: (m_i, n_i) row-major, scale per n_i.
-        // Load 8 scales into a vec<bf16, 8> and tile across r rows.
-        alignas(32) bfloat16 scale_row_buf[t];
-        for (unsigned n_i = 0; n_i < t; n_i++)
-          scale_row_buf[n_i] = a_s[g * n_tile + n_b * t + n_i];
-        aie::vector<bfloat16, t> scale_row = aie::load_v<t>(scale_row_buf);
-        alignas(32) bfloat16 scale_tile_buf[r * t];
-        for (unsigned m_i = 0; m_i < r; m_i++)
-          aie::store_v(scale_tile_buf + m_i * t, scale_row);
-        aie::vector<bfloat16, r * t> scale_tile =
-            aie::load_v<r * t>(scale_tile_buf);
-        aie::accum<accfloat, r * t> scaled_acc = aie::mul(c_g_bf16, scale_tile);
-        aie::vector<float, r * t> scaled_f32 =
-            scaled_acc.template to_vector<float>();
-        // Accumulate into c_acc_buf row by row (vector load + add + store).
+
+        // Per-group scale fold (cold path — runs NG=1 times for the
+        // production gs=k_chunk config). Two scale broadcasts (one per
+        // n-block); each applies to both m-block rows.
+        alignas(32) bfloat16 scale0_buf[t], scale1_buf[t];
+        for (unsigned n_i = 0; n_i < t; n_i++) {
+          scale0_buf[n_i] = a_s[g * n_tile + n_b2 * t + n_i];
+          scale1_buf[n_i] = a_s[g * n_tile + (n_b2 + 1) * t + n_i];
+        }
+        aie::vector<bfloat16, t> s0 = aie::load_v<t>(scale0_buf);
+        aie::vector<bfloat16, t> s1 = aie::load_v<t>(scale1_buf);
+        alignas(32) bfloat16 s0_tile_buf[r * t];
+        alignas(32) bfloat16 s1_tile_buf[r * t];
         for (unsigned m_i = 0; m_i < r; m_i++) {
-          aie::vector<float, t> inc = scaled_f32.template extract<t>(m_i);
-          aie::vector<float, t> old = aie::load_v<t>(c_acc_buf + m_i * t);
-          aie::vector<float, t> sum = aie::add(old, inc);
-          aie::store_v(c_acc_buf + m_i * t, sum);
+          aie::store_v(s0_tile_buf + m_i * t, s0);
+          aie::store_v(s1_tile_buf + m_i * t, s1);
         }
+        aie::vector<bfloat16, r * t> s0_tile =
+            aie::load_v<r * t>(s0_tile_buf);
+        aie::vector<bfloat16, r * t> s1_tile =
+            aie::load_v<r * t>(s1_tile_buf);
+
+        auto fold = [&](MMUL &C, aie::vector<bfloat16, r * t> &scale_tile,
+                        float *c_acc) {
+          aie::vector<bfloat16, r * t> c_bf16 =
+              C.template to_vector<bfloat16>();
+          aie::accum<accfloat, r * t> scaled_acc =
+              aie::mul(c_bf16, scale_tile);
+          aie::vector<float, r * t> scaled_f32 =
+              scaled_acc.template to_vector<float>();
+          for (unsigned m_i = 0; m_i < r; m_i++) {
+            aie::vector<float, t> inc = scaled_f32.template extract<t>(m_i);
+            aie::vector<float, t> old = aie::load_v<t>(c_acc + m_i * t);
+            aie::vector<float, t> sum = aie::add(old, inc);
+            aie::store_v(c_acc + m_i * t, sum);
+          }
+        };
+        fold(C00, s0_tile, c_acc_00);
+        fold(C01, s1_tile, c_acc_01);
+        fold(C10, s0_tile, c_acc_10);
+        fold(C11, s1_tile, c_acc_11);
       }
 
-      // Store accumulator back to c row-by-row.
       for (unsigned m_i = 0; m_i < r; m_i++) {
-        aie::vector<float, t> row = aie::load_v<t>(c_acc_buf + m_i * t);
-        aie::store_v(cdst_base + m_i * n_tile, row);
+        aie::store_v(cdst00 + m_i * n_tile, aie::load_v<t>(c_acc_00 + m_i * t));
+        aie::store_v(cdst01 + m_i * n_tile, aie::load_v<t>(c_acc_01 + m_i * t));
+        aie::store_v(cdst10 + m_i * n_tile, aie::load_v<t>(c_acc_10 + m_i * t));
+        aie::store_v(cdst11 + m_i * n_tile, aie::load_v<t>(c_acc_11 + m_i * t));
       }
     }
   }
