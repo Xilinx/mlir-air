@@ -28,31 +28,7 @@ AIE::TileOp getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col, int row);
 // get tileop using physical coordinates
 AIE::TileOp getPhysTileOp(AIE::DeviceOp aie_device, int col, int row);
 
-// Materialize a physical aie.tile by emitting an aie.logical_tile<tileType>
-// with the given hints (use std::nullopt for "?"), running mlir-aie's
-// SequentialPlacer, and resolving the result through getPhysTileOp. On
-// placement failure, emits a diagnostic on `aie_device` and returns failure.
-//
-// Caller must NOT be inside a greedy PatternRewriter callback; this helper
-// uses plain OpBuilder + replaceAllUsesWith/erase, which would invalidate
-// a greedy worklist's cached use-def edges (see RFC #1567 milestone 2).
-mlir::FailureOr<AIE::TileOp> createTileViaPlacer(AIE::DeviceOp aie_device,
-                                                 AIE::AIETileType tileType,
-                                                 std::optional<int> col_hint,
-                                                 std::optional<int> row_hint);
-
-// Batched variant: emits N aie.logical_tile<tileType> ops (one per hint),
-// runs the placer ONCE, and resolves each into a physical aie.tile. The
-// returned vector parallels `hints`. Use this when multiple unconstrained
-// or partially-constrained logical tiles must be placed together — e.g.,
-// a herd of cores all asking (col, ?), which a per-tile placer would all
-// map to the same row because state doesn't persist across place() calls.
-mlir::LogicalResult createTilesViaPlacer(
-    AIE::DeviceOp aie_device, AIE::AIETileType tileType,
-    llvm::ArrayRef<std::pair<std::optional<int>, std::optional<int>>> hints,
-    llvm::SmallVectorImpl<AIE::TileOp> &outTiles);
-
-AIE::LockOp allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
+AIE::LockOp allocateLockOp(AIE::DeviceOp aie_device, AIE::TileLike tile,
                            int init = 0, int id = -1,
                            StringAttr name = nullptr);
 
@@ -91,32 +67,55 @@ getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref,
                  air::ChannelOp air_chan);
 
 struct allocation_info_t {
-  AIE::TileOp dma_tile = nullptr;
+  // dma_tile is the SSA value of the (logical or physical) AIE tile that owns
+  // this DMA allocation. Stored as TileLike (op interface) so it works for
+  // both AIE::TileOp (post-placement) and AIE::LogicalTileOp (pre-placement).
+  // Pointer-equality on the underlying Operation* gives the same answer as
+  // (col, row) integer comparison without dependence on physical placement.
+  AIE::TileLike dma_tile = nullptr;
   int64_t col = -1;
   int64_t row = -1;
   AIE::DMAChannel dma_channel = {AIE::DMAChannelDir::MM2S, -1};
   int64_t tile_channel = -1;
   int packet_flow_id = -1; // Packet flow ID assigned during flow creation
+  // The other-side LTO (Operation*) of the flow this allocation belongs to.
+  // For a shim allocation, this is the memtile (or compute-core) LTO at the
+  // far end of the flow; for tile/memtile allocations it is unused. Used as
+  // the shim DMA bucket key so that one shim LTO never bundles flows whose
+  // far-side LTOs differ — keying on TileLike Operation* identity is lossless
+  // even when the far-side LTO is unplaced and its col is unknown (Path B,
+  // RFC #1567). Pre-Path-B the bucket keyed on `col`, which was a lossless
+  // proxy because each LTO had a unique col; with unhinted LTOs every flow
+  // collapsed to col=-1 and one shim LTO swallowed every memtile-side flow.
+  Operation *otherSideLTO = nullptr;
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
   bool valid();
-  AIE::TileOp getDmaTile();
-  bool foundAlloc(AIE::TileOp tile);
-  bool foundAlloc(AIE::TileOp tile, air::MemcpyInterface memcpyOp);
-  bool foundAlloc(AIE::TileOp tile, air::ChannelOp channel_op);
-  bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
-  bool foundPacketFlowAllocInTile(AIE::TileOp tile);
+  AIE::TileLike getDmaTile();
+  bool foundAlloc(AIE::TileLike tile);
+  bool foundAlloc(AIE::TileLike tile, air::MemcpyInterface memcpyOp);
+  bool foundAlloc(AIE::TileLike tile, air::ChannelOp channel_op);
+  bool foundAlloc(AIE::TileLike tile, AIE::DMAChannel channel);
+  bool foundPacketFlowAllocInTile(AIE::TileLike tile);
 
   bool foundAlloc(air::ChannelOp channel_op);
   bool foundAlloc(AIE::DMAChannel channel);
 
-  // Column-keyed; row is implied (shim is always row 0).
+  // Column-keyed; row is implied (shim is always row 0). Returns false for
+  // unplaced tiles (tryGetCol() == nullopt) — column-keyed lookups are only
+  // meaningful when the tile has a known column.
   bool foundAllocInColumn(int32_t col);
   bool foundAllocInColumn(int32_t col, AIE::DMAChannel channel);
   bool foundPacketFlowAllocInColumn(int32_t col);
 
   bool operator==(const allocation_info_t &other) const {
-    return dma_tile == other.dma_tile && col == other.col && row == other.row &&
+    // op interface getOperation() isn't const-qualified; cast away the
+    // top-level const for the pointer-equality comparison.
+    auto thisOp =
+        const_cast<allocation_info_t *>(this)->dma_tile.getOperation();
+    auto otherOp =
+        const_cast<allocation_info_t &>(other).dma_tile.getOperation();
+    return thisOp == otherOp && col == other.col && row == other.row &&
            dma_channel == other.dma_channel &&
            tile_channel == other.tile_channel;
   }
@@ -154,13 +153,13 @@ public:
       : device(device), dmaMemorySpace(dmaMemorySpace) {}
 
   FailureOr<allocation_info_t>
-  lookupDMAAllocation(AIE::TileOp tile, air::MemcpyInterface &memcpyOp);
+  lookupDMAAllocation(AIE::TileLike tile, air::MemcpyInterface &memcpyOp);
   FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
-  getLockForDMA(air::MemcpyInterface &memcpyOp, AIE::TileOp tile,
+  getLockForDMA(air::MemcpyInterface &memcpyOp, AIE::TileLike tile,
                 Operation *bufferOp, bool lockRaceConditionFix = false);
   FailureOr<allocation_info_t>
-  allocNewDmaChannel(air::MemcpyInterface &memcpyOp, AIE::TileOp tile, int chan,
-                     int col, int row, std::vector<int> dma_id);
+  allocNewDmaChannel(air::MemcpyInterface &memcpyOp, AIE::TileLike tile,
+                     int chan, int col, int row, std::vector<int> dma_id);
   void sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops);
 
 protected:
@@ -194,15 +193,25 @@ public:
 class ShimDMAAllocator : public DMAAllocator {
 
 public:
-  std::vector<int> dma_columns;
+  // Per-shim DMA channel count (2 MM2S + 2 S2MM on all current targets).
+  // Caps how many channels AIR may pack onto one shim LTO before opening
+  // a new LTO; aie-place-tiles (with merge-ltos=false) then maps each LTO
+  // to its own physical shim col.
   int shim_dma_channels;
 
   ShimDMAAllocator(AIE::DeviceOp device);
 
+  // Allocate a new shim DMA channel. The shim tile is emitted as an
+  // unconstrained aie.logical_tile<ShimNOCTile>(?, ?). aie-place-tiles
+  // assigns the physical column from flow adjacency to placed core peers.
+  // `otherSide` is the LTO (or physical tile) at the OTHER end of the flow
+  // (memtile or core); its Operation* identity is the bucket key used to
+  // group shim allocations so flows targeting distinct far-side LTOs land
+  // on distinct shim LTOs. col/row are kept for airrt metadata only and
+  // may be -1 when otherSide is an unhinted LTO.
   FailureOr<allocation_info_t>
-  allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col, int row,
-                     std::vector<Operation *> &dma_ops,
-                     std::string colAllocConstraint = "same_column");
+  allocNewDmaChannel(air::MemcpyInterface &memcpyOp, AIE::TileLike otherSide,
+                     int col, int row, std::vector<Operation *> &dma_ops);
 
   FailureOr<allocation_info_t>
   allocNewDmaChannel(air::MemcpyInterface &memcpyOp,

@@ -14,15 +14,14 @@
 // second put from overwriting the buffer before the DMA reads the first.
 
 // CHECK: aie.device
-// CHECK:         %[[TILE_MT:.*]] = aie.tile(2, 1)
-// CHECK:         %[[TILE:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[TILE:.*]] = aie.tile(2, 3)
 
 // One lock pair for the compute tile's MM2S channel (wlock init=1, rlock init=0)
-// CHECK:         %[[WLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 1 : i32}
-// CHECK:         %[[RLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 0 : i32}
+// CHECK-DAG:         %[[WLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 1 : i32}
+// CHECK-DAG:         %[[RLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 0 : i32}
 
 // One shared buffer
-// CHECK:         %[[BUF:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[BUF:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // DMA program: single BD using the shared buffer and lock pair
 // CHECK:    aie.mem(%[[TILE]])  {

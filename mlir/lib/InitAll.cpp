@@ -17,6 +17,10 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/InitAllPasses.h"
 
+#if AIR_ENABLE_AIE
+#include "aie/Dialect/AIE/Transforms/AIEPasses.h"
+#endif
+
 void xilinx::air::registerAllDialects(mlir::DialectRegistry &registry) {
   registry.insert<xilinx::air::airDialect, xilinx::airrt::AIRRtDialect>();
   xilinx::air::registerTransformDialectExtension(registry);
@@ -26,4 +30,11 @@ void xilinx::air::registerAllDialects(mlir::DialectRegistry &registry) {
 void xilinx::air::registerAllPasses() {
   xilinx::air::registerTransformPasses();
   xilinx::air::registerConversionPasses();
+#if AIR_ENABLE_AIE
+  // Register mlir-aie's transform passes (most importantly aie-place-tiles)
+  // so air-opt and aircc can invoke them. AIR emits aie.logical_tile<...>
+  // for memtiles and shim DMA tiles; aie-place-tiles resolves these to
+  // physical aie.tile ops.
+  xilinx::AIE::registerAIEPasses();
+#endif
 }

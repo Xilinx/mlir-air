@@ -28,6 +28,7 @@
 
 #if AIR_ENABLE_AIE
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIE/Transforms/AIEPasses.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #endif
 
@@ -956,6 +957,12 @@ static LogicalResult runAieCompilation() {
   // --- Set up MLIR context and parse input ---
   mlir::registerAllPasses();
   xilinx::air::registerAllPasses();
+#if AIR_ENABLE_AIE
+  // Required so we can invoke `aie-place-tiles` from the AIE-side pipeline
+  // below — AIR emits aie.logical_tile<...>(...) for memtiles and shim
+  // tiles, and aie-place-tiles resolves them to physical aie.tile ops.
+  xilinx::AIE::registerAIEPasses();
+#endif
 
   DialectRegistry registry;
   registerAllDialects(registry);
@@ -1057,6 +1064,13 @@ static LogicalResult runAieCompilation() {
   }
 
   // --- AIR to AIE conversion ---
+  // After air-to-aie + air-merge-unrolled-devices the device contains
+  // aie.logical_tile<...>(...) ops for memtiles and shim DMA tiles. We
+  // intentionally do NOT resolve those LTOs here — the aieModule we save
+  // (and pass to aiecc) is left with LTOs so aiecc's own placement
+  // pipeline runs aie-place-tiles with the full objfifo/flow connectivity
+  // visible. The npuModule clone below picks up its own copy of place-
+  // tiles before airrt-to-npu (which needs physical shim cols).
   std::string airToAiePipeline;
   {
     raw_string_ostream os(airToAiePipeline);
@@ -1074,6 +1088,15 @@ static LogicalResult runAieCompilation() {
       os << " stack-size=" << stackSize.getValue();
     os << "}";
     os << ",air-merge-unrolled-devices";
+#if AIR_ENABLE_AIE
+    // AIR emits unhinted shim/memtile aie.logical_tile ops. Run
+    // aie-place-tiles here so the saved aieModule already has physical
+    // aie.tile ops; aiecc's runPlacementPipeline will see no logical
+    // tiles and no-op via its hasLogicalTileOps guard.
+    // merge-logical-tiles=false keeps the placer from collapsing AIR's
+    // pre-aggregated logical tiles onto shared physical tiles.
+    os << ",aie.device(aie-place-tiles{merge-logical-tiles=false})";
+#endif
     os << ")";
   }
 
@@ -1127,6 +1150,14 @@ static LogicalResult runAieCompilation() {
     {
       raw_string_ostream os(npuPipeline);
       os << "builtin.module(";
+      // No aie-place-tiles here. AIR sets a col hint on every shim
+      // aie.logical_tile (matching the compute-side col), and the
+      // downstream aiecc placer respects those hints — so airrt-to-npu's
+      // LTO-aware getColFromTileValue() reads the same col aiecc will
+      // pick. Calling the placer here too would mean two independent
+      // placement runs (this one + aiecc's), and any drift between them
+      // produces NPU instructions targeting different shim cols than the
+      // cores aiecc actually places. Place once, in aiecc only.
       os << shimBdPass;
       os << ",canonicalize,cse";
       os << ",air-to-std";

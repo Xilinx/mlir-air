@@ -12,7 +12,7 @@
 // This tests the prefix+suffix detection in getRepeatCounts().
 
 // CHECK: aie.device
-// CHECK:         %[[TILE:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[TILE:.*]] = aie.tile(2, 3)
 
 // Verify 2-BD circular chain: bb1 -> bb2 -> bb1 (loops back)
 // Without the prefix+suffix collapse, this would generate 5 BDs.

@@ -13,6 +13,25 @@ add_subdirectory(Util)
 get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 
+set(_air_initall_link_libs
+  AIRConversionPasses
+  AIRTransformPasses
+  AIRTransformOps
+  AIRDialect
+  AIRRtDialect
+  AIRUtil
+  AIRInterface
+  MLIRSupport
+  ${conversion_libs}
+  ${dialect_libs})
+
+if(AIR_ENABLE_AIE)
+  # AIETransforms exposes registerAIEPasses() — wired into
+  # registerAllPasses() so air-opt and aircc can invoke aie-place-tiles
+  # on the LogicalTileOps emitted by AIR's lowering.
+  list(APPEND _air_initall_link_libs AIETransforms)
+endif()
+
 add_mlir_library(
   AIRInitAll
   InitAll.cpp
@@ -26,13 +45,4 @@ add_mlir_library(
   AIRInterface
 
   LINK_LIBS
-  AIRConversionPasses
-  AIRTransformPasses
-  AIRTransformOps
-  AIRDialect
-  AIRRtDialect
-  AIRUtil
-  AIRInterface
-  MLIRSupport
-  ${conversion_libs}
-  ${dialect_libs})
+  ${_air_initall_link_libs})

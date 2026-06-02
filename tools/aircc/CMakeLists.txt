@@ -40,7 +40,11 @@ set(LIBS
 )
 
 if(AIR_ENABLE_AIE)
-  list(APPEND LIBS AIE)
+  # AIE: dialect ops/types
+  # AIETransforms: transform passes including aie-place-tiles, which we
+  # invoke from aircc to resolve aie.logical_tile<...>(...) emitted by
+  # AIR-to-AIE.
+  list(APPEND LIBS AIE AIETransforms)
 endif()
 
 target_link_libraries(aircc PRIVATE ${LIBS})

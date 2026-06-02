@@ -11,11 +11,11 @@
 // This tests the N-buffer rotation detection in getRepeatCounts().
 
 // CHECK: aie.device
-// CHECK:         %[[TILE:.*]] = aie.tile(2, 3)
-// CHECK:         %[[BUF3:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[BUF2:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[TILE:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[BUF3:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[BUF2:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // Verify circular BD chain: bb1 -> bb2 -> bb3 -> bb4 -> bb1 (loops back)
 // CHECK:    aie.mem(%[[TILE]])  {

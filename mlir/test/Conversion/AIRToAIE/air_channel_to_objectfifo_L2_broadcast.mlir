@@ -8,22 +8,22 @@
 // RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='use-objectfifo=true device=xcve2802' --canonicalize | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) @segment_0 {
-// CHECK:    %[[VAL_0:.*]] = aie.tile(1, 1)
-// CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
-// CHECK:    %[[VAL_3:.*]] = aie.tile(5, 4)
-// CHECK:    %[[VAL_4:.*]] = aie.tile(2, 0)
-// CHECK:    aie.objectfifo @air_channel_1(%[[VAL_0]], {%[[VAL_3]], %[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:    aie.objectfifo @air_channel_0(%[[VAL_4]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK-DAG:    %[[CORE_5_3:.*]] = aie.tile(5, 3)
+// CHECK-DAG:    %[[CORE_5_4:.*]] = aie.tile(5, 4)
+// CHECK-DAG:    %[[MEMTILE:.*]] = aie.logical_tile<MemTile>({{.*}}, ?)
+// CHECK-DAG:    %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
+// CHECK:    aie.objectfifo @air_channel_0(%[[SHIM]], {%[[MEMTILE]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo.link [@air_channel_0] -> [@air_channel_1]([] [])
-// CHECK:    %[[VAL_8:.*]] = aie.core(%[[VAL_3]]) {
-// CHECK:      %[[VAL_9:.*]] = aie.objectfifo.acquire @air_channel_1(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:      %[[VAL_10:.*]] = aie.objectfifo.subview.access %[[VAL_9]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:    aie.objectfifo @air_channel_1(%[[MEMTILE]], {%[[CORE_5_4]], %[[CORE_5_3]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK:    aie.core(%[[CORE_5_4]]) {
+// CHECK:      aie.objectfifo.acquire @air_channel_1(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
+// CHECK:      aie.objectfifo.subview.access %{{.*}}[0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:      aie.objectfifo.release @air_channel_1(Consume, 1)
 // CHECK:      aie.end
 // CHECK:    }
-// CHECK:    %[[VAL_7:.*]] = aie.core(%[[VAL_2]]) {
-// CHECK:      %[[VAL_8:.*]] = aie.objectfifo.acquire @air_channel_1(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:      %[[VAL_9:.*]] = aie.objectfifo.subview.access %[[VAL_8]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:    aie.core(%[[CORE_5_3]]) {
+// CHECK:      aie.objectfifo.acquire @air_channel_1(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
+// CHECK:      aie.objectfifo.subview.access %{{.*}}[0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:      aie.objectfifo.release @air_channel_1(Consume, 1)
 // CHECK:      aie.end
 // CHECK:    }

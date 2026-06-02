@@ -8,12 +8,10 @@
 // RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcvc1902" %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcvc1902) @herd_0 {
-// CHECK:   %[[VAL_0:.*]] = aie.tile(2, 0)
-// CHECK:   %[[VAL_1:.*]] = aie.tile(3, 0)
-// CHECK:   %[[VAL_2:.*]] = aie.tile(5, 3)
-// CHECK:   %[[VAL_3:.*]] = aie.tile(6, 3)
-// CHECK:   %[[VAL_4:.*]] = aie.tile(5, 4)
-// CHECK:   %[[VAL_5:.*]] = aie.tile(6, 4)
+// CHECK-DAG:   %[[VAL_2:.*]] = aie.tile(5, 3)
+// CHECK-DAG:   %[[VAL_3:.*]] = aie.tile(6, 3)
+// CHECK-DAG:   %[[VAL_4:.*]] = aie.tile(5, 4)
+// CHECK-DAG:   %[[VAL_5:.*]] = aie.tile(6, 4)
 // CHECK-COUNT-6:    aie.lock(%[[VAL_2]], {{.*}}) {init = 0 : i32}
 // CHECK-COUNT-6:    aie.lock(%[[VAL_3]], {{.*}}) {init = 0 : i32}
 // CHECK-COUNT-6:    aie.lock(%[[VAL_4]], {{.*}}) {init = 0 : i32}
