@@ -1595,16 +1595,46 @@ bool air::isPacketShimFlow(const air::MemcpyBundleAsFlow &f) {
          f.MM2S_memspace == air::MemorySpace::L3;
 }
 
+// Identify the unique parent core (== receiver tile) of a flow's S2MM
+// receivers. Returns null if there isn't exactly one. Reordering across
+// flows that target distinct receiver tiles is unsafe -- the bug we fix
+// only manifests when N flows demux into a single tile's S2MM port.
+static AIE::CoreOp uniqueReceiverCore(const air::MemcpyBundleAsFlow &f) {
+  AIE::CoreOp uniq = nullptr;
+  for (int i = 0; i < f.numS2MMAllocs && i < (int)f.S2MM.size(); ++i)
+    for (auto *recvOp : f.S2MM[i]) {
+      auto c = recvOp->getParentOfType<AIE::CoreOp>();
+      if (!c)
+        return nullptr;
+      if (!uniq)
+        uniq = c;
+      else if (uniq != c)
+        return nullptr;
+    }
+  return uniq;
+}
+
 void air::sortPacketShimFlowsByReceiverOrder(
     std::vector<air::MemcpyBundleAsFlow> &memcpy_flows,
     AIE::DeviceOp aie_device) {
-  // Sort only the eligible subset to keep the comparator strict-weak --
-  // a partial comparator over the full vector breaks transitivity for n>=3.
-  SmallVector<size_t> eligibleIdx;
-  for (size_t i = 0; i < memcpy_flows.size(); ++i)
-    if (isPacketShimFlow(memcpy_flows[i]))
-      eligibleIdx.push_back(i);
-  if (eligibleIdx.size() < 2)
+  // Group eligible flows by receiver core. Only reorder within groups of
+  // >=2 flows that share a single core -- that's the bug pattern (N flows
+  // demuxing into one tile S2MM port). Reordering across cores would
+  // disturb routing for unrelated flows (dual-herd, multi-column, etc.).
+  llvm::MapVector<AIE::CoreOp, SmallVector<size_t>> groupByCore;
+  for (size_t i = 0; i < memcpy_flows.size(); ++i) {
+    if (!isPacketShimFlow(memcpy_flows[i]))
+      continue;
+    if (auto core = uniqueReceiverCore(memcpy_flows[i]))
+      groupByCore[core].push_back(i);
+  }
+  bool anyGroup = false;
+  for (auto &kv : groupByCore)
+    if (kv.second.size() >= 2) {
+      anyGroup = true;
+      break;
+    }
+  if (!anyGroup)
     return;
 
   DenseMap<Operation *, unsigned> walkPos;
@@ -1625,16 +1655,23 @@ void air::sortPacketShimFlowsByReceiverOrder(
     return minPos;
   };
 
-  SmallVector<air::MemcpyBundleAsFlow> eligible;
-  eligible.reserve(eligibleIdx.size());
-  for (auto i : eligibleIdx)
-    eligible.push_back(std::move(memcpy_flows[i]));
-  llvm::stable_sort(eligible, [&](const air::MemcpyBundleAsFlow &a,
-                                  const air::MemcpyBundleAsFlow &b) {
-    return firstUsePos(a) < firstUsePos(b);
-  });
-  for (size_t k = 0; k < eligibleIdx.size(); ++k)
-    memcpy_flows[eligibleIdx[k]] = std::move(eligible[k]);
+  // Sort each group's subset in place (stable_sort on the subset keeps
+  // the comparator strict-weak).
+  for (auto &kv : groupByCore) {
+    auto &idx = kv.second;
+    if (idx.size() < 2)
+      continue;
+    SmallVector<air::MemcpyBundleAsFlow> group;
+    group.reserve(idx.size());
+    for (auto i : idx)
+      group.push_back(std::move(memcpy_flows[i]));
+    llvm::stable_sort(group, [&](const air::MemcpyBundleAsFlow &a,
+                                 const air::MemcpyBundleAsFlow &b) {
+      return firstUsePos(a) < firstUsePos(b);
+    });
+    for (size_t k = 0; k < idx.size(); ++k)
+      memcpy_flows[idx[k]] = std::move(group[k]);
+  }
 }
 
 void air::reorderL3PacketPutsByFlowOrder(
