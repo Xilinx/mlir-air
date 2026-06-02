@@ -237,13 +237,6 @@ def build_rms_gemms_rope_int4_module(
     if tile_k_l2 is None:
         tile_k_l2 = emb_dim  # single segment-K iter; matches Q-proj config
 
-    # Cap launch_m_outer at 4: above that the multi-launch ELF runs out of
-    # shim DMA BD pool entries. See matmul_int4_packed.build_module
-    # m_per_segment docstring.
-    assert seq_len % (tile_m * herd_m) == 0
-    m_outer_total = seq_len // (tile_m * herd_m)
-    m_per_segment = m_outer_total // 4 if m_outer_total > 4 else 1
-
     q_total = seq_len * emb_dim
     k_total = seq_len * kv_dim
 
@@ -262,27 +255,51 @@ def build_rms_gemms_rope_int4_module(
         str(build_rms(seq_len, emb_dim, bfloat16, 16, herd_x=8))
     )
 
-    print(f"  [2/6] Q int4 GEMM (M={seq_len}, K={emb_dim}, N={emb_dim}, m_per_seg={m_per_segment})...")
+    print(f"  [2/6] Q int4 GEMM (M={seq_len}, K={emb_dim}, N={emb_dim})...")
     q_ir = str(
         build_int4_gemm(
-            seq_len, emb_dim, emb_dim, gs, tile_m, tile_k_l2, tile_k_l1,
-            tile_n, herd_m, herd_n, m_per_segment=m_per_segment,
+            seq_len,
+            emb_dim,
+            emb_dim,
+            gs,
+            tile_m,
+            tile_k_l2,
+            tile_k_l1,
+            tile_n,
+            herd_m,
+            herd_n,
         )
     )
 
     print(f"  [3/6] K int4 GEMM (M={seq_len}, K={emb_dim}, N={kv_dim})...")
     k_ir = str(
         build_int4_gemm(
-            seq_len, emb_dim, kv_dim, gs, tile_m, tile_k_l2, tile_k_l1,
-            tile_n, herd_m, herd_n, m_per_segment=m_per_segment,
+            seq_len,
+            emb_dim,
+            kv_dim,
+            gs,
+            tile_m,
+            tile_k_l2,
+            tile_k_l1,
+            tile_n,
+            herd_m,
+            herd_n,
         )
     )
 
     print(f"  [4/6] V int4 GEMM (M={seq_len}, K={emb_dim}, N={kv_dim})...")
     v_ir = str(
         build_int4_gemm(
-            seq_len, emb_dim, kv_dim, gs, tile_m, tile_k_l2, tile_k_l1,
-            tile_n, herd_m, herd_n, m_per_segment=m_per_segment,
+            seq_len,
+            emb_dim,
+            kv_dim,
+            gs,
+            tile_m,
+            tile_k_l2,
+            tile_k_l1,
+            tile_n,
+            herd_m,
+            herd_n,
         )
     )
 
