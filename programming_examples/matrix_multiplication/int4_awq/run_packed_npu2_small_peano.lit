@@ -1,0 +1,12 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_int4_gemm_npu2_small_peano
+// RUN: cd test_int4_gemm_npu2_small_peano
+// RUN: make -f %S/Makefile clean
+//
+// int4-AWQ GEMM smoke: M=64 K=128 N=128 on a 2x4 herd.
+// RUN: make -f %S/Makefile run_packed M=64 K=128 N=128 HERD_M=2 HERD_N=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PASS!
