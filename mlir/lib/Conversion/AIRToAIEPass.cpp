@@ -3909,6 +3909,103 @@ public:
       }
     }
 
+    // Reorder packet-switched shim sender flows by their receiver-side
+    // first-use position. When multiple packet flows demux into one tile S2MM
+    // port, the receiver consumes BD chains in FIFO arrival order; the sender
+    // (shim) emits in dispatch order. Both must match the core's lock-acquire
+    // order, which follows herd-source order. Without this sort, when a herd
+    // puts sibling channel.gets before a per-tile loop containing the main
+    // get, sender dispatch (driven by launch-decl order) and receiver mem
+    // chain / core (driven by herd-source order) disagree → packets land in
+    // wrong BD chains, wrong-buffer data, or deadlock.
+    {
+      DenseMap<Operation *, unsigned> walkPos;
+      unsigned pos = 0;
+      if (auto pm = aie_device->getParentOfType<ModuleOp>())
+        pm.walk([&](Operation *op) { walkPos[op] = pos++; });
+      else
+        aie_device.walk([&](Operation *op) { walkPos[op] = pos++; });
+      auto getReceiverFirstUsePos = [&](const air::MemcpyBundleAsFlow &f) {
+        unsigned minPos = std::numeric_limits<unsigned>::max();
+        for (int i = 0; i < f.numS2MMAllocs; ++i) {
+          if (i >= (int)f.S2MM.size())
+            break;
+          for (auto *recvOp : f.S2MM[i]) {
+            auto it = walkPos.find(recvOp);
+            if (it != walkPos.end() && it->second < minPos)
+              minPos = it->second;
+          }
+        }
+        return minPos;
+      };
+      // Sort only the eligible subset to keep the comparator strict-weak.
+      SmallVector<size_t> eligibleIdx;
+      for (size_t i = 0; i < memcpy_flows.size(); ++i) {
+        auto &f = memcpy_flows[i];
+        if (f.memcpyResourceType != "npu_dma_packet")
+          continue;
+        if (f.MM2S_memspace != air::MemorySpace::L3)
+          continue;
+        eligibleIdx.push_back(i);
+      }
+      if (eligibleIdx.size() > 1) {
+        SmallVector<air::MemcpyBundleAsFlow> eligible;
+        for (auto i : eligibleIdx)
+          eligible.push_back(std::move(memcpy_flows[i]));
+        llvm::stable_sort(eligible, [&](const air::MemcpyBundleAsFlow &a,
+                                        const air::MemcpyBundleAsFlow &b) {
+          return getReceiverFirstUsePos(a) < getReceiverFirstUsePos(b);
+        });
+        for (size_t k = 0; k < eligibleIdx.size(); ++k)
+          memcpy_flows[eligibleIdx[k]] = std::move(eligible[k]);
+      }
+
+      // Physically reorder the launch-side L3 ChannelPut ops in IR so the
+      // runtime sequence (emitted later by AIRRtToNpuPass in IR walk order)
+      // dispatches dma_start_task calls in the sorted order. The puts live
+      // in func.func @repro (outside aie.device), reached via the parent
+      // module. Track prev per block since there may be multiple launch
+      // clones (e.g. main + reset device).
+      if (auto parentModule = aie_device->getParentOfType<ModuleOp>()) {
+        DenseMap<StringAttr, SmallVector<air::ChannelPutOp>> putsByChan;
+        parentModule.walk([&](air::ChannelPutOp put) {
+          auto memrefTy = dyn_cast<BaseMemRefType>(put.getMemref().getType());
+          if (!memrefTy || !air::isL3(memrefTy))
+            return;
+          auto chan = air::getChannelDeclarationThroughSymbol(put);
+          if (!chan || chan.getChannelType().str() != "npu_dma_packet")
+            return;
+          putsByChan[chan.getSymNameAttr()].push_back(put);
+        });
+        SmallVector<air::ChannelPutOp> sortedPuts;
+        for (auto &f : memcpy_flows) {
+          if (f.memcpyResourceType != "npu_dma_packet")
+            continue;
+          if (f.MM2S_memspace != air::MemorySpace::L3)
+            continue;
+          auto chan = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op);
+          if (!chan)
+            continue;
+          auto it = putsByChan.find(chan.getSymNameAttr());
+          if (it == putsByChan.end())
+            continue;
+          for (auto put : it->second)
+            sortedPuts.push_back(put);
+        }
+        DenseMap<Block *, Operation *> prevByBlock;
+        for (auto put : sortedPuts) {
+          Block *blk = put->getBlock();
+          auto it = prevByBlock.find(blk);
+          if (it == prevByBlock.end()) {
+            prevByBlock[blk] = put;
+            continue;
+          }
+          put->moveAfter(it->second);
+          prevByBlock[blk] = put;
+        }
+      }
+    }
+
     // Step 2: Allocate tile DMA channels, shim DMA channels and shim tiles
     auto r = simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
                                         memtile_dma_alloc, tile_dma_alloc,
