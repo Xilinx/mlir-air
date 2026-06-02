@@ -67,7 +67,7 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | ML Pipeline | [MNIST-FC (Argmax)](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/mnist_fc/argmax/) | f32→i32 | ⚪ | 🟢 | [mnist_fc/argmax/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/mnist_fc/argmax/) |
 | ML Pipeline | [MNIST-FC (Integration)](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/mnist_fc/integration/) | f32 | ⚪ | 🟢 | [mnist_fc/integration/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/mnist_fc/integration/) |
 | Memory | [Shared L1 Buffer](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/shared_l1/) | bf16 | 🟢 | ⚪ | [shared_l1/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/shared_l1/) |
-| Quantization | [Dequant (AWQ int4→bf16)](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/dequant_awq/) | int4/bf16 | ⚪ | 🟢 | [dequant_awq/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/dequant_awq/) |
+| Quantization | [Dequant (AWQ int4→bf16)](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/dequant_awq/) | int4/bf16 | 🟢 | 🟢 | [dequant_awq/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/dequant_awq/) |
 | Primitives | [Scalar/Vector Operations](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/primitives/) | various | 🟢 | 🟢 | [primitives/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/primitives/) |
 
 ### Status Legend
