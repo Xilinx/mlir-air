@@ -812,6 +812,33 @@ LogicalResult outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
     }
   }
 
+  // Extend to the max herd column footprint inside the segment. When the
+  // segment carries no explicit x_size (Python sugar like
+  // `@segment(name="seg")` defaults to 1x1), it doesn't reflect the actual
+  // physical column extent the herds will occupy. Memtile is column-bound
+  // so we need one logical memtile per column the herds will land on, or
+  // L2 buffers for distinct columns wrap-collide onto the same memtile
+  // LTO and the placer fails (matvec_2tile_add 8-col reproduces this).
+  // Falling back to herd footprint matches what an explicitly-sized
+  // segment (e.g. matmul_i8 with x_size=8) already gets.
+  int64_t herd_max_x = 0;
+  seg.walk([&](air::HerdOp h) {
+    int64_t x_loc = 0;
+    if (auto loc = h->getAttrOfType<IntegerAttr>("x_loc"))
+      x_loc = loc.getInt();
+    int64_t x_size = 1;
+    auto sizeOperands = h.getSizeOperands();
+    if (!sizeOperands.empty()) {
+      if (auto cst = sizeOperands[0].getDefiningOp<arith::ConstantIndexOp>())
+        x_size = cst.value();
+      else if (auto cst = sizeOperands[0].getDefiningOp<arith::ConstantOp>())
+        if (auto intAttr = dyn_cast_if_present<IntegerAttr>(cst.getValue()))
+          x_size = intAttr.getInt();
+    }
+    herd_max_x = std::max(herd_max_x, x_loc + x_size);
+  });
+  seg_size_x = std::max(seg_size_x, herd_max_x);
+
   seg.walk([&](air::ChannelInterface op) {
     if (!aie_device.lookupSymbol(op.getChanName())) {
       auto ch = air::getChannelDeclarationThroughSymbol(op);
@@ -2059,24 +2086,151 @@ void L2MemrefToMemTileMap(
       memref_buckets.push_back(SmallVector<memref::AllocOp>{alloc});
     }
   }
-  // Second stage in memref placement: round-robin placement of memref groups
-  // to memtiles. This distributes buffer count evenly, which correlates well
-  // with DMA channel/BD pressure.
-  int memtile_id = 0;
-  for (auto &bucket : memref_buckets) {
-    for (auto bucket_elem : bucket) {
-      memrefToMemTileMap[bucket_elem] = memtiles[memtile_id];
+  // Second stage in memref placement: assign each bucket to a memtile LTO
+  // by its derived consumer column. Buckets with the same target column
+  // share a memtile LTO; the placer (with merge-logical-tiles=false on
+  // shims and per-LTO physical tiles on memtiles) lands each col-X LTO at
+  // physical memtile col X, so the round-trip core->memtile flow stays
+  // intra-column. Without this, round-robin assignment lands buffers on
+  // memtiles in arbitrary columns and aie-create-pathfinder-flows spends
+  // hundreds of seconds routing cross-column traffic (matches the original
+  // matmul_i8 Triton-XDNA#50 latency regression).
+  //
+  // Buckets whose target col can't be derived (no channel users with
+  // core consumers) fall back to round-robin on whichever LTOs aren't yet
+  // claimed by a col-hinted bucket.
+  const auto &targetModel = m.getTargetModel();
+  auto colHasMemTile = [&](int col) {
+    if (col < 0 || col >= targetModel.columns())
+      return false;
+    for (int row = 0; row < targetModel.rows(); row++)
+      if (targetModel.isMemTile(col, row))
+        return true;
+    return false;
+  };
+  auto otherSideCoreCol = [&](StringRef channelName, bool weAreThePut) -> int {
+    int col = -1;
+    m.walk([&](air::ChannelInterface chIf) {
+      if (chIf.getChanName() != channelName)
+        return WalkResult::advance();
+      bool isOurSide = (weAreThePut == isa<air::ChannelPutOp>(*chIf));
+      if (isOurSide)
+        return WalkResult::advance();
+      auto core = chIf->getParentOfType<AIE::CoreOp>();
+      if (!core)
+        return WalkResult::advance();
+      auto tile =
+          dyn_cast_if_present<AIE::TileOp>(core.getTile().getDefiningOp());
+      if (!tile)
+        return WalkResult::advance();
+      int c = tile.getCol();
+      if (col == -1)
+        col = c;
+      else if (col != c)
+        col = -2; // mixed cols across consumer cores
+      return WalkResult::advance();
+    });
+    return col < 0 ? -1 : col;
+  };
+  auto deriveBucketCol = [&](ArrayRef<memref::AllocOp> bucket) -> int {
+    int consensus = -1;
+    for (auto alloc : bucket) {
+      for (auto user : alloc.getMemref().getUsers()) {
+        auto ch = dyn_cast_if_present<air::ChannelInterface>(user);
+        if (!ch)
+          continue;
+        bool weArePut = isa<air::ChannelPutOp>(*ch);
+        int cand = otherSideCoreCol(ch.getChanName(), weArePut);
+        if (cand < 0)
+          continue;
+        if (consensus == -1)
+          consensus = cand;
+        else if (consensus != cand)
+          return -1;
+      }
     }
-    memtile_id++;
-    memtile_id %= memtiles.size();
-  }
+    return colHasMemTile(consensus) ? consensus : -1;
+  };
 
-  // RFC #1567 Stage C #4: bucket placement uses round-robin only. The
-  // column-affinity swap optimization that previously lived here was
-  // removed; the proper replacement is to defer memtile placement to
-  // mlir-aie's SequentialPlacer (now flow-aware via #3055). That migration
-  // requires deferring the placer call until after aie.flow ops materialize
-  // and is tracked as a follow-up.
+  // Compute per-bucket col hint.
+  SmallVector<int> bucketCols;
+  bucketCols.reserve(memref_buckets.size());
+  for (auto &bucket : memref_buckets)
+    bucketCols.push_back(deriveBucketCol(bucket));
+
+  // Map col -> pre-existing memtile LTO. Use the first pre-emitted LTO
+  // that has no col hint yet, hint it to this col, and reuse it for all
+  // buckets targeting the same col. If no pre-emitted LTO is available,
+  // emit a new one hinted to this col.
+  OpBuilder builder(m);
+  builder.setInsertionPointToStart(m.getBody());
+  for (auto &o : m.getBody()->getOperations()) {
+    if (isa<AIE::TileOp, AIE::LogicalTileOp>(o))
+      builder.setInsertionPointAfter(&o);
+    else
+      break;
+  }
+  llvm::DenseMap<int, AIE::TileLike> colToMemtile;
+  llvm::SmallPtrSet<Operation *, 8> claimedLtos;
+  auto findOrCreateLtoForCol = [&](int col) -> AIE::TileLike {
+    auto it = colToMemtile.find(col);
+    if (it != colToMemtile.end())
+      return it->second;
+    // Reuse a pre-emitted LTO that isn't yet claimed.
+    for (auto memtile : memtiles) {
+      if (claimedLtos.contains(memtile.getOperation()))
+        continue;
+      auto preLto = dyn_cast<AIE::LogicalTileOp>(memtile.getOperation());
+      if (!preLto || preLto.getCol().has_value())
+        continue;
+      preLto.setColAttr(builder.getI32IntegerAttr(col));
+      claimedLtos.insert(memtile.getOperation());
+      colToMemtile[col] = memtile;
+      return memtile;
+    }
+    // Emit a fresh col-hinted LTO.
+    auto newLto = AIE::LogicalTileOp::create(
+        builder, m.getLoc(), AIE::AIETileType::MemTile,
+        /*col=*/builder.getI32IntegerAttr(col),
+        /*row=*/IntegerAttr(),
+        /*allocation_scheme=*/StringAttr());
+    AIE::TileLike tl = newLto;
+    memtiles.push_back(tl);
+    claimedLtos.insert(newLto.getOperation());
+    colToMemtile[col] = tl;
+    return tl;
+  };
+
+  // Pass 1: place col-hinted buckets onto col-aligned LTOs.
+  SmallVector<size_t> unhintedBuckets;
+  for (size_t i = 0; i < memref_buckets.size(); i++) {
+    if (bucketCols[i] < 0) {
+      unhintedBuckets.push_back(i);
+      continue;
+    }
+    AIE::TileLike memtile = findOrCreateLtoForCol(bucketCols[i]);
+    for (auto bucket_elem : memref_buckets[i])
+      memrefToMemTileMap[bucket_elem] = memtile;
+  }
+  // Pass 2: round-robin unhinted buckets onto any remaining LTOs (or
+  // existing col-hinted ones if no free LTOs left).
+  int rr = 0;
+  for (size_t bi : unhintedBuckets) {
+    AIE::TileLike memtile = nullptr;
+    for (auto m2 : memtiles) {
+      if (!claimedLtos.contains(m2.getOperation())) {
+        memtile = m2;
+        claimedLtos.insert(m2.getOperation());
+        break;
+      }
+    }
+    if (!memtile) {
+      memtile = memtiles[rr % memtiles.size()];
+      rr++;
+    }
+    for (auto bucket_elem : memref_buckets[bi])
+      memrefToMemTileMap[bucket_elem] = memtile;
+  }
 }
 
 void allocL2Buffers(AIE::DeviceOp m,
