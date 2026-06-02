@@ -167,6 +167,17 @@ if __name__ == "__main__":
         help="Number of compute tiles to split N across",
     )
     parser.add_argument(
+        "--device",
+        type=str,
+        choices=["npu1", "npu2"],
+        default=None,
+        dest="device",
+        help=(
+            "Target NPU device. npu1 = Phoenix (AIE2), npu2 = Strix (AIE2P). "
+            "If unset, the XRT backend auto-detects via xrt-smi."
+        ),
+    )
+    parser.add_argument(
         "--compile-mode",
         type=str,
         choices=["compile-only", "compile-and-run"],
@@ -201,6 +212,8 @@ if __name__ == "__main__":
         parser.error("N must be divisible by herd_n")
     if (args.n // args.herd_n) % args.group_size != 0:
         parser.error("N / herd_n must be divisible by group_size")
+    if args.device == "npu1" and args.output_format == "elf":
+        parser.error("--output-format=elf is not supported on npu1; use xclbin")
 
     mlir_module = build_module(args.n, args.group_size, args.herd_n)
     if args.print_module_only:
@@ -229,6 +242,7 @@ if __name__ == "__main__":
             omit_pingpong=True,
             output_format=args.output_format,
             instance_name="dequant",
+            target_device=args.device,
         )
         exit(
             runner.run_test(
@@ -244,6 +258,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_pingpong=True,
             output_format=args.output_format,
+            target_device=args.device,
         )
         module_function = backend.compile(mlir_module)
         backend.unload()
