@@ -339,6 +339,15 @@ def build_o_ffn_int4_module(
 
     n_total = seq_len * emb_dim
 
+    # Cap launch_m_outer at 4 per GEMM (see rms_gemms_rope_int4 sibling for why).
+    def _mps(herd_m_):
+        assert seq_len % (tile_m * herd_m_) == 0
+        mot = seq_len // (tile_m * herd_m_)
+        return mot // 4 if mot > 4 else 1
+    mps_o = _mps(o_herd_m)
+    mps_gu = _mps(gate_herd_m)
+    mps_d = _mps(down_herd_m)
+
     # Packed-BO shapes — all three FFN-input GEMMs share tile_n=16, tile_k_l1=128,
     # gs=128 so they have the same tile_bytes (1072). Down differs only in
     # N (=emb_dim) vs K (=hidden_dim) outer dims.
@@ -351,19 +360,11 @@ def build_o_ffn_int4_module(
 
     # ---- Build sub-kernels ----
 
-    print("  [1/8] O int4 GEMM (M=K=N=emb_dim)...")
+    print(f"  [1/8] O int4 GEMM (M=K=N=emb_dim, m_per_seg={mps_o})...")
     o_ir = str(
         build_int4_gemm(
-            seq_len,
-            emb_dim,
-            emb_dim,
-            gs,
-            tile_m,
-            emb_dim,            # tile_k_l2 = K
-            tile_k_l1,
-            tile_n,
-            o_herd_m,
-            o_herd_n,
+            seq_len, emb_dim, emb_dim, gs, tile_m, emb_dim, tile_k_l1,
+            tile_n, o_herd_m, o_herd_n, m_per_segment=mps_o,
         )
     )
 
@@ -375,35 +376,19 @@ def build_o_ffn_int4_module(
         str(build_rms(seq_len, emb_dim, bfloat16, 16, herd_x=8))
     )
 
-    print("  [4/8] Gate int4 GEMM (K=emb_dim, N=hidden_dim)...")
+    print(f"  [4/8] Gate int4 GEMM (K=emb_dim, N=hidden_dim, m_per_seg={mps_gu})...")
     gate_ir = str(
         build_int4_gemm(
-            seq_len,
-            emb_dim,
-            hidden_dim,
-            gs,
-            tile_m,
-            emb_dim,
-            tile_k_l1,
-            tile_n,
-            gate_herd_m,
-            gate_herd_n,
+            seq_len, emb_dim, hidden_dim, gs, tile_m, emb_dim, tile_k_l1,
+            tile_n, gate_herd_m, gate_herd_n, m_per_segment=mps_gu,
         )
     )
 
-    print("  [5/8] Up int4 GEMM (K=emb_dim, N=hidden_dim)...")
+    print(f"  [5/8] Up int4 GEMM (K=emb_dim, N=hidden_dim, m_per_seg={mps_gu})...")
     up_ir = str(
         build_int4_gemm(
-            seq_len,
-            emb_dim,
-            hidden_dim,
-            gs,
-            tile_m,
-            emb_dim,
-            tile_k_l1,
-            tile_n,
-            gate_herd_m,
-            gate_herd_n,
+            seq_len, emb_dim, hidden_dim, gs, tile_m, emb_dim, tile_k_l1,
+            tile_n, gate_herd_m, gate_herd_n, m_per_segment=mps_gu,
         )
     )
 
@@ -423,20 +408,12 @@ def build_o_ffn_int4_module(
 
     print(
         f"  [7/8] Down int4 GEMM (K=hidden_dim={hidden_dim}, N=emb_dim, "
-        f"herd_m={down_herd_m} due to L2 budget)..."
+        f"herd_m={down_herd_m}, m_per_seg={mps_d} due to L2 budget)..."
     )
     down_ir = str(
         build_int4_gemm(
-            seq_len,
-            hidden_dim,
-            emb_dim,
-            gs,
-            tile_m,
-            hidden_dim,
-            tile_k_l1,
-            tile_n,
-            down_herd_m,
-            down_herd_n,
+            seq_len, hidden_dim, emb_dim, gs, tile_m, hidden_dim, tile_k_l1,
+            tile_n, down_herd_m, down_herd_n, m_per_segment=mps_d,
         )
     )
 
