@@ -116,17 +116,22 @@ _cache_mod.prepare_air_project = _prepare_air_project_int4
 
 # stack_size=16384: int4 GEMM kernel needs it; default 1024 silently
 # overflows (corrupts later sub-launches' compute).
+# runtime_loop_tiling_sizes=[2,2]: int4 GEMM uses tile_n=16 (mmul constraint)
+# vs bf16's tile_n=128, giving 8x more launch_n iters. Tile the runtime
+# loop so the shim DMA BD chain doesn't exhaust the BD pool at seq>=512.
 RMS_GEMMS_ROPE_INT4_BACKEND = {
     "omit_while_true_loop": False,
     "output_format": "elf",
     "instance_name": "rms_gemms_rope_int4",
     "stack_size": 16384,
+    "runtime_loop_tiling_sizes": [2, 2],
 }
 O_FFN_INT4_BACKEND = {
     "omit_while_true_loop": False,
     "output_format": "elf",
     "instance_name": "o_ffn_int4",
     "stack_size": 16384,
+    "runtime_loop_tiling_sizes": [2, 2],
 }
 
 
