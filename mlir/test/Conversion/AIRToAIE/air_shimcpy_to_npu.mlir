@@ -11,7 +11,7 @@
 
 // CHECK-LABEL:   aie.device(npu1) @herd1 {
 // CHECK-DAG:  %[[VAL_0:.*]] = aie.tile(0, 2)
-// CHECK-DAG:  %[[VAL_1:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:  %[[VAL_1:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG:  %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 1) {init = 1 : i32}
 // CHECK-DAG:  %[[VAL_3:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
 // CHECK-DAG:  %[[VAL_4:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<1024xi32, 2>
@@ -55,7 +55,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // CHECK-LABEL:   aie.device(npu1) @herd1 {
 // CHECK-DAG: %[[VAL_0:.*]] = aie.tile(0, 2)
-// CHECK-DAG: %[[VAL_1:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG: %[[VAL_1:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG: %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 3) {init = 1 : i32}
 // CHECK-DAG: %[[VAL_3:.*]] = aie.lock(%[[VAL_0]], 2) {init = 0 : i32}
 // CHECK-DAG: %[[VAL_4:.*]] = aie.lock(%[[VAL_0]], 1) {init = 1 : i32}
@@ -117,7 +117,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // air.channel to aie.locks.
 // CHECK-LABEL:   aie.device(npu1) @herd1 {
-// CHECK-DAG:         %[[VAL_0:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:         %[[VAL_0:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG:         %[[VAL_1:.*]] = aie.tile(0, 2)
 // CHECK-DAG:         %[[VAL_2:.*]] = aie.lock(%[[VAL_1]], 3) {init = 1 : i32}
 // CHECK-DAG:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 2) {init = 0 : i32}
@@ -189,7 +189,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // air.channel to aie.locks.
 // CHECK-LABEL:   aie.device(npu1) @segment0 {
 // CHECK-DAG:         %[[VAL_3:.*]] = aie.tile(0, 2)
-// CHECK-DAG:         %[[VAL_4:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:         %[[VAL_4:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG:         %[[VAL_17:.*]] = aie.lock(%[[VAL_3]], 3) {init = 1 : i32}
 // CHECK-DAG:         %[[VAL_18:.*]] = aie.lock(%[[VAL_3]], 2) {init = 0 : i32}
 // CHECK-DAG:         %[[VAL_19:.*]] = aie.lock(%[[VAL_3]], 1) {init = 1 : i32}
@@ -222,7 +222,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           aie.end
 // CHECK:         }
 
-// CHECK-DAG:         %[[VAL_2:.*]] = aie.logical_tile<MemTile>(?, ?)
+// CHECK-DAG:         %[[VAL_2:.*]] = aie.logical_tile<MemTile>({{.*}}, ?)
 // CHECK-DAG:         %[[VAL_5:.*]] = aie.lock(%[[VAL_2]], 3) {init = 1 : i32}
 // CHECK-DAG:         %[[VAL_6:.*]] = aie.lock(%[[VAL_2]], 2) {init = 0 : i32}
 // CHECK-DAG:         %[[VAL_7:.*]] = aie.lock(%[[VAL_2]], 1) {init = 1 : i32}
@@ -305,8 +305,8 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // L2 to L1 broadcast
 // CHECK: aie.device
-// CHECK-DAG:         %[[VAL_0:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
-// CHECK-DAG:         %[[VAL_1:.*]] = aie.logical_tile<MemTile>(?, ?)
+// CHECK-DAG:         %[[VAL_0:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
+// CHECK-DAG:         %[[VAL_1:.*]] = aie.logical_tile<MemTile>({{.*}}, ?)
 // CHECK-DAG:         %[[VAL_2:.*]] = aie.tile(0, 2)
 // CHECK-DAG:         %[[VAL_3:.*]] = aie.tile(1, 2)
 // CHECK-DAG:         %[[VAL_4:.*]] = aie.tile(2, 2)
@@ -404,8 +404,8 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
 
 // L3 to L1 parallel shim dmas
 // CHECK: aie.device(npu1)
-// CHECK-DAG: %[[tile_0_0:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
-// CHECK-DAG: %[[tile_1_0:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG: %[[tile_0_0:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
+// CHECK-DAG: %[[tile_1_0:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG: %[[tile_0_3:.*]] = aie.tile(0, 3)
 // CHECK-DAG: %[[tile_1_3:.*]] = aie.tile(1, 3)
 // CHECK-DAG: %[[tile_0_4:.*]] = aie.tile(0, 4)
@@ -763,7 +763,7 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
 // 16 compute → memtile flows + memtile_dma blocks are emitted. The exact
 // LTO→column binding is a placer concern (aie-place-tiles).
 // CHECK: aie.device(npu1)
-// CHECK-DAG: aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG: aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG: %[[tile_0_2:.*]] = aie.tile(0, 2)
 // CHECK-DAG: %[[tile_1_2:.*]] = aie.tile(1, 2)
 // CHECK-DAG: %[[tile_2_2:.*]] = aie.tile(2, 2)
@@ -783,7 +783,7 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
 // 16 L1 buffers — one per compute tile, all 16x16x4x4xbf16
 // CHECK-COUNT-16: aie.buffer({{.*}}) {{{.*}}} : memref<16x16x4x4xbf16, 2>
 // CHECK: aie.core
-// CHECK-DAG: aie.logical_tile<MemTile>(?, ?)
+// CHECK-DAG: aie.logical_tile<MemTile>({{.*}}, ?)
 // 4 L2 memtile buffers of size 64x256xbf16
 // CHECK-COUNT-4: aie.buffer({{.*}}) {{{.*}}} : memref<64x256xbf16, 1>
 // CHECK: @func12
@@ -917,7 +917,7 @@ module {
 
 // Wrap-and-stride list canonicalization during herd outlining.
 // CHECK: aie.device(npu1)
-// CHECK-DAG: %[[tile_2_0:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG: %[[tile_2_0:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG: %[[tile_2_3:.*]] = aie.tile(0, 2)
 // CHECK:  %[[VAL_0:.*]] = aie.mem(%[[tile_2_3]]) {
 // CHECK:    %[[VAL_1:.*]] = aie.dma_start(MM2S, 0, ^bb1, ^bb2)
@@ -996,8 +996,8 @@ module {
 
 // Unrolled bundle of channels from shim accessing directly to herd.
 // CHECK: aie.device(npu1)
-// CHECK-DAG: %[[tile_0_0:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
-// CHECK-DAG: %[[tile_1_0:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG: %[[tile_0_0:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
+// CHECK-DAG: %[[tile_1_0:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG: %[[tile_0_2:.*]] = aie.tile(0, 2)
 // CHECK-DAG: %[[tile_1_2:.*]] = aie.tile(1, 2)
 // CHECK-DAG: %[[tile_0_3:.*]] = aie.tile(0, 3)
@@ -1200,7 +1200,7 @@ func.func @func17(%arg0 : memref<5xi32>, %arg1 : memref<96xi32>, %arg2 : memref<
 
 // Air.launch and air.herd only (no air.segment).
 //
-// CHECK-DAG:      %[[shim_noc_tile_0_0:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:      %[[shim_noc_tile_0_0:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG:      %[[tile_0_2:.*]] = aie.tile(0, 2)
 // CHECK:      aie.flow(%[[tile_0_2]], DMA : 0, %[[shim_noc_tile_0_0]], DMA : 0)
 // CHECK:      aie.shim_dma_allocation @air_channel_0(%[[shim_noc_tile_0_0]], S2MM, 0)
@@ -1284,7 +1284,7 @@ func.func @func18(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: i32, %arg3:
 
 // Air.launch and air.herd only (no air.segment), with time-multiplexed data movement on one DMA channel.
 //
-// CHECK-DAG:      %[[shim_noc_tile_0_0:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:      %[[shim_noc_tile_0_0:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG:      %[[tile_0_2:.*]] = aie.tile(0, 2)
 // CHECK-DAG:      %[[lock_0_2:.*]] = aie.lock(%[[tile_0_2]], 1) {init = 2
 // CHECK-DAG:      %[[buf1:.*]] = aie.buffer(%[[tile_0_2]]) {sym_name = "buf1"}

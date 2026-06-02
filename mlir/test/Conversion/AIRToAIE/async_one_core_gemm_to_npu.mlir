@@ -8,7 +8,7 @@
 // RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="row-offset=2 col-offset=0 device=npu1_1col" -canonicalize -cse %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(npu1_1col) @segment_0 {
-// CHECK-DAG:  %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:  %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG:  %[[COMPUTE:.*]] = aie.tile(0, 2)
 // CHECK-DAG:  %[[CLOCK_3P:.*]] = aie.lock(%[[COMPUTE]], 3) {init = 3 : i32}
 // CHECK-DAG:  %[[CLOCK_3C:.*]] = aie.lock(%[[COMPUTE]], 2) {init = 0 : i32}
@@ -19,7 +19,7 @@
 // CHECK-DAG:  aie.buffer(%[[COMPUTE]]) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK:  aie.mem(%[[COMPUTE]]) {
 // CHECK:  aie.core(%[[COMPUTE]]) {
-// CHECK-DAG:  %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(?, ?)
+// CHECK-DAG:  %[[MEMTILE:.*]] = aie.logical_tile<MemTile>({{.*}}, ?)
 // CHECK-DAG:  aie.lock(%[[MEMTILE]], 7) {init = 1 : i32}
 // CHECK-DAG:  aie.lock(%[[MEMTILE]], 6) {init = 0 : i32}
 // CHECK-DAG:  aie.lock(%[[MEMTILE]], 5) {init = 1 : i32}

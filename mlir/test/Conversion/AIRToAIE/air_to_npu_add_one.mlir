@@ -9,7 +9,7 @@
 // RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu1_1col})' --split-input-file | FileCheck %s
 // RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu1_1col use-lock-race-condition-fix=true})' --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
-// CHECK-DAG: %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG: %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG: %[[COMPUTE:.*]] = aie.tile(0, 2)
 // CHECK-DAG: %[[CLOCK_PROD2:.*]] = aie.lock(%[[COMPUTE]], 3) {init = 1 : i32}
 // CHECK-DAG: %[[CLOCK_CONS2:.*]] = aie.lock(%[[COMPUTE]], 2) {init = 0 : i32}
@@ -49,7 +49,7 @@
 // CHECK:   aie.use_lock(%[[CLOCK_CONS1]], Release, 1)
 // CHECK:   aie.end
 // CHECK: }
-// CHECK-DAG: %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(?, ?)
+// CHECK-DAG: %[[MEMTILE:.*]] = aie.logical_tile<MemTile>({{.*}}, ?)
 // CHECK-DAG: %[[MLOCK_PROD2:.*]] = aie.lock(%[[MEMTILE]], 3) {init = 1 : i32}
 // CHECK-DAG: %[[MLOCK_CONS2:.*]] = aie.lock(%[[MEMTILE]], 2) {init = 0 : i32}
 // CHECK-DAG: %[[MLOCK_PROD1:.*]] = aie.lock(%[[MEMTILE]], 1) {init = 1 : i32}
@@ -138,7 +138,7 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 
 // Asynchronous version
 
-// CHECK-DAG: %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG: %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK-DAG: %[[COMPUTE:.*]] = aie.tile(0, 2)
 // CHECK-DAG: %[[CLOCK_PROD2:.*]] = aie.lock(%[[COMPUTE]], 3) {init = 1 : i32}
 // CHECK-DAG: %[[CLOCK_CONS2:.*]] = aie.lock(%[[COMPUTE]], 2) {init = 0 : i32}
@@ -178,7 +178,7 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK:   aie.use_lock(%[[CLOCK_CONS1]], Release, 1)
 // CHECK:   aie.end
 // CHECK: }
-// CHECK-DAG: %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(?, ?)
+// CHECK-DAG: %[[MEMTILE:.*]] = aie.logical_tile<MemTile>({{.*}}, ?)
 // CHECK-DAG: %[[MLOCK_PROD2:.*]] = aie.lock(%[[MEMTILE]], 3) {init = 1 : i32}
 // CHECK-DAG: %[[MLOCK_CONS2:.*]] = aie.lock(%[[MEMTILE]], 2) {init = 0 : i32}
 // CHECK-DAG: %[[MLOCK_PROD1:.*]] = aie.lock(%[[MEMTILE]], 1) {init = 1 : i32}
