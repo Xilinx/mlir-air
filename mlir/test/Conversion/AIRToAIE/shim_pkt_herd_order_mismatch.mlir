@@ -241,3 +241,82 @@ module {
     return
   }
 }
+
+// -----
+
+// =============================================================================
+// Case 4: launch interleaves packet PUTs (in0, in1) with unrelated
+// non-packet GETs (out0, out1). Herd consumes in1 BEFORE in0 (which is in
+// an scf.for). This is the HW-failure shape from repro_packet_demux: an
+// unrelated dma sits between the two same-metadata packet puts. The
+// reorder must skip past the unrelated gets and still place the packet
+// puts in pkt_id order.
+// =============================================================================
+
+// CHECK-LABEL: aie.device(npu2) @seg
+// CHECK-DAG: aie.packet_flow(0)
+// CHECK-DAG: aie.packet_flow(1)
+// CHECK:     aie.shim_dma_allocation @air_in1(%{{.*}}, MM2S, 0)
+// CHECK:     aie.shim_dma_allocation @air_in0(%{{.*}}, MM2S, 0)
+
+// in1 must precede in0 in the launch; the unrelated out0 / out1 gets are
+// not constrained but must continue to coexist with the puts.
+// CHECK-LABEL: func.func @case4_interleaved_non_packet
+// CHECK:       air.channel.put{{.*}}@in1{{.*}}pkt_id = 0
+// CHECK:       air.channel.put{{.*}}@in0{{.*}}pkt_id = 1
+// CHECK-NOT:   air.channel.put{{.*}}@in0{{.*}}pkt_id = 0
+// CHECK-NOT:   air.channel.put{{.*}}@in1{{.*}}pkt_id = 1
+
+module {
+  air.channel @in0 [1] {channel_type = "npu_dma_packet"}
+  air.channel @out0 [1]
+  air.channel @in1 [1] {channel_type = "npu_dma_packet"}
+  air.channel @out1 [1]
+  func.func @case4_interleaved_non_packet(%arg0: memref<8x16xi32>, %arg1: memref<16xi32>, %arg2: memref<128xi32>, %arg3: memref<16xi32>) {
+    air.launch () in () args(%a0=%arg0, %a1=%arg1, %a2=%arg2, %a3=%arg3) : memref<8x16xi32>, memref<16xi32>, memref<128xi32>, memref<16xi32> {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c16 = arith.constant 16 : index
+      %c8 = arith.constant 8 : index
+      %c128 = arith.constant 128 : index
+      air.channel.put @in0[] (%a0[%c0, %c0] [%c8, %c16] [%c16, %c1]) : (memref<8x16xi32>)
+      air.channel.get @out0[] (%a2[%c0] [%c128] [%c1]) : (memref<128xi32>)
+      air.channel.put @in1[] (%a1[] [] []) : (memref<16xi32>)
+      air.channel.get @out1[] (%a3[] [] []) : (memref<16xi32>)
+      air.segment @seg {
+        %c1_0 = arith.constant 1 : index
+        air.herd @herd_h tile (%tx, %ty) in (%htx=%c1_0, %hty=%c1_0) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          %bi1 = memref.alloc() : memref<16xi32, 2>
+          %bo1 = memref.alloc() : memref<16xi32, 2>
+          air.channel.get @in1[] (%bi1[] [] []) : (memref<16xi32, 2>)
+          %c0_h = arith.constant 0 : index
+          %c8_h = arith.constant 8 : index
+          %c1_h = arith.constant 1 : index
+          scf.for %tile = %c0_h to %c8_h step %c1_h {
+            %li = memref.alloc() : memref<16xi32, 2>
+            %lo = memref.alloc() : memref<16xi32, 2>
+            air.channel.get @in0[] (%li[] [] []) : (memref<16xi32, 2>)
+            %c0_t = arith.constant 0 : index
+            %c1_t = arith.constant 1 : index
+            %c16_t = arith.constant 16 : index
+            scf.for %i = %c0_t to %c16_t step %c1_t {
+              %v = memref.load %li[%i] : memref<16xi32, 2>
+              memref.store %v, %lo[%i] : memref<16xi32, 2>
+            }
+            air.channel.put @out0[] (%lo[] [] []) : (memref<16xi32, 2>)
+            memref.dealloc %li : memref<16xi32, 2>
+            memref.dealloc %lo : memref<16xi32, 2>
+          }
+          scf.for %i = %c0_h to %c8_h step %c1_h {
+            %v = memref.load %bi1[%c0_h] : memref<16xi32, 2>
+            memref.store %v, %bo1[%c0_h] : memref<16xi32, 2>
+          }
+          air.channel.put @out1[] (%bo1[] [] []) : (memref<16xi32, 2>)
+          memref.dealloc %bi1 : memref<16xi32, 2>
+          memref.dealloc %bo1 : memref<16xi32, 2>
+        }
+      }
+    }
+    return
+  }
+}

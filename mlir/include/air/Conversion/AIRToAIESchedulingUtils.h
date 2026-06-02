@@ -268,6 +268,17 @@ simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
                            MemTileDMAAllocator &memtile_dma_alloc,
                            TileDMAAllocator &tile_dma_alloc,
                            air::CascadeAllocator &core_cascade_alloc);
+
+// Shared-MM2S packet flow ordering. Receiver mem chain + core follow
+// herd-source order; sender pkt_ids + dispatch order must too. Call
+// sortPacketShimFlowsByReceiverOrder before simpleDMAChannelAllocation,
+// reorderL3PacketPutsByFlowOrder after.
+bool isPacketShimFlow(const MemcpyBundleAsFlow &f);
+void sortPacketShimFlowsByReceiverOrder(
+    std::vector<MemcpyBundleAsFlow> &memcpy_flows, AIE::DeviceOp aie_device);
+void reorderL3PacketPutsByFlowOrder(
+    AIE::DeviceOp aie_device,
+    const std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 template <typename T>
 int foundInVector(T item, std::vector<T> vec);
 int getSCFForLoopDepth(Operation *o);
