@@ -114,19 +114,19 @@ def _prepare_air_project_int4():
 _cache_mod.prepare_air_project = _prepare_air_project_int4
 
 
-# Local backend presets — output_format=elf + distinct instance names so
-# the two int4 ELFs don't collide with the bf16 ones in any shared cache.
+# stack_size=16384: int4 GEMM kernel needs it; default 1024 silently
+# overflows (corrupts later sub-launches' compute).
 RMS_GEMMS_ROPE_INT4_BACKEND = {
     "omit_while_true_loop": False,
-    "omit_pingpong": "all",   # diagnostic: see if ping-pong is broken at small M
     "output_format": "elf",
     "instance_name": "rms_gemms_rope_int4",
+    "stack_size": 16384,
 }
 O_FFN_INT4_BACKEND = {
     "omit_while_true_loop": False,
-    "omit_pingpong": "all",
     "output_format": "elf",
     "instance_name": "o_ffn_int4",
+    "stack_size": 16384,
 }
 
 
