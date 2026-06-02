@@ -2164,10 +2164,16 @@ void L2MemrefToMemTileMap(
       colDemand[col]++;
   }
 
-  // Saturation check: each memtile holds ~8 producer/consumer-paired
-  // buffers (16 locks / 2 per bucket). If any column wants more, the
-  // col-affinity path would lock-overflow that memtile.
-  constexpr int kBucketsPerMemtileBudget = 8;
+  // Saturation check: col-affinity is only safe when each column would
+  // receive at most one bucket. With more, downstream allocation tends
+  // to ping-pong L1 buffers to keep up with the concentrated L2->L1 flow
+  // (flash_attention/dataflow_based: 9 buckets across 3 cols → col 0
+  // gets 5-6 buckets → L1 doubled to 6 buffers on tile (1,2) → 65536B,
+  // over the 64KB budget). Fall back to round-robin across the full LTO
+  // pool to match the pre-Path-B distribution that flash_attention
+  // relied on, while still keeping the matvec case (1 bucket per col)
+  // on the col-affinity path.
+  constexpr int kBucketsPerMemtileBudget = 1;
   bool saturated = false;
   for (auto &kv : colDemand)
     if (kv.second > kBucketsPerMemtileBudget) {
