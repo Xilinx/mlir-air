@@ -361,6 +361,10 @@ void matvec_int4_bf16_packed(uint8_t *packed, bfloat16 *b, bfloat16 *c) {
 
 void zero_vectorized_bf16(bfloat16 *c) { zero_impl<DIM_M>(c); }
 
+// Matmul-only entries are guarded so matvec builds (DIM_M=8) don't
+// instantiate mm_int4_bf16_mmul_impl, which static-asserts m_tile and
+// n_tile are multiples of 16 (2x mmul m/n for the 2x2 expansion).
+#if DIM_M >= 16 && DIM_N >= 16
 void zero_vectorized_bf16_mn(bfloat16 *c) { zero_mn_impl<DIM_M, DIM_N>(c); }
 
 void zero_vectorized_f32_mn(float *c) { zero_mn_f32_impl<DIM_M, DIM_N>(c); }
@@ -382,6 +386,7 @@ void matmul_int4_bf16_packed_f32(uint8_t *packed, bfloat16 *a, float *c) {
   mm_int4_bf16_mmul_impl<DIM_M, DIM_N, DIM_K_CHUNK, DIM_GS>(a_q, a_s, a_z, a,
                                                             c);
 }
+#endif
 
 void partial_plus_r_bf16(bfloat16 *partial, bfloat16 *r_full, int offset,
                          bfloat16 *d) {
