@@ -236,9 +236,8 @@ void mm_int4_bf16_mmul_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
         const bfloat16 *__restrict pB1 =
             b_pack + ((n_b2 + 1) * KB + g * KB_PER_G) * (s * t);
 
-        chess_prepare_for_pipelining chess_loop_range(1, ) for (unsigned kg = 0;
-                                                                kg < KB_PER_G;
-                                                                kg++) {
+        chess_prepare_for_pipelining chess_loop_range(
+            1, ) for (unsigned kg = 0; kg < KB_PER_G; kg++) {
           aie::vector<bfloat16, MMUL::size_A> A0 =
               aie::load_v<MMUL::size_A>(pA0);
           pA0 += MB * (r * s);
@@ -275,17 +274,14 @@ void mm_int4_bf16_mmul_impl(uint8_t *__restrict a_q, bfloat16 *__restrict a_s,
           aie::store_v(s0_tile_buf + m_i * t, s0);
           aie::store_v(s1_tile_buf + m_i * t, s1);
         }
-        aie::vector<bfloat16, r * t> s0_tile =
-            aie::load_v<r * t>(s0_tile_buf);
-        aie::vector<bfloat16, r * t> s1_tile =
-            aie::load_v<r * t>(s1_tile_buf);
+        aie::vector<bfloat16, r * t> s0_tile = aie::load_v<r * t>(s0_tile_buf);
+        aie::vector<bfloat16, r * t> s1_tile = aie::load_v<r * t>(s1_tile_buf);
 
         auto fold = [&](MMUL &C, aie::vector<bfloat16, r * t> &scale_tile,
                         float *c_acc) {
           aie::vector<bfloat16, r * t> c_bf16 =
               C.template to_vector<bfloat16>();
-          aie::accum<accfloat, r * t> scaled_acc =
-              aie::mul(c_bf16, scale_tile);
+          aie::accum<accfloat, r * t> scaled_acc = aie::mul(c_bf16, scale_tile);
           aie::vector<float, r * t> scaled_f32 =
               scaled_acc.template to_vector<float>();
           for (unsigned m_i = 0; m_i < r; m_i++) {
