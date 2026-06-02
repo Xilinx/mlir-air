@@ -182,8 +182,19 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    if args.n <= 0:
+        parser.error("N must be positive")
+    if args.group_size <= 0:
+        parser.error("group_size must be positive")
+    if args.herd_n <= 0:
+        parser.error("herd_n must be positive")
     if args.n % 2 != 0:
         parser.error("N must be even (2 int4 values per byte)")
+    # The vectorized kernel's inner loop processes 32 nibbles per iteration
+    # (see GROUP_SIZE static_assert in dequant.cc). Catch the mismatch here
+    # with a clear message instead of failing at C++ compile time.
+    if args.group_size % 32 != 0:
+        parser.error("group_size must be a multiple of 32 (kernel inner vector width)")
     if args.n % args.group_size != 0:
         parser.error("N must be divisible by group_size")
     if args.n % args.herd_n != 0:

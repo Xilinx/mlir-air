@@ -55,7 +55,21 @@ int main(int argc, const char *argv[]) {
   int N = vm["size_n"].as<int>();
   int GS = vm["group_size"].as<int>();
   int HERD_N = vm["herd_n"].as<int>();
+  int n_iter_arg = vm["iterations"].as<int>();
+  int n_warm_arg = vm["warmup"].as<int>();
 
+  if (N <= 0 || GS <= 0 || HERD_N <= 0) {
+    std::cerr << "Error: N, group_size, and herd_n must all be positive\n";
+    return 1;
+  }
+  if (n_iter_arg <= 0) {
+    std::cerr << "Error: iterations must be positive (divides total time)\n";
+    return 1;
+  }
+  if (n_warm_arg < 0) {
+    std::cerr << "Error: warmup must be non-negative\n";
+    return 1;
+  }
   if (N % HERD_N != 0) {
     std::cerr << "Error: N must be divisible by HERD_N\n";
     return 1;
@@ -113,8 +127,8 @@ int main(int argc, const char *argv[]) {
   bo_packed.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_out.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-  unsigned n_iter = vm["iterations"].as<int>();
-  unsigned n_warm = vm["warmup"].as<int>();
+  unsigned n_iter = (unsigned)n_iter_arg;
+  unsigned n_warm = (unsigned)n_warm_arg;
   unsigned total = n_iter + n_warm;
   float t_total = 0, t_min = std::numeric_limits<float>::max(), t_max = 0;
 

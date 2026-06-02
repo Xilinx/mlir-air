@@ -29,8 +29,15 @@
 #define GROUP_SIZE 128
 #endif
 
+static_assert(DIM_N % 2 == 0,
+              "DIM_N must be even (two int4 weights packed per byte)");
 static_assert(DIM_N % GROUP_SIZE == 0,
               "DIM_N must be a multiple of GROUP_SIZE");
+// The vectorized inner loop processes r=32 nibbles per iteration; the
+// templated impl requires gs to be a multiple of r so each group fills a
+// whole number of vector iterations.
+static_assert(GROUP_SIZE % 32 == 0,
+              "GROUP_SIZE must be a multiple of 32 (inner vector width)");
 
 template <unsigned n, unsigned gs, unsigned r = 32>
 static void
