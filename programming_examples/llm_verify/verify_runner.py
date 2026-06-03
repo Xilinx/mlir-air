@@ -1,36 +1,41 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""verify_runner.py — orchestrate the verify gate and the diagnosis lens.
+"""verify_runner.py — shared verify gate + diagnosis lens for any LLM example.
 
-Two modes selected by --prompts:
+Adapter-driven: each model's `verify_adapter.py` (under its programming_example
+dir) exports `build_runner(...)`, `build_config()`, `MODEL_CHOICES`, and
+`resolve_model(...)`. Pick one with `--runner=<dotted.module.path>`; the rest
+of this driver is model-agnostic and reuses the same HF reference runner,
+comparators, and report code across all LLMs.
+
+Two modes (mutually exclusive, selected by --prompts):
 
     --prompts topk_token  `make verify`   token-level top-k inclusion gate.
-                                          NPU + HF bf16 only, lite mode
-                                          runners, prompts × 32 greedy
-                                          tokens, top-5 set inclusion.
-                                          Method mirrors vLLM's
-                                          check_logprobs_close. `make verify`
-                                          caps at 2 prompts (~2 min, CI gate);
-                                          `make verify-full` runs all prompts
-                                          in the file (~6 min).
+                                          Multi-prompt × 32 greedy tokens.
+                                          Lite-mode runners (no per-layer
+                                          capture). Method mirrors vLLM's
+                                          check_logprobs_close.
 
-    --prompts single      `make diagnosis` inside-probing microscope. NPU + HF
-                                          bf16 only, full-capture runners,
-                                          one prompt's prefill, per-layer
+    --prompts single      `make diagnosis` inside-probing microscope. Single
+                                          prompt's prefill, per-layer
                                           ffn_out cosine + max_abs (NPU vs
                                           HF) for layers 0..n_layers-2 plus
                                           the post-final-norm hidden as the
-                                          L15 cell. No decode loop, no
-                                          logits gate, no token match —
-                                          `verify` already checks the
-                                          user-visible output.
+                                          last-layer cell. No decode loop.
+
+Example invocations:
+    python verify_runner.py --runner=llama32_1b.verify_adapter \\
+        --prompts topk_token --max-prompts 2
+    python verify_runner.py --runner=llama32_1b_int4.verify_adapter \\
+        --prompts topk_token --max-prompts 2
 """
 
 from __future__ import annotations
 
 import argparse
 import functools
+import importlib
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -38,57 +43,36 @@ from typing import Optional
 
 import numpy as np
 
-# Ensure programming_examples (for `llama_kernel_builder`), project, and
-# verify dirs are importable.
 HERE = Path(__file__).parent
-PROJECT = HERE.parent
-sys.path.insert(0, str(PROJECT.parent))
-sys.path.insert(0, str(PROJECT))
+_PROG_EXAMPLES = HERE.parent
+sys.path.insert(0, str(_PROG_EXAMPLES))
 sys.path.insert(0, str(HERE))
 
-from comparators import (
+from comparators import (  # noqa: E402
     compare_pair,
     compute_topk_set_check,
     topk_token_ids,
 )
-from report import Report
-from runners.npu_runner import NpuRunner
+from report import Report  # noqa: E402
 
 DEFAULT_PROMPT = "The capital of France is"
-
-# Same architecture (16 layers, emb=2048, n_heads=32, n_kv_heads=8,
-# head_dim=64, vocab=128256) — only the weight tensors and tokenizer
-# differ. base = original pretraining checkpoint (text continuation);
-# instruct = what vLLM and other production stacks deploy.
-MODEL_CHOICES = {
-    "base": "meta-llama/Llama-3.2-1B",
-    "instruct": "meta-llama/Llama-3.2-1B-Instruct",
-}
 BLOCK_PROBE = "ffn_out"
 
-# Token-level top-k inclusion gate constants. Values mirror vLLM's
-# check_logprobs_close defaults (max_tokens=32, num_logprobs=5).
+# Prompt sets live under llm_verify/prompts/; pick by `--prompt-style`
+# (`instruct` for chat-tuned models, `base` for completion checkpoints).
 PROMPTS_DIR = HERE / "prompts"
-DEFAULT_PROMPTS_FILE = {
-    "base": PROMPTS_DIR / "base.txt",
+DEFAULT_PROMPTS = {
     "instruct": PROMPTS_DIR / "instruct.txt",
+    "base": PROMPTS_DIR / "base.txt",
 }
 GATE_N_TOKENS = 32  # greedy tokens decoded per prompt
 GATE_K = 5  # top-k inclusion threshold
 
 
-def _load_weights(weights_mode: str, config, seed: int, model_name: str):
-    from llama32_1b_weights import synthetic_weights, load_weights
-
-    if weights_mode == "synthetic":
-        return synthetic_weights(config, seed=seed)
-    return load_weights(model_name, config=config)
-
-
 @functools.lru_cache(maxsize=4)
 def _get_tokenizer(model_name: str):
     """Cached tokenizer loader. AutoTokenizer.from_pretrained is ~50 ms even
-    when the files are local — pre-cache, we paid that 8 times per verify run."""
+    when local."""
     from transformers import AutoTokenizer
 
     return AutoTokenizer.from_pretrained(model_name)
@@ -101,7 +85,6 @@ def _tokenize(prompt: str, model_name: str):
 
 
 def _load_prompts(path: Path) -> list[str]:
-    """Load prompts from a file; skip blank and '#' comment lines."""
     out: list[str] = []
     for line in path.read_text().splitlines():
         line = line.strip()
@@ -111,34 +94,20 @@ def _load_prompts(path: Path) -> list[str]:
 
 
 def _md_escape(text: str) -> str:
-    """Escape a tokenizer-decoded string for safe markdown-table embedding.
-    Escapes the four sequences that would otherwise break the rendered
-    cell: backslash, pipe (column separator), newline / cr / tab."""
     text = text.replace("\\", "\\\\").replace("|", "\\|")
     return text.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 
 
 def _decode_token_for_display(tokenizer, token_id: Optional[int]) -> Optional[str]:
-    """Render one token ID as a quoted, escape-safe string for the report.
-    Quoting keeps leading whitespace visible (most LLM tokens carry one)."""
     if token_id is None:
         return None
     return f'"{_md_escape(tokenizer.decode([int(token_id)]))}"'
 
 
 def _generate_with_topk(runner, prompt_tokens: np.ndarray, n_tokens: int, k: int):
-    """Free-run greedy decode capturing chosen token + top-k token IDs per step.
-
-    Returns (chosen_tokens, topk_per_step) — both length n_tokens. The first
-    entry is the prefill prediction; subsequent entries are decode-step
-    predictions, each fed as input to the next step.
-
-    Sanity check: each step's chosen token MUST equal the first entry of
-    that step's top-k. If it does not, one of the runner's logit fields has
-    been mutated between top1_token computation and the field being read
-    here — print a loud warning so the rendered report is not misinterpreted
-    as a real model disagreement.
-    """
+    """Free-run greedy decode capturing chosen token + top-k token IDs per
+    step. The runner-integrity check below catches accidental mutation of
+    logit arrays between top1_token computation and the field being read."""
 
     def _check(step_idx, chosen_id, topk_ids, tag):
         if topk_ids and chosen_id != topk_ids[0]:
@@ -146,7 +115,7 @@ def _generate_with_topk(runner, prompt_tokens: np.ndarray, n_tokens: int, k: int
                 f"[verify] WARN: {tag} step {step_idx} top1_token={chosen_id} "
                 f"!= topk[0]={topk_ids[0]} (full top-{k}={topk_ids}). "
                 "Indicates runner-side logit mutation between top1_token "
-                "and lm_head_logits/logits_at_pred capture.",
+                "and lm_head_logits capture.",
                 file=sys.stderr,
             )
 
@@ -169,56 +138,64 @@ def _generate_with_topk(runner, prompt_tokens: np.ndarray, n_tokens: int, k: int
 
 
 def _run_diagnosis(npu, hf, prompt_tokens, report, n_layers):
-    """Diagnosis lens: per-layer ffn_out (NPU vs HF bf16) for one prompt.
-
-    For layers 0..n_layers-2 we compare each runner's raw layer output
-    (npu.layer_intermediates[li]['ffn_out'] vs hf.layer_intermediates[li]
-    ['ffn_out']). For the last layer we compare each runner's
-    final_hidden_normed (the post-final-RMSNorm hidden state that feeds
-    LM-head) — HF's hidden_states[n_layers] is post-norm by HF v5.3
-    convention, and NPU exposes the equivalent via the same final_norm
-    application it does inside the production LM-head GEMV path.
-
-    Diagnosis is informational only — no thresholds, no pass/fail. Inspect
-    the cosine table by hand; the verify gate is the actual correctness
-    signal.
-    """
+    """Per-layer ffn_out (NPU vs HF) for one prompt. Informational only —
+    inspect the cosine table by hand; the verify gate is the actual
+    correctness signal."""
     print("[diagnosis] prefill: NPU + HF...")
     npu_pf = npu.prefill(prompt_tokens)
     hf_pf = hf.prefill(prompt_tokens)
     print("[diagnosis] comparing per-layer ffn_out (NPU vs HF bf16)...")
     for li in range(n_layers - 1):
+        npu_li = npu_pf.layer_intermediates[li].get(BLOCK_PROBE)
+        hf_li = hf_pf.layer_intermediates[li].get(BLOCK_PROBE)
+        if npu_li is None or hf_li is None or npu_li.size == 0 or hf_li.size == 0:
+            # Adapter doesn't expose this layer's intermediate — skip rather
+            # than poison the cosine table.
+            continue
+        report.add(compare_pair(name=BLOCK_PROBE, npu=npu_li, hf=hf_li, layer=li))
+    if npu_pf.final_hidden_normed.size and hf_pf.final_hidden_normed.size:
         report.add(
             compare_pair(
                 name=BLOCK_PROBE,
-                npu=npu_pf.layer_intermediates[li][BLOCK_PROBE],
-                hf=hf_pf.layer_intermediates[li][BLOCK_PROBE],
-                layer=li,
+                npu=npu_pf.final_hidden_normed,
+                hf=hf_pf.final_hidden_normed,
+                layer=n_layers - 1,
             )
         )
-    report.add(
-        compare_pair(
-            name=BLOCK_PROBE,
-            npu=npu_pf.final_hidden_normed,
-            hf=hf_pf.final_hidden_normed,
-            layer=n_layers - 1,
-        )
-    )
+
+
+def _load_adapter(dotted_path: str):
+    """Import the model's verify_adapter module by dotted path.
+
+    Adapter modules live next to each LLM example; we make
+    `programming_examples/` importable above so `<example_dir>.verify_adapter`
+    resolves natively.
+    """
+    return importlib.import_module(dotted_path)
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--npu-attn", choices=["on", "off"], default="on")
-    p.add_argument("--prompt", default=DEFAULT_PROMPT)
-    p.add_argument("--weights", choices=["hf", "synthetic"], default="hf")
+    p.add_argument(
+        "--runner",
+        required=True,
+        help="Dotted path to the model's verify adapter (e.g. "
+        "'llama32_1b.verify_adapter', 'llama32_1b_int4.verify_adapter').",
+    )
     p.add_argument(
         "--model",
-        choices=list(MODEL_CHOICES),
-        default="instruct",
-        help="Llama-3.2-1B checkpoint. Default 'instruct' matches what "
-        "production stacks deploy. 'base' is the original pretraining "
-        "checkpoint (text continuation).",
+        default=None,
+        help="Adapter's MODEL_CHOICES key (e.g. 'instruct', 'base') OR a "
+        "raw HF id / local path. Defaults to adapter.DEFAULT_MODEL.",
     )
+    p.add_argument(
+        "--prompt-style",
+        choices=list(DEFAULT_PROMPTS),
+        default="instruct",
+        help="Which prompts file to use (selects from llm_verify/prompts/).",
+    )
+    p.add_argument("--npu-attn", choices=["on", "off"], default="on")
+    p.add_argument("--prompt", default=DEFAULT_PROMPT)
     p.add_argument("--report-dir", default=str(HERE / "reports"))
     p.add_argument(
         "--no-strict",
@@ -232,92 +209,95 @@ def main():
         default="single",
         help="'single' (used by `make diagnosis`) probes per-layer ffn_out "
         "for one prompt. 'topk_token' (used by `make verify`) runs the "
-        "top-k token-level inclusion gate over the prompts file (capped "
-        "by --max-prompts). The two modes are exclusive.",
+        "multi-prompt top-k token-level inclusion gate.",
     )
     p.add_argument(
         "--prompts-file",
         default=None,
         help="Override the prompt file used by --prompts topk_token. "
-        "Defaults to verify/prompts/{model}.txt.",
+        "Defaults to llm_verify/prompts/{prompt-style}.txt.",
     )
     p.add_argument(
         "--max-prompts",
         type=int,
         default=None,
         help="Cap the number of prompts run in --prompts topk_token mode. "
-        "Default: run all prompts in the file. `make verify` uses 2 (fast "
-        "CI gate); `make verify-full` uses the full set.",
+        "Default: run all prompts in the file.",
     )
     args = p.parse_args()
 
-    # The HF reference runner always loads the real checkpoint, so verifying
-    # against synthetic NPU weights compares apples to oranges and would
-    # always FAIL. Reject up front rather than emit meaningless reports.
-    if args.weights == "synthetic":
-        print(
-            "[verify] --weights synthetic is not supported: the HF reference "
-            "runner only loads real checkpoints, so the comparison would be "
-            "meaningless. Use --weights hf.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+    adapter = _load_adapter(args.runner)
+    model_choice = args.model if args.model is not None else adapter.DEFAULT_MODEL
+    model_name = adapter.resolve_model(model_choice)
+    hf_ref_model = (
+        adapter.hf_reference(model_name)
+        if hasattr(adapter, "hf_reference")
+        else model_name
+    )
 
-    from llama32_1b_weights import LlamaConfig
-
-    config = LlamaConfig()
-    model_name = MODEL_CHOICES[args.model]
-    weights = _load_weights(args.weights, config, args.seed, model_name)
-    # Production prefill kernels are tiled for seq_len=2048; NpuRunner pads
-    # short prompts internally.
-    max_seq = 2048
+    config = adapter.build_config()
+    max_seq = 2048  # Production prefill kernels are tiled for seq_len=2048.
 
     in_verify_mode = args.prompts == "topk_token"
     report = Report(
         config={
             "mode": "verify" if in_verify_mode else "diagnosis",
-            "weights": args.weights,
-            "model": args.model,
+            "runner": args.runner,
+            "model": model_choice,
             "model_name": model_name,
             "npu_attn": args.npu_attn == "on",
             "prompt": args.prompt if not in_verify_mode else None,
         }
     )
 
-    # ---- Build runners ----
-    # Both modes use NPU + HF bf16 only. Verify runs lite (no per-layer
-    # capture); diagnosis runs full-capture for the per-layer probe.
     lite = in_verify_mode
-    print(f"[verify] mode = {report.config['mode']}, lite={lite}")
-    print("[verify] building NPU runner...")
-    npu = NpuRunner(
-        weights,
-        config,
+    print(
+        f"[verify] adapter={args.runner}, model={model_name}, "
+        f"hf_ref={hf_ref_model}, mode={report.config['mode']}, lite={lite}"
+    )
+    tokenizer = _get_tokenizer(model_name)
+    # The HF runner needs its own tokenizer instance (matched to the HF ref
+    # model). For bf16 this is the same checkpoint as model_name; for int4
+    # adapter overrides hf_reference() to the upstream un-quantized model.
+    hf_tokenizer = _get_tokenizer(hf_ref_model)
+    print("[verify] building NPU runner via adapter...")
+    npu = adapter.build_runner(
+        model_name=model_name,
+        config=config,
         max_seq=max_seq,
-        tokenizer=_get_tokenizer(model_name),
+        tokenizer=tokenizer,
         npu_attn=(args.npu_attn == "on"),
         lite_mode=lite,
     )
     from runners.hf_runner import HfRunner
 
-    print(f"[verify] building HF runner ({model_name}, lite={lite}, may download)...")
+    # Optional adapter hook: produce a custom HF model (e.g. meta-llama
+    # architecture with AWQ-dequantized weights patched in) so the verify
+    # gate isolates NPU drift from quantization error. When absent, fall
+    # back to plain `from_pretrained(hf_ref_model)`.
+    hf_model = None
+    if hasattr(adapter, "build_hf_model"):
+        print(f"[verify] adapter is building custom HF reference model...")
+        hf_model = adapter.build_hf_model(
+            npu_model_name=model_name,
+            hf_ref_model=hf_ref_model,
+            config=config,
+        )
+    print(f"[verify] building HF runner ({hf_ref_model}, lite={lite}, may download)...")
     try:
         hf = HfRunner(
-            model_name=model_name,
+            model_name=hf_ref_model,
             config=config,
             max_seq=max_seq,
             lite_mode=lite,
+            model=hf_model,
         )
     except Exception as e:
         print(f"[verify] HF runner unavailable: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # ---- Diagnosis path: single prompt, per-layer ffn_out only ----
     if not in_verify_mode:
         prompt_tokens, _ = _tokenize(args.prompt, model_name)
-        # NpuRunner truncates to max_seq internally; truncate here too so the
-        # HF runner sees the same context and the per-layer diagnosis stays
-        # apples-to-apples on long prompts.
         if len(prompt_tokens) > max_seq:
             prompt_tokens = prompt_tokens[:max_seq]
         _run_diagnosis(npu, hf, prompt_tokens, report, config.n_layers)
@@ -336,11 +316,10 @@ def main():
         print("[verify] PASS")
         return
 
-    # ---- Verify path: top-k token-level inclusion gate over prompts file ----
     prompts_path = (
         Path(args.prompts_file)
         if args.prompts_file
-        else DEFAULT_PROMPTS_FILE[args.model]
+        else DEFAULT_PROMPTS[args.prompt_style]
     )
     prompts = _load_prompts(prompts_path)
     if args.max_prompts is not None and args.max_prompts > 0:
@@ -356,7 +335,6 @@ def main():
         short = (prompt[:60] + "…") if len(prompt) > 60 else prompt
         print(f"[verify] prompt {pi + 1}/{len(prompts)}: {short!r}")
         ptoks, tokenizer = _tokenize(prompt, model_name)
-        # Same context for both runners — see the diagnosis path above.
         if len(ptoks) > max_seq:
             ptoks = ptoks[:max_seq]
         print(f"[verify]   NPU greedy decode ({GATE_N_TOKENS} tokens)...")
@@ -365,12 +343,6 @@ def main():
         hf_chosen, hf_topk = _generate_with_topk(hf, ptoks, GATE_N_TOKENS, GATE_K)
 
         def _decorate(rec, test_seq):
-            """Inject decoded text into the record:
-            - the two chosen tokens at divergence (with rank context)
-            - the agreed prefix (the tokens both runners produced
-              identically before divergence) — empty string when
-              divergence_step == 0.
-            """
             rec.test_chosen_text_at_div = _decode_token_for_display(
                 tokenizer, rec.test_chosen_at_div
             )

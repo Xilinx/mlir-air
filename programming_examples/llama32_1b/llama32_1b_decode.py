@@ -222,7 +222,11 @@ def run_decode_block(
         q_roped_buf,  # arg11 (intermediate/output)
         k_roped_buf,  # arg12 (intermediate/output)
         output_indices=[8, 11, 12],
-        static_indices={3, 5, 7},
+        # arg1 (w_norm) is per-layer constant and pre-written by
+        # _preload_decode_weights with static_input_indices={1, 3, 5, 7};
+        # include it here too so the decode loop skips the per-token
+        # host->device sync.
+        static_indices={1, 3, 5, 7},
         intermediate_indices={2, 4, 6, 8, 11, 12},
     )
     v = results[8].astype(bfloat16)

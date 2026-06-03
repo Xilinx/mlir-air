@@ -1,53 +1,107 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""NPU runner — thin adapter over the production prefill / decode functions.
+"""Verify adapter for the bf16 Llama-3.2-1B example.
 
-Delegates the actual work to:
-  - llama32_1b_inference.prepare_runtime  (runtime setup)
-  - llama32_1b_inference.run_npu_prefill  (prefill + KV cache extract + LM head)
-  - llama32_1b_inference.run_npu_decode_step (one decode step + LM head)
-  - llama32_1b_prefill.compile_all_kernels / decode.compile_decode_kernels
+Wraps the production `llama32_1b_inference` driver into a Runner that
+satisfies `llm_verify/runners/base.Runner`. The shared verify framework
+(see `programming_examples/llm_verify/verify_runner.py`) imports this
+module via `--runner=llama32_1b.verify_adapter` and calls `build_runner`.
 
-The runner holds the stateful pieces (kernel caches + KV cache) across calls;
-the actual NPU compute path is identical to what `make run` exercises. Any
-change to the production functions is automatically picked up by `make verify`.
-
-Two modes:
-  - lite_mode=True  (used by `make verify`): prefill returns logits + chosen
-    token only; layer_intermediates is left empty.
-  - lite_mode=False (used by `make diagnosis`): also collects per-layer
-    ffn_out + the post-final-norm hidden state for the L15 probe. The
-    layer-intermediate collection runs OUTSIDE the production path — it
-    re-invokes run_transformer_block layer-by-layer with the same inputs,
-    capturing the dict each block returns. This is a diagnosis-only side
-    channel; verify never touches it.
+Nothing here is reachable from production code; it exists only so the
+verify gate can exercise the exact same NPU code path that `make run`
+uses. Mirror of the previous `runners/npu_runner.py` (which lived under
+`llama32_1b/verify/` before the verify subsystem was hoisted to
+`llm_verify/`).
 """
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from llama_kernel_builder.cache import KernelCache
-from llama32_1b_prefill import (
+# Ensure programming_examples/, this dir, and llm_verify/ are importable.
+_THIS_DIR = Path(__file__).resolve().parent
+_PROG_EXAMPLES = _THIS_DIR.parent
+_LLM_VERIFY = _PROG_EXAMPLES / "llm_verify"
+for _p in (str(_PROG_EXAMPLES), str(_LLM_VERIFY), str(_THIS_DIR)):
+    while _p in sys.path:
+        sys.path.remove(_p)
+    sys.path.insert(0, _p)
+
+from llama_kernel_builder.cache import KernelCache  # noqa: E402
+from llama32_1b_prefill import (  # noqa: E402
     compile_all_kernels as compile_prefill_kernels,
     run_transformer_block as run_prefill_block,
 )
-from llama32_1b_decode import compile_decode_kernels
-from llama32_1b_inference import (
+from llama32_1b_decode import compile_decode_kernels  # noqa: E402
+from llama32_1b_inference import (  # noqa: E402
     prepare_runtime,
     run_npu_prefill,
     run_npu_decode_step,
 )
-from llama32_1b_weights import generate_rope_lut
-from llama32_1b_cpu_helpers import rms_norm
+from llama32_1b_weights import (  # noqa: E402
+    LlamaConfig,
+    load_weights,
+    generate_rope_lut,
+)
+from llama32_1b_cpu_helpers import rms_norm  # noqa: E402
+from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
-from runners._records import PrefillRecord, DecodeStepRecord
+# CLI --model choice -> HF id. Both Llamas use the same architecture; only
+# the weights and chat template differ.
+MODEL_CHOICES = {
+    "base": "meta-llama/Llama-3.2-1B",
+    "instruct": "meta-llama/Llama-3.2-1B-Instruct",
+}
+DEFAULT_MODEL = "instruct"
+
+
+def resolve_model(model_choice_or_id: str) -> str:
+    """`--model` accepts either a `MODEL_CHOICES` key (base/instruct) or a
+    raw HF model id / local path. Return the HF id."""
+    return MODEL_CHOICES.get(model_choice_or_id, model_choice_or_id)
+
+
+def hf_reference(npu_model_name: str) -> str:
+    """HF reference checkpoint for `npu_model_name`. bf16 baseline is its
+    own reference (verifies NPU bf16 vs HF bf16 on the same checkpoint)."""
+    return npu_model_name
+
+
+def build_config():
+    return LlamaConfig()
+
+
+def build_runner(
+    model_name: str,
+    config,
+    max_seq: int,
+    tokenizer,
+    *,
+    npu_attn: bool = True,
+    lite_mode: bool = False,
+):
+    """Load bf16 weights, compile NPU kernels, return a `NpuRunner`."""
+    weights = load_weights(model_name, config=config)
+    return NpuRunner(
+        weights=weights,
+        config=config,
+        max_seq=max_seq,
+        tokenizer=tokenizer,
+        npu_attn=npu_attn,
+        lite_mode=lite_mode,
+    )
 
 
 class NpuRunner:
-    name = "npu"
+    """Adapter over the bf16 production NPU prefill + decode functions."""
+
+    name = "npu_bf16"
 
     def __init__(
         self,
@@ -64,17 +118,12 @@ class NpuRunner:
         self.npu_attn = npu_attn
         self.cpu_attn = not npu_attn
         self.lite_mode = lite_mode
-        # tokenizer is needed only to give run_npu_prefill an EOS-token-id
-        # for padding the (raw) prompt to max_seq. Verify orchestrator passes
-        # the same tokenizer it uses to encode prompts, so pad-token ID
-        # matches the prompt's tokenization.
         self._tokenizer = tokenizer
 
         self.rope_lut_bf16 = generate_rope_lut(config=config, seq_len=max_seq).astype(
             bfloat16
         )
 
-        # Compile prefill + decode kernels (same ones production compiles).
         self.prefill_cache = KernelCache(verbose=False)
         compile_prefill_kernels(
             self.prefill_cache,
@@ -85,8 +134,6 @@ class NpuRunner:
         self.decode_cache = KernelCache(verbose=False)
         compile_decode_kernels(self.decode_cache, config)
 
-        # Production prepare_runtime: weight pre-transpose, per-layer index
-        # tagging, BO preloading.
         prepare_runtime(
             self.prefill_cache,
             self.decode_cache,
@@ -96,22 +143,19 @@ class NpuRunner:
             self.rope_lut_bf16,
         )
 
-        # KV cache state lives across decode_step calls within one prefill.
-        # prefill() repopulates this from run_npu_prefill's return.
+        # Repopulated by prefill(); read by decode_step() within the same
+        # verify run.
         self.k_cache = None
         self.v_cache = None
 
     def prefill(self, prompt_tokens: np.ndarray) -> PrefillRecord:
-        # Production-side run_once pre-pads the prompt to the kernel's
-        # compiled seq_len (= self.max_seq) with eos_token_id before calling
-        # run_npu_prefill. Mirror that here so the verify path hits exactly
-        # the same code with exactly the same shape.
+        # Mirror production's eos-pad-to-max_seq before run_npu_prefill so
+        # the verify path hits the same kernel shape make run does.
         eos = self._tokenizer.eos_token_id
         if len(prompt_tokens) < self.max_seq:
             padded = list(prompt_tokens) + [eos] * (self.max_seq - len(prompt_tokens))
         else:
             padded = list(prompt_tokens)[: self.max_seq]
-        # Production path — exact same code make run uses.
         prefill_token, logits_row, k_cache, v_cache, prompt_len = run_npu_prefill(
             padded,
             self.weights,
@@ -125,7 +169,6 @@ class NpuRunner:
             profile=False,
             quiet=True,
         )
-        # Persist KV cache for subsequent decode_step calls in this run.
         self.k_cache = k_cache
         self.v_cache = v_cache
 
@@ -138,17 +181,16 @@ class NpuRunner:
                 top1_token=prefill_token,
             )
 
-        # ---- Diagnosis-only side channel: re-run the prefill layer loop
-        # to capture per-layer ffn_out + the post-final-norm hidden state.
-        # This is duplicate compute (~3-5 s extra) but only happens in
-        # diagnosis mode, which is single-prompt by design.
+        # Diagnosis-only: re-run the prefill layer loop to capture per-layer
+        # ffn_out + final post-norm hidden state. ~3-5s extra; diagnosis is
+        # single-prompt so the overhead doesn't matter.
         cfg = self.config
         if len(prompt_tokens) < self.max_seq:
             pad = np.zeros(self.max_seq - len(prompt_tokens), dtype=prompt_tokens.dtype)
-            padded = np.concatenate([prompt_tokens, pad])
+            padded_diag = np.concatenate([prompt_tokens, pad])
         else:
-            padded = prompt_tokens[: self.max_seq]
-        embed = self.weights.embed_table[padded].astype(np.float32)
+            padded_diag = prompt_tokens[: self.max_seq]
+        embed = self.weights.embed_table[padded_diag].astype(np.float32)
         x = embed.astype(bfloat16)
         layer_intermediates: list[dict[str, np.ndarray]] = []
         for li in range(cfg.n_layers):
@@ -165,7 +207,6 @@ class NpuRunner:
             fo_full = np.asarray(ints["ffn_out"])
             layer_intermediates.append({"ffn_out": fo_full[:prompt_len]})
 
-        # Post-final-norm hidden — the value the LM-head GEMV sees.
         x_full_f32 = np.asarray(x, dtype=np.float32)[:prompt_len]
         x_full_normed = rms_norm(x_full_f32, self.weights.final_norm)
 

@@ -40,13 +40,27 @@ class HfRunner:
         config,
         max_seq: int,
         lite_mode: bool = False,
+        model=None,
     ):
+        """Build an HF reference runner.
+
+        If `model` is provided (any `torch.nn.Module` returning
+        `(logits, hidden_states, past_key_values)`-shaped output), use it
+        as-is. Otherwise load via `AutoModelForCausalLM.from_pretrained`.
+        Adapters wanting a non-trivial weight setup (e.g. patching AWQ-
+        dequant weights into the meta-llama architecture so the verify
+        gate isolates NPU drift from quantization error) build the model
+        themselves and inject it here.
+        """
         self.config = config
         self.max_seq = max_seq
         self.lite_mode = lite_mode
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.bfloat16
-        )
+        if model is None:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name, torch_dtype=torch.bfloat16
+            )
+        else:
+            self.model = model
         self.model.eval()
         self.past_key_values = None
         self._n_layers = config.n_layers

@@ -63,3 +63,22 @@ LM_GEMV_BACKEND = {
     "instance_name": "lm_head_gemv",
     **GEMV_K2048_BACKEND,
 }
+
+# ---------------------------------------------------------------------------
+# Decode (int4-AWQ ELFs). Inherits ping-pong + runtime_loop_tiling from
+# GEMV_K2048_BACKEND; dropping ping-pong regressed e2e 12.4 -> 7.8 tok/s.
+# ---------------------------------------------------------------------------
+
+RGR_INT4_BACKEND = {
+    "output_format": "elf",
+    "instance_name": "rms_qkv_int4_rope",
+    "stack_size": 4096,
+    **GEMV_K2048_BACKEND,
+}
+
+OGF_INT4_BACKEND = {
+    "output_format": "elf",
+    "instance_name": "o_gemv_ffn_int4",
+    "stack_size": 4096,
+    **GEMV_K2048_BACKEND,
+}
