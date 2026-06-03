@@ -12,13 +12,17 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 
-def prepare_air_project():
+def prepare_air_project(quant: str = "bf16"):
     """Clean and prepare the air_project/ directory for a fresh compilation.
 
     aircc defaults to 'air_project/' as its working directory. Sequential
     compilations leave stale artifacts that corrupt subsequent kernels.
     This method wipes the directory, compiles all external C++ kernels from
     source, and copies them to air_project/.
+
+    Args:
+        quant: "bf16" or "awq". When "awq", also compiles + stages
+            `mv_int4_bf16.o` so the int4 decode ELFs can link it.
     """
     air_proj = Path("air_project")
     if air_proj.exists():
@@ -28,7 +32,7 @@ def prepare_air_project():
     # Compile external kernels from source (not stale .o copies)
     from llama_kernel_builder.external_kernels import compile_all_external_kernels
 
-    compile_all_external_kernels()
+    compile_all_external_kernels(quant=quant)
 
     # Copy compiled .o files to air_project/ for aiecc to find. Must include
     # every external symbol referenced by `link_with` in the kernel modules:
@@ -38,7 +42,8 @@ def prepare_air_project():
     # - silu_and_mul.o  : SwiGLU (prefill o_ffn, decode o_gemv_ffn)
     # - attn.o          : flash attention (prefill, when --cpu-attn=False)
     # - attn_npu2.o     : flash attention NPU2 variant alias
-    for obj_name in [
+    # - mv_int4_bf16.o  : int4-AWQ GEMV (decode int4 ELFs only, when quant=awq)
+    obj_names = [
         "silu_and_mul.o",
         "rope.o",
         "attn.o",
@@ -46,7 +51,10 @@ def prepare_air_project():
         "mv.o",
         "mv_bf16.o",
         "attn_decode_npu2.o",
-    ]:
+    ]
+    if quant == "awq":
+        obj_names.append("mv_int4_bf16.o")
+    for obj_name in obj_names:
         src = Path(obj_name)
         if src.exists():
             shutil.copy2(src, air_proj / obj_name)
@@ -373,7 +381,11 @@ class KernelCache:
         from air.backend.xrt import XRTBackend
 
         self._log(f"Compiling {name}...")
-        prepare_air_project()
+        # Int4 ELFs need the AWQ GEMV micro-kernel staged alongside the bf16
+        # objects. Detect from kernel name so existing call sites don't need
+        # an extra flag.
+        quant = "awq" if "int4" in name else "bf16"
+        prepare_air_project(quant=quant)
         backend = XRTBackend(**backend_kwargs)
 
         t0 = time.time()

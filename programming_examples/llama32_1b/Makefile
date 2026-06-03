@@ -90,24 +90,30 @@ chat:
 ## Compile and run in one step
 all: compile profile
 
+# The shared verify framework lives under programming_examples/llm_verify/.
+# Each model contributes a `verify_adapter.py`; we point the framework at
+# ours via `--runner=llama32_1b.verify_adapter`.
+VERIFY_RUNNER = $(srcdir)/../llm_verify/verify_runner.py
+RUNNER_ADAPTER = llama32_1b.verify_adapter
+
 ## Run the top-k token-level inclusion gate (NPU vs HF bf16, 2 prompts × 32 tokens, k=5).
 ## This is the fast CI gate. For the full 8-prompt sweep, use `make verify-full`.
 verify:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(srcdir)/verify/verify_runner.py \
+	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL) --max-prompts 2
 
 ## Full-sweep variant of `make verify`: runs all prompts in the prompt file
 ## (currently 8). Use locally for exhaustive validation; CI uses `make verify`.
 verify-full:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(srcdir)/verify/verify_runner.py \
+	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL)
 
 ## Run the diagnosis lens (per-layer ffn_out cosine vs HF bf16, single prompt, informational)
 diagnosis:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(srcdir)/verify/verify_runner.py \
+	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts single --prompt "$(PROMPT)" --model $(MODEL)
 
 # ============================================================
@@ -117,5 +123,5 @@ diagnosis:
 ## Remove all build artifacts and verify reports
 clean:
 	rm -r $(BUILD_DIR) 2>/dev/null || true
-	rm -rf $(srcdir)/verify/reports
-	@echo "Build directory and verify/reports/ removed. Run 'make compile' to rebuild."
+	rm -rf $(srcdir)/../llm_verify/reports
+	@echo "Build directory and llm_verify/reports/ removed. Run 'make compile' to rebuild."

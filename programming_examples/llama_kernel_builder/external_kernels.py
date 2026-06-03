@@ -198,12 +198,19 @@ def compile_attn_decode_npu2(head_dim=64):
     )
 
 
-def compile_all_external_kernels(head_dim=64):
+def compile_all_external_kernels(head_dim=64, quant="bf16"):
     """Compile all external C++ kernels from source.
 
     Call this before kernel compilation to ensure all .o files are fresh.
     Each kernel is only compiled if its .o doesn't already exist.
     Delete build_peano/*.o to force recompilation.
+
+    Args:
+        head_dim: attention head dimension (RoPE / attn kernel macros).
+        quant: "bf16" (default) or "awq". When "awq" the int4-AWQ GEMV
+            micro-kernel (`mv_int4_bf16.o`) is also built so the int4
+            decode ELFs can link it. bf16 GEMV objects are still built
+            so mixed paths (e.g. bf16 prefill + int4 decode) keep working.
     """
     compile_silu_and_mul()
     compile_rope()
@@ -211,3 +218,5 @@ def compile_all_external_kernels(head_dim=64):
     compile_attn_decode_npu2(head_dim=head_dim)
     compile_mv()
     compile_mv_bf16()
+    if quant == "awq":
+        compile_mv_int4_bf16()

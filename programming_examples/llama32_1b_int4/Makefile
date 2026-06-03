@@ -1,20 +1,22 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# LLAMA-3.2-1B int4-AWQ Prefill on NPU2 (MLIR-AIR)
+# LLAMA-3.2-1B int4-AWQ end-to-end on NPU2 (MLIR-AIR)
 #
-# Quick start:
+# Quick start (prefill smoke / token-overlap verify):
 #   make compile         — Compile both prefill backends (int4 + bf16)
 #   make run             — Run prefill end-to-end (default: --prefill-dtype=bf16)
 #   make verify          — Top-K token-level inclusion gate vs HF bf16
-#   make profile         — Run with per-kernel profiling breakdown
+#
+# Full e2e inference (bf16 NPU prefill + int4 NPU decode):
+#   make compile-inference — Compile prefill ELFs + int4 decode ELFs
+#   make run-inference     — Tokenize prompt, prefill, decode N tokens
+#   make chat              — Interactive REPL (each turn independent)
 #
 # Performance (NPU2 AMD Strix, seq=2048, 16 layers, NPU flash_attn):
 #   --prefill-dtype=int4 :  ~700 ms/layer  (kernel-bound; see PR for bisection)
 #   --prefill-dtype=bf16 :  ~80 ms/layer   (~9x faster, same AWQ weights)
-#
-# Decode is not yet wired in this directory — see ../llama32_1b/ for the
-# bf16 decode driver; the int4 decode driver will land in a follow-up PR.
+#   int4 NPU decode      :  ~56 ms/token   (17.8 tok/s on instruct model)
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
@@ -35,7 +37,19 @@ MIN_OVERLAP   ?= 6
 # so both Llama examples gate against the same prompt set.
 PROMPTS_FILE  ?= $(srcdir)/../llama32_1b/verify/prompts/instruct.txt
 
-.PHONY: help compile run profile verify verify-int4 verify-full diagnosis clean
+N_TOKENS      ?= 30
+PREFILL_INF_CACHE ?= $(srcdir)/inference_prefill_cache
+DECODE_INF_CACHE  ?= $(srcdir)/inference_decode_cache
+
+# The shared verify framework lives under programming_examples/llm_verify/.
+# Each model contributes a `verify_adapter.py`; we point the framework at
+# ours via `--runner=llama32_1b_int4.verify_adapter`.
+VERIFY_RUNNER  = $(srcdir)/../llm_verify/verify_runner.py
+RUNNER_ADAPTER = llama32_1b_int4.verify_adapter
+
+.PHONY: help compile run profile verify-prefill verify-prefill-full \
+        diagnosis-prefill verify verify-full diagnosis clean \
+        compile-inference run-inference chat compile-decode
 
 # ============================================================
 # Help
@@ -51,6 +65,11 @@ help:
 	@echo "  make run              Run prefill end-to-end + topK vs HF"
 	@echo "  make verify           Same as run but gates on PASS / FAIL"
 	@echo "  make profile          Run with per-kernel profiling"
+	@echo ""
+	@echo "End-to-end inference (bf16 NPU prefill + int4 NPU decode):"
+	@echo "  make compile-inference  Compile prefill + decode kernels"
+	@echo "  make run-inference      Decode N_TOKENS tokens after prefill"
+	@echo "  make chat               Interactive REPL"
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  make clean            Remove build artifacts and kernel cache"
@@ -84,7 +103,9 @@ compile:
 		--cache-dir $(srcdir)/verify_kernel_cache
 	@echo "Compilation passed."
 
-## Run NPU prefill end-to-end + top-K comparison vs HF bf16 reference.
+## Run NPU prefill end-to-end + top-K comparison vs HF bf16 reference
+## (prefill-only argmax/overlap; for the full prefill+decode gate, see
+## `make verify` which goes through the shared llm_verify framework).
 run:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
@@ -92,9 +113,10 @@ run:
 		--prompt "$(PROMPT)" --n-layers $(N_LAYERS) --topk $(TOPK) \
 		--cache-dir $(srcdir)/verify_kernel_cache
 
-## Run NPU prefill + top-K gate. Prints '[verify] PASS' when overlap
-## >= MIN_OVERLAP AND argmax matches HF (matched by run_npu2_verify.lit).
-verify:
+## Prefill-only top-K gate (single prompt, argmax + overlap). Faster but
+## doesn't exercise decode. Use `make verify` for the full prefill+decode
+## gate matching the bf16 baseline's CI gate.
+verify-prefill:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
 		--prefill-dtype $(PREFILL_DTYPE) --model $(MODEL) \
@@ -102,15 +124,9 @@ verify:
 		--min-overlap $(MIN_OVERLAP) \
 		--cache-dir $(srcdir)/verify_kernel_cache
 
-## Run with the int4 backend (slower compute, low-memory).
-verify-int4:
-	$(MAKE) -f $(srcdir)/Makefile verify PREFILL_DTYPE=int4
-
-## Multi-prompt verify: run each prompt in PROMPTS_FILE and aggregate
-## pass/fail. '[verify] PASS' iff every prompt meets overlap >= MIN_OVERLAP
-## AND argmax matches HF. Default prompts file is the bf16 sibling's
-## verify/prompts/instruct.txt.
-verify-full:
+## Multi-prompt prefill-only sweep. Use `make verify-full` for the full
+## prefill+decode equivalent through the shared framework.
+verify-prefill-full:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
 		--prefill-dtype $(PREFILL_DTYPE) --model $(MODEL) \
@@ -119,16 +135,30 @@ verify-full:
 		--prompts-file $(PROMPTS_FILE) \
 		--cache-dir $(srcdir)/verify_kernel_cache
 
-## Diagnosis lens: per-layer ffn_out cosine vs HF bf16 reference, single
-## prompt, informational (no PASS/FAIL gate). Mirrors the bf16 sibling's
-## `make diagnosis`.
+## Full prefill + decode top-K inclusion gate via the shared llm_verify/
+## framework (matches the bf16 baseline's `make verify`). 2 prompts × 32
+## greedy tokens, k=5. NPU runs bf16 prefill on dequantized AWQ + int4
+## decode; HF reference loads the same AWQ checkpoint in bf16.
+verify:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+		--prompts topk_token --max-prompts 2
+
+## Same as `make verify` but runs the full prompt set (slower; local
+## exhaustive validation). Mirrors the bf16 sibling's `make verify-full`.
+verify-full:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+		--prompts topk_token
+
+## Diagnosis lens (per-layer ffn_out cosine). Note: int4 decode adapter
+## does not expose per-layer intermediates yet — diagnosis works only for
+## the prefill RMSNorm/QKV/RoPE stages. For full per-layer NPU-vs-HF
+## probe, use the bf16 sibling's `make diagnosis`.
 diagnosis:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
-		--prefill-dtype $(PREFILL_DTYPE) --model $(MODEL) \
-		--prompt "$(PROMPT)" --n-layers $(N_LAYERS) \
-		--diagnosis \
-		--cache-dir $(srcdir)/verify_kernel_cache
+	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+		--prompts single --prompt "$(PROMPT)"
 
 ## Run with per-kernel + per-layer profiling instrumentation.
 profile:
@@ -139,8 +169,52 @@ profile:
 		--profile \
 		--cache-dir $(srcdir)/verify_kernel_cache
 
+## ============================================================
+## End-to-end inference (bf16 NPU prefill + int4 NPU decode)
+## ============================================================
+
+## Compile both prefill (bf16) ELFs and decode (int4) ELFs into separate
+## kernel caches. Idempotent; re-run after editing stitchers.
+compile-inference:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_inference.py \
+		--compile-only \
+		--model-path $(MODEL) \
+		--prefill-cache-dir $(PREFILL_INF_CACHE) \
+		--decode-cache-dir $(DECODE_INF_CACHE)
+	@echo "Compilation passed."
+
+## Decode-only kernel compile (no prefill). Useful when iterating on
+## decode stitchers in isolation.
+compile-decode:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_decode.py \
+		--compile-only --cache-dir $(DECODE_INF_CACHE)
+
+## End-to-end generation: prefill the prompt, then decode N_TOKENS tokens
+## on the NPU. Override PROMPT, N_TOKENS, MODEL via the command line.
+run-inference:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && flock /tmp/mlir-air-npu.lock python3 \
+		$(srcdir)/llama32_1b_int4_inference.py \
+		--run-only --n-tokens $(N_TOKENS) --prompt "$(PROMPT)" \
+		--model-path $(MODEL) \
+		--prefill-cache-dir $(PREFILL_INF_CACHE) \
+		--decode-cache-dir $(DECODE_INF_CACHE)
+
+## Interactive chat REPL — each prompt is independent (no chat history).
+## Ctrl-D / /quit exits.
+chat:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && flock /tmp/mlir-air-npu.lock python3 \
+		$(srcdir)/llama32_1b_int4_inference.py \
+		--run-only --interactive --n-tokens $(N_TOKENS) \
+		--model-path $(MODEL) \
+		--prefill-cache-dir $(PREFILL_INF_CACHE) \
+		--decode-cache-dir $(DECODE_INF_CACHE)
+
 ## Remove build dir and the on-disk ELF cache.
 clean:
 	rm -r $(BUILD_DIR) 2>/dev/null || true
-	rm -rf $(srcdir)/verify_kernel_cache
-	@echo "Build directory and verify_kernel_cache/ removed. Run 'make compile' to rebuild."
+	rm -rf $(srcdir)/verify_kernel_cache $(PREFILL_INF_CACHE) $(DECODE_INF_CACHE)
+	@echo "Build directory and kernel caches removed. Run 'make compile' to rebuild."
