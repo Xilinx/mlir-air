@@ -42,6 +42,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -3325,13 +3326,13 @@ public:
   }
 
   AIE::PacketFlowOp
-  createPacketFlowOp(OpBuilder &builder, int &flowID, Value source,
+  createPacketFlowOp(OpBuilder &builder, int flowID, Value source,
                      xilinx::AIE::WireBundle sourceBundle,
                      uint32_t sourceChannel, Value dest,
                      xilinx::AIE::WireBundle destBundle, uint32_t destChannel,
                      mlir::BoolAttr keep_pkt_header = nullptr) {
     AIE::PacketFlowOp pktFlow = AIE::PacketFlowOp::create(
-        builder, builder.getUnknownLoc(), flowID++, keep_pkt_header, nullptr);
+        builder, builder.getUnknownLoc(), flowID, keep_pkt_header, nullptr);
     Region &r_pktFlow = pktFlow.getPorts();
     Block *b_pktFlow = builder.createBlock(&r_pktFlow);
     builder.setInsertionPointToStart(b_pktFlow);
@@ -3343,6 +3344,27 @@ public:
     return pktFlow;
   }
 
+  // Assign a pkt_id for a shim (or trace) packet flow: monotonic global
+  // counter, skipping any id already claimed by an intra-device flow in this
+  // device. Records the assignment in claimedPacketIDs.
+  int assignShimPacketID() {
+    while (claimedPacketIDs.count(nextGlobalShimPacketID))
+      ++nextGlobalShimPacketID;
+    int id = nextGlobalShimPacketID++;
+    claimedPacketIDs.insert(id);
+    return id;
+  }
+
+  // Assign a pkt_id for an intra-device packet flow: lowest pkt_id not yet
+  // claimed in this device. Records the assignment in claimedPacketIDs.
+  int assignIntraDevicePacketID() {
+    int id = 0;
+    while (claimedPacketIDs.count(id))
+      ++id;
+    claimedPacketIDs.insert(id);
+    return id;
+  }
+
   // This method generates broadcast packet flow if found multiple flows with
   // the same source. TODO: packet flows sharing source do not always mean
   // broadcast.
@@ -3351,7 +3373,7 @@ public:
                                     xilinx::AIE::WireBundle sourceBundle,
                                     uint32_t sourceChannel, mlir::Value dest,
                                     xilinx::AIE::WireBundle destBundle,
-                                    uint32_t destChannel, int &flowID) {
+                                    uint32_t destChannel, int flowID) {
     AIE::PacketFlowOp packetFlowOp = nullptr;
     aie_device.walk([&](AIE::PacketFlowOp pktFlowOp) {
       auto pktSrcOp = getPacketSourceOpInPacketFlowOp(pktFlowOp, source);
@@ -3407,47 +3429,14 @@ public:
       return AIE::PacketFlowOp(); // Only air.channel_interface ops support
                                   // packet-flow routing.
 
-    // Convert a flow map from Operation pointers to channel symbol names.
-    // This is necessary because air.channel declarations are duplicated
-    // under aie.device op and its parent module op, requiring symbol-based
-    // matching.
-    auto buildFlowIdMap =
-        [](const SetVector<Operation *> &fmap) -> std::vector<std::string> {
-      std::vector<std::string> result;
-      for (auto op : fmap) {
-        auto flowChanOp = dyn_cast_if_present<air::ChannelOp>(op);
-        if (!flowChanOp) {
-          result.push_back("");
-          continue;
-        }
-        result.push_back(flowChanOp.getSymName().str());
-      }
-      return result;
-    };
-
-    // Search both flow maps by channel name. Channel names are unique symbols,
-    // so each channel appears in exactly one map. We search the shim (device-
-    // host) map first, then the intra-device map.
-    //
-    // Note: we cannot reliably determine which map to search from the memcpy
-    // op alone, because ChannelPutOp::getDstMemref() and ChannelGetOp::
-    // getSrcMemref() return nullptr by design (the other end of a channel op
-    // is implicit via the channel symbol). Searching both maps directly is
-    // simpler and always correct.
-    std::string chanName = chanIfOp.getChanName().str();
-
-    for (const auto &flowMap : {std::cref(shimFlowOpToFlowIdMap),
-                                std::cref(intraDeviceFlowOpToFlowIdMap)}) {
-      auto flowStrings = buildFlowIdMap(flowMap.get());
-      auto it = llvm::find(flowStrings, chanName);
-      if (it != flowStrings.end()) {
-        int flowID = std::distance(flowStrings.begin(), it);
-        return findPacketFlowOp(source, sourceBundle, sourceChannel,
-                                /*checkFlowID=*/true, flowID);
-      }
-    }
-
-    return AIE::PacketFlowOp();
+    // packetIDForChannelName stores the pkt_id assigned at flow-creation time,
+    // keyed by air.channel symbol name. Symbol names are stable across the
+    // aie.device / parent module duplication of air.channel decls.
+    auto it = packetIDForChannelName.find(chanIfOp.getChanName().str());
+    if (it == packetIDForChannelName.end())
+      return AIE::PacketFlowOp();
+    return findPacketFlowOp(source, sourceBundle, sourceChannel,
+                            /*checkFlowID=*/true, it->second);
   }
 
   /// Query an existing packet flow operation from the runtime function.
@@ -4151,80 +4140,124 @@ public:
     // ping-pong deadlock.
     tile_dma_alloc.sortMemcpyOps(dma_memcpy_ops);
 
-    // Step 4: Connect flows
-    for (auto &f : memcpy_flows) {
-      for (int i = 0; i < f.numS2MMAllocs; i++) {
-        // Skip if either MM2S or S2MM tile allocation is invalid
-        if (!f.MM2S_alloc.getDmaTile() || !f.S2MM_alloc[i].getDmaTile()) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "AIRToAIE: skipping memcpy flow due to invalid DMA "
-                        "tile allocation (MM2S or S2MM tile is null)\n");
-          continue;
-        }
-        // Determine if this is a device-host flow (involves shim tiles)
-        bool isShimFlow = f.MM2S_alloc.getDmaTile().isShimNOCorPLTile() ||
-                          f.S2MM_alloc[i].getDmaTile().isShimNOCorPLTile();
+    // Step 4: Connect flows.
+    //
+    // Packet flows are assigned pkt_ids in two passes so that within one
+    // device, no two packet flows share a pkt_id. (Pre-fix: shim and intra-
+    // device flows ran independent 0-based counters, the first of each got
+    // pkt_id=0, and switchbox arbiters silently mis-routed where their
+    // physical routes crossed.) Each air.channel symbol maps to exactly one
+    // pkt_id, recorded in packetIDForChannelName for broadcast reuse and for
+    // lookup by getExistingPacketFlowOpFromDevice.
+    //
+    //   Pass 1: shim packet flows (assignShimPacketID -- monotonic global).
+    //   Pass 2: intra-device packet flows (assignIntraDevicePacketID --
+    //           lowest gap in claimedPacketIDs).
+    //   Pass 3: stream and cascade flows (no pkt_id involved).
+    auto isInvalidAlloc = [&](air::MemcpyBundleAsFlow &f, int i) {
+      if (!f.MM2S_alloc.getDmaTile() || !f.S2MM_alloc[i].getDmaTile()) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "AIRToAIE: skipping memcpy flow due to invalid DMA "
+                      "tile allocation (MM2S or S2MM tile is null)\n");
+        return true;
+      }
+      return false;
+    };
+    auto isShimFlowAt = [&](air::MemcpyBundleAsFlow &f, int i) {
+      return f.MM2S_alloc.getDmaTile().isShimNOCorPLTile() ||
+             f.S2MM_alloc[i].getDmaTile().isShimNOCorPLTile();
+    };
+    // The flow-op key for packetIDForChannelName is the air.channel symbol
+    // name. air.channel decls are duplicated under aie.device and its parent
+    // module, so symbol name is the stable identifier across both contexts.
+    auto getChannelName = [](air::MemcpyBundleAsFlow &f) -> std::string {
+      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op))
+        return chanOp.getSymName().str();
+      return {};
+    };
+    // Assign or reuse a pkt_id for a packet flow. air.channel-rooted flows
+    // dedupe by symbol name (broadcast: one source -> multiple receivers
+    // share a pkt_id). Non-channel packet flows get a fresh id per call.
+    auto assignOrLookupPacketID = [&](air::MemcpyBundleAsFlow &f,
+                                      bool isShim) -> int {
+      std::string chanName = getChannelName(f);
+      if (chanName.empty())
+        return isShim ? assignShimPacketID() : assignIntraDevicePacketID();
+      auto [it, inserted] = packetIDForChannelName.try_emplace(chanName, -1);
+      if (inserted)
+        it->second =
+            isShim ? assignShimPacketID() : assignIntraDevicePacketID();
+      return it->second;
+    };
 
-        if (f.memcpyResourceType == "npu_dma_packet") {
-          // Use appropriate flow map based on whether flow involves shim tiles
-          if (isShimFlow) {
-            // Device-host flows use global shim flow ID
-            shimFlowOpToFlowIdMap.insert(f.air_flow_op);
-            auto it = llvm::find(shimFlowOpToFlowIdMap, f.air_flow_op);
-            int flowID = std::distance(shimFlowOpToFlowIdMap.begin(), it);
-            auto pktFlowOp = getPacketFlowOp(
-                aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-                AIE::WireBundle::DMA,
-                (uint32_t)f.MM2S_alloc.dma_channel.channel,
-                f.S2MM_alloc[i].getDmaTile()->getResult(0),
-                AIE::WireBundle::DMA,
-                (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-            // Update global shim flow ID following the local packet assignment.
-            globalShimFlowID = std::max(globalShimFlowID, flowID);
-            // Store flow ID in matching MM2S shim alloc for labeling phase.
-            // Use the packet flow op's actual ID, not the mutated flowID
-            // (createPacketFlowOp post-increments flowID by reference).
-            int storedFlowID = pktFlowOp ? pktFlowOp.getID() : flowID;
-            for (auto &sa : shim_dma_alloc.mm2s_allocs) {
-              if (sa.getDmaTile().getOperation() ==
-                      f.MM2S_alloc.getDmaTile().getOperation() &&
-                  sa.dma_channel == f.MM2S_alloc.dma_channel &&
-                  sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
-                  sa.dma_id == f.MM2S_alloc.dma_id) {
-                sa.packet_flow_id = storedFlowID;
-                break;
-              }
-            }
-          } else {
-            // Intra-device flows use per-device flow ID (can restart from 0)
-            intraDeviceFlowOpToFlowIdMap.insert(f.air_flow_op);
-            auto it = llvm::find(intraDeviceFlowOpToFlowIdMap, f.air_flow_op);
-            int flowID =
-                std::distance(intraDeviceFlowOpToFlowIdMap.begin(), it);
-            getPacketFlowOp(aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-                            AIE::WireBundle::DMA,
-                            (uint32_t)f.MM2S_alloc.dma_channel.channel,
-                            f.S2MM_alloc[i].getDmaTile()->getResult(0),
-                            AIE::WireBundle::DMA,
-                            (uint32_t)f.S2MM_alloc[i].dma_channel.channel,
-                            flowID);
-            // Update intra-device flow ID following the local packet
-            // assignment.
-            intraDeviceFlowID = std::max(intraDeviceFlowID, flowID);
+    // Pass 1: shim packet flows.
+    for (auto &f : memcpy_flows) {
+      if (f.memcpyResourceType != "npu_dma_packet")
+        continue;
+      for (int i = 0; i < f.numS2MMAllocs; i++) {
+        if (isInvalidAlloc(f, i))
+          continue;
+        if (!isShimFlowAt(f, i))
+          continue;
+        int flowID = assignOrLookupPacketID(f, /*isShim=*/true);
+        getPacketFlowOp(
+            aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
+            AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
+            f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
+            (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+        // Backlink: the host runtime keys packet identification on
+        // (shim tile, pkt_id), so the matching MM2S shim alloc carries the id.
+        for (auto &sa : shim_dma_alloc.mm2s_allocs) {
+          if (sa.getDmaTile().getOperation() ==
+                  f.MM2S_alloc.getDmaTile().getOperation() &&
+              sa.dma_channel == f.MM2S_alloc.dma_channel &&
+              sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
+              sa.dma_id == f.MM2S_alloc.dma_id) {
+            sa.packet_flow_id = flowID;
+            break;
           }
-        } else if (f.memcpyResourceType == "npu_dma_stream")
+        }
+      }
+    }
+
+    // Pass 2: intra-device packet flows.
+    for (auto &f : memcpy_flows) {
+      if (f.memcpyResourceType != "npu_dma_packet")
+        continue;
+      for (int i = 0; i < f.numS2MMAllocs; i++) {
+        if (isInvalidAlloc(f, i))
+          continue;
+        if (isShimFlowAt(f, i))
+          continue;
+        int flowID = assignOrLookupPacketID(f, /*isShim=*/false);
+        getPacketFlowOp(
+            aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
+            AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
+            f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
+            (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+      }
+    }
+
+    // Pass 3: stream and cascade flows.
+    for (auto &f : memcpy_flows) {
+      if (f.memcpyResourceType != "npu_dma_stream" &&
+          f.memcpyResourceType != "npu_cascade")
+        continue;
+      for (int i = 0; i < f.numS2MMAllocs; i++) {
+        if (isInvalidAlloc(f, i))
+          continue;
+        if (f.memcpyResourceType == "npu_dma_stream")
           getFlowOp(
               aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
               AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
               f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
               (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
-        else if (f.memcpyResourceType == "npu_cascade") {
+        else
           getCascadeFlowOp(
               aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
               AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
               f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
               (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
-        }
       }
     }
     return success();
@@ -6471,9 +6504,12 @@ public:
 
         builder.setInsertionPoint(device.getBody()->getTerminator());
         auto keep_pkt_header = builder.getBoolAttr(true);
-        // Trace flows go to shim tiles, so use global shim flow ID
+        // Trace packets terminate at shim DMA -> draw from the shim id pool.
+        // assignShimPacketID skips ids already claimed by intra-device flows
+        // placed earlier in this device (latent collision: pre-redesign trace
+        // could reuse an id from the device's intra-device pass).
         (void)createPacketFlowOp(
-            builder, globalShimFlowID, srcTile, AIE::WireBundle::Trace, 0,
+            builder, assignShimPacketID(), srcTile, AIE::WireBundle::Trace, 0,
             destTile, AIE::WireBundle::DMA, destChan, keep_pkt_header);
       }
     }
@@ -6672,10 +6708,11 @@ public:
         continue;
       seen.insert(device);
 
-      // Reset per-device flow tracking for segment unroll.
-      // Each isolated device can reuse packet IDs starting from 0.
-      intraDeviceFlowID = 0;
-      intraDeviceFlowOpToFlowIdMap.clear();
+      // Reset per-device packet-flow tracking for segment unroll. Each
+      // isolated device assigns its own pkt_ids; shim ids are drawn from a
+      // global counter (nextGlobalShimPacketID) for cross-device uniqueness.
+      packetIDForChannelName.clear();
+      claimedPacketIDs.clear();
 
       // The shim tile allocation is not unified for dma and channel lowering
       // so we disallow a mix of dma and channel ops.
@@ -6908,19 +6945,23 @@ public:
     }
   }
 
-  // Intra-device flow ID tracking (reset per device for segment unroll)
-  // These flows are between tiles within the same device and can safely
-  // reuse packet IDs across isolated devices.
-  int intraDeviceFlowID = 0;
-  SetVector<Operation *>
-      intraDeviceFlowOpToFlowIdMap; // Ordered set for intra-device flows
-
-  // Device-host (shim) flow ID tracking (persists globally across devices)
-  // These flows involve shim tiles and require globally unique IDs since
-  // all devices share the host interface/NoC.
-  int globalShimFlowID = 0;
-  SetVector<Operation *>
-      shimFlowOpToFlowIdMap; // Ordered set for device-host flows
+  // Packet-flow id tracking.
+  //
+  // Per-device (reset each device):
+  //   packetIDForChannelName: air.channel symbol -> assigned pkt_id. Drives
+  //     reuse for broadcast (one source, many receivers) and lookup from
+  //     downstream lowering. Keyed by symbol name because air.channel decls
+  //     are duplicated under aie.device and its parent module.
+  //   claimedPacketIDs: pkt_ids already assigned in this device. Drives gap-
+  //     finding for intra-device flows and skip-on-collision for trace/shim.
+  //
+  // Global (persists across devices):
+  //   nextGlobalShimPacketID: monotonic source for shim (and trace) pkt_ids.
+  //     Shim flows require global uniqueness because the host runtime keys
+  //     packet identification on (shim tile, pkt_id).
+  llvm::StringMap<int> packetIDForChannelName;
+  llvm::SmallSet<int, 32> claimedPacketIDs;
+  int nextGlobalShimPacketID = 0;
 
 private:
   // Collapses the innermost `numDims` dimensions of a MemRef `val` into a
