@@ -271,6 +271,18 @@ def main():
     )
     from runners.hf_runner import HfRunner
 
+    # Optional adapter hook: produce a custom HF model (e.g. meta-llama
+    # architecture with AWQ-dequantized weights patched in) so the verify
+    # gate isolates NPU drift from quantization error. When absent, fall
+    # back to plain `from_pretrained(hf_ref_model)`.
+    hf_model = None
+    if hasattr(adapter, "build_hf_model"):
+        print(f"[verify] adapter is building custom HF reference model...")
+        hf_model = adapter.build_hf_model(
+            npu_model_name=model_name,
+            hf_ref_model=hf_ref_model,
+            config=config,
+        )
     print(f"[verify] building HF runner ({hf_ref_model}, lite={lite}, may download)...")
     try:
         hf = HfRunner(
@@ -278,6 +290,7 @@ def main():
             config=config,
             max_seq=max_seq,
             lite_mode=lite,
+            model=hf_model,
         )
     except Exception as e:
         print(f"[verify] HF runner unavailable: {e}", file=sys.stderr)

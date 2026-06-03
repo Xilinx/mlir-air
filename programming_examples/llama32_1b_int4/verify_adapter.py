@@ -7,9 +7,12 @@ Wraps the production `llama32_1b_int4_inference` driver into a Runner for
 the shared verify framework. Mirrors `llama32_1b/verify_adapter.py` but
 loads AWQ weights (`load_weights_awq`) and uses the int4 decode kernels.
 
-The HF reference still runs in bf16 — AutoAWQ is not in CI deps, and the
-NPU int4 path's correctness target is "matches bf16 dequant" which the
-top-K-set inclusion gate already measures.
+HF reference uses the meta-llama Llama-3.2-1B-Instruct architecture with
+AWQ-dequantized weights patched in over the bf16 originals (see
+`build_hf_model`). That isolates the verify gate to NPU drift only, vs
+the looser "quant_error + NPU_drift" comparison you'd get by using the
+un-quantized meta-llama weights as reference. No autoawq dep — we use
+our own `awq_repacker.dequant_to_bf16`.
 """
 
 from __future__ import annotations
@@ -62,11 +65,10 @@ def resolve_model(model_choice_or_id: str) -> str:
     return MODEL_CHOICES.get(model_choice_or_id, model_choice_or_id)
 
 
-# HF reference is the un-quantized upstream Meta checkpoint. The AWQ
-# weights are a particular quantization of it; the verify gate measures
-# NPU int4 (with AWQ weights) vs HF bf16 (with the source weights),
-# which is a looser comparison than NPU-int4 vs HF-AutoAWQ-dequant but
-# avoids dragging the autoawq package into CI deps.
+# HF reference architecture (vanilla meta-llama). The Linear weights are
+# replaced with our AWQ-dequant copies inside `build_hf_model`, so the
+# gate measures NPU drift only — both sides see identical bf16 values
+# for every weight.
 _HF_REF_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 
 
@@ -76,6 +78,103 @@ def hf_reference(npu_model_name: str) -> str:
 
 def build_config():
     return LlamaConfig()
+
+
+# Both build_runner() and build_hf_model() need the AWQ-loaded LlamaWeights.
+# Cache once per model_name so we don't read safetensors twice in one verify
+# run (the framework calls build_runner first and build_hf_model second).
+_WEIGHTS_CACHE: dict = {}
+
+
+def _get_or_load_weights(model_name: str, config):
+    key = (model_name, id(config))
+    if key not in _WEIGHTS_CACHE:
+        _WEIGHTS_CACHE[key] = load_weights_awq(model_name, config=config)
+    return _WEIGHTS_CACHE[key]
+
+
+def build_hf_model(npu_model_name: str, hf_ref_model: str, config):
+    """Construct the HF reference model: meta-llama architecture + the
+    AWQ-dequantized weights from the AMD checkpoint patched in over the
+    bf16 originals. Tightens the verify gate from
+    (quant_error + NPU_drift) down to (NPU_drift) since both sides see
+    exactly the same bf16 tensor values for every Linear weight.
+
+    The trick: load weights once via `load_weights_awq` (which already
+    produces bf16 dequant copies on each LayerWeights field). Then walk
+    each HF Linear and overwrite `.weight.data` with the dequant. HF
+    stores Linear weights as (out_features, in_features) but our dequant
+    is (in_features, out_features), hence the `.T.contiguous()`.
+
+    Layernorms, embed_tokens and lm_head in the AMD checkpoint are
+    un-quantized bf16 and we copy them straight through.
+    """
+    import torch
+    from transformers import AutoModelForCausalLM
+
+    weights = _get_or_load_weights(npu_model_name, config)
+    print(f"[verify_adapter] loading HF arch from {hf_ref_model}...")
+    model = AutoModelForCausalLM.from_pretrained(
+        hf_ref_model, torch_dtype=torch.bfloat16
+    )
+
+    def _to_bf16_tensor(arr):
+        # numpy bfloat16 -> torch bfloat16 via int16 bit-reinterpret. The
+        # standard `torch.from_numpy(bf16_array)` errors out because numpy
+        # has no native bfloat16 dtype.
+        return torch.from_numpy(arr.view(np.int16)).view(torch.bfloat16)
+
+    n_layers = config.n_layers
+    for li in range(n_layers):
+        lw = weights.layers[li]
+        hf_layer = model.model.layers[li]
+        # Linear weights: HF (out, in); our dequant (in, out) => transpose.
+        hf_layer.self_attn.q_proj.weight.data = _to_bf16_tensor(
+            np.ascontiguousarray(np.asarray(lw.wq).T)
+        )
+        hf_layer.self_attn.k_proj.weight.data = _to_bf16_tensor(
+            np.ascontiguousarray(np.asarray(lw.wk).T)
+        )
+        hf_layer.self_attn.v_proj.weight.data = _to_bf16_tensor(
+            np.ascontiguousarray(np.asarray(lw.wv).T)
+        )
+        hf_layer.self_attn.o_proj.weight.data = _to_bf16_tensor(
+            np.ascontiguousarray(np.asarray(lw.wo).T)
+        )
+        hf_layer.mlp.gate_proj.weight.data = _to_bf16_tensor(
+            np.ascontiguousarray(np.asarray(lw.w_gate).T)
+        )
+        hf_layer.mlp.up_proj.weight.data = _to_bf16_tensor(
+            np.ascontiguousarray(np.asarray(lw.w_up).T)
+        )
+        hf_layer.mlp.down_proj.weight.data = _to_bf16_tensor(
+            np.ascontiguousarray(np.asarray(lw.w_down).T)
+        )
+        # Layernorms (un-quantized in AWQ checkpoint).
+        hf_layer.input_layernorm.weight.data = _to_bf16_tensor(
+            np.ascontiguousarray(np.asarray(lw.attn_norm))
+        )
+        hf_layer.post_attention_layernorm.weight.data = _to_bf16_tensor(
+            np.ascontiguousarray(np.asarray(lw.ffn_norm))
+        )
+
+    # Embedding, final norm, lm_head from AMD checkpoint.
+    model.model.embed_tokens.weight.data = _to_bf16_tensor(
+        np.ascontiguousarray(np.asarray(weights.embed_table))
+    )
+    model.model.norm.weight.data = _to_bf16_tensor(
+        np.ascontiguousarray(np.asarray(weights.final_norm))
+    )
+    # Llama-3.2 ties lm_head to embed_tokens. The patched embed_tokens
+    # already carries the AMD checkpoint values; lm_head's shared weight
+    # is the same tensor, so no separate patch is needed for tied models.
+    if not getattr(model.config, "tie_word_embeddings", False):
+        model.lm_head.weight.data = _to_bf16_tensor(
+            np.ascontiguousarray(np.asarray(weights.lm_head))
+        )
+
+    print(f"[verify_adapter] HF reference model patched with AWQ-dequant weights")
+    return model
 
 
 def build_runner(
@@ -89,7 +188,7 @@ def build_runner(
 ):
     """Load AWQ weights, compile NPU kernels (bf16 prefill + int4 decode),
     return an `Int4NpuRunner`."""
-    weights = load_weights_awq(model_name, config=config)
+    weights = _get_or_load_weights(model_name, config)
     return Int4NpuRunner(
         weights=weights,
         config=config,
