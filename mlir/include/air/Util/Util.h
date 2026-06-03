@@ -81,6 +81,12 @@ std::optional<int64_t> getStaticScfForTripCountAsInt(scf::ForOp for_op);
 std::optional<int64_t>
 getStaticAffineForTripCountAsInt(affine::AffineForOp for_op);
 
+// Multiplies static trip counts of every scf.for / affine.for strictly between
+// `inner` and `outer` in the parent-op chain. Returns nullopt if any such loop
+// has a non-static trip count; returns 1 if no loops sit between.
+std::optional<int64_t> getStaticTripCountInRange(Operation *inner,
+                                                 Operation *outer);
+
 // Erase a kernel operand from air.hierarchy op
 void eraseAIRHierarchyOperand(HierarchyInterface op, unsigned index);
 
