@@ -213,8 +213,11 @@ chat:
 		--prefill-cache-dir $(PREFILL_INF_CACHE) \
 		--decode-cache-dir $(DECODE_INF_CACHE)
 
-## Remove build dir and the on-disk ELF cache.
+## Remove build dir and all on-disk ELF caches (prefill verifier,
+## inference prefill, inference decode).
 clean:
 	rm -r $(BUILD_DIR) 2>/dev/null || true
 	rm -rf $(srcdir)/verify_kernel_cache $(PREFILL_INF_CACHE) $(DECODE_INF_CACHE)
-	@echo "Build directory and kernel caches removed. Run 'make compile' to rebuild."
+	@echo "Build directory and kernel caches removed. Rebuild with:"
+	@echo "  make compile             # prefill stitcher ELFs (verify/run/profile)"
+	@echo "  make compile-inference   # bf16 prefill + int4 decode ELFs (run-inference/chat)"
