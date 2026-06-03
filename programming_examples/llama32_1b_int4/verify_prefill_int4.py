@@ -119,7 +119,9 @@ def _prepare_air_project_int4():
             shutil.copy2(src, air_proj / obj_name)
 
 
-_cache_mod.prepare_air_project = _prepare_air_project_int4
+# The monkey-patch is applied conditionally in main() — only the int4
+# prefill path needs the GEMM-flavored mv_int4_bf16.o. The bf16 prefill
+# path uses the stock cache.prepare_air_project (no int4 .o needed).
 
 
 # stack_size=16384: int4 GEMM kernel needs it; default 1024 silently
@@ -468,9 +470,20 @@ def main():
                     help="Use numpy GQA attention instead of NPU flash_attn. "
                     "Default is NPU (the bf16 flash_attn ELF is "
                     "q/k/v-dtype-agnostic).")
+    ap.add_argument("--prefill-dtype", choices=["int4", "bf16"], default="int4",
+                    help="Which prefill GEMM ELFs to run. 'int4' uses the "
+                    "int4 stitchers (low-memory). 'bf16' dequants the AWQ "
+                    "weights once at load and runs the bf16 prefill stitchers "
+                    "(3-6x faster compute; same AWQ-quality output). Decode "
+                    "is unaffected — that path still benefits from int4.")
     args = ap.parse_args()
     global _INT4_TILE_N
     _INT4_TILE_N = args.tile_n
+
+    # int4 prefill needs the GEMM-flavored mv_int4_bf16.o under air_project/;
+    # bf16 prefill uses the stock external-kernel set (rope/silu/attn).
+    if args.prefill_dtype == "int4":
+        _cache_mod.prepare_air_project = _prepare_air_project_int4
 
     config = LlamaConfig()
     seq_len = args.seq_len
@@ -492,7 +505,24 @@ def main():
     )
     print(f"  loaded + dequant + packed in {time.time()-t0:.1f}s")
 
-    # ---- Compile (or load) the two int4 stitcher ELFs.
+    # Skip-if-cached: avoid rebuilding ELFs that already exist on disk.
+    # Compile times at seq=2048 are minutes per kernel, so this matters.
+    # kernel_sym must match the actual ELF symbol (= XRTBackend's
+    # `instance_name` arg); it is NOT always equal to the cache key (e.g.
+    # flash_attn ships as `attention_bf16`).
+    def _need(name, kernel_sym=None):
+        if kernel_sym is None:
+            kernel_sym = name
+        elf = Path(args.cache_dir) / f"{name}.elf"
+        if elf.exists():
+            print(f"  using cached {name}.elf ({elf.stat().st_size//1024} KB)")
+            from air.backend.xrt import XRTCompileArtifact
+            cache.artifacts[name] = XRTCompileArtifact(
+                str(elf), f"main:{kernel_sym}", None)
+            return False
+        return True
+
+    # ---- Compile (or load) the prefill stitcher ELFs.
     if not args.skip_npu and not args.run_only:
         # awq_pack inserts the bf16 sibling dir (which also has a
         # `multi_launch_builder` package) at sys.path[0] for shared
@@ -500,46 +530,68 @@ def main():
         # win the namespace race here.
         if sys.path[0] != str(_THIS_DIR):
             sys.path.insert(0, str(_THIS_DIR))
-        from multi_launch_builder.rms_gemms_rope_int4_multi import (
-            build_rms_gemms_rope_int4_module,
-        )
-        from multi_launch_builder.o_ffn_int4_multi import build_o_ffn_int4_module
 
-        # Skip-if-cached: avoid rebuilding ELFs that already exist on disk.
-        # Compile times at seq=2048 are minutes per kernel, so this matters.
-        def _need(name):
-            elf = Path(args.cache_dir) / f"{name}.elf"
-            if elf.exists():
-                print(f"  using cached {name}.elf ({elf.stat().st_size//1024} KB)")
-                from air.backend.xrt import XRTCompileArtifact
-                cache.artifacts[name] = XRTCompileArtifact(
-                    str(elf), f"main:{name}", None)
-                return False
-            return True
+        if args.prefill_dtype == "int4":
+            from multi_launch_builder.rms_gemms_rope_int4_multi import (
+                build_rms_gemms_rope_int4_module,
+            )
+            from multi_launch_builder.o_ffn_int4_multi import (
+                build_o_ffn_int4_module,
+            )
 
-        if _need("rms_gemms_rope_int4"):
-            print("\nCompiling rms_gemms_rope_int4...")
-            cache.compile_and_cache(
-                "rms_gemms_rope_int4",
-                build_rms_gemms_rope_int4_module(
-                    seq_len=seq_len, emb_dim=emb_dim, kv_dim=kv_dim,
-                    n_heads=config.n_heads, n_kv_heads=n_kv_heads,
-                    head_dim=head_dim, gs=args.gs, tile_n=args.tile_n,
-                ),
-                {"verbose": args.verbose, **RMS_GEMMS_ROPE_INT4_BACKEND},
+            if _need("rms_gemms_rope_int4"):
+                print("\nCompiling rms_gemms_rope_int4...")
+                cache.compile_and_cache(
+                    "rms_gemms_rope_int4",
+                    build_rms_gemms_rope_int4_module(
+                        seq_len=seq_len, emb_dim=emb_dim, kv_dim=kv_dim,
+                        n_heads=config.n_heads, n_kv_heads=n_kv_heads,
+                        head_dim=head_dim, gs=args.gs, tile_n=args.tile_n,
+                    ),
+                    {"verbose": args.verbose, **RMS_GEMMS_ROPE_INT4_BACKEND},
+                )
+            if _need("o_ffn_int4"):
+                print("Compiling o_ffn_int4...")
+                cache.compile_and_cache(
+                    "o_ffn_int4",
+                    build_o_ffn_int4_module(
+                        seq_len=seq_len, emb_dim=emb_dim,
+                        hidden_dim=hidden_dim,
+                        gs=args.gs, tile_n=args.tile_n,
+                    ),
+                    {"verbose": args.verbose, **O_FFN_INT4_BACKEND},
+                )
+        else:
+            # bf16 prefill: dequantized AWQ weights through the bf16 stitchers
+            # (~3-6x faster compute per layer; see bisection findings).
+            sys.path.insert(0, _LLAMA_BF16)
+            from kernel_builder.backend_presets import (
+                RMS_GEMMS_ROPE_BACKEND, O_FFN_BACKEND,
             )
-        if _need("o_ffn_int4"):
-            print("Compiling o_ffn_int4...")
-            cache.compile_and_cache(
-                "o_ffn_int4",
-                build_o_ffn_int4_module(
-                    seq_len=seq_len, emb_dim=emb_dim, hidden_dim=hidden_dim,
-                    gs=args.gs, tile_n=args.tile_n,
-                ),
-                {"verbose": args.verbose, **O_FFN_INT4_BACKEND},
-            )
-        if not args.cpu_attn and _need("flash_attn"):
-            print("Compiling flash_attn (bf16 ELF, reused for int4)...")
+            if _need("rms_gemms_rope"):
+                print("\nCompiling rms_gemms_rope (bf16)...")
+                from multi_launch_builder.rms_gemms_rope_multi import (
+                    build_rms_gemms_rope_module,
+                )
+                cache.compile_and_cache(
+                    "rms_gemms_rope",
+                    build_rms_gemms_rope_module(
+                        seq_len, emb_dim, kv_dim, config.n_heads,
+                        n_kv_heads, head_dim,
+                    ),
+                    {"verbose": args.verbose, **RMS_GEMMS_ROPE_BACKEND},
+                )
+            if _need("o_ffn"):
+                print("Compiling o_ffn (bf16)...")
+                from multi_launch_builder.o_ffn_multi import build_o_ffn_module
+                cache.compile_and_cache(
+                    "o_ffn",
+                    build_o_ffn_module(seq_len, emb_dim, hidden_dim),
+                    {"verbose": args.verbose, **O_FFN_BACKEND},
+                )
+
+        if not args.cpu_attn and _need("flash_attn", kernel_sym="attention_bf16"):
+            print("Compiling flash_attn (bf16 ELF)...")
             sys.path.insert(0, str(_PROJ_ROOT))
             from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
                 build_module as build_attn,
@@ -684,15 +736,34 @@ def main():
         _diff("K_roped",  npu_int["k_roped"],   cpu_k_roped)
         return
 
-    # ---- 16-layer NPU prefill (CPU attention placeholder).
-    print(f"\nRunning {args.n_layers}-layer NPU int4 prefill...")
+    # ---- N-layer NPU prefill.
+    print(f"\nRunning {args.n_layers}-layer NPU prefill "
+          f"(prefill-dtype={args.prefill_dtype})...")
     t0 = time.time()
+
+    if args.prefill_dtype == "bf16":
+        # Reuse the bf16 prefill driver. weights_bf16.layers[li] is the
+        # dequantized AWQ weights — same numerical values the int4 path
+        # consumes, just laid out as plain bf16 matrices.
+        sys.path.insert(0, _LLAMA_BF16)
+        from llama32_1b_prefill import run_transformer_block, preload_prefill_weights
+        preload_prefill_weights(
+            weights_bf16, config, cache, seq_len, rope_lut_bf16,
+        )
+
     for li in range(args.n_layers):
         t_layer = cache.profiler.start_layer()
-        x_bf16 = _run_layer_int4(
-            x_bf16, weights_bf16.layers[li], layers_packed[li],
-            rope_lut_bf16, config, cache, li, cpu_attn=args.cpu_attn,
-        )
+        if args.prefill_dtype == "int4":
+            x_bf16 = _run_layer_int4(
+                x_bf16, weights_bf16.layers[li], layers_packed[li],
+                rope_lut_bf16, config, cache, li, cpu_attn=args.cpu_attn,
+            )
+        else:
+            x_bf16, _ = run_transformer_block(
+                x_bf16, weights_bf16.layers[li], rope_lut_bf16, config,
+                cache, layer_idx=li, cpu_attn=args.cpu_attn,
+                verbose=args.verbose,
+            )
         cache.profiler.end_layer(li, t_layer)
         print(f"  layer {li+1}/{args.n_layers} done "
               f"({time.time()-t0:.1f}s, ||x||="
