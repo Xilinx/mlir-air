@@ -1590,16 +1590,11 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                     std::string omitMemorySpace)
       : OpRewritePattern(ctx), omitMemorySpace(omitMemorySpace) {}
 
-  // Single predicate shared between the rewriter's main check and the
-  // nested-loop suppression below. A loop is a ping-pong labeling candidate
-  // iff:
-  //   - it is not already labeled (no "unroll" attr), and
-  //   - it has at least one direct-child air.execute containing memref.alloc,
-  //     and
-  //   - if omitMemorySpace is set, none of those allocs live in that space
-  //     (matches the original "skip if any alloc matches omit" semantics).
-  // `allocsOut`, if non-null, is populated with the matched alloc ops when
-  // the loop is a candidate, so callers can avoid re-walking.
+  // Shared predicate for the rewriter and the nested-loop suppression check.
+  // Rejects loops whose candidate alloc receives >1 channel.get per outer
+  // iteration -- the K fills are sequential overwrites; doubling the buffer
+  // doesn't decouple them and the downstream ping-pong transform miscompiles.
+  // `allocsOut`, if non-null, receives the matched allocs on success.
   static bool isPingPongCandidate(scf::ForOp forOp, StringRef omitMemorySpace,
                                   SmallVectorImpl<Operation *> *allocsOut) {
     if (forOp->hasAttr("unroll"))
@@ -1619,6 +1614,45 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     }
     if (allocs.empty())
       return false;
+
+    // Each air.execute wraps a single memref.alloc and yields it as the
+    // non-token result at index 1 (see AIR.td and HoistMemallocInForPattern).
+    // Map every alias (bare alloc result and execute yield) to the bare alloc
+    // result as canonical key so a get-via-yield and a get-via-bare don't
+    // count as separate destinations for the same buffer.
+    llvm::DenseMap<Value, Value> aliasToCanonical;
+    for (auto *allocOp : allocs) {
+      Value canonical = allocOp->getResult(0);
+      aliasToCanonical[canonical] = canonical;
+      if (auto exec = allocOp->getParentOfType<air::ExecuteOp>();
+          exec && exec->getNumResults() >= 2)
+        aliasToCanonical[exec->getResults()[1]] = canonical;
+    }
+
+    // Reject if any candidate alloc has >1 channel.get/iter, or if any
+    // intervening loop has a non-static trip count (can't bound the count).
+    llvm::DenseSet<Value> seenOnce;
+    bool reject = false;
+    forOp.getBody()->walk<WalkOrder::PreOrder>(
+        [&](Operation *op) -> WalkResult {
+          if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(op))
+            return WalkResult::skip();
+          auto getOp = dyn_cast<air::ChannelGetOp>(op);
+          if (!getOp)
+            return WalkResult::advance();
+          auto it = aliasToCanonical.find(getOp.getMemref());
+          if (it == aliasToCanonical.end())
+            return WalkResult::advance();
+          auto trip = air::getStaticTripCountInRange(op, forOp.getOperation());
+          if (!trip || *trip > 1 || !seenOnce.insert(it->second).second) {
+            reject = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+    if (reject)
+      return false;
+
     if (allocsOut)
       *allocsOut = std::move(allocs);
     return true;
