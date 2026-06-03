@@ -480,9 +480,7 @@ def build_o_ffn_module(
     privates_str = "\n  ".join(sorted(all_privates))
 
     # Assemble (15 func args, 8 launches)
-    combined = (
-        "\n".join(maps_all)
-        + f"""
+    combined = "\n".join(maps_all) + f"""
 module {{
   {privates_str}
   func.func @o_ffn(
@@ -514,7 +512,6 @@ module {{
   }}
 }}
 """
-    )
 
     with Context() as ctx:
         try:

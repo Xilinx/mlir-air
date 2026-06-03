@@ -369,9 +369,7 @@ def build_rms_gemms_rope_int4_module(
             all_privates.add(p.strip())
     privates_str = "\n  ".join(sorted(all_privates))
 
-    combined = (
-        "\n".join(maps_all)
-        + f"""
+    combined = "\n".join(maps_all) + f"""
 module {{
   {privates_str}
   func.func @rms_gemms_rope_int4(
@@ -399,7 +397,6 @@ module {{
   }}
 }}
 """
-    )
 
     with Context() as ctx:
         module = Module.parse(combined, ctx)

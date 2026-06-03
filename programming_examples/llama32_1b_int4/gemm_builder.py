@@ -17,7 +17,6 @@ int4 prefill stitchers can call it identically.
 import os
 import sys
 
-
 _THIS = os.path.dirname(os.path.abspath(__file__))
 _INT4_GEMM_DIR = os.path.normpath(
     os.path.join(_THIS, "..", "matrix_multiplication", "int4_awq")

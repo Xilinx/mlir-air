@@ -58,7 +58,6 @@ from llama_kernel_builder.external_kernels import (
 )
 from awq_pack import load_awq_weights
 
-
 # ---------------------------------------------------------------------------
 # air_project preparation for the int4 stitchers
 # ---------------------------------------------------------------------------

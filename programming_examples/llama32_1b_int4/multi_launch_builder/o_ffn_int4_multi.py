@@ -507,9 +507,7 @@ def build_o_ffn_int4_module(
             all_privates.add(p.strip())
     privates_str = "\n  ".join(sorted(all_privates))
 
-    combined = (
-        "\n".join(maps_all)
-        + f"""
+    combined = "\n".join(maps_all) + f"""
 module {{
   {privates_str}
   func.func @o_ffn_int4(
@@ -541,7 +539,6 @@ module {{
   }}
 }}
 """
-    )
 
     with Context() as ctx:
         try:

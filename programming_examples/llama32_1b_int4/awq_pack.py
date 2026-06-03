@@ -32,7 +32,6 @@ from typing import Optional
 import numpy as np
 from ml_dtypes import bfloat16
 
-
 _INT4_GEMM_DIR = os.path.join(
     os.path.dirname(__file__),
     "..",
@@ -43,12 +42,10 @@ if _INT4_GEMM_DIR not in sys.path:
     sys.path.insert(0, _INT4_GEMM_DIR)
 from matmul_int4_packed import pack_inputs as pack_inputs_gemm  # noqa: E402
 
-
 _LLAMA_BF16_DIR = os.path.join(os.path.dirname(__file__), "..", "llama32_1b")
 if _LLAMA_BF16_DIR not in sys.path:
     sys.path.insert(0, _LLAMA_BF16_DIR)
 from llama32_1b_weights import LlamaConfig, LayerWeights, LlamaWeights  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # AWQ gemm-v1 packing constants

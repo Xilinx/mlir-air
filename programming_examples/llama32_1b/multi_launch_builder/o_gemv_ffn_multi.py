@@ -174,9 +174,7 @@ def build_o_gemv_ffn_module(emb_dim=2048, hidden_dim=8192):
 
     all_maps = s1_maps + s2_maps + s3_maps
 
-    combined = (
-        "\n".join(all_maps)
-        + f"""
+    combined = "\n".join(all_maps) + f"""
 module {{
 {chr(10).join('  ' + c for c in all_chans)}
 {chr(10).join('  ' + p for p in all_privs)}
@@ -208,7 +206,6 @@ module {{
   }}
 }}
 """
-    )
     with Context() as ctx:
         return Module.parse(combined, ctx)
 

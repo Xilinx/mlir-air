@@ -87,9 +87,7 @@ def build_lm_head_gemv_module(
         arg_lines.append(f"    %arg{1+2*p}: memref<{n_part}x{emb_dim}xbf16>")
         arg_lines.append(f"    %arg{2+2*p}: memref<{n_part}xbf16>")
 
-    combined = (
-        "\n".join(maps_all)
-        + f"""
+    combined = "\n".join(maps_all) + f"""
 module {{
   {privates_str}
   func.func @lm_head_gemv(
@@ -100,7 +98,6 @@ module {{
   }}
 }}
 """
-    )
 
     from air.ir import Module, Context
 
