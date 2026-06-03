@@ -352,11 +352,10 @@ def _run_layer_cpu_int4(x_bf16, layer, rope_lut_bf16, config):
 # ---------------------------------------------------------------------------
 
 
-def _hf_reference_logits(model_path, weights_bf16, prompt, config,
-                         n_layers=None):
+def _build_hf_model(model_path, weights_bf16, n_layers=None):
     """Build a vanilla (non-quantized) Llama-3.2-1B in bf16, populate it
-    with the dequantized AWQ weights, and run forward on `prompt`. Returns
-    (logits_at_last_position [vocab] f32, token_ids list, tokenizer).
+    with the dequantized AWQ weights, and return (model, tokenizer).
+    Per-prompt forward passes can then call `_hf_forward(model, tok, ...)`.
     """
     import torch
     from transformers import (
@@ -371,12 +370,7 @@ def _hf_reference_logits(model_path, weights_bf16, prompt, config,
     model = LlamaForCausalLM(hf_cfg).to(torch.bfloat16)
     model.eval()
 
-    # ---- build state dict from our dequantized LlamaWeights ----
-    # HF stores linear weights as (out_features, in_features); ours are
-    # (in_features, out_features). Transpose as we write.
     def _to_torch_bf16_T(arr):
-        # arr is ml_dtypes.bfloat16, shape (in, out). View as int16 bytes,
-        # torch reads as bf16 with the same bit pattern.
         a = np.ascontiguousarray(arr.view(np.int16).T)
         return torch.from_numpy(a).view(torch.bfloat16)
 
@@ -384,13 +378,11 @@ def _hf_reference_logits(model_path, weights_bf16, prompt, config,
         a = np.ascontiguousarray(arr.view(np.int16))
         return torch.from_numpy(a).view(torch.bfloat16)
 
-    sd = {}
-    sd["model.embed_tokens.weight"] = _to_torch_bf16(weights_bf16.embed_table)
-    sd["model.norm.weight"] = _to_torch_bf16(weights_bf16.final_norm)
-    # tied lm_head -> embed_tokens; HF still expects lm_head.weight unless
-    # tie_word_embeddings is honored. With from_config the param exists.
-    sd["lm_head.weight"] = _to_torch_bf16(weights_bf16.embed_table)
-
+    sd = {
+        "model.embed_tokens.weight": _to_torch_bf16(weights_bf16.embed_table),
+        "model.norm.weight": _to_torch_bf16(weights_bf16.final_norm),
+        "lm_head.weight": _to_torch_bf16(weights_bf16.embed_table),  # tied
+    }
     for li, lw in enumerate(weights_bf16.layers):
         b = f"model.layers.{li}"
         sd[f"{b}.input_layernorm.weight"] = _to_torch_bf16(lw.attn_norm)
@@ -408,24 +400,208 @@ def _hf_reference_logits(model_path, weights_bf16, prompt, config,
     if unexpected:
         print(f"  WARNING: {len(unexpected)} unexpected keys (e.g. {unexpected[:3]})")
     if missing:
-        # Tied weights commonly miss lm_head; tolerate that one specifically.
         nontrivial = [m for m in missing if m != "lm_head.weight"]
         if nontrivial:
             print(f"  WARNING: {len(nontrivial)} missing keys (e.g. {nontrivial[:3]})")
 
-    # Match NPU layer depth so the top-K comparison isn't apples-to-oranges
-    # (a 1-layer NPU run does not approximate a 16-layer HF run).
     if n_layers is not None and n_layers < len(model.model.layers):
         import torch.nn as nn
         model.model.layers = nn.ModuleList(model.model.layers[:n_layers])
 
     tok = AutoTokenizer.from_pretrained(model_path)
+    return model, tok
+
+
+def _hf_forward(model, tok, prompt, want_hidden_states=False):
+    """Run one HF forward pass. Returns (logits[vocab] f32, token_ids list,
+    hidden_states or None). `hidden_states[i]` is the bf16-as-f32 array of
+    shape (seq_len, hidden_dim) after layer i (per HF v5.3 convention,
+    [0] is post-embedding and [n_layers] is post-final-RMSNorm)."""
+    import torch
     ids = tok(prompt, return_tensors="pt").input_ids
-    print(f"  HF prefill ({ids.shape[1]} tokens, {len(model.model.layers)} layers)...")
     with torch.no_grad():
-        out = model(ids)
+        out = model(ids, output_hidden_states=want_hidden_states)
     logits = out.logits[0, -1].to(torch.float32).numpy()
-    return logits, ids[0].tolist(), tok
+    hs = None
+    if want_hidden_states:
+        hs = [t[0].to(torch.float32).numpy() for t in out.hidden_states]
+    return logits, ids[0].tolist(), hs
+
+
+def _hf_reference_logits(model_path, weights_bf16, prompt, config,
+                         n_layers=None):
+    """Convenience wrapper preserving the older single-shot API: builds the
+    HF model + tokenizer once and runs one forward. Returns
+    (logits[vocab] f32, token_ids list, tokenizer)."""
+    model, tok = _build_hf_model(model_path, weights_bf16, n_layers=n_layers)
+    logits, ids, _ = _hf_forward(model, tok, prompt)
+    print(f"  HF prefill ({len(ids)} tokens, {len(model.model.layers)} layers)...")
+    return logits, ids, tok
+
+
+# ---------------------------------------------------------------------------
+# Diagnosis lens (per-layer ffn_out NPU vs HF) + prompts-file loader
+# ---------------------------------------------------------------------------
+
+
+def _load_prompts_file(path):
+    """Read a prompts file (one prompt per line, '#' comments + blanks
+    ignored). Same format as ../llama32_1b/verify/prompts/{base,instruct}.txt."""
+    out = []
+    with open(path) as f:
+        for ln in f:
+            ln = ln.strip()
+            if not ln or ln.startswith("#"):
+                continue
+            out.append(ln)
+    return out
+
+
+def _layer_cosine(a, b):
+    """Cosine sim + MAE between two arrays (any matching shape)."""
+    af = np.asarray(a, dtype=np.float32).flatten()
+    bf = np.asarray(b, dtype=np.float32).flatten()
+    na = np.linalg.norm(af)
+    nb = np.linalg.norm(bf)
+    cos = float(np.dot(af, bf) / (na * nb + 1e-30))
+    mae = float(np.abs(af - bf).mean())
+    return cos, mae, float(na), float(nb)
+
+
+def _run_diagnosis(args, weights_bf16, layers_packed, config,
+                   rope_lut_bf16, cache, hf_model, tok, prompt):
+    """Per-layer ffn_out diff (NPU vs HF bf16). Mirrors the bf16 sibling's
+    `make diagnosis` behavior. Informational only — no PASS/FAIL gate."""
+    seq_len = args.seq_len
+    emb_dim = config.emb_dim
+
+    print(f"[diagnosis] prompt: {prompt!r}")
+    print("[diagnosis] HF prefill (with output_hidden_states=True)...")
+    _, token_ids, hf_hs = _hf_forward(hf_model, tok, prompt,
+                                      want_hidden_states=True)
+    prompt_len = len(token_ids)
+    if prompt_len > seq_len:
+        raise SystemExit(f"prompt_len={prompt_len} > seq_len={seq_len}")
+    pred_pos = prompt_len - 1
+
+    embed = weights_bf16.embed_table
+    x_bf16 = np.zeros((seq_len, emb_dim), dtype=bfloat16)
+    for i, tid in enumerate(token_ids):
+        x_bf16[i] = embed[tid]
+
+    npu_layer_outs = []
+    print(f"[diagnosis] NPU prefill (capturing per-layer ffn_out)...")
+    if args.prefill_dtype == "bf16":
+        sys.path.insert(0, _LLAMA_BF16)
+        from llama32_1b_prefill import (
+            run_transformer_block, preload_prefill_weights,
+        )
+        preload_prefill_weights(weights_bf16, config, cache, seq_len, rope_lut_bf16)
+
+    for li in range(args.n_layers):
+        if args.prefill_dtype == "int4":
+            x_bf16 = _run_layer_int4(
+                x_bf16, weights_bf16.layers[li], layers_packed[li],
+                rope_lut_bf16, config, cache, li, cpu_attn=args.cpu_attn,
+            )
+        else:
+            x_bf16, _ = run_transformer_block(
+                x_bf16, weights_bf16.layers[li], rope_lut_bf16, config,
+                cache, layer_idx=li, cpu_attn=args.cpu_attn,
+                verbose=False,
+            )
+        # x_bf16 has shape (seq_len, emb_dim). Take only the prompt region
+        # for a fair compare against HF (which only sees prompt_len tokens).
+        npu_layer_outs.append(np.asarray(x_bf16[:prompt_len], dtype=bfloat16))
+
+    # HF v5.3 convention: hidden_states[0] = post-embedding, hidden_states[i+1]
+    # = block output for layers 0..n-2, hidden_states[n_layers] = post-final-
+    # RMSNorm. So for the LAST layer we apply final_norm to NPU output too,
+    # else the cosine collapses (post-norm vs pre-norm have wildly different
+    # magnitudes). Mirrors the bf16 sibling's _run_diagnosis behavior.
+    print("\n[diagnosis] per-layer ffn_out cosine (NPU vs HF bf16):")
+    print(f"  {'layer':>5} {'cos':>9} {'MAE':>9} {'||NPU||':>10} {'||HF||':>10}  note")
+    print(f"  {'-'*5} {'-'*9} {'-'*9} {'-'*10} {'-'*10}  {'-'*20}")
+    for li in range(args.n_layers):
+        npu = npu_layer_outs[li]
+        if li == args.n_layers - 1:
+            # Apply final RMSNorm to NPU and compare to HF post-norm.
+            npu_f32 = np.asarray(npu, dtype=np.float32)
+            npu_normed = rms_norm(npu_f32, weights_bf16.final_norm)
+            hf = hf_hs[args.n_layers][:prompt_len]
+            cos, mae, na, nb = _layer_cosine(npu_normed, hf)
+            note = "(post-final-norm)"
+        else:
+            hf = hf_hs[li + 1][:prompt_len]
+            cos, mae, na, nb = _layer_cosine(npu, hf)
+            note = ""
+        print(f"  {li:>5d} {cos:>+9.4f} {mae:>9.4f} {na:>10.2f} {nb:>10.2f}  {note}")
+
+    print("\n[diagnosis] done. (informational — no PASS/FAIL gate)")
+
+
+def _verify_one_prompt(args, weights_bf16, layers_packed, config,
+                       rope_lut_bf16, cache, hf_model, tok, prompt):
+    """Single-prompt prefill + top-K vs HF. Returns dict with overlap,
+    argmax_match for caller aggregation."""
+    seq_len = args.seq_len
+    emb_dim = config.emb_dim
+
+    hf_logits, token_ids, _ = _hf_forward(hf_model, tok, prompt)
+    prompt_len = len(token_ids)
+    if prompt_len > seq_len:
+        raise SystemExit(f"prompt_len={prompt_len} > seq_len={seq_len}")
+    pred_pos = prompt_len - 1
+    print(f"  prompt: {prompt!r} (len={prompt_len})")
+
+    hf_top = np.argsort(-hf_logits)[: args.topk]
+
+    embed = weights_bf16.embed_table
+    x_bf16 = np.zeros((seq_len, emb_dim), dtype=bfloat16)
+    for i, tid in enumerate(token_ids):
+        x_bf16[i] = embed[tid]
+
+    if args.prefill_dtype == "bf16":
+        sys.path.insert(0, _LLAMA_BF16)
+        from llama32_1b_prefill import (
+            run_transformer_block, preload_prefill_weights,
+        )
+        preload_prefill_weights(weights_bf16, config, cache, seq_len, rope_lut_bf16)
+
+    t0 = time.time()
+    for li in range(args.n_layers):
+        t_layer = cache.profiler.start_layer()
+        if args.prefill_dtype == "int4":
+            x_bf16 = _run_layer_int4(
+                x_bf16, weights_bf16.layers[li], layers_packed[li],
+                rope_lut_bf16, config, cache, li, cpu_attn=args.cpu_attn,
+            )
+        else:
+            x_bf16, _ = run_transformer_block(
+                x_bf16, weights_bf16.layers[li], rope_lut_bf16, config,
+                cache, layer_idx=li, cpu_attn=args.cpu_attn,
+                verbose=args.verbose,
+            )
+        cache.profiler.end_layer(li, t_layer)
+
+    last_row = np.asarray(x_bf16, dtype=np.float32)[pred_pos]
+    normed = rms_norm(last_row[np.newaxis, :], weights_bf16.final_norm).flatten()
+    npu_logits = (normed.astype(np.float32) @
+                  weights_bf16.lm_head.astype(np.float32).T).astype(np.float32)
+    npu_top = np.argsort(-npu_logits)[: args.topk]
+    overlap = len(set(hf_top.tolist()) & set(npu_top.tolist()))
+    argmax_match = int(hf_top[0]) == int(npu_top[0])
+
+    print(f"  HF argmax   : id={int(hf_top[0]):>6d} {tok.decode([int(hf_top[0])])!r}")
+    print(f"  NPU argmax  : id={int(npu_top[0]):>6d} {tok.decode([int(npu_top[0])])!r}  "
+          f"match={argmax_match}")
+    print(f"  Top-{args.topk} overlap: {overlap}/{args.topk}  "
+          f"({time.time()-t0:.1f}s NPU prefill)")
+    return {
+        "prompt": prompt,
+        "overlap": overlap,
+        "argmax_match": argmax_match,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +656,15 @@ def main():
                     help="If >0, print '[verify] PASS' iff top-K overlap vs "
                     "HF reaches this threshold (and argmax matches); else "
                     "'[verify] FAIL'. Used by run_npu2_verify.lit.")
+    ap.add_argument("--prompts-file", type=str, default=None,
+                    help="Path to a prompts file (one prompt per line, '#' "
+                    "comments allowed). When set, runs each prompt and "
+                    "aggregates pass/fail. Used by `make verify-full`.")
+    ap.add_argument("--diagnosis", action="store_true",
+                    help="Diagnosis lens: collect per-layer ffn_out from "
+                    "NPU prefill and diff against HF bf16 reference's "
+                    "per-layer hidden_states. Informational, no PASS/FAIL "
+                    "gate. Used by `make diagnosis`.")
     args = ap.parse_args()
     global _INT4_TILE_N
     _INT4_TILE_N = args.tile_n
@@ -626,7 +811,54 @@ def main():
         print("Compilation passed.")
         return
 
-    # ---- HF reference (also gives us the tokenizer + token IDs).
+    # ---- Multi-prompt (`make verify-full`) and diagnosis (`make diagnosis`)
+    # paths build the HF model once and dispatch to the per-prompt helpers.
+    if args.prompts_file or args.diagnosis:
+        rope_lut_bf16 = generate_rope_lut(config, seq_len=seq_len)
+        print(f"\nBuilding HF bf16 reference model (one-time)...")
+        hf_model, tok = _build_hf_model(
+            args.model, weights_bf16, n_layers=args.n_layers,
+        )
+
+        if args.diagnosis:
+            _run_diagnosis(
+                args, weights_bf16, layers_packed, config,
+                rope_lut_bf16, cache, hf_model, tok, args.prompt,
+            )
+            return
+
+        prompts = _load_prompts_file(args.prompts_file)
+        if not prompts:
+            raise SystemExit(f"--prompts-file {args.prompts_file} has no usable prompts")
+        print(f"\n=== verify-full: {len(prompts)} prompt(s), "
+              f"--prefill-dtype={args.prefill_dtype}, --n-layers={args.n_layers} ===")
+        results = []
+        for pi, prompt in enumerate(prompts):
+            print(f"\n--- prompt {pi+1}/{len(prompts)} ---")
+            results.append(_verify_one_prompt(
+                args, weights_bf16, layers_packed, config,
+                rope_lut_bf16, cache, hf_model, tok, prompt,
+            ))
+
+        n = len(results)
+        n_argmax = sum(r["argmax_match"] for r in results)
+        avg_overlap = sum(r["overlap"] for r in results) / n
+        print(f"\n=== verify-full summary ===")
+        print(f"  prompts                : {n}")
+        print(f"  argmax matches         : {n_argmax}/{n}")
+        print(f"  avg top-{args.topk} overlap : {avg_overlap:.2f}/{args.topk}")
+        if args.min_overlap > 0:
+            passes = sum(
+                1 for r in results
+                if r["overlap"] >= args.min_overlap and r["argmax_match"]
+            )
+            verdict = "PASS" if passes == n else "FAIL"
+            print(f"\n[verify] {verdict} "
+                  f"({passes}/{n} prompts met overlap>={args.min_overlap} "
+                  f"AND argmax match)")
+        return
+
+    # ---- Single-prompt path (legacy `make verify`, `make run`, --probe-stitcher1).
     print(f"\nRunning HF bf16 reference (same dequant'd weights)...")
     hf_logits, token_ids, tok = _hf_reference_logits(
         args.model, weights_bf16, args.prompt, config,

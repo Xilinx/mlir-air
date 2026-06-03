@@ -31,8 +31,11 @@ N_LAYERS      ?= 16
 PREFILL_DTYPE ?= bf16
 TOPK          ?= 10
 MIN_OVERLAP   ?= 6
+# Multi-prompt sweep. Default uses the bf16 sibling's instruct prompts file
+# so both Llama examples gate against the same prompt set.
+PROMPTS_FILE  ?= $(srcdir)/../llama32_1b/verify/prompts/instruct.txt
 
-.PHONY: help compile run profile verify verify-int4 clean
+.PHONY: help compile run profile verify verify-int4 verify-full diagnosis clean
 
 # ============================================================
 # Help
@@ -102,6 +105,30 @@ verify:
 ## Run with the int4 backend (slower compute, low-memory).
 verify-int4:
 	$(MAKE) -f $(srcdir)/Makefile verify PREFILL_DTYPE=int4
+
+## Multi-prompt verify: run each prompt in PROMPTS_FILE and aggregate
+## pass/fail. '[verify] PASS' iff every prompt meets overlap >= MIN_OVERLAP
+## AND argmax matches HF. Default prompts file is the bf16 sibling's
+## verify/prompts/instruct.txt.
+verify-full:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
+		--prefill-dtype $(PREFILL_DTYPE) --model $(MODEL) \
+		--n-layers $(N_LAYERS) --topk $(TOPK) \
+		--min-overlap $(MIN_OVERLAP) \
+		--prompts-file $(PROMPTS_FILE) \
+		--cache-dir $(srcdir)/verify_kernel_cache
+
+## Diagnosis lens: per-layer ffn_out cosine vs HF bf16 reference, single
+## prompt, informational (no PASS/FAIL gate). Mirrors the bf16 sibling's
+## `make diagnosis`.
+diagnosis:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
+		--prefill-dtype $(PREFILL_DTYPE) --model $(MODEL) \
+		--prompt "$(PROMPT)" --n-layers $(N_LAYERS) \
+		--diagnosis \
+		--cache-dir $(srcdir)/verify_kernel_cache
 
 ## Run with per-kernel + per-layer profiling instrumentation.
 profile:

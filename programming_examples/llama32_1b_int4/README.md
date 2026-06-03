@@ -70,7 +70,22 @@ make profile
 # >= MIN_OVERLAP (default 6) AND argmax matches HF.
 make verify
 make verify-int4    # same gate against the int4 backend
+
+# Multi-prompt sweep: runs each prompt in PROMPTS_FILE (defaults to the
+# bf16 sibling's verify/prompts/instruct.txt). PASS iff EVERY prompt
+# meets the per-prompt overlap + argmax criteria.
+make verify-full
+
+# Diagnosis lens: per-layer ffn_out cosine vs HF bf16 reference. Single
+# prompt, informational only (no PASS/FAIL gate). Last-layer cosine is
+# computed post-final-RMSNorm to match HF's hidden_states[-1] convention.
+make diagnosis
 ```
+
+`make {verify,verify-full,diagnosis}` are decode-independent and run on
+either backend (`PREFILL_DTYPE=bf16` or `int4`). `make chat` is not yet
+present — it requires the int4 autoregressive decode driver, which
+lands in a follow-up.
 
 ## Key Files
 
