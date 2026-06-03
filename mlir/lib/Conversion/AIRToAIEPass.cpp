@@ -2182,19 +2182,11 @@ void L2MemrefToMemTileMap(
     }
 
   if (saturated) {
-    // Round-robin per-alloc-shape: reset memtile_id when the bucket's
-    // alloc type changes. Each shape corresponds to a logical L2 buffer
-    // class (A, B, C in a matmul; one shape per operand). Within a class,
-    // bucket-i targets consumer/producer col-i, so resetting at the start
-    // of each class makes bucket[i]->memtiles[i] = col i (intra-col).
-    // Without the reset, a global counter shifts the second/third class's
-    // mapping by the prior class's remainder (Triton i8 matmul: B fills 4
-    // slots, leaving memtile_id at 4, so C[0] lands on memtiles[4] -> the
-    // observed 4-col C-out shift). Grouping by channel name doesn't work
-    // because air-split-l2-memref renames each split with a unique symbol.
+    // Reset round-robin counter when the bucket's alloc type changes so each
+    // operand class (A/B/C) restarts at memtile 0 -- without this, a partial
+    // class shifts the next class's mapping off its consumer cols.
     auto bucketShape = [](SmallVectorImpl<memref::AllocOp> &bucket) -> Type {
-      if (bucket.empty()) return Type();
-      return bucket.front().getMemref().getType();
+      return bucket.empty() ? Type() : bucket.front().getMemref().getType();
     };
     Type lastShape;
     int memtile_id = 0;
