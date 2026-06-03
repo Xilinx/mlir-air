@@ -227,7 +227,9 @@ def _build_add_2d_to_1d(rows, cols, np_dtype, vector_size=16, total_tiles=8):
                     ],
                 )
 
-                @herd(name="add_herd", sizes=[total_tiles, 1], operands=[s_a, s_b, s_out])
+                @herd(
+                    name="add_herd", sizes=[total_tiles, 1], operands=[s_a, s_b, s_out]
+                )
                 def add_body(_tx, _ty, _sx, _sy, h_a, h_b, h_out):
                     l1_a = AllocOp(l1_ty, [], [])
                     l1_b = AllocOp(l1_ty, [], [])
@@ -341,11 +343,11 @@ def build_o_ffn_int4_module(
     # gs=128 so they have the same tile_bytes (1072). Down differs only in
     # N (=emb_dim) vs K (=hidden_dim) outer dims.
     _, _, _, tile_bytes = packed_tile_bytes(tile_n, tile_k_l1, gs)
-    n_o_div = emb_dim // tile_n           # O: N = emb_dim
-    n_h_div = hidden_dim // tile_n        # Gate/Up: N = hidden_dim
-    n_e_div = emb_dim // tile_n           # Down: N = emb_dim
-    k_e_div = emb_dim // tile_k_l1        # K = emb_dim for O / Gate / Up
-    k_h_div = hidden_dim // tile_k_l1     # K = hidden_dim for Down
+    n_o_div = emb_dim // tile_n  # O: N = emb_dim
+    n_h_div = hidden_dim // tile_n  # Gate/Up: N = hidden_dim
+    n_e_div = emb_dim // tile_n  # Down: N = emb_dim
+    k_e_div = emb_dim // tile_k_l1  # K = emb_dim for O / Gate / Up
+    k_h_div = hidden_dim // tile_k_l1  # K = hidden_dim for Down
 
     # ---- Build sub-kernels ----
 
@@ -357,7 +359,7 @@ def build_o_ffn_int4_module(
             emb_dim,
             gs,
             tile_m,
-            emb_dim,            # tile_k_l2 = K
+            emb_dim,  # tile_k_l2 = K
             tile_k_l1,
             tile_n,
             o_herd_m,
@@ -505,7 +507,9 @@ def build_o_ffn_int4_module(
             all_privates.add(p.strip())
     privates_str = "\n  ".join(sorted(all_privates))
 
-    combined = "\n".join(maps_all) + f"""
+    combined = (
+        "\n".join(maps_all)
+        + f"""
 module {{
   {privates_str}
   func.func @o_ffn_int4(
@@ -537,6 +541,7 @@ module {{
   }}
 }}
 """
+    )
 
     with Context() as ctx:
         try:
@@ -626,9 +631,7 @@ if __name__ == "__main__":
     Wup_q, Wup_s, Wup_z = _random_int4_weight(HIDDEN_DIM, EMB_DIM, GS)
     Wdown_q, Wdown_s, Wdown_z = _random_int4_weight(EMB_DIM, HIDDEN_DIM, GS)
 
-    wo_packed = pack_inputs(
-        Wo_q, Wo_s, Wo_z, SEQ_LEN, EMB_DIM, EMB_DIM, GS, 16, 128
-    )
+    wo_packed = pack_inputs(Wo_q, Wo_s, Wo_z, SEQ_LEN, EMB_DIM, EMB_DIM, GS, 16, 128)
     wgate_packed = pack_inputs(
         Wgate_q, Wgate_s, Wgate_z, SEQ_LEN, EMB_DIM, HIDDEN_DIM, GS, 16, 128
     )

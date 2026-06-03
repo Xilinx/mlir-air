@@ -369,7 +369,9 @@ def build_rms_gemms_rope_int4_module(
             all_privates.add(p.strip())
     privates_str = "\n  ".join(sorted(all_privates))
 
-    combined = "\n".join(maps_all) + f"""
+    combined = (
+        "\n".join(maps_all)
+        + f"""
 module {{
   {privates_str}
   func.func @rms_gemms_rope_int4(
@@ -397,6 +399,7 @@ module {{
   }}
 }}
 """
+    )
 
     with Context() as ctx:
         module = Module.parse(combined, ctx)
@@ -523,15 +526,9 @@ if __name__ == "__main__":
     Wv_q, Wv_s, Wv_z = _random_int4_weight(KV_DIM, EMB_DIM, GS)
 
     # Pack per-(n_outer, k_outer) tiles, NPU-ready layout.
-    wq_packed = pack_inputs(
-        Wq_q, Wq_s, Wq_z, SEQ_LEN, EMB_DIM, EMB_DIM, GS, 16, 128
-    )
-    wk_packed = pack_inputs(
-        Wk_q, Wk_s, Wk_z, SEQ_LEN, EMB_DIM, KV_DIM, GS, 16, 128
-    )
-    wv_packed = pack_inputs(
-        Wv_q, Wv_s, Wv_z, SEQ_LEN, EMB_DIM, KV_DIM, GS, 16, 128
-    )
+    wq_packed = pack_inputs(Wq_q, Wq_s, Wq_z, SEQ_LEN, EMB_DIM, EMB_DIM, GS, 16, 128)
+    wk_packed = pack_inputs(Wk_q, Wk_s, Wk_z, SEQ_LEN, EMB_DIM, KV_DIM, GS, 16, 128)
+    wv_packed = pack_inputs(Wv_q, Wv_s, Wv_z, SEQ_LEN, EMB_DIM, KV_DIM, GS, 16, 128)
 
     # RoPE LUTs. Use the half-split layout (concatenated [cos..., sin...])
     # produced by `llama32_1b_weights.generate_rope_lut` — same producer

@@ -111,8 +111,9 @@ def awq_dequant_layer(qweight_i32, qzeros_i32, scales_bf16, gs=128):
 # ---------------------------------------------------------------------------
 
 
-def awq_pack_for_npu(qweight_i32, qzeros_i32, scales_bf16,
-                     gs=128, n_tile=16, k_chunk=128, M_seq=2048):
+def awq_pack_for_npu(
+    qweight_i32, qzeros_i32, scales_bf16, gs=128, n_tile=16, k_chunk=128, M_seq=2048
+):
     """AWQ qweight/qzeros/scales -> `(N/n_tile, K/k_chunk, tile_bytes)` u8.
 
     Pure layout conversion: the nibble values are preserved exactly, just
@@ -135,8 +136,15 @@ def awq_pack_for_npu(qweight_i32, qzeros_i32, scales_bf16,
     W_q = (W_NK[:, 0::2] | (W_NK[:, 1::2] << 4)).astype(np.uint8)  # (N, K/2)
 
     return pack_inputs_gemm(
-        W_q, np.asarray(scales_bf16).astype(bfloat16), Z_GN,
-        M=M_seq, K=K, N=N, GS=gs, N_TILE=n_tile, K_CHUNK=k_chunk,
+        W_q,
+        np.asarray(scales_bf16).astype(bfloat16),
+        Z_GN,
+        M=M_seq,
+        K=K,
+        N=N,
+        GS=gs,
+        N_TILE=n_tile,
+        K_CHUNK=k_chunk,
     )
 
 
@@ -168,12 +176,17 @@ def _resolve_safetensor_files(model_path):
         return files
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
+
     try:
-        local = snapshot_download(model_path,
-            allow_patterns=["*.safetensors", "*.json"], local_files_only=True)
+        local = snapshot_download(
+            model_path,
+            allow_patterns=["*.safetensors", "*.json"],
+            local_files_only=True,
+        )
     except LocalEntryNotFoundError:
-        local = snapshot_download(model_path,
-            allow_patterns=["*.safetensors", "*.json"])
+        local = snapshot_download(
+            model_path, allow_patterns=["*.safetensors", "*.json"]
+        )
     return sorted(glob.glob(os.path.join(local, "*.safetensors")))
 
 
@@ -245,7 +258,13 @@ def load_awq_weights(
             sc = _get(f"{base}.{hf_suffix}.scales")
             layer_kw[field] = awq_dequant_layer(qw, qz, sc, gs=gs)
             packed_kw[field] = awq_pack_for_npu(
-                qw, qz, sc, gs=gs, n_tile=n_tile, k_chunk=k_chunk, M_seq=seq_len,
+                qw,
+                qz,
+                sc,
+                gs=gs,
+                n_tile=n_tile,
+                k_chunk=k_chunk,
+                M_seq=seq_len,
             )
         layers_bf16.append(LayerWeights(**layer_kw))
         layers_packed.append(packed_kw)
@@ -285,9 +304,14 @@ def fake_quantize_awq_int4(W_bf16, gs=128):
     scale = np.where(scale == 0, 1e-7, scale)
     zero = np.round(-w_min / scale).clip(0, 15).astype(np.uint8)
 
-    q = np.round(W_f32 / np.repeat(scale, gs, axis=1)
-                 + np.repeat(zero.astype(np.float32), gs, axis=1)
-                 ).clip(0, 15).astype(np.uint8)
+    q = (
+        np.round(
+            W_f32 / np.repeat(scale, gs, axis=1)
+            + np.repeat(zero.astype(np.float32), gs, axis=1)
+        )
+        .clip(0, 15)
+        .astype(np.uint8)
+    )
     W_q = (q[:, 0::2] | (q[:, 1::2] << 4)).astype(np.uint8)
     W_s = scale.T.astype(bfloat16)
     W_z = zero.T.astype(np.uint8)

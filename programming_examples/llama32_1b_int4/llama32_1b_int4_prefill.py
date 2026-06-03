@@ -50,7 +50,10 @@ from llama32_1b_cpu_helpers import rms_norm, attention_reference
 from llama_kernel_builder import cache as _cache_mod
 from llama_kernel_builder.cache import KernelCache, Profiler
 from llama_kernel_builder.external_kernels import (
-    _compile_kernel, _PROJ_ROOT, compile_rope, compile_silu_and_mul,
+    _compile_kernel,
+    _PROJ_ROOT,
+    compile_rope,
+    compile_silu_and_mul,
     compile_attn_npu2,
 )
 from awq_pack import load_awq_weights
@@ -112,8 +115,13 @@ def _prepare_air_project_int4():
     if Path("attn_npu2.o").exists() and not Path("attn.o").exists():
         shutil.copy2("attn_npu2.o", "attn.o")
 
-    for obj_name in ["mv_int4_bf16.o", "rope.o", "silu_and_mul.o",
-                     "attn_npu2.o", "attn.o"]:
+    for obj_name in [
+        "mv_int4_bf16.o",
+        "rope.o",
+        "silu_and_mul.o",
+        "attn_npu2.o",
+        "attn.o",
+    ]:
         src = Path(obj_name)
         if src.exists():
             shutil.copy2(src, air_proj / obj_name)
@@ -160,8 +168,15 @@ FLASH_ATTN_BACKEND = {
 
 
 def _run_layer_int4(
-    x_bf16, layer, layer_packed, rope_lut_bf16, config, cache, layer_idx,
-    return_intermediates=False, cpu_attn=False,
+    x_bf16,
+    layer,
+    layer_packed,
+    rope_lut_bf16,
+    config,
+    cache,
+    layer_idx,
+    return_intermediates=False,
+    cpu_attn=False,
 ):
     seq_len = x_bf16.shape[0]
     emb_dim = config.emb_dim
@@ -217,18 +232,23 @@ def _run_layer_int4(
     if cpu_attn:
         with cache.profiler.time_cpu("prefill_cpu_attention"):
             attn_out = attention_reference(
-                q_roped.astype(np.float32), k_roped.astype(np.float32),
-                v.astype(np.float32), n_heads, n_kv_heads,
+                q_roped.astype(np.float32),
+                k_roped.astype(np.float32),
+                v.astype(np.float32),
+                n_heads,
+                n_kv_heads,
             ).astype(bfloat16)
     else:
         attn_buf = np.zeros((seq_len, n_heads * head_dim), dtype=bfloat16)
         res = cache.load_and_run(
-            "flash_attn", FLASH_ATTN_BACKEND,
+            "flash_attn",
+            FLASH_ATTN_BACKEND,
             np.ascontiguousarray(q_roped),
             np.ascontiguousarray(k_roped),
             np.ascontiguousarray(v),
             attn_buf,
-            output_indices=[3], bo_key=f"flash_attn_L{layer_idx}",
+            output_indices=[3],
+            bo_key=f"flash_attn_L{layer_idx}",
         )
         attn_out = res[3].reshape(seq_len, n_heads * head_dim)
 
@@ -253,9 +273,15 @@ def _run_layer_int4(
     ]
     if return_intermediates:
         # Quick stop after the first stitcher so callers can probe q/k/v.
-        return None, {"normed": normed, "q": q, "k": k, "v": v,
-                      "q_roped": q_roped, "k_roped": k_roped,
-                      "attn_out": attn_out}
+        return None, {
+            "normed": normed,
+            "q": q,
+            "k": k,
+            "v": v,
+            "q_roped": q_roped,
+            "k_roped": k_roped,
+            "attn_out": attn_out,
+        }
 
     results = cache.load_and_run(
         "o_ffn_int4",
@@ -333,16 +359,19 @@ def _run_layer_cpu_int4(x_bf16, layer, rope_lut_bf16, config):
         q_roped.astype(np.float32),
         k_roped.astype(np.float32),
         v.astype(np.float32),
-        n_heads, n_kv_heads,
+        n_heads,
+        n_kv_heads,
     ).astype(bfloat16)
 
     proj = (attn_out.astype(np.float32) @ layer.wo.astype(np.float32)).astype(bfloat16)
     res1 = (proj.astype(np.float32) + x_bf16.astype(np.float32)).astype(bfloat16)
     normed2 = _cpu_rmsnorm(res1, layer.ffn_norm)
-    gate = (normed2.astype(np.float32) @ layer.w_gate.astype(np.float32))
-    up = (normed2.astype(np.float32) @ layer.w_up.astype(np.float32))
+    gate = normed2.astype(np.float32) @ layer.w_gate.astype(np.float32)
+    up = normed2.astype(np.float32) @ layer.w_up.astype(np.float32)
     swiglu = (gate / (1.0 + np.exp(-gate)) * up).astype(bfloat16)
-    down = (swiglu.astype(np.float32) @ layer.w_down.astype(np.float32)).astype(bfloat16)
+    down = (swiglu.astype(np.float32) @ layer.w_down.astype(np.float32)).astype(
+        bfloat16
+    )
     out = (down.astype(np.float32) + res1.astype(np.float32)).astype(bfloat16)
     return out
 
@@ -359,7 +388,9 @@ def _build_hf_model(model_path, weights_bf16, n_layers=None):
     """
     import torch
     from transformers import (
-        AutoConfig, AutoTokenizer, LlamaForCausalLM,
+        AutoConfig,
+        AutoTokenizer,
+        LlamaForCausalLM,
     )
 
     print("  building HF vanilla bf16 model from config...")
@@ -406,6 +437,7 @@ def _build_hf_model(model_path, weights_bf16, n_layers=None):
 
     if n_layers is not None and n_layers < len(model.model.layers):
         import torch.nn as nn
+
         model.model.layers = nn.ModuleList(model.model.layers[:n_layers])
 
     tok = AutoTokenizer.from_pretrained(model_path)
@@ -418,6 +450,7 @@ def _hf_forward(model, tok, prompt, want_hidden_states=False):
     shape (seq_len, hidden_dim) after layer i (per HF v5.3 convention,
     [0] is post-embedding and [n_layers] is post-final-RMSNorm)."""
     import torch
+
     ids = tok(prompt, return_tensors="pt").input_ids
     with torch.no_grad():
         out = model(ids, output_hidden_states=want_hidden_states)
@@ -428,8 +461,7 @@ def _hf_forward(model, tok, prompt, want_hidden_states=False):
     return logits, ids[0].tolist(), hs
 
 
-def _hf_reference_logits(model_path, weights_bf16, prompt, config,
-                         n_layers=None):
+def _hf_reference_logits(model_path, weights_bf16, prompt, config, n_layers=None):
     """Convenience wrapper preserving the older single-shot API: builds the
     HF model + tokenizer once and runs one forward. Returns
     (logits[vocab] f32, token_ids list, tokenizer)."""
@@ -468,8 +500,17 @@ def _layer_cosine(a, b):
     return cos, mae, float(na), float(nb)
 
 
-def _run_diagnosis(args, weights_bf16, layers_packed, config,
-                   rope_lut_bf16, cache, hf_model, tok, prompt):
+def _run_diagnosis(
+    args,
+    weights_bf16,
+    layers_packed,
+    config,
+    rope_lut_bf16,
+    cache,
+    hf_model,
+    tok,
+    prompt,
+):
     """Per-layer ffn_out diff (NPU vs HF bf16). Mirrors the bf16 sibling's
     `make diagnosis` behavior. Informational only — no PASS/FAIL gate."""
     seq_len = args.seq_len
@@ -477,8 +518,7 @@ def _run_diagnosis(args, weights_bf16, layers_packed, config,
 
     print(f"[diagnosis] prompt: {prompt!r}")
     print("[diagnosis] HF prefill (with output_hidden_states=True)...")
-    _, token_ids, hf_hs = _hf_forward(hf_model, tok, prompt,
-                                      want_hidden_states=True)
+    _, token_ids, hf_hs = _hf_forward(hf_model, tok, prompt, want_hidden_states=True)
     prompt_len = len(token_ids)
     if prompt_len > seq_len:
         raise SystemExit(f"prompt_len={prompt_len} > seq_len={seq_len}")
@@ -494,20 +534,33 @@ def _run_diagnosis(args, weights_bf16, layers_packed, config,
     if args.prefill_dtype == "bf16":
         sys.path.insert(0, _LLAMA_BF16)
         from llama32_1b_prefill import (
-            run_transformer_block, preload_prefill_weights,
+            run_transformer_block,
+            preload_prefill_weights,
         )
+
         preload_prefill_weights(weights_bf16, config, cache, seq_len, rope_lut_bf16)
 
     for li in range(args.n_layers):
         if args.prefill_dtype == "int4":
             x_bf16 = _run_layer_int4(
-                x_bf16, weights_bf16.layers[li], layers_packed[li],
-                rope_lut_bf16, config, cache, li, cpu_attn=args.cpu_attn,
+                x_bf16,
+                weights_bf16.layers[li],
+                layers_packed[li],
+                rope_lut_bf16,
+                config,
+                cache,
+                li,
+                cpu_attn=args.cpu_attn,
             )
         else:
             x_bf16, _ = run_transformer_block(
-                x_bf16, weights_bf16.layers[li], rope_lut_bf16, config,
-                cache, layer_idx=li, cpu_attn=args.cpu_attn,
+                x_bf16,
+                weights_bf16.layers[li],
+                rope_lut_bf16,
+                config,
+                cache,
+                layer_idx=li,
+                cpu_attn=args.cpu_attn,
                 verbose=False,
             )
         # x_bf16 has shape (seq_len, emb_dim). Take only the prompt region
@@ -540,8 +593,17 @@ def _run_diagnosis(args, weights_bf16, layers_packed, config,
     print("\n[diagnosis] done. (informational — no PASS/FAIL gate)")
 
 
-def _verify_one_prompt(args, weights_bf16, layers_packed, config,
-                       rope_lut_bf16, cache, hf_model, tok, prompt):
+def _verify_one_prompt(
+    args,
+    weights_bf16,
+    layers_packed,
+    config,
+    rope_lut_bf16,
+    cache,
+    hf_model,
+    tok,
+    prompt,
+):
     """Single-prompt prefill + top-K vs HF. Returns dict with overlap,
     argmax_match for caller aggregation."""
     seq_len = args.seq_len
@@ -564,8 +626,10 @@ def _verify_one_prompt(args, weights_bf16, layers_packed, config,
     if args.prefill_dtype == "bf16":
         sys.path.insert(0, _LLAMA_BF16)
         from llama32_1b_prefill import (
-            run_transformer_block, preload_prefill_weights,
+            run_transformer_block,
+            preload_prefill_weights,
         )
+
         preload_prefill_weights(weights_bf16, config, cache, seq_len, rope_lut_bf16)
 
     t0 = time.time()
@@ -573,30 +637,46 @@ def _verify_one_prompt(args, weights_bf16, layers_packed, config,
         t_layer = cache.profiler.start_layer()
         if args.prefill_dtype == "int4":
             x_bf16 = _run_layer_int4(
-                x_bf16, weights_bf16.layers[li], layers_packed[li],
-                rope_lut_bf16, config, cache, li, cpu_attn=args.cpu_attn,
+                x_bf16,
+                weights_bf16.layers[li],
+                layers_packed[li],
+                rope_lut_bf16,
+                config,
+                cache,
+                li,
+                cpu_attn=args.cpu_attn,
             )
         else:
             x_bf16, _ = run_transformer_block(
-                x_bf16, weights_bf16.layers[li], rope_lut_bf16, config,
-                cache, layer_idx=li, cpu_attn=args.cpu_attn,
+                x_bf16,
+                weights_bf16.layers[li],
+                rope_lut_bf16,
+                config,
+                cache,
+                layer_idx=li,
+                cpu_attn=args.cpu_attn,
                 verbose=args.verbose,
             )
         cache.profiler.end_layer(li, t_layer)
 
     last_row = np.asarray(x_bf16, dtype=np.float32)[pred_pos]
     normed = rms_norm(last_row[np.newaxis, :], weights_bf16.final_norm).flatten()
-    npu_logits = (normed.astype(np.float32) @
-                  weights_bf16.lm_head.astype(np.float32).T).astype(np.float32)
+    npu_logits = (
+        normed.astype(np.float32) @ weights_bf16.lm_head.astype(np.float32).T
+    ).astype(np.float32)
     npu_top = np.argsort(-npu_logits)[: args.topk]
     overlap = len(set(hf_top.tolist()) & set(npu_top.tolist()))
     argmax_match = int(hf_top[0]) == int(npu_top[0])
 
     print(f"  HF argmax   : id={int(hf_top[0]):>6d} {tok.decode([int(hf_top[0])])!r}")
-    print(f"  NPU argmax  : id={int(npu_top[0]):>6d} {tok.decode([int(npu_top[0])])!r}  "
-          f"match={argmax_match}")
-    print(f"  Top-{args.topk} overlap: {overlap}/{args.topk}  "
-          f"({time.time()-t0:.1f}s NPU prefill)")
+    print(
+        f"  NPU argmax  : id={int(npu_top[0]):>6d} {tok.decode([int(npu_top[0])])!r}  "
+        f"match={argmax_match}"
+    )
+    print(
+        f"  Top-{args.topk} overlap: {overlap}/{args.topk}  "
+        f"({time.time()-t0:.1f}s NPU prefill)"
+    )
     return {
         "prompt": prompt,
         "overlap": overlap,
@@ -622,49 +702,87 @@ def main():
     ap.add_argument("--topk", type=int, default=10)
     ap.add_argument("--gs", type=int, default=128)
     ap.add_argument("--cache-dir", default=str(_THIS_DIR / "verify_kernel_cache"))
-    ap.add_argument("--compile-only", action="store_true",
-                    help="Build + compile the two int4 ELFs and exit.")
-    ap.add_argument("--run-only", action="store_true",
-                    help="Use cached ELFs; skip compile.")
-    ap.add_argument("--skip-npu", action="store_true",
-                    help="Skip NPU prefill; just print HF reference top-K.")
-    ap.add_argument("--probe-stitcher1", action="store_true",
-                    help="Run only rms_gemms_rope_int4 on layer 0 and diff "
-                    "q/k/v against numpy reference on dequantized weights.")
-    ap.add_argument("--cpu-int4", action="store_true",
-                    help="Also run a CPU-numpy prefill on the dequantized "
-                    "AWQ weights and print its top-K. Useful for isolating "
-                    "whether divergence vs HF is in our stitching logic vs "
-                    "in the NPU kernels themselves.")
+    ap.add_argument(
+        "--compile-only",
+        action="store_true",
+        help="Build + compile the two int4 ELFs and exit.",
+    )
+    ap.add_argument(
+        "--run-only", action="store_true", help="Use cached ELFs; skip compile."
+    )
+    ap.add_argument(
+        "--skip-npu",
+        action="store_true",
+        help="Skip NPU prefill; just print HF reference top-K.",
+    )
+    ap.add_argument(
+        "--probe-stitcher1",
+        action="store_true",
+        help="Run only rms_gemms_rope_int4 on layer 0 and diff "
+        "q/k/v against numpy reference on dequantized weights.",
+    )
+    ap.add_argument(
+        "--cpu-int4",
+        action="store_true",
+        help="Also run a CPU-numpy prefill on the dequantized "
+        "AWQ weights and print its top-K. Useful for isolating "
+        "whether divergence vs HF is in our stitching logic vs "
+        "in the NPU kernels themselves.",
+    )
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--profile", action="store_true",
-                    help="Enable per-layer / per-kernel timing instrumentation.")
-    ap.add_argument("--tile-n", type=int, default=16,
-                    help="int4 GEMM tile_n (16/32/64). Larger reduces launch_n "
-                    "iter count; AIE2P caps the kernel at 64.")
-    ap.add_argument("--cpu-attn", action="store_true",
-                    help="Use numpy GQA attention instead of NPU flash_attn. "
-                    "Default is NPU (the bf16 flash_attn ELF is "
-                    "q/k/v-dtype-agnostic).")
-    ap.add_argument("--prefill-dtype", choices=["int4", "bf16"], default="int4",
-                    help="Which prefill GEMM ELFs to run. 'int4' uses the "
-                    "int4 stitchers (low-memory). 'bf16' dequants the AWQ "
-                    "weights once at load and runs the bf16 prefill stitchers "
-                    "(3-6x faster compute; same AWQ-quality output). Decode "
-                    "is unaffected — that path still benefits from int4.")
-    ap.add_argument("--min-overlap", type=int, default=0,
-                    help="If >0, print '[verify] PASS' iff top-K overlap vs "
-                    "HF reaches this threshold (and argmax matches); else "
-                    "'[verify] FAIL'. Used by run_npu2_verify.lit.")
-    ap.add_argument("--prompts-file", type=str, default=None,
-                    help="Path to a prompts file (one prompt per line, '#' "
-                    "comments allowed). When set, runs each prompt and "
-                    "aggregates pass/fail. Used by `make verify-full`.")
-    ap.add_argument("--diagnosis", action="store_true",
-                    help="Diagnosis lens: collect per-layer ffn_out from "
-                    "NPU prefill and diff against HF bf16 reference's "
-                    "per-layer hidden_states. Informational, no PASS/FAIL "
-                    "gate. Used by `make diagnosis`.")
+    ap.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable per-layer / per-kernel timing instrumentation.",
+    )
+    ap.add_argument(
+        "--tile-n",
+        type=int,
+        default=16,
+        help="int4 GEMM tile_n (16/32/64). Larger reduces launch_n "
+        "iter count; AIE2P caps the kernel at 64.",
+    )
+    ap.add_argument(
+        "--cpu-attn",
+        action="store_true",
+        help="Use numpy GQA attention instead of NPU flash_attn. "
+        "Default is NPU (the bf16 flash_attn ELF is "
+        "q/k/v-dtype-agnostic).",
+    )
+    ap.add_argument(
+        "--prefill-dtype",
+        choices=["int4", "bf16"],
+        default="int4",
+        help="Which prefill GEMM ELFs to run. 'int4' uses the "
+        "int4 stitchers (low-memory). 'bf16' dequants the AWQ "
+        "weights once at load and runs the bf16 prefill stitchers "
+        "(3-6x faster compute; same AWQ-quality output). Decode "
+        "is unaffected — that path still benefits from int4.",
+    )
+    ap.add_argument(
+        "--min-overlap",
+        type=int,
+        default=0,
+        help="If >0, print '[verify] PASS' iff top-K overlap vs "
+        "HF reaches this threshold (and argmax matches); else "
+        "'[verify] FAIL'. Used by run_npu2_verify.lit.",
+    )
+    ap.add_argument(
+        "--prompts-file",
+        type=str,
+        default=None,
+        help="Path to a prompts file (one prompt per line, '#' "
+        "comments allowed). When set, runs each prompt and "
+        "aggregates pass/fail. Used by `make verify-full`.",
+    )
+    ap.add_argument(
+        "--diagnosis",
+        action="store_true",
+        help="Diagnosis lens: collect per-layer ffn_out from "
+        "NPU prefill and diff against HF bf16 reference's "
+        "per-layer hidden_states. Informational, no PASS/FAIL "
+        "gate. Used by `make diagnosis`.",
+    )
     args = ap.parse_args()
     global _INT4_TILE_N
     _INT4_TILE_N = args.tile_n
@@ -682,15 +800,22 @@ def main():
     hidden_dim = config.hidden_dim
     kv_dim = n_kv_heads * head_dim
 
-    cache = KernelCache(cache_dir=args.cache_dir, verbose=args.verbose,
-                        profiler=Profiler(enabled=args.profile))
+    cache = KernelCache(
+        cache_dir=args.cache_dir,
+        verbose=args.verbose,
+        profiler=Profiler(enabled=args.profile),
+    )
 
     # ---- Load AWQ checkpoint once (both reference + NPU consume this).
     print(f"Loading AWQ checkpoint: {args.model}")
     t0 = time.time()
     weights_bf16, layers_packed = load_awq_weights(
-        args.model, config=config, gs=args.gs,
-        n_tile=args.tile_n, k_chunk=128, seq_len=seq_len,
+        args.model,
+        config=config,
+        gs=args.gs,
+        n_tile=args.tile_n,
+        k_chunk=128,
+        seq_len=seq_len,
     )
     print(f"  loaded + dequant + packed in {time.time()-t0:.1f}s")
 
@@ -706,8 +831,10 @@ def main():
         if elf.exists():
             print(f"  using cached {name}.elf ({elf.stat().st_size//1024} KB)")
             from air.backend.xrt import XRTCompileArtifact
+
             cache.artifacts[name] = XRTCompileArtifact(
-                str(elf), f"main:{kernel_sym}", None)
+                str(elf), f"main:{kernel_sym}", None
+            )
             return False
         return True
 
@@ -733,9 +860,14 @@ def main():
                 cache.compile_and_cache(
                     "rms_gemms_rope_int4",
                     build_rms_gemms_rope_int4_module(
-                        seq_len=seq_len, emb_dim=emb_dim, kv_dim=kv_dim,
-                        n_heads=config.n_heads, n_kv_heads=n_kv_heads,
-                        head_dim=head_dim, gs=args.gs, tile_n=args.tile_n,
+                        seq_len=seq_len,
+                        emb_dim=emb_dim,
+                        kv_dim=kv_dim,
+                        n_heads=config.n_heads,
+                        n_kv_heads=n_kv_heads,
+                        head_dim=head_dim,
+                        gs=args.gs,
+                        tile_n=args.tile_n,
                     ),
                     {"verbose": args.verbose, **RMS_GEMMS_ROPE_INT4_BACKEND},
                 )
@@ -744,9 +876,11 @@ def main():
                 cache.compile_and_cache(
                     "o_ffn_int4",
                     build_o_ffn_int4_module(
-                        seq_len=seq_len, emb_dim=emb_dim,
+                        seq_len=seq_len,
+                        emb_dim=emb_dim,
                         hidden_dim=hidden_dim,
-                        gs=args.gs, tile_n=args.tile_n,
+                        gs=args.gs,
+                        tile_n=args.tile_n,
                     ),
                     {"verbose": args.verbose, **O_FFN_INT4_BACKEND},
                 )
@@ -755,24 +889,32 @@ def main():
             # (~3-6x faster compute per layer; see bisection findings).
             sys.path.insert(0, _LLAMA_BF16)
             from llama_kernel_builder.backend_presets import (
-                RMS_GEMMS_ROPE_BACKEND, O_FFN_BACKEND,
+                RMS_GEMMS_ROPE_BACKEND,
+                O_FFN_BACKEND,
             )
+
             if _need("rms_gemms_rope"):
                 print("\nCompiling rms_gemms_rope (bf16)...")
                 from multi_launch_builder.rms_gemms_rope_multi import (
                     build_rms_gemms_rope_module,
                 )
+
                 cache.compile_and_cache(
                     "rms_gemms_rope",
                     build_rms_gemms_rope_module(
-                        seq_len, emb_dim, kv_dim, config.n_heads,
-                        n_kv_heads, head_dim,
+                        seq_len,
+                        emb_dim,
+                        kv_dim,
+                        config.n_heads,
+                        n_kv_heads,
+                        head_dim,
                     ),
                     {"verbose": args.verbose, **RMS_GEMMS_ROPE_BACKEND},
                 )
             if _need("o_ffn"):
                 print("Compiling o_ffn (bf16)...")
                 from multi_launch_builder.o_ffn_multi import build_o_ffn_module
+
                 cache.compile_and_cache(
                     "o_ffn",
                     build_o_ffn_module(seq_len, emb_dim, hidden_dim),
@@ -785,21 +927,33 @@ def main():
             from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
                 build_module as build_attn,
             )
+
             lkp = head_dim
-            enable_shared = (lkp == head_dim)
+            enable_shared = lkp == head_dim
             cache.compile_and_cache(
                 "flash_attn",
                 build_attn(
-                    lk=seq_len, lkp=lkp, lq=seq_len, lqp=256,
-                    dk=head_dim, dv=head_dim,
-                    num_q_tiles=4, num_cascade_stages=4,
-                    num_heads=config.n_heads, num_kv_heads=n_kv_heads,
+                    lk=seq_len,
+                    lkp=lkp,
+                    lq=seq_len,
+                    lqp=256,
+                    dk=head_dim,
+                    dv=head_dim,
+                    num_q_tiles=4,
+                    num_cascade_stages=4,
+                    num_heads=config.n_heads,
+                    num_kv_heads=n_kv_heads,
                     causal=True,
                 ),
-                {"verbose": args.verbose,
-                 "omit_while_true_loop": not enable_shared,
-                 **{k: v for k, v in FLASH_ATTN_BACKEND.items()
-                    if k != "omit_while_true_loop"}},
+                {
+                    "verbose": args.verbose,
+                    "omit_while_true_loop": not enable_shared,
+                    **{
+                        k: v
+                        for k, v in FLASH_ATTN_BACKEND.items()
+                        if k != "omit_while_true_loop"
+                    },
+                },
             )
         cache._save_manifest()
     elif not args.skip_npu and args.run_only:
@@ -817,28 +971,50 @@ def main():
         rope_lut_bf16 = generate_rope_lut(config, seq_len=seq_len)
         print(f"\nBuilding HF bf16 reference model (one-time)...")
         hf_model, tok = _build_hf_model(
-            args.model, weights_bf16, n_layers=args.n_layers,
+            args.model,
+            weights_bf16,
+            n_layers=args.n_layers,
         )
 
         if args.diagnosis:
             _run_diagnosis(
-                args, weights_bf16, layers_packed, config,
-                rope_lut_bf16, cache, hf_model, tok, args.prompt,
+                args,
+                weights_bf16,
+                layers_packed,
+                config,
+                rope_lut_bf16,
+                cache,
+                hf_model,
+                tok,
+                args.prompt,
             )
             return
 
         prompts = _load_prompts_file(args.prompts_file)
         if not prompts:
-            raise SystemExit(f"--prompts-file {args.prompts_file} has no usable prompts")
-        print(f"\n=== verify-full: {len(prompts)} prompt(s), "
-              f"--prefill-dtype={args.prefill_dtype}, --n-layers={args.n_layers} ===")
+            raise SystemExit(
+                f"--prompts-file {args.prompts_file} has no usable prompts"
+            )
+        print(
+            f"\n=== verify-full: {len(prompts)} prompt(s), "
+            f"--prefill-dtype={args.prefill_dtype}, --n-layers={args.n_layers} ==="
+        )
         results = []
         for pi, prompt in enumerate(prompts):
             print(f"\n--- prompt {pi+1}/{len(prompts)} ---")
-            results.append(_verify_one_prompt(
-                args, weights_bf16, layers_packed, config,
-                rope_lut_bf16, cache, hf_model, tok, prompt,
-            ))
+            results.append(
+                _verify_one_prompt(
+                    args,
+                    weights_bf16,
+                    layers_packed,
+                    config,
+                    rope_lut_bf16,
+                    cache,
+                    hf_model,
+                    tok,
+                    prompt,
+                )
+            )
 
         n = len(results)
         n_argmax = sum(r["argmax_match"] for r in results)
@@ -849,19 +1025,25 @@ def main():
         print(f"  avg top-{args.topk} overlap : {avg_overlap:.2f}/{args.topk}")
         if args.min_overlap > 0:
             passes = sum(
-                1 for r in results
+                1
+                for r in results
                 if r["overlap"] >= args.min_overlap and r["argmax_match"]
             )
             verdict = "PASS" if passes == n else "FAIL"
-            print(f"\n[verify] {verdict} "
-                  f"({passes}/{n} prompts met overlap>={args.min_overlap} "
-                  f"AND argmax match)")
+            print(
+                f"\n[verify] {verdict} "
+                f"({passes}/{n} prompts met overlap>={args.min_overlap} "
+                f"AND argmax match)"
+            )
         return
 
     # ---- Single-prompt path (legacy `make verify`, `make run`, --probe-stitcher1).
     print(f"\nRunning HF bf16 reference (same dequant'd weights)...")
     hf_logits, token_ids, tok = _hf_reference_logits(
-        args.model, weights_bf16, args.prompt, config,
+        args.model,
+        weights_bf16,
+        args.prompt,
+        config,
         n_layers=args.n_layers,
     )
     prompt_len = len(token_ids)
@@ -875,37 +1057,51 @@ def main():
     print(f"\nHF top-{args.topk}:")
     for r, tid in enumerate(hf_top):
         text = tok.decode([int(tid)])
-        print(f"  #{r+1:2d}  id={int(tid):>6d}  logit={float(hf_logits[tid]):+9.3f}  {text!r}")
+        print(
+            f"  #{r+1:2d}  id={int(tid):>6d}  logit={float(hf_logits[tid]):+9.3f}  {text!r}"
+        )
 
     # ---- Optional CPU-int4 reference path (same dequant weights, numpy ops).
     if args.cpu_int4:
-        print(f"\nRunning {args.n_layers}-layer CPU int4 prefill (numpy on "
-              f"dequantized AWQ weights)...")
+        print(
+            f"\nRunning {args.n_layers}-layer CPU int4 prefill (numpy on "
+            f"dequantized AWQ weights)..."
+        )
         cpu_rope = generate_rope_lut(config, seq_len=seq_len)
         cpu_x = np.zeros((seq_len, emb_dim), dtype=bfloat16)
         for i, tid in enumerate(token_ids):
             cpu_x[i] = weights_bf16.embed_table[tid]
         for li in range(args.n_layers):
             cpu_x = _run_layer_cpu_int4(
-                cpu_x, weights_bf16.layers[li], cpu_rope, config,
+                cpu_x,
+                weights_bf16.layers[li],
+                cpu_rope,
+                config,
             )
         cpu_last = np.asarray(cpu_x, dtype=np.float32)[pred_pos]
-        cpu_normed = rms_norm(cpu_last[np.newaxis, :], weights_bf16.final_norm).flatten()
-        cpu_logits = (cpu_normed.astype(np.float32) @
-                      weights_bf16.lm_head.astype(np.float32).T).astype(np.float32)
+        cpu_normed = rms_norm(
+            cpu_last[np.newaxis, :], weights_bf16.final_norm
+        ).flatten()
+        cpu_logits = (
+            cpu_normed.astype(np.float32) @ weights_bf16.lm_head.astype(np.float32).T
+        ).astype(np.float32)
         cpu_top = np.argsort(-cpu_logits)[: args.topk]
         cpu_in_hf = set(hf_top.tolist())
         print(f"\nCPU int4 top-{args.topk}:")
         for r, tid in enumerate(cpu_top):
             text = tok.decode([int(tid)])
             mark = "*" if int(tid) in cpu_in_hf else " "
-            print(f"  #{r+1:2d}{mark} id={int(tid):>6d}  logit={float(cpu_logits[tid]):+9.3f}  {text!r}")
+            print(
+                f"  #{r+1:2d}{mark} id={int(tid):>6d}  logit={float(cpu_logits[tid]):+9.3f}  {text!r}"
+            )
         cpu_overlap = len(set(cpu_top.tolist()) & cpu_in_hf)
         print(f"\nCPU int4 vs HF top-{args.topk} overlap: {cpu_overlap}/{args.topk}")
         cpu_union = sorted(set(cpu_top.tolist()) | set(hf_top.tolist()))
         a, b = hf_logits[cpu_union], cpu_logits[cpu_union]
         if a.std() > 0 and b.std() > 0:
-            print(f"CPU int4 vs HF logit Pearson r: {float(np.corrcoef(a, b)[0,1]):.4f}")
+            print(
+                f"CPU int4 vs HF logit Pearson r: {float(np.corrcoef(a, b)[0,1]):.4f}"
+            )
 
     if args.skip_npu:
         return
@@ -929,15 +1125,23 @@ def main():
             print("  (ZERO_WV=1: zeroing wv packed BO to see if NPU output changes)")
             layers_packed[0]["wv"] = np.zeros_like(layers_packed[0]["wv"])
         _, npu_int = _run_layer_int4(
-            x_bf16, weights_bf16.layers[0], layers_packed[0],
-            rope_lut_bf16, config, cache, 0, return_intermediates=True,
+            x_bf16,
+            weights_bf16.layers[0],
+            layers_packed[0],
+            rope_lut_bf16,
+            config,
+            cache,
+            0,
+            return_intermediates=True,
             cpu_attn=args.cpu_attn,
         )
         # CPU reference: same dequantized weights, same numpy ops.
         normed = _cpu_rmsnorm(x_bf16, weights_bf16.layers[0].attn_norm)
-        cpu_q = (normed.astype(np.float32) @ weights_bf16.layers[0].wq.astype(np.float32))
-        cpu_k = (normed.astype(np.float32) @ weights_bf16.layers[0].wk.astype(np.float32))
-        cpu_v = (normed.astype(np.float32) @ weights_bf16.layers[0].wv.astype(np.float32)).astype(bfloat16)
+        cpu_q = normed.astype(np.float32) @ weights_bf16.layers[0].wq.astype(np.float32)
+        cpu_k = normed.astype(np.float32) @ weights_bf16.layers[0].wk.astype(np.float32)
+        cpu_v = (
+            normed.astype(np.float32) @ weights_bf16.layers[0].wv.astype(np.float32)
+        ).astype(bfloat16)
         # Half-split RoPE on CPU (match NPU kernel convention)
         n_heads = config.n_heads
         n_kv_heads = config.n_kv_heads
@@ -946,35 +1150,48 @@ def main():
         half = head_dim // 2
         cos = lut_f32[:, :half]
         sin = lut_f32[:, half:]
+
         def hs_rope(x, n_h):
             x = x.reshape(seq_len, n_h, head_dim).astype(np.float32)
-            x1 = x[..., :half]; x2 = x[..., half:]
+            x1 = x[..., :half]
+            x2 = x[..., half:]
             r1 = x1 * cos[:, None, :] - x2 * sin[:, None, :]
             r2 = x2 * cos[:, None, :] + x1 * sin[:, None, :]
-            return np.concatenate([r1, r2], axis=-1).reshape(seq_len, n_h * head_dim).astype(bfloat16)
+            return (
+                np.concatenate([r1, r2], axis=-1)
+                .reshape(seq_len, n_h * head_dim)
+                .astype(bfloat16)
+            )
+
         cpu_q_roped = hs_rope(cpu_q, n_heads)
         cpu_k_roped = hs_rope(cpu_k, n_kv_heads)
 
         def _diff(name, a, b):
             af = a.astype(np.float32).flatten()
             bf = b.astype(np.float32).flatten()
-            cos_ab = float(np.dot(af, bf) / (np.linalg.norm(af) * np.linalg.norm(bf) + 1e-30))
+            cos_ab = float(
+                np.dot(af, bf) / (np.linalg.norm(af) * np.linalg.norm(bf) + 1e-30)
+            )
             mae = float(np.abs(af - bf).mean())
-            print(f"  {name}: shape={a.shape}  ||NPU||={np.linalg.norm(af):.2f}  "
-                  f"||CPU||={np.linalg.norm(bf):.2f}  cos={cos_ab:+.4f}  MAE={mae:.4f}  "
-                  f"NPU[:5]={af[:5].round(3)}  CPU[:5]={bf[:5].round(3)}")
+            print(
+                f"  {name}: shape={a.shape}  ||NPU||={np.linalg.norm(af):.2f}  "
+                f"||CPU||={np.linalg.norm(bf):.2f}  cos={cos_ab:+.4f}  MAE={mae:.4f}  "
+                f"NPU[:5]={af[:5].round(3)}  CPU[:5]={bf[:5].round(3)}"
+            )
 
-        _diff("normed",   npu_int["normed"],    normed)
-        _diff("Q",        npu_int["q"],         cpu_q.astype(bfloat16))
-        _diff("K",        npu_int["k"],         cpu_k.astype(bfloat16))
-        _diff("V",        npu_int["v"],         cpu_v)
-        _diff("Q_roped",  npu_int["q_roped"],   cpu_q_roped)
-        _diff("K_roped",  npu_int["k_roped"],   cpu_k_roped)
+        _diff("normed", npu_int["normed"], normed)
+        _diff("Q", npu_int["q"], cpu_q.astype(bfloat16))
+        _diff("K", npu_int["k"], cpu_k.astype(bfloat16))
+        _diff("V", npu_int["v"], cpu_v)
+        _diff("Q_roped", npu_int["q_roped"], cpu_q_roped)
+        _diff("K_roped", npu_int["k_roped"], cpu_k_roped)
         return
 
     # ---- N-layer NPU prefill.
-    print(f"\nRunning {args.n_layers}-layer NPU prefill "
-          f"(prefill-dtype={args.prefill_dtype})...")
+    print(
+        f"\nRunning {args.n_layers}-layer NPU prefill "
+        f"(prefill-dtype={args.prefill_dtype})..."
+    )
     t0 = time.time()
 
     if args.prefill_dtype == "bf16":
@@ -983,34 +1200,53 @@ def main():
         # consumes, just laid out as plain bf16 matrices.
         sys.path.insert(0, _LLAMA_BF16)
         from llama32_1b_prefill import run_transformer_block, preload_prefill_weights
+
         preload_prefill_weights(
-            weights_bf16, config, cache, seq_len, rope_lut_bf16,
+            weights_bf16,
+            config,
+            cache,
+            seq_len,
+            rope_lut_bf16,
         )
 
     for li in range(args.n_layers):
         t_layer = cache.profiler.start_layer()
         if args.prefill_dtype == "int4":
             x_bf16 = _run_layer_int4(
-                x_bf16, weights_bf16.layers[li], layers_packed[li],
-                rope_lut_bf16, config, cache, li, cpu_attn=args.cpu_attn,
+                x_bf16,
+                weights_bf16.layers[li],
+                layers_packed[li],
+                rope_lut_bf16,
+                config,
+                cache,
+                li,
+                cpu_attn=args.cpu_attn,
             )
         else:
             x_bf16, _ = run_transformer_block(
-                x_bf16, weights_bf16.layers[li], rope_lut_bf16, config,
-                cache, layer_idx=li, cpu_attn=args.cpu_attn,
+                x_bf16,
+                weights_bf16.layers[li],
+                rope_lut_bf16,
+                config,
+                cache,
+                layer_idx=li,
+                cpu_attn=args.cpu_attn,
                 verbose=args.verbose,
             )
         cache.profiler.end_layer(li, t_layer)
-        print(f"  layer {li+1}/{args.n_layers} done "
-              f"({time.time()-t0:.1f}s, ||x||="
-              f"{np.linalg.norm(x_bf16.astype(np.float32)):.3f})")
+        print(
+            f"  layer {li+1}/{args.n_layers} done "
+            f"({time.time()-t0:.1f}s, ||x||="
+            f"{np.linalg.norm(x_bf16.astype(np.float32)):.3f})"
+        )
 
     # ---- Final RMSNorm + lm_head on prediction position (CPU).
     print("\nFinal RMSNorm + LM-head on pred position (CPU)...")
     last_row = np.asarray(x_bf16, dtype=np.float32)[pred_pos]
     normed = rms_norm(last_row[np.newaxis, :], weights_bf16.final_norm).flatten()
-    npu_logits = (normed.astype(np.float32) @
-                  weights_bf16.lm_head.astype(np.float32).T).astype(np.float32)
+    npu_logits = (
+        normed.astype(np.float32) @ weights_bf16.lm_head.astype(np.float32).T
+    ).astype(np.float32)
 
     # ---- Compare top-K.
     npu_label = f"NPU {args.prefill_dtype}"
@@ -1024,11 +1260,15 @@ def main():
     for r, tid in enumerate(npu_top):
         text = tok.decode([int(tid)])
         mark = "*" if int(tid) in set(hf_top.tolist()) else " "
-        print(f"  #{r+1:2d}{mark} id={int(tid):>6d}  logit={float(npu_logits[tid]):+9.3f}  {text!r}")
+        print(
+            f"  #{r+1:2d}{mark} id={int(tid):>6d}  logit={float(npu_logits[tid]):+9.3f}  {text!r}"
+        )
 
     print(f"\nTop-{args.topk} overlap   : {overlap}/{args.topk}")
     print(f"HF argmax       : id={int(hf_top[0])}   {tok.decode([int(hf_top[0])])!r}")
-    print(f"{npu_label} argmax : id={int(npu_top[0])}   {tok.decode([int(npu_top[0])])!r}")
+    print(
+        f"{npu_label} argmax : id={int(npu_top[0])}   {tok.decode([int(npu_top[0])])!r}"
+    )
     print(f"Argmax match    : {int(hf_top[0]) == int(npu_top[0])}")
 
     union = sorted(set(hf_top.tolist()) | set(npu_top.tolist()))
@@ -1045,9 +1285,13 @@ def main():
         npu_cpu_union = sorted(set(npu_top.tolist()) | set(cpu_top.tolist()))
         a, b = cpu_logits[npu_cpu_union], npu_logits[npu_cpu_union]
         npu_cpu_overlap = len(set(npu_top.tolist()) & set(cpu_top.tolist()))
-        print(f"Top-{args.topk} {npu_label}-vs-CPU-int4 overlap: {npu_cpu_overlap}/{args.topk}")
+        print(
+            f"Top-{args.topk} {npu_label}-vs-CPU-int4 overlap: {npu_cpu_overlap}/{args.topk}"
+        )
         if a.std() > 0 and b.std() > 0:
-            print(f"{npu_label}-vs-CPU-int4 logit Pearson r: {float(np.corrcoef(a,b)[0,1]):.4f}")
+            print(
+                f"{npu_label}-vs-CPU-int4 logit Pearson r: {float(np.corrcoef(a,b)[0,1]):.4f}"
+            )
 
     if cache.profiler.enabled:
         cache.profiler.report()
@@ -1055,9 +1299,11 @@ def main():
     if args.min_overlap > 0:
         argmax_match = int(hf_top[0]) == int(npu_top[0])
         verdict = "PASS" if (overlap >= args.min_overlap and argmax_match) else "FAIL"
-        print(f"\n[verify] {verdict} "
-              f"(overlap={overlap}/{args.topk} threshold={args.min_overlap} "
-              f"argmax_match={argmax_match})")
+        print(
+            f"\n[verify] {verdict} "
+            f"(overlap={overlap}/{args.topk} threshold={args.min_overlap} "
+            f"argmax_match={argmax_match})"
+        )
 
 
 if __name__ == "__main__":

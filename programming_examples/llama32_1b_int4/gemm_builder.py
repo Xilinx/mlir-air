@@ -27,7 +27,16 @@ if _INT4_GEMM_DIR not in sys.path:
 
 
 def _build_int4_gemm_module(
-    m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd_n,
+    m,
+    k,
+    n,
+    gs,
+    tile_m,
+    tile_k_l2,
+    tile_k_l1,
+    tile_n,
+    herd_m,
+    herd_n,
     m_per_segment=1,
 ):
     """Build an int4-AWQ packed GEMM MLIR module.
@@ -36,9 +45,17 @@ def _build_int4_gemm_module(
     callers can swap a single import line.
     """
     from matmul_int4_packed import build_module as build_int4_gemm
+
     return build_int4_gemm(
-        m, k, n, gs,
-        tile_m, tile_k_l2, tile_k_l1, tile_n,
-        herd_m, herd_n,
+        m,
+        k,
+        n,
+        gs,
+        tile_m,
+        tile_k_l2,
+        tile_k_l1,
+        tile_n,
+        herd_m,
+        herd_n,
         m_per_segment=m_per_segment,
     )

@@ -488,7 +488,9 @@ def build_rms_gemv_rope_module(
     privates_str = "\n  ".join(all_privates)
 
     # Assemble (13 func args, 6 launches)
-    combined = "\n".join(maps_all) + f"""
+    combined = (
+        "\n".join(maps_all)
+        + f"""
 module {{
   {privates_str}
   func.func @rms_gemv_rope(
@@ -516,6 +518,7 @@ module {{
   }}
 }}
 """
+    )
 
     with Context() as ctx:
         module = Module.parse(combined, ctx)

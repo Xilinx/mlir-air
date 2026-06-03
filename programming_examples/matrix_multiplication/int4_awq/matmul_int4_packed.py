@@ -106,8 +106,9 @@ def cpu_reference(W_q, W_s, W_z, A):
 
 
 @module_builder
-def build_module(m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m,
-                 herd_n, m_per_segment=1):
+def build_module(
+    m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd_n, m_per_segment=1
+):
     """Build the int4-AWQ packed GEMM.
 
     `m_per_segment` lets the segment body iterate M outer tiles inside one
@@ -129,7 +130,8 @@ def build_module(m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m,
     m_outer_total = m // (tile_m * herd_m)
     assert m_outer_total % m_per_segment == 0, (
         f"m_outer_total ({m_outer_total}) must be divisible by m_per_segment "
-        f"({m_per_segment})")
+        f"({m_per_segment})"
+    )
     launch_m_outer = m_outer_total // m_per_segment
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
@@ -226,8 +228,7 @@ def build_module(m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m,
                         AffineExpr.get_add(
                             AffineExpr.get_mul(
                                 AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(
-                                    tile_m * herd_m * m_per_segment),
+                                AffineConstantExpr.get(tile_m * herd_m * m_per_segment),
                             ),
                             AffineExpr.get_mul(
                                 AffineSymbolExpr.get(1),
