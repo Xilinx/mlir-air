@@ -165,3 +165,54 @@ module {
     return
   }
 }
+
+// -----
+
+// =============================================================================
+// Case 3: intra-device-only device (no shim packet flow). Pins the redesign
+// invariant: when no shim flow in this device has claimed pkt_id 0, an
+// intra-device flow may take it. The lowest-gap assignment in
+// assignIntraDevicePacketID is what makes this possible -- prior schemes
+// that offset intra-device pkt_ids past a global shim counter would have
+// wasted pkt_id 0 in this device once any other device had placed a shim
+// flow.
+// =============================================================================
+
+// CHECK-LABEL: aie.device(npu2) @case3_seg
+// The single packet flow in this device is intra-device (L2->L1) and must
+// be allowed to take pkt_id 0.
+// CHECK-COUNT-1: aie.packet_flow(0) {
+// CHECK-NOT:     aie.packet_flow(0) {
+
+module {
+  air.channel @l2_to_l1_only [1, 1] {channel_type = "npu_dma_packet"}
+
+  func.func @case3_intra_only() {
+    %0 = air.launch async () in () attributes {id = 1 : i32} {
+      %seg = air.segment @case3_seg async attributes {id = 2 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
+        %c1_seg = arith.constant 1 : index
+        %async_l2, %buf_l2 = air.execute -> (memref<64xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64xbf16, 1>
+          air.execute_terminator %alloc : memref<64xbf16, 1>
+        }
+        %put_l2 = air.channel.put async [%async_l2] @l2_to_l1_only[%c1_seg, %c1_seg] (%buf_l2[] [] []) {id = 1 : i32} : (memref<64xbf16, 1>)
+
+        %herd = air.herd @case3_herd async [%put_l2] tile (%tx, %ty) in (%htx=%c1_seg, %hty=%c1_seg) attributes {id = 3 : i32} {
+          %hc0 = arith.constant 0 : index
+          %async_l1, %buf_l1 = air.execute -> (memref<64xbf16, 2>) {
+            %alloc = memref.alloc() : memref<64xbf16, 2>
+            air.execute_terminator %alloc : memref<64xbf16, 2>
+          }
+          %get_l1 = air.channel.get async [%async_l1] @l2_to_l1_only[%hc0, %hc0] (%buf_l1[] [] []) {id = 2 : i32} : (memref<64xbf16, 2>)
+          %dealloc_l1 = air.execute [%get_l1] {
+            memref.dealloc %buf_l1 : memref<64xbf16, 2>
+          }
+        }
+        %dealloc_l2 = air.execute [%put_l2] {
+          memref.dealloc %buf_l2 : memref<64xbf16, 1>
+        }
+      }
+    }
+    return
+  }
+}
