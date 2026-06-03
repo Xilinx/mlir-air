@@ -367,7 +367,7 @@ def build_rms_gemms_rope_int4_module(
     for ir in [rms_ir, rope_q_ir, q_ir]:
         for p in _extract_private_funcs(ir):
             all_privates.add(p.strip())
-    privates_str = "\n  ".join(all_privates)
+    privates_str = "\n  ".join(sorted(all_privates))
 
     combined = "\n".join(maps_all) + f"""
 module {{
@@ -416,11 +416,21 @@ def _rms_norm_ref(x, weight, eps=1e-5):
 
 
 def _rope_ref(x_2d, lut_2d):
+    """Half-split RoPE matching the rope_halfsplit.cc kernel (= rope.o)
+    and HuggingFace LlamaRotaryEmbedding:
+      out[i]      = x[i]*cos[i] - x[i+half]*sin[i]
+      out[i+half] = x[i+half]*cos[i] + x[i]*sin[i]
+    LUT layout is concatenated [cos_0..cos_{half-1}, sin_0..sin_{half-1}]."""
     x = x_2d.astype(np.float32)
     lut = lut_2d.astype(np.float32)
+    half = x.shape[1] // 2
+    cos = lut[:, :half]
+    sin = lut[:, half:]
+    x1 = x[:, :half]
+    x2 = x[:, half:]
     out = np.empty_like(x)
-    out[:, 0::2] = x[:, 0::2] * lut[:, 0::2] - x[:, 1::2] * lut[:, 1::2]
-    out[:, 1::2] = x[:, 0::2] * lut[:, 1::2] + x[:, 1::2] * lut[:, 0::2]
+    out[:, :half] = x1 * cos - x2 * sin
+    out[:, half:] = x2 * cos + x1 * sin
     return out.astype(bfloat16)
 
 
@@ -523,10 +533,14 @@ if __name__ == "__main__":
         Wv_q, Wv_s, Wv_z, SEQ_LEN, EMB_DIM, KV_DIM, GS, 16, 128
     )
 
-    # RoPE LUTs
-    from rope_lut.rope_lut import generate_lut
+    # RoPE LUTs. Use the half-split layout (concatenated [cos..., sin...])
+    # produced by `llama32_1b_weights.generate_rope_lut` — same producer
+    # the verifier / inference paths use, and the layout `rope.o`
+    # (rope_halfsplit.cc) expects. Per-head expansion repeats the
+    # (seq_len, head_dim) base LUT N_HEADS / N_KV_HEADS times.
+    from llama32_1b_weights import LlamaConfig, generate_rope_lut
 
-    base_lut = generate_lut(SEQ_LEN, HEAD_DIM, bfloat16)
+    base_lut = generate_rope_lut(LlamaConfig(), seq_len=SEQ_LEN)
     lut_q = np.repeat(base_lut, N_HEADS, axis=0)
     lut_k = np.repeat(base_lut, N_KV_HEADS, axis=0)
 

@@ -72,7 +72,6 @@ from awq_pack import load_awq_weights
 
 
 import shutil
-from pathlib import Path
 
 
 def _compile_mv_int4_bf16_matmul(tile_m=16, tile_n=16, k_chunk=128, gs=128):
@@ -727,7 +726,6 @@ def main():
         def _diff(name, a, b):
             af = a.astype(np.float32).flatten()
             bf = b.astype(np.float32).flatten()
-            denom = np.maximum(np.abs(af), np.abs(bf)).max()
             cos_ab = float(np.dot(af, bf) / (np.linalg.norm(af) * np.linalg.norm(bf) + 1e-30))
             mae = float(np.abs(af - bf).mean())
             print(f"  {name}: shape={a.shape}  ||NPU||={np.linalg.norm(af):.2f}  "
@@ -783,13 +781,14 @@ def main():
                   weights_bf16.lm_head.astype(np.float32).T).astype(np.float32)
 
     # ---- Compare top-K.
+    npu_label = f"NPU {args.prefill_dtype}"
     print(f"\n{'='*60}")
-    print(f"Top-{args.topk} comparison (NPU int4 prefill vs HF bf16 dequant)")
+    print(f"Top-{args.topk} comparison ({npu_label} prefill vs HF bf16 dequant)")
     print(f"{'='*60}")
     npu_top = np.argsort(-npu_logits)[: args.topk]
     overlap = len(set(hf_top.tolist()) & set(npu_top.tolist()))
 
-    print(f"\nNPU int4 top-{args.topk}:")
+    print(f"\n{npu_label} top-{args.topk}:")
     for r, tid in enumerate(npu_top):
         text = tok.decode([int(tid)])
         mark = "*" if int(tid) in set(hf_top.tolist()) else " "
@@ -797,7 +796,7 @@ def main():
 
     print(f"\nTop-{args.topk} overlap   : {overlap}/{args.topk}")
     print(f"HF argmax       : id={int(hf_top[0])}   {tok.decode([int(hf_top[0])])!r}")
-    print(f"NPU int4 argmax : id={int(npu_top[0])}   {tok.decode([int(npu_top[0])])!r}")
+    print(f"{npu_label} argmax : id={int(npu_top[0])}   {tok.decode([int(npu_top[0])])!r}")
     print(f"Argmax match    : {int(hf_top[0]) == int(npu_top[0])}")
 
     union = sorted(set(hf_top.tolist()) | set(npu_top.tolist()))
@@ -814,9 +813,9 @@ def main():
         npu_cpu_union = sorted(set(npu_top.tolist()) | set(cpu_top.tolist()))
         a, b = cpu_logits[npu_cpu_union], npu_logits[npu_cpu_union]
         npu_cpu_overlap = len(set(npu_top.tolist()) & set(cpu_top.tolist()))
-        print(f"Top-{args.topk} NPU-vs-CPU-int4 overlap: {npu_cpu_overlap}/{args.topk}")
+        print(f"Top-{args.topk} {npu_label}-vs-CPU-int4 overlap: {npu_cpu_overlap}/{args.topk}")
         if a.std() > 0 and b.std() > 0:
-            print(f"NPU-vs-CPU-int4 logit Pearson r: {float(np.corrcoef(a,b)[0,1]):.4f}")
+            print(f"{npu_label}-vs-CPU-int4 logit Pearson r: {float(np.corrcoef(a,b)[0,1]):.4f}")
 
     if cache.profiler.enabled:
         cache.profiler.report()
