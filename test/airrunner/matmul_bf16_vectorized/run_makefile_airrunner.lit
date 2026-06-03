@@ -6,4 +6,6 @@
 // RUN: cd test_airrunner
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile run | FileCheck %s
-// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 423.808us
+// Updated post-#1647: K-tiled L1 fills no longer ping-pong'd (multi-fill
+// of the same alloc per outer iter is unsafe; see PR description).
+// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 429.52us
