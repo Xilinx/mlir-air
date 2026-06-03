@@ -5426,13 +5426,31 @@ public:
                                : AIE::LockAction::Acquire,
                            lockAqValue);
 
-    // Packet flow routing: get packet flow id.
-    auto pktFlowOp = getExistingPacketFlowOpFromDevice(
-        tile->getResult(0), AIE::WireBundle::DMA, chan, memcpyOp);
+    // Packet flow routing: tag every BD (sender AND receiver) for a packet
+    // channel with its pkt_id so the AIE switchbox and the receiving DMA's
+    // per-BD packet-filter can demux. Pre-fix the lookup walked
+    // PacketFlowOps by source, so receiver-side BDs (whose source value is
+    // a different tile from the BD's owner) found nothing; the
+    // `isMM2S && pktFlowOp` guard then dropped the filter entirely on the
+    // receiver side. Result: a receiver channel multiplexed by two packet
+    // flows (e.g. tile_0_2 S2MM 0 fed by gamma + res1ToCons in the
+    // la_lgu_ld_cascade_fused design) accepted any arriving packet into
+    // whichever BD was active, corrupting data and deadlocking on the
+    // rate-imbalanced flow whose ping-pong BD slot got the wrong source's
+    // packets. Each receiver memcpy op already emits its own BD in the
+    // channel chain, so per-pkt_id filtering happens naturally once each
+    // BD carries the right filter.
+    //
+    // Look up the pkt_id from packetIDForChannelName directly using the
+    // air.channel symbol name. Non-packet channels (no entry) get no
+    // filter -- same behaviour as today for circuit flows.
     AIE::PacketInfoAttr pktInfoAttr = nullptr;
-    if (isMM2S && pktFlowOp) {
-      auto packetID = pktFlowOp.getID();
-      pktInfoAttr = AIE::PacketInfoAttr::get(ndcpy->getContext(), 0, packetID);
+    if (auto chanIfOp = dyn_cast_if_present<air::ChannelInterface>(
+            memcpyOp.getOperation())) {
+      auto it = packetIDForChannelName.find(chanIfOp.getChanName().str());
+      if (it != packetIDForChannelName.end())
+        pktInfoAttr =
+            AIE::PacketInfoAttr::get(ndcpy->getContext(), 0, it->second);
     }
 
     std::vector<AIE::BDDimLayoutAttr> dims =

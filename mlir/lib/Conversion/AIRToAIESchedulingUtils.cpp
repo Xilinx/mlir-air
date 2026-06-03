@@ -974,6 +974,54 @@ static std::vector<int> collectDmaIds(ArrayRef<Operation *> dma_ops) {
   return {idOrSentinel.begin(), idOrSentinel.end()};
 }
 
+// Derive the eventual physical column for an unhinted MemTile LTO by walking
+// to its downstream cores via the L2 buffer use-chain. The memtile carries
+// AIE::BufferOp(s); each buffer is used by air.channel puts/gets whose
+// symbol-peers live in aie.core ops with an already-placed column. Returns
+// -1 if no peer core can be resolved.
+//
+// Rationale: under Path B, AIRToAIE emits memtile LTOs with col=row=? and
+// defers col selection to aie-place-tiles. ShimDMAAllocator runs earlier
+// though and needs *some* col-equivalent key to bucket shim allocations that
+// will eventually share a column. Pre-Path B that key was the memtile's
+// physical col; today the memtile is column-less but the cores it serves
+// are not, so derive the col from them. Single source of truth: the cores
+// authoritatively dictate which column a memtile-anchored flow lives in.
+static int effectiveColForMemTileLTO(AIE::LogicalTileOp mtLTO) {
+  if (!mtLTO || mtLTO.getTileType() != AIE::AIETileType::MemTile)
+    return -1;
+  std::set<int> cols;
+  for (Operation *user : mtLTO.getResult().getUsers()) {
+    auto buf = dyn_cast<AIE::BufferOp>(user);
+    if (!buf)
+      continue;
+    for (Operation *bufUser : buf.getResult().getUsers()) {
+      auto chan = dyn_cast<air::ChannelInterface>(bufUser);
+      if (!chan)
+        continue;
+      for (air::ChannelInterface peer :
+           air::getTheOtherChannelOpThroughSymbol(chan)) {
+        auto core = peer->getParentOfType<AIE::CoreOp>();
+        if (!core)
+          continue;
+        auto t = dyn_cast_or_null<AIE::TileOp>(core.getTile().getDefiningOp());
+        if (t)
+          cols.insert(t.getCol());
+      }
+    }
+  }
+  // Only return a col when the memtile unambiguously serves ONE column.
+  // A fan-out memtile (e.g. after aggressive-mode L1/L2/L3 channel fusion
+  // that broadcasts L3 data to multiple compute columns through a single
+  // memtile) has no single "right" bucket col; collapsing two such
+  // memtiles by an arbitrary tiebreaker would erase the Op*-bucket
+  // anti-collapse guard the caller still needs for the fan-out case. Fall
+  // through to -1 and let `sameBucket` re-fall-back to Op* identity.
+  if (cols.size() != 1)
+    return -1;
+  return *cols.begin();
+}
+
 air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
     : air::DMAAllocator(device, air::MemorySpace::L3) {
   shim_dma_channels = 2;
@@ -1020,18 +1068,29 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       isBroadcastL3Put = chanDecl->hasAttr("broadcast_shape");
   }
 
-  // Bucket key: the far-side col when known, else the far-side LTO's
-  // Operation*. Col is authoritative whenever it's known (>= 0) because two
-  // flows targeting the same physical col should share one shim so the shim
-  // can sit adjacent to that col. When the far side is an unhinted LTO
-  // (col == -1 under Path B) we fall back to Operation* identity, so each
-  // distinct unhinted LTO still gets its own shim LTO — preventing the pre-
-  // fix collapse where every memtile-side flow piled into one col=-1 bucket
-  // and produced too-few shim LTOs (cross-column routing failure).
+  // Bucket key: the far-side col when known, else derive it from a memtile
+  // LTO's downstream cores (Path B: memtiles are emitted column-less but
+  // their consumer cores are placed). Distinct memtile LTOs that resolve
+  // to the same col land in the same bucket and may share one shim; that
+  // is the exact merge the packet-multiplex branch below depends on. Falls
+  // through to Operation* identity only when no col can be recovered, so
+  // truly-unhinted LTOs still each get their own shim — preserving the
+  // anti-collapse property the pre-derivation key gave for L3->memtile
+  // flows (cross-column routing failure when many memtile flows piled
+  // onto one col=-1 bucket and produced too few shim LTOs).
   Operation *otherSideOp = otherSide ? otherSide.getOperation() : nullptr;
+  auto bucketColFor = [](int knownCol, Operation *otherOp) -> int {
+    if (knownCol >= 0)
+      return knownCol;
+    if (auto lt = dyn_cast_or_null<AIE::LogicalTileOp>(otherOp))
+      return effectiveColForMemTileLTO(lt);
+    return -1;
+  };
+  int bucketCol = bucketColFor(col, otherSideOp);
   auto sameBucket = [&](const allocation_info_t &t) {
-    if (col >= 0)
-      return t.col == col;
+    int tCol = bucketColFor(t.col, t.otherSideLTO);
+    if (bucketCol >= 0 && tCol >= 0)
+      return tCol == bucketCol;
     return t.otherSideLTO == otherSideOp;
   };
   auto walkBucketLTOs = [&](auto fn) {
