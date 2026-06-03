@@ -2182,11 +2182,25 @@ void L2MemrefToMemTileMap(
     }
 
   if (saturated) {
-    int memtile_id = 0;
+    // Multi-bucket shapes (operand classes like A/B/C) get a per-shape
+    // counter so each class restarts at memtile 0 and bucket-i maps to
+    // memtile-i; singleton shapes keep using a global counter so unrelated
+    // one-off buffers still spread across the pool.
+    auto bucketShape = [](SmallVectorImpl<memref::AllocOp> &bucket) -> Type {
+      return bucket.empty() ? Type() : bucket.front().getMemref().getType();
+    };
+    llvm::DenseMap<Type, int> shapeCount;
+    for (auto &bucket : memref_buckets)
+      shapeCount[bucketShape(bucket)]++;
+    llvm::DenseMap<Type, int> perShapeCounter;
+    int globalCounter = 0;
     for (auto &bucket : memref_buckets) {
+      Type shape = bucketShape(bucket);
+      int slot =
+          (shapeCount[shape] > 1) ? perShapeCounter[shape]++ : globalCounter++;
+      auto memtile = memtiles[slot % memtiles.size()];
       for (auto bucket_elem : bucket)
-        memrefToMemTileMap[bucket_elem] = memtiles[memtile_id];
-      memtile_id = (memtile_id + 1) % memtiles.size();
+        memrefToMemTileMap[bucket_elem] = memtile;
     }
     return;
   }
