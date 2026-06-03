@@ -107,14 +107,12 @@ def _compile_kernel(src_path, output_name, extra_flags=None, force=False):
 # Individual kernel compilation functions
 # ---------------------------------------------------------------------------
 
-_PROJ_ROOT = Path(__file__).resolve().parent.parent.parent  # programming_examples/
+_PROJ_ROOT = Path(__file__).resolve().parent.parent  # programming_examples/
 
 
 def compile_silu_and_mul():
-    """Compile silu_and_mul.o from kernel_builder/ffn_swiglu/silu_and_mul.cc."""
-    src = (
-        _PROJ_ROOT / "llama32_1b" / "kernel_builder" / "ffn_swiglu" / "silu_and_mul.cc"
-    )
+    """Compile silu_and_mul.o from llama_kernel_builder/ffn_swiglu/silu_and_mul.cc."""
+    src = _PROJ_ROOT / "llama_kernel_builder" / "ffn_swiglu" / "silu_and_mul.cc"
     include_dir = _get_aie_include_dir()
     utils_header = Path(include_dir) / "aie_kernels" / "aie_kernel_utils.h"
     extra = []

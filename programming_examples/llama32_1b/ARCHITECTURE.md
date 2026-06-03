@@ -40,7 +40,7 @@ generate() decode loop     ← per token: 16 layers × 3 kernel calls + LM Head 
   `xrt.run()`. Intermediates flow through DDR without CPU round-trip.
 - **Text-based MLIR stitching**: extract func body, rename SSA values with a
   prefix, remap func args, assemble combined module. See
-  `kernel_builder/stitching.py`.
+  `llama_kernel_builder/stitching.py`.
 - **Per-layer BOs** (`bo_key=f"kernel_L{layer_idx}"`): each layer gets its own
   Buffer Objects. Weights are written once during pre-load and reused on
   every inference call.

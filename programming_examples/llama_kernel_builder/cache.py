@@ -26,7 +26,7 @@ def prepare_air_project():
     air_proj.mkdir(parents=True, exist_ok=True)
 
     # Compile external kernels from source (not stale .o copies)
-    from kernel_builder.external_kernels import compile_all_external_kernels
+    from llama_kernel_builder.external_kernels import compile_all_external_kernels
 
     compile_all_external_kernels()
 

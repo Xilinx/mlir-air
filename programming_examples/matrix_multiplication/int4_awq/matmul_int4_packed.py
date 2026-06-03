@@ -106,9 +106,33 @@ def cpu_reference(W_q, W_s, W_z, A):
 
 
 @module_builder
-def build_module(m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd_n):
+def build_module(
+    m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd_n, m_per_segment=1
+):
+    """Build the int4-AWQ packed GEMM.
+
+    `m_per_segment` lets the segment body iterate M outer tiles inside one
+    launch step, instead of putting every M outer tile on its own launch
+    axis position. The total per-PE M tile count is unchanged
+    (`m // (tile_m * herd_m)`); only WHERE the iteration lives moves.
+
+    Why this knob matters: shim DMA BD chains on AIE2P fold zero-stride
+    launch-axis loops into a single multi-dim BD, but unroll non-zero-stride
+    launch-axis loops into separate BDs (one per iteration). M-axis
+    iterations have non-zero stride, so the BD count grows linearly with
+    the launch M axis. At full Llama prefill (M=2048, tile_m=16, herd_m=8)
+    that is 16 BDs per chain — over the per-shim-channel BD ID pool.
+    Setting `m_per_segment = m // (tile_m * herd_m)` absorbs all M
+    iterations into the segment loop (launch M axis = 1), and the segment
+    for loop becomes a single BD repeated at runtime."""
     assert m % (tile_m * herd_m) == 0
     assert n % (tile_n * herd_n) == 0
+    m_outer_total = m // (tile_m * herd_m)
+    assert m_outer_total % m_per_segment == 0, (
+        f"m_outer_total ({m_outer_total}) must be divisible by m_per_segment "
+        f"({m_per_segment})"
+    )
+    launch_m_outer = m_outer_total // m_per_segment
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
     assert tile_k_l1 % gs == 0
@@ -183,7 +207,7 @@ def build_module(m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd
 
     @FuncOp.from_py_func(A_l3_ty, B_l3_ty, C_l3_ty)
     def matmul_int4_packed(arg_a, arg_b, arg_c):
-        launch_size = [m // tile_m // herd_m, n // tile_n // herd_n]
+        launch_size = [launch_m_outer, n // tile_n // herd_n]
 
         @launch(operands=[arg_a, arg_b, arg_c], sizes=launch_size)
         def launch_body(li, lj, lsx, lsy, l3_a, l3_b, l3_c):
@@ -193,13 +217,23 @@ def build_module(m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd
                 l2_b = AllocOp(B_l2_ty, [], [])
                 l2_c = AllocOp(C_l2_ty, [], [])
 
-                ix_to_row = AffineMap.get(
+                # row_off = li_s * (tile_m * herd_m * m_per_segment)
+                #         + m_o * (tile_m * herd_m)
+                # (m_o is the segment-level M-outer loop induction var;
+                #  when m_per_segment == 1 the loop has one iter and folds.)
+                ix_mo_to_row = AffineMap.get(
                     0,
-                    1,
+                    2,
                     [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_m * herd_m),
+                        AffineExpr.get_add(
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0),
+                                AffineConstantExpr.get(tile_m * herd_m * m_per_segment),
+                            ),
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(1),
+                                AffineConstantExpr.get(tile_m * herd_m),
+                            ),
                         )
                     ],
                 )
@@ -212,7 +246,6 @@ def build_module(m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd
                         )
                     ],
                 )
-                row_off = affine_apply(ix_to_row, [li_s])
                 n_outer_off = affine_apply(iy_to_n_outer, [lj_s])
 
                 k_l2_to_k = AffineMap.get(
@@ -243,90 +276,6 @@ def build_module(m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd
                     ],
                 )
 
-                for i in for_(0, k // tile_k_l2):
-                    k_l2_off = affine_apply(k_l2_to_k, [i])
-                    k_chunk_off = affine_apply(k_l2_to_chunk, [i])
-
-                    dma_memcpy_nd(
-                        l2_a,
-                        l3_a_s,
-                        src_offsets=[0, 0, row_off, k_l2_off],
-                        src_sizes=[herd_m, 1, tile_m, tile_k_l2],
-                        src_strides=[k * tile_m, tile_k_l2, k, 1],
-                    )
-                    dma_memcpy_nd(
-                        l2_b,
-                        l3_b_s,
-                        src_offsets=[0, n_outer_off, k_chunk_off, 0],
-                        src_sizes=[1, herd_n, k_per_l2, tile_bytes],
-                        src_strides=[
-                            K_div * tile_bytes,
-                            K_div * tile_bytes,
-                            tile_bytes,
-                            1,
-                        ],
-                    )
-
-                    @herd(
-                        name="herd_0",
-                        sizes=[herd_m, herd_n],
-                        operands=[l2_a, l2_b, l2_c],
-                    )
-                    def compute_body(_tx, _ty, _sx, _sy, _l2a, _l2b, _l2c):
-                        _l1_a = AllocOp(A_l1_ty, [], [])
-                        _l1_b = AllocOp(B_l1_ty, [], [])
-                        _l1_c_acc = AllocOp(C_l1_acc_ty, [], [])
-                        _l1_c_drain = AllocOp(C_l1_drain_ty, [], [])
-                        CallOp(zero_func, [_l1_c_acc])
-                        for j in for_(0, k_per_l2):
-                            k1_off = affine_apply(k_chunk_off_l1_map, [j])
-                            dma_memcpy_nd(
-                                _l1_a,
-                                _l2a,
-                                src_offsets=[_tx, 0, 0, k1_off],
-                                src_sizes=[1, 1, tile_m, tile_k_l1],
-                                src_strides=[
-                                    tile_m * tile_k_l2,
-                                    tile_m * tile_k_l2,
-                                    tile_k_l2,
-                                    1,
-                                ],
-                            )
-                            dma_memcpy_nd(
-                                _l1_b,
-                                _l2b,
-                                src_offsets=[0, _ty, j, 0],
-                                src_sizes=[1, 1, 1, tile_bytes],
-                                src_strides=[
-                                    herd_n * k_per_l2 * tile_bytes,
-                                    k_per_l2 * tile_bytes,
-                                    tile_bytes,
-                                    1,
-                                ],
-                            )
-                            CallOp(matmul_func, [_l1_b, _l1_a, _l1_c_acc])
-                            yield_([])
-                        # Convert f32 accumulator → bf16 once per launch.
-                        CallOp(f32_to_bf16_func, [_l1_c_acc, _l1_c_drain])
-                        dma_memcpy_nd(
-                            _l2c,
-                            _l1_c_drain,
-                            dst_offsets=[_tx, _ty, 0, 0],
-                            dst_sizes=[1, 1, tile_m, tile_n],
-                            dst_strides=[
-                                herd_n * tile_m * tile_n,
-                                tile_m * tile_n,
-                                tile_n,
-                                1,
-                            ],
-                        )
-                        DeallocOp(_l1_a)
-                        DeallocOp(_l1_b)
-                        DeallocOp(_l1_c_acc)
-                        DeallocOp(_l1_c_drain)
-
-                    yield_([])
-
                 col_off_map = AffineMap.get(
                     0,
                     1,
@@ -338,21 +287,108 @@ def build_module(m, k, n, gs, tile_m, tile_k_l2, tile_k_l1, tile_n, herd_m, herd
                     ],
                 )
                 col_off = affine_apply(col_off_map, [lj_s])
-                dma_memcpy_nd(
-                    l3_c_s,
-                    l2_c,
-                    dst_offsets=[row_off, col_off],
-                    dst_sizes=[herd_m * tile_m, herd_n * tile_n],
-                    dst_strides=[n, 1],
-                    src_offsets=[0, 0, 0, 0],
-                    src_sizes=[herd_m, tile_m, herd_n, tile_n],
-                    src_strides=[
-                        herd_n * tile_m * tile_n,
-                        tile_n,
-                        tile_m * tile_n,
-                        1,
-                    ],
-                )
+
+                for m_o in for_(0, m_per_segment):
+                    row_off = affine_apply(ix_mo_to_row, [li_s, m_o])
+                    for i in for_(0, k // tile_k_l2):
+                        k_l2_off = affine_apply(k_l2_to_k, [i])
+                        k_chunk_off = affine_apply(k_l2_to_chunk, [i])
+
+                        dma_memcpy_nd(
+                            l2_a,
+                            l3_a_s,
+                            src_offsets=[0, 0, row_off, k_l2_off],
+                            src_sizes=[herd_m, 1, tile_m, tile_k_l2],
+                            src_strides=[k * tile_m, tile_k_l2, k, 1],
+                        )
+                        dma_memcpy_nd(
+                            l2_b,
+                            l3_b_s,
+                            src_offsets=[0, n_outer_off, k_chunk_off, 0],
+                            src_sizes=[1, herd_n, k_per_l2, tile_bytes],
+                            src_strides=[
+                                K_div * tile_bytes,
+                                K_div * tile_bytes,
+                                tile_bytes,
+                                1,
+                            ],
+                        )
+
+                        @herd(
+                            name="herd_0",
+                            sizes=[herd_m, herd_n],
+                            operands=[l2_a, l2_b, l2_c],
+                        )
+                        def compute_body(_tx, _ty, _sx, _sy, _l2a, _l2b, _l2c):
+                            _l1_a = AllocOp(A_l1_ty, [], [])
+                            _l1_b = AllocOp(B_l1_ty, [], [])
+                            _l1_c_acc = AllocOp(C_l1_acc_ty, [], [])
+                            _l1_c_drain = AllocOp(C_l1_drain_ty, [], [])
+                            CallOp(zero_func, [_l1_c_acc])
+                            for j in for_(0, k_per_l2):
+                                k1_off = affine_apply(k_chunk_off_l1_map, [j])
+                                dma_memcpy_nd(
+                                    _l1_a,
+                                    _l2a,
+                                    src_offsets=[_tx, 0, 0, k1_off],
+                                    src_sizes=[1, 1, tile_m, tile_k_l1],
+                                    src_strides=[
+                                        tile_m * tile_k_l2,
+                                        tile_m * tile_k_l2,
+                                        tile_k_l2,
+                                        1,
+                                    ],
+                                )
+                                dma_memcpy_nd(
+                                    _l1_b,
+                                    _l2b,
+                                    src_offsets=[0, _ty, j, 0],
+                                    src_sizes=[1, 1, 1, tile_bytes],
+                                    src_strides=[
+                                        herd_n * k_per_l2 * tile_bytes,
+                                        k_per_l2 * tile_bytes,
+                                        tile_bytes,
+                                        1,
+                                    ],
+                                )
+                                CallOp(matmul_func, [_l1_b, _l1_a, _l1_c_acc])
+                                yield_([])
+                            CallOp(f32_to_bf16_func, [_l1_c_acc, _l1_c_drain])
+                            dma_memcpy_nd(
+                                _l2c,
+                                _l1_c_drain,
+                                dst_offsets=[_tx, _ty, 0, 0],
+                                dst_sizes=[1, 1, tile_m, tile_n],
+                                dst_strides=[
+                                    herd_n * tile_m * tile_n,
+                                    tile_m * tile_n,
+                                    tile_n,
+                                    1,
+                                ],
+                            )
+                            DeallocOp(_l1_a)
+                            DeallocOp(_l1_b)
+                            DeallocOp(_l1_c_acc)
+                            DeallocOp(_l1_c_drain)
+
+                        yield_([])
+
+                    dma_memcpy_nd(
+                        l3_c_s,
+                        l2_c,
+                        dst_offsets=[row_off, col_off],
+                        dst_sizes=[herd_m * tile_m, herd_n * tile_n],
+                        dst_strides=[n, 1],
+                        src_offsets=[0, 0, 0, 0],
+                        src_sizes=[herd_m, tile_m, herd_n, tile_n],
+                        src_strides=[
+                            herd_n * tile_m * tile_n,
+                            tile_n,
+                            tile_m * tile_n,
+                            1,
+                        ],
+                    )
+                    yield_([])
 
                 DeallocOp(l2_a)
                 DeallocOp(l2_b)

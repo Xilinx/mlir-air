@@ -1,0 +1,22 @@
+# Additional Python packages for the LLAMA-3.2-1B int4-AWQ example.
+#
+# These are *on top of* the mlir-air base environment (which already
+# provides numpy, ml_dtypes, filelock, pyxrt, etc.).
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# The default AWQ checkpoint
+#   amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead
+# is NOT gated — no HuggingFace token required to download the int4
+# weights. A token IS required if you want to compare against the
+# upstream meta-llama base model via `make verify` (HF AutoTokenizer
+# fetches the gated tokenizer).
+
+# Weight loading (AWQ qweight/qzeros/scales)
+safetensors
+huggingface_hub
+
+# Tokenizer + HF vanilla bf16 reference for `make verify`
+transformers
+torch

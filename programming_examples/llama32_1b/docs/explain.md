@@ -72,7 +72,7 @@ Multiple kernel modules are combined into a single MLIR function with multiple
 MLIR API manipulation, just string processing:
 
 ```python
-# In kernel_builder/stitching.py:
+# In llama_kernel_builder/stitching.py:
 
 # 1. Extract function body (between func signature and return)
 body = _extract_between_func_and_return(mlir_text)
@@ -129,7 +129,7 @@ with a `manifest.json` mapping kernel names to ELF paths. Subsequent runs with
 
 ## Multi-Launch Stitching Details
 
-### The Stitching Utilities (`kernel_builder/stitching.py`)
+### The Stitching Utilities (`llama_kernel_builder/stitching.py`)
 
 | Function | Purpose |
 |----------|---------|
@@ -236,7 +236,7 @@ HuggingFace Llama uses **half-split** RoPE rotation: pairs `(x[i], x[i+32])` wit
 each head's 64 dimensions. The upstream `rope.cc` kernel uses a different
 **interleaved** convention pairing adjacent elements `(x[2i], x[2i+1])`.
 
-We provide our own `rope_halfsplit.cc` (`kernel_builder/rope_halfsplit.cc`) that
+We provide our own `rope_halfsplit.cc` (`llama_kernel_builder/rope_halfsplit.cc`) that
 implements the half-split convention directly, matching HuggingFace exactly:
 
 ```
@@ -264,7 +264,7 @@ These generate MLIR for a single operation. They live in their respective
 
 | Kernel | Builder Location | Output |
 |--------|-----------------|--------|
-| GEMM (prefill) | `matrix_multiplication/bf16/run.py` + `kernel_builder/gemm_builder.py` (transform IR) | `air.launch` with [8,4] herd |
+| GEMM (prefill) | `matrix_multiplication/bf16/run.py` + `gemm_builder.py` (bf16 wrapper) (transform IR) | `air.launch` with [8,4] herd |
 | GEMV (decode) | `matrix_vector_multiplication/bf16/matvec.py` | `air.launch` with [8,1] herd |
 | RMSNorm | `weighted_rms_norm/weighted_rms_norm.py` | bare `air.herd` (needs `_wrap_ir_in_launch`) |
 | RoPE | `rope_lut/rope_lut.py` | bare `air.herd` (needs wrapping) |
@@ -290,7 +290,7 @@ These combine multiple sub-kernels into single ELFs. They live in
 
 ### External C++ Kernels
 
-These are compiled from C++ source by `kernel_builder/external_kernels.py`:
+These are compiled from C++ source by `llama_kernel_builder/external_kernels.py`:
 
 | .o File | Source | Function | Used By |
 |---------|--------|----------|---------|
@@ -303,7 +303,7 @@ These are compiled from C++ source by `kernel_builder/external_kernels.py`:
 All `.o` files are compiled fresh from source via `compile_all_external_kernels()`.
 No pre-compiled artifacts are copied.
 
-### Shared Infrastructure (`kernel_builder/`)
+### Shared Infrastructure (`llama_kernel_builder/`)
 
 | Module | Contents |
 |--------|----------|
