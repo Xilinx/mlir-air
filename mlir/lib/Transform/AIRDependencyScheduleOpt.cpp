@@ -1597,7 +1597,13 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   //   - it has at least one direct-child air.execute containing memref.alloc,
   //     and
   //   - if omitMemorySpace is set, none of those allocs live in that space
-  //     (matches the original "skip if any alloc matches omit" semantics).
+  //     (matches the original "skip if any alloc matches omit" semantics), and
+  //   - no candidate alloc in the loop body is written by more than one
+  //     air.channel.get per single iteration of forOp. K>1 gets-into-one-buf
+  //     per iter cannot be ping-pong'd: the K fills are sequential overwrites
+  //     of the same memory, so doubling the buffer doesn't help. The K-fills
+  //     then collide with init=N_buffers lock semantics + grouped-per-buffer
+  //     BD chain emission and the writer races past the reader.
   // `allocsOut`, if non-null, is populated with the matched alloc ops when
   // the loop is a candidate, so callers can avoid re-walking.
   static bool isPingPongCandidate(scf::ForOp forOp, StringRef omitMemorySpace,
@@ -1619,6 +1625,65 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     }
     if (allocs.empty())
       return false;
+
+    // Build a set of values that ultimately resolve to one of our candidate
+    // alloc ops. An air.execute that wraps a memref.alloc yields the alloc's
+    // result via its execute_terminator, and that yielded Value is what
+    // channel.gets actually reference.
+    llvm::DenseSet<Value> candidateAllocVals;
+    for (auto *allocOp : allocs) {
+      candidateAllocVals.insert(allocOp->getResult(0));
+      if (auto exec = allocOp->getParentOfType<air::ExecuteOp>())
+        for (auto res : exec.getResults())
+          if (isa<BaseMemRefType>(res.getType()))
+            candidateAllocVals.insert(res);
+    }
+
+    // For each candidate alloc, count channel.gets writing into it per single
+    // iteration of forOp, multiplying by static trip counts of nested loops.
+    // Reject the loop if any alloc has >1 channel.get/iter (sub-case A bug).
+    // channel.puts (which read from the buffer) are safe regardless of count.
+    llvm::DenseMap<Value, int64_t> getsPerAllocPerIter;
+    bool overcount = false;
+    forOp.getBody()->walk<WalkOrder::PreOrder>(
+        [&](Operation *op) -> WalkResult {
+          if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(op))
+            return WalkResult::skip();
+          auto getOp = dyn_cast<air::ChannelGetOp>(op);
+          if (!getOp)
+            return WalkResult::advance();
+          Value dst = getOp.getMemref();
+          if (!candidateAllocVals.contains(dst))
+            return WalkResult::advance();
+          int64_t trip = 1;
+          Operation *p = op->getParentOp();
+          while (p && p != forOp.getOperation()) {
+            if (auto innerScfFor = dyn_cast<scf::ForOp>(p)) {
+              auto tc = air::getStaticScfForTripCountAsInt(innerScfFor);
+              if (!tc) {
+                overcount = true;
+                return WalkResult::interrupt();
+              }
+              trip *= *tc;
+            } else if (auto innerAffFor = dyn_cast<affine::AffineForOp>(p)) {
+              auto tc = air::getStaticAffineForTripCountAsInt(innerAffFor);
+              if (!tc) {
+                overcount = true;
+                return WalkResult::interrupt();
+              }
+              trip *= *tc;
+            }
+            p = p->getParentOp();
+          }
+          getsPerAllocPerIter[dst] += trip;
+          return WalkResult::advance();
+        });
+    if (overcount)
+      return false;
+    for (auto &kv : getsPerAllocPerIter)
+      if (kv.second > 1)
+        return false;
+
     if (allocsOut)
       *allocsOut = std::move(allocs);
     return true;
