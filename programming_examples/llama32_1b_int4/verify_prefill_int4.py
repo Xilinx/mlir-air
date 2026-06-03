@@ -50,6 +50,7 @@ from kernel_builder import cache as _cache_mod
 from kernel_builder.cache import KernelCache, Profiler
 from kernel_builder.external_kernels import (
     _compile_kernel, _PROJ_ROOT, compile_rope, compile_silu_and_mul,
+    compile_attn_npu2,
 )
 from awq_pack import load_awq_weights
 
@@ -105,13 +106,17 @@ def _prepare_air_project_int4():
     _compile_mv_int4_bf16_matmul(tile_n=_INT4_TILE_N)
     compile_rope()
     compile_silu_and_mul()
+    compile_attn_npu2()
 
-    for obj_name in ["mv_int4_bf16.o", "rope.o", "silu_and_mul.o"]:
+    # attn.o is an alias the flash_attn link_with attribute uses.
+    if Path("attn_npu2.o").exists() and not Path("attn.o").exists():
+        shutil.copy2("attn_npu2.o", "attn.o")
+
+    for obj_name in ["mv_int4_bf16.o", "rope.o", "silu_and_mul.o",
+                     "attn_npu2.o", "attn.o"]:
         src = Path(obj_name)
         if src.exists():
             shutil.copy2(src, air_proj / obj_name)
-        else:
-            raise FileNotFoundError(f"Expected {obj_name} after compile but not found")
 
 
 _cache_mod.prepare_air_project = _prepare_air_project_int4
@@ -136,6 +141,15 @@ O_FFN_INT4_BACKEND = {
     "stack_size": 16384,
     "runtime_loop_tiling_sizes": [2, 2],
 }
+# Attention runs on the same bf16 q/k/v regardless of upstream quant —
+# the bf16 flash_attn ELF works unchanged on int4-produced tensors.
+FLASH_ATTN_BACKEND = {
+    "omit_while_true_loop": False,
+    "omit_pingpong": "all",
+    "runtime_loop_tiling_sizes": [1, 1],
+    "output_format": "elf",
+    "instance_name": "attention_bf16",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +159,7 @@ O_FFN_INT4_BACKEND = {
 
 def _run_layer_int4(
     x_bf16, layer, layer_packed, rope_lut_bf16, config, cache, layer_idx,
-    return_intermediates=False,
+    return_intermediates=False, cpu_attn=False,
 ):
     seq_len = x_bf16.shape[0]
     emb_dim = config.emb_dim
@@ -196,15 +210,25 @@ def _run_layer_int4(
         q_roped = results[11].reshape(seq_len, n_heads * head_dim)
         k_roped = results[12].reshape(seq_len, n_kv_heads * head_dim)
 
-    # ---- CPU GQA attention (placeholder for the not-yet-wired NPU stage)
-    with cache.profiler.time_cpu("prefill_cpu_attention"):
-        attn_out = attention_reference(
-            q_roped.astype(np.float32),
-            k_roped.astype(np.float32),
-            v.astype(np.float32),
-            n_heads,
-            n_kv_heads,
-        ).astype(bfloat16)
+    # ---- GQA attention. bf16 flash_attn ELF is q/k/v-dtype-agnostic so the
+    # same ELF runs regardless of int4 quant upstream.
+    if cpu_attn:
+        with cache.profiler.time_cpu("prefill_cpu_attention"):
+            attn_out = attention_reference(
+                q_roped.astype(np.float32), k_roped.astype(np.float32),
+                v.astype(np.float32), n_heads, n_kv_heads,
+            ).astype(bfloat16)
+    else:
+        attn_buf = np.zeros((seq_len, n_heads * head_dim), dtype=bfloat16)
+        res = cache.load_and_run(
+            "flash_attn", FLASH_ATTN_BACKEND,
+            np.ascontiguousarray(q_roped),
+            np.ascontiguousarray(k_roped),
+            np.ascontiguousarray(v),
+            attn_buf,
+            output_indices=[3], bo_key=f"flash_attn_L{layer_idx}",
+        )
+        attn_out = res[3].reshape(seq_len, n_heads * head_dim)
 
     # ---- o_ffn_int4 (15 args)
     n_total = seq_len * emb_dim
@@ -440,6 +464,10 @@ def main():
     ap.add_argument("--tile-n", type=int, default=16,
                     help="int4 GEMM tile_n (16/32/64). Larger reduces launch_n "
                     "iter count; AIE2P caps the kernel at 64.")
+    ap.add_argument("--cpu-attn", action="store_true",
+                    help="Use numpy GQA attention instead of NPU flash_attn. "
+                    "Default is NPU (the bf16 flash_attn ELF is "
+                    "q/k/v-dtype-agnostic).")
     args = ap.parse_args()
     global _INT4_TILE_N
     _INT4_TILE_N = args.tile_n
@@ -477,25 +505,61 @@ def main():
         )
         from multi_launch_builder.o_ffn_int4_multi import build_o_ffn_int4_module
 
-        print("\nCompiling rms_gemms_rope_int4...")
-        cache.compile_and_cache(
-            "rms_gemms_rope_int4",
-            build_rms_gemms_rope_int4_module(
-                seq_len=seq_len, emb_dim=emb_dim, kv_dim=kv_dim,
-                n_heads=config.n_heads, n_kv_heads=n_kv_heads,
-                head_dim=head_dim, gs=args.gs, tile_n=args.tile_n,
-            ),
-            {"verbose": args.verbose, **RMS_GEMMS_ROPE_INT4_BACKEND},
-        )
-        print("Compiling o_ffn_int4...")
-        cache.compile_and_cache(
-            "o_ffn_int4",
-            build_o_ffn_int4_module(
-                seq_len=seq_len, emb_dim=emb_dim, hidden_dim=hidden_dim,
-                gs=args.gs, tile_n=args.tile_n,
-            ),
-            {"verbose": args.verbose, **O_FFN_INT4_BACKEND},
-        )
+        # Skip-if-cached: avoid rebuilding ELFs that already exist on disk.
+        # Compile times at seq=2048 are minutes per kernel, so this matters.
+        def _need(name):
+            elf = Path(args.cache_dir) / f"{name}.elf"
+            if elf.exists():
+                print(f"  using cached {name}.elf ({elf.stat().st_size//1024} KB)")
+                from air.backend.xrt import XRTCompileArtifact
+                cache.artifacts[name] = XRTCompileArtifact(
+                    str(elf), f"main:{name}", None)
+                return False
+            return True
+
+        if _need("rms_gemms_rope_int4"):
+            print("\nCompiling rms_gemms_rope_int4...")
+            cache.compile_and_cache(
+                "rms_gemms_rope_int4",
+                build_rms_gemms_rope_int4_module(
+                    seq_len=seq_len, emb_dim=emb_dim, kv_dim=kv_dim,
+                    n_heads=config.n_heads, n_kv_heads=n_kv_heads,
+                    head_dim=head_dim, gs=args.gs, tile_n=args.tile_n,
+                ),
+                {"verbose": args.verbose, **RMS_GEMMS_ROPE_INT4_BACKEND},
+            )
+        if _need("o_ffn_int4"):
+            print("Compiling o_ffn_int4...")
+            cache.compile_and_cache(
+                "o_ffn_int4",
+                build_o_ffn_int4_module(
+                    seq_len=seq_len, emb_dim=emb_dim, hidden_dim=hidden_dim,
+                    gs=args.gs, tile_n=args.tile_n,
+                ),
+                {"verbose": args.verbose, **O_FFN_INT4_BACKEND},
+            )
+        if not args.cpu_attn and _need("flash_attn"):
+            print("Compiling flash_attn (bf16 ELF, reused for int4)...")
+            sys.path.insert(0, str(_PROJ_ROOT))
+            from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
+                build_module as build_attn,
+            )
+            lkp = head_dim
+            enable_shared = (lkp == head_dim)
+            cache.compile_and_cache(
+                "flash_attn",
+                build_attn(
+                    lk=seq_len, lkp=lkp, lq=seq_len, lqp=256,
+                    dk=head_dim, dv=head_dim,
+                    num_q_tiles=4, num_cascade_stages=4,
+                    num_heads=config.n_heads, num_kv_heads=n_kv_heads,
+                    causal=True,
+                ),
+                {"verbose": args.verbose,
+                 "omit_while_true_loop": not enable_shared,
+                 **{k: v for k, v in FLASH_ATTN_BACKEND.items()
+                    if k != "omit_while_true_loop"}},
+            )
         cache._save_manifest()
     elif not args.skip_npu and args.run_only:
         if not cache.load_manifest():
@@ -578,6 +642,7 @@ def main():
         _, npu_int = _run_layer_int4(
             x_bf16, weights_bf16.layers[0], layers_packed[0],
             rope_lut_bf16, config, cache, 0, return_intermediates=True,
+            cpu_attn=args.cpu_attn,
         )
         # CPU reference: same dequantized weights, same numpy ops.
         normed = _cpu_rmsnorm(x_bf16, weights_bf16.layers[0].attn_norm)
@@ -626,7 +691,7 @@ def main():
         t_layer = cache.profiler.start_layer()
         x_bf16 = _run_layer_int4(
             x_bf16, weights_bf16.layers[li], layers_packed[li],
-            rope_lut_bf16, config, cache, li,
+            rope_lut_bf16, config, cache, li, cpu_attn=args.cpu_attn,
         )
         cache.profiler.end_layer(li, t_layer)
         print(f"  layer {li+1}/{args.n_layers} done "
