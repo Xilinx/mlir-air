@@ -47,7 +47,7 @@ Phase 1: Compilation  (one-time, ~3 min, cached to disk)
   ┌──────────────────────────────────────────────────────────────┐
   │  compile_all_external_kernels()                              │
   │    silu_and_mul.o  ← ffn_swiglu/silu_and_mul.cc              │
-  │    rope.o          ← kernel_builder/rope_halfsplit.cc        │
+  │    rope.o          ← llama_kernel_builder/rope_halfsplit.cc        │
   │    attn_npu2.o     ← flash_attention/attn_npu2.cc            │
   │    mv.o            ← matrix_vector_multiplication/mv.cc      │
   │    mv_k8192.o      ← mv.cc with -D renamed symbols           │

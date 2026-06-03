@@ -29,7 +29,7 @@ from __future__ import annotations
 import numpy as np
 from ml_dtypes import bfloat16
 
-from kernel_builder.cache import KernelCache
+from llama_kernel_builder.cache import KernelCache
 from llama32_1b_prefill import (
     compile_all_kernels as compile_prefill_kernels,
     run_transformer_block as run_prefill_block,

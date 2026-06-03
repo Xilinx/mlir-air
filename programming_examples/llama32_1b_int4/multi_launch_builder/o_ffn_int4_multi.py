@@ -31,7 +31,7 @@ from ml_dtypes import bfloat16
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-# Shared scaffolding (kernel_builder.stitching, ffn_swiglu builder,
+# Shared scaffolding (llama_kernel_builder.stitching, ffn_swiglu builder,
 # weighted_rms_norm, rope_lut) currently lives under the bf16 example.
 # Cross-link until those move to a shared location.
 sys.path.insert(
@@ -60,7 +60,7 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
-from kernel_builder.stitching import (
+from llama_kernel_builder.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
@@ -328,12 +328,10 @@ def build_o_ffn_int4_module(
         %arg13: down         (seq_len, emb_dim)              bf16
         %arg14: output       (seq_len*emb_dim,)              bf16 (1D)
     """
-    from matmul_int4_packed import (
-        build_module as build_int4_gemm,
-        packed_tile_bytes,
-    )
+    from llama32_1b_int4.gemm_builder import _build_int4_gemm_module as build_int4_gemm
+    from matmul_int4_packed import packed_tile_bytes
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
-    from kernel_builder.ffn_swiglu.silu_and_mul import (
+    from llama_kernel_builder.ffn_swiglu.silu_and_mul import (
         build_module_2d as build_swiglu,
     )
 

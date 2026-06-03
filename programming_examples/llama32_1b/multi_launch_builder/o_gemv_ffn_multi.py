@@ -66,7 +66,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from matvec_2tile_add import build_module as build_2tile_add
 from matvec_swiglu_rms import build_module as build_swiglu_rms
-from kernel_builder.stitching import (
+from llama_kernel_builder.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,

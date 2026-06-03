@@ -42,8 +42,8 @@ if _PROG_EXAMPLES not in sys.path:
 
 from llama32_1b_weights import LlamaConfig, load_weights, generate_rope_lut
 from llama32_1b_cpu_helpers import attention_reference
-from kernel_builder.cache import KernelCache, Profiler
-from kernel_builder.backend_presets import (
+from llama_kernel_builder.cache import KernelCache, Profiler
+from llama_kernel_builder.backend_presets import (
     SIMPLE_BACKEND,
     RMS_GEMMS_ROPE_BACKEND,
     O_FFN_BACKEND,

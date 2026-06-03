@@ -71,14 +71,14 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
-from kernel_builder.stitching import (
+from llama_kernel_builder.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
     _fix_launch_func_args,
     _rename_all_with_externs,
 )
-from kernel_builder.external_kernels import compile_mv_int4_bf16, compile_rope
+from llama_kernel_builder.external_kernels import compile_mv_int4_bf16, compile_rope
 
 range_ = for_
 

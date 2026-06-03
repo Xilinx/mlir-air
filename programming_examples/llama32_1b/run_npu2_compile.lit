@@ -12,7 +12,7 @@
 // without secrets and "does it still produce correct output?" with secrets.
 //
 // Gated on ryzen_ai_npu2 because the example hardcodes the AIE2P target
-// throughout its kernel builders (kernel_builder/external_kernels.py uses
+// throughout its kernel builders (llama_kernel_builder/external_kernels.py uses
 // --target=aie2p-none-unknown-elf, gemm_builder.py uses arch="aie2p");
 // running this on a non-NPU2 context would compile artifacts that cannot
 // be exercised on the host runner. The actual compile does not touch the

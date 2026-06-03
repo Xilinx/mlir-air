@@ -23,8 +23,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from llama32_1b_weights import LlamaConfig
-from kernel_builder.cache import KernelCache
-from kernel_builder.backend_presets import (
+from llama_kernel_builder.cache import KernelCache
+from llama_kernel_builder.backend_presets import (
     RGR_BACKEND,
     OGF_BACKEND,
     LM_GEMV_BACKEND,
@@ -37,7 +37,7 @@ from kernel_builder.backend_presets import (
 
 def compile_decode_kernels(cache, config):
     """Compile the 3 merged decode kernels."""
-    from kernel_builder.external_kernels import compile_all_external_kernels
+    from llama_kernel_builder.external_kernels import compile_all_external_kernels
 
     compile_all_external_kernels(head_dim=config.head_dim)
 

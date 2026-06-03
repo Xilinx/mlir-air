@@ -78,16 +78,21 @@ make verify-int4    # same gate against the int4 backend
 |---|---|
 | `llama32_1b_int4_prefill.py` | Driver: loads AWQ, runs either backend, prints top-K vs HF |
 | `awq_pack.py` | AWQ qweight/qzeros/scales → int4 GEMM packed BO + bf16 dense |
+| `gemm_builder.py` | int4 GEMM wrapper (per-model; bf16 sibling under `../llama32_1b/`) |
 | `multi_launch_builder/rms_gemms_rope_int4_multi.py` | int4 RMSNorm + Q/K/V + RoPE Q/K (6-launch ELF) |
 | `multi_launch_builder/o_ffn_int4_multi.py` | int4 O + ResAdd + FFN-RMS + Gate/Up + SwiGLU + Down + FFN-Add (8-launch ELF) |
 | `Makefile` | Canonical `compile / run / verify / profile / clean` targets |
 | `run_npu2_compile.lit` | Compile-only smoke test (no HF_TOKEN needed) |
 | `run_npu2_verify.lit` | End-to-end top-K gate (HF_TOKEN required) |
 
-Shared scaffolding (the bf16 prefill stitchers, the `kernel_builder/`
-package, the `LlamaWeights`/`LlamaConfig` dataclasses, the bf16 CPU
-helpers) is imported from `../llama32_1b/` via `sys.path`. The int4
-GEMM module is imported from
+Shared scaffolding lives one level up at `../llama_kernel_builder/`
+(MLIR stitching, kernel cache, external `.o` compilation, SwiGLU + RoPE
+C sources) — used by both this example and `../llama32_1b/`. Llama-side
+helpers that aren't strictly kernel infra (the `LlamaWeights` /
+`LlamaConfig` dataclasses, the bf16 CPU helpers, the bf16 prefill
+stitchers) live in `../llama32_1b/` and are imported via `sys.path`
+until a shared verify / loader package consolidates them. The int4 GEMM
+module is imported from
 `../matrix_multiplication/int4_awq/matmul_int4_packed.py`.
 
 The verify subsystem under `../llama32_1b/verify/` (top-K gate,

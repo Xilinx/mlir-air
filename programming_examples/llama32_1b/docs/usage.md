@@ -204,11 +204,7 @@ llama32_1b/
 ├── llama32_1b_weights.py               ← Weight loading from safetensors
 ├── llama32_1b_cpu_helpers.py           ← Small NumPy helpers: rms_norm, attention_reference, softmax
 │
-├── kernel_builder/                 ← Shared kernel infrastructure
-│   ├── stitching.py                ← MLIR text stitching for multi-launch ELFs
-│   ├── gemm_builder.py             ← GEMM module builder + transform IR
-│   ├── cache.py                    ← KernelCache, Profiler, prepare_air_project
-│   └── external_kernels.py         ← C++ kernel compilation (rope, silu, attn, gemv)
+├── gemm_builder.py                 ← bf16 GEMM module builder + transform IR
 │
 ├── multi_launch_builder/           ← Multi-launch ELF builders
 │   ├── rms_gemms_rope_multi.py     ← Prefill: RMS+QKV+RoPE (6 launches)
@@ -218,7 +214,12 @@ llama32_1b/
 │   ├── o_gemv_ffn_multi.py         ← Decode: O+FFN (8 launches)
 │   └── lm_head_gemv_multi.py       ← Decode: LM Head (8 launches)
 │
-├── ffn_swiglu/                     ← SiLU×mul kernel
+│   (one level up: ../llama_kernel_builder/ — shared with llama32_1b_int4/)
+│   ├── stitching.py                ← MLIR text stitching for multi-launch ELFs
+│   ├── cache.py                    ← KernelCache, Profiler, prepare_air_project
+│   ├── external_kernels.py         ← C++ kernel compilation (rope, silu, attn, gemv)
+│   ├── ffn_swiglu/                 ← SwiGLU MLIR + .cc source
+│   └── rope_halfsplit.cc           ← Half-split RoPE C source
 ├── build_peano/                    ← Build directory (created by make compile)
 │   ├── prefill_kernel_cache/       ← Compiled prefill .elf files
 │   ├── decode_kernel_cache/        ← Compiled decode .elf files
