@@ -1617,13 +1617,16 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
 
     // Each air.execute wraps a single memref.alloc and yields it as the
     // non-token result at index 1 (see AIR.td and HoistMemallocInForPattern).
-    // channel.gets reference that yielded Value, not the bare alloc result.
-    llvm::DenseSet<Value> candidateAllocVals;
+    // Map every alias (bare alloc result and execute yield) to the bare alloc
+    // result as canonical key so a get-via-yield and a get-via-bare don't
+    // count as separate destinations for the same buffer.
+    llvm::DenseMap<Value, Value> aliasToCanonical;
     for (auto *allocOp : allocs) {
-      candidateAllocVals.insert(allocOp->getResult(0));
+      Value canonical = allocOp->getResult(0);
+      aliasToCanonical[canonical] = canonical;
       if (auto exec = allocOp->getParentOfType<air::ExecuteOp>();
           exec && exec->getNumResults() >= 2)
-        candidateAllocVals.insert(exec->getResults()[1]);
+        aliasToCanonical[exec->getResults()[1]] = canonical;
     }
 
     // Reject if any candidate alloc has >1 channel.get/iter, or if any
@@ -1637,11 +1640,11 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
           auto getOp = dyn_cast<air::ChannelGetOp>(op);
           if (!getOp)
             return WalkResult::advance();
-          Value dst = getOp.getMemref();
-          if (!candidateAllocVals.contains(dst))
+          auto it = aliasToCanonical.find(getOp.getMemref());
+          if (it == aliasToCanonical.end())
             return WalkResult::advance();
           auto trip = air::getStaticTripCountInRange(op, forOp.getOperation());
-          if (!trip || *trip > 1 || !seenOnce.insert(dst).second) {
+          if (!trip || *trip > 1 || !seenOnce.insert(it->second).second) {
             reject = true;
             return WalkResult::interrupt();
           }

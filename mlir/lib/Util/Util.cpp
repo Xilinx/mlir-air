@@ -324,18 +324,23 @@ air::getStaticAffineForTripCountAsInt(affine::AffineForOp for_op) {
 std::optional<int64_t> air::getStaticTripCountInRange(Operation *inner,
                                                       Operation *outer) {
   int64_t trip = 1;
+  auto checkedMul = [&](int64_t factor) -> bool {
+    int64_t product;
+    if (__builtin_mul_overflow(trip, factor, &product))
+      return false;
+    trip = product;
+    return true;
+  };
   for (Operation *p = inner ? inner->getParentOp() : nullptr; p && p != outer;
        p = p->getParentOp()) {
     if (auto sfo = dyn_cast<scf::ForOp>(p)) {
       auto tc = getStaticScfForTripCountAsInt(sfo);
-      if (!tc)
+      if (!tc || !checkedMul(*tc))
         return std::nullopt;
-      trip *= *tc;
     } else if (auto afo = dyn_cast<affine::AffineForOp>(p)) {
       auto tc = getStaticAffineForTripCountAsInt(afo);
-      if (!tc)
+      if (!tc || !checkedMul(*tc))
         return std::nullopt;
-      trip *= *tc;
     }
   }
   return trip;
