@@ -1,31 +1,32 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""End-to-end verification for int4-AWQ NPU prefill of LLAMA-3.2-1B.
+"""End-to-end prefill + verification for int4-AWQ LLAMA-3.2-1B on NPU2.
 
-Both sides consume the *same* AWQ HF checkpoint (e.g.
+Both backends consume the *same* AWQ HF checkpoint (e.g.
 amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead):
 
-* NPU path: the AWQ qweight/qzeros/scales are bit-shuffled (no
-  re-quantization) into the packed BO layout the int4 GEMM kernel
-  consumes. The two int4 multi-launch stitchers run all 16 transformer
-  blocks; attention is a CPU GQA placeholder (the NPU attention kernel
-  for int4 has not been wired in yet).
+* `--prefill-dtype=int4` (default): AWQ qweight/qzeros/scales are
+  bit-shuffled (no re-quantization) into the packed BO layout the int4
+  GEMM kernel consumes. Two int4 multi-launch stitchers run all 16
+  transformer blocks. Lower compute throughput (kernel-bound), low
+  weight memory.
 
-* Reference path: the same AWQ tensors are dequantized via `(q - z) * s`
-  into bf16 dense projections and loaded into a fresh
-  `LlamaForCausalLM` (vanilla, no quantization_config). HF runs prefill
-  in bf16 on CPU.
+* `--prefill-dtype=bf16`: same AWQ tensors are dequantized to dense bf16
+  projections at load and routed through the bf16 prefill stitchers
+  from `../llama32_1b/`. ~9x faster compute per layer, same AWQ-quality
+  numerics, 2x weight memory. Recommended for prefill; decode work that
+  truly benefits from int4 (DMA-bound) lives in a separate driver.
 
-Both sides therefore see numerically identical weight matrices; any
-top-K divergence reflects (a) bf16 accumulation differences between
-NPU MAC and HF / numpy matmul, (b) RoPE / RMSNorm precision, and
-(c) the CPU-attention placeholder vs. HF's eager attention.
+Reference path: the dequantized AWQ tensors are loaded into a vanilla
+`LlamaForCausalLM` (no quantization_config) and HF runs prefill in bf16
+on CPU. Top-k token-level inclusion check on the predicted position.
 
 Usage:
-    python3 verify_prefill_int4.py \\
+    python3 llama32_1b_int4_prefill.py \\
         --model amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead \\
-        --prompt "The capital of France is" --n-layers 16 --topk 10
+        --prefill-dtype bf16 --prompt "The capital of France is" \\
+        --n-layers 16 --topk 10
 """
 
 import argparse
@@ -476,6 +477,10 @@ def main():
                     "weights once at load and runs the bf16 prefill stitchers "
                     "(3-6x faster compute; same AWQ-quality output). Decode "
                     "is unaffected — that path still benefits from int4.")
+    ap.add_argument("--min-overlap", type=int, default=0,
+                    help="If >0, print '[verify] PASS' iff top-K overlap vs "
+                    "HF reaches this threshold (and argmax matches); else "
+                    "'[verify] FAIL'. Used by run_npu2_verify.lit.")
     args = ap.parse_args()
     global _INT4_TILE_N
     _INT4_TILE_N = args.tile_n
@@ -618,7 +623,8 @@ def main():
             raise SystemExit(f"--run-only but no manifest at {args.cache_dir}")
 
     if args.compile_only:
-        print("Compile-only mode: done.")
+        # Marker matched by run_npu2_compile.lit.
+        print("Compilation passed.")
         return
 
     # ---- HF reference (also gives us the tokenizer + token IDs).
@@ -814,6 +820,13 @@ def main():
 
     if cache.profiler.enabled:
         cache.profiler.report()
+
+    if args.min_overlap > 0:
+        argmax_match = int(hf_top[0]) == int(npu_top[0])
+        verdict = "PASS" if (overlap >= args.min_overlap and argmax_match) else "FAIL"
+        print(f"\n[verify] {verdict} "
+              f"(overlap={overlap}/{args.topk} threshold={args.min_overlap} "
+              f"argmax_match={argmax_match})")
 
 
 if __name__ == "__main__":

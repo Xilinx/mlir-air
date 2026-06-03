@@ -1,0 +1,18 @@
+# Build / kernel cache artifacts
+build_peano/
+build_chess/
+__pycache__/
+*.pyc
+verify_kernel_cache/
+air_project/
+.debug/
+.pytest_cache/
+
+# Stray artifacts from running scripts outside build_*/ (xrt.py + external_kernels.py
+# write these to CWD by design — `make compile/run/verify` cd into BUILD_DIR first,
+# but ad-hoc `python3 llama32_1b_int4_prefill.py` from this dir will leak them here).
+air.mlir
+air.elf
+air.xclbin
+air.insts.bin
+*.o
