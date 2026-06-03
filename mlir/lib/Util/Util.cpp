@@ -321,6 +321,26 @@ air::getStaticAffineForTripCountAsInt(affine::AffineForOp for_op) {
   return output;
 }
 
+std::optional<int64_t> air::getStaticTripCountInRange(Operation *inner,
+                                                      Operation *outer) {
+  int64_t trip = 1;
+  for (Operation *p = inner ? inner->getParentOp() : nullptr; p && p != outer;
+       p = p->getParentOp()) {
+    if (auto sfo = dyn_cast<scf::ForOp>(p)) {
+      auto tc = getStaticScfForTripCountAsInt(sfo);
+      if (!tc)
+        return std::nullopt;
+      trip *= *tc;
+    } else if (auto afo = dyn_cast<affine::AffineForOp>(p)) {
+      auto tc = getStaticAffineForTripCountAsInt(afo);
+      if (!tc)
+        return std::nullopt;
+      trip *= *tc;
+    }
+  }
+  return trip;
+}
+
 // Get operation's "id" attribute
 int air::getIdAttr(Operation *op) {
   auto idAttr = op->getAttrOfType<IntegerAttr>("id");
