@@ -38,9 +38,11 @@ from typing import Optional
 
 import numpy as np
 
-# Ensure project + verify dirs are importable.
+# Ensure programming_examples (for `llama_kernel_builder`), project, and
+# verify dirs are importable.
 HERE = Path(__file__).parent
 PROJECT = HERE.parent
+sys.path.insert(0, str(PROJECT.parent))
 sys.path.insert(0, str(PROJECT))
 sys.path.insert(0, str(HERE))
 
