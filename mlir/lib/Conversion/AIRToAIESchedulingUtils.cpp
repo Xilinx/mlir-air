@@ -999,20 +999,15 @@ static int effectiveColForMemTileLTO(AIE::LogicalTileOp mtLTO) {
       auto chan = dyn_cast<air::ChannelInterface>(bufUser);
       if (!chan)
         continue;
-      auto recordCol = [&](air::ChannelInterface peer) {
+      for (air::ChannelInterface peer :
+           air::getTheOtherChannelOpThroughSymbol(chan)) {
         auto core = peer->getParentOfType<AIE::CoreOp>();
         if (!core)
-          return;
+          continue;
         auto t = dyn_cast_or_null<AIE::TileOp>(core.getTile().getDefiningOp());
         if (t)
           cols.insert(t.getCol());
-      };
-      if (auto put = dyn_cast<air::ChannelPutOp>(bufUser))
-        for (auto g : air::getTheOtherChannelOpThroughSymbol(put))
-          recordCol(g);
-      else if (auto get = dyn_cast<air::ChannelGetOp>(bufUser))
-        for (auto p : air::getTheOtherChannelOpThroughSymbol(get))
-          recordCol(p);
+      }
     }
   }
   // Only return a col when the memtile unambiguously serves ONE column.

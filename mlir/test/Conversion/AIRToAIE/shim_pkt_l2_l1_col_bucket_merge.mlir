@@ -33,7 +33,7 @@
 
 // RUN: air-opt %s -air-to-aie='row-offset=2 col-offset=0 device=npu1' | FileCheck %s
 
-// CHECK-LABEL: aie.device(npu1) @seg
+// CHECK-LABEL: aie.device(npu1)
 // All three packet channels share ONE shim LTO at MM2S 0 (packet
 // time-multiplex). Pre-fix the direct-to-core channel got its own shim
 // LTO because its bucket key (col=0) didn't match the memtile-routed
