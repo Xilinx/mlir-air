@@ -31,6 +31,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "iostream"
@@ -324,9 +325,11 @@ air::getStaticAffineForTripCountAsInt(affine::AffineForOp for_op) {
 std::optional<int64_t> air::getStaticTripCountInRange(Operation *inner,
                                                       Operation *outer) {
   int64_t trip = 1;
+  // Use llvm::MulOverflow instead of __builtin_mul_overflow so the code
+  // builds on MSVC (the Windows CI does not provide the GCC/Clang builtin).
   auto checkedMul = [&](int64_t factor) -> bool {
     int64_t product;
-    if (__builtin_mul_overflow(trip, factor, &product))
+    if (llvm::MulOverflow(trip, factor, product))
       return false;
     trip = product;
     return true;
