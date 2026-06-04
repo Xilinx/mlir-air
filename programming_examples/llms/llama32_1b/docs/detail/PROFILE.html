@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Llama-3.2-1B Performance Profile (NPU2)</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1f2937; --muted: #6b7280; --accent: #2563eb;
+    --code-bg: #1e293b; --code-fg: #e2e8f0;
+    --card-bg: #ffffff; --card-border: #e5e7eb;
+    --part-a: #eff6ff; --part-b: #f0fdf4; --part-c: #fef3c7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--fg); line-height: 1.6;
+    margin: 0; padding: 2rem 2rem 2rem 290px;
+    max-width: 1100px; margin-left: auto; margin-right: auto;
+  }
+  .nav {
+    position: fixed; left: 0; top: 0; bottom: 0; width: 260px;
+    background: var(--card-bg); border-right: 1px solid var(--card-border);
+    padding: 1.2rem 1.2rem 1.2rem 1.4rem;
+    overflow-y: auto; z-index: 10;
+    box-shadow: 2px 0 6px rgba(0,0,0,0.04);
+  }
+  .nav h4 { margin: 0 0 0.6rem; font-size: 0.85rem; text-transform: uppercase;
+            letter-spacing: 0.05em; color: var(--muted); }
+  .nav .nav-part {
+    display: block; margin: 1rem 0 0.3rem;
+    font-size: 0.72rem; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .nav .nav-part:first-of-type { margin-top: 0.3rem; }
+  .nav a {
+    display: block; color: var(--accent); text-decoration: none;
+    font-size: 0.85rem; line-height: 1.4;
+    padding: 0.3rem 0.5rem; border-radius: 4px;
+  }
+  .nav a:hover { background: #eef2ff; text-decoration: none; }
+  .nav-toggle {
+    position: absolute; top: 0.6rem; right: 0.6rem;
+    background: #f1f5f9; border: 1px solid var(--card-border);
+    border-radius: 4px; padding: 0.2rem 0.55rem;
+    font-size: 0.72rem; font-weight: 600; color: var(--muted);
+    cursor: pointer; line-height: 1.2;
+  }
+  .nav-toggle:hover { background: #e2e8f0; color: var(--fg); }
+  #nav-show {
+    display: none;
+    position: fixed; top: 0.6rem; left: 0.8rem; z-index: 11;
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: 999px; padding: 0.35rem 0.95rem;
+    font-size: 0.78rem; font-weight: 600; color: var(--accent);
+    cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  }
+  #nav-show:hover { background: #eef2ff; }
+  body.nav-hidden { padding-left: 2rem; }
+  body.nav-hidden .nav { display: none; }
+  body.nav-hidden #nav-show { display: inline-block; }
+  @media (max-width: 900px) {
+    body { padding-left: 2rem; }
+    .nav { box-shadow: 4px 0 12px rgba(0,0,0,0.12); }
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.3rem; color: #111827; }
+  h2 { font-size: 1.5rem; margin-top: 2.6rem; padding-bottom: 0.4rem;
+       border-bottom: 3px solid var(--accent); color: #111827; }
+  h2.part { font-size: 1.7rem; padding: 0.7rem 1rem; border-radius: 6px;
+            border-bottom: none; margin-top: 3.5rem; }
+  h2.part-a { background: var(--part-a); border-left: 6px solid var(--accent); }
+  h2.part-b { background: var(--part-b); border-left: 6px solid #15803d; }
+  h2.part-c { background: var(--part-c); border-left: 6px solid #d97706; }
+  h3 { font-size: 1.15rem; margin-top: 1.6rem; color: #1f2937; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin-bottom: 1.5rem; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 0.9em;
+         background: #eef2ff; padding: 1px 4px; border-radius: 3px; }
+  pre code { background: none; color: var(--code-fg); padding: 0; }
+  pre { background: var(--code-bg); color: var(--code-fg);
+        padding: 0.9rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: 0.85rem; line-height: 1.45; }
+  table { border-collapse: collapse; margin: 0.7rem 0; width: 100%; font-size: 0.92rem; }
+  th, td { border: 1px solid var(--card-border); padding: 0.4rem 0.7rem;
+           text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .card { background: var(--card-bg); border: 1px solid var(--card-border);
+          border-left: 4px solid var(--accent); border-radius: 6px;
+          padding: 0.9rem 1.1rem; margin: 1rem 0; }
+  .file-ref { font-family: "SF Mono", Menlo, monospace; font-size: 0.85em;
+              color: #6b7280; }
+  .small { font-size: 0.9rem; color: var(--muted); }
+  .legend { display: flex; gap: 1rem; margin: 0.5rem 0 1rem; flex-wrap: wrap;
+            font-size: 0.85rem; }
+  .legend .item { display: inline-flex; align-items: center; gap: 0.35rem; }
+  .legend .swatch { display: inline-block; width: 14px; height: 14px;
+                    border-radius: 3px; border: 2px solid; }
+  .legend .swatch.cpu { background: #f3f4f6; border-color: #6b7280; }
+  .legend .swatch.npu { background: #ede9fe; border-color: #8b5cf6; }
+  .legend .swatch.fa  { background: #fce7f3; border-color: #db2777; }
+
+  svg.model-svg { display: block; margin: 1.2rem auto; max-width: 720px;
+                  width: 100%; height: auto; background: #fafaf7;
+                  border: 1px solid var(--card-border); border-radius: 8px;
+                  padding: 0.5rem; }
+  svg.model-svg text.th { font: 600 13px -apple-system, "SF Pro Text", system-ui, sans-serif;
+                          dominant-baseline: central; text-anchor: middle; fill: var(--fg); }
+  svg.model-svg text.ts { font: 11px ui-monospace, "SF Mono", Menlo, monospace;
+                          dominant-baseline: central; text-anchor: middle; fill: var(--muted); }
+  svg.model-svg text.t-time { font: 700 12px ui-monospace, "SF Mono", Menlo, monospace;
+                              dominant-baseline: central; text-anchor: middle; fill: #b91c1c; }
+  svg.model-svg text.edge-label { font: 11px ui-monospace, monospace; fill: var(--muted);
+                                  dominant-baseline: central; }
+  svg.model-svg .arr, svg.model-svg line.arr { stroke: #374151; stroke-width: 2; fill: none; }
+  svg.model-svg .arr-side { stroke: #9ca3af; stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+  svg.model-svg .c-purple rect { fill: #ede9fe; stroke: #8b5cf6; stroke-width: 2; }
+  svg.model-svg .c-purple text.th { fill: #5b21b6; }
+  svg.model-svg .c-gray rect { fill: #f3f4f6; stroke: #6b7280; stroke-width: 2; }
+  svg.model-svg .c-gray text.th { fill: #374151; }
+  svg.model-svg .c-pink rect { fill: #fce7f3; stroke: #db2777; stroke-width: 2; }
+  svg.model-svg .c-pink text.th { fill: #9f1239; }
+</style>
+</head>
+<body>
+
+<div class="nav" id="nav">
+  <button type="button" class="nav-toggle" id="nav-toggle" title="Hide sidebar (press h)">Hide &larr;</button>
+  <div class="nav-body">
+    <h4>Navigation</h4>
+
+    <span class="nav-part">Overview</span>
+    <a href="#overview">What <code>make profile</code> reports</a>
+    <a href="#headline">Headline numbers (TTFT 1.28 s + 92 ms/tok)</a>
+
+    <span class="nav-part">Part A &mdash; Prefill</span>
+    <a href="#prefill-flow">Dataflow + per-step timing</a>
+    <a href="#prefill-numbers">Per-kernel + fine-grained tables</a>
+
+    <span class="nav-part">Part B &mdash; Decode</span>
+    <a href="#decode-flow">Dataflow + per-step timing</a>
+    <a href="#decode-numbers">Per-kernel + fine-grained tables</a>
+
+    <span class="nav-part">Part C &mdash; Concepts</span>
+    <a href="#three-segments">BO Write / NPU Run / BO Read</a>
+    <a href="#wall-attribution">Wall-time attribution</a>
+
+    <span class="nav-part">Reproduce</span>
+    <a href="#repro">How to regenerate these numbers</a>
+
+    <span class="nav-part">Companion</span>
+    <a href="../profile.md" style="font-weight:600;">&rarr; profile.md</a>
+    <a href="IMPLEMENTATION_GUIDE.html" style="font-weight:600;">&rarr; IMPLEMENTATION_GUIDE.html</a>
+  </div>
+</div>
+<button type="button" id="nav-show" title="Show navigation (h)">&#9776; Nav</button>
+
+<h1>Llama-3.2-1B Performance Profile (NPU2)</h1>
+<p class="subtitle">Per-step wall-time attribution of the production prefill + decode pipeline, end-to-end. Diagrams mirror the dataflow in <a href="IMPLEMENTATION_GUIDE.html#flow">IMPLEMENTATION_GUIDE.html Part B1</a>; numbers are reproduced from a single <code>make profile</code> run on NPU2 (AMD Strix), <code>seq_len=2048</code>, <code>MODEL=instruct</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="overview">What <code>make profile</code> reports</h2>
+
+<p><code>make profile</code> runs the same code path as <code>make run</code> — the production prefill + decode functions, end to end, real HuggingFace weights — and just enables the otherwise-disabled <code>Profiler</code> instance that <code>cache.load_and_run</code> already records into. There is no <em>profile-only</em> code path; any change to the production functions is automatically reflected in the profile.</p>
+
+<p>The report (printed at the end of the run) opens with an architecture-aware <b>dataflow summary</b> (matches this page&rsquo;s SVG order) and then dumps generic detail tables per phase (prefill / decode):</p>
+
+<table>
+  <tr><th>Section</th><th>What it tells you</th></tr>
+  <tr><td><b>END-TO-END DATAFLOW</b> <span class="small">(at the top)</span></td><td>Architecture-aware walkthrough: <code>tokenize &rarr; eos_pad &rarr; embed &rarr; 16&times;(rms_gemms_rope + flash_attn + o_ffn + kv_cache_extract) &rarr; final_norm &rarr; lm_head_gemv</code>. Each row tagged CPU/NPU/&mdash; with measured ms. Same ordering as the SVGs in Part A / Part B below. Also prints the one-time <b>Preprocessing</b> (prepare_runtime) wall as a reminder.</td></tr>
+  <tr><td><b>Wall-Time Attribution</b></td><td>How the total wall budget splits across NPU XRT calls, CPU host ops, and the layer-loop envelope (sanity check; remainder is python scheduling).</td></tr>
+  <tr><td><b>Per-Layer Execution</b></td><td>One row per layer for prefill; aggregated avg/min/max across tokens for decode.</td></tr>
+  <tr><td><b>NPU XRT Call Breakdown</b></td><td>Each multi-launch ELF&rsquo;s wall time per invocation, plus call count. The granularity is one XRT run = one merged ELF (sub-launches inside the ELF stay opaque, since that&rsquo;s how production dispatches them).</td></tr>
+  <tr><td><b>CPU Op Breakdown</b></td><td>Each tracked CPU host operation (tokenize, eos_pad, embed lookup, KV-cache extract, final RMSNorm, decode CPU attention).</td></tr>
+  <tr><td><b>Fine-Grained NPU Breakdown</b></td><td>Each XRT call further split into <b>BO Write</b> / <b>NPU Run</b> / <b>BO Read</b> (concept explained in <a href="#three-segments">Part C</a>).</td></tr>
+  <tr><td><b>Per-Token Wall Trend</b> <span class="small">(decode only)</span></td><td>Per-token layer-loop wall for token&nbsp;1 / middle / last + min/max/avg + first&rarr;last drift. Lets you see whether per-token latency grows with KV-cache length (decode CPU attention is O(current_pos)). With a 2048-token prompt and 30 decode tokens the drift is typically &lt;1%.</td></tr>
+</table>
+
+<h3 id="headline">Headline numbers</h3>
+
+<p>Snapshot from the report (single run, instruct model, 30 decode tokens):</p>
+
+<table>
+  <tr><th>Metric</th><th>Wall</th><th>Notes</th></tr>
+  <tr><td><b>TTFT</b> (time-to-first-token, prefill end-to-end)</td><td class="num">~1.28&nbsp;s</td><td>tokenize + EOS-pad + embed + 16&times;layer + final RMSNorm + LM head. Matches the vLLM / TGI / TRT-LLM TTFT metric (user-facing latency from request submit to first output token). 95% NPU-bound. <i>Tokenize varies by prompt length; ~10&nbsp;ms typical.</i></td></tr>
+  <tr><td><b>TPOT</b> (per output token, steady-state decode)</td><td class="num">~92&nbsp;ms (10.8 tok/s)</td><td>16 layers × 4.95&nbsp;ms each + 13.6&nbsp;ms LM head + ~0.1&nbsp;ms host wrappers. Slope vs token index is &lt;1% over 30 tokens (KV cache grows by ~1.5% on a 2048-token prompt).</td></tr>
+  <tr><td><b>Preprocessing</b> (one-time, <code>prepare_runtime</code>)</td><td class="num">~7.6&nbsp;s</td><td>Compile external kernels + pre-load weights into per-layer BOs. Happens once per process and is NOT included in TTFT.</td></tr>
+</table>
+
+<div class="legend">
+  <span class="item"><span class="swatch cpu"></span> CPU host op</span>
+  <span class="item"><span class="swatch npu"></span> NPU XRT call (multi-launch ELF)</span>
+  <span class="item"><span class="swatch fa"></span> FlashAttention (separate ELF, see <a href="IMPLEMENTATION_GUIDE.html#stitching">B5</a>)</span>
+</div>
+
+<!-- ============================================================ -->
+<h2 class="part part-a" id="prefill-flow">Part A &mdash; Prefill (TTFT ~1.28&nbsp;s)</h2>
+
+<p>One inference&rsquo;s prefill phase: prompt &rarr; first generated token. Each box shows the step, where it runs, and the measured wall time. The 16 layers are identical; one iteration is shown in the &ldquo;decoder block&rdquo; container.</p>
+
+<svg viewBox="0 0 720 1080" class="model-svg" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow-pf" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#374151" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <!-- Tokenize + EOS-pad (inside TTFT scope) -->
+  <g class="c-gray">
+    <rect x="180" y="20" width="320" height="60" rx="8"/>
+    <text x="340" y="40" class="th">Tokenize + EOS-pad to seq_len</text>
+    <text x="340" y="58" class="ts">CPU; HF chat template + tokenizer.encode + pad</text>
+    <text x="340" y="74" class="t-time">~10 ms tokenize + ~0 ms pad</text>
+  </g>
+  <line x1="340" y1="80" x2="340" y2="108" class="arr" marker-end="url(#arrow-pf)"/>
+
+  <!-- Embed lookup -->
+  <g class="c-gray">
+    <rect x="180" y="108" width="320" height="60" rx="8"/>
+    <text x="340" y="128" class="th">Token embedding lookup</text>
+    <text x="340" y="146" class="ts">CPU; numpy gather + bf16 cast</text>
+    <text x="340" y="162" class="t-time">~5.8 ms</text>
+  </g>
+  <line x1="340" y1="168" x2="340" y2="196" class="arr" marker-end="url(#arrow-pf)"/>
+  <text x="350" y="184" class="edge-label" text-anchor="start">x: [2048, 2048] bf16</text>
+
+  <!-- Decoder block container (× 16) -->
+  <rect x="60" y="208" width="600" height="500" rx="10" fill="#faf5ff"
+        stroke="#8b5cf6" stroke-width="2.5" stroke-dasharray="6 3"/>
+  <text x="360" y="230" font-size="13" font-weight="700" fill="#5b21b6" text-anchor="middle">
+    Decoder block &times; L = 16  (one iteration shown; ~77.9 ms per layer; total ~1247 ms)
+  </text>
+
+  <!-- rms_gemms_rope -->
+  <g class="c-purple">
+    <rect x="100" y="250" width="520" height="60" rx="8"/>
+    <text x="360" y="270" class="th">rms_gemms_rope.elf &mdash; 1 xrt.run, 6 stitched launches</text>
+    <text x="360" y="288" class="ts">RMSNorm + Q/K/V GEMM + RoPE Q + RoPE K</text>
+    <text x="360" y="304" class="t-time">7.3 ms (BO write 0.5 / NPU 6.5 / BO read 0.1)</text>
+  </g>
+  <line x1="360" y1="310" x2="360" y2="340" class="arr" marker-end="url(#arrow-pf)"/>
+  <text x="370" y="325" class="edge-label" text-anchor="start">q_roped, k_roped, v</text>
+
+  <!-- flash_attn -->
+  <g class="c-pink">
+    <rect x="100" y="340" width="520" height="60" rx="8"/>
+    <text x="360" y="360" class="th">flash_attn.elf &mdash; 1 xrt.run, separate ELF</text>
+    <text x="360" y="378" class="ts">1 launch; un-mergeable (see B5)</text>
+    <text x="360" y="394" class="t-time">21.6 ms (BO write 1.3 / NPU 20.1 / BO read 0.1)</text>
+  </g>
+  <line x1="360" y1="400" x2="360" y2="428" class="arr" marker-end="url(#arrow-pf)"/>
+  <text x="370" y="414" class="edge-label" text-anchor="start">attn_out [2048, 2048]</text>
+
+  <!-- o_ffn -->
+  <g class="c-purple">
+    <rect x="100" y="428" width="520" height="60" rx="8"/>
+    <text x="360" y="448" class="th">o_ffn.elf &mdash; 1 xrt.run, 8 stitched launches</text>
+    <text x="360" y="466" class="ts">O + Add + RMSNorm + Gate/Up + SwiGLU + Down + Add</text>
+    <text x="360" y="482" class="t-time">41.0 ms (BO write 1.0 / NPU 39.8 / BO read 0.1)</text>
+  </g>
+  <line x1="360" y1="488" x2="360" y2="518" class="arr" marker-end="url(#arrow-pf)"/>
+  <text x="370" y="503" class="edge-label" text-anchor="start">x_next (= next layer's input)</text>
+
+  <!-- KV cache extract (CPU, inside layer envelope) -->
+  <g class="c-gray">
+    <rect x="170" y="518" width="380" height="60" rx="8"/>
+    <text x="360" y="538" class="th">KV cache extract &amp; write</text>
+    <text x="360" y="556" class="ts">CPU; reshape + transpose + slice-assign of k_roped, v</text>
+    <text x="360" y="572" class="t-time">1.1 ms per layer (×16 = 17.6 ms)</text>
+  </g>
+  <line x1="360" y1="578" x2="360" y2="608" class="arr" marker-end="url(#arrow-pf)"/>
+  <text x="370" y="593" class="edge-label" text-anchor="start">(loop back; 16 layers total)</text>
+
+  <!-- Layer summary inside container -->
+  <text x="360" y="635" font-size="13" font-weight="700" fill="#5b21b6" text-anchor="middle">
+    Per layer total: 7.3 + 21.6 + 41.0 + 1.1 = 71.0 ms (kernel+CPU)
+  </text>
+  <text x="360" y="655" font-size="12" fill="#6b21a8" text-anchor="middle">
+    Layer-loop wall: 77.9 ms &rarr; ~7 ms python/numpy scheduling overhead per layer
+  </text>
+  <text x="360" y="685" font-size="13" font-weight="700" fill="#5b21b6" text-anchor="middle">
+    16 layers &times; 77.9 ms = 1247 ms
+  </text>
+
+  <!-- After 16 layers -->
+  <line x1="360" y1="708" x2="360" y2="744" class="arr" marker-end="url(#arrow-pf)"/>
+  <text x="370" y="724" class="edge-label" text-anchor="start">x: [2048, 2048] after 16 layers</text>
+
+  <!-- Final RMSNorm (single-row, see A7 in IMPLEMENTATION_GUIDE) -->
+  <g class="c-gray">
+    <rect x="180" y="744" width="320" height="60" rx="8"/>
+    <text x="340" y="764" class="th">Final RMSNorm @ row pred_pos</text>
+    <text x="340" y="782" class="ts">CPU; only the 1 row needed for next-token argmax</text>
+    <text x="340" y="798" class="t-time">3.1 ms</text>
+  </g>
+  <line x1="340" y1="804" x2="340" y2="832" class="arr" marker-end="url(#arrow-pf)"/>
+  <text x="350" y="820" class="edge-label" text-anchor="start">[1, 2048] normed</text>
+
+  <!-- LM head (reuses decode-side 8-partition GEMV ELF) -->
+  <g class="c-purple">
+    <rect x="180" y="832" width="320" height="60" rx="8"/>
+    <text x="340" y="852" class="th">lm_head_gemv.elf &mdash; 1 xrt.run, 8 partitions</text>
+    <text x="340" y="870" class="ts">Reuses decode-side ELF for the single-row projection (see A7)</text>
+    <text x="340" y="886" class="t-time">13.6 ms (BO write 0 / NPU 13.5 / BO read 0)</text>
+  </g>
+  <line x1="340" y1="892" x2="340" y2="920" class="arr" marker-end="url(#arrow-pf)"/>
+  <text x="350" y="908" class="edge-label" text-anchor="start">logits [1, 128256] &rarr; argmax</text>
+
+  <!-- First token output -->
+  <g class="c-gray">
+    <rect x="220" y="920" width="240" height="44" rx="8"/>
+    <text x="340" y="942" class="th">First generated token</text>
+  </g>
+
+  <!-- Phase total -->
+  <text x="360" y="998" font-size="14" font-weight="700" fill="#1f2937" text-anchor="middle">
+    TTFT (time-to-first-token): ~1280 ms
+  </text>
+  <text x="360" y="1018" font-size="12" fill="#6b7280" text-anchor="middle">
+    = 10 (tokenize) + ~0 (pad) + 5.8 (embed) + 1247 (16 layers) + 3.1 (norm) + 13.6 (LM head) &asymp; 1280 ms
+  </text>
+  <text x="360" y="1040" font-size="11" font-style="italic" fill="#6b7280" text-anchor="middle">
+    NPU XRT 1119 ms (87%) &middot; CPU host 37 ms (3%) &middot; python sched ~125 ms (10%, mostly inside layers)
+  </text>
+</svg>
+
+<!-- ============================================================ -->
+<h3 id="prefill-numbers">Prefill: per-kernel and fine-grained tables</h3>
+
+<table>
+  <caption class="small">NPU XRT calls (16 layer-invocations of each, plus 1 LM head)</caption>
+  <tr><th>ELF</th><th>Launches</th><th>avg / call</th><th>BO Write</th><th>NPU Run</th><th>BO Read</th><th>BO MB written</th></tr>
+  <tr><td><code>rms_gemms_rope</code></td><td class="num">6 stitched</td><td class="num">7.3 ms</td><td class="num">0.5 ms</td><td class="num">6.5 ms</td><td class="num">0.1 ms</td><td class="num">8.0 MB</td></tr>
+  <tr><td><code>flash_attn</code> (separate ELF)</td><td class="num">1</td><td class="num">21.6 ms</td><td class="num">1.3 ms</td><td class="num">20.1 ms</td><td class="num">0.1 ms</td><td class="num">20.0 MB</td></tr>
+  <tr><td><code>o_ffn</code></td><td class="num">8 stitched</td><td class="num">41.0 ms</td><td class="num">1.0 ms</td><td class="num">39.8 ms</td><td class="num">0.1 ms</td><td class="num">16.0 MB</td></tr>
+  <tr><td><code>lm_head_gemv</code> (prefill end)</td><td class="num">8 stitched</td><td class="num">13.6 ms</td><td class="num">~0 ms</td><td class="num">13.5 ms</td><td class="num">~0 ms</td><td class="num">~0 MB</td></tr>
+</table>
+
+<table>
+  <caption class="small">CPU host ops (prefill side)</caption>
+  <tr><th>Op</th><th>Count</th><th>avg</th><th>Total</th></tr>
+  <tr><td><code>tokenize</code></td><td class="num">1</td><td class="num">~10 ms</td><td class="num">~10 ms</td></tr>
+  <tr><td><code>eos_pad</code></td><td class="num">1</td><td class="num">~0 ms</td><td class="num">~0 ms</td></tr>
+  <tr><td><code>embed_lookup</code></td><td class="num">1</td><td class="num">5.8 ms</td><td class="num">5.8 ms</td></tr>
+  <tr><td><code>kv_cache_extract</code></td><td class="num">16</td><td class="num">1.1 ms</td><td class="num">17.6 ms</td></tr>
+  <tr><td><code>final_rms_norm</code></td><td class="num">1</td><td class="num">3.1 ms</td><td class="num">3.1 ms</td></tr>
+  <tr><td><b>Total CPU</b></td><td class="num"><b>20</b></td><td>&mdash;</td><td class="num"><b>~37 ms</b></td></tr>
+</table>
+
+<p class="small">Wall-time attribution check: NPU XRT 1119 ms (16 layer-invocations × 3 kernels + 1 LM head = 49 calls) + CPU host ~37 ms = ~1156 ms accounted, vs. TTFT ~1280 ms &rarr; ~125 ms unattributed python/numpy scheduling, mostly inside the layer loop.</p>
+
+<!-- ============================================================ -->
+<h2 class="part part-b" id="decode-flow">Part B &mdash; Decode (per token ~92 ms)</h2>
+
+<p>Per-token decode step: takes the last produced token, returns the next. Diagram and numbers cover one token; the loop repeats until EOT. Each kernel reflects an avg over 30 decode tokens, 16 layers.</p>
+
+<svg viewBox="0 0 720 1000" class="model-svg" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow-dc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#374151" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <!-- Embed lookup -->
+  <g class="c-gray">
+    <rect x="180" y="20" width="320" height="60" rx="8"/>
+    <text x="340" y="40" class="th">Embed lookup (next-token id &rarr; row)</text>
+    <text x="340" y="58" class="ts">CPU; weights.embed_table[id].astype(bf16)</text>
+    <text x="340" y="74" class="t-time">~0 ms (single row gather)</text>
+  </g>
+  <line x1="340" y1="80" x2="340" y2="108" class="arr" marker-end="url(#arrow-dc)"/>
+  <text x="350" y="94" class="edge-label" text-anchor="start">x: [2048] bf16</text>
+
+  <!-- Decoder block container -->
+  <rect x="60" y="116" width="600" height="490" rx="10" fill="#faf5ff"
+        stroke="#8b5cf6" stroke-width="2.5" stroke-dasharray="6 3"/>
+  <text x="360" y="138" font-size="13" font-weight="700" fill="#5b21b6" text-anchor="middle">
+    Decoder block &times; L = 16  (one iteration shown; ~5.0 ms per layer; total ~79 ms)
+  </text>
+
+  <!-- rms_gemv_rope -->
+  <g class="c-purple">
+    <rect x="100" y="160" width="520" height="60" rx="8"/>
+    <text x="360" y="180" class="th">rms_gemv_rope.elf &mdash; 1 xrt.run, 6 stitched launches</text>
+    <text x="360" y="198" class="ts">RMSNorm + Q/K/V GEMV + RoPE Q + RoPE K (single token)</text>
+    <text x="360" y="214" class="t-time">0.9 ms (BO write 0 / NPU 0.8 / BO read 0)</text>
+  </g>
+  <line x1="360" y1="220" x2="360" y2="250" class="arr" marker-end="url(#arrow-dc)"/>
+  <text x="370" y="235" class="edge-label" text-anchor="start">q_roped [2048]; k_roped, v [512] each</text>
+
+  <!-- decode_attention_cpu -->
+  <g class="c-gray">
+    <rect x="100" y="250" width="520" height="60" rx="8"/>
+    <text x="360" y="270" class="th">decode_attention_cpu</text>
+    <text x="360" y="288" class="ts">CPU single-query attention against KV cache (head_dim=64; FA NPU has too much overhead at single-query)</text>
+    <text x="360" y="304" class="t-time">0.3 ms per layer</text>
+  </g>
+  <line x1="360" y1="310" x2="360" y2="340" class="arr" marker-end="url(#arrow-dc)"/>
+  <text x="370" y="325" class="edge-label" text-anchor="start">attn_out [2048]</text>
+
+  <!-- o_gemv_ffn -->
+  <g class="c-purple">
+    <rect x="100" y="340" width="520" height="60" rx="8"/>
+    <text x="360" y="360" class="th">o_gemv_ffn.elf &mdash; 1 xrt.run, 8 stitched launches</text>
+    <text x="360" y="378" class="ts">O + Add + RMSNorm + Gate/Up + SwiGLU + Down + Add</text>
+    <text x="360" y="394" class="t-time">3.7 ms (BO write 0 / NPU 3.6 / BO read 0)</text>
+  </g>
+  <line x1="360" y1="400" x2="360" y2="430" class="arr" marker-end="url(#arrow-dc)"/>
+  <text x="370" y="415" class="edge-label" text-anchor="start">x_next (= next layer's input)</text>
+
+  <!-- KV cache append annotation -->
+  <path d="M 540 188 L 615 188 L 615 260 L 540 260" class="arr-side" marker-end="url(#arrow-dc)"/>
+  <text x="608" y="175" class="edge-label" text-anchor="end">append k,v at pos</text>
+
+  <!-- Per-layer summary -->
+  <text x="360" y="468" font-size="13" font-weight="700" fill="#5b21b6" text-anchor="middle">
+    Per layer total: 0.9 + 0.3 + 3.7 = 4.9 ms (kernel+CPU)
+  </text>
+  <text x="360" y="488" font-size="12" fill="#6b21a8" text-anchor="middle">
+    Layer-loop wall: 4.95 ms &rarr; ~0.05 ms python/numpy overhead per layer
+  </text>
+  <text x="360" y="518" font-size="13" font-weight="700" fill="#5b21b6" text-anchor="middle">
+    16 layers &times; 4.95 ms = 79.2 ms
+  </text>
+  <line x1="360" y1="538" x2="360" y2="586" class="arr" marker-end="url(#arrow-dc)"/>
+  <text x="370" y="562" class="edge-label" text-anchor="start">x: [2048] after 16 layers</text>
+
+  <!-- Final RMSNorm -->
+  <g class="c-gray">
+    <rect x="180" y="640" width="320" height="60" rx="8"/>
+    <text x="340" y="660" class="th">Final RMSNorm</text>
+    <text x="340" y="678" class="ts">CPU; single row, F32 internal</text>
+    <text x="340" y="694" class="t-time">0.07 ms</text>
+  </g>
+  <line x1="340" y1="700" x2="340" y2="728" class="arr" marker-end="url(#arrow-dc)"/>
+  <text x="350" y="716" class="edge-label" text-anchor="start">[1, 2048] normed</text>
+
+  <!-- LM head GEMV -->
+  <g class="c-purple">
+    <rect x="180" y="728" width="320" height="60" rx="8"/>
+    <text x="340" y="748" class="th">lm_head_gemv.elf &mdash; 1 xrt.run, 8 partitions</text>
+    <text x="340" y="766" class="ts">8-partition GEMV stitched in 1 ELF</text>
+    <text x="340" y="782" class="t-time">13.6 ms (NPU 13.5 dominates)</text>
+  </g>
+  <line x1="340" y1="788" x2="340" y2="816" class="arr" marker-end="url(#arrow-dc)"/>
+  <text x="350" y="804" class="edge-label" text-anchor="start">logits [1, 128256] &rarr; argmax</text>
+
+  <!-- next-token output -->
+  <g class="c-gray">
+    <rect x="220" y="816" width="240" height="44" rx="8"/>
+    <text x="340" y="838" class="th">next token id</text>
+  </g>
+
+  <!-- Phase total -->
+  <text x="360" y="900" font-size="14" font-weight="700" fill="#1f2937" text-anchor="middle">
+    Total per-token wall: ~92 ms
+  </text>
+  <text x="360" y="920" font-size="12" fill="#6b7280" text-anchor="middle">
+    = ~0 (embed) + 79.2 (16 layers) + 0.07 (norm) + 13.6 (LM head) &asymp; 93 ms
+  </text>
+  <text x="360" y="942" font-size="11" font-style="italic" fill="#6b7280" text-anchor="middle">
+    NPU XRT ~85 ms (92%) &middot; CPU host ~5 ms (5%) &middot; LM head dominates the per-token bill at 15%
+  </text>
+</svg>
+
+<!-- ============================================================ -->
+<h3 id="decode-numbers">Decode: per-kernel and fine-grained tables</h3>
+
+<table>
+  <caption class="small">NPU XRT calls (avg over 30 decode tokens × 16 layers)</caption>
+  <tr><th>ELF</th><th>Launches</th><th>avg / call</th><th>BO Write</th><th>NPU Run</th><th>BO Read</th></tr>
+  <tr><td><code>rms_gemv_rope</code></td><td class="num">6 stitched</td><td class="num">0.9 ms</td><td class="num">0.02 ms</td><td class="num">0.83 ms</td><td class="num">0.01 ms</td></tr>
+  <tr><td><code>o_gemv_ffn</code></td><td class="num">8 stitched</td><td class="num">3.7 ms</td><td class="num">0.02 ms</td><td class="num">3.64 ms</td><td class="num">0.01 ms</td></tr>
+  <tr><td><code>lm_head_gemv</code></td><td class="num">8 stitched</td><td class="num">13.6 ms</td><td class="num">0.01 ms</td><td class="num">13.50 ms</td><td class="num">0.03 ms</td></tr>
+</table>
+
+<table>
+  <caption class="small">CPU host ops (decode side)</caption>
+  <tr><th>Op</th><th>Count / token</th><th>avg</th><th>Total / token</th></tr>
+  <tr><td><code>decode_attention_cpu</code></td><td class="num">16</td><td class="num">0.28 ms</td><td class="num">4.5 ms</td></tr>
+  <tr><td><code>embed_lookup</code></td><td class="num">1</td><td class="num">~0 ms</td><td class="num">~0 ms</td></tr>
+  <tr><td><code>final_rms_norm</code></td><td class="num">1</td><td class="num">0.07 ms</td><td class="num">0.07 ms</td></tr>
+  <tr><td><b>Total CPU / token</b></td><td class="num"><b>18</b></td><td>&mdash;</td><td class="num"><b>~4.6 ms</b></td></tr>
+</table>
+
+<p class="small">Wall-time check: NPU XRT per token = 16 × (0.9 + 3.7) + 13.6 = 87.2 ms &middot; CPU = 4.6 ms &middot; sum 91.8 ms &asymp; observed 92 ms wall. Decode is overwhelmingly NPU-bound; the LM head GEMV alone is ~15% of the per-token cost.</p>
+
+<p class="card"><b>Observation:</b> across decode, BO Write is &lt;1% &mdash; this is the payoff for pre-loading all weights into per-layer BOs (and marking them <code>static_input_indices</code>) during <code>prepare_runtime</code>. Without that, each layer would re-write its 116 MB of weights per token.</p>
+
+<!-- ============================================================ -->
+<h2 class="part part-c" id="three-segments">Part C &mdash; BO Write / NPU Run / BO Read explained</h2>
+
+<p>Each <code>cache.load_and_run("kernel", backend, arg0, ..., argN)</code> invocation is split into three timed segments:</p>
+
+<h3>1. BO Write &mdash; <code>t_write_ms</code></h3>
+
+<p>For each input/intermediate argument that needs new bytes, the host does <code>memcpy(numpy_data &rarr; BO.map())</code>. Args marked <code>static_input_indices</code> (e.g. layer weights) skip this step on every call after <code>prepare_runtime</code>, so steady-state <code>t_write_ms</code> mainly reflects the <em>dynamic</em> inputs that change call-to-call (the input activation, RoPE LUT row, KV-cache slice, &hellip;).</p>
+
+<p>What this measures in practice: <strong>host-to-DDR memcpy bandwidth for the dynamic inputs only</strong>. If you see this rise, either an argument lost its <code>static_input_indices</code> mark, or a normally-small dynamic input grew (e.g. a bigger seq_len).</p>
+
+<h3>2. NPU Run &mdash; <code>t_kernel_ms</code></h3>
+
+<p>Wall time of <code>xrt.run.start()</code> + <code>xrt.run.wait()</code>. This is the NPU actually executing the multi-launch ELF: DDR &rarr; L2/L1 DMAs, AIE-tile compute, and L1/L2 &rarr; DDR DMAs of outputs. Host does nothing here except spin-wait the completion signal.</p>
+
+<p>What this measures: <strong>real NPU hardware execution time for the ELF</strong>. All the multi-launch&rsquo;s stitched sub-launches (e.g. RMSNorm + Q + K + V + RoPE_Q + RoPE_K inside <code>rms_gemms_rope.elf</code>) run sequentially on-device and are not separately resolved here &mdash; that&rsquo;s by design, because production never dispatches them separately.</p>
+
+<h3>3. BO Read &mdash; <code>t_read_ms</code></h3>
+
+<p>For each output argument, the host constructs a numpy view over the BO&rsquo;s mapped memory using <code>np.frombuffer(BO.map(), &hellip;)</code>. This is <strong>zero-copy</strong> &mdash; no memcpy &mdash; and consistently &lt;0.1 ms. If <code>t_read_ms</code> ever climbs into the ms range, that signals an accidental copy was introduced (e.g. an <code>.astype()</code> on a large output).</p>
+
+<h3 id="wall-attribution">How they sum</h3>
+
+<table>
+  <tr><th>Phase</th><th>BO Write</th><th>NPU Run</th><th>BO Read</th></tr>
+  <tr><td><b>Prefill</b> (one full pass)</td><td class="num">~46 ms (4%)</td><td class="num">~1062 ms (95%)</td><td class="num">~5 ms (0%)</td></tr>
+  <tr><td><b>Decode</b> (per token)</td><td class="num">~0.6 ms (1%)</td><td class="num">~86 ms (98%)</td><td class="num">~0.3 ms (0%)</td></tr>
+</table>
+
+<p>Both phases are dominated by NPU Run &mdash; the host&rsquo;s job is mostly to feed the right BOs and wait. Decode is even closer to pure-NPU because the per-token dynamic inputs are tiny (a single activation row vs. an entire sequence&rsquo;s worth).</p>
+
+<!-- ============================================================ -->
+<h2 id="repro">How to reproduce the numbers</h2>
+
+<pre><code>cd programming_examples/llms/llama32_1b
+
+# One-time kernel compilation (~3-4 min, cached)
+make compile
+
+# Full profiling report (single run, instruct model)
+make profile N_TOKENS=30 PROMPT="Explain photosynthesis in detail."
+
+# Or with the base checkpoint
+make profile MODEL=base N_TOKENS=30 PROMPT="Once upon a time"
+</code></pre>
+
+<p>The report is printed to stdout at the end of the run. To save a copy:</p>
+
+<pre><code>make profile 2&gt;&amp;1 | tee profile_$(date +%Y%m%d-%H%M%S).log</code></pre>
+
+<p>Numbers will jitter ±3-5% between runs (NPU power state, OS scheduling, etc); the breakdown structure is stable. <code>make verify</code> is the orthogonal gate that ensures the production code path producing these numbers is still numerically correct.</p>
+
+<hr>
+
+<p class="small">
+  Companion: <a href="../profile.md"><code>profile.md</code></a> (textual perf summary, optimization history, vs IRON comparison) &middot;
+  <a href="IMPLEMENTATION_GUIDE.html#flow"><code>IMPLEMENTATION_GUIDE.html</code> B1</a> (same dataflow, no timing &mdash; shows just the structural picture).
+</p>
+
+<script>
+  (function() {
+    const STATE_KEY = "llama-profile-nav-state";
+    const toggle = document.getElementById("nav-toggle");
+    const showBtn = document.getElementById("nav-show");
+    function apply(state) {
+      document.body.classList.toggle("nav-hidden", state === "hidden");
+    }
+    function setState(state) {
+      try { localStorage.setItem(STATE_KEY, state); } catch (e) {}
+      apply(state);
+    }
+    toggle.addEventListener("click", function() { setState("hidden"); });
+    showBtn.addEventListener("click", function() { setState("open"); });
+    document.addEventListener("keydown", function(e) {
+      if (e.key === "h" && !e.ctrlKey && !e.metaKey && !e.altKey &&
+          !["INPUT","TEXTAREA"].includes(document.activeElement.tagName)) {
+        const hidden = document.body.classList.contains("nav-hidden");
+        setState(hidden ? "open" : "hidden");
+      }
+    });
+    let saved = "open";
+    try { saved = localStorage.getItem(STATE_KEY) || "open"; } catch (e) {}
+    apply(saved);
+  })();
+</script>
+
+</body>
+</html>
