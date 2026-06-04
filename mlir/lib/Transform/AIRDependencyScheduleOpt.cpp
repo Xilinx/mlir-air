@@ -2324,6 +2324,25 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       }
       if (postFoldActiveDims > maxNumDims)
         return failure();
+      // When the pre-fold gate was relaxed (pre was already at the dim
+      // limit), the new outer dim can canonicalize INTO an adjacent dim,
+      // multiplying its size. Downstream the shim-DMA emitter unrolls a
+      // large outermost dim into per-iter tasks; if the product exceeds the
+      // per-channel BD pool capacity (~16), the allocator runs out of BD
+      // IDs. Cap the post-fold outermost active dim conservatively to
+      // protect that path. Folds whose outer wraps stay small are
+      // unaffected.
+      constexpr int64_t kSafePostFoldOuterDim = 64;
+      if (numActualWrapDims >= maxNumDims) {
+        for (auto v : wraps) {
+          auto cv = getConstantIntValue(v);
+          if (cv && *cv > 1) {
+            if (*cv > kSafePostFoldOuterDim)
+              return failure();
+            break;
+          }
+        }
+      }
     }
 
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
