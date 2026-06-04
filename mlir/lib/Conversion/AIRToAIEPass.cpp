@@ -1822,6 +1822,12 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     if (fop->hasAttr("loop_annotation")) {
       new_fop->setAttr("loop_annotation", fop->getAttr("loop_annotation"));
     }
+    // Preserve the user-facing ping-pong opt-out so labeling later in
+    // the pipeline still sees it.
+    if (fop->hasAttr("air.disable_ping_pong")) {
+      new_fop->setAttr("air.disable_ping_pong",
+                       fop->getAttr("air.disable_ping_pong"));
+    }
 
     // use the new for op's results
     int idx = 0;

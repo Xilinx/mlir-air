@@ -806,6 +806,10 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   // loops and blows program memory.
   if (auto attr = for_op->getAttr("loop_annotation"))
     new_for_op->setAttr("loop_annotation", attr);
+  // Preserve the user-facing ping-pong opt-out so labeling later still
+  // sees it.
+  if (auto attr = for_op->getAttr("air.disable_ping_pong"))
+    new_for_op->setAttr("air.disable_ping_pong", attr);
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
