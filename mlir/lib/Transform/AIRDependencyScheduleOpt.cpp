@@ -1657,8 +1657,8 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
           }
           // Find the outermost affine.if between op and forOp.
           Operation *topIf = nullptr;
-          for (Operation *p = op->getParentOp();
-               p && p != forOp.getOperation(); p = p->getParentOp()) {
+          for (Operation *p = op->getParentOp(); p && p != forOp.getOperation();
+               p = p->getParentOp()) {
             if (isa<mlir::affine::AffineIfOp>(p))
               topIf = p;
           }

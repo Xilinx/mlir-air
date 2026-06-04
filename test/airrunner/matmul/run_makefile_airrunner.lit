@@ -5,6 +5,7 @@
 // RUN: cd test_airrunner
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile run | FileCheck %s
-// Updated post-#1647: K-tiled L1 fills no longer ping-pong'd (multi-fill
-// of the same alloc per outer iter is unsafe; see PR description).
-// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 1225.6us
+// Updated post-#1659: ping-pong restored for K-tiled L1 fills dispatched via
+// mutually-exclusive affine.if broadcast branches (only one branch fires per
+// outer iter, so multi-fill of the same alloc is safe).
+// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 1127.23us
