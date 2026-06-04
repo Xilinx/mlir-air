@@ -1249,6 +1249,10 @@ private:
     // op with only a few hand-copied attributes.
     if (auto attr = loop_op->getAttr("loop_annotation"))
       new_loop_op->setAttr("loop_annotation", attr);
+    // Preserve the user-facing ping-pong opt-out so labeling later still
+    // sees it.
+    if (auto attr = loop_op->getAttr("air.disable_ping_pong"))
+      new_loop_op->setAttr("air.disable_ping_pong", attr);
 
     // Splice the operations inside loop op INCLUDING the terminator
     auto &bb = new_loop_op.getBody()->getOperations();
@@ -1310,6 +1314,8 @@ private:
       new_loop_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
     if (auto attr = loop_op->getAttr("loop_annotation"))
       new_loop_op->setAttr("loop_annotation", attr);
+    if (auto attr = loop_op->getAttr("air.disable_ping_pong"))
+      new_loop_op->setAttr("air.disable_ping_pong", attr);
 
     // Splice the operations inside loop op
     auto &bb = new_loop_op.getBody()->getOperations();
