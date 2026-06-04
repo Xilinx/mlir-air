@@ -191,6 +191,12 @@ def build_module(
     assert (M_LA // N_LD) % M_TILE == 0
     # Sanity: swiglu width must match LD's K reduction.
     assert M_LGU // 2 == K_LD
+    # LA and LGU use W->E cascade chains (size=N-1) and the eastmost
+    # core broadcasts to consumers; a 1-core herd has no cascade hop
+    # and no eastmost-vs-rest split, so the broadcast paths would
+    # never fire. LD has no cascade so N_LD >= 1 is fine.
+    assert N_LA >= 2, "LA cascade requires N_LA >= 2"
+    assert N_LGU >= 2, "LGU cascade requires N_LGU >= 2"
 
     M_la_per_core = M_LA // N_LA  # 256
     M_la_div = M_la_per_core // M_TILE  # 32 outer iters per LA core

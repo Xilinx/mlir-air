@@ -37,6 +37,8 @@ K = $(EMB_DIM)
 all: profile
 
 compile-kernel:
+	@test -n "$(PEANO_INSTALL_DIR)" || \
+	    { echo "ERROR: PEANO_INSTALL_DIR not set (source utils/env_setup.sh or pass on the make command line)" >&2; exit 1; }
 	mkdir -p $(BUILD_DIR)
 	$(PEANO_INSTALL_DIR)/bin/clang++ $(PEANOWRAP2P_FLAGS) \
 		-DDIM_M=$(M_TILE) -DDIM_K=$(K_CHUNK) -DDIM_GS=$(GS) $(EXTRA_CFLAGS) \
@@ -61,13 +63,13 @@ build-test-exe:
 # the lit test; prints PASS on success.
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  python3 $(srcdir)/o_gemv_ffn_int4_fused.py $(PY_ARGS)
+	cd $(BUILD_DIR) && \
+	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) python3 $(srcdir)/o_gemv_ffn_int4_fused.py $(PY_ARGS)
 
 profile: build-test-exe compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  python3 $(srcdir)/o_gemv_ffn_int4_fused.py --compile-mode compile-only $(PY_ARGS)
+	cd $(BUILD_DIR) && \
+	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) python3 $(srcdir)/o_gemv_ffn_int4_fused.py --compile-mode compile-only $(PY_ARGS)
 	cd $(BUILD_DIR) && ./test_o_gemv_ffn_int4_fused.exe -e air.elf -k "main:o_gemv_ffn_int4_fused" \
 	  -L $(M_LA) -U $(M_LGU) -D $(K_LD) -K $(K) -G $(GS) -T $(M_TILE) -C $(K_CHUNK)
 
