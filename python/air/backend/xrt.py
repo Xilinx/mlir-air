@@ -18,6 +18,7 @@ import numpy as np
 import os
 import shutil
 import subprocess
+import time
 
 from air.tools import resolve_tool
 
@@ -79,6 +80,8 @@ class XRTBackend(AirBackend):
         debug_ir: bool = False,
         bf16_emulation: bool = False,
         stack_size: int = 1024,
+        n_perf_iters: int = 0,
+        n_warmup_iters: int = 10,
     ):
         """Constructor for XRTBackend
 
@@ -108,6 +111,12 @@ class XRTBackend(AirBackend):
             bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
             stack_size: stack size in bytes per AIE core (default: 1024). Increase when
                 kernels have deep call chains (e.g., scalar fdiv needs ~1152 bytes).
+            n_perf_iters: when > 0, the loaded invoker times the kernel over this many
+                iterations (after n_warmup_iters warmup runs) and stores the average
+                wall-clock latency in microseconds on self.last_latency_us. Only the
+                kernel invocation + wait is timed (buffer sync is excluded). Default 0
+                disables timing, preserving the original single-shot behavior.
+            n_warmup_iters: warmup iterations excluded from timing when n_perf_iters > 0.
         """
         super().__init__()
         self.verbose = verbose
@@ -135,6 +144,13 @@ class XRTBackend(AirBackend):
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
         self.bf16_emulation = bf16_emulation
+        if not isinstance(n_perf_iters, int) or n_perf_iters < 0:
+            raise ValueError("`n_perf_iters` must be a non-negative integer")
+        if not isinstance(n_warmup_iters, int) or n_warmup_iters < 0:
+            raise ValueError("`n_warmup_iters` must be a non-negative integer")
+        self.n_perf_iters = n_perf_iters
+        self.n_warmup_iters = n_warmup_iters
+        self.last_latency_us = None
         if not isinstance(stack_size, int) or stack_size <= 0:
             raise ValueError("`stack_size` must be a positive integer")
         self.stack_size = stack_size
@@ -533,8 +549,21 @@ class XRTBackend(AirBackend):
                 run = xrt.run(self.kernel)
                 for i, bo in enumerate(bos):
                     run.set_arg(i, bo)
-                run.start()
-                run.wait2()
+                if self.n_perf_iters > 0:
+                    # Time only run.start()+wait2(), averaged over n_perf_iters
+                    # after n_warmup_iters warmup runs (buffer sync excluded).
+                    for _ in range(self.n_warmup_iters):
+                        run.start()
+                        run.wait2()
+                    t0 = time.perf_counter()
+                    for _ in range(self.n_perf_iters):
+                        run.start()
+                        run.wait2()
+                    t1 = time.perf_counter()
+                    self.last_latency_us = (t1 - t0) / self.n_perf_iters * 1e6
+                else:
+                    run.start()
+                    run.wait2()
 
                 for i, a in enumerate(args):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
@@ -599,8 +628,20 @@ class XRTBackend(AirBackend):
                     bos[i].write(a, 0)
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
-                h = self.kernel(3, self.bo_instr, len(self.instr_v), *bos)
-                h.wait()
+                if self.n_perf_iters > 0:
+                    # Time only the kernel invocation + wait, averaged over
+                    # n_perf_iters after n_warmup_iters warmup runs (buffer sync
+                    # excluded — matches the C++ test-harness timing range).
+                    for _ in range(self.n_warmup_iters):
+                        self.kernel(3, self.bo_instr, len(self.instr_v), *bos).wait()
+                    t0 = time.perf_counter()
+                    for _ in range(self.n_perf_iters):
+                        self.kernel(3, self.bo_instr, len(self.instr_v), *bos).wait()
+                    t1 = time.perf_counter()
+                    self.last_latency_us = (t1 - t0) / self.n_perf_iters * 1e6
+                else:
+                    h = self.kernel(3, self.bo_instr, len(self.instr_v), *bos)
+                    h.wait()
 
                 for i, a in enumerate(args):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
