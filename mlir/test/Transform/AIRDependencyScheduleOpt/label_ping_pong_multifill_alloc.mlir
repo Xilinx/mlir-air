@@ -165,3 +165,80 @@ module {
     return
   }
 }
+
+// -----
+
+// =============================================================================
+// Case 4 (positive): channel.gets inside mutually-exclusive `affine.if`
+// branches (the IR shape produced by `air-specialize-dma-broadcast` for
+// index-dispatched broadcasts) all write to the SAME outer-loop alloc, but
+// only ONE branch runs per outer iter. Pre-fix the multifill predicate
+// counted these as N gets and rejected the loop. Post-fix: dedup by the
+// outermost `affine.if` between the get and the for, so the chain registers
+// as a single per-iter occurrence and the loop is labeled.
+// =============================================================================
+
+// CHECK-LABEL: func.func @affine_if_broadcast_branches_eligible
+// CHECK:       scf.for
+// CHECK:       memref.alloc() {hoist_alloc = true} : memref<32x32xbf16, 2>
+// CHECK:       } {unroll = 2 : i32}
+
+#set_a = affine_set<()[s0] : (s0 == 0)>
+#set_b = affine_set<()[s0] : (s0 - 1 == 0)>
+#set_c = affine_set<()[s0] : (s0 - 2 == 0)>
+
+module {
+  air.channel @chA [1, 1] {broadcast_shape = [1, 4]}
+  air.channel @chB [1, 1] {broadcast_shape = [1, 4]}
+  air.channel @chC [1, 1] {broadcast_shape = [1, 4]}
+  air.channel @chD [1, 1] {broadcast_shape = [1, 4]}
+
+  func.func @affine_if_broadcast_branches_eligible(%arg0: memref<256x1024xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg4) in (%arg6=%c1) attributes {id = 1 : i32} {
+      %1 = air.segment async {
+        %c4 = arith.constant 4 : index
+        %2 = air.herd @herd_0 async tile (%col, %row) in (%cs=%c4, %rs=%c4) {
+          %c0 = arith.constant 0 : index
+          %c64 = arith.constant 64 : index
+          %c512 = arith.constant 512 : index
+          %async_token_0 = air.wait_all async
+          %3 = scf.for %iv = %c0 to %c512 step %c64 iter_args(%arg11 = %async_token_0) -> (!air.async.token) {
+            %async_token_a, %results_a = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
+              %alloc_a = memref.alloc() : memref<32x32xbf16, 2>
+              air.execute_terminator %alloc_a : memref<32x32xbf16, 2>
+            }
+            // N=4 mutually-exclusive affine.if branches dispatch on the herd
+            // column index. Each branch reads via a distinct channel into the
+            // same alloc. Only one branch runs per iter, so this is logically
+            // a single get-per-iter, not 4.
+            %g = affine.if #set_a()[%col] -> !air.async.token {
+              %ga = air.channel.get async [%async_token_a] @chA[] (%results_a[] [] []) {id = 1 : i32} : (memref<32x32xbf16, 2>)
+              affine.yield %ga : !air.async.token
+            } else {
+              %gb = affine.if #set_b()[%col] -> !air.async.token {
+                %gbb = air.channel.get async [%async_token_a] @chB[] (%results_a[] [] []) {id = 2 : i32} : (memref<32x32xbf16, 2>)
+                affine.yield %gbb : !air.async.token
+              } else {
+                %gc = affine.if #set_c()[%col] -> !air.async.token {
+                  %gcc = air.channel.get async [%async_token_a] @chC[] (%results_a[] [] []) {id = 3 : i32} : (memref<32x32xbf16, 2>)
+                  affine.yield %gcc : !air.async.token
+                } else {
+                  %gd = air.channel.get async [%async_token_a] @chD[] (%results_a[] [] []) {id = 4 : i32} : (memref<32x32xbf16, 2>)
+                  affine.yield %gd : !air.async.token
+                }
+                affine.yield %gc : !air.async.token
+              }
+              affine.yield %gb : !air.async.token
+            }
+            %async_token_d = air.execute [%g] {
+              memref.dealloc %results_a : memref<32x32xbf16, 2>
+            }
+            scf.yield %async_token_d : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}
