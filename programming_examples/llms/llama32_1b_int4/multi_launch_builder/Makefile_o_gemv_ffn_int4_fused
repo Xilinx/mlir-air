@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: MIT
+# Profile + run-test harness for o_gemv_ffn_int4_fused.
+
+srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+INT4_SRC := $(realpath $(srcdir)/../../matrix_vector_multiplication/int4_awq)
+
+ifdef PEANO_INSTALL_DIR
+  BUILD_DIR := build_peano_o_gemv_ffn_int4_fused
+else
+  BUILD_DIR := build_chess_o_gemv_ffn_int4_fused
+endif
+
+EMB_DIM    ?= 2048
+HIDDEN_DIM ?= 8192
+GS         ?= 128
+M_TILE     ?= 8
+K_CHUNK    ?= 2048
+N_CORES    ?= 8
+
+AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
+PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf $(WARNING_FLAGS) -DNDEBUG -I $(AIEOPT_DIR)/include
+
+PY_ARGS = --emb-dim $(EMB_DIM) --hidden-dim $(HIDDEN_DIM) \
+          --gs $(GS) --m-tile $(M_TILE) --k-chunk $(K_CHUNK) \
+          --n-cores $(N_CORES) \
+          $(EXTRA_PY_ARGS)
+
+# Profile harness still uses the explicit LA/LGU/LD shape flags.
+M_LA = $(EMB_DIM)
+M_LGU = $(shell expr 2 \* $(HIDDEN_DIM))
+K_LD = $(HIDDEN_DIM)
+K = $(EMB_DIM)
+
+.PHONY: all compile-kernel build-test-exe profile run clean
+
+all: profile
+
+compile-kernel:
+	mkdir -p $(BUILD_DIR)
+	$(PEANO_INSTALL_DIR)/bin/clang++ $(PEANOWRAP2P_FLAGS) \
+		-DDIM_M=$(M_TILE) -DDIM_K=$(K_CHUNK) -DDIM_GS=$(GS) $(EXTRA_CFLAGS) \
+		-c $(INT4_SRC)/mv_int4_bf16.cc -o $(BUILD_DIR)/mv_int4_bf16.o
+
+build-test-exe:
+	@GPP=$$( \
+		for bin in /usr/bin/g++-*; do \
+			ver=$$(echo $$bin | grep -oE '[0-9]+$$'); \
+			if [ "$$ver" -ge 13 ] 2>/dev/null; then echo "$$ver $$bin"; fi; \
+		done | sort -nr | head -n1 | awk '{print $$2}' \
+	); \
+	mkdir -p $(BUILD_DIR); \
+	cd $(BUILD_DIR) && $$GPP $(srcdir)/test_o_gemv_ffn_int4_fused.cpp \
+		-o test_o_gemv_ffn_int4_fused.exe -std=c++23 -Wall \
+		-I$$XILINX_XRT/include -L$$XILINX_XRT/lib \
+		-I$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/include \
+		-L$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/lib \
+		-luuid -lxrt_coreutil -lrt -lstdc++ -ltest_utils
+
+# Compile-and-run via Python harness (XRTRunner correctness check). Used by
+# the lit test; prints PASS on success.
+run: compile-kernel
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
+	  python3 $(srcdir)/o_gemv_ffn_int4_fused.py $(PY_ARGS)
+
+profile: build-test-exe compile-kernel
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
+	  python3 $(srcdir)/o_gemv_ffn_int4_fused.py --compile-mode compile-only $(PY_ARGS)
+	cd $(BUILD_DIR) && ./test_o_gemv_ffn_int4_fused.exe -e air.elf -k "main:o_gemv_ffn_int4_fused" \
+	  -L $(M_LA) -U $(M_LGU) -D $(K_LD) -K $(K) -G $(GS) -T $(M_TILE) -C $(K_CHUNK)
+
+clean:
+	rm -rf $(BUILD_DIR) __pycache__
