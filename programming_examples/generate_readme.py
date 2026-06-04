@@ -68,6 +68,12 @@ EXAMPLES = [
     },
     {
         "category": "Linear Algebra",
+        "name": "Matrix Multiplication (bf16 x bfp16ebs8)",
+        "path": "matrix_multiplication/bf16_x_bfp16",
+        "datatypes": "bf16 activations / bfp16ebs8 weights",
+    },
+    {
+        "category": "Linear Algebra",
         "name": "AXPY",
         "path": "axpy",
         "datatypes": "bf16",
