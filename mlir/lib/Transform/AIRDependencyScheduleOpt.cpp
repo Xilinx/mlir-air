@@ -1653,6 +1653,31 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     if (reject)
       return false;
 
+    // Reject if any nested scf.for has a non-!air.async.token iter_arg
+    // (in practice a vector accumulator, but the check is on the type, not
+    // the dialect). Ping-pong's body duplication produces two body copies,
+    // each carrying the nested scf.for. When the nested for has a
+    // non-token iter_arg, the duplicated copies are read/yielded in a way
+    // that the downstream async-dependency rewrite + AIE lowering
+    // miscompiles (odd-iteration outputs come out as garbage on the order
+    // of ~1e7). Until that path is fixed, skip ping-pong for such loops --
+    // the user can refactor to memref-based accumulators if they want PP
+    // overlap.
+    bool hasNestedNonTokenIterArgs = false;
+    forOp.getBody()->walk([&](scf::ForOp innerFor) -> WalkResult {
+      if (innerFor == forOp)
+        return WalkResult::advance();
+      for (auto initArg : innerFor.getInitArgs()) {
+        if (!isa<air::AsyncTokenType>(initArg.getType())) {
+          hasNestedNonTokenIterArgs = true;
+          return WalkResult::interrupt();
+        }
+      }
+      return WalkResult::advance();
+    });
+    if (hasNestedNonTokenIterArgs)
+      return false;
+
     if (allocsOut)
       *allocsOut = std::move(allocs);
     return true;
