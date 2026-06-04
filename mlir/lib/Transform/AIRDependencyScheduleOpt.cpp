@@ -1632,13 +1632,16 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     // Reject if any candidate alloc has >1 channel.get/iter, or if any
     // intervening loop has a non-static trip count (can't bound the count).
     //
-    // Channel.gets inside mutually-exclusive `affine.if` branches (introduced
-    // by air-specialize-dma-broadcast for index-dispatched broadcasts) all
-    // read into the same alloc but only ONE runs per iter. Group those into
-    // a single occurrence using the enclosing top-level affine.if as a
-    // discriminator, so we don't reject just because there are N branches.
-    llvm::DenseSet<Value> seenOnce;
-    llvm::DenseSet<std::pair<Value, Operation *>> seenInAffineIf;
+    // Channel.gets dispatched by `air-specialize-dma-broadcast` into a chain
+    // of `affine.if` branches all read into the same alloc but only ONE runs
+    // per iter — which is safe for ping-pong. To distinguish that case from
+    // genuinely unsafe multi-fill, check mutual exclusivity directly: two
+    // gets to the same alloc are safe iff they share a common `affine.if`
+    // ancestor where they sit in different regions (then-vs-else). Any other
+    // arrangement — siblings under separate top-level affine.ifs, two gets
+    // in the same `then`/`else` block of one ladder, gets entirely outside
+    // any affine.if — implies both can execute in the same iter, so reject.
+    llvm::SmallDenseMap<Value, SmallVector<Operation *>, 4> getsByAlloc;
     bool reject = false;
     forOp.getBody()->walk<WalkOrder::PreOrder>(
         [&](Operation *op) -> WalkResult {
@@ -1655,26 +1658,43 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
             reject = true;
             return WalkResult::interrupt();
           }
-          // Find the outermost affine.if between op and forOp.
-          Operation *topIf = nullptr;
-          for (Operation *p = op->getParentOp(); p && p != forOp.getOperation();
-               p = p->getParentOp()) {
-            if (isa<mlir::affine::AffineIfOp>(p))
-              topIf = p;
-          }
-          if (topIf) {
-            // Multiple gets to the same alloc inside the same affine.if
-            // chain are mutually-exclusive branches; dedup by (alloc, topIf).
-            if (!seenInAffineIf.insert({it->second, topIf}).second)
-              return WalkResult::advance();
-          } else if (!seenOnce.insert(it->second).second) {
-            reject = true;
-            return WalkResult::interrupt();
-          }
+          getsByAlloc[it->second].push_back(op);
           return WalkResult::advance();
         });
     if (reject)
       return false;
+
+    // For each op, collect the (affine.if, region) chain that encloses it,
+    // stopping at forOp's body.
+    auto getAffineIfPath = [&](Operation *op) {
+      SmallVector<std::pair<Operation *, Region *>, 4> path;
+      for (Region *r = op->getParentRegion();
+           r && r->getParentOp() && r->getParentOp() != forOp.getOperation();
+           r = r->getParentOp()->getParentRegion()) {
+        if (isa<mlir::affine::AffineIfOp>(r->getParentOp()))
+          path.emplace_back(r->getParentOp(), r);
+      }
+      return path;
+    };
+    // Two ops are mutually exclusive at runtime iff some common affine.if
+    // ancestor places them in different regions (one in `then`, the other
+    // in `else`).
+    auto areMutuallyExclusive = [&](Operation *a, Operation *b) {
+      auto pa = getAffineIfPath(a);
+      auto pb = getAffineIfPath(b);
+      for (auto &[aIf, aReg] : pa)
+        for (auto &[bIf, bReg] : pb)
+          if (aIf == bIf && aReg != bReg)
+            return true;
+      return false;
+    };
+    for (auto &kv : getsByAlloc) {
+      auto &gets = kv.second;
+      for (size_t i = 0; i < gets.size(); ++i)
+        for (size_t j = i + 1; j < gets.size(); ++j)
+          if (!areMutuallyExclusive(gets[i], gets[j]))
+            return false;
+    }
 
     if (allocsOut)
       *allocsOut = std::move(allocs);
