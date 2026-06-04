@@ -89,15 +89,19 @@ int main(int argc, const char *argv[]) {
   std::string Node = vm["kernel"].as<std::string>();
 
   auto xkernels = xclbin.get_kernels();
-  auto xkernel = *std::find_if(xkernels.begin(), xkernels.end(),
-                               [Node, verbosity](xrt::xclbin::kernel &k) {
-                                 auto name = k.get_name();
-                                 if (verbosity >= 1) {
-                                   std::cout << "Name: " << name << std::endl;
-                                 }
-                                 return name.rfind(Node, 0) == 0;
-                               });
-  auto kernelName = xkernel.get_name();
+  auto it = std::find_if(xkernels.begin(), xkernels.end(),
+                         [Node, verbosity](xrt::xclbin::kernel &k) {
+                           auto name = k.get_name();
+                           if (verbosity >= 1) {
+                             std::cout << "Name: " << name << std::endl;
+                           }
+                           return name.rfind(Node, 0) == 0;
+                         });
+  if (it == xkernels.end()) {
+    std::cerr << "error: kernel '" << Node << "' not found in xclbin\n";
+    return 1;
+  }
+  auto kernelName = it->get_name();
 
   if (verbosity >= 1)
     std::cout << "Registering xclbin: " << vm["xclbin"].as<std::string>()
@@ -113,7 +117,7 @@ int main(int argc, const char *argv[]) {
     std::cout << "Getting handle to kernel:" << kernelName << "\n";
   auto kernel = xrt::kernel(context, kernelName);
 
-  auto bo_instr = xrt::bo(device, instr_v.size() * sizeof(int),
+  auto bo_instr = xrt::bo(device, instr_v.size() * sizeof(instr_v[0]),
                           XCL_BO_FLAGS_CACHEABLE, kernel.group_id(1));
   auto bo_a =
       xrt::bo(device, A_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
@@ -135,7 +139,7 @@ int main(int argc, const char *argv[]) {
   std::memset(bufC, 0, C_SIZE);
 
   void *bufInstr = bo_instr.map<void *>();
-  memcpy(bufInstr, instr_v.data(), instr_v.size() * sizeof(int));
+  memcpy(bufInstr, instr_v.data(), instr_v.size() * sizeof(instr_v[0]));
 
   bo_instr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_a.sync(XCL_BO_SYNC_BO_TO_DEVICE);
