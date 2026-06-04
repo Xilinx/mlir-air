@@ -1,0 +1,18 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// LLAMA-3.2-1B bfp16 prefill verify gate: top-K token-level inclusion
+// check on the bfp16 prefill backend. Mirrors run_npu2_verify.lit's
+// methodology but exercises the bfp16 stitchers in isolation (prefill
+// only; decode is unaffected by --prefill-dtype).
+//
+// Requires HF_TOKEN to fetch the upstream tokenizer behind the AWQ
+// checkpoint (gated).
+//
+// REQUIRES: ryzen_ai_npu2, peano, hf_token
+//
+// RUN: mkdir -p test_peano_verify_prefill_bfp16
+// RUN: cd test_peano_verify_prefill_bfp16
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile verify-prefill PREFILL_DTYPE=bfp16 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: [verify] PASS

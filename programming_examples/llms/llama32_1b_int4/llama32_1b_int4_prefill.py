@@ -93,13 +93,34 @@ def _compile_mv_int4_bf16_matmul(tile_m=16, tile_n=16, k_chunk=128, gs=128):
     )
 
 
+def _compile_mm_bf16_x_bfp16(tile_m=32, tile_n=32, tile_k_l1=128):
+    """Compile mm_bf16_x_bfp16.cc for the bfp16 GEMM kernel.
+
+    DIM_M/DIM_N/DIM_K must match the per-tile shape the stitcher passes
+    so the kernel iterates over exactly its L1_C subview.
+    """
+    src = _PROJ_ROOT / "matrix_multiplication" / "bf16_x_bfp16" / "mm_bf16_x_bfp16.cc"
+    _compile_kernel(
+        src,
+        "mm_bf16_x_bfp16.o",
+        extra_flags=[
+            f"-DDIM_M={tile_m}",
+            f"-DDIM_N={tile_n}",
+            f"-DDIM_K={tile_k_l1}",
+        ],
+        force=True,
+    )
+
+
 _INT4_TILE_N = 16  # overridden by --tile-n
 
 
-def _prepare_air_project_int4():
+def _prepare_air_project_int4(quant=None):
     """Replacement for cache.prepare_air_project: wipe + repopulate
     air_project/ with `mv_int4_bf16.o` (GEMM flags), `rope.o`, and
-    `silu_and_mul.o`."""
+    `silu_and_mul.o`. `quant` is accepted for cache.compile_and_cache
+    compatibility but unused (the kernel flavor is determined here)."""
+    del quant
     air_proj = Path("air_project")
     if air_proj.exists():
         shutil.rmtree(air_proj)
@@ -116,6 +137,36 @@ def _prepare_air_project_int4():
 
     for obj_name in [
         "mv_int4_bf16.o",
+        "rope.o",
+        "silu_and_mul.o",
+        "attn_npu2.o",
+        "attn.o",
+    ]:
+        src = Path(obj_name)
+        if src.exists():
+            shutil.copy2(src, air_proj / obj_name)
+
+
+def _prepare_air_project_bfp16(quant=None):
+    """Replacement for cache.prepare_air_project: same as int4 but with the
+    bfp16-mixed kernel `mm_bf16_x_bfp16.o` in place of `mv_int4_bf16.o`.
+    `quant` accepted for cache.compile_and_cache compatibility but unused."""
+    del quant
+    air_proj = Path("air_project")
+    if air_proj.exists():
+        shutil.rmtree(air_proj)
+    air_proj.mkdir(parents=True, exist_ok=True)
+
+    _compile_mm_bf16_x_bfp16()
+    compile_rope()
+    compile_silu_and_mul()
+    compile_attn_npu2()
+
+    if Path("attn_npu2.o").exists() and not Path("attn.o").exists():
+        shutil.copy2("attn_npu2.o", "attn.o")
+
+    for obj_name in [
+        "mm_bf16_x_bfp16.o",
         "rope.o",
         "silu_and_mul.o",
         "attn_npu2.o",
@@ -148,6 +199,20 @@ O_FFN_INT4_BACKEND = {
     "output_format": "elf",
     "instance_name": "o_ffn_int4",
     "stack_size": 16384,
+    "runtime_loop_tiling_sizes": [2, 2],
+}
+RMS_GEMMS_ROPE_BFP16_BACKEND = {
+    "omit_while_true_loop": False,
+    "output_format": "elf",
+    "instance_name": "rms_gemms_rope_bfp16",
+    "stack_size": 2048,
+    "runtime_loop_tiling_sizes": [2, 2],
+}
+O_FFN_BFP16_BACKEND = {
+    "omit_while_true_loop": False,
+    "output_format": "elf",
+    "instance_name": "o_ffn_bfp16",
+    "stack_size": 2048,
     "runtime_loop_tiling_sizes": [2, 2],
 }
 # Attention runs on the same bf16 q/k/v regardless of upstream quant —
@@ -290,6 +355,129 @@ def _run_layer_int4(
         static_input_indices={1, 5, 7, 9, 12},
         intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14},
         bo_key=f"offn_int4_L{layer_idx}",
+    )
+    return results[14].reshape(seq_len, emb_dim)
+
+
+def _run_layer_bfp16(
+    x_bf16,
+    layer,
+    layer_packed,
+    rope_lut_bf16,
+    config,
+    cache,
+    layer_idx,
+    return_intermediates=False,
+    cpu_attn=False,
+):
+    """Run one transformer block through the bfp16 prefill stitchers."""
+    seq_len = x_bf16.shape[0]
+    emb_dim = config.emb_dim
+    n_heads = config.n_heads
+    n_kv_heads = config.n_kv_heads
+    head_dim = config.head_dim
+    hidden_dim = config.hidden_dim
+    kv_dim = n_kv_heads * head_dim
+
+    rope_q = np.repeat(rope_lut_bf16[:seq_len], n_heads, axis=0).flatten()
+    rope_k = np.repeat(rope_lut_bf16[:seq_len], n_kv_heads, axis=0).flatten()
+
+    rms_args = [
+        np.asarray(x_bf16, dtype=bfloat16).reshape(seq_len, emb_dim),
+        np.asarray(layer.attn_norm, dtype=bfloat16).reshape(emb_dim),
+        np.zeros((seq_len, emb_dim), dtype=bfloat16),
+        layer_packed["wq"],
+        np.zeros((seq_len, emb_dim), dtype=bfloat16),
+        layer_packed["wk"],
+        np.zeros((seq_len, kv_dim), dtype=bfloat16),
+        layer_packed["wv"],
+        np.zeros((seq_len, kv_dim), dtype=bfloat16),
+        rope_q,
+        rope_k,
+        np.zeros((seq_len, emb_dim), dtype=bfloat16),
+        np.zeros((seq_len, kv_dim), dtype=bfloat16),
+    ]
+    output_idx = [2, 4, 6, 8, 11, 12] if return_intermediates else [8, 11, 12]
+    results = cache.load_and_run(
+        "rms_gemms_rope_bfp16",
+        {"verbose": cache.verbose, **RMS_GEMMS_ROPE_BFP16_BACKEND},
+        *rms_args,
+        output_indices=output_idx,
+        static_input_indices={1, 3, 5, 7, 9, 10},
+        intermediate_indices={2, 4, 6, 8, 11, 12},
+        bo_key=f"rms_bfp16_L{layer_idx}",
+    )
+    if return_intermediates:
+        normed = results[2].reshape(seq_len, emb_dim)
+        q = results[4].reshape(seq_len, emb_dim)
+        k = results[6].reshape(seq_len, kv_dim)
+        v = results[8].reshape(seq_len, kv_dim)
+        q_roped = results[11].reshape(seq_len, n_heads * head_dim)
+        k_roped = results[12].reshape(seq_len, n_kv_heads * head_dim)
+    else:
+        v = results[8].reshape(seq_len, kv_dim)
+        q_roped = results[11].reshape(seq_len, n_heads * head_dim)
+        k_roped = results[12].reshape(seq_len, n_kv_heads * head_dim)
+
+    if cpu_attn:
+        with cache.profiler.time_cpu("prefill_cpu_attention"):
+            attn_out = attention_reference(
+                q_roped.astype(np.float32),
+                k_roped.astype(np.float32),
+                v.astype(np.float32),
+                n_heads,
+                n_kv_heads,
+            ).astype(bfloat16)
+    else:
+        attn_buf = np.zeros((seq_len, n_heads * head_dim), dtype=bfloat16)
+        res = cache.load_and_run(
+            "flash_attn",
+            FLASH_ATTN_BACKEND,
+            np.ascontiguousarray(q_roped),
+            np.ascontiguousarray(k_roped),
+            np.ascontiguousarray(v),
+            attn_buf,
+            output_indices=[3],
+            bo_key=f"flash_attn_L{layer_idx}",
+        )
+        attn_out = res[3].reshape(seq_len, n_heads * head_dim)
+
+    n_total = seq_len * emb_dim
+    offn_args = [
+        np.asarray(attn_out, dtype=bfloat16).reshape(seq_len, emb_dim),
+        layer_packed["wo"],
+        np.zeros((seq_len, emb_dim), dtype=bfloat16),
+        np.asarray(x_bf16, dtype=bfloat16).reshape(seq_len, emb_dim),
+        np.zeros((seq_len, emb_dim), dtype=bfloat16),
+        np.asarray(layer.ffn_norm, dtype=bfloat16).reshape(emb_dim),
+        np.zeros((seq_len, emb_dim), dtype=bfloat16),
+        layer_packed["w_gate"],
+        np.zeros((seq_len, hidden_dim), dtype=bfloat16),
+        layer_packed["w_up"],
+        np.zeros((seq_len, hidden_dim), dtype=bfloat16),
+        np.zeros((seq_len, hidden_dim), dtype=bfloat16),
+        layer_packed["w_down"],
+        np.zeros((seq_len, emb_dim), dtype=bfloat16),
+        np.zeros(n_total, dtype=bfloat16),
+    ]
+    if return_intermediates:
+        return None, {
+            "normed": normed,
+            "q": q,
+            "k": k,
+            "v": v,
+            "q_roped": q_roped,
+            "k_roped": k_roped,
+            "attn_out": attn_out,
+        }
+    results = cache.load_and_run(
+        "o_ffn_bfp16",
+        {"verbose": cache.verbose, **O_FFN_BFP16_BACKEND},
+        *offn_args,
+        output_indices=[14],
+        static_input_indices={1, 5, 7, 9, 12},
+        intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14},
+        bo_key=f"offn_bfp16_L{layer_idx}",
     )
     return results[14].reshape(seq_len, emb_dim)
 
@@ -551,6 +739,17 @@ def _run_diagnosis(
                 li,
                 cpu_attn=args.cpu_attn,
             )
+        elif args.prefill_dtype == "bfp16":
+            x_bf16 = _run_layer_bfp16(
+                x_bf16,
+                weights_bf16.layers[li],
+                layers_packed[li],
+                rope_lut_bf16,
+                config,
+                cache,
+                li,
+                cpu_attn=args.cpu_attn,
+            )
         else:
             x_bf16, _ = run_transformer_block(
                 x_bf16,
@@ -636,6 +835,17 @@ def _verify_one_prompt(
         t_layer = cache.profiler.start_layer()
         if args.prefill_dtype == "int4":
             x_bf16 = _run_layer_int4(
+                x_bf16,
+                weights_bf16.layers[li],
+                layers_packed[li],
+                rope_lut_bf16,
+                config,
+                cache,
+                li,
+                cpu_attn=args.cpu_attn,
+            )
+        elif args.prefill_dtype == "bfp16":
+            x_bf16 = _run_layer_bfp16(
                 x_bf16,
                 weights_bf16.layers[li],
                 layers_packed[li],
@@ -750,13 +960,15 @@ def main():
     )
     ap.add_argument(
         "--prefill-dtype",
-        choices=["int4", "bf16"],
+        choices=["int4", "bf16", "bfp16"],
         default="int4",
         help="Which prefill GEMM ELFs to run. 'int4' uses the "
         "int4 stitchers (low-memory). 'bf16' dequants the AWQ "
         "weights once at load and runs the bf16 prefill stitchers "
-        "(3-6x faster compute; same AWQ-quality output). Decode "
-        "is unaffected — that path still benefits from int4.",
+        "(3-6x faster compute; same AWQ-quality output). 'bfp16' "
+        "dequants AWQ then re-packs as bfp16ebs8 and runs the bfp16 "
+        "stitchers (matmul_bf16_x_bfp16; ~1.19x faster than bf16 at "
+        "Q-proj scale per standalone profile). Decode is unaffected.",
     )
     ap.add_argument(
         "--min-overlap",
@@ -787,9 +999,12 @@ def main():
     _INT4_TILE_N = args.tile_n
 
     # int4 prefill needs the GEMM-flavored mv_int4_bf16.o under air_project/;
+    # bfp16 prefill needs mm_bf16_x_bfp16.o.
     # bf16 prefill uses the stock external-kernel set (rope/silu/attn).
     if args.prefill_dtype == "int4":
         _cache_mod.prepare_air_project = _prepare_air_project_int4
+    elif args.prefill_dtype == "bfp16":
+        _cache_mod.prepare_air_project = _prepare_air_project_bfp16
 
     config = LlamaConfig()
     seq_len = args.seq_len
@@ -808,14 +1023,25 @@ def main():
     # ---- Load AWQ checkpoint once (both reference + NPU consume this).
     print(f"Loading AWQ checkpoint: {args.model}")
     t0 = time.time()
-    weights_bf16, layers_packed = load_awq_weights(
-        args.model,
-        config=config,
-        gs=args.gs,
-        n_tile=args.tile_n,
-        k_chunk=128,
-        seq_len=seq_len,
-    )
+    if args.prefill_dtype == "bfp16":
+        from awq_bfp_pack import load_awq_weights_bfp
+
+        weights_bf16, layers_packed = load_awq_weights_bfp(
+            args.model,
+            config=config,
+            n_tile=32,
+            k_chunk=128,
+            seq_len=seq_len,
+        )
+    else:
+        weights_bf16, layers_packed = load_awq_weights(
+            args.model,
+            config=config,
+            gs=args.gs,
+            n_tile=args.tile_n,
+            k_chunk=128,
+            seq_len=seq_len,
+        )
     print(f"  loaded + dequant + packed in {time.time()-t0:.1f}s")
 
     # Skip-if-cached: avoid rebuilding ELFs that already exist on disk.
@@ -882,6 +1108,39 @@ def main():
                         tile_n=args.tile_n,
                     ),
                     {"verbose": args.verbose, **O_FFN_INT4_BACKEND},
+                )
+        elif args.prefill_dtype == "bfp16":
+            from multi_launch_builder.rms_gemms_rope_bfp16_multi import (
+                build_rms_gemms_rope_bfp16_module,
+            )
+            from multi_launch_builder.o_ffn_bfp16_multi import (
+                build_o_ffn_bfp16_module,
+            )
+
+            if _need("rms_gemms_rope_bfp16"):
+                print("\nCompiling rms_gemms_rope_bfp16...")
+                cache.compile_and_cache(
+                    "rms_gemms_rope_bfp16",
+                    build_rms_gemms_rope_bfp16_module(
+                        seq_len=seq_len,
+                        emb_dim=emb_dim,
+                        kv_dim=kv_dim,
+                        n_heads=config.n_heads,
+                        n_kv_heads=n_kv_heads,
+                        head_dim=head_dim,
+                    ),
+                    {"verbose": args.verbose, **RMS_GEMMS_ROPE_BFP16_BACKEND},
+                )
+            if _need("o_ffn_bfp16"):
+                print("Compiling o_ffn_bfp16...")
+                cache.compile_and_cache(
+                    "o_ffn_bfp16",
+                    build_o_ffn_bfp16_module(
+                        seq_len=seq_len,
+                        emb_dim=emb_dim,
+                        hidden_dim=hidden_dim,
+                    ),
+                    {"verbose": args.verbose, **O_FFN_BFP16_BACKEND},
                 )
         else:
             # bf16 prefill: dequantized AWQ weights through the bf16 stitchers
@@ -1114,7 +1373,12 @@ def main():
     rope_lut_bf16 = generate_rope_lut(config, seq_len=seq_len)
 
     if args.probe_stitcher1:
-        print("\n=== Probing rms_gemms_rope_int4 on layer 0 ===")
+        runner_name = (
+            "rms_gemms_rope_bfp16"
+            if args.prefill_dtype == "bfp16"
+            else "rms_gemms_rope_int4"
+        )
+        print(f"\n=== Probing {runner_name} on layer 0 ===")
         # OPTIONAL: zero the input to see if NPU produces zero output
         # (RMSNorm of zero = zero → GEMM of zero = zero).
         if os.environ.get("ZERO_INPUT") == "1":
@@ -1123,7 +1387,8 @@ def main():
         if os.environ.get("ZERO_WV") == "1":
             print("  (ZERO_WV=1: zeroing wv packed BO to see if NPU output changes)")
             layers_packed[0]["wv"] = np.zeros_like(layers_packed[0]["wv"])
-        _, npu_int = _run_layer_int4(
+        _runner = _run_layer_bfp16 if args.prefill_dtype == "bfp16" else _run_layer_int4
+        _, npu_int = _runner(
             x_bf16,
             weights_bf16.layers[0],
             layers_packed[0],
@@ -1212,6 +1477,17 @@ def main():
         t_layer = cache.profiler.start_layer()
         if args.prefill_dtype == "int4":
             x_bf16 = _run_layer_int4(
+                x_bf16,
+                weights_bf16.layers[li],
+                layers_packed[li],
+                rope_lut_bf16,
+                config,
+                cache,
+                li,
+                cpu_attn=args.cpu_attn,
+            )
+        elif args.prefill_dtype == "bfp16":
+            x_bf16 = _run_layer_bfp16(
                 x_bf16,
                 weights_bf16.layers[li],
                 layers_packed[li],
