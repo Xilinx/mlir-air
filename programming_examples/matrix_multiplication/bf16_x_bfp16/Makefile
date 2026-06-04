@@ -14,10 +14,11 @@ HERD_M  ?= 2
 HERD_N  ?= 4
 
 # bfp16ebs8 MMUL is Peano-only; xchesscc has no bfp16ebs8 codegen path.
+# compile-kernel errors at recipe time if PEANO_INSTALL_DIR is unset.
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
-  $(error PEANO_INSTALL_DIR not set. Chess toolchain is not supported for bfp16ebs8; source utils/env_setup.sh)
+  BUILD_DIR := build_chess
 endif
 
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
@@ -36,6 +37,11 @@ print:
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
+	@if [ -z "$(PEANO_INSTALL_DIR)" ]; then \
+		echo "Error: PEANO_INSTALL_DIR not set. Chess toolchain is not"\
+		     "supported for bfp16ebs8; source utils/env_setup.sh."; \
+		exit 1; \
+	fi
 	$(PEANO_INSTALL_DIR)/bin/clang++ $(PEANOWRAP2P_FLAGS) \
 		-DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) \
 		-c $(srcdir)/mm_bf16_x_bfp16.cc -o $(BUILD_DIR)/mm_bf16_x_bfp16.o
