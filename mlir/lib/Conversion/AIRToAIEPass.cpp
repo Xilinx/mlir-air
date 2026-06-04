@@ -1816,6 +1816,12 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     if (fop->hasAttr("unroll")) {
       new_fop->setAttr("unroll", fop->getAttr("unroll"));
     }
+    // Preserve user-attached loop_annotation (e.g., unroll-disable for
+    // Peano). Without this, Peano -O2 aggressively unrolls small-trip
+    // loops and blows program memory on AIE2P.
+    if (fop->hasAttr("loop_annotation")) {
+      new_fop->setAttr("loop_annotation", fop->getAttr("loop_annotation"));
+    }
 
     // use the new for op's results
     int idx = 0;
