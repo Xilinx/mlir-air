@@ -1,0 +1,4 @@
+# Internal working notes (for discussion/iteration — NOT for upstream).
+# Any file whose basename starts with internal_ is local-only.
+internal_*
+**/internal_*
