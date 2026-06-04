@@ -1599,6 +1599,27 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                   SmallVectorImpl<Operation *> *allocsOut) {
     if (forOp->hasAttr("unroll"))
       return false;
+    // User-facing opt-out: an scf.for in the candidate's region tree
+    // (including the candidate itself) carrying `air.disable_ping_pong`
+    // disables PP labeling for the enclosing candidate. Used by designs
+    // that know PP is unsafe or unprofitable for the surrounding loop
+    // -- e.g. an inner scf.for with vector iter_args, which today
+    // miscompiles under PP body duplication. Attaching the attr at the
+    // bug site (the inner loop) is more robust than attaching on the
+    // outer candidate, because compiler passes that rebuild fresh
+    // scf.for ops mostly leave pure-compute inner loops intact.
+    if (forOp->hasAttr("air.disable_ping_pong"))
+      return false;
+    bool optedOut = false;
+    forOp.getBody()->walk([&](scf::ForOp inner) -> WalkResult {
+      if (inner->hasAttr("air.disable_ping_pong")) {
+        optedOut = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (optedOut)
+      return false;
     SmallVector<Operation *> allocs;
     for (auto exec : forOp.getOps<air::ExecuteOp>()) {
       for (auto alloc : exec.getOps<memref::AllocOp>()) {
