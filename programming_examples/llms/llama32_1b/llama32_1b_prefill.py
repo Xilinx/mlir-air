@@ -36,9 +36,13 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 # Add parent directory to path for kernel imports
-_PROG_EXAMPLES = str(Path(__file__).resolve().parent.parent)
+_PROG_EXAMPLES = str(Path(__file__).resolve().parent.parent.parent)
 if _PROG_EXAMPLES not in sys.path:
     sys.path.insert(0, _PROG_EXAMPLES)
+# Also add llms/ for sibling LLM packages (llama_kernel_builder).
+_LLMS_DIR = str(Path(__file__).resolve().parent.parent)
+if _LLMS_DIR not in sys.path:
+    sys.path.insert(0, _LLMS_DIR)
 
 from llama32_1b_weights import LlamaConfig, load_weights, generate_rope_lut
 from llama32_1b_cpu_helpers import attention_reference

@@ -122,6 +122,7 @@ def repack_for_gemv(
         os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "..",
+            "..",
             "matrix_vector_multiplication",
             "int4_awq",
         ),
@@ -209,6 +210,7 @@ def self_test(K=512, N=128, group_size=128, seed=42, verbose=True):
         0,
         os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
+            "..",
             "..",
             "matrix_vector_multiplication",
             "int4_awq",

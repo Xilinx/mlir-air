@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // LLAMA-3.2-1B int4-AWQ verify gate: top-K token-level inclusion check
-// via the shared llm_verify/ framework. NPU (bf16 prefill on dequantized
+// via the shared verify/ framework. NPU (bf16 prefill on dequantized
 // AWQ + int4 decode) vs HF bf16 reference, 2 prompts × 32 greedy tokens,
 // k=5. Mirrors the bf16 sibling's run_npu2_verify.lit so both Llama
 // examples gate on identical methodology.

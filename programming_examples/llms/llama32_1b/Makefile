@@ -90,10 +90,10 @@ chat:
 ## Compile and run in one step
 all: compile profile
 
-# The shared verify framework lives under programming_examples/llm_verify/.
+# The shared verify framework lives under programming_examples/llms/verify/.
 # Each model contributes a `verify_adapter.py`; we point the framework at
 # ours via `--runner=llama32_1b.verify_adapter`.
-VERIFY_RUNNER = $(srcdir)/../llm_verify/verify_runner.py
+VERIFY_RUNNER = $(srcdir)/../verify/verify_runner.py
 RUNNER_ADAPTER = llama32_1b.verify_adapter
 
 ## Run the top-k token-level inclusion gate (NPU vs HF bf16, 2 prompts × 32 tokens, k=5).
@@ -123,5 +123,5 @@ diagnosis:
 ## Remove all build artifacts and verify reports
 clean:
 	rm -r $(BUILD_DIR) 2>/dev/null || true
-	rm -rf $(srcdir)/../llm_verify/reports
-	@echo "Build directory and llm_verify/reports/ removed. Run 'make compile' to rebuild."
+	rm -rf $(srcdir)/../verify/reports
+	@echo "Build directory and verify/reports/ removed. Run 'make compile' to rebuild."

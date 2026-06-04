@@ -107,7 +107,7 @@ def _compile_kernel(src_path, output_name, extra_flags=None, force=False):
 # Individual kernel compilation functions
 # ---------------------------------------------------------------------------
 
-_PROJ_ROOT = Path(__file__).resolve().parent.parent  # programming_examples/
+_PROJ_ROOT = Path(__file__).resolve().parent.parent.parent  # programming_examples/
 
 
 def compile_silu_and_mul():

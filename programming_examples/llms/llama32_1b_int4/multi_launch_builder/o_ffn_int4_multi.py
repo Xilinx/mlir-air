@@ -29,6 +29,7 @@ import sys
 import numpy as np
 from ml_dtypes import bfloat16
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # Shared scaffolding (llama_kernel_builder.stitching, ffn_swiglu builder,
@@ -42,6 +43,7 @@ sys.path.insert(
     0,
     os.path.join(
         os.path.dirname(__file__),
+        "..",
         "..",
         "..",
         "matrix_multiplication",

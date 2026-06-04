@@ -35,16 +35,16 @@ TOPK          ?= 10
 MIN_OVERLAP   ?= 6
 # Multi-prompt sweep. Default uses the bf16 sibling's instruct prompts file
 # so both Llama examples gate against the same prompt set.
-PROMPTS_FILE  ?= $(srcdir)/../llama32_1b/verify/prompts/instruct.txt
+PROMPTS_FILE  ?= $(srcdir)/../verify/prompts/instruct.txt
 
 N_TOKENS      ?= 30
 PREFILL_INF_CACHE ?= $(srcdir)/inference_prefill_cache
 DECODE_INF_CACHE  ?= $(srcdir)/inference_decode_cache
 
-# The shared verify framework lives under programming_examples/llm_verify/.
+# The shared verify framework lives under programming_examples/llms/verify/.
 # Each model contributes a `verify_adapter.py`; we point the framework at
 # ours via `--runner=llama32_1b_int4.verify_adapter`.
-VERIFY_RUNNER  = $(srcdir)/../llm_verify/verify_runner.py
+VERIFY_RUNNER  = $(srcdir)/../verify/verify_runner.py
 RUNNER_ADAPTER = llama32_1b_int4.verify_adapter
 
 .PHONY: help compile run profile verify-prefill verify-prefill-full \
@@ -105,7 +105,7 @@ compile:
 
 ## Run NPU prefill end-to-end + top-K comparison vs HF bf16 reference
 ## (prefill-only argmax/overlap; for the full prefill+decode gate, see
-## `make verify` which goes through the shared llm_verify framework).
+## `make verify` which goes through the shared verify/ framework).
 run:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
@@ -135,7 +135,7 @@ verify-prefill-full:
 		--prompts-file $(PROMPTS_FILE) \
 		--cache-dir $(srcdir)/verify_kernel_cache
 
-## Full prefill + decode top-K inclusion gate via the shared llm_verify/
+## Full prefill + decode top-K inclusion gate via the shared verify/
 ## framework (matches the bf16 baseline's `make verify`). 2 prompts × 32
 ## greedy tokens, k=5. NPU runs bf16 prefill on dequantized AWQ + int4
 ## decode; HF reference loads the same AWQ checkpoint in bf16.

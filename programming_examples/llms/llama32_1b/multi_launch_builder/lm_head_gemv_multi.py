@@ -13,12 +13,13 @@ prefill LM Head (which uses GEMM with M=seq_len).
 import os
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(
     0,
     os.path.join(
-        os.path.dirname(__file__), "..", "..", "matrix_vector_multiplication", "bf16"
+        os.path.dirname(__file__), "..", "..", "..", "matrix_vector_multiplication", "bf16"
     ),
 )
 

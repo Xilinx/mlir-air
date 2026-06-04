@@ -395,7 +395,7 @@ from llama32_1b_decode    import compile_decode_kernels, run_decode_block</code>
 <!-- ============================================================ -->
 <h2 id="repro">How to reproduce these numbers</h2>
 
-<pre><code>cd programming_examples/llama32_1b
+<pre><code>cd programming_examples/llms/llama32_1b
 
 make verify MODEL=instruct       <span class="file-ref"># ~3m41s — top-k token-level inclusion gate, NPU vs HF bf16 (NPU FA on)</span>
 make verify MODEL=base           <span class="file-ref"># ~3m39s — base checkpoint, continuation prompts</span>

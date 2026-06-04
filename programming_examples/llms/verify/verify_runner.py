@@ -58,7 +58,7 @@ from report import Report  # noqa: E402
 DEFAULT_PROMPT = "The capital of France is"
 BLOCK_PROBE = "ffn_out"
 
-# Prompt sets live under llm_verify/prompts/; pick by `--prompt-style`
+# Prompt sets live under verify/prompts/; pick by `--prompt-style`
 # (`instruct` for chat-tuned models, `base` for completion checkpoints).
 PROMPTS_DIR = HERE / "prompts"
 DEFAULT_PROMPTS = {
@@ -192,7 +192,7 @@ def main():
         "--prompt-style",
         choices=list(DEFAULT_PROMPTS),
         default="instruct",
-        help="Which prompts file to use (selects from llm_verify/prompts/).",
+        help="Which prompts file to use (selects from verify/prompts/).",
     )
     p.add_argument("--npu-attn", choices=["on", "off"], default="on")
     p.add_argument("--prompt", default=DEFAULT_PROMPT)
@@ -215,7 +215,7 @@ def main():
         "--prompts-file",
         default=None,
         help="Override the prompt file used by --prompts topk_token. "
-        "Defaults to llm_verify/prompts/{prompt-style}.txt.",
+        "Defaults to verify/prompts/{prompt-style}.txt.",
     )
     p.add_argument(
         "--max-prompts",

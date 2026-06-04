@@ -25,10 +25,10 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _THIS_DIR = Path(__file__).resolve().parent
-_PROG_EXAMPLES = _THIS_DIR.parent
-_LLAMA_BF16 = _PROG_EXAMPLES / "llama32_1b"
-_LLM_VERIFY = _PROG_EXAMPLES / "llm_verify"
-for _p in (str(_PROG_EXAMPLES), str(_LLAMA_BF16), str(_LLM_VERIFY), str(_THIS_DIR)):
+_LLMS_DIR = _THIS_DIR.parent
+_LLAMA_BF16 = _LLMS_DIR / "llama32_1b"
+_VERIFY = _LLMS_DIR / "verify"
+for _p in (str(_LLMS_DIR), str(_LLAMA_BF16), str(_VERIFY), str(_THIS_DIR)):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)

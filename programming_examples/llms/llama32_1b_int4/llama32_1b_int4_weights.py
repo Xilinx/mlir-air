@@ -28,9 +28,10 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _THIS_DIR = Path(__file__).resolve().parent
-_LLAMA_BF16_DIR = _THIS_DIR.parent / "llama32_1b"
-_PROG_EXAMPLES = _THIS_DIR.parent
-for p in (str(_PROG_EXAMPLES), str(_LLAMA_BF16_DIR), str(_THIS_DIR)):
+_LLMS_DIR = _THIS_DIR.parent
+_LLAMA_BF16_DIR = _LLMS_DIR / "llama32_1b"
+_PROG_EXAMPLES = _LLMS_DIR.parent  # programming_examples/ (for cross-area imports)
+for p in (str(_LLMS_DIR), str(_LLAMA_BF16_DIR), str(_THIS_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 

@@ -19,7 +19,7 @@ import sys
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 _INT4_GEMM_DIR = os.path.normpath(
-    os.path.join(_THIS, "..", "matrix_multiplication", "int4_awq")
+    os.path.join(_THIS, "..", "..", "matrix_multiplication", "int4_awq")
 )
 if _INT4_GEMM_DIR not in sys.path:
     sys.path.insert(0, _INT4_GEMM_DIR)

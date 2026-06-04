@@ -4,10 +4,10 @@ Two ways to look at the production Llama-3.2-1B NPU2 inference pipeline,
 both comparing against HuggingFace transformers in **bf16** (same dtype
 as NPU — fair fight). Companion doc: `../docs/VERIFICATION.html`.
 
-Targets live in the parent Makefile (`programming_examples/llama32_1b/Makefile`):
+Targets live in the parent Makefile (`programming_examples/llms/llama32_1b/Makefile`):
 
 ```
-cd programming_examples/llama32_1b
+cd programming_examples/llms/llama32_1b
 
 make verify [MODEL=instruct|base]                # ~4 min — top-k token-level correctness gate
 make diagnosis [MODEL=...] [PROMPT="..."]        # ~3 min — per-layer cosine, informational

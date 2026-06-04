@@ -14,7 +14,7 @@ This example needs four packages on top of the mlir-air base. Install them
 with the bundled `requirements.txt`:
 
 ```bash
-cd programming_examples/llama32_1b
+cd programming_examples/llms/llama32_1b
 pip install -r requirements.txt
 ```
 
@@ -51,7 +51,7 @@ export HF_TOKEN=<your-token>       # for non-interactive / CI
 ## Quick Start
 
 ```bash
-cd programming_examples/llama32_1b
+cd programming_examples/llms/llama32_1b
 
 # Step 1: Compile all kernels (one-time, ~3 minutes)
 make compile

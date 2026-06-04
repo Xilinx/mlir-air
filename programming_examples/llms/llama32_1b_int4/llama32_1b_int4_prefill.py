@@ -477,7 +477,7 @@ def _hf_reference_logits(model_path, weights_bf16, prompt, config, n_layers=None
 
 def _load_prompts_file(path):
     """Read a prompts file (one prompt per line, '#' comments + blanks
-    ignored). Same format as ../llama32_1b/verify/prompts/{base,instruct}.txt."""
+    ignored). Same format as ../verify/prompts/{base,instruct}.txt."""
     out = []
     with open(path) as f:
         for ln in f:

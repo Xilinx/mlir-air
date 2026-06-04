@@ -110,7 +110,6 @@ until a shared verify / loader package consolidates them. The int4 GEMM
 module is imported from
 `../matrix_multiplication/int4_awq/matmul_int4_packed.py`.
 
-The verify subsystem under `../llama32_1b/verify/` (top-K gate,
-per-layer diagnosis, prompt fixtures, HF + NPU runners) will move to a
-shared location in a follow-up so this example can plug into it
-instead of carrying its own monolithic verifier.
+The shared verify subsystem under `../verify/` (top-K gate,
+per-layer diagnosis, prompt fixtures, HF + NPU runners) is plugged
+into via `verify_adapter.py` (see `make verify`).

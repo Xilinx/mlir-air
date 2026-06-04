@@ -4,15 +4,13 @@
 """Verify adapter for the bf16 Llama-3.2-1B example.
 
 Wraps the production `llama32_1b_inference` driver into a Runner that
-satisfies `llm_verify/runners/base.Runner`. The shared verify framework
-(see `programming_examples/llm_verify/verify_runner.py`) imports this
+satisfies `verify/runners/base.Runner`. The shared verify framework
+(see `programming_examples/llms/verify/verify_runner.py`) imports this
 module via `--runner=llama32_1b.verify_adapter` and calls `build_runner`.
 
 Nothing here is reachable from production code; it exists only so the
 verify gate can exercise the exact same NPU code path that `make run`
-uses. Mirror of the previous `runners/npu_runner.py` (which lived under
-`llama32_1b/verify/` before the verify subsystem was hoisted to
-`llm_verify/`).
+uses.
 """
 
 from __future__ import annotations
@@ -24,11 +22,11 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
-# Ensure programming_examples/, this dir, and llm_verify/ are importable.
+# Ensure llms/, this dir, and llms/verify/ are importable.
 _THIS_DIR = Path(__file__).resolve().parent
-_PROG_EXAMPLES = _THIS_DIR.parent
-_LLM_VERIFY = _PROG_EXAMPLES / "llm_verify"
-for _p in (str(_PROG_EXAMPLES), str(_LLM_VERIFY), str(_THIS_DIR)):
+_LLMS_DIR = _THIS_DIR.parent
+_VERIFY = _LLMS_DIR / "verify"
+for _p in (str(_LLMS_DIR), str(_VERIFY), str(_THIS_DIR)):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)

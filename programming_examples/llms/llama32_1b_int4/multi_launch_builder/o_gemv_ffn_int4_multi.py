@@ -50,6 +50,7 @@ sys.path.insert(
         os.path.dirname(__file__),
         "..",
         "..",
+        "..",
         "matrix_vector_multiplication",
         "int4_awq",
     ),
@@ -60,9 +61,12 @@ sys.path.insert(
         os.path.dirname(__file__),
         "..",
         "..",
+        "..",
         "decode_ffn_swiglu",
     ),
 )
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import matvec_int4_packed_add

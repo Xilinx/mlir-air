@@ -35,6 +35,7 @@ from ml_dtypes import bfloat16
 _INT4_GEMM_DIR = os.path.join(
     os.path.dirname(__file__),
     "..",
+    "..",
     "matrix_multiplication",
     "int4_awq",
 )
