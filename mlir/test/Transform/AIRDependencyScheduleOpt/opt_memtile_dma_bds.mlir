@@ -129,6 +129,7 @@ module {
 // CHECK-NOT:   scf.for
 // CHECK:       air.channel.put async {{.*}} @channel_pf[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c8{{.*}}, %c98{{.*}}, %c8{{.*}}, %c8{{.*}}] [%c6272{{.*}}, %c8{{.*}}, %c784{{.*}}, %c1{{.*}}])
 // CHECK-NOT:   air.channel.put
+// CHECK:       {air.segment_end}
 
 module {
   air.channel @channel_pf [1]
@@ -184,6 +185,7 @@ module {
 // CHECK:       air.channel.put async {{.*}} @channel_neg[] (%{{.*}}[%c1{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c3{{.*}}, %c4{{.*}}, %c5{{.*}}] [%c200{{.*}}, %c50{{.*}}, %c12{{.*}}, %c1{{.*}}])
 // CHECK:       air.channel.put async {{.*}} @channel_neg[] (%{{.*}}[%c2{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c3{{.*}}, %c4{{.*}}, %c5{{.*}}] [%c200{{.*}}, %c50{{.*}}, %c12{{.*}}, %c1{{.*}}])
 // CHECK-NOT:   [%c{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}]
+// CHECK:       {air.segment_end}
 
 module {
   air.channel @channel_neg [1]
