@@ -801,6 +801,11 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   if (auto attr =
           for_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
     new_for_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+  // Preserve loop_annotation (user code attaches it to disable Peano
+  // unrolling). Without this, Peano -O2 aggressively unrolls small-trip
+  // loops and blows program memory.
+  if (auto attr = for_op->getAttr("loop_annotation"))
+    new_for_op->setAttr("loop_annotation", attr);
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));

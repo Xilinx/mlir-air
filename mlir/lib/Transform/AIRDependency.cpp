@@ -1244,6 +1244,11 @@ private:
     if (auto attr = loop_op->getAttrOfType<StringAttr>(
             SymbolTable::getSymbolAttrName()))
       new_loop_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+    // Preserve user-attached loop_annotation (e.g., unroll-disable for
+    // Peano). This is dropped by default since the new loop is a fresh
+    // op with only a few hand-copied attributes.
+    if (auto attr = loop_op->getAttr("loop_annotation"))
+      new_loop_op->setAttr("loop_annotation", attr);
 
     // Splice the operations inside loop op INCLUDING the terminator
     auto &bb = new_loop_op.getBody()->getOperations();
@@ -1303,6 +1308,8 @@ private:
     if (auto attr = loop_op->getAttrOfType<StringAttr>(
             SymbolTable::getSymbolAttrName()))
       new_loop_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+    if (auto attr = loop_op->getAttr("loop_annotation"))
+      new_loop_op->setAttr("loop_annotation", attr);
 
     // Splice the operations inside loop op
     auto &bb = new_loop_op.getBody()->getOperations();
