@@ -12,10 +12,8 @@
 // Optimize logical air.channel.put/get op into efficient shim dma block descriptor (BD).
 
 // CHECK-LABEL: @func0
-// CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c16{{.*}}, %c4{{.*}}, %c32{{.*}}, %c8{{.*}}] [%c1024{{.*}}, %c8{{.*}}, %c32{{.*}}, %c1{{.*}}])
-// CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c16{{.*}}, %c4{{.*}}, %c32{{.*}}, %c8{{.*}}] [%c1024{{.*}}, %c8{{.*}}, %c32{{.*}}, %c1{{.*}}])
-// CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c0{{.*}}] [%c16{{.*}}, %c4{{.*}}, %c32{{.*}}, %c8{{.*}}] [%c1024{{.*}}, %c8{{.*}}, %c32{{.*}}, %c1{{.*}}])
-// CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c0{{.*}}] [%c16{{.*}}, %c4{{.*}}, %c32{{.*}}, %c8{{.*}}] [%c1024{{.*}}, %c8{{.*}}, %c32{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c4{{.*}}, %c32{{.*}}, %c8{{.*}}] [%c1024{{.*}}, %c8{{.*}}, %c32{{.*}}, %c1{{.*}}])
+// CHECK-NOT: air.channel.put
 // CHECK: {air.segment_end}
 
 // AIE1: error{{.*}}'func.func' op AIE1 architecture does not come with memtiles.
@@ -104,6 +102,113 @@ module {
         }
         %async_token_0 = air.execute {
           memref.dealloc %results : memref<8x2x32x32xbf16, 1>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// =============================================================================
+// Regression: scf.for whose channel op already has maxNumDims=4 active wrap
+// dims, but the new outer dim folded from the loop can collapse with an
+// existing adjacent dim (stride[i-1] == size[i] * stride[i]) under
+// canonicalization. The pre-fold gate must NOT pre-reject these; the
+// post-canonicalize legality check decides.
+//
+// Concretely: existing wrap <2, 6272> · <98, 8> · <8, 784> · <8, 1> (12544 B)
+// inside scf.for %xb = 0..4 step 1 with offsets[1] = %xb at stride 12544.
+// Fold prepends <4, 12544>; canonicalize collapses <4, 12544> · <2, 6272>
+// → <8, 6272>; final 4D <8, 6272> · <98, 8> · <8, 784> · <8, 1> (50176 B).
+// (This is the L2->L1 act gather pattern from conv2d_14x14.)
+// =============================================================================
+
+// CHECK-LABEL: @postfold_collapse_4d_to_4d
+// CHECK-NOT:   scf.for
+// CHECK:       air.channel.put async {{.*}} @channel_pf[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c8{{.*}}, %c98{{.*}}, %c8{{.*}}, %c8{{.*}}] [%c6272{{.*}}, %c8{{.*}}, %c784{{.*}}, %c1{{.*}}])
+// CHECK-NOT:   air.channel.put
+
+module {
+  air.channel @channel_pf [1]
+  func.func @postfold_collapse_4d_to_4d() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg_pf async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c4 = arith.constant 4 : index
+        %c8 = arith.constant 8 : index
+        %c98 = arith.constant 98 : index
+        %c784 = arith.constant 784 : index
+        %c6272 = arith.constant 6272 : index
+        %c12544 = arith.constant 12544 : index
+        %c50176 = arith.constant 50176 : index
+        %async_token, %results = air.execute -> (memref<1x3x50176xi8, 1 : i32>) {
+          %alloc = memref.alloc() : memref<1x3x50176xi8, 1 : i32>
+          air.execute_terminator %alloc : memref<1x3x50176xi8, 1 : i32>
+        }
+        %t = scf.for %xb = %c0 to %c4 step %c1 iter_args(%arg = %async_token) -> (!air.async.token) {
+          %p = air.channel.put async [%arg] @channel_pf[] (%results[%c0, %xb, %c0, %c0, %c0, %c0] [%c1, %c1, %c2, %c98, %c8, %c8] [%c50176, %c12544, %c6272, %c8, %c784, %c1]) {id = 1 : i32} : (memref<1x3x50176xi8, 1 : i32>)
+          scf.yield %p : !air.async.token
+        }
+        %async_token_0 = air.execute {
+          memref.dealloc %results : memref<1x3x50176xi8, 1 : i32>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// =============================================================================
+// Regression: scf.for whose channel op has maxNumDims=4 active wrap dims AND
+// the new outer dim folded from the loop CANNOT collapse with any existing
+// adjacent dim. The post-canonicalize legality check must reject the fold to
+// avoid emitting an illegal 5D BD wrap; the unroll fallback then materializes
+// N separate channel ops.
+//
+// Concretely: existing wrap <2, 200> · <3, 50> · <4, 12> · <5, 1> (no
+// internal collapsing — stride[i-1] != size[i] * stride[i] for any i), loop
+// adds outer with stride 200 (matches stride[0] but 200 != 2 * 200, so no
+// collapse). Result IR has 3 separate puts (unroll fallback), each with
+// the original 4D wrap.
+// =============================================================================
+
+// CHECK-LABEL: @postfold_no_collapse_rejected
+// CHECK-NOT:   scf.for
+// CHECK:       air.channel.put async {{.*}} @channel_neg[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c3{{.*}}, %c4{{.*}}, %c5{{.*}}] [%c200{{.*}}, %c50{{.*}}, %c12{{.*}}, %c1{{.*}}])
+// CHECK:       air.channel.put async {{.*}} @channel_neg[] (%{{.*}}[%c1{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c3{{.*}}, %c4{{.*}}, %c5{{.*}}] [%c200{{.*}}, %c50{{.*}}, %c12{{.*}}, %c1{{.*}}])
+// CHECK:       air.channel.put async {{.*}} @channel_neg[] (%{{.*}}[%c2{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c3{{.*}}, %c4{{.*}}, %c5{{.*}}] [%c200{{.*}}, %c50{{.*}}, %c12{{.*}}, %c1{{.*}}])
+// CHECK-NOT:   [%c{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}]
+
+module {
+  air.channel @channel_neg [1]
+  func.func @postfold_no_collapse_rejected() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg_neg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
+        %c5 = arith.constant 5 : index
+        %c12 = arith.constant 12 : index
+        %c50 = arith.constant 50 : index
+        %c200 = arith.constant 200 : index
+        %async_token, %results = air.execute -> (memref<10000xi8, 1 : i32>) {
+          %alloc = memref.alloc() : memref<10000xi8, 1 : i32>
+          air.execute_terminator %alloc : memref<10000xi8, 1 : i32>
+        }
+        %t = scf.for %iv = %c0 to %c3 step %c1 iter_args(%arg = %async_token) -> (!air.async.token) {
+          %p = air.channel.put async [%arg] @channel_neg[] (%results[%iv, %c0, %c0, %c0] [%c2, %c3, %c4, %c5] [%c200, %c50, %c12, %c1]) {id = 2 : i32} : (memref<10000xi8, 1 : i32>)
+          scf.yield %p : !air.async.token
+        }
+        %async_token_0 = air.execute {
+          memref.dealloc %results : memref<10000xi8, 1 : i32>
         }
       }
     }

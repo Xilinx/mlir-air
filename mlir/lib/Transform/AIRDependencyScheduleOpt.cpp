@@ -2287,15 +2287,19 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       populateDefaultWrapsAndStrides(b, channel_op.getMemref(), offsets, wraps,
                                      strides);
 
-    // Check if the number of wrap-and-stride dims exceed maxNumDims. TODO:
-    // expand this to take into account more wrap-and-stride constraints.
+    // Pre-fold gate: allow attempting the fold when we already have up to
+    // maxNumDims active wraps. The fold inserts one new outer dim; if
+    // canonicalize can collapse it with an existing adjacent dim
+    // (stride[i-1] == size[i] * stride[i]), the post-canonicalize count
+    // will still fit in maxNumDims. A stricter post-fold check below
+    // rejects cases where canonicalize cannot reduce.
     int numActualWrapDims = 0; // Count the number of actual hardware wrap
                                // dimensions, with wrap value greater than one.
     for (auto v : wraps) {
       if (*getConstantIntValue(v) > 1)
         numActualWrapDims++;
     }
-    if (maxNumDims >= 0 && numActualWrapDims > maxNumDims - 1)
+    if (maxNumDims >= 0 && numActualWrapDims > maxNumDims)
       return failure();
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
@@ -2308,6 +2312,19 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         rewriter, offsets, wraps, strides,
         air::getTensorVolume(channel_op.getMemref().getType()), maxSize,
         innerAlignment);
+
+    // Post-fold legality check: the BD encoder cannot emit more than
+    // maxNumDims active wrap dims. If canonicalize did not reduce the
+    // count back, abandon this fold attempt.
+    if (maxNumDims >= 0) {
+      int postFoldActiveDims = 0;
+      for (auto v : wraps) {
+        if (auto cv = getConstantIntValue(v); cv && *cv > 1)
+          postFoldActiveDims++;
+      }
+      if (postFoldActiveDims > maxNumDims)
+        return failure();
+    }
 
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
     if (enableRepeatAtHighestDim && !wraps.empty()) {
