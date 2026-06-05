@@ -111,6 +111,7 @@ sys.path.insert(
         os.path.dirname(__file__),
         "..",
         "..",
+        "..",
         "matrix_vector_multiplication",
         "int4_awq",
     ),

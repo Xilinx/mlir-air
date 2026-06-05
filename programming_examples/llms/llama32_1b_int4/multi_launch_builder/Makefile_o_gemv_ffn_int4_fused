@@ -2,7 +2,7 @@
 # Profile + run-test harness for o_gemv_ffn_int4_fused.
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
-INT4_SRC := $(realpath $(srcdir)/../../matrix_vector_multiplication/int4_awq)
+INT4_SRC := $(realpath $(srcdir)/../../../matrix_vector_multiplication/int4_awq)
 
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano_o_gemv_ffn_int4_fused
