@@ -2242,14 +2242,13 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
-  AIRSpecializeChannelWrapAndStrideInScfFor(
-      MLIRContext *ctx, int &maxNumDims, int &maxSize,
-      bool &enableRepeatAtHighestDim, bool &skipZeroStride,
-      llvm::ArrayRef<int> wrapUpperBounds = {})
+  AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx, int &maxNumDims,
+                                            int &maxSize,
+                                            bool &enableRepeatAtHighestDim,
+                                            bool &skipZeroStride)
       : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize),
         enableRepeatAtHighestDim(enableRepeatAtHighestDim),
-        skipZeroStride(skipZeroStride),
-        wrapUpperBounds(wrapUpperBounds.begin(), wrapUpperBounds.end()) {}
+        skipZeroStride(skipZeroStride) {}
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
@@ -2405,44 +2404,6 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       if (postFoldActiveDims > maxNumDims)
         return failure();
     }
-    // Per-axis bound check applies only when this fold is *terminal*: no
-    // further for-loop parent above for_op is available to push the new
-    // outermost dim further inward via another fold. Otherwise the greedy
-    // rewriter may match this pattern at the innermost level first, leaving
-    // a wrap that temporarily sits at axis 0 but will be displaced by the
-    // next iteration's fold of the outer for-loop. Rejecting on intermediate
-    // state would needlessly disable the chain.
-    //
-    // The leak condition is not "any wrap >= bound" — tileIllegalWrapDim
-    // happily splits an over-bound dim into two and the resulting chain still
-    // emits exactly one airrt.dma_memcpy_nd with one matching npu.dma_wait
-    // (BDs paired). The leak triggers only when the post-split dim count
-    // exceeds maxNumDims, which kicks the count-overflow path in
-    // AIRRtToNpuPass.cpp:tileIllegalWrapDim that unrolls the outer dim into
-    // multiple airrt.dma_memcpy_nd ops without replicating the wait. Predict
-    // that condition by summing post-fold active dims with the number of
-    // over-bound dims (each contributes one extra dim post-split) and reject
-    // only when that sum would exceed maxNumDims. Bounds are exclusive upper
-    // bounds, mirroring tileIllegalWrapDim's `wrap >= bound` predicate.
-    bool isTerminalFold = !for_op->getParentOfType<scf::ForOp>() &&
-                          !for_op->getParentOfType<affine::AffineForOp>();
-    if (isTerminalFold && maxNumDims >= 0 && !wrapUpperBounds.empty()) {
-      int activeDims = 0;
-      int overBoundDims = 0;
-      unsigned axisIdx = 0;
-      for (auto v : wraps) {
-        auto cv = getConstantIntValue(v);
-        if (!cv || *cv <= 1)
-          continue;
-        activeDims++;
-        if (axisIdx < wrapUpperBounds.size() && *cv >= wrapUpperBounds[axisIdx])
-          overBoundDims++;
-        axisIdx++;
-      }
-      if (activeDims + overBoundDims > maxNumDims)
-        return failure();
-    }
-
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
     if (enableRepeatAtHighestDim && !wraps.empty()) {
       // Force bump up number of dims to maxNumDims.
@@ -2564,7 +2525,6 @@ private:
   int &maxSize;
   bool &enableRepeatAtHighestDim;
   bool &skipZeroStride;
-  SmallVector<int> wrapUpperBounds;
 };
 
 // This pattern should be executed after
@@ -3668,7 +3628,7 @@ private:
 LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
     Region *region, int maxNumDims = -1, int maxSize = -1,
     bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false,
-    bool skipZeroStride = false, llvm::ArrayRef<int> wrapUpperBounds = {}) {
+    bool skipZeroStride = false) {
   MLIRContext *ctx = region->getContext();
   RewritePatternSet preproc_patterns(ctx);
   preproc_patterns
@@ -3696,8 +3656,7 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
                   CanonicalizeArithIndexCastOpOnLoopInductionVar,
                   AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
   patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(
-      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim, skipZeroStride,
-      wrapUpperBounds);
+      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim, skipZeroStride);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(patterns));
@@ -6884,20 +6843,13 @@ private:
       if (isAIE2)
         air::applyAIRIsolateAsyncDmaLoopNestsPattern(region);
 
-      // Mirror AIRRtToNpuPass.cpp's AIE2_WRAP_UPPER_BOUNDS for shim BDs:
-      // outermost dim is the iteration-count axis (max 64); inner dims use
-      // the 10-bit BD wrap field (max 1024). Empty for AIE1 since maxNumDims
-      // is 1 and downstream tileIllegalWrapDim only runs for AIE2.
-      SmallVector<int> wrapUpperBounds;
-      if (isAIE2)
-        wrapUpperBounds = {64, 1024, 1024, 1024};
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           region,
           /*maxNumDims=*/maxNumDims,
           /*maxSize=*/maxSize,
           /*enableForLoopUnrolling=*/enableForLoopUnrolling,
           /*enableRepeatAtHighestDim=*/true,
-          /*skipZeroStride=*/false, wrapUpperBounds);
+          /*skipZeroStride=*/false);
     }
   }
 };
@@ -7514,11 +7466,10 @@ void populateAIRCanonicalizeChannelWrapAndStridePatterns(
 
 void applyAIRSpecializeChannelWrapAndStridePattern(
     Region *region, int maxNumDims, int maxSize, bool enableForLoopUnrolling,
-    bool enableRepeatAtHighestDim, bool skipZeroStride,
-    llvm::ArrayRef<int> wrapUpperBounds) {
+    bool enableRepeatAtHighestDim, bool skipZeroStride) {
   (void)AIRSpecializeChannelWrapAndStrideImpl(
       region, maxNumDims, maxSize, enableForLoopUnrolling,
-      enableRepeatAtHighestDim, skipZeroStride, wrapUpperBounds);
+      enableRepeatAtHighestDim, skipZeroStride);
 }
 
 void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {
