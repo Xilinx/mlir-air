@@ -18,7 +18,6 @@ from air.ir import (
     AffineSymbolExpr,
     BF16Type,
     F32Type,
-    IndexType,
     InsertionPoint,
     IntegerAttr,
     IntegerType,
@@ -38,7 +37,7 @@ from air.dialects.air import (
     module_builder,
     segment,
 )
-from air.dialects.arith import constant
+from air.dialects import arith
 from air.dialects.func import CallOp, FuncOp
 from air.dialects.memref import AllocOp, DeallocOp, subview
 from air.dialects.scf import ForOp, for_, yield_
@@ -58,10 +57,9 @@ def for_disable_pp(start, stop=None, step=None):
     params = [start, stop, step]
     for i, p in enumerate(params):
         if isinstance(p, int):
-            p = constant(IndexType.get(), p)
-        params[i] = p
+            params[i] = arith.ConstantOp.create_index(p)
     start, stop, step = params
-    for_op = ForOp(start, stop, step, None)
+    for_op = ForOp(start, stop, step, [])
     for_op.operation.attributes["air.disable_ping_pong"] = UnitAttr.get()
     with InsertionPoint(for_op.body):
         yield for_op.induction_variable
