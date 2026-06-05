@@ -51,7 +51,6 @@ def build_module():
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
             ChannelPut("ChanIn", a)
-            ChannelGet("ChanOut", b)
 
             # The arguments are still the input and the output
             @segment(name="seg")
@@ -94,6 +93,8 @@ def build_module():
                     DeallocOp(tensor_out_l1)
 
                 DeallocOp(tensor_in_l2)
+
+            ChannelGet("ChanOut", b)
 
 
 if __name__ == "__main__":

@@ -52,7 +52,6 @@ def build_module():
         def launch_body(a, b):
 
             ChannelPut("ChanInL2", a)
-            ChannelGet("ChanOutL2", b)
 
             @segment(name="seg")
             def segment_body():
@@ -60,11 +59,6 @@ def build_module():
                 ChannelGet("ChanInL2", image_in_l2)
                 ChannelPut("ChanInL1", image_in_l2)
                 DeallocOp(image_in_l2)
-
-                image_out_l2 = AllocOp(image_type_l2, [], [])
-                ChannelGet("ChanOutL1", image_out_l2)
-                ChannelPut("ChanOutL2", image_out_l2)
-                DeallocOp(image_out_l2)
 
                 @herd(name="addherd", sizes=[1, 1])
                 def herd_body(tx, ty, sx, sy):
@@ -93,6 +87,13 @@ def build_module():
 
                     DeallocOp(image_in)
                     DeallocOp(image_out)
+
+                image_out_l2 = AllocOp(image_type_l2, [], [])
+                ChannelGet("ChanOutL1", image_out_l2)
+                ChannelPut("ChanOutL2", image_out_l2)
+                DeallocOp(image_out_l2)
+
+            ChannelGet("ChanOutL2", b)
 
 
 if __name__ == "__main__":

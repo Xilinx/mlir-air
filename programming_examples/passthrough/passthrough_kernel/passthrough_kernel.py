@@ -47,7 +47,6 @@ def build_module(vector_size, num_subvectors):
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
             ChannelPut("ChanIn", a)
-            ChannelGet("ChanOut", b)
 
             @segment(name="seg")
             def segment_body():
@@ -74,6 +73,8 @@ def build_module(vector_size, num_subvectors):
                         DeallocOp(tensor_in)
                         DeallocOp(tensor_out)
                         yield_([])
+
+            ChannelGet("ChanOut", b)
 
 
 if __name__ == "__main__":

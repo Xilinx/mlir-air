@@ -61,22 +61,6 @@ def build_module():
                         strides=[IMAGE_WIDTH, 1],
                     )
 
-            # Transfer one tile of data per worker
-            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
-                for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = TILE_HEIGHT * h
-                    offset1 = TILE_WIDTH * w
-
-                    # Write data back out to the channel tile by tile
-                    ChannelGet(
-                        "ChanOut",
-                        b,
-                        indices=[h, w],
-                        offsets=[offset0, offset1],
-                        sizes=TILE_SIZE,
-                        strides=[IMAGE_WIDTH, 1],
-                    )
-
             # The arguments are still the input and the output
             @segment(name="seg")
             def segment_body():
@@ -120,6 +104,22 @@ def build_module():
                     # Deallocate our L1 buffers
                     DeallocOp(tile_in)
                     DeallocOp(tile_out)
+
+            # Transfer one tile of data per worker
+            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
+                for w in range(IMAGE_WIDTH // TILE_WIDTH):
+                    offset0 = TILE_HEIGHT * h
+                    offset1 = TILE_WIDTH * w
+
+                    # Write data back out to the channel tile by tile
+                    ChannelGet(
+                        "ChanOut",
+                        b,
+                        indices=[h, w],
+                        offsets=[offset0, offset1],
+                        sizes=TILE_SIZE,
+                        strides=[IMAGE_WIDTH, 1],
+                    )
 
 
 if __name__ == "__main__":

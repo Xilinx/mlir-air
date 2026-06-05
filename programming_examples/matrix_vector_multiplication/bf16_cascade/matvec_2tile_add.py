@@ -135,14 +135,6 @@ def build_module(M, K, m=8, k=512, n_cores=8):
                         sizes=[M_div_m_per_core, K_div_k, m, k],
                         strides=[m * K, k, K, 1],
                     )
-                    ChannelGet(
-                        "outD",
-                        d,
-                        indices=[c_col],
-                        offsets=[i * M_per_core],
-                        sizes=[M_per_core],
-                        strides=[1],
-                    )
                 # B: replay the same K-chunk stream per outer iter
                 # (outer-dim stride=0). R: broadcast the full vector
                 # once and reuse via per-iter offset inside addr_h.
@@ -260,6 +252,19 @@ def build_module(M, K, m=8, k=512, n_cores=8):
                     addr_herd.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
                     addr_herd.attributes["x_loc"] = IntegerAttr.get(T.i64(), 0)
                     addr_herd.attributes["y_loc"] = IntegerAttr.get(T.i64(), 2)
+
+                # Per-core D gets, placed AFTER @segment so source program
+                # order encodes producer→consumer (#1671).
+                for i in range(n_cores):
+                    c_col = arith.ConstantOp.create_index(i)
+                    ChannelGet(
+                        "outD",
+                        d,
+                        indices=[c_col],
+                        offsets=[i * M_per_core],
+                        sizes=[M_per_core],
+                        strides=[1],
+                    )
 
     return build()
 
