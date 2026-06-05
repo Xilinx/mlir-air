@@ -76,18 +76,6 @@ def build_module():
                     strides=[1],
                 )
 
-            # Collect output tiles from each core
-            for i in range(NUM_TILES):
-                offset = TILE_SIZE * i
-                ChannelGet(
-                    "ChanOut",
-                    l3_out,
-                    indices=[0, i],
-                    offsets=[offset],
-                    sizes=[TILE_SIZE],
-                    strides=[1],
-                )
-
             @segment(name="seg")
             def segment_body():
 
@@ -129,6 +117,18 @@ def build_module():
 
                     DeallocOp(recv_buf)
                     DeallocOp(out_buf)
+
+            # Collect output tiles from each core
+            for i in range(NUM_TILES):
+                offset = TILE_SIZE * i
+                ChannelGet(
+                    "ChanOut",
+                    l3_out,
+                    indices=[0, i],
+                    offsets=[offset],
+                    sizes=[TILE_SIZE],
+                    strides=[1],
+                )
 
 
 if __name__ == "__main__":
