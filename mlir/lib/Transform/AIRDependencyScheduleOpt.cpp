@@ -2287,38 +2287,19 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       populateDefaultWrapsAndStrides(b, channel_op.getMemref(), offsets, wraps,
                                      strides);
 
-    // Pre-fold gate: allow attempting the fold when we already have up to
-    // maxNumDims active wraps. The fold inserts one new outer dim; if
-    // canonicalize can collapse it with an existing adjacent dim
-    // (stride[i-1] == size[i] * stride[i]), the post-canonicalize count
-    // will still fit in maxNumDims. A stricter post-fold check below
-    // rejects cases where canonicalize cannot reduce.
-    int numActualWrapDims = 0; // Count the number of actual hardware wrap
-                               // dimensions, with wrap value greater than one.
+    int numActualWrapDims = 0;
     for (auto v : wraps) {
       if (*getConstantIntValue(v) > 1)
         numActualWrapDims++;
     }
-    // Pre-fold gate. PR #1658 relaxed `> maxNumDims - 1` to `> maxNumDims`
-    // to admit folds where the new outer dim collapses with the existing
-    // outermost dim post-canonicalize (the conv2dk14 v21 L2->L1 act
-    // gather pattern: scf.for %xb prepended <4,12544> collapses with
-    // adjacent <2,6272> into <8,6272>, staying at maxNumDims active
-    // dims). That blanket relaxation also admitted folds that desync
-    // paired channel BDs: gemm 29 channel_3 GET (shim, iterating-IV at
-    // non-outermost offset) and gemm 29 channel_10-17 PUT (memtile, no
-    // IV in offsets: fold no-ops erase the surrounding scf.for and lose
-    // iteration count semantics for the paired op).
-    //
-    // Refinement: admit the relaxed gate only when ALL hold:
-    //   - skipZeroStride=true (memtile pass). Shim relaxation is never
-    //     safe given the observed desync.
-    //   - Some IV (the matched for_op or a parent scf.for) reaches the
-    //     ORIGINAL channel offsets[0] (the outermost offset position;
-    //     using the pre-canonicalize operand list so IVs sitting in
-    //     size-1 dims are still found). This matches conv2dk14's pattern
-    //     (IV at offset[0]) and rejects gemm 29's patterns where the IV
-    //     is at offset[2+] or absent from offsets entirely.
+    // Pre-fold gate. The fold inserts one new outer dim; admit at the
+    // maxNumDims boundary only when canonicalize can collapse the new
+    // dim with the existing outermost, which requires (a) the memtile
+    // pass (skipZeroStride=true) and (b) some parent scf.for IV reaches
+    // the original outermost offset. Pre-canonicalize offsets are used
+    // so an IV sitting in a size-1 dim is still found. The post-fold
+    // active-dim count check below rejects fold results that did not
+    // collapse.
     bool admitBoundary = false;
     if (skipZeroStride && maxNumDims >= 0 && numActualWrapDims == maxNumDims) {
       SmallVector<Value> origOffsets = channel_op.getOffsets();
@@ -2344,14 +2325,6 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         }
         return false;
       };
-      // Only consider IV at offset[0] — the outermost position. The conv
-      // pattern PR1658 was designed for has IV at offset[0]; collapse
-      // happens between the new outer dim and the existing outermost.
-      // IV at any other position would create a fold whose new outer
-      // dim has a stride that doesn't match `wraps[0] * strides[0]`,
-      // so no collapse occurs and admitting it produces an illegal 5D
-      // wrap (post-fold count check rejects) OR a 4D wrap that loses
-      // iteration semantics for paired ops (gemm 29 channel_10-17).
       if (!origOffsets.empty()) {
         for (auto pf : parentForOps) {
           Value iv = pf.getInductionVar();
@@ -2377,24 +2350,10 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         air::getTensorVolume(channel_op.getMemref().getType()), maxSize,
         innerAlignment);
 
-    // Post-fold legality check: validate that the canonicalized wrap list is
-    // emittable as a single BD without downstream splitting.
-    //
-    // Two constraints:
-    //   (1) Active dim count must be <= maxNumDims. The BD encoder cannot emit
-    //       more than maxNumDims active wrap dims.
-    //   (2) Each dim's size must fit its corresponding hardware per-axis
-    //       bound (e.g. shim outermost = 64, inner = 1024). Bounds are
-    //       *exclusive* upper bounds, matching tileIllegalWrapDim in
-    //       AIRRtToNpuPass.cpp (`wrap >= bound` is illegal). If a fold
-    //       lands a dim at or over its bound, the downstream
-    //       tileIllegalWrapDim pass would split the airrt.dma_memcpy_nd
-    //       into multiple ops, but the original npu.dma_wait is only
-    //       emitted once, leaking BD IDs ("Allocator exhausted available
-    //       buffer descriptor IDs" at runtime).
-    //
-    // Both rejections fall through to AIRUnrollScfForIntoBDChain, which
-    // unrolls at the AIR level and preserves per-op paired waits.
+    // Post-fold legality: reject when canonicalize did not bring the active
+    // dim count back within maxNumDims. The rejection falls through to
+    // AIRUnrollScfForIntoBDChain, which unrolls at the AIR level and
+    // preserves per-op paired waits.
     if (maxNumDims >= 0) {
       int postFoldActiveDims = 0;
       for (auto v : wraps) {
