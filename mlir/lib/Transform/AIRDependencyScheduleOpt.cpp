@@ -2324,6 +2324,30 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       }
       if (postFoldActiveDims > maxNumDims)
         return failure();
+      // When the pre-fold gate was relaxed (pre was already at the dim
+      // limit), the new outer dim can canonicalize INTO an adjacent dim,
+      // multiplying its size. The downstream airrt-to-npu lowering tiles
+      // outer wraps >= AIE2_WRAP_UPPER_BOUNDS[0] (=64) into multiple shim
+      // BDs but does NOT correspondingly replicate the matching
+      // npu.dma_wait — N split configures end up matched 1:1 to N waits
+      // in FIFO order; if the original loop produced one shared wait_all
+      // (the common case), only 1 of the N BDs gets freed and the rest
+      // leak, exhausting the per-channel BD pool. Cap the post-fold
+      // outermost active wrap to the same threshold so we leave the loop
+      // unfolded (and the unroll fallback emits the original small wraps,
+      // each with its own wait) when canonicalize would have grown it
+      // past the shim limit.
+      constexpr int64_t kAie2WrapUpperBoundOuterDim = 64;
+      if (numActualWrapDims >= maxNumDims) {
+        for (auto v : wraps) {
+          auto cv = getConstantIntValue(v);
+          if (cv && *cv > 1) {
+            if (*cv >= kAie2WrapUpperBoundOuterDim)
+              return failure();
+            break;
+          }
+        }
+      }
     }
 
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
