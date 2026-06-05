@@ -36,9 +36,6 @@ def build_module(m, k, dtype):
             # Put data into the channel
             ChannelPut("ChanIn", a)
 
-            # Write data back out to the channel
-            ChannelGet("ChanOut", b)
-
             @segment(name="seg")
             def segment_body():
                 @herd(name="herd", sizes=[1, 1])
@@ -60,6 +57,9 @@ def build_module(m, k, dtype):
                     ChannelPut("ChanOut", tensor_in, sizes=[1, k, m], strides=[1, 1, k])
 
                     DeallocOp(tensor_in)
+
+            # Write data back out to the channel
+            ChannelGet("ChanOut", b)
 
 
 if __name__ == "__main__":

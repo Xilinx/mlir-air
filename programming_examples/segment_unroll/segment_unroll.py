@@ -71,7 +71,7 @@ def build_module():
 
         @launch(operands=[input_buf, output_buf])
         def launch_body(a, b):
-            # Put/Get on each subchannel at launch level
+            # Put on each subchannel at launch level
             # Each unrolled segment instance reads from its own subchannel
             chunk_size = VECTOR_LEN // SEGMENT_SIZE_X
             for sx in range(SEGMENT_SIZE_X):
@@ -87,15 +87,6 @@ def build_module():
                     ChannelPut(
                         "ChanIn",
                         a,
-                        indices=[sx_idx, sy_idx],
-                        offsets=[offset_idx],
-                        sizes=[size_idx],
-                        strides=[stride_idx],
-                    )
-                    # Get a portion of output from each subchannel
-                    ChannelGet(
-                        "ChanOut",
-                        b,
                         indices=[sx_idx, sy_idx],
                         offsets=[offset_idx],
                         sizes=[size_idx],
@@ -128,6 +119,25 @@ def build_module():
 
                     DeallocOp(tile_in)
                     DeallocOp(tile_out)
+
+            # Get on each subchannel at launch level (after producer @segment)
+            for sx in range(SEGMENT_SIZE_X):
+                for sy in range(SEGMENT_SIZE_Y):
+                    offset = sx * chunk_size
+                    sx_idx = arith.constant(T.index(), sx)
+                    sy_idx = arith.constant(T.index(), sy)
+                    offset_idx = arith.constant(T.index(), offset)
+                    size_idx = arith.constant(T.index(), chunk_size)
+                    stride_idx = arith.constant(T.index(), 1)
+                    # Get a portion of output from each subchannel
+                    ChannelGet(
+                        "ChanOut",
+                        b,
+                        indices=[sx_idx, sy_idx],
+                        offsets=[offset_idx],
+                        sizes=[size_idx],
+                        strides=[stride_idx],
+                    )
 
 
 if __name__ == "__main__":

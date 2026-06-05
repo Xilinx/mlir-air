@@ -45,8 +45,6 @@ def build_module():
         def launch_body(a, b, c, d):
             ChannelPut("ChanInA", a)
             ChannelPut("ChanInB", b)
-            ChannelGet("ChanOutC", c)
-            ChannelGet("ChanOutD", d)
 
             @segment(name="seg1")
             def segment_body():
@@ -70,6 +68,8 @@ def build_module():
                     DeallocOp(image_in_a)
                     DeallocOp(image_out_a)
 
+            ChannelGet("ChanOutC", c)
+
             @segment(name="seg2")
             def segment_body():
 
@@ -91,6 +91,8 @@ def build_module():
 
                     DeallocOp(image_in_b)
                     DeallocOp(image_out_b)
+
+            ChannelGet("ChanOutD", d)
 
 
 if __name__ == "__main__":
