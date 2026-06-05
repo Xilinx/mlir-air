@@ -227,3 +227,121 @@ module {
     return
   }
 }
+
+// -----
+
+// =============================================================================
+// AIRUnrollScfForIntoBDChain compound-trip cascade guard.
+//
+// A scf.for whose body contains only a channel op with ALL-constant offsets
+// represents a redundant-repeat (same data sent each iteration). The unroll
+// fallback would materialize N chained identical channel ops; downstream
+// air-to-aie collapses them to one BD but sets the per-channel lock init
+// count to N, breaking per-iter producer/consumer pairing.
+//
+// When this for_op is itself nested inside one or more scf.fors that are
+// ALSO redundant (no IV from any enclosing scf.for reaches the channel
+// offsets), the compound trip count of the cascade can exceed the per-
+// channel lock capacity. The guard rejects the unroll in this case so the
+// loops survive and downstream emits a single BD with an implicit per-iter
+// repeat at init=1.
+//
+// Concretely: scf.for %g = 0..9 / scf.for %y = 0..16 enclosing a single
+// channel.put with constant offsets and the v21fold-style 4D wrap
+// <8,6272>·<98,8>·<8,784>·<8,1> = 50176 B. Compound trip = 9 * 16 = 144,
+// well above the kRedundantUnrollLockLimit = 16 threshold. Both loops must
+// be preserved.
+// =============================================================================
+
+// CHECK-LABEL: @unroll_cascade_redundant_preserved
+// CHECK:       scf.for {{.*}} = %c0{{.*}} to %c9{{.*}} step %c1{{.*}}
+// CHECK:         scf.for {{.*}} = %c0{{.*}} to %c16{{.*}} step %c1{{.*}}
+// CHECK:           air.channel.put async {{.*}} @channel_casc[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c8{{.*}}, %c98{{.*}}, %c8{{.*}}, %c8{{.*}}] [%c6272{{.*}}, %c8{{.*}}, %c784{{.*}}, %c1{{.*}}])
+// CHECK-NOT:       air.channel.put
+// CHECK:         scf.yield
+// CHECK:       scf.yield
+// CHECK:       {air.segment_end}
+
+module {
+  air.channel @channel_casc [1]
+  func.func @unroll_cascade_redundant_preserved() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg_casc async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c8 = arith.constant 8 : index
+        %c9 = arith.constant 9 : index
+        %c16 = arith.constant 16 : index
+        %c98 = arith.constant 98 : index
+        %c784 = arith.constant 784 : index
+        %c6272 = arith.constant 6272 : index
+        %async_token, %results = air.execute -> (memref<1x3x50176xi8, 1 : i32>) {
+          %alloc = memref.alloc() : memref<1x3x50176xi8, 1 : i32>
+          air.execute_terminator %alloc : memref<1x3x50176xi8, 1 : i32>
+        }
+        %tg = scf.for %g = %c0 to %c9 step %c1 iter_args(%arg_g = %async_token) -> (!air.async.token) {
+          %ty = scf.for %y = %c0 to %c16 step %c1 iter_args(%arg_y = %arg_g) -> (!air.async.token) {
+            %p = air.channel.put async [%arg_y] @channel_casc[] (%results[%c0, %c0, %c0, %c0] [%c8, %c98, %c8, %c8] [%c6272, %c8, %c784, %c1]) {id = 3 : i32} : (memref<1x3x50176xi8, 1 : i32>)
+            scf.yield %p : !air.async.token
+          }
+          scf.yield %ty : !air.async.token
+        }
+        %async_token_0 = air.execute {
+          memref.dealloc %results : memref<1x3x50176xi8, 1 : i32>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// =============================================================================
+// Regression guard for AIRUnrollScfForIntoBDChain compound-trip cascade:
+// short redundant loops (compound trip <= kRedundantUnrollLockLimit = 16)
+// must still unroll. A single scf.for with trip 4 and constant offsets
+// should unroll into 4 chained puts, matching the pre-fix behavior. This
+// keeps the guard from over-rejecting workloads like gemm 29 whose small
+// non-IV-bearing inner loops legitimately need unrolling to emit distinct
+// BDs.
+// =============================================================================
+
+// CHECK-LABEL: @unroll_small_redundant_admitted
+// CHECK-NOT:   scf.for
+// CHECK:       air.channel.put async {{.*}} @channel_small[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c3{{.*}}, %c4{{.*}}, %c5{{.*}}] [%c200{{.*}}, %c50{{.*}}, %c12{{.*}}, %c1{{.*}}])
+// CHECK:       air.channel.put async {{.*}} @channel_small[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c3{{.*}}, %c4{{.*}}, %c5{{.*}}] [%c200{{.*}}, %c50{{.*}}, %c12{{.*}}, %c1{{.*}}])
+// CHECK:       air.channel.put async {{.*}} @channel_small[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c3{{.*}}, %c4{{.*}}, %c5{{.*}}] [%c200{{.*}}, %c50{{.*}}, %c12{{.*}}, %c1{{.*}}])
+// CHECK:       air.channel.put async {{.*}} @channel_small[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c3{{.*}}, %c4{{.*}}, %c5{{.*}}] [%c200{{.*}}, %c50{{.*}}, %c12{{.*}}, %c1{{.*}}])
+// CHECK:       {air.segment_end}
+
+module {
+  air.channel @channel_small [1]
+  func.func @unroll_small_redundant_admitted() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg_small async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
+        %c5 = arith.constant 5 : index
+        %c12 = arith.constant 12 : index
+        %c50 = arith.constant 50 : index
+        %c200 = arith.constant 200 : index
+        %async_token, %results = air.execute -> (memref<10000xi8, 1 : i32>) {
+          %alloc = memref.alloc() : memref<10000xi8, 1 : i32>
+          air.execute_terminator %alloc : memref<10000xi8, 1 : i32>
+        }
+        %t = scf.for %iv = %c0 to %c4 step %c1 iter_args(%arg = %async_token) -> (!air.async.token) {
+          %p = air.channel.put async [%arg] @channel_small[] (%results[%c0, %c0, %c0, %c0] [%c2, %c3, %c4, %c5] [%c200, %c50, %c12, %c1]) {id = 4 : i32} : (memref<10000xi8, 1 : i32>)
+          scf.yield %p : !air.async.token
+        }
+        %async_token_0 = air.execute {
+          memref.dealloc %results : memref<10000xi8, 1 : i32>
+        }
+      }
+    }
+    return
+  }
+}
