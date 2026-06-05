@@ -230,28 +230,10 @@ module {
 
 // -----
 
-// =============================================================================
-// AIRUnrollScfForIntoBDChain compound-trip cascade guard.
-//
-// A scf.for whose body contains only a channel op with ALL-constant offsets
-// represents a redundant-repeat (same data sent each iteration). The unroll
-// fallback would materialize N chained identical channel ops; downstream
-// air-to-aie collapses them to one BD but sets the per-channel lock init
-// count to N, breaking per-iter producer/consumer pairing.
-//
-// When this for_op is itself nested inside one or more scf.fors that are
-// ALSO redundant (no IV from any enclosing scf.for reaches the channel
-// offsets), the compound trip count of the cascade can exceed the per-
-// channel lock capacity. The guard rejects the unroll in this case so the
-// loops survive and downstream emits a single BD with an implicit per-iter
-// repeat at init=1.
-//
-// Concretely: scf.for %g = 0..9 / scf.for %y = 0..16 enclosing a single
-// channel.put with constant offsets and the v21fold-style 4D wrap
-// <8,6272>·<98,8>·<8,784>·<8,1> = 50176 B. Compound trip = 9 * 16 = 144,
-// well above the kRedundantUnrollLockLimit = 16 threshold. Both loops must
-// be preserved.
-// =============================================================================
+// Cascade-redundant unroll guard: 9 * 16 = 144 > kRedundantUnrollLockLimit
+// (16) with all-constant channel offsets and no IV reach. Both loops must
+// be preserved so downstream emits one BD with implicit per-iter repeat
+// at init=1, instead of 144 chained identical puts at init=144.
 
 // CHECK-LABEL: @unroll_cascade_redundant_preserved
 // CHECK:       scf.for {{.*}} = %c0{{.*}} to %c9{{.*}} step %c1{{.*}}
@@ -297,15 +279,9 @@ module {
 
 // -----
 
-// =============================================================================
-// Regression guard for AIRUnrollScfForIntoBDChain compound-trip cascade:
-// short redundant loops (compound trip <= kRedundantUnrollLockLimit = 16)
-// must still unroll. A single scf.for with trip 4 and constant offsets
-// should unroll into 4 chained puts, matching the pre-fix behavior. This
-// keeps the guard from over-rejecting workloads like gemm 29 whose small
-// non-IV-bearing inner loops legitimately need unrolling to emit distinct
-// BDs.
-// =============================================================================
+// Regression guard: short redundant loop (trip 4 <= 16) still unrolls.
+// Keeps the cascade guard from over-rejecting workloads that need small
+// no-IV-in-offsets unrolls.
 
 // CHECK-LABEL: @unroll_small_redundant_admitted
 // CHECK-NOT:   scf.for

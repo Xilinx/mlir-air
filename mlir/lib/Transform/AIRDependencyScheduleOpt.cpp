@@ -2356,16 +2356,10 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       if (*getConstantIntValue(v) > 1)
         numActualWrapDims++;
     }
-    // Pre-fold gate. The fold inserts one new outer dim; admit at the
-    // maxNumDims boundary only when canonicalize can collapse the new
-    // dim with an existing dim. This requires (a) the memtile pass
-    // (skipZeroStride=true) and (b) some parent scf.for IV reaches an
-    // offset entry that is either the outermost (offset[0]) or sits in a
-    // size-1 wrap dim (which canonicalize will erase, freeing room for
-    // the new outer dim). Pre-canonicalize offsets and the original
-    // pre-canonicalize wraps are used here so an IV in a size-1 dim is
-    // still found. The post-fold active-dim count check below rejects
-    // fold results that did not actually collapse.
+    // Pre-fold gate. At the maxNumDims boundary, admit only when some
+    // parent IV reaches an offset that canonicalize can collapse: offset[0]
+    // (outermost) or any offset whose wrap is statically 1 (size-1 dim
+    // erased by canonicalize). Memtile pass only (skipZeroStride=true).
     bool admitBoundary = false;
     if (skipZeroStride && maxNumDims >= 0 && numActualWrapDims == maxNumDims) {
       SmallVector<Value> origOffsets = channel_op.getOffsets();
@@ -2392,24 +2386,18 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         }
         return false;
       };
-      // Check each (offset[i], wraps[i]) pair: an IV reach at i is
-      // admissible iff i==0 (outermost, collapses against the new outer
-      // dim directly) or wraps[i]==1 (size-1 dim erased by canonicalize,
-      // freeing slot for the new outer dim).
       for (unsigned i = 0; i < origOffsets.size() && !admitBoundary; ++i) {
         bool slotIsCollapsible = (i == 0);
-        if (!slotIsCollapsible && i < origWraps.size()) {
+        if (!slotIsCollapsible && i < origWraps.size())
           if (auto cw = getConstantIntValue(origWraps[i]))
             slotIsCollapsible = (*cw == 1);
-        }
         if (!slotIsCollapsible)
           continue;
-        for (auto pf : parentForOps) {
+        for (auto pf : parentForOps)
           if (reachesIV(origOffsets[i], pf.getInductionVar())) {
             admitBoundary = true;
             break;
           }
-        }
       }
     }
     int effectiveMax = admitBoundary ? maxNumDims : (maxNumDims - 1);
@@ -2601,47 +2589,66 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
     if (resAsyncTokenCount > 1)
       return failure();
 
-    // Reject unroll when the loop is part of a deeply-nested redundant-repeat
-    // cascade — i.e. neither this for_op's IV nor any enclosing scf.for IV
-    // (up to the herd/segment/launch boundary) appears in any contained
-    // channel op's offsets, AND the COMPOUND trip count of all such
-    // redundant enclosing loops exceeds the per-channel lock capacity
-    // (kRedundantUnrollLockLimit = 16). Unrolling such a cascade creates
-    // K identical chained channel ops; downstream air-to-aie collapses
-    // them to one BD per channel but sets the lock init count to K,
-    // breaking per-iter producer/consumer pairing. Below the threshold
-    // (e.g. a single 2- or 4-iter loop with constant offsets), the
-    // unrolled chain stays small and downstream BD/lock allocation still
-    // emits distinct BDs that pair correctly.
+    // Reject unroll of a deeply-nested redundant-repeat cascade: if no
+    // enclosing IV reaches any channel offset and the compound trip
+    // count exceeds the per-channel lock capacity, unrolling would emit
+    // K chained identical ops and downstream air-to-aie would set the
+    // lock init count to K, breaking per-iter pairing. Leaving the loop
+    // intact keeps init=1 with an implicit per-iter BD repeat.
     constexpr int64_t kRedundantUnrollLockLimit = 16;
-    SmallVector<Value> enclosingIVs;
-    enclosingIVs.push_back(for_op.getInductionVar());
-    int64_t compoundTrip = 1;
-    if (auto t = air::getStaticScfForTripCountAsInt(for_op))
-      compoundTrip *= *t;
-    else
-      compoundTrip = -1;
+    auto satMul = [](int64_t a, int64_t b) -> int64_t {
+      if (a < 0 || b < 0)
+        return -1;
+      int64_t prod;
+      if (llvm::MulOverflow(a, b, prod) || prod > kRedundantUnrollLockLimit)
+        return kRedundantUnrollLockLimit + 1;
+      return prod;
+    };
+    SmallVector<Value> enclosingIVs{for_op.getInductionVar()};
+    int64_t compoundTrip =
+        air::getStaticScfForTripCountAsInt(for_op).value_or(-1);
     for (Operation *p = for_op->getParentOp(); p; p = p->getParentOp()) {
       if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(p))
         break;
       if (auto pf = dyn_cast<scf::ForOp>(p)) {
         enclosingIVs.push_back(pf.getInductionVar());
-        if (compoundTrip > 0) {
-          if (auto t = air::getStaticScfForTripCountAsInt(pf))
-            compoundTrip *= *t;
-          else
-            compoundTrip = -1;
-        }
+        auto t = air::getStaticScfForTripCountAsInt(pf);
+        compoundTrip = t ? satMul(compoundTrip, *t) : -1;
       }
     }
+    // True iff `v` transitively depends on some enclosing IV via its
+    // def-use chain (handles arith ops, affine.apply, index_cast,
+    // air.execute wrappers).
+    auto ivReachesValue = [&](Value v) -> bool {
+      SmallVector<Value> worklist{v};
+      llvm::SmallPtrSet<Value, 8> seen;
+      while (!worklist.empty()) {
+        Value cur = worklist.pop_back_val();
+        if (!seen.insert(cur).second)
+          continue;
+        for (Value iv : enclosingIVs)
+          if (cur == iv)
+            return true;
+        Operation *def = cur.getDefiningOp();
+        if (!def)
+          continue;
+        if (auto exec = dyn_cast<air::ExecuteOp>(def))
+          for (Operation &child : exec.getChildOps())
+            for (Value oper : child.getOperands())
+              worklist.push_back(oper);
+        else
+          for (Value oper : def->getOperands())
+            worklist.push_back(oper);
+      }
+      return false;
+    };
     bool someIVInOffsets = false;
     for_op.getBody()->walk([&](air::ChannelInterface chan) {
       for (Value off : chan.getOffsets())
-        for (Value iv : enclosingIVs)
-          if (off == iv) {
-            someIVInOffsets = true;
-            return WalkResult::interrupt();
-          }
+        if (ivReachesValue(off)) {
+          someIVInOffsets = true;
+          return WalkResult::interrupt();
+        }
       return WalkResult::advance();
     });
     if (!someIVInOffsets && compoundTrip > kRedundantUnrollLockLimit)
