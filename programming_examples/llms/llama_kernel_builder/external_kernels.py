@@ -168,21 +168,25 @@ def compile_mv(tile_m=8):
 def compile_mv_int4_bf16(m_tile=8, k_chunk=2048, gs=128):
     """Compile mv_int4_bf16.o (int4-AWQ GEMV micro-kernel) from source.
 
-    force=True because the int4 GEMM prefill compiles the same .cc with
-    DIM_M=16 to the same filename; without force, decode would reuse the
-    matmul-flavored .o and matvec_int4_bf16_packed would run with M=16.
+    Produces `mv_int4_bf16_gemv.o` (config-tagged) and stages it as the
+    canonical `mv_int4_bf16.o` (the name link_with attributes expect).
+    The int4 GEMM prefill compiles the same .cc with DIM_M=16 to a
+    different config-tagged name (`mv_int4_bf16_matmul.o`), so the two
+    variants don't clobber each other in CWD across sessions; the
+    last-staged canonical .o is whichever variant the current compile
+    needs.
     """
     src = _PROJ_ROOT / "matrix_vector_multiplication" / "int4_awq" / "mv_int4_bf16.cc"
     _compile_kernel(
         src,
-        "mv_int4_bf16.o",
+        "mv_int4_bf16_gemv.o",
         extra_flags=[
             f"-DDIM_M={m_tile}",
             f"-DDIM_K={k_chunk}",
             f"-DDIM_GS={gs}",
         ],
-        force=True,
     )
+    shutil.copy2("mv_int4_bf16_gemv.o", "mv_int4_bf16.o")
 
 
 def compile_mv_bf16():
