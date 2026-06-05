@@ -91,8 +91,9 @@ help:
 # Targets
 # ============================================================
 
-## Compile prefill stitchers + flash_attn for both backends. Caches ELFs
-## under verify_kernel_cache/. Re-uses cached ELFs across both backends.
+## Compile prefill stitchers + flash_attn for all three backends. Caches
+## ELFs under verify_kernel_cache/. ELFs are distinct per backend (named
+## rms_gemms_rope_{int4,bf16,bfp16}.elf etc) so they coexist.
 compile:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
@@ -101,7 +102,18 @@ compile:
 	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
 		--prefill-dtype bf16 --compile-only --model $(MODEL) \
 		--cache-dir $(srcdir)/verify_kernel_cache
+	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
+		--prefill-dtype bfp16 --compile-only --model $(MODEL) \
+		--cache-dir $(srcdir)/verify_kernel_cache
 	@echo "Compilation passed."
+
+## Compile only the bfp16 stitchers (faster iteration during bfp16 dev).
+compile-bfp16:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
+		--prefill-dtype bfp16 --compile-only --model $(MODEL) \
+		--cache-dir $(srcdir)/verify_kernel_cache
+	@echo "bfp16 compilation passed."
 
 ## Run NPU prefill end-to-end + top-K comparison vs HF bf16 reference
 ## (prefill-only argmax/overlap; for the full prefill+decode gate, see
