@@ -12,8 +12,18 @@
 // Optimize logical air.channel.put/get op into efficient shim dma block descriptor (BD).
 
 // CHECK-LABEL: @func0
-// CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c4{{.*}}, %c32{{.*}}, %c8{{.*}}] [%c1024{{.*}}, %c8{{.*}}, %c32{{.*}}, %c1{{.*}}])
-// CHECK-NOT: air.channel.put
+// This test exercises pre-fold == maxNumDims with the IV in a NON-outermost
+// offset position (offset[1] = %arg4). PR #1658 originally admitted such
+// folds, but the post-PR1658 refinement (this PR) only admits when the IV
+// is in offset[0] — otherwise the fold either fails to collapse with the
+// existing outermost or loses iteration semantics for paired ops (gemm 29
+// channel_10-17 regression). Reject path here: the AIR-level unroll
+// fallback produces 4 separate puts (one per (%arg0, %arg2) coordinate),
+// matching the pre-PR1658 origin/main behavior.
+// CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c16{{.*}}, %c4{{.*}}, %c32{{.*}}, %c8{{.*}}] [%c1024{{.*}}, %c8{{.*}}, %c32{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c16{{.*}}, %c4{{.*}}, %c32{{.*}}, %c8{{.*}}] [%c1024{{.*}}, %c8{{.*}}, %c32{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c0{{.*}}] [%c16{{.*}}, %c4{{.*}}, %c32{{.*}}, %c8{{.*}}] [%c1024{{.*}}, %c8{{.*}}, %c32{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c0{{.*}}] [%c16{{.*}}, %c4{{.*}}, %c32{{.*}}, %c8{{.*}}] [%c1024{{.*}}, %c8{{.*}}, %c32{{.*}}, %c1{{.*}}])
 // CHECK: {air.segment_end}
 
 // AIE1: error{{.*}}'func.func' op AIE1 architecture does not come with memtiles.

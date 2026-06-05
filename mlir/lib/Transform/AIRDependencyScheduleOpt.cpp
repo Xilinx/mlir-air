@@ -2300,7 +2300,71 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       if (*getConstantIntValue(v) > 1)
         numActualWrapDims++;
     }
-    if (maxNumDims >= 0 && numActualWrapDims > maxNumDims)
+    // Pre-fold gate. PR #1658 relaxed `> maxNumDims - 1` to `> maxNumDims`
+    // to admit folds where the new outer dim collapses with the existing
+    // outermost dim post-canonicalize (the conv2dk14 v21 L2->L1 act
+    // gather pattern: scf.for %xb prepended <4,12544> collapses with
+    // adjacent <2,6272> into <8,6272>, staying at maxNumDims active
+    // dims). That blanket relaxation also admitted folds that desync
+    // paired channel BDs: gemm 29 channel_3 GET (shim, iterating-IV at
+    // non-outermost offset) and gemm 29 channel_10-17 PUT (memtile, no
+    // IV in offsets: fold no-ops erase the surrounding scf.for and lose
+    // iteration count semantics for the paired op).
+    //
+    // Refinement: admit the relaxed gate only when ALL hold:
+    //   - skipZeroStride=true (memtile pass). Shim relaxation is never
+    //     safe given the observed desync.
+    //   - Some IV (the matched for_op or a parent scf.for) reaches the
+    //     ORIGINAL channel offsets[0] (the outermost offset position;
+    //     using the pre-canonicalize operand list so IVs sitting in
+    //     size-1 dims are still found). This matches conv2dk14's pattern
+    //     (IV at offset[0]) and rejects gemm 29's patterns where the IV
+    //     is at offset[2+] or absent from offsets entirely.
+    bool admitBoundary = false;
+    if (skipZeroStride && maxNumDims >= 0 && numActualWrapDims == maxNumDims) {
+      SmallVector<Value> origOffsets = channel_op.getOffsets();
+      SmallVector<scf::ForOp> parentForOps;
+      Operation *parent = channel_op->getParentOp();
+      while (parent) {
+        if (auto pf = dyn_cast<scf::ForOp>(parent))
+          parentForOps.push_back(pf);
+        if (parent == for_op)
+          break;
+        parent = parent->getParentOp();
+      }
+      auto reachesIV = [&](Value v, Value iv) -> bool {
+        if (v == iv)
+          return true;
+        Operation *defOp = v.getDefiningOp();
+        if (auto exec = dyn_cast_if_present<air::ExecuteOp>(defOp))
+          defOp = &exec.getChildOps().front();
+        if (defOp && isa<arith::AddIOp>(defOp)) {
+          for (Value oper : defOp->getOperands())
+            if (oper == iv)
+              return true;
+        }
+        return false;
+      };
+      // Only consider IV at offset[0] — the outermost position. The conv
+      // pattern PR1658 was designed for has IV at offset[0]; collapse
+      // happens between the new outer dim and the existing outermost.
+      // IV at any other position would create a fold whose new outer
+      // dim has a stride that doesn't match `wraps[0] * strides[0]`,
+      // so no collapse occurs and admitting it produces an illegal 5D
+      // wrap (post-fold count check rejects) OR a 4D wrap that loses
+      // iteration semantics for paired ops (gemm 29 channel_10-17).
+      if (!origOffsets.empty()) {
+        for (auto pf : parentForOps) {
+          Value iv = pf.getInductionVar();
+          if (reachesIV(origOffsets[0], iv)) {
+            admitBoundary = true;
+            break;
+          }
+        }
+      }
+    }
+    int effectiveMax = admitBoundary ? maxNumDims : (maxNumDims - 1);
+    if (maxNumDims >= 0 && numActualWrapDims > effectiveMax)
       return failure();
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
