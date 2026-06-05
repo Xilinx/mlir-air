@@ -487,16 +487,6 @@ def build_module(
                         strides=[lkp * dv_tile, dv_tile, 1],
                     )
 
-                # Output get: contiguous dv_tile slice (transposed L3 layout)
-                ChannelGet(
-                    "GpOut",
-                    gp,
-                    indices=[head_offset_idx],
-                    offsets=[out_combined],
-                    sizes=[lqp * dv_tile],
-                    strides=[1],
-                )
-
             # ----------------------------------------------------------
             # Segment: unrolled over heads
             # ----------------------------------------------------------
@@ -592,36 +582,6 @@ def build_module(
                             strides=[M, dv_tile * M, dv_tile, 1],
                         )
                         yield_([])
-
-                # Output gather from ty=0 tiles
-                affine_map_col = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_size_q),
-                        )
-                    ],
-                )
-                par_out = scf.ForallOp(lower_bounds=[0], upper_bounds=[NQ], steps=[1])
-                with InsertionPoint(par_out.body):
-                    apply_off = affine_apply(
-                        affine_map_col,
-                        [par_out.induction_variables[0]],
-                    )
-                    ChannelGet(
-                        "Gp2L2",
-                        gp_l2.result,
-                        indices=[par_out.induction_variables[0], 0],
-                        offsets=[apply_off, 0],
-                        sizes=[tile_size_q, dv_tile],
-                        strides=[dv_tile, 1],
-                    )
-                    scf.InParallelOp()
-
-                # Output: L2-to-L3
-                ChannelPut("GpOut", gp_l2.result, indices=[seg_x])
 
                 # ----------------------------------------------------------
                 # Herd: [NQ, NS] — pass seg_x as operand
@@ -1119,6 +1079,36 @@ def build_module(
                         else:
                             _emit_counter_increment()
 
+                # Output gather from ty=0 tiles
+                affine_map_col = AffineMap.get(
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0),
+                            AffineConstantExpr.get(tile_size_q),
+                        )
+                    ],
+                )
+                par_out = scf.ForallOp(lower_bounds=[0], upper_bounds=[NQ], steps=[1])
+                with InsertionPoint(par_out.body):
+                    apply_off = affine_apply(
+                        affine_map_col,
+                        [par_out.induction_variables[0]],
+                    )
+                    ChannelGet(
+                        "Gp2L2",
+                        gp_l2.result,
+                        indices=[par_out.induction_variables[0], 0],
+                        offsets=[apply_off, 0],
+                        sizes=[tile_size_q, dv_tile],
+                        strides=[dv_tile, 1],
+                    )
+                    scf.InParallelOp()
+
+                # Output: L2-to-L3
+                ChannelPut("GpOut", gp_l2.result, indices=[seg_x])
+
                 # Deallocs for segment-level buffers
                 for q_buf in q_saved_bufs:
                     DeallocOp(q_buf)
@@ -1135,6 +1125,27 @@ def build_module(
                 DeallocOp(gp_l2)
                 if causal:
                     DeallocOp(causal_ctr)
+
+            # Output gets: one per head in the unroll group, placed after the
+            # producing @segment so source order encodes producer→consumer.
+            for head_local in range(num_heads_per_unroll):
+                if head_local == 0:
+                    head_idx = head_base
+                else:
+                    head_idx = affine_apply(affine_map_plus1, [head_base])
+                head_out_off = affine_apply(affine_map_head_out_dv, [head_idx, lz])
+                head_offset_idx = ConstantOp(index_type, head_local)
+                out_combined = affine_apply(
+                    affine_map_add, [head_out_off, out_launch_off]
+                )
+                ChannelGet(
+                    "GpOut",
+                    gp,
+                    indices=[head_offset_idx],
+                    offsets=[out_combined],
+                    sizes=[lqp * dv_tile],
+                    strides=[1],
+                )
 
 
 if __name__ == "__main__":

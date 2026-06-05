@@ -351,24 +351,6 @@ def build_module(
                     )
                     yield_([])
 
-                # KV cache writeback at slot pos_host for this col.
-                ChannelGet(
-                    "cL2ToL3",
-                    l3_k_cache_data,
-                    offsets=[tx_i, pos_host, launch_offset_y],
-                    sizes=[1, 1, tile_n],
-                    strides=[seq_len * n, n, 1],
-                    indices=[c_tx_i],
-                )
-                ChannelGet(
-                    "cL2ToL3",
-                    l3_v_cache_data,
-                    offsets=[tx_i, pos_host, launch_offset_y],
-                    sizes=[1, 1, tile_n],
-                    strides=[seq_len * n, n, 1],
-                    indices=[c_tx_i],
-                )
-
                 # KV cache reads for attention: pos K rows, then pos V rows.
                 # Slot pos is supplied to attn_1/attn_2 directly from the herd's
                 # local L1 c_data (K_new at row GROUP_SIZE, V_new at row
@@ -395,16 +377,6 @@ def build_module(
                         indices=[c_tx_i],
                     )
                     yield_([])
-
-                # xb output back to L3 for this col.
-                ChannelGet(
-                    "dL2ToL3",
-                    l3_xb_data,
-                    offsets=[tx_i, 0, 0],
-                    sizes=[1, GROUP_SIZE, n],
-                    strides=[GROUP_SIZE * n, n, 1],
-                    indices=[c_tx_i],
-                )
 
             @segment(name="vecmat_i8_0")
             def segment_body():
@@ -492,16 +464,6 @@ def build_module(
                             indices=[c_tx_i],
                         )
                         yield_([])
-
-                    # KV cache writeback: pull from herd then forward to L3.
-                    ChannelGet(
-                        "cL1ToL2",
-                        l2_c_bufs[tx_i].result,
-                        offsets=[],
-                        sizes=[],
-                        strides=[],
-                        indices=[c_tx_i],
-                    )
 
                 l1_out_data = AllocOp(l1MemrefTyC, [], [])
 
@@ -1427,9 +1389,19 @@ def build_module(
                     "attn_decode_npu2.o"
                 )
 
-                # Per-col KV cache writeback forwarding to L3.
+                # Per-col KV cache writeback: pull from herd L1, then forward
+                # to L3. The get of cL1ToL2 is placed AFTER @herd so source
+                # program order encodes producer→consumer (#1671).
                 for tx_i in range(NKV):
                     c_tx_i = arith.ConstantOp.create_index(tx_i)
+                    ChannelGet(
+                        "cL1ToL2",
+                        l2_c_bufs[tx_i].result,
+                        offsets=[],
+                        sizes=[],
+                        strides=[],
+                        indices=[c_tx_i],
+                    )
                     ChannelPut(
                         "cL2ToL3",
                         l2_c_bufs[tx_i].result,
@@ -1471,6 +1443,39 @@ def build_module(
                     DeallocOp(l2_b_bufs[tx_i])
                     DeallocOp(l2_c_bufs[tx_i])
                 DeallocOp(l1_c_data)
+
+            # Output gets at launch scope, placed AFTER @segment so source
+            # program order encodes producer→consumer (#1671).
+            for tx_i in range(NKV):
+                c_tx_i = arith.ConstantOp.create_index(tx_i)
+
+                # KV cache writeback at slot pos_host for this col.
+                ChannelGet(
+                    "cL2ToL3",
+                    l3_k_cache_data,
+                    offsets=[tx_i, pos_host, launch_offset_y],
+                    sizes=[1, 1, tile_n],
+                    strides=[seq_len * n, n, 1],
+                    indices=[c_tx_i],
+                )
+                ChannelGet(
+                    "cL2ToL3",
+                    l3_v_cache_data,
+                    offsets=[tx_i, pos_host, launch_offset_y],
+                    sizes=[1, 1, tile_n],
+                    strides=[seq_len * n, n, 1],
+                    indices=[c_tx_i],
+                )
+
+                # xb output back to L3 for this col.
+                ChannelGet(
+                    "dL2ToL3",
+                    l3_xb_data,
+                    offsets=[tx_i, 0, 0],
+                    sizes=[1, GROUP_SIZE, n],
+                    strides=[GROUP_SIZE * n, n, 1],
+                    indices=[c_tx_i],
+                )
 
 
 if __name__ == "__main__":

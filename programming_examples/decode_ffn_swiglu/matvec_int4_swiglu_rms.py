@@ -173,7 +173,7 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8):
         def matvec_int4_swiglu_rms(PACKED, RMS, D):
             @launch(sizes=[1, 1], operands=[PACKED, RMS, D])
             def launch_body(li, lj, lsx, lsy, packed, rms, d):
-                # L3-side puts: per-core PACKED slab + per-core D get.
+                # L3-side puts: per-core PACKED slab.
                 for c in range(N_CORES):
                     c_idx = arith.ConstantOp.create_index(c)
                     c_tile_const = arith.ConstantOp.create_index(c * M_div)
@@ -184,15 +184,6 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8):
                         offsets=[c_tile_const, 0],
                         sizes=[M_div, tile_bytes],
                         strides=[tile_bytes, 1],
-                    )
-                    c_d_off = arith.ConstantOp.create_index(c * half_M_per_core)
-                    ChannelGet(
-                        "outD",
-                        d,
-                        indices=[c_idx],
-                        offsets=[c_d_off],
-                        sizes=[half_M_per_core],
-                        strides=[1],
                     )
                 # RMS input broadcast: a single S2MM per compute tile, replayed
                 # once per launch (RMS input does not change across outer iters).
@@ -478,6 +469,20 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8):
                     herd_body.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
                     herd_body.attributes["x_loc"] = IntegerAttr.get(T.i64(), 0)
                     herd_body.attributes["y_loc"] = IntegerAttr.get(T.i64(), 2)
+
+                # Per-core D gets, placed AFTER @segment so source program
+                # order encodes producer→consumer (#1671).
+                for c in range(N_CORES):
+                    c_idx = arith.ConstantOp.create_index(c)
+                    c_d_off = arith.ConstantOp.create_index(c * half_M_per_core)
+                    ChannelGet(
+                        "outD",
+                        d,
+                        indices=[c_idx],
+                        offsets=[c_d_off],
+                        sizes=[half_M_per_core],
+                        strides=[1],
+                    )
 
     return build()
 

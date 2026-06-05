@@ -201,18 +201,6 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8, M_PER_LAUNCH=N
                         sizes=[tiles_per_launch_per_core, tile_bytes],
                         strides=[tile_bytes, 1],
                     )
-                    c_row_const = arith.ConstantOp.create_index(
-                        c * M_per_core_per_launch
-                    )
-                    core_launch_base = arith.AddIOp(launch_off, c_row_const).result
-                    ChannelGet(
-                        "outD",
-                        d,
-                        indices=[c_idx],
-                        offsets=[core_launch_base],
-                        sizes=[M_per_core_per_launch],
-                        strides=[1],
-                    )
 
                 # B: replay each K-chunk across outer iters (outer-stride=0).
                 ChannelPut(
@@ -260,6 +248,23 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8, M_PER_LAUNCH=N
                     herd_body.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
                     herd_body.attributes["x_loc"] = IntegerAttr.get(T.i64(), 0)
                     herd_body.attributes["y_loc"] = IntegerAttr.get(T.i64(), 2)
+
+                # Per-core D gets, placed AFTER @segment so source program
+                # order encodes producer→consumer (#1671).
+                for c in range(N_CORES):
+                    c_idx = arith.ConstantOp.create_index(c)
+                    c_row_const = arith.ConstantOp.create_index(
+                        c * M_per_core_per_launch
+                    )
+                    core_launch_base = arith.AddIOp(launch_off, c_row_const).result
+                    ChannelGet(
+                        "outD",
+                        d,
+                        indices=[c_idx],
+                        offsets=[core_launch_base],
+                        sizes=[M_per_core_per_launch],
+                        strides=[1],
+                    )
 
     return build()
 

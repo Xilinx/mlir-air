@@ -179,16 +179,6 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8, M_PER_LAUNCH=N
                         sizes=[tiles_per_launch_per_core, tile_bytes],
                         strides=[tile_bytes, 1],
                     )
-                    c_row_const = arith.ConstantOp.create_index(c * M_per_core)
-                    core_launch_base = arith.AddIOp(launch_off, c_row_const).result
-                    ChannelGet(
-                        "outD",
-                        d,
-                        indices=[c_idx],
-                        offsets=[core_launch_base],
-                        sizes=[M_per_core],
-                        strides=[1],
-                    )
                 ChannelPut(
                     "inB",
                     b,
@@ -290,6 +280,21 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8, M_PER_LAUNCH=N
                     addr_herd.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
                     addr_herd.attributes["x_loc"] = IntegerAttr.get(T.i64(), 0)
                     addr_herd.attributes["y_loc"] = IntegerAttr.get(T.i64(), 2)
+
+                # Per-core D gets, placed AFTER @segment so source program
+                # order encodes producer→consumer (#1671).
+                for c in range(N_CORES):
+                    c_idx = arith.ConstantOp.create_index(c)
+                    c_row_const = arith.ConstantOp.create_index(c * M_per_core)
+                    core_launch_base = arith.AddIOp(launch_off, c_row_const).result
+                    ChannelGet(
+                        "outD",
+                        d,
+                        indices=[c_idx],
+                        offsets=[core_launch_base],
+                        sizes=[M_per_core],
+                        strides=[1],
+                    )
 
     return build()
 
