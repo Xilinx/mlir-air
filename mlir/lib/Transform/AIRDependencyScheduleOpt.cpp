@@ -2242,13 +2242,14 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
-  AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx, int &maxNumDims,
-                                            int &maxSize,
-                                            bool &enableRepeatAtHighestDim,
-                                            bool &skipZeroStride)
+  AIRSpecializeChannelWrapAndStrideInScfFor(
+      MLIRContext *ctx, int &maxNumDims, int &maxSize,
+      bool &enableRepeatAtHighestDim, bool &skipZeroStride,
+      llvm::ArrayRef<int> wrapUpperBounds = {})
       : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize),
         enableRepeatAtHighestDim(enableRepeatAtHighestDim),
-        skipZeroStride(skipZeroStride) {}
+        skipZeroStride(skipZeroStride),
+        wrapUpperBounds(wrapUpperBounds.begin(), wrapUpperBounds.end()) {}
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
@@ -2313,9 +2314,21 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         air::getTensorVolume(channel_op.getMemref().getType()), maxSize,
         innerAlignment);
 
-    // Post-fold legality check: the BD encoder cannot emit more than
-    // maxNumDims active wrap dims. If canonicalize did not reduce the
-    // count back, abandon this fold attempt.
+    // Post-fold legality check: validate that the canonicalized wrap list is
+    // emittable as a single BD without downstream splitting.
+    //
+    // Two constraints:
+    //   (1) Active dim count must be <= maxNumDims. The BD encoder cannot emit
+    //       more than maxNumDims active wrap dims.
+    //   (2) Each dim's size must fit its corresponding hardware per-axis
+    //       bound (e.g. shim outermost = 64, inner = 1024). If a fold lands a
+    //       dim over its bound, the downstream tileIllegalWrapDim pass would
+    //       split the airrt.dma_memcpy_nd into multiple ops, but the original
+    //       npu.dma_wait is only emitted once, leaking BD IDs ("Allocator
+    //       exhausted available buffer descriptor IDs" at runtime).
+    //
+    // Both rejections fall through to AIRUnrollScfForIntoBDChain, which
+    // unrolls at the AIR level and preserves per-op paired waits.
     if (maxNumDims >= 0) {
       int postFoldActiveDims = 0;
       for (auto v : wraps) {
@@ -2324,6 +2337,32 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       }
       if (postFoldActiveDims > maxNumDims)
         return failure();
+    }
+    // Per-axis bound check applies only when this fold is *terminal*: no
+    // further for-loop parent above for_op is available to push the new
+    // outermost dim further inward via another fold. Otherwise the greedy
+    // rewriter may match this pattern at the innermost level first, leaving
+    // a wrap that temporarily sits at axis 0 but will be displaced by the
+    // next iteration's fold of the outer for-loop. Rejecting on intermediate
+    // state would needlessly disable the chain.
+    bool isTerminalFold = !for_op->getParentOfType<scf::ForOp>() &&
+                          !for_op->getParentOfType<affine::AffineForOp>();
+    if (isTerminalFold && !wrapUpperBounds.empty()) {
+      // Walk wraps from outermost (index 0) to innermost. Map each wrap to its
+      // hardware axis: the outermost active dim maps to wrapUpperBounds[0],
+      // the next active to wrapUpperBounds[1], etc. Inactive dims (size==1)
+      // do not consume a hardware axis slot.
+      unsigned axisIdx = 0;
+      for (auto v : wraps) {
+        auto cv = getConstantIntValue(v);
+        if (!cv || *cv <= 1)
+          continue;
+        if (axisIdx >= wrapUpperBounds.size())
+          break; // post-fold count check above already covers this.
+        if (*cv > wrapUpperBounds[axisIdx])
+          return failure();
+        axisIdx++;
+      }
     }
 
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
@@ -2447,6 +2486,7 @@ private:
   int &maxSize;
   bool &enableRepeatAtHighestDim;
   bool &skipZeroStride;
+  SmallVector<int> wrapUpperBounds;
 };
 
 // This pattern should be executed after
@@ -3550,7 +3590,7 @@ private:
 LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
     Region *region, int maxNumDims = -1, int maxSize = -1,
     bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false,
-    bool skipZeroStride = false) {
+    bool skipZeroStride = false, llvm::ArrayRef<int> wrapUpperBounds = {}) {
   MLIRContext *ctx = region->getContext();
   RewritePatternSet preproc_patterns(ctx);
   preproc_patterns
@@ -3578,7 +3618,8 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
                   CanonicalizeArithIndexCastOpOnLoopInductionVar,
                   AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
   patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(
-      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim, skipZeroStride);
+      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim, skipZeroStride,
+      wrapUpperBounds);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(patterns));
@@ -6765,12 +6806,20 @@ private:
       if (isAIE2)
         air::applyAIRIsolateAsyncDmaLoopNestsPattern(region);
 
+      // Mirror AIRRtToNpuPass.cpp's AIE2_WRAP_UPPER_BOUNDS for shim BDs:
+      // outermost dim is the iteration-count axis (max 64); inner dims use
+      // the 10-bit BD wrap field (max 1024). Empty for AIE1 since maxNumDims
+      // is 1 and downstream tileIllegalWrapDim only runs for AIE2.
+      SmallVector<int> wrapUpperBounds;
+      if (isAIE2)
+        wrapUpperBounds = {64, 1024, 1024, 1024};
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           region,
           /*maxNumDims=*/maxNumDims,
           /*maxSize=*/maxSize,
           /*enableForLoopUnrolling=*/enableForLoopUnrolling,
-          /*enableRepeatAtHighestDim=*/true);
+          /*enableRepeatAtHighestDim=*/true,
+          /*skipZeroStride=*/false, wrapUpperBounds);
     }
   }
 };
@@ -7387,10 +7436,11 @@ void populateAIRCanonicalizeChannelWrapAndStridePatterns(
 
 void applyAIRSpecializeChannelWrapAndStridePattern(
     Region *region, int maxNumDims, int maxSize, bool enableForLoopUnrolling,
-    bool enableRepeatAtHighestDim, bool skipZeroStride) {
+    bool enableRepeatAtHighestDim, bool skipZeroStride,
+    llvm::ArrayRef<int> wrapUpperBounds) {
   (void)AIRSpecializeChannelWrapAndStrideImpl(
       region, maxNumDims, maxSize, enableForLoopUnrolling,
-      enableRepeatAtHighestDim, skipZeroStride);
+      enableRepeatAtHighestDim, skipZeroStride, wrapUpperBounds);
 }
 
 void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {

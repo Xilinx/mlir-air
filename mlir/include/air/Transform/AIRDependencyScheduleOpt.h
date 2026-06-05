@@ -78,10 +78,15 @@ void populateAIRCanonicalizeChannelWrapAndStridePatterns(
     RewritePatternSet &patterns, int &maxSize, int &maxNumDims,
     bool &enableRepeatAtHighestDim);
 
-// Apply AIRSpecializeChannelWrapAndStridePattern on region.
+// Apply AIRSpecializeChannelWrapAndStridePattern on region. If
+// `wrapUpperBounds` is non-empty, post-fold candidate wraps are rejected when
+// any active dim exceeds the corresponding per-axis bound (indexed from the
+// outermost dim outward). This guards against folds whose lowered shim BD
+// would require splitting in tileIllegalWrapDim and leak BD IDs.
 void applyAIRSpecializeChannelWrapAndStridePattern(
     Region *region, int maxNumDims, int maxSize, bool enableForLoopUnrolling,
-    bool enableRepeatAtHighestDim, bool skipZeroStride = false);
+    bool enableRepeatAtHighestDim, bool skipZeroStride = false,
+    llvm::ArrayRef<int> wrapUpperBounds = {});
 
 // Populate patterns for fusing scf.for loops within air.launch.
 void populateAIRLoopFusionPattern(RewritePatternSet &patterns);

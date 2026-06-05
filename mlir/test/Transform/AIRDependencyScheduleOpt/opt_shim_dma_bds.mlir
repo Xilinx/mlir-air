@@ -954,4 +954,47 @@ module {
     }
     return
   }
+
+  // Regression: scf.for whose fold + canonicalize-collapse produces an
+  // outermost wrap that exceeds the shim axis-0 bound (64). Without the
+  // per-axis check, the fold would succeed (4 active dims fits maxNumDims)
+  // but downstream tileIllegalWrapDim would split the airrt.dma_memcpy_nd
+  // and leak a BD ID, manifesting as "Allocator exhausted available buffer
+  // descriptor IDs" at runtime. The fold must be rejected so the unroll
+  // fallback materializes paired air.channel.put / npu.dma_wait per BD.
+  //
+  // Pre-fold wrap <40, 40>·<5, 1>. Loop trip=2 step=40, IV at offset[0]
+  // (stride 40). Fold prepends <2, 1600>; canonicalize collapses
+  // <2,1600>·<40,40> → <80, 40>·<5, 1> because 1600 == 40 * 40. 80 > 64 →
+  // gate rejects → AIRUnrollScfForIntoBDChain emits 2 separate puts.
+
+  // CHECK-LABEL: func_postfold_outer_dim_overbound
+  // CHECK-NOT:   scf.for
+  // CHECK:       air.channel.put async {{.*}} @channel_ob[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c40{{.*}}, %c5{{.*}}] [%c40{{.*}}, %c1{{.*}}])
+  // CHECK:       air.channel.put async {{.*}} @channel_ob[] (%{{.*}}[%c40{{.*}}, %c0{{.*}}] [%c40{{.*}}, %c5{{.*}}] [%c40{{.*}}, %c1{{.*}}])
+  // CHECK-NOT:   air.channel.put{{.*}}@channel_ob
+
+  // AIE1-LABEL: func_postfold_outer_dim_overbound
+  // AIE1: scf.for
+
+  air.channel @channel_ob [1]
+  func.func @func_postfold_outer_dim_overbound() {
+    %0 = air.launch async () in () {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c5 = arith.constant 5 : index
+      %c40 = arith.constant 40 : index
+      %c80 = arith.constant 80 : index
+      %async_token, %results = air.execute -> (memref<10000xi8>) {
+        %alloc = memref.alloc() : memref<10000xi8>
+        air.execute_terminator %alloc : memref<10000xi8>
+      }
+      %t = scf.for %i = %c0 to %c80 step %c40 iter_args(%arg = %async_token) -> (!air.async.token) {
+        %p = air.channel.put async [%arg] @channel_ob[] (%results[%i, %c0] [%c40, %c5] [%c40, %c1]) {id = 99 : i32} : (memref<10000xi8>)
+        scf.yield %p : !air.async.token
+      }
+    }
+    return
+  }
+
 }
