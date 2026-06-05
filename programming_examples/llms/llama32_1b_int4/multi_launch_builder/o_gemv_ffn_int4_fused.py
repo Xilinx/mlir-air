@@ -90,6 +90,7 @@ from air.dialects.memref import (
     cast as memref_cast,
 )
 from air.dialects import arith
+from air.dialects import linalg
 from air.dialects import math as math_dialect
 from air.dialects import scf
 from air.dialects.scf import for_, yield_
@@ -189,6 +190,10 @@ def build_module(
     assert (M_LA // N_LA) % M_TILE == 0
     assert M_LA % N_LD == 0
     assert (M_LA // N_LD) % M_TILE == 0
+    # Pair two outer iters per add so the bf16 vector add is 16-wide
+    # (8-wide bf16 doesn't legalize on AIE2P).
+    assert (M_LA // N_LA) % (2 * M_TILE) == 0
+    assert (M_LA // N_LD) % (2 * M_TILE) == 0
     # Sanity: swiglu width must match LD's K reduction.
     assert M_LGU // 2 == K_LD
     # LA and LGU use W->E cascade chains (size=N-1) and the eastmost
@@ -269,8 +274,8 @@ def build_module(
         # ---- LA L1 ----
         packed_la_l1 = MemRefType.get([tile_bytes], i8_ty, memory_space=l1_ms)
         B_la_l1 = MemRefType.get([K], bf16_ty, memory_space=l1_ms)
-        # R is full M_LA so partial_plus_r_func signature is shared with
-        # LD (kernel takes a flat bf16 pointer; offset indexes elements).
+        # R is full M_LA; inline partial+r subviews it at the per-core
+        # slab offset (shared shape with LD).
         R_la_l1 = MemRefType.get([M_LA], bf16_ty, memory_space=l1_ms)
         full_la_l1 = MemRefType.get([M_LA], bf16_ty, memory_space=l1_ms)
 
@@ -321,12 +326,6 @@ def build_module(
         channel_decl("ldOutD", size=[N_LD])
 
         # ---- Private kernel decls ----
-        zero_func = FuncOp(
-            "zero_vectorized_bf16", ([partial_slice_ty], []), visibility="private"
-        )
-        zero_func.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
-        zero_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
         matvec_func = FuncOp(
             "matvec_int4_bf16_packed",
             ([packed_lgu_l1, normed_l1, partial_slice_ty], []),
@@ -353,15 +352,6 @@ def build_module(
         matvec_offset_func.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
         matvec_offset_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
 
-        # Shared signature: R is full M_LA, offset indexes per-core slab.
-        partial_plus_r_func = FuncOp(
-            "partial_plus_r_bf16",
-            ([D_la_l1, R_ld_l1, i32_ty, D_la_l1], []),
-            visibility="private",
-        )
-        partial_plus_r_func.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
-        partial_plus_r_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
         @FuncOp.from_py_func(
             packed_la_l3,
             B_la_l3,
@@ -387,8 +377,8 @@ def build_module(
                     ChannelPut(
                         f"laAll_{c}", b_la, offsets=[c0], sizes=[cK], strides=[c1]
                     )
-                    # Push FULL R so partial_plus_r_func signature can be
-                    # shared with LD.
+                    # Push FULL R so each LA core subviews its own per-core
+                    # slab offset (shared shape with LD).
                     ChannelPut(
                         f"laAll_{c}", r_la, offsets=[c0], sizes=[cMLA], strides=[c1]
                     )
@@ -485,6 +475,7 @@ def build_module(
                                 c0 = arith.ConstantOp.create_index(0)
                                 vec_w_la = CASCADE_WIDTH
                                 vecTy_la = VectorType.get([vec_w_la], bf16_ty)
+                                vecTy_mt_la = VectorType.get([M_TILE], bf16_ty)
                                 cst0_bf16_la = arith.ConstantOp(bf16_ty, 0.0)
                                 id_map_la = AffineMapAttr.get(AffineMap.get_identity(1))
                                 c_mla_idx = arith.ConstantOp.create_index(M_LA)
@@ -543,15 +534,39 @@ def build_module(
 
                                     local_off = arith.muli(outer, c_mt_la)
                                     global_off = arith.addi(col_base_la, local_off)
-                                    offset_i32 = arith.IndexCastOp(
-                                        i32_ty, global_off
-                                    ).result
                                     CallOp(
                                         matvec_store_func, [l1_p, l1_b, l1_partial_la]
                                     )
-                                    CallOp(
-                                        partial_plus_r_func,
-                                        [l1_partial_la, l1_r, offset_i32, l1_d_la],
+                                    # Inline partial+r: one 8-wide bf16
+                                    # vector add (patched aievec pads to
+                                    # 16-wide internally).
+                                    sub_r_la = subview(
+                                        l1_r.result, [global_off], [M_TILE], [1]
+                                    )
+                                    v_p_la = transfer_read(
+                                        vecTy_mt_la,
+                                        l1_partial_la,
+                                        [c0],
+                                        id_map_la,
+                                        cst0_bf16_la,
+                                        [True],
+                                    )
+                                    v_r_la = transfer_read(
+                                        vecTy_mt_la,
+                                        sub_r_la,
+                                        [c0],
+                                        id_map_la,
+                                        cst0_bf16_la,
+                                        [True],
+                                    )
+                                    v_sum_la = arith.addf(v_p_la, v_r_la)
+                                    transfer_write(
+                                        None,
+                                        v_sum_la,
+                                        l1_d_la,
+                                        [c0],
+                                        id_map_la,
+                                        [True],
                                     )
                                     if not skip_inline:
                                         # Scatter M_TILE outputs into l1_local
@@ -975,6 +990,10 @@ def build_module(
                                 strides=[c_one],
                             )
 
+                        cst0_bf16_ld = arith.ConstantOp(bf16_ty, 0.0)
+                        vecTy_mt_ld = VectorType.get([M_TILE], bf16_ty)
+                        id_map_ld = AffineMapAttr.get(AffineMap.get_identity(1))
+
                         for outer in for_(M_ld_div):
                             l1_partial_full = AllocOp(partial_full_ty, [], [])
                             l1_partial_full.attributes["air.shrinkage"] = BoolAttr.get(
@@ -989,7 +1008,7 @@ def build_module(
                             l1_d_strided = subview(l1_d_full.result, [0], [M_TILE], [1])
                             l1_d = memref_cast(D_la_l1, l1_d_strided)
 
-                            CallOp(zero_func, [l1_partial])
+                            linalg.fill(cst0_bf16_ld, outs=[l1_partial])
                             # Inner K loop: scf.for + per-iter PACKED alloc
                             # so the compiler auto-introduces ping-pong on
                             # ldL2ToL1 (DMA prefetch overlaps with compute).
@@ -1007,10 +1026,28 @@ def build_module(
 
                             local_off = arith.muli(outer, c_mt)
                             global_off = arith.addi(tx_base, local_off)
-                            offset_i32 = arith.IndexCastOp(i32_ty, global_off).result
-                            CallOp(
-                                partial_plus_r_func,
-                                [l1_partial, l1_r, offset_i32, l1_d],
+                            # Inline partial+r: one 8-wide bf16 vector add
+                            # (patched aievec pads to 16-wide internally).
+                            sub_r_ld = subview(l1_r.result, [global_off], [M_TILE], [1])
+                            v_p_ld = transfer_read(
+                                vecTy_mt_ld,
+                                l1_partial,
+                                [c0],
+                                id_map_ld,
+                                cst0_bf16_ld,
+                                [True],
+                            )
+                            v_r_ld = transfer_read(
+                                vecTy_mt_ld,
+                                sub_r_ld,
+                                [c0],
+                                id_map_ld,
+                                cst0_bf16_ld,
+                                [True],
+                            )
+                            v_sum_ld = arith.addf(v_p_ld, v_r_ld)
+                            transfer_write(
+                                None, v_sum_ld, l1_d, [c0], id_map_ld, [True]
                             )
                             if not skip_inline:
                                 for i in range(M_TILE):
