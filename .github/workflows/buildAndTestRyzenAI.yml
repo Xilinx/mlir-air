@@ -136,6 +136,13 @@ jobs:
           # Chess tests disabled to reduce CI time. Uncomment to re-enable:
           # ninja check-air-e2e-chess
 
+          # Install verify's Python dependencies (safetensors, transformers,
+          # torch, huggingface_hub). Required by both the main and gated
+          # `check-programming-examples-peano` invocations below: the int4
+          # verify lit is ungated and runs in the main step, while the bf16
+          # baseline's verify lit runs in the gated sub-shell.
+          pip install -r ../programming_examples/llms/llama32_1b/requirements.txt
+
           # Programming examples set 1: peano tests (retry once on failure for flaky NPU tests).
           # HF_TOKEN is NOT set here — REQUIRES: hf_token tests skip cleanly as
           # UNSUPPORTED in this step. They are exercised in the targeted step below,
@@ -145,9 +152,7 @@ jobs:
           # Programming examples set 1b: hf_token-gated tests only.
           # Scoped LIT --filter pattern matches any verify lit under
           # programming_examples/llms/llama32_1b{,_int4}/ — currently just the
-          # bf16 baseline's run_npu2_verify.lit (int4 + bfp16 verify lits got
-          # un-gated when verify_adapter switched to building the HF reference
-          # from the AMD AWQ checkpoint's config); kept here so future
+          # bf16 baseline's run_npu2_verify.lit; kept here so future
           # hf_token-requiring verify lits under either dir don't silently
           # skip. HF_TOKEN is exported in a sub-shell so it's visible only to
           # this single ninja invocation — the main check-programming-examples-peano
@@ -155,10 +160,6 @@ jobs:
           (
             export HF_TOKEN="${{ secrets.HF_TOKEN }}"
             export LIT_OPTS="$LIT_OPTS --filter llms/llama32_1b.*/run_npu2_verify"
-            # Install verify's Python dependencies (safetensors, transformers,
-            # torch, huggingface_hub) on top of the mlir-air base environment.
-            # Scoped to this sub-shell so it does not affect other test steps.
-            pip install -r ../programming_examples/llms/llama32_1b/requirements.txt
             ninja check-programming-examples-peano || ninja check-programming-examples-peano
           )
 
