@@ -23,10 +23,7 @@ from awq_pack import (  # noqa: E402
     awq_dequant_layer,
 )
 from llama32_1b_weights import LayerWeights, LlamaConfig, LlamaWeights  # noqa: E402
-from matmul_bf16_x_bfp16 import (  # noqa: E402
-    bfp_tile_bytes,
-    pack_b_bfp16ebs8,
-)
+from matmul_bf16_x_bfp16 import pack_b_bfp16ebs8  # noqa: E402
 
 
 def awq_pack_for_npu_bfp16(

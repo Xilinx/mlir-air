@@ -967,8 +967,7 @@ def main():
         "weights once at load and runs the bf16 prefill stitchers "
         "(3-6x faster compute; same AWQ-quality output). 'bfp16' "
         "dequants AWQ then re-packs as bfp16ebs8 and runs the bfp16 "
-        "stitchers (matmul_bf16_x_bfp16; ~1.19x faster than bf16 at "
-        "Q-proj scale per standalone profile). Decode is unaffected.",
+        "stitchers (matmul_bf16_x_bfp16). Decode is unaffected.",
     )
     ap.add_argument(
         "--min-overlap",

@@ -1,4 +1,4 @@
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
 // LLAMA-3.2-1B bfp16 prefill verify gate: top-K token-level inclusion

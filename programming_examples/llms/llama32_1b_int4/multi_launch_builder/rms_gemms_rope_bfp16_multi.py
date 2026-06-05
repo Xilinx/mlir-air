@@ -43,7 +43,6 @@ sys.path.insert(
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
-from air.dialects import arith
 from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
@@ -55,7 +54,6 @@ from llama_kernel_builder.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
-    _rename_all,
     _fix_launch_func_args,
     _wrap_ir_in_launch,
     _rename_all_with_externs,
