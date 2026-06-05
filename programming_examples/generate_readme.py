@@ -356,6 +356,12 @@ EXAMPLES = [
     },
     {
         "category": "CNN",
+        "name": "Conv2d 14x14",
+        "path": "conv2d_14x14",
+        "datatypes": "ui8/i8",
+    },
+    {
+        "category": "CNN",
         "name": "Bottleneck",
         "path": "bottleneck",
         "datatypes": "bf16",
