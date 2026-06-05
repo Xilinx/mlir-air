@@ -14,8 +14,8 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=e094875d61e891c692bd2120e761909e4e4273fd
-DEV_COUNT=101
+export HASH=2401e5312aaff56ed1a840b8f36eba3494803f4d
+DEV_COUNT=115
 WHEEL_VERSION=1.3.2.dev$DEV_COUNT+g${HASH:0:7}
 
 if [ x"$1" == x--get-wheel-version ]; then

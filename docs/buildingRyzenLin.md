@@ -27,7 +27,7 @@ AIR supports multiple backends — AIE (NPU / Versal AI Engines), [GPU](building
    ```bash
    pip install 'mlir_air[aie]' \
      -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels \
-     -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3 \
+     -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4 \
      -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
    ```
 
