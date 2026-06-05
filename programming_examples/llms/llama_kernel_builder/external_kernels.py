@@ -111,8 +111,10 @@ _PROJ_ROOT = Path(__file__).resolve().parent.parent.parent  # programming_exampl
 
 
 def compile_silu_and_mul():
-    """Compile silu_and_mul.o from llama_kernel_builder/ffn_swiglu/silu_and_mul.cc."""
-    src = _PROJ_ROOT / "llama_kernel_builder" / "ffn_swiglu" / "silu_and_mul.cc"
+    """Compile silu_and_mul.o from llms/llama_kernel_builder/ffn_swiglu/silu_and_mul.cc."""
+    src = (
+        _PROJ_ROOT / "llms" / "llama_kernel_builder" / "ffn_swiglu" / "silu_and_mul.cc"
+    )
     include_dir = _get_aie_include_dir()
     utils_header = Path(include_dir) / "aie_kernels" / "aie_kernel_utils.h"
     extra = []
@@ -164,7 +166,12 @@ def compile_mv(tile_m=8):
 
 
 def compile_mv_int4_bf16(m_tile=8, k_chunk=2048, gs=128):
-    """Compile mv_int4_bf16.o (int4-AWQ GEMV micro-kernel) from source."""
+    """Compile mv_int4_bf16.o (int4-AWQ GEMV micro-kernel) from source.
+
+    force=True because the int4 GEMM prefill compiles the same .cc with
+    DIM_M=16 to the same filename; without force, decode would reuse the
+    matmul-flavored .o and matvec_int4_bf16_packed would run with M=16.
+    """
     src = _PROJ_ROOT / "matrix_vector_multiplication" / "int4_awq" / "mv_int4_bf16.cc"
     _compile_kernel(
         src,
@@ -174,6 +181,7 @@ def compile_mv_int4_bf16(m_tile=8, k_chunk=2048, gs=128):
             f"-DDIM_K={k_chunk}",
             f"-DDIM_GS={gs}",
         ],
+        force=True,
     )
 
 
