@@ -13,12 +13,9 @@
 # upstream meta-llama base model via `make verify` (HF AutoTokenizer
 # fetches the gated tokenizer).
 
-# Weight loading (AWQ qweight/qzeros/scales). hf_xet is required because
-# the AMD AWQ checkpoint is stored on HF's Xet/CAS backend; without it
-# huggingface_hub silently skips the Xet-backed .safetensors blob.
+# Weight loading (AWQ qweight/qzeros/scales)
 safetensors
 huggingface_hub
-hf_xet
 
 # Tokenizer + HF vanilla bf16 reference for `make verify`
 transformers
