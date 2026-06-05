@@ -7,12 +7,12 @@ Wraps the production `llama32_1b_int4_inference` driver into a Runner for
 the shared verify framework. Mirrors `llama32_1b/verify_adapter.py` but
 loads AWQ weights (`load_weights_awq`) and uses the int4 decode kernels.
 
-HF reference uses the meta-llama Llama-3.2-1B-Instruct architecture with
-AWQ-dequantized weights patched in over the bf16 originals (see
-`build_hf_model`). That isolates the verify gate to NPU drift only, vs
-the looser "quant_error + NPU_drift" comparison you'd get by using the
-un-quantized meta-llama weights as reference. No autoawq dep — we use
-our own `awq_repacker.dequant_to_bf16`.
+HF reference is built from the AMD AWQ checkpoint's config alone (no
+weight download) with AWQ-dequantized weights patched in. That isolates
+the verify gate to NPU drift only — both sides see exactly the same bf16
+tensor values for every Linear weight — and keeps the verify path
+ungated (no HF_TOKEN needed). No autoawq dep — we use our own
+`awq_repacker.dequant_to_bf16`.
 """
 
 from __future__ import annotations
@@ -49,10 +49,9 @@ from llama32_1b_prefill import (
 )  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
-# Default AWQ checkpoint exposed by AMD; un-gated, no HF_TOKEN required to
-# fetch the AWQ weights themselves. The tokenizer behind it (the upstream
-# meta-llama/Llama-3.2-1B-Instruct tokenizer) IS gated, so `make verify`
-# still needs HF_TOKEN.
+# Default AWQ checkpoint exposed by AMD; un-gated, no HF_TOKEN needed.
+# `build_hf_model` reuses this checkpoint's config to construct the HF
+# reference architecture, so the entire verify path is ungated.
 _DEFAULT_AWQ_MODEL = "amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead"
 
 MODEL_CHOICES = {
@@ -65,15 +64,10 @@ def resolve_model(model_choice_or_id: str) -> str:
     return MODEL_CHOICES.get(model_choice_or_id, model_choice_or_id)
 
 
-# HF reference architecture (vanilla meta-llama). The Linear weights are
-# replaced with our AWQ-dequant copies inside `build_hf_model`, so the
-# gate measures NPU drift only — both sides see identical bf16 values
-# for every weight.
-_HF_REF_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
-
-
 def hf_reference(npu_model_name: str) -> str:
-    return _HF_REF_MODEL
+    """HF reference model name; same as the AWQ checkpoint so the
+    tokenizer and HF arch config are loaded from a single ungated repo."""
+    return npu_model_name
 
 
 def build_config():
@@ -94,29 +88,29 @@ def _get_or_load_weights(model_name: str, config):
 
 
 def build_hf_model(npu_model_name: str, hf_ref_model: str, config):
-    """Construct the HF reference model: meta-llama architecture + the
-    AWQ-dequantized weights from the AMD checkpoint patched in over the
-    bf16 originals. Tightens the verify gate from
-    (quant_error + NPU_drift) down to (NPU_drift) since both sides see
-    exactly the same bf16 tensor values for every Linear weight.
+    """Construct an HF reference model with AWQ-dequantized weights.
 
-    The trick: load weights once via `load_weights_awq` (which already
-    produces bf16 dequant copies on each LayerWeights field). Then walk
-    each HF Linear and overwrite `.weight.data` with the dequant. HF
-    stores Linear weights as (out_features, in_features) but our dequant
-    is (in_features, out_features), hence the `.T.contiguous()`.
+    Load the architecture config from the AMD AWQ checkpoint (ungated),
+    construct an empty LlamaForCausalLM from that config, then overwrite
+    every Linear and layernorm with the AWQ-dequant bf16 from
+    `load_weights_awq`. No remote weight download — only the config.json
+    is fetched, which is already cached by the prefill driver's run.
 
-    Layernorms, embed_tokens and lm_head in the AMD checkpoint are
-    un-quantized bf16 and we copy them straight through.
+    Tightens the verify gate from (quant_error + NPU_drift) down to
+    (NPU_drift) since both sides see exactly the same bf16 tensor values.
+    HF stores Linear weights as (out_features, in_features) but our
+    dequant is (in_features, out_features), hence the transpose.
     """
     import torch
-    from transformers import AutoModelForCausalLM
+    from transformers import AutoConfig, LlamaForCausalLM
 
     weights = _get_or_load_weights(npu_model_name, config)
-    print(f"[verify_adapter] loading HF arch from {hf_ref_model}...")
-    model = AutoModelForCausalLM.from_pretrained(
-        hf_ref_model, torch_dtype=torch.bfloat16
-    )
+    print(f"[verify_adapter] building HF arch from {hf_ref_model} config...")
+    hf_cfg = AutoConfig.from_pretrained(hf_ref_model)
+    if hasattr(hf_cfg, "quantization_config"):
+        delattr(hf_cfg, "quantization_config")
+    hf_cfg.torch_dtype = torch.bfloat16
+    model = LlamaForCausalLM(hf_cfg).to(torch.bfloat16)
 
     def _to_bf16_tensor(arr):
         # numpy bfloat16 -> torch bfloat16 via int16 bit-reinterpret. The

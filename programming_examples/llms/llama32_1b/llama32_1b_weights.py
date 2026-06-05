@@ -155,19 +155,28 @@ def _resolve_safetensor_files(model_path: str) -> List[str]:
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
 
+    pattern_glob = "*.safetensors"
     try:
         local_dir = snapshot_download(
             model_path,
             allow_patterns=["*.safetensors", "*.json"],
             local_files_only=True,
         )
+        # local_files_only=True returns whatever subset of allow_patterns is
+        # already cached; it does NOT raise when some files match. A persistent
+        # CI runner that previously did `AutoConfig.from_pretrained` will have
+        # config.json cached but no safetensors. Force the network branch
+        # when no .safetensors are actually present.
+        if not glob_module.glob(os.path.join(local_dir, pattern_glob)):
+            raise LocalEntryNotFoundError(
+                f"local cache for {model_path} has no .safetensors"
+            )
     except LocalEntryNotFoundError:
         local_dir = snapshot_download(
             model_path,
             allow_patterns=["*.safetensors", "*.json"],
         )
-    pattern = os.path.join(local_dir, "*.safetensors")
-    files = sorted(glob_module.glob(pattern))
+    files = sorted(glob_module.glob(os.path.join(local_dir, pattern_glob)))
     if not files:
         raise FileNotFoundError(
             f"No .safetensors files found after downloading {model_path}"
