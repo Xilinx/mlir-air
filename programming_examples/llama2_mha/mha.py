@@ -261,22 +261,6 @@ def build_module(
                 )
                 yield_([])
 
-            ChannelGet(
-                "cL2ToL3",
-                l3_k_cache_data,
-                offsets=[pos_host, launch_offset_y],
-                sizes=[1, tile_n],
-                strides=[n, 1],
-            )
-
-            ChannelGet(
-                "cL2ToL3",
-                l3_v_cache_data,
-                offsets=[pos_host, launch_offset_y],
-                sizes=[1, tile_n],
-                strides=[n, 1],
-            )
-
             # Launch 2 runtime
 
             for i in range_(0, pos_host + 1):
@@ -297,14 +281,6 @@ def build_module(
                     strides=[n, 1],
                 )
                 yield_([])
-
-            ChannelGet(
-                "dL2ToL3",
-                l3_xb_data,
-                offsets=[],
-                sizes=[],
-                strides=[],
-            )
 
             @segment(name="vecmat_i8_0")
             def segment_body():
@@ -385,14 +361,6 @@ def build_module(
                         )
                         yield_([])
                     yield_([])
-
-                ChannelGet(
-                    "cL1ToL2",
-                    l2_c_data,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
 
                 l1_out_data = AllocOp(l1MemrefTyC, [], [])
 
@@ -658,6 +626,14 @@ def build_module(
 
                 herd_body_0.attributes["link_with"] = StringAttr.get("mha.o")
 
+                ChannelGet(
+                    "cL1ToL2",
+                    l2_c_data,
+                    offsets=[],
+                    sizes=[],
+                    strides=[],
+                )
+
                 ChannelPut(
                     "cL2ToL3",
                     l2_c_data,
@@ -692,6 +668,30 @@ def build_module(
                 DeallocOp(l2_a_data)
                 DeallocOp(l2_b_data)
                 DeallocOp(l2_c_data)
+
+            ChannelGet(
+                "cL2ToL3",
+                l3_k_cache_data,
+                offsets=[pos_host, launch_offset_y],
+                sizes=[1, tile_n],
+                strides=[n, 1],
+            )
+
+            ChannelGet(
+                "cL2ToL3",
+                l3_v_cache_data,
+                offsets=[pos_host, launch_offset_y],
+                sizes=[1, tile_n],
+                strides=[n, 1],
+            )
+
+            ChannelGet(
+                "dL2ToL3",
+                l3_xb_data,
+                offsets=[],
+                sizes=[],
+                strides=[],
+            )
 
 
 if __name__ == "__main__":
