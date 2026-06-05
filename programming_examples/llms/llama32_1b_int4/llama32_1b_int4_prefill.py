@@ -77,11 +77,18 @@ import shutil
 
 
 def _compile_mv_int4_bf16_matmul(tile_m=16, tile_n=16, k_chunk=128, gs=128):
-    """Compile mv_int4_bf16.cc for the int4 GEMM (matmul) entry."""
+    """Compile mv_int4_bf16.cc for the int4 GEMM (matmul) entry.
+
+    Produces `mv_int4_bf16_matmul.o` (config-tagged) and stages it as
+    the canonical `mv_int4_bf16.o`. Decode-side `compile_mv_int4_bf16`
+    produces `mv_int4_bf16_gemv.o` from the same .cc with DIM_M=8 and
+    similarly stages it; the two .o variants coexist on disk so neither
+    invalidates the other's cache.
+    """
     src = _PROJ_ROOT / "matrix_vector_multiplication" / "int4_awq" / "mv_int4_bf16.cc"
     _compile_kernel(
         src,
-        "mv_int4_bf16.o",
+        "mv_int4_bf16_matmul.o",
         extra_flags=[
             f"-DDIM_M={tile_m}",
             f"-DDIM_N={tile_n}",
@@ -89,8 +96,8 @@ def _compile_mv_int4_bf16_matmul(tile_m=16, tile_n=16, k_chunk=128, gs=128):
             f"-DDIM_GS={gs}",
             "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
         ],
-        force=True,
     )
+    shutil.copy2("mv_int4_bf16_matmul.o", "mv_int4_bf16.o")
 
 
 def _compile_mm_bf16_x_bfp16(tile_m=32, tile_n=32, tile_k_l1=128):
