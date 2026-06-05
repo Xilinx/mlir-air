@@ -955,42 +955,57 @@ module {
     return
   }
 
-  // Regression: scf.for whose fold + canonicalize-collapse produces an
-  // outermost wrap that exceeds the shim axis-0 bound (64). Without the
-  // per-axis check, the fold would succeed (4 active dims fits maxNumDims)
-  // but downstream tileIllegalWrapDim would split the airrt.dma_memcpy_nd
-  // and leak a BD ID, manifesting as "Allocator exhausted available buffer
-  // descriptor IDs" at runtime. The fold must be rejected so the unroll
-  // fallback materializes paired air.channel.put / npu.dma_wait per BD.
+  // Regression: scf.for whose fold lands a post-canonicalize result that
+  // would force tileIllegalWrapDim to push the dim count past the BD
+  // encoder limit. Specifically, when fold result is at maxNumDims active
+  // dims AND at least one dim exceeds its per-axis hardware bound,
+  // tileIllegalWrapDim's split adds a dim and tips count over the limit,
+  // forcing it into the count-overflow unroll path
+  // (AIRRtToNpuPass.cpp:1303-1349) that emits multiple airrt.dma_memcpy_nd
+  // ops without replicating the matching npu.dma_wait. The result is a BD
+  // ID leak that manifests as "Allocator exhausted available buffer
+  // descriptor IDs" at runtime. The fold must be rejected so the AIR-level
+  // unroll fallback materializes paired air.channel.put / npu.dma_wait per
+  // BD.
   //
-  // Pre-fold wrap <40, 40>·<5, 1>. Loop trip=2 step=40, IV at offset[0]
-  // (stride 40). Fold prepends <2, 1600>; canonicalize collapses
-  // <2,1600>·<40,40> → <80, 40>·<5, 1> because 1600 == 40 * 40. 80 > 64 →
-  // gate rejects → AIRUnrollScfForIntoBDChain emits 2 separate puts.
+  // Pre-fold wrap <2, 50>·<3, 20>·<5, 1> (3 active; no adjacent collapse
+  // since 50 != 3*20 and 20 != 5*1). Loop trip=64 step=1, IV at offset[0]
+  // (stride 50). Fold prepends <64, 50>; canonicalize finds no adjacent
+  // collapse. Post-fold: <64, 50>·<2, 50>·<3, 20>·<5, 1> = 4 active, with
+  // axis-0 wrap=64 matching its bound. activeDims(4) + overBoundDims(1)
+  // = 5 > maxNumDims(4) → gate rejects → AIRUnrollScfForIntoBDChain
+  // emits 64 separate puts.
+  //
+  // Contrast: a fold whose result is below maxNumDims (e.g. 2 active dims
+  // with one inner overbound) is *admitted*, since tileIllegalWrapDim's
+  // split keeps count <= 4 and pairs waits correctly. This matches the
+  // torch_mlir_e2e mul.py [32768] case.
 
-  // CHECK-LABEL: func_postfold_outer_dim_overbound
+  // CHECK-LABEL: func_postfold_count_overflow_after_split
   // CHECK-NOT:   scf.for
-  // CHECK:       air.channel.put async {{.*}} @channel_ob[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c40{{.*}}, %c5{{.*}}] [%c40{{.*}}, %c1{{.*}}])
-  // CHECK:       air.channel.put async {{.*}} @channel_ob[] (%{{.*}}[%c40{{.*}}, %c0{{.*}}] [%c40{{.*}}, %c5{{.*}}] [%c40{{.*}}, %c1{{.*}}])
+  // CHECK-COUNT-64: air.channel.put async {{.*}} @channel_ob[] (%{{.*}}[%c{{[0-9]+}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c3{{.*}}, %c5{{.*}}] [%c50{{.*}}, %c20{{.*}}, %c1{{.*}}])
   // CHECK-NOT:   air.channel.put{{.*}}@channel_ob
 
-  // AIE1-LABEL: func_postfold_outer_dim_overbound
+  // AIE1-LABEL: func_postfold_count_overflow_after_split
   // AIE1: scf.for
 
   air.channel @channel_ob [1]
-  func.func @func_postfold_outer_dim_overbound() {
+  func.func @func_postfold_count_overflow_after_split() {
     %0 = air.launch async () in () {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c3 = arith.constant 3 : index
       %c5 = arith.constant 5 : index
-      %c40 = arith.constant 40 : index
-      %c80 = arith.constant 80 : index
+      %c20 = arith.constant 20 : index
+      %c50 = arith.constant 50 : index
+      %c64 = arith.constant 64 : index
       %async_token, %results = air.execute -> (memref<10000xi8>) {
         %alloc = memref.alloc() : memref<10000xi8>
         air.execute_terminator %alloc : memref<10000xi8>
       }
-      %t = scf.for %i = %c0 to %c80 step %c40 iter_args(%arg = %async_token) -> (!air.async.token) {
-        %p = air.channel.put async [%arg] @channel_ob[] (%results[%i, %c0] [%c40, %c5] [%c40, %c1]) {id = 99 : i32} : (memref<10000xi8>)
+      %t = scf.for %i = %c0 to %c64 step %c1 iter_args(%arg = %async_token) -> (!air.async.token) {
+        %p = air.channel.put async [%arg] @channel_ob[] (%results[%i, %c0, %c0] [%c2, %c3, %c5] [%c50, %c20, %c1]) {id = 99 : i32} : (memref<10000xi8>)
         scf.yield %p : !air.async.token
       }
     }

@@ -2348,27 +2348,35 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     // a wrap that temporarily sits at axis 0 but will be displaced by the
     // next iteration's fold of the outer for-loop. Rejecting on intermediate
     // state would needlessly disable the chain.
+    //
+    // The leak condition is not "any wrap >= bound" — tileIllegalWrapDim
+    // happily splits an over-bound dim into two and the resulting chain still
+    // emits exactly one airrt.dma_memcpy_nd with one matching npu.dma_wait
+    // (BDs paired). The leak triggers only when the post-split dim count
+    // exceeds maxNumDims, which kicks the count-overflow path in
+    // AIRRtToNpuPass.cpp:tileIllegalWrapDim that unrolls the outer dim into
+    // multiple airrt.dma_memcpy_nd ops without replicating the wait. Predict
+    // that condition by summing post-fold active dims with the number of
+    // over-bound dims (each contributes one extra dim post-split) and reject
+    // only when that sum would exceed maxNumDims. Bounds are exclusive upper
+    // bounds, mirroring tileIllegalWrapDim's `wrap >= bound` predicate.
     bool isTerminalFold = !for_op->getParentOfType<scf::ForOp>() &&
                           !for_op->getParentOfType<affine::AffineForOp>();
-    if (isTerminalFold && !wrapUpperBounds.empty()) {
-      // Walk wraps from outermost (index 0) to innermost. Map each wrap to its
-      // hardware axis: the outermost active dim maps to wrapUpperBounds[0],
-      // the next active to wrapUpperBounds[1], etc. Inactive dims (size==1)
-      // do not consume a hardware axis slot.
+    if (isTerminalFold && maxNumDims >= 0 && !wrapUpperBounds.empty()) {
+      int activeDims = 0;
+      int overBoundDims = 0;
       unsigned axisIdx = 0;
       for (auto v : wraps) {
         auto cv = getConstantIntValue(v);
         if (!cv || *cv <= 1)
           continue;
-        if (axisIdx >= wrapUpperBounds.size())
-          break; // post-fold count check above already covers this.
-        // Bounds are exclusive upper bounds; mirror tileIllegalWrapDim's
-        // `wrap >= bound` predicate exactly so that we never admit a fold
-        // result that would still be split downstream.
-        if (*cv >= wrapUpperBounds[axisIdx])
-          return failure();
+        activeDims++;
+        if (axisIdx < wrapUpperBounds.size() && *cv >= wrapUpperBounds[axisIdx])
+          overBoundDims++;
         axisIdx++;
       }
+      if (activeDims + overBoundDims > maxNumDims)
+        return failure();
     }
 
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
