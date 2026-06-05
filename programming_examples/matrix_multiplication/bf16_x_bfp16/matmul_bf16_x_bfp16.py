@@ -18,6 +18,8 @@ from air.ir import (
     AffineSymbolExpr,
     BF16Type,
     F32Type,
+    IndexType,
+    InsertionPoint,
     IntegerAttr,
     IntegerType,
     MemRefType,
@@ -36,11 +38,34 @@ from air.dialects.air import (
     module_builder,
     segment,
 )
+from air.dialects.arith import constant
 from air.dialects.func import CallOp, FuncOp
 from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.scf import for_, yield_
+from air.dialects.scf import ForOp, for_, yield_
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
+
+
+def for_disable_pp(start, stop=None, step=None):
+    """`for_` variant that tags the underlying scf.for with
+    `air.disable_ping_pong`. The K-l1 fill loop's L1 budget can't absorb
+    the ping-pong unroll's 2x buffer copies on AIE2P (74 KiB > 64 KiB)."""
+    if step is None:
+        step = 1
+    if stop is None:
+        stop = start
+        start = 0
+    params = [start, stop, step]
+    for i, p in enumerate(params):
+        if isinstance(p, int):
+            p = constant(IndexType.get(), p)
+        params[i] = p
+    start, stop, step = params
+    for_op = ForOp(start, stop, step, None)
+    for_op.operation.attributes["air.disable_ping_pong"] = UnitAttr.get()
+    with InsertionPoint(for_op.body):
+        yield for_op.induction_variable
+
 
 KERNEL_OBJ_NAME = "mm_bf16_x_bfp16.o"
 BFP16_BLOCK = 8
@@ -426,7 +451,7 @@ def build_module(
                     ):
                         _l1_a = AllocOp(l1MemrefTyA, [], [])
                         _l1_b = AllocOp(l1MemrefTyB, [], [])
-                        for j in for_(0, k_per_l2):
+                        for j in for_disable_pp(0, k_per_l2):
                             reduction_l1_iv_map = AffineMap.get(
                                 0,
                                 1,
