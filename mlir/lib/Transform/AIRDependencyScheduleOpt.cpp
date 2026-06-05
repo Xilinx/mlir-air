@@ -2351,15 +2351,56 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       populateDefaultWrapsAndStrides(b, channel_op.getMemref(), offsets, wraps,
                                      strides);
 
-    // Check if the number of wrap-and-stride dims exceed maxNumDims. TODO:
-    // expand this to take into account more wrap-and-stride constraints.
-    int numActualWrapDims = 0; // Count the number of actual hardware wrap
-                               // dimensions, with wrap value greater than one.
+    int numActualWrapDims = 0;
     for (auto v : wraps) {
       if (*getConstantIntValue(v) > 1)
         numActualWrapDims++;
     }
-    if (maxNumDims >= 0 && numActualWrapDims > maxNumDims - 1)
+    // Pre-fold gate. The fold inserts one new outer dim; admit at the
+    // maxNumDims boundary only when canonicalize can collapse the new
+    // dim with the existing outermost, which requires (a) the memtile
+    // pass (skipZeroStride=true) and (b) some parent scf.for IV reaches
+    // the original outermost offset. Pre-canonicalize offsets are used
+    // so an IV sitting in a size-1 dim is still found. The post-fold
+    // active-dim count check below rejects fold results that did not
+    // collapse.
+    bool admitBoundary = false;
+    if (skipZeroStride && maxNumDims >= 0 && numActualWrapDims == maxNumDims) {
+      SmallVector<Value> origOffsets = channel_op.getOffsets();
+      SmallVector<scf::ForOp> parentForOps;
+      Operation *parent = channel_op->getParentOp();
+      while (parent) {
+        if (auto pf = dyn_cast<scf::ForOp>(parent))
+          parentForOps.push_back(pf);
+        if (parent == for_op)
+          break;
+        parent = parent->getParentOp();
+      }
+      auto reachesIV = [&](Value v, Value iv) -> bool {
+        if (v == iv)
+          return true;
+        Operation *defOp = v.getDefiningOp();
+        if (auto exec = dyn_cast_if_present<air::ExecuteOp>(defOp))
+          defOp = &exec.getChildOps().front();
+        if (defOp && isa<arith::AddIOp>(defOp)) {
+          for (Value oper : defOp->getOperands())
+            if (oper == iv)
+              return true;
+        }
+        return false;
+      };
+      if (!origOffsets.empty()) {
+        for (auto pf : parentForOps) {
+          Value iv = pf.getInductionVar();
+          if (reachesIV(origOffsets[0], iv)) {
+            admitBoundary = true;
+            break;
+          }
+        }
+      }
+    }
+    int effectiveMax = admitBoundary ? maxNumDims : (maxNumDims - 1);
+    if (maxNumDims >= 0 && numActualWrapDims > effectiveMax)
       return failure();
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
@@ -2373,6 +2414,19 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         air::getTensorVolume(channel_op.getMemref().getType()), maxSize,
         innerAlignment);
 
+    // Post-fold legality: reject when canonicalize did not bring the active
+    // dim count back within maxNumDims. The rejection falls through to
+    // AIRUnrollScfForIntoBDChain, which unrolls at the AIR level and
+    // preserves per-op paired waits.
+    if (maxNumDims >= 0) {
+      int postFoldActiveDims = 0;
+      for (auto v : wraps) {
+        if (auto cv = getConstantIntValue(v); cv && *cv > 1)
+          postFoldActiveDims++;
+      }
+      if (postFoldActiveDims > maxNumDims)
+        return failure();
+    }
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
     if (enableRepeatAtHighestDim && !wraps.empty()) {
       // Force bump up number of dims to maxNumDims.
@@ -6817,7 +6871,8 @@ private:
           /*maxNumDims=*/maxNumDims,
           /*maxSize=*/maxSize,
           /*enableForLoopUnrolling=*/enableForLoopUnrolling,
-          /*enableRepeatAtHighestDim=*/true);
+          /*enableRepeatAtHighestDim=*/true,
+          /*skipZeroStride=*/false);
     }
   }
 };
