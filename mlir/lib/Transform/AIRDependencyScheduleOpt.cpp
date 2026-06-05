@@ -2321,11 +2321,14 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     //   (1) Active dim count must be <= maxNumDims. The BD encoder cannot emit
     //       more than maxNumDims active wrap dims.
     //   (2) Each dim's size must fit its corresponding hardware per-axis
-    //       bound (e.g. shim outermost = 64, inner = 1024). If a fold lands a
-    //       dim over its bound, the downstream tileIllegalWrapDim pass would
-    //       split the airrt.dma_memcpy_nd into multiple ops, but the original
-    //       npu.dma_wait is only emitted once, leaking BD IDs ("Allocator
-    //       exhausted available buffer descriptor IDs" at runtime).
+    //       bound (e.g. shim outermost = 64, inner = 1024). Bounds are
+    //       *exclusive* upper bounds, matching tileIllegalWrapDim in
+    //       AIRRtToNpuPass.cpp (`wrap >= bound` is illegal). If a fold
+    //       lands a dim at or over its bound, the downstream
+    //       tileIllegalWrapDim pass would split the airrt.dma_memcpy_nd
+    //       into multiple ops, but the original npu.dma_wait is only
+    //       emitted once, leaking BD IDs ("Allocator exhausted available
+    //       buffer descriptor IDs" at runtime).
     //
     // Both rejections fall through to AIRUnrollScfForIntoBDChain, which
     // unrolls at the AIR level and preserves per-op paired waits.
@@ -2359,7 +2362,10 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
           continue;
         if (axisIdx >= wrapUpperBounds.size())
           break; // post-fold count check above already covers this.
-        if (*cv > wrapUpperBounds[axisIdx])
+        // Bounds are exclusive upper bounds; mirror tileIllegalWrapDim's
+        // `wrap >= bound` predicate exactly so that we never admit a fold
+        // result that would still be split downstream.
+        if (*cv >= wrapUpperBounds[axisIdx])
           return failure();
         axisIdx++;
       }

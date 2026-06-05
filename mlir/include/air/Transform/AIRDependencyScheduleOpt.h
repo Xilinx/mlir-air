@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/ArrayRef.h"
 #include <memory>
 
 namespace xilinx {
