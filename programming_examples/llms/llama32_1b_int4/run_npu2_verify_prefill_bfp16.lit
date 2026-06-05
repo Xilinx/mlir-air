@@ -4,12 +4,12 @@
 // LLAMA-3.2-1B bfp16 prefill verify gate: top-K token-level inclusion
 // check on the bfp16 prefill backend. Mirrors run_npu2_verify.lit's
 // methodology but exercises the bfp16 stitchers in isolation (prefill
-// only; decode is unaffected by --prefill-dtype).
+// only; decode is unaffected by --prefill-dtype). HF reference is built
+// from the AMD AWQ checkpoint's config + AWQ-dequant weights — no
+// upstream meta-llama download (depends on the verify_adapter rewrite
+// in #1667).
 //
-// Requires HF_TOKEN to fetch the upstream tokenizer behind the AWQ
-// checkpoint (gated).
-//
-// REQUIRES: ryzen_ai_npu2, peano, hf_token
+// REQUIRES: ryzen_ai_npu2, peano
 //
 // RUN: mkdir -p test_peano_verify_prefill_bfp16
 // RUN: cd test_peano_verify_prefill_bfp16
