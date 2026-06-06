@@ -155,8 +155,8 @@ int main(int argc, const char *argv[]) {
 
   // KSZxKSZ stride-KSZ conv: per output = KSZ*KSZ*CI MACs;
   //   outputs = (H/KSZ) * (W/KSZ) * CO; *2 for mul+add per MAC.
-  double macs = 2.0 * double(KSZ) * double(KSZ) * double(CI) *
-                double(H / KSZ) * double(W / KSZ) * double(CO);
+  double macs = 2.0 * double(KSZ) * double(KSZ) * double(CI) * double(H / KSZ) *
+                double(W / KSZ) * double(CO);
 
   for (unsigned iter = 0; iter < num_iter; iter++) {
     auto start = std::chrono::high_resolution_clock::now();
