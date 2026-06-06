@@ -10,26 +10,34 @@
 // `air.channel.get/put` and the herd-side tile placement must agree on a
 // single linearization of `indices=[i, j]` to a metadataArray slot.
 //
-// Before the fix to `getIteratorFromMDVector` (mlir/lib/Util/Util.cpp), the
-// formula was row-major (idx[0] slow) while shim_dma_allocation enumeration
-// happened in tile-allocation order (col fast). The two coincide only when
-// any dim == 1, so 1D-style herds passed but a true 2D herd misrouted
-// off-diagonal channel instances.
+// `getIteratorFromMDVector` uses row-major (idx[0] slow, idx[N-1] fast). For
+// that to pair correctly with the per-device shim-allocation enumeration in
+// `createShimDMAAllocationOpsImpl`, the alloc bucket must be sorted by far-
+// end tile (col, row) lex — col slow, row fast — so that physical tile
+// (x_loc+i, y_loc+j) gets per-device-idx `i*y_size + j`. Without the sort,
+// the bucket arrived in tile-allocation order (col fast, row slow) and
+// off-diagonal channel instances routed to the wrong shim allocation. The
+// two orderings coincide whenever any dim == 1, so 1D-style herds were
+// unaffected.
 //
-// This test checks the col-major-fixed behavior: for a 2x2 herd with channel
-// @outD [2, 2], the launch-side getter for indices=[1, 0] picks
-// metadataArray slot 1 (linIdx = 1 + 0*2 = 1), which is the shim allocation
-// for tile (col=1, row=2)'s output — the matching producer.
+// This test exercises a 2x2 herd with channel @outD [2, 2]: a launch-side
+// `air.channel.get @outD[1, 0]` must resolve to the shim allocation for
+// tile (col=1, row=2)'s output — the matching producer for herd indices
+// (tx=1, ty=0).
 
 // RUN: air-opt %s -air-to-aie='row-offset=2 col-offset=0 device=npu2' 2>&1 | FileCheck %s
 
 // CHECK-DAG: aie.shim_dma_allocation @air_outD_0(%logical_shim_noc, S2MM, 0)
-// CHECK-DAG: aie.shim_dma_allocation @air_outD_1(%logical_shim_noc_0, S2MM, 0)
-// CHECK-DAG: aie.shim_dma_allocation @air_outD_2(%logical_shim_noc, S2MM, 1)
+// CHECK-DAG: aie.shim_dma_allocation @air_outD_1(%logical_shim_noc, S2MM, 1)
+// CHECK-DAG: aie.shim_dma_allocation @air_outD_2(%logical_shim_noc_0, S2MM, 0)
 // CHECK-DAG: aie.shim_dma_allocation @air_outD_3(%logical_shim_noc_0, S2MM, 1)
 
-// Metadata order matches col-major linearization
-// (idx[0] fast: outD_0=[0,0], outD_1=[1,0], outD_2=[0,1], outD_3=[1,1]).
+// Per-device alloc index for tile (col, row) = (col-x_loc)*y_size + (row-y_loc).
+// For 2x2 with x_loc=0, y_loc=2:
+//   tile (0,2) → outD_0     tile (0,3) → outD_1
+//   tile (1,2) → outD_2     tile (1,3) → outD_3
+// Row-major formula `idx[0]*dims[1] + idx[1]` then picks the matching slot:
+//   indices=[0,0]→0  [0,1]→1  [1,0]→2  [1,1]→3
 // CHECK: air.channel.get @outD[%c0, %c0]
 // CHECK-SAME: metadataArray = [{base = "air_outD_0"
 // CHECK-SAME:                   {base = "air_outD_1"
@@ -48,8 +56,8 @@ module {
       %c24 = arith.constant 24 : index
 
       air.channel.get @outD[%c0, %c0] (%output[%c0] [%c8] [%c1]) {id = 10 : i32} : (memref<32xbf16>)
-      air.channel.get @outD[%c1, %c0] (%output[%c8] [%c8] [%c1]) {id = 11 : i32} : (memref<32xbf16>)
-      air.channel.get @outD[%c0, %c1] (%output[%c16] [%c8] [%c1]) {id = 12 : i32} : (memref<32xbf16>)
+      air.channel.get @outD[%c0, %c1] (%output[%c8] [%c8] [%c1]) {id = 11 : i32} : (memref<32xbf16>)
+      air.channel.get @outD[%c1, %c0] (%output[%c16] [%c8] [%c1]) {id = 12 : i32} : (memref<32xbf16>)
       air.channel.get @outD[%c1, %c1] (%output[%c24] [%c8] [%c1]) {id = 13 : i32} : (memref<32xbf16>)
 
       %seg = air.segment @seg async

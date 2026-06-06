@@ -918,14 +918,8 @@ air::convertVecOfConstIndexToVecOfUInt(SmallVector<Value> svec) {
 }
 
 // Get iterator corresponding to a position in a multi-dimensional vector.
-// Col-major linearization: position[0] is fastest-varying, position[N-1] is
-// slowest-varying. Matches the tile-allocation order in
-// `createShimDMAAllocationOpsImpl` (AIRToAIEPass.cpp) which iterates physical
-// tiles col-fast, row-slow. A prior row-major formula (position[0] slow)
-// misrouted off-diagonal channel instances for 2D channels with both dims > 1
-// (e.g. a 2x2 herd with channel size=[2,2]) because the launch-side lookup
-// picked the wrong metadataArray entry. Single-dim cases are unaffected (the
-// two formulas coincide when any dim == 1).
+// Row-major linearization: position[0] is slowest-varying, position[N-1] is
+// fastest-varying.
 //
 // Note: If dims.size() != position.size(), returns 0 as a sentinel value.
 // Callers must not treat the return value as a valid linearized index in that
@@ -936,26 +930,28 @@ unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
     return 0;
 
   unsigned output = 0;
-  unsigned stride = 1;
   for (unsigned i = 0; i < dims.size(); i++) {
+    unsigned stride = 1;
+    for (unsigned j = i + 1; j < dims.size(); j++)
+      stride *= dims[j];
     output += position[i] * stride;
-    stride *= dims[i];
   }
   return output;
 }
 
 // Get coordinates corresponding to a position in a multi-dimensional vector
-// from an iterator. Col-major delinearization: output[0] is fastest-varying,
-// output[N-1] is slowest-varying. This is the inverse of
+// from an iterator. Row-major delinearization: output[0] is slowest-varying,
+// output[N-1] is fastest-varying. This is the inverse of
 // getIteratorFromMDVector when all dims[i] > 0 and
 // 0 <= iter < product(dims).
 std::vector<unsigned> air::getMDVectorFromIterator(std::vector<unsigned> dims,
                                                    unsigned iter) {
   std::vector<unsigned> output;
-  unsigned stride = 1;
   for (unsigned i = 0; i < dims.size(); i++) {
+    unsigned stride = 1;
+    for (unsigned j = i + 1; j < dims.size(); j++)
+      stride *= dims[j];
     output.push_back((iter / stride) % dims[i]);
-    stride *= dims[i];
   }
   return output;
 }
