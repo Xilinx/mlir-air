@@ -4677,6 +4677,41 @@ public:
       }
     }
 
+    // Sort each bucket lexicographically by its far-end tile's (col, row).
+    // The bucket order determines per-device shim allocation naming
+    // (outD_0, outD_1, ...) at line ~4711, which is what
+    // getIndexToMetadataArrayFromChannelIndices indexes into via the
+    // row-major formula (`idx[0]*dims[1] + idx[1]`). Without this sort the
+    // bucket arrives in whatever order shimSideMemcpyIfOps was traversed,
+    // which is col-fast/row-slow in physical tile order — opposite of the
+    // formula's row-fast convention. The two coincide only when any dim
+    // == 1, so 1D-style herds work but 2D channels with both dims > 1
+    // misroute off-diagonal channel instances.
+    // Sorting by (col, row) lex gives col-slow/row-fast iteration, which
+    // matches `idx[0]=cx` (slow) and `idx[1]=cy` (fast) when channel index
+    // [i,j] corresponds to herd tile (i,j) at (x_loc+i, y_loc+j).
+    for (auto &kv : shimChanSymbolToAlloc) {
+      auto &allocVec = kv.second;
+      if (allocVec.size() <= 1)
+        continue;
+      auto getFarEndCoords = [](air::allocation_info_t &t) {
+        std::pair<int64_t, int64_t> coords{-1, -1};
+        if (!t.otherSideLTO)
+          return coords;
+        if (auto tileLike = dyn_cast<AIE::TileLike>(t.otherSideLTO)) {
+          coords.first = tileLike.tryGetCol().value_or(-1);
+          coords.second = tileLike.tryGetRow().value_or(-1);
+        }
+        return coords;
+      };
+      std::stable_sort(allocVec.begin(), allocVec.end(),
+                       [&](air::allocation_info_t a, air::allocation_info_t b) {
+                         auto ca = getFarEndCoords(a);
+                         auto cb = getFarEndCoords(b);
+                         return ca < cb;
+                       });
+    }
+
     // Capture errors when any shim memcpy op fails to link to shim allocation.
     // When skipUnlinked is true (segment-unrolled per-device processing),
     // unlinked ops belong to other devices and are silently skipped.
