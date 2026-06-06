@@ -11,6 +11,12 @@
 // which uses bit-exact np.array_equal on i8). This harness only measures
 // steady-state NPU latency over an xclbin/insts pair that the Python flow
 // has already produced.
+//
+// Works for both the npu2 (8x4 herd) and npu1 (4x4 herd) builds: the
+// total IN/WT/OUT buffer sizes are device-independent because the same
+// total work (CO=1152, H=W=896) is partitioned across either 8 cols * 9
+// oc-groups or 4 cols * 18 oc-groups. The --device flag is purely
+// informational and prints the herd layout.
 
 #include "cxxopts.hpp"
 #include <bits/stdc++.h>
@@ -34,17 +40,13 @@ using IN_DATATYPE =
 using WT_DATATYPE = int8_t;  // i8 weights
 using OUT_DATATYPE = int8_t; // i8 outputs
 
-// Problem dims fixed by the design (see conv2d_14x14.py / CONV_IR).
-constexpr int IN_COLS = 4;
-constexpr int IN_BYTES_PER_COL = 802816;
-constexpr int WT_COLS = 8;
-constexpr int WT_BYTES_PER_COL = 112896;
-constexpr int OUT_COLS = 8;
-constexpr int OUT_BYTES_PER_COL = 589824;
-
-constexpr int IN_VOLUME = IN_COLS * IN_BYTES_PER_COL;    // 3,211,264
-constexpr int WT_VOLUME = WT_COLS * WT_BYTES_PER_COL;    // 903,168
-constexpr int OUT_VOLUME = OUT_COLS * OUT_BYTES_PER_COL; // 4,718,592
+// Total buffer sizes (device-independent: same on npu2 and npu1).
+//   IN  = CI * H * W                     = 4 * 896 * 896 = 3,211,264 B
+//   WT  = CO * CI * KSZ * KSZ            = 1152 * 4 * 14 * 14 = 903,168 B
+//   OUT = CO * (H/KSZ) * (W/KSZ)         = 1152 * 64 * 64 = 4,718,592 B
+constexpr int IN_VOLUME = 3211264;
+constexpr int WT_VOLUME = 903168;
+constexpr int OUT_VOLUME = 4718592;
 
 void add_default_options(cxxopts::Options &options) {
   options.add_options()("help,h", "produce help message")(
@@ -59,7 +61,11 @@ void add_default_options(cxxopts::Options &options) {
       "iters", "number of timed iterations",
       cxxopts::value<int>()->default_value("20"))(
       "warmup", "number of warmup iterations",
-      cxxopts::value<int>()->default_value("10"));
+      cxxopts::value<int>()->default_value("10"))(
+      "device,d",
+      "target device label (npu1 or npu2) - informational only; total BO "
+      "sizes are identical on both",
+      cxxopts::value<std::string>()->default_value("npu2"));
 }
 
 int main(int argc, const char *argv[]) {
@@ -68,6 +74,18 @@ int main(int argc, const char *argv[]) {
   add_default_options(options);
   test_utils::parse_options(argc, argv, options, vm);
   int verbosity = vm["verbosity"].as<int>();
+
+  const std::string device_label = vm["device"].as<std::string>();
+  if (device_label != "npu1" && device_label != "npu2") {
+    std::cerr << "Unknown --device '" << device_label
+              << "' (expected npu1 or npu2)\n";
+    return 1;
+  }
+  const int n_cols = (device_label == "npu1") ? 4 : 8;
+  const int num_g = (device_label == "npu1") ? 18 : 9;
+  if (verbosity >= 0)
+    std::cout << "Device: " << device_label << " (" << n_cols
+              << " cols x 4 rows, " << num_g << " oc-groups per col)\n";
 
   srand(0);
 

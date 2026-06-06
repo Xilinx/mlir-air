@@ -2,36 +2,55 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-ifdef PEANO_INSTALL_DIR
-  BUILD_DIR := build_peano
+DEVICE ?= npu2
+
+ifeq ($(DEVICE),npu2)
+  AIE_TARGET := aie2p
+  AIE_KERNEL_DIR := aie2p
+else ifeq ($(DEVICE),npu1)
+  AIE_TARGET := aie2
+  AIE_KERNEL_DIR := aie2p
 else
-  BUILD_DIR := build_chess
+  $(error Unsupported DEVICE='$(DEVICE)'. Use DEVICE=npu1 or DEVICE=npu2)
+endif
+
+ifdef PEANO_INSTALL_DIR
+  BUILD_DIR := build_peano_$(DEVICE)
+else
+  BUILD_DIR := build_chess_$(DEVICE)
 endif
 
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
+DEVICE_FLAG = --target-device $(DEVICE)
 
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
+PEANOWRAP2_FLAGS  = -O2 -std=c++20 --target=aie2-none-unknown-elf  ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
 
-AIE_TARGET ?= aie2p
-PEANO_FLAGS = ${PEANOWRAP2P_FLAGS}
+ifeq ($(AIE_TARGET),aie2p)
+  PEANO_FLAGS = ${PEANOWRAP2P_FLAGS}
+else
+  PEANO_FLAGS = ${PEANOWRAP2_FLAGS}
+endif
 
-KERNEL_SRC = ${AIEOPT_DIR}/include/aie_kernels/aie2p/conv2dk14.cc
+# The aie2p source compiles for both aie2 and aie2p targets; on aie2 the
+# mmul<8,8,8> specialization is emulated via two mmul<4,8,8> macs.
+KERNEL_SRC = ${AIEOPT_DIR}/include/aie_kernels/$(AIE_KERNEL_DIR)/conv2dk14.cc
 
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/conv2d_14x14.py $(OUTPUT_FORMAT_FLAG) -p
+	${powershell} python3 ${srcdir}/conv2d_14x14.py $(OUTPUT_FORMAT_FLAG) $(DEVICE_FLAG) -p
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/conv2d_14x14.py $(OUTPUT_FORMAT_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/conv2d_14x14.py $(OUTPUT_FORMAT_FLAG) $(DEVICE_FLAG)
 
 profile: compile-kernel build-test-exe
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/conv2d_14x14.py $(OUTPUT_FORMAT_FLAG)
-	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/conv2d_14x14.py $(OUTPUT_FORMAT_FLAG) $(DEVICE_FLAG)
+	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin --device $(DEVICE)
 
 build-test-exe:
 	@GPP=$$( \
