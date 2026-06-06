@@ -918,8 +918,14 @@ air::convertVecOfConstIndexToVecOfUInt(SmallVector<Value> svec) {
 }
 
 // Get iterator corresponding to a position in a multi-dimensional vector.
-// Row-major linearization: position[0] is slowest-varying, position[N-1] is
-// fastest-varying.
+// Col-major linearization: position[0] is fastest-varying, position[N-1] is
+// slowest-varying. Matches the tile-allocation order in
+// `createShimDMAAllocationOpsImpl` (AIRToAIEPass.cpp) which iterates physical
+// tiles col-fast, row-slow. A prior row-major formula (position[0] slow)
+// misrouted off-diagonal channel instances for 2D channels with both dims > 1
+// (e.g. a 2x2 herd with channel size=[2,2]) because the launch-side lookup
+// picked the wrong metadataArray entry. Single-dim cases are unaffected (the
+// two formulas coincide when any dim == 1).
 //
 // Note: If dims.size() != position.size(), returns 0 as a sentinel value.
 // Callers must not treat the return value as a valid linearized index in that
@@ -929,14 +935,6 @@ unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
   if (dims.size() != position.size())
     return 0;
 
-  // Col-major linearization: position[0] is FASTEST-varying. Matches the
-  // tile-allocation order in `createShimDMAAllocationOpsImpl`
-  // (AIRToAIEPass.cpp ~4711) which iterates physical tiles col-fast,
-  // row-slow. With the prior row-major formula (position[0] slow), 2D
-  // channels with both dims > 1 (e.g. a 2x2 herd with channel size=[2,2])
-  // misrouted off-diagonal channel instances because the launch-side
-  // lookup picked the wrong metadataArray entry. Single-dim cases are
-  // unaffected (the formulas coincide when any dim == 1).
   unsigned output = 0;
   unsigned stride = 1;
   for (unsigned i = 0; i < dims.size(); i++) {
