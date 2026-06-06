@@ -395,14 +395,13 @@ if __name__ == "__main__":
             (float(int4_vals[i]) - float(zeros[g])) * float(scales[g])
         )
 
-    instance_name = "dequant_inline" if args.direct_codegen else "dequant"
-
+    # ELF kernel resolves as main:<instance_name>; must match @dequant.
     if args.compile_mode == "compile-and-run":
         runner = XRTRunner(
             verbose=args.verbose,
             omit_pingpong=True,
             output_format=args.output_format,
-            instance_name=instance_name,
+            instance_name="dequant",
             target_device=args.device,
         )
         exit(
