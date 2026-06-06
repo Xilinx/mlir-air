@@ -6512,6 +6512,42 @@ public:
       tiles[{colIndex, rowIndex}] = tile;
     }
 
+    // Collect shim NOC columns already in use by circuit-switched data
+    // flows, and (col,row,channel) tuples whose local DMA port is already
+    // sourced by a circuit flow. On AIE2 the Trace bundle on a core tile is
+    // internally wired to DMA channel 0 (see AIE2TargetModel::isLegalTile
+    // Connection in mlir-aie's AIETargetModel.cpp -- Trace -> DMA dst is only
+    // legal when dst chan == 0). A packet flow with source Trace:0 therefore
+    // shares the switchbox's DMA0 ingress with any circuit flow that uses
+    // DMA0 as its source, tripping the verifier:
+    //   'aie.packet_rules' op packet switched source DMA0 cannot match
+    //   another connect or masterset operation
+    // Skip trace emission for any core whose local DMA0 is already in use
+    // and prefer a shim column distinct from existing data shims.
+    llvm::SmallSet<int, 4> dataShimCols;
+    llvm::SmallSet<AIE::TileID, 8> coresWithDMA0SourceFlow;
+    for (auto flow : device.getOps<AIE::FlowOp>()) {
+      auto srcT =
+          dyn_cast_or_null<AIE::TileOp>(flow.getSource().getDefiningOp());
+      auto dstT = dyn_cast_or_null<AIE::TileOp>(flow.getDest().getDefiningOp());
+      if (srcT && target_model.isShimNOCTile(srcT.getCol(), srcT.getRow()))
+        dataShimCols.insert(srcT.getCol());
+      if (dstT && target_model.isShimNOCTile(dstT.getCol(), dstT.getRow()))
+        dataShimCols.insert(dstT.getCol());
+      if (srcT && target_model.isCoreTile(srcT.getCol(), srcT.getRow()) &&
+          flow.getSourceBundle() == AIE::WireBundle::DMA &&
+          flow.getSourceChannel() == 0)
+        coresWithDMA0SourceFlow.insert({srcT.getCol(), srcT.getRow()});
+    }
+    auto pickTraceShimCol = [&](int srcColIndex) -> int {
+      const int numCols = target_model.columns();
+      for (int c = 0; c < numCols; ++c) {
+        if (target_model.isShimNOCTile(c, 0) && !dataShimCols.count(c))
+          return c;
+      }
+      return srcColIndex;
+    };
+
     // Create packet flows
     for (auto srcTile : device.getOps<AIE::TileOp>()) {
       int srcColIndex = srcTile.colIndex();
@@ -6520,7 +6556,13 @@ public:
 
       if (target_model.isCoreTile(srcColIndex, srcRowIndex) ||
           target_model.isMemTile(srcColIndex, srcRowIndex)) {
-        int destColIndex = srcColIndex; // todo: allocation?
+        // Hardware constraint: on a core tile, Trace ingresses the switchbox
+        // via DMA0. Cannot emit a Trace:0 packet flow if DMA0 is already a
+        // circuit-switched source.
+        if (target_model.isCoreTile(srcColIndex, srcRowIndex) &&
+            coresWithDMA0SourceFlow.count({srcColIndex, srcRowIndex}))
+          continue;
+        int destColIndex = pickTraceShimCol(srcColIndex);
         int destRowIndex = 0;
         if (!tiles[{destColIndex, destRowIndex}]) {
           builder.setInsertionPointToStart(device.getBody());
