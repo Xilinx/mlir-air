@@ -16,7 +16,7 @@ Design highlights:
     [<14,56>,<64,784>,<56,1>], and consumer L2->L1 gathers via the same
     [<2,6272>,<98,8>,<8,784>,<8,1>] window the kernel expects.
   * L1 weights are streamed direct L3->L1 with a 4D shim BD per col. The
-    per-col weight slab is NUM_G * 12544 bytes (=112896 for npu2, =225792
+    per-col weight slab is num_g * 12544 bytes (=112896 for npu2, =225792
     for npu1).
   * L2->L3 output drain is a flat 65536-B/col S2MM per g iter; host
     reorders the kernel's [oc=2,nt=2,nt8=8,oc8=8] byte order into
@@ -316,7 +316,9 @@ def build_inputs_and_golden(n_cols, num_g):
     # Weights need to be reshaped to OIYX -> OYXIO8 grouped form so the
     # (n_cols, num_g*12544) buffer matches what the kernel reads. Upstream
     # uses DataShaper.reorder_mat("OYXIO8", "OIYX"). Total CO//8 = 144
-    # oc-groups packed contiguously then split across n_cols columns.
+    # 8-OC blocks packed contiguously and then split across n_cols columns;
+    # the kernel consumes them in pairs (one "oc-group" / kernel call =
+    # 16 OC = two CO//8 blocks = 12544 bytes).
     wts_np = int_weight.data.numpy().astype(np.int8)  # (CO, CI, KSZ, KSZ)
     # OYXIO8 layout: split CO into (CO//8, 8). Source label "OIYX" means
     # axes (CO, CI, Y, X) which is what we have. Target label "OYXIO8"

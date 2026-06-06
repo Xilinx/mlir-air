@@ -40,13 +40,17 @@ using IN_DATATYPE =
 using WT_DATATYPE = int8_t;  // i8 weights
 using OUT_DATATYPE = int8_t; // i8 outputs
 
+// Problem dims (fixed by the design; see conv2d_14x14.py).
+constexpr int CI = 4;
+constexpr int CO = 1152;
+constexpr int H = 896;
+constexpr int W = 896;
+constexpr int KSZ = 14;
+
 // Total buffer sizes (device-independent: same on npu2 and npu1).
-//   IN  = CI * H * W                     = 4 * 896 * 896 = 3,211,264 B
-//   WT  = CO * CI * KSZ * KSZ            = 1152 * 4 * 14 * 14 = 903,168 B
-//   OUT = CO * (H/KSZ) * (W/KSZ)         = 1152 * 64 * 64 = 4,718,592 B
-constexpr int IN_VOLUME = 3211264;
-constexpr int WT_VOLUME = 903168;
-constexpr int OUT_VOLUME = 4718592;
+constexpr int IN_VOLUME = CI * H * W;                  // 3,211,264 B
+constexpr int WT_VOLUME = CO * CI * KSZ * KSZ;         // 903,168 B
+constexpr int OUT_VOLUME = CO * (H / KSZ) * (W / KSZ); // 4,718,592 B
 
 void add_default_options(cxxopts::Options &options) {
   options.add_options()("help,h", "produce help message")(
@@ -149,9 +153,10 @@ int main(int argc, const char *argv[]) {
   float npu_time_min = std::numeric_limits<float>::max();
   float npu_time_max = 0;
 
-  // 14x14 stride-14 conv, 4 in-chan, 1152 out-chan over 896x896:
-  //   per output: 14*14*4 MACs; outputs: 64*64*1152
-  double macs = 2.0 * 14.0 * 14.0 * 4.0 * 64.0 * 64.0 * 1152.0;
+  // KSZxKSZ stride-KSZ conv: per output = KSZ*KSZ*CI MACs;
+  //   outputs = (H/KSZ) * (W/KSZ) * CO; *2 for mul+add per MAC.
+  double macs = 2.0 * double(KSZ) * double(KSZ) * double(CI) *
+                double(H / KSZ) * double(W / KSZ) * double(CO);
 
   for (unsigned iter = 0; iter < num_iter; iter++) {
     auto start = std::chrono::high_resolution_clock::now();
