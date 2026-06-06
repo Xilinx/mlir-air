@@ -929,29 +929,35 @@ unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
   if (dims.size() != position.size())
     return 0;
 
+  // Col-major linearization: position[0] is FASTEST-varying. Matches the
+  // tile-allocation order in `createShimDMAAllocationOpsImpl`
+  // (AIRToAIEPass.cpp ~4711) which iterates physical tiles col-fast,
+  // row-slow. With the prior row-major formula (position[0] slow), 2D
+  // channels with both dims > 1 (e.g. a 2x2 herd with channel size=[2,2])
+  // misrouted off-diagonal channel instances because the launch-side
+  // lookup picked the wrong metadataArray entry. Single-dim cases are
+  // unaffected (the formulas coincide when any dim == 1).
   unsigned output = 0;
+  unsigned stride = 1;
   for (unsigned i = 0; i < dims.size(); i++) {
-    unsigned stride = 1;
-    for (unsigned j = i + 1; j < dims.size(); j++)
-      stride *= dims[j];
     output += position[i] * stride;
+    stride *= dims[i];
   }
   return output;
 }
 
 // Get coordinates corresponding to a position in a multi-dimensional vector
-// from an iterator. Row-major delinearization: output[0] is slowest-varying,
-// output[N-1] is fastest-varying. This is the inverse of
+// from an iterator. Col-major delinearization: output[0] is fastest-varying,
+// output[N-1] is slowest-varying. This is the inverse of
 // getIteratorFromMDVector when all dims[i] > 0 and
 // 0 <= iter < product(dims).
 std::vector<unsigned> air::getMDVectorFromIterator(std::vector<unsigned> dims,
                                                    unsigned iter) {
   std::vector<unsigned> output;
+  unsigned stride = 1;
   for (unsigned i = 0; i < dims.size(); i++) {
-    unsigned stride = 1;
-    for (unsigned j = i + 1; j < dims.size(); j++)
-      stride *= dims[j];
     output.push_back((iter / stride) % dims[i]);
+    stride *= dims[i];
   }
   return output;
 }

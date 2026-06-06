@@ -96,10 +96,11 @@ module {
 //
 // With the fix, device 1's allocations have tileIdx=0,1,2 (per-device),
 // and the sort code correctly reorders the metadataArray so that
-// getIteratorFromMDVector({3,2}, {col, head}) maps to the right entry:
-//   [0,0]→pos 0 (dev0 tile0), [0,1]→pos 1 (dev1 tile0),
-//   [1,0]→pos 2 (dev0 tile1), [1,1]→pos 3 (dev1 tile1),
-//   [2,0]→pos 4 (dev0 tile2), [2,1]→pos 5 (dev1 tile2)
+// getIteratorFromMDVector({3,2}, {col, head}) maps to the right entry
+// (col-major: idx[0]=col is fastest-varying):
+//   [0,0]→pos 0 (dev0 tile0), [1,0]→pos 1 (dev0 tile1),
+//   [2,0]→pos 2 (dev0 tile2), [0,1]→pos 3 (dev1 tile0),
+//   [1,1]→pos 4 (dev1 tile1), [2,1]→pos 5 (dev1 tile2)
 
 // Check per-device shim allocations have per-device tile indices:
 // CHECK2D-LABEL: aie.device{{.*}}@segment_2d_0_0
@@ -113,16 +114,17 @@ module {
 // CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_2
 
 // Check that the metadataArray is sorted to match getIteratorFromMDVector
-// linearization: position = {tileIdx, unrollCopy}, dims = {3, 2}.
-//   linIdx 0 = {0,0} → dev0 tile0, linIdx 1 = {0,1} → dev1 tile0,
-//   linIdx 2 = {1,0} → dev0 tile1, linIdx 3 = {1,1} → dev1 tile1,
-//   linIdx 4 = {2,0} → dev0 tile2, linIdx 5 = {2,1} → dev1 tile2
+// linearization (col-major: position[0] is fastest-varying):
+// position = {tileIdx, unrollCopy}, dims = {3, 2}.
+//   linIdx 0 = {0,0} → dev0 tile0, linIdx 1 = {1,0} → dev0 tile1,
+//   linIdx 2 = {2,0} → dev0 tile2, linIdx 3 = {0,1} → dev1 tile0,
+//   linIdx 4 = {1,1} → dev1 tile1, linIdx 5 = {2,1} → dev1 tile2
 // CHECK2D: air.channel.get @out_2d[%c0, %c0]
 // CHECK2D-SAME: metadataArray = [{base = "air_out_2d_0_0_0"
-// CHECK2D-SAME:                   {base = "air_out_2d_1_0_0"
 // CHECK2D-SAME:                   {base = "air_out_2d_0_0_1"
-// CHECK2D-SAME:                   {base = "air_out_2d_1_0_1"
 // CHECK2D-SAME:                   {base = "air_out_2d_0_0_2"
+// CHECK2D-SAME:                   {base = "air_out_2d_1_0_0"
+// CHECK2D-SAME:                   {base = "air_out_2d_1_0_1"
 // CHECK2D-SAME:                   {base = "air_out_2d_1_0_2"
 
 module {
