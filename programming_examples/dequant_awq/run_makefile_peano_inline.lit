@@ -1,0 +1,18 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// Inline-MLIR (--direct-codegen) variant of dequant_awq: the per-tile
+// int4 -> bf16 dequant body is authored as standard arith/vector/memref
+// ops (vector.transfer_read, vector.bitcast + arith.extui for the int4
+// unpack, arith.subi, arith.sitofp, arith.mulf) and lowered through
+// mlir-aie's VectorToAIEVec + AIEVecToLLVM pipeline to the AIE2P
+// unpack.I512.I8.I4 intrinsic, magic-number sitofp sequence, and native
+// bf16 mul. No external .o.
+//
+// RUN: mkdir -p test_peano_inline
+// RUN: cd test_peano_inline
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR DIRECT_CODEGEN_FLAG=--direct-codegen | FileCheck %s
+// CHECK: PASS!
