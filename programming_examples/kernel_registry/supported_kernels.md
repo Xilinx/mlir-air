@@ -19,7 +19,7 @@ This is **documentation, not executable code** — it records results produced b
 
 ## Kernels
 
-| Kernel | Detail | Best measured (NPU2) | Status |
+| Kernel | Detail | Best measured throughput (NPU2, units per entry) | Status |
 |---|---|---|---|
 | GEMM (BF16) | [`details/GEMM_bf16.md`](details/GEMM_bf16.md) | **9492 GFLOP/s** (external, 2048×8192×2048, full-chip 8×4) | ✅ |
 | GEMV (BF16) | [`details/GEMV_bf16.md`](details/GEMV_bf16.md) | **32 GFLOP/s** (memory-bound, 16384×2048, herd 8) | ✅ |

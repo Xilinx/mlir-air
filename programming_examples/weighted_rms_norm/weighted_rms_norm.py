@@ -50,10 +50,14 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
     vecTy = VectorType.get([vector_size], xrt_dtype)
     identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
 
-    # FP32 compute types. RMSNorm follows the GPU/PyTorch standard: bf16 inputs
-    # are upcast to f32, the whole reduction + scaling is done in f32, and the
-    # result is cast back to bf16 only at the very end (matches torch
-    # rms_norm_composite / HF LlamaRMSNorm).
+    # FP32 compute types. Following the GPU/PyTorch standard (torch
+    # rms_norm_composite / HF LlamaRMSNorm), the accuracy-critical reduction is
+    # done in f32: bf16 inputs are squared, upcast, and the sum-of-squares is
+    # accumulated in f32, with the scalar rsqrt also in f32. The per-element
+    # epilogue (x * rstd * weight) then runs in bf16 vectors — the aie vector
+    # unit does not legalize f32 vector elementwise mul — so the only remaining
+    # quantization is the single bf16 output rounding, as in a standard GPU
+    # RMSNorm.
     f32 = F32Type.get()
     vecTyF32 = VectorType.get([vector_size], f32)
 
@@ -65,6 +69,10 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
     l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
     l1RowTy = MemRefType.get([N], xrt_dtype, memory_space=l1_mem_space)
     l1VecTyF32 = MemRefType.get([vector_size], f32, memory_space=l1_mem_space)
+    # Small bf16 scratch for the square round-trip that breaks the mulf->addf
+    # def-use chain (see Step 1). Dedicated buffer so the reduction phase does
+    # not alias the output buffer.
+    l1SqTy = MemRefType.get([vector_size], xrt_dtype, memory_space=l1_mem_space)
 
     if herd_x > 1:
         assert M % herd_x == 0
@@ -94,6 +102,7 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
                 l1_out = AllocOp(l1RowTy, [], [])
                 l1_weight = AllocOp(l1RowTy, [], [])
                 l1_acc = AllocOp(l1VecTyF32, [], [])
+                l1_sq = AllocOp(l1SqTy, [], [])
 
                 c0 = arith.ConstantOp.create_index(0)
                 cst0 = arith.ConstantOp(xrt_dtype, 0.0)
@@ -130,16 +139,16 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
                     transfer_write(None, v_zero_f32, l1_acc, [c0], identity_map, [True])
                     for j in range_(0, N, vector_size):
                         sub_row = subview(l1_row.result, [j], [vector_size], [1])
-                        sub_tmp = subview(l1_out.result, [j], [vector_size], [1])
                         v_x = transfer_read(
                             vecTy, sub_row, [c0], identity_map, cst0, [True]
                         )
                         v_sq = arith.mulf(v_x, v_x)
                         # break the mulf->addf chain (aievec rejects addf fed
-                        # directly by mulf); round-trip through L1.
-                        transfer_write(None, v_sq, sub_tmp, [c0], identity_map, [True])
+                        # directly by mulf); round-trip through a dedicated L1
+                        # scratch buffer.
+                        transfer_write(None, v_sq, l1_sq, [c0], identity_map, [True])
                         v_sq_rd = transfer_read(
-                            vecTy, sub_tmp, [c0], identity_map, cst0, [True]
+                            vecTy, l1_sq, [c0], identity_map, cst0, [True]
                         )
                         v_sq_f32 = arith.extf(vecTyF32, v_sq_rd)
                         v_acc = transfer_read(
@@ -203,6 +212,7 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
                 DeallocOp(l1_out)
                 DeallocOp(l1_weight)
                 DeallocOp(l1_acc)
+                DeallocOp(l1_sq)
 
         return  # end of herd_x > 1 path
 
@@ -216,6 +226,7 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
             l1_out = AllocOp(l1RowTy, [], [])
             l1_weight = AllocOp(l1RowTy, [], [])
             l1_acc = AllocOp(l1VecTyF32, [], [])
+            l1_sq = AllocOp(l1SqTy, [], [])
 
             c0 = arith.ConstantOp.create_index(0)
             cst0 = arith.ConstantOp(xrt_dtype, 0.0)
@@ -245,16 +256,16 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
                 transfer_write(None, v_zero_f32, l1_acc, [c0], identity_map, [True])
                 for j in range_(0, N, vector_size):
                     sub_row = subview(l1_row.result, [j], [vector_size], [1])
-                    sub_tmp = subview(l1_out.result, [j], [vector_size], [1])
                     v_x = transfer_read(
                         vecTy, sub_row, [c0], identity_map, cst0, [True]
                     )
                     v_sq = arith.mulf(v_x, v_x)
                     # break the mulf->addf chain (aievec rejects addf fed
-                    # directly by mulf); round-trip through L1.
-                    transfer_write(None, v_sq, sub_tmp, [c0], identity_map, [True])
+                    # directly by mulf); round-trip through a dedicated L1
+                    # scratch buffer.
+                    transfer_write(None, v_sq, l1_sq, [c0], identity_map, [True])
                     v_sq_rd = transfer_read(
-                        vecTy, sub_tmp, [c0], identity_map, cst0, [True]
+                        vecTy, l1_sq, [c0], identity_map, cst0, [True]
                     )
                     v_sq_f32 = arith.extf(vecTyF32, v_sq_rd)
                     v_acc = transfer_read(
@@ -308,6 +319,7 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
             DeallocOp(l1_out)
             DeallocOp(l1_weight)
             DeallocOp(l1_acc)
+            DeallocOp(l1_sq)
 
 
 def rms_norm_reference(x, weight, eps=1e-5):
