@@ -13,25 +13,27 @@ This is **documentation, not executable code** — nothing here compiles or runs
 
 ## Scope
 
-This registry targets **NPU2 (Strix / AIE2P) only** — all shapes, tile configs, tolerances, and measured numbers are for the aie2p target. It is built up **one kernel at a time** — only kernels we have independently understood and verified are included, so every number here can be trusted and reproduced. Currently the registry covers **GEMM** and **GEMV**.
+This registry targets **NPU2 (Strix / AIE2P) only** — all shapes, tile configs, tolerances, and measured numbers are for the aie2p target. It is built up **one kernel at a time** — only kernels we have independently understood and verified against the GPU/HF numerical standard are included, so every number here can be trusted and reproduced. Currently the registry covers **GEMM**, **GEMV**, and **RMSNorm**.
 
 | File | What it is |
 |---|---|
 | [`supported_kernels.md`](supported_kernels.md) | High-level index: which kernels are covered, tested shapes, and best measured performance. |
 | [`details/GEMM_bf16.md`](details/GEMM_bf16.md) | Full detail for the BF16 GEMM kernel: numerical datapath, tunable parameters, tolerances, per-path data, reproduce commands. |
 | [`details/GEMV_bf16.md`](details/GEMV_bf16.md) | Full detail for the BF16 GEMV kernel: numerical datapath, tunable parameters, tolerances, per-shape data, reproduce commands. |
+| [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md) | Full detail for the BF16 weighted RMSNorm kernel: datapath, the bf16-reduction precision caveat, tunable parameters, per-shape data, reproduce commands. |
 
 ## Where the data comes from
 
-Each kernel × shape row is filled from a **standalone harness** — a self-contained run that compiles the kernel to an ELF, runs it on NPU2, and compares against a CPU reference. GEMM uses `programming_examples/matrix_multiplication/bf16`; GEMV uses `programming_examples/matrix_vector_multiplication/bf16`.
+Each kernel × shape row is filled from a **standalone harness** — a self-contained run that compiles the kernel to an ELF, runs it on NPU2, and compares against a CPU reference. GEMM uses `programming_examples/matrix_multiplication/bf16`; GEMV uses `programming_examples/matrix_vector_multiplication/bf16`; RMSNorm uses `programming_examples/weighted_rms_norm`.
 
-**Reference precision.** The reference is a **CPU FP32-accumulate** dot product (bf16 inputs upcast to f32, summed in f32, cast back to the output dtype). This matches how a standard GPU BF16 matmul is verified: the accumulator is FP32 on CPU, GPU, and NPU alike, so comparing against an FP32 reference isolates each device's quantization error rather than penalizing bf16-vs-fp32 noise. Note GEMM and GEMV differ in datapath — GEMM routes through the BFP16-emulated MMA (block quantization, `mean_rel_L1 ≈ 9e-3`) while GEMV uses a plain FP32 vector accumulate (effectively exact, `mean_rel_L1 ≤ 3e-8`).
+**Reference precision.** The reference is a **CPU FP32** computation (bf16 inputs upcast to f32, all reduction/accumulation in f32, cast back to the output dtype). This matches how a standard GPU / HuggingFace bf16 op is verified: the reduction is FP32 on CPU, GPU, and the NPU kernels here alike, so comparing against an FP32 reference isolates each device's quantization error rather than penalizing bf16-vs-fp32 noise. The datapath — not just the dtype — drives the error: GEMM routes through the BFP16-emulated MMA (block quantization, `mean_rel_L1 ≈ 9e-3`), GEMV uses a plain FP32 vector accumulate (effectively exact, `≤ 3e-8`), and RMSNorm accumulates its reduction in FP32 (`≈ 4e-3`, the bf16 standard tier).
 
 ## Methodology notes
 
 - **Accuracy is independent of tile / herd choice** — it is set only by the data type and accumulation precision. Tile and herd are pure performance knobs. (The detail pages show the same shape at different tiles giving bit-identical accuracy.)
-- **Datapath drives accuracy, not just dtype** — the same bf16 inputs give very different error depending on the compute unit: GEMM's BFP16-emulated MMA adds block quantization (`mean_rel_L1 ≈ 9e-3`, growing with K), while GEMV's FP32 vector accumulate is effectively exact (`≤ 3e-8`). Measure at the real reduction dimension, not just a small smoke shape.
-- The robust accuracy metric is `mean_rel_L1 = mean|out−ref| / mean|ref|`; per-element relative error blows up where the reference is near zero and is not a meaningful failure signal on its own.
+- **Accumulate reductions in FP32** — the GPU/HF standard upcasts bf16 to f32 for any reduction (matmul K-loop, RMSNorm sum-of-squares) and casts back only at the end. GEMV (FP32 vector accumulate, `≤ 3e-8`) and RMSNorm (FP32 sum-of-squares, `≈ 4e-3`) follow this. Measure at the real reduction dimension, not just a small smoke shape.
+- The robust accuracy metric is `mean_rel_L1 = mean|out−ref| / mean|ref|`; per-element relative error blows up where the reference is near zero (or at large-magnitude bf16-output ULPs) and is not a meaningful failure signal on its own.
+- **Gate on a full-output element-wise check (`rtol`/`atol`), never on correlation / cosine-similarity** — a correlation/cosine gate is blind to a systematic per-element scale error (a uniformly 2× output still scores ~1.0). This matches GPU practice: PyTorch and vLLM gate matmul/RMSNorm with `torch.testing.assert_close`; cosine-similarity appears only as a *supplementary* sanity check ("to ensure we didn't … make the test trivial", `pytorch test_scaled_matmul_cuda.py`) or for lossy approximations (quantized KV), never as the correctness gate itself.
 
 ## Roadmap (kernels not yet in this registry)
 
@@ -39,7 +41,6 @@ The other LLM leaf kernels are being verified and will be added in subsequent co
 
 | Kernel | Role | Status |
 |---|---|---|
-| RMSNorm | per-row normalization | not yet |
 | RoPE | rotary positional encoding | not yet |
 | FlashAttention | causal attention | not yet |
 | SiLU + Mul | SwiGLU activation | not yet |

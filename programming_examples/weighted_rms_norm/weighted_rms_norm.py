@@ -50,6 +50,13 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
     vecTy = VectorType.get([vector_size], xrt_dtype)
     identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
 
+    # FP32 compute types. RMSNorm follows the GPU/PyTorch standard: bf16 inputs
+    # are upcast to f32, the whole reduction + scaling is done in f32, and the
+    # result is cast back to bf16 only at the very end (matches torch
+    # rms_norm_composite / HF LlamaRMSNorm).
+    f32 = F32Type.get()
+    vecTyF32 = VectorType.get([vector_size], f32)
+
     # L3 types
     l3MemrefTy = MemRefType.get([M, N], xrt_dtype)
     l3WeightTy = MemRefType.get([N], xrt_dtype)
@@ -57,7 +64,7 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
     # L1 types
     l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
     l1RowTy = MemRefType.get([N], xrt_dtype, memory_space=l1_mem_space)
-    l1VecTy = MemRefType.get([vector_size], xrt_dtype, memory_space=l1_mem_space)
+    l1VecTyF32 = MemRefType.get([vector_size], f32, memory_space=l1_mem_space)
 
     if herd_x > 1:
         assert M % herd_x == 0
@@ -86,14 +93,15 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
                 l1_row = AllocOp(l1RowTy, [], [])
                 l1_out = AllocOp(l1RowTy, [], [])
                 l1_weight = AllocOp(l1RowTy, [], [])
-                l1_acc = AllocOp(l1VecTy, [], [])
+                l1_acc = AllocOp(l1VecTyF32, [], [])
 
                 c0 = arith.ConstantOp.create_index(0)
                 cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                n_f = arith.ConstantOp(xrt_dtype, float(N))
-                eps_f = arith.ConstantOp(xrt_dtype, EPS)
+                cst0_f32 = arith.ConstantOp(f32, 0.0)
+                n_f = arith.ConstantOp(f32, float(N))
+                eps_f = arith.ConstantOp(f32, EPS)
 
-                v_zero = BroadcastOp(vecTy, cst0)
+                v_zero_f32 = BroadcastOp(vecTyF32, cst0_f32)
 
                 # Weight DMA: same data to all tiles (broadcast)
                 dma_memcpy_nd(
@@ -115,8 +123,11 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
                         src_strides=[N, 1],
                     )
 
-                    # Step 1: Vectorized sum of x^2
-                    transfer_write(None, v_zero, l1_acc, [c0], identity_map, [True])
+                    # Step 1: sum of x^2, accumulated in F32 (GPU standard).
+                    # Square in bf16 vector (aievec-legal), upcast to f32, and
+                    # accumulate into an f32 buffer — the running sum stays f32 so
+                    # the reduction over N does not lose low-order bits.
+                    transfer_write(None, v_zero_f32, l1_acc, [c0], identity_map, [True])
                     for j in range_(0, N, vector_size):
                         sub_row = subview(l1_row.result, [j], [vector_size], [1])
                         sub_tmp = subview(l1_out.result, [j], [vector_size], [1])
@@ -124,32 +135,36 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
                             vecTy, sub_row, [c0], identity_map, cst0, [True]
                         )
                         v_sq = arith.mulf(v_x, v_x)
+                        # break the mulf->addf chain (aievec rejects addf fed
+                        # directly by mulf); round-trip through L1.
                         transfer_write(None, v_sq, sub_tmp, [c0], identity_map, [True])
                         v_sq_rd = transfer_read(
                             vecTy, sub_tmp, [c0], identity_map, cst0, [True]
                         )
+                        v_sq_f32 = arith.extf(vecTyF32, v_sq_rd)
                         v_acc = transfer_read(
-                            vecTy, l1_acc, [c0], identity_map, cst0, [True]
+                            vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
                         )
-                        v_sum = arith.addf(v_acc, v_sq_rd)
+                        v_sum = arith.addf(v_acc, v_sq_f32)
                         transfer_write(None, v_sum, l1_acc, [c0], identity_map, [True])
                         yield_([])
 
-                    # Horizontal reduce
+                    # Horizontal reduce in f32
                     v_final = transfer_read(
-                        vecTy, l1_acc, [c0], identity_map, cst0, [True]
+                        vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
                     )
-                    total_sum = vector_reduction(xrt_dtype, "add", v_final)
+                    total_sum = vector_reduction(f32, "add", v_final)
                     rms = arith.divf(total_sum, n_f)
 
-                    # Step 2: rstd = rsqrt(rms + eps) in f32
-                    f32 = F32Type.get()
+                    # Step 2: rstd = rsqrt(mean + eps) in f32, truncate the
+                    # scalar to bf16 (f32 scalar ops are legal; f32 *vector*
+                    # elementwise is not, so the per-element scaling below stays
+                    # in bf16).
                     rms_eps = arith.addf(rms, eps_f)
-                    rms_eps_f32 = arith.extf(f32, rms_eps)
-                    rstd_f32 = math_dialect.rsqrt(rms_eps_f32)
+                    rstd_f32 = math_dialect.rsqrt(rms_eps)
                     rstd = arith.truncf(xrt_dtype, rstd_f32)
 
-                    # Step 3: y = x * rstd * weight
+                    # Step 3: y = x * rstd * weight (bf16 vector elementwise)
                     v_rstd = BroadcastOp(vecTy, rstd)
                     for j in range_(0, N, vector_size):
                         sub_row = subview(l1_row.result, [j], [vector_size], [1])
@@ -200,14 +215,15 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
             l1_row = AllocOp(l1RowTy, [], [])
             l1_out = AllocOp(l1RowTy, [], [])
             l1_weight = AllocOp(l1RowTy, [], [])
-            l1_acc = AllocOp(l1VecTy, [], [])
+            l1_acc = AllocOp(l1VecTyF32, [], [])
 
             c0 = arith.ConstantOp.create_index(0)
             cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-            n_f = arith.ConstantOp(xrt_dtype, float(N))
-            eps_f = arith.ConstantOp(xrt_dtype, EPS)
+            cst0_f32 = arith.ConstantOp(f32, 0.0)
+            n_f = arith.ConstantOp(f32, float(N))
+            eps_f = arith.ConstantOp(f32, EPS)
 
-            v_zero = BroadcastOp(vecTy, cst0)
+            v_zero_f32 = BroadcastOp(vecTyF32, cst0_f32)
 
             # DMA weight to L1 (shared across all rows)
             dma_memcpy_nd(l1_weight, l3_weight)
@@ -222,8 +238,11 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
                     src_strides=[N, 1],
                 )
 
-                # Step 1: Vectorized sum of x^2
-                transfer_write(None, v_zero, l1_acc, [c0], identity_map, [True])
+                # Step 1: sum of x^2, accumulated in F32 (GPU standard).
+                # Square in bf16 vector (aievec-legal), upcast to f32, and
+                # accumulate into an f32 buffer — the running sum stays f32 so
+                # the reduction over N does not lose low-order bits.
+                transfer_write(None, v_zero_f32, l1_acc, [c0], identity_map, [True])
                 for j in range_(0, N, vector_size):
                     sub_row = subview(l1_row.result, [j], [vector_size], [1])
                     sub_tmp = subview(l1_out.result, [j], [vector_size], [1])
@@ -231,31 +250,33 @@ def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
                         vecTy, sub_row, [c0], identity_map, cst0, [True]
                     )
                     v_sq = arith.mulf(v_x, v_x)
-                    # Break mulf→addf chain
+                    # break the mulf->addf chain (aievec rejects addf fed
+                    # directly by mulf); round-trip through L1.
                     transfer_write(None, v_sq, sub_tmp, [c0], identity_map, [True])
                     v_sq_rd = transfer_read(
                         vecTy, sub_tmp, [c0], identity_map, cst0, [True]
                     )
+                    v_sq_f32 = arith.extf(vecTyF32, v_sq_rd)
                     v_acc = transfer_read(
-                        vecTy, l1_acc, [c0], identity_map, cst0, [True]
+                        vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
                     )
-                    v_sum = arith.addf(v_acc, v_sq_rd)
+                    v_sum = arith.addf(v_acc, v_sq_f32)
                     transfer_write(None, v_sum, l1_acc, [c0], identity_map, [True])
                     yield_([])
 
-                # Horizontal reduce
-                v_final = transfer_read(vecTy, l1_acc, [c0], identity_map, cst0, [True])
-                total_sum = vector_reduction(xrt_dtype, "add", v_final)
+                # Horizontal reduce in f32
+                v_final = transfer_read(
+                    vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
+                )
+                total_sum = vector_reduction(f32, "add", v_final)
                 rms = arith.divf(total_sum, n_f)
 
-                # Step 2: rstd = rsqrt(rms + eps) in f32
-                f32 = F32Type.get()
+                # Step 2: rstd = rsqrt(mean + eps) in f32, truncate scalar to bf16.
                 rms_eps = arith.addf(rms, eps_f)
-                rms_eps_f32 = arith.extf(f32, rms_eps)
-                rstd_f32 = math_dialect.rsqrt(rms_eps_f32)
+                rstd_f32 = math_dialect.rsqrt(rms_eps)
                 rstd = arith.truncf(xrt_dtype, rstd_f32)
 
-                # Step 3: y = x * rstd * weight
+                # Step 3: y = x * rstd * weight (bf16 vector elementwise)
                 v_rstd = BroadcastOp(vecTy, rstd)
                 for j in range_(0, N, vector_size):
                     sub_row = subview(l1_row.result, [j], [vector_size], [1])
@@ -322,6 +343,14 @@ if __name__ == "__main__":
         "--iterations", type=int, default=5, help="Profiling iterations"
     )
     parser.add_argument(
+        "--perf-iters",
+        type=int,
+        default=0,
+        dest="perf_iters",
+        help="If >0, time the kernel over this many iters (after 10 warmup) and "
+        "print Latency in addition to the correctness check",
+    )
+    parser.add_argument(
         "--compile-mode",
         type=str,
         choices=["compile-only", "compile-and-run"],
@@ -345,8 +374,8 @@ if __name__ == "__main__":
         exit(0)
 
     np.random.seed(0)
-    x_input = np.random.rand(M, N).astype(bfloat16)
-    weight = np.random.rand(N).astype(bfloat16)
+    x_input = np.random.randn(M, N).astype(bfloat16)
+    weight = np.random.randn(N).astype(bfloat16)
     y_expected = rms_norm_reference(x_input, weight)
 
     # Function signature is (input, weight, output) for both single- and
@@ -419,15 +448,16 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="weighted_rms_norm",
             runtime_loop_tiling_sizes=[4, 4],
+            report_precision=True,
+            n_perf_iters=args.perf_iters,
         )
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[x_input, weight],
                 expected_outputs=[y_expected],
-                rtol=5e-2,
-                atol=5e-1,
-                min_correlation=0.99,
+                rtol=1.6e-2,
+                atol=5e-2,
             )
         )
 
