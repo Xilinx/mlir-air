@@ -43,17 +43,17 @@ A,B stored bf16 → per-row dot product, FP32 vector accumulate → cast to bf16
 
 ## Tunable parameters
 
-**`herd_m` is not really a tunable — always set it to 8.** GEMV is memory-bound, so spreading the work across all 8 AIE columns (= full NPU2 chip width) is what gets the DMA bandwidth; 8 columns is ≈ 2.6× faster than 4, and there is never a reason to use fewer. Treat `herd_m = 8` as fixed and only tune `tile_m` / `m_input` below.
+**`herd_m` is effectively not a tuning target — use 8 (the full NPU2 chip width) whenever the shape allows.** GEMV is memory-bound, so spreading the work across all 8 AIE columns is what gets the DMA bandwidth; 8 columns is ≈ 2.6× faster than 4. The only reason to use fewer is the legality constraint `M % (tile_m × herd_m) == 0` (and `M ≥ tile_m × herd_m`): for the llama-3.2-1B decode shapes (M ∈ {512, 2048, 8192, 16384}) `herd_m = 8` is always legal, but a model with an M not divisible by `8 × tile_m` would need a smaller `herd_m`. Otherwise treat `herd_m = 8` as fixed and only tune `tile_m` / `m_input` below.
 
 The two genuine knobs to set when deploying a **new** model are `tile_m` and `m_input`. The **Recommended** column is what the tile sweep found best across the llama-3.2-1B GEMV shapes; it is **not** the `Makefile`'s default (`TILE_M=4 M_INPUT=1 HERD_M=4`) — see the note below.
 
 | Knob | Recommended | Hard constraint | Note |
 |---|---|---|---|
-| `herd_m` | **8 (fixed)** | `M ≥ tile_m × herd_m` | number of AIE columns; **always 8** = full chip width. Not a tuning target — fewer columns just leaves bandwidth on the table (8 ≈ 2.6× over 4) |
+| `herd_m` | **8 when legal** | `M % (tile_m × herd_m) == 0`; `M ≥ tile_m × herd_m` | number of AIE columns; 8 = full chip width. Use the largest legal value (8 for all llama decode shapes) — fewer columns leaves bandwidth on the table (8 ≈ 2.6× over 4) |
 | `tile_m` | largest legal | `M % (tile_m × herd_m) == 0`; `tile_m × 2` byte-aligned ⇒ `tile_m` even | output rows per column per launch; bounded by the L2 budget below |
 | `m_input` | `= tile_m` | `tile_m % m_input == 0` | rows per kernel call; larger = fewer calls, less overhead (≈ 1.2× from `m_input=1` → `tile_m`) |
 
-`K` must be a multiple of 64 (vector width). The best config for nearly every shape is **`herd_m=8` (fixed), `tile_m` = the largest the L2 budget allows, `m_input = tile_m`**.
+`K` must be a multiple of 64 (vector width). The best config for nearly every shape is **`herd_m=8` (when legal), `tile_m` = the largest the L2 budget allows, `m_input = tile_m`**.
 
 > **`Makefile` default ≠ Recommended.** The example's `Makefile` defaults to `TILE_M=4 M_INPUT=1 HERD_M=4` (half the columns, smallest call granularity) — a conservative config that is ~2–3× slower than the recommended `herd_m=8` settings. Pass the recommended values explicitly for performance.
 

@@ -360,6 +360,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    if args.perf_iters < 0:
+        parser.error("--perf-iters must be >= 0")
+
     mlir_module = build_module(
         args.m,
         args.k,
