@@ -13,15 +13,16 @@ This is **documentation, not executable code** — it records results produced b
 
 **Status legend**: ✅ verified on real NPU2 · ⚠️ pending standalone verification · ❌ broken/missing
 
-> **Scope**: currently **GEMM only** — the registry is built up one verified kernel at a time. Other LLM leaf kernels (GEMV, RMSNorm, RoPE, FlashAttention, SiLU+Mul, Eltwise Add) are on the roadmap in [`README.md`](README.md) and **not yet** included.
+> **Scope**: currently **GEMM** and **GEMV** — the registry is built up one verified kernel at a time. The remaining LLM leaf kernels (RMSNorm, RoPE, FlashAttention, SiLU+Mul, Eltwise Add) are on the roadmap in [`README.md`](README.md) and **not yet** included.
 
 ---
 
 ## Kernels
 
-| Kernel | Detail | Best measured (NPU2, full-chip 8×4) | Status |
+| Kernel | Detail | Best measured (NPU2) | Status |
 |---|---|---|---|
-| GEMM (BF16) | [`details/GEMM_bf16.md`](details/GEMM_bf16.md) | **9492 GFLOP/s** (external, 2048×8192×2048) | ✅ |
+| GEMM (BF16) | [`details/GEMM_bf16.md`](details/GEMM_bf16.md) | **9492 GFLOP/s** (external, 2048×8192×2048, full-chip 8×4) | ✅ |
+| GEMV (BF16) | [`details/GEMV_bf16.md`](details/GEMV_bf16.md) | **32 GFLOP/s** (memory-bound, 16384×2048, herd 8) | ✅ |
 
 ---
 
@@ -40,3 +41,20 @@ This is **documentation, not executable code** — it records results produced b
 | 4096×4096×4096 | 64/512/32/128 | 9243 | 9.4e-3 | K-sweep | ✅ |
 
 > Measured on NPU2 (RyzenAI-npu4), June 2026, at the fastest tile from an external-path sweep. There are three code-paths (external / direct-codegen f32 / direct-codegen bf16); external is fastest, and external vs direct-f32 are bit-identical in accuracy — see [`details/GEMM_bf16.md`](details/GEMM_bf16.md) for all three.
+
+---
+
+## GEMV — tested shapes
+
+`C[M] = A[M,K] @ B[K]`, shapes written `M×K`. The decode-time (batch = 1) projections of llama-3.2-1B. GEMV is **memory-bound** (reads the whole `M×K` matrix for one length-`M` output), so GFLOPS is far below GEMM; the fastest config is `herd_m=8` (all columns) with the largest L2-legal `tile_m`. Full data, tunables, and reproduce commands are in [`details/GEMV_bf16.md`](details/GEMV_bf16.md).
+
+| (M×K) | best tile (herd_m/tile_m/m_input) | GFLOPS | mean_rel_L1 | Used by | Status |
+|---|---|---|---|---|---|
+| 2048×2048 | 8/8/8 | 25.5 | 1.6e-9 | llama-3.2-1B Q proj | ✅ |
+| 512×2048 | 8/8/8 | 15.5 | 0.0 | llama-3.2-1B K/V proj | ✅ |
+| 8192×2048 | 8/8/8 | 31.5 | 2.7e-8 | coverage | ✅ |
+| 2048×8192 | 8/2/2 | 31.0 | 0.0 | coverage | ✅ |
+| 16384×2048 | 8/8/8 | **30.6** | 0.0 | llama-3.2-1B LM-head | ✅ |
+
+> This plain GEMV is the exact kernel for llama-3.2-1B decode's **Q / K / V projections and LM-head**. The **O / Gate / Up / Down** projections use *fused* cascade variants (GEMV+residual, GEMV+SwiGLU+RMSNorm) — separate kernels, separate registry entries; the 8192×2048 / 2048×8192 rows here are coverage shapes. See [`details/GEMV_bf16.md`](details/GEMV_bf16.md).
+> GEMV uses an **FP32 vector accumulate** (not the BFP16-emulated MMA that GEMM uses), so accuracy is effectively exact — `mean_rel_L1 ≤ 2.7e-8`, several shapes bit-identical to the f32 reference, orders of magnitude tighter than BF16 GEMM's ~9e-3.
