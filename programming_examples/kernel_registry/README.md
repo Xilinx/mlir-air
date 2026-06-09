@@ -13,7 +13,7 @@ This is **documentation, not executable code** — nothing here compiles or runs
 
 ## Scope
 
-This registry targets **NPU2 (Strix / AIE2P) only** — all shapes, tile configs, tolerances, and measured numbers are for the aie2p target. It is built up **one kernel at a time** — only kernels we have independently understood and verified against the GPU/HF numerical standard are included, so every number here can be trusted and reproduced. Currently the registry covers **GEMM**, **GEMV**, and **RMSNorm**.
+This registry targets **NPU2 (Strix / AIE2P) only** — all shapes, tile configs, tolerances, and measured numbers are for the aie2p target. It is built up **one kernel at a time** — only kernels we have independently understood and verified against the GPU/HF numerical standard are included, so every number here can be trusted and reproduced. Currently the registry covers **GEMM**, **GEMV**, **RMSNorm**, and **FlashAttention** (driven by the heads-first harness; a seq-first variant shares the same compute kernel and is bit-identical).
 
 | File | What it is |
 |---|---|
@@ -21,12 +21,13 @@ This registry targets **NPU2 (Strix / AIE2P) only** — all shapes, tile configs
 | [`details/GEMM_bf16.md`](details/GEMM_bf16.md) | Full detail for the BF16 GEMM kernel: numerical datapath, tunable parameters, tolerances, per-path data, reproduce commands. |
 | [`details/GEMV_bf16.md`](details/GEMV_bf16.md) | Full detail for the BF16 GEMV kernel: numerical datapath, tunable parameters, tolerances, per-shape data, reproduce commands. |
 | [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md) | Full detail for the BF16 weighted RMSNorm kernel: datapath, the bf16-reduction precision caveat, tunable parameters, per-shape data, reproduce commands. |
+| [`details/FlashAttention_bf16.md`](details/FlashAttention_bf16.md) | Full detail for the BF16 FlashAttention kernel (GQA, causal): the heads-first harness and its NPU2-verified shapes (head dim 64/128, MHA & GQA, short/long seq, causal/non-causal), the seq-first variant (llama-3.2-1B prefill; bit-identical), datapath (two BFP16-emulated MMAs + bf16 online-softmax) and how it differs from the GPU FP32-carry standard, tunable parameters, tolerances, per-shape data, reproduce commands. |
 
 ## Where the data comes from
 
-Each kernel × shape row is filled from a **standalone harness** — a self-contained run that compiles the kernel to an ELF, runs it on NPU2, and compares against a CPU reference. GEMM uses `programming_examples/matrix_multiplication/bf16`; GEMV uses `programming_examples/matrix_vector_multiplication/bf16`; RMSNorm uses `programming_examples/weighted_rms_norm`.
+Each kernel × shape row is filled from a **standalone harness** — a self-contained run that compiles the kernel to an ELF, runs it on NPU2, and compares against a CPU reference. GEMM uses `programming_examples/matrix_multiplication/bf16`; GEMV uses `programming_examples/matrix_vector_multiplication/bf16`; RMSNorm uses `programming_examples/weighted_rms_norm`; FlashAttention uses `programming_examples/flash_attention/kernel_fusion_based`.
 
-**Reference precision.** The reference is a **CPU FP32** computation (bf16 inputs upcast to f32, all reduction/accumulation in f32, cast back to the output dtype). This matches how a standard GPU / HuggingFace bf16 op is verified: the reduction is FP32 on CPU, GPU, and the NPU kernels here alike, so comparing against an FP32 reference isolates each device's quantization error rather than penalizing bf16-vs-fp32 noise. The datapath — not just the dtype — drives the error: GEMM routes through the BFP16-emulated MMA (block quantization, `mean_rel_L1 ≈ 9e-3`), GEMV uses a plain FP32 vector accumulate (effectively exact, `≤ 3e-8`), and RMSNorm accumulates its reduction in FP32 (`≈ 4e-3`, the bf16 standard tier).
+**Reference precision.** The reference is a **CPU FP32** computation (bf16 inputs upcast to f32, all reduction/accumulation/softmax in f32, cast back to the output dtype). This matches how a standard GPU / HuggingFace bf16 op is verified: the reduction is FP32 on CPU, GPU, and the NPU kernels here alike, so comparing against an FP32 reference isolates each device's quantization error rather than penalizing bf16-vs-fp32 noise. The datapath — not just the dtype — drives the error: GEMM routes through the BFP16-emulated MMA (block quantization, `mean_rel_L1 ≈ 9e-3`), GEMV uses a plain FP32 vector accumulate (effectively exact, `≤ 3e-8`), RMSNorm accumulates its reduction in FP32 (`≈ 4e-3`, the bf16 standard tier), and FlashAttention chains two BFP16-emulated MMAs plus a bf16 online-softmax (`≈ 4e-2`, ~4× the GEMM tier — as GPU FA is also looser than GEMM).
 
 ## Methodology notes
 
@@ -34,6 +35,8 @@ Each kernel × shape row is filled from a **standalone harness** — a self-cont
 - **Accumulate reductions in FP32** — the GPU/HF standard upcasts bf16 to f32 for any reduction (matmul K-loop, RMSNorm sum-of-squares) and casts back only at the end. GEMV (FP32 vector accumulate, `≤ 3e-8`) and RMSNorm (FP32 sum-of-squares, `≈ 4e-3`) follow this. Measure at the real reduction dimension, not just a small smoke shape.
 - The robust accuracy metric is `mean_rel_L1 = mean|out−ref| / mean|ref|`; per-element relative error blows up where the reference is near zero (or at large-magnitude bf16-output ULPs) and is not a meaningful failure signal on its own.
 - **Gate on a full-output element-wise check (`rtol`/`atol`), never on correlation / cosine-similarity** — a correlation/cosine gate is blind to a systematic per-element scale error (a uniformly 2× output still scores ~1.0). This matches GPU practice: PyTorch and vLLM gate matmul/RMSNorm with `torch.testing.assert_close`; cosine-similarity appears only as a *supplementary* sanity check ("to ensure we didn't … make the test trivial", `pytorch test_scaled_matmul_cuda.py`) or for lossy approximations (quantized KV), never as the correctness gate itself.
+- **Chained / fused kernels are looser than single ops** — FlashAttention chains two BFP16-emulated MMAs plus a bf16 online-softmax, giving `mean_rel_L1 ≈ 4e-2` (~4× a single GEMM); GPU FA is likewise looser than GEMM (PyTorch fused SDPA bf16 uses `5e-2`). Hold the canonical bf16 `rtol = 1.6e-2` and size `atol` to the kernel's measured worst-case rather than copying a single-matmul threshold.
+- **For stateful kernels, measure precision and performance in separate runs** — a repeated-iteration timing loop (e.g. `--perf-iters`) re-runs the kernel without re-syncing inputs; a kernel that writes intermediate state into its output/scratch buffers (FlashAttention) then reports a corrupted precision number *in the same run*. Take accuracy from a clean single run and latency from the timed run.
 
 ## Roadmap (kernels not yet in this registry)
 
@@ -42,6 +45,5 @@ The other LLM leaf kernels are being verified and will be added in subsequent co
 | Kernel | Role | Status |
 |---|---|---|
 | RoPE | rotary positional encoding | not yet |
-| FlashAttention | causal attention | not yet |
 | SiLU + Mul | SwiGLU activation | not yet |
 | Eltwise Add | residual adds | not yet |

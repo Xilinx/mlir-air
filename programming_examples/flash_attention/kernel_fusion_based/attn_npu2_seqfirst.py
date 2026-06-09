@@ -65,6 +65,7 @@ def build_module(
     num_heads=2,
     num_kv_heads=None,
     causal=False,
+    num_heads_per_unroll=2,
 ):
     """Build flash attention module with selective Q capture pattern.
 
@@ -81,6 +82,10 @@ def build_module(
         num_kv_heads: Number of key/value heads for grouped-query attention
             (GQA). If None, defaults to num_heads (standard MHA).
         causal: Whether to enable causal (autoregressive) masking.
+        num_heads_per_unroll: Heads processed per segment instance (default: 2).
+            Acts as the physical-column multiplier — physical columns =
+            num_heads_per_unroll * num_q_tiles (must be <= 8 on NPU2). Requires
+            num_heads % num_heads_per_unroll == 0.
     """
     # Validate
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
@@ -124,7 +129,7 @@ def build_module(
     )
     gqa_group_size = num_heads // num_kv_heads
 
-    num_heads_per_unroll = 2
+    # num_heads_per_unroll is now a build_module parameter (was hardcoded to 2).
     assert num_heads % num_heads_per_unroll == 0, (
         f"num_heads ({num_heads}) must be divisible by "
         f"num_heads_per_unroll ({num_heads_per_unroll})"
@@ -1205,6 +1210,22 @@ if __name__ == "__main__":
         help="Number of cascade pipeline stages (default: 4)",
     )
     parser.add_argument(
+        "--num-q-tiles",
+        type=int,
+        default=4,
+        dest="num_q_tiles",
+        help="Number of tiles to partition the Q chunk into (default: 4). "
+        "Under causal masking, lqp / num_q_tiles must equal lkp.",
+    )
+    parser.add_argument(
+        "--num-heads-per-unroll",
+        type=int,
+        default=2,
+        dest="num_heads_per_unroll",
+        help="Heads processed per segment instance (default: 2). "
+        "Physical columns = num_heads_per_unroll * num_q_tiles.",
+    )
+    parser.add_argument(
         "--num-heads",
         type=int,
         default=2,
@@ -1235,7 +1256,22 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable causal masking (autoregressive attention)",
     )
+    parser.add_argument(
+        "--perf-iters",
+        type=int,
+        default=0,
+        dest="perf_iters",
+        help="If >0, time the kernel over this many iters (after 10 warmup) and "
+        "print Latency + GFLOPs in addition to the correctness check",
+    )
     args = parser.parse_args()
+
+    if args.perf_iters < 0:
+        parser.error("--perf-iters must be >= 0")
+    if args.num_q_tiles < 1:
+        parser.error("--num-q-tiles must be >= 1")
+    if args.num_heads_per_unroll < 1:
+        parser.error("--num-heads-per-unroll must be >= 1")
 
     lk = args.lk
     lkp = args.lkp
@@ -1244,7 +1280,8 @@ if __name__ == "__main__":
     dk = args.dk
     dv = args.dv
     num_cascade_stages = args.num_cascade_stages
-    num_q_tiles = 4
+    num_q_tiles = args.num_q_tiles
+    num_heads_per_unroll = args.num_heads_per_unroll
     num_heads = args.num_heads
     num_kv_heads = args.num_kv_heads if args.num_kv_heads is not None else num_heads
     causal = args.causal
@@ -1262,6 +1299,7 @@ if __name__ == "__main__":
         num_heads=num_heads,
         num_kv_heads=num_kv_heads,
         causal=causal,
+        num_heads_per_unroll=num_heads_per_unroll,
     )
 
     if args.print_module_only:
@@ -1274,12 +1312,13 @@ if __name__ == "__main__":
 
     INPUT_DATATYPE = OUTPUT_DATATYPE = bfloat16
     rng = np.random.default_rng(42)
-    val_range = 4.0
 
-    # SEQ-FIRST inputs: [seq, heads * dim]
-    input_q = rng.uniform(0, val_range, (lq, num_heads * dk)).astype(INPUT_DATATYPE)
-    input_k = rng.uniform(0, val_range, (lk, num_kv_heads * dk)).astype(INPUT_DATATYPE)
-    input_v = rng.uniform(0, val_range, (lk, num_kv_heads * dv)).astype(INPUT_DATATYPE)
+    # SEQ-FIRST inputs: [seq, heads * dim]. Use N(0,1) (matching the GPU SDPA
+    # test standard — PyTorch uses randn) so the correctness check sees a
+    # realistic signed distribution rather than an all-positive one.
+    input_q = rng.standard_normal((lq, num_heads * dk)).astype(INPUT_DATATYPE)
+    input_k = rng.standard_normal((lk, num_kv_heads * dk)).astype(INPUT_DATATYPE)
+    input_v = rng.standard_normal((lk, num_kv_heads * dv)).astype(INPUT_DATATYPE)
 
     # CPU reference: extract per-head data for attention computation
     inv_sqrt_dk = 1.0 / sqrt(dk)
@@ -1305,6 +1344,12 @@ if __name__ == "__main__":
 
     # Seq-first: output is 2D [lq, num_heads*dv], so tiling is [1, 1]
     tiling = [1, 1]
+    # FLOPs for attention: Q@K^T scales with dk, P@V scales with dv (each is
+    # 2*num_heads*lq*lk*<dim>), so total = 2*num_heads*lq*lk*(dk+dv). Causal
+    # masking roughly halves the effective work.
+    perf_flops = 2.0 * num_heads * lq * lk * (dk + dv)
+    if causal:
+        perf_flops *= 0.5
     backend_opts = dict(
         omit_while_true_loop=False,
         omit_pingpong="all",
@@ -1313,6 +1358,9 @@ if __name__ == "__main__":
         output_format=args.output_format,
         instance_name="attention_bf16",
         target_device="npu2",
+        report_precision=True,
+        n_perf_iters=args.perf_iters,
+        perf_flops=(perf_flops if args.perf_iters > 0 else None),
     )
 
     if args.compile_mode == "compile-and-run":
@@ -1322,13 +1370,16 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[input_q, input_k, input_v],
                 expected_outputs=[sdpa_output_transposed],
-                atol=0.15,
-                rtol=0.04,
-                max_mismatch_percentage=0.5,
-                min_correlation=0.99,
+                rtol=1.6e-2,
+                atol=1e-1,
             )
         )
     elif args.compile_mode == "compile-only":
-        backend = XRTBackend(**backend_opts)
+        # report_precision / n_perf_iters / perf_flops are XRTRunner-only args;
+        # strip them for the bare XRTBackend used in compile-only mode.
+        runner_only = {"report_precision", "n_perf_iters", "perf_flops"}
+        backend = XRTBackend(
+            **{k: v for k, v in backend_opts.items() if k not in runner_only}
+        )
         module_function = backend.compile(mlir_module)
         print("Compilation complete.")
