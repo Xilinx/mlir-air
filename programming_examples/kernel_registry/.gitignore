@@ -5,3 +5,6 @@ internal_*
 
 # Local-only planning doc — our own kernel-adding tracker, not for upstream.
 kernel_adding_todolist.md
+
+# skills workplace
+.add-kernel/
