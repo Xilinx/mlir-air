@@ -13,7 +13,7 @@ This is **documentation, not executable code** — nothing here compiles or runs
 
 ## Scope
 
-This registry targets **NPU2 (Strix / AIE2P) only** — all shapes, tile configs, tolerances, and measured numbers are for the aie2p target. It is built up **one kernel at a time** — only kernels we have independently understood and verified against the GPU/HF numerical standard are included, so every number here can be trusted and reproduced. Currently the registry covers **GEMM**, **GEMV**, **RMSNorm**, and **FlashAttention** (driven by the heads-first harness; a seq-first variant shares the same compute kernel and is bit-identical).
+This registry targets **NPU2 (Strix / AIE2P) only** — all shapes, tile configs, tolerances, and measured numbers are for the aie2p target. It is built up **one kernel at a time** — only kernels we have independently understood and verified against the GPU/HF numerical standard are included, so every number here can be trusted and reproduced. Currently the registry covers **GEMM**, **GEMV**, **RMSNorm**, **FlashAttention** (driven by the heads-first harness; a seq-first variant shares the same compute kernel and is bit-identical), and **Element-wise Add**.
 
 | File | What it is |
 |---|---|
@@ -22,6 +22,7 @@ This registry targets **NPU2 (Strix / AIE2P) only** — all shapes, tile configs
 | [`details/GEMV_bf16.md`](details/GEMV_bf16.md) | Full detail for the BF16 GEMV kernel: numerical datapath, tunable parameters, tolerances, per-shape data, reproduce commands. |
 | [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md) | Full detail for the BF16 weighted RMSNorm kernel: datapath, the bf16-reduction precision caveat, tunable parameters, per-shape data, reproduce commands. |
 | [`details/FlashAttention_bf16.md`](details/FlashAttention_bf16.md) | Full detail for the BF16 FlashAttention kernel (GQA, causal): the heads-first harness and its NPU2-verified shapes (head dim 64/128, MHA & GQA, short/long seq, causal/non-causal), the seq-first variant (llama-3.2-1B prefill; bit-identical), datapath (two BFP16-emulated MMAs + bf16 online-softmax) and how it differs from the GPU FP32-carry standard, tunable parameters, tolerances, per-shape data, reproduce commands. |
+| [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md) | Full detail for the BF16 element-wise add kernel (`c=a+b`): datapath (single bf16 rounding, no accumulation → cleanest tier `mean_rel_L1≈1.9e-3`), memory-bound herd_x sweep (near-linear to 57.7 GB/s (8×1, shim-DMA-capped at 8 tiles)), tolerances, per-shape data, reproduce commands. |
 
 ## Where the data comes from
 
@@ -46,4 +47,3 @@ The other LLM leaf kernels are being verified and will be added in subsequent co
 |---|---|---|
 | RoPE | rotary positional encoding | not yet |
 | SiLU + Mul | SwiGLU activation | not yet |
-| Eltwise Add | residual adds | not yet |

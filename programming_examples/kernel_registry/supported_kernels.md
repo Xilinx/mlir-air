@@ -13,7 +13,7 @@ This is **documentation, not executable code** — it records results produced b
 
 **Status legend**: ✅ verified on real NPU2, accuracy in line with the bf16 standard · ⚠️ verified on real NPU2 but with a documented precision/coverage caveat · ❌ broken/missing
 
-> **Scope**: currently **GEMM**, **GEMV**, **RMSNorm**, and **FlashAttention** — the registry is built up one verified kernel at a time. The remaining LLM leaf kernels (RoPE, SiLU+Mul, Eltwise Add) are on the roadmap in [`README.md`](README.md) and **not yet** included.
+> **Scope**: currently **GEMM**, **GEMV**, **RMSNorm**, **FlashAttention**, and **Element-wise Add** — the registry is built up one verified kernel at a time. The remaining LLM leaf kernels (RoPE, SiLU+Mul) are on the roadmap in [`README.md`](README.md) and **not yet** included.
 
 ---
 
@@ -25,6 +25,7 @@ This is **documentation, not executable code** — it records results produced b
 | GEMV (BF16) | [`details/GEMV_bf16.md`](details/GEMV_bf16.md) | **32 GFLOP/s** (memory-bound, 16384×2048, herd 8) | ✅ |
 | RMSNorm (BF16) | [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md) | **18.4 GB/s** (memory-bound, 2048×2048, herd 8) | ✅ |
 | FlashAttention (BF16, GQA) | [`details/FlashAttention_bf16.md`](details/FlashAttention_bf16.md) | **1065–1131 GFLOP/s** (2048×2048, dk=64, 32q/8kv causal, full-chip 32 tiles) | ✅ |
+| Element-wise Add (BF16) | [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md) | **57.7 GB/s** (memory-bound, N=4194304, herd 8×1) | ✅ |
 
 ---
 
@@ -91,3 +92,18 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 | 16384×16384 | 64/64 | 2/2 | ✗ | 1 | 40.1 ms | **3427** | 5.5e-2 | ✅ |
 
 > All rows measured on NPU2 with the heads-first harness at the default tiling (`lqp=256, num_q_tiles=4, num_heads_per_unroll=2, num_cascade_stages=4` = 32 tiles, full 8×4 array). Accuracy `mean_rel_L1 ≈ 3.9e-2` is ~4× the GEMM tier: FA chains **two BFP16-emulated MMAs** plus a **bf16 online-softmax**, so it is looser than a single matmul (looser than GPU FA's `5e-2` only by the `atol`, not the standard `rtol = 1.6e-2`); accuracy is set by the datapath, not the shape. The **2048, 32q/8kv causal** row is llama-3.2-1B prefill's config (seq-first harness, bit-identical to heads-first — verified `max abs diff = 0`); its GFLOP/s range is run-to-run timing variation. `head_dim=128` rows use `dv_chunks=2`. A separate tunable sweep found only 2 of 8 candidate 32-tile configs place (constraints: columns `num_heads_per_unroll × num_q_tiles ≤ 8`, rows `num_cascade_stages ≤ 4`, `num_heads_per_unroll ≤ 2`). See [`details/FlashAttention_bf16.md`](details/FlashAttention_bf16.md).
+
+---
+
+## Element-wise Add — tested shapes
+
+`c = a + b`, per-element, BF16. The residual adds of llama-3.2-1B (the prefill residual is the fused `o_ffn` inline 2-D variant — same math; this entry measures the **standalone** `eltwise_add`). **Memory-bound** (O(N) streaming, zero arithmetic intensity), so throughput is bandwidth. The **cleanest** kernel in the registry — a single bf16 rounding, no accumulation. Full datapath, herd sweep, and reproduce commands in [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md).
+
+| N | best config (hx/hy/tile_n) | latency | bandwidth | mean_rel_L1 | Status |
+|---|---|---|---|---|---|
+| 1048576 | 8/1/2048 | 175 µs | 36.0 GB/s | 1.9e-3 | ✅ |
+| 2097152 | 8/1/2048 | 277 µs | 45.4 GB/s | 1.9e-3 | ✅ |
+| 4194304 (2048×2048) | 8/1/2048 | 437 µs | 57.7 GB/s | 1.9e-3 | ✅ |
+| 8388608 | 8/1/2048 | 798 µs | **63.0 GB/s** | 1.9e-3 | ✅ |
+
+> `mean_rel_L1 = 1.9e-3` is the lowest in the registry — `c=a+b` rounds each output once (matching `torch.add` bf16: f32 sum, single round, no accumulation), bit-identical across all configs and `N`. Best config `herd_x=8, herd_y=1` for every shape: the 3-DMA-per-tile shim-channel limit caps the herd at one 8-column row (**cannot fill 32 tiles** — `herd_y>1` fails to place), but within that `herd_x` scales near-linearly (9→57.7 GB/s as herd_x 1→8). Highest bandwidth in the registry (pure streaming). See [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md).
