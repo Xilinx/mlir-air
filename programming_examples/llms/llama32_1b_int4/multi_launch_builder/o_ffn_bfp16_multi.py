@@ -330,7 +330,7 @@ def build_o_ffn_bfp16_module(
     )
     from matmul_bf16_x_bfp16 import bfp_tile_bytes
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
-    from llama_kernel_builder.ffn_swiglu.silu_and_mul import (
+    from silu_and_mul.silu_and_mul import (
         build_module_2d as build_swiglu,
     )
 

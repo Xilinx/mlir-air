@@ -335,7 +335,7 @@ def build_o_ffn_int4_module(
     from llama32_1b_int4.gemm_builder import _build_int4_gemm_module as build_int4_gemm
     from matmul_int4_packed import packed_tile_bytes
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
-    from llama_kernel_builder.ffn_swiglu.silu_and_mul import (
+    from silu_and_mul.silu_and_mul import (
         build_module_2d as build_swiglu,
     )
 

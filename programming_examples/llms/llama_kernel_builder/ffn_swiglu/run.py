@@ -25,6 +25,7 @@ import time
 import numpy as np
 from ml_dtypes import bfloat16
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -128,10 +129,18 @@ def build_ffn_module(
     """
     from llama32_1b.gemm_builder import _build_gemm_module
 
-    # Import silu_and_mul from same directory as this file
+    # Import silu_and_mul from the standalone kernel example
+    # (programming_examples/silu_and_mul/), which this FFN test reuses.
     import importlib.util
 
-    _silu_path = os.path.join(os.path.dirname(__file__), "silu_and_mul.py")
+    _silu_path = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "..",
+        "silu_and_mul",
+        "silu_and_mul.py",
+    )
     _spec = importlib.util.spec_from_file_location("silu_and_mul", _silu_path)
     _silu_mod = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_silu_mod)
