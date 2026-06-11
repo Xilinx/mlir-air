@@ -19,7 +19,7 @@
 
 ```
 programming_examples/silu_and_mul/silu_and_mul.py
-  build_module(n, tile_n, np_dtype_in, herd_x=1, herd_y=None)        # 1-D (standalone)
+  build_module(n, tile_n, np_dtype_in, herd_x=8, herd_y=None)        # 1-D (standalone); herd_y=None -> 1
   build_module_2d(rows, cols, tile_n, np_dtype_in, herd_x=8, herd_y=1)  # 2-D (llama uses this)
 ```
 
