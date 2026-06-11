@@ -13,7 +13,7 @@ This is **documentation, not executable code** — it records results produced b
 
 **Status legend**: ✅ verified on real NPU2, accuracy in line with the bf16 standard · ⚠️ verified on real NPU2 but with a documented precision/coverage caveat · ❌ broken/missing
 
-> **Scope**: currently **GEMM**, **GEMV**, **RMSNorm**, **FlashAttention**, and **Element-wise Add** — the registry is built up one verified kernel at a time. The remaining LLM leaf kernels (RoPE, SiLU+Mul) are on the roadmap in [`README.md`](README.md) and **not yet** included.
+> **Scope**: currently **GEMM**, **GEMV**, **RMSNorm**, **FlashAttention**, **Element-wise Add**, and **SiLU-and-Mul** — the registry is built up one verified kernel at a time. The remaining LLM leaf kernels (RoPE) are on the roadmap in [`README.md`](README.md) and **not yet** included.
 
 ---
 
@@ -26,6 +26,7 @@ This is **documentation, not executable code** — it records results produced b
 | RMSNorm (BF16) | [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md) | **18.4 GB/s** (memory-bound, 2048×2048, herd 8) | ✅ |
 | FlashAttention (BF16, GQA) | [`details/FlashAttention_bf16.md`](details/FlashAttention_bf16.md) | **1065–1131 GFLOP/s** (2048×2048, dk=64, 32q/8kv causal, full-chip 32 tiles) | ✅ |
 | Element-wise Add (BF16) | [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md) | **57.7 GB/s** (memory-bound, N=4194304, herd 8×1) | ✅ |
+| SiLU-and-Mul (BF16) | [`details/SiLU_Mul_bf16.md`](details/SiLU_Mul_bf16.md) | **25.1 GB/s** (memory-bound, N=16777216, herd 8×1) | ✅ |
 
 ---
 
@@ -107,3 +108,18 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 | 8388608 | 8/1/2048 | 798 µs | **63.0 GB/s** | 1.9e-3 | ✅ |
 
 > `mean_rel_L1 = 1.9e-3` is the lowest in the registry — `c=a+b` rounds each output once (matching `torch.add` bf16: f32 sum, single round, no accumulation), bit-identical across all configs and `N`. Best config `herd_x=8, herd_y=1` for every shape: the 3-DMA-per-tile shim-channel limit caps the herd at one 8-column row (**cannot fill 32 tiles** — `herd_y>1` fails to place), but within that `herd_x` scales near-linearly (9→57.7 GB/s as herd_x 1→8). Highest bandwidth in the registry (pure streaming). See [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md).
+
+---
+
+## SiLU-and-Mul — tested shapes
+
+`out = SiLU(gate) · up`, `SiLU(x) = x·sigmoid(x)`, per-element, BF16. The SwiGLU activation of llama-3.2-1B prefill FFN (the standalone `silu_and_mul` is measured; llama runs the bit-identical 2-D `build_module_2d` variant). **Memory-bound** (O(N) streaming, ~1 op/byte), so throughput is bandwidth. sigmoid is computed via the hardware `aie::tanh` (`0.5·(1+tanh(g/2))`); the precision is the "bf16 + one transcendental" tier. Full datapath, sweep, and reproduce commands in [`details/SiLU_Mul_bf16.md`](details/SiLU_Mul_bf16.md).
+
+| N | (as 2-D) | best config (hx/hy/tile_n) | latency | bandwidth | mean_rel_L1 | abs_err max | Status |
+|---|---|---|---|---|---|---|---|
+| 2097152 | — | 8/1/4096 | 569 µs | 22.1 GB/s | 1.0e-2 | 0.125 | ✅ |
+| 4194304 | 2048×2048 | 8/1/4096 | 1052 µs | 23.9 GB/s | 1.0e-2 | 0.125 | ✅ |
+| 8388608 | — | 8/1/4096 | 2247 µs | 22.4 GB/s | 1.0e-2 | 0.125 | ✅ |
+| 16777216 | 2048×8192 | 8/1/4096 | 4016 µs | **25.1 GB/s** | 1.0e-2 | 0.125 | ✅ |
+
+> `mean_rel_L1 = 1.0e-2` is an order of magnitude above Element-wise Add (1.9e-3): the hardware `aie::tanh<bf16>` LUT approximation plus a chain of bf16 roundings (vs a single rounding for a plain add). Verified element-wise over the full output (no cosine) at `rtol = 1.6e-2, atol = 8e-2` — `atol` covers the worst-case `tanh`-LUT element (`abs_err max = 0.125`); the mean error sits inside `rtol`. Best config `herd_x=8, herd_y=1, tile_n=4096` for every shape (= llama's default): `herd_y>1` fails the shim-channel limit and some `tile_n`/`herd_x` fail a non-monotonic buffer-descriptor limit, so the best config is the fastest one that places. `herd_x` scales 7.6× (1→8). See [`details/SiLU_Mul_bf16.md`](details/SiLU_Mul_bf16.md).

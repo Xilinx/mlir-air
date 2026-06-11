@@ -294,7 +294,7 @@ def build_o_ffn_module(
 
     # L6: SwiGLU (bare herd → wrap)
     print("  [6/8] SwiGLU...")
-    from llama_kernel_builder.ffn_swiglu.silu_and_mul import (
+    from silu_and_mul.silu_and_mul import (
         build_module_2d as build_swiglu,
     )
 
