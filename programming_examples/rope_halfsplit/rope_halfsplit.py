@@ -64,7 +64,6 @@ def build_module(rows, head_dim, np_dtype_in, herd_x=8, herd_y=1):
     assert (
         rows % total_tiles == 0
     ), f"rows ({rows}) must be divisible by herd_x * herd_y ({total_tiles})"
-    rows_per_tile = rows // total_tiles  # rows each tile handles, one row per DMA
 
     # L3 types (flat)
     l3DataTy = MemRefType.get([total], xrt_dtype)
