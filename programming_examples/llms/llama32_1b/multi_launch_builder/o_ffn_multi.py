@@ -184,7 +184,7 @@ def build_o_ffn_module(
     o_tile_m=64,
     o_tile_k_l2=256,
     o_tile_k_l1=32,
-    o_tile_n=64,
+    o_tile_n=128,
     o_herd_m=8,
     o_herd_n=4,
     # Gate/Up GEMM tile config
@@ -198,7 +198,7 @@ def build_o_ffn_module(
     down_tile_m=64,
     down_tile_k_l2=256,
     down_tile_k_l1=32,
-    down_tile_n=64,
+    down_tile_n=128,
     down_herd_m=8,
     down_herd_n=4,
     # SwiGLU config
