@@ -1,3 +1,9 @@
+# Claude Code skills are versioned with the repo (overrides global ~/.gitignore_global excluding .claude/).
+# Pattern: un-ignore .claude/ parent, re-ignore all immediate children, then re-allow only skills/.
+!.claude/
+.claude/*
+!.claude/skills/
+
 # make artifacts
 CMakeFiles/
 CMakeCache.txt
