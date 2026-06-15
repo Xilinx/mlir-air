@@ -13,7 +13,7 @@ This is **documentation, not executable code** — it records results produced b
 
 **Status legend**: ✅ verified on real NPU2, accuracy in line with the bf16 standard · ⚠️ verified on real NPU2 but with a documented precision/coverage caveat · ❌ broken/missing
 
-> **Scope**: currently **GEMM**, **GEMV**, **RMSNorm**, **FlashAttention**, **Element-wise Add**, and **SiLU-and-Mul** — the registry is built up one verified kernel at a time. The remaining LLM leaf kernels (RoPE) are on the roadmap in [`README.md`](README.md) and **not yet** included.
+> **Scope**: currently **GEMM**, **GEMV**, **RMSNorm**, **FlashAttention**, **Element-wise Add**, **SiLU-and-Mul**, and **RoPE** — the registry is built up one verified kernel at a time. The core LLM leaf kernels are now covered; see [`README.md`](README.md) for the roadmap.
 
 ---
 
@@ -27,6 +27,7 @@ This is **documentation, not executable code** — it records results produced b
 | FlashAttention (BF16, GQA) | [`details/FlashAttention_bf16.md`](details/FlashAttention_bf16.md) | **1065–1131 GFLOP/s** (2048×2048, dk=64, 32q/8kv causal, full-chip 32 tiles) | ✅ |
 | Element-wise Add (BF16) | [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md) | **57.7 GB/s** (memory-bound, N=4194304, herd 8×1) | ✅ |
 | SiLU-and-Mul (BF16) | [`details/SiLU_Mul_bf16.md`](details/SiLU_Mul_bf16.md) | **25.1 GB/s** (memory-bound, N=16777216, herd 8×1) | ✅ |
+| RoPE (BF16, half-split) | [`details/RoPE_bf16.md`](details/RoPE_bf16.md) | **43.4 GB/s** (memory-bound, 65536×64, herd 8×1) | ✅ |
 
 ---
 
@@ -123,3 +124,20 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 | 16777216 | 2048×8192 | 8/1/4096 | 4016 µs | **25.1 GB/s** | 1.0e-2 | 0.125 | ✅ |
 
 > `mean_rel_L1 = 1.0e-2` is an order of magnitude above Element-wise Add (1.9e-3): the hardware `aie::tanh<bf16>` LUT approximation plus a chain of bf16 roundings (vs a single rounding for a plain add). Verified element-wise over the full output (no cosine) at `rtol = 1.6e-2, atol = 8e-2` — `atol` covers the worst-case `tanh`-LUT element (`abs_err max = 0.125`); the mean error sits inside `rtol`. Best config `herd_x=8, herd_y=1, tile_n=4096` for every shape (= llama's default): `herd_y>1` fails the shim-channel limit and some `tile_n`/`herd_x` fail a non-monotonic buffer-descriptor limit, so the best config is the fastest one that places. `herd_x` scales 7.6× (1→8). See [`details/SiLU_Mul_bf16.md`](details/SiLU_Mul_bf16.md).
+
+---
+
+## RoPE — tested shapes
+
+Rotary Position Embedding applied to Q/K, **half-split** convention (HuggingFace Llama `rotate_half`), per row; shapes written `rows × head_dim` (rows = n_heads·seq for prefill, n_heads for decode). BF16 in/out, per-element rotation (no reduction, no non-linearity — cos/sin come from a precomputed LUT). **Memory-bound** (streams input + LUT in, output out, ~1 flop/byte), so throughput is bandwidth; the fastest config is `herd_x=8` (all columns, near-linear). The kernel links the **same `rope_halfsplit.cc` (`rope.o`) llama uses** — not the interleaved `rope_lut/`/`rope_sincos/` decoys. Full data, the decoy/provenance note, and reproduce commands are in [`details/RoPE_bf16.md`](details/RoPE_bf16.md).
+
+| (rows×head_dim) | herd (hx/hy) | latency | bandwidth | mean_rel_L1 | Used by | Status |
+|---|---|---|---|---|---|---|
+| 8×64 | 8/1 | 83 µs | 0.04 GB/s | 2.4e-3 | llama-3.2-1B decode RoPE-K | ✅ |
+| 32×64 | 8/1 | 82 µs | 0.15 GB/s | 2.7e-3 | llama-3.2-1B decode RoPE-Q | ✅ |
+| 2048×64 | 8/1 | 105 µs | 7.5 GB/s | 2.8e-3 | coverage | ✅ |
+| 4096×64 | 8/1 | 118 µs | 13.3 GB/s | 2.8e-3 | coverage | ✅ |
+| 16384×64 | 8/1 | 210 µs | 30.0 GB/s | 2.8e-3 | llama-3.2-1B prefill RoPE-K | ✅ |
+| 65536×64 | 8/1 | 579 µs | **43.4 GB/s** | 2.8e-3 | llama-3.2-1B prefill RoPE-Q | ✅ |
+
+> `mean_rel_L1 = 2.8e-3` is the second-cleanest in the registry (above Element-wise Add 1.9e-3, below RMSNorm 4.2e-3): a rotation is a few bf16 multiplies and one add/sub per element with **no accumulation** — nothing to amplify error, and `|out| ≈ |x|` so no near-zero blowup. Verified element-wise over the full output (no cosine) at `rtol = 1.6e-2, atol = 5e-2`; bit-identical across all herd configs and shapes (decode rows 8/32 read slightly lower from smaller rotation angles). Best config `herd_x=8, herd_y=1` for every shape: each tile uses 3 shim DMAs (input/LUT in, output out), so `herd_x·herd_y>8` exhausts the shim channels (the herd **cannot fill 32 tiles**, same limit as Element-wise Add / SiLU); within 8 tiles `herd_x` scales 7.4× (1→8). Small shapes are latency-bound by a ~80 µs launch floor. See [`details/RoPE_bf16.md`](details/RoPE_bf16.md).

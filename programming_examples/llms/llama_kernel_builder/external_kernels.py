@@ -122,13 +122,14 @@ def compile_silu_and_mul():
 
 
 def compile_rope():
-    """Compile rope.o from our half-split RoPE kernel.
+    """Compile rope.o from programming_examples/rope_halfsplit/rope_halfsplit.cc.
 
     Uses rope_halfsplit.cc (half-split rotation matching HuggingFace Llama)
     instead of upstream rope.cc (interleaved rotation). Same function name
-    (@rope) and signature, so no MLIR changes needed.
+    (@rope) and signature, so no MLIR changes needed. The kernel lives in the
+    standalone rope_halfsplit registry example; llama links the same source.
     """
-    src = Path(__file__).resolve().parent / "rope_halfsplit.cc"
+    src = _PROJ_ROOT / "rope_halfsplit" / "rope_halfsplit.cc"
     _compile_kernel(src, "rope.o")
 
 
