@@ -202,8 +202,10 @@ try:
             ("%PEANO_INSTALL_DIR", os.path.dirname(config.peano_tools_dir))
         )
         print("Peano found: " + os.path.join(config.peano_tools_dir, "llc"))
-        peano_flags = "-O2 -std=c++20 -DNDEBUG -mllvm -aie-disable-fold-imm -I{}".format(
-            os.path.join(config.aie_obj_root, "include")
+        peano_flags = (
+            "-O2 -std=c++20 -DNDEBUG -mllvm -aie-disable-fold-imm -I{}".format(
+                os.path.join(config.aie_obj_root, "include")
+            )
         )
         config.substitutions.append(("%peano_flags", peano_flags))
     else:
