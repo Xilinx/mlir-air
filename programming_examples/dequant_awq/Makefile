@@ -25,7 +25,7 @@ N_TILE := $(shell expr $(N) / $(HERD_N))
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
-PEANOWRAP2_FLAGS  = -O2 -std=c++20 --target=aie2-none-unknown-elf  ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
+PEANOWRAP2_FLAGS  = -O2 -std=c++20 --target=aie2-none-unknown-elf  ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -mllvm -aie-disable-fold-imm
 
 ifeq ($(DEVICE),npu1)
   PEANO_FLAGS = $(PEANOWRAP2_FLAGS)
