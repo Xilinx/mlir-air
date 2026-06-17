@@ -150,17 +150,16 @@ jobs:
           ninja check-programming-examples-peano || ninja check-programming-examples-peano
 
           # Programming examples set 1b: hf_token-gated tests only.
-          # Matches verify lits under llms/ that require the hf_token feature.
-          # llama32_1b_int4/run_npu2_verify.lit is included here: the AWQ
-          # quantisation step loads the full bf16 model before quantising,
-          # making it too slow to run in the ungated main step without risking
-          # job cancellation when cancel-in-progress fires on a new push.
+          # Filter matches llama32_1b/run_npu2_verify.lit (bf16 baseline).
+          # llama32_1b_int4 verify is excluded: AWQ quantisation loads the
+          # full bf16 model before quantising to int4, causing OOM on
+          # memory-constrained runners when run alongside other LLM tests.
           # HF_TOKEN is exported in a sub-shell so it's visible only to
           # this single ninja invocation — the main check-programming-examples-peano
           # step above never sees the token.
           (
             export HF_TOKEN="${{ secrets.HF_TOKEN }}"
-            export LIT_OPTS="$LIT_OPTS --filter llms/llama32_1b.*/run_npu2_verify"
+            export LIT_OPTS="$LIT_OPTS --filter llms/llama32_1b/run_npu2_verify"
             ninja check-programming-examples-peano || ninja check-programming-examples-peano
           )
 
