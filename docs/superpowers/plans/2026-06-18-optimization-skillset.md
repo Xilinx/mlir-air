@@ -221,9 +221,9 @@ If (1)/(2) regress → a kernel did not actually accept the new layout; revert.
 
 ## Knowledge base references
 
-- `programming_examples/llms/flash_attention/kernel_fusion_based/attn_npu2_seqfirst.py`
+- `programming_examples/flash_attention/kernel_fusion_based/attn_npu2_seqfirst.py`
   — the seq-first FlashAttention variant (head_dim ≤ 64).
-- `programming_examples/llms/flash_attention/kernel_fusion_based/` — the
+- `programming_examples/flash_attention/kernel_fusion_based/` — the
   head-first kernel + wrapper used for head_dim ≥ 128 (see caveat below).
 - `.claude/skills/debug-fa-runtime-failure` — owns the *why* of the
   head_dim ≥ 128 routing.
