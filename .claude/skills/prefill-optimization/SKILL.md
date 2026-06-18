@@ -112,6 +112,22 @@ restate them, reuse Phase 2's verdict):
 Either way, expected gain: 2–4× XRT-call reduction → corresponding
 wall-clock improvement.
 
+**Sub: registry-driven GEMM config (no hardcoded tiles).** When your fused
+ELF contains GEMMs, do NOT hand-copy tile sizes into the builder — look
+them up from the registry so there is one source of truth (this removed a
+real drift bug where Gate/Up `tile_k_l2` was stale at 64 vs the
+registry-best 256). Call
+`kernel_registry/registry_lookup.gemm_config(M, K, N, output_dtype,
+precision)` at build time; it returns `{method, tile, gflops,
+mean_rel_L1}` for the best measured config and **raises for an unmeasured
+shape** (run a sweep + record it in Phase 1 first — no silent guess). For
+BF16-out prefill GEMMs use `precision="high"` (the FP32-accumulate
+fused-cast / drain path, GPU-standard ~9.3e-3); `gemm_config` picks
+fused-cast vs drain per shape. `llama32_1b`'s `gemm_builder.py` +
+`multi_launch_builder/{o_ffn_multi, rms_gemms_rope_multi}.py` are the worked
+example (mixed fused-cast tile_m=64 + drain tile_m=32 co-linked in one ELF
+via distinct symbol suffixes).
+
 #### Pattern B — Eliminate redundant host↔NPU data movement
 
 **B1. Per-layer BO pre-loading** — weights are written ONCE during

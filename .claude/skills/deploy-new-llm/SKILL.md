@@ -37,9 +37,14 @@ triages.
 - `programming_examples/llms/llama_kernel_builder/` — the **shared** kernel
   builder (KernelCache, external kernels, stitching, the `ffn_swiglu/`
   harness); per-model scripts import from it.
-- `programming_examples/kernel_registry/supported_kernels.md` +
-  `details/<Kernel>_bf16.md` — the model-agnostic kernel registry; Phase 1
-  appends this model's verified (kernel, shape) rows here (Used by = `<model>`).
+- `programming_examples/kernel_registry/` — the model-agnostic kernel
+  registry. Human half: `supported_kernels.md` (index) + `details/<Kernel>_bf16.md`
+  per kernel (GEMM is split by output dtype: `GEMM_bf16_in_bf16_out.md` +
+  `GEMM_bf16_in_fp32_out.md`). Machine half: `details/*.json` +
+  `registry_lookup.py` (`gemm_config(...)` returns the best measured tile
+  config; raises for unmeasured shapes). Phase 1 appends this model's
+  verified (kernel, shape) rows (Used by = `<model>`); Phase 4 builders read
+  tile configs back via the lookup instead of hardcoding them.
 - `docs/superpowers/specs/2026-04-17-llm-mapping-skills-design.md`
   — original design spec for the skill chain
 

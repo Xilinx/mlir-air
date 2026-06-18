@@ -35,7 +35,9 @@ The core loop is small:
   measured datapath error). The registry's `details/<Kernel>_bf16.md`
   §Tolerances documents each kernel's exact `rtol`/`atol`. Upstream ships a
   harness for the FFN block (`llms/llama_kernel_builder/ffn_swiglu/`) plus
-  the top-level kernel examples `matrix_multiplication/bf16`,
+  the top-level kernel examples `matrix_multiplication/bf16_in_bf16_out`
+  and `matrix_multiplication/bf16_in_fp32_out` (the BF16 GEMM, split by
+  output dtype — the legacy `matrix_multiplication/bf16` is kept for NPU1),
   `matrix_vector_multiplication/bf16`, `flash_attention/kernel_fusion_based`,
   `eltwise_add`, `weighted_rms_norm`, `rms_norm`, `rope_lut`.
 - **In-context diagnosis (fallback)** — for a kernel with **no standalone
@@ -107,7 +109,19 @@ PRIMARY (read before starting):
   — per-kernel detail: the numerical datapath, **Tunable parameters**
   (knobs + hard constraints + tradeoffs), tolerances, per-shape data, and
   the reproduce commands (which harness, how to run). Read the page for
-  each kernel your model needs.
+  each kernel your model needs. **GEMM is the exception**: it is split by
+  output dtype into `details/GEMM_bf16_in_bf16_out.md` and
+  `details/GEMM_bf16_in_fp32_out.md` (BF16-out has a `--high-precision`
+  tier — fused-cast / drain = FP32-accumulate + single cast, GPU-standard
+  ~9.3e-3; F32-out always FP32-accumulates).
+- `programming_examples/kernel_registry/registry_lookup.py` — the
+  **machine-readable** half of the registry. `gemm_config(M,K,N,
+  output_dtype, precision)` returns the registry's best measured
+  `{method, tile, gflops, mean_rel_L1}` for a shape from the companion
+  `details/*.json`, and **raises (no silent guess) for an unmeasured
+  shape** — so Phase 1 recording a new GEMM shape is what unlocks the
+  programmatic lookup that Phase 4 builders consume. The `.md` tables
+  mirror these `.json` files for humans.
 
 ## Workflow
 

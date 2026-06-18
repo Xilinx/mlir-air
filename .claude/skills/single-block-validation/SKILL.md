@@ -56,8 +56,13 @@ Run the diagnosis lens on the canonical prompt and gate on **layer 0**
 **Also record `max_abs` and `max_rel` error** alongside the cosine numbers
 (informational, not gated — absolute thresholds depend on input
 distribution). The diagnosis comparator's `error_metrics` reports these.
-The current BF16-output GEMM production path is in 0.005–0.025 MAE
-territory across 7 GEMMs + softmax + RoPE + RMSNorm. Recording them gives
+The current BF16-output GEMM production path is the registry's
+high-precision tier (FP32-accumulate + a single epilogue cast, fused-cast
+or drain) at ~9.3e-3 `mean_rel_L1` — the GPU-standard accuracy, single-
+sourced from `details/GEMM_bf16_in_bf16_out.json`; the low-precision
+direct-codegen tier (1.3e-2–1.9e-2) is the fallback. Across 7 GEMMs +
+softmax + RoPE + RMSNorm the block stays in that high-precision band.
+Recording them gives
 future deployments a regression baseline (NPU max_abs ≤ 1.5× reference
 deployment's measured value at same shape signals no regression).
 
@@ -220,7 +225,7 @@ deployments learn from this specific failure.
 |---|---|---|
 | Cosine drops at Q/K/V GEMM | weight loading / tensor layout (seq-first vs heads-first) | Compare NPU output shape to reference's; check `np.ascontiguousarray()` after weight load |
 | Cosine drops at FlashAttention | causal masking missing / wrong dk_chunks compile flag | See `debug-fa-runtime-failure` |
-| Cosine drops at Down GEMM | BF16 truncation; missing F32 accumulator | check production GEMM path uses bf16-out with F32 internal accumulate |
+| Cosine drops at Down GEMM | BF16 truncation; running the low-precision (direct-codegen) tier instead of high-precision | confirm the GEMM uses the registry's high-precision path (fused-cast / drain = FP32-accumulate + single cast), not `--high-precision false`; see `details/GEMM_bf16_in_bf16_out.md` |
 | NaN in output | uninitialized BO / reused stale buffer | Invoke `debug-bo-corruption` |
 | Cosine drops at residual add | bias forgotten on padded path / GQA reindex bug | If padding+bias model: re-run CPU sanity test on padded forward (Step 2) |
 | Whole-tensor cosine OK but per-position min low | one bad position run; check whether last few positions diverge (causal mask edge case) | Print per-position cosine, look for contiguous bad runs |
