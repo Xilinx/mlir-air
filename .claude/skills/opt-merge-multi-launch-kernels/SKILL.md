@@ -1,5 +1,5 @@
 ---
-name: merge-multi-launch-kernels
+name: opt-merge-multi-launch-kernels
 description: Procedural recipe for fusing multiple `air.launch` kernels into one multi-launch ELF (single XRT invocation). Invoked by phase-4-prefill-optimization and phase-5-decode-optimization to fuse kernel groups when building NEW model-specific fused ELFs (kernel-first path). Reduces XRT dispatch overhead (~50–200 µs per call on NPU2).
 ---
 
@@ -120,7 +120,7 @@ overhead levels: ≥ 20% reduction per merged group at moderate scale
 (llama3 saw 16-XRT-call/layer prefill → 3-XRT-call/layer = much
 larger reduction). If the gain is much smaller than expected, the
 per-call XRT overhead may not have been the bottleneck — the
-`buffer-object-reuse` skill (static weight BOs) is often the missing piece
+`opt-buffer-object-reuse` skill (static weight BOs) is often the missing piece
 in that case.
 
 Record gain in `<model>/docs/development_progress/phase{4,5}_*.md`.

@@ -1,5 +1,5 @@
 ---
-name: buffer-object-reuse
+name: opt-buffer-object-reuse
 description: Optimization skill — reuse NPU BufferObjects across calls instead of re-allocating/re-writing them. Two mechanics in one class: (B1) per-layer weight BOs pre-loaded once and skipped via static_input_indices, and (B2) intermediate BOs the kernel overwrites, skipped via intermediate_indices. Invoked by phase-4-prefill-optimization and phase-5-decode-optimization to cut redundant host↔NPU data movement. Decode amplifies the weight-BO win (weights reused on every token).
 ---
 
@@ -96,7 +96,7 @@ Same mechanic, two contexts (pass which one as the caller's parameter):
 |---|---|---|
 | Correct on 1st call, NaN/garbage on 2nd+ call | per-layer BO key collision OR `static_input_indices` slot list wrong | Invoke `debug-bo-corruption` |
 | Output mismatch on the very 1st call | a slot marked `intermediate` is actually read before being written | Re-classify that slot as a real input (drop it from `intermediate_indices`) |
-| No host-time reduction | the per-call upload wasn't the bottleneck (kernel-bound) | Document; the merge skill (dispatch) or layout-alignment may be the bigger win |
+| No host-time reduction | the per-call upload wasn't the bottleneck (kernel-bound) | Document; the merge skill (dispatch) or opt-layout-alignment may be the bigger win |
 
 For any failure not in the table, invoke `superpowers:systematic-debugging`.
 

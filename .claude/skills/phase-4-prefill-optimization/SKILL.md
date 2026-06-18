@@ -1,6 +1,6 @@
 ---
 name: phase-4-prefill-optimization
-description: Phase 4 of LLM deployment — apply the shared optimization skillset to a Phase-3-correct prefill pipeline (multi-launch merge, BO pre-loading + intermediate buffer reuse, seq-first layout). Thin orchestrator that dispatches `merge-multi-launch-kernels`, `buffer-object-reuse`, and `layout-alignment`. Each step preserves correctness by re-running the Phase 3 gate — `make verify` (token-set vs HF bf16) is the PASS/FAIL gate; `make diagnosis` per-layer cosine is the informational lens used to localize a regression. Invoked after Phase 3 PASS.
+description: Phase 4 of LLM deployment — apply the shared optimization skillset to a Phase-3-correct prefill pipeline (multi-launch merge, BO pre-loading + intermediate buffer reuse, seq-first layout). Thin orchestrator that dispatches `opt-merge-multi-launch-kernels`, `opt-buffer-object-reuse`, and `opt-layout-alignment`. Each step preserves correctness by re-running the Phase 3 gate — `make verify` (token-set vs HF bf16) is the PASS/FAIL gate; `make diagnosis` per-layer cosine is the informational lens used to localize a regression. Invoked after Phase 3 PASS.
 ---
 
 ## Purpose
@@ -10,9 +10,9 @@ in Phase 1, layer-by-layer in Phase 2-3, all numerically aligned with
 the HF bf16 reference). Phase 4 keeps that correctness while applying
 the shared optimization skillset to **reduce prefill latency**. This phase
 is a thin orchestrator: it dispatches three now-independent optimization
-skills — `merge-multi-launch-kernels` (ELF-merging),
-`buffer-object-reuse` (host↔NPU runtime-overhead reduction), and
-`layout-alignment` (host-side layout) — each of which owns its own recipe
+skills — `opt-merge-multi-launch-kernels` (ELF-merging),
+`opt-buffer-object-reuse` (host↔NPU runtime-overhead reduction), and
+`opt-layout-alignment` (host-side layout) — each of which owns its own recipe
 and failure modes. These wins are things you **compose from the kernels**,
 not behaviors inherited from a reference; the reference's builders are
 worked examples. Every optimization is an experiment: apply, re-measure,
@@ -46,7 +46,7 @@ deployment must hit.
 
 The "≥ N optimization skills applied" check is NOT a gate — some models
 legitimately need only 1-2 (e.g., the model is already seq-first by
-construction → `layout-alignment` N/A). The gate is the outcome (perf
+construction → `opt-layout-alignment` N/A). The gate is the outcome (perf
 improved + correctness preserved), not the process count.
 
 ## Knowledge base references
@@ -60,7 +60,7 @@ PRIMARY:
   measure against and preserve)
 - `programming_examples/llms/llama_kernel_builder/cache.py` — the
   `KernelCache` host-optimization knobs (`static_input_indices`,
-  `intermediate_indices`); the `buffer-object-reuse` skill owns how to
+  `intermediate_indices`); the `opt-buffer-object-reuse` skill owns how to
   wire them, this is just the source file it touches
 
 REFERENCE EXEMPLARS (read/mirror to compose your own fused ELFs; import
@@ -101,9 +101,9 @@ the gate is the outcome (faster + `make verify` still PASSES).
 
 | Optimization skill | When it applies to prefill | What it does |
 |---|---|---|
-| `merge-multi-launch-kernels` | almost always (the dominant win) | stitch each leaf kernel's `air.launch` into one fused ELF per kernel-group → one `xrt.run()` per group instead of per kernel (llama3: 16→3 calls/layer). Build the model's `multi_launch_builder/` (kernel-first) or reuse llama's fused ELFs (bit-for-bit inheritance — the verdict made in `phase-2-single-block-validation` Step 1). |
-| `buffer-object-reuse` | always | pre-load per-layer weight BOs once (`static_input_indices`) + reuse intermediate BOs (`intermediate_indices`); removes redundant host↔NPU uploads. |
-| `layout-alignment` | only if a host transpose still sits between two kernels | choose seq-first layouts so RoPE/FA/O-proj hand off on-device; skip if the model already runs seq-first end-to-end (most inheritance deployments do). |
+| `opt-merge-multi-launch-kernels` | almost always (the dominant win) | stitch each leaf kernel's `air.launch` into one fused ELF per kernel-group → one `xrt.run()` per group instead of per kernel (llama3: 16→3 calls/layer). Build the model's `multi_launch_builder/` (kernel-first) or reuse llama's fused ELFs (bit-for-bit inheritance — the verdict made in `phase-2-single-block-validation` Step 1). |
+| `opt-buffer-object-reuse` | always | pre-load per-layer weight BOs once (`static_input_indices`) + reuse intermediate BOs (`intermediate_indices`); removes redundant host↔NPU uploads. |
+| `opt-layout-alignment` | only if a host transpose still sits between two kernels | choose seq-first layouts so RoPE/FA/O-proj hand off on-device; skip if the model already runs seq-first end-to-end (most inheritance deployments do). |
 
 Each skill owns its own recipe, success self-check, and failure modes —
 this phase does not restate them. Invoke the skill, read its result, then
@@ -127,7 +127,7 @@ flock -x -w 1800 /tmp/mlir-air-npu.lock make diagnosis   # informational: per-la
 ```
 
 A cosine cliff at layer *i* points at the broken assumption there (e.g. a
-transpose `layout-alignment` removed that this model actually needed).
+transpose `opt-layout-alignment` removed that this model actually needed).
 diagnosis does not PASS/FAIL — it is the microscope, verify is the gate.
 
 ## Failure modes
@@ -136,10 +136,10 @@ diagnosis does not PASS/FAIL — it is the microscope, verify is the gate.
 |---|---|---|
 | Multi-launch merge compile fails (BD exhaustion, channel routing, herd shape conflict, bare-herd, DMA stride, IR/compile blowup) | non-1024-aligned dim (see the kernel's `details/<Kernel>_bf16.md`) OR wrong stitching boundary | Invoke `debug-multi-launch-merge` — it discriminates the 6 known compile blockers |
 | Output corruption after BO pre-loading (correct first call, NaN/garbage on subsequent calls) | Per-layer BO key collision OR `static_input_indices` set wrong | Invoke `debug-bo-corruption` |
-| FA hang (`ERT_CMD_STATE_TIMEOUT`) at head_dim ≥ 128 | Seq-first `dk_chunks > 1` path bug | Invoke `debug-fa-runtime-failure`; the head-first wrapper (routed by `layout-alignment`) is the workaround |
+| FA hang (`ERT_CMD_STATE_TIMEOUT`) at head_dim ≥ 128 | Seq-first `dk_chunks > 1` path bug | Invoke `debug-fa-runtime-failure`; the head-first wrapper (routed by `opt-layout-alignment`) is the workaround |
 | FA all-NaN at runtime | Compile-flag mismatch on `attn_npu2.cc` macros (LESSON 3 — `-Dlqp` must be per-tile, not per-launch) | Invoke `debug-fa-runtime-failure`; `compile_attn_npu2_split` derives correct flags |
 | Cosine drops after an optimization skill | the skill has a layout/type assumption your model violates | Revert the change; check whether the assumption (e.g., seq-first only, all weights pre-transposed) holds |
-| Latency unchanged after `merge-multi-launch-kernels` | Multi-launch ELF compiled but XRT call count didn't drop | Check `xrt-smi top` for actual call count; verify the new fused ELF is what `_run_cached` actually invokes (not falling back to per-kernel path) |
+| Latency unchanged after `opt-merge-multi-launch-kernels` | Multi-launch ELF compiled but XRT call count didn't drop | Check `xrt-smi top` for actual call count; verify the new fused ELF is what `_run_cached` actually invokes (not falling back to per-kernel path) |
 
 For any failure not in the table, invoke `superpowers:systematic-debugging`.
 
@@ -152,6 +152,6 @@ On Phase 4 PASS:
 - `<model>/TODO.md`: mark Phase 4, append final prefill kernel time +
   speedup vs Phase 3 baseline
 - If a new fused ELF was built (kernel-first path of
-  `merge-multi-launch-kernels`), surface to Phase 6 for potential
+  `opt-merge-multi-launch-kernels`), surface to Phase 6 for potential
   promotion to a shared location if a second deployment validates the
   same pattern

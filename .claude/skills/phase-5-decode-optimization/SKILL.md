@@ -1,6 +1,6 @@
 ---
 name: phase-5-decode-optimization
-description: Phase 5 of LLM deployment — apply the shared optimization skillset to a Phase-4-correct decode pipeline (multi-launch merge with N-way extern rename, static weight BOs, on-device layout). Thin orchestrator that dispatches `merge-multi-launch-kernels`, `buffer-object-reuse`, and `layout-alignment`. Each step preserves correctness by re-running the Phase 3 gate — `make verify` (token-set vs HF bf16) is the PASS/FAIL gate; `make diagnosis` per-layer cosine is the informational lens used to localize a regression. Invoked after Phase 4 PASS.
+description: Phase 5 of LLM deployment — apply the shared optimization skillset to a Phase-4-correct decode pipeline (multi-launch merge with N-way extern rename, static weight BOs, on-device layout). Thin orchestrator that dispatches `opt-merge-multi-launch-kernels`, `opt-buffer-object-reuse`, and `opt-layout-alignment`. Each step preserves correctness by re-running the Phase 3 gate — `make verify` (token-set vs HF bf16) is the PASS/FAIL gate; `make diagnosis` per-layer cosine is the informational lens used to localize a regression. Invoked after Phase 4 PASS.
 ---
 
 ## Purpose
@@ -9,9 +9,9 @@ Phase 4 optimized prefill while preserving Phase 3 correctness. Phase 5
 does the same for decode — but the dominant optimizations differ because
 decode runs at M=1 per token, calling all N layers once per generated
 token. This phase is a thin orchestrator: it dispatches the same shared
-optimization skillset as Phase 4 — `merge-multi-launch-kernels`
-(ELF-merging), `buffer-object-reuse` (host↔NPU runtime-overhead
-reduction), and `layout-alignment` (host-side layout) — each of which
+optimization skillset as Phase 4 — `opt-merge-multi-launch-kernels`
+(ELF-merging), `opt-buffer-object-reuse` (host↔NPU runtime-overhead
+reduction), and `opt-layout-alignment` (host-side layout) — each of which
 owns its own recipe and failure modes. Decode amplifies the value of
 static weight BOs (weights are loaded once but read on every token).
 These wins are things you **compose from the kernels**, not behaviors
@@ -98,9 +98,9 @@ differ because decode runs at M=1 per token, calling all N layers per token.
 
 | Optimization skill | When it applies to decode | What it does (decode flavor) |
 |---|---|---|
-| `merge-multi-launch-kernels` | almost always | stitch decode kernel groups (GEMV instead of GEMM) into fused ELFs (10 launches/layer/token → 2–3). Build the model's `multi_launch_builder/` (kernel-first) or reuse llama's fused decode ELFs (bit-for-bit inheritance — the verdict made in `phase-2-single-block-validation` Step 1). **Decode specifics handled by the skill**: N-way extern kernel rename when multiple GEMV K values co-link in one ELF (2-K for llama: `mv.o` K=2048 + `mv_k8192.o`; add a 3rd renamed `.o` when `n_heads·head_dim ≠ emb_dim`), and K-split (`down_k_split`) for K > 8160 (`details/GEMV_bf16.md`). |
-| `buffer-object-reuse` | always — biggest decode win | static weight BOs: weights allocated once, `bo.map()` zero-copy, `static_input_indices` skips re-write on every token. With 16+ layers × ~7 weights × 100 tokens, this is the dominant pre-optimization decode host cost. |
-| `layout-alignment` | usually N/A | only if decode introduced a transpose Phase 4 didn't already fix. |
+| `opt-merge-multi-launch-kernels` | almost always | stitch decode kernel groups (GEMV instead of GEMM) into fused ELFs (10 launches/layer/token → 2–3). Build the model's `multi_launch_builder/` (kernel-first) or reuse llama's fused decode ELFs (bit-for-bit inheritance — the verdict made in `phase-2-single-block-validation` Step 1). **Decode specifics handled by the skill**: N-way extern kernel rename when multiple GEMV K values co-link in one ELF (2-K for llama: `mv.o` K=2048 + `mv_k8192.o`; add a 3rd renamed `.o` when `n_heads·head_dim ≠ emb_dim`), and K-split (`down_k_split`) for K > 8160 (`details/GEMV_bf16.md`). |
+| `opt-buffer-object-reuse` | always — biggest decode win | static weight BOs: weights allocated once, `bo.map()` zero-copy, `static_input_indices` skips re-write on every token. With 16+ layers × ~7 weights × 100 tokens, this is the dominant pre-optimization decode host cost. |
+| `opt-layout-alignment` | usually N/A | only if decode introduced a transpose Phase 4 didn't already fix. |
 
 Each skill owns its recipe + success self-check + failure modes. The LM Head
 GEMV (vocab-partitioned) is part of the model's decode assembly built in
@@ -126,11 +126,11 @@ reverting optimization skills instead.
 |---|---|---|
 | Multi-launch merge compile fails (BD exhaustion, channel routing, herd shape conflict, bare-herd, DMA stride, IR/compile blowup) | BD/placeability limit or wrong stitching boundary | Invoke `debug-multi-launch-merge` — it discriminates the 6 known compile blockers |
 | Extern kernel rename collision (link error, symbol redefined) | Two `.o` files exporting same symbol | Check `-D` mapping uniqueness; each `.o` must export distinct `<group>_matvec_*` names |
-| `'aiex.npu.push_queue' op Repeat count exceeds [0:255]` (`merge-multi-launch-kernels`) | GEMV K > 8160, or combined channel reads > 255 (see `details/GEMV_bf16.md`) | For K > 8160 → set `k_split` / `down_k_split`; for large M → set `tile_m == m_input` and grow `tile_m × herd_m` |
+| `'aiex.npu.push_queue' op Repeat count exceeds [0:255]` (`opt-merge-multi-launch-kernels`) | GEMV K > 8160, or combined channel reads > 255 (see `details/GEMV_bf16.md`) | For K > 8160 → set `k_split` / `down_k_split`; for large M → set `tile_m == m_input` and grow `tile_m × herd_m` |
 | `L2 capacity exceeded` (matvec.py builder assert) | GEMV staged buffer `K × herd_m × tile_m × 2 > 512 KiB` (see `details/GEMV_bf16.md`) | Reduce `tile_m` (e.g., 8 → 2 for K=8192) |
 | Output corruption after static weight BO conversion (correct first call, NaN/garbage on subsequent) | Per-layer BO key collision OR `static_input_indices` wrong | Invoke `debug-bo-corruption` |
 | Cosine drops after an optimization skill | the skill has a layout/type assumption this model violates | Revert the change; check the assumption (e.g., decode already seq-first, weights already pre-transposed) |
-| ms/token unchanged after `merge-multi-launch-kernels` | Per-call XRT overhead dominates; fusion alone insufficient | `buffer-object-reuse` (static weight BOs) is likely the missing piece — apply it next |
+| ms/token unchanged after `opt-merge-multi-launch-kernels` | Per-call XRT overhead dominates; fusion alone insufficient | `opt-buffer-object-reuse` (static weight BOs) is likely the missing piece — apply it next |
 
 For any failure not in the table, invoke `superpowers:systematic-debugging`.
 
@@ -143,6 +143,6 @@ On Phase 5 PASS:
 - `<model>/TODO.md`: mark Phase 5, append final ms/token + speedup
   vs Phase 4 baseline
 - If a new fused decode ELF was built (kernel-first path of
-  `merge-multi-launch-kernels`), surface to Phase 6 for potential
+  `opt-merge-multi-launch-kernels`), surface to Phase 6 for potential
   promotion to a shared location if a second deployment validates the
   same pattern

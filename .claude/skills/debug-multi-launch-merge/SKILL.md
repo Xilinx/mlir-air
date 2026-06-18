@@ -5,7 +5,7 @@ description: Use when stitching kernels into a multi-launch ELF and the AIE comp
 
 ## Purpose
 
-When `merge-multi-launch-kernels` produces a fused ELF and `aircc.py`
+When `opt-merge-multi-launch-kernels` produces a fused ELF and `aircc.py`
 rejects it for hardware-resource reasons, this skill identifies which
 of the 6 documented constraints was hit. Use as a **diagnostic
 decision tree**, not a mechanical fix-applier — confirm the trigger
@@ -150,7 +150,7 @@ After applying a fix:
    NOT use `rtol=1e-3` — too tight for K ≥ 1024 BF16); log
    `max_abs/max_rel` informational
 
-If output mismatch: invoke `merge-multi-launch-kernels` Step 5 bisect
+If output mismatch: invoke `opt-merge-multi-launch-kernels` Step 5 bisect
 (un-merge the last-added kernel to localize the offender).
 
 ## Failure mode (when this skill itself can't resolve)

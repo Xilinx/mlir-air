@@ -1,5 +1,5 @@
 ---
-name: layout-alignment
+name: opt-layout-alignment
 description: Optimization skill — choose activation layouts so consecutive kernels hand off on-device without a host-side transpose. Canonical case: seq-first (seq, n_heads·head_dim) so RMSNorm → RoPE → FlashAttention → O-proj stay seq-first, eliminating 1–4 host transposes per layer. Invoked by phase-4-prefill-optimization (and phase-5 when decode introduces a transpose phase-4 didn't fix).
 ---
 
