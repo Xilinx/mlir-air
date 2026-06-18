@@ -78,7 +78,7 @@ For each group, create `<model>/multi_launch_builder/<group_name>_multi.py`
 that:
 
 1. Builds each sub-kernel's IR via `@module_builder`
-2. Imports stitching helpers: `from llama_kernel_builder.stitching import (_rename_all, _fix_launch_func_args, _wrap_ir_in_launch, ...)` (resolved against the shared `llms/llama_kernel_builder/` via sys.path)
+2. Imports stitching helpers: `from llama_kernel_builder.stitching import (_rename_all, _fix_launch_func_args, _wrap_ir_in_launch, ...)` (resolved against the shared `programming_examples/llms/llama_kernel_builder/` via sys.path)
 3. For each sub-kernel: extract its function body via `_extract_between_func_and_return(ir_text)`
 4. Rename SSA values with a per-kernel prefix via `_rename_all(body, prefix=...)` to avoid collisions across the merged module
 5. Remap function arguments to the merged module's args via `_fix_launch_func_args(body, prefix, arg_map)`

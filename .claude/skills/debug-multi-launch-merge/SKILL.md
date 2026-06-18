@@ -77,7 +77,7 @@ check IDs across the merged launches.
 
 **Remedy**: rename channels in one of the offending launches. The
 `_rename_all(text, prefix=...)` helper in
-`llms/llama_kernel_builder/stitching.py` already prefixes every SSA
+`programming_examples/llms/llama_kernel_builder/stitching.py` already prefixes every SSA
 name (including channels) per-kernel — confirm your stitching code
 used distinct prefixes per sub-kernel. If two sub-kernels were
 stitched with the same prefix, that's the bug. Re-run stitching with
@@ -110,7 +110,7 @@ the multi-launch builder for `air.herd` ops not wrapped in
 `air.launch + air.segment`.
 
 **Remedy**: wrap via `_wrap_ir_in_launch(mlir_text)` from
-`llms/llama_kernel_builder/stitching.py`. The fused builders in
+`programming_examples/llms/llama_kernel_builder/stitching.py`. The fused builders in
 `llama32_1b/multi_launch_builder/` apply this wrapper around every bare
 herd (e.g. the RMSNorm and Eltwise-Add `herd_x=8` builders).
 

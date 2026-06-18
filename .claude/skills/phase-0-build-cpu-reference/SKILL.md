@@ -1,6 +1,6 @@
 ---
 name: phase-0-build-cpu-reference
-description: Phase 0 of LLM deployment — produce `<model>_weights.py` (HF weight loader) and `<model>_cpu_helpers.py` (the few NumPy helpers production prefill/decode import), then confirm the HF bf16 reference baseline loads and runs via the shared `llms/verify/` subsystem's HfRunner. Downstream phases compare NPU against HF transformers in bf16 directly; there is no hand-written full-model FP32 oracle.
+description: Phase 0 of LLM deployment — produce `<model>_weights.py` (HF weight loader) and `<model>_cpu_helpers.py` (the few NumPy helpers production prefill/decode import), then confirm the HF bf16 reference baseline loads and runs via the shared `programming_examples/llms/verify/` subsystem's HfRunner. Downstream phases compare NPU against HF transformers in bf16 directly; there is no hand-written full-model FP32 oracle.
 ---
 
 ## Purpose
@@ -163,7 +163,7 @@ Confirm the reference baseline using the `verify/` subsystem's `HfRunner`,
 NOT a hand-written full-model comparison. Minimal confirmation:
 
 ```python
-# from programming_examples/llms/<model>/, with the shared llms/verify/ reachable via verify_adapter
+# from programming_examples/llms/<model>/, with the shared programming_examples/llms/verify/ reachable via verify_adapter
 from verify.runners.hf_runner import HfRunner
 from <model>_weights import LlamaConfig  # or your Config class
 

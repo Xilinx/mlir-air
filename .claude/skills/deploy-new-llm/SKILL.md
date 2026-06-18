@@ -109,8 +109,8 @@ any is missing, halt and instruct the human.
 ### Step 4: Scaffold `<model>/` directory — kernel-first, minimal
 
 The model lives at `programming_examples/llms/<dirname>/`, a sibling of
-`llms/llama32_1b/` (the reference exemplar) and the shared `llms/verify/`
-+ `llms/llama_kernel_builder/` (the toolkit every deployment builds on).
+`programming_examples/llms/llama32_1b/` (the reference exemplar) and the shared `programming_examples/llms/verify/`
++ `programming_examples/llms/llama_kernel_builder/` (the toolkit every deployment builds on).
 
 **Default mindset: build this model up from registry kernels** using the
 shared `llama_kernel_builder` toolkit (KernelCache, stitching,
@@ -133,13 +133,13 @@ owned by `phase-2-single-block-validation` Step 1 — Phase 2 makes the call):
 The minimal Tier-A scaffold is:
 
 ```
-llms/<dirname>/
+programming_examples/llms/<dirname>/
 ├── .gitignore                       # copy from llama32_1b/.gitignore + add *.o, *kernel_cache/
 ├── Makefile                         # template-render with model name (run / verify / verify-full / diagnosis / profile + compile / clean)
 ├── README.md                        # placeholder; final version written by phase-6-finalize-and-learn
 ├── ARCHITECTURE.md                  # model-specific guide (NOT CLAUDE.md — top-level .gitignore excludes it, so it would not ship)
 ├── TODO.md                          # phase status (template in Step 5)
-├── verify_adapter.py                # written by phase-6-finalize-and-learn; hooks this model into the shared llms/verify/
+├── verify_adapter.py                # written by phase-6-finalize-and-learn; hooks this model into the shared programming_examples/llms/verify/
 └── docs/development_progress/
     ├── progress.md                  # header-only; phases append as they pass
     ├── LESSONS.md                   # header-only; appended on novel failures
@@ -147,7 +147,7 @@ llms/<dirname>/
 ```
 
 **Per-model scripts use this sys.path block** to resolve the shared
-`llms/` packages (always) and the llama32_1b reference (as exemplar, or
+`programming_examples/llms/` packages (always) and the llama32_1b reference (as exemplar, or
 to import directly on a bit-for-bit match):
 
 ```python
@@ -184,7 +184,7 @@ divergent part kernel-first, and import the unchanged rest from
 - Phases 1-3 (validation): `<model>_phaseN_test.py` per phase
 - Phase 6 (`phase-6-finalize-and-learn`): `<model>_inference.py` (clean
   end-to-end NPU runner: setup → prefill → decode_loop) + `<model>/verify_adapter.py`
-  (hooks this model into the shared `llms/verify/`; mirrors
+  (hooks this model into the shared `programming_examples/llms/verify/`; mirrors
   `llama32_1b/verify_adapter.py`)
 
 **Makefile template** (mirror `programming_examples/llms/llama32_1b/Makefile`):
@@ -283,7 +283,7 @@ architectural axes are genuinely hard, which informs future deployments.
 | 3 | `phase-3-full-model-validation` | Full N layers: `make verify` token-set gate (top-5 inclusion vs HF bf16) PASSES — the binding gate; `make diagnosis` per-layer cosine is the localization lens, not a pass/fail |
 | 4 | `phase-4-prefill-optimization` | Apply optimization patterns; correctness preserved (`make verify` token-set still PASSES — diagnosis cosine is the localization lens, not the gate) AND prefill kernel time strictly < Phase 3 baseline |
 | 5 | `phase-5-decode-optimization` | Same shape: correctness preserved (`make verify` token-set still PASSES) AND decode time/token strictly < Phase 4 baseline |
-| 6 | `phase-6-finalize-and-learn` | Clean `<model>_inference.py` + `<model>/verify_adapter.py` (shared `llms/verify/`) + Makefile; `make verify` (top-5 token-set vs HF bf16) PASSES |
+| 6 | `phase-6-finalize-and-learn` | Clean `<model>_inference.py` + `<model>/verify_adapter.py` (shared `programming_examples/llms/verify/`) + Makefile; `make verify` (top-5 token-set vs HF bf16) PASSES |
 | 7 | `phase-7-independent-evaluator` | Fresh subagent: audit `make verify` (anti-reward-hacking) + re-run as primary gate; produce structured `evaluation_report.md` |
 
 Report current state to the human:
@@ -338,9 +338,9 @@ If the evaluator reports:
   Do NOT hand off. Surface specific failures.
 
 > If this deployment changed shared infra (`kernel_registry/`,
-> `llms/llama_kernel_builder/`, `llms/verify/`, or the reference
-> `llms/llama32_1b/`), re-run `make verify` on the OTHER deployments under
-> `llms/<model>/` before tagging — a shared-infra change can silently break
+> `programming_examples/llms/llama_kernel_builder/`, `programming_examples/llms/verify/`, or the reference
+> `programming_examples/llms/llama32_1b/`), re-run `make verify` on the OTHER deployments under
+> `programming_examples/llms/<model>/` before tagging — a shared-infra change can silently break
 > a sibling. NPU is a singleton, so run sequentially with `flock`.
 
 ### Step 9: On all-PASS, hand off to the human

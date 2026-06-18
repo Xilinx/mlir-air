@@ -32,7 +32,7 @@ written and its overall verdict is PASS or PASS-with-warnings.
 
 1. **`make verify` audited** (anti-reward-hacking): subagent has read the
    Makefile target + the model's `verify_adapter.py` + the shared
-   `llms/verify/{verify_runner,comparators,runners/hf_runner}.py`, and
+   `programming_examples/llms/verify/{verify_runner,comparators,runners/hf_runner}.py`, and
    confirmed the gate (a) drives the model's PRODUCTION `run_npu_prefill` /
    `run_npu_decode_step` via the `NpuRunner` (not a mock), (b) compares
    against HF transformers in bf16 (`torch_dtype=torch.bfloat16`), (c)
@@ -97,10 +97,10 @@ BEFORE running anything, READ:
    methods) imports and calls THIS model's production `run_npu_prefill` /
    `run_npu_decode_step` from `<model>_inference.py` — NOT a stub, NOT the
    llama32_1b copy. (The runner/comparators/report/HF runner live once in
-   the shared `llms/verify/`; the adapter is the per-model hook.)
-3. **`llms/verify/runners/hf_runner.py`** (shared): confirm the reference
+   the shared `programming_examples/llms/verify/`; the adapter is the per-model hook.)
+3. **`programming_examples/llms/verify/runners/hf_runner.py`** (shared): confirm the reference
    loads with `AutoModelForCausalLM.from_pretrained(..., torch_dtype=torch.bfloat16)`.
-4. **`llms/verify/comparators.py`** + **`llms/verify/report.py`** (shared):
+4. **`programming_examples/llms/verify/comparators.py`** + **`programming_examples/llms/verify/report.py`** (shared):
    confirm the gate is `compute_topk_set_check` (top-5 set inclusion at
    first divergence) and `report.has_failure()` drives a real exit code —
    not a hardcoded `return True` / `> 0` threshold.
@@ -120,7 +120,7 @@ Expected (per Phase 6 / verify subsystem design):
 - At the first divergence, NPU's chosen token ∈ HF top-5 AND HF's chosen
   token ∈ NPU top-5 → PASS; exit 0; no `npu_vs_hf` FAIL in the report.
 - The report written under the model's build dir (`reports/`, by the
-  shared `llms/verify/` runner) records the first divergence + top-5 sets.
+  shared `programming_examples/llms/verify/` runner) records the first divergence + top-5 sets.
 
 Also run `make diagnosis` to capture the per-layer cosine table as an
 **informational** sanity signal — eyeball it for a gross cliff or a NaN

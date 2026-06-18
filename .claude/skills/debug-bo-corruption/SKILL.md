@@ -93,7 +93,7 @@ region to the `aie.device` op. A bare herd without the segment wrapper
 gets silently dropped.
 
 **Remedy**: Wrap via `_wrap_ir_in_launch(mlir_text)` from
-`llms/llama_kernel_builder/stitching.py`. The fused multi-launch
+`programming_examples/llms/llama_kernel_builder/stitching.py`. The fused multi-launch
 builders in `llama32_1b/multi_launch_builder/` use this wrapper around
 every bare herd (e.g. the RMSNorm and Eltwise-Add `herd_x=8` builders,
 which emit bare herds) — mirror that pattern.

@@ -67,7 +67,7 @@ LQP_TILE := $(shell echo $$(($(LQP) / $(NUM_Q_TILES))))
 
 **Diagnostic**: diff your compile call against the Makefile. The FA
 compile helper in
-`llms/llama_kernel_builder/external_kernels.py` derives
+`programming_examples/llms/llama_kernel_builder/external_kernels.py` derives
 `lqp_tile = lqp // num_q_tiles` internally and emits the right per-tile
 flags.
 

@@ -1,6 +1,6 @@
 ---
 name: phase-6-finalize-and-learn
-description: Phase 6 of LLM deployment — integrate Phase 4 prefill + Phase 5 decode into a clean `<model>_inference.py`, write the model's `verify_adapter.py` hooking into the shared `llms/verify/` subsystem + a Makefile (run / verify / verify-full / diagnosis / profile), and confirm `make verify` (top-k token-set gate vs HF bf16) PASSES. That gate is the production-readiness check. Capture lessons learned. Invoked after Phase 5 PASS.
+description: Phase 6 of LLM deployment — integrate Phase 4 prefill + Phase 5 decode into a clean `<model>_inference.py`, write the model's `verify_adapter.py` hooking into the shared `programming_examples/llms/verify/` subsystem + a Makefile (run / verify / verify-full / diagnosis / profile), and confirm `make verify` (top-k token-set gate vs HF bf16) PASSES. That gate is the production-readiness check. Capture lessons learned. Invoked after Phase 5 PASS.
 ---
 
 ## Purpose
@@ -9,7 +9,7 @@ Phase 4-5 produced an optimized prefill kernel and an optimized decode
 kernel — but they may live in separate scripts with optimization-time
 warmup hacks scattered through the main flow. Phase 6 integrates them
 into a single clean `<model>_inference.py` and wires the deployment into
-the **shared** `llms/verify/` subsystem via a per-model `verify_adapter.py`
+the **shared** `programming_examples/llms/verify/` subsystem via a per-model `verify_adapter.py`
 (mirroring `llama32_1b/verify_adapter.py`) so the deployment has:
 
 1. A clean **setup → prefill → decode** structure with no warmup hacks
@@ -37,9 +37,9 @@ This top-k token-level inclusion check **mirrors vLLM's correctness
 methodology** — it is the GPU/industry-standard end-to-end signal, which
 is why it (not a per-tensor cosine) is the production-readiness gate. The
 whole `verify/` subsystem is **shared across all models** under
-`llms/verify/`; a new deployment hooks in with a thin `verify_adapter.py`
+`programming_examples/llms/verify/`; a new deployment hooks in with a thin `verify_adapter.py`
 rather than copying the runner, so every model is judged by the identical
-gate. See `llms/verify/README.md`.
+gate. See `programming_examples/llms/verify/README.md`.
 
 ## Phase 6 PASS criteria (HARD GATES)
 
@@ -49,12 +49,12 @@ gate. See `llms/verify/README.md`.
    hacks, cache prime calls, or timing resets in the main flow.
 2. **`<model>/verify_adapter.py` exists**, mirroring
    `llama32_1b/verify_adapter.py`: it provides the adapter interface the
-   shared `llms/verify/verify_runner.py` calls — `resolve_model`,
+   shared `programming_examples/llms/verify/verify_runner.py` calls — `resolve_model`,
    `hf_reference`, `build_config`, `build_runner`, and an `NpuRunner`
    (implementing `.prefill()` / `.decode_step()`) that calls THIS model's
    production `run_npu_prefill` / `run_npu_decode_step`. The verify runner,
    comparators, report, and HF runner are NOT copied — they live once in
-   `llms/verify/`.
+   `programming_examples/llms/verify/`.
 3. **`make run` works**: invokes inference at default `--n-tokens 100`,
    prints TTFT (prefill kernel ms) + TPS (tokens/sec).
 4. **`make verify` PASSES** the token-set gate (production-readiness):
@@ -137,7 +137,7 @@ not fork a verify-only copy.
 ### Step 2: Write the model's `verify_adapter.py`
 
 The verify runner/comparators/report/HF runner are **shared** in
-`llms/verify/` — you do NOT copy them. You write one per-model file,
+`programming_examples/llms/verify/` — you do NOT copy them. You write one per-model file,
 `<model>/verify_adapter.py`, mirroring `llama32_1b/verify_adapter.py`. It
 provides the adapter interface the shared `verify_runner.py` loads via
 `--runner=<model>.verify_adapter`:
@@ -150,9 +150,9 @@ provides the adapter interface the shared `verify_runner.py` loads via
   production `run_npu_prefill` / `run_npu_decode_step`.
 
 The HF reference path, the comparators (`compute_topk_set_check`), and the
-report all stay in `llms/verify/` — unchanged, model-agnostic. If the
+report all stay in `programming_examples/llms/verify/` — unchanged, model-agnostic. If the
 default chat template differs, point `resolve_model` / the prompt choice
-at the right `llms/verify/prompts/*.txt`.
+at the right `programming_examples/llms/verify/prompts/*.txt`.
 
 ### Step 3: Wire the Makefile
 
