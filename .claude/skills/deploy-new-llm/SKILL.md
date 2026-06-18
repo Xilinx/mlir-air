@@ -45,8 +45,6 @@ triages.
   config; raises for unmeasured shapes). Phase 1 appends this model's
   verified (kernel, shape) rows (Used by = `<model>`); Phase 4 builders read
   tile configs back via the lookup instead of hardcoding them.
-- `docs/superpowers/specs/2026-04-17-llm-mapping-skills-design.md`
-  — original design spec for the skill chain
 
 ## Workflow
 
@@ -87,12 +85,10 @@ Fetch HF `config.json`. Reject if any of:
 - Uses MLA (Multi-head Latent Attention)
 - Uses encoder-decoder structure
 
-**QKV bias is supported** (Qwen2-family models with `qkv_bias=true`):
-the bias is added on the HOST after the bias-free kernels return,
-exploiting RoPE's linearity (`RoPE(q + bq) = RoPE(q) + RoPE(bq)`). The
-bias-on-host wrapper is re-derived per deployment (technique described
-in `phase-2-single-block-validation` Step 2). Per-deployment effort: ~1-2 hours;
-surface in TODO.md as a Phase 2 prerequisite.
+**QKV bias is supported** (e.g. Qwen2-family with `qkv_bias=true`) — added
+on the host around the bias-free kernels; the technique lives in
+`phase-2-single-block-validation` Step 2. Surface it in TODO.md as a Phase 2
+prerequisite.
 
 If rejected, print clear message and do NOT proceed.
 
@@ -341,12 +337,11 @@ If the evaluator reports:
 - **FAIL** → mark deployment `needs-human-review` in TODO.md and STOP.
   Do NOT hand off. Surface specific failures.
 
-If the deployment touched shared infra (any of `kernel_registry/`,
-`matrix_vector_multiplication/`, `llms/llama_kernel_builder/`,
-`llms/verify/`, `llms/llama32_1b/multi_launch_builder/`,
-`llms/llama32_1b/llama32_1b_*.py`), the evaluator's Step 7 (Conditional
-Cross-deployment regression) will also re-verify every OTHER deployment's
-`make verify` to catch back-compat breaks. Budget ~5 min per deployment.
+> If this deployment changed shared infra (`kernel_registry/`,
+> `llms/llama_kernel_builder/`, `llms/verify/`, or the reference
+> `llms/llama32_1b/`), re-run `make verify` on the OTHER deployments under
+> `llms/<model>/` before tagging — a shared-infra change can silently break
+> a sibling. NPU is a singleton, so run sequentially with `flock`.
 
 ### Step 9: On all-PASS, hand off to the human
 
