@@ -1,137 +1,177 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""GEMM module builder and transform IR for NPU2 BF16 matrix multiplication."""
+"""GEMM module builder for NPU2 BF16 matrix multiplication.
+
+Thin llama-side adapter over the contract-split example builders in
+`matrix_multiplication/bf16_in_{fp32,bf16}_out/run.py`. The direct-codegen
+transform lives there (a single definition per dtype, reused via
+`build_module_lowered`); this file no longer keeps its own copy.
+"""
 
 from ml_dtypes import bfloat16
 
-GEMM_TRANSFORM_IR = """
-    module attributes {transform.with_named_sequence} {
-      transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
-        %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func0 {
-            transform.apply_patterns.linalg.tiling_canonicalization
-            transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
-        %func_fold_1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %func_folded_1 = transform.air.fold_unit_extent_dims %func_fold_1 : (!transform.any_op) -> !transform.any_op
+# External-bf16 high-precision methods (both = f32 accumulate + single epilogue
+# cast = 9.3e-3). They differ only in HOW the cast is done, which fixes tile_m:
+#   - fused-cast: external GEMM (f32 scratch) + separate cast launch, tile_m=64.
+#                 Faster on large shapes (M*K*N >= 4e9). Links mm_m64.o (symbols _m64).
+#   - drain:      in-GEMM drain-herd cast, single launch, tile_m=32 (L1 ceiling).
+#                 Better on small/thin shapes. Links mm_m32.o (symbols _m32).
+# Distinct symbol suffixes + .o names let BOTH variants coexist in one fused ELF.
+_FUSED_CAST_SUFFIX = "_m64"
+_FUSED_CAST_OBJ = "mm_m64.o"
+_FUSED_CAST_TILE_M = 64
+_DRAIN_SUFFIX = "_m32"
+_DRAIN_OBJ = "mm_m32.o"
+_DRAIN_TILE_M = 32
 
-        %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
-        %inner_most_matmul, %vec_loops:3 =
-          transform.structured.tile_using_for %matmul tile_sizes [2, 2, 1, 0, 0, 0]
-          : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-        %inner_most_matmul_to_unroll, %vec_loops_to_unroll:2 =
-          transform.structured.tile_using_for %inner_most_matmul tile_sizes [1, 1, 0, 0, 0, 0]
-          : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-        transform.loop.unroll %vec_loops_to_unroll#1 {factor = 2} : !transform.any_op
-        transform.loop.unroll %vec_loops_to_unroll#0 {factor = 2} : !transform.any_op
 
-        %linalg_fills = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %inner_most_fills, %vec_fill_loops:2 =
-          transform.structured.tile_using_for %linalg_fills tile_sizes [0, 0, 1, 1]
-          : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+def gemm_registry_config(m, k, n, output_dtype="bf16", precision="high"):
+    """Full per-shape build recipe from the registry: the chosen method's spec
+    (build_kwargs / suffix / launches) MERGED with the registry tile sizes. This is
+    the single entry point llama builders use so tiles + method are never hardcoded.
 
-        %herds = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %vectorized_herds = transform.air.herd_vectorize %herds : (!transform.any_op) -> !transform.any_op
+    Returns the gemm_method_spec dict plus:
+      tile_k_l2, tile_k_l1, tile_n : from the registry JSON (tile_m comes from the
+                                     method spec — drain=32 / fused-cast=64)
+      method                       : the registry-selected method name
+    """
+    from kernel_registry.registry_lookup import gemm_config
 
-        %herd1, %herd2, %herd3 = transform.split_handle %vectorized_herds : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+    cfg = gemm_config(m, k, n, output_dtype, precision)
+    return _spec_with_tiles(cfg["method"], cfg["tile"])
 
-        %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func1 {
-            transform.apply_patterns.linalg.tiling_canonicalization
-            transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-            transform.apply_patterns.memref.fold_memref_alias_ops
-        } : !transform.any_op
-        %func_fold_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %func_folded_2 = transform.air.fold_unit_extent_dims %func_fold_2 : (!transform.any_op) -> !transform.any_op
 
-        %func1_rematch = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1_rematch : (!transform.any_op) -> !transform.any_op
+def _spec_with_tiles(method, tile):
+    """Merge a method's build spec with the registry tile (a named dict
+    {tile_m, tile_k_l2, tile_k_l1, tile_n}). tile_m is dictated by the method
+    (drain=32 / fused=64) and matches spec['tile_m'] (asserted for safety).
+    """
+    spec = dict(gemm_method_spec(method))
+    assert (
+        tile["tile_m"] == spec["tile_m"]
+    ), f"registry tile_m={tile['tile_m']} != method '{method}' tile_m={spec['tile_m']}"
+    spec["method"] = method
+    spec["tile_k_l2"] = tile["tile_k_l2"]
+    spec["tile_k_l1"] = tile["tile_k_l1"]
+    spec["tile_n"] = tile["tile_n"]
+    return spec
 
-        %herds_1 = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %vectorized_herds_1 = transform.air.herd_vectorize %herds_1 : (!transform.any_op) -> !transform.any_op
-        %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %vectorized_herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
-        %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-        %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+def gemm_method_spec(method):
+    """Reusable per-GEMM method primitive for ELF-merged kernels. Returns a dict
+    describing how to build + stitch ONE GEMM by the chosen method, so any GEMM in
+    any merged ELF can independently pick drain vs fused-cast (they are two
+    implementations of the same bf16-in/bf16-out high-precision GEMM, with distinct
+    symbol suffixes + mm.o files so both can co-link in one ELF):
 
-        %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = f32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
-
-        %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
-        %innermost_for_updated_4 = transform.air.flatten_for_iter_args %innermost_for_updated_3 : (!transform.any_op) -> !transform.any_op
-        %innermost_for_updated_5 = transform.air.hoist_vector_transfer_pointers %innermost_for_updated_4 : (!transform.any_op) -> !transform.any_op
-
-        %fors_to_hoist_ptrs = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-        %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-
-        %all_extf_loop = transform.structured.match ops{["arith.extf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
-        %all_truncf_loop = transform.structured.match ops{["arith.truncf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
-        %extf_bf16_1, %extf_bf16_2, %extf_bf16_3, %extf_bf16_4 = transform.split_handle %all_extf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-        %truncf_1, %truncf_2, %truncf_3, %truncf_4 = transform.split_handle %all_truncf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-        %for1_1_hoisted_1 = transform.air.hoist_cast_pair %extf_bf16_1, %truncf_1, %innermost_for1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-
-        %all_extf_loop_2 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
-        %all_truncf_loop_2 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
-        %extf_bf16_2_new, %e2_5, %e2_6 = transform.split_handle %all_extf_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-        %truncf_2_1, %truncf_2_2, %truncf_2_3 = transform.split_handle %all_truncf_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-        %for1_1_hoisted_2 = transform.air.hoist_cast_pair %extf_bf16_2_new, %truncf_2_1, %for1_1_hoisted_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-
-        %all_extf_loop_3 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
-        %all_truncf_loop_3 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
-        %extf_bf16_3_new, %e3_7 = transform.split_handle %all_extf_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %truncf_3_1, %truncf_3_2 = transform.split_handle %all_truncf_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-        %for1_1_hoisted_3 = transform.air.hoist_cast_pair %extf_bf16_3_new, %truncf_3_1, %for1_1_hoisted_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-
-        %all_extf_loop_4 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
-        %all_truncf_loop_4 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
-        %for1_1_hoisted_final = transform.air.hoist_cast_pair %all_extf_loop_4, %all_truncf_loop_4, %for1_1_hoisted_3 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-
-        %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func2 {
-            transform.apply_patterns.linalg.tiling_canonicalization
-            transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-            transform.apply_patterns.memref.fold_memref_alias_ops
-        } : !transform.any_op
-        %func_fold_3 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %func_folded_3 = transform.air.fold_unit_extent_dims %func_fold_3 : (!transform.any_op) -> !transform.any_op
-      transform.yield
-    }
-    }
-"""
+      tile_m         : the forced tile_m (drain=32, fused-cast=64)
+      n_launches     : launches this GEMM contributes to the stitched func (drain=1,
+                       fused-cast=2 — the GEMM launch + the cast launch)
+      needs_f32_scratch : fused-cast needs one extra f32 C-scratch func arg
+      sym_suffix / obj  : symbol suffix + mm.o filename for co-linking
+      build_kwargs   : kwargs for _build_gemm_module (minus m,k,n,tiles,herd)
+    """
+    if method == "fused-cast":
+        return {
+            "tile_m": _FUSED_CAST_TILE_M,
+            "n_launches": 2,
+            "needs_f32_scratch": True,
+            "sym_suffix": _FUSED_CAST_SUFFIX,
+            "obj": _FUSED_CAST_OBJ,
+            "build_kwargs": {
+                "external_fused_cast": True,
+                "sym_suffix": _FUSED_CAST_SUFFIX,
+                "link_with_name": _FUSED_CAST_OBJ,
+            },
+        }
+    if method == "drain":
+        return {
+            "tile_m": _DRAIN_TILE_M,
+            "n_launches": 1,
+            "needs_f32_scratch": False,
+            "sym_suffix": _DRAIN_SUFFIX,
+            "obj": _DRAIN_OBJ,
+            "build_kwargs": {
+                "external_bf16_out": True,
+                "sym_suffix": _DRAIN_SUFFIX,
+                "link_with_name": _DRAIN_OBJ,
+            },
+        }
+    raise ValueError(f"unknown gemm method: {method!r}")
 
 
 def _build_gemm_module(
-    m, k, n, tile_m=64, tile_k_l2=64, tile_k_l1=32, tile_n=64, herd_m=8, herd_n=4
+    m,
+    k,
+    n,
+    tile_m,
+    tile_k_l2,
+    tile_k_l1,
+    tile_n,
+    herd_m=8,
+    herd_n=4,
+    external_fused_cast=False,
+    external_bf16_out=False,
+    sym_suffix="",
+    link_with_name="mm.o",
 ):
-    """Build and transform a GEMM MLIR module.
+    """Build a high-precision BF16-in/BF16-out GEMM via the external mm.o microkernel.
 
-    Uses BF16 output (rounding mode fix landed upstream 2026-03-19).
-    Default tile config optimized for NPU2 8x4 herd.
+    Two methods (both = f32 accumulate + single epilogue cast = GPU-standard 9.3e-3;
+    the registry picks which per shape, see gemm_registry_config):
+    - external_fused_cast=True: external GEMM writes an f32 C scratch (full tile_m=64)
+      then a SEPARATE on-chip cast launch → `@gemm_cast_bf16`, 2 launches, 4 args
+      (A, B, C-f32-scratch, D-bf16-out). Faster on large shapes (M*K*N>=4e9).
+    - external_bf16_out=True: in-GEMM drain-herd cast, 1 launch, tile_m=32 (the
+      tile_m=64 drain overflows L1). Better on small/thin shapes.
+
+    sym_suffix / link_with_name disambiguate the mm.o variant (_m64 fused / _m32
+    drain) so both can co-link in one fused ELF.
     """
-    from matrix_multiplication.bf16.run import build_module as build_gemm
-    from air.ir import Module
-    from air.dialects.air import run_transform
+    if external_fused_cast:
+        from matrix_multiplication.bf16_in_bf16_out.run import build_module_gemm_cast
 
-    mlir_module = build_gemm(
-        m,
-        k,
-        n,
-        tile_m,
-        tile_k_l2,
-        tile_k_l1,
-        tile_n,
-        herd_m,
-        herd_n,
-        bfloat16,
-        bfloat16,  # BF16 output (rounding fix applied)
-        arch="aie2p",
-        direct_codegen=True,
+        return build_module_gemm_cast(
+            m,
+            k,
+            n,
+            tile_m,
+            tile_k_l2,
+            tile_k_l1,
+            tile_n,
+            herd_m,
+            herd_n,
+            arch="aie2p",
+            sym_suffix=sym_suffix,
+            link_with_name=link_with_name,
+        )
+
+    if external_bf16_out:
+        from matrix_multiplication.bf16_in_bf16_out.run import (
+            build_module as build_gemm_bf16_ext,
+        )
+
+        return build_gemm_bf16_ext(
+            m,
+            k,
+            n,
+            tile_m,
+            tile_k_l2,
+            tile_k_l1,
+            tile_n,
+            herd_m,
+            herd_n,
+            bfloat16,
+            bfloat16,  # bf16 output: f32 accumulator + single drain cast
+            arch="aie2p",
+            emit_external_call=True,
+            sym_suffix=sym_suffix,
+            link_with_name=link_with_name,
+        )
+
+    raise ValueError(
+        "_build_gemm_module: must set external_fused_cast=True or external_bf16_out=True "
+        "(llama GEMM is always the external high-precision path; tiles+method come from "
+        "the registry via gemm_registry_config)."
     )
-
-    transform_ir = Module.parse(GEMM_TRANSFORM_IR, context=mlir_module.context)
-    run_transform(transform_ir, mlir_module)
-    return mlir_module

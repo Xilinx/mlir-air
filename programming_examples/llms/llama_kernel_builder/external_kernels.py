@@ -121,6 +121,40 @@ def compile_silu_and_mul():
     _compile_kernel(src, "silu_and_mul.o", extra_flags=extra)
 
 
+def compile_gemm_mm(
+    tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="", out_name="mm.o"
+):
+    """Compile mm.o from matrix_multiplication/bf16_in_fp32_out/mm_aie2p.cc.
+
+    The hand-tuned Peano -O2 vectorized GEMM microkernel (external path), ~1.5-1.65x
+    faster than direct-codegen on large shapes (kernel_registry/details/GEMM_bf16_in_fp32_out.md).
+    DIM_M/DIM_N/DIM_K are baked in at compile time and MUST match the tile_m/tile_n/
+    tile_k_l1 passed to the GEMM module builder. Exposes op_has_no_registered_library_name
+    (f32-C matmul), zero_f32_mn, f32_to_bf16_mn.
+
+    sym_suffix / out_name: to link TWO mm.o variants (e.g. tile_m=32 drain +
+    tile_m=64 fused-cast) into ONE ELF, the symbols must not collide. Pass
+    sym_suffix="_m64" (-> @op_has_no_registered_library_name_m64 etc.) and a
+    distinct out_name="mm_m64.o". Default empty suffix / "mm.o" keeps the original
+    names for single-variant ELFs (back-compat).
+    """
+    src = _PROJ_ROOT / "matrix_multiplication" / "bf16_in_fp32_out" / "mm_aie2p.cc"
+    extra = [
+        "-DBIT_WIDTH=8",
+        f"-DDIM_M={tile_m}",
+        f"-DDIM_N={tile_n}",
+        f"-DDIM_K={tile_k_l1}",
+        f"-DDIM_N_DIV_4={tile_n // 4}",
+        f"-DDIM_M_DIV_4={tile_m // 4}",
+        f"-DDIM_N_DIV_8={tile_n // 8}",
+        f"-DDIM_M_DIV_8={tile_m // 8}",
+        "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
+    ]
+    if sym_suffix:
+        extra.append(f"-DSYM_SUFFIX={sym_suffix}")
+    _compile_kernel(src, out_name, extra_flags=extra, force=True)
+
+
 def compile_rope():
     """Compile rope.o from programming_examples/rope_halfsplit/rope_halfsplit.cc.
 

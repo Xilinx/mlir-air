@@ -51,6 +51,12 @@ def prepare_air_project(quant: str = "bf16"):
         "mv.o",
         "mv_bf16.o",
         "attn_decode_npu2.o",
+        # external GEMM microkernel variants (prefill o_ffn / rms_gemms_rope):
+        # bare mm.o (legacy f32-out / single-variant) + suffixed _m32 (drain,
+        # tile_m=32) / _m64 (fused-cast, tile_m=64) so mixed-method ELFs link.
+        "mm.o",
+        "mm_m32.o",
+        "mm_m64.o",
     ]
     if quant == "awq":
         obj_names.append("mv_int4_bf16.o")

@@ -57,6 +57,25 @@ from llama_kernel_builder.backend_presets import (
 # Kernel compilation definitions
 # ---------------------------------------------------------------------------
 
+# Prefill GEMM is always the external high-precision path, registry-driven: every
+# GEMM's method (fused-cast vs drain) + tile sizes come from the kernel_registry JSON
+# per shape (gemm_registry_config). o_ffn = 4 fused-cast GEMMs (mm_m64.o); rms =
+# Q fused-cast (mm_m64.o) + K/V drain (mm_m32.o), mixed in one ELF. All GPU-standard
+# 9.3e-3 precision. The external GEMM herds need BD-ID-recycling tiling [2,2].
+
+
+def _o_ffn_run_backend():
+    from llama_kernel_builder.backend_presets import O_FFN_BACKEND as _base
+
+    return {**_base, "runtime_loop_tiling_sizes": [2, 2]}
+
+
+def _rms_gemms_rope_run_backend():
+    from llama_kernel_builder.backend_presets import RMS_GEMMS_ROPE_BACKEND as _base
+
+    return {**_base, "runtime_loop_tiling_sizes": [2, 2]}
+
+
 # Each kernel config is defined as a dict with:
 #   build_fn: callable that returns an MLIR module
 #   backend_kwargs: dict for XRTBackend constructor
@@ -83,7 +102,21 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     print(f"Compiling unique kernels (seq_len={seq_len})...")
     print(f"{'='*60}\n")
 
-    # 1. RMSNorm + QKV GEMMs + RoPE Q+K: 6 launches in one ELF
+    # External-GEMM mm.o variants — compile FIRST (before any compile_and_cache, so
+    # prepare_air_project copies them into air_project/ for every ELF that links
+    # them). The per-GEMM-method builders reference SUFFIXED symbols + filenames so
+    # drain (_m32 / mm_m32.o, tile_m=32) and fused-cast (_m64 / mm_m64.o, tile_m=64)
+    # can co-link in ONE ELF (rms mixes them; o_ffn is all-fused).
+    from llama_kernel_builder.external_kernels import compile_gemm_mm
+
+    compile_gemm_mm(
+        tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
+    )
+    compile_gemm_mm(
+        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    )
+
+    # 1. RMSNorm + QKV GEMMs + RoPE Q+K: one ELF (registry-driven per-GEMM method).
     from multi_launch_builder.rms_gemms_rope_multi import (
         build_rms_gemms_rope_module,
     )
@@ -93,22 +126,21 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
         build_rms_gemms_rope_module(
             seq_len, emb_dim, kv_dim, n_heads, n_kv_heads, head_dim
         ),
-        {"verbose": cache.verbose, **RMS_GEMMS_ROPE_BACKEND},
+        {"verbose": cache.verbose, **_rms_gemms_rope_run_backend()},
     )
 
-    # 3. O GEMM + Residual Add + FFN: 8 launches in one ELF
+    # 3. O GEMM + Residual Add + FFN (registry-driven fused-cast GEMMs).
     from multi_launch_builder.o_ffn_multi import build_o_ffn_module
 
-    cache.compile_and_cache(
-        "o_ffn",
-        build_o_ffn_module(seq_len, emb_dim, hidden_dim),
-        {
-            "verbose": cache.verbose,
-            "omit_while_true_loop": False,
-            "output_format": "elf",
-            "instance_name": "o_ffn",
-        },
-    )
+    o_ffn_backend = {
+        "verbose": cache.verbose,
+        "omit_while_true_loop": False,
+        "output_format": "elf",
+        "instance_name": "o_ffn",
+        "runtime_loop_tiling_sizes": [2, 2],
+    }
+    _o_ffn_mod = build_o_ffn_module(seq_len, emb_dim, hidden_dim)
+    cache.compile_and_cache("o_ffn", _o_ffn_mod, o_ffn_backend)
 
     # 8. Flash Attention GQA (skip if using CPU attention fallback)
     if not cpu_attn:
@@ -228,7 +260,7 @@ def run_transformer_block(
     _rms_key = f"rms_gemms_rope_L{layer_idx}"
     if _rms_key not in _arg_cache:
         # First call: build all arrays and cache static/intermediate ones
-        _arg_cache[_rms_key] = [
+        _rms_args = [
             None,  # arg0: x_in (dynamic, replaced each call)
             np.asarray(layer_weights.attn_norm, dtype=bfloat16).reshape(emb_dim),
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # normed_buf
@@ -243,16 +275,21 @@ def run_transformer_block(
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # q_roped_buf
             np.zeros((seq_len, kv_dim), dtype=bfloat16),  # k_roped_buf
         ]
+        # Q is fused-cast (registry best.high for the large Q shape) → needs an f32
+        # C-scratch arg (arg13); K/V are drain (no scratch).
+        _rms_args.append(np.zeros((seq_len, emb_dim), dtype=np.float32))  # arg13 q_f32
+        _arg_cache[_rms_key] = _rms_args
     cached_args = _arg_cache[_rms_key]
     cached_args[0] = np.asarray(x_bf16, dtype=bfloat16).reshape(seq_len, emb_dim)
 
+    _rms_inter = {2, 4, 6, 8, 11, 12, 13}
     results = cache.load_and_run(
         "rms_gemms_rope",
-        RMS_GEMMS_ROPE_BACKEND,
+        _rms_gemms_rope_run_backend(),
         *cached_args,
         output_indices=[8, 11, 12],
         static_input_indices={1, 3, 5, 7, 9, 10},  # weights + LUTs
-        intermediate_indices={2, 4, 6, 8, 11, 12},
+        intermediate_indices=_rms_inter,
         bo_key=_rms_key,
     )
     v = results[8].reshape(seq_len, kv_dim)
@@ -305,9 +342,11 @@ def run_transformer_block(
             f"(O: {seq_len}x{emb_dim}, FFN: {seq_len}x{emb_dim}x{hidden_dim})"
         )
     _offn_key = f"o_ffn_L{layer_idx}"
+    # Fused-cast o_ffn layout: all outward buffers bf16 (the fused-cast GEMM's own
+    # cast launch writes bf16); 4 f32 C-scratch args (15..18); output arg14.
     if _offn_key not in _arg_cache:
         # First call: build all arrays and cache static/intermediate ones
-        _arg_cache[_offn_key] = [
+        offn_args = [
             None,  # arg0: attn_out (dynamic)
             np.asarray(layer_weights.wo, dtype=bfloat16).reshape(emb_dim, emb_dim),
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # proj_buf
@@ -326,8 +365,14 @@ def run_transformer_block(
                 hidden_dim, emb_dim
             ),
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # down_buf
-            np.zeros(n_total, dtype=bfloat16),  # output_buf
+            np.zeros(n_total, dtype=bfloat16),  # output_buf (arg14)
+            # arg15..18: per-GEMM f32 C-scratch (proj, gate, up, down).
+            np.zeros((seq_len, emb_dim), dtype=np.float32),
+            np.zeros((seq_len, hidden_dim), dtype=np.float32),
+            np.zeros((seq_len, hidden_dim), dtype=np.float32),
+            np.zeros((seq_len, emb_dim), dtype=np.float32),
         ]
+        _arg_cache[_offn_key] = offn_args
     cached_args = _arg_cache[_offn_key]
     cached_args[0] = np.asarray(attn_out, dtype=bfloat16).reshape(seq_len, emb_dim)
     # `copy=False` makes .astype a no-op when x_bf16 is already bf16 (which
@@ -337,16 +382,18 @@ def run_transformer_block(
     # llama3.2-1B's 16 layers, eliminating the bulk of the trial-1 perf gradient.
     cached_args[3] = x_bf16.reshape(seq_len, emb_dim).astype(bfloat16, copy=False)
 
+    _out_idx = 14
+    _inter = {2, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18}
     results = cache.load_and_run(
         "o_ffn",
-        O_FFN_BACKEND,
+        _o_ffn_run_backend(),
         *cached_args,
-        output_indices=[14],
+        output_indices=[_out_idx],
         static_input_indices={1, 5, 7, 9, 12},  # wo, ffn_norm_w, w_gate, w_up, w_down
-        intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14},
+        intermediate_indices=_inter,
         bo_key=_offn_key,
     )
-    output_bf16 = results[14].reshape(seq_len, emb_dim)
+    output_bf16 = results[_out_idx].reshape(seq_len, emb_dim)
     intermediates["ffn_out"] = output_bf16
 
     return output_bf16, intermediates
@@ -406,43 +453,52 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # arg11
             np.zeros((seq_len, kv_dim), dtype=bfloat16),  # arg12
         ]
+        # Q is fused-cast → arg13 q_f32 scratch.
+        rms_args.append(np.zeros((seq_len, emb_dim), dtype=np.float32))  # arg13 q_f32
         _arg_cache[f"rms_gemms_rope_L{layer_idx}"] = rms_args
+        _rms_inter_warm = {2, 4, 6, 8, 11, 12, 13}
         cache.load_and_run(
             "rms_gemms_rope",
-            RMS_GEMMS_ROPE_BACKEND,
+            _rms_gemms_rope_run_backend(),
             *rms_args,
             output_indices=[8, 11, 12],
             static_input_indices={1, 3, 5, 7, 9, 10},
-            intermediate_indices={2, 4, 6, 8, 11, 12},
+            intermediate_indices=_rms_inter_warm,
             bo_key=f"rms_gemms_rope_L{layer_idx}",
         )
 
-        # o_ffn: warmup to allocate + write weights
+        # o_ffn warmup (allocate + write weights). Fused-cast layout: all-bf16
+        # buffers + output arg14 + 4 f32 C-scratch args (15..18). Matches
+        # run_transformer_block's _offn_key cache.
         offn_args = [
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # arg0: attn_out (dynamic)
             np.asarray(lw.wo, dtype=bfloat16).reshape(emb_dim, emb_dim),  # arg1: wo
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # arg2
+            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # arg2: proj
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # arg3: x_residual (dynamic)
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # arg4
             np.asarray(lw.ffn_norm, dtype=bfloat16).reshape(emb_dim),  # arg5
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # arg6
             np.asarray(lw.w_gate, dtype=bfloat16).reshape(emb_dim, hidden_dim),  # arg7
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # arg8
+            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # arg8: gate
             np.asarray(lw.w_up, dtype=bfloat16).reshape(emb_dim, hidden_dim),  # arg9
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # arg10
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # arg11
+            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # arg10: up
+            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # arg11: swiglu
             np.asarray(lw.w_down, dtype=bfloat16).reshape(hidden_dim, emb_dim),  # arg12
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # arg13
-            np.zeros(n_total, dtype=bfloat16),  # arg14
+            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # arg13: down
+            np.zeros(n_total, dtype=bfloat16),  # arg14: output
+            np.zeros((seq_len, emb_dim), dtype=np.float32),  # arg15 proj_f32
+            np.zeros((seq_len, hidden_dim), dtype=np.float32),  # arg16 gate_f32
+            np.zeros((seq_len, hidden_dim), dtype=np.float32),  # arg17 up_f32
+            np.zeros((seq_len, emb_dim), dtype=np.float32),  # arg18 down_f32
         ]
         _arg_cache[f"o_ffn_L{layer_idx}"] = offn_args
         cache.load_and_run(
             "o_ffn",
-            O_FFN_BACKEND,
+            _o_ffn_run_backend(),
             *offn_args,
             output_indices=[14],
             static_input_indices={1, 5, 7, 9, 12},
-            intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14},
+            intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18},
             bo_key=f"o_ffn_L{layer_idx}",
         )
 

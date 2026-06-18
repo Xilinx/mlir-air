@@ -21,7 +21,8 @@ This is **documentation, not executable code** — it records results produced b
 
 | Kernel | Detail | Best measured throughput (NPU2, units per entry) | Status |
 |---|---|---|---|
-| GEMM (BF16) | [`details/GEMM_bf16.md`](details/GEMM_bf16.md) | **9492 GFLOP/s** (external, 2048×8192×2048, full-chip 8×4) | ✅ |
+| GEMM (BF16 in, FP32 out) | [`details/GEMM_bf16_in_fp32_out.md`](details/GEMM_bf16_in_fp32_out.md) | **9797 GFLOP/s** (external, 2048×8192×2048, full-chip 8×4) | ✅ |
+| GEMM (BF16 in, BF16 out) | [`details/GEMM_bf16_in_bf16_out.md`](details/GEMM_bf16_in_bf16_out.md) | **8898 GFLOP/s** (fused-cast incl. cast, 2048×8192×2048, full-chip 8×4) | ✅ |
 | GEMV (BF16) | [`details/GEMV_bf16.md`](details/GEMV_bf16.md) | **32 GFLOP/s** (memory-bound, 16384×2048, herd 8) | ✅ |
 | RMSNorm (BF16) | [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md) | **18.4 GB/s** (memory-bound, 2048×2048, herd 8) | ✅ |
 | FlashAttention (BF16, GQA) | [`details/FlashAttention_bf16.md`](details/FlashAttention_bf16.md) | **1065–1131 GFLOP/s** (2048×2048, dk=64, 32q/8kv causal, full-chip 32 tiles) | ✅ |
@@ -31,21 +32,39 @@ This is **documentation, not executable code** — it records results produced b
 
 ---
 
-## GEMM — tested shapes
+## GEMM (f32 out) — tested shapes
 
-`C[M,N] = A[M,K] @ B[K,N]`, shapes written `M×K×N`. GFLOPS is the fastest (external) path at the tile found by sweep; `mean_rel_L1` = `mean|out−ref| / mean|ref|` vs an FP32 reference. Full per-path data, tolerances, and reproduce commands are in [`details/GEMM_bf16.md`](details/GEMM_bf16.md).
+`C[M,N] = A[M,K] @ B[K,N]`, shapes written `M×K×N`. **BF16 in, FP32 out** — always FP32-accumulate (no precision knob). GFLOPS is the fastest (external) path; `mean_rel_L1` = `mean|out−ref| / mean|ref|` vs an FP32 reference. Full per-path data, tolerances, and reproduce commands are in [`details/GEMM_bf16_in_fp32_out.md`](details/GEMM_bf16_in_fp32_out.md).
 
-| (M×K×N) | best tile (m/kl2/kl1/n) | GFLOPS | mean_rel_L1 | Used by | Status |
-|---|---|---|---|---|---|
-| 2048×2048×2048 | 64/512/32/128 | 8540 | 9.3e-3 | llama-3.2-1B Q/O proj | ✅ |
-| 2048×2048×512 | 64/256/32/128 | 7384 | 9.3e-3 | llama-3.2-1B K/V proj | ✅ |
-| 2048×2048×8192 | 64/256/32/128 | 8210 | 9.3e-3 | llama-3.2-1B Gate/Up proj | ✅ |
-| 2048×8192×2048 | 64/256/32/128 | **9492** | 9.3e-3 | llama-3.2-1B Down proj | ✅ |
-| 512×512×512 | 32/256/32/128 | 1870 | 9.3e-3 | K-sweep | ✅ |
-| 1024×1024×1024 | 64/256/32/128 | 6337 | 9.5e-3 | K-sweep | ✅ |
-| 4096×4096×4096 | 64/512/32/128 | 9243 | 9.4e-3 | K-sweep | ✅ |
+| (M×K×N) | best tile (m/kl2/kl1/n) | external GFLOPS | direct GFLOPS | mean_rel_L1 | Used by | Status |
+|---|---|---|---|---|---|---|
+| 2048×2048×2048 | 64/512/32/128 | 8508 | 5516 | 9.3e-3 | llama-3.2-1B Q/O proj | ✅ |
+| 2048×2048×512 | 64/256/32/128 | 7342 | 4896 | 9.3e-3 | llama-3.2-1B K/V proj | ✅ |
+| 2048×2048×8192 | 64/256/32/128 | 8278 | 5582 | 9.3e-3 | llama-3.2-1B Gate/Up proj | ✅ |
+| 2048×8192×2048 | 64/256/32/128 | **9797** | 6010 | 9.3e-3 | llama-3.2-1B Down proj | ✅ |
+| 512×512×512 | 32/256/32/128 | 1791 | 1536 | 9.3e-3 | K-sweep | ✅ |
+| 1024×1024×1024 | 64/256/32/128 | 6256 | 4413 | 9.5e-3 | K-sweep | ✅ |
+| 4096×4096×4096 | 64/512/32/128 | 9329 | 5791 | 9.4e-3 | K-sweep | ✅ |
 
-> Measured on NPU2 (RyzenAI-npu4), June 2026, at the fastest tile from an external-path sweep. There are three code-paths (external / direct-codegen f32 / direct-codegen bf16); external is fastest, and external vs direct-f32 are bit-identical in accuracy — see [`details/GEMM_bf16.md`](details/GEMM_bf16.md) for all three.
+> Measured on NPU2 (RyzenAI-npu4), June 2026. Two code-paths (external / direct-codegen); external is ~1.5–1.7× faster and bit-identical in accuracy to direct — see [`details/GEMM_bf16_in_fp32_out.md`](details/GEMM_bf16_in_fp32_out.md).
+
+---
+
+## GEMM (bf16 out) — tested shapes
+
+`C[M,N] = A[M,K] @ B[K,N]`, **BF16 in, BF16 out** (half the DDR bytes of f32-out). `--high-precision true` (default) keeps FP32-accumulate + a single epilogue cast (`mean_rel_L1 ≈ 9.7e-3`, GPU standard); `false` is direct-codegen with per-L2-tile bf16 truncation (faster, 1.3e-2–1.9e-2). Within high-precision, `--method auto` picks **fused-cast** (`M*K*N ≥ 4e9`) or **drain** (else). GFLOPS for fused-cast includes the cast launch. Full data in [`details/GEMM_bf16_in_bf16_out.md`](details/GEMM_bf16_in_bf16_out.md).
+
+| (M×K×N) | high-prec fused-cast | high-prec drain | low-prec direct | mean_rel_L1 (high / low) | Used by | Status |
+|---|---|---|---|---|---|---|
+| 2048×2048×2048 | **6215** | 6025 | 5230 | 9.7e-3 / 1.3e-2 | llama-3.2-1B Q/O proj | ✅ |
+| 2048×2048×512 | 4083 | **5626** | 4765 | 9.7e-3 / 1.3e-2 | llama-3.2-1B K/V proj | ✅ |
+| 2048×2048×8192 | **6893** | 5784 | 5287 | 9.7e-3 / 1.3e-2 | llama-3.2-1B Gate/Up proj | ✅ |
+| 2048×8192×2048 | **8898** | 7234 | 5592 | 9.7e-3 / 1.9e-2 | llama-3.2-1B Down proj | ✅ |
+| 512×512×512 | 482 | **1703** | 1750 | 9.7e-3 / 1.0e-2 | K-sweep | ✅ |
+| 1024×1024×1024 | 2502 | **4637** | 4456 | 9.9e-3 / 1.1e-2 | K-sweep | ✅ |
+| 4096×4096×4096 | **8423** | 7002 | 5509 | 9.9e-3 / 1.5e-2 | K-sweep | ✅ |
+
+> GFLOPS, all PASS. **Bold** = faster high-precision method (what `auto` picks); the `M*K*N ≥ 4e9` threshold matches the bold winner for all 7 shapes. fused-cast is tile_m=64, drain is tile_m=32. The high-precision tier preserves f32-out accuracy (9.3–9.9e-3) via a single cast; low-precision direct degrades with the L2-tile count (`K / tile_k_l2`). See [`details/GEMM_bf16_in_bf16_out.md`](details/GEMM_bf16_in_bf16_out.md).
 
 ---
 

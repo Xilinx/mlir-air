@@ -26,6 +26,9 @@ Usage:
 import argparse
 import os
 import sys
+import tempfile
+
+import filelock
 
 import numpy as np
 from ml_dtypes import bfloat16
@@ -40,9 +43,9 @@ from air.dialects.air import *
 from air.dialects import arith
 from air.dialects.memref import AllocOp, DeallocOp, subview
 from air.dialects.vector import transfer_read, transfer_write
-from air.dialects.func import FuncOp
+from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import type_mapper
 from air.backend.xrt import XRTBackend
 
 from llama_kernel_builder.stitching import (
@@ -50,6 +53,7 @@ from llama_kernel_builder.stitching import (
     _extract_affine_maps,
     _extract_private_funcs,
     _rename_all,
+    _rename_all_with_externs,
     _fix_launch_func_args,
     _wrap_ir_in_launch,
 )
@@ -64,12 +68,13 @@ range_ = for_
 
 @module_builder
 def _build_add_2d_to_2d(rows, cols, np_dtype, vector_size=16, herd_x=8, herd_y=1):
-    """Eltwise add: all 3 args are 2D memrefs, collapsed to 1D inside launch.
+    """Eltwise add (bf16): all 3 args are 2D memrefs, collapsed to 1D inside launch.
 
-    Unlike the standard _build_add_2d (2D inputs, 1D output), this version
-    keeps the OUTPUT as 2D too, so subsequent launches can read it as 2D
-    without expand_shape. The collapse_shape inside the launch gives a 1D
-    view for the DMA writes — same bytes in DDR, just different type.
+    Unlike the standard _build_add_2d (2D inputs, 1D output), this version keeps the
+    OUTPUT as 2D too, so subsequent launches can read it as 2D without expand_shape.
+    The collapse_shape inside the launch gives a 1D view for the DMA writes — same
+    bytes in DDR, just different type. Used for the residual add (proj + x_residual),
+    both bf16 (the fused-cast GEMM already produced bf16).
     """
     from air.dialects.memref import collapse_shape as memref_collapse_shape
 
@@ -180,25 +185,32 @@ def build_o_ffn_module(
     seq_len=2048,
     emb_dim=2048,
     hidden_dim=8192,
-    # O GEMM tile config
-    o_tile_m=64,
-    o_tile_k_l2=256,
-    o_tile_k_l1=32,
-    o_tile_n=64,
+    print_kernels=False,
+):
+    """Build the fused O-proj + Residual + FFN ELF (12 launches, 19 args).
+
+    The 4 GEMMs (O/Gate/Up/Down) use external mm.o kernels whose method + tiles come
+    from the kernel_registry JSON per shape (gemm_registry_config). All 4 are large
+    (M*K*N>=4e9) so the registry resolves them to fused-cast (tile_m=64, f32 C scratch
+    + on-chip cast launch); 4 extra f32-scratch func args (15..18) carry the scratch.
+    Same 9.3e-3 GPU-standard precision as drain, but faster.
+    """
+    return _build_o_ffn(
+        seq_len=seq_len,
+        emb_dim=emb_dim,
+        hidden_dim=hidden_dim,
+        print_kernels=print_kernels,
+    )
+
+
+def _build_o_ffn(
+    seq_len=2048,
+    emb_dim=2048,
+    hidden_dim=8192,
     o_herd_m=8,
     o_herd_n=4,
-    # Gate/Up GEMM tile config
-    gate_tile_m=64,
-    gate_tile_k_l2=64,
-    gate_tile_k_l1=32,
-    gate_tile_n=128,
     gate_herd_m=8,
     gate_herd_n=4,
-    # Down GEMM tile config
-    down_tile_m=64,
-    down_tile_k_l2=256,
-    down_tile_k_l1=32,
-    down_tile_n=64,
     down_herd_m=8,
     down_herd_n=4,
     # SwiGLU config
@@ -207,46 +219,60 @@ def build_o_ffn_module(
     swiglu_herd_y=1,
     print_kernels=False,
 ):
-    """Build 8-launch module: O GEMM + Res Add + FFN RMSNorm + Gate/Up + SwiGLU + Down + FFN Add.
+    """O-proj + Residual + FFN, all-bf16 outward buffers, 12 launches / 19 args.
 
-    Returns:
-        Module with func @o_ffn and 15 memref args:
-            %arg0:  attn_out     (seq_len, emb_dim)
-            %arg1:  wo           (emb_dim, emb_dim)
-            %arg2:  proj         (seq_len, emb_dim)       intermediate
-            %arg3:  x_residual   (seq_len, emb_dim)       skip connection
-            %arg4:  res1         (seq_len, emb_dim)       shared (2D, collapse in adds)
-            %arg5:  ffn_norm_w   (emb_dim,)
-            %arg6:  normed2      (seq_len, emb_dim)       intermediate
-            %arg7:  w_gate       (emb_dim, hidden_dim)
-            %arg8:  gate         (seq_len, hidden_dim)    intermediate
-            %arg9:  w_up         (emb_dim, hidden_dim)
-            %arg10: up           (seq_len, hidden_dim)    intermediate
-            %arg11: swiglu       (seq_len, hidden_dim)    intermediate
-            %arg12: w_down       (hidden_dim, emb_dim)
-            %arg13: down         (seq_len, emb_dim)       intermediate
-            %arg14: output       (n_total,)               1D final output
+    The 4 GEMMs (O/Gate/Up/Down) get their method + tiles from the kernel_registry
+    JSON per shape (gemm_registry_config, "bf16"/"high"). All 4 are large so they
+    resolve to fused-cast (external mm.o GEMM with an f32 C scratch + a separate
+    on-chip cast launch each = @gemm_cast_bf16, 2 launches/GEMM). The 4 f32 scratch
+    buffers are func args 15..18. GPU-standard 9.3e-3 precision. Needs mm_m64.o +
+    runtime_loop_tiling_sizes=[2,2] (BD-ID recycling).
     """
-    from llama32_1b.gemm_builder import _build_gemm_module
+    from llama32_1b.gemm_builder import (
+        _build_gemm_module,
+        gemm_registry_config,
+    )
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+
+    # Per-GEMM config from the kernel_registry JSON (single source of truth): method
+    # (fused-cast vs drain) AND all tiles are looked up per shape — never hardcoded.
+    # The lookup is per-shape so this adapts automatically to other models. Distinct
+    # _m64/_m32 symbols + mm_*.o let any method mix co-link in one ELF.
+    o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
+    g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
+    d_spec = gemm_registry_config(seq_len, hidden_dim, emb_dim, "bf16", "high")
+
+    def _tiles(spec):
+        return (
+            dict(spec["build_kwargs"]),
+            spec["tile_m"],
+            spec["tile_k_l2"],
+            spec["tile_k_l1"],
+            spec["tile_n"],
+        )
+
+    _o_kw, _o_m, _o_k2, _o_k1, _o_n = _tiles(o_spec)
+    _g_kw, _g_m, _g_k2, _g_k1, _g_n = _tiles(g_spec)
+    _d_kw, _d_m, _d_k2, _d_k1, _d_n = _tiles(d_spec)
 
     n_total = seq_len * emb_dim
 
     # ---- Build sub-kernels ----
 
     # L1: O GEMM
-    print("  [1/8] O GEMM...")
+    print(f"  [1/8] O GEMM ({o_spec['method']})...")
     o_ir = str(
         _build_gemm_module(
             seq_len,
             emb_dim,
             emb_dim,
-            o_tile_m,
-            o_tile_k_l2,
-            o_tile_k_l1,
-            o_tile_n,
+            _o_m,
+            _o_k2,
+            _o_k1,
+            _o_n,
             o_herd_m,
             o_herd_n,
+            **_o_kw,
         )
     )
 
@@ -261,42 +287,42 @@ def build_o_ffn_module(
     )
 
     # L4: Gate GEMM
-    print("  [4/8] Gate GEMM...")
+    print(f"  [4/8] Gate GEMM ({g_spec['method']})...")
     gate_ir = str(
         _build_gemm_module(
             seq_len,
             emb_dim,
             hidden_dim,
-            gate_tile_m,
-            gate_tile_k_l2,
-            gate_tile_k_l1,
-            gate_tile_n,
+            _g_m,
+            _g_k2,
+            _g_k1,
+            _g_n,
             gate_herd_m,
             gate_herd_n,
+            **_g_kw,
         )
     )
 
-    # L5: Up GEMM
-    print("  [5/8] Up GEMM...")
+    # L5: Up GEMM (same shape as Gate → same registry config)
+    print(f"  [5/8] Up GEMM ({g_spec['method']})...")
     up_ir = str(
         _build_gemm_module(
             seq_len,
             emb_dim,
             hidden_dim,
-            gate_tile_m,
-            gate_tile_k_l2,
-            gate_tile_k_l1,
-            gate_tile_n,
+            _g_m,
+            _g_k2,
+            _g_k1,
+            _g_n,
             gate_herd_m,
             gate_herd_n,
+            **_g_kw,
         )
     )
 
     # L6: SwiGLU (bare herd → wrap)
     print("  [6/8] SwiGLU...")
-    from silu_and_mul.silu_and_mul import (
-        build_module_2d as build_swiglu,
-    )
+    from silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
 
     swiglu_ir = _wrap_ir_in_launch(
         str(
@@ -312,25 +338,25 @@ def build_o_ffn_module(
     )
 
     # L7: Down GEMM
-    print("  [7/8] Down GEMM...")
+    print(f"  [7/8] Down GEMM ({d_spec['method']})...")
     down_ir = str(
         _build_gemm_module(
             seq_len,
             hidden_dim,
             emb_dim,
-            down_tile_m,
-            down_tile_k_l2,
-            down_tile_k_l1,
-            down_tile_n,
+            _d_m,
+            _d_k2,
+            _d_k1,
+            _d_n,
             down_herd_m,
             down_herd_n,
+            **_d_kw,
         )
     )
 
     # L8: FFN Add (2D inputs, 1D output — same as ffn_full's add)
     print("  [8/8] FFN Add (2D -> 1D)...")
 
-    # Build the 2D→1D add (same pattern as ffn_full's eltwise_add)
     @module_builder
     def _build_add_2d_to_1d():
         from air.dialects.memref import collapse_shape as memref_collapse_shape
@@ -444,43 +470,58 @@ def build_o_ffn_module(
             print(ir)
 
     # ---- Stitch ----
-    # Arg mapping:
-    #   L1  O GEMM:       {0:0, 1:1, 2:2}        (attn_out, wo, proj)
-    #   L2  Res Add:      {0:2, 1:3, 2:4}         (proj, x_residual, res1[2D])
-    #   L3  FFN RMSNorm:  {0:4, 1:5, 2:6}         (res1, ffn_norm_w, normed2)
-    #   L4  Gate GEMM:    {0:6, 1:7, 2:8}          (normed2, w_gate, gate)
-    #   L5  Up GEMM:      {0:6, 1:9, 2:10}         (normed2, w_up, up)
-    #   L6  SwiGLU:       {0:8, 1:10, 2:11}        (gate, up, swiglu)
-    #   L7  Down GEMM:    {0:11, 1:12, 2:13}       (swiglu, w_down, down)
-    #   L8  FFN Add:      {0:13, 1:4, 2:14}        (down, res1[2D], output[1D])
+    # The 4 GEMMs call mm.o symbols that must keep their fixed names across stitched
+    # launches (not get prefixed); collect privates. The symbol suffix (_m64) comes
+    # from the registry spec — all 4 o_ffn GEMMs share the same fused-cast method.
+    _gemm_sym = o_spec["sym_suffix"]
+    _extern_funcs = {
+        "@op_has_no_registered_library_name" + _gemm_sym,
+        "@zero_f32_mn" + _gemm_sym,
+        "@f32_to_bf16_mn" + _gemm_sym,
+        "@silu_and_mul_bf16",
+    }
 
-    bodies, maps_all = [], []
-    for ir, prefix, arg_map in [
-        (o_ir, "og", {0: 0, 1: 1, 2: 2}),
+    def _rename(text, prefix):
+        return _rename_all_with_externs(text, prefix, _extern_funcs)
+
+    # Each GEMM is a 2-launch @gemm_cast_bf16 (A, W, C-f32-scratch, D-bf16-out). The
+    # 4 f32 scratches are func args 15..18; the non-GEMM kernels keep bf16 arg_maps.
+    stitch_list = [
+        (o_ir, "og", {0: 0, 1: 1, 2: 15, 3: 2}),
         (res_add_ir, "ra", {0: 2, 1: 3, 2: 4}),
         (rms_ir, "rm", {0: 4, 1: 5, 2: 6}),
-        (gate_ir, "gg", {0: 6, 1: 7, 2: 8}),
-        (up_ir, "ug", {0: 6, 1: 9, 2: 10}),
+        (gate_ir, "gg", {0: 6, 1: 7, 2: 16, 3: 8}),
+        (up_ir, "ug", {0: 6, 1: 9, 2: 17, 3: 10}),
         (swiglu_ir, "sw", {0: 8, 1: 10, 2: 11}),
-        (down_ir, "dg", {0: 11, 1: 12, 2: 13}),
+        (down_ir, "dg", {0: 11, 1: 12, 2: 18, 3: 13}),
         (ffn_add_ir, "fa", {0: 13, 1: 4, 2: 14}),
-    ]:
+    ]
+
+    bodies, maps_all = [], []
+    for ir, prefix, arg_map in stitch_list:
         body = _extract_between_func_and_return(ir)
         maps = _extract_affine_maps(ir)
-        body = _rename_all(body, prefix)
-        maps = [_rename_all(m, prefix) for m in maps]
+        body = _rename(body, prefix)
+        maps = [_rename(m, prefix) for m in maps]
         body = _fix_launch_func_args(body, prefix, arg_map)
         bodies.append(body)
         maps_all.extend(maps)
 
-    # Collect private func declarations (SwiGLU has @silu_and_mul_bf16)
+    # SwiGLU has @silu_and_mul_bf16; the external GEMM (o_ir covers all 4) adds the
+    # mm.o symbols.
     all_privates = set()
-    for ir in [swiglu_ir]:
+    for ir in [swiglu_ir, o_ir]:
         for p in _extract_private_funcs(ir):
             all_privates.add(p.strip())
     privates_str = "\n  ".join(sorted(all_privates))
 
-    # Assemble (15 func args, 8 launches)
+    # 4 f32-scratch args (proj/gate/up/down C-scratch).
+    _fused_scratch_args = f"""
+    ,%arg15: memref<{seq_len}x{emb_dim}xf32>
+    ,%arg16: memref<{seq_len}x{hidden_dim}xf32>
+    ,%arg17: memref<{seq_len}x{hidden_dim}xf32>
+    ,%arg18: memref<{seq_len}x{emb_dim}xf32>"""
+
     combined = "\n".join(maps_all) + f"""
 module {{
   {privates_str}
@@ -499,7 +540,7 @@ module {{
     %arg11: memref<{seq_len}x{hidden_dim}xbf16>,
     %arg12: memref<{hidden_dim}x{emb_dim}xbf16>,
     %arg13: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg14: memref<{n_total}xbf16>
+    %arg14: memref<{n_total}xbf16>{_fused_scratch_args}
   ) {{
 {bodies[0]}
 {bodies[1]}
@@ -548,6 +589,18 @@ if __name__ == "__main__":
 
     SEQ_LEN, EMB_DIM, HIDDEN_DIM = 2048, 2048, 8192
 
+    from llama_kernel_builder.external_kernels import (
+        compile_silu_and_mul,
+        compile_gemm_mm,
+    )
+
+    # The 4 GEMMs are fused-cast (tile_m=64) per the registry → mm_m64.o.
+    print("Compiling external kernels (mm_m64.o, silu_and_mul.o)...")
+    compile_gemm_mm(
+        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    )
+    compile_silu_and_mul()
+
     print(f"O+FFN Multi-Launch: seq={SEQ_LEN}, emb={EMB_DIM}, hidden={HIDDEN_DIM}")
     module = build_o_ffn_module(
         seq_len=SEQ_LEN,
@@ -560,12 +613,16 @@ if __name__ == "__main__":
         print(module)
         sys.exit(0)
 
+    # fused-cast GEMM herds need BD-ID recycling.
+    extra_backend = {"runtime_loop_tiling_sizes": [2, 2]}
+
     if args.compile_mode == "compile-only":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="o_ffn",
+            **extra_backend,
         )
         module_function = backend.compile(module)
         backend.unload()
@@ -612,7 +669,8 @@ if __name__ == "__main__":
         bfloat16
     )
 
-    # Buffers
+    # All GEMMs emit bf16 (fused-cast does the cast on-chip); proj/gate/up/down
+    # buffers are bf16. The 4 f32 C-scratch buffers are args 15..18; output arg14.
     proj_buf = np.zeros((SEQ_LEN, EMB_DIM), dtype=bfloat16)
     res1_buf = np.zeros((SEQ_LEN, EMB_DIM), dtype=bfloat16)
     normed2_buf = np.zeros((SEQ_LEN, EMB_DIM), dtype=bfloat16)
@@ -620,37 +678,56 @@ if __name__ == "__main__":
     up_buf = np.zeros((SEQ_LEN, HIDDEN_DIM), dtype=bfloat16)
     swiglu_buf = np.zeros((SEQ_LEN, HIDDEN_DIM), dtype=bfloat16)
     down_buf = np.zeros((SEQ_LEN, EMB_DIM), dtype=bfloat16)
+    output_buf = np.zeros(N_TOTAL, dtype=bfloat16)
 
-    runner = XRTRunner(
+    # The stitched @o_ffn has its output at arg14 (NOT last) with 4 f32 C-scratch
+    # buffers at args 15..18. XRTRunner.run_test() appends output placeholders
+    # AFTER inputs, so it can only handle output-is-last functions — it would
+    # misalign every arg from 14 onward here. Drive the module directly with the
+    # full 19-arg list in position (matching the production cache.load_and_run
+    # path), then read back arg14.
+    args_in_order = [
+        attn_out,
+        wo,
+        proj_buf,
+        x_residual,
+        res1_buf,
+        ffn_norm_w,
+        normed2_buf,
+        w_gate,
+        gate_buf,
+        w_up,
+        up_buf,
+        swiglu_buf,
+        w_down,
+        down_buf,
+        output_buf,  # arg14: output
+        # arg15..18: per-GEMM f32 C-scratch (proj, gate, up, down)
+        np.zeros((SEQ_LEN, EMB_DIM), dtype=np.float32),
+        np.zeros((SEQ_LEN, HIDDEN_DIM), dtype=np.float32),
+        np.zeros((SEQ_LEN, HIDDEN_DIM), dtype=np.float32),
+        np.zeros((SEQ_LEN, EMB_DIM), dtype=np.float32),
+    ]
+
+    backend = XRTBackend(
         verbose=args.verbose,
         omit_while_true_loop=False,
         output_format=args.output_format,
         instance_name="o_ffn",
+        **extra_backend,
     )
+    compiled = backend.compile(module)
+    with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
+        module_function = backend.load(compiled)
+        results = module_function(*args_in_order)
+    backend.unload()
 
-    # 14 inputs (args 0-13) + 1 expected output (arg 14, 1D)
-    exit(
-        runner.run_test(
-            module,
-            inputs=[
-                attn_out,
-                wo,
-                proj_buf,
-                x_residual,
-                res1_buf,
-                ffn_norm_w,
-                normed2_buf,
-                w_gate,
-                gate_buf,
-                w_up,
-                up_buf,
-                swiglu_buf,
-                w_down,
-                down_buf,
-            ],
-            expected_outputs=[output_ref.flatten()],
-            rtol=0.5,
-            atol=10.0,
-            min_correlation=0.99,
-        )
-    )
+    actual = np.asarray(results[14]).reshape(-1).astype(np.float32)
+    expected = output_ref.flatten().astype(np.float32)
+    corr = np.corrcoef(actual, expected)[0, 1]
+    print(f"correlation = {corr:.6f}")
+    if corr >= 0.99:
+        print("PASS!")
+        exit(0)
+    print("FAIL!")
+    exit(1)
