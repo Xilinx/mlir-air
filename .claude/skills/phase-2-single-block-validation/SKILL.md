@@ -66,14 +66,29 @@ Recording them gives
 future deployments a regression baseline (NPU max_abs ≤ 1.5× reference
 deployment's measured value at same shape signals no regression).
 
-> **Standardization note (interim gate).** Per-layer/per-position cosine
-> vs HF bf16 is the correctness lens for *intermediate activations*, where
-> there is no token output yet to score. It is the interim mid-layer gate.
-> The end-of-chain gate (Phase 3/6 token-set top-5) already mirrors the
-> GPU/industry standard (vLLM); the standardization goal is to bring these
-> mid-layer activation gates onto the same GPU/industry-standard footing
-> over time (e.g. an element-wise relative-error tolerance like the
-> per-kernel `rtol`/`atol` Phase 1 uses). Thresholds unchanged for now.
+> **Why cosine here, and why it's only an interim gate.** A 2026 survey of
+> industry practice (vLLM, HF transformers, llama.cpp, MLPerf, TensorRT-LLM,
+> the GPTQ/AWQ/SmoothQuant literature) found that **per-layer activation
+> cosine is NOT a standard correctness gate** — everyone gates either
+> end-to-end (vLLM token-set, llama.cpp logit-KL, MLPerf ≥99%-of-reference)
+> or per-tensor on element-wise atol/rtol / SQNR vs an FP32 reference. The
+> one stack that does gate on per-layer cosine (TPU-MLIR) uses **0.99**, not
+> a loose value. So treat this gate honestly:
+> - At Phase 2 there is **no token output yet to score**, so we still need
+>   *some* numeric tripwire on the block output — cosine vs HF bf16 is that
+>   tripwire. It catches gross integration bugs (layout, missing transpose,
+>   dtype drop), which is all Phase 2 needs.
+> - It is **bf16-vs-bf16** (NPU bf16 vs HF bf16) — there is no FP32 ground
+>   truth at this layer, so a tight element-wise atol/rtol (HF's FP32-parity
+>   bar) would mis-fire on benign rounding-order differences; cosine's
+>   direction-only nature is why it tolerates that. That tolerance is also
+>   its weakness (it can pass on magnitude errors), which is exactly why
+>   it's interim, not the final word.
+> - The **real correctness gate is end-to-end** (Phase 3/6 token-set top-5,
+>   which mirrors vLLM `check_logprobs_close`). Once the full model exists,
+>   that gate — not cosine — decides correctness. A future upgrade could add
+>   SQNR (≥40 dB, PyTorch Numeric Suite's "very good alignment" bar) as a
+>   more defensible per-block number; thresholds unchanged for now.
 
 ## Knowledge base references
 

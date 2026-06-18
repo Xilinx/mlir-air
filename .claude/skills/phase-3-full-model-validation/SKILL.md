@@ -26,51 +26,50 @@ transformers bf16 throughout.
 Run `make diagnosis` (per-layer cosine, all layers) and `make verify`
 (token-set gate) on the canonical prompts. All must hold:
 
-**Numerical correctness (per-layer, vs HF bf16 — the diagnosis lens)**
+**Semantic correctness (token-level, vs HF bf16 — THE GATE)**
 
-1. **Per-layer cosine ≥ 0.85** at EVERY layer (NPU layer-i `ffn_out` vs
-   HF bf16 layer-i `ffn_out`, plus the final post-norm hidden). 0.85 is
-   loose enough to admit legitimate BF16 drift in deep models (a 28-layer
-   stack hits ~0.88 at the last layer with no kernel bug) but tight enough
-   to catch gross corruption.
-2. **No sudden cliff** between consecutive layers:
-   `|cos[i+1] - cos[i]| < 0.05`. Catches layer-indexed bugs (wrong
-   `bo_key=f"kernel_L{i}"`, weight-load shifted by a layer) that would
-   slip through (1) if the absolute value stays above threshold but the
-   trend has a discontinuity.
-3. **Record `max_abs` and `max_rel` error** alongside the cosines
-   (informational, not gated — the diagnosis `error_metrics` reports
-   them). Future deployments use these as a regression baseline (e.g.
-   "new deployment's per-layer max_abs ≤ 1.5× the value logged here at
-   the same layer signals no perf-related correctness drop").
-
-**Semantic correctness (token-level, vs HF bf16 — the verify gate)**
-
-4. **`make verify` PASSES**: at the first divergence between NPU and HF
+1. **`make verify` PASSES**: at the first divergence between NPU and HF
    greedy sequences, NPU's chosen token is in HF's top-5 AND HF's chosen
    token is in NPU's top-5 (the `compute_topk_set_check` gate, GATE_K=5,
-   GATE_N_TOKENS=32). This replaces the old hand-written top-1/top-5 vs
-   CPU-reference check — it is the same idea (semantic agreement within a
-   top-k band) but measured against HF bf16 and on generated tokens, not
-   just the prefill prediction position. bf16 noise can flip top-1 even
-   between mathematically equivalent implementations, but almost never
-   displaces a token out of the top-5. This top-k token-set gate **mirrors
-vLLM's correctness check** — it is the GPU/industry-standard end-to-end
-signal, and the same gate Phase 6/7 re-run.
+   GATE_N_TOKENS=32), measured against HF bf16 on generated tokens. bf16
+   noise can flip top-1 even between mathematically equivalent
+   implementations, but almost never displaces a token out of the top-5.
+   This top-k token-set gate **mirrors vLLM's `check_logprobs_close`** —
+   the GPU/industry-standard end-to-end signal, and the same gate Phase 6/7
+   re-run. **This is the binding correctness verdict for Phase 3.**
+
+**Numerical sanity (per-layer, vs HF bf16 — diagnostic, NOT the gate)**
+
+2. **Per-layer cosine table recorded, eyeballed for gross failure.** This
+   is bf16-vs-bf16 (no FP32 ground truth at the layer level), and per-layer
+   activation cosine is *not* an industry-standard correctness gate (see
+   the note below) — so it does not PASS/FAIL the phase. Use it to
+   **localize** a problem when criterion 1 fails: a layer where cosine
+   collapses (e.g. < 0.85, or a sudden cliff `|cos[i+1] − cos[i]|` > 0.05)
+   points at a layer-indexed bug (wrong `bo_key=f"kernel_L{i}"`,
+   weight-load shifted by a layer). If `make verify` PASSES, a gently
+   drifting cosine (a deep stack reaching ~0.88 at the last layer) is
+   expected bf16 geometry, not a bug.
+3. **Record `max_abs` / `max_rel`** alongside the cosines (the diagnosis
+   `error_metrics` reports them) as a regression baseline for future
+   deployments at the same shape.
 
 **Hygiene**
 
-5. No NaN anywhere in the stack.
-6. Per-layer cos table (from diagnosis) + `make verify` PASS/FAIL for
+4. No NaN anywhere in the stack.
+5. Per-layer cos table (from diagnosis) + `make verify` PASS/FAIL for
    every canonical prompt documented in
    `<model>/docs/development_progress/phase3_full.md`.
 
-> **Standardization note (interim gate).** The per-layer cosine (criteria
-> 1-3) is the interim correctness lens for *intermediate activations* —
-> there is no token to score mid-stack. The token-set gate (criterion 4)
-> is already the GPU/industry-standard (vLLM-aligned) end-to-end signal.
-> The standardization goal is to bring the mid-layer activation gates onto
-> the same footing over time; thresholds unchanged for now.
+> **Why this split.** A 2026 survey of industry practice (vLLM, HF
+> transformers, llama.cpp, MLPerf, TensorRT-LLM, GPTQ/AWQ/SmoothQuant)
+> found that correctness is gated **end-to-end** (vLLM token-set,
+> llama.cpp logit-KL, MLPerf ≥99%-of-reference) — per-layer activation
+> cosine is used for *localization*, not as a pass/fail gate, and where it
+> is gated at all (TPU-MLIR) the bar is 0.99, not a loose value. Hence the
+> token-set check is THE gate and cosine is the lens. A future upgrade
+> could add a logit KL-divergence / perplexity-≥99%-of-HF check (llama.cpp
+> / MLPerf style) as an even stronger end-to-end signal.
 
 ## Knowledge base references
 
@@ -123,13 +122,14 @@ flock -x -w 1800 /tmp/mlir-air-npu.lock make diagnosis    # per-layer cosine, al
 flock -x -w 1800 /tmp/mlir-air-npu.lock make verify       # token-set gate (exit 0/1)
 ```
 
-From diagnosis: read the per-layer cosine table (gate on criteria 1-2).
-From verify: PASS/FAIL (criterion 4); the report under `verify/reports/`
-records the first divergence and the top-5 sets on each side.
+From verify: PASS/FAIL (criterion 1, the gate); the report under
+`verify/reports/` records the first divergence and the top-5 sets on each
+side. From diagnosis: read the per-layer cosine table as the localization
+lens (criterion 2) — not a pass/fail, but where you look when verify fails.
 
 ### Step 4: Bisect on FAIL
 
-If the per-layer cosine gate fails, the diagnosis table localizes where:
+If `make verify` fails, the diagnosis cosine table localizes where:
 
 - **Sudden cliff at layer i** (cos[i] >> cos[i+1]) → layer-indexed bug
   at i+1 (weight load shifted, wrong `bo_key`, wrong `wq` for that layer)
