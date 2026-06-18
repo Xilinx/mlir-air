@@ -349,8 +349,19 @@ if __name__ == "__main__":
         dest="debug_ir",
         help="Emit IR after each pass into debug_ir/ directory",
     )
+    parser.add_argument(
+        "--perf-iters",
+        type=int,
+        default=0,
+        dest="perf_iters",
+        help="If >0, time the kernel over this many iters (after 10 warmup) and "
+        "print Latency + GFLOPs in addition to the correctness check",
+    )
 
     args = parser.parse_args()
+
+    if args.perf_iters < 0:
+        parser.error("--perf-iters must be >= 0")
 
     mlir_module = build_module(
         args.m,
@@ -382,13 +393,16 @@ if __name__ == "__main__":
             instance_name="matvec_bf16",
             debug_ir=args.debug_ir,
             use_lock_race_condition_fix=True,
+            report_precision=True,
+            n_perf_iters=args.perf_iters,
+            perf_flops=((2.0 * args.m * args.k) if args.perf_iters > 0 else None),
         )
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_a, input_b],
                 expected_outputs=[output_c],
-                rtol=0.04,
+                rtol=1.6e-2,
                 atol=1e-3,
             )
         )

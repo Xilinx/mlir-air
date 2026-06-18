@@ -15,6 +15,12 @@ DEVICE ?= npu2
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
+# DIRECT_CODEGEN_FLAG: pass --direct-codegen to emit the per-tile dequant
+# body as inline MLIR ops instead of calling dequant.o. AIE2P only.
+#   make run                                # extern .o (default)
+#   make run DIRECT_CODEGEN_FLAG=--direct-codegen   # inline MLIR
+DIRECT_CODEGEN_FLAG ?=
+
 N ?= 1024
 GROUP_SIZE ?= 128
 HERD_N ?= 4
@@ -40,9 +46,12 @@ PY_ARGS = --device $(DEVICE) --n $(N) --group-size $(GROUP_SIZE) --herd-n $(HERD
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/dequant_awq.py $(OUTPUT_FORMAT_FLAG) -p $(PY_ARGS)
+	${powershell} python3 ${srcdir}/dequant_awq.py $(OUTPUT_FORMAT_FLAG) -p $(PY_ARGS) $(DIRECT_CODEGEN_FLAG)
 
+# Build dequant.o for the extern path. No-op when --direct-codegen is set
+# (the inline path has no external kernel object).
 compile-kernel:
+ifeq ($(DIRECT_CODEGEN_FLAG),)
 	mkdir -p $(BUILD_DIR)
 	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
 		$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} \
@@ -55,12 +64,17 @@ compile-kernel:
 		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
 		exit 1; \
 	fi
+else
+	@echo "DIRECT_CODEGEN_FLAG set: skipping dequant.o build (inline path)."
+endif
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)/air_project
+ifeq ($(DIRECT_CODEGEN_FLAG),)
 	cp $(BUILD_DIR)/dequant.o $(BUILD_DIR)/air_project/dequant.o
+endif
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/dequant_awq.py $(OUTPUT_FORMAT_FLAG) $(PY_ARGS)
+		${powershell} python3 ${srcdir}/dequant_awq.py $(OUTPUT_FORMAT_FLAG) $(DIRECT_CODEGEN_FLAG) $(PY_ARGS)
 
 # ELF profile harness (compile module ELF, then run XRT benchmark loop)
 build-test-dequant-exe:
@@ -71,9 +85,11 @@ ifeq ($(DEVICE),npu1)
 	$(error `make profile` requires DEVICE=npu2: the ELF profile harness compiles with --output-format=elf, which is only supported on npu2 and later. Use `make run` for npu1 correctness.)
 endif
 	mkdir -p $(BUILD_DIR)/air_project
+ifeq ($(DIRECT_CODEGEN_FLAG),)
 	cp $(BUILD_DIR)/dequant.o $(BUILD_DIR)/air_project/dequant.o
+endif
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/dequant_awq.py --compile-mode compile-only --output-format elf $(PY_ARGS)
+		${powershell} python3 ${srcdir}/dequant_awq.py --compile-mode compile-only --output-format elf $(DIRECT_CODEGEN_FLAG) $(PY_ARGS)
 	cd $(BUILD_DIR) && ./test_dequant.exe -e air.elf -k "main:dequant" \
 		-N $(N) -G $(GROUP_SIZE) -H $(HERD_N)
 

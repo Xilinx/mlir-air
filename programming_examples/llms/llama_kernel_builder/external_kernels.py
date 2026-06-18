@@ -111,10 +111,8 @@ _PROJ_ROOT = Path(__file__).resolve().parent.parent.parent  # programming_exampl
 
 
 def compile_silu_and_mul():
-    """Compile silu_and_mul.o from llms/llama_kernel_builder/ffn_swiglu/silu_and_mul.cc."""
-    src = (
-        _PROJ_ROOT / "llms" / "llama_kernel_builder" / "ffn_swiglu" / "silu_and_mul.cc"
-    )
+    """Compile silu_and_mul.o from programming_examples/silu_and_mul/silu_and_mul.cc."""
+    src = _PROJ_ROOT / "silu_and_mul" / "silu_and_mul.cc"
     include_dir = _get_aie_include_dir()
     utils_header = Path(include_dir) / "aie_kernels" / "aie_kernel_utils.h"
     extra = []
@@ -124,13 +122,14 @@ def compile_silu_and_mul():
 
 
 def compile_rope():
-    """Compile rope.o from our half-split RoPE kernel.
+    """Compile rope.o from programming_examples/rope_halfsplit/rope_halfsplit.cc.
 
     Uses rope_halfsplit.cc (half-split rotation matching HuggingFace Llama)
     instead of upstream rope.cc (interleaved rotation). Same function name
-    (@rope) and signature, so no MLIR changes needed.
+    (@rope) and signature, so no MLIR changes needed. The kernel lives in the
+    standalone rope_halfsplit registry example; llama links the same source.
     """
-    src = Path(__file__).resolve().parent / "rope_halfsplit.cc"
+    src = _PROJ_ROOT / "rope_halfsplit" / "rope_halfsplit.cc"
     _compile_kernel(src, "rope.o")
 
 
