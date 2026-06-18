@@ -74,7 +74,7 @@ For decode, replace GEMM with GEMV throughout.
 
 ### Step 3: Author the multi-launch builder
 
-For each group, create `<model>/multi_launch/<group_name>_multi.py`
+For each group, create `<model>/multi_launch_builder/<group_name>_multi.py`
 that:
 
 1. Builds each sub-kernel's IR via `@module_builder`

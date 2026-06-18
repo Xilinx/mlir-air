@@ -186,7 +186,7 @@ reverting patterns instead.
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| Multi-launch merge compile fails (BD exhaustion, channel routing, herd shape conflict) | BD/placeability limit or wrong stitching boundary | Invoke `debug-multi-launch-merge` |
+| Multi-launch merge compile fails (BD exhaustion, channel routing, herd shape conflict, bare-herd, DMA stride, IR/compile blowup) | BD/placeability limit or wrong stitching boundary | Invoke `debug-multi-launch-merge` — it discriminates the 6 known compile blockers |
 | Extern kernel rename collision (link error, symbol redefined) | Two `.o` files exporting same symbol | Check `-D` mapping uniqueness; each `.o` must export distinct `<group>_matvec_*` names |
 | `'aiex.npu.push_queue' op Repeat count exceeds [0:255]` (Pattern A or D) | GEMV K > 8160, or combined channel reads > 255 (see `details/GEMV_bf16.md`) | For K > 8160 → set `k_split` / `down_k_split`; for large M → set `tile_m == m_input` and grow `tile_m × herd_m` |
 | `L2 capacity exceeded` (matvec.py builder assert) | GEMV staged buffer `K × herd_m × tile_m × 2 > 512 KiB` (see `details/GEMV_bf16.md`) | Reduce `tile_m` (e.g., 8 → 2 for K=8192) |

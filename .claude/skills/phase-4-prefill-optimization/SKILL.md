@@ -205,7 +205,7 @@ the gate.
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| Multi-launch merge compile fails (BD exhaustion, channel routing, herd shape conflict) | non-1024-aligned dim (see the kernel's `details/<Kernel>_bf16.md`) OR wrong stitching boundary | Invoke `debug-multi-launch-merge` — it discriminates the 4 known compile blockers |
+| Multi-launch merge compile fails (BD exhaustion, channel routing, herd shape conflict, bare-herd, DMA stride, IR/compile blowup) | non-1024-aligned dim (see the kernel's `details/<Kernel>_bf16.md`) OR wrong stitching boundary | Invoke `debug-multi-launch-merge` — it discriminates the 6 known compile blockers |
 | Output corruption after BO pre-loading (correct first call, NaN/garbage on subsequent calls) | Per-layer BO key collision OR `static_input_indices` set wrong | Invoke `debug-bo-corruption` |
 | FA hang (`ERT_CMD_STATE_TIMEOUT`) at head_dim ≥ 128 | Seq-first `dk_chunks > 1` path bug | Invoke `debug-fa-runtime-failure`; head-first wrapper is the workaround (see Pattern D caveat) |
 | FA all-NaN at runtime | Compile-flag mismatch on `attn_npu2.cc` macros (LESSON 3 — `-Dlqp` must be per-tile, not per-launch) | Invoke `debug-fa-runtime-failure`; `compile_attn_npu2_split` derives correct flags |

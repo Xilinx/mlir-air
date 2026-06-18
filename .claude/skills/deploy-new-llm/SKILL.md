@@ -308,9 +308,11 @@ For each phase (0 → 6):
    that phase's section. Even if the phase was stuck on debug for most
    of the time, record honestly — it reveals which axes are hard.
 5. Report PASS/FAIL/BLOCKED to the human
-6. On PASS: ask permission to advance to next phase
-5. On BLOCKED: surface the blocker, human resolves
-6. Advance to the next phase
+6. **Then branch on the outcome:**
+   - **PASS** → ask permission to advance, then go to the next phase
+   - **BLOCKED / FAIL** → surface the blocker; the human resolves before
+     any advance. Do NOT advance past a non-PASS gate (a skipped gate
+     means later phases verify against unverified upstream).
 
 ### Step 8: Phase 7 — Independent evaluation
 

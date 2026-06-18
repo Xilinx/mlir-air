@@ -137,8 +137,13 @@ Expected (per Phase 6 / verify subsystem design):
 - The report written under the model's build dir (`reports/`, by the
   shared `llms/verify/` runner) records the first divergence + top-5 sets.
 
-Also run `make diagnosis` to capture the per-layer cosine table (each
-layer ≥ 0.85, no cliff > 0.05) as a supporting numerical signal.
+Also run `make diagnosis` to capture the per-layer cosine table as an
+**informational** sanity signal — eyeball it for a gross cliff or a NaN
+layer. It is NOT a gate: the verify subsystem retired threshold-based
+diagnosis (`compare_pair` reports cosine with no pass/fail), so do not
+fail the evaluation on a cosine number. `make verify` (the token-set gate)
+is the sole binding numeric verdict; the cosine table just helps localize
+*if* verify fails.
 
 If the gate fails: record exact failure + cite the divergence position
 and which token left the top-5. Verdict = FAIL.
