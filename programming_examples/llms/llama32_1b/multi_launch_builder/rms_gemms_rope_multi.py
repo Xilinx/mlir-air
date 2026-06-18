@@ -198,11 +198,6 @@ def build_rms_gemms_rope_module(
     n_heads=32,
     n_kv_heads=8,
     head_dim=64,
-    # GEMM tile config
-    tile_m=64,
-    tile_k_l2=64,
-    tile_k_l1=32,
-    tile_n=128,
     herd_m=8,
     herd_n=4,
     # RoPE config
@@ -227,8 +222,26 @@ def build_rms_gemms_rope_module(
             %arg11: q_roped     (seq_len, emb_dim)       RoPE Q output (2D)
             %arg12: k_roped     (seq_len, kv_dim)        RoPE K output (2D)
     """
-    from llama32_1b.gemm_builder import _build_gemm_module
+    from llama32_1b.gemm_builder import _build_gemm_module, gemm_registry_config
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+
+    # Per-GEMM config from the kernel_registry JSON (single source of truth): method
+    # (fused-cast vs drain) AND all tiles are looked up per shape, never hardcoded.
+    # Q (large) resolves to fused-cast (_m64), K/V (small) to drain (_m32); both
+    # co-link in one ELF (distinct symbols + mm_*.o; each air.launch reconfigures
+    # L1/L2 so launch buffers don't accumulate). Adapts automatically to other models.
+    q_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
+    k_spec = gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high")
+    v_spec = gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high")
+
+    def _gemm_kw_and_tiles(spec):
+        return (
+            dict(spec["build_kwargs"]),
+            spec["tile_m"],
+            spec["tile_k_l2"],
+            spec["tile_k_l1"],
+            spec["tile_n"],
+        )
 
     q_total = seq_len * emb_dim  # = n_heads * seq_len * head_dim
     k_total = seq_len * kv_dim  # = n_kv_heads * seq_len * head_dim
@@ -247,47 +260,56 @@ def build_rms_gemms_rope_module(
         str(build_rms(seq_len, emb_dim, bfloat16, 16, herd_x=8))
     )
 
-    # 2-4. Q/K/V GEMMs
-    print("  [2/6] Q GEMM...")
+    # 2-4. Q/K/V GEMMs — method + ALL tiles come from the registry spec per shape.
+    _q_kw, _q_tm, _q_k2, _q_k1, _q_tn = _gemm_kw_and_tiles(q_spec)
+    _k_kw, _k_tm, _k_k2, _k_k1, _k_tn = _gemm_kw_and_tiles(k_spec)
+    _v_kw, _v_tm, _v_k2, _v_k1, _v_tn = _gemm_kw_and_tiles(v_spec)
+    _qm = q_spec["method"]
+    _km = k_spec["method"]
+    _vm = v_spec["method"]
+    print(f"  [2/6] Q GEMM ({_qm})...")
     q_ir = str(
         _build_gemm_module(
             seq_len,
             emb_dim,
             emb_dim,
-            tile_m,
-            tile_k_l2,
-            tile_k_l1,
-            tile_n,
+            _q_tm,
+            _q_k2,
+            _q_k1,
+            _q_tn,
             herd_m,
             herd_n,
+            **_q_kw,
         )
     )
-    print("  [3/6] K GEMM...")
+    print(f"  [3/6] K GEMM ({_km})...")
     k_ir = str(
         _build_gemm_module(
             seq_len,
             emb_dim,
             kv_dim,
-            tile_m,
-            tile_k_l2,
-            tile_k_l1,
-            tile_n,
+            _k_tm,
+            _k_k2,
+            _k_k1,
+            _k_tn,
             herd_m,
             herd_n,
+            **_k_kw,
         )
     )
-    print("  [4/6] V GEMM...")
+    print(f"  [4/6] V GEMM ({_vm})...")
     v_ir = str(
         _build_gemm_module(
             seq_len,
             emb_dim,
             kv_dim,
-            tile_m,
-            tile_k_l2,
-            tile_k_l1,
-            tile_n,
+            _v_tm,
+            _v_k2,
+            _v_k1,
+            _v_tn,
             herd_m,
             herd_n,
+            **_v_kw,
         )
     )
 
@@ -318,23 +340,52 @@ def build_rms_gemms_rope_module(
             print(ir)
 
     # ---- Stitch ----
-    # Arg mapping (combined func arg indices):
+    # Arg mapping (combined func arg indices). Base bf16 args 0..12; when a GEMM is
+    # fused-cast it gets ONE extra f32 C-scratch arg appended at 13+ and its arg_map
+    # gains slot 2->scratch, 3->bf16-out (drain stays {0:in,1:w,2:out}).
     #   RMSNorm:  {0->0, 1->1, 2->2}       (x_in, norm_w, normed)
-    #   Q GEMM:   {0->2, 1->3, 2->4}       (normed, wq, q)
-    #   K GEMM:   {0->2, 1->5, 2->6}       (normed, wk, k)
-    #   V GEMM:   {0->2, 1->7, 2->8}       (normed, wv, v)
+    #   Q GEMM:   normed=2, wq=3, q=4   (+ q_f32 scratch if fused)
+    #   K GEMM:   normed=2, wk=5, k=6   (+ k_f32 scratch if fused)
+    #   V GEMM:   normed=2, wv=7, v=8   (+ v_f32 scratch if fused)
     #   RoPE Q:   {0->4, 1->9, 2->11}      (q[2D], lut_q[1D], q_roped[2D])
     #   RoPE K:   {0->6, 1->10, 2->12}     (k[2D], lut_k[1D], k_roped[2D])
 
-    # Combined extern_funcs: GEMM + RoPE + RMSNorm externals
+    # Combined extern_funcs: GEMM + RoPE + RMSNorm externals. Each fused/drain GEMM
+    # uses suffixed mm.o symbols (_m64 / _m32) so both variants co-link in one ELF.
     _EXTERN_FUNCS = {"@matmul_bf16", "@zero_vectorized_bf16", "@rope"}
+    for sp in (q_spec, k_spec, v_spec):
+        sfx = sp["sym_suffix"]
+        _EXTERN_FUNCS |= {
+            "@op_has_no_registered_library_name" + sfx,
+            "@zero_f32_mn" + sfx,
+            "@f32_to_bf16_mn" + sfx,
+        }
+
+    # Build the GEMM arg_maps + f32-scratch func args. f32-scratch args start at 13.
+    _scratch_args = []  # MLIR type strings appended to the func signature
+    _next_scratch = 13
+
+    def _gemm_arg_map(spec, in_idx, w_idx, out_idx, out_rows, out_cols):
+        nonlocal _next_scratch
+        if spec["needs_f32_scratch"]:
+            sc = _next_scratch
+            _next_scratch += 1
+            _scratch_args.append(f"    ,%arg{sc}: memref<{out_rows}x{out_cols}xf32>")
+            # fused-cast: {0:in, 1:w, 2:Cf32-scratch, 3:bf16-out}
+            return {0: in_idx, 1: w_idx, 2: sc, 3: out_idx}
+        # drain: {0:in, 1:w, 2:bf16-out}
+        return {0: in_idx, 1: w_idx, 2: out_idx}
+
+    q_map = _gemm_arg_map(q_spec, 2, 3, 4, seq_len, emb_dim)
+    k_map = _gemm_arg_map(k_spec, 2, 5, 6, seq_len, kv_dim)
+    v_map = _gemm_arg_map(v_spec, 2, 7, 8, seq_len, kv_dim)
 
     bodies, maps_all = [], []
     for ir, prefix, arg_map in [
         (rms_ir, "r", {0: 0, 1: 1, 2: 2}),
-        (q_ir, "q", {0: 2, 1: 3, 2: 4}),
-        (k_ir, "k", {0: 2, 1: 5, 2: 6}),
-        (v_ir, "v", {0: 2, 1: 7, 2: 8}),
+        (q_ir, "q", q_map),
+        (k_ir, "k", k_map),
+        (v_ir, "v", v_map),
         (rope_q_ir, "rq", {0: 4, 1: 9, 2: 11}),
         (rope_k_ir, "rk", {0: 6, 1: 10, 2: 12}),
     ]:
@@ -346,14 +397,18 @@ def build_rms_gemms_rope_module(
         bodies.append(body)
         maps_all.extend(maps)
 
-    # Collect private func declarations (RoPE has @rope, RMSNorm has @zero_vectorized_bf16)
+    # Collect private func declarations (RoPE has @rope, RMSNorm has
+    # @zero_vectorized_bf16). Each external GEMM variant adds its suffixed mm.o
+    # symbols; q_ir covers _m64 (fused Q), k_ir covers _m32 (drain K/V).
     all_privates = set()
-    for ir in [rms_ir, rope_q_ir]:
+    for ir in [rms_ir, rope_q_ir, q_ir, k_ir, v_ir]:
         for p in _extract_private_funcs(ir):
             all_privates.add(p.strip())
-    privates_str = "\n  ".join(all_privates)
+    privates_str = "\n  ".join(sorted(all_privates))
 
-    # Assemble (13 func args, 6 launches)
+    _scratch_sig = ("\n" + "\n".join(_scratch_args)) if _scratch_args else ""
+
+    # Assemble (13 base func args + N f32 scratch, 6+ launches)
     combined = "\n".join(maps_all) + f"""
 module {{
   {privates_str}
@@ -370,7 +425,7 @@ module {{
     %arg9: memref<{q_total}xbf16>,
     %arg10: memref<{k_total}xbf16>,
     %arg11: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg12: memref<{seq_len}x{kv_dim}xbf16>
+    %arg12: memref<{seq_len}x{kv_dim}xbf16>{_scratch_sig}
   ) {{
 {bodies[0]}
 {bodies[1]}
