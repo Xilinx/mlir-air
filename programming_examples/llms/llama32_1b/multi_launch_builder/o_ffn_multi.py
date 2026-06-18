@@ -26,6 +26,9 @@ Usage:
 import argparse
 import os
 import sys
+import tempfile
+
+import filelock
 
 import numpy as np
 from ml_dtypes import bfloat16
@@ -42,7 +45,7 @@ from air.dialects.memref import AllocOp, DeallocOp, subview
 from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import type_mapper
 from air.backend.xrt import XRTBackend
 
 from llama_kernel_builder.stitching import (
@@ -677,15 +680,13 @@ if __name__ == "__main__":
     down_buf = np.zeros((SEQ_LEN, EMB_DIM), dtype=bfloat16)
     output_buf = np.zeros(N_TOTAL, dtype=bfloat16)
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        omit_while_true_loop=False,
-        output_format=args.output_format,
-        instance_name="o_ffn",
-        **extra_backend,
-    )
-
-    inputs = [
+    # The stitched @o_ffn has its output at arg14 (NOT last) with 4 f32 C-scratch
+    # buffers at args 15..18. XRTRunner.run_test() appends output placeholders
+    # AFTER inputs, so it can only handle output-is-last functions — it would
+    # misalign every arg from 14 onward here. Drive the module directly with the
+    # full 19-arg list in position (matching the production cache.load_and_run
+    # path), then read back arg14.
+    args_in_order = [
         attn_out,
         wo,
         proj_buf,
@@ -700,7 +701,7 @@ if __name__ == "__main__":
         swiglu_buf,
         w_down,
         down_buf,
-        output_buf,  # arg14
+        output_buf,  # arg14: output
         # arg15..18: per-GEMM f32 C-scratch (proj, gate, up, down)
         np.zeros((SEQ_LEN, EMB_DIM), dtype=np.float32),
         np.zeros((SEQ_LEN, HIDDEN_DIM), dtype=np.float32),
@@ -708,14 +709,25 @@ if __name__ == "__main__":
         np.zeros((SEQ_LEN, EMB_DIM), dtype=np.float32),
     ]
 
-    exit(
-        runner.run_test(
-            module,
-            inputs=inputs[:14]
-            + inputs[15:],  # output (arg14) is the expected_output slot
-            expected_outputs=[output_ref.flatten()],
-            rtol=0.5,
-            atol=10.0,
-            min_correlation=0.99,
-        )
+    backend = XRTBackend(
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="o_ffn",
+        **extra_backend,
     )
+    compiled = backend.compile(module)
+    with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
+        module_function = backend.load(compiled)
+        results = module_function(*args_in_order)
+    backend.unload()
+
+    actual = np.asarray(results[14]).reshape(-1).astype(np.float32)
+    expected = output_ref.flatten().astype(np.float32)
+    corr = np.corrcoef(actual, expected)[0, 1]
+    print(f"correlation = {corr:.6f}")
+    if corr >= 0.99:
+        print("PASS!")
+        exit(0)
+    print("FAIL!")
+    exit(1)

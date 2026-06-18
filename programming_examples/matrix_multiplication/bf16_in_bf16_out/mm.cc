@@ -244,7 +244,7 @@ static inline void matmul_vectorized_4x4(const T_in *__restrict pA,
   event1();
 }
 
-// bf16 MatMul kernel definion with bf16 outputs.
+// bf16 MatMul kernel definition with bf16 outputs.
 template <unsigned m, unsigned k, unsigned n>
 static inline void
 matmul_vectorized_4x8x4_bf16_bf16(const bfloat16 *__restrict pA,
@@ -258,8 +258,8 @@ matmul_vectorized_4x8x4_bf16_bf16(const bfloat16 *__restrict pA,
   constexpr int t = 4;
 
   // Since the kernel has been expanded 4 times for both A ('m' dimension) and B
-  // ('n' dimension), the following assertions veirify this even division for
-  // the single AIE MatMul dimensionality Notice that 'k' dimension is not
+  // ('n' dimension), the following assertions verify this even division for
+  // the single AIE MatMul dimensionality. Notice that 'k' dimension is not
   // spatially expanded.
   static_assert(m % (4 * r) == 0); // 'm' dimension
   static_assert(k % s == 0);       // 'k' dimension

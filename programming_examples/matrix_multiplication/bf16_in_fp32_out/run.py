@@ -57,10 +57,10 @@ def build_module(
     emit_external_call=False,
     drain_chunks=1,
 ):
-    assert m % tile_m == 0
+    assert m % (tile_m * herd_m) == 0, (m, tile_m, herd_m)
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
-    assert n % tile_n == 0
+    assert n % (tile_n * herd_n) == 0, (n, tile_n, herd_n)
     if emit_external_call:
         # Manual-CallOp external-mm.o path (also usable inside a fused multi-launch
         # ELF, where the whole-module air-linalg-to-func pass can't run). The L1 C
@@ -729,6 +729,7 @@ def _build_cast_module(m, n, np_dtype_in, tile_n=2048, herd_x=8, herd_y=1):
     f32 = type_mapper(np.float32)
     bf16 = type_mapper(bfloat16)
     total_tiles = herd_x * herd_y
+    assert nelem % total_tiles == 0, (nelem, total_tiles)
     chunk_size = nelem // total_tiles
     assert chunk_size % tile_n == 0, (nelem, total_tiles, tile_n)
     l3_in_2d = MemRefType.get([m, n], f32)
