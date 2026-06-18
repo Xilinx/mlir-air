@@ -60,7 +60,7 @@ launch's DMA pattern is BD-friendly (see the kernel's
 **Remedy** (in order of preference):
 
 1. Pad the offending dim to 1024-aligned via GQA-aware reindexed padding
-   (technique in `single-block-validation` Step 2 + the kernel's `details/<Kernel>_bf16.md` placeability notes)
+   (technique in `phase-2-single-block-validation` Step 2 + the kernel's `details/<Kernel>_bf16.md` placeability notes)
 2. If padding is infeasible: un-merge the most recently added launch
    from the merged ELF; recompile
 3. Switch to kernel-first split-ELF path (more, smaller ELFs)

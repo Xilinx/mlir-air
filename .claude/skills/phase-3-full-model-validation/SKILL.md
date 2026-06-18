@@ -1,5 +1,5 @@
 ---
-name: full-model-validation
+name: phase-3-full-model-validation
 description: Phase 3 of LLM deployment — wire all N layers and verify NPU matches the HF bf16 reference end-to-end (per-layer cosine via the shared `llms/verify/` diagnosis lens + token-level top-5 set-inclusion via its token-set gate) at canonical prompts. Catches accumulated drift, KV cache bugs, layer-indexed weight loading errors. Invoked after Phase 2 gate.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: kernel-validation
+name: phase-1-kernel-validation
 description: Phase 1 of LLM deployment — for every leaf kernel × shape the model needs, verify numerical correctness on real NPU2 against the registry's GPU/vLLM-aligned standard. Primary gate where a standalone harness exists: the harness's full-output element-wise `np.isclose` check at that kernel's `rtol`/`atol` vs an FP32 reference (the same PASS/FAIL `make run` prints). Fallback for a kernel with no harness: `make diagnosis` per-layer cosine vs the HF bf16 reference. Record each verified (kernel, shape) as a row in that kernel's "tested shapes" table in `kernel_registry/supported_kernels.md` + `details/<Kernel>_bf16.md` (Used by = `<model>`); per-model progress stays in `<model>/docs/`. Hard gate before integration. Invoked by deploy-new-llm after Phase 0.
 ---
 
@@ -149,7 +149,7 @@ BEFORE compile time.
 (If the model has unusual ops — Q/K Norm, post-norm, ops between
 currently-fused launches — flag in `<model>/TODO.md` as a Phase 2
 prerequisite. The actual integration decision lives in
-`single-block-validation` Step 0a.)
+`phase-2-single-block-validation` Step 0a.)
 
 ### Step 2: Per-kernel verification
 

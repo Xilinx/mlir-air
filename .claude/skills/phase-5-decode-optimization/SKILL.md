@@ -1,5 +1,5 @@
 ---
-name: decode-optimization
+name: phase-5-decode-optimization
 description: Phase 5 of LLM deployment — apply decode-specific optimization patterns to a Phase-4-correct pipeline (multi-launch merge with N-way extern rename, static weight BOs, NPU LM Head GEMV, CPU→NPU promotion). Each step preserves correctness by re-running the Phase 3 gate — `make verify` (token-set vs HF bf16) is the PASS/FAIL gate; `make diagnosis` per-layer cosine is the informational lens used to localize a regression. Invoked after Phase 4 PASS.
 ---
 
@@ -98,7 +98,7 @@ verify`) and re-measure profile.
 Stitch decode kernel groups into fused ELFs (mirrors Phase 4 Pattern A
 but with GEMV instead of GEMM). Two paths — the **same kernel-first-vs-
 inheritance decision Phase 2 made** (the bit-for-bit match rule lives once
-in `single-block-validation` Step 1; reuse that verdict, don't restate it):
+in `phase-2-single-block-validation` Step 1; reuse that verdict, don't restate it):
 
 | Path | When | What to do |
 |---|---|---|

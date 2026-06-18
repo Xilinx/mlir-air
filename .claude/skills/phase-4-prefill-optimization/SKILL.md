@@ -1,5 +1,5 @@
 ---
-name: prefill-optimization
+name: phase-4-prefill-optimization
 description: Phase 4 of LLM deployment — apply known prefill optimization patterns to a Phase-3-correct pipeline (multi-launch merge, BO pre-loading, intermediate buffer reuse, seq-first layout, CPU→NPU op promotion). Each step preserves correctness by re-running the Phase 3 gate — `make verify` (token-set vs HF bf16) is the PASS/FAIL gate; `make diagnosis` per-layer cosine is the informational lens used to localize a regression. Invoked after Phase 3 PASS.
 ---
 
@@ -101,7 +101,7 @@ Llama3 prefill went from 16-XRT-call/layer to 3-XRT-call/layer here.
 
 Two paths — the **same kernel-first-vs-inheritance decision Phase 2 already
 made** (kernel-first is the default; the bit-for-bit match rule + its a/b/c
-breakers are defined once in `single-block-validation` Step 1 — don't
+breakers are defined once in `phase-2-single-block-validation` Step 1 — don't
 restate them, reuse Phase 2's verdict):
 
 | Path | When | What to do |

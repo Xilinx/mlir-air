@@ -18,7 +18,7 @@ This skill is "successful" when:
 1. **Workspace scaffolded** correctly (Steps 1-6 below complete)
 2. **Phases 0-6 dispatched in order**, each phase's HARD gate (defined
    inside the per-phase SKILL.md) passes
-3. **Phase 7 (`independent-evaluator`) verdict** = PASS or
+3. **Phase 7 (`phase-7-independent-evaluator`) verdict** = PASS or
    PASS-with-warnings
 4. **Hand-off report written** to the human (Step 9)
 
@@ -91,7 +91,7 @@ Fetch HF `config.json`. Reject if any of:
 the bias is added on the HOST after the bias-free kernels return,
 exploiting RoPE's linearity (`RoPE(q + bq) = RoPE(q) + RoPE(bq)`). The
 bias-on-host wrapper is re-derived per deployment (technique described
-in `single-block-validation` Step 2). Per-deployment effort: ~1-2 hours;
+in `phase-2-single-block-validation` Step 2). Per-deployment effort: ~1-2 hours;
 surface in TODO.md as a Phase 2 prerequisite.
 
 If rejected, print clear message and do NOT proceed.
@@ -126,7 +126,7 @@ architecture — it does not assume the model resembles llama.
 
 **Do NOT `cp -r llama32_1b <model>`.** Two reasons depending on path
 (the kernel-first-vs-inheritance decision + the bit-for-bit match rule are
-owned by `single-block-validation` Step 1 — Phase 2 makes the call):
+owned by `phase-2-single-block-validation` Step 1 — Phase 2 makes the call):
 - Kernel-first (default): you're writing model-specific assembly, not
   copying the reference's — bulk-copying just duplicates stale code.
 - Inheritance shortcut (bit-for-bit llama variant only): the reference's
@@ -140,10 +140,10 @@ The minimal Tier-A scaffold is:
 llms/<dirname>/
 ├── .gitignore                       # copy from llama32_1b/.gitignore + add *.o, *kernel_cache/
 ├── Makefile                         # template-render with model name (run / verify / verify-full / diagnosis / profile + compile / clean)
-├── README.md                        # placeholder; final version written by finalize-and-learn
+├── README.md                        # placeholder; final version written by phase-6-finalize-and-learn
 ├── ARCHITECTURE.md                  # model-specific guide (NOT CLAUDE.md — top-level .gitignore excludes it, so it would not ship)
 ├── TODO.md                          # phase status (template in Step 5)
-├── verify_adapter.py                # written by finalize-and-learn; hooks this model into the shared llms/verify/
+├── verify_adapter.py                # written by phase-6-finalize-and-learn; hooks this model into the shared llms/verify/
 └── docs/development_progress/
     ├── progress.md                  # header-only; phases append as they pass
     ├── LESSONS.md                   # header-only; appended on novel failures
@@ -184,9 +184,9 @@ divergent part kernel-first, and import the unchanged rest from
 
 **Per-phase skills produce these model-specific files**:
 
-- Phase 0 (`build-cpu-reference`): `<model>_weights.py`, `<model>_cpu_helpers.py`
+- Phase 0 (`phase-0-build-cpu-reference`): `<model>_weights.py`, `<model>_cpu_helpers.py`
 - Phases 1-3 (validation): `<model>_phaseN_test.py` per phase
-- Phase 6 (`finalize-and-learn`): `<model>_inference.py` (clean
+- Phase 6 (`phase-6-finalize-and-learn`): `<model>_inference.py` (clean
   end-to-end NPU runner: setup → prefill → decode_loop) + `<model>/verify_adapter.py`
   (hooks this model into the shared `llms/verify/`; mirrors
   `llama32_1b/verify_adapter.py`)
@@ -281,20 +281,20 @@ architectural axes are genuinely hard, which informs future deployments.
 
 | Phase | Skill | Gate (in 1 line — see the skill itself for full criteria) |
 |---|---|---|
-| 0 | `build-cpu-reference` | `<model>_weights.py` + `<model>_cpu_helpers.py` produced; HF bf16 baseline loads & runs canonical prompt via `verify/` HfRunner (sane top-1, no NaN); config matches HF `config.json` |
-| 1 | `kernel-validation` | Every leaf kernel × shape: harness atol/rtol element-wise check vs FP32 ref PASSES (GPU/vLLM standard), or `make diagnosis` cosine vs HF bf16 for no-harness kernels; each new shape recorded as a `kernel_registry` row (Used by = `<model>`) + full results in `<model>/docs/` |
-| 2 | `single-block-validation` | Single transformer block on NPU: per-layer cosine vs HF bf16 (diagnosis lens) ≥ 0.99 (whole-tensor) + per-position min ≥ head_dim-scaled threshold |
-| 3 | `full-model-validation` | Full N layers: `make diagnosis` per-layer cos ≥ 0.85 + no cliff; `make verify` token-set gate (top-5 inclusion vs HF bf16) PASSES |
-| 4 | `prefill-optimization` | Apply optimization patterns; correctness preserved (`make verify` token-set still PASSES — diagnosis cosine is the localization lens, not the gate) AND prefill kernel time strictly < Phase 3 baseline |
-| 5 | `decode-optimization` | Same shape: correctness preserved (`make verify` token-set still PASSES) AND decode time/token strictly < Phase 4 baseline |
-| 6 | `finalize-and-learn` | Clean `<model>_inference.py` + `<model>/verify_adapter.py` (shared `llms/verify/`) + Makefile; `make verify` (top-5 token-set vs HF bf16) PASSES |
-| 7 | `independent-evaluator` | Fresh subagent: audit `make verify` (anti-reward-hacking) + re-run as primary gate; produce structured `evaluation_report.md` |
+| 0 | `phase-0-build-cpu-reference` | `<model>_weights.py` + `<model>_cpu_helpers.py` produced; HF bf16 baseline loads & runs canonical prompt via `verify/` HfRunner (sane top-1, no NaN); config matches HF `config.json` |
+| 1 | `phase-1-kernel-validation` | Every leaf kernel × shape: harness atol/rtol element-wise check vs FP32 ref PASSES (GPU/vLLM standard), or `make diagnosis` cosine vs HF bf16 for no-harness kernels; each new shape recorded as a `kernel_registry` row (Used by = `<model>`) + full results in `<model>/docs/` |
+| 2 | `phase-2-single-block-validation` | Single transformer block on NPU: per-layer cosine vs HF bf16 (diagnosis lens) ≥ 0.99 (whole-tensor) + per-position min ≥ head_dim-scaled threshold |
+| 3 | `phase-3-full-model-validation` | Full N layers: `make diagnosis` per-layer cos ≥ 0.85 + no cliff; `make verify` token-set gate (top-5 inclusion vs HF bf16) PASSES |
+| 4 | `phase-4-prefill-optimization` | Apply optimization patterns; correctness preserved (`make verify` token-set still PASSES — diagnosis cosine is the localization lens, not the gate) AND prefill kernel time strictly < Phase 3 baseline |
+| 5 | `phase-5-decode-optimization` | Same shape: correctness preserved (`make verify` token-set still PASSES) AND decode time/token strictly < Phase 4 baseline |
+| 6 | `phase-6-finalize-and-learn` | Clean `<model>_inference.py` + `<model>/verify_adapter.py` (shared `llms/verify/`) + Makefile; `make verify` (top-5 token-set vs HF bf16) PASSES |
+| 7 | `phase-7-independent-evaluator` | Fresh subagent: audit `make verify` (anti-reward-hacking) + re-run as primary gate; produce structured `evaluation_report.md` |
 
 Report current state to the human:
 
 > "Workspace scaffolded at `programming_examples/llms/<dirname>/`. Resolved
 > config: <summary>. Ready to start Phase 0 (Build CPU Reference). Invoke
-> `build-cpu-reference` to begin, or say 'go' for me to invoke it now."
+> `phase-0-build-cpu-reference` to begin, or say 'go' for me to invoke it now."
 
 For each phase (0 → 6):
 
@@ -315,7 +315,7 @@ For each phase (0 → 6):
 ### Step 8: Phase 7 — Independent evaluation
 
 After Phase 6 PASSES but BEFORE the final hand-off, spawn the
-`independent-evaluator` skill as Phase 7. It re-derives every
+`phase-7-independent-evaluator` skill as Phase 7. It re-derives every
 correctness claim with a fresh subagent and produces
 `<model>/docs/evaluation_report.md`.
 
@@ -329,7 +329,7 @@ is the independence check.
 > primary gate, and write a structured report. Expected runtime:
 > 15-30 min."
 
-Then call the `independent-evaluator` skill with `<model_dir>` as input.
+Then call the `phase-7-independent-evaluator` skill with `<model_dir>` as input.
 
 If the evaluator reports:
 

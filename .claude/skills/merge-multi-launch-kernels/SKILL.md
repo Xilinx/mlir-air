@@ -1,6 +1,6 @@
 ---
 name: merge-multi-launch-kernels
-description: Procedural recipe for fusing multiple `air.launch` kernels into one multi-launch ELF (single XRT invocation). Invoked by prefill-optimization and decode-optimization Pattern A when building NEW model-specific fused ELFs (kernel-first path). Reduces XRT dispatch overhead (~50–200 µs per call on NPU2).
+description: Procedural recipe for fusing multiple `air.launch` kernels into one multi-launch ELF (single XRT invocation). Invoked by phase-4-prefill-optimization and phase-5-decode-optimization Pattern A when building NEW model-specific fused ELFs (kernel-first path). Reduces XRT dispatch overhead (~50–200 µs per call on NPU2).
 ---
 
 ## Purpose
@@ -22,7 +22,7 @@ A merge is "successful" when ALL hold:
    as separate XRT calls, compare output). Match the BF16 tolerance
    convention from the kernel registry — `rtol=1e-3` is too tight for
    K=2048 BF16; use cosine + `max_abs/max_rel` informational logging
-   (see `kernel-validation` PASS criteria for the convention).
+   (see `phase-1-kernel-validation` PASS criteria for the convention).
 3. Wall-clock time is lower than the unmerged baseline
 
 If (1) fails → invoke `debug-multi-launch-merge`.

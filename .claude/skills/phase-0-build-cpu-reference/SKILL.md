@@ -1,5 +1,5 @@
 ---
-name: build-cpu-reference
+name: phase-0-build-cpu-reference
 description: Phase 0 of LLM deployment — produce `<model>_weights.py` (HF weight loader) and `<model>_cpu_helpers.py` (the few NumPy helpers production prefill/decode import), then confirm the HF bf16 reference baseline loads and runs via the shared `llms/verify/` subsystem's HfRunner. Downstream phases compare NPU against HF transformers in bf16 directly; there is no hand-written full-model FP32 oracle.
 ---
 
@@ -129,7 +129,7 @@ Copy `programming_examples/llms/llama32_1b/llama32_1b_weights.py` to
   (`q_proj.bias` etc.). The bias is applied on the HOST around the
   bias-free NPU kernels (exploiting RoPE linearity:
   `RoPE(q + bq) = RoPE(q) + RoPE(bq)`); the application detail belongs to
-  Phase 2 (`single-block-validation` Step 2) — surface it in TODO.md as a
+  Phase 2 (`phase-2-single-block-validation` Step 2) — surface it in TODO.md as a
   Phase 2 prerequisite. Re-derive the bias-on-host wrapper from the HF
   reference impl.
 

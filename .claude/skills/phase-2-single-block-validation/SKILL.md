@@ -1,5 +1,5 @@
 ---
-name: single-block-validation
+name: phase-2-single-block-validation
 description: Phase 2 of LLM deployment — wire the verified Phase 1 kernels into one transformer block on NPU and verify per-layer cosine vs the HF bf16 reference (the shared `llms/verify/` diagnosis lens, promoted to a gate at layer 0). Catches integration bugs (layout mismatches, missing transposes, type drops between kernel boundaries) before scaling to N layers.
 ---
 

@@ -1,6 +1,6 @@
 ---
-name: independent-evaluator
-description: Phase 7 of LLM deployment — spawn a fresh subagent that treats the deployment as UNTRUSTED, audits the `make verify` implementation (anti-reward-hacking: confirms the token-set gate runs the production path vs HF bf16), then re-runs it as the primary gate. Produces a structured `evaluation_report.md` a human can read in 2 minutes to know the full deployment state. Invoke as `/independent-evaluator <model_dir>` or auto-spawn from deploy-new-llm after Phase 6 PASS.
+name: phase-7-independent-evaluator
+description: Phase 7 of LLM deployment — spawn a fresh subagent that treats the deployment as UNTRUSTED, audits the `make verify` implementation (anti-reward-hacking: confirms the token-set gate runs the production path vs HF bf16), then re-runs it as the primary gate. Produces a structured `evaluation_report.md` a human can read in 2 minutes to know the full deployment state. Invoke as `/phase-7-independent-evaluator <model_dir>` or auto-spawn from deploy-new-llm after Phase 6 PASS.
 ---
 
 ## Purpose
@@ -227,7 +227,7 @@ report covers what's different.
 
 | Check | Result |
 |---|---|
-| Auditor agent (`Skill: independent-evaluator`) | <verdict>: <one-line summary> |
+| Auditor agent (`Skill: phase-7-independent-evaluator`) | <verdict>: <one-line summary> |
 | `make run` smoke | First token `<token>` (id=...). N-trial mean prefill <X> s ± <Y> ms |
 | `make verify` (NPU vs HF bf16, top-5 token-set) | PASS — first divergence at token <i>; NPU/HF chosen tokens both in the other's top-5 |
 | `make diagnosis` (per-layer cosine vs HF bf16) | Per-layer cosine <X>→<Y> over N layers, no cliff |

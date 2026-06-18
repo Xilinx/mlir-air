@@ -1,5 +1,5 @@
 ---
-name: finalize-and-learn
+name: phase-6-finalize-and-learn
 description: Phase 6 of LLM deployment — integrate Phase 4 prefill + Phase 5 decode into a clean `<model>_inference.py`, write the model's `verify_adapter.py` hooking into the shared `llms/verify/` subsystem + a Makefile (run / verify / verify-full / diagnosis / profile), and confirm `make verify` (top-k token-set gate vs HF bf16) PASSES. That gate is the production-readiness check. Capture lessons learned. Invoked after Phase 5 PASS.
 ---
 
@@ -276,6 +276,6 @@ On Phase 6 PASS:
   `CLAUDE.md` — the top-level `.gitignore` excludes `CLAUDE.md`, so it
   would not ship in the PR.
 - **Hand off to Phase 7**: deploy-new-llm orchestrator now spawns
-  `independent-evaluator` to re-derive every claim from scratch.
+  `phase-7-independent-evaluator` to re-derive every claim from scratch.
   Phase 6 is "deployment is internally complete"; Phase 7 is "deployment
   is independently audited".
