@@ -31,7 +31,8 @@ triages.
 - `programming_examples/llms/llama32_1b/` — the reference Tier-A deployment
   (everything in scope today inherits from this)
 - `programming_examples/llms/verify/` — the **shared** verify subsystem
-  (HF bf16 reference + token-set / per-layer-cosine gates); every model
+  (HF bf16 reference; `make verify` token-set check is the PASS/FAIL gate,
+  `make diagnosis` per-layer cosine is the informational lens); every model
   hooks in via its own `verify_adapter.py`, not by copying this.
 - `programming_examples/llms/llama_kernel_builder/` — the **shared** kernel
   builder (KernelCache, external kernels, stitching, the `ffn_swiglu/`
@@ -279,8 +280,8 @@ architectural axes are genuinely hard, which informs future deployments.
 | 1 | `kernel-validation` | Every leaf kernel × shape: harness atol/rtol element-wise check vs FP32 ref PASSES (GPU/vLLM standard), or `make diagnosis` cosine vs HF bf16 for no-harness kernels; each new shape recorded as a `kernel_registry` row (Used by = `<model>`) + full results in `<model>/docs/` |
 | 2 | `single-block-validation` | Single transformer block on NPU: per-layer cosine vs HF bf16 (diagnosis lens) ≥ 0.99 (whole-tensor) + per-position min ≥ head_dim-scaled threshold |
 | 3 | `full-model-validation` | Full N layers: `make diagnosis` per-layer cos ≥ 0.85 + no cliff; `make verify` token-set gate (top-5 inclusion vs HF bf16) PASSES |
-| 4 | `prefill-optimization` | Apply optimization patterns; correctness preserved (Phase 3 gate re-run) AND prefill kernel time strictly < Phase 3 baseline |
-| 5 | `decode-optimization` | Same shape: correctness preserved AND decode time/token strictly < Phase 4 baseline |
+| 4 | `prefill-optimization` | Apply optimization patterns; correctness preserved (`make verify` token-set still PASSES — diagnosis cosine is the localization lens, not the gate) AND prefill kernel time strictly < Phase 3 baseline |
+| 5 | `decode-optimization` | Same shape: correctness preserved (`make verify` token-set still PASSES) AND decode time/token strictly < Phase 4 baseline |
 | 6 | `finalize-and-learn` | Clean `<model>_inference.py` + `<model>/verify_adapter.py` (shared `llms/verify/`) + Makefile; `make verify` (top-5 token-set vs HF bf16) PASSES |
 | 7 | `independent-evaluator` | Fresh subagent: audit `make verify` (anti-reward-hacking) + re-run as primary gate; produce structured `evaluation_report.md` |
 

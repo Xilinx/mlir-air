@@ -1,6 +1,6 @@
 ---
 name: decode-optimization
-description: Phase 5 of LLM deployment — apply decode-specific optimization patterns to a Phase-4-correct pipeline (multi-launch merge with N-way extern rename, static weight BOs, NPU LM Head GEMV, CPU→NPU promotion). Each step preserves correctness by re-running the Phase 3 gate (make diagnosis per-layer cosine + make verify token-set, both vs HF bf16). Invoked after Phase 4 PASS.
+description: Phase 5 of LLM deployment — apply decode-specific optimization patterns to a Phase-4-correct pipeline (multi-launch merge with N-way extern rename, static weight BOs, NPU LM Head GEMV, CPU→NPU promotion). Each step preserves correctness by re-running the Phase 3 gate — `make verify` (token-set vs HF bf16) is the PASS/FAIL gate; `make diagnosis` per-layer cosine is the informational lens used to localize a regression. Invoked after Phase 4 PASS.
 ---
 
 ## Purpose
@@ -17,11 +17,15 @@ The reference deployment llama3.2-1B took decode from ~500 ms/token →
 
 ## Phase 5 PASS criteria (HARD GATES)
 
-1. **Correctness preserved**: after every applied pattern, the Phase 3
-   PASS criteria still hold (`make diagnosis` per-layer cosine ≥ 0.85 +
-   no cliff; `make verify` token-set gate PASSES). Re-run the Phase 3
-   gate between patterns. If correctness regresses, **revert the
-   pattern** and document why.
+1. **Correctness preserved**: after every applied pattern, **`make verify`
+   (the token-set gate vs HF bf16) still PASSES** — this is the Phase 3
+   correctness gate, re-run between patterns. `make diagnosis` per-layer
+   cosine is NOT a gate (the verify subsystem retired threshold-based
+   diagnosis; `compare_pair` reports cosine with no pass/fail), and note it
+   only probes *prefill* — decode regressions (KV cache, per-token BO
+   reuse) surface in `make verify`'s 32-token generation, not in diagnosis.
+   If `make verify` regresses to FAIL, **revert the pattern** and document
+   why.
 2. **Decode time/token strictly < Phase 4 baseline**, measured with
    `make profile` at the same canonical prompt.
 3. **Per-pattern outcome documented** in
@@ -87,7 +91,7 @@ budget goes today). These numbers gate every pattern below.
 
 Apply A → B → D (skip C unless decode introduced a layout transpose
 that Phase 4 didn't fix). Between each, re-run the Phase 3 gate (`make
-diagnosis` + `make verify`) and re-measure profile.
+verify`) and re-measure profile.
 
 #### Pattern A — Multi-launch merge (decode variants)
 
@@ -166,14 +170,17 @@ standalone harness Phase 1 already validated.
 
 ### Step 3: Re-run Phase 3 gate after each pattern
 
-After every applied pattern:
+After every applied pattern, re-run the gate:
 
 ```bash
-flock -x -w 1800 /tmp/mlir-air-npu.lock make diagnosis   # per-layer cosine
-flock -x -w 1800 /tmp/mlir-air-npu.lock make verify      # token-set gate
+flock -x -w 1800 /tmp/mlir-air-npu.lock make verify      # GATE: token-set, exit 1 on FAIL
 ```
 
-Confirm the Phase 3 gate still passes. If regressed, revert and document why.
+`make verify` PASS is the correctness gate (its 32-token generation is
+what catches decode-only bugs — KV cache, per-token static-BO reuse). If
+it regresses to FAIL, revert the pattern and document why. diagnosis only
+probes prefill, so it cannot localize a decode regression — bisect by
+reverting patterns instead.
 
 ## Failure modes
 

@@ -1,6 +1,6 @@
 ---
 name: prefill-optimization
-description: Phase 4 of LLM deployment — apply known prefill optimization patterns to a Phase-3-correct pipeline (multi-launch merge, BO pre-loading, intermediate buffer reuse, seq-first layout, CPU→NPU op promotion). Each step preserves correctness by re-running the Phase 3 gate (make diagnosis per-layer cosine + make verify token-set, both vs HF bf16). Invoked after Phase 3 PASS.
+description: Phase 4 of LLM deployment — apply known prefill optimization patterns to a Phase-3-correct pipeline (multi-launch merge, BO pre-loading, intermediate buffer reuse, seq-first layout, CPU→NPU op promotion). Each step preserves correctness by re-running the Phase 3 gate — `make verify` (token-set vs HF bf16) is the PASS/FAIL gate; `make diagnosis` per-layer cosine is the informational lens used to localize a regression. Invoked after Phase 3 PASS.
 ---
 
 ## Purpose
@@ -22,11 +22,14 @@ target every deployment must hit.
 
 ## Phase 4 PASS criteria (HARD GATES)
 
-1. **Correctness preserved**: after every applied pattern, the Phase 3
-   PASS criteria still hold (`make diagnosis` per-layer cosine ≥ 0.85 +
-   no cliff; `make verify` token-set gate PASSES). Re-run the Phase 3
-   gate between patterns. If correctness regresses, **revert the
-   pattern** and document why it doesn't apply to this model.
+1. **Correctness preserved**: after every applied pattern, **`make verify`
+   (the token-set gate vs HF bf16) still PASSES** — this is the Phase 3
+   correctness gate, re-run between patterns. `make diagnosis` per-layer
+   cosine is NOT a gate (the verify subsystem retired threshold-based
+   diagnosis; `compare_pair` reports cosine with no pass/fail); run it only
+   to **localize** a regression when verify breaks (which pattern / which
+   layer the cosine cliff appears at). If `make verify` regresses to FAIL,
+   **revert the pattern** and document why it doesn't apply to this model.
 2. **Prefill kernel time strictly < Phase 3 baseline**, measured at
    the same canonical prompt + seq_len with 5-warmup + 20-iter
    profile. Recording wall time too (kernel + host overhead) is good
@@ -80,14 +83,15 @@ cd programming_examples/llms/<model>
 flock -x -w 1800 /tmp/mlir-air-npu.lock make profile
 ```
 
-Record: kernel time (ms) + wall time + per-layer cosine numbers (from
-Phase 3). These are the numbers every pattern below must match or beat.
+Record: kernel time (ms) + wall time. Also note the Phase 3 per-layer
+cosine table as a baseline to compare against *if* a later pattern breaks
+verify (it's the localization reference, not a gate).
 
 ### Step 2: Apply optimization patterns
 
-Apply A → B → C → D. Between each, re-run the Phase 3 gate (`make
-diagnosis` + `make verify`) and re-measure profile. Skip a pattern if the
-trigger condition isn't met (skip reasons go in the log).
+Apply A → B → C → D. Between each, re-run the Phase 3 gate (`make verify`)
+and re-measure profile. Skip a pattern if the trigger condition isn't met
+(skip reasons go in the log).
 
 #### Pattern A — Multi-launch merge (the dominant win)
 
@@ -161,16 +165,25 @@ time per layer. If kernel time dominates, skip.
 
 ### Step 3: Re-run Phase 3 gate after each pattern
 
-After every applied (or attempted) pattern:
+After every applied (or attempted) pattern, re-run the gate:
 
 ```bash
-flock -x -w 1800 /tmp/mlir-air-npu.lock make diagnosis   # per-layer cosine
-flock -x -w 1800 /tmp/mlir-air-npu.lock make verify      # token-set gate
+flock -x -w 1800 /tmp/mlir-air-npu.lock make verify      # GATE: token-set, exit 1 on FAIL
 ```
 
-Confirm the Phase 3 gate still passes (per-layer cos ≥ 0.85 + no cliff;
-`make verify` token-set PASSES). If regressed, revert the pattern and
-document why.
+`make verify` PASS is the correctness gate. If it regresses to FAIL,
+revert the pattern and document why.
+
+Only when verify FAILs, run diagnosis to **localize** the break:
+
+```bash
+flock -x -w 1800 /tmp/mlir-air-npu.lock make diagnosis   # informational: per-layer cosine table
+```
+
+A cosine cliff at layer *i* points at the pattern's broken assumption
+there (e.g. a transpose Pattern C removed that this model actually
+needed). diagnosis does not PASS/FAIL — it is the microscope, verify is
+the gate.
 
 ## Failure modes
 

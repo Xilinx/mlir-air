@@ -62,9 +62,13 @@ gate. See `llms/verify/README.md`.
      divergence, NPU's chosen token ∈ HF top-5 AND HF's chosen token ∈
      NPU top-5 (`compute_topk_set_check`, GATE_K=5, GATE_N_TOKENS=32).
    - `report.has_failure()` is False → exit 0.
-5. **`make diagnosis` runs** and the per-layer cosine table still meets
-   the Phase 3 bar (per-layer ≥ 0.85 + no cliff) — confirms the
-   finalized integration didn't regress the numerical alignment.
+5. **`make diagnosis` runs without error** (informational, not a gate —
+   the verify subsystem retired threshold-based diagnosis; `compare_pair`
+   reports per-layer cosine with no pass/fail). Eyeball the per-layer
+   cosine table against the Phase 3 baseline to confirm the finalized
+   integration didn't perturb the numerical alignment; if criterion 4
+   (`make verify`) FAILs, this table is the localization lens. The gate is
+   criterion 4, not this.
 6. **`make profile` works**: outputs per-phase total (setup / prefill
    total / per-token decode avg / LM head) + key-kernel ms (FA, Down
    GEMM/GEMV, LM Head — the bottleneck candidates).
