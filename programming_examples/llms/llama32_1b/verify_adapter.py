@@ -122,14 +122,18 @@ class NpuRunner:
             bfloat16
         )
 
-        self.prefill_cache = KernelCache(verbose=False)
+        # Per-model cache dirs (absolute, CWD-independent) so concurrent/
+        # back-to-back verify runs of different models never share the default
+        # llama_kernel_builder/kernel_cache/ and pick up each other's stale ELFs.
+        _cache_root = _THIS_DIR / "verify_kernel_cache"
+        self.prefill_cache = KernelCache(str(_cache_root / "prefill"), verbose=False)
         compile_prefill_kernels(
             self.prefill_cache,
             config,
             seq_len=max_seq,
             cpu_attn=self.cpu_attn,
         )
-        self.decode_cache = KernelCache(verbose=False)
+        self.decode_cache = KernelCache(str(_cache_root / "decode"), verbose=False)
         compile_decode_kernels(self.decode_cache, config)
 
         prepare_runtime(

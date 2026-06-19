@@ -226,12 +226,16 @@ class Int4NpuRunner:
 
         # Same multi_launch_builder collision as in inference.py — flush
         # the cached package + repin sys.path[0] around each compile phase.
-        self.prefill_cache = KernelCache(verbose=False)
+        # Per-model cache dirs (absolute, CWD-independent) so verify runs of
+        # different models never share the default llama_kernel_builder/
+        # kernel_cache/ and pick up each other's stale ELFs.
+        _cache_root = _THIS_DIR / "verify_kernel_cache"
+        self.prefill_cache = KernelCache(str(_cache_root / "prefill"), verbose=False)
         with _multi_launch_dir(str(_LLAMA_BF16)):
             compile_prefill_kernels(
                 self.prefill_cache, config, seq_len=max_seq, cpu_attn=self.cpu_attn
             )
-        self.decode_cache = KernelCache(verbose=False)
+        self.decode_cache = KernelCache(str(_cache_root / "decode"), verbose=False)
         with _multi_launch_dir(str(_THIS_DIR)):
             compile_decode_kernels(self.decode_cache, config)
 
