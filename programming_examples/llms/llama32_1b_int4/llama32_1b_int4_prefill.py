@@ -1159,7 +1159,7 @@ def main():
 
             if _need("rms_gemms_rope"):
                 print("\nCompiling rms_gemms_rope (bf16)...")
-                from multi_launch_builder.rms_gemms_rope_multi import (
+                from block_builder.rms_gemms_rope_multi import (
                     build_rms_gemms_rope_module,
                 )
 
@@ -1177,7 +1177,7 @@ def main():
                 )
             if _need("o_ffn"):
                 print("Compiling o_ffn (bf16)...")
-                from multi_launch_builder.o_ffn_multi import build_o_ffn_module
+                from block_builder.o_ffn_multi import build_o_ffn_module
 
                 cache.compile_and_cache(
                     "o_ffn",

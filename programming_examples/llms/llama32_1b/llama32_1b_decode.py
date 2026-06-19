@@ -53,7 +53,7 @@ def compile_decode_kernels(cache, config):
     print(f"{'='*60}\n")
 
     # 1. rms_gemv_rope: RMSNorm + QKV GEMV + RoPE Q+K (6 launches, 13 args)
-    from multi_launch_builder.rms_gemv_rope_multi import (
+    from block_builder.rms_gemv_rope_multi import (
         build_rms_gemv_rope_module,
     )
 
@@ -67,7 +67,7 @@ def compile_decode_kernels(cache, config):
     #                matvec_2tile_add). Post-attention residual is routed
     #                through a row-0 subview of arg6 (the packed RMSNorm
     #                input buffer); see o_gemv_ffn_multi.py for the ABI.
-    from multi_launch_builder.o_gemv_ffn_multi import build_o_gemv_ffn_module
+    from block_builder.o_gemv_ffn_multi import build_o_gemv_ffn_module
 
     cache.compile_and_cache(
         "o_gemv_ffn",
@@ -76,7 +76,7 @@ def compile_decode_kernels(cache, config):
     )
 
     # 3. LM Head GEMV multi-launch: 8-partition GEMV in one ELF
-    from multi_launch_builder.lm_head_gemv_multi import (
+    from block_builder.lm_head_gemv_multi import (
         build_lm_head_gemv_module,
     )
 

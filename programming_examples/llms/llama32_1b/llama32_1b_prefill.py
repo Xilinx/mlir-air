@@ -88,7 +88,7 @@ def _rms_scratch_specs(seq_len, emb_dim, kv_dim):
     to Q,K,V (arg13,14,15). Hardcoding "Q only" was the GQA assumption that
     produced zero K/V at kv_dim==emb_dim.
     """
-    from llama32_1b.gemm_builder import gemm_registry_config
+    from block_builder.gemm_builder import gemm_registry_config
 
     q_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
     k_spec = gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high")
@@ -144,7 +144,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     )
 
     # 1. RMSNorm + QKV GEMMs + RoPE Q+K: one ELF (registry-driven per-GEMM method).
-    from multi_launch_builder.rms_gemms_rope_multi import (
+    from block_builder.rms_gemms_rope_multi import (
         build_rms_gemms_rope_module,
     )
 
@@ -157,7 +157,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     )
 
     # 3. O GEMM + Residual Add + FFN (registry-driven fused-cast GEMMs).
-    from multi_launch_builder.o_ffn_multi import build_o_ffn_module
+    from block_builder.o_ffn_multi import build_o_ffn_module
 
     o_ffn_backend = {
         "verbose": cache.verbose,

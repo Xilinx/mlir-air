@@ -27,7 +27,6 @@ import sys
 import numpy as np
 from ml_dtypes import bfloat16
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -222,7 +221,7 @@ def build_rms_gemms_rope_module(
             %arg11: q_roped     (seq_len, emb_dim)       RoPE Q output (2D)
             %arg12: k_roped     (seq_len, kv_dim)        RoPE K output (2D)
     """
-    from llama32_1b.gemm_builder import _build_gemm_module, gemm_registry_config
+    from block_builder.gemm_builder import _build_gemm_module, gemm_registry_config
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
 
     # Per-GEMM config from the kernel_registry JSON (single source of truth): method

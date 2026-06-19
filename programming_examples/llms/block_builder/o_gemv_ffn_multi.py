@@ -54,17 +54,16 @@ sys.path.insert(
         os.path.dirname(__file__),
         "..",
         "..",
-        "..",
         "matrix_vector_multiplication",
         "bf16_cascade",
     ),
 )
 sys.path.insert(
     0,
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "decode_ffn_swiglu"),
+    os.path.join(os.path.dirname(__file__), "..", "..", "decode_ffn_swiglu"),
 )
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from matvec_2tile_add import build_module as build_2tile_add
 from matvec_swiglu_rms import build_module as build_swiglu_rms

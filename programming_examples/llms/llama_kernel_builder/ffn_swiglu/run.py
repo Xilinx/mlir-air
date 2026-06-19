@@ -127,7 +127,7 @@ def build_ffn_module(
     Args:
         print_kernels: If True, print each sub-kernel's MLIR before stitching.
     """
-    from llama32_1b.gemm_builder import _build_gemm_module
+    from block_builder.gemm_builder import _build_gemm_module
 
     # Import silu_and_mul from the standalone kernel example
     # (programming_examples/silu_and_mul/), which this FFN test reuses.

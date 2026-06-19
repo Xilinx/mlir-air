@@ -33,7 +33,6 @@ import filelock
 import numpy as np
 from ml_dtypes import bfloat16
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -228,7 +227,7 @@ def _build_o_ffn(
     buffers are func args 15..18. GPU-standard 9.3e-3 precision. Needs mm_m64.o +
     runtime_loop_tiling_sizes=[2,2] (BD-ID recycling).
     """
-    from llama32_1b.gemm_builder import (
+    from block_builder.gemm_builder import (
         _build_gemm_module,
         gemm_registry_config,
     )
