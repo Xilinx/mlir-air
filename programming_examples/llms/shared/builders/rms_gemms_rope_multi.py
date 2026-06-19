@@ -42,13 +42,11 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
 from shared.infra.stitching import (
-    _extract_between_func_and_return,
-    _extract_affine_maps,
-    _extract_private_funcs,
-    _rename_all,
-    _fix_launch_func_args,
     _wrap_ir_in_launch,
-    _rename_all_with_externs,
+    stitch_elf,
+    KernelSlice,
+    FuncArg,
+    alloc_gemm_scratch,
 )
 
 range_ = for_
@@ -338,109 +336,82 @@ def build_rms_gemms_rope_module(
             print(f"{'='*60}")
             print(ir)
 
-    # ---- Stitch ----
-    # Arg mapping (combined func arg indices). Base bf16 args 0..12; when a GEMM is
-    # fused-cast it gets ONE extra f32 C-scratch arg appended at 13+ and its arg_map
-    # gains slot 2->scratch, 3->bf16-out (drain stays {0:in,1:w,2:out}).
+    # ---- Stitch (declarative via stitch_elf) ----
+    # Base bf16 signature args 0..12. Each fused-cast GEMM appends one f32
+    # C-scratch tail arg (13+), allocated registry-driven by alloc_gemm_scratch
+    # in Q,K,V order; drain GEMMs get none. GQA -> 1 scratch (Q), MHA -> 3.
     #   RMSNorm:  {0->0, 1->1, 2->2}       (x_in, norm_w, normed)
     #   Q GEMM:   normed=2, wq=3, q=4   (+ q_f32 scratch if fused)
     #   K GEMM:   normed=2, wk=5, k=6   (+ k_f32 scratch if fused)
     #   V GEMM:   normed=2, wv=7, v=8   (+ v_f32 scratch if fused)
     #   RoPE Q:   {0->4, 1->9, 2->11}      (q[2D], lut_q[1D], q_roped[2D])
     #   RoPE K:   {0->6, 1->10, 2->12}     (k[2D], lut_k[1D], k_roped[2D])
+    scratch_args, scratch_for = alloc_gemm_scratch(
+        [
+            (q_spec, seq_len, emb_dim),
+            (k_spec, seq_len, kv_dim),
+            (v_spec, seq_len, kv_dim),
+        ],
+        base_arg_count=13,
+    )
 
-    # Combined extern_funcs: GEMM + RoPE + RMSNorm externals. Each fused/drain GEMM
-    # uses suffixed mm.o symbols (_m64 / _m32) so both variants co-link in one ELF.
-    _EXTERN_FUNCS = {"@matmul_bf16", "@zero_vectorized_bf16", "@rope"}
-    for sp in (q_spec, k_spec, v_spec):
-        sfx = sp["sym_suffix"]
-        _EXTERN_FUNCS |= {
+    def _gemm_arg_map(in_idx, w_idx, out_idx, sc):
+        if sc is not None:  # fused-cast: {0:in, 1:w, 2:Cf32-scratch, 3:bf16-out}
+            return {0: in_idx, 1: w_idx, 2: sc, 3: out_idx}
+        return {0: in_idx, 1: w_idx, 2: out_idx}  # drain: {0:in, 1:w, 2:bf16-out}
+
+    # Per-GEMM externs: each fused/drain GEMM uses suffixed mm.o symbols
+    # (_m64 / _m32) so both variants co-link in one ELF.
+    def _gemm_externs(spec):
+        sfx = spec["sym_suffix"]
+        return {
             "@op_has_no_registered_library_name" + sfx,
             "@zero_f32_mn" + sfx,
             "@f32_to_bf16_mn" + sfx,
         }
 
-    # Build the GEMM arg_maps + f32-scratch func args. f32-scratch args start at 13.
-    _scratch_args = []  # MLIR type strings appended to the func signature
-    _next_scratch = 13
+    base_args = [
+        FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg1", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg2", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg3", f"memref<{emb_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg4", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg5", f"memref<{emb_dim}x{kv_dim}xbf16>"),
+        FuncArg("%arg6", f"memref<{seq_len}x{kv_dim}xbf16>"),
+        FuncArg("%arg7", f"memref<{emb_dim}x{kv_dim}xbf16>"),
+        FuncArg("%arg8", f"memref<{seq_len}x{kv_dim}xbf16>"),
+        FuncArg("%arg9", f"memref<{q_total}xbf16>"),
+        FuncArg("%arg10", f"memref<{k_total}xbf16>"),
+        FuncArg("%arg11", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg12", f"memref<{seq_len}x{kv_dim}xbf16>"),
+    ]
 
-    def _gemm_arg_map(spec, in_idx, w_idx, out_idx, out_rows, out_cols):
-        nonlocal _next_scratch
-        if spec["needs_f32_scratch"]:
-            sc = _next_scratch
-            _next_scratch += 1
-            _scratch_args.append(f"    ,%arg{sc}: memref<{out_rows}x{out_cols}xf32>")
-            # fused-cast: {0:in, 1:w, 2:Cf32-scratch, 3:bf16-out}
-            return {0: in_idx, 1: w_idx, 2: sc, 3: out_idx}
-        # drain: {0:in, 1:w, 2:bf16-out}
-        return {0: in_idx, 1: w_idx, 2: out_idx}
+    slices = [
+        KernelSlice(rms_ir, "r", {0: 0, 1: 1, 2: 2}, extern_syms={"@zero_vectorized_bf16"}),
+        KernelSlice(
+            q_ir, "q", _gemm_arg_map(2, 3, 4, scratch_for[0]),
+            extern_syms={"@matmul_bf16"} | _gemm_externs(q_spec),
+        ),
+        KernelSlice(
+            k_ir, "k", _gemm_arg_map(2, 5, 6, scratch_for[1]),
+            extern_syms={"@matmul_bf16"} | _gemm_externs(k_spec),
+        ),
+        KernelSlice(
+            v_ir, "v", _gemm_arg_map(2, 7, 8, scratch_for[2]),
+            extern_syms={"@matmul_bf16"} | _gemm_externs(v_spec),
+        ),
+        KernelSlice(rope_q_ir, "rq", {0: 4, 1: 9, 2: 11}, extern_syms={"@rope"}),
+        KernelSlice(rope_k_ir, "rk", {0: 6, 1: 10, 2: 12}, extern_syms={"@rope"}),
+    ]
 
-    q_map = _gemm_arg_map(q_spec, 2, 3, 4, seq_len, emb_dim)
-    k_map = _gemm_arg_map(k_spec, 2, 5, 6, seq_len, kv_dim)
-    v_map = _gemm_arg_map(v_spec, 2, 7, 8, seq_len, kv_dim)
-
-    bodies, maps_all = [], []
-    for ir, prefix, arg_map in [
-        (rms_ir, "r", {0: 0, 1: 1, 2: 2}),
-        (q_ir, "q", q_map),
-        (k_ir, "k", k_map),
-        (v_ir, "v", v_map),
-        (rope_q_ir, "rq", {0: 4, 1: 9, 2: 11}),
-        (rope_k_ir, "rk", {0: 6, 1: 10, 2: 12}),
-    ]:
-        body = _extract_between_func_and_return(ir)
-        maps = _extract_affine_maps(ir)
-        body = _rename_all_with_externs(body, prefix, _EXTERN_FUNCS)
-        maps = [_rename_all_with_externs(m, prefix, _EXTERN_FUNCS) for m in maps]
-        body = _fix_launch_func_args(body, prefix, arg_map)
-        bodies.append(body)
-        maps_all.extend(maps)
-
-    # Collect private func declarations (RoPE has @rope, RMSNorm has
-    # @zero_vectorized_bf16). Each external GEMM variant adds its suffixed mm.o
-    # symbols; q_ir covers _m64 (fused Q), k_ir covers _m32 (drain K/V).
-    all_privates = set()
-    for ir in [rms_ir, rope_q_ir, q_ir, k_ir, v_ir]:
-        for p in _extract_private_funcs(ir):
-            all_privates.add(p.strip())
-    privates_str = "\n  ".join(sorted(all_privates))
-
-    _scratch_sig = ("\n" + "\n".join(_scratch_args)) if _scratch_args else ""
-
-    # Assemble (13 base func args + N f32 scratch, 6+ launches)
-    combined = "\n".join(maps_all) + f"""
-module {{
-  {privates_str}
-  func.func @rms_gemms_rope(
-    %arg0: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg1: memref<{emb_dim}xbf16>,
-    %arg2: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg3: memref<{emb_dim}x{emb_dim}xbf16>,
-    %arg4: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg5: memref<{emb_dim}x{kv_dim}xbf16>,
-    %arg6: memref<{seq_len}x{kv_dim}xbf16>,
-    %arg7: memref<{emb_dim}x{kv_dim}xbf16>,
-    %arg8: memref<{seq_len}x{kv_dim}xbf16>,
-    %arg9: memref<{q_total}xbf16>,
-    %arg10: memref<{k_total}xbf16>,
-    %arg11: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg12: memref<{seq_len}x{kv_dim}xbf16>{_scratch_sig}
-  ) {{
-{bodies[0]}
-{bodies[1]}
-{bodies[2]}
-{bodies[3]}
-{bodies[4]}
-{bodies[5]}
-    return
-  }}
-}}
-"""
-
-    with Context() as ctx:
-        module = Module.parse(combined, ctx)
-        print(f"  Module: {len(combined.splitlines())} lines, parsed OK")
-        return module
+    module = stitch_elf(
+        "rms_gemms_rope",
+        base_args,
+        slices,
+        scratch_args=scratch_args,
+    )
+    print(f"  Module: {len(str(module).splitlines())} lines, parsed OK")
+    return module
 
 
 # ---------------------------------------------------------------------------
