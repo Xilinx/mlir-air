@@ -28,11 +28,9 @@ sys.path.insert(
 )
 
 from shared.infra.stitching import (
-    _extract_between_func_and_return,
-    _extract_affine_maps,
-    _extract_private_funcs,
-    _fix_launch_func_args,
-    _rename_all_with_externs,
+    stitch_elf,
+    KernelSlice,
+    FuncArg,
 )
 
 _EXTERN_FUNCS = {"@matvec_vectorized_bf16_bf16", "@linalg_fill_bf16"}
@@ -67,49 +65,29 @@ def build_lm_head_gemv_module(
         build_gemv(n_part, emb_dim, tile_m, m_input, herd_m, bfloat16, bfloat16)
     )
 
-    # Extract private function declarations (shared across all partitions)
-    privates = _extract_private_funcs(gemv_ir)
-    privates_str = "\n  ".join(p.strip() for p in privates)
-
-    # Stitch 8 copies with different arg mappings
-    # GEMV func has 3 args: {0: weight (MxK), 1: input (K,), 2: output (M,)}
-    # Combined func: arg0=shared_input, arg(1+2p)=weight_p, arg(2+2p)=output_p
-    # Per-partition mapping: {0: 1+2*p, 1: 0, 2: 2+2*p}
-    bodies, maps_all = [], []
+    # Stitch n_partitions copies of the GEMV, each onto its own (weight, output)
+    # arg pair, all sharing arg0 (input vector).
+    # GEMV func has 3 args: {0: weight (MxK), 1: input (K,), 2: output (M,)}.
+    # Combined: arg0=shared_input, arg(1+2p)=weight_p, arg(2+2p)=output_p.
+    # Per-partition mapping: {0: 1+2*p, 1: 0, 2: 2+2*p}.
+    base_args = [FuncArg("%arg0", f"memref<{emb_dim}xbf16>")]
     for p in range(n_partitions):
-        prefix = f"p{p}"
-        body = _extract_between_func_and_return(gemv_ir)
-        maps = _extract_affine_maps(gemv_ir)
-        body = _rename_all_with_externs(body, prefix, _EXTERN_FUNCS)
-        maps = [_rename_all_with_externs(m, prefix, _EXTERN_FUNCS) for m in maps]
-        body = _fix_launch_func_args(body, prefix, {0: 1 + 2 * p, 1: 0, 2: 2 + 2 * p})
-        bodies.append(body)
-        maps_all.extend(maps)
+        base_args.append(FuncArg(f"%arg{1+2*p}", f"memref<{n_part}x{emb_dim}xbf16>"))
+        base_args.append(FuncArg(f"%arg{2+2*p}", f"memref<{n_part}xbf16>"))
 
-    # Build func signature: 1 shared input + 8 (weight, output) pairs
-    arg_lines = [f"    %arg0: memref<{emb_dim}xbf16>"]
-    for p in range(n_partitions):
-        arg_lines.append(f"    %arg{1+2*p}: memref<{n_part}x{emb_dim}xbf16>")
-        arg_lines.append(f"    %arg{2+2*p}: memref<{n_part}xbf16>")
-
-    combined = "\n".join(maps_all) + f"""
-module {{
-  {privates_str}
-  func.func @lm_head_gemv(
-{(',' + chr(10)).join(arg_lines)}
-  ) {{
-{chr(10).join(bodies)}
-    return
-  }}
-}}
-"""
-
-    from air.ir import Module, Context
-
-    with Context() as ctx:
-        module = Module.parse(combined, ctx)
-        print(
-            f"  Module: {len(combined.splitlines())} lines, "
-            f"{1+2*n_partitions} args, {n_partitions} launches, parsed OK"
+    slices = [
+        KernelSlice(
+            gemv_ir,
+            f"p{p}",
+            {0: 1 + 2 * p, 1: 0, 2: 2 + 2 * p},
+            extern_syms=_EXTERN_FUNCS,
         )
-        return module
+        for p in range(n_partitions)
+    ]
+
+    module = stitch_elf("lm_head_gemv", base_args, slices)
+    print(
+        f"  Module: {len(str(module).splitlines())} lines, "
+        f"{1+2*n_partitions} args, {n_partitions} launches, parsed OK"
+    )
+    return module

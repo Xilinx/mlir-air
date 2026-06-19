@@ -323,6 +323,7 @@ def stitch_elf(
     scratch_args=(),
     prelude="",
     extra_externs=frozenset(),
+    allow_unreferenced_args=(),
     debug_dump_path=None,
 ):
     """Assemble sub-kernel IRs into one multi-launch module and parse it.
@@ -338,6 +339,11 @@ def stitch_elf(
     prelude: SSA injected at the top of the combined func body (before any
         slice), e.g. a subview/cast that `arg_aliases` route onto.
     extra_externs: externs to preserve beyond the union of slice.extern_syms.
+    allow_unreferenced_args: set of combined-arg indices that are intentionally
+        present in the signature but not wired to any launch (dead-ABI
+        placeholders kept for cross-variant ABI compatibility). Excludes them
+        from the dangling-arg check. Use sparingly — the default behavior of
+        flagging unreferenced args is what catches silent arg drift.
     debug_dump_path: if parsing fails, write the combined IR here before
         re-raising.
 
@@ -351,7 +357,6 @@ def stitch_elf(
     # --- Validation (hard errors — silent arg drift is the bug class we kill) ---
     referenced = set()
     for sl in slices:
-        operands = set(sl.arg_map) | set(sl.arg_aliases)
         overlap = set(sl.arg_map) & set(sl.arg_aliases)
         if overlap:
             raise ValueError(
@@ -366,11 +371,13 @@ def stitch_elf(
                     f"[0,{n_args})"
                 )
             referenced.add(combined_idx)
-    unreferenced = set(range(n_args)) - referenced
+    unreferenced = set(range(n_args)) - referenced - set(allow_unreferenced_args)
     if unreferenced:
         raise ValueError(
             f"stitch_elf: combined func arg(s) {sorted(unreferenced)} are never "
-            f"referenced by any slice's arg_map (dangling signature args)"
+            f"referenced by any slice's arg_map (dangling signature args). If "
+            f"intentional (dead-ABI placeholders), pass them in "
+            f"allow_unreferenced_args."
         )
 
     # --- Mechanical stitch (extract / rename / fixup) ---
@@ -379,28 +386,38 @@ def stitch_elf(
         externs |= set(sl.extern_syms)
 
     bodies, maps_all, all_privates = [], [], set()
+    all_chans = []  # ordered, textually deduped (per-slice prefix makes unique)
+    _seen_chans = set()
     for sl in slices:
         body = _extract_between_func_and_return(sl.ir)
         maps = _extract_affine_maps(sl.ir)
+        chans = _extract_channel_decls(sl.ir)
         body = _rename_all_with_externs(body, sl.prefix, externs)
         maps = [_rename_all_with_externs(m, sl.prefix, externs) for m in maps]
+        chans = [_rename_all_with_externs(c, sl.prefix, externs) for c in chans]
         body = _fix_launch_func_args(
             body, sl.prefix, sl.arg_map, arg_aliases=sl.arg_aliases
         )
         bodies.append(body)
         maps_all.extend(maps)
+        for c in chans:
+            cs = c.strip()
+            if cs not in _seen_chans:
+                _seen_chans.add(cs)
+                all_chans.append(cs)
         if sl.private_from:
             for p in _extract_private_funcs(sl.ir):
                 all_privates.add(p.strip())
 
     privates_str = "\n  ".join(sorted(all_privates))
+    chans_str = "".join("  " + c + "\n" for c in all_chans)
     sig = ",\n    ".join(f"{a.name}: {a.type}" for a in all_args)
     prelude_str = (prelude + "\n") if prelude else ""
     bodies_str = "\n".join(bodies)
 
     combined = "\n".join(maps_all) + f"""
 module {{
-  {privates_str}
+{chans_str}  {privates_str}
   func.func @{func_name}(
     {sig}
   ) {{
