@@ -39,15 +39,15 @@ from ml_dtypes import bfloat16
 _PROG_EXAMPLES = str(Path(__file__).resolve().parent.parent.parent)
 if _PROG_EXAMPLES not in sys.path:
     sys.path.insert(0, _PROG_EXAMPLES)
-# Also add llms/ for sibling LLM packages (llama_kernel_builder).
+# Also add llms/ for sibling LLM packages (shared.infra).
 _LLMS_DIR = str(Path(__file__).resolve().parent.parent)
 if _LLMS_DIR not in sys.path:
     sys.path.insert(0, _LLMS_DIR)
 
 from llama32_1b_weights import LlamaConfig, load_weights, generate_rope_lut
 from llama32_1b_cpu_helpers import attention_reference
-from llama_kernel_builder.cache import KernelCache, Profiler
-from llama_kernel_builder.backend_presets import (
+from shared.infra.cache import KernelCache, Profiler
+from shared.infra.backend_presets import (
     SIMPLE_BACKEND,
     RMS_GEMMS_ROPE_BACKEND,
     O_FFN_BACKEND,
@@ -65,13 +65,13 @@ from llama_kernel_builder.backend_presets import (
 
 
 def _o_ffn_run_backend():
-    from llama_kernel_builder.backend_presets import O_FFN_BACKEND as _base
+    from shared.infra.backend_presets import O_FFN_BACKEND as _base
 
     return {**_base, "runtime_loop_tiling_sizes": [2, 2]}
 
 
 def _rms_gemms_rope_run_backend():
-    from llama_kernel_builder.backend_presets import RMS_GEMMS_ROPE_BACKEND as _base
+    from shared.infra.backend_presets import RMS_GEMMS_ROPE_BACKEND as _base
 
     return {**_base, "runtime_loop_tiling_sizes": [2, 2]}
 
@@ -88,7 +88,7 @@ def _rms_scratch_specs(seq_len, emb_dim, kv_dim):
     to Q,K,V (arg13,14,15). Hardcoding "Q only" was the GQA assumption that
     produced zero K/V at kv_dim==emb_dim.
     """
-    from block_builder.gemm_builder import gemm_registry_config
+    from shared.builders.gemm_builder import gemm_registry_config
 
     q_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
     k_spec = gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high")
@@ -134,7 +134,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     # them). The per-GEMM-method builders reference SUFFIXED symbols + filenames so
     # drain (_m32 / mm_m32.o, tile_m=32) and fused-cast (_m64 / mm_m64.o, tile_m=64)
     # can co-link in ONE ELF (rms mixes them; o_ffn is all-fused).
-    from llama_kernel_builder.external_kernels import compile_gemm_mm
+    from shared.infra.external_kernels import compile_gemm_mm
 
     compile_gemm_mm(
         tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
@@ -144,7 +144,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     )
 
     # 1. RMSNorm + QKV GEMMs + RoPE Q+K: one ELF (registry-driven per-GEMM method).
-    from block_builder.rms_gemms_rope_multi import (
+    from shared.builders.rms_gemms_rope_multi import (
         build_rms_gemms_rope_module,
     )
 
@@ -157,7 +157,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     )
 
     # 3. O GEMM + Residual Add + FFN (registry-driven fused-cast GEMMs).
-    from block_builder.o_ffn_multi import build_o_ffn_module
+    from shared.builders.o_ffn_multi import build_o_ffn_module
 
     o_ffn_backend = {
         "verbose": cache.verbose,

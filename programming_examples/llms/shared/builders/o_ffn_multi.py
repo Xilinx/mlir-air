@@ -33,8 +33,8 @@ import filelock
 import numpy as np
 from ml_dtypes import bfloat16
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
@@ -47,7 +47,7 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import type_mapper
 from air.backend.xrt import XRTBackend
 
-from llama_kernel_builder.stitching import (
+from shared.infra.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
@@ -227,7 +227,7 @@ def _build_o_ffn(
     buffers are func args 15..18. GPU-standard 9.3e-3 precision. Needs mm_m64.o +
     runtime_loop_tiling_sizes=[2,2] (BD-ID recycling).
     """
-    from block_builder.gemm_builder import (
+    from shared.builders.gemm_builder import (
         _build_gemm_module,
         gemm_registry_config,
     )
@@ -588,7 +588,7 @@ if __name__ == "__main__":
 
     SEQ_LEN, EMB_DIM, HIDDEN_DIM = 2048, 2048, 8192
 
-    from llama_kernel_builder.external_kernels import (
+    from shared.infra.external_kernels import (
         compile_silu_and_mul,
         compile_gemm_mm,
     )

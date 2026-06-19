@@ -31,7 +31,7 @@ for _p in (str(_LLMS_DIR), str(_VERIFY), str(_THIS_DIR)):
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
-from llama_kernel_builder.cache import KernelCache  # noqa: E402
+from shared.infra.cache import KernelCache  # noqa: E402
 from llama32_1b_prefill import (  # noqa: E402
     compile_all_kernels as compile_prefill_kernels,
     run_transformer_block as run_prefill_block,
@@ -124,7 +124,7 @@ class NpuRunner:
 
         # Per-model cache dirs (absolute, CWD-independent) so concurrent/
         # back-to-back verify runs of different models never share the default
-        # llama_kernel_builder/kernel_cache/ and pick up each other's stale ELFs.
+        # shared/infra/kernel_cache/ and pick up each other's stale ELFs.
         _cache_root = _THIS_DIR / "verify_kernel_cache"
         self.prefill_cache = KernelCache(str(_cache_root / "prefill"), verbose=False)
         compile_prefill_kernels(

@@ -6,5 +6,5 @@
 # XRT invocation. Parameterized purely by shapes (seq_len, emb_dim, kv_dim, ...);
 # any model (llama32_1b, smollm2, future qwen3/MoE) assembles its own transformer
 # block from these. The low-level text-stitching primitives live in
-# llama_kernel_builder.stitching; gemm_builder.py is the per-shape GEMM adapter
+# shared.infra.stitching; gemm_builder.py is the per-shape GEMM adapter
 # over matrix_multiplication + kernel_registry.

@@ -30,7 +30,7 @@ def prepare_air_project(quant: str = "bf16"):
     air_proj.mkdir(parents=True, exist_ok=True)
 
     # Compile external kernels from source (not stale .o copies)
-    from llama_kernel_builder.external_kernels import compile_all_external_kernels
+    from shared.infra.external_kernels import compile_all_external_kernels
 
     compile_all_external_kernels(quant=quant)
 

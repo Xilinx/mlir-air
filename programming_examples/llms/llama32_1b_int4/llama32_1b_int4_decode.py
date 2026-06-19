@@ -39,8 +39,8 @@ for _p in (_PROG_EXAMPLES, _LLAMA_BF16, _THIS_DIR):
     sys.path.insert(0, _p)
 
 from llama32_1b_weights import LlamaConfig  # noqa: E402
-from llama_kernel_builder.cache import KernelCache  # noqa: E402
-from llama_kernel_builder.backend_presets import (  # noqa: E402
+from shared.infra.cache import KernelCache  # noqa: E402
+from shared.infra.backend_presets import (  # noqa: E402
     RGR_INT4_BACKEND,
     OGF_INT4_BACKEND,
     LM_GEMV_BACKEND,
@@ -68,7 +68,7 @@ def _dead_buf(shape, dtype=bfloat16):
 def compile_decode_kernels(cache, config):
     """Compile the 3 int4 decode kernels (rms_qkv_int4_rope, o_gemv_ffn_int4,
     lm_head_gemv)."""
-    from llama_kernel_builder.external_kernels import compile_all_external_kernels
+    from shared.infra.external_kernels import compile_all_external_kernels
 
     compile_all_external_kernels(head_dim=config.head_dim, quant="awq")
 
@@ -110,12 +110,12 @@ def compile_decode_kernels(cache, config):
     )
 
     # lm_head_gemv is architecture-orthogonal — import it from the shared
-    # block_builder package. (Previously this had to load the bf16 sibling by
-    # file path to dodge a `multi_launch_builder` name collision between the
-    # bf16 and int4 dirs; the shared block_builder name removed that collision.)
+    # builders package. (Previously this had to load the bf16 sibling by file
+    # path to dodge a `multi_launch_builder` name collision between the bf16 and
+    # int4 dirs; the shared builders package name removed that collision.)
     # LM head stays bf16 — AMD's AWQ checkpoint keeps it un-quantized, and we
     # tie to embed_table.
-    from block_builder.lm_head_gemv_multi import build_lm_head_gemv_module
+    from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
 
     cache.compile_and_cache(
         "lm_head_gemv",

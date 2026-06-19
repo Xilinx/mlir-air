@@ -40,7 +40,7 @@ from smollm2_1_7b_weights import (  # noqa: E402
     load_weights,
     generate_rope_lut,
 )
-from llama_kernel_builder.cache import KernelCache, Profiler  # noqa: E402
+from shared.infra.cache import KernelCache, Profiler  # noqa: E402
 from llama32_1b_prefill import compile_all_kernels  # noqa: E402
 from llama32_1b_decode import compile_decode_kernels  # noqa: E402
 

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+# Dev-only design/notes kept locally for development reference; excluded from
+# upstream PR to keep the shared toolkit focused.
+docs/design/
+docs/development_progress/

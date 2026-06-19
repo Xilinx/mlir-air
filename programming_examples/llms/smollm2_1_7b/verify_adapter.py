@@ -33,7 +33,7 @@ for _p in (str(_LLMS_DIR), str(_VERIFY), str(_LLAMA_REF), str(_THIS_DIR)):
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
-from llama_kernel_builder.cache import KernelCache  # noqa: E402
+from shared.infra.cache import KernelCache  # noqa: E402
 
 # SmolLM2 is pure MHA (kv_dim == emb_dim). The shared llama32_1b_prefill
 # run_transformer_block / preload_prefill_weights are registry-driven and
@@ -131,7 +131,7 @@ class NpuRunner:
         )
 
         # Per-model cache dirs (absolute, CWD-independent) so verify runs of
-        # different models never share the default llama_kernel_builder/
+        # different models never share the default shared/infra/
         # kernel_cache/ and pick up each other's stale ELFs.
         _cache_root = _THIS_DIR / "verify_kernel_cache"
         self.prefill_cache = KernelCache(str(_cache_root / "prefill"), verbose=False)

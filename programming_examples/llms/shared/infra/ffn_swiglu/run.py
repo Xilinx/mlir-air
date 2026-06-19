@@ -25,9 +25,9 @@ import time
 import numpy as np
 from ml_dtypes import bfloat16
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from air.ir import *
 from air.dialects.air import *
@@ -127,7 +127,7 @@ def build_ffn_module(
     Args:
         print_kernels: If True, print each sub-kernel's MLIR before stitching.
     """
-    from block_builder.gemm_builder import _build_gemm_module
+    from shared.builders.gemm_builder import _build_gemm_module
 
     # Import silu_and_mul from the standalone kernel example
     # (programming_examples/silu_and_mul/), which this FFN test reuses.
@@ -135,6 +135,7 @@ def build_ffn_module(
 
     _silu_path = os.path.join(
         os.path.dirname(__file__),
+        "..",
         "..",
         "..",
         "..",

@@ -27,8 +27,8 @@ import sys
 import numpy as np
 from ml_dtypes import bfloat16
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
@@ -41,7 +41,7 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
-from llama_kernel_builder.stitching import (
+from shared.infra.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
@@ -221,7 +221,7 @@ def build_rms_gemms_rope_module(
             %arg11: q_roped     (seq_len, emb_dim)       RoPE Q output (2D)
             %arg12: k_roped     (seq_len, kv_dim)        RoPE K output (2D)
     """
-    from block_builder.gemm_builder import _build_gemm_module, gemm_registry_config
+    from shared.builders.gemm_builder import _build_gemm_module, gemm_registry_config
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
 
     # Per-GEMM config from the kernel_registry JSON (single source of truth): method

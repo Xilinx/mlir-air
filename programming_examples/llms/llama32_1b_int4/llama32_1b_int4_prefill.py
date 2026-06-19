@@ -47,9 +47,9 @@ for p in (_PROG_EXAMPLES, _LLAMA_BF16, str(_THIS_DIR)):
 
 from llama32_1b_weights import LlamaConfig, generate_rope_lut
 from llama32_1b_cpu_helpers import rms_norm, attention_reference
-from llama_kernel_builder import cache as _cache_mod
-from llama_kernel_builder.cache import KernelCache, Profiler
-from llama_kernel_builder.external_kernels import (
+from shared.infra import cache as _cache_mod
+from shared.infra.cache import KernelCache, Profiler
+from shared.infra.external_kernels import (
     _compile_kernel,
     _PROJ_ROOT,
     compile_rope,
@@ -1152,14 +1152,14 @@ def main():
             # bf16 prefill: dequantized AWQ weights through the bf16 stitchers
             # (~3-6x faster compute per layer; see bisection findings).
             sys.path.insert(0, _LLAMA_BF16)
-            from llama_kernel_builder.backend_presets import (
+            from shared.infra.backend_presets import (
                 RMS_GEMMS_ROPE_BACKEND,
                 O_FFN_BACKEND,
             )
 
             if _need("rms_gemms_rope"):
                 print("\nCompiling rms_gemms_rope (bf16)...")
-                from block_builder.rms_gemms_rope_multi import (
+                from shared.builders.rms_gemms_rope_multi import (
                     build_rms_gemms_rope_module,
                 )
 
@@ -1177,7 +1177,7 @@ def main():
                 )
             if _need("o_ffn"):
                 print("Compiling o_ffn (bf16)...")
-                from block_builder.o_ffn_multi import build_o_ffn_module
+                from shared.builders.o_ffn_multi import build_o_ffn_module
 
                 cache.compile_and_cache(
                     "o_ffn",
