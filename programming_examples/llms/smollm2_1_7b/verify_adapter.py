@@ -34,26 +34,15 @@ for _p in (str(_LLMS_DIR), str(_VERIFY), str(_LLAMA_REF), str(_THIS_DIR)):
     sys.path.insert(0, _p)
 
 from llama_kernel_builder.cache import KernelCache  # noqa: E402
+
+# SmolLM2 is pure MHA (kv_dim == emb_dim). The shared llama32_1b_prefill
+# run_transformer_block / preload_prefill_weights are registry-driven and
+# MHA-safe (per-shape gemm_registry_config supplies the fused-cast f32 C-scratch
+# args), so they're used directly — no fork or monkeypatch.
 from llama32_1b_prefill import (  # noqa: E402
     compile_all_kernels as compile_prefill_kernels,
-)
-
-# SmolLM2 is pure MHA (kv_dim == emb_dim); the reference run_transformer_block
-# hardcodes a GQA scratch-arg assumption that produces NaN K/V at kv_dim=2048.
-# Use the MHA-safe registry-driven fork. We also patch the name inside
-# llama32_1b_inference so run_npu_prefill (logits path) uses the fixed block too.
-from smollm2_1_7b_prefill import (
     run_transformer_block as run_prefill_block,
-    preload_prefill_weights as _smol_preload,
-)  # noqa: E402
-import llama32_1b_inference as _llama_inf  # noqa: E402
-
-# Patch BOTH the block AND preload: prepare_runtime() calls preload BEFORE
-# inference, pre-populating the per-layer BO set + arg cache. Patching only the
-# block would leave preload's 14-arg (GQA) BO set in place, which every later
-# call reuses by bo_key — so K/V's MHA scratch args (14,15) would be missing.
-_llama_inf.run_transformer_block = run_prefill_block
-_llama_inf.preload_prefill_weights = _smol_preload
+)
 
 from llama32_1b_decode import compile_decode_kernels  # noqa: E402
 from llama32_1b_inference import (  # noqa: E402

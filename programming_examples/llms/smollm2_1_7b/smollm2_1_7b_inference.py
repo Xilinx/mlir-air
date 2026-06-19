@@ -5,14 +5,15 @@
 
 SmolLM2 is a bit-for-bit llama kernel sequence, so the heavy machinery (Session,
 prepare_runtime, run_npu_prefill, run_npu_decode_step, generate, REPL, profiling
-printers) is reused verbatim from `llama32_1b_inference`. This module only:
+printers) is reused verbatim from `llama32_1b_inference`. SmolLM2 is pure MHA
+(n_kv_heads == n_heads, kv_dim == emb_dim); the shared
+llama32_1b_prefill.run_transformer_block / preload_prefill_weights are
+registry-driven and MHA-safe (they query gemm_registry_config per shape for the
+fused-cast f32 C-scratch args), so no fork/monkeypatch is needed. This module
+only:
 
-  1. Patches the two prefill functions that hardcode the GQA scratch-arg
-     assumption (run_transformer_block + preload_prefill_weights) with the
-     MHA-safe registry-driven fork in `smollm2_1_7b_prefill` (see that file +
-     docs/development_progress/phase2_block.md for the root cause).
-  2. Supplies SmolLM2's config / weights / RoPE / model IDs.
-  3. Provides a `build_session` + CLI mirroring the reference's, using (1)+(2).
+  1. Supplies SmolLM2's config / weights / RoPE / model IDs.
+  2. Provides a `build_session` + CLI mirroring the reference's, using (1).
 
 Usage:
   python3 smollm2_1_7b_inference.py --compile-only
@@ -33,18 +34,7 @@ for _p in (str(_PROG_EXAMPLES), str(_LLMS_DIR), str(_LLAMA_REF), str(_THIS_DIR))
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# --- (1) MHA-safe prefill: patch the reference inference module's globals so
-#     run_npu_prefill / prepare_runtime use the registry-driven fork. ---
-import llama32_1b_inference as _inf  # noqa: E402
-from smollm2_1_7b_prefill import (  # noqa: E402
-    run_transformer_block as _smol_block,
-    preload_prefill_weights as _smol_preload,
-)
-
-_inf.run_transformer_block = _smol_block
-_inf.preload_prefill_weights = _smol_preload
-
-# --- (2) SmolLM2 config / weights / RoPE / model IDs. ---
+# --- (1) SmolLM2 config / weights / RoPE / model IDs. ---
 from smollm2_1_7b_weights import (  # noqa: E402
     LlamaConfig,
     load_weights,
