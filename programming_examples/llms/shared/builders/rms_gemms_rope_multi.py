@@ -387,17 +387,25 @@ def build_rms_gemms_rope_module(
     ]
 
     slices = [
-        KernelSlice(rms_ir, "r", {0: 0, 1: 1, 2: 2}, extern_syms={"@zero_vectorized_bf16"}),
         KernelSlice(
-            q_ir, "q", _gemm_arg_map(2, 3, 4, scratch_for[0]),
+            rms_ir, "r", {0: 0, 1: 1, 2: 2}, extern_syms={"@zero_vectorized_bf16"}
+        ),
+        KernelSlice(
+            q_ir,
+            "q",
+            _gemm_arg_map(2, 3, 4, scratch_for[0]),
             extern_syms={"@matmul_bf16"} | _gemm_externs(q_spec),
         ),
         KernelSlice(
-            k_ir, "k", _gemm_arg_map(2, 5, 6, scratch_for[1]),
+            k_ir,
+            "k",
+            _gemm_arg_map(2, 5, 6, scratch_for[1]),
             extern_syms={"@matmul_bf16"} | _gemm_externs(k_spec),
         ),
         KernelSlice(
-            v_ir, "v", _gemm_arg_map(2, 7, 8, scratch_for[2]),
+            v_ir,
+            "v",
+            _gemm_arg_map(2, 7, 8, scratch_for[2]),
             extern_syms={"@matmul_bf16"} | _gemm_externs(v_spec),
         ),
         KernelSlice(rope_q_ir, "rq", {0: 4, 1: 9, 2: 11}, extern_syms={"@rope"}),

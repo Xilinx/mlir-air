@@ -508,14 +508,30 @@ def _build_o_ffn(
         KernelSlice(o_ir, "og", {0: 0, 1: 1, 2: 15, 3: 2}, extern_syms=_gemm_externs),
         KernelSlice(res_add_ir, "ra", {0: 2, 1: 3, 2: 4}, private_from=False),
         KernelSlice(rms_ir, "rm", {0: 4, 1: 5, 2: 6}, private_from=False),
-        KernelSlice(gate_ir, "gg", {0: 6, 1: 7, 2: 16, 3: 8},
-                    extern_syms=_gemm_externs, private_from=False),
-        KernelSlice(up_ir, "ug", {0: 6, 1: 9, 2: 17, 3: 10},
-                    extern_syms=_gemm_externs, private_from=False),
-        KernelSlice(swiglu_ir, "sw", {0: 8, 1: 10, 2: 11},
-                    extern_syms={"@silu_and_mul_bf16"}),
-        KernelSlice(down_ir, "dg", {0: 11, 1: 12, 2: 18, 3: 13},
-                    extern_syms=_gemm_externs, private_from=False),
+        KernelSlice(
+            gate_ir,
+            "gg",
+            {0: 6, 1: 7, 2: 16, 3: 8},
+            extern_syms=_gemm_externs,
+            private_from=False,
+        ),
+        KernelSlice(
+            up_ir,
+            "ug",
+            {0: 6, 1: 9, 2: 17, 3: 10},
+            extern_syms=_gemm_externs,
+            private_from=False,
+        ),
+        KernelSlice(
+            swiglu_ir, "sw", {0: 8, 1: 10, 2: 11}, extern_syms={"@silu_and_mul_bf16"}
+        ),
+        KernelSlice(
+            down_ir,
+            "dg",
+            {0: 11, 1: 12, 2: 18, 3: 13},
+            extern_syms=_gemm_externs,
+            private_from=False,
+        ),
         KernelSlice(ffn_add_ir, "fa", {0: 13, 1: 4, 2: 14}, private_from=False),
     ]
 

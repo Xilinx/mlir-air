@@ -145,11 +145,21 @@ def build_o_gemv_ffn_module(emb_dim=2048, hidden_dim=8192):
         f"        : memref<{emb_dim}xbf16, strided<[1]>> to memref<{emb_dim}xbf16>"
     )
     slices = [
-        KernelSlice(str(stage1), "s1", {0: 0, 1: 1, 2: 3},
-                    arg_aliases={3: "%arg6_row0"}, extern_syms=_EXTERNS),
+        KernelSlice(
+            str(stage1),
+            "s1",
+            {0: 0, 1: 1, 2: 3},
+            arg_aliases={3: "%arg6_row0"},
+            extern_syms=_EXTERNS,
+        ),
         KernelSlice(str(stage2), "s2", {0: 7, 1: 6, 2: 11}, extern_syms=_EXTERNS),
-        KernelSlice(str(stage3), "s3", {0: 12, 1: 11, 3: 14},
-                    arg_aliases={2: "%arg6_row0"}, extern_syms=_EXTERNS),
+        KernelSlice(
+            str(stage3),
+            "s3",
+            {0: 12, 1: 11, 3: 14},
+            arg_aliases={2: "%arg6_row0"},
+            extern_syms=_EXTERNS,
+        ),
     ]
     # args 2,4,5,8,9,10,13 are dead-ABI placeholders: present so this ELF's
     # signature matches the int4 o_gemv_ffn variant, but not wired to any launch.
