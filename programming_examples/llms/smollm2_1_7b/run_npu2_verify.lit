@@ -1,0 +1,26 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// SmolLM2-1.7B verify gate: top-k token-level inclusion check, NPU vs HF bf16,
+// 2 prompts x 32 greedy tokens, k=5 (fast gate; `make verify-full` for the full
+// sweep). Exercises the full production prefill + decode path through the verify
+// subsystem (verify/verify_runner.py).
+//
+// NOT CI-triggered by design: the filename intentionally OMITS "peano", so the
+// CI peano suite (`lit --filter "peano"`) does not collect it — keeping CI time
+// bounded (llama32_1b's verify is the bf16 correctness signal in CI). Run on
+// demand with:
+//   lit -v programming_examples/llms/smollm2_1_7b/run_npu2_verify.lit
+//
+// No hf_token required: SmolLM2 uses the ungated HuggingFaceTB/SmolLM2-1.7B
+// checkpoint (public, no gated download), unlike llama32_1b's meta-llama/*
+// reference. So if this lit is ever promoted into CI, it needs only
+// ryzen_ai_npu2 + peano — no secret.
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_peano_verify
+// RUN: cd test_peano_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: [verify] PASS
