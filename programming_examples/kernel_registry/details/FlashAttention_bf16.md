@@ -147,6 +147,7 @@ Shapes verified on NPU2 (heads-first harness; the seq-first variant is bit-ident
 | lq×lk | dk/dv | heads q/kv | causal | dv_chunks | latency | GFLOP/s | mean_rel_L1 | abs_err max | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | 2048×2048 | 64/64 | 32/8 | ✓ | 1 | 15.4–16.1 ms | **1065–1116** | 3.9e-2 | 8.4e-2 | ✅ |
+| 2048×2048 | 64/64 | 32/32 | ✓ | 1 | 16.9 ms | 2031 | 3.9e-2 | 9.4e-2 | ✅ |
 | 512×512 | 64/64 | 2/2 | ✗ | 1 | 0.73 ms | 184 | 4.4e-2 | 4.7e-2 | ✅ |
 | 512×512 | 64/64 | 12/6 | ✗ | 1 | 1.22 ms | 661 | 4.6e-2 | 3.9e-2 | ✅ |
 | 512×512 | 64/64 | 64/8 | ✗ | 1 | 3.79 ms | 1135 | 4.6e-2 | 5.9e-2 | ✅ |
@@ -155,7 +156,7 @@ Shapes verified on NPU2 (heads-first harness; the seq-first variant is bit-ident
 | 16384×16384 | 64/64 | 2/2 | ✓ | 1 | 39.6 ms | 1734 | 4.5e-2 | 6.8e-2 | ✅ |
 | 16384×16384 | 64/64 | 2/2 | ✗ | 1 | 40.1 ms | **3427** | 5.5e-2 | 5.9e-3 | ✅ |
 
-> The **2048×2048, 32q/8kv, causal** row is the config llama-3.2-1B prefill imports (`attn_npu2_seqfirst.py`'s `build_module` → `flash_attn` ELF); its two-harness GFLOP/s range reflects run-to-run timing variation (~5%). The other rows are additional NPU2-verified shapes (head dim 64/128, MHA & GQA ratios, short & long sequences, causal & non-causal) — they record what the kernel is known to run, independent of any specific model. `head_dim = 128` shapes use `dv_chunks = 2` (heads-first only).
+> The **2048×2048, 32q/8kv, causal** row is the config llama-3.2-1B prefill imports (`attn_npu2_seqfirst.py`'s `build_module` → `flash_attn` ELF); its two-harness GFLOP/s range reflects run-to-run timing variation (~5%). The **2048×2048, 32q/32kv, causal** row is SmolLM2-1.7B's prefill config (pure MHA — every Q head has its own KV head, no GQA broadcast); same near-unique tiling, same `mean_rel_L1` (FA error is datapath-bound, independent of kv-head count), but ~2× the GFLOP/s because MHA does ~2× the attention FLOPs of 8-KV GQA in similar wall-time. The other rows are additional NPU2-verified shapes (head dim 64/128, MHA & GQA ratios, short & long sequences, causal & non-causal) — they record what the kernel is known to run, independent of any specific model. `head_dim = 128` shapes use `dv_chunks = 2` (heads-first only).
 
 **Reading the table**:
 - **Compute-bound**: FA is dominated by the two matmuls (Q@Kᵀ, P@V); throughput is GFLOP/s.

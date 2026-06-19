@@ -89,6 +89,7 @@ The precision columns are exactly what the reproduce command's `[precision]` lin
 | 8192×2048 | 8/8/8 | 1067 µs | 31.5 | 2.7e-8 | 5.9e-3 | 1.3e-1 | coverage (see note) | ✅ |
 | 2048×8192 | 8/2/2 | 1082 µs | 31.0 | 0.0 | 0.0 | 0.0 | coverage (see note) | ✅ |
 | 16384×2048 | 8/8/8 | 2193 µs | 30.6 | 0.0 | 0.0 | 0.0 | llama-3.2-1B LM-head (per-partition) | ✅ |
+| 49152×2048 | 8/8/8 | 6187 µs | 32.5 | 5.9e-8 | 8.5e-3 | 1.0e0 | SmolLM2-1.7B LM-head | ✅ |
 
 > **What "Used by" means here.** This kernel (`matvec.py` + `mv.cc`, extern `@matvec_vectorized_bf16_bf16`) is the **exact** kernel llama-3.2-1B decode uses for **Q / K / V projections** (in the `rms_gemv_rope` ELF) and the **LM-head** (in the `lm_head_gemv` ELF). The **O / Gate / Up / Down** projections in decode do **not** use this plain GEMV — they run through *fused* cascade kernels (GEMV + residual add, and GEMV + SwiGLU + RMSNorm) in the `o_gemv_ffn` ELF, which are separate kernels (`bf16_cascade/mv_bf16.cc`, `decode_ffn_swiglu/matvec_swiglu_rms.py`) and get their own registry entries. The 8192×2048 and 2048×8192 rows above are **coverage shapes** — they exercise this kernel at the Gate/Up and Down dimensions for completeness, but those projections are served by the fused kernels in the actual model.
 
