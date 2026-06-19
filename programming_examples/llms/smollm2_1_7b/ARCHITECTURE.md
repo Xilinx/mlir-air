@@ -42,19 +42,23 @@ vs llama32_1b: FlashAttention 32q/**32kv** (MHA, not 32q/8kv GQA) and LM-head
 GEMV 49152×2048 (vocab). Because MHA makes kv_dim==emb_dim, the K/V projection
 GEMMs reuse the already-covered 2048×2048×2048 shape.
 
-## The MHA fork (why smollm2_1_7b_prefill.py exists)
+## The MHA scratch-arg fix (in the shared llama prefill)
 
 llama32_1b's `rms_gemms_rope` builder is registry-driven: each GEMM picks
 fused-cast vs drain by shape. For GQA, only Q (N=emb_dim) is fused-cast (needs 1
 f32 C-scratch arg); K/V (N=kv_dim=512) are drain. For SmolLM2's MHA,
 kv_dim=2048==emb_dim, so K/V ALSO resolve to fused-cast → the builder emits 16
-func args (Q,K,V scratch). But the reference Python callers
-(`run_transformer_block` AND `preload_prefill_weights`) hardcode the GQA case (1
-scratch) — and preload pre-allocates the per-layer BO set, which every later
-call reuses by bo_key. Result: the 16-arg ELF ran against 14 BOs → K/V output =
-zero → garbage. The fork makes both callers registry-driven
-(`_rms_scratch_specs`). GQA-bit-identical; MHA-correct. Decode (GEMV, FP32
-accumulate) has no such issue and needed no fork.
+func args (Q,K,V scratch).
+
+Originally the Python callers (`run_transformer_block` AND
+`preload_prefill_weights`) hardcoded the GQA case (1 scratch) — and preload
+pre-allocates the per-layer BO set, which every later call reuses by bo_key.
+Result: the 16-arg ELF ran against 14 BOs → K/V output = zero → garbage. The fix
+makes both callers registry-driven (a `_rms_scratch_specs` helper that queries
+`gemm_registry_config` per Q/K/V shape) — and it was promoted INTO the shared
+`llama32_1b_prefill`, so SmolLM2 reuses it directly with no model-specific fork.
+GQA-bit-identical (1 scratch); MHA-correct (3 scratch). Decode (GEMV, FP32
+accumulate) has no such issue.
 
 ## Runtime Flow
 

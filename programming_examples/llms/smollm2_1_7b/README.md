@@ -35,19 +35,20 @@ hidden_dim=8192, vocab=49152, rope_theta=130000, tied embeddings.
 ## Relationship to llama32_1b
 
 SmolLM2 is a bit-for-bit llama kernel sequence, so it reuses the `llama32_1b`
-prefill/decode/inference machinery via Python imports. The one architectural
-delta — pure MHA vs llama's GQA — required a fork of the prefill
-arg-construction (`smollm2_1_7b_prefill.py`): at kv_dim==emb_dim the K/V GEMMs
-also resolve to fused-cast and need their own f32 scratch args, which the
-reference hardcodes for the GQA case. See [ARCHITECTURE.md](ARCHITECTURE.md) and
-`docs/development_progress/phase2_block.md`.
+prefill/decode/inference machinery directly via Python imports — no SmolLM2
+fork. The one architectural delta is pure MHA vs llama's GQA: at
+kv_dim==emb_dim the K/V GEMMs also resolve to fused-cast and need their own f32
+C-scratch args. The shared `llama32_1b_prefill.{run_transformer_block,
+preload_prefill_weights}` allocate those scratch args registry-driven (querying
+`gemm_registry_config` per shape), so they are correct for both GQA (1 scratch)
+and MHA (3 scratch) with no model-specific code. See
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## File map
 
 | File | Role |
 |---|---|
-| `smollm2_1_7b_inference.py` | production runner (setup → prefill → decode) |
-| `smollm2_1_7b_prefill.py` | MHA-safe fork of run_transformer_block + preload |
+| `smollm2_1_7b_inference.py` | production runner (setup → prefill → decode); reuses `llama32_1b_inference` Session + loops |
 | `smollm2_1_7b_weights.py` | HF weight loader + Config + RoPE LUT |
 | `smollm2_1_7b_cpu_helpers.py` | rms_norm / attention_reference / softmax |
 | `verify_adapter.py` | hooks into shared `../verify/` subsystem |

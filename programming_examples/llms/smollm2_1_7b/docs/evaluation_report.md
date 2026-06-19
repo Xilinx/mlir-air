@@ -16,16 +16,15 @@ then re-run on the NPU in this session. `make verify MODEL=base` exited 0 with
 
 - **Adapter runs real NPU kernels, patching is genuine (not a bypass).**
   `verify_adapter.py` `NpuRunner.prefill()` calls production `run_npu_prefill`
-  (line 176) and `decode_step()` calls `run_npu_decode_step` (line 239), both
-  imported from `llama32_1b_inference`. The inheritance pattern patches two
-  functions — `_llama_inf.run_transformer_block = run_prefill_block` and
-  `.preload_prefill_weights = _smol_preload` (lines 55-56) — with the MHA-safe
-  fork in `smollm2_1_7b_prefill.py`. That fork is real NPU code: it issues
-  `cache.load_and_run("rms_gemms_rope"/"o_ffn", ...)` against compiled ELFs
-  (prefill.py lines 130, 210; preload lines 281, 313). The patch only makes
-  the f32 C-scratch arg set registry-driven (Q for GQA → Q,K,V for MHA so
-  K/V fused-cast GEMMs don't read unallocated scratch → NaN). No numpy
-  substitution of the kernel path. REAL.
+  and `decode_step()` calls `run_npu_decode_step`, both imported from
+  `llama32_1b_inference`. SmolLM2 reuses the shared `llama32_1b_prefill`
+  directly — no fork, no monkeypatch. The MHA correctness comes from the shared
+  `run_transformer_block` / `preload_prefill_weights` being registry-driven:
+  they issue `cache.load_and_run("rms_gemms_rope"/"o_ffn", ...)` against compiled
+  ELFs and allocate the f32 C-scratch arg set per shape via
+  `gemm_registry_config` (1 scratch for GQA's Q → 3 for MHA's Q,K,V, so the K/V
+  fused-cast GEMMs don't read unallocated scratch → zero/NaN). Real NPU path, no
+  numpy substitution. REAL.
 
 - **HF reference is bf16.** `llms/verify/runners/hf_runner.py:59-61`
   `AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)`.
@@ -76,7 +75,7 @@ gate is the correctness signal.
 ## 3. Manual reproduce
 
 ```bash
-cd /home/jiajli/apps/mlir-air/.claude/worktrees/skills-deploy-test/programming_examples/llms/smollm2_1_7b
+cd programming_examples/llms/smollm2_1_7b   # from the repo root
 
 # Primary gate (NPU bf16 vs HF bf16, 2 prompts x 32 tokens, k=5). Exit 0 = PASS.
 flock -x -w 1800 /tmp/mlir-air-npu.lock make verify MODEL=base

@@ -71,10 +71,12 @@ class LayerWeights:
         w_down:     (hidden_dim, emb_dim)   Down projection
     """
 
+    # Shapes for SmolLM2-1.7B (pure MHA: kv_dim = n_kv_heads*head_dim =
+    # 32*64 = 2048 = emb_dim, so wk/wv are square like wq).
     attn_norm: np.ndarray  # (2048,)
     wq: np.ndarray  # (2048, 2048)
-    wk: np.ndarray  # (2048, 512)
-    wv: np.ndarray  # (2048, 512)
+    wk: np.ndarray  # (2048, 2048)
+    wv: np.ndarray  # (2048, 2048)
     wo: np.ndarray  # (2048, 2048)
     ffn_norm: np.ndarray  # (2048,)
     w_gate: np.ndarray  # (2048, 8192)
@@ -89,19 +91,19 @@ class LayerWeights:
 
 @dataclass
 class LlamaWeights:
-    """All weights for a LLAMA-3.2-1B model.
+    """All weights for a SmolLM2-1.7B model.
 
     Attributes:
         embed_table:  (vocab_size, emb_dim)  Token embeddings
-        layers:       list of 16 LayerWeights
+        layers:       list of n_layers (24) LayerWeights
         final_norm:   (emb_dim,)             Final RMSNorm weight
         lm_head:      (vocab_size, emb_dim)  Output projection (may be tied)
     """
 
-    embed_table: np.ndarray  # (128256, 2048)
+    embed_table: np.ndarray  # (vocab_size, emb_dim) = (49152, 2048)
     layers: List[LayerWeights] = field(default_factory=list)
-    final_norm: np.ndarray = None  # (2048,)
-    lm_head: np.ndarray = None  # (128256, 2048)
+    final_norm: np.ndarray = None  # (emb_dim,) = (2048,)
+    lm_head: np.ndarray = None  # (vocab_size, emb_dim) = (49152, 2048)
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +137,7 @@ def _resolve_safetensor_files(model_path: str) -> List[str]:
 
     Args:
         model_path: Either a local directory path or a HuggingFace model ID
-                    (e.g. "meta-llama/Llama-3.2-1B").
+                    (e.g. "HuggingFaceTB/SmolLM2-1.7B").
 
     Returns:
         List of absolute paths to .safetensors files.
@@ -202,20 +204,29 @@ def _load_tensor(file_handle, key: str, dtype) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def _check_shape(name: str, arr: np.ndarray, expected: tuple) -> None:
+    """Raise ValueError on shape mismatch. Used instead of `assert` so the
+    checks survive `python -O` (which strips asserts) — this is a user-facing
+    weight loader and a silent shape mismatch turns into a hard-to-debug
+    downstream failure."""
+    if arr.shape != expected:
+        raise ValueError(f"{name} shape mismatch: expected {expected}, got {arr.shape}")
+
+
 def load_weights(
     model_name_or_path: str,
     dtype=bfloat16,
     config: Optional[LlamaConfig] = None,
 ) -> LlamaWeights:
-    """Load LLAMA-3.2-1B weights from safetensors into numpy arrays.
+    """Load SmolLM2-1.7B weights from safetensors into numpy arrays.
 
     Supports both local directories and HuggingFace model IDs.
 
     Args:
         model_name_or_path: Path to a local directory containing .safetensors
-            files, or a HuggingFace model ID like "meta-llama/Llama-3.2-1B".
+            files, or a HuggingFace model ID like "HuggingFaceTB/SmolLM2-1.7B".
         dtype: Target numpy dtype for all weight arrays. Default is bfloat16.
-        config: Optional LlamaConfig. If None, uses default LLAMA-3.2-1B config.
+        config: Optional LlamaConfig. If None, uses default SmolLM2-1.7B config.
 
     Returns:
         A LlamaWeights instance with all weights loaded and correctly shaped.
@@ -240,10 +251,7 @@ def load_weights(
         raise KeyError(f"Missing weight: {embed_key}")
     with safe_open(key_to_file[embed_key], framework="numpy") as f:
         embed_table = _load_tensor(f, embed_key, dtype)
-    assert embed_table.shape == (config.vocab_size, config.emb_dim), (
-        f"embed_table shape mismatch: expected "
-        f"({config.vocab_size}, {config.emb_dim}), got {embed_table.shape}"
-    )
+    _check_shape("embed_table", embed_table, (config.vocab_size, config.emb_dim))
 
     # --- Load per-layer weights ---
     layers = []
@@ -262,40 +270,22 @@ def load_weights(
         layer = LayerWeights(**layer_tensors)
 
         # Sanity check shapes
-        assert layer.attn_norm.shape == (
-            config.emb_dim,
-        ), f"Layer {layer_idx} attn_norm: {layer.attn_norm.shape}"
-        assert layer.wq.shape == (
-            config.emb_dim,
-            config.n_heads * config.head_dim,
-        ), f"Layer {layer_idx} wq: {layer.wq.shape}"
-        assert layer.wk.shape == (
-            config.emb_dim,
-            config.n_kv_heads * config.head_dim,
-        ), f"Layer {layer_idx} wk: {layer.wk.shape}"
-        assert layer.wv.shape == (
-            config.emb_dim,
-            config.n_kv_heads * config.head_dim,
-        ), f"Layer {layer_idx} wv: {layer.wv.shape}"
-        assert layer.wo.shape == (
-            config.emb_dim,
-            config.emb_dim,
-        ), f"Layer {layer_idx} wo: {layer.wo.shape}"
-        assert layer.ffn_norm.shape == (
-            config.emb_dim,
-        ), f"Layer {layer_idx} ffn_norm: {layer.ffn_norm.shape}"
-        assert layer.w_gate.shape == (
-            config.emb_dim,
-            config.hidden_dim,
-        ), f"Layer {layer_idx} w_gate: {layer.w_gate.shape}"
-        assert layer.w_up.shape == (
-            config.emb_dim,
-            config.hidden_dim,
-        ), f"Layer {layer_idx} w_up: {layer.w_up.shape}"
-        assert layer.w_down.shape == (
-            config.hidden_dim,
-            config.emb_dim,
-        ), f"Layer {layer_idx} w_down: {layer.w_down.shape}"
+        _lp = f"Layer {layer_idx}"
+        _check_shape(f"{_lp} attn_norm", layer.attn_norm, (config.emb_dim,))
+        _check_shape(
+            f"{_lp} wq", layer.wq, (config.emb_dim, config.n_heads * config.head_dim)
+        )
+        _check_shape(
+            f"{_lp} wk", layer.wk, (config.emb_dim, config.n_kv_heads * config.head_dim)
+        )
+        _check_shape(
+            f"{_lp} wv", layer.wv, (config.emb_dim, config.n_kv_heads * config.head_dim)
+        )
+        _check_shape(f"{_lp} wo", layer.wo, (config.emb_dim, config.emb_dim))
+        _check_shape(f"{_lp} ffn_norm", layer.ffn_norm, (config.emb_dim,))
+        _check_shape(f"{_lp} w_gate", layer.w_gate, (config.emb_dim, config.hidden_dim))
+        _check_shape(f"{_lp} w_up", layer.w_up, (config.emb_dim, config.hidden_dim))
+        _check_shape(f"{_lp} w_down", layer.w_down, (config.hidden_dim, config.emb_dim))
 
         layers.append(layer)
 
@@ -305,9 +295,7 @@ def load_weights(
         raise KeyError(f"Missing weight: {norm_key}")
     with safe_open(key_to_file[norm_key], framework="numpy") as f:
         final_norm = _load_tensor(f, norm_key, dtype)
-    assert final_norm.shape == (
-        config.emb_dim,
-    ), f"final_norm shape mismatch: {final_norm.shape}"
+    _check_shape("final_norm", final_norm, (config.emb_dim,))
 
     # --- Load lm_head (or tie to embeddings) ---
     lm_head_key = "lm_head.weight"
@@ -317,14 +305,11 @@ def load_weights(
         # lm_head is stored as (vocab_size, emb_dim) in HF -- no transpose
         # because the output logits = hidden @ lm_head.T is handled at
         # inference time, and we store it in the same layout as embed_table.
-        assert lm_head.shape == (
-            config.vocab_size,
-            config.emb_dim,
-        ), f"lm_head shape mismatch: {lm_head.shape}"
+        _check_shape("lm_head", lm_head, (config.vocab_size, config.emb_dim))
     else:
-        # LLAMA-3.2-1B (and other small Llamas) tie lm_head to embed_tokens
-        # — the checkpoint omits lm_head.weight by design and the runtime
-        # is expected to compute logits = h @ embed_table.T.
+        # SmolLM2 (like the small Llamas) ties lm_head to embed_tokens — the
+        # checkpoint omits lm_head.weight by design and the runtime is
+        # expected to compute logits = h @ embed_table.T.
         print("  Tied embeddings: reusing embed_table as lm_head.")
         lm_head = embed_table
 
@@ -410,7 +395,7 @@ def generate_rope_lut(
 
     Args:
         config: Model config (uses rope_base and head_dim). Defaults to
-                LLAMA-3.2-1B config.
+                SmolLM2-1.7B config.
         seq_len: Maximum sequence length for the LUT.
         dtype: Output dtype. Default is bfloat16.
 
@@ -453,14 +438,14 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Load LLAMA-3.2-1B weights and print shapes",
+        description="Load SmolLM2-1.7B weights and print shapes",
     )
     parser.add_argument(
         "model_path",
         type=str,
         help=(
             "Path to local model directory or HuggingFace model ID "
-            "(e.g. meta-llama/Llama-3.2-1B)"
+            "(e.g. HuggingFaceTB/SmolLM2-1.7B)"
         ),
     )
     parser.add_argument(
