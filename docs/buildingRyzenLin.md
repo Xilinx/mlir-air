@@ -344,7 +344,7 @@ After this step, you are ready to build MLIR-AIR!
 
 ### Building
 
-To build MLIR-AIR provide the paths to llvm, cmakeModules, and xrt:
+To build MLIR-AIR provide the paths to llvm, cmakeModules, mlir-aie, libxaie, and xrt:
 ```bash
 ./utils/build-mlir-air-xrt.sh llvm mlir-aie/cmake/modulesXilinx mlir-aie aienginev2/install /path/to/xrt
 ```
