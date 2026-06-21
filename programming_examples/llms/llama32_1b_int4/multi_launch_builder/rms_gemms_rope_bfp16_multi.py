@@ -50,7 +50,7 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
-from llama_kernel_builder.stitching import (
+from shared.infra.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,

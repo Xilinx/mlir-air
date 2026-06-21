@@ -38,9 +38,9 @@ from llama32_1b_weights import (
     load_weights,
     generate_rope_lut,
 )
-from llama_kernel_builder.cache import KernelCache, Profiler
-from llama_kernel_builder.external_kernels import compile_all_external_kernels
-from llama_kernel_builder.backend_presets import (
+from shared.infra.cache import KernelCache, Profiler
+from shared.infra.external_kernels import compile_all_external_kernels
+from shared.infra.backend_presets import (
     LM_GEMV_BACKEND,
     RGR_BACKEND,
     OGF_BACKEND,

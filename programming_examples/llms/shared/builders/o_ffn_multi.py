@@ -35,7 +35,6 @@ from ml_dtypes import bfloat16
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
@@ -48,14 +47,11 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import type_mapper
 from air.backend.xrt import XRTBackend
 
-from llama_kernel_builder.stitching import (
-    _extract_between_func_and_return,
-    _extract_affine_maps,
-    _extract_private_funcs,
-    _rename_all,
-    _rename_all_with_externs,
-    _fix_launch_func_args,
+from shared.infra.stitching import (
     _wrap_ir_in_launch,
+    stitch_elf,
+    KernelSlice,
+    FuncArg,
 )
 
 range_ = for_
@@ -228,7 +224,7 @@ def _build_o_ffn(
     buffers are func args 15..18. GPU-standard 9.3e-3 precision. Needs mm_m64.o +
     runtime_loop_tiling_sizes=[2,2] (BD-ID recycling).
     """
-    from llama32_1b.gemm_builder import (
+    from shared.builders.gemm_builder import (
         _build_gemm_module,
         gemm_registry_config,
     )
@@ -469,102 +465,85 @@ def _build_o_ffn(
             print(f"{'='*60}")
             print(ir)
 
-    # ---- Stitch ----
-    # The 4 GEMMs call mm.o symbols that must keep their fixed names across stitched
-    # launches (not get prefixed); collect privates. The symbol suffix (_m64) comes
-    # from the registry spec — all 4 o_ffn GEMMs share the same fused-cast method.
+    # ---- Stitch (declarative via stitch_elf) ----
+    # o_ffn is unconditionally all-fused-cast: all 4 GEMMs (O/Gate/Up/Down) share
+    # one method (_m64), each a 2-launch @gemm_cast_bf16 (A, W, C-f32-scratch,
+    # D-bf16-out). The 4 f32 scratches are fixed func args 15..18; non-GEMM kernels
+    # keep bf16 arg_maps. The mm.o symbols (suffix from o_spec) must not be renamed.
     _gemm_sym = o_spec["sym_suffix"]
-    _extern_funcs = {
+    _gemm_externs = {
         "@op_has_no_registered_library_name" + _gemm_sym,
         "@zero_f32_mn" + _gemm_sym,
         "@f32_to_bf16_mn" + _gemm_sym,
-        "@silu_and_mul_bf16",
     }
 
-    def _rename(text, prefix):
-        return _rename_all_with_externs(text, prefix, _extern_funcs)
-
-    # Each GEMM is a 2-launch @gemm_cast_bf16 (A, W, C-f32-scratch, D-bf16-out). The
-    # 4 f32 scratches are func args 15..18; the non-GEMM kernels keep bf16 arg_maps.
-    stitch_list = [
-        (o_ir, "og", {0: 0, 1: 1, 2: 15, 3: 2}),
-        (res_add_ir, "ra", {0: 2, 1: 3, 2: 4}),
-        (rms_ir, "rm", {0: 4, 1: 5, 2: 6}),
-        (gate_ir, "gg", {0: 6, 1: 7, 2: 16, 3: 8}),
-        (up_ir, "ug", {0: 6, 1: 9, 2: 17, 3: 10}),
-        (swiglu_ir, "sw", {0: 8, 1: 10, 2: 11}),
-        (down_ir, "dg", {0: 11, 1: 12, 2: 18, 3: 13}),
-        (ffn_add_ir, "fa", {0: 13, 1: 4, 2: 14}),
+    base_args = [
+        FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg1", f"memref<{emb_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg2", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg3", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg4", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg5", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg6", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg7", f"memref<{emb_dim}x{hidden_dim}xbf16>"),
+        FuncArg("%arg8", f"memref<{seq_len}x{hidden_dim}xbf16>"),
+        FuncArg("%arg9", f"memref<{emb_dim}x{hidden_dim}xbf16>"),
+        FuncArg("%arg10", f"memref<{seq_len}x{hidden_dim}xbf16>"),
+        FuncArg("%arg11", f"memref<{seq_len}x{hidden_dim}xbf16>"),
+        FuncArg("%arg12", f"memref<{hidden_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg13", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg14", f"memref<{n_total}xbf16>"),
+    ]
+    # 4 f32-scratch args (proj/gate/up/down C-scratch), fixed indices 15..18.
+    scratch_args = [
+        FuncArg("%arg15", f"memref<{seq_len}x{emb_dim}xf32>"),
+        FuncArg("%arg16", f"memref<{seq_len}x{hidden_dim}xf32>"),
+        FuncArg("%arg17", f"memref<{seq_len}x{hidden_dim}xf32>"),
+        FuncArg("%arg18", f"memref<{seq_len}x{emb_dim}xf32>"),
     ]
 
-    bodies, maps_all = [], []
-    for ir, prefix, arg_map in stitch_list:
-        body = _extract_between_func_and_return(ir)
-        maps = _extract_affine_maps(ir)
-        body = _rename(body, prefix)
-        maps = [_rename(m, prefix) for m in maps]
-        body = _fix_launch_func_args(body, prefix, arg_map)
-        bodies.append(body)
-        maps_all.extend(maps)
+    # Privates only from the GEMM (o_ir covers all 4 mm.o symbols) and SwiGLU
+    # (@silu_and_mul_bf16); the other slices carry no private decls of their own.
+    slices = [
+        KernelSlice(o_ir, "og", {0: 0, 1: 1, 2: 15, 3: 2}, extern_syms=_gemm_externs),
+        KernelSlice(res_add_ir, "ra", {0: 2, 1: 3, 2: 4}, private_from=False),
+        KernelSlice(rms_ir, "rm", {0: 4, 1: 5, 2: 6}, private_from=False),
+        KernelSlice(
+            gate_ir,
+            "gg",
+            {0: 6, 1: 7, 2: 16, 3: 8},
+            extern_syms=_gemm_externs,
+            private_from=False,
+        ),
+        KernelSlice(
+            up_ir,
+            "ug",
+            {0: 6, 1: 9, 2: 17, 3: 10},
+            extern_syms=_gemm_externs,
+            private_from=False,
+        ),
+        KernelSlice(
+            swiglu_ir, "sw", {0: 8, 1: 10, 2: 11}, extern_syms={"@silu_and_mul_bf16"}
+        ),
+        KernelSlice(
+            down_ir,
+            "dg",
+            {0: 11, 1: 12, 2: 18, 3: 13},
+            extern_syms=_gemm_externs,
+            private_from=False,
+        ),
+        KernelSlice(ffn_add_ir, "fa", {0: 13, 1: 4, 2: 14}, private_from=False),
+    ]
 
-    # SwiGLU has @silu_and_mul_bf16; the external GEMM (o_ir covers all 4) adds the
-    # mm.o symbols.
-    all_privates = set()
-    for ir in [swiglu_ir, o_ir]:
-        for p in _extract_private_funcs(ir):
-            all_privates.add(p.strip())
-    privates_str = "\n  ".join(sorted(all_privates))
-
-    # 4 f32-scratch args (proj/gate/up/down C-scratch).
-    _fused_scratch_args = f"""
-    ,%arg15: memref<{seq_len}x{emb_dim}xf32>
-    ,%arg16: memref<{seq_len}x{hidden_dim}xf32>
-    ,%arg17: memref<{seq_len}x{hidden_dim}xf32>
-    ,%arg18: memref<{seq_len}x{emb_dim}xf32>"""
-
-    combined = "\n".join(maps_all) + f"""
-module {{
-  {privates_str}
-  func.func @o_ffn(
-    %arg0: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg1: memref<{emb_dim}x{emb_dim}xbf16>,
-    %arg2: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg3: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg4: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg5: memref<{emb_dim}xbf16>,
-    %arg6: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg7: memref<{emb_dim}x{hidden_dim}xbf16>,
-    %arg8: memref<{seq_len}x{hidden_dim}xbf16>,
-    %arg9: memref<{emb_dim}x{hidden_dim}xbf16>,
-    %arg10: memref<{seq_len}x{hidden_dim}xbf16>,
-    %arg11: memref<{seq_len}x{hidden_dim}xbf16>,
-    %arg12: memref<{hidden_dim}x{emb_dim}xbf16>,
-    %arg13: memref<{seq_len}x{emb_dim}xbf16>,
-    %arg14: memref<{n_total}xbf16>{_fused_scratch_args}
-  ) {{
-{bodies[0]}
-{bodies[1]}
-{bodies[2]}
-{bodies[3]}
-{bodies[4]}
-{bodies[5]}
-{bodies[6]}
-{bodies[7]}
-    return
-  }}
-}}
-"""
-
-    with Context() as ctx:
-        try:
-            module = Module.parse(combined, ctx)
-        except Exception:
-            with open("/tmp/debug_o_ffn.mlir", "w") as f:
-                f.write(combined)
-            print("  PARSE ERROR: dumped to /tmp/debug_o_ffn.mlir")
-            raise
-        print(f"  Module: {len(combined.splitlines())} lines, parsed OK")
-        return module
+    module = stitch_elf(
+        "o_ffn",
+        base_args,
+        slices,
+        scratch_args=scratch_args,
+        debug_dump_path="/tmp/debug_o_ffn.mlir",
+    )
+    print(f"  Module: {len(str(module).splitlines())} lines, parsed OK")
+    return module
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +568,7 @@ if __name__ == "__main__":
 
     SEQ_LEN, EMB_DIM, HIDDEN_DIM = 2048, 2048, 8192
 
-    from llama_kernel_builder.external_kernels import (
+    from shared.infra.external_kernels import (
         compile_silu_and_mul,
         compile_gemm_mm,
     )

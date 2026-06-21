@@ -30,3 +30,6 @@ docs/development_progress/
 docs/report/
 docs/issues/
 test_hf_model/
+# Deployment-process progress tracker (phase status / blockers / follow-ups) —
+# a dev artifact like docs/development_progress/, not part of the shipped example.
+TODO.md

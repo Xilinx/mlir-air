@@ -79,6 +79,7 @@ This is **documentation, not executable code** — it records results produced b
 | 8192×2048 | 8/8/8 | 31.5 | 2.7e-8 | coverage | ✅ |
 | 2048×8192 | 8/2/2 | 31.0 | 0.0 | coverage | ✅ |
 | 16384×2048 | 8/8/8 | **30.6** | 0.0 | llama-3.2-1B LM-head | ✅ |
+| 49152×2048 | 8/8/8 | 32.5 | 5.9e-8 | SmolLM2-1.7B LM-head | ✅ |
 
 > This plain GEMV is the exact kernel for llama-3.2-1B decode's **Q / K / V projections and LM-head**. The **O / Gate / Up / Down** projections use *fused* cascade variants (GEMV+residual, GEMV+SwiGLU+RMSNorm) — separate kernels, separate registry entries; the 8192×2048 / 2048×8192 rows here are coverage shapes. See [`details/GEMV_bf16.md`](details/GEMV_bf16.md).
 > GEMV uses an **FP32 vector accumulate** (not the BFP16-emulated MMA that GEMM uses), so accuracy is effectively exact — `mean_rel_L1 ≤ 2.7e-8`, several shapes bit-identical to the f32 reference, orders of magnitude tighter than BF16 GEMM's ~9e-3.
@@ -104,6 +105,7 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 | lq×lk | dk/dv | heads q/kv | causal | dv_chunks | latency | GFLOP/s | mean_rel_L1 | Status |
 |---|---|---|---|---|---|---|---|---|
 | 2048×2048 | 64/64 | 32/8 | ✓ | 1 | 15.4–16.1 ms | **1065–1116** | 3.9e-2 | ✅ |
+| 2048×2048 | 64/64 | 32/32 | ✓ | 1 | 16.9 ms | 2031 | 3.9e-2 | ✅ |
 | 512×512 | 64/64 | 2/2 | ✗ | 1 | 0.73 ms | 184 | 4.4e-2 | ✅ |
 | 512×512 | 64/64 | 12/6 | ✗ | 1 | 1.22 ms | 661 | 4.6e-2 | ✅ |
 | 512×512 | 64/64 | 64/8 | ✗ | 1 | 3.79 ms | 1135 | 4.6e-2 | ✅ |

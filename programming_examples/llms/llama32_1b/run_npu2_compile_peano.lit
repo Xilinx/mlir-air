@@ -12,11 +12,16 @@
 // without secrets and "does it still produce correct output?" with secrets.
 //
 // Gated on ryzen_ai_npu2 because the example hardcodes the AIE2P target
-// throughout its kernel builders (llama_kernel_builder/external_kernels.py uses
-// --target=aie2p-none-unknown-elf, gemm_builder.py uses arch="aie2p");
-// running this on a non-NPU2 context would compile artifacts that cannot
-// be exercised on the host runner. The actual compile does not touch the
-// NPU device, so any NPU2-capable runner is sufficient.
+// throughout its kernel builders (shared/infra/external_kernels.py uses
+// --target=aie2p-none-unknown-elf, shared/builders/gemm_builder.py uses
+// arch="aie2p"); running this on a non-NPU2 context would compile artifacts
+// that cannot be exercised on the host runner. The actual compile does not
+// touch the NPU device, so any NPU2-capable runner is sufficient.
+//
+// The "_peano" in the filename is load-bearing: CI's peano suite runs
+// `lit --filter "peano"`, which matches on the test name, so a compile lit
+// must carry "peano" in its filename to be collected (see
+// programming_examples/CMakeLists.txt check-programming-examples-peano).
 //
 // REQUIRES: ryzen_ai_npu2, peano
 //

@@ -68,13 +68,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from matvec_2tile_add import build_module as build_2tile_add
 from matvec_swiglu_rms import build_module as build_swiglu_rms
-from llama_kernel_builder.stitching import (
-    _extract_between_func_and_return,
-    _extract_affine_maps,
-    _extract_private_funcs,
-    _extract_channel_decls,
-    _rename_all_with_externs,
-    _fix_launch_func_args,
+from shared.infra.stitching import (
+    stitch_elf,
+    KernelSlice,
+    FuncArg,
 )
 from air.ir import Module, Context
 from air.backend.xrt import XRTBackend
@@ -115,101 +112,64 @@ def build_o_gemv_ffn_module(emb_dim=2048, hidden_dim=8192):
     )
     stage3 = build_2tile_add(emb_dim, hidden_dim, m=8, k=512, n_cores=8)
 
-    def _slice(ir, prefix, arg_map, arg_aliases=None):
-        body = _extract_between_func_and_return(ir)
-        maps = _extract_affine_maps(ir)
-        chans = _extract_channel_decls(ir)
-        privs = _extract_private_funcs(ir)
-        body = _rename_all_with_externs(body, prefix, _EXTERNS)
-        maps = [_rename_all_with_externs(m, prefix, _EXTERNS) for m in maps]
-        chans = [_rename_all_with_externs(c, prefix, _EXTERNS) for c in chans]
-        privs = [_rename_all_with_externs(p, prefix, _EXTERNS) for p in privs]
-        body = _fix_launch_func_args(
-            body,
-            prefix,
-            arg_map=arg_map,
-            arg_aliases=arg_aliases,
-        )
-        return body, maps, chans, privs
-
     # Stage 1 — matvec_2tile_add local (A=0, B=1, R=2, D=3):
     #   wo (arg0) @ attn_out (arg1) + x_residual (arg3)  →  arg6[0]
-    s1_body, s1_maps, s1_chans, s1_privs = _slice(
-        str(stage1),
-        "s1",
-        arg_map={0: 0, 1: 1, 2: 3},
-        arg_aliases={3: "%arg6_row0"},
-    )
     # Stage 2 — matvec_swiglu_rms local (A_interleaved=0, packed_rms=1, D=2):
     #   w_gateup (arg7), packed (arg6 native 2D), swiglu (arg11)
-    s2_body, s2_maps, s2_chans, s2_privs = _slice(
-        str(stage2),
-        "s2",
-        arg_map={0: 7, 1: 6, 2: 11},
-    )
     # Stage 3 — matvec_2tile_add local (A=0, B=1, R=2, D=3):
     #   wdown (arg12) @ swiglu (arg11) + arg6[0]  →  output (arg14)
-    s3_body, s3_maps, s3_chans, s3_privs = _slice(
-        str(stage3),
-        "s3",
-        arg_map={0: 12, 1: 11, 3: 14},
-        arg_aliases={2: "%arg6_row0"},
+    # The post-attention residual is routed through a row-0 subview of arg6 (the
+    # packed RMSNorm-input buffer), declared in the func-body prelude and aliased
+    # into stage1's R operand and stage3's R operand.
+    base_args = [
+        FuncArg("%arg0", f"memref<{emb_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg1", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg2", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg3", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg4", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg5", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg6", f"memref<2x{emb_dim}xbf16>"),
+        FuncArg("%arg7", f"memref<{2 * hidden_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg8", f"memref<{hidden_dim}xbf16>"),
+        FuncArg("%arg9", f"memref<{hidden_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg10", f"memref<{hidden_dim}xbf16>"),
+        FuncArg("%arg11", f"memref<{hidden_dim}xbf16>"),
+        FuncArg("%arg12", f"memref<{emb_dim}x{hidden_dim}xbf16>"),
+        FuncArg("%arg13", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg14", f"memref<{emb_dim}xbf16>"),
+    ]
+    prelude = (
+        f"    %arg6_row0_strided = memref.subview %arg6[0, 0] [1, {emb_dim}] [1, 1]\n"
+        f"        : memref<2x{emb_dim}xbf16> to memref<{emb_dim}xbf16, strided<[1]>>\n"
+        f"    %arg6_row0 = memref.cast %arg6_row0_strided\n"
+        f"        : memref<{emb_dim}xbf16, strided<[1]>> to memref<{emb_dim}xbf16>"
     )
-
-    # Dedup private decls by name (symbol identity).
-    seen = set()
-    all_privs = []
-    for p in s1_privs + s2_privs + s3_privs:
-        m = re.search(r"@(\w+)", p)
-        if m and m.group(1) not in seen:
-            seen.add(m.group(1))
-            all_privs.append(p.strip())
-
-    # Channel decls: per-stage prefix makes them unique; textual dedup as safety.
-    seen_chans = set()
-    all_chans = []
-    for c in s1_chans + s2_chans + s3_chans:
-        cs = c.strip()
-        if cs not in seen_chans:
-            seen_chans.add(cs)
-            all_chans.append(cs)
-
-    all_maps = s1_maps + s2_maps + s3_maps
-
-    combined = "\n".join(all_maps) + f"""
-module {{
-{chr(10).join('  ' + c for c in all_chans)}
-{chr(10).join('  ' + p for p in all_privs)}
-  func.func @o_gemv_ffn(
-    %arg0: memref<{emb_dim}x{emb_dim}xbf16>,
-    %arg1: memref<{emb_dim}xbf16>,
-    %arg2: memref<{emb_dim}xbf16>,
-    %arg3: memref<{emb_dim}xbf16>,
-    %arg4: memref<{emb_dim}xbf16>,
-    %arg5: memref<{emb_dim}xbf16>,
-    %arg6: memref<2x{emb_dim}xbf16>,
-    %arg7: memref<{2 * hidden_dim}x{emb_dim}xbf16>,
-    %arg8: memref<{hidden_dim}xbf16>,
-    %arg9: memref<{hidden_dim}x{emb_dim}xbf16>,
-    %arg10: memref<{hidden_dim}xbf16>,
-    %arg11: memref<{hidden_dim}xbf16>,
-    %arg12: memref<{emb_dim}x{hidden_dim}xbf16>,
-    %arg13: memref<{emb_dim}xbf16>,
-    %arg14: memref<{emb_dim}xbf16>
-  ) {{
-    %arg6_row0_strided = memref.subview %arg6[0, 0] [1, {emb_dim}] [1, 1]
-        : memref<2x{emb_dim}xbf16> to memref<{emb_dim}xbf16, strided<[1]>>
-    %arg6_row0 = memref.cast %arg6_row0_strided
-        : memref<{emb_dim}xbf16, strided<[1]>> to memref<{emb_dim}xbf16>
-{s1_body}
-{s2_body}
-{s3_body}
-    return
-  }}
-}}
-"""
-    with Context() as ctx:
-        return Module.parse(combined, ctx)
+    slices = [
+        KernelSlice(
+            str(stage1),
+            "s1",
+            {0: 0, 1: 1, 2: 3},
+            arg_aliases={3: "%arg6_row0"},
+            extern_syms=_EXTERNS,
+        ),
+        KernelSlice(str(stage2), "s2", {0: 7, 1: 6, 2: 11}, extern_syms=_EXTERNS),
+        KernelSlice(
+            str(stage3),
+            "s3",
+            {0: 12, 1: 11, 3: 14},
+            arg_aliases={2: "%arg6_row0"},
+            extern_syms=_EXTERNS,
+        ),
+    ]
+    # args 2,4,5,8,9,10,13 are dead-ABI placeholders: present so this ELF's
+    # signature matches the int4 o_gemv_ffn variant, but not wired to any launch.
+    return stitch_elf(
+        "o_gemv_ffn",
+        base_args,
+        slices,
+        prelude=prelude,
+        allow_unreferenced_args={2, 4, 5, 8, 9, 10, 13},
+    )
 
 
 def o_gemv_ffn_reference(

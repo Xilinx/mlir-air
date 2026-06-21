@@ -7,7 +7,18 @@ Provides functions to extract, rename, and combine MLIR text fragments from
 individually-built kernel modules into a single multi-launch module. These
 utilities handle SSA value renaming, affine map prefixing, func-arg fixup,
 and air.launch/segment wrapping for bare herds.
+
+The low-level primitives (`_extract_*`, `_rename_*`, `_fix_launch_func_args`,
+`_wrap_ir_in_launch`) do the mechanical text surgery. `stitch_elf()` is the
+declarative orchestration layer on top: given the combined func signature and a
+list of `KernelSlice`s (each = one sub-kernel IR + its prefix + arg wiring), it
+runs the extract/rename/fixup loop, assembles the module, and parses it. It
+folds the three historically error-prone concerns into explicit, validated
+inputs: arg-number wiring (`KernelSlice.arg_map`), extern de-dup (per-slice
+`extern_syms`), and registry-driven tail scratch args (`alloc_gemm_scratch`).
 """
+
+from dataclasses import dataclass, field
 
 import re
 
@@ -226,3 +237,202 @@ def _rename_all_with_externs(text, prefix, extern_funcs):
             text = text.replace(name, f"@{prefix}_{name[1:]}")
 
     return text
+
+
+# ---------------------------------------------------------------------------
+# Declarative ELF assembly: stitch_elf()
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FuncArg:
+    """One argument of the combined func signature.
+
+    `name` is the MLIR SSA name (e.g. "%arg0"); `type` is the memref type
+    string (e.g. "memref<2048x2048xbf16>"). Emitted verbatim as
+    "{name}: {type}".
+    """
+
+    name: str
+    type: str
+
+
+@dataclass
+class KernelSlice:
+    """One sub-kernel to splice into the combined func.
+
+    ir: the sub-kernel module text. May itself contain multiple air.launch ops
+        (e.g. a fused-cast GEMM = GEMM launch + cast launch); the whole func
+        body is copied, so launch count is transparent to stitching.
+    prefix: unique SSA/affine/symbol prefix (e.g. "q") to avoid collisions.
+    arg_map: {launch-operand-idx: combined-func-arg-idx}. The data-flow wiring
+        — which combined arg feeds each operand of this slice's launch(es).
+    arg_aliases: {launch-operand-idx: "%ssa_name"} routes an operand onto an
+        SSA value defined in `prelude` (e.g. a subview) instead of a func arg.
+    extern_syms: symbols this slice references that must NOT be prefix-renamed
+        (external .o kernel entry points), so they link across slices.
+    private_from: collect this slice's `func.func private` decls into the
+        module header.
+    """
+
+    ir: str
+    prefix: str
+    arg_map: dict
+    arg_aliases: dict = field(default_factory=dict)
+    extern_syms: set = field(default_factory=set)
+    private_from: bool = True
+
+
+def alloc_gemm_scratch(specs_in_order, base_arg_count):
+    """Registry-driven f32 C-scratch allocation for fused-cast GEMMs.
+
+    `specs_in_order`: list of (spec, out_rows, out_cols) in the SAME order the
+    GEMM slices appear, where `spec` is a gemm_method_spec dict (has
+    `needs_f32_scratch`). For each fused-cast GEMM, allocate one tail func arg
+    (index counts up from `base_arg_count`); drain GEMMs get none.
+
+    Returns (scratch_args, scratch_for):
+      scratch_args: list[FuncArg] to append after the base signature args.
+      scratch_for:  list[int|None] parallel to specs_in_order — the allocated
+                    combined-arg index for that GEMM, or None if drain.
+
+    This is the single owner of scratch-arg numbering: callers thread
+    scratch_for[i] into the GEMM slice's arg_map instead of hand-writing tail
+    indices. Making the GQA(1 scratch)->MHA(3 scratch) transition correct by
+    construction — the bug class this whole helper exists to kill.
+    """
+    scratch_args, scratch_for = [], []
+    nxt = base_arg_count
+    for spec, out_rows, out_cols in specs_in_order:
+        if spec["needs_f32_scratch"]:
+            scratch_args.append(
+                FuncArg(f"%arg{nxt}", f"memref<{out_rows}x{out_cols}xf32>")
+            )
+            scratch_for.append(nxt)
+            nxt += 1
+        else:
+            scratch_for.append(None)
+    return scratch_args, scratch_for
+
+
+def stitch_elf(
+    func_name,
+    base_args,
+    slices,
+    *,
+    scratch_args=(),
+    prelude="",
+    extra_externs=frozenset(),
+    allow_unreferenced_args=(),
+    debug_dump_path=None,
+):
+    """Assemble sub-kernel IRs into one multi-launch module and parse it.
+
+    func_name: combined func symbol WITHOUT the leading "@" (e.g.
+        "rms_gemms_rope" -> emits `func.func @rms_gemms_rope`).
+    base_args: list[FuncArg], the always-present signature args (indices
+        0..len(base_args)-1).
+    slices: ordered list[KernelSlice]; bodies are spliced in this order.
+    scratch_args: list[FuncArg] appended after base_args (registry-driven tail,
+        typically from alloc_gemm_scratch). Their indices continue from
+        len(base_args).
+    prelude: SSA injected at the top of the combined func body (before any
+        slice), e.g. a subview/cast that `arg_aliases` route onto.
+    extra_externs: externs to preserve beyond the union of slice.extern_syms.
+    allow_unreferenced_args: set of combined-arg indices that are intentionally
+        present in the signature but not wired to any launch (dead-ABI
+        placeholders kept for cross-variant ABI compatibility). Excludes them
+        from the dangling-arg check. Use sparingly — the default behavior of
+        flagging unreferenced args is what catches silent arg drift.
+    debug_dump_path: if parsing fails, write the combined IR here before
+        re-raising.
+
+    Returns the parsed `air.ir.Module`.
+    """
+    from air.ir import Context, Module
+
+    all_args = list(base_args) + list(scratch_args)
+    n_args = len(all_args)
+
+    # --- Validation (hard errors — silent arg drift is the bug class we kill) ---
+    referenced = set()
+    for sl in slices:
+        overlap = set(sl.arg_map) & set(sl.arg_aliases)
+        if overlap:
+            raise ValueError(
+                f"stitch_elf: slice '{sl.prefix}' operand(s) {sorted(overlap)} "
+                f"appear in BOTH arg_map and arg_aliases"
+            )
+        for operand_idx, combined_idx in sl.arg_map.items():
+            if not (0 <= combined_idx < n_args):
+                raise ValueError(
+                    f"stitch_elf: slice '{sl.prefix}' arg_map maps operand "
+                    f"{operand_idx} -> combined arg {combined_idx}, out of range "
+                    f"[0,{n_args})"
+                )
+            referenced.add(combined_idx)
+    unreferenced = set(range(n_args)) - referenced - set(allow_unreferenced_args)
+    if unreferenced:
+        raise ValueError(
+            f"stitch_elf: combined func arg(s) {sorted(unreferenced)} are never "
+            f"referenced by any slice's arg_map (dangling signature args). If "
+            f"intentional (dead-ABI placeholders), pass them in "
+            f"allow_unreferenced_args."
+        )
+
+    # --- Mechanical stitch (extract / rename / fixup) ---
+    externs = set(extra_externs)
+    for sl in slices:
+        externs |= set(sl.extern_syms)
+
+    bodies, maps_all, all_privates = [], [], set()
+    all_chans = []  # ordered, textually deduped (per-slice prefix makes unique)
+    _seen_chans = set()
+    for sl in slices:
+        body = _extract_between_func_and_return(sl.ir)
+        maps = _extract_affine_maps(sl.ir)
+        chans = _extract_channel_decls(sl.ir)
+        body = _rename_all_with_externs(body, sl.prefix, externs)
+        maps = [_rename_all_with_externs(m, sl.prefix, externs) for m in maps]
+        chans = [_rename_all_with_externs(c, sl.prefix, externs) for c in chans]
+        body = _fix_launch_func_args(
+            body, sl.prefix, sl.arg_map, arg_aliases=sl.arg_aliases
+        )
+        bodies.append(body)
+        maps_all.extend(maps)
+        for c in chans:
+            cs = c.strip()
+            if cs not in _seen_chans:
+                _seen_chans.add(cs)
+                all_chans.append(cs)
+        if sl.private_from:
+            for p in _extract_private_funcs(sl.ir):
+                all_privates.add(p.strip())
+
+    privates_str = "\n  ".join(sorted(all_privates))
+    chans_str = "".join("  " + c + "\n" for c in all_chans)
+    sig = ",\n    ".join(f"{a.name}: {a.type}" for a in all_args)
+    prelude_str = (prelude + "\n") if prelude else ""
+    bodies_str = "\n".join(bodies)
+
+    combined = "\n".join(maps_all) + f"""
+module {{
+{chans_str}  {privates_str}
+  func.func @{func_name}(
+    {sig}
+  ) {{
+{prelude_str}{bodies_str}
+    return
+  }}
+}}
+"""
+
+    with Context() as ctx:
+        try:
+            return Module.parse(combined, ctx)
+        except Exception:
+            if debug_dump_path:
+                with open(debug_dump_path, "w") as f:
+                    f.write(combined)
+                print(f"  PARSE ERROR: dumped to {debug_dump_path}")
+            raise

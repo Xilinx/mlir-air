@@ -45,7 +45,6 @@ from ml_dtypes import bfloat16
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(
     0,
     os.path.join(
@@ -75,13 +74,11 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
-from llama_kernel_builder.stitching import (
-    _extract_between_func_and_return,
-    _extract_affine_maps,
-    _extract_private_funcs,
-    _fix_launch_func_args,
+from shared.infra.stitching import (
     _wrap_ir_in_launch,
-    _rename_all_with_externs,
+    stitch_elf,
+    KernelSlice,
+    FuncArg,
 )
 
 range_ = for_
@@ -469,67 +466,42 @@ def build_rms_gemv_rope_module(
     #   RoPE Q:   {0->4, 1->9, 2->11}      (q, lut_q, q_roped)
     #   RoPE K:   {0->6, 1->10, 2->12}     (k, lut_k, k_roped)
 
-    bodies, maps_all = [], []
-    for ir, prefix, arg_map in [
-        (rms_ir, "r", {0: 0, 1: 1, 2: 2}),
-        (q_ir, "q", {0: 3, 1: 2, 2: 4}),
-        (k_ir, "k", {0: 5, 1: 2, 2: 6}),
-        (v_ir, "v", {0: 7, 1: 2, 2: 8}),
-        (rope_q_ir, "rq", {0: 4, 1: 9, 2: 11}),
-        (rope_k_ir, "rk", {0: 6, 1: 10, 2: 12}),
-    ]:
-        body = _extract_between_func_and_return(ir)
-        maps = _extract_affine_maps(ir)
-        body = _rename_all_with_externs(body, prefix, _EXTERN_FUNCS)
-        maps = [_rename_all_with_externs(m, prefix, _EXTERN_FUNCS) for m in maps]
-        body = _fix_launch_func_args(body, prefix, arg_map)
-        bodies.append(body)
-        maps_all.extend(maps)
-
-    # Collect private func declarations from all sub-kernels
-    all_privates = set()
-    for ir in [q_ir, rope_q_ir]:
-        for p in _extract_private_funcs(ir):
-            all_privates.add(p.strip())
-    privates_str = "\n  ".join(all_privates)
-
-    # Assemble (13 func args, 6 launches)
-    combined = "\n".join(maps_all) + f"""
-module {{
-  {privates_str}
-  func.func @rms_gemv_rope(
-    %arg0: memref<{emb_dim}xbf16>,
-    %arg1: memref<{emb_dim}xbf16>,
-    %arg2: memref<{emb_dim}xbf16>,
-    %arg3: memref<{emb_dim}x{emb_dim}xbf16>,
-    %arg4: memref<{emb_dim}xbf16>,
-    %arg5: memref<{kv_dim}x{emb_dim}xbf16>,
-    %arg6: memref<{kv_dim}xbf16>,
-    %arg7: memref<{kv_dim}x{emb_dim}xbf16>,
-    %arg8: memref<{kv_dim}xbf16>,
-    %arg9: memref<{q_total}xbf16>,
-    %arg10: memref<{k_total}xbf16>,
-    %arg11: memref<{q_total}xbf16>,
-    %arg12: memref<{k_total}xbf16>
-  ) {{
-{bodies[0]}
-{bodies[1]}
-{bodies[2]}
-{bodies[3]}
-{bodies[4]}
-{bodies[5]}
-    return
-  }}
-}}
-"""
-
-    with Context() as ctx:
-        module = Module.parse(combined, ctx)
-        print(
-            f"  Module: {len(combined.splitlines())} lines, "
-            f"13 args, 6 launches, parsed OK"
-        )
-        return module
+    # Privates only from q_ir (GEMV externs) and rope_q_ir (@rope); the other
+    # slices carry no private decls of their own.
+    base_args = [
+        FuncArg("%arg0", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg1", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg2", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg3", f"memref<{emb_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg4", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg5", f"memref<{kv_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg6", f"memref<{kv_dim}xbf16>"),
+        FuncArg("%arg7", f"memref<{kv_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg8", f"memref<{kv_dim}xbf16>"),
+        FuncArg("%arg9", f"memref<{q_total}xbf16>"),
+        FuncArg("%arg10", f"memref<{k_total}xbf16>"),
+        FuncArg("%arg11", f"memref<{q_total}xbf16>"),
+        FuncArg("%arg12", f"memref<{k_total}xbf16>"),
+    ]
+    slices = [
+        KernelSlice(rms_ir, "r", {0: 0, 1: 1, 2: 2}, private_from=False),
+        KernelSlice(q_ir, "q", {0: 3, 1: 2, 2: 4}),
+        KernelSlice(k_ir, "k", {0: 5, 1: 2, 2: 6}, private_from=False),
+        KernelSlice(v_ir, "v", {0: 7, 1: 2, 2: 8}, private_from=False),
+        KernelSlice(rope_q_ir, "rq", {0: 4, 1: 9, 2: 11}),
+        KernelSlice(rope_k_ir, "rk", {0: 6, 1: 10, 2: 12}, private_from=False),
+    ]
+    module = stitch_elf(
+        "rms_gemv_rope",
+        base_args,
+        slices,
+        extra_externs=_EXTERN_FUNCS,
+    )
+    print(
+        f"  Module: {len(str(module).splitlines())} lines, "
+        f"13 args, 6 launches, parsed OK"
+    )
+    return module
 
 
 # ---------------------------------------------------------------------------

@@ -45,7 +45,7 @@ def _get_aie_include_dir():
             return str(p)
     # Fallback: explicit local dev install path.
     p = (
-        Path(__file__).resolve().parent.parent.parent.parent
+        Path(__file__).resolve().parent.parent.parent.parent.parent
         / "my_install"
         / "mlir-aie"
         / "install"
@@ -107,7 +107,9 @@ def _compile_kernel(src_path, output_name, extra_flags=None, force=False):
 # Individual kernel compilation functions
 # ---------------------------------------------------------------------------
 
-_PROJ_ROOT = Path(__file__).resolve().parent.parent.parent  # programming_examples/
+_PROJ_ROOT = (
+    Path(__file__).resolve().parent.parent.parent.parent
+)  # programming_examples/
 
 
 def compile_silu_and_mul():

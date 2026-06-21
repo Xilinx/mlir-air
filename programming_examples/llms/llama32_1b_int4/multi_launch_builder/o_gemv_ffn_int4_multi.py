@@ -75,7 +75,7 @@ import matvec_int4_swiglu_rms
 from matvec_int4_swiglu_rms import build_module as build_int4_swiglu_rms
 from matvec_int4_packed import pack_inputs
 
-from llama_kernel_builder.stitching import (
+from shared.infra.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
