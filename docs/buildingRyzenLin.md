@@ -45,8 +45,8 @@ AIR supports multiple backends — AIE (NPU / Versal AI Engines), [GPU](building
    export PYTHONPATH=$MLIR_AIR_INSTALL_DIR/python:$MLIR_AIE_INSTALL_DIR/python:$PYTHONPATH
    export LD_LIBRARY_PATH=$MLIR_AIR_INSTALL_DIR/lib:$MLIR_AIE_INSTALL_DIR/lib:$LD_LIBRARY_PATH
 
-   # Only if you have XRT installed:
-   source /opt/xilinx/xrt/setup.sh
+   # Only if you have XRT installed (replace with your actual XRT install path):
+   source /path/to/xrt/setup.sh
    ```
 
 4. **Verify the install:**
@@ -344,9 +344,9 @@ After this step, you are ready to build MLIR-AIR!
 
 ### Building
 
-To build MLIR-AIR provide the paths to llvm, cmakeModules, and xrt (here, we assume it is installed in `/opt/xilinx/xrt`):
+To build MLIR-AIR provide the paths to llvm, cmakeModules, mlir-aie, libxaie, and xrt:
 ```bash
-./utils/build-mlir-air-xrt.sh llvm mlir-aie/cmake/modulesXilinx mlir-aie aienginev2/install /opt/xilinx/xrt
+./utils/build-mlir-air-xrt.sh llvm mlir-aie/cmake/modulesXilinx mlir-aie aienginev2/install /path/to/xrt
 ```
 
 ### Environment
