@@ -42,7 +42,7 @@ def parse_and_check_args():
 
 
 def main():
-    (xclbin_path, insts_path) = parse_and_check_args()
+    xclbin_path, insts_path = parse_and_check_args()
 
     with open(insts_path, "rb") as f:
         instr_v = np.fromfile(f, dtype=np.uint32)
@@ -87,7 +87,9 @@ def main():
     h.wait()
 
     bo_out.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-    output_buffer = bo_out.read(INOUT_SIZE_BYTES, 0).view(INOUT_DATATYPE)
+    output_buffer = np.frombuffer(
+        bytes(bo_out.read(INOUT_SIZE_BYTES, 0)), dtype=INOUT_DATATYPE
+    )
 
     # check output, should have the top left filled in
     actual_output = np.reshape(output_buffer, expected_output.shape)

@@ -862,8 +862,9 @@ public:
     if (!contains_relevant_ops)
       return failure();
 
-    auto seq = AIE::RuntimeSequenceOp::create(rewriter, op->getLoc(),
-                                              op.getSymNameAttr());
+    auto seq = AIE::RuntimeSequenceOp::create(
+        rewriter, op->getLoc(), op.getSymNameAttr(),
+        /*emit_parameter_sync_preamble=*/nullptr);
     seq.getBody().push_back(new Block);
 
     // Add and remap the arguments
@@ -1142,7 +1143,8 @@ AIE::DeviceOp createMainDeviceWrapper(
   // Create runtime_sequence inside main device
   builder.setInsertionPointToStart(mainDeviceBody);
   auto mainSeq = AIE::RuntimeSequenceOp::create(
-      builder, loc, builder.getStringAttr(mainSeqName.str()));
+      builder, loc, builder.getStringAttr(mainSeqName.str()),
+      /*emit_parameter_sync_preamble=*/nullptr);
   mainSeq.getBody().push_back(new Block);
 
   // Add arguments to runtime_sequence based on first device's signature

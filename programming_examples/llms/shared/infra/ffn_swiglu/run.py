@@ -393,7 +393,9 @@ if __name__ == "__main__":
 
         # Check correctness
         output_bo = bos[-1]
-        output_data = output_bo.read(sizes[-1], 0).view(np.int16).view(bfloat16)
+        output_data = np.frombuffer(
+            bytes(output_bo.read(sizes[-1], 0)), dtype=np.int16
+        ).view(bfloat16)
         output_data = output_data.reshape(seq_len, emb_dim).astype(np.float32)
         ref_flat = output_ref.astype(np.float32).flatten()
         corr = np.corrcoef(output_data.flatten(), ref_flat)[0, 1]

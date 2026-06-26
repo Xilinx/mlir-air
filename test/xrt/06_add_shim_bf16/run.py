@@ -53,7 +53,7 @@ h = kernel(opcode, bo_instr, len(instr_v), bo_a, bo_b, bo_c)
 h.wait()
 
 bo_c.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-output_buffer = bo_c.read(out_size_bytes, 0).view(np.float32)
+output_buffer = np.frombuffer(bytes(bo_c.read(out_size_bytes, 0)), dtype=np.float32)
 print("input:", input_a)
 print("input:", input_b)
 print("output:", output_buffer)

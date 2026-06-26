@@ -94,7 +94,7 @@ for i in range(0, niter):
     npu_total_time = npu_total_time + t
 
     bo_c.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-    output_buffer = bo_c.read(out_size_bytes, 0).view(np.float32)
+    output_buffer = np.frombuffer(bytes(bo_c.read(out_size_bytes, 0)), dtype=np.float32)
 print("macs:", macs)
 print("Avg NPU gflops:", macs / (1e9 * npu_total_time / niter))
 

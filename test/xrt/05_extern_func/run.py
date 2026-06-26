@@ -41,7 +41,7 @@ h = kernel(opcode, bo_instr, len(instr_v), bo_c)
 h.wait()
 
 bo_c.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-output_buffer = bo_c.read(out_size_bytes, 0).view(np.uint32)
+output_buffer = np.frombuffer(bytes(bo_c.read(out_size_bytes, 0)), dtype=np.uint32)
 
 errors = 0
 for i in range(0, 1024, 4):

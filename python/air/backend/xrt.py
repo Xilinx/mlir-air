@@ -569,7 +569,7 @@ class XRTBackend(AirBackend):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
                 return tuple(
                     [
-                        bos[i].read(s, 0).view(args[i].dtype)
+                        np.frombuffer(bytes(bos[i].read(s, 0)), dtype=args[i].dtype)
                         for i, s in enumerate(sizes_in_bytes)
                     ]
                 )
@@ -647,7 +647,7 @@ class XRTBackend(AirBackend):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
                 return tuple(
                     [
-                        bos[i].read(s, 0).view(args[i].dtype)
+                        np.frombuffer(bytes(bos[i].read(s, 0)), dtype=args[i].dtype)
                         for i, s in enumerate(sizes_in_bytes)
                     ]
                 )
