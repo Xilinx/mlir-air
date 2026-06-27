@@ -820,16 +820,23 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
       }
     }
     // Get constant values used by backward slices, and add to backward
-    // slices.
+    // slices. Collect into a temporary first: inserting into backwardSlice
+    // from within this loop can reallocate the SetVector's backing storage and
+    // invalidate the range-for iterator (a SIGSEGV reproducible when the
+    // hoisted op nests under enough affine.if/scf.if regions, e.g. a cascade
+    // GEMV). Newly added ops are always constants (no regions), so deferring
+    // their insertion does not change the result.
+    SmallVector<Operation *> constantsToAdd;
     for (auto o : backwardSlice) {
       for (auto &region : o->getRegions()) {
-        visitUsedValuesDefinedAbove(region, [&backwardSlice](OpOperand *use) {
+        visitUsedValuesDefinedAbove(region, [&constantsToAdd](OpOperand *use) {
           if (getConstantIntValue(use->get())) {
-            backwardSlice.insert(use->get().getDefiningOp());
+            constantsToAdd.push_back(use->get().getDefiningOp());
           }
         });
       }
     }
+    backwardSlice.insert(constantsToAdd.begin(), constantsToAdd.end());
 
     // Don't miss out the backward slices of air.execute op's child ops.
     auto backwardSliceCopy = backwardSlice;
