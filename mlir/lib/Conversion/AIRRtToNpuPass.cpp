@@ -87,6 +87,29 @@ static bool deviceHasRepeatCountDMAs(xilinx::AIE::DeviceOp device) {
   return hasRepeatCount;
 }
 
+// Helper function to check if an aie.device uses the cascade bus (cascade flows or
+// core-side get/put_cascade). Cascade core locks/credits, like repeat_count DMA state,
+// must be re-armed after each launch via the load_pdi reset (which runs initLocks). A
+// single-trip launch has repeat_count == 0, so deviceHasRepeatCountDMAs() misses cascade
+// kernels -> they abort on the 2nd host dispatch ("qds_device::wait() unexpected command
+// state"). Detecting cascade lets the existing reset path fire for single-trip cascade too.
+static bool deviceHasCascade(xilinx::AIE::DeviceOp device) {
+  bool hasCascade = false;
+  device.walk([&](mlir::Operation *op) {
+    if (llvm::isa<xilinx::AIE::CascadeFlowOp, xilinx::AIE::GetCascadeOp,
+                  xilinx::AIE::PutCascadeOp>(op))
+      hasCascade = true;
+  });
+  return hasCascade;
+}
+
+// A device needs the per-launch lock/DMA-state reset (load_pdi + initLocks) if it has
+// repeat_count DMAs OR uses the cascade bus -- both hold core state that does not re-arm
+// across host re-dispatch on its own.
+static bool deviceNeedsLockReset(xilinx::AIE::DeviceOp device) {
+  return deviceHasRepeatCountDMAs(device) || deviceHasCascade(device);
+}
+
 namespace {
 
 // Helper function to check if a value is a memref on host memory (space 0)
@@ -803,7 +826,7 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          if (outputElf && deviceHasRepeatCountDMAs(device)) {
+          if (outputElf && deviceNeedsLockReset(device)) {
             // Insert aiex.npu.load_pdi to reset DMA engine state when
             // core/memtile DMAs have repeat_count > 0.
             rewriter.setInsertionPoint(op);
@@ -956,7 +979,7 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          if (outputElf && deviceHasRepeatCountDMAs(device)) {
+          if (outputElf && deviceNeedsLockReset(device)) {
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
@@ -1844,7 +1867,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   void createLightweightResetDevice(ModuleOp module) {
     SmallVector<std::pair<AIE::DeviceOp, std::string>> devicesToClone;
     module.walk([&](AIE::DeviceOp device) {
-      if (!deviceHasRepeatCountDMAs(device))
+      if (!deviceNeedsLockReset(device))
         return;
       if (device.getSymName().empty())
         return;
