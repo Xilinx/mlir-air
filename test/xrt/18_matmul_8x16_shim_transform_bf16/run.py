@@ -53,11 +53,19 @@ bo_a = xrt.bo(device, in_a_size_bytes, xrt.bo.host_only, kernel.group_id(3))
 bo_b = xrt.bo(device, in_b_size_bytes, xrt.bo.host_only, kernel.group_id(4))
 bo_c = xrt.bo(device, out_size_bytes, xrt.bo.host_only, kernel.group_id(5))
 
-bo_instr.write(instr_v, 0)
+bo_instr.write(instr_v.tobytes(), 0)
 bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
+# Map host_only BOs once; read/write through the mapped arrays + bo.sync().
+# pyxrt's bo.write()/bo.read() misbehave under numpy 2.x with older XRT.
+bo_a_map = np.frombuffer(bo_a.map(), dtype=np.uint8)
+bo_b_map = np.frombuffer(bo_b.map(), dtype=np.uint8)
+bo_c_map = np.frombuffer(bo_c.map(), dtype=np.uint8)
+
 input_a = np.random.rand(*in_a_size).astype(bfloat16)
-bo_a.write(input_a.view(np.int16), 0)
+bo_a_map[:in_a_size_bytes] = np.frombuffer(
+    input_a.view(np.int16).tobytes(), dtype=np.uint8
+)
 bo_a.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
 macs = 2.0 * M * K * N
@@ -76,7 +84,9 @@ for k in range(0, int(K / Ty)):
 
 input_b = input_b.reshape((K, N))
 blocked_input_b = blocked_input_b.reshape((K, N))
-bo_b.write(blocked_input_b.view(np.int16), 0)
+bo_b_map[:in_b_size_bytes] = np.frombuffer(
+    blocked_input_b.view(np.int16).tobytes(), dtype=np.uint8
+)
 bo_b.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
 niter = 1
@@ -94,7 +104,7 @@ for i in range(0, niter):
     npu_total_time = npu_total_time + t
 
     bo_c.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-    output_buffer = np.frombuffer(bytes(bo_c.read(out_size_bytes, 0)), dtype=np.float32)
+    output_buffer = np.frombuffer(bo_c_map.tobytes(), dtype=np.float32)
 print("macs:", macs)
 print("Avg NPU gflops:", macs / (1e9 * npu_total_time / niter))
 

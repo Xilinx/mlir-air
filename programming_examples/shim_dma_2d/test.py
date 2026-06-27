@@ -66,7 +66,7 @@ def main():
     bo_in = xrt.bo(device, INOUT_SIZE_BYTES, xrt.bo.host_only, kernel.group_id(3))
     bo_out = xrt.bo(device, INOUT_SIZE_BYTES, xrt.bo.host_only, kernel.group_id(4))
 
-    bo_instr.write(instr_v, 0)
+    bo_instr.write(instr_v.tobytes(), 0)
     bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
     input_a = np.arange(np.prod(IMAGE_SIZE), dtype=INOUT_DATATYPE).reshape(IMAGE_SIZE)
@@ -77,19 +77,21 @@ def main():
         for w in range(TILE_WIDTH):
             expected_output[h, w] = input_a[h, w]
 
-    bo_in.write(input_a, 0)
+    # Use bo.map() + sync for host_only BOs; bo.write() misbehaves under
+    # numpy 2.x with older pyxrt.
+    bo_in_map = np.frombuffer(bo_in.map(), dtype=np.uint8)
+    bo_in_map[: input_a.nbytes] = np.frombuffer(input_a.tobytes(), dtype=np.uint8)
     bo_in.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
-    bo_out.write(output_a, 0)
+    bo_out_map = np.frombuffer(bo_out.map(), dtype=np.uint8)
+    bo_out_map[: output_a.nbytes] = np.frombuffer(output_a.tobytes(), dtype=np.uint8)
     bo_out.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
     h = kernel(3, bo_instr, len(instr_v), bo_in, bo_out)
     h.wait()
 
     bo_out.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-    output_buffer = np.frombuffer(
-        bytes(bo_out.read(INOUT_SIZE_BYTES, 0)), dtype=INOUT_DATATYPE
-    )
+    output_buffer = np.frombuffer(bo_out_map.tobytes(), dtype=INOUT_DATATYPE)
 
     # check output, should have the top left filled in
     actual_output = np.reshape(output_buffer, expected_output.shape)

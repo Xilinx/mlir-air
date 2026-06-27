@@ -33,15 +33,19 @@ kernel = xrt.kernel(context, xkernel.get_name())
 bo_instr = xrt.bo(device, len(instr_v) * 4, xrt.bo.cacheable, kernel.group_id(1))
 bo_c = xrt.bo(device, out_size_bytes, xrt.bo.host_only, kernel.group_id(3))
 
-bo_instr.write(instr_v, 0)
+bo_instr.write(instr_v.tobytes(), 0)
 bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+
+# Map host_only output BO once and read through the mapped array; pyxrt's
+# bo.read() misbehaves under numpy 2.x with older XRT.
+bo_c_map = np.frombuffer(bo_c.map(), dtype=np.uint8)
 
 opcode = 3
 h = kernel(opcode, bo_instr, len(instr_v), bo_c)
 h.wait()
 
 bo_c.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-output_buffer = np.frombuffer(bytes(bo_c.read(out_size_bytes, 0)), dtype=np.uint32)
+output_buffer = np.frombuffer(bo_c_map.tobytes(), dtype=np.uint32)
 
 errors = 0
 for i in range(0, 1024, 4):

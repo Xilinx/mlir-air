@@ -74,7 +74,7 @@ jobs:
           source air-venv/bin/activate
           MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
           pip install mlir_aie==$MLIR_AIE_VERSION \
-            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.3.3/
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4/
 
       - name: Get llvm-aie
         run: |
