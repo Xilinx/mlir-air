@@ -394,3 +394,51 @@ module {
     return
   }
 }
+
+// -----
+
+// Test 8: device with a cascade flow but NO repeat_count DMA (single-trip cascade).
+// Cascade core-locks need the same per-launch reset as repeat_count DMAs -- they do not
+// re-arm across host re-dispatch on their own -- so with output-elf=true load_pdi SHOULD
+// be generated even though repeat_count == 0.
+
+// EMIT-TRUE-LABEL: aie.device(npu2) @segment_cascade_reset {
+// EMIT-TRUE-NOT: runtime_sequence
+// EMIT-TRUE: }
+// EMIT-TRUE-LABEL: aie.device(npu2) @segment_cascade {
+// EMIT-TRUE: aie.runtime_sequence @func_cascade
+// EMIT-TRUE:   aiex.npu.load_pdi {device_ref = @segment_cascade_reset}
+// EMIT-TRUE: }
+
+// EMIT-FALSE-LABEL: aie.device(npu2) @segment_cascade {
+// EMIT-FALSE: aie.runtime_sequence @func_cascade
+// EMIT-FALSE-NOT:   aiex.npu.load_pdi
+// EMIT-FALSE: }
+
+module {
+  aie.device(npu2) {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %tile_0_3 = aie.tile(0, 3)
+    aie.shim_dma_allocation @airMemcpyId14(%tile_0_0, S2MM, 0)
+    aie.cascade_flow(%tile_0_2, %tile_0_3)
+    %mem_0_2 = aie.mem(%tile_0_2) {
+      %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb2)
+    ^bb1:
+      aie.end
+    ^bb2:
+      aie.end
+    }
+  } {sym_name = "segment_cascade"}
+  airrt.module_metadata{}
+  func.func @func_cascade(%arg0: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c14_i32 = arith.constant 14 : i32
+    %0 = airrt.dma_memcpy_nd(%c14_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId14} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    airrt.wait_all %0 {"air.launch_end"}
+    %p = airrt.segment_load "segment_cascade" : i64
+    return
+  }
+}
