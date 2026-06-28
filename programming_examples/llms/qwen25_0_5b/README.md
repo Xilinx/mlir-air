@@ -14,7 +14,7 @@ Measured on NPU2 (AIE2P), `make profile N_TOKENS=32`, 2026-06-28.
 
 | Phase | Measured | Notes |
 |-------|----------|-------|
-| Prefill / TTFT (2048 tokens) | **1.01 s wall** | head_dim=64 → seq-first FA (no transpose); NPU-kernel time ~0.80 s |
+| Prefill / TTFT (2048 tokens) | **0.99 s wall** | head_dim=64 → seq-first FA (no transpose); NPU-kernel time ~0.80 s |
 | Decode / TPOT (steady-state) | **11.9 tok/s** | 24 layers, NPU-compute-bound; only cheap single-token glue stays on host |
 
 ## Model Config

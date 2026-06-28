@@ -57,7 +57,7 @@ once: (HOST) final RMSNorm → [NPU elf:lm_head_gemv]
 **On NPU (all heavy compute):** every GEMM / GEMV (Q/K/V, O, Gate, Up, Down,
 LM-head), RMSNorm, **per-head QK-norm**, RoPE, prefill FlashAttention, **prefill
 SwiGLU** (standalone NPU ELF, tile_n=4864 — moved CPU→NPU, the prefill
-12.0s→5.78s 2.1× win). **Decode Down GEMV (K=9728) is on NPU** (dedicated
+12.0s→6.06s 2.0× win). **Decode Down GEMV (K=9728) is on NPU** (dedicated
 `down_mv.o`, `m_input=2` to keep the push_queue repeat ≤255). All four decode
 projections are NPU GEMV ELFs.
 
