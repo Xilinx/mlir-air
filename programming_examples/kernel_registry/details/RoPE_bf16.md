@@ -175,9 +175,20 @@ is the llama-3.2-1B prefill RoPE-Q scale (32 query heads × 2048 seq); `16384 =
 | 8 | 64 | 8/1 | 83 µs | 0.04 GB/s | 2.4e-3 | 1.6e-2 | decode RoPE-K (8 KV heads) | ✅ |
 | 32 | 64 | 8/1 | 82 µs | 0.15 GB/s | 2.7e-3 | 1.6e-2 | decode RoPE-Q (32 heads) | ✅ |
 | 2048 | 64 | 8/1 | 105 µs | 7.5 GB/s | 2.8e-3 | 3.1e-2 | coverage | ✅ |
-| 4096 | 64 | 8/1 | 118 µs | 13.3 GB/s | 2.8e-3 | 3.1e-2 | coverage | ✅ |
+| 4096 | 64 | 8/1 | 118 µs | 13.3 GB/s | 2.8e-3 | 3.1e-2 | coverage / Qwen2.5-0.5B prefill RoPE-K (2 KV heads·2048) | ✅ |
 | 16384 | 64 | 8/1 | 210 µs | 30.0 GB/s | 2.8e-3 | 3.1e-2 | prefill RoPE-K (8 KV heads) | ✅ |
 | 65536 | 64 | 8/1 | 579 µs | **43.4 GB/s** | 2.8e-3 | 3.1e-2 | prefill RoPE-Q (32 heads) | ✅ |
+| 16384 | 128 | 8/1 | — | (mem-bound) | 2.8e-3 | 3.1e-2 | Qwen3-0.6B prefill RoPE-K (8 KV heads, head_dim=128) | ✅ |
+| 32768 | 128 | 8/1 | — | (mem-bound) | 2.8e-3 | 3.1e-2 | Qwen3-0.6B prefill RoPE-Q (16 heads, head_dim=128) | ✅ |
+| 28672 | 64 | 8/1 | — | (mem-bound) | 2.8e-3 | 3.1e-2 | Qwen2.5-0.5B prefill RoPE-Q (14 heads·2048, head_dim=64) | ✅ |
+| 24576 | 128 | 8/1 | — | (mem-bound) | 2.8e-3 | 3.1e-2 | Qwen2.5-1.5B prefill RoPE-Q (12 heads·2048, head_dim=128) | ✅ |
+| 4096 | 128 | 8/1 | — | (mem-bound) | 2.8e-3 | 3.1e-2 | Qwen2.5-1.5B prefill RoPE-K (2 KV heads·2048, head_dim=128) | ✅ |
+
+> **Qwen2.5-1.5B** uses `head_dim = 128` (12 q-heads / 2 kv-heads): `rows = 12·2048 = 24576` (Q, new) and `2·2048 = 4096` (K, new at head_dim=128). Same half-split kernel, verified PASS at 2.8e-3.
+
+> **Qwen2.5-0.5B** uses `head_dim = 64` (back to llama's dim, unlike Qwen3's 128): 14 q-heads / 2 kv-heads, so `rows = 14·2048 = 28672` (Q, new) and `2·2048 = 4096` (K, already in registry). Verified PASS at 2.8e-3.
+
+> **`head_dim = 128`** (the two rows above) is the first registry coverage beyond llama's `head_dim = 64` — Qwen3-0.6B uses 16 q-heads / 8 kv-heads of `head_dim = 128`, so `rows = 16·2048 = 32768` (Q) and `8·2048 = 16384` (K). Same half-split `rope_halfsplit.cc` kernel, verified PASS at 2.8e-3 (accuracy set by the datapath, unchanged by head dim; `head_dim % 16 == 0` holds for 128).
 
 > Bandwidth rises with rows (0.04 → 43.4 GB/s): the small shapes are
 > **latency-dominated** by fixed launch overhead (~80 µs floor), while the large

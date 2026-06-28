@@ -99,6 +99,10 @@ Shapes verified on NPU2 (bf16). **Best config is `herd_x=8, herd_y=1, tile_n=204
 | 2097152 | — | 8/1/2048 | 277 µs | 45.4 GB/s | 1.9e-3 | 3.1e-2 | ✅ |
 | 4194304 | 2048×2048 | 8/1/2048 | 437 µs | 57.7 GB/s | 1.9e-3 | 3.1e-2 | ✅ |
 | 8388608 | — | 8/1/2048 | 798 µs | **63.0 GB/s** | 1.9e-3 | 3.1e-2 | ✅ |
+| 1835008 | 2048×896 | 8/1/2048 | — | (mem-bound) | 1.9e-3 | 3.1e-2 | ✅ Qwen2.5-0.5B residual (seq·emb) |
+| 3145728 | 2048×1536 | 8/1/2048 | — | (mem-bound) | 1.9e-3 | 3.1e-2 | ✅ Qwen2.5-1.5B residual (seq·emb) |
+
+> The 1835008 row is Qwen2.5-0.5B's prefill residual-add scale (seq·emb = 2048·896); the 3145728 row is Qwen2.5-1.5B's (seq·emb = 2048·1536). Same best config, bit-identical 1.9e-3.
 
 > The 4194304 row is the llama-3.2-1B prefill residual-add scale (the fused `o_ffn` variant does the same math on a 2-D `[2048,2048]` layout — see Builder). All shapes use the same best config; bandwidth rises with N as fixed launch overhead amortizes (36 → 63 GB/s). Accuracy is bit-identical across all shapes and herd configs.
 

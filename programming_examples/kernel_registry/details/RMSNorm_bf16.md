@@ -100,6 +100,16 @@ The RMSNorm shape used by llama-3.2-1B **prefill** (`M = seq_len = 2048`, `N = e
 | (M, N) | herd_x | latency | bandwidth | mean_rel_L1 | rel_err max | abs_err max | Used by | Status |
 |---|---|---|---|---|---|---|---|---|
 | 2048×2048 | 8 | 911 µs | 18.4 GB/s | 4.2e-3 | 2.3e-2 | 1.9e-1 | llama-3.2-1B prefill RMSNorm | ✅ |
+| 2048×1024 | 8 | — | (mem-bound) | 4.3e-3 | 2.3e-2 | 1.25e-1 | Qwen3-0.6B prefill RMSNorm | ✅ |
+| 2048×128 | 8 | — | (mem-bound) | 4.6e-3 | 2.3e-2 | 1.25e-1 | Qwen3-0.6B QK-norm (per-head, N=head_dim) | ✅ |
+| 2048×896 | 8 | — | (mem-bound) | 4.2e-3 | 2.3e-2 | 1.25e-1 | Qwen2.5-0.5B prefill RMSNorm | ✅ |
+| 2048×1536 | 8 | — | (mem-bound) | 4.3e-3 | 2.3e-2 | 1.25e-1 | Qwen2.5-1.5B prefill RMSNorm | ✅ |
+
+> **Qwen2.5-0.5B (2048×896)** is the per-layer RMSNorm at emb=896. Qwen2.5 has no QK-norm (unlike Qwen3). Verified PASS at 4.2e-3.
+
+> **Qwen2.5-1.5B (2048×1536)** is the per-layer RMSNorm at emb=1536. No QK-norm. Verified PASS at 4.3e-3.
+
+> **Qwen3-0.6B QK-norm (2048×128)** is Qwen3's per-head q_norm/k_norm: weighted RMSNorm with the reduction axis = `head_dim = 128` (the smallest `N` in the registry). Verified PASS at 4.6e-3, confirming the kernel handles a 128-wide reduction. (Harness `EPS = 1e-5`; Qwen3 uses `eps = 1e-6` — negligible vs the bf16 datapath error. Run via `python3 weighted_rms_norm.py --M 2048 --N <N> --herd-x 8`; the Makefile `run` target does not forward `--M/--N`.)
 
 > **What "Used by" means here.** This kernel (`weighted_rms_norm.py`, 2-D `build_module`) is the exact kernel llama-3.2-1B **prefill** uses for the per-layer RMSNorm (in the `rms_gemms_rope` ELF, `herd_x=8`). **Decode** uses a 1-D (`M=1`) wrapper (`_build_rms_1d` in `rms_gemv_rope_multi.py`) built around the same vectorized math — same datapath, same FP32 reduction, just a single-row layout.
 

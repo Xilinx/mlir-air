@@ -90,6 +90,25 @@ The precision columns are exactly what the reproduce command's `[precision]` lin
 | 2048×8192 | 8/2/2 | 1082 µs | 31.0 | 0.0 | 0.0 | 0.0 | coverage (see note) | ✅ |
 | 16384×2048 | 8/8/8 | 2193 µs | 30.6 | 0.0 | 0.0 | 0.0 | llama-3.2-1B LM-head (per-partition) | ✅ |
 | 49152×2048 | 8/8/8 | 6187 µs | 32.5 | 5.9e-8 | 8.5e-3 | 1.0e0 | SmolLM2-1.7B LM-head | ✅ |
+| 2048×1024 | 8/8/8 | 231 µs | 18.2 | 1.2e-6 | 5.2e-3 | 1.0e0 | Qwen3-0.6B decode Q proj | ✅ |
+| 1024×1024 | 8/8/8 | 147 µs | 14.3 | 0.0 | 0.0 | 0.0 | Qwen3-0.6B decode K/V proj | ✅ |
+| 16384×1024 | 8/16/16 | 1069 µs | 31.4 | 2.0e-8 | 5.3e-3 | 1.25e-1 | Qwen3-0.6B LM-head (per-partition) | ✅ |
+| 896×896 | 8/8/8 | (mem-bound) | — | 0.0 | 0.0 | 0.0 | Qwen2.5-0.5B decode Q/O proj | ✅ |
+| 128×896 | 8/8/8 | (mem-bound) | — | 0.0 | 0.0 | 0.0 | Qwen2.5-0.5B decode K/V proj | ✅ |
+| 4864×896 | 8/8/8 | (mem-bound) | — | 0.0 | 0.0 | 0.0 | Qwen2.5-0.5B decode Gate/Up proj | ✅ |
+| 896×4864 | 8/2/2 | (mem-bound) | — | 0.0 | 0.0 | 0.0 | Qwen2.5-0.5B decode Down proj (K=4864 L2 limit→tile_m=2) | ✅ |
+| 16384×896 | 8/16/16 | (mem-bound) | — | 7.2e-12 | 1.3e-2 | 4.6e-5 | Qwen2.5-0.5B LM-head (per-partition) | ✅ |
+| 1536×1536 | 8/8/8 | (mem-bound) | — | 0.0 | 0.0 | 0.0 | Qwen2.5-1.5B decode Q/O proj | ✅ |
+| 256×1536 | 8/8/8 | (mem-bound) | — | 0.0 | 0.0 | 0.0 | Qwen2.5-1.5B decode K/V proj | ✅ |
+| 8960×1536 | 8/8/8 | (mem-bound) | — | 1.7e-9 | 4.8e-3 | 7.8e-3 | Qwen2.5-1.5B decode Gate/Up proj | ✅ |
+| 1536×8960 | 8/2/2 | (mem-bound) | — | 2.2e-6 | 7.8e-3 | 4.0e+0 | Qwen2.5-1.5B decode Down proj (K=8960 L2 limit→tile_m=2; tile_m=1 fails placement) | ✅ |
+| 16384×1536 | 8/16/16 | (mem-bound) | — | 2.3e-8 | 4.1e-3 | 1.25e-1 | Qwen2.5-1.5B LM-head (per-partition) | ✅ |
+
+> **Qwen2.5-1.5B GEMV.** Decode Q/O/K/V projections (K=1536) bit-identical to the f32 ref; Gate/Up ≤1.7e-9. Down proj (K=8960) is L2-constrained — `tile_m=2` places (`tile_m=1` fails the placement pass, not L2). **LM-head is 151936×1536**, run per-partition for the same 255 BD repeat-count reason as all siblings; the 16384×1536 row verifies the K=1536 datapath at partition scale (outer=128, PASS, 2.3e-8).
+
+> **Qwen2.5-0.5B GEMV.** Decode Q/O/Gate-Up projections (K=896) and K/V (K=896, M=128) are bit-identical to the f32 ref. Down proj (K=4864) is the only L2-constrained shape — `8·tile_m·4864·2 ≤ 256KB` forces `tile_m=2`. **LM-head is 151936×896**, run per-partition for the same 255 BD repeat-count reason as Qwen3/llama; the 16384×896 row verifies the K=896 datapath at partition scale (outer=128, PASS).
+
+> **Qwen3-0.6B LM-head is 151936×1024** and cannot be run single-shot: the outer launch loop `M/(tile_m·herd_m)` exceeds the 255 buffer-descriptor repeat-count limit at every legal tile (151936 = 8·16·1187 has no `tile_m` divisor in (16, 1187)). It is run **per-partition** like llama's LM-head; the 16384×1024 row verifies the K=1024 LM-head datapath at partition scale (128 launches, PASS).
 
 > **What "Used by" means here.** This kernel (`matvec.py` + `mv.cc`, extern `@matvec_vectorized_bf16_bf16`) is the **exact** kernel llama-3.2-1B decode uses for **Q / K / V projections** (in the `rms_gemv_rope` ELF) and the **LM-head** (in the `lm_head_gemv` ELF). The **O / Gate / Up / Down** projections in decode do **not** use this plain GEMV — they run through *fused* cascade kernels (GEMV + residual add, and GEMV + SwiGLU + RMSNorm) in the `o_gemv_ffn` ELF, which are separate kernels (`bf16_cascade/mv_bf16.cc`, `decode_ffn_swiglu/matvec_swiglu_rms.py`) and get their own registry entries. The 8192×2048 and 2048×8192 rows above are **coverage shapes** — they exercise this kernel at the Gate/Up and Down dimensions for completeness, but those projections are served by the fused kernels in the actual model.
 
