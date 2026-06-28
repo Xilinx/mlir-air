@@ -169,28 +169,56 @@ def compile_rope():
     _compile_kernel(src, "rope.o")
 
 
-def compile_attn_npu2(head_dim=64):
-    """Compile attn_npu2.o (FlashAttention kernel) from source."""
+def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False):
+    """Compile attn_npu2.o (FlashAttention kernel) from source.
+
+    The attn_npu2.cc defines are PER-TILE, not per-launch (see the canonical
+    Makefile): ``lqp`` = tile_size_q (= lqp_launch / num_q_tiles), ``lkp`` =
+    K/V chunk size per tile, ``dk``/``dv`` = the K/V dimension TILE (= lkp),
+    and ``dk_full``/``dv_full`` = the full head_dim. The matmul microkernels
+    are instantiated with these tile shapes, so they MUST match the L1 buffer
+    shapes the Python builder emits or the kernel hangs (ERT_CMD_STATE_TIMEOUT).
+
+    head_dim=64 (llama32_1b seq-first): lkp == head_dim, so the legacy
+    "everything = head_dim" defaults are correct.
+
+    head_dim=128 (head-first path): the kernel tiles dk/dv into dv_chunks=2
+    slices of lkp=64, and tile_size_q=64 (lqp_launch=256 / num_q_tiles=4). So
+    pass lkp=64, lqp_tile=64; dk_full/dv_full stay at head_dim (128).
+
+    Args:
+        head_dim: full head dimension (-> dk_full / dv_full).
+        lkp: K/V chunk size per tile (= dk/dv tile). Defaults to head_dim
+            (legacy hd==lkp behavior).
+        lqp_tile: Q tile size (tile_size_q). Defaults to lkp.
+        force: recompile even if attn_npu2.o exists (needed when the same CWD
+            previously built a different-shaped .o, e.g. hd=64 then hd=128).
+    """
+    if lkp is None:
+        lkp = head_dim
+    if lqp_tile is None:
+        lqp_tile = lkp
     src = _PROJ_ROOT / "flash_attention" / "kernel_fusion_based" / "attn_npu2.cc"
     _compile_kernel(
         src,
         "attn_npu2.o",
         extra_flags=[
             "-DBIT_WIDTH=8",
-            f"-Dlqp={head_dim}",
-            f"-Dlkp={head_dim}",
-            f"-Ddk={head_dim}",
+            f"-Dlqp={lqp_tile}",
+            f"-Dlkp={lkp}",
+            f"-Ddk={lkp}",
             f"-Ddk_full={head_dim}",
-            f"-Ddv={head_dim}",
+            f"-Ddv={lkp}",
             f"-Ddv_full={head_dim}",
             "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
             "-DROUND_CONV_EVEN",
         ],
+        force=force,
     )
-    # Also create attn.o symlink/copy (some link_with attributes use "attn.o")
-    if not Path("attn.o").exists() and Path("attn_npu2.o").exists():
-        import shutil
-
+    # Also create attn.o copy (some link_with attributes use "attn.o").
+    # Refresh whenever attn_npu2.o exists so a force-rebuild (different tile
+    # shape) doesn't leave a stale attn.o behind.
+    if Path("attn_npu2.o").exists():
         shutil.copy2("attn_npu2.o", "attn.o")
 
 
