@@ -177,12 +177,13 @@ is the llama-3.2-1B prefill RoPE-Q scale (32 query heads × 2048 seq); `16384 =
 | 2048 | 64 | 8/1 | 105 µs | 7.5 GB/s | 2.8e-3 | 3.1e-2 | coverage | ✅ |
 | 4096 | 64 | 8/1 | 118 µs | 13.3 GB/s | 2.8e-3 | 3.1e-2 | coverage / Qwen2.5-0.5B prefill RoPE-K (2 KV heads·2048) | ✅ |
 | 16384 | 64 | 8/1 | 210 µs | 30.0 GB/s | 2.8e-3 | 3.1e-2 | prefill RoPE-K (8 KV heads) | ✅ |
-| 65536 | 64 | 8/1 | 579 µs | **43.4 GB/s** | 2.8e-3 | 3.1e-2 | prefill RoPE-Q (32 heads) | ✅ |
-| 16384 | 128 | 8/1 | — | (mem-bound) | 2.8e-3 | 3.1e-2 | Qwen3-0.6B prefill RoPE-K (8 KV heads, head_dim=128) | ✅ |
-| 32768 | 128 | 8/1 | — | (mem-bound) | 2.8e-3 | 3.1e-2 | Qwen3-0.6B prefill RoPE-Q (16 heads, head_dim=128) | ✅ |
-| 28672 | 64 | 8/1 | — | (mem-bound) | 2.8e-3 | 3.1e-2 | Qwen2.5-0.5B prefill RoPE-Q (14 heads·2048, head_dim=64) | ✅ |
-| 24576 | 128 | 8/1 | — | (mem-bound) | 2.8e-3 | 3.1e-2 | Qwen2.5-1.5B prefill RoPE-Q (12 heads·2048, head_dim=128) | ✅ |
-| 4096 | 128 | 8/1 | — | (mem-bound) | 2.8e-3 | 3.1e-2 | Qwen2.5-1.5B prefill RoPE-K (2 KV heads·2048, head_dim=128) | ✅ |
+| 65536 | 64 | 8/1 | 579 µs | 43.4 GB/s | 2.8e-3 | 3.1e-2 | prefill RoPE-Q (32 heads) | ✅ |
+| 16384 | 128 | 8/1 | 285 µs | 44.2 GB/s | 2.8e-3 | 3.1e-2 | Qwen3-0.6B + Qwen3-1.7B prefill RoPE-K (8 KV heads, head_dim=128) | ✅ |
+| 32768 | 128 | 8/1 | 477 µs | 52.8 GB/s | 2.8e-3 | 3.1e-2 | Qwen3-0.6B + Qwen3-1.7B + Qwen2.5-3B prefill RoPE-Q (16 heads, head_dim=128) | ✅ |
+| 49152 | 128 | 8/1 | 667 µs | **56.6 GB/s** | 2.8e-3 | 3.1e-2 | Llama-3.2-3B prefill RoPE-Q (24 heads·2048, head_dim=128) | ✅ |
+| 28672 | 64 | 8/1 | 303 µs | 36.4 GB/s | 2.8e-3 | 3.1e-2 | Qwen2.5-0.5B prefill RoPE-Q (14 heads·2048, head_dim=64) | ✅ |
+| 24576 | 128 | 8/1 | 380 µs | 49.7 GB/s | 2.8e-3 | 3.1e-2 | Qwen2.5-1.5B prefill RoPE-Q (12 heads·2048, head_dim=128) | ✅ |
+| 4096 | 128 | 8/1 | 149 µs | 21.1 GB/s | 2.8e-3 | 3.1e-2 | Qwen2.5-1.5B + Qwen2.5-3B prefill RoPE-K (2 KV heads·2048, head_dim=128) | ✅ |
 
 > **Qwen2.5-1.5B** uses `head_dim = 128` (12 q-heads / 2 kv-heads): `rows = 12·2048 = 24576` (Q, new) and `2·2048 = 4096` (K, new at head_dim=128). Same half-split kernel, verified PASS at 2.8e-3.
 

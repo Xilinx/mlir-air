@@ -23,12 +23,12 @@ This is **documentation, not executable code** — it records results produced b
 |---|---|---|---|
 | GEMM (BF16 in, FP32 out) | [`details/GEMM_bf16_in_fp32_out.md`](details/GEMM_bf16_in_fp32_out.md) | **9797 GFLOP/s** (external, 2048×8192×2048, full-chip 8×4) | ✅ |
 | GEMM (BF16 in, BF16 out) | [`details/GEMM_bf16_in_bf16_out.md`](details/GEMM_bf16_in_bf16_out.md) | **8898 GFLOP/s** (fused-cast incl. cast, 2048×8192×2048, full-chip 8×4) | ✅ |
-| GEMV (BF16) | [`details/GEMV_bf16.md`](details/GEMV_bf16.md) | **32 GFLOP/s** (memory-bound, 16384×2048, herd 8) | ✅ |
-| RMSNorm (BF16) | [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md) | **18.4 GB/s** (memory-bound, 2048×2048, herd 8) | ✅ |
+| GEMV (BF16) | [`details/GEMV_bf16.md`](details/GEMV_bf16.md) | **32.7 GFLOP/s** (memory-bound, 16384×3072, herd 8/8/8) | ✅ |
+| RMSNorm (BF16) | [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md) | **24.9 GB/s** (memory-bound, 2048×3072, herd 8) | ✅ |
 | FlashAttention (BF16, GQA) | [`details/FlashAttention_bf16.md`](details/FlashAttention_bf16.md) | **1065–1131 GFLOP/s** (2048×2048, dk=64, 32q/8kv causal, full-chip 32 tiles) | ✅ |
 | Element-wise Add (BF16) | [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md) | **57.7 GB/s** (memory-bound, N=4194304, herd 8×1) | ✅ |
 | SiLU-and-Mul (BF16) | [`details/SiLU_Mul_bf16.md`](details/SiLU_Mul_bf16.md) | **25.1 GB/s** (memory-bound, N=16777216, herd 8×1) | ✅ |
-| RoPE (BF16, half-split) | [`details/RoPE_bf16.md`](details/RoPE_bf16.md) | **43.4 GB/s** (memory-bound, 65536×64, herd 8×1) | ✅ |
+| RoPE (BF16, half-split) | [`details/RoPE_bf16.md`](details/RoPE_bf16.md) | **56.6 GB/s** (memory-bound, 49152×128, herd 8×1) | ✅ |
 
 ---
 
@@ -120,30 +120,36 @@ This is **documentation, not executable code** — it records results produced b
 | 2048×1024 | 8/8/8 | 18.2 | 1.2e-6 | Qwen3-0.6B decode Q proj | ✅ |
 | 1024×1024 | 8/8/8 | 14.3 | 0.0 | Qwen3-0.6B decode K/V proj | ✅ |
 | 16384×1024 | 8/16/16 | 31.4 | 2.0e-8 | Qwen3-0.6B LM-head (per-partition) | ✅ |
-| 896×896 | 8/8/8 | (mem-bound) | 0.0 | Qwen2.5-0.5B decode Q/O proj | ✅ |
-| 128×896 | 8/8/8 | (mem-bound) | 0.0 | Qwen2.5-0.5B decode K/V proj | ✅ |
-| 4864×896 | 8/8/8 | (mem-bound) | 0.0 | Qwen2.5-0.5B decode Gate/Up proj | ✅ |
-| 896×4864 | 8/2/2 | (mem-bound) | 0.0 | Qwen2.5-0.5B decode Down proj | ✅ |
-| 16384×896 | 8/16/16 | (mem-bound) | 7.2e-12 | Qwen2.5-0.5B LM-head (per-partition) | ✅ |
-| 1536×1536 | 8/8/8 | (mem-bound) | 0.0 | Qwen2.5-1.5B decode Q/O proj | ✅ |
-| 256×1536 | 8/8/8 | (mem-bound) | 0.0 | Qwen2.5-1.5B decode K/V proj | ✅ |
-| 8960×1536 | 8/8/8 | (mem-bound) | 1.7e-9 | Qwen2.5-1.5B decode Gate/Up proj | ✅ |
-| 1536×8960 | 8/2/2 | (mem-bound) | 2.2e-6 | Qwen2.5-1.5B decode Down proj | ✅ |
-| 16384×1536 | 8/16/16 | (mem-bound) | 2.3e-8 | Qwen2.5-1.5B LM-head (per-partition) | ✅ |
-| 1024×2048 | 8/8/8 | (mem-bound) | 0.0 | Qwen3-1.7B decode K/V proj | ✅ |
-| 6144×2048 | 8/8/8 | (mem-bound) | 0.0 | Qwen3-1.7B decode Gate/Up proj | ✅ |
-| 2048×6144 | 8/2/2 | (mem-bound) | 0.0 | Qwen3-1.7B decode Down proj | ✅ |
-| 256×2048 | 8/8/8 | (mem-bound) | 0.0 | Qwen2.5-3B decode K/V proj | ✅ |
-| 11008×2048 | 8/8/8 | (mem-bound) | 7.9e-8 | Qwen2.5-3B decode Gate/Up proj | ✅ |
-| 2048×11008 | 8/2/1 | (mem-bound) | 0.0 | Qwen2.5-3B decode Down proj (K=11008 L1-bound → m_input=1) | ✅ |
-| 4096×2560 | 8/8/8 | (mem-bound) | 0.0 | Qwen3-4B decode Q proj | ✅ |
-| 1024×2560 | 8/8/8 | (mem-bound) | 0.0 | Qwen3-4B decode K/V proj | ✅ |
-| 2560×4096 | 8/4/4 | (mem-bound) | 0.0 | Qwen3-4B decode O proj (decoupled K=4096 → tile_m=4 m_input=4 to fit L2) | ✅ |
-| 9728×2560 | 8/8/8 | (mem-bound) | 0.0 | Qwen3-4B decode Gate/Up proj | ✅ |
-| 2048×9728 | 8/2/1 | (mem-bound) | 0.0 | Qwen3-4B decode Down proj (HOST — K=9728 stitched-ELF L1 overflow) | ✅ |
-| 8192×2560 | 8/16/16 | (mem-bound) | 0.0 | Qwen3-4B LM-head (19 partitions × n_part=8192, K=2560) | ✅ |
+| 896×896 | 8/16/16 | 9.5 | 0.0 | Qwen2.5-0.5B decode Q/O proj | ✅ |
+| 128×896 | 8/16/16 | 2.7 | 0.0 | Qwen2.5-0.5B decode K/V proj | ✅ |
+| 4864×896 | 8/16/16 | 20.3 | 0.0 | Qwen2.5-0.5B decode Gate/Up proj | ✅ |
+| 896×4864 | 8/4/4 | 26.3 | 0.0 | Qwen2.5-0.5B decode Down proj | ✅ |
+| 16384×896 | 8/16/16 | 28.5 | 7.2e-12 | Qwen2.5-0.5B LM-head (per-partition) | ✅ |
+| 1536×1536 | 8/16/16 | 22.5 | 0.0 | Qwen2.5-1.5B decode Q/O proj | ✅ |
+| 256×1536 | 8/16/16 | 7.5 | 0.0 | Qwen2.5-1.5B decode K/V proj | ✅ |
+| 8960×1536 | 8/16/16 | 25.0 | 1.7e-9 | Qwen2.5-1.5B decode Gate/Up proj | ✅ |
+| 1536×8960 | 8/2/2 | 30.6 | 2.2e-6 | Qwen2.5-1.5B decode Down proj | ✅ |
+| 16384×1536 | 8/16/16 | 32.6 | 2.3e-8 | Qwen2.5-1.5B LM-head (per-partition) | ✅ |
+| 1024×2048 | 8/8/8 | 21.0 | 0.0 | Qwen3-1.7B decode K/V proj | ✅ |
+| 6144×2048 | 8/8/8 | 30.8 | 0.0 | Qwen3-1.7B decode Gate/Up proj | ✅ |
+| 2048×6144 | 8/4/4 | 31.4 | 0.0 | Qwen3-1.7B decode Down proj | ✅ |
+| 256×2048 | 8/8/8 | 10.1 | 0.0 | Qwen2.5-3B decode K/V proj | ✅ |
+| 11008×2048 | 8/8/8 | 31.9 | 7.9e-8 | Qwen2.5-3B decode Gate/Up proj | ✅ |
+| 2048×11008 | 8/2/1 | 27.6 | 0.0 | Qwen2.5-3B decode Down proj (K=11008 L1-bound → m_input=1) | ✅ |
+| 4096×2560 | 8/8/8 | 30.1 | 7.3e-7 | Qwen3-4B decode Q proj | ✅ |
+| 1024×2560 | 8/8/8 | 22.6 | 0.0 | Qwen3-4B decode K/V proj | ✅ |
+| 2560×4096 | 8/4/4 | 29.4 | 0.0 | Qwen3-4B decode O proj (decoupled K=4096 → tile_m=4 m_input=4 to fit L2) | ✅ |
+| 9728×2560 | 8/8/8 | 32.6 | 0.0 | Qwen3-4B decode Gate/Up proj | ✅ |
+| 2560×9728 | 8/2/2 | 31.0 | 2.3e-10 | Qwen3-4B decode Down proj — standalone (model runs this on HOST: stitched-ELF L1 overflow) | ✅ |
+| 16384×2560 | 8/8/8 | 30.2 | 4.2e-7 | Qwen3-4B LM-head (per-partition, K=2560) | ✅ |
+| 1024×3072 | 8/8/8 | 24.5 | 0.0 | coverage (K=3072) | ✅ |
+| 3072×1024 | 8/16/16 | 22.7 | 4.9e-10 | coverage (M=3072, K=1024) | ✅ |
+| 3072×3072 | 8/8/8 | 30.4 | 1.8e-9 | coverage (K=3072) | ✅ |
+| 3072×8192 | 8/2/2 | 29.4 | 0.0 | coverage (K=8192) | ✅ |
+| 8192×3072 | 8/8/8 | 32.2 | 1.1e-7 | coverage (M=8192, K=3072) | ✅ |
+| 16384×3072 | 8/8/8 | 32.6 | 3.4e-7 | LM-head coverage (K=3072) | ✅ |
 
-> **Qwen3-4B GEMV.** Decode projections bit-identical (0.0) to the f32 ref. emb=2560 K, q_dim=4096 decoupled. O proj is **decoupled** (M=emb=2560, K=q_dim=4096) — at K=4096 the full `[m_input, K]` A tile constrains L2, so `tile_m=4, m_input=4` (vs the stock 8/8) keeps A=tile_m·herd_m·K·2 ≤ 512 KiB. Down proj (K=9728) runs on **HOST** (stitched-ELF L1 overflow, same as Qwen2.5-3B's K=11008). LM-head reuses the shared 19-partition vocab=151936 datapath at K=2560 per partition.
+> **Qwen3-4B GEMV.** Decode projections bit-identical (0.0) to the f32 ref. emb=2560 K, q_dim=4096 decoupled. O proj is **decoupled** (M=emb=2560, K=q_dim=4096) — at K=4096 the full `[m_input, K]` A tile constrains L2, so `tile_m=4, m_input=4` (vs the stock 8/8) keeps A=tile_m·herd_m·K·2 ≤ 512 KiB. Down proj is **2560×9728** (M=emb=2560, K=intermediate=9728); the standalone harness places at `8/2/2` (31.0 GFLOPS, 2.3e-10), but in the model it runs on **HOST** (stitched-ELF L1 overflow, same as Qwen2.5-3B's K=11008). LM-head reuses the shared 19-partition vocab=151936 datapath at K=2560 per partition (16384×2560 row, 30.2 GFLOPS).
 
 > **Qwen2.5-3B GEMV.** Decode projections bit-identical (0.0) or ≤7.9e-8 to the f32 ref. Q/O proj is 2048×2048 (reuses the llama Q row); LM-head is K=2048 per-partition (reuses the 16384×2048 datapath row). K=11008 (Down proj) is the most L1-constrained GEMV in the registry — the harness loads the full `[m_input, K]` A tile + `[K]` B vector into L1 (no K-tiling), so at K=11008 even `tile_m=2, m_input=2` (44 KB A-tile) overflows the 64 KB L1; **`tile_m=2, m_input=1` (22 KB A-tile) PASSES**. (`tile_m=1` is rejected by the 4-byte transfer-length check.)
 
@@ -167,10 +173,12 @@ This is **documentation, not executable code** — it records results produced b
 | (M×N) | herd_x | latency | bandwidth | mean_rel_L1 | Used by | Status |
 |---|---|---|---|---|---|---|
 | 2048×2048 | 8 | 911 µs | 18.4 GB/s | 4.2e-3 | llama-3.2-1B + Qwen3-1.7B + Qwen2.5-3B prefill RMSNorm | ✅ |
-| 2048×1024 | 8 | — | (mem-bound) | 4.3e-3 | Qwen3-0.6B prefill RMSNorm | ✅ |
-| 2048×128 | 8 | — | (mem-bound) | 4.6e-3 | Qwen3-0.6B + Qwen3-1.7B QK-norm (per-head, N=head_dim) | ✅ |
-| 2048×896 | 8 | — | (mem-bound) | 4.2e-3 | Qwen2.5-0.5B prefill RMSNorm | ✅ |
-| 2048×1536 | 8 | — | (mem-bound) | 4.3e-3 | Qwen2.5-1.5B prefill RMSNorm | ✅ |
+| 2048×1024 | 8 | 407 µs | 20.6 GB/s | 4.3e-3 | Qwen3-0.6B prefill RMSNorm | ✅ |
+| 2048×128 | 8 | 155 µs | 6.8 GB/s | 4.6e-3 | Qwen3-0.6B + Qwen3-1.7B QK-norm (per-head, N=head_dim) | ✅ |
+| 2048×896 | 8 | 398 µs | 18.4 GB/s | 4.2e-3 | Qwen2.5-0.5B prefill RMSNorm | ✅ |
+| 2048×1536 | 8 | 570 µs | 22.1 GB/s | 4.3e-3 | Qwen2.5-1.5B prefill RMSNorm | ✅ |
+| 2048×2560 | 8 | 867 µs | 24.2 GB/s | 4.2e-3 | Qwen3-4B prefill RMSNorm | ✅ |
+| 2048×3072 | 8 | 1012 µs | **24.9 GB/s** | 4.2e-3 | Llama-3.2-3B prefill RMSNorm | ✅ |
 
 > **Qwen3-0.6B QK-norm (2048×128)** is per-head RMSNorm over `head_dim=128` (Qwen3-specific q_norm/k_norm) — the same weighted-RMSNorm kernel with a small `N=128` reduction axis; verified PASS at 4.6e-3, confirming the kernel handles a 128-wide reduction. (Harness `eps = 1e-5`; Qwen3 `eps = 1e-6` — the difference is negligible vs the bf16 datapath error.)
 
@@ -193,8 +201,11 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 | 512×512 | 128/128 | 28/4 | ✗ | 2 | 4.05 ms | 928 | 4.4e-2 | ✅ |
 | 16384×16384 | 64/64 | 2/2 | ✓ | 1 | 39.6 ms | 1734 | 4.5e-2 | ✅ |
 | 16384×16384 | 64/64 | 2/2 | ✗ | 1 | 40.1 ms | **3427** | 5.5e-2 | ✅ |
-| 2048×2048 | 128/128 | 16/8 | ✓ | 2 | — | — | 3.8e-2 | ✅ |
-| 2048×2048 | 64/64 | 14/2 | ✓ | 1 | — | — | 3.8e-2 | ✅ |
+| 2048×2048 | 128/128 | 16/8 | ✓ | 2 | 17.6 ms | 979 | 3.8e-2 | ✅ |
+| 2048×2048 | 64/64 | 14/2 | ✓ | 1 | 7.27 ms | 1035 | 3.8e-2 | ✅ |
+| 2048×2048 | 128/128 | 12/2 | ✓ | 2 | 14.5 ms | 891 | 3.8e-2 | ✅ |
+| 2048×2048 | 128/128 | 24/8 | ✓ | 2 | 25.9 ms | 995 | 3.8e-2 | ✅ |
+| 2048×2048 | 128/128 | 32/8 | ✓ | 2 | 35.0 ms | 983 | 3.8e-2 | ✅ |
 
 > **Qwen3-0.6B prefill attention** (`head_dim = 128`, 16q/8kv GQA, causal, lq=lk=2048): verified PASS at mean_rel_L1 = 3.8e-2 (full-output check, rtol 1.6e-2 / atol 1e-1) with the default full-chip config (`lqp=256, num_q_tiles=4, num_heads_per_unroll=2, num_cascade_stages=4`, `dv_chunks=2` for head_dim=128). Note: head_dim=128 FA has been flaky (hang/NaN) on some NPU2 setups; this run completed cleanly, and Qwen3-0.6B prefill can also fall back to CPU attention (`cpu_attn`) if a deployment hits the hang.
 
@@ -216,8 +227,10 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 | 2097152 | 8/1/2048 | 277 µs | 45.4 GB/s | 1.9e-3 | ✅ |
 | 4194304 (2048×2048) | 8/1/2048 | 437 µs | 57.7 GB/s | 1.9e-3 | ✅ (llama-3.2-1B + Qwen3-1.7B + Qwen2.5-3B residual, seq·emb) |
 | 8388608 | 8/1/2048 | 798 µs | **63.0 GB/s** | 1.9e-3 | ✅ |
-| 1835008 (2048×896) | 8/1/2048 | — | (mem-bound) | 1.9e-3 | ✅ (Qwen2.5-0.5B residual, seq·emb) |
-| 3145728 (2048×1536) | 8/1/2048 | — | (mem-bound) | 1.9e-3 | ✅ (Qwen2.5-1.5B residual, seq·emb) |
+| 1835008 (2048×896) | 8/1/2048 | 243 µs | 45.3 GB/s | 1.9e-3 | ✅ (Qwen2.5-0.5B residual, seq·emb) |
+| 3145728 (2048×1536) | 8/1/2048 | 364 µs | 51.9 GB/s | 1.9e-3 | ✅ (Qwen2.5-1.5B residual, seq·emb) |
+| 5242880 (2048×2560) | 8/1/2048 | 516 µs | 61.0 GB/s | 1.9e-3 | ✅ (Qwen3-4B residual, seq·emb) |
+| 6291456 (2048×3072) | 8/1/2048 | 614 µs | 61.4 GB/s | 1.9e-3 | ✅ (Llama-3.2-3B residual, seq·emb) |
 
 > `mean_rel_L1 = 1.9e-3` is the lowest in the registry — `c=a+b` rounds each output once (matching `torch.add` bf16: f32 sum, single round, no accumulation), bit-identical across all configs and `N`. Best config `herd_x=8, herd_y=1` for every shape: the 3-DMA-per-tile shim-channel limit caps the herd at one 8-column row (**cannot fill 32 tiles** — `herd_y>1` fails to place), but within that `herd_x` scales near-linearly (9→57.7 GB/s as herd_x 1→8). Highest bandwidth in the registry (pure streaming). See [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md).
 
@@ -233,11 +246,12 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 | 4194304 | 2048×2048 | 8/1/4096 | 1052 µs | 23.9 GB/s | 1.0e-2 | 0.125 | ✅ |
 | 8388608 | — | 8/1/4096 | 2247 µs | 22.4 GB/s | 1.0e-2 | 0.125 | ✅ |
 | 16777216 | 2048×8192 | 8/1/4096 | 4016 µs | **25.1 GB/s** | 1.0e-2 | 0.125 | ✅ |
-| 6291456 | 2048×3072 (seq·hidden) | 8/1/4096 | — | (mem-bound) | 1.0e-2 | 0.125 | ✅ |
-| 9961472 | 2048×4864 (seq·hidden) | 8/1/4096 | — | (mem-bound) | 1.0e-2 | 0.125 | ✅ |
-| 18350080 | 2048×8960 (seq·hidden) | 8/1/4096 | — | (mem-bound) | 1.0e-2 | 0.188 | ✅ |
-| 12582912 | 2048×6144 (seq·hidden) | 8/1/4096 | — | (mem-bound) | 1.0e-2 | 0.125 | ✅ (Qwen3-1.7B SwiGLU) |
-| 22544384 | 2048×11008 (seq·hidden) | 8/1/4096 | — | (mem-bound) | 1.0e-2 | 0.188 | ✅ (Qwen2.5-3B SwiGLU) |
+| 6291456 | 2048×3072 (seq·hidden) | 8/1/4096 | 1771 µs | 21.3 GB/s | 1.0e-2 | 0.125 | ✅ |
+| 9961472 | 2048×4864 (seq·hidden) | 8/1/4096 | 2489 µs | 24.0 GB/s | 1.0e-2 | 0.125 | ✅ |
+| 18350080 | 2048×8960 (seq·hidden) | 8/1/4096 | 4933 µs | 22.3 GB/s | 1.0e-2 | 0.188 | ✅ |
+| 12582912 | 2048×6144 (seq·hidden) | 8/1/4096 | 3041 µs | 24.8 GB/s | 1.0e-2 | 0.125 | ✅ (Qwen3-1.7B SwiGLU) |
+| 19922944 | 2048×9728 (seq·hidden) | 8/1/4096 | 5077 µs | 23.5 GB/s | 1.0e-2 | 0.125 | ✅ (Qwen3-4B SwiGLU) |
+| 22544384 | 2048×11008 (seq·hidden) | 8/1/4096 | 5694 µs | 23.8 GB/s | 1.0e-2 | 0.188 | ✅ (Qwen2.5-3B SwiGLU) |
 
 > **Qwen2.5-1.5B SwiGLU**: `N = 18350080 = seq·hidden = 2048·8960` (intermediate size 8960), verified PASS at 1.0e-2 with the default best config.
 
@@ -259,13 +273,14 @@ Rotary Position Embedding applied to Q/K, **half-split** convention (HuggingFace
 | 32×64 | 8/1 | 82 µs | 0.15 GB/s | 2.7e-3 | llama-3.2-1B decode RoPE-Q | ✅ |
 | 2048×64 | 8/1 | 105 µs | 7.5 GB/s | 2.8e-3 | coverage | ✅ |
 | 4096×64 | 8/1 | 118 µs | 13.3 GB/s | 2.8e-3 | coverage / Qwen2.5-0.5B prefill RoPE-K (rows=n_kv·seq=2·2048) | ✅ |
-| 28672×64 | 8/1 | — | (mem-bound) | 2.8e-3 | Qwen2.5-0.5B prefill RoPE-Q (rows=n_heads·seq=14·2048) | ✅ |
+| 28672×64 | 8/1 | 303 µs | 36.4 GB/s | 2.8e-3 | Qwen2.5-0.5B prefill RoPE-Q (rows=n_heads·seq=14·2048) | ✅ |
 | 16384×64 | 8/1 | 210 µs | 30.0 GB/s | 2.8e-3 | llama-3.2-1B prefill RoPE-K | ✅ |
-| 65536×64 | 8/1 | 579 µs | **43.4 GB/s** | 2.8e-3 | llama-3.2-1B prefill RoPE-Q | ✅ |
-| 32768×128 | 8/1 | — | (mem-bound) | 2.8e-3 | Qwen3-0.6B + Qwen3-1.7B + Qwen2.5-3B prefill RoPE-Q (rows=n_heads·seq=16·2048) | ✅ |
-| 16384×128 | 8/1 | — | (mem-bound) | 2.8e-3 | Qwen3-0.6B + Qwen3-1.7B prefill RoPE-K (rows=n_kv_heads·seq=8·2048) | ✅ |
-| 24576×128 | 8/1 | — | (mem-bound) | 2.8e-3 | Qwen2.5-1.5B prefill RoPE-Q (rows=n_heads·seq=12·2048) | ✅ |
-| 4096×128 | 8/1 | — | (mem-bound) | 2.8e-3 | Qwen2.5-1.5B + Qwen2.5-3B prefill RoPE-K (rows=n_kv_heads·seq=2·2048) | ✅ |
+| 65536×64 | 8/1 | 579 µs | 43.4 GB/s | 2.8e-3 | llama-3.2-1B prefill RoPE-Q | ✅ |
+| 32768×128 | 8/1 | 477 µs | 52.8 GB/s | 2.8e-3 | Qwen3-0.6B + Qwen3-1.7B + Qwen2.5-3B prefill RoPE-Q (rows=n_heads·seq=16·2048) | ✅ |
+| 16384×128 | 8/1 | 285 µs | 44.2 GB/s | 2.8e-3 | Qwen3-0.6B + Qwen3-1.7B prefill RoPE-K (rows=n_kv_heads·seq=8·2048) | ✅ |
+| 49152×128 | 8/1 | 667 µs | **56.6 GB/s** | 2.8e-3 | Llama-3.2-3B prefill RoPE-Q (rows=n_heads·seq=24·2048) | ✅ |
+| 24576×128 | 8/1 | 380 µs | 49.7 GB/s | 2.8e-3 | Qwen2.5-1.5B prefill RoPE-Q (rows=n_heads·seq=12·2048) | ✅ |
+| 4096×128 | 8/1 | 149 µs | 21.1 GB/s | 2.8e-3 | Qwen2.5-1.5B + Qwen2.5-3B prefill RoPE-K (rows=n_kv_heads·seq=2·2048) | ✅ |
 
 > **Qwen3-0.6B uses `head_dim = 128`** (vs llama's 64) — the two rows above are the first registry coverage of `head_dim = 128`; same half-split `rope_halfsplit.cc` kernel, verified PASS at 2.8e-3 (accuracy unchanged, set by the datapath not the head dim).
 

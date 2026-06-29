@@ -99,11 +99,13 @@ The RMSNorm shape used by llama-3.2-1B **prefill** (`M = seq_len = 2048`, `N = e
 
 | (M, N) | herd_x | latency | bandwidth | mean_rel_L1 | rel_err max | abs_err max | Used by | Status |
 |---|---|---|---|---|---|---|---|---|
-| 2048×2048 | 8 | 911 µs | 18.4 GB/s | 4.2e-3 | 2.3e-2 | 1.9e-1 | llama-3.2-1B prefill RMSNorm | ✅ |
-| 2048×1024 | 8 | — | (mem-bound) | 4.3e-3 | 2.3e-2 | 1.25e-1 | Qwen3-0.6B prefill RMSNorm | ✅ |
-| 2048×128 | 8 | — | (mem-bound) | 4.6e-3 | 2.3e-2 | 1.25e-1 | Qwen3-0.6B QK-norm (per-head, N=head_dim) | ✅ |
-| 2048×896 | 8 | — | (mem-bound) | 4.2e-3 | 2.3e-2 | 1.25e-1 | Qwen2.5-0.5B prefill RMSNorm | ✅ |
-| 2048×1536 | 8 | — | (mem-bound) | 4.3e-3 | 2.3e-2 | 1.25e-1 | Qwen2.5-1.5B prefill RMSNorm | ✅ |
+| 2048×2048 | 8 | 911 µs | 18.4 GB/s | 4.2e-3 | 2.3e-2 | 1.9e-1 | llama-3.2-1B + Qwen3-1.7B + Qwen2.5-3B prefill RMSNorm | ✅ |
+| 2048×1024 | 8 | 407 µs | 20.6 GB/s | 4.3e-3 | 2.3e-2 | 1.25e-1 | Qwen3-0.6B prefill RMSNorm | ✅ |
+| 2048×128 | 8 | 155 µs | 6.8 GB/s | 4.6e-3 | 2.3e-2 | 1.25e-1 | Qwen3-0.6B + Qwen3-1.7B QK-norm (per-head, N=head_dim) | ✅ |
+| 2048×896 | 8 | 398 µs | 18.4 GB/s | 4.2e-3 | 2.3e-2 | 1.25e-1 | Qwen2.5-0.5B prefill RMSNorm | ✅ |
+| 2048×1536 | 8 | 570 µs | 22.1 GB/s | 4.3e-3 | 2.3e-2 | 1.25e-1 | Qwen2.5-1.5B prefill RMSNorm | ✅ |
+| 2048×2560 | 8 | 867 µs | 24.2 GB/s | 4.2e-3 | 2.3e-2 | 1.25e-1 | Qwen3-4B prefill RMSNorm (emb=2560) | ✅ |
+| 2048×3072 | 8 | 1012 µs | 24.9 GB/s | 4.2e-3 | 2.3e-2 | 1.25e-1 | Llama-3.2-3B prefill RMSNorm (emb=3072) | ✅ |
 
 > **Qwen2.5-0.5B (2048×896)** is the per-layer RMSNorm at emb=896. Qwen2.5 has no QK-norm (unlike Qwen3). Verified PASS at 4.2e-3.
 

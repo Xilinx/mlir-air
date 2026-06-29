@@ -812,6 +812,142 @@
       "best": {
         "high": "fused-cast"
       }
+    },
+    {
+      "M": 2048,
+      "K": 2560,
+      "N": 1024,
+      "used_by": "Qwen3-4B O proj (emb=2560)",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6049,
+          "mean_rel_L1": 0.0098,
+          "tier": "high"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5389,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2560,
+      "N": 4096,
+      "used_by": "Qwen3-4B Q proj (emb=2560, n_heads*head_dim=4096)",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7034,
+          "mean_rel_L1": 0.0098,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2560,
+      "N": 9728,
+      "used_by": "Qwen3-4B Gate/Up proj (emb=2560, ffn=9728)",
+      "_note": "N=9728=256*38=512*19 -> stock TILE_N=128 HERD_N=4 OK. fused-cast/direct at tile_k_l2>=128 FAIL aiecc: DMA stride tile_k_l2*N exceeds [1:1048576] (256*9728=2490368, 128*9728=1245184). High-precision fused-cast PASSES at tile_k_l2=64 (64*9728=622592 < limit), 5528 GFLOPS @ 9.8e-3 -- strictly better than the low-prec direct path (4397 @ 1.35e-2), unlike the Qwen2.5-3B/1.5B wide-N Gate/Up siblings which had to drop to low-precision. best.high=fused-cast(tile_k_l2=64).",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5528,
+          "mean_rel_L1": 0.0098,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4397,
+          "mean_rel_L1": 0.0135,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 4096,
+      "N": 2560,
+      "used_by": "Qwen3-4B O proj alt / 4096->2560 (n_heads*head_dim=4096 -> emb=2560)",
+      "_note": "N=2560=512*5 -> stock TILE_N=128 HERD_N=4. K=4096 tile_k_l2=256 (4096/256=16); tile_k_l2=512 DMA-stride 512*2560=1310720 > limit -> compile fail. MKN=2.1e10 -> fused-cast.",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7560,
+          "mean_rel_L1": 0.0099,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 9728,
+      "N": 2560,
+      "used_by": "Qwen3-4B Down proj (ffn=9728 -> emb=2560)",
+      "_note": "N=2560=512*5 -> stock TILE_N=128. K=9728=256*38 reduction tile_k_l2=256. MKN=5.1e10 -> fused-cast, PASSES high-precision at 9.8e-3.",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8633,
+          "mean_rel_L1": 0.0098,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
     }
   ]
 }

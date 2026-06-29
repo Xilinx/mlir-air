@@ -98,9 +98,11 @@ Shapes verified on NPU2 (bf16). **Best config is `herd_x=8, herd_y=1, tile_n=204
 | 1048576 | 1024×1024 | 8/1/2048 | 175 µs | 36.0 GB/s | 1.9e-3 | 3.1e-2 | ✅ |
 | 2097152 | — | 8/1/2048 | 277 µs | 45.4 GB/s | 1.9e-3 | 3.1e-2 | ✅ |
 | 4194304 | 2048×2048 | 8/1/2048 | 437 µs | 57.7 GB/s | 1.9e-3 | 3.1e-2 | ✅ |
-| 8388608 | — | 8/1/2048 | 798 µs | **63.0 GB/s** | 1.9e-3 | 3.1e-2 | ✅ |
-| 1835008 | 2048×896 | 8/1/2048 | — | (mem-bound) | 1.9e-3 | 3.1e-2 | ✅ Qwen2.5-0.5B residual (seq·emb) |
-| 3145728 | 2048×1536 | 8/1/2048 | — | (mem-bound) | 1.9e-3 | 3.1e-2 | ✅ Qwen2.5-1.5B residual (seq·emb) |
+| 8388608 | — | 8/1/2048 | 798 µs | 63.0 GB/s | 1.9e-3 | 3.1e-2 | ✅ |
+| 1835008 | 2048×896 | 8/1/2048 | 243 µs | 45.3 GB/s | 1.9e-3 | 3.1e-2 | ✅ Qwen2.5-0.5B residual (seq·emb) |
+| 3145728 | 2048×1536 | 8/1/2048 | 364 µs | 51.9 GB/s | 1.9e-3 | 3.1e-2 | ✅ Qwen2.5-1.5B residual (seq·emb) |
+| 5242880 | 2048×2560 | 8/1/2048 | 516 µs | 61.0 GB/s | 1.9e-3 | 3.1e-2 | ✅ Qwen3-4B residual (seq·emb=2560) |
+| 6291456 | 2048×3072 | 8/1/2048 | 614 µs | **61.4 GB/s** | 1.9e-3 | 3.1e-2 | ✅ Llama-3.2-3B residual (seq·emb=3072) |
 
 > The 1835008 row is Qwen2.5-0.5B's prefill residual-add scale (seq·emb = 2048·896); the 3145728 row is Qwen2.5-1.5B's (seq·emb = 2048·1536). Same best config, bit-identical 1.9e-3.
 
