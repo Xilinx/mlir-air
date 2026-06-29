@@ -87,12 +87,13 @@ static bool deviceHasRepeatCountDMAs(xilinx::AIE::DeviceOp device) {
   return hasRepeatCount;
 }
 
-// Helper function to check if an aie.device uses the cascade bus (cascade flows or
-// core-side get/put_cascade). Cascade core locks/credits, like repeat_count DMA state,
-// must be re-armed after each launch via the load_pdi reset (which runs initLocks). A
-// single-trip launch has repeat_count == 0, so deviceHasRepeatCountDMAs() misses cascade
-// kernels -> they abort on the 2nd host dispatch ("qds_device::wait() unexpected command
-// state"). Detecting cascade lets the existing reset path fire for single-trip cascade too.
+// Helper function to check if an aie.device uses the cascade bus (cascade flows
+// or core-side get/put_cascade). Cascade core locks/credits, like repeat_count
+// DMA state, must be re-armed after each launch via the load_pdi reset (which
+// runs initLocks). A single-trip launch has repeat_count == 0, so
+// deviceHasRepeatCountDMAs() misses cascade kernels -> they abort on the 2nd
+// host dispatch ("qds_device::wait() unexpected command state"). Detecting
+// cascade lets the existing reset path fire for single-trip cascade too.
 static bool deviceHasCascade(xilinx::AIE::DeviceOp device) {
   bool hasCascade = false;
   device.walk([&](mlir::Operation *op) {
@@ -103,9 +104,9 @@ static bool deviceHasCascade(xilinx::AIE::DeviceOp device) {
   return hasCascade;
 }
 
-// A device needs the per-launch lock/DMA-state reset (load_pdi + initLocks) if it has
-// repeat_count DMAs OR uses the cascade bus -- both hold core state that does not re-arm
-// across host re-dispatch on its own.
+// A device needs the per-launch lock/DMA-state reset (load_pdi + initLocks) if
+// it has repeat_count DMAs OR uses the cascade bus -- both hold core state that
+// does not re-arm across host re-dispatch on its own.
 static bool deviceNeedsLockReset(xilinx::AIE::DeviceOp device) {
   return deviceHasRepeatCountDMAs(device) || deviceHasCascade(device);
 }
