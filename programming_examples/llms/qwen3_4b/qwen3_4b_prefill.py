@@ -25,22 +25,25 @@ The two Qwen3 deltas vs LLAMA-3.2 (handled exactly as in qwen3_0_6b):
      We build a Qwen-specific o_ffn ELF whose O GEMM is K=q_dim=4096,
      N=emb_dim=2560; the residual/RMSNorm/FFN tail stays emb_dim=2560.
 
-ALIGNMENT + the Gate/Up un-merge (Phase-1 NPU finding):
+ALIGNMENT + the O+FFN un-merge (REGISTRY-DRIVEN):
 Every GEMM N and K is divisible by 512 (emb=2560=512x5, q_dim=4096=512x8,
-kv_dim=1024, hidden=9728=512x19). Phase-1 standalone GEMM sweep on NPU2:
-    Q/K/V/O/Down -> fused-cast high (mm_m64.o, tile_m=64, tk_l2=256, tn=128) PASS
-    Gate/Up (2048x2560x9728) -> high-precision fused-cast FAILS AT COMPILE TIME
-        ("aie.dma_bd op Stride 2 exceeds the [1:1048576] range" on the
-        f32-out B-tile DMA at N=9728). Only the DIRECT low-precision path
-        (tile_m=64, tk_l2=128, tk_l1=32, tn=64) compiles + PASSES (max_abs
-        2.9e-3, within the bf16 low-prec tolerance).
+kv_dim=1024, hidden=9728=512x19). All five GEMM shapes now resolve in the
+kernel registry to high-precision fused-cast (mm_m64.o, tile_m=64, tn=128):
+    Q/K/V/O/Down            -> fused-cast tk_l2=256
+    Gate/Up (2048x2560x9728) -> fused-cast tk_l2=64
+The Gate/Up tk_l2=64 (NOT 256) keeps the f32-out B-tile DMA stride within the
+AIE [1:1048576] range at N=9728 — the registry tuning that unblocked the
+high-precision path that the old hardcoded tk_l2=256 fused-cast overflowed.
+Gate/Up are now fused-cast high-prec (mean_rel_L1 9.8e-3, 5528 GFLOPS) instead
+of the former direct-codegen low-prec (1.4e-2, 4397 GFLOPS): more accurate AND
+~1.26x faster.
 
-Because Gate/Up cannot be fused-cast, the merged qwen3_0_6b 8-launch o_ffn
-ELF cannot compile here. We adopt the qwen25_3b un-merge: the O+FFN tail is
-FIVE pieces (matching the N=11008 case), with the O GEMM kept DECOUPLED:
+The merged qwen3_0_6b 8-launch o_ffn ELF still cannot compile here (hidden=9728
+exhausts the merged ELF L1/BD budget), so the O+FFN tail stays SPLIT into FIVE
+pieces (matching the N=11008 case), with the O GEMM kept DECOUPLED:
     o_res_norm : O(fused-cast, K=q_dim=4096 N=emb=2560) + Residual + FFN-RMSNorm
-    gate       : Gate(direct low-prec) alone
-    up         : Up(direct low-prec) alone
+    gate       : Gate(fused-cast high-prec, registry) alone   [+ f32 scratch]
+    up         : Up(fused-cast high-prec, registry) alone     [+ f32 scratch]
     swiglu     : NPU SwiGLU silu(gate)*up   (standalone ELF, tile_n tuned to
                   fit both L1 and the BD pool at hidden=9728)
     down_add   : Down(fused-cast, launch 0) + FFN-Add
@@ -68,56 +71,32 @@ from qwen3_4b_cpu_helpers import attention_reference
 
 
 # ---------------------------------------------------------------------------
-# GEMM method/tile spec. The kernel registry has no emb=2560 entries yet, so
-# this picks the method + tiles directly (validated by the Phase-1 standalone
-# GEMM sweep on NPU2). All qwen3_4b GEMMs are 512-aligned -> high-precision
-# fused-cast (mm_m64.o, tile_m=64, tile_k_l2=256, tile_k_l1=32, tile_n=128).
-# Signature mirrors gemm_registry_config() so the qwen3_0_6b builders transfer
-# verbatim (same keys: method, tile_m/k_l2/k_l1/n, needs_f32_scratch,
-# sym_suffix, build_kwargs).
+# GEMM method/tile spec — REGISTRY-DRIVEN. Every qwen3_4b prefill GEMM now
+# pulls its method + tiles from the kernel registry (gemm_registry_config),
+# exactly like the qwen3_0_6b / qwen3_1_7b siblings, so the example tracks the
+# tuned registry instead of a hardcoded table. The registry now has emb=2560
+# entries (Phase-1 GEMM sweep was promoted into it):
+#     Q/K/V/O/Down (512-aligned)  -> fused-cast tk_l2=256 tn=128 (mm_m64.o)
+#     Gate/Up (2048x2560x9728)    -> fused-cast tk_l2=64  tn=128 (mm_m64.o)
+# The Gate/Up tk_l2=64 (vs 256) keeps the f32-out B-tile DMA stride within the
+# AIE [1:1048576] range at N=9728, so the high-precision fused-cast path now
+# compiles AND is more accurate (mean_rel_L1 9.8e-3 vs the old direct-codegen
+# low-prec 1.4e-2) AND ~1.26x faster (5528 vs 4397 GFLOPS).
+#
+# gemm_registry_config returns the keys this builder needs: method, tile_m,
+# tile_k_l2, tile_k_l1, tile_n, n_launches, needs_f32_scratch, sym_suffix,
+# build_kwargs.
 # ---------------------------------------------------------------------------
-
-_FUSED = {
-    "method": "fused-cast",
-    "tile_m": 64,
-    "tile_k_l2": 256,
-    "tile_k_l1": 32,
-    "tile_n": 128,
-    "n_launches": 2,
-    "needs_f32_scratch": True,
-    "sym_suffix": "_m64",
-    "build_kwargs": {
-        "external_fused_cast": True,
-        "sym_suffix": "_m64",
-        "link_with_name": "mm_m64.o",
-    },
-}
-
-# Gate/Up (N=9728): fused-cast fails the AIE DMA-stride limit at compile time,
-# so they use the direct-codegen low-precision GEMM (no external mm.o, no f32
-# scratch — fully lowered in the example builder). Phase-1 verified PASS.
-_DIRECT = {
-    "method": "direct",
-    "tile_m": 64,
-    "tile_k_l2": 128,
-    "tile_k_l1": 32,
-    "tile_n": 64,
-    "n_launches": 1,
-    "needs_f32_scratch": False,
-    "sym_suffix": "",
-    "build_kwargs": {},
-}
 
 
 def gemm_spec(m, k, n, precision="high"):
-    """Per-GEMM build recipe for one qwen3_4b shape.
+    """Per-GEMM build recipe for one qwen3_4b shape, from the kernel registry.
 
-    'high' -> fused-cast (Q/K/V/O/Down, all PASS the high-prec path).
-    'low'  -> direct low-precision (Gate/Up at N=9728, the only shape whose
-              fused-cast path overflows the AIE DMA stride at compile time)."""
-    if precision == "low":
-        return dict(_DIRECT)
-    return dict(_FUSED)
+    `precision` is forwarded to the registry ("high" for all qwen3_4b GEMMs;
+    every shape resolves to high-precision fused-cast)."""
+    from shared.builders.gemm_builder import gemm_registry_config
+
+    return gemm_registry_config(m, k, n, "bf16", precision)
 
 
 def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=4):
@@ -324,38 +303,44 @@ def build_o_res_norm_module(seq_len, emb_dim, q_dim, o_herd_m=8, o_herd_n=4):
     return module, scratch_for
 
 
-def build_gate_module(seq_len, emb_dim, hidden_dim, gate_herd_m=8, gate_herd_n=4):
-    """ELF A2: Gate(direct low-prec) alone -> gate (seq,hidden)."""
-    from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
-    g_spec = gemm_spec(seq_len, emb_dim, hidden_dim, "low")  # direct
-    print(f"  [gate] Gate GEMM ({g_spec['method']}) {seq_len}x{emb_dim}x{hidden_dim} (tn={g_spec['tile_n']})...")
-    gate_ir = _build_gemm_ir(seq_len, emb_dim, hidden_dim, g_spec, gate_herd_m, gate_herd_n)
+def _build_single_gemm_elf(name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4):
+    """Build a standalone single-GEMM ELF (Gate or Up), registry-driven.
+
+    The registry resolves these (2048x2560x9728) to fused-cast high-prec, which
+    needs an f32 C-scratch func arg + the external mm_m64.o symbols. Returns
+    (module, scratch_for_index) where scratch_for_index is the f32-scratch combined
+    arg index (or None for a direct/drain method that needs no scratch)."""
+    from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg, alloc_gemm_scratch
+    g_spec = gemm_spec(seq_len, k_dim, n_dim, "high")
+    print(f"  [{name}] {name} GEMM ({g_spec['method']}) {seq_len}x{k_dim}x{n_dim} "
+          f"(tk_l2={g_spec['tile_k_l2']}, tn={g_spec['tile_n']})...")
+    gemm_ir = _build_gemm_ir(seq_len, k_dim, n_dim, g_spec, herd_m, herd_n)
     base_args = [
-        FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),     # normed2
-        FuncArg("%arg1", f"memref<{emb_dim}x{hidden_dim}xbf16>"),  # w_gate
-        FuncArg("%arg2", f"memref<{seq_len}x{hidden_dim}xbf16>"),  # gate (out)
+        FuncArg("%arg0", f"memref<{seq_len}x{k_dim}xbf16>"),   # normed2
+        FuncArg("%arg1", f"memref<{k_dim}x{n_dim}xbf16>"),     # weight
+        FuncArg("%arg2", f"memref<{seq_len}x{n_dim}xbf16>"),   # out
     ]
-    slices = [KernelSlice(gate_ir, "gg", {0: 0, 1: 1, 2: 2}, extern_syms=_gemm_externs(g_spec))]
-    module = stitch_elf("gate", base_args, slices)
-    print(f"  gate module: {len(str(module).splitlines())} lines, parsed OK")
-    return module
+    scratch_args, scratch_for = alloc_gemm_scratch(
+        [(g_spec, seq_len, n_dim)], base_arg_count=3,
+    )
+    sc = scratch_for[0]
+    amap = {0: 0, 1: 1, 2: sc, 3: 2} if sc is not None else {0: 0, 1: 1, 2: 2}
+    slices = [KernelSlice(gemm_ir, sym, amap, extern_syms=_gemm_externs(g_spec))]
+    module = stitch_elf(name, base_args, slices, scratch_args=scratch_args)
+    print(f"  {name} module: {len(str(module).splitlines())} lines, parsed OK")
+    return module, scratch_for
+
+
+def build_gate_module(seq_len, emb_dim, hidden_dim, gate_herd_m=8, gate_herd_n=4):
+    """ELF A2: Gate(fused-cast high-prec, registry) alone -> gate (seq,hidden)."""
+    return _build_single_gemm_elf("gate", "gg", seq_len, emb_dim, hidden_dim,
+                                  gate_herd_m, gate_herd_n)
 
 
 def build_up_module(seq_len, emb_dim, hidden_dim, up_herd_m=8, up_herd_n=4):
-    """ELF A3: Up(direct low-prec) alone -> up (seq,hidden)."""
-    from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
-    g_spec = gemm_spec(seq_len, emb_dim, hidden_dim, "low")  # direct
-    print(f"  [up] Up GEMM ({g_spec['method']}) {seq_len}x{emb_dim}x{hidden_dim} (tn={g_spec['tile_n']})...")
-    up_ir = _build_gemm_ir(seq_len, emb_dim, hidden_dim, g_spec, up_herd_m, up_herd_n)
-    base_args = [
-        FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),     # normed2
-        FuncArg("%arg1", f"memref<{emb_dim}x{hidden_dim}xbf16>"),  # w_up
-        FuncArg("%arg2", f"memref<{seq_len}x{hidden_dim}xbf16>"),  # up (out)
-    ]
-    slices = [KernelSlice(up_ir, "ug", {0: 0, 1: 1, 2: 2}, extern_syms=_gemm_externs(g_spec))]
-    module = stitch_elf("up", base_args, slices)
-    print(f"  up module: {len(str(module).splitlines())} lines, parsed OK")
-    return module
+    """ELF A3: Up(fused-cast high-prec, registry) alone -> up (seq,hidden)."""
+    return _build_single_gemm_elf("up", "ug", seq_len, emb_dim, hidden_dim,
+                                  up_herd_m, up_herd_n)
 
 
 # SwiGLU runs on the NPU as a standalone ELF (silu_and_mul.build_module_2d).
@@ -588,10 +573,14 @@ def _down_add_backend(verbose=False):
 # ---------------------------------------------------------------------------
 
 # Set by compile_all_kernels so the block runner knows scratch-arg indices.
-# Gate/Up are direct-codegen (no f32 scratch). o_res_norm (O fused-cast) -> [7];
-# down_add (Down fused-cast) -> [5]; rms_qkv_qknorm_rope (Q/K/V fused-cast).
+# All GEMMs are now registry-driven fused-cast (Q/K/V/O/Gate/Up/Down), each
+# needing one f32 C-scratch tail arg. gate/up are standalone single-GEMM ELFs
+# whose scratch is arg index 3; o_res_norm (O) -> [7]; down_add (Down) -> [5];
+# rms_qkv_qknorm_rope (Q/K/V) -> [17..].
 _ORES_SCRATCH_FOR = None
 _DOWN_SCRATCH_FOR = None
+_GATE_SCRATCH_FOR = None
+_UP_SCRATCH_FOR = None
 # Scratch-arg indices for the FUSED rms_qkv_qknorm_rope ELF (Q/K/V fused-cast).
 _FUSED_SCRATCH_FOR = None
 
@@ -599,8 +588,11 @@ _FUSED_SCRATCH_FOR = None
 def _resolve_scratch_for(config, seq_len=2048):
     """Recompute all scratch_for lists from the spec (for --run-only path)."""
     global _ORES_SCRATCH_FOR, _DOWN_SCRATCH_FOR, _FUSED_SCRATCH_FOR
+    global _GATE_SCRATCH_FOR, _UP_SCRATCH_FOR
     q_dim = config.n_heads * config.head_dim
     kv_dim = config.n_kv_heads * config.head_dim
+    hidden_dim = config.hidden_dim
+    emb_dim = config.emb_dim
 
     def _alloc(specs, base):
         nxt = base
@@ -624,11 +616,15 @@ def _resolve_scratch_for(config, seq_len=2048):
     _DOWN_SCRATCH_FOR = _alloc([
         gemm_spec(seq_len, config.hidden_dim, config.emb_dim),
     ], 5)
+    # gate / up standalone single-GEMM ELFs: scratch tail starts at arg 3.
+    _GATE_SCRATCH_FOR = _alloc([gemm_spec(seq_len, emb_dim, hidden_dim)], 3)
+    _UP_SCRATCH_FOR = _alloc([gemm_spec(seq_len, emb_dim, hidden_dim)], 3)
     return _ORES_SCRATCH_FOR, _DOWN_SCRATCH_FOR
 
 
 def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
     global _ORES_SCRATCH_FOR, _DOWN_SCRATCH_FOR, _FUSED_SCRATCH_FOR
+    global _GATE_SCRATCH_FOR, _UP_SCRATCH_FOR
     emb_dim = config.emb_dim
     n_heads = config.n_heads
     n_kv_heads = config.n_kv_heads
@@ -661,13 +657,15 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
     _ORES_SCRATCH_FOR = ores_scratch
     cache.compile_and_cache("o_res_norm", ores_mod, _o_res_norm_backend(verbose))
 
-    print("\n--- gate (Gate GEMM, direct) ---")
-    cache.compile_and_cache("gate", build_gate_module(seq_len, emb_dim, hidden_dim),
-                            _gate_backend(verbose))
+    print("\n--- gate (Gate GEMM, fused-cast registry) ---")
+    gate_mod, gate_scratch = build_gate_module(seq_len, emb_dim, hidden_dim)
+    _GATE_SCRATCH_FOR = gate_scratch
+    cache.compile_and_cache("gate", gate_mod, _gate_backend(verbose))
 
-    print("\n--- up (Up GEMM, direct) ---")
-    cache.compile_and_cache("up", build_up_module(seq_len, emb_dim, hidden_dim),
-                            _up_backend(verbose))
+    print("\n--- up (Up GEMM, fused-cast registry) ---")
+    up_mod, up_scratch = build_up_module(seq_len, emb_dim, hidden_dim)
+    _UP_SCRATCH_FOR = up_scratch
+    cache.compile_and_cache("up", up_mod, _up_backend(verbose))
 
     print("\n--- swiglu (NPU SwiGLU: silu(gate)*up) ---")
     cache.compile_and_cache("swiglu", build_swiglu_module(seq_len, hidden_dim),
@@ -781,6 +779,11 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
     down_scratch = _DOWN_SCRATCH_FOR
     if ores_scratch is None or down_scratch is None:
         ores_scratch, down_scratch = _resolve_scratch_for(config, seq_len)
+    gate_scratch = _GATE_SCRATCH_FOR
+    up_scratch = _UP_SCRATCH_FOR
+    if gate_scratch is None or up_scratch is None:
+        _resolve_scratch_for(config, seq_len)
+        gate_scratch, up_scratch = _GATE_SCRATCH_FOR, _UP_SCRATCH_FOR
 
     for layer_idx in range(config.n_layers):
         lw = weights.layers[layer_idx]
@@ -814,23 +817,37 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             bo_key=f"o_res_norm_L{layer_idx}",
         )
 
-        # gate: static {1}. Output gate (arg2).
-        cache.load_and_run(
-            "gate", _gate_backend(),
+        # gate: static {1}. Output gate (arg2). fused-cast -> f32 scratch tail.
+        gate_args = [
             np.zeros((seq_len, emb_dim), dtype=bfloat16),                          # 0 normed2
             np.asarray(lw.w_gate, dtype=bfloat16).reshape(emb_dim, hidden_dim),    # 1 w_gate (static)
             np.zeros((seq_len, hidden_dim), dtype=bfloat16),                       # 2 gate (out)
-            output_indices=[2], static_input_indices={1}, intermediate_indices={2},
+        ]
+        gate_int = {2}
+        for sc in gate_scratch:
+            if sc is not None:
+                gate_args.append(np.zeros((seq_len, hidden_dim), dtype=np.float32))
+                gate_int.add(sc)
+        cache.load_and_run(
+            "gate", _gate_backend(), *gate_args,
+            output_indices=[2], static_input_indices={1}, intermediate_indices=gate_int,
             bo_key=f"gate_L{layer_idx}",
         )
 
-        # up: static {1}. Output up (arg2).
-        cache.load_and_run(
-            "up", _up_backend(),
+        # up: static {1}. Output up (arg2). fused-cast -> f32 scratch tail.
+        up_args = [
             np.zeros((seq_len, emb_dim), dtype=bfloat16),                          # 0 normed2
             np.asarray(lw.w_up, dtype=bfloat16).reshape(emb_dim, hidden_dim),      # 1 w_up (static)
             np.zeros((seq_len, hidden_dim), dtype=bfloat16),                       # 2 up (out)
-            output_indices=[2], static_input_indices={1}, intermediate_indices={2},
+        ]
+        up_int = {2}
+        for sc in up_scratch:
+            if sc is not None:
+                up_args.append(np.zeros((seq_len, hidden_dim), dtype=np.float32))
+                up_int.add(sc)
+        cache.load_and_run(
+            "up", _up_backend(), *up_args,
+            output_indices=[2], static_input_indices={1}, intermediate_indices=up_int,
             bo_key=f"up_L{layer_idx}",
         )
 
@@ -952,6 +969,11 @@ def run_transformer_block_qwen3(
     down_scratch = _DOWN_SCRATCH_FOR
     if ores_scratch is None or down_scratch is None:
         ores_scratch, down_scratch = _resolve_scratch_for(config, seq_len)
+    gate_scratch = _GATE_SCRATCH_FOR
+    up_scratch = _UP_SCRATCH_FOR
+    if gate_scratch is None or up_scratch is None:
+        _resolve_scratch_for(config, seq_len)
+        gate_scratch, up_scratch = _GATE_SCRATCH_FOR, _UP_SCRATCH_FOR
 
     # ELF A1: o_res_norm (O decoupled) -> res1 (arg4) + normed2 (arg6).
     ores_args = [
@@ -980,30 +1002,46 @@ def run_transformer_block_qwen3(
     res1 = ores_res[4].reshape(seq_len, emb_dim)
     normed2 = ores_res[6].reshape(seq_len, emb_dim)
 
-    # ELF A2: gate -> gate (arg2).
-    gate_res = cache.load_and_run(
-        "gate",
-        _gate_backend(verbose),
+    # ELF A2: gate -> gate (arg2). fused-cast -> f32 scratch tail.
+    gate_args = [
         np.asarray(normed2, dtype=bfloat16).reshape(seq_len, emb_dim),
         np.asarray(layer_weights.w_gate, dtype=bfloat16).reshape(emb_dim, hidden_dim),
         np.zeros((seq_len, hidden_dim), dtype=bfloat16),
+    ]
+    gate_int = {2}
+    for sc in gate_scratch:
+        if sc is not None:
+            gate_args.append(np.zeros((seq_len, hidden_dim), dtype=np.float32))
+            gate_int.add(sc)
+    gate_res = cache.load_and_run(
+        "gate",
+        _gate_backend(verbose),
+        *gate_args,
         output_indices=[2],
         static_input_indices={1},
-        intermediate_indices={2},
+        intermediate_indices=gate_int,
         bo_key=f"gate_L{layer_idx}",
     )
     gate = gate_res[2].reshape(seq_len, hidden_dim)
 
-    # ELF A3: up -> up (arg2).
-    up_res = cache.load_and_run(
-        "up",
-        _up_backend(verbose),
+    # ELF A3: up -> up (arg2). fused-cast -> f32 scratch tail.
+    up_args = [
         np.asarray(normed2, dtype=bfloat16).reshape(seq_len, emb_dim),
         np.asarray(layer_weights.w_up, dtype=bfloat16).reshape(emb_dim, hidden_dim),
         np.zeros((seq_len, hidden_dim), dtype=bfloat16),
+    ]
+    up_int = {2}
+    for sc in up_scratch:
+        if sc is not None:
+            up_args.append(np.zeros((seq_len, hidden_dim), dtype=np.float32))
+            up_int.add(sc)
+    up_res = cache.load_and_run(
+        "up",
+        _up_backend(verbose),
+        *up_args,
         output_indices=[2],
         static_input_indices={1},
-        intermediate_indices={2},
+        intermediate_indices=up_int,
         bo_key=f"up_L{layer_idx}",
     )
     up = up_res[2].reshape(seq_len, hidden_dim)

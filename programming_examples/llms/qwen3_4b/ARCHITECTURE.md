@@ -14,8 +14,10 @@ BF16, rope_theta=1000000, eps=1e-6, tied embeddings, **per-head QK-norm** (no
 bias).
 
 Topology: **Qwen3, SwiGLU on NPU, O+FFN un-merged** (hidden=9728 large/non-1024
-→ Gate/Up cannot fuse-cast; SwiGLU is its own NPU ELF). head_dim=128 →
-head-first FlashAttention.
+→ separate gate/up/down ELFs; SwiGLU is its own NPU ELF). Gate/Up use the
+registry **fused-cast high-precision** GEMM (tile_k_l2=64 keeps the f32-out
+B-tile DMA stride within the AIE limit at N=9728 → 5528 GFLOP/s, mean_rel_L1
+9.8e-3). head_dim=128 → head-first FlashAttention.
 
 ## Per-Layer Kernel Sequence
 
@@ -56,8 +58,8 @@ once: (HOST) final RMSNorm → [NPU elf:lm_head_gemv]
 
 **On NPU (all heavy compute):** every GEMM / GEMV (Q/K/V, O, Gate, Up, Down,
 LM-head), RMSNorm, **per-head QK-norm**, RoPE, prefill FlashAttention, **prefill
-SwiGLU** (standalone NPU ELF, tile_n=4864 — moved CPU→NPU, the prefill
-12.0s→6.06s 2.0× win). **Decode Down GEMV (K=9728) is on NPU** (dedicated
+SwiGLU** (standalone NPU ELF, tile_n=4864 — moved CPU→NPU; together with the
+Gate/Up fused-cast switch, prefill TTFT 12.0s→5.45s). **Decode Down GEMV (K=9728) is on NPU** (dedicated
 `down_mv.o`, `m_input=2` to keep the push_queue repeat ≤255). All four decode
 projections are NPU GEMV ELFs.
 
@@ -96,8 +98,10 @@ position-dependent → NON-static.
 - **Decoupled O-projection** (q_dim=4096 ≠ emb=2560) → O GEMM is 4096→2560, the
   largest non-square O in the set.
 - **7-ELF prefill** — the most of any model here: hidden=9728 forces a full
-  O+FFN un-merge (Gate/Up cannot fuse-cast at N=9728: the f32-out B-tile DMA hits
-  `Stride exceeds [1:1048576]`), plus SwiGLU is its own NPU ELF.
+  O+FFN un-merge (separate gate/up/down ELFs), plus SwiGLU is its own NPU ELF.
+  Gate/Up DO fuse-cast (high-prec) at N=9728 by using tile_k_l2=64, which keeps
+  the f32-out B-tile DMA stride under the AIE `[1:1048576]` limit (tile_k_l2≥128
+  would overflow it).
 - **head_dim=128 → head-first FlashAttention** (dv_chunks=2) + host transposes.
 - **Decode Down GEMV on NPU** (dedicated `down_mv.o`, m_input=2).
 - **emb=2560=512×5**, **hidden=9728=512×19** → 512-aligned (not 1024); proj N
