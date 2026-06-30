@@ -18,16 +18,28 @@
 // was wrongly assumed to imply a zero base offset. Every launch iteration then
 // collapsed onto offset 0, so only the first program's data was moved.
 
+// The per-core sub-tile strides are concrete affine maps base + core*128.
+// CHECK-DAG: #[[$ADD128:.+]] = affine_map<()[s0] -> (s0 + 128)>
+// CHECK-DAG: #[[$ADD896:.+]] = affine_map<()[s0] -> (s0 + 896)>
+
 // CHECK-LABEL: func.func @vecadd
 // The launch base (launch_idx * 1024) must still feed the split offsets.
 // CHECK: %[[MUL:.*]] = arith.muli %{{.*}}, %c1024{{.*}} : index
 // CHECK: %[[I32:.*]] = arith.index_cast %[[MUL]] : index to i32
 // CHECK: %[[BASE:.*]] = arith.index_cast %[[I32]] : i32 to index
-// First split put accesses L3 at the launch base directly...
-// CHECK: air.channel.put {{.*}}(%{{.*}}[%[[BASE]]] [%c128
-// ...and each subsequent core adds its sub-tile stride to that base.
-// CHECK: %[[OFF:.*]] = affine.apply #{{.*}}()[%[[BASE]]]
-// CHECK: air.channel.put {{.*}}(%{{.*}}[%[[OFF]]] [%c128
+
+// MM2S: core 0 accesses L3 at the launch base directly; the wrap stays at the
+// sub-tile size (128), and each subsequent core adds its stride to that base.
+// CHECK: air.channel.put {{.*}}[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%[[BASE]]] [%c128{{.*}}] [
+// CHECK: %[[P1:.*]] = affine.apply #[[$ADD128]]()[%[[BASE]]]
+// CHECK: air.channel.put {{.*}}[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%[[P1]]] [%c128{{.*}}] [
+// CHECK: %[[P7:.*]] = affine.apply #[[$ADD896]]()[%[[BASE]]]
+// CHECK: air.channel.put {{.*}}[%c7{{.*}}, %c0{{.*}}] (%{{.*}}[%[[P7]]] [%c128{{.*}}] [
+
+// S2MM: the get path threads the same launch base through its split offsets.
+// CHECK: air.channel.get {{.*}}[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%[[BASE]]] [%c128{{.*}}] [
+// CHECK: %[[G1:.*]] = affine.apply #[[$ADD128]]()[%[[BASE]]]
+// CHECK: air.channel.get {{.*}}[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%[[G1]]] [%c128{{.*}}] [
 
 #map = affine_map<()[s0] -> (s0 * 128)>
 module {

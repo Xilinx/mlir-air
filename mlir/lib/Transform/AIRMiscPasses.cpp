@@ -1589,20 +1589,15 @@ FailureOr<Value> tileChannelOpByFactor(
             getUsedValuesDefinedAbove(execOp.getRegion(), opers);
             originalApplyOperands = llvm::to_vector(opers);
           } else {
-            // A "default" (contiguous) access pattern does not imply a zero
-            // base offset: a multi-iteration air.launch contributes a base
-            // offset (launch_idx * tile) on the split dimension, expressed as
-            // a plain SSA value rather than an affine.apply. That base must be
-            // preserved so each launch iteration accesses its own slice;
-            // otherwise every iteration collapses onto offset 0. Fall back to
-            // zero only when there is genuinely no offset on the split dim.
+            // Why: the base offset is independent of the access pattern;
+            // propagate any non-zero base on the split dim instead of zeroing
+            // it just because the access happens to be contiguous.
             Value baseOffset =
                 (size_t)splitDimOnOffsets < originalChanOp.getOffsets().size()
                     ? originalChanOp.getOffsets()[splitDimOnOffsets]
                     : Value();
             std::optional<int64_t> baseConst =
-                baseOffset ? getConstantIntValue(baseOffset)
-                           : std::optional<int64_t>(0);
+                baseOffset ? getConstantIntValue(baseOffset) : std::nullopt;
             if (baseOffset && (!baseConst || *baseConst != 0))
               originalApplyOperands.push_back(baseOffset);
             else
