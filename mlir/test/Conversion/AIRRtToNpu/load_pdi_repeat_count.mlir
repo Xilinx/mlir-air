@@ -442,3 +442,52 @@ module {
     return
   }
 }
+
+// -----
+
+// Test 9: cascade flow whose air.launch_end sits inside a MULTI-ITERATION launch
+// loop (repeat_count == 0). Unlike the single-trip cascade in Test 8, the cascade
+// locks re-arm every iteration on their own, so the between-iteration load_pdi
+// reset is unnecessary and costly (one PDI reload per boundary). load_pdi should
+// NOT be generated, even with output-elf=true.
+
+// EMIT-TRUE-LABEL: aie.device(npu2) @segment_cascade_loop {
+// EMIT-TRUE: aie.runtime_sequence @func_cascade_loop
+// EMIT-TRUE-NOT:   aiex.npu.load_pdi
+// EMIT-TRUE: }
+
+// EMIT-FALSE-LABEL: aie.device(npu2) @segment_cascade_loop {
+// EMIT-FALSE: aie.runtime_sequence @func_cascade_loop
+// EMIT-FALSE-NOT:   aiex.npu.load_pdi
+// EMIT-FALSE: }
+
+module {
+  aie.device(npu2) {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %tile_0_3 = aie.tile(0, 3)
+    aie.shim_dma_allocation @airMemcpyId15(%tile_0_0, S2MM, 0)
+    aie.cascade_flow(%tile_0_2, %tile_0_3)
+    %mem_0_2 = aie.mem(%tile_0_2) {
+      %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb2)
+    ^bb1:
+      aie.end
+    ^bb2:
+      aie.end
+    }
+  } {sym_name = "segment_cascade_loop"}
+  airrt.module_metadata{}
+  func.func @func_cascade_loop(%arg0: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c15_i32 = arith.constant 15 : i32
+    // Multi-iteration launch boundary: air.launch_end fires once per iteration.
+    affine.for %arg1 = 0 to 2 {
+      %0 = airrt.dma_memcpy_nd(%c15_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+      airrt.wait_all %0 {"air.launch_end"}
+    }
+    %p = airrt.segment_load "segment_cascade_loop" : i64
+    return
+  }
+}
