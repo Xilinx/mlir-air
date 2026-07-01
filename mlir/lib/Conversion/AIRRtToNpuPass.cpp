@@ -133,22 +133,26 @@ static int64_t enclosingLoopTrips(mlir::Operation *op) {
 // 2nd dispatch without the reset. A MULTI-ITERATION launch re-arms them every
 // iteration on its own, so inserting the reset between iterations is
 // unnecessary and costs a load_pdi PDI reload per boundary (a silent perf
-// regression, e.g. flash-attention prefill). Detect single-trip by the
-// air.launch_end boundary not sitting inside an iteration loop. MUST be
-// evaluated before the launch_end wait_all ops are converted/erased and before
+// regression, e.g. flash-attention prefill). A multi-iteration launch presents
+// two ways depending on whether its iteration loop survived: either one
+// air.launch_end inside a multi-trip loop, or -- once the loop is unrolled --
+// several air.launch_end markers. Single-trip is therefore exactly one
+// air.launch_end that is not enclosed by a multi-trip loop. MUST be evaluated
+// before the launch_end wait_all ops are converted/erased and before
 // unrollAffineFors -- see markDevicesNeedingLockReset.
 static bool deviceHasSingleTripCascade(xilinx::AIE::DeviceOp device) {
   if (!deviceHasCascade(device))
     return false;
-  bool hasLaunchEnd = false, allSingleTrip = true;
+  int64_t numLaunchEnds = 0;
+  bool anyMultiTrip = false;
   device.walk([&](xilinx::airrt::WaitAllOp wa) {
     if (!wa->hasAttr("air.launch_end"))
       return;
-    hasLaunchEnd = true;
+    ++numLaunchEnds;
     if (enclosingLoopTrips(wa) != 1)
-      allSingleTrip = false;
+      anyMultiTrip = true;
   });
-  return hasLaunchEnd && allSingleTrip;
+  return numLaunchEnds == 1 && !anyMultiTrip;
 }
 
 // Internal marker carrying the per-launch reset decision from

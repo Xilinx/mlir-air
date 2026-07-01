@@ -491,3 +491,79 @@ module {
     return
   }
 }
+
+// -----
+
+// Test 10: FLASH-ATTENTION PREFILL REGRESSION GUARD.
+//
+// This mirrors the shape of flash-attention prefill's lowered control code at
+// airrt-to-npu time: a cascade device (aie.cascade_flow) whose multi-iteration
+// launch (the lq_iters loop) has already been UNROLLED, so it appears as several
+// airrt.wait_all {air.launch_end} markers -- here two -- sitting inside a
+// degenerate `affine.for 0 to 1` wrapper, each preceded by its own DMA loops.
+// There is NO enclosing multi-trip loop, so a per-launch_end loop-trip check
+// alone would misread this as single-trip and insert the load_pdi reset between
+// the iterations (a silent ~42% latency regression: 708 -> 1004 us on NPU2 at
+// LQ=LK=512, 2 heads). Because the cascade locks re-arm every iteration on their
+// own, load_pdi must NOT be generated here even with output-elf=true. The guard:
+// more than one air.launch_end on the device => multi-iteration => no reset.
+
+// The costly reset-device clone (emitted before the segment device) must NOT be
+// created, and no load_pdi must appear in the control sequence.
+// EMIT-TRUE-NOT: @flash_attn_seg_reset
+// EMIT-TRUE-LABEL: aie.device(npu2) @flash_attn_seg {
+// EMIT-TRUE: aie.runtime_sequence @fa_ctrl
+// EMIT-TRUE-NOT: aiex.npu.load_pdi
+// EMIT-TRUE: }
+
+// EMIT-FALSE-LABEL: aie.device(npu2) @flash_attn_seg {
+// EMIT-FALSE: aie.runtime_sequence @fa_ctrl
+// EMIT-FALSE-NOT: aiex.npu.load_pdi
+// EMIT-FALSE: }
+
+module {
+  aie.device(npu2) {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %tile_0_3 = aie.tile(0, 3)
+    aie.shim_dma_allocation @flashQKIn(%tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @flashOut(%tile_0_0, S2MM, 0)
+    // Cascade bus between the two compute tiles (as in flash-attention).
+    aie.cascade_flow(%tile_0_2, %tile_0_3)
+    %mem_0_2 = aie.mem(%tile_0_2) {
+      %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb2)
+    ^bb1:
+      aie.end
+    ^bb2:
+      aie.end
+    }
+  } {sym_name = "flash_attn_seg"}
+  airrt.module_metadata{}
+  func.func @fa_ctrl(%q: memref<512x64xbf16>, %o: memref<512x64xbf16>) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c64 = arith.constant 64 : i64
+    %c512 = arith.constant 512 : i64
+    %qid = arith.constant 1 : i32
+    %oid = arith.constant 2 : i32
+    // Degenerate outer wrapper (trip count 1), exactly as observed in the real
+    // lowered IR; the true lq_iters=2 iteration was unrolled into the two
+    // launch_end blocks below.
+    affine.for %i = 0 to 1 {
+      // ---- unrolled launch iteration 0 ----
+      affine.for %j = 0 to 2 {
+        %a = airrt.dma_memcpy_nd(%qid, %c0, %c0, %q[%c0, %c0, %c0, %c0], [%c1, %c1, %c512, %c64], [%c0, %c0, %c64, %c1]) {metadata = @flashQKIn} : (i32, i64, i64, memref<512x64xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+      }
+      %b = airrt.dma_memcpy_nd(%oid, %c0, %c0, %o[%c0, %c0, %c0, %c0], [%c1, %c1, %c512, %c64], [%c0, %c0, %c64, %c1]) {metadata = @flashOut} : (i32, i64, i64, memref<512x64xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+      airrt.wait_all %b {"air.launch_end"}
+      // ---- unrolled launch iteration 1 ----
+      affine.for %j = 0 to 2 {
+        %a = airrt.dma_memcpy_nd(%qid, %c0, %c0, %q[%c0, %c0, %c0, %c0], [%c1, %c1, %c512, %c64], [%c0, %c0, %c64, %c1]) {metadata = @flashQKIn} : (i32, i64, i64, memref<512x64xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+      }
+      %c = airrt.dma_memcpy_nd(%oid, %c0, %c0, %o[%c0, %c0, %c0, %c0], [%c1, %c1, %c512, %c64], [%c0, %c0, %c64, %c1]) {metadata = @flashOut} : (i32, i64, i64, memref<512x64xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+      airrt.wait_all %c {"air.launch_end"}
+    }
+    %p = airrt.segment_load "flash_attn_seg" : i64
+    return
+  }
+}
