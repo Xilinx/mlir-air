@@ -59,6 +59,10 @@ jobs:
           pushd mlir-aie
           pip install -r python/requirements.txt
           pip install -r python/requirements_ml.txt
+          # requirements_ml.txt pins torch==2.12.0+cpu, which downgrades the
+          # nightly torch installed in Setup. Reinstall the matching stable
+          # torchvision so torchvision::nms is registered against torch 2.12.
+          pip install "torchvision==0.27.1+cpu" --index-url https://download.pytorch.org/whl/cpu
           pip install -r python/requirements_dev.txt
 
           VERSION=$(utils/clone-llvm.sh --get-wheel-version)
