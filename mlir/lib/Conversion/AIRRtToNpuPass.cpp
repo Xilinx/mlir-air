@@ -104,12 +104,12 @@ static bool deviceHasCascade(xilinx::AIE::DeviceOp device) {
   return hasCascade;
 }
 
-// Static trip count of the affine loops enclosing `op` (1 if none). Used to tell
-// a SINGLE-TRIP launch (the launch boundary runs once per host dispatch) from a
-// MULTI-ITERATION launch (the boundary sits inside an iteration loop, e.g.
-// flash-attention's lq_iters loop). A non-constant affine loop or any scf loop
-// is treated as multi-trip. Must be evaluated before unrollAffineFors strips
-// these loops.
+// Static trip count of the affine loops enclosing `op` (1 if none). Used to
+// tell a SINGLE-TRIP launch (the launch boundary runs once per host dispatch)
+// from a MULTI-ITERATION launch (the boundary sits inside an iteration loop,
+// e.g. flash-attention's lq_iters loop). A non-constant affine loop or any scf
+// loop is treated as multi-trip. Must be evaluated before unrollAffineFors
+// strips these loops.
 static int64_t enclosingLoopTrips(mlir::Operation *op) {
   int64_t trips = 1;
   for (mlir::Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
@@ -131,12 +131,12 @@ static int64_t enclosingLoopTrips(mlir::Operation *op) {
 // Cascade core locks/credits need the per-launch reset only for a SINGLE-TRIP
 // launch: across a host re-dispatch they are stale and the kernel aborts on the
 // 2nd dispatch without the reset. A MULTI-ITERATION launch re-arms them every
-// iteration on its own, so inserting the reset between iterations is unnecessary
-// and costs a load_pdi PDI reload per boundary (a silent perf regression, e.g.
-// flash-attention prefill). Detect single-trip by the air.launch_end boundary
-// not sitting inside an iteration loop. MUST be evaluated before the launch_end
-// wait_all ops are converted/erased and before unrollAffineFors -- see
-// markDevicesNeedingLockReset.
+// iteration on its own, so inserting the reset between iterations is
+// unnecessary and costs a load_pdi PDI reload per boundary (a silent perf
+// regression, e.g. flash-attention prefill). Detect single-trip by the
+// air.launch_end boundary not sitting inside an iteration loop. MUST be
+// evaluated before the launch_end wait_all ops are converted/erased and before
+// unrollAffineFors -- see markDevicesNeedingLockReset.
 static bool deviceHasSingleTripCascade(xilinx::AIE::DeviceOp device) {
   if (!deviceHasCascade(device))
     return false;
@@ -152,13 +152,14 @@ static bool deviceHasSingleTripCascade(xilinx::AIE::DeviceOp device) {
 }
 
 // Internal marker carrying the per-launch reset decision from
-// markDevicesNeedingLockReset() (computed while the launch_end markers and their
-// loops still exist) to the load_pdi insertion and reset-clone sites. Stripped
-// at the end of the pass.
-static constexpr llvm::StringLiteral kNeedsLockResetAttr = "air.needs_lock_reset";
+// markDevicesNeedingLockReset() (computed while the launch_end markers and
+// their loops still exist) to the load_pdi insertion and reset-clone sites.
+// Stripped at the end of the pass.
+static constexpr llvm::StringLiteral kNeedsLockResetAttr =
+    "air.needs_lock_reset";
 
-// A device needs the per-launch lock/DMA-state reset (load_pdi + initLocks) if it
-// has repeat_count DMAs OR is a single-trip cascade launch. The decision is
+// A device needs the per-launch lock/DMA-state reset (load_pdi + initLocks) if
+// it has repeat_count DMAs OR is a single-trip cascade launch. The decision is
 // cached on the device because the launch_end markers it depends on are erased
 // during conversion (and the loops unrolled afterwards), so it cannot be
 // recomputed at the insertion / reset-clone sites.
@@ -167,9 +168,9 @@ static bool deviceNeedsLockReset(xilinx::AIE::DeviceOp device) {
 }
 
 // Compute and stamp the reset decision on every device. MUST run after
-// moveFuncOpToEndOfDeviceOp (so the control funcs, hence the launch_end markers,
-// are inside their devices) and before generateNpuWaitFromAIRRtWaitAll /
-// unrollAffineFors (which erase the markers and strip the loops).
+// moveFuncOpToEndOfDeviceOp (so the control funcs, hence the launch_end
+// markers, are inside their devices) and before generateNpuWaitFromAIRRtWaitAll
+// / unrollAffineFors (which erase the markers and strip the loops).
 static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
   module.walk([&](xilinx::AIE::DeviceOp device) {
     if (deviceHasRepeatCountDMAs(device) || deviceHasSingleTripCascade(device))
@@ -1568,8 +1569,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Decide the per-launch lock/DMA reset for each device now, while the
     // launch_end markers (and the loops that mark a multi-iteration launch) are
-    // still present: the conversion below erases the markers and unrollAffineFors
-    // strips the loops, so the decision cannot be recomputed afterwards.
+    // still present: the conversion below erases the markers and
+    // unrollAffineFors strips the loops, so the decision cannot be recomputed
+    // afterwards.
     markDevicesNeedingLockReset(module);
 
     generateNpuWaitFromAIRRtWaitAll(module);
@@ -1674,8 +1676,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Strip the internal reset-decision marker so it does not leak into the
     // emitted IR (the reset clones copy it too).
-    module.walk(
-        [](xilinx::AIE::DeviceOp device) { device->removeAttr(kNeedsLockResetAttr); });
+    module.walk([](xilinx::AIE::DeviceOp device) {
+      device->removeAttr(kNeedsLockResetAttr);
+    });
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
