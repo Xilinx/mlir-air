@@ -878,9 +878,10 @@ public:
 // Erase remaining WaitAllOps that weren't converted to NpuDmaWaitOp.
 // These are pure synchronization ops that don't generate NPU ops.
 // For WaitAllOps with "air.launch_end" attribute, we may need to insert
-// aiex.npu.load_pdi to reset the DMA engine state if:
+// aiex.npu.load_pdi to reset the DMA engine / cascade state if:
 // 1. output-elf mode is enabled, AND
-// 2. The device contains core/memtile DMAs with repeat_count > 0
+// 2. deviceNeedsLockReset(device) -- i.e. the device has core/memtile DMAs
+//    with repeat_count > 0, OR is a single-trip cascade launch.
 class AIRRtWaitAllOpConversion : public OpConversionPattern<airrt::WaitAllOp> {
 public:
   AIRRtWaitAllOpConversion(MLIRContext *context, bool outputElf,
@@ -900,8 +901,8 @@ public:
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
           if (outputElf && deviceNeedsLockReset(device)) {
-            // Insert aiex.npu.load_pdi to reset DMA engine state when
-            // core/memtile DMAs have repeat_count > 0.
+            // Insert aiex.npu.load_pdi to reset DMA engine / cascade state
+            // (repeat_count DMAs, or a single-trip cascade launch).
             rewriter.setInsertionPoint(op);
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
@@ -1667,8 +1668,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       signalPassFailure();
 
     // Create a lightweight copy of the segment device (without core
-    // bodies/ELFs) and redirect between-iteration load_pdi to it.
-    createLightweightResetDevice(module);
+    // bodies/ELFs) and redirect between-iteration load_pdi to it. Only needed
+    // in ELF output mode -- load_pdi is never emitted otherwise, so the clone
+    // would be dead IR.
+    if (clOutputElf)
+      createLightweightResetDevice(module);
 
     // Generate main device wrapper if needed. This handles two mutually
     // exclusive cases:

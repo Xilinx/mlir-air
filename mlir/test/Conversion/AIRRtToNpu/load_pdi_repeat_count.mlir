@@ -8,7 +8,10 @@
 // Test the generation of aiex.npu.load_pdi at air.launch_end locations.
 // load_pdi is generated when BOTH conditions are true:
 // 1. output-elf=true is set (ELF output mode)
-// 2. The device has core/memtile DMAs with repeat_count > 0
+// 2. The device needs a lock/DMA-state reset -- i.e. it has core/memtile DMAs
+//    with repeat_count > 0, OR it is a single-trip cascade launch (a
+//    multi-iteration cascade launch, looped or unrolled, does NOT).
+// The lightweight *_reset device clone is likewise only created in ELF mode.
 
 // RUN: air-opt -airrt-to-npu="output-elf=true" --split-input-file %s | FileCheck %s --check-prefix=EMIT-TRUE
 // RUN: air-opt -airrt-to-npu="output-elf=false" --split-input-file %s | FileCheck %s --check-prefix=EMIT-FALSE
@@ -410,6 +413,8 @@ module {
 // EMIT-TRUE:   aiex.npu.load_pdi {device_ref = @segment_cascade_reset}
 // EMIT-TRUE: }
 
+// The lightweight reset-device clone must NOT be created in non-ELF mode.
+// EMIT-FALSE-NOT: @segment_cascade_reset
 // EMIT-FALSE-LABEL: aie.device(npu2) @segment_cascade {
 // EMIT-FALSE: aie.runtime_sequence @func_cascade
 // EMIT-FALSE-NOT:   aiex.npu.load_pdi
