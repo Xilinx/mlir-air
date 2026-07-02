@@ -539,10 +539,21 @@ class XRTBackend(AirBackend):
                 # Use xrt.ext.bo for ELF mode (simpler, no group_id needed)
                 bos = [xrt.ext.bo(self.device, s) for s in sizes_in_bytes]
 
+                # Map each BO once and keep the mapped numpy array alive. All
+                # host<->device data movement goes through these mapped arrays +
+                # bo.sync(); bo.write()/bo.read() are avoided because they
+                # misbehave under numpy 2.x with older pyxrt.
+                bo_maps = [
+                    np.frombuffer(bos[i].map(), dtype=np.uint8)
+                    for i in range(len(args))
+                ]
+
                 for i, a in enumerate(args):
                     if a.dtype == bfloat16:
                         a = a.view(np.int16)
-                    bos[i].write(a, 0)
+                    bo_maps[i][: sizes_in_bytes[i]] = np.frombuffer(
+                        np.ascontiguousarray(a).tobytes(), dtype=np.uint8
+                    )
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
                 # Use xrt.run for ELF mode
@@ -565,12 +576,12 @@ class XRTBackend(AirBackend):
                     run.start()
                     run.wait2()
 
-                for i, a in enumerate(args):
+                for i in range(len(args)):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
                 return tuple(
                     [
-                        bos[i].read(s, 0).view(args[i].dtype)
-                        for i, s in enumerate(sizes_in_bytes)
+                        np.frombuffer(bo_maps[i].tobytes(), dtype=args[i].dtype)
+                        for i in range(len(args))
                     ]
                 )
 
@@ -598,7 +609,7 @@ class XRTBackend(AirBackend):
             # load the instructions as a numpy array
             with open(artifact.insts, "rb") as f:
                 instr_data = f.read()
-                self.instr_v = np.frombuffer(instr_data, dtype=np.uint32)
+                self.instr_v = np.frombuffer(instr_data, dtype=np.uint32).copy()
 
             self.bo_instr = xrt.bo(
                 self.device,
@@ -606,7 +617,7 @@ class XRTBackend(AirBackend):
                 xrt.bo.cacheable,
                 self.kernel.group_id(1),
             )
-            self.bo_instr.write(self.instr_v, 0)
+            self.bo_instr.write(self.instr_v.tobytes(), 0)
 
             def invoker(*args):
                 # limit arg length to 5
@@ -620,12 +631,24 @@ class XRTBackend(AirBackend):
                     for i, s in enumerate(sizes_in_bytes)
                 ]
 
+                # Map each host_only BO once and keep the mapped numpy array
+                # alive. All host<->device data movement goes through these
+                # mapped arrays + bo.sync(); bo.write()/bo.read() are avoided
+                # because they misbehave under numpy 2.x with older pyxrt.
+                # This mirrors mlir-aie's XRTTensor implementation.
+                bo_maps = [
+                    np.frombuffer(bos[i].map(), dtype=np.uint8)
+                    for i in range(len(args))
+                ]
+
                 self.bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
                 for i, a in enumerate(args):
                     if a.dtype == bfloat16:
                         # store bfloat16 in binary as int16
                         a = a.view(np.int16)
-                    bos[i].write(a, 0)
+                    bo_maps[i][: sizes_in_bytes[i]] = np.frombuffer(
+                        np.ascontiguousarray(a).tobytes(), dtype=np.uint8
+                    )
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
                 if self.n_perf_iters > 0:
@@ -643,12 +666,12 @@ class XRTBackend(AirBackend):
                     h = self.kernel(3, self.bo_instr, len(self.instr_v), *bos)
                     h.wait()
 
-                for i, a in enumerate(args):
+                for i in range(len(args)):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
                 return tuple(
                     [
-                        bos[i].read(s, 0).view(args[i].dtype)
-                        for i, s in enumerate(sizes_in_bytes)
+                        np.frombuffer(bo_maps[i].tobytes(), dtype=args[i].dtype)
+                        for i in range(len(args))
                     ]
                 )
 
