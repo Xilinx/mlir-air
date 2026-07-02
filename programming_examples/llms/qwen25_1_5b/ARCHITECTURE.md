@@ -24,7 +24,7 @@ x ─[NPU elf:rms_qkv_bias_rope]   FUSED, 1 ELF
   ─[NPU elf:flash_attn]   npu_fa_headfirst (head-first, hd=128)
       (HOST) seq→head transpose → NPU FA → (HOST) head→seq transpose → attn_out[seq,1536]
   ─[NPU elf:o_res_norm]   { O GEMM + Add + RMSNorm }
-  ─[NPU elf:gate_up]      { Gate GEMM + Up GEMM }   (gate+up fused into ONE ELF, flag QWEN25_FUSE_GATE_UP)
+  ─[NPU elf:gate_up]      { Gate GEMM + Up GEMM }   (gate+up fused into ONE ELF)
   ─[NPU elf:swiglu]       { SwiGLU }   (NPU SwiGLU, tile_n=5120)
   ─[NPU elf:down_add]     { Down GEMM (launch 0) + Add } → layer_out[seq,1536]
 once: (HOST) final RMSNorm → [NPU elf:lm_head_gemv] (19 partitions ×8192, vocab 151936)
@@ -90,7 +90,7 @@ LUT position-dependent → NON-static.
 - **head_dim=128 → head-first FlashAttention** + host seq↔head transposes.
 - **Prefill SwiGLU on NPU as a standalone ELF** (tile_n=5120) — large hidden
   forces O+FFN to split, but SwiGLU stays on-device.
-- **gate+up fused** into one ELF (`QWEN25_FUSE_GATE_UP`) → 5 prefill ELFs (vs 6).
+- **gate+up fused** into one ELF → 5 prefill ELFs (vs 6).
 - **Non-aligned dims (1536 / 8960 / 256)** → per-shape GEMM tile configs;
   `down_add` Down must be launch 0 of its ELF (else NaN).
 - **Multi-launch ELF + text-based MLIR stitching** (shared infra).

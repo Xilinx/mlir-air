@@ -51,7 +51,7 @@ per token.
 | Qwen2.5-1.5B | 2.43 s | 6.6 tok/s | 5 / 5 |
 | Llama-3.2-3B | 3.70 s | 4.7 tok/s | 3 / 5 |
 | Qwen2.5-3B | 4.24 s | 3.5 tok/s | 6 / 5 |
-| Qwen3-4B | 6.06 s | 3.2 tok/s | 7 / 5 |
+| Qwen3-4B | 5.45 s | 3.5 tok/s | 7 / 5 |
 
 Measured via `make profile N_TOKENS=32` on NPU2, 2026-06. All pass `make verify`
 (top-5 token-set vs HF bf16, exit 0). The lean **3-ELF prefill / 2-ELF decode**
