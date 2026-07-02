@@ -4,9 +4,9 @@
 """Small NumPy CPU helpers for Qwen2.5-1.5B production prefill/decode + verify.
 
 Mirrors llama32_1b_cpu_helpers.py. Qwen2.5 has QKV bias (no QK-norm).
-Kept helpers: rms_norm, attention_reference, softmax. Bias is applied on the
-host around the bias-free NPU GEMMs (see prefill/decode), exploiting RoPE
-linearity, so no dedicated bias helper is needed here.
+Kept helpers: rms_norm, attention_reference, softmax. The QKV bias is fused into
+the NPU attention-input ELFs (rms_qkv_bias_rope; see prefill/decode) and applied
+on-device, so no dedicated host-side bias helper is needed here.
 """
 
 import numpy as np

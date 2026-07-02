@@ -170,7 +170,7 @@ def build_o_gemv_ffn_qwen_module(emb_dim, q_dim, hidden_dim):
 
 
 # ---------------------------------------------------------------------------
-# Builder 2: LM-head GEMV (8 partitions, n_part=19008 for vocab 151936).
+# Builder 2: LM-head GEMV (19 partitions, n_part=8192 for vocab 151936).
 # ---------------------------------------------------------------------------
 
 

@@ -13,10 +13,12 @@ A blend of two completed siblings:
 
 Qwen2.5 deltas vs LLAMA-3.2:
 
-  1. QKV bias (attention_bias=True, the Qwen2 family). After the Q/K/V
-     projection GEMM, a per-channel bias is added on the HOST, AFTER the GEMM
-     and BEFORE RoPE (HF Qwen2 order: proj -> +bias -> RoPE(Q,K) -> attention;
-     V is bias-added and used directly). NO QK-norm (that is Qwen3).
+  1. QKV bias (attention_bias=True, the Qwen2 family). The bias is fused into
+     the rms_qkv_bias_rope ELF: after the Q/K/V projection GEMM, the on-device
+     bias-add applies a per-channel bias BEFORE RoPE (HF Qwen2 order:
+     proj -> +bias -> RoPE(Q,K) -> attention; V is bias-added and used
+     directly). The bias (bq/bk/bv) is a kernel INPUT, not applied on the host.
+     NO QK-norm (that is Qwen3).
 
   2. Dims (vs 0.5B): emb=1536, q_dim=1536 (12 heads x 128), kv_dim=256
      (2 heads x 128), hidden=8960, head_dim=128. o_proj is SQUARE
@@ -34,8 +36,9 @@ Registry-selected methods (seq=2048):
     Gate/Up(1536x8960)  -> direct (low-precision, no external .o, tile_n=64)
     Down   (8960x1536)  -> fused-cast (mm_m64.o, tile_n=128, launch 0)
 
-Attention uses the CPU fallback (cpu_attn=True). head_dim=128 -> FA hang risk,
-so prefill never uses NPU FlashAttention (mirrors qwen3_0_6b).
+Attention runs head-first NPU FlashAttention by default (cpu_attn=False builds
+the flash_attn ELF, head_dim=128); CPU attention is an optional fallback
+(cpu_attn=True).
 """
 
 import sys

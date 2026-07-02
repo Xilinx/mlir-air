@@ -25,7 +25,8 @@ Qwen3 diverges from LLAMA-3.2 in two ways that break the llama
      fused-cast TILE_N=128 HERD_N=4 config (sym `_m64`); no low-precision
      tier or padding is needed.
 
-Attention uses the CPU fallback (cpu_attn=True), matching llama prefill.
+Attention runs NPU FlashAttention by default (cpu_attn=False builds the
+flash_attn ELF); CPU attention is an optional fallback (cpu_attn=True).
 """
 
 import sys
