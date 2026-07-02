@@ -1,0 +1,20 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Qwen2.5-3B compile-only smoke test: builds every prefill + decode kernel ELF
+// through the AIR -> AIE -> aiecc -> Peano pipeline. No NPU dispatch, no
+// HuggingFace download.
+//
+// NOT CI-triggered by design: the filename OMITS "peano", so the CI peano
+// suite (`lit --filter "peano"`) does not collect it — llama32_1b's compile
+// lit is the bf16 prefill/decode CI signal; this example shares the same
+// shared/builders + shared/infra assembly. Run on demand:
+//   lit -v programming_examples/llms/qwen25_3b/run_npu2_compile.lit
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_peano_compile
+// RUN: cd test_peano_compile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: Compilation passed.
