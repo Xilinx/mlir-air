@@ -5,8 +5,9 @@
 
 Mirrors llama32_1b_weights.py with Qwen2.5 deltas:
   - QKV bias (attention_bias / Qwen2 family): q_proj.bias (q_dim,),
-    k_proj.bias (kv_dim,), v_proj.bias (kv_dim,). Applied on HOST around the
-    bias-free NPU kernels (RoPE linearity: RoPE(q+bq)=RoPE(q)+RoPE(bq)).
+    k_proj.bias (kv_dim,), v_proj.bias (kv_dim,). Fused ON-DEVICE: bq/bk/bv are
+    passed as static args into the rms_qkv_bias_rope(_gemv) ELF, which adds the
+    per-channel bias after the Q/K/V projection and before RoPE (Q,K).
   - No QK-norm (that is Qwen3).
   - Non-aligned dims: emb=896, hidden=4864, kv_dim=128 (2*64). head_dim=64.
   - Tied embeddings.

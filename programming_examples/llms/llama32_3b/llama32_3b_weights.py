@@ -12,11 +12,11 @@ Weight convention:
     All projection weights are transposed during loading.
 
 Usage:
-    from llama32_1b_weights import load_weights, LlamaConfig
+    from llama32_3b_weights import load_weights, LlamaConfig
 
     config = LlamaConfig()
     weights = load_weights("meta-llama/Llama-3.2-3B")
-    print(weights.layers[0].wq.shape)  # (2048, 2048)
+    print(weights.layers[0].wq.shape)  # (3072, 3072)
 """
 
 import os
@@ -40,7 +40,7 @@ class LlamaConfig:
     emb_dim: int = 3072
     n_heads: int = 24
     head_dim: int = 128
-    n_kv_heads: int = 8  # GQA: 4 Q heads per KV head
+    n_kv_heads: int = 8  # GQA: 3 Q heads per KV head (24 / 8)
     hidden_dim: int = 8192
     vocab_size: int = 128256
     rope_base: float = 500000.0
@@ -71,15 +71,15 @@ class LayerWeights:
         w_down:     (hidden_dim, emb_dim)   Down projection
     """
 
-    attn_norm: np.ndarray  # (2048,)
-    wq: np.ndarray  # (2048, 2048)
-    wk: np.ndarray  # (2048, 512)
-    wv: np.ndarray  # (2048, 512)
-    wo: np.ndarray  # (2048, 2048)
-    ffn_norm: np.ndarray  # (2048,)
-    w_gate: np.ndarray  # (2048, 8192)
-    w_up: np.ndarray  # (2048, 8192)
-    w_down: np.ndarray  # (8192, 2048)
+    attn_norm: np.ndarray  # (3072,)
+    wq: np.ndarray  # (3072, 3072)
+    wk: np.ndarray  # (3072, 1024)
+    wv: np.ndarray  # (3072, 1024)
+    wo: np.ndarray  # (3072, 3072)
+    ffn_norm: np.ndarray  # (3072,)
+    w_gate: np.ndarray  # (3072, 8192)
+    w_up: np.ndarray  # (3072, 8192)
+    w_down: np.ndarray  # (8192, 3072)
 
 
 # ---------------------------------------------------------------------------
@@ -93,15 +93,15 @@ class LlamaWeights:
 
     Attributes:
         embed_table:  (vocab_size, emb_dim)  Token embeddings
-        layers:       list of 16 LayerWeights
+        layers:       list of 28 LayerWeights
         final_norm:   (emb_dim,)             Final RMSNorm weight
         lm_head:      (vocab_size, emb_dim)  Output projection (may be tied)
     """
 
-    embed_table: np.ndarray  # (128256, 2048)
+    embed_table: np.ndarray  # (128256, 3072)
     layers: List[LayerWeights] = field(default_factory=list)
-    final_norm: np.ndarray = None  # (2048,)
-    lm_head: np.ndarray = None  # (128256, 2048)
+    final_norm: np.ndarray = None  # (3072,)
+    lm_head: np.ndarray = None  # (128256, 3072)
 
 
 # ---------------------------------------------------------------------------

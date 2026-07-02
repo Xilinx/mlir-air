@@ -6,13 +6,12 @@
 Single-token autoregressive generation with KV cache. Mirrors the Phase-2
 prefill (qwen25_0_5b_prefill.py) deltas, applied to the M=1 GEMV path:
 
-  1. QKV BIAS on host (Qwen2 family, attention_bias=True; NOT QK-norm — that
-     is Qwen3). After the Q/K/V GEMV projection, a per-channel bias is added on
-     the HOST: q=(q_dim,)+bq, k=(kv_dim,)+bk, v=(kv_dim,)+bv, BEFORE RoPE for
-     q/k (HF Qwen2 order: proj -> +bias -> RoPE(Q,K) -> attention; V is
-     bias-added and used directly). RoPE linearity is irrelevant here — we just
-     do the cheap single-token elementwise add between the (bias-free) GEMV
-     and the standalone RoPE ELFs.
+  1. QKV BIAS fused on-device (Qwen2 family, attention_bias=True; NOT QK-norm —
+     that is Qwen3). The fused rms_qkv_bias_rope_gemv ELF adds a per-channel
+     bias after the Q/K/V GEMV projection and before RoPE for q/k (HF Qwen2
+     order: proj -> +bias -> RoPE(Q,K) -> attention; V is bias-added and used
+     directly). bq/bk/bv are passed as static ELF args, so the add happens on
+     the NPU together with the RMSNorm + Q/K/V GEMV + RoPE, all in one launch.
 
   2. Non-aligned dims: emb=896, q_dim=896 (14*64), kv_dim=128 (2*64),
      hidden=4864, head_dim=64. o_proj is SQUARE (q_dim==emb_dim==896).

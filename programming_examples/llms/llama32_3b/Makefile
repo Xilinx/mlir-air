@@ -8,9 +8,9 @@
 #   make run            — Run inference: NPU prefill + NPU decode
 #   make profile        — Run with per-kernel profiling breakdown
 #
-# Performance (NPU2, AMD Strix):
-#   Prefill:  1.27s (seq_len=2048, 16 layers)
-#   Decode:   92ms/token (10.8 tokens/sec)
+# Config: 28 layers, emb=3072, 24 heads / 8 KV heads, head_dim=128,
+#         hidden=8192, vocab=128256 (NPU2, AMD Strix).
+# Run `make profile` for the measured per-kernel prefill/decode breakdown.
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 

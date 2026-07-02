@@ -23,10 +23,11 @@ prefill handled:
      `o_gemv_ffn` stage-1 O-GEMV is square (emb x emb). We build Qwen
      variants: the Q GEMV is M=q_dim, the O GEMV is M=emb_dim, K=q_dim.
 
-  3. LM-head vocab = 151936 (not 128256). 151936 is not divisible by
-     8*64 the llama way; we pad each of the 8 partitions to n_part=19008
-     (8*19008 = 152064 >= 151936; 19008 % 64 == 0). The last partition
-     carries 128 zero rows (logits truncated to vocab on host).
+  3. LM-head vocab = 151936 (not 128256). We split the vocab across
+     19 partitions of n_part=8192 each (19*8192 = 155648 >= 151936;
+     8192 % 64 == 0). n_part is capped at 8192 so the DMA repeat count
+     n_part/32 - 1 = 255 stays at the hardware limit. The trailing
+     partitions carry zero rows (logits truncated to vocab on host).
 
 Decode attention is CPU (decode_attention_cpu), matching llama.
 """
@@ -170,7 +171,7 @@ def build_o_gemv_ffn_qwen_module(emb_dim, q_dim, hidden_dim):
 
 
 # ---------------------------------------------------------------------------
-# Builder 2: LM-head GEMV (8 partitions, n_part=19008 for vocab 151936).
+# Builder 2: LM-head GEMV (19 partitions, n_part=8192 for vocab 151936).
 # ---------------------------------------------------------------------------
 
 

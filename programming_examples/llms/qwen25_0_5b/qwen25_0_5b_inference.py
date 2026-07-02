@@ -5,9 +5,9 @@
 
 Unified driver: NPU prefill (24 layers) + NPU decode (KV cache) + NPU LM-head.
 Mirrors qwen3_0_6b_inference.py with the Qwen2.5 deltas handled in the prefill
-and decode block runners (QKV bias on host instead of QK-norm, non-aligned dims
-896/4864/128, head_dim=64, eps=1e-6, tied embeddings, vocab=151936 LM-head
-partitioning).
+and decode block runners (QKV bias fused on-device instead of QK-norm,
+non-aligned dims 896/4864/128, head_dim=64, eps=1e-6, tied embeddings,
+vocab=151936 LM-head partitioning).
 
 Usage:
     cd build_peano

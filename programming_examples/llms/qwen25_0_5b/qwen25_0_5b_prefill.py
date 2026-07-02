@@ -7,12 +7,12 @@ Qwen2.5 diverges from LLAMA-3.2 in two ways:
 
   1. QKV bias (attention_bias=True, the Qwen2 family). After the Q/K/V
      projection GEMM, a per-channel bias is added: q=x@wq+bq, k=x@wk+bk,
-     v=x@wv+bv. The NPU GEMM kernels are bias-FREE, so we add the bias on the
-     HOST, AFTER the projection GEMM and BEFORE RoPE (the HF Qwen2 order:
+     v=x@wv+bv, AFTER the projection GEMM and BEFORE RoPE (the HF Qwen2 order:
      proj -> +bias -> RoPE(Q,K) -> attention; V is bias-added and used directly).
-     This mirrors the Qwen3 split (RMSNorm+QKV on NPU, host step, standalone
-     RoPE on NPU) but the host step is a cheap elementwise bias add instead of
-     QK-norm. NO QK-norm (that is Qwen3 — do NOT add it).
+     The bias-add is fused ON-DEVICE inside the rms_qkv_bias_rope ELF as a
+     broadcast bias-add slice (bq/bk/bv passed as static args), so RMSNorm +
+     Q/K/V GEMM + bias + RoPE(Q,K) all run in one stitched module.
+     NO QK-norm (that is Qwen3 — do NOT add it).
 
   2. Non-aligned dims + mixed GEMM precision.
         emb=896, q_dim=896 (14 heads x 64), kv_dim=128 (2 heads x 64),

@@ -1,4 +1,4 @@
-# Additional Python packages for the LLAMA-3.2-1B example.
+# Additional Python packages for the Qwen2.5-0.5B example.
 #
 # These are *on top of* the mlir-air base environment (which already
 # provides numpy, ml_dtypes, filelock, pyxrt, etc.).
@@ -6,12 +6,10 @@
 # Install with:
 #     pip install -r requirements.txt
 #
-# After this, you still need a one-time HuggingFace setup:
-#   1. Accept Meta's license at:
-#        https://huggingface.co/meta-llama/Llama-3.2-1B
-#        https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct
-#   2. Create a read token at https://huggingface.co/settings/tokens
-#   3. `huggingface-cli login`  (or export HF_TOKEN=<token>)
+# Qwen2.5-0.5B is openly licensed and auto-downloads from HuggingFace on
+# first use (https://huggingface.co/Qwen/Qwen2.5-0.5B) -- no license
+# acceptance required. If you hit rate limits, run `huggingface-cli login`
+# (or export HF_TOKEN=<token>) with a free read token.
 # See README.md / docs/usage.md for details.
 
 # Weight loading
