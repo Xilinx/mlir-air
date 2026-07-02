@@ -1,0 +1,18 @@
+# Stray compile artifacts that leak to this dir when a script is run with
+# cwd=llms/ instead of inside a model's build_peano/ (xrt.py + external_kernels.py
+# write external-kernel .o + air_project/ to CWD by design). The per-model
+# Makefiles cd into build_peano/ first, so production runs don't leak — but
+# ad-hoc/standalone scripts can. These are never source; ignore subtree-wide.
+*.o
+air_project/
+*_cache/
+build_peano/
+build_chess/
+__pycache__/
+*.pyc
+
+# Stray XRT outputs (same cwd-leak reason)
+air.mlir
+air.elf
+air.xclbin
+air.insts.bin
