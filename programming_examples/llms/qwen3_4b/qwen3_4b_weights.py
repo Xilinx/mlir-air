@@ -8,8 +8,9 @@ MLIR-AIR kernel invocations. Mirrors llama32_1b_weights.py with two Qwen3
 deltas:
   - QK-norm: per-head RMSNorm weights q_norm/k_norm of shape (head_dim,),
     applied to Q and K (per head) after projection, before RoPE.
-  - Decoupled head_dim: n_heads*head_dim (2048) != hidden_size (1024); the
-    q_proj is (emb_dim, n_heads*head_dim), k/v_proj (emb_dim, n_kv*head_dim).
+  - Decoupled dims: q_dim = n_heads*head_dim (32*128 = 4096) != emb_dim (2560);
+    kv_dim = n_kv*head_dim (8*128 = 1024). The q_proj is (emb_dim, q_dim),
+    k/v_proj (emb_dim, kv_dim), so o_proj (q_dim, emb_dim) is non-square.
   - No qkv bias (attention_bias=false). (Qwen2.5 family DOES have bias.)
   - Tied embeddings (lm_head = embed_tokens).
 
@@ -34,7 +35,7 @@ class LlamaConfig:
     emb_dim: int = 2560
     n_heads: int = 32
     head_dim: int = 128
-    n_kv_heads: int = 8  # GQA: 2 Q heads per KV head
+    n_kv_heads: int = 8  # GQA: 4 Q heads per KV head (32 heads / 8 kv)
     hidden_dim: int = 9728
     vocab_size: int = 151936
     rope_base: float = 1000000.0

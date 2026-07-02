@@ -92,7 +92,7 @@ class NpuRunner:
         self.config = config
         self.max_seq = max_seq
         self.npu_attn = npu_attn
-        self.cpu_attn = not npu_attn  # Qwen3 prefill attention is CPU.
+        self.cpu_attn = not npu_attn  # NPU FlashAttention by default (npu_attn=True).
         self.lite_mode = lite_mode
         self._tokenizer = tokenizer
 

@@ -12,10 +12,11 @@ build_down_add_module.
 
 Qwen2.5 deltas vs LLAMA-3.2:
 
-  1. QKV bias (attention_bias=True, the Qwen2 family). After the Q/K/V
-     projection GEMM, a per-channel bias is added on the HOST, AFTER the GEMM
-     and BEFORE RoPE (HF Qwen2 order: proj -> +bias -> RoPE(Q,K) -> attention;
-     V is bias-added and used directly). NO QK-norm (that is Qwen3).
+  1. QKV bias (attention_bias=True, the Qwen2 family). The per-channel bias is
+     fused into the rms_qkv_bias_rope ELF on-device (bq/bk/bv passed as static
+     ELF args), applied AFTER the Q/K/V projection and BEFORE RoPE (HF Qwen2
+     order: proj -> +bias -> RoPE(Q,K) -> attention; V is bias-added and used
+     directly). NO QK-norm (that is Qwen3).
 
   2. Dims (3B): emb=2048, q_dim=2048 (16 heads x 128), kv_dim=256
      (2 heads x 128), hidden=11008, head_dim=128. o_proj is SQUARE

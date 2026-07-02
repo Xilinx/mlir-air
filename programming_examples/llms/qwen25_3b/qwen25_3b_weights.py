@@ -5,10 +5,11 @@
 
 Mirrors llama32_1b_weights.py with Qwen2.5 deltas:
   - QKV bias (attention_bias / Qwen2 family): q_proj.bias (q_dim,),
-    k_proj.bias (kv_dim,), v_proj.bias (kv_dim,). Applied on HOST around the
-    bias-free NPU kernels (RoPE linearity: RoPE(q+bq)=RoPE(q)+RoPE(bq)).
+    k_proj.bias (kv_dim,), v_proj.bias (kv_dim,). The bias is FUSED into the
+    NPU rms_qkv_bias_rope ELF on-device (passed as static ELF args), not
+    added on the host.
   - No QK-norm (that is Qwen3).
-  - Non-aligned dims: emb=896, hidden=4864, kv_dim=128 (2*64). head_dim=64.
+  - Dims (3B): emb=2048, hidden=11008, kv_dim=256 (2*128), head_dim=128.
   - Tied embeddings.
 
 Weight convention: HF (out,in); our GEMM y=x@W → transpose to (in,out).
@@ -31,7 +32,7 @@ class LlamaConfig:
     emb_dim: int = 2048
     n_heads: int = 16
     head_dim: int = 128
-    n_kv_heads: int = 2  # GQA: 7 Q heads per KV head
+    n_kv_heads: int = 2  # GQA: 8 Q heads per KV head (16 heads / 2 kv)
     hidden_dim: int = 11008
     vocab_size: int = 151936
     rope_base: float = 1000000.0

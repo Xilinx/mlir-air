@@ -4,10 +4,10 @@
 """Qwen3-4B BF16 Inference on MLIR-AIR (NPU2).
 
 Unified driver: NPU prefill (36 layers) + NPU decode (KV cache) + NPU LM-head.
-Direct re-parameterization of qwen25_1_5b_inference.py (same Qwen3 deltas:
-QKV bias on host, NO QK-norm, eps=1e-6, tied embeddings, vocab=151936 LM-head
-per-partition). 3B dims: emb=q_dim=2048 (square O), kv_dim=256, hidden=11008,
-head_dim=128, 36 layers.
+Qwen3 deltas: QK-norm enabled (per-head RMSNorm q_norm/k_norm fused into the
+NPU rms_qkv_qknorm_rope ELF), NO qkv bias, eps=1e-6, tied embeddings,
+vocab=151936 LM-head per-partition. 4B dims: emb=2560, q_dim=4096 (32*128,
+DECOUPLED o_proj), kv_dim=1024 (8*128), hidden=9728, head_dim=128, 36 layers.
 
 Usage:
     cd build_peano
