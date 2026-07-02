@@ -87,6 +87,102 @@ static bool deviceHasRepeatCountDMAs(xilinx::AIE::DeviceOp device) {
   return hasRepeatCount;
 }
 
+// Helper function to check if an aie.device uses the cascade bus (cascade flows
+// or core-side get/put_cascade). Cascade core locks/credits, like repeat_count
+// DMA state, must be re-armed after each launch via the load_pdi reset (which
+// runs initLocks). A single-trip launch has repeat_count == 0, so
+// deviceHasRepeatCountDMAs() misses cascade kernels -> they abort on the 2nd
+// host dispatch ("qds_device::wait() unexpected command state"). Detecting
+// cascade lets the existing reset path fire for single-trip cascade too.
+static bool deviceHasCascade(xilinx::AIE::DeviceOp device) {
+  bool hasCascade = false;
+  device.walk([&](mlir::Operation *op) {
+    if (llvm::isa<xilinx::AIE::CascadeFlowOp, xilinx::AIE::GetCascadeOp,
+                  xilinx::AIE::PutCascadeOp>(op))
+      hasCascade = true;
+  });
+  return hasCascade;
+}
+
+// Static trip count of the affine loops enclosing `op` (1 if none). Used to
+// tell a SINGLE-TRIP launch (the launch boundary runs once per host dispatch)
+// from a MULTI-ITERATION launch (the boundary sits inside an iteration loop,
+// e.g. flash-attention's lq_iters loop). A non-constant affine loop or any scf
+// loop is treated as multi-trip. Must be evaluated before unrollAffineFors
+// strips these loops.
+static int64_t enclosingLoopTrips(mlir::Operation *op) {
+  int64_t trips = 1;
+  for (mlir::Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
+    if (auto forOp = llvm::dyn_cast<mlir::affine::AffineForOp>(p)) {
+      if (!forOp.hasConstantBounds())
+        return std::numeric_limits<int64_t>::max();
+      int64_t lb = forOp.getConstantLowerBound();
+      int64_t ub = forOp.getConstantUpperBound();
+      int64_t step = forOp.getStepAsInt();
+      int64_t n = (step > 0 && ub > lb) ? (ub - lb + step - 1) / step : 1;
+      trips *= n;
+    } else if (llvm::isa<mlir::scf::ForOp, mlir::scf::WhileOp>(p)) {
+      return std::numeric_limits<int64_t>::max();
+    }
+  }
+  return trips;
+}
+
+// Cascade core locks/credits need the per-launch reset only for a SINGLE-TRIP
+// launch: across a host re-dispatch they are stale and the kernel aborts on the
+// 2nd dispatch without the reset. A MULTI-ITERATION launch re-arms them every
+// iteration on its own, so inserting the reset between iterations is
+// unnecessary and costs a load_pdi PDI reload per boundary (a silent perf
+// regression, e.g. flash-attention prefill). A multi-iteration launch presents
+// two ways depending on whether its iteration loop survived: either one
+// air.launch_end inside a multi-trip loop, or -- once the loop is unrolled --
+// several air.launch_end markers. Single-trip is therefore exactly one
+// air.launch_end that is not enclosed by a multi-trip loop. MUST be evaluated
+// before the launch_end wait_all ops are converted/erased and before
+// unrollAffineFors -- see markDevicesNeedingLockReset.
+static bool deviceHasSingleTripCascade(xilinx::AIE::DeviceOp device) {
+  if (!deviceHasCascade(device))
+    return false;
+  int64_t numLaunchEnds = 0;
+  bool anyMultiTrip = false;
+  device.walk([&](xilinx::airrt::WaitAllOp wa) {
+    if (!wa->hasAttr("air.launch_end"))
+      return;
+    ++numLaunchEnds;
+    if (enclosingLoopTrips(wa) != 1)
+      anyMultiTrip = true;
+  });
+  return numLaunchEnds == 1 && !anyMultiTrip;
+}
+
+// Internal marker carrying the per-launch reset decision from
+// markDevicesNeedingLockReset() (computed while the launch_end markers and
+// their loops still exist) to the load_pdi insertion and reset-clone sites.
+// Stripped at the end of the pass.
+static constexpr llvm::StringLiteral kNeedsLockResetAttr =
+    "air.needs_lock_reset";
+
+// A device needs the per-launch lock/DMA-state reset (load_pdi + initLocks) if
+// it has repeat_count DMAs OR is a single-trip cascade launch. The decision is
+// cached on the device because the launch_end markers it depends on are erased
+// during conversion (and the loops unrolled afterwards), so it cannot be
+// recomputed at the insertion / reset-clone sites.
+static bool deviceNeedsLockReset(xilinx::AIE::DeviceOp device) {
+  return device->hasAttr(kNeedsLockResetAttr);
+}
+
+// Compute and stamp the reset decision on every device. MUST run after
+// moveFuncOpToEndOfDeviceOp (so the control funcs, hence the launch_end
+// markers, are inside their devices) and before generateNpuWaitFromAIRRtWaitAll
+// / unrollAffineFors (which erase the markers and strip the loops).
+static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
+  module.walk([&](xilinx::AIE::DeviceOp device) {
+    if (deviceHasRepeatCountDMAs(device) || deviceHasSingleTripCascade(device))
+      device->setAttr(kNeedsLockResetAttr,
+                      mlir::UnitAttr::get(device.getContext()));
+  });
+}
+
 namespace {
 
 // Helper function to check if a value is a memref on host memory (space 0)
@@ -782,9 +878,10 @@ public:
 // Erase remaining WaitAllOps that weren't converted to NpuDmaWaitOp.
 // These are pure synchronization ops that don't generate NPU ops.
 // For WaitAllOps with "air.launch_end" attribute, we may need to insert
-// aiex.npu.load_pdi to reset the DMA engine state if:
+// aiex.npu.load_pdi to reset the DMA engine / cascade state if:
 // 1. output-elf mode is enabled, AND
-// 2. The device contains core/memtile DMAs with repeat_count > 0
+// 2. deviceNeedsLockReset(device) -- i.e. the device has core/memtile DMAs
+//    with repeat_count > 0, OR is a single-trip cascade launch.
 class AIRRtWaitAllOpConversion : public OpConversionPattern<airrt::WaitAllOp> {
 public:
   AIRRtWaitAllOpConversion(MLIRContext *context, bool outputElf,
@@ -803,9 +900,9 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          if (outputElf && deviceHasRepeatCountDMAs(device)) {
-            // Insert aiex.npu.load_pdi to reset DMA engine state when
-            // core/memtile DMAs have repeat_count > 0.
+          if (outputElf && deviceNeedsLockReset(device)) {
+            // Insert aiex.npu.load_pdi to reset DMA engine / cascade state
+            // (repeat_count DMAs, or a single-trip cascade launch).
             rewriter.setInsertionPoint(op);
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
@@ -956,7 +1053,7 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          if (outputElf && deviceHasRepeatCountDMAs(device)) {
+          if (outputElf && deviceNeedsLockReset(device)) {
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
@@ -1474,6 +1571,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // 2. NpuDmaWaitOp uses symbol reference (can be created before DMA
     // conversion)
     // 3. After this, DMA tokens can be safely purged
+
+    // Decide the per-launch lock/DMA reset for each device now, while the
+    // launch_end markers (and the loops that mark a multi-iteration launch) are
+    // still present: the conversion below erases the markers and
+    // unrollAffineFors strips the loops, so the decision cannot be recomputed
+    // afterwards.
+    markDevicesNeedingLockReset(module);
+
     generateNpuWaitFromAIRRtWaitAll(module);
 
     // Enforce AIE2 hardware constraints.
@@ -1563,8 +1668,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       signalPassFailure();
 
     // Create a lightweight copy of the segment device (without core
-    // bodies/ELFs) and redirect between-iteration load_pdi to it.
-    createLightweightResetDevice(module);
+    // bodies/ELFs) and redirect between-iteration load_pdi to it. Only needed
+    // in ELF output mode -- load_pdi is never emitted otherwise, so the clone
+    // would be dead IR.
+    if (clOutputElf)
+      createLightweightResetDevice(module);
 
     // Generate main device wrapper if needed. This handles two mutually
     // exclusive cases:
@@ -1573,6 +1681,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // This MUST run at the very end after ALL patterns that modify
     // runtime_sequence arguments.
     generateMainDeviceIfNeeded(module);
+
+    // Strip the internal reset-decision marker so it does not leak into the
+    // emitted IR (the reset clones copy it too).
+    module.walk([](xilinx::AIE::DeviceOp device) {
+      device->removeAttr(kNeedsLockResetAttr);
+    });
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -1844,7 +1958,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   void createLightweightResetDevice(ModuleOp module) {
     SmallVector<std::pair<AIE::DeviceOp, std::string>> devicesToClone;
     module.walk([&](AIE::DeviceOp device) {
-      if (!deviceHasRepeatCountDMAs(device))
+      if (!deviceNeedsLockReset(device))
         return;
       if (device.getSymName().empty())
         return;
