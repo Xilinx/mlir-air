@@ -252,7 +252,7 @@ def compile_decode_kernels(cache, config, verbose=False):
         _o_gemv_ffn_backend(verbose),
     )
 
-    print("\n--- lm_head_gemv (8-partition, vocab 151936) ---")
+    print("\n--- lm_head_gemv (19-partition, vocab 151936) ---")
     cache.compile_and_cache(
         "lm_head_gemv",
         build_lm_head_gemv_qwen_module(emb_dim),
