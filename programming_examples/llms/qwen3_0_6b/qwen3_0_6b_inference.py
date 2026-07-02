@@ -231,7 +231,7 @@ def _preload_decode_weights(decode_cache, weights, config):
             bo_key=f"o_gemv_ffn_L{li}",
         )
 
-    # LM-head GEMV weights (8 partitions, n_part=19008).
+    # LM-head GEMV weights (19 partitions, n_part=8192).
     weights._lm_weight_parts_gemv = []
     for p in range(_LM_N_PARTITIONS):
         n_start = p * _LM_N_PART
@@ -262,7 +262,7 @@ def _preload_decode_weights(decode_cache, weights, config):
 
 
 # ---------------------------------------------------------------------------
-# NPU LM-head (8-partition GEMV) — shared by prefill end + decode.
+# NPU LM-head (19-partition GEMV) — shared by prefill end + decode.
 # ---------------------------------------------------------------------------
 
 
