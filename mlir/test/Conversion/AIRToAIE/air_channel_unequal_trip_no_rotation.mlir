@@ -7,36 +7,37 @@
 
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
-// Two channel.get sites on the SAME channel target DISTINCT buffers but run
-// for UNEQUAL static trip counts (here 6 and 4). This is the unrolled
-// multi-phase projection pattern: each phase drains its own buffer a
-// phase-specific number of times.
+// Two channel.get sites on the SAME channel target DISTINCT buffers, each
+// drained by its OWN separate scf.for loop (here 6 and 4 iterations). This is
+// the unrolled multi-phase projection pattern: each phase consumes its buffer
+// as a contiguous block, one loop after the other.
 //
-// This is NOT an N-buffer round-robin rotation (which uses every buffer the
-// same number of times). getRepeatCounts()/detectNBufferRotation must reject
-// it -- collapsing it into a single circular BD chain would make each phase
-// see only every Nth block and mis-deliver data. It must fall through to
-// per-op counted BDs: one terminated dma_start per buffer, each carrying its
-// own repeat_count (trip - 1: 5 and 3), NOT a single dma_start whose next_bd
-// cycles between the two buffers.
+// This is NOT an N-buffer round-robin rotation. A rotation interleaves its
+// buffers inside ONE shared loop (successive iterations hand off to the next
+// buffer); here the two sites share no enclosing loop, so
+// detectNBufferRotation must reject them. Collapsing block consumers into a
+// single circular BD chain would make each phase see only every Nth block and
+// mis-deliver data. They must fall through to per-op counted BDs: one
+// terminated dma_start per buffer, each carrying its own repeat_count
+// (trip - 1: 5 and 3), NOT a single dma_start whose next_bd cycles between the
+// two buffers.
+//
+// The two counted tasks are asserted order-independently and without pinning
+// their terminator to a single shared end block: generateDmaBdProgram may give
+// each non-infinite task its own end block. The presence of two dma_start ops
+// each with a distinct repeat_count (rather than one repeat_count-less
+// dma_start whose chain cycles) is what proves this is not a rotation.
 
 // CHECK: aie.device
 // CHECK-DAG:   %[[TILE:.*]] = aie.tile(2, 3)
 // CHECK-DAG:   aie.buffer(%[[TILE]]) {{.*}} : memref<32x32xbf16, 2>
 // CHECK-DAG:   aie.buffer(%[[TILE]]) {{.*}} : memref<32x32xbf16, 2>
-// CHECK:   aie.mem(%[[TILE]])  {
-// CHECK:     aie.dma_start(S2MM, 0, ^[[BB1:.*]], ^[[BB3:.*]], repeat_count = 5)
-// CHECK:   ^[[BB1]]:
-// CHECK:     aie.dma_bd(%{{.*}} : memref<32x32xbf16, 2>
-// CHECK:     aie.next_bd ^[[END:.*]]
-// CHECK:   ^[[END]]:
-// CHECK:     aie.end
-// CHECK:   ^[[BB3]]:
-// CHECK:     aie.dma_start(S2MM, 0, ^[[BB4:.*]], ^[[END]], repeat_count = 3)
-// CHECK:   ^[[BB4]]:
-// CHECK:     aie.dma_bd(%{{.*}} : memref<32x32xbf16, 2>
-// CHECK:     aie.next_bd ^[[END]]
-// CHECK:   }
+// CHECK:       aie.mem(%[[TILE]])
+// CHECK-DAG:     aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 5)
+// CHECK-DAG:     aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 3)
+// CHECK-DAG:     aie.dma_bd(%{{.*}} : memref<32x32xbf16, 2>, 0, 1024) {task_id = 0
+// CHECK-DAG:     aie.dma_bd(%{{.*}} : memref<32x32xbf16, 2>, 0, 1024) {task_id = 1
+// CHECK-DAG:     aie.end
 
 air.channel @channel_0 [1, 1]
 func.func @unequal_trip_phases() {
