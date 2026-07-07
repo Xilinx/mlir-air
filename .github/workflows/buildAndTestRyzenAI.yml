@@ -59,6 +59,10 @@ jobs:
           pushd mlir-aie
           pip install -r python/requirements.txt
           pip install -r python/requirements_ml.txt
+          # requirements_ml.txt pins torch==2.12.0+cpu, which downgrades the
+          # nightly torch installed in Setup. Reinstall the matching stable
+          # torchvision so torchvision::nms is registered against torch 2.12.
+          pip install "torchvision==0.27.1+cpu" --index-url https://download.pytorch.org/whl/cpu
           pip install -r python/requirements_dev.txt
 
           VERSION=$(utils/clone-llvm.sh --get-wheel-version)
@@ -74,12 +78,13 @@ jobs:
           source air-venv/bin/activate
           MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
           pip install mlir_aie==$MLIR_AIE_VERSION \
-            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4/
 
       - name: Get llvm-aie
         run: |
           source air-venv/bin/activate
-          python3 -m pip install --upgrade --force-reinstall llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          # Temp pin: latest llvm-aie nightly miscompiles int->float->int at -O2 (Xilinx/llvm-aie#1056). Revert once fixed upstream.
+          python3 -m pip install --upgrade --force-reinstall "llvm-aie==21.0.0.2026062301+cb664e8c" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
       - name: Build and test mlir-air
         run: |
@@ -87,6 +92,7 @@ jobs:
 
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           source /opt/xilinx/xrt/setup.sh
+
           WHL_MLIR_DIR=$(pwd)/mlir-aie/mlir
           MLIR_AIE_INSTALL_DIR="$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie"
           PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie

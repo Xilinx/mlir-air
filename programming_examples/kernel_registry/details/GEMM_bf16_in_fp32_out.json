@@ -1,0 +1,244 @@
+{
+  "_comment": "Machine-readable registry for BF16-in / FP32-out GEMM on NPU2. Single source of truth for tile configs + measured performance; the GEMM_bf16_in_fp32_out.md tables mirror this. Consumed by llama via kernel_registry/registry_lookup.py gemm_config(). tile is a named object {tile_m, tile_k_l2, tile_k_l1, tile_n} (self-describing). herd 8x4 full chip. Output is f32 (always FP32-accumulate high-precision tier).",
+  "kernel": "GEMM",
+  "output_dtype": "f32",
+  "target": "npu2",
+  "measured": "2026-06",
+  "herd": [
+    8,
+    4
+  ],
+  "shapes": [
+    {
+      "M": 2048,
+      "K": 2048,
+      "N": 2048,
+      "used_by": "llama-3.2-1B Q/O proj",
+      "methods": {
+        "external": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8508,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5516,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "external"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2048,
+      "N": 512,
+      "used_by": "llama-3.2-1B K/V proj",
+      "methods": {
+        "external": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7342,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4896,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "external"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2048,
+      "N": 8192,
+      "used_by": "llama-3.2-1B Gate/Up proj",
+      "methods": {
+        "external": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8278,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5582,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "external"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 8192,
+      "N": 2048,
+      "used_by": "llama-3.2-1B Down proj",
+      "methods": {
+        "external": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 9797,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6010,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "external"
+      }
+    },
+    {
+      "M": 512,
+      "K": 512,
+      "N": 512,
+      "used_by": "K-sweep",
+      "methods": {
+        "external": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 1791,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 1536,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "external"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 1024,
+      "N": 1024,
+      "used_by": "K-sweep",
+      "methods": {
+        "external": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6256,
+          "mean_rel_L1": 0.0095,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4413,
+          "mean_rel_L1": 0.0095,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "external"
+      }
+    },
+    {
+      "M": 4096,
+      "K": 4096,
+      "N": 4096,
+      "used_by": "K-sweep",
+      "methods": {
+        "external": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 9329,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5791,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "external"
+      }
+    }
+  ]
+}

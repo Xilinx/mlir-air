@@ -1589,12 +1589,19 @@ FailureOr<Value> tileChannelOpByFactor(
             getUsedValuesDefinedAbove(execOp.getRegion(), opers);
             originalApplyOperands = llvm::to_vector(opers);
           } else {
-            if (air::isDefaultDataAccessPattern(originalChanOp.getSizes(),
-                                                originalChanOp.getStrides()))
-              originalApplyOperands.push_back(zeroIdx);
+            // Why: the base offset is independent of the access pattern;
+            // propagate any non-zero base on the split dim instead of zeroing
+            // it just because the access happens to be contiguous.
+            Value baseOffset =
+                (size_t)splitDimOnOffsets < originalChanOp.getOffsets().size()
+                    ? originalChanOp.getOffsets()[splitDimOnOffsets]
+                    : Value();
+            std::optional<int64_t> baseConst =
+                baseOffset ? getConstantIntValue(baseOffset) : std::nullopt;
+            if (baseOffset && (!baseConst || *baseConst != 0))
+              originalApplyOperands.push_back(baseOffset);
             else
-              originalApplyOperands.push_back(
-                  originalChanOp.getOffsets()[splitDimOnOffsets]);
+              originalApplyOperands.push_back(zeroIdx);
           }
           return originalApplyOperands;
         };

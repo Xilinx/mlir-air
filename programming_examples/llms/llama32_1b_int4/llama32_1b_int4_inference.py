@@ -47,11 +47,11 @@ for _p in (_PROG_EXAMPLES, _LLAMA_BF16, _THIS_DIR):
     sys.path.insert(0, _p)
 
 from llama32_1b_weights import LlamaConfig, generate_rope_lut  # noqa: E402
-from llama_kernel_builder.cache import KernelCache, Profiler  # noqa: E402
-from llama_kernel_builder.external_kernels import (  # noqa: E402
+from shared.infra.cache import KernelCache, Profiler  # noqa: E402
+from shared.infra.external_kernels import (  # noqa: E402
     compile_all_external_kernels,
 )
-from llama_kernel_builder.backend_presets import (  # noqa: E402
+from shared.infra.backend_presets import (  # noqa: E402
     LM_GEMV_BACKEND,
     RGR_INT4_BACKEND,
     OGF_INT4_BACKEND,
@@ -767,7 +767,7 @@ if __name__ == "__main__":
         "--prefill-cache-dir",
         type=str,
         default=None,
-        help="Disk dir for prefill kernel cache (default: llama_kernel_builder/kernel_cache).",
+        help="Disk dir for prefill kernel cache (default: shared/infra/kernel_cache).",
     )
     parser.add_argument(
         "--decode-cache-dir",

@@ -39,8 +39,8 @@ for _p in (_PROG_EXAMPLES, _LLAMA_BF16, _THIS_DIR):
     sys.path.insert(0, _p)
 
 from llama32_1b_weights import LlamaConfig  # noqa: E402
-from llama_kernel_builder.cache import KernelCache  # noqa: E402
-from llama_kernel_builder.backend_presets import (  # noqa: E402
+from shared.infra.cache import KernelCache  # noqa: E402
+from shared.infra.backend_presets import (  # noqa: E402
     RGR_INT4_BACKEND,
     OGF_INT4_BACKEND,
     LM_GEMV_BACKEND,
@@ -68,7 +68,7 @@ def _dead_buf(shape, dtype=bfloat16):
 def compile_decode_kernels(cache, config):
     """Compile the 3 int4 decode kernels (rms_qkv_int4_rope, o_gemv_ffn_int4,
     lm_head_gemv)."""
-    from llama_kernel_builder.external_kernels import compile_all_external_kernels
+    from shared.infra.external_kernels import compile_all_external_kernels
 
     compile_all_external_kernels(head_dim=config.head_dim, quant="awq")
 
@@ -109,23 +109,13 @@ def compile_decode_kernels(cache, config):
         {"verbose": cache.verbose, **OGF_INT4_BACKEND},
     )
 
-    # lm_head_gemv is the same module as bf16 — load it directly from the
-    # bf16 sibling by file path. Can't use `from multi_launch_builder.X` here
-    # because Python has already pinned `multi_launch_builder` to the int4
-    # dir's package (we imported the int4 stitchers above), and lm_head_gemv
-    # only exists in the bf16 dir's namesake. (LM head stays bf16 — AMD's
-    # AWQ checkpoint keeps it un-quantized, and we tie to embed_table.)
-    import importlib.util
-
-    _lm_head_path = os.path.join(
-        _LLAMA_BF16, "multi_launch_builder", "lm_head_gemv_multi.py"
-    )
-    _spec = importlib.util.spec_from_file_location(
-        "_bf16_lm_head_gemv_multi", _lm_head_path
-    )
-    _lm_head_mod = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_lm_head_mod)
-    build_lm_head_gemv_module = _lm_head_mod.build_lm_head_gemv_module
+    # lm_head_gemv is architecture-orthogonal — import it from the shared
+    # builders package. (Previously this had to load the bf16 sibling by file
+    # path to dodge a `multi_launch_builder` name collision between the bf16 and
+    # int4 dirs; the shared builders package name removed that collision.)
+    # LM head stays bf16 — AMD's AWQ checkpoint keeps it un-quantized, and we
+    # tie to embed_table.
+    from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
 
     cache.compile_and_cache(
         "lm_head_gemv",

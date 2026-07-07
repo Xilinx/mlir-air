@@ -269,7 +269,7 @@ These generate MLIR for a single operation. They live in their respective
 | RMSNorm | `weighted_rms_norm/weighted_rms_norm.py` | bare `air.herd` (needs `_wrap_ir_in_launch`) |
 | RoPE | `rope_lut/rope_lut.py` | bare `air.herd` (needs wrapping) |
 | FlashAttention | `flash_attention/kernel_fusion_based/attn_npu2_seqfirst.py` | `air.launch` with channels + cascade |
-| SiLU×mul | `llama32_1b/ffn_swiglu/silu_and_mul.py` | bare `air.herd` (needs wrapping) |
+| SiLU×mul | `silu_and_mul/silu_and_mul.py` | bare `air.herd` (needs wrapping) |
 | Eltwise Add | `eltwise_add/eltwise_add.py` | bare `air.herd` (needs wrapping) |
 
 ### Multi-Launch Builders (stitched kernels)
@@ -295,7 +295,7 @@ These are compiled from C++ source by `llama_kernel_builder/external_kernels.py`
 | .o File | Source | Function | Used By |
 |---------|--------|----------|---------|
 | `rope.o` | `aie_kernels/aie2p/rope.cc` | `@rope` | RoPE launches |
-| `silu_and_mul.o` | `ffn_swiglu/silu_and_mul.cc` | `@silu_and_mul_bf16` | SiLU×mul launch |
+| `silu_and_mul.o` | `silu_and_mul/silu_and_mul.cc` | `@silu_and_mul_bf16` | SiLU×mul launch |
 | `attn_npu2.o` | `flash_attention/.../attn_npu2.cc` | 16 attention functions | FlashAttention |
 | `mv.o` | `matrix_vector_multiplication/bf16/mv.cc` | `@matvec_vectorized_bf16_bf16` | K=2048 GEMVs |
 | `mv_k8192.o` | same `mv.cc` with `-D` renames | `@dg_matvec_vectorized_bf16_bf16` | K=8192 Down GEMV |

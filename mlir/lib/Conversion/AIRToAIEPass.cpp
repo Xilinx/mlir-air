@@ -6547,6 +6547,70 @@ public:
       tiles[{colIndex, rowIndex}] = tile;
     }
 
+    // On AIE2 core tiles the only legal switchbox destinations for the
+    // Trace source bundle are FIFO and South (see AIE2TargetModel::
+    // isLegalTileConnection in mlir-aie's AIETargetModel.cpp). When the
+    // South channels of a compute-tile switchbox are already saturated by
+    // circuit-switched data flows (the tile's own outbound DMA flow plus
+    // any passthrough from tiles above it in the same column), the
+    // pathfinder can't route Trace through South, falls back to the
+    // Trace<->DMA0 hardware mux, and ends up generating an
+    // 'aie.packet_rules source=DMA:0' that collides with the circuit
+    // 'aie.connect source=DMA:0' for the local data flow:
+    //   'aie.packet_rules' op packet switched source DMA0 cannot match
+    //   another connect or masterset operation
+    // (regressed by mlir-aie #3139 centroid-ing the data shim onto the
+    // herd column, which concentrates all data flows on a single column
+    // and saturates every south channel of every compute tile in that
+    // column.)
+    //
+    // Estimate the south-bound circuit pressure on each compute tile and
+    // skip trace emission when the pressure would consume every South
+    // channel. Pressure for tile (col, row) = local outbound circuit
+    // flows that exit south + outbound circuit flows from tiles strictly
+    // above (col, row) in the same column (since the pathfinder routes
+    // them straight down through (col, row)'s switchbox).
+    const int southCapacity = 4; // AIE2 compute tile: South ch 0..3
+    DenseMap<int, SmallVector<int>> colToSouthRows;
+    auto getTileLike = [](Value v) -> AIE::TileLike {
+      return dyn_cast_or_null<AIE::TileLike>(v.getDefiningOp());
+    };
+    for (auto flow : device.getOps<AIE::FlowOp>()) {
+      auto srcT = getTileLike(flow.getSource());
+      auto dstT = getTileLike(flow.getDest());
+      if (!srcT || !dstT)
+        continue;
+      if (!srcT.isCoreTile())
+        continue;
+      auto srcCol = srcT.tryGetCol(), srcRow = srcT.tryGetRow();
+      auto dstCol = dstT.tryGetCol(), dstRow = dstT.tryGetRow();
+      if (!srcCol || !srcRow)
+        continue;
+      // Same-column south-bound flow: dst col matches src col, dst row
+      // strictly less than src row. If dst has unknown coords (logical
+      // memtile awaiting placement), assume it lands on the same column
+      // as its consumer core (the herd column) -- which is the typical
+      // post-#3139 placement and the case that triggers the conflict.
+      bool isSouth = false;
+      if (dstCol && dstRow)
+        isSouth = (*dstCol == *srcCol) && (*dstRow < *srcRow);
+      else if (dstT.isMemTile())
+        isSouth = true; // unplaced memtile assumed south of the herd
+      if (!isSouth)
+        continue;
+      colToSouthRows[*srcCol].push_back(*srcRow);
+    }
+    auto southPressureAt = [&](int col, int row) -> int {
+      int pressure = 0;
+      auto it = colToSouthRows.find(col);
+      if (it == colToSouthRows.end())
+        return 0;
+      for (int r : it->second)
+        if (r >= row)
+          ++pressure;
+      return pressure;
+    };
+
     // Create packet flows
     for (auto srcTile : device.getOps<AIE::TileOp>()) {
       int srcColIndex = srcTile.colIndex();
@@ -6555,6 +6619,9 @@ public:
 
       if (target_model.isCoreTile(srcColIndex, srcRowIndex) ||
           target_model.isMemTile(srcColIndex, srcRowIndex)) {
+        if (target_model.isCoreTile(srcColIndex, srcRowIndex) &&
+            southPressureAt(srcColIndex, srcRowIndex) >= southCapacity)
+          continue;
         int destColIndex = srcColIndex; // todo: allocation?
         int destRowIndex = 0;
         if (!tiles[{destColIndex, destRowIndex}]) {
