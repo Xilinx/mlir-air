@@ -96,15 +96,23 @@ def _resolve_safetensor_files(model_path: str) -> List[str]:
     pattern_glob = "*.safetensors"
     try:
         local_dir = snapshot_download(
-            model_path, allow_patterns=["*.safetensors", "*.json"], local_files_only=True
+            model_path,
+            allow_patterns=["*.safetensors", "*.json"],
+            local_files_only=True,
         )
         if not glob_module.glob(os.path.join(local_dir, pattern_glob)):
-            raise LocalEntryNotFoundError(f"local cache for {model_path} has no .safetensors")
+            raise LocalEntryNotFoundError(
+                f"local cache for {model_path} has no .safetensors"
+            )
     except LocalEntryNotFoundError:
-        local_dir = snapshot_download(model_path, allow_patterns=["*.safetensors", "*.json"])
+        local_dir = snapshot_download(
+            model_path, allow_patterns=["*.safetensors", "*.json"]
+        )
     files = sorted(glob_module.glob(os.path.join(local_dir, pattern_glob)))
     if not files:
-        raise FileNotFoundError(f"No .safetensors files found after downloading {model_path}")
+        raise FileNotFoundError(
+            f"No .safetensors files found after downloading {model_path}"
+        )
     return files
 
 
@@ -115,7 +123,9 @@ def _load_tensor(file_handle, key: str, dtype) -> np.ndarray:
     return tensor.astype(dtype)
 
 
-def load_weights(model_name_or_path: str, dtype=bfloat16, config: Optional[LlamaConfig] = None) -> LlamaWeights:
+def load_weights(
+    model_name_or_path: str, dtype=bfloat16, config: Optional[LlamaConfig] = None
+) -> LlamaWeights:
     from safetensors import safe_open
 
     if config is None:
@@ -152,9 +162,18 @@ def load_weights(model_name_or_path: str, dtype=bfloat16, config: Optional[Llama
             layer_tensors[field_name] = tensor
 
         layer = LayerWeights(**layer_tensors)
-        assert layer.wq.shape == (config.emb_dim, qd), f"L{layer_idx} wq {layer.wq.shape}"
-        assert layer.wk.shape == (config.emb_dim, kvd), f"L{layer_idx} wk {layer.wk.shape}"
-        assert layer.wo.shape == (qd, config.emb_dim), f"L{layer_idx} wo {layer.wo.shape}"
+        assert layer.wq.shape == (
+            config.emb_dim,
+            qd,
+        ), f"L{layer_idx} wq {layer.wq.shape}"
+        assert layer.wk.shape == (
+            config.emb_dim,
+            kvd,
+        ), f"L{layer_idx} wk {layer.wk.shape}"
+        assert layer.wo.shape == (
+            qd,
+            config.emb_dim,
+        ), f"L{layer_idx} wo {layer.wo.shape}"
         assert layer.bq.shape == (qd,), f"L{layer_idx} bq {layer.bq.shape}"
         assert layer.bk.shape == (kvd,), f"L{layer_idx} bk {layer.bk.shape}"
         assert layer.bv.shape == (kvd,), f"L{layer_idx} bv {layer.bv.shape}"
@@ -174,10 +193,14 @@ def load_weights(model_name_or_path: str, dtype=bfloat16, config: Optional[Llama
         print("  Tied embeddings: reusing embed_table as lm_head.")
         lm_head = embed_table
 
-    return LlamaWeights(embed_table=embed_table, layers=layers, final_norm=final_norm, lm_head=lm_head)
+    return LlamaWeights(
+        embed_table=embed_table, layers=layers, final_norm=final_norm, lm_head=lm_head
+    )
 
 
-def generate_rope_lut(config: Optional[LlamaConfig] = None, seq_len: int = 2048, dtype=bfloat16) -> np.ndarray:
+def generate_rope_lut(
+    config: Optional[LlamaConfig] = None, seq_len: int = 2048, dtype=bfloat16
+) -> np.ndarray:
     if config is None:
         config = LlamaConfig()
     head_dim = config.head_dim
@@ -195,12 +218,17 @@ def generate_rope_lut(config: Optional[LlamaConfig] = None, seq_len: int = 2048,
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("model_path", type=str)
     args = parser.parse_args()
     config = LlamaConfig()
     w = load_weights(args.model_path, config=config)
     L0 = w.layers[0]
-    print(f"embed {w.embed_table.shape} final_norm {w.final_norm.shape} lm_head {w.lm_head.shape}")
-    print(f"L0 wq {L0.wq.shape} wk {L0.wk.shape} wo {L0.wo.shape} bq {L0.bq.shape} bk {L0.bk.shape}")
+    print(
+        f"embed {w.embed_table.shape} final_norm {w.final_norm.shape} lm_head {w.lm_head.shape}"
+    )
+    print(
+        f"L0 wq {L0.wq.shape} wk {L0.wk.shape} wo {L0.wo.shape} bq {L0.bq.shape} bk {L0.bk.shape}"
+    )
     print(f"{len(w.layers)} layers loaded.")

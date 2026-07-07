@@ -39,11 +39,23 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from air.ir import (
-    MemRefType, IntegerAttr, AffineMap, AffineExpr, AffineSymbolExpr,
-    AffineConstantExpr, AffineMapAttr, VectorType,
+    MemRefType,
+    IntegerAttr,
+    AffineMap,
+    AffineExpr,
+    AffineSymbolExpr,
+    AffineConstantExpr,
+    AffineMapAttr,
+    VectorType,
 )
 from air.dialects.air import (
-    module_builder, launch, segment, herd, dma_memcpy_nd, MemorySpace, T,
+    module_builder,
+    launch,
+    segment,
+    herd,
+    dma_memcpy_nd,
+    MemorySpace,
+    T,
 )
 from air.dialects.affine import apply as affine_apply
 from air.dialects import arith
@@ -52,7 +64,6 @@ from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_ as range_, yield_
 from air.backend.xrt_runner import type_mapper
-
 
 # ---------------------------------------------------------------------------
 # Per-channel broadcast bias-add, 2D in/out (prefill, M=seq).
@@ -99,15 +110,22 @@ def _build_bias_add_2d(seq_len, in_cols, real_cols, np_dtype, herd_x, vector_siz
 
     # row index r = tile_id * rows_per_tile + local_row
     row_map = AffineMap.get(
-        0, 3,
-        [AffineExpr.get_add(
-            AffineExpr.get_mul(
-                AffineExpr.get_add(
-                    AffineExpr.get_mul(AffineSymbolExpr.get(1),
-                                       AffineConstantExpr.get(herd_y)),
-                    AffineSymbolExpr.get(2)),
-                AffineConstantExpr.get(rows_per_tile)),
-            AffineSymbolExpr.get(0))],
+        0,
+        3,
+        [
+            AffineExpr.get_add(
+                AffineExpr.get_mul(
+                    AffineExpr.get_add(
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(1), AffineConstantExpr.get(herd_y)
+                        ),
+                        AffineSymbolExpr.get(2),
+                    ),
+                    AffineConstantExpr.get(rows_per_tile),
+                ),
+                AffineSymbolExpr.get(0),
+            )
+        ],
     )
 
     @FuncOp.from_py_func(in_2d_ty, bias_ty, out_2d_ty)
@@ -120,8 +138,11 @@ def _build_bias_add_2d(seq_len, in_cols, real_cols, np_dtype, herd_x, vector_siz
 
             @segment(name="ba_seg", operands=[l_in, l_bias, out_flat])
             def ba_seg(s_in, s_bias, s_out):
-                @herd(name="ba_herd", sizes=[herd_x, herd_y],
-                      operands=[s_in, s_bias, s_out])
+                @herd(
+                    name="ba_herd",
+                    sizes=[herd_x, herd_y],
+                    operands=[s_in, s_bias, s_out],
+                )
                 def ba_body(_tx, _ty, _sx, _sy, h_in, h_bias, h_out):
                     l1_in = AllocOp(l1_row_ty, [], [])
                     l1_bias = AllocOp(l1_row_ty, [], [])
@@ -130,28 +151,52 @@ def _build_bias_add_2d(seq_len, in_cols, real_cols, np_dtype, herd_x, vector_siz
                     cst0 = arith.ConstantOp(xrt_dtype, 0.0)
 
                     # bias DMA once per tile (broadcast across rows).
-                    dma_memcpy_nd(l1_bias, h_bias, src_offsets=[0],
-                                  src_sizes=[real_cols], src_strides=[1])
+                    dma_memcpy_nd(
+                        l1_bias,
+                        h_bias,
+                        src_offsets=[0],
+                        src_sizes=[real_cols],
+                        src_strides=[1],
+                    )
 
                     for local_row in range_(rows_per_tile):
                         r = affine_apply(row_map, [local_row, _tx, _ty])
                         # in: 2D (seq, in_cols) — read row r, first real_cols.
-                        dma_memcpy_nd(l1_in, h_in, src_offsets=[r, c0],
-                                      src_sizes=[1, real_cols],
-                                      src_strides=[in_cols, 1])
+                        dma_memcpy_nd(
+                            l1_in,
+                            h_in,
+                            src_offsets=[r, c0],
+                            src_sizes=[1, real_cols],
+                            src_strides=[in_cols, 1],
+                        )
                         for j in range_(0, real_cols, vector_size):
                             si = subview(l1_in.result, [j], [vector_size], [1])
                             sb = subview(l1_bias.result, [j], [vector_size], [1])
                             so = subview(l1_out.result, [j], [vector_size], [1])
-                            v_i = transfer_read(vec_ty, si, [c0], identity_map, cst0, [True])
-                            v_b = transfer_read(vec_ty, sb, [c0], identity_map, cst0, [True])
-                            transfer_write(None, arith.addf(v_i, v_b), so, [c0],
-                                           identity_map, [True])
+                            v_i = transfer_read(
+                                vec_ty, si, [c0], identity_map, cst0, [True]
+                            )
+                            v_b = transfer_read(
+                                vec_ty, sb, [c0], identity_map, cst0, [True]
+                            )
+                            transfer_write(
+                                None,
+                                arith.addf(v_i, v_b),
+                                so,
+                                [c0],
+                                identity_map,
+                                [True],
+                            )
                             yield_([])
                         # out: flat 1D (seq*real_cols), row offset r*real_cols.
                         off = arith.muli(r, arith.ConstantOp.create_index(real_cols))
-                        dma_memcpy_nd(h_out, l1_out, dst_offsets=[off],
-                                      dst_sizes=[real_cols], dst_strides=[1])
+                        dma_memcpy_nd(
+                            h_out,
+                            l1_out,
+                            dst_offsets=[off],
+                            dst_sizes=[real_cols],
+                            dst_strides=[1],
+                        )
                         yield_([])
 
                     DeallocOp(l1_in)
@@ -189,13 +234,19 @@ def _build_bias_add_1d(n_cols, np_dtype, herd_x=1, vector_size=16):
 
     # offset = tile_id * cols_per_tile
     off_map = AffineMap.get(
-        0, 2,
-        [AffineExpr.get_mul(
-            AffineExpr.get_add(
-                AffineExpr.get_mul(AffineSymbolExpr.get(0),
-                                   AffineConstantExpr.get(1)),
-                AffineSymbolExpr.get(1)),
-            AffineConstantExpr.get(cols_per_tile))],
+        0,
+        2,
+        [
+            AffineExpr.get_mul(
+                AffineExpr.get_add(
+                    AffineExpr.get_mul(
+                        AffineSymbolExpr.get(0), AffineConstantExpr.get(1)
+                    ),
+                    AffineSymbolExpr.get(1),
+                ),
+                AffineConstantExpr.get(cols_per_tile),
+            )
+        ],
     )
 
     @FuncOp.from_py_func(l3_ty, l3_ty, l3_ty)
@@ -204,8 +255,9 @@ def _build_bias_add_1d(n_cols, np_dtype, herd_x=1, vector_size=16):
         def ba_launch(l_in, l_bias, l_out):
             @segment(name="ba1_seg", operands=[l_in, l_bias, l_out])
             def ba_seg(s_in, s_bias, s_out):
-                @herd(name="ba1_herd", sizes=[herd_x, 1],
-                      operands=[s_in, s_bias, s_out])
+                @herd(
+                    name="ba1_herd", sizes=[herd_x, 1], operands=[s_in, s_bias, s_out]
+                )
                 def ba_body(_tx, _ty, _sx, _sy, h_in, h_bias, h_out):
                     l1_in = AllocOp(l1_ty, [], [])
                     l1_bias = AllocOp(l1_ty, [], [])
@@ -213,21 +265,41 @@ def _build_bias_add_1d(n_cols, np_dtype, herd_x=1, vector_size=16):
                     c0 = arith.ConstantOp.create_index(0)
                     cst0 = arith.ConstantOp(xrt_dtype, 0.0)
                     off = affine_apply(off_map, [_tx, _ty])
-                    dma_memcpy_nd(l1_in, h_in, src_offsets=[off],
-                                  src_sizes=[cols_per_tile], src_strides=[1])
-                    dma_memcpy_nd(l1_bias, h_bias, src_offsets=[off],
-                                  src_sizes=[cols_per_tile], src_strides=[1])
+                    dma_memcpy_nd(
+                        l1_in,
+                        h_in,
+                        src_offsets=[off],
+                        src_sizes=[cols_per_tile],
+                        src_strides=[1],
+                    )
+                    dma_memcpy_nd(
+                        l1_bias,
+                        h_bias,
+                        src_offsets=[off],
+                        src_sizes=[cols_per_tile],
+                        src_strides=[1],
+                    )
                     for j in range_(0, cols_per_tile, vector_size):
                         si = subview(l1_in.result, [j], [vector_size], [1])
                         sb = subview(l1_bias.result, [j], [vector_size], [1])
                         so = subview(l1_out.result, [j], [vector_size], [1])
-                        v_i = transfer_read(vec_ty, si, [c0], identity_map, cst0, [True])
-                        v_b = transfer_read(vec_ty, sb, [c0], identity_map, cst0, [True])
-                        transfer_write(None, arith.addf(v_i, v_b), so, [c0],
-                                       identity_map, [True])
+                        v_i = transfer_read(
+                            vec_ty, si, [c0], identity_map, cst0, [True]
+                        )
+                        v_b = transfer_read(
+                            vec_ty, sb, [c0], identity_map, cst0, [True]
+                        )
+                        transfer_write(
+                            None, arith.addf(v_i, v_b), so, [c0], identity_map, [True]
+                        )
                         yield_([])
-                    dma_memcpy_nd(h_out, l1_out, dst_offsets=[off],
-                                  dst_sizes=[cols_per_tile], dst_strides=[1])
+                    dma_memcpy_nd(
+                        h_out,
+                        l1_out,
+                        dst_offsets=[off],
+                        dst_sizes=[cols_per_tile],
+                        dst_strides=[1],
+                    )
                     DeallocOp(l1_in)
                     DeallocOp(l1_bias)
                     DeallocOp(l1_out)
@@ -292,7 +364,11 @@ def build_rms_qkv_bias_rope_module(
     from shared.builders.gemm_builder import _build_gemm_module, gemm_registry_config
     from shared.builders.rms_gemms_rope_multi import _build_rope_2d
     from shared.infra.stitching import (
-        _wrap_ir_in_launch, stitch_elf, KernelSlice, FuncArg, alloc_gemm_scratch,
+        _wrap_ir_in_launch,
+        stitch_elf,
+        KernelSlice,
+        FuncArg,
+        alloc_gemm_scratch,
     )
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
 
@@ -327,22 +403,63 @@ def build_rms_qkv_bias_rope_module(
     def _kw_tiles(spec):
         return (
             dict(spec["build_kwargs"]),
-            spec["tile_m"], spec["tile_k_l2"], spec["tile_k_l1"], spec["tile_n"],
+            spec["tile_m"],
+            spec["tile_k_l2"],
+            spec["tile_k_l1"],
+            spec["tile_n"],
         )
 
     # ---- Build sub-kernels ----
     print("  [1/9] RMSNorm...")
-    rms_ir = _wrap_ir_in_launch(str(build_rms(seq_len, emb_dim, bfloat16, 16, herd_x=8)))
+    rms_ir = _wrap_ir_in_launch(
+        str(build_rms(seq_len, emb_dim, bfloat16, 16, herd_x=8))
+    )
 
     _q_kw, _q_tm, _q_k2, _q_k1, _q_tn = _kw_tiles(q_spec)
     _k_kw, _k_tm, _k_k2, _k_k1, _k_tn = _kw_tiles(k_spec)
     _v_kw, _v_tm, _v_k2, _v_k1, _v_tn = _kw_tiles(v_spec)
-    print(f"  [2/9] Q GEMM ({q_spec['method']})  {seq_len}x{emb_dim}x{q_pad} (pad {q_dim})...")
-    q_ir = str(_build_gemm_module(seq_len, emb_dim, q_pad, _q_tm, _q_k2, _q_k1, _q_tn, herd_m, herd_n, **_q_kw))
-    print(f"  [3/9] K GEMM ({k_spec['method']})  {seq_len}x{emb_dim}x{kv_pad} (pad {kv_dim})...")
-    k_ir = str(_build_gemm_module(seq_len, emb_dim, kv_pad, _k_tm, _k_k2, _k_k1, _k_tn, herd_m, herd_n, **_k_kw))
-    print(f"  [4/9] V GEMM ({v_spec['method']})  {seq_len}x{emb_dim}x{kv_pad} (pad {kv_dim})...")
-    v_ir = str(_build_gemm_module(seq_len, emb_dim, kv_pad, _v_tm, _v_k2, _v_k1, _v_tn, herd_m, herd_n, **_v_kw))
+    print(
+        f"  [2/9] Q GEMM ({q_spec['method']})  {seq_len}x{emb_dim}x{q_pad} (pad {q_dim})..."
+    )
+    q_ir = str(
+        _build_gemm_module(
+            seq_len, emb_dim, q_pad, _q_tm, _q_k2, _q_k1, _q_tn, herd_m, herd_n, **_q_kw
+        )
+    )
+    print(
+        f"  [3/9] K GEMM ({k_spec['method']})  {seq_len}x{emb_dim}x{kv_pad} (pad {kv_dim})..."
+    )
+    k_ir = str(
+        _build_gemm_module(
+            seq_len,
+            emb_dim,
+            kv_pad,
+            _k_tm,
+            _k_k2,
+            _k_k1,
+            _k_tn,
+            herd_m,
+            herd_n,
+            **_k_kw,
+        )
+    )
+    print(
+        f"  [4/9] V GEMM ({v_spec['method']})  {seq_len}x{emb_dim}x{kv_pad} (pad {kv_dim})..."
+    )
+    v_ir = str(
+        _build_gemm_module(
+            seq_len,
+            emb_dim,
+            kv_pad,
+            _v_tm,
+            _v_k2,
+            _v_k1,
+            _v_tn,
+            herd_m,
+            herd_n,
+            **_v_kw,
+        )
+    )
 
     # 5-7. bias-add (broadcast (D,) over rows, padded->unpadded).
     print(f"  [5/9] bias Q (in_cols={q_pad} real={q_dim})...")
@@ -360,7 +477,11 @@ def build_rms_qkv_bias_rope_module(
 
     # ---- Scratch (fused-cast GEMM f32 C-tail) ----
     scratch_args, scratch_for = alloc_gemm_scratch(
-        [(q_spec, seq_len, q_pad), (k_spec, seq_len, kv_pad), (v_spec, seq_len, kv_pad)],
+        [
+            (q_spec, seq_len, q_pad),
+            (k_spec, seq_len, kv_pad),
+            (v_spec, seq_len, kv_pad),
+        ],
         base_arg_count=19,
     )
 
@@ -407,9 +528,10 @@ def build_rms_qkv_bias_rope_module(
     # _m64, K/V drain _m32) → each suffix's decls (zero_f32_mn_*, f32_to_bf16_*)
     # must be emitted exactly once. direct-codegen GEMMs carry no external decls.
     def _gemm_key(spec):
-        return ("direct" if spec["method"] == "direct" else spec["sym_suffix"])
+        return "direct" if spec["method"] == "direct" else spec["sym_suffix"]
 
     _seen_keys = set()
+
     def _pf(spec):
         key = _gemm_key(spec)
         first = key not in _seen_keys
@@ -417,10 +539,30 @@ def build_rms_qkv_bias_rope_module(
         return first
 
     slices = [
-        KernelSlice(rms_ir, "r", {0: 0, 1: 1, 2: 2}, extern_syms={"@zero_vectorized_bf16"}),
-        KernelSlice(q_ir, "q", _gemm_arg_map(2, 3, 4, scratch_for[0]), extern_syms=_gemm_externs(q_spec), private_from=_pf(q_spec)),
-        KernelSlice(k_ir, "k", _gemm_arg_map(2, 5, 6, scratch_for[1]), extern_syms=_gemm_externs(k_spec), private_from=_pf(k_spec)),
-        KernelSlice(v_ir, "v", _gemm_arg_map(2, 7, 8, scratch_for[2]), extern_syms=_gemm_externs(v_spec), private_from=_pf(v_spec)),
+        KernelSlice(
+            rms_ir, "r", {0: 0, 1: 1, 2: 2}, extern_syms={"@zero_vectorized_bf16"}
+        ),
+        KernelSlice(
+            q_ir,
+            "q",
+            _gemm_arg_map(2, 3, 4, scratch_for[0]),
+            extern_syms=_gemm_externs(q_spec),
+            private_from=_pf(q_spec),
+        ),
+        KernelSlice(
+            k_ir,
+            "k",
+            _gemm_arg_map(2, 5, 6, scratch_for[1]),
+            extern_syms=_gemm_externs(k_spec),
+            private_from=_pf(k_spec),
+        ),
+        KernelSlice(
+            v_ir,
+            "v",
+            _gemm_arg_map(2, 7, 8, scratch_for[2]),
+            extern_syms=_gemm_externs(v_spec),
+            private_from=_pf(v_spec),
+        ),
         # bias Q: in=q_pad(arg4), bias=bq(arg9), out=q_b(arg12).
         KernelSlice(bias_q_ir, "bq", {0: 4, 1: 9, 2: 12}, private_from=False),
         # bias K: in=k_pad(arg6), bias=bk(arg10), out=k_b(arg13).
@@ -439,7 +581,9 @@ def build_rms_qkv_bias_rope_module(
         scratch_args=scratch_args,
         debug_dump_path="/tmp/debug_rms_qkv_bias_rope.mlir",
     )
-    print(f"  rms_qkv_bias_rope module: {len(str(module).splitlines())} lines, parsed OK")
+    print(
+        f"  rms_qkv_bias_rope module: {len(str(module).splitlines())} lines, parsed OK"
+    )
     return module, scratch_for
 
 
@@ -449,30 +593,39 @@ def build_rms_qkv_bias_rope_module(
 
 
 def build_rms_qkv_bias_rope_gemv_module(
-    emb_dim, q_dim, kv_dim, n_heads, n_kv_heads, head_dim,
-    tile_m=8, m_input=8, herd_m=8, eps=1e-6, bias_herd_x=8,
+    emb_dim,
+    q_dim,
+    kv_dim,
+    n_heads,
+    n_kv_heads,
+    head_dim,
+    tile_m=8,
+    m_input=8,
+    herd_m=8,
+    eps=1e-6,
+    bias_herd_x=8,
 ):
     """9-launch decode ELF (all 1D — M=1 token):
 
-      %arg0  x_in     (emb_dim,)
-      %arg1  norm_w   (emb_dim,)
-      %arg2  normed   (emb_dim,)
-      %arg3  wq       (q_dim, emb_dim)    GEMV weight (out, in)
-      %arg4  q        (q_dim,)            Q GEMV out (pre-bias)
-      %arg5  wk       (kv_dim, emb_dim)
-      %arg6  k        (kv_dim,)
-      %arg7  wv       (kv_dim, emb_dim)
-      %arg8  v        (kv_dim,)           V GEMV out (pre-bias)
-      %arg9  bq       (q_dim,)
-      %arg10 bk       (kv_dim,)
-      %arg11 bv       (kv_dim,)
-      %arg12 q_b      (q_dim,)            Q after bias (RoPE input)
-      %arg13 k_b      (kv_dim,)           K after bias (RoPE input)
-      %arg14 v_b      (kv_dim,)           V after bias (final)
-      %arg15 lut_q    (q_dim,)            RoPE Q LUT (position-dependent)
-      %arg16 lut_k    (kv_dim,)           RoPE K LUT
-      %arg17 q_roped  (q_dim,)            final RoPE Q
-      %arg18 k_roped  (kv_dim,)           final RoPE K
+    %arg0  x_in     (emb_dim,)
+    %arg1  norm_w   (emb_dim,)
+    %arg2  normed   (emb_dim,)
+    %arg3  wq       (q_dim, emb_dim)    GEMV weight (out, in)
+    %arg4  q        (q_dim,)            Q GEMV out (pre-bias)
+    %arg5  wk       (kv_dim, emb_dim)
+    %arg6  k        (kv_dim,)
+    %arg7  wv       (kv_dim, emb_dim)
+    %arg8  v        (kv_dim,)           V GEMV out (pre-bias)
+    %arg9  bq       (q_dim,)
+    %arg10 bk       (kv_dim,)
+    %arg11 bv       (kv_dim,)
+    %arg12 q_b      (q_dim,)            Q after bias (RoPE input)
+    %arg13 k_b      (kv_dim,)           K after bias (RoPE input)
+    %arg14 v_b      (kv_dim,)           V after bias (final)
+    %arg15 lut_q    (q_dim,)            RoPE Q LUT (position-dependent)
+    %arg16 lut_k    (kv_dim,)           RoPE K LUT
+    %arg17 q_roped  (q_dim,)            final RoPE Q
+    %arg18 k_roped  (kv_dim,)           final RoPE K
     """
     import shared.builders.rms_gemv_rope_multi as rgr
     from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
@@ -568,5 +721,7 @@ def build_rms_qkv_bias_rope_gemv_module(
         },
         debug_dump_path="/tmp/debug_rms_qkv_bias_rope_gemv.mlir",
     )
-    print(f"  rms_qkv_bias_rope_gemv module: {len(str(module).splitlines())} lines, parsed OK")
+    print(
+        f"  rms_qkv_bias_rope_gemv module: {len(str(module).splitlines())} lines, parsed OK"
+    )
     return module

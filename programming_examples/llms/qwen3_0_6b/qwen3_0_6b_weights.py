@@ -175,16 +175,32 @@ def load_weights(
         layer = LayerWeights(**layer_tensors)
 
         assert layer.attn_norm.shape == (config.emb_dim,)
-        assert layer.wq.shape == (config.emb_dim, qd), f"L{layer_idx} wq {layer.wq.shape}"
-        assert layer.wk.shape == (config.emb_dim, kvd), f"L{layer_idx} wk {layer.wk.shape}"
-        assert layer.wv.shape == (config.emb_dim, kvd), f"L{layer_idx} wv {layer.wv.shape}"
-        assert layer.wo.shape == (qd, config.emb_dim), f"L{layer_idx} wo {layer.wo.shape}"
+        assert layer.wq.shape == (
+            config.emb_dim,
+            qd,
+        ), f"L{layer_idx} wq {layer.wq.shape}"
+        assert layer.wk.shape == (
+            config.emb_dim,
+            kvd,
+        ), f"L{layer_idx} wk {layer.wk.shape}"
+        assert layer.wv.shape == (
+            config.emb_dim,
+            kvd,
+        ), f"L{layer_idx} wv {layer.wv.shape}"
+        assert layer.wo.shape == (
+            qd,
+            config.emb_dim,
+        ), f"L{layer_idx} wo {layer.wo.shape}"
         assert layer.ffn_norm.shape == (config.emb_dim,)
         assert layer.w_gate.shape == (config.emb_dim, config.hidden_dim)
         assert layer.w_up.shape == (config.emb_dim, config.hidden_dim)
         assert layer.w_down.shape == (config.hidden_dim, config.emb_dim)
-        assert layer.q_norm.shape == (config.head_dim,), f"L{layer_idx} q_norm {layer.q_norm.shape}"
-        assert layer.k_norm.shape == (config.head_dim,), f"L{layer_idx} k_norm {layer.k_norm.shape}"
+        assert layer.q_norm.shape == (
+            config.head_dim,
+        ), f"L{layer_idx} q_norm {layer.q_norm.shape}"
+        assert layer.k_norm.shape == (
+            config.head_dim,
+        ), f"L{layer_idx} k_norm {layer.k_norm.shape}"
 
         layers.append(layer)
 
@@ -239,7 +255,9 @@ def generate_rope_lut(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Load Qwen3-0.6B weights, print shapes")
+    parser = argparse.ArgumentParser(
+        description="Load Qwen3-0.6B weights, print shapes"
+    )
     parser.add_argument("model_path", type=str)
     parser.add_argument("--dtype", choices=["bfloat16", "float32"], default="bfloat16")
     args = parser.parse_args()
@@ -250,7 +268,9 @@ if __name__ == "__main__":
     weights = load_weights(args.model_path, dtype=dtype, config=config)
     print(f"  embed_table : {weights.embed_table.shape}")
     print(f"  final_norm  : {weights.final_norm.shape}")
-    print(f"  lm_head     : {weights.lm_head.shape} (tied={weights.lm_head is weights.embed_table})")
+    print(
+        f"  lm_head     : {weights.lm_head.shape} (tied={weights.lm_head is weights.embed_table})"
+    )
     L0 = weights.layers[0]
     print(f"  L0 wq {L0.wq.shape} wk {L0.wk.shape} wv {L0.wv.shape} wo {L0.wo.shape}")
     print(f"  L0 q_norm {L0.q_norm.shape} k_norm {L0.k_norm.shape}")

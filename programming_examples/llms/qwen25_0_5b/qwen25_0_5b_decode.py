@@ -59,7 +59,6 @@ if _LLMS_DIR not in sys.path:
 from qwen25_0_5b_weights import LlamaConfig
 from qwen25_0_5b_cpu_helpers import rms_norm
 
-
 # LM-head decode partitioning. vocab=151936. Per-partition GEMV broadcasts the
 # K=emb_dim input vector with a push_queue repeat_count ~= n_part/32 - 1, capped
 # at [0:255] → n_part <= 8192. 19 * 8192 = 155648 >= 151936; the final partition
@@ -68,10 +67,10 @@ _LM_N_PARTITIONS = 19
 _LM_N_PART = 8192  # % 64 == 0; n_part/32 - 1 = 255 (at the repeat-count limit)
 
 # Phase-1-verified decode GEMV tile configs (tile_m, m_input, herd_m).
-_GEMV_QO = (8, 8, 8)        # 896×896 (Q proj, O proj)
-_GEMV_KV = (8, 8, 8)        # 128×896 (K proj, V proj)
-_GEMV_GATEUP = (8, 8, 8)    # 4864×896 (Gate proj, Up proj)
-_GEMV_DOWN = (2, 2, 8)      # 896×4864 (Down proj; K=4864 → L2-bound tile_m=2)
+_GEMV_QO = (8, 8, 8)  # 896×896 (Q proj, O proj)
+_GEMV_KV = (8, 8, 8)  # 128×896 (K proj, V proj)
+_GEMV_GATEUP = (8, 8, 8)  # 4864×896 (Gate proj, Up proj)
+_GEMV_DOWN = (2, 2, 8)  # 896×4864 (Down proj; K=4864 → L2-bound tile_m=2)
 
 
 # ---------------------------------------------------------------------------
@@ -87,9 +86,16 @@ def build_rms_qkv_bias_rope_gemv_module(emb_dim, q_dim, kv_dim, config, eps=1e-6
 
     q_tm, q_mi, q_hm = _GEMV_QO
     return _build(
-        emb_dim, q_dim, kv_dim,
-        config.n_heads, config.n_kv_heads, config.head_dim,
-        tile_m=q_tm, m_input=q_mi, herd_m=q_hm, eps=eps,
+        emb_dim,
+        q_dim,
+        kv_dim,
+        config.n_heads,
+        config.n_kv_heads,
+        config.head_dim,
+        tile_m=q_tm,
+        m_input=q_mi,
+        herd_m=q_hm,
+        eps=eps,
     )
 
 
@@ -112,9 +118,7 @@ def build_gemv_module(m, k, tile_m, m_input, herd_m=8, name="gemv"):
     GEMV slice through stitch_elf so the public func is renamed to `name`,
     matching the per-projection instance_name in the backend kwargs.
     """
-    _mv_dir = os.path.join(
-        _PROG_EXAMPLES, "matrix_vector_multiplication", "bf16"
-    )
+    _mv_dir = os.path.join(_PROG_EXAMPLES, "matrix_vector_multiplication", "bf16")
     if _mv_dir not in sys.path:
         sys.path.insert(0, _mv_dir)
     from matvec import build_module as build_gemv
@@ -129,7 +133,9 @@ def build_gemv_module(m, k, tile_m, m_input, herd_m=8, name="gemv"):
     # GEMV func args: {0: weight (MxK), 1: input (K,), 2: output (M,)}.
     slices = [
         KernelSlice(
-            gemv_ir, "g", {0: 0, 1: 1, 2: 2},
+            gemv_ir,
+            "g",
+            {0: 0, 1: 1, 2: 2},
             extern_syms={"@matvec_vectorized_bf16_bf16", "@linalg_fill_bf16"},
         )
     ]
@@ -220,24 +226,28 @@ def compile_decode_kernels(cache, config, verbose=False):
     print(f"\n--- o_gemv (O proj GEMV, {emb_dim}x{q_dim}) ---")
     o_tm, o_mi, o_hm = _GEMV_QO
     cache.compile_and_cache(
-        "o_gemv", build_gemv_module(emb_dim, q_dim, o_tm, o_mi, o_hm, name="o_gemv"),
+        "o_gemv",
+        build_gemv_module(emb_dim, q_dim, o_tm, o_mi, o_hm, name="o_gemv"),
         _gemv_backend(verbose, "o_gemv"),
     )
     print(f"\n--- gate_gemv (Gate proj GEMV, {hidden_dim}x{emb_dim}) ---")
     g_tm, g_mi, g_hm = _GEMV_GATEUP
     cache.compile_and_cache(
-        "gate_gemv", build_gemv_module(hidden_dim, emb_dim, g_tm, g_mi, g_hm, name="gate_gemv"),
+        "gate_gemv",
+        build_gemv_module(hidden_dim, emb_dim, g_tm, g_mi, g_hm, name="gate_gemv"),
         _gemv_backend(verbose, "gate_gemv"),
     )
     print(f"\n--- up_gemv (Up proj GEMV, {hidden_dim}x{emb_dim}) ---")
     cache.compile_and_cache(
-        "up_gemv", build_gemv_module(hidden_dim, emb_dim, g_tm, g_mi, g_hm, name="up_gemv"),
+        "up_gemv",
+        build_gemv_module(hidden_dim, emb_dim, g_tm, g_mi, g_hm, name="up_gemv"),
         _gemv_backend(verbose, "up_gemv"),
     )
     print(f"\n--- down_gemv (Down proj GEMV, {emb_dim}x{hidden_dim}) ---")
     d_tm, d_mi, d_hm = _GEMV_DOWN
     cache.compile_and_cache(
-        "down_gemv", build_gemv_module(emb_dim, hidden_dim, d_tm, d_mi, d_hm, name="down_gemv"),
+        "down_gemv",
+        build_gemv_module(emb_dim, hidden_dim, d_tm, d_mi, d_hm, name="down_gemv"),
         _gemv_backend(verbose, "down_gemv"),
     )
 
@@ -257,7 +267,9 @@ def compile_decode_kernels(cache, config, verbose=False):
 # ---------------------------------------------------------------------------
 
 
-def decode_attention_cpu(q, k_cache, v_cache, current_pos, n_heads, n_kv_heads, head_dim):
+def decode_attention_cpu(
+    q, k_cache, v_cache, current_pos, n_heads, n_kv_heads, head_dim
+):
     """Single-query GQA attention with KV cache.
 
     Args:
@@ -292,7 +304,9 @@ def decode_attention_cpu(q, k_cache, v_cache, current_pos, n_heads, n_kv_heads, 
 # ---------------------------------------------------------------------------
 
 
-def _fused_bias_rope_gemv_call(cache, lw, config, lut_q, lut_k, suffix, x_in, verbose=False):
+def _fused_bias_rope_gemv_call(
+    cache, lw, config, lut_q, lut_k, suffix, x_in, verbose=False
+):
     """Issue one rms_qkv_bias_rope_gemv ELF call (fused decode attention-input).
 
     Used by BOTH _preload_decode_weights (warmup, x_in zeroed, dummy LUTs) and
@@ -308,25 +322,25 @@ def _fused_bias_rope_gemv_call(cache, lw, config, lut_q, lut_k, suffix, x_in, ve
     q_dim = n_heads * head_dim
     kv_dim = n_kv_heads * head_dim
     args = [
-        np.ascontiguousarray(x_in).astype(bfloat16).reshape(emb_dim),       # 0 x_in
-        lw.attn_norm.reshape(emb_dim).astype(bfloat16),                     # 1 norm_w (static)
-        np.zeros(emb_dim, dtype=bfloat16),                                  # 2 normed (inter)
-        lw._wq_t,                                                           # 3 wq (static)
-        np.zeros(q_dim, dtype=bfloat16),                                    # 4 q (inter)
-        lw._wk_t,                                                           # 5 wk (static)
-        np.zeros(kv_dim, dtype=bfloat16),                                   # 6 k (inter)
-        lw._wv_t,                                                           # 7 wv (static)
-        np.zeros(kv_dim, dtype=bfloat16),                                   # 8 v (inter)
-        np.asarray(lw.bq, dtype=bfloat16).reshape(q_dim),                  # 9 bq (static)
-        np.asarray(lw.bk, dtype=bfloat16).reshape(kv_dim),                 # 10 bk (static)
-        np.asarray(lw.bv, dtype=bfloat16).reshape(kv_dim),                 # 11 bv (static)
-        np.zeros(q_dim, dtype=bfloat16),                                    # 12 q_b (inter)
-        np.zeros(kv_dim, dtype=bfloat16),                                   # 13 k_b (inter)
-        np.zeros(kv_dim, dtype=bfloat16),                                   # 14 v_b (inter/out)
-        np.ascontiguousarray(lut_q).astype(bfloat16),                      # 15 lut_q (NON-static)
-        np.ascontiguousarray(lut_k).astype(bfloat16),                      # 16 lut_k (NON-static)
-        np.zeros(q_dim, dtype=bfloat16),                                    # 17 q_roped (inter/out)
-        np.zeros(kv_dim, dtype=bfloat16),                                   # 18 k_roped (inter/out)
+        np.ascontiguousarray(x_in).astype(bfloat16).reshape(emb_dim),  # 0 x_in
+        lw.attn_norm.reshape(emb_dim).astype(bfloat16),  # 1 norm_w (static)
+        np.zeros(emb_dim, dtype=bfloat16),  # 2 normed (inter)
+        lw._wq_t,  # 3 wq (static)
+        np.zeros(q_dim, dtype=bfloat16),  # 4 q (inter)
+        lw._wk_t,  # 5 wk (static)
+        np.zeros(kv_dim, dtype=bfloat16),  # 6 k (inter)
+        lw._wv_t,  # 7 wv (static)
+        np.zeros(kv_dim, dtype=bfloat16),  # 8 v (inter)
+        np.asarray(lw.bq, dtype=bfloat16).reshape(q_dim),  # 9 bq (static)
+        np.asarray(lw.bk, dtype=bfloat16).reshape(kv_dim),  # 10 bk (static)
+        np.asarray(lw.bv, dtype=bfloat16).reshape(kv_dim),  # 11 bv (static)
+        np.zeros(q_dim, dtype=bfloat16),  # 12 q_b (inter)
+        np.zeros(kv_dim, dtype=bfloat16),  # 13 k_b (inter)
+        np.zeros(kv_dim, dtype=bfloat16),  # 14 v_b (inter/out)
+        np.ascontiguousarray(lut_q).astype(bfloat16),  # 15 lut_q (NON-static)
+        np.ascontiguousarray(lut_k).astype(bfloat16),  # 16 lut_k (NON-static)
+        np.zeros(q_dim, dtype=bfloat16),  # 17 q_roped (inter/out)
+        np.zeros(kv_dim, dtype=bfloat16),  # 18 k_roped (inter/out)
     ]
     return cache.load_and_run(
         "rms_qkv_bias_rope_gemv",
@@ -395,8 +409,13 @@ def run_decode_block(
     # --- CPU attention ---
     with cache.profiler.time_cpu("decode_attention_cpu"):
         attn_out = decode_attention_cpu(
-            q_roped, k_cache_layer, v_cache_layer, current_pos,
-            n_heads, n_kv_heads, head_dim,
+            q_roped,
+            k_cache_layer,
+            v_cache_layer,
+            current_pos,
+            n_heads,
+            n_kv_heads,
+            head_dim,
         )
     inter["attn_out"] = attn_out
 
@@ -404,9 +423,9 @@ def run_decode_block(
     ro = cache.load_and_run(
         "o_gemv",
         _gemv_backend(verbose, "o_gemv"),
-        layer_weights._wo_t,                        # arg0 wo (static) (emb, q_dim)
-        np.ascontiguousarray(attn_out),             # arg1 attn_out (q_dim,)
-        np.zeros(emb_dim, dtype=bfloat16),          # arg2 proj (emb,)
+        layer_weights._wo_t,  # arg0 wo (static) (emb, q_dim)
+        np.ascontiguousarray(attn_out),  # arg1 attn_out (q_dim,)
+        np.zeros(emb_dim, dtype=bfloat16),  # arg2 proj (emb,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
@@ -419,14 +438,18 @@ def run_decode_block(
     inter["res1"] = res1.astype(bfloat16)
 
     # FFN RMSNorm (host, eps=1e-6)
-    normed2 = rms_norm(res1.reshape(1, emb_dim), layer_weights.ffn_norm, eps=1e-6).reshape(emb_dim).astype(bfloat16)
+    normed2 = (
+        rms_norm(res1.reshape(1, emb_dim), layer_weights.ffn_norm, eps=1e-6)
+        .reshape(emb_dim)
+        .astype(bfloat16)
+    )
 
     rg = cache.load_and_run(
         "gate_gemv",
         _gemv_backend(verbose, "gate_gemv"),
-        layer_weights._wgate_t,                     # arg0 w_gate (static) (hidden, emb)
-        np.ascontiguousarray(normed2),              # arg1 normed2 (emb,)
-        np.zeros(hidden_dim, dtype=bfloat16),       # arg2 gate (hidden,)
+        layer_weights._wgate_t,  # arg0 w_gate (static) (hidden, emb)
+        np.ascontiguousarray(normed2),  # arg1 normed2 (emb,)
+        np.zeros(hidden_dim, dtype=bfloat16),  # arg2 gate (hidden,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
@@ -436,9 +459,9 @@ def run_decode_block(
     ru = cache.load_and_run(
         "up_gemv",
         _gemv_backend(verbose, "up_gemv"),
-        layer_weights._wup_t,                       # arg0 w_up (static) (hidden, emb)
-        np.ascontiguousarray(normed2),              # arg1 normed2 (emb,)
-        np.zeros(hidden_dim, dtype=bfloat16),       # arg2 up (hidden,)
+        layer_weights._wup_t,  # arg0 w_up (static) (hidden, emb)
+        np.ascontiguousarray(normed2),  # arg1 normed2 (emb,)
+        np.zeros(hidden_dim, dtype=bfloat16),  # arg2 up (hidden,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
@@ -450,9 +473,9 @@ def run_decode_block(
     rd = cache.load_and_run(
         "down_gemv",
         _gemv_backend(verbose, "down_gemv"),
-        layer_weights._wdown_t,                     # arg0 w_down (static) (emb, hidden)
-        np.ascontiguousarray(swig),                 # arg1 swiglu (hidden,)
-        np.zeros(emb_dim, dtype=bfloat16),          # arg2 down (emb,)
+        layer_weights._wdown_t,  # arg0 w_down (static) (emb, hidden)
+        np.ascontiguousarray(swig),  # arg1 swiglu (hidden,)
+        np.zeros(emb_dim, dtype=bfloat16),  # arg2 down (emb,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},

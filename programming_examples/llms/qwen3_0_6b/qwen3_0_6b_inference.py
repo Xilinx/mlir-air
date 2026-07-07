@@ -88,7 +88,9 @@ class Session:
 # ---------------------------------------------------------------------------
 
 
-def prepare_runtime(prefill_cache, decode_cache, weights, config, seq_len, rope_lut_bf16):
+def prepare_runtime(
+    prefill_cache, decode_cache, weights, config, seq_len, rope_lut_bf16
+):
     """One-time runtime init: transpose decode GEMV weights, tag layer idx,
     pre-load prefill + decode + LM-head BOs."""
     print(f"\n{'='*60}")
@@ -109,13 +111,27 @@ def prepare_runtime(prefill_cache, decode_cache, weights, config, seq_len, rope_
     if not hasattr(weights, "_decode_weights_transposed"):
         print("  Pre-transposing weights for decode GEMV...")
         for lw in weights.layers:
-            lw._wq_t = np.ascontiguousarray(lw.wq.astype(bfloat16).reshape(emb_dim, q_dim).T)   # (q_dim, emb_dim)
-            lw._wk_t = np.ascontiguousarray(lw.wk.astype(bfloat16).reshape(emb_dim, kv_dim).T)  # (kv_dim, emb_dim)
-            lw._wv_t = np.ascontiguousarray(lw.wv.astype(bfloat16).reshape(emb_dim, kv_dim).T)  # (kv_dim, emb_dim)
-            lw._wo_t = np.ascontiguousarray(lw.wo.astype(bfloat16).reshape(q_dim, emb_dim).T)   # (emb_dim, q_dim) DECOUPLED
-            lw._wgate_t = np.ascontiguousarray(lw.w_gate.astype(bfloat16).reshape(emb_dim, hidden_dim).T)  # (hidden, emb)
-            lw._wup_t = np.ascontiguousarray(lw.w_up.astype(bfloat16).reshape(emb_dim, hidden_dim).T)      # (hidden, emb)
-            lw._wdown_t = np.ascontiguousarray(lw.w_down.astype(bfloat16).reshape(hidden_dim, emb_dim).T)  # (emb, hidden)
+            lw._wq_t = np.ascontiguousarray(
+                lw.wq.astype(bfloat16).reshape(emb_dim, q_dim).T
+            )  # (q_dim, emb_dim)
+            lw._wk_t = np.ascontiguousarray(
+                lw.wk.astype(bfloat16).reshape(emb_dim, kv_dim).T
+            )  # (kv_dim, emb_dim)
+            lw._wv_t = np.ascontiguousarray(
+                lw.wv.astype(bfloat16).reshape(emb_dim, kv_dim).T
+            )  # (kv_dim, emb_dim)
+            lw._wo_t = np.ascontiguousarray(
+                lw.wo.astype(bfloat16).reshape(q_dim, emb_dim).T
+            )  # (emb_dim, q_dim) DECOUPLED
+            lw._wgate_t = np.ascontiguousarray(
+                lw.w_gate.astype(bfloat16).reshape(emb_dim, hidden_dim).T
+            )  # (hidden, emb)
+            lw._wup_t = np.ascontiguousarray(
+                lw.w_up.astype(bfloat16).reshape(emb_dim, hidden_dim).T
+            )  # (hidden, emb)
+            lw._wdown_t = np.ascontiguousarray(
+                lw.w_down.astype(bfloat16).reshape(hidden_dim, emb_dim).T
+            )  # (emb, hidden)
         weights._decode_weights_transposed = True
 
     # 2. Tag layer index for per-layer BO isolation.
@@ -166,23 +182,23 @@ def _preload_decode_weights(decode_cache, weights, config):
         decode_cache.load_and_run(
             "rms_qkv_qknorm_rope_gemv",
             _rms_qkv_qknorm_rope_gemv_backend(),
-            np.zeros(emb_dim, dtype=bfloat16),                      # 0 x_in
-            lw.attn_norm.reshape(emb_dim).astype(bfloat16),         # 1 norm_w (static)
-            np.zeros(emb_dim, dtype=bfloat16),                      # 2 normed
-            lw._wq_t,                                               # 3 wq (static)
-            np.zeros(q_dim, dtype=bfloat16),                        # 4 q
-            lw._wk_t,                                               # 5 wk (static)
-            np.zeros(kv_dim, dtype=bfloat16),                       # 6 k
-            lw._wv_t,                                               # 7 wv (static)
-            np.zeros(kv_dim, dtype=bfloat16),                       # 8 v
-            np.asarray(lw.q_norm, bfloat16).reshape(head_dim),      # 9 q_norm (static)
-            np.asarray(lw.k_norm, bfloat16).reshape(head_dim),      # 10 k_norm (static)
-            np.zeros(q_dim, dtype=bfloat16),                        # 11 q_n
-            np.zeros(kv_dim, dtype=bfloat16),                       # 12 k_n
-            lut_q_dummy,                                            # 13 lut_q (dynamic)
-            lut_k_dummy,                                            # 14 lut_k (dynamic)
-            np.zeros(q_dim, dtype=bfloat16),                        # 15 q_roped
-            np.zeros(kv_dim, dtype=bfloat16),                       # 16 k_roped
+            np.zeros(emb_dim, dtype=bfloat16),  # 0 x_in
+            lw.attn_norm.reshape(emb_dim).astype(bfloat16),  # 1 norm_w (static)
+            np.zeros(emb_dim, dtype=bfloat16),  # 2 normed
+            lw._wq_t,  # 3 wq (static)
+            np.zeros(q_dim, dtype=bfloat16),  # 4 q
+            lw._wk_t,  # 5 wk (static)
+            np.zeros(kv_dim, dtype=bfloat16),  # 6 k
+            lw._wv_t,  # 7 wv (static)
+            np.zeros(kv_dim, dtype=bfloat16),  # 8 v
+            np.asarray(lw.q_norm, bfloat16).reshape(head_dim),  # 9 q_norm (static)
+            np.asarray(lw.k_norm, bfloat16).reshape(head_dim),  # 10 k_norm (static)
+            np.zeros(q_dim, dtype=bfloat16),  # 11 q_n
+            np.zeros(kv_dim, dtype=bfloat16),  # 12 k_n
+            lut_q_dummy,  # 13 lut_q (dynamic)
+            lut_k_dummy,  # 14 lut_k (dynamic)
+            np.zeros(q_dim, dtype=bfloat16),  # 15 q_roped
+            np.zeros(kv_dim, dtype=bfloat16),  # 16 k_roped
             output_indices=[8, 15, 16],
             static_input_indices={1, 3, 5, 7, 9, 10},
             intermediate_indices={2, 4, 6, 8, 11, 12, 15, 16},
@@ -210,21 +226,21 @@ def _preload_decode_weights(decode_cache, weights, config):
         decode_cache.load_and_run(
             "o_gemv_ffn",
             _o_gemv_ffn_backend(),
-            lw._wo_t,          # arg0 wo (static, decoupled)
-            z_q,               # arg1 attn_out (q_dim)
-            z_emb,             # arg2 (dead)
-            z_emb,             # arg3 x_residual
-            z_emb,             # arg4 (dead)
-            z_emb,             # arg5 (dead)
+            lw._wo_t,  # arg0 wo (static, decoupled)
+            z_q,  # arg1 attn_out (q_dim)
+            z_emb,  # arg2 (dead)
+            z_emb,  # arg3 x_residual
+            z_emb,  # arg4 (dead)
+            z_emb,  # arg5 (dead)
             lw._packed_rms_buf,  # arg6 packed (static)
-            lw._wgateup_t,     # arg7 gate/up (static)
-            z_hidden,          # arg8 (dead)
-            z_hidden_emb,      # arg9 (dead)
-            z_hidden,          # arg10 (dead)
-            z_hidden,          # arg11 swiglu
-            lw._wdown_t,       # arg12 wdown (static)
-            z_emb,             # arg13 (dead)
-            z_emb,             # arg14 output
+            lw._wgateup_t,  # arg7 gate/up (static)
+            z_hidden,  # arg8 (dead)
+            z_hidden_emb,  # arg9 (dead)
+            z_hidden,  # arg10 (dead)
+            z_hidden,  # arg11 swiglu
+            lw._wdown_t,  # arg12 wdown (static)
+            z_emb,  # arg13 (dead)
+            z_emb,  # arg14 output
             output_indices=[14],
             static_input_indices={0, 6, 7, 12},
             intermediate_indices={2, 4, 5, 8, 9, 10, 11, 13, 14},
@@ -344,10 +360,14 @@ def run_npu_prefill(
             k_roped = inter["k_roped"]
             v_raw = inter["v"]
             k_cache[layer_idx, :, :seq_len, :] = (
-                k_roped.astype(bfloat16).reshape(seq_len, n_kv_heads, head_dim).transpose(1, 0, 2)
+                k_roped.astype(bfloat16)
+                .reshape(seq_len, n_kv_heads, head_dim)
+                .transpose(1, 0, 2)
             )
             v_cache[layer_idx, :, :seq_len, :] = (
-                v_raw.astype(bfloat16).reshape(seq_len, n_kv_heads, head_dim).transpose(1, 0, 2)
+                v_raw.astype(bfloat16)
+                .reshape(seq_len, n_kv_heads, head_dim)
+                .transpose(1, 0, 2)
             )
         prefill_cache.profiler.end_layer(layer_idx, t0)
 
@@ -356,7 +376,11 @@ def run_npu_prefill(
     pred_pos = prompt_len - 1
     with prefill_cache.profiler.time_cpu("final_rms_norm"):
         last_hidden = np.asarray(x_bf16, dtype=np.float32)[pred_pos : pred_pos + 1]
-        last_normed = rms_norm(last_hidden, weights.final_norm, eps=EPS).flatten().astype(bfloat16)
+        last_normed = (
+            rms_norm(last_hidden, weights.final_norm, eps=EPS)
+            .flatten()
+            .astype(bfloat16)
+        )
 
     logits_row = _run_lm_head(decode_cache, weights, last_normed, vocab_size)
     prefill_token = int(np.argmax(logits_row))
@@ -373,7 +397,14 @@ def run_npu_prefill(
 
 
 def run_npu_decode_step(
-    x_decode_bf16, weights, config, decode_cache, rope_lut_bf16, k_cache, v_cache, current_pos
+    x_decode_bf16,
+    weights,
+    config,
+    decode_cache,
+    rope_lut_bf16,
+    k_cache,
+    v_cache,
+    current_pos,
 ):
     """Run one NPU decode step: 28 blocks + final RMSNorm + LM-head."""
     vocab_size = weights.lm_head.shape[0]
@@ -396,7 +427,9 @@ def run_npu_decode_step(
         x_normed = rms_norm(
             x.astype(np.float32).reshape(1, config.emb_dim), weights.final_norm, eps=EPS
         )
-    logits = _run_lm_head(decode_cache, weights, x_normed.flatten().astype(bfloat16), vocab_size)
+    logits = _run_lm_head(
+        decode_cache, weights, x_normed.flatten().astype(bfloat16), vocab_size
+    )
     next_token = int(np.argmax(logits))
     return next_token, logits
 
@@ -432,9 +465,17 @@ def generate(
         print(f"{'='*60}\n")
 
     prefill_token, _logits, k_cache, v_cache, prompt_len = run_npu_prefill(
-        prompt_tokens, weights, config, prefill_cache, decode_cache,
-        rope_lut_bf16, max_seq, tokenizer=tokenizer, cpu_attn=cpu_attn,
-        profile=profile, quiet=True,
+        prompt_tokens,
+        weights,
+        config,
+        prefill_cache,
+        decode_cache,
+        rope_lut_bf16,
+        max_seq,
+        tokenizer=tokenizer,
+        cpu_attn=cpu_attn,
+        profile=profile,
+        quiet=True,
     )
 
     ttft = time.perf_counter() - ttft_start
@@ -460,8 +501,14 @@ def generate(
 
     for _ in range(n_tokens):
         next_token, _ = run_npu_decode_step(
-            x_decode, weights, config, decode_cache, rope_lut_bf16,
-            k_cache, v_cache, current_pos,
+            x_decode,
+            weights,
+            config,
+            decode_cache,
+            rope_lut_bf16,
+            k_cache,
+            v_cache,
+            current_pos,
         )
         generated_tokens.append(next_token)
         current_pos += 1
@@ -475,7 +522,9 @@ def generate(
     t_decode = time.time() - t_dec
     n_gen = len(generated_tokens) - 1
     if not streaming and n_gen > 0:
-        print(f"\nGenerated {n_gen} tokens in {t_decode:.2f}s ({n_gen / t_decode:.2f} tok/s)")
+        print(
+            f"\nGenerated {n_gen} tokens in {t_decode:.2f}s ({n_gen / t_decode:.2f} tok/s)"
+        )
 
     if prefill_cache.profiler.enabled:
         print(f"\n{'='*60}\nPREFILL detail")
@@ -499,10 +548,14 @@ def build_session(args) -> Session:
     seq_len = 2048
 
     prefill_cache = KernelCache(
-        "prefill_kernel_cache", verbose=args.verbose, profiler=Profiler(enabled=args.profile)
+        "prefill_kernel_cache",
+        verbose=args.verbose,
+        profiler=Profiler(enabled=args.profile),
     )
     decode_cache = KernelCache(
-        "decode_kernel_cache", verbose=args.verbose, profiler=Profiler(enabled=args.profile)
+        "decode_kernel_cache",
+        verbose=args.verbose,
+        profiler=Profiler(enabled=args.profile),
     )
 
     if not args.run_only:
@@ -529,14 +582,23 @@ def build_session(args) -> Session:
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
-    rope_lut_bf16 = generate_rope_lut(config=config, seq_len=seq_len + args.n_tokens).astype(bfloat16)
+    rope_lut_bf16 = generate_rope_lut(
+        config=config, seq_len=seq_len + args.n_tokens
+    ).astype(bfloat16)
 
-    prepare_runtime(prefill_cache, decode_cache, weights, config, seq_len, rope_lut_bf16)
+    prepare_runtime(
+        prefill_cache, decode_cache, weights, config, seq_len, rope_lut_bf16
+    )
 
     return Session(
-        config=config, seq_len=seq_len, weights=weights, tokenizer=tokenizer,
-        prefill_cache=prefill_cache, decode_cache=decode_cache,
-        rope_lut_bf16=rope_lut_bf16, model_variant=args.model,
+        config=config,
+        seq_len=seq_len,
+        weights=weights,
+        tokenizer=tokenizer,
+        prefill_cache=prefill_cache,
+        decode_cache=decode_cache,
+        rope_lut_bf16=rope_lut_bf16,
+        model_variant=args.model,
     )
 
 
@@ -550,18 +612,30 @@ def _tokenize_prompt(session: Session, prompt_text: str) -> list:
     return session.tokenizer.encode(prompt_text)
 
 
-def run_once(session, prompt_text, *, n_tokens, profile=False, cpu_attn=True, on_token=None):
+def run_once(
+    session, prompt_text, *, n_tokens, profile=False, cpu_attn=True, on_token=None
+):
     ttft_start = time.perf_counter()
     with session.prefill_cache.profiler.time_cpu("tokenize"):
         tokens = _tokenize_prompt(session, prompt_text)
     prompt_len_actual = len(tokens)
     with session.prefill_cache.profiler.time_cpu("eos_pad"):
         if len(tokens) < session.seq_len:
-            tokens = tokens + [session.tokenizer.eos_token_id] * (session.seq_len - len(tokens))
+            tokens = tokens + [session.tokenizer.eos_token_id] * (
+                session.seq_len - len(tokens)
+            )
     generated = generate(
-        tokens, session.weights, session.config, session.prefill_cache,
-        session.decode_cache, session.rope_lut_bf16, tokenizer=session.tokenizer,
-        n_tokens=n_tokens, profile=profile, cpu_attn=cpu_attn, on_token=on_token,
+        tokens,
+        session.weights,
+        session.config,
+        session.prefill_cache,
+        session.decode_cache,
+        session.rope_lut_bf16,
+        tokenizer=session.tokenizer,
+        n_tokens=n_tokens,
+        profile=profile,
+        cpu_attn=cpu_attn,
+        on_token=on_token,
         ttft_start=ttft_start,
     )
     return generated, prompt_len_actual
@@ -600,8 +674,14 @@ def repl_loop(session, args):
         sys.stdout.write("\nResponse: ")
         sys.stdout.flush()
         try:
-            run_once(session, prompt, n_tokens=args.n_tokens, profile=False,
-                     cpu_attn=args.cpu_attn, on_token=_cb)
+            run_once(
+                session,
+                prompt,
+                n_tokens=args.n_tokens,
+                profile=False,
+                cpu_attn=args.cpu_attn,
+                on_token=_cb,
+            )
         except KeyboardInterrupt:
             print("\n[interrupted]")
             continue
@@ -619,7 +699,9 @@ if __name__ == "__main__":
     parser.add_argument("--cpu-attn", action="store_true", default=False)
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--prompt", type=str, default="What is the capital of France?")
-    parser.add_argument("--model", type=str, choices=["base", "instruct"], default="instruct")
+    parser.add_argument(
+        "--model", type=str, choices=["base", "instruct"], default="instruct"
+    )
     parser.add_argument("--interactive", action="store_true")
     args = parser.parse_args()
 
@@ -636,7 +718,10 @@ if __name__ == "__main__":
         repl_loop(session, args)
     else:
         generated, plen = run_once(
-            session, args.prompt, n_tokens=args.n_tokens, profile=args.profile,
+            session,
+            args.prompt,
+            n_tokens=args.n_tokens,
+            profile=args.profile,
             cpu_attn=args.cpu_attn,
         )
         _print_one_shot_output(session, args.prompt, generated, plen)

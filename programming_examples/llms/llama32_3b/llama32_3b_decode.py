@@ -73,7 +73,7 @@ from llama32_1b_decode import decode_attention_cpu  # noqa: F401
 # cascade's SwiGLU stage held the full K=emb in L1 and overflowed the AIE2P BD
 # size limit at emb=3072 — that is why O+FFN runs as standalone GEMVs rather than
 # the fused cascade.
-_GEMV_DOWN = (2, 2, 8)   # 3072×8192 (Down proj; K=8192 → L2 caps tile_m=2)
+_GEMV_DOWN = (2, 2, 8)  # 3072×8192 (Down proj; K=8192 → L2 caps tile_m=2)
 
 # O / Gate / Up proj GEMVs on NPU. Standalone matvec ELFs (A in L2, B streamed
 # L3->L1), mirroring qwen25_3b. The residual / FFN RMSNorm / SwiGLU glue stays on
@@ -81,8 +81,8 @@ _GEMV_DOWN = (2, 2, 8)   # 3072×8192 (Down proj; K=8192 → L2 caps tile_m=2)
 # Tile configs (tile_m, m_input, herd_m). O proj is SQUARE (M=emb=3072, K=q_dim
 # =3072). Gate/Up are M=hidden=8192, K=emb=3072. matvec L2 budget:
 # tile_m*herd_m*K*2 <= 512 KiB; herd_m=8 -> tile_m*K <= 32768. K=3072 -> tile_m<=10.
-_GEMV_O = (8, 8, 8)        # O proj (M=3072 K=3072)
-_GEMV_GATEUP = (8, 8, 8)   # Gate/Up proj (M=8192 K=3072)
+_GEMV_O = (8, 8, 8)  # O proj (M=3072 K=3072)
+_GEMV_GATEUP = (8, 8, 8)  # Gate/Up proj (M=8192 K=3072)
 
 
 def _gemv_backend(verbose=False, name="gemv", omit_pingpong=False):
@@ -114,8 +114,11 @@ def build_gemv_module(m, k, tile_m, m_input, herd_m=8, name="gemv", link_with="m
     from matvec import build_module as build_gemv
     from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
 
-    gemv_ir = str(build_gemv(m, k, tile_m, m_input, herd_m, bfloat16, bfloat16,
-                             link_with=link_with))
+    gemv_ir = str(
+        build_gemv(
+            m, k, tile_m, m_input, herd_m, bfloat16, bfloat16, link_with=link_with
+        )
+    )
     base_args = [
         FuncArg("%arg0", f"memref<{m}x{k}xbf16>"),
         FuncArg("%arg1", f"memref<{k}xbf16>"),
@@ -123,7 +126,9 @@ def build_gemv_module(m, k, tile_m, m_input, herd_m=8, name="gemv", link_with="m
     ]
     slices = [
         KernelSlice(
-            gemv_ir, "g", {0: 0, 1: 1, 2: 2},
+            gemv_ir,
+            "g",
+            {0: 0, 1: 1, 2: 2},
             extern_syms={"@matvec_vectorized_bf16_bf16", "@linalg_fill_bf16"},
         )
     ]
@@ -146,8 +151,10 @@ def compile_decode_kernels(cache, config):
     kv_dim = n_kv_heads * head_dim
 
     print(f"\n{'='*60}")
-    print("Compiling decode kernels (rms_gemv_rope + lm_head_gemv; "
-          "o_gemv_ffn -> CPU at emb=3072)...")
+    print(
+        "Compiling decode kernels (rms_gemv_rope + lm_head_gemv; "
+        "o_gemv_ffn -> CPU at emb=3072)..."
+    )
     print(f"{'='*60}\n")
 
     from shared.builders.rms_gemv_rope_multi import build_rms_gemv_rope_module
@@ -172,6 +179,7 @@ def compile_decode_kernels(cache, config):
     # O proj GEMV (M=emb=3072, K=q_dim=3072). tile_m=8 -> shared mv.o
     # (DIM_M_OUTPUT=8) works; no dedicated .o needed.
     from shared.infra.external_kernels import compile_mv
+
     compile_mv()  # ensure shared mv.o is DIM_M_OUTPUT=8
     print(f"\n--- o_gemv (O proj GEMV, {emb_dim}x{q_dim}) ---")
     o_tm, o_mi, o_hm = _GEMV_O
@@ -197,6 +205,7 @@ def compile_decode_kernels(cache, config):
     # Standalone Down GEMV (M=emb=3072, K=hidden=8192). Needs its own mv.o
     # with DIM_M_OUTPUT=tile_m (the shared mv.o uses 8); link down_mv.o.
     import shutil as _shutil
+
     d_tm, d_mi, d_hm = _GEMV_DOWN
     compile_mv(tile_m=d_tm)
     _shutil.copy2("mv.o", "down_mv.o")
@@ -204,8 +213,15 @@ def compile_decode_kernels(cache, config):
     print(f"\n--- down_gemv (Down proj GEMV, {emb_dim}x{hidden_dim}) ---")
     cache.compile_and_cache(
         "down_gemv",
-        build_gemv_module(emb_dim, hidden_dim, d_tm, d_mi, d_hm,
-                          name="down_gemv", link_with="down_mv.o"),
+        build_gemv_module(
+            emb_dim,
+            hidden_dim,
+            d_tm,
+            d_mi,
+            d_hm,
+            name="down_gemv",
+            link_with="down_mv.o",
+        ),
         _gemv_backend(cache.verbose, "down_gemv", omit_pingpong=True),
     )
 
@@ -213,8 +229,7 @@ def compile_decode_kernels(cache, config):
     print(f"\nAll {len(cache.artifacts)} decode kernels compiled.")
 
 
-def _o_ffn_cpu(layer_weights, attn_out, x_residual, config,
-               cache, verbose=False):
+def _o_ffn_cpu(layer_weights, attn_out, x_residual, config, cache, verbose=False):
     """O-proj + residual + FFN(SwiGLU) + down + residual for one decode token.
 
     O / Gate / Up / Down projections run on NPU as standalone GEMV ELFs (the big
@@ -237,9 +252,9 @@ def _o_ffn_cpu(layer_weights, attn_out, x_residual, config,
     ro = cache.load_and_run(
         "o_gemv",
         _gemv_backend(verbose, "o_gemv"),
-        layer_weights._wo_t,                        # arg0 wo (static) (emb, q_dim)
+        layer_weights._wo_t,  # arg0 wo (static) (emb, q_dim)
         np.ascontiguousarray(attn_out).astype(bfloat16),  # arg1 attn_out (q_dim,)
-        np.zeros(emb_dim, dtype=bfloat16),          # arg2 proj (emb,)
+        np.zeros(emb_dim, dtype=bfloat16),  # arg2 proj (emb,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
@@ -258,9 +273,9 @@ def _o_ffn_cpu(layer_weights, attn_out, x_residual, config,
     rg = cache.load_and_run(
         "gate_gemv",
         _gemv_backend(verbose, "gate_gemv"),
-        layer_weights._wgate_t,                     # arg0 w_gate (static) (hidden, emb)
-        np.ascontiguousarray(normed_bf16),          # arg1 normed (emb,)
-        np.zeros(hidden_dim, dtype=bfloat16),       # arg2 gate (hidden,)
+        layer_weights._wgate_t,  # arg0 w_gate (static) (hidden, emb)
+        np.ascontiguousarray(normed_bf16),  # arg1 normed (emb,)
+        np.zeros(hidden_dim, dtype=bfloat16),  # arg2 gate (hidden,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
@@ -270,9 +285,9 @@ def _o_ffn_cpu(layer_weights, attn_out, x_residual, config,
     ru = cache.load_and_run(
         "up_gemv",
         _gemv_backend(verbose, "up_gemv"),
-        layer_weights._wup_t,                       # arg0 w_up (static) (hidden, emb)
-        np.ascontiguousarray(normed_bf16),          # arg1 normed (emb,)
-        np.zeros(hidden_dim, dtype=bfloat16),       # arg2 up (hidden,)
+        layer_weights._wup_t,  # arg0 w_up (static) (hidden, emb)
+        np.ascontiguousarray(normed_bf16),  # arg1 normed (emb,)
+        np.zeros(hidden_dim, dtype=bfloat16),  # arg2 up (hidden,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
@@ -288,9 +303,9 @@ def _o_ffn_cpu(layer_weights, attn_out, x_residual, config,
     rd = cache.load_and_run(
         "down_gemv",
         _gemv_backend(verbose, "down_gemv", omit_pingpong=True),
-        layer_weights._wdown_t,                        # arg0 w_down (static) (emb, hidden)
-        np.ascontiguousarray(swiglu_bf16),             # arg1 swiglu (hidden,)
-        np.zeros(emb_dim, dtype=bfloat16),             # arg2 down (emb,)
+        layer_weights._wdown_t,  # arg0 w_down (static) (emb, hidden)
+        np.ascontiguousarray(swiglu_bf16),  # arg1 swiglu (hidden,)
+        np.zeros(emb_dim, dtype=bfloat16),  # arg2 down (emb,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
@@ -341,8 +356,19 @@ def run_decode_block(
     results = cache.load_and_run(
         "rms_gemv_rope",
         RGR_BACKEND,
-        x_in, w_norm, normed_buf, wq, q_buf, wk, k_buf, wv, v_buf,
-        lut_q, lut_k, q_roped_buf, k_roped_buf,
+        x_in,
+        w_norm,
+        normed_buf,
+        wq,
+        q_buf,
+        wk,
+        k_buf,
+        wv,
+        v_buf,
+        lut_q,
+        lut_k,
+        q_roped_buf,
+        k_roped_buf,
         output_indices=[8, 11, 12],
         static_input_indices={1, 3, 5, 7},
         intermediate_indices={2, 4, 6, 8, 11, 12},
@@ -359,8 +385,13 @@ def run_decode_block(
     # --- CPU attention (KV cache) ---
     with cache.profiler.time_cpu("decode_attention_cpu"):
         attn_out = decode_attention_cpu(
-            q_roped.flatten(), k_cache_layer, v_cache_layer,
-            current_pos, n_heads, n_kv_heads, head_dim,
+            q_roped.flatten(),
+            k_cache_layer,
+            v_cache_layer,
+            current_pos,
+            n_heads,
+            n_kv_heads,
+            head_dim,
         )
 
     # --- O/Gate/Up/Down GEMVs on NPU; residual + FFN RMSNorm + SwiGLU host glue ---

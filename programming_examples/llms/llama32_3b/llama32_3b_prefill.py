@@ -79,15 +79,21 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False):
 
     from shared.infra.external_kernels import compile_gemm_mm
 
-    compile_gemm_mm(tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o")
-    compile_gemm_mm(tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o")
+    compile_gemm_mm(
+        tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
+    )
+    compile_gemm_mm(
+        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    )
 
     # 1. RMSNorm + QKV GEMMs + RoPE Q+K: one ELF (registry-driven per-GEMM method).
     from shared.builders.rms_gemms_rope_multi import build_rms_gemms_rope_module
 
     cache.compile_and_cache(
         "rms_gemms_rope",
-        build_rms_gemms_rope_module(seq_len, emb_dim, kv_dim, n_heads, n_kv_heads, head_dim),
+        build_rms_gemms_rope_module(
+            seq_len, emb_dim, kv_dim, n_heads, n_kv_heads, head_dim
+        ),
         {"verbose": cache.verbose, **_rms_gemms_rope_run_backend()},
     )
 
@@ -101,19 +107,25 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False):
         "instance_name": "o_ffn",
         "runtime_loop_tiling_sizes": [2, 2],
     }
-    cache.compile_and_cache("o_ffn", build_o_ffn_module(seq_len, emb_dim, hidden_dim), o_ffn_backend)
+    cache.compile_and_cache(
+        "o_ffn", build_o_ffn_module(seq_len, emb_dim, hidden_dim), o_ffn_backend
+    )
 
     # 3. Flash Attention (head-first, head_dim=128). Skip if using CPU fallback.
     if not cpu_attn:
         print("\n--- flash_attn (head-first FA, head_dim=128) ---")
         from shared.infra.fa_headfirst import compile_headfirst_fa
 
-        compile_headfirst_fa(cache, seq_len, n_heads, n_kv_heads, head_dim, cache.verbose)
+        compile_headfirst_fa(
+            cache, seq_len, n_heads, n_kv_heads, head_dim, cache.verbose
+        )
     else:
         print("  Skipping flash_attn compilation (using CPU attention fallback)")
 
     cache._save_manifest()
-    print(f"\nAll {len(cache.artifacts)} kernels compiled and cached to {cache.cache_dir}/")
+    print(
+        f"\nAll {len(cache.artifacts)} kernels compiled and cached to {cache.cache_dir}/"
+    )
     if cache.profiler.enabled:
         total = sum(cache.profiler.compile_times.values())
         print(f"Total compilation time: {total:.1f}s")
@@ -230,12 +242,16 @@ def run_transformer_block(
             np.zeros((seq_len, emb_dim), dtype=bfloat16),
             np.asarray(layer_weights.ffn_norm, dtype=bfloat16).reshape(emb_dim),
             np.zeros((seq_len, emb_dim), dtype=bfloat16),
-            np.asarray(layer_weights.w_gate, dtype=bfloat16).reshape(emb_dim, hidden_dim),
+            np.asarray(layer_weights.w_gate, dtype=bfloat16).reshape(
+                emb_dim, hidden_dim
+            ),
             np.zeros((seq_len, hidden_dim), dtype=bfloat16),
             np.asarray(layer_weights.w_up, dtype=bfloat16).reshape(emb_dim, hidden_dim),
             np.zeros((seq_len, hidden_dim), dtype=bfloat16),
             np.zeros((seq_len, hidden_dim), dtype=bfloat16),
-            np.asarray(layer_weights.w_down, dtype=bfloat16).reshape(hidden_dim, emb_dim),
+            np.asarray(layer_weights.w_down, dtype=bfloat16).reshape(
+                hidden_dim, emb_dim
+            ),
             np.zeros((seq_len, emb_dim), dtype=bfloat16),
             np.zeros(n_total, dtype=bfloat16),
             np.zeros((seq_len, emb_dim), dtype=np.float32),

@@ -77,6 +77,7 @@ def compile_headfirst_fa(cache, seq_len, n_heads, n_kv_heads, head_dim, verbose=
     compile_attn_npu2(head_dim=head_dim, lkp=lkp, lqp_tile=lqp_tile, force=True)
 
     from flash_attention.kernel_fusion_based.attn_npu2 import build_module
+
     mod = build_module(
         lk=seq_len,
         lkp=lkp,
