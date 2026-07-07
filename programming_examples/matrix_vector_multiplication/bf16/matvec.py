@@ -29,8 +29,9 @@ range_ = for_
 
 
 @module_builder
-def build_module(m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out,
-                 link_with="mv.o"):
+def build_module(
+    m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out, link_with="mv.o"
+):
     assert (
         m % (tile_m * herd_m) == 0
     ), f"M ({m}) must be divisible by tile_m * herd_m ({tile_m * herd_m})"
