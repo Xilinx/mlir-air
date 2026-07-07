@@ -342,27 +342,21 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
     }
   }
 
-  // Static trip count of an op = product of the constant-bound scf.for /
-  // affine.for loops enclosing it (1 if none). Used to tell a genuine
-  // round-robin rotation (all sites used equally) from time-multiplexed
-  // distinct sites that each drain ONE buffer for an unequal number of
-  // iterations (e.g. unrolled multi-phase GEMV/projection loops with a
-  // different M/K per phase).
-  auto getOpTripCount = [](Operation *op) -> int {
-    int tripCount = 1;
+  // Nearest enclosing scf.for / affine.for of an op (null if none). A genuine
+  // round-robin rotation interleaves its buffers within one shared loop:
+  // successive iterations of that loop hand off to the next buffer, so two or
+  // more rotation sites live in the SAME loop. Time-multiplexed sites that each
+  // drain their own buffer in a SEPARATE loop (e.g. unrolled multi-phase proj:
+  // phase 0 drains buf0, then phase 1 drains buf1) consume in contiguous blocks
+  // and share no loop.
+  auto nearestForLoop = [](Operation *op) -> Operation * {
     Operation *parent = op->getParentOp();
     while (parent) {
-      if (auto affineFor = dyn_cast<affine::AffineForOp>(parent)) {
-        if (affineFor.hasConstantBounds())
-          if (auto tc = air::getStaticAffineForTripCountAsInt(affineFor))
-            tripCount *= *tc;
-      } else if (auto scfFor = dyn_cast<scf::ForOp>(parent)) {
-        if (auto tc = air::getStaticScfForTripCountAsInt(scfFor))
-          tripCount *= *tc;
-      }
+      if (isa<affine::AffineForOp, scf::ForOp>(parent))
+        return parent;
       parent = parent->getParentOp();
     }
-    return tripCount;
+    return nullptr;
   };
 
   // Detect if all operations form an N-buffer rotation pattern.
@@ -370,7 +364,7 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   // a single circular BD chain even if operations have different loop contexts.
   auto detectNBufferRotation =
       [&chansPartOfSameRotation,
-       &getOpTripCount](const llvm::SetVector<Operation *> &ops) -> bool {
+       &nearestForLoop](const llvm::SetVector<Operation *> &ops) -> bool {
     if (ops.size() < 2)
       return false;
 
@@ -389,17 +383,20 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
       uniqueBuffers.insert(chanOp.getMemref());
     }
 
-    // A genuine round-robin rotation uses every buffer the SAME number of
-    // times, so all sites must have EQUAL static trip counts. Time-multiplexed
-    // sites that each drain one buffer for an unequal count (e.g. unrolled
-    // multi-phase proj: phase 0 reads buf0 96x, phase 1 reads buf1 256x) are
-    // NOT a rotation -- a single round-robin BD chain would mis-deliver (each
-    // phase would see only every Nth block). Let those fall through to per-op
-    // sequential BDs (one counted BD per buffer).
-    int firstTrip = getOpTripCount(firstOp);
+    // A genuine rotation interleaves buffers inside a shared loop (a peeled
+    // steady-state loop unrolled across the buffer pool), so at least two sites
+    // share one enclosing for-loop. Sites that each sit alone in their own loop
+    // are time-multiplexed block consumers, NOT a rotation -- a single circular
+    // BD chain would mis-deliver (each block would see only every Nth buffer).
+    // Let those fall through to per-op sequential BDs.
+    llvm::DenseMap<Operation *, unsigned> loopSiteCount;
+    bool anySharedLoop = false;
     for (auto *op : ops)
-      if (getOpTripCount(op) != firstTrip)
-        return false;
+      if (Operation *loop = nearestForLoop(op))
+        if (++loopSiteCount[loop] >= 2)
+          anySharedLoop = true;
+    if (!anySharedLoop)
+      return false;
 
     // Valid rotation: multiple unique buffers, total ops divisible by buffer
     // count
