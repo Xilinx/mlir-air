@@ -1288,6 +1288,21 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
     erase_dims.push_back(i);
   }
 
+  // Never erase EVERY dimension: an empty offsets/sizes/strides list is
+  // interpreted downstream (e.g. AIRRtToNpu) as a full-volume contiguous
+  // access of the whole memref. If the access is genuinely partial (its total
+  // volume of 1 is smaller than the memref), keep the innermost dimension so
+  // its offset/size survive. Without this, a single-element write/read at
+  // offset 0 (e.g. a per-token kv-cache append) gets silently expanded to the
+  // whole memref. erase_dims is ordered high->low, so erase_dims.front() is the
+  // innermost dim. memref_volume == 1 means the size-1 access already covers
+  // the whole (scalar) memref, so erasing to empty is correct there.
+  if (!erase_dims.empty() &&
+      static_cast<size_t>(erase_dims.size()) == sizes.size() &&
+      memref_volume != 1) {
+    erase_dims.erase(erase_dims.begin());
+  }
+
   listsHaveChanged |=
       eraseWrapNStrideDim(builder, erase_dims, offsets, sizes, strides)
           .succeeded();
