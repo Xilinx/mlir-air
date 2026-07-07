@@ -82,7 +82,9 @@ def build_rms_qkv_qknorm_rope_gemv_module(config):
     head_dim = config.head_dim
     q_dim = n_heads * head_dim
     kv_dim = n_kv_heads * head_dim
-    return _build(emb_dim, q_dim, kv_dim, n_heads, n_kv_heads, head_dim, qknorm_eps=1e-6)
+    return _build(
+        emb_dim, q_dim, kv_dim, n_heads, n_kv_heads, head_dim, qknorm_eps=1e-6
+    )
 
 
 def _rms_qkv_qknorm_rope_gemv_backend(verbose=False):
@@ -108,16 +110,20 @@ _LM_N_PART = 8192  # % 64 == 0; n_part/32 - 1 = 255 (at the repeat-count limit)
 # herd_m=8 that caps tile_m*K <= 32768. K=2560 -> tile_m<=12 (use 8). The O
 # GEMV has the larger K=q_dim=4096 -> tile_m*4096<=32768 -> tile_m<=8, but 8
 # lands exactly at the L2 ceiling (A=524288 + C overflows), so O uses tile_m=4.
-_GEMV_QO = (8, 8, 8)        # Q proj (M=4096 K=2560)
-_GEMV_KV = (8, 8, 8)        # K/V proj (M=1024 K=2560)
-_GEMV_O = (4, 4, 8)         # O proj (M=2560 K=4096 DECOUPLED; tile_m=4 to fit L2, m_input=4 | tile_m)
-_GEMV_GATEUP = (8, 8, 8)    # Gate/Up proj (M=9728 K=2560)
-_GEMV_DOWN = (2, 2, 8)      # Down proj (M=2560 K=9728). m_input=2 (NOT 1): the B
-                            # vector is streamed once per (launch × tile_m/m_input)
-                            # and hoisted into one push_queue whose repeat_count =
-                            # M/(herd_m*m_input)-1 must be <=255. m_input=1 gives
-                            # 2560/8-1=319 (OVERFLOW); m_input=2 gives 159. Mirrors
-                            # llama32_3b down (2,2,8). omit_pingpong keeps L1 in budget.
+_GEMV_QO = (8, 8, 8)  # Q proj (M=4096 K=2560)
+_GEMV_KV = (8, 8, 8)  # K/V proj (M=1024 K=2560)
+_GEMV_O = (
+    4,
+    4,
+    8,
+)  # O proj (M=2560 K=4096 DECOUPLED; tile_m=4 to fit L2, m_input=4 | tile_m)
+_GEMV_GATEUP = (8, 8, 8)  # Gate/Up proj (M=9728 K=2560)
+_GEMV_DOWN = (2, 2, 8)  # Down proj (M=2560 K=9728). m_input=2 (NOT 1): the B
+# vector is streamed once per (launch × tile_m/m_input)
+# and hoisted into one push_queue whose repeat_count =
+# M/(herd_m*m_input)-1 must be <=255. m_input=1 gives
+# 2560/8-1=319 (OVERFLOW); m_input=2 gives 159. Mirrors
+# llama32_3b down (2,2,8). omit_pingpong keeps L1 in budget.
 
 
 # ---------------------------------------------------------------------------
@@ -139,16 +145,17 @@ def build_gemv_module(m, k, tile_m, m_input, herd_m=8, name="gemv", link_with="m
     GEMV slice through stitch_elf so the public func is renamed to `name`,
     matching the per-projection instance_name in the backend kwargs.
     """
-    _mv_dir = os.path.join(
-        _PROG_EXAMPLES, "matrix_vector_multiplication", "bf16"
-    )
+    _mv_dir = os.path.join(_PROG_EXAMPLES, "matrix_vector_multiplication", "bf16")
     if _mv_dir not in sys.path:
         sys.path.insert(0, _mv_dir)
     from matvec import build_module as build_gemv
     from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
 
-    gemv_ir = str(build_gemv(m, k, tile_m, m_input, herd_m, bfloat16, bfloat16,
-                             link_with=link_with))
+    gemv_ir = str(
+        build_gemv(
+            m, k, tile_m, m_input, herd_m, bfloat16, bfloat16, link_with=link_with
+        )
+    )
     base_args = [
         FuncArg("%arg0", f"memref<{m}x{k}xbf16>"),
         FuncArg("%arg1", f"memref<{k}xbf16>"),
@@ -157,7 +164,9 @@ def build_gemv_module(m, k, tile_m, m_input, herd_m=8, name="gemv", link_with="m
     # GEMV func args: {0: weight (MxK), 1: input (K,), 2: output (M,)}.
     slices = [
         KernelSlice(
-            gemv_ir, "g", {0: 0, 1: 1, 2: 2},
+            gemv_ir,
+            "g",
+            {0: 0, 1: 1, 2: 2},
             extern_syms={"@matvec_vectorized_bf16_bf16", "@linalg_fill_bf16"},
         )
     ]
@@ -232,7 +241,9 @@ def compile_decode_kernels(cache, config, verbose=False):
     compile_mv()
     compile_rope()
 
-    print("\n--- rms_qkv_qknorm_rope_gemv (FUSED: RMSNorm+QKV+QK-norm+RoPE, 8 launches) ---")
+    print(
+        "\n--- rms_qkv_qknorm_rope_gemv (FUSED: RMSNorm+QKV+QK-norm+RoPE, 8 launches) ---"
+    )
     cache.compile_and_cache(
         "rms_qkv_qknorm_rope_gemv",
         build_rms_qkv_qknorm_rope_gemv_module(config),
@@ -243,18 +254,21 @@ def compile_decode_kernels(cache, config, verbose=False):
     print(f"\n--- o_gemv (O proj GEMV, {emb_dim}x{q_dim}) ---")
     o_tm, o_mi, o_hm = _GEMV_O
     cache.compile_and_cache(
-        "o_gemv", build_gemv_module(emb_dim, q_dim, o_tm, o_mi, o_hm, name="o_gemv"),
+        "o_gemv",
+        build_gemv_module(emb_dim, q_dim, o_tm, o_mi, o_hm, name="o_gemv"),
         _gemv_backend(verbose, "o_gemv"),
     )
     print(f"\n--- gate_gemv (Gate proj GEMV, {hidden_dim}x{emb_dim}) ---")
     g_tm, g_mi, g_hm = _GEMV_GATEUP
     cache.compile_and_cache(
-        "gate_gemv", build_gemv_module(hidden_dim, emb_dim, g_tm, g_mi, g_hm, name="gate_gemv"),
+        "gate_gemv",
+        build_gemv_module(hidden_dim, emb_dim, g_tm, g_mi, g_hm, name="gate_gemv"),
         _gemv_backend(verbose, "gate_gemv"),
     )
     print(f"\n--- up_gemv (Up proj GEMV, {hidden_dim}x{emb_dim}) ---")
     cache.compile_and_cache(
-        "up_gemv", build_gemv_module(hidden_dim, emb_dim, g_tm, g_mi, g_hm, name="up_gemv"),
+        "up_gemv",
+        build_gemv_module(hidden_dim, emb_dim, g_tm, g_mi, g_hm, name="up_gemv"),
         _gemv_backend(verbose, "up_gemv"),
     )
     # Down proj GEMV (M=emb=2560, K=hidden=9728). The STANDALONE matvec stages A
@@ -262,15 +276,23 @@ def compile_decode_kernels(cache, config, verbose=False):
     # swiglu cascade overflowed L1). Needs its own mv.o with DIM_M_OUTPUT=tile_m
     # (the shared mv.o uses 8); link down_mv.o. omit_pingpong so the large B fits.
     import shutil as _shutil
+
     d_tm, d_mi, d_hm = _GEMV_DOWN
-    compile_mv(tile_m=d_tm)            # writes mv.o with DIM_M_OUTPUT=d_tm
+    compile_mv(tile_m=d_tm)  # writes mv.o with DIM_M_OUTPUT=d_tm
     _shutil.copy2("mv.o", "down_mv.o")
-    compile_mv()                       # restore mv.o (DIM_M_OUTPUT=8) for o/gate/up
+    compile_mv()  # restore mv.o (DIM_M_OUTPUT=8) for o/gate/up
     print(f"\n--- down_gemv (Down proj GEMV, {emb_dim}x{hidden_dim}) ---")
     cache.compile_and_cache(
         "down_gemv",
-        build_gemv_module(emb_dim, hidden_dim, d_tm, d_mi, d_hm,
-                          name="down_gemv", link_with="down_mv.o"),
+        build_gemv_module(
+            emb_dim,
+            hidden_dim,
+            d_tm,
+            d_mi,
+            d_hm,
+            name="down_gemv",
+            link_with="down_mv.o",
+        ),
         _gemv_backend(verbose, "down_gemv", omit_pingpong=True),
     )
 
@@ -290,7 +312,9 @@ def compile_decode_kernels(cache, config, verbose=False):
 # ---------------------------------------------------------------------------
 
 
-def decode_attention_cpu(q, k_cache, v_cache, current_pos, n_heads, n_kv_heads, head_dim):
+def decode_attention_cpu(
+    q, k_cache, v_cache, current_pos, n_heads, n_kv_heads, head_dim
+):
     """Single-query GQA attention with KV cache.
 
     Args:
@@ -366,23 +390,27 @@ def run_decode_block(
     res = cache.load_and_run(
         "rms_qkv_qknorm_rope_gemv",
         _rms_qkv_qknorm_rope_gemv_backend(verbose),
-        x_in,                                              # 0 x_in
+        x_in,  # 0 x_in
         layer_weights.attn_norm.reshape(emb_dim).astype(bfloat16),  # 1 norm_w (static)
-        np.zeros(emb_dim, dtype=bfloat16),                 # 2 normed
-        layer_weights._wq_t,                               # 3 wq (static)
-        np.zeros(q_dim, dtype=bfloat16),                   # 4 q
-        layer_weights._wk_t,                               # 5 wk (static)
-        np.zeros(kv_dim, dtype=bfloat16),                  # 6 k
-        layer_weights._wv_t,                               # 7 wv (static)
-        np.zeros(kv_dim, dtype=bfloat16),                  # 8 v
-        np.asarray(layer_weights.q_norm, bfloat16).reshape(head_dim),  # 9 q_norm (static)
-        np.asarray(layer_weights.k_norm, bfloat16).reshape(head_dim),  # 10 k_norm (static)
-        np.zeros(q_dim, dtype=bfloat16),                   # 11 q_n
-        np.zeros(kv_dim, dtype=bfloat16),                  # 12 k_n
-        lut_q,                                             # 13 lut_q (DYNAMIC)
-        lut_k,                                             # 14 lut_k (DYNAMIC)
-        np.zeros(q_dim, dtype=bfloat16),                   # 15 q_roped
-        np.zeros(kv_dim, dtype=bfloat16),                  # 16 k_roped
+        np.zeros(emb_dim, dtype=bfloat16),  # 2 normed
+        layer_weights._wq_t,  # 3 wq (static)
+        np.zeros(q_dim, dtype=bfloat16),  # 4 q
+        layer_weights._wk_t,  # 5 wk (static)
+        np.zeros(kv_dim, dtype=bfloat16),  # 6 k
+        layer_weights._wv_t,  # 7 wv (static)
+        np.zeros(kv_dim, dtype=bfloat16),  # 8 v
+        np.asarray(layer_weights.q_norm, bfloat16).reshape(
+            head_dim
+        ),  # 9 q_norm (static)
+        np.asarray(layer_weights.k_norm, bfloat16).reshape(
+            head_dim
+        ),  # 10 k_norm (static)
+        np.zeros(q_dim, dtype=bfloat16),  # 11 q_n
+        np.zeros(kv_dim, dtype=bfloat16),  # 12 k_n
+        lut_q,  # 13 lut_q (DYNAMIC)
+        lut_k,  # 14 lut_k (DYNAMIC)
+        np.zeros(q_dim, dtype=bfloat16),  # 15 q_roped
+        np.zeros(kv_dim, dtype=bfloat16),  # 16 k_roped
         output_indices=[8, 15, 16],
         static_input_indices={1, 3, 5, 7, 9, 10},
         intermediate_indices={2, 4, 6, 8, 11, 12, 15, 16},
@@ -402,8 +430,13 @@ def run_decode_block(
     # --- CPU attention ---
     with cache.profiler.time_cpu("decode_attention_cpu"):
         attn_out = decode_attention_cpu(
-            q_roped, k_cache_layer, v_cache_layer, current_pos,
-            n_heads, n_kv_heads, head_dim,
+            q_roped,
+            k_cache_layer,
+            v_cache_layer,
+            current_pos,
+            n_heads,
+            n_kv_heads,
+            head_dim,
         )
     inter["attn_out"] = attn_out
 
@@ -411,9 +444,9 @@ def run_decode_block(
     ro = cache.load_and_run(
         "o_gemv",
         _gemv_backend(verbose, "o_gemv"),
-        layer_weights._wo_t,                        # arg0 wo (static) (emb, q_dim)
-        np.ascontiguousarray(attn_out),             # arg1 attn_out (q_dim,)
-        np.zeros(emb_dim, dtype=bfloat16),          # arg2 proj (emb,)
+        layer_weights._wo_t,  # arg0 wo (static) (emb, q_dim)
+        np.ascontiguousarray(attn_out),  # arg1 attn_out (q_dim,)
+        np.zeros(emb_dim, dtype=bfloat16),  # arg2 proj (emb,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
@@ -426,14 +459,18 @@ def run_decode_block(
     inter["res1"] = res1.astype(bfloat16)
 
     # FFN RMSNorm (host, eps=1e-6)
-    normed2 = rms_norm(res1.reshape(1, emb_dim), layer_weights.ffn_norm, eps=1e-6).reshape(emb_dim).astype(bfloat16)
+    normed2 = (
+        rms_norm(res1.reshape(1, emb_dim), layer_weights.ffn_norm, eps=1e-6)
+        .reshape(emb_dim)
+        .astype(bfloat16)
+    )
 
     rg = cache.load_and_run(
         "gate_gemv",
         _gemv_backend(verbose, "gate_gemv"),
-        layer_weights._wgate_t,                     # arg0 w_gate (static) (hidden, emb)
-        np.ascontiguousarray(normed2),              # arg1 normed2 (emb,)
-        np.zeros(hidden_dim, dtype=bfloat16),       # arg2 gate (hidden,)
+        layer_weights._wgate_t,  # arg0 w_gate (static) (hidden, emb)
+        np.ascontiguousarray(normed2),  # arg1 normed2 (emb,)
+        np.zeros(hidden_dim, dtype=bfloat16),  # arg2 gate (hidden,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
@@ -443,9 +480,9 @@ def run_decode_block(
     ru = cache.load_and_run(
         "up_gemv",
         _gemv_backend(verbose, "up_gemv"),
-        layer_weights._wup_t,                       # arg0 w_up (static) (hidden, emb)
-        np.ascontiguousarray(normed2),              # arg1 normed2 (emb,)
-        np.zeros(hidden_dim, dtype=bfloat16),       # arg2 up (hidden,)
+        layer_weights._wup_t,  # arg0 w_up (static) (hidden, emb)
+        np.ascontiguousarray(normed2),  # arg1 normed2 (emb,)
+        np.zeros(hidden_dim, dtype=bfloat16),  # arg2 up (hidden,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
@@ -461,9 +498,9 @@ def run_decode_block(
     rd = cache.load_and_run(
         "down_gemv",
         _gemv_backend(verbose, "down_gemv", omit_pingpong=True),
-        layer_weights._wdown_t,                     # arg0 w_down (static) (emb, hidden)
-        np.ascontiguousarray(swig),                 # arg1 swig (hidden,)
-        np.zeros(emb_dim, dtype=bfloat16),          # arg2 down (emb,)
+        layer_weights._wdown_t,  # arg0 w_down (static) (emb, hidden)
+        np.ascontiguousarray(swig),  # arg1 swig (hidden,)
+        np.zeros(emb_dim, dtype=bfloat16),  # arg2 down (emb,)
         output_indices=[2],
         static_input_indices={0},
         intermediate_indices={2},
