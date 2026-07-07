@@ -366,6 +366,24 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
       uniqueBuffers.insert(chanOp.getMemref());
     }
 
+    // A genuine rotation interleaves buffers inside a shared loop (a peeled
+    // steady-state loop unrolled across the buffer pool), so at least two sites
+    // share one enclosing loop. Sites that each sit alone in their own loop are
+    // time-multiplexed block consumers, NOT a rotation -- a single circular BD
+    // chain would mis-deliver (each block would see only every Nth buffer). Let
+    // those fall through to per-op sequential BDs.
+    // Note: this is coarse -- any two sites sharing a loop marks the whole set
+    // as a rotation; a channel/tile mixing a rotation with block consumers on
+    // one DMA channel (not observed in practice) would be over-collapsed.
+    llvm::DenseMap<Operation *, unsigned> loopSiteCount;
+    bool anySharedLoop = false;
+    for (auto *op : ops)
+      if (auto loop = op->getParentOfType<LoopLikeOpInterface>())
+        if (++loopSiteCount[loop.getOperation()] >= 2)
+          anySharedLoop = true;
+    if (!anySharedLoop)
+      return false;
+
     // Valid rotation: multiple unique buffers, total ops divisible by buffer
     // count
     unsigned numBuffers = uniqueBuffers.size();
