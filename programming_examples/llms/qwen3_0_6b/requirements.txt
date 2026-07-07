@@ -1,0 +1,21 @@
+# Additional Python packages for the Qwen3-0.6B example.
+#
+# These are *on top of* the mlir-air base environment (which already
+# provides numpy, ml_dtypes, filelock, pyxrt, etc.).
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# Qwen3-0.6B is openly licensed and auto-downloads from HuggingFace on
+# first use (https://huggingface.co/Qwen/Qwen3-0.6B) -- no license
+# acceptance required. If you hit rate limits, run `huggingface-cli login`
+# (or export HF_TOKEN=<token>) with a free read token.
+# See README.md / docs/usage.md for details.
+
+# Weight loading
+safetensors
+huggingface_hub
+
+# Tokenizer (chat template) and HuggingFace reference model (used by `make verify`)
+transformers
+torch

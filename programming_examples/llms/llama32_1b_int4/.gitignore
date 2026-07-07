@@ -3,7 +3,6 @@ build_peano/
 build_chess/
 __pycache__/
 *.pyc
-verify_kernel_cache/
 air_project/
 .debug/
 .pytest_cache/

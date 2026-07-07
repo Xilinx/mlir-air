@@ -1,16 +1,14 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Verify adapter for the bf16 Llama-3.2-1B example.
+"""Verify adapter for the bf16 Qwen3-0.6B example.
 
-Wraps the production `llama32_1b_inference` driver into a Runner that
+Wraps the production `qwen3_0_6b_inference` driver into a Runner that
 satisfies `verify/runners/base.Runner`. The shared verify framework
-(see `programming_examples/llms/verify/verify_runner.py`) imports this
-module via `--runner=llama32_1b.verify_adapter` and calls `build_runner`.
+imports this via `--runner=qwen3_0_6b.verify_adapter`.
 
-Nothing here is reachable from production code; it exists only so the
-verify gate can exercise the exact same NPU code path that `make run`
-uses.
+Qwen3-0.6B has no separate "-Instruct" repo (Qwen3 unifies base and
+instruct), so both MODEL_CHOICES keys map to "Qwen/Qwen3-0.6B".
 """
 
 from __future__ import annotations
@@ -22,7 +20,6 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
-# Ensure llms/, this dir, and llms/verify/ are importable.
 _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
 _VERIFY = _LLMS_DIR / "verify"
@@ -32,42 +29,40 @@ for _p in (str(_LLMS_DIR), str(_VERIFY), str(_THIS_DIR)):
     sys.path.insert(0, _p)
 
 from shared.infra.cache import KernelCache  # noqa: E402
-from llama32_1b_prefill import (  # noqa: E402
+from qwen3_0_6b_prefill import (  # noqa: E402
     compile_all_kernels as compile_prefill_kernels,
-    run_transformer_block as run_prefill_block,
+    run_transformer_block_qwen3 as run_prefill_block,
 )
-from llama32_1b_decode import compile_decode_kernels  # noqa: E402
-from llama32_1b_inference import (  # noqa: E402
+from qwen3_0_6b_decode import compile_decode_kernels  # noqa: E402
+from qwen3_0_6b_inference import (  # noqa: E402
     prepare_runtime,
     run_npu_prefill,
     run_npu_decode_step,
 )
-from llama32_1b_weights import (  # noqa: E402
+from qwen3_0_6b_weights import (  # noqa: E402
     LlamaConfig,
     load_weights,
     generate_rope_lut,
 )
-from llama32_1b_cpu_helpers import rms_norm  # noqa: E402
+from qwen3_0_6b_cpu_helpers import rms_norm  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
-# CLI --model choice -> HF id. Both Llamas use the same architecture; only
-# the weights and chat template differ.
+# Qwen3 unifies base + instruct in one checkpoint.
 MODEL_CHOICES = {
-    "base": "meta-llama/Llama-3.2-1B",
-    "instruct": "meta-llama/Llama-3.2-1B-Instruct",
+    "base": "Qwen/Qwen3-0.6B",
+    "instruct": "Qwen/Qwen3-0.6B",
 }
 DEFAULT_MODEL = "instruct"
 
+EPS = 1e-6
+
 
 def resolve_model(model_choice_or_id: str) -> str:
-    """`--model` accepts either a `MODEL_CHOICES` key (base/instruct) or a
-    raw HF model id / local path. Return the HF id."""
     return MODEL_CHOICES.get(model_choice_or_id, model_choice_or_id)
 
 
 def hf_reference(npu_model_name: str) -> str:
-    """HF reference checkpoint for `npu_model_name`. bf16 baseline is its
-    own reference (verifies NPU bf16 vs HF bf16 on the same checkpoint)."""
+    """bf16 baseline is its own reference (NPU bf16 vs HF bf16)."""
     return npu_model_name
 
 
@@ -76,15 +71,8 @@ def build_config():
 
 
 def build_runner(
-    model_name: str,
-    config,
-    max_seq: int,
-    tokenizer,
-    *,
-    npu_attn: bool = True,
-    lite_mode: bool = False,
+    model_name, config, max_seq, tokenizer, *, npu_attn=True, lite_mode=False
 ):
-    """Load bf16 weights, compile NPU kernels, return a `NpuRunner`."""
     weights = load_weights(model_name, config=config)
     return NpuRunner(
         weights=weights,
@@ -102,19 +90,15 @@ class NpuRunner:
     name = "npu_bf16"
 
     def __init__(
-        self,
-        weights,
-        config,
-        max_seq: int,
-        tokenizer,
-        npu_attn: bool = True,
-        lite_mode: bool = False,
+        self, weights, config, max_seq, tokenizer, npu_attn=True, lite_mode=False
     ):
         self.weights = weights
         self.config = config
         self.max_seq = max_seq
         self.npu_attn = npu_attn
-        self.cpu_attn = not npu_attn
+        self.cpu_attn = (
+            not npu_attn
+        )  # Qwen3 prefill attention is NPU FlashAttention by default (CPU only if npu_attn is explicitly disabled).
         self.lite_mode = lite_mode
         self._tokenizer = tokenizer
 
@@ -122,20 +106,12 @@ class NpuRunner:
             bfloat16
         )
 
-        # Reuse this model's build_peano kernel cache — the same dirs `make run`
-        # / `make profile` compile into — so verify/diagnosis and run/profile
-        # share one per-model cache (no recompile between commands). The path is
-        # absolute (anchored to _THIS_DIR) so it stays per-model and never
-        # contaminates another model's cache regardless of CWD.
         _cache_root = _THIS_DIR / "build_peano"
         self.prefill_cache = KernelCache(
             str(_cache_root / "prefill_kernel_cache"), verbose=False
         )
         compile_prefill_kernels(
-            self.prefill_cache,
-            config,
-            seq_len=max_seq,
-            cpu_attn=self.cpu_attn,
+            self.prefill_cache, config, seq_len=max_seq, cpu_attn=self.cpu_attn
         )
         self.decode_cache = KernelCache(
             str(_cache_root / "decode_kernel_cache"), verbose=False
@@ -151,14 +127,10 @@ class NpuRunner:
             self.rope_lut_bf16,
         )
 
-        # Repopulated by prefill(); read by decode_step() within the same
-        # verify run.
         self.k_cache = None
         self.v_cache = None
 
     def prefill(self, prompt_tokens: np.ndarray) -> PrefillRecord:
-        # Mirror production's eos-pad-to-max_seq before run_npu_prefill so
-        # the verify path hits the same kernel shape make run does.
         eos = self._tokenizer.eos_token_id
         if len(prompt_tokens) < self.max_seq:
             padded = list(prompt_tokens) + [eos] * (self.max_seq - len(prompt_tokens))
@@ -189,18 +161,16 @@ class NpuRunner:
                 top1_token=prefill_token,
             )
 
-        # Diagnosis-only: re-run the prefill layer loop to capture per-layer
-        # ffn_out + final post-norm hidden state. ~3-5s extra; diagnosis is
-        # single-prompt so the overhead doesn't matter.
+        # Diagnosis-only: re-run the prefill layer loop capturing per-layer
+        # ffn_out + final post-norm hidden state.
         cfg = self.config
         if len(prompt_tokens) < self.max_seq:
             pad = np.zeros(self.max_seq - len(prompt_tokens), dtype=prompt_tokens.dtype)
             padded_diag = np.concatenate([prompt_tokens, pad])
         else:
             padded_diag = prompt_tokens[: self.max_seq]
-        embed = self.weights.embed_table[padded_diag].astype(np.float32)
-        x = embed.astype(bfloat16)
-        layer_intermediates: list[dict[str, np.ndarray]] = []
+        x = self.weights.embed_table[padded_diag].astype(np.float32).astype(bfloat16)
+        layer_intermediates = []
         for li in range(cfg.n_layers):
             x, ints = run_prefill_block(
                 x,
@@ -216,7 +186,7 @@ class NpuRunner:
             layer_intermediates.append({"ffn_out": fo_full[:prompt_len]})
 
         x_full_f32 = np.asarray(x, dtype=np.float32)[:prompt_len]
-        x_full_normed = rms_norm(x_full_f32, self.weights.final_norm)
+        x_full_normed = rms_norm(x_full_f32, self.weights.final_norm, eps=EPS)
 
         return PrefillRecord(
             layer_intermediates=layer_intermediates,
@@ -237,7 +207,4 @@ class NpuRunner:
             self.v_cache,
             current_pos,
         )
-        return DecodeStepRecord(
-            lm_head_logits=logits,
-            top1_token=next_token,
-        )
+        return DecodeStepRecord(lm_head_logits=logits, top1_token=next_token)

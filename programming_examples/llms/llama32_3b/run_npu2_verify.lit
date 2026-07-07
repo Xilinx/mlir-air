@@ -1,0 +1,17 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Llama-3.2-3B verify gate: top-k token-level inclusion check, NPU vs HF bf16,
+// 2 prompts × 32 greedy tokens, k=5 (fast CI gate; use `make verify-full` for
+// the full sweep locally). Exercises the full production prefill + decode path
+// through the verify subsystem (verify/verify_runner.py).
+//
+// Skips cleanly when HF_TOKEN is unset (model downloads require it).
+//
+// REQUIRES: ryzen_ai_npu2, peano, hf_token
+//
+// RUN: mkdir -p test_peano_verify
+// RUN: cd test_peano_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: [verify] PASS

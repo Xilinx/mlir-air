@@ -1,16 +1,15 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Verify adapter for the bf16 Llama-3.2-1B example.
+"""Verify adapter for the bf16 Llama-3.2-3B example.
 
-Wraps the production `llama32_1b_inference` driver into a Runner that
-satisfies `verify/runners/base.Runner`. The shared verify framework
-(see `programming_examples/llms/verify/verify_runner.py`) imports this
-module via `--runner=llama32_1b.verify_adapter` and calls `build_runner`.
+Wraps the production `llama32_3b_inference` driver (which itself reuses the
+config-driven llama32_1b runtime verbatim) into a Runner that satisfies
+`verify/runners/base.Runner`. The shared verify framework imports this module
+via `--runner=llama32_3b.verify_adapter` and calls `build_runner`.
 
-Nothing here is reachable from production code; it exists only so the
-verify gate can exercise the exact same NPU code path that `make run`
-uses.
+Nothing here is reachable from production code; it exists only so the verify
+gate exercises the exact same NPU code path that `make run` uses.
 """
 
 from __future__ import annotations
@@ -22,52 +21,50 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
-# Ensure llms/, this dir, and llms/verify/ are importable.
+# Ensure llms/, this dir, llms/verify/, and the sibling llama32_1b/ are importable.
 _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
 _VERIFY = _LLMS_DIR / "verify"
-for _p in (str(_LLMS_DIR), str(_VERIFY), str(_THIS_DIR)):
+_LLAMA1B = _LLMS_DIR / "llama32_1b"
+for _p in (str(_LLMS_DIR), str(_VERIFY), str(_LLAMA1B), str(_THIS_DIR)):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
 from shared.infra.cache import KernelCache  # noqa: E402
-from llama32_1b_prefill import (  # noqa: E402
+from llama32_3b_prefill import (  # noqa: E402
     compile_all_kernels as compile_prefill_kernels,
     run_transformer_block as run_prefill_block,
 )
-from llama32_1b_decode import compile_decode_kernels  # noqa: E402
-from llama32_1b_inference import (  # noqa: E402
+from llama32_3b_decode import compile_decode_kernels  # noqa: E402
+from llama32_3b_inference import (  # noqa: E402
     prepare_runtime,
     run_npu_prefill,
     run_npu_decode_step,
 )
-from llama32_1b_weights import (  # noqa: E402
+from llama32_3b_weights import (  # noqa: E402
     LlamaConfig,
     load_weights,
     generate_rope_lut,
 )
-from llama32_1b_cpu_helpers import rms_norm  # noqa: E402
+from llama32_3b_cpu_helpers import rms_norm  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
-# CLI --model choice -> HF id. Both Llamas use the same architecture; only
-# the weights and chat template differ.
+# CLI --model choice -> HF id.
 MODEL_CHOICES = {
-    "base": "meta-llama/Llama-3.2-1B",
-    "instruct": "meta-llama/Llama-3.2-1B-Instruct",
+    "base": "meta-llama/Llama-3.2-3B",
+    "instruct": "meta-llama/Llama-3.2-3B-Instruct",
 }
 DEFAULT_MODEL = "instruct"
 
 
 def resolve_model(model_choice_or_id: str) -> str:
-    """`--model` accepts either a `MODEL_CHOICES` key (base/instruct) or a
-    raw HF model id / local path. Return the HF id."""
     return MODEL_CHOICES.get(model_choice_or_id, model_choice_or_id)
 
 
 def hf_reference(npu_model_name: str) -> str:
-    """HF reference checkpoint for `npu_model_name`. bf16 baseline is its
-    own reference (verifies NPU bf16 vs HF bf16 on the same checkpoint)."""
+    """HF reference checkpoint: bf16 baseline is its own reference (NPU bf16 vs
+    HF bf16 on the same checkpoint)."""
     return npu_model_name
 
 
@@ -113,6 +110,8 @@ class NpuRunner:
         self.weights = weights
         self.config = config
         self.max_seq = max_seq
+        # Llama-3.2-3B has head_dim=128; prefill attention uses the shared
+        # HEAD-FIRST FlashAttention wrapper (proven on qwen3_0_6b and siblings).
         self.npu_attn = npu_attn
         self.cpu_attn = not npu_attn
         self.lite_mode = lite_mode
@@ -122,11 +121,6 @@ class NpuRunner:
             bfloat16
         )
 
-        # Reuse this model's build_peano kernel cache — the same dirs `make run`
-        # / `make profile` compile into — so verify/diagnosis and run/profile
-        # share one per-model cache (no recompile between commands). The path is
-        # absolute (anchored to _THIS_DIR) so it stays per-model and never
-        # contaminates another model's cache regardless of CWD.
         _cache_root = _THIS_DIR / "build_peano"
         self.prefill_cache = KernelCache(
             str(_cache_root / "prefill_kernel_cache"), verbose=False
@@ -151,14 +145,10 @@ class NpuRunner:
             self.rope_lut_bf16,
         )
 
-        # Repopulated by prefill(); read by decode_step() within the same
-        # verify run.
         self.k_cache = None
         self.v_cache = None
 
     def prefill(self, prompt_tokens: np.ndarray) -> PrefillRecord:
-        # Mirror production's eos-pad-to-max_seq before run_npu_prefill so
-        # the verify path hits the same kernel shape make run does.
         eos = self._tokenizer.eos_token_id
         if len(prompt_tokens) < self.max_seq:
             padded = list(prompt_tokens) + [eos] * (self.max_seq - len(prompt_tokens))
@@ -190,8 +180,7 @@ class NpuRunner:
             )
 
         # Diagnosis-only: re-run the prefill layer loop to capture per-layer
-        # ffn_out + final post-norm hidden state. ~3-5s extra; diagnosis is
-        # single-prompt so the overhead doesn't matter.
+        # ffn_out + final post-norm hidden state.
         cfg = self.config
         if len(prompt_tokens) < self.max_seq:
             pad = np.zeros(self.max_seq - len(prompt_tokens), dtype=prompt_tokens.dtype)
