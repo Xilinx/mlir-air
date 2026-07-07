@@ -342,12 +342,35 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
     }
   }
 
+  // Static trip count of an op = product of the constant-bound scf.for /
+  // affine.for loops enclosing it (1 if none). Used to tell a genuine
+  // round-robin rotation (all sites used equally) from time-multiplexed
+  // distinct sites that each drain ONE buffer for an unequal number of
+  // iterations (e.g. unrolled multi-phase GEMV/projection loops with a
+  // different M/K per phase).
+  auto getOpTripCount = [](Operation *op) -> int {
+    int tripCount = 1;
+    Operation *parent = op->getParentOp();
+    while (parent) {
+      if (auto affineFor = dyn_cast<affine::AffineForOp>(parent)) {
+        if (affineFor.hasConstantBounds())
+          if (auto tc = air::getStaticAffineForTripCountAsInt(affineFor))
+            tripCount *= *tc;
+      } else if (auto scfFor = dyn_cast<scf::ForOp>(parent)) {
+        if (auto tc = air::getStaticScfForTripCountAsInt(scfFor))
+          tripCount *= *tc;
+      }
+      parent = parent->getParentOp();
+    }
+    return tripCount;
+  };
+
   // Detect if all operations form an N-buffer rotation pattern.
   // For N-buffer rotation (e.g., 4-buffer sliding window), we need to generate
   // a single circular BD chain even if operations have different loop contexts.
   auto detectNBufferRotation =
-      [&chansPartOfSameRotation](
-          const llvm::SetVector<Operation *> &ops) -> bool {
+      [&chansPartOfSameRotation,
+       &getOpTripCount](const llvm::SetVector<Operation *> &ops) -> bool {
     if (ops.size() < 2)
       return false;
 
@@ -365,6 +388,18 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
         return false;
       uniqueBuffers.insert(chanOp.getMemref());
     }
+
+    // A genuine round-robin rotation uses every buffer the SAME number of
+    // times, so all sites must have EQUAL static trip counts. Time-multiplexed
+    // sites that each drain one buffer for an unequal count (e.g. unrolled
+    // multi-phase proj: phase 0 reads buf0 96x, phase 1 reads buf1 256x) are
+    // NOT a rotation -- a single round-robin BD chain would mis-deliver (each
+    // phase would see only every Nth block). Let those fall through to per-op
+    // sequential BDs (one counted BD per buffer).
+    int firstTrip = getOpTripCount(firstOp);
+    for (auto *op : ops)
+      if (getOpTripCount(op) != firstTrip)
+        return false;
 
     // Valid rotation: multiple unique buffers, total ops divisible by buffer
     // count
