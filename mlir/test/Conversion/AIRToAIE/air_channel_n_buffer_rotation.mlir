@@ -8,7 +8,10 @@
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
 // 4-buffer rotation should generate single circular BD chain, not terminated sequences.
-// This tests the N-buffer rotation detection in getRepeatCounts().
+// Here all four gets are fully unrolled with equal (trivial) trip counts, so
+// getRepeatCounts() groups them into one repeat-count bucket regardless of the
+// detectNBufferRotation shared-loop path; see air_channel_peeled_rotation.mlir
+// for the unequal-trip case that exercises detectNBufferRotation directly.
 
 // CHECK: aie.device
 // CHECK-DAG:         %[[TILE:.*]] = aie.tile(2, 3)

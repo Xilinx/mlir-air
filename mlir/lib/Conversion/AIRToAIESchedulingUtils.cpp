@@ -342,29 +342,12 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
     }
   }
 
-  // Nearest enclosing scf.for / affine.for of an op (null if none). A genuine
-  // round-robin rotation interleaves its buffers within one shared loop:
-  // successive iterations of that loop hand off to the next buffer, so two or
-  // more rotation sites live in the SAME loop. Time-multiplexed sites that each
-  // drain their own buffer in a SEPARATE loop (e.g. unrolled multi-phase proj:
-  // phase 0 drains buf0, then phase 1 drains buf1) consume in contiguous blocks
-  // and share no loop.
-  auto nearestForLoop = [](Operation *op) -> Operation * {
-    Operation *parent = op->getParentOp();
-    while (parent) {
-      if (isa<affine::AffineForOp, scf::ForOp>(parent))
-        return parent;
-      parent = parent->getParentOp();
-    }
-    return nullptr;
-  };
-
   // Detect if all operations form an N-buffer rotation pattern.
   // For N-buffer rotation (e.g., 4-buffer sliding window), we need to generate
   // a single circular BD chain even if operations have different loop contexts.
   auto detectNBufferRotation =
-      [&chansPartOfSameRotation,
-       &nearestForLoop](const llvm::SetVector<Operation *> &ops) -> bool {
+      [&chansPartOfSameRotation](
+          const llvm::SetVector<Operation *> &ops) -> bool {
     if (ops.size() < 2)
       return false;
 
@@ -385,15 +368,18 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
 
     // A genuine rotation interleaves buffers inside a shared loop (a peeled
     // steady-state loop unrolled across the buffer pool), so at least two sites
-    // share one enclosing for-loop. Sites that each sit alone in their own loop
-    // are time-multiplexed block consumers, NOT a rotation -- a single circular
-    // BD chain would mis-deliver (each block would see only every Nth buffer).
-    // Let those fall through to per-op sequential BDs.
+    // share one enclosing loop. Sites that each sit alone in their own loop are
+    // time-multiplexed block consumers, NOT a rotation -- a single circular BD
+    // chain would mis-deliver (each block would see only every Nth buffer). Let
+    // those fall through to per-op sequential BDs.
+    // Note: this is coarse -- any two sites sharing a loop marks the whole set
+    // as a rotation; a channel/tile mixing a rotation with block consumers on
+    // one DMA channel (not observed in practice) would be over-collapsed.
     llvm::DenseMap<Operation *, unsigned> loopSiteCount;
     bool anySharedLoop = false;
     for (auto *op : ops)
-      if (Operation *loop = nearestForLoop(op))
-        if (++loopSiteCount[loop] >= 2)
+      if (auto loop = op->getParentOfType<LoopLikeOpInterface>())
+        if (++loopSiteCount[loop.getOperation()] >= 2)
           anySharedLoop = true;
     if (!anySharedLoop)
       return false;
