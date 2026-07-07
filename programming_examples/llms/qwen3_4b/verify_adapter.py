@@ -104,12 +104,16 @@ class NpuRunner:
             bfloat16
         )
 
-        _cache_root = _THIS_DIR / "verify_kernel_cache"
-        self.prefill_cache = KernelCache(str(_cache_root / "prefill"), verbose=False)
+        _cache_root = _THIS_DIR / "build_peano"
+        self.prefill_cache = KernelCache(
+            str(_cache_root / "prefill_kernel_cache"), verbose=False
+        )
         compile_prefill_kernels(
             self.prefill_cache, config, seq_len=max_seq, cpu_attn=self.cpu_attn
         )
-        self.decode_cache = KernelCache(str(_cache_root / "decode"), verbose=False)
+        self.decode_cache = KernelCache(
+            str(_cache_root / "decode_kernel_cache"), verbose=False
+        )
         compile_decode_kernels(self.decode_cache, config)
 
         prepare_runtime(
