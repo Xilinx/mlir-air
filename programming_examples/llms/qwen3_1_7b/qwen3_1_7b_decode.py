@@ -60,7 +60,9 @@ def build_rms_qkv_qknorm_rope_gemv_module(config):
     head_dim = config.head_dim
     q_dim = n_heads * head_dim
     kv_dim = n_kv_heads * head_dim
-    return _build(emb_dim, q_dim, kv_dim, n_heads, n_kv_heads, head_dim, qknorm_eps=1e-6)
+    return _build(
+        emb_dim, q_dim, kv_dim, n_heads, n_kv_heads, head_dim, qknorm_eps=1e-6
+    )
 
 
 def _rms_qkv_qknorm_rope_gemv_backend(verbose=False):
@@ -129,21 +131,21 @@ def build_o_gemv_ffn_qwen_module(emb_dim, q_dim, hidden_dim):
     stage3 = build_2tile_add(emb_dim, hidden_dim, m=8, k=512, n_cores=8)
 
     base_args = [
-        FuncArg("%arg0", f"memref<{emb_dim}x{q_dim}xbf16>"),   # wo (DECOUPLED)
-        FuncArg("%arg1", f"memref<{q_dim}xbf16>"),             # attn_out (DECOUPLED)
+        FuncArg("%arg0", f"memref<{emb_dim}x{q_dim}xbf16>"),  # wo (DECOUPLED)
+        FuncArg("%arg1", f"memref<{q_dim}xbf16>"),  # attn_out (DECOUPLED)
         FuncArg("%arg2", f"memref<{emb_dim}xbf16>"),
-        FuncArg("%arg3", f"memref<{emb_dim}xbf16>"),           # x_residual
+        FuncArg("%arg3", f"memref<{emb_dim}xbf16>"),  # x_residual
         FuncArg("%arg4", f"memref<{emb_dim}xbf16>"),
         FuncArg("%arg5", f"memref<{emb_dim}xbf16>"),
-        FuncArg("%arg6", f"memref<2x{emb_dim}xbf16>"),         # packed RMS input
+        FuncArg("%arg6", f"memref<2x{emb_dim}xbf16>"),  # packed RMS input
         FuncArg("%arg7", f"memref<{2 * hidden_dim}x{emb_dim}xbf16>"),  # gate/up
         FuncArg("%arg8", f"memref<{hidden_dim}xbf16>"),
         FuncArg("%arg9", f"memref<{hidden_dim}x{emb_dim}xbf16>"),
         FuncArg("%arg10", f"memref<{hidden_dim}xbf16>"),
-        FuncArg("%arg11", f"memref<{hidden_dim}xbf16>"),       # swiglu
+        FuncArg("%arg11", f"memref<{hidden_dim}xbf16>"),  # swiglu
         FuncArg("%arg12", f"memref<{emb_dim}x{hidden_dim}xbf16>"),  # wdown
         FuncArg("%arg13", f"memref<{emb_dim}xbf16>"),
-        FuncArg("%arg14", f"memref<{emb_dim}xbf16>"),          # output
+        FuncArg("%arg14", f"memref<{emb_dim}xbf16>"),  # output
     ]
     prelude = (
         f"    %arg6_row0_strided = memref.subview %arg6[0, 0] [1, {emb_dim}] [1, 1]\n"
@@ -152,11 +154,21 @@ def build_o_gemv_ffn_qwen_module(emb_dim, q_dim, hidden_dim):
         f"        : memref<{emb_dim}xbf16, strided<[1]>> to memref<{emb_dim}xbf16>"
     )
     slices = [
-        KernelSlice(str(stage1), "s1", {0: 0, 1: 1, 2: 3},
-                    arg_aliases={3: "%arg6_row0"}, extern_syms=_EXTERNS),
+        KernelSlice(
+            str(stage1),
+            "s1",
+            {0: 0, 1: 1, 2: 3},
+            arg_aliases={3: "%arg6_row0"},
+            extern_syms=_EXTERNS,
+        ),
         KernelSlice(str(stage2), "s2", {0: 7, 1: 6, 2: 11}, extern_syms=_EXTERNS),
-        KernelSlice(str(stage3), "s3", {0: 12, 1: 11, 3: 14},
-                    arg_aliases={2: "%arg6_row0"}, extern_syms=_EXTERNS),
+        KernelSlice(
+            str(stage3),
+            "s3",
+            {0: 12, 1: 11, 3: 14},
+            arg_aliases={2: "%arg6_row0"},
+            extern_syms=_EXTERNS,
+        ),
     ]
     module = stitch_elf(
         "o_gemv_ffn",
@@ -237,7 +249,9 @@ def compile_decode_kernels(cache, config, verbose=False):
     compile_rope()
     compile_silu_and_mul()
 
-    print("\n--- rms_qkv_qknorm_rope_gemv (FUSED: RMSNorm+QKV+QK-norm+RoPE, 8 launches) ---")
+    print(
+        "\n--- rms_qkv_qknorm_rope_gemv (FUSED: RMSNorm+QKV+QK-norm+RoPE, 8 launches) ---"
+    )
     cache.compile_and_cache(
         "rms_qkv_qknorm_rope_gemv",
         build_rms_qkv_qknorm_rope_gemv_module(config),
@@ -267,7 +281,9 @@ def compile_decode_kernels(cache, config, verbose=False):
 # ---------------------------------------------------------------------------
 
 
-def decode_attention_cpu(q, k_cache, v_cache, current_pos, n_heads, n_kv_heads, head_dim):
+def decode_attention_cpu(
+    q, k_cache, v_cache, current_pos, n_heads, n_kv_heads, head_dim
+):
     """Single-query GQA attention with KV cache.
 
     Args:
@@ -336,27 +352,33 @@ def run_decode_block(
     res = cache.load_and_run(
         "rms_qkv_qknorm_rope_gemv",
         _rms_qkv_qknorm_rope_gemv_backend(verbose),
-        x_bf16.flatten().astype(bfloat16),                 # 0 x_in
+        x_bf16.flatten().astype(bfloat16),  # 0 x_in
         layer_weights.attn_norm.reshape(emb_dim).astype(bfloat16),  # 1 norm_w (static)
-        np.zeros(emb_dim, dtype=bfloat16),                 # 2 normed
-        layer_weights._wq_t,                               # 3 wq (static)
-        np.zeros(q_dim, dtype=bfloat16),                   # 4 q
-        layer_weights._wk_t,                               # 5 wk (static)
-        np.zeros(kv_dim, dtype=bfloat16),                  # 6 k
-        layer_weights._wv_t,                               # 7 wv (static)
-        np.zeros(kv_dim, dtype=bfloat16),                  # 8 v
-        np.asarray(layer_weights.q_norm, bfloat16).reshape(head_dim),  # 9 q_norm (static)
-        np.asarray(layer_weights.k_norm, bfloat16).reshape(head_dim),  # 10 k_norm (static)
-        np.zeros(q_dim, dtype=bfloat16),                   # 11 q_n
-        np.zeros(kv_dim, dtype=bfloat16),                  # 12 k_n
-        lut_q,                                             # 13 lut_q (DYNAMIC — position-dependent)
-        lut_k,                                             # 14 lut_k (DYNAMIC)
-        np.zeros(q_dim, dtype=bfloat16),                   # 15 q_roped
-        np.zeros(kv_dim, dtype=bfloat16),                  # 16 k_roped
+        np.zeros(emb_dim, dtype=bfloat16),  # 2 normed
+        layer_weights._wq_t,  # 3 wq (static)
+        np.zeros(q_dim, dtype=bfloat16),  # 4 q
+        layer_weights._wk_t,  # 5 wk (static)
+        np.zeros(kv_dim, dtype=bfloat16),  # 6 k
+        layer_weights._wv_t,  # 7 wv (static)
+        np.zeros(kv_dim, dtype=bfloat16),  # 8 v
+        np.asarray(layer_weights.q_norm, bfloat16).reshape(
+            head_dim
+        ),  # 9 q_norm (static)
+        np.asarray(layer_weights.k_norm, bfloat16).reshape(
+            head_dim
+        ),  # 10 k_norm (static)
+        np.zeros(q_dim, dtype=bfloat16),  # 11 q_n
+        np.zeros(kv_dim, dtype=bfloat16),  # 12 k_n
+        lut_q,  # 13 lut_q (DYNAMIC — position-dependent)
+        lut_k,  # 14 lut_k (DYNAMIC)
+        np.zeros(q_dim, dtype=bfloat16),  # 15 q_roped
+        np.zeros(kv_dim, dtype=bfloat16),  # 16 k_roped
         output_indices=[8, 15, 16],
         static_input_indices={1, 3, 5, 7, 9, 10},
         intermediate_indices={2, 4, 6, 8, 11, 12, 15, 16},
-        bo_key=f"rms_qkv_qknorm_rope_gemv_L{layer_idx}" if layer_idx is not None else None,
+        bo_key=(
+            f"rms_qkv_qknorm_rope_gemv_L{layer_idx}" if layer_idx is not None else None
+        ),
     )
     v = res[8].astype(bfloat16)
     q_roped = res[15].astype(bfloat16)
@@ -369,8 +391,13 @@ def run_decode_block(
     # --- CPU attention ---
     with cache.profiler.time_cpu("decode_attention_cpu"):
         attn_out = decode_attention_cpu(
-            q_roped, k_cache_layer, v_cache_layer, current_pos,
-            n_heads, n_kv_heads, head_dim,
+            q_roped,
+            k_cache_layer,
+            v_cache_layer,
+            current_pos,
+            n_heads,
+            n_kv_heads,
+            head_dim,
         )
 
     # --- Stage E: O-proj (decoupled) + Residual + RMSNorm + SwiGLU ---
@@ -379,7 +406,9 @@ def run_decode_block(
     )
 
 
-def _run_o_gemv_ffn(attn_out, x_bf16, layer_weights, config, cache, layer_idx, verbose=False):
+def _run_o_gemv_ffn(
+    attn_out, x_bf16, layer_weights, config, cache, layer_idx, verbose=False
+):
     """Decode Stage E: O-proj(decoupled) + Residual + RMSNorm + SwiGLU FFN."""
     emb_dim = config.emb_dim
     hidden_dim = config.hidden_dim
@@ -389,21 +418,21 @@ def _run_o_gemv_ffn(attn_out, x_bf16, layer_weights, config, cache, layer_idx, v
     results = cache.load_and_run(
         "o_gemv_ffn",
         _o_gemv_ffn_backend(verbose),
-        layer_weights._wo_t,                      # arg0 wo (static, decoupled)
-        attn_out,                                 # arg1 attn_out (q_dim)
-        z_emb,                                    # arg2 (dead)
-        x_bf16.flatten().astype(bfloat16),        # arg3 x_residual
-        z_emb,                                    # arg4 (dead)
-        z_emb,                                    # arg5 (dead)
-        layer_weights._packed_rms_buf,            # arg6 packed (static)
-        layer_weights._wgateup_t,                 # arg7 gate/up (static)
-        z_hidden,                                 # arg8 (dead)
-        z_hidden_emb,                             # arg9 (dead)
-        z_hidden,                                 # arg10 (dead)
-        z_hidden,                                 # arg11 swiglu
-        layer_weights._wdown_t,                   # arg12 wdown (static)
-        z_emb,                                    # arg13 (dead)
-        z_emb,                                    # arg14 output
+        layer_weights._wo_t,  # arg0 wo (static, decoupled)
+        attn_out,  # arg1 attn_out (q_dim)
+        z_emb,  # arg2 (dead)
+        x_bf16.flatten().astype(bfloat16),  # arg3 x_residual
+        z_emb,  # arg4 (dead)
+        z_emb,  # arg5 (dead)
+        layer_weights._packed_rms_buf,  # arg6 packed (static)
+        layer_weights._wgateup_t,  # arg7 gate/up (static)
+        z_hidden,  # arg8 (dead)
+        z_hidden_emb,  # arg9 (dead)
+        z_hidden,  # arg10 (dead)
+        z_hidden,  # arg11 swiglu
+        layer_weights._wdown_t,  # arg12 wdown (static)
+        z_emb,  # arg13 (dead)
+        z_emb,  # arg14 output
         output_indices=[14],
         static_input_indices={0, 6, 7, 12},
         intermediate_indices={2, 4, 5, 8, 9, 10, 11, 13, 14},

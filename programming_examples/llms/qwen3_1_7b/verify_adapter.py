@@ -70,7 +70,9 @@ def build_config():
     return LlamaConfig()
 
 
-def build_runner(model_name, config, max_seq, tokenizer, *, npu_attn=True, lite_mode=False):
+def build_runner(
+    model_name, config, max_seq, tokenizer, *, npu_attn=True, lite_mode=False
+):
     weights = load_weights(model_name, config=config)
     return NpuRunner(
         weights=weights,
@@ -87,16 +89,22 @@ class NpuRunner:
 
     name = "npu_bf16"
 
-    def __init__(self, weights, config, max_seq, tokenizer, npu_attn=True, lite_mode=False):
+    def __init__(
+        self, weights, config, max_seq, tokenizer, npu_attn=True, lite_mode=False
+    ):
         self.weights = weights
         self.config = config
         self.max_seq = max_seq
         self.npu_attn = npu_attn
-        self.cpu_attn = not npu_attn  # Qwen3 prefill: NPU FlashAttention by default; CPU is optional fallback.
+        self.cpu_attn = (
+            not npu_attn
+        )  # Qwen3 prefill: NPU FlashAttention by default; CPU is optional fallback.
         self.lite_mode = lite_mode
         self._tokenizer = tokenizer
 
-        self.rope_lut_bf16 = generate_rope_lut(config=config, seq_len=max_seq).astype(bfloat16)
+        self.rope_lut_bf16 = generate_rope_lut(config=config, seq_len=max_seq).astype(
+            bfloat16
+        )
 
         _cache_root = _THIS_DIR / "verify_kernel_cache"
         self.prefill_cache = KernelCache(str(_cache_root / "prefill"), verbose=False)
@@ -107,7 +115,12 @@ class NpuRunner:
         compile_decode_kernels(self.decode_cache, config)
 
         prepare_runtime(
-            self.prefill_cache, self.decode_cache, weights, config, max_seq, self.rope_lut_bf16
+            self.prefill_cache,
+            self.decode_cache,
+            weights,
+            config,
+            max_seq,
+            self.rope_lut_bf16,
         )
 
         self.k_cache = None
@@ -120,9 +133,17 @@ class NpuRunner:
         else:
             padded = list(prompt_tokens)[: self.max_seq]
         prefill_token, logits_row, k_cache, v_cache, prompt_len = run_npu_prefill(
-            padded, self.weights, self.config, self.prefill_cache, self.decode_cache,
-            self.rope_lut_bf16, self.max_seq, tokenizer=self._tokenizer,
-            cpu_attn=self.cpu_attn, profile=False, quiet=True,
+            padded,
+            self.weights,
+            self.config,
+            self.prefill_cache,
+            self.decode_cache,
+            self.rope_lut_bf16,
+            self.max_seq,
+            tokenizer=self._tokenizer,
+            cpu_attn=self.cpu_attn,
+            profile=False,
+            quiet=True,
         )
         self.k_cache = k_cache
         self.v_cache = v_cache
@@ -148,8 +169,14 @@ class NpuRunner:
         layer_intermediates = []
         for li in range(cfg.n_layers):
             x, ints = run_prefill_block(
-                x, self.weights.layers[li], self.rope_lut_bf16, cfg,
-                self.prefill_cache, layer_idx=li, cpu_attn=self.cpu_attn, verbose=False,
+                x,
+                self.weights.layers[li],
+                self.rope_lut_bf16,
+                cfg,
+                self.prefill_cache,
+                layer_idx=li,
+                cpu_attn=self.cpu_attn,
+                verbose=False,
             )
             fo_full = np.asarray(ints["ffn_out"])
             layer_intermediates.append({"ffn_out": fo_full[:prompt_len]})
@@ -167,7 +194,13 @@ class NpuRunner:
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
         x = self.weights.embed_table[input_token].astype(bfloat16)
         next_token, logits = run_npu_decode_step(
-            x, self.weights, self.config, self.decode_cache, self.rope_lut_bf16,
-            self.k_cache, self.v_cache, current_pos,
+            x,
+            self.weights,
+            self.config,
+            self.decode_cache,
+            self.rope_lut_bf16,
+            self.k_cache,
+            self.v_cache,
+            current_pos,
         )
         return DecodeStepRecord(lm_head_logits=logits, top1_token=next_token)

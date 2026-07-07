@@ -47,7 +47,6 @@ from qwen3_1_7b_weights import LlamaConfig
 from qwen3_1_7b_cpu_helpers import attention_reference
 from shared.infra.cache import KernelCache, Profiler
 
-
 # ---------------------------------------------------------------------------
 # Builder 1 (FUSED): RMSNorm + Q/K/V GEMM + per-head QK-norm(Q,K) + RoPE(Q,K).
 #   8-launch ELF that does the entire attention-input stage on the NPU. See
@@ -67,7 +66,13 @@ def build_rms_qkv_qknorm_rope_module(seq_len, config):
     q_dim = n_heads * head_dim
     kv_dim = n_kv_heads * head_dim
     return _build(
-        seq_len, emb_dim, q_dim, kv_dim, n_heads, n_kv_heads, head_dim,
+        seq_len,
+        emb_dim,
+        q_dim,
+        kv_dim,
+        n_heads,
+        n_kv_heads,
+        head_dim,
         qknorm_eps=1e-6,
     )
 
@@ -161,33 +166,84 @@ def build_o_ffn_qwen_module(
     print(f"  [1/8] O GEMM ({o_spec['method']})  {seq_len}x{q_dim}x{emb_dim}...")
     o_ir = str(
         _build_gemm_module(
-            seq_len, q_dim, emb_dim, _o_m, _o_k2, _o_k1, _o_n, o_herd_m, o_herd_n, **_o_kw
+            seq_len,
+            q_dim,
+            emb_dim,
+            _o_m,
+            _o_k2,
+            _o_k1,
+            _o_n,
+            o_herd_m,
+            o_herd_n,
+            **_o_kw,
         )
     )
     print("  [2/8] Residual Add...")
     res_add_ir = str(_build_add_2d_to_2d(seq_len, emb_dim, bfloat16))
     print("  [3/8] FFN RMSNorm...")
-    rms_ir = _wrap_ir_in_launch(str(build_rms(seq_len, emb_dim, bfloat16, 16, herd_x=8)))
-    print(f"  [4/8] Gate GEMM ({g_spec['method']})  {seq_len}x{emb_dim}x{hidden_dim}...")
+    rms_ir = _wrap_ir_in_launch(
+        str(build_rms(seq_len, emb_dim, bfloat16, 16, herd_x=8))
+    )
+    print(
+        f"  [4/8] Gate GEMM ({g_spec['method']})  {seq_len}x{emb_dim}x{hidden_dim}..."
+    )
     gate_ir = str(
         _build_gemm_module(
-            seq_len, emb_dim, hidden_dim, _g_m, _g_k2, _g_k1, _g_n, gate_herd_m, gate_herd_n, **_g_kw
+            seq_len,
+            emb_dim,
+            hidden_dim,
+            _g_m,
+            _g_k2,
+            _g_k1,
+            _g_n,
+            gate_herd_m,
+            gate_herd_n,
+            **_g_kw,
         )
     )
     print(f"  [5/8] Up GEMM ({g_spec['method']})...")
     up_ir = str(
         _build_gemm_module(
-            seq_len, emb_dim, hidden_dim, _g_m, _g_k2, _g_k1, _g_n, gate_herd_m, gate_herd_n, **_g_kw
+            seq_len,
+            emb_dim,
+            hidden_dim,
+            _g_m,
+            _g_k2,
+            _g_k1,
+            _g_n,
+            gate_herd_m,
+            gate_herd_n,
+            **_g_kw,
         )
     )
     print("  [6/8] SwiGLU...")
     swiglu_ir = _wrap_ir_in_launch(
-        str(build_swiglu(seq_len, hidden_dim, swiglu_tile_n, bfloat16, swiglu_herd_x, swiglu_herd_y))
+        str(
+            build_swiglu(
+                seq_len,
+                hidden_dim,
+                swiglu_tile_n,
+                bfloat16,
+                swiglu_herd_x,
+                swiglu_herd_y,
+            )
+        )
     )
-    print(f"  [7/8] Down GEMM ({d_spec['method']})  {seq_len}x{hidden_dim}x{emb_dim}...")
+    print(
+        f"  [7/8] Down GEMM ({d_spec['method']})  {seq_len}x{hidden_dim}x{emb_dim}..."
+    )
     down_ir = str(
         _build_gemm_module(
-            seq_len, hidden_dim, emb_dim, _d_m, _d_k2, _d_k1, _d_n, down_herd_m, down_herd_n, **_d_kw
+            seq_len,
+            hidden_dim,
+            emb_dim,
+            _d_m,
+            _d_k2,
+            _d_k1,
+            _d_n,
+            down_herd_m,
+            down_herd_n,
+            **_d_kw,
         )
     )
 
@@ -218,7 +274,8 @@ def build_o_ffn_qwen_module(
                 @segment(name="add_seg", operands=[a_flat, b_flat, l_out])
                 def add_seg(s_a, s_b, s_out):
                     offset_map = AffineMap.get(
-                        0, 3,
+                        0,
+                        3,
                         [
                             AffineExpr.get_add(
                                 AffineSymbolExpr.get(0),
@@ -245,18 +302,42 @@ def build_o_ffn_qwen_module(
                         cst0 = arith.ConstantOp(xrt_dtype, 0.0)
                         for loop_iv in range_(0, chunk_size, tile_n):
                             offset = affine_apply(offset_map, [loop_iv, _tx, _ty])
-                            dma_memcpy_nd(l1_a, h_a, src_offsets=[offset], src_sizes=[tile_n], src_strides=[1])
-                            dma_memcpy_nd(l1_b, h_b, src_offsets=[offset], src_sizes=[tile_n], src_strides=[1])
+                            dma_memcpy_nd(
+                                l1_a,
+                                h_a,
+                                src_offsets=[offset],
+                                src_sizes=[tile_n],
+                                src_strides=[1],
+                            )
+                            dma_memcpy_nd(
+                                l1_b,
+                                h_b,
+                                src_offsets=[offset],
+                                src_sizes=[tile_n],
+                                src_strides=[1],
+                            )
                             for j in range_(0, tile_n, 16):
                                 sub_a = subview(l1_a.result, [j], [16], [1])
                                 sub_b = subview(l1_b.result, [j], [16], [1])
                                 sub_out = subview(l1_out.result, [j], [16], [1])
-                                v_a = transfer_read(vec_ty, sub_a, [c0], identity_map, cst0, [True])
-                                v_b = transfer_read(vec_ty, sub_b, [c0], identity_map, cst0, [True])
+                                v_a = transfer_read(
+                                    vec_ty, sub_a, [c0], identity_map, cst0, [True]
+                                )
+                                v_b = transfer_read(
+                                    vec_ty, sub_b, [c0], identity_map, cst0, [True]
+                                )
                                 v_sum = arith.addf(v_a, v_b)
-                                transfer_write(None, v_sum, sub_out, [c0], identity_map, [True])
+                                transfer_write(
+                                    None, v_sum, sub_out, [c0], identity_map, [True]
+                                )
                                 yield_([])
-                            dma_memcpy_nd(h_out, l1_out, dst_offsets=[offset], dst_sizes=[tile_n], dst_strides=[1])
+                            dma_memcpy_nd(
+                                h_out,
+                                l1_out,
+                                dst_offsets=[offset],
+                                dst_sizes=[tile_n],
+                                dst_strides=[1],
+                            )
                             yield_([])
                         DeallocOp(l1_a)
                         DeallocOp(l1_b)
@@ -277,21 +358,21 @@ def build_o_ffn_qwen_module(
     )
 
     base_args = [
-        FuncArg("%arg0", f"memref<{seq_len}x{q_dim}xbf16>"),    # attn_out (DECOUPLED)
-        FuncArg("%arg1", f"memref<{q_dim}x{emb_dim}xbf16>"),    # wo       (DECOUPLED)
+        FuncArg("%arg0", f"memref<{seq_len}x{q_dim}xbf16>"),  # attn_out (DECOUPLED)
+        FuncArg("%arg1", f"memref<{q_dim}x{emb_dim}xbf16>"),  # wo       (DECOUPLED)
         FuncArg("%arg2", f"memref<{seq_len}x{emb_dim}xbf16>"),  # proj
         FuncArg("%arg3", f"memref<{seq_len}x{emb_dim}xbf16>"),  # x_resid
         FuncArg("%arg4", f"memref<{seq_len}x{emb_dim}xbf16>"),  # res1
-        FuncArg("%arg5", f"memref<{emb_dim}xbf16>"),            # ffn_norm
+        FuncArg("%arg5", f"memref<{emb_dim}xbf16>"),  # ffn_norm
         FuncArg("%arg6", f"memref<{seq_len}x{emb_dim}xbf16>"),  # normed2
         FuncArg("%arg7", f"memref<{emb_dim}x{hidden_dim}xbf16>"),  # w_gate
         FuncArg("%arg8", f"memref<{seq_len}x{hidden_dim}xbf16>"),  # gate
         FuncArg("%arg9", f"memref<{emb_dim}x{hidden_dim}xbf16>"),  # w_up
-        FuncArg("%arg10", f"memref<{seq_len}x{hidden_dim}xbf16>"), # up
-        FuncArg("%arg11", f"memref<{seq_len}x{hidden_dim}xbf16>"), # swiglu
-        FuncArg("%arg12", f"memref<{hidden_dim}x{emb_dim}xbf16>"), # w_down
-        FuncArg("%arg13", f"memref<{seq_len}x{emb_dim}xbf16>"),    # down
-        FuncArg("%arg14", f"memref<{n_total}xbf16>"),             # output
+        FuncArg("%arg10", f"memref<{seq_len}x{hidden_dim}xbf16>"),  # up
+        FuncArg("%arg11", f"memref<{seq_len}x{hidden_dim}xbf16>"),  # swiglu
+        FuncArg("%arg12", f"memref<{hidden_dim}x{emb_dim}xbf16>"),  # w_down
+        FuncArg("%arg13", f"memref<{seq_len}x{emb_dim}xbf16>"),  # down
+        FuncArg("%arg14", f"memref<{n_total}xbf16>"),  # output
     ]
     scratch_args = [
         FuncArg("%arg15", f"memref<{seq_len}x{emb_dim}xf32>"),
@@ -304,10 +385,30 @@ def build_o_ffn_qwen_module(
         KernelSlice(o_ir, "og", {0: 0, 1: 1, 2: 15, 3: 2}, extern_syms=_gemm_externs),
         KernelSlice(res_add_ir, "ra", {0: 2, 1: 3, 2: 4}, private_from=False),
         KernelSlice(rms_ir, "rm", {0: 4, 1: 5, 2: 6}, private_from=False),
-        KernelSlice(gate_ir, "gg", {0: 6, 1: 7, 2: 16, 3: 8}, extern_syms=_gemm_externs, private_from=False),
-        KernelSlice(up_ir, "ug", {0: 6, 1: 9, 2: 17, 3: 10}, extern_syms=_gemm_externs, private_from=False),
-        KernelSlice(swiglu_ir, "sw", {0: 8, 1: 10, 2: 11}, extern_syms={"@silu_and_mul_bf16"}),
-        KernelSlice(down_ir, "dg", {0: 11, 1: 12, 2: 18, 3: 13}, extern_syms=_gemm_externs, private_from=False),
+        KernelSlice(
+            gate_ir,
+            "gg",
+            {0: 6, 1: 7, 2: 16, 3: 8},
+            extern_syms=_gemm_externs,
+            private_from=False,
+        ),
+        KernelSlice(
+            up_ir,
+            "ug",
+            {0: 6, 1: 9, 2: 17, 3: 10},
+            extern_syms=_gemm_externs,
+            private_from=False,
+        ),
+        KernelSlice(
+            swiglu_ir, "sw", {0: 8, 1: 10, 2: 11}, extern_syms={"@silu_and_mul_bf16"}
+        ),
+        KernelSlice(
+            down_ir,
+            "dg",
+            {0: 11, 1: 12, 2: 18, 3: 13},
+            extern_syms=_gemm_externs,
+            private_from=False,
+        ),
         KernelSlice(ffn_add_ir, "fa", {0: 13, 1: 4, 2: 14}, private_from=False),
     ]
 
@@ -367,13 +468,19 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
     q_dim = n_heads * head_dim
     kv_dim = n_kv_heads * head_dim
 
-    print(f"\n{'='*60}\nCompiling Qwen3 prefill kernels (seq_len={seq_len})...\n{'='*60}\n")
+    print(
+        f"\n{'='*60}\nCompiling Qwen3 prefill kernels (seq_len={seq_len})...\n{'='*60}\n"
+    )
 
     from shared.infra.external_kernels import compile_gemm_mm, compile_rope
 
     # mm.o variants for GEMM co-linking; rope.o (head_dim=128) for the rope ELFs.
-    compile_gemm_mm(tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o")
-    compile_gemm_mm(tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o")
+    compile_gemm_mm(
+        tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
+    )
+    compile_gemm_mm(
+        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    )
     compile_rope()
 
     print("\n--- rms_qkv_qknorm_rope (FUSED: RMSNorm+QKV+QK-norm+RoPE, 8 launches) ---")
@@ -426,23 +533,23 @@ def _fused_qknorm_rope_call(
     kv_dim = n_kv_heads * head_dim
 
     args = [
-        np.asarray(x_in, dtype=bfloat16).reshape(seq_len, emb_dim),          # 0 x_in (dynamic)
-        np.asarray(lw.attn_norm, dtype=bfloat16).reshape(emb_dim),           # 1 norm_w (static)
-        np.zeros((seq_len, emb_dim), dtype=bfloat16),                        # 2 normed (inter)
-        np.asarray(lw.wq, dtype=bfloat16).reshape(emb_dim, q_dim),           # 3 wq (static)
-        np.zeros((seq_len, q_dim), dtype=bfloat16),                          # 4 q (inter)
-        np.asarray(lw.wk, dtype=bfloat16).reshape(emb_dim, kv_dim),          # 5 wk (static)
-        np.zeros((seq_len, kv_dim), dtype=bfloat16),                         # 6 k (inter)
-        np.asarray(lw.wv, dtype=bfloat16).reshape(emb_dim, kv_dim),          # 7 wv (static)
-        np.zeros((seq_len, kv_dim), dtype=bfloat16),                         # 8 v (inter/out)
-        np.asarray(lw.q_norm, dtype=bfloat16).reshape(head_dim),            # 9 q_norm (static)
-        np.asarray(lw.k_norm, dtype=bfloat16).reshape(head_dim),            # 10 k_norm (static)
-        np.zeros((seq_len, q_dim), dtype=bfloat16),                          # 11 q_n (inter)
-        np.zeros((seq_len, kv_dim), dtype=bfloat16),                         # 12 k_n (inter)
-        lut_q,                                                              # 13 lut_q (static)
-        lut_k,                                                              # 14 lut_k (static)
-        np.zeros((seq_len, q_dim), dtype=bfloat16),                          # 15 q_roped (inter/out)
-        np.zeros((seq_len, kv_dim), dtype=bfloat16),                         # 16 k_roped (inter/out)
+        np.asarray(x_in, dtype=bfloat16).reshape(seq_len, emb_dim),  # 0 x_in (dynamic)
+        np.asarray(lw.attn_norm, dtype=bfloat16).reshape(emb_dim),  # 1 norm_w (static)
+        np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 2 normed (inter)
+        np.asarray(lw.wq, dtype=bfloat16).reshape(emb_dim, q_dim),  # 3 wq (static)
+        np.zeros((seq_len, q_dim), dtype=bfloat16),  # 4 q (inter)
+        np.asarray(lw.wk, dtype=bfloat16).reshape(emb_dim, kv_dim),  # 5 wk (static)
+        np.zeros((seq_len, kv_dim), dtype=bfloat16),  # 6 k (inter)
+        np.asarray(lw.wv, dtype=bfloat16).reshape(emb_dim, kv_dim),  # 7 wv (static)
+        np.zeros((seq_len, kv_dim), dtype=bfloat16),  # 8 v (inter/out)
+        np.asarray(lw.q_norm, dtype=bfloat16).reshape(head_dim),  # 9 q_norm (static)
+        np.asarray(lw.k_norm, dtype=bfloat16).reshape(head_dim),  # 10 k_norm (static)
+        np.zeros((seq_len, q_dim), dtype=bfloat16),  # 11 q_n (inter)
+        np.zeros((seq_len, kv_dim), dtype=bfloat16),  # 12 k_n (inter)
+        lut_q,  # 13 lut_q (static)
+        lut_k,  # 14 lut_k (static)
+        np.zeros((seq_len, q_dim), dtype=bfloat16),  # 15 q_roped (inter/out)
+        np.zeros((seq_len, kv_dim), dtype=bfloat16),  # 16 k_roped (inter/out)
     ]
     inter = {2, 4, 6, 8, 11, 12, 15, 16}
     nxt = 17
@@ -503,31 +610,45 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
 
         # One fused ELF: RMSNorm + Q/K/V GEMM + per-head QK-norm + RoPE.
         _fused_qknorm_rope_call(
-            cache, lw, config, seq_len, lut_q, lut_k, layer_idx,
+            cache,
+            lw,
+            config,
+            seq_len,
+            lut_q,
+            lut_k,
+            layer_idx,
             np.zeros((seq_len, emb_dim), dtype=bfloat16),
         )
 
         # o_ffn_qwen: allocate + write wo/ffn_norm/w_gate/w_up/w_down ({1,5,7,9,12}).
         offn_args = [
-            np.zeros((seq_len, q_dim), dtype=bfloat16),                           # 0 attn_out (dynamic)
-            np.asarray(lw.wo, dtype=bfloat16).reshape(q_dim, emb_dim),            # 1 wo (static)
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),                         # 2 proj (inter)
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),                         # 3 x_resid (dynamic)
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),                         # 4 res1 (inter)
-            np.asarray(lw.ffn_norm, dtype=bfloat16).reshape(emb_dim),            # 5 ffn_norm (static)
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),                         # 6 normed2 (inter)
-            np.asarray(lw.w_gate, dtype=bfloat16).reshape(emb_dim, hidden_dim),  # 7 w_gate (static)
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),                      # 8 gate (inter)
-            np.asarray(lw.w_up, dtype=bfloat16).reshape(emb_dim, hidden_dim),    # 9 w_up (static)
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),                      # 10 up (inter)
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),                      # 11 swiglu (inter)
-            np.asarray(lw.w_down, dtype=bfloat16).reshape(hidden_dim, emb_dim),  # 12 w_down (static)
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),                         # 13 down (inter)
-            np.zeros(n_total, dtype=bfloat16),                                    # 14 output (inter)
-            np.zeros((seq_len, emb_dim), dtype=np.float32),                       # 15 scratch (inter)
-            np.zeros((seq_len, hidden_dim), dtype=np.float32),                    # 16 scratch (inter)
-            np.zeros((seq_len, hidden_dim), dtype=np.float32),                    # 17 scratch (inter)
-            np.zeros((seq_len, emb_dim), dtype=np.float32),                       # 18 scratch (inter)
+            np.zeros((seq_len, q_dim), dtype=bfloat16),  # 0 attn_out (dynamic)
+            np.asarray(lw.wo, dtype=bfloat16).reshape(q_dim, emb_dim),  # 1 wo (static)
+            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 2 proj (inter)
+            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 3 x_resid (dynamic)
+            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 4 res1 (inter)
+            np.asarray(lw.ffn_norm, dtype=bfloat16).reshape(
+                emb_dim
+            ),  # 5 ffn_norm (static)
+            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 6 normed2 (inter)
+            np.asarray(lw.w_gate, dtype=bfloat16).reshape(
+                emb_dim, hidden_dim
+            ),  # 7 w_gate (static)
+            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # 8 gate (inter)
+            np.asarray(lw.w_up, dtype=bfloat16).reshape(
+                emb_dim, hidden_dim
+            ),  # 9 w_up (static)
+            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # 10 up (inter)
+            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # 11 swiglu (inter)
+            np.asarray(lw.w_down, dtype=bfloat16).reshape(
+                hidden_dim, emb_dim
+            ),  # 12 w_down (static)
+            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 13 down (inter)
+            np.zeros(n_total, dtype=bfloat16),  # 14 output (inter)
+            np.zeros((seq_len, emb_dim), dtype=np.float32),  # 15 scratch (inter)
+            np.zeros((seq_len, hidden_dim), dtype=np.float32),  # 16 scratch (inter)
+            np.zeros((seq_len, hidden_dim), dtype=np.float32),  # 17 scratch (inter)
+            np.zeros((seq_len, emb_dim), dtype=np.float32),  # 18 scratch (inter)
         ]
         cache.load_and_run(
             "o_ffn_qwen",
@@ -578,8 +699,15 @@ def run_transformer_block_qwen3(
 
     # ---- Stages A-C: one ELF = RMSNorm + Q/K/V GEMM + QK-norm(Q,K) + RoPE(Q,K).
     res = _fused_qknorm_rope_call(
-        cache, layer_weights, config, seq_len, lut_q, lut_k, layer_idx,
-        x_bf16, verbose=verbose,
+        cache,
+        layer_weights,
+        config,
+        seq_len,
+        lut_q,
+        lut_k,
+        layer_idx,
+        x_bf16,
+        verbose=verbose,
     )
     v = res[8].reshape(seq_len, kv_dim)
     q_roped = res[15].reshape(seq_len, q_dim)
