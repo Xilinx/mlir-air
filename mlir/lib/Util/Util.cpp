@@ -1183,6 +1183,35 @@ int air::getDmaInnerElementAlignment(BaseMemRefType memrefTy, Operation *op) {
   return addrGenBits / elemBits;
 }
 
+// See header for the resolution rules.
+bool air::isDeviceToHostShimDMA(Operation *op) {
+#if AIR_ENABLE_AIE
+  auto md = op->getAttrOfType<FlatSymbolRefAttr>("metadata");
+  if (!md)
+    return false;
+  auto isS2MM = [&](AIE::DeviceOp d) -> std::optional<bool> {
+    if (auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(d, md.getValue()))
+      return alloc.getChannelDir() == AIE::DMAChannelDir::S2MM;
+    return std::nullopt;
+  };
+  if (auto d = op->getParentOfType<AIE::DeviceOp>())
+    if (auto dir = isS2MM(d))
+      return *dir;
+  bool result = false;
+  if (auto mod = op->getParentOfType<ModuleOp>())
+    mod.walk([&](AIE::DeviceOp d) {
+      if (auto dir = isS2MM(d)) {
+        result = *dir;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+  return result;
+#else
+  return false;
+#endif
+}
+
 // Largest factor of 'num' that is <= 'max' and a multiple of 'alignment'.
 // See header for rationale.
 int air::findLargestAlignedFactor(int num, int max, int alignment) {

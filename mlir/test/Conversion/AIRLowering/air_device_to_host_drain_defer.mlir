@@ -112,3 +112,46 @@ module {
     return
   }
 }
+
+// -----
+
+// Blast-radius guard: a launch with NO device->host drain (only host->device
+// inputs) must be left untouched -- no reordering, and each input keeps its own
+// in-place wait. Confirms the rewrite is a no-op for ordinary launches.
+
+// CHECK-LABEL: func.func @no_drain
+// CHECK: %[[IN0:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @inA{{.*}} : !airrt.event
+// CHECK-NEXT: airrt.wait_all %[[IN0]] : !airrt.event
+// CHECK: %[[IN1:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @inB{{.*}} : !airrt.event
+// CHECK-NEXT: airrt.wait_all %[[IN1]] : !airrt.event
+
+module {
+  aie.device(npu1_1col) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @inA(%t, MM2S, 0)
+    aie.shim_dma_allocation @inB(%t, MM2S, 1)
+  } {sym_name = "seg2"}
+  air.channel @winA [1, 1]
+  air.channel @winB [1, 1]
+  func.func @no_drain(%a: memref<64xi32>, %b: memref<64xi32>) {
+    %c1 = arith.constant 1 : index
+    %l = air.launch async (%i, %j) in (%si=%c1, %sj=%c1) args(%aa=%a, %ab=%b) : memref<64xi32>, memref<64xi32> {
+      %p0 = air.channel.put async  @winA[] (%aa[] [] []) {id = 1 : i32, metadata = @inA} : (memref<64xi32>)
+      %p1 = air.channel.put async  @winB[] (%ab[] [] []) {id = 2 : i32, metadata = @inB} : (memref<64xi32>)
+      %e = air.wait_all async [%p0, %p1] {air.launch_end}
+      %s = air.segment @seg2 async {
+        %c1_0 = arith.constant 1 : index
+        %h = air.herd @h async  tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) {
+          %tok, %m = air.execute -> (memref<64xi32, 2>) {
+            %alloc = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %alloc : memref<64xi32, 2>
+          }
+          %g0 = air.channel.get async [%tok]  @winA[] (%m[] [] []) {id = 3 : i32} : (memref<64xi32, 2>)
+          %g1 = air.channel.get async [%tok]  @winB[] (%m[] [] []) {id = 4 : i32} : (memref<64xi32, 2>)
+        }
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
