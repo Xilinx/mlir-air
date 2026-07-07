@@ -16,6 +16,7 @@
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
@@ -1239,6 +1240,157 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
   return success();
 }
 
+// After AIR->AIRRt lowering, a launch-scope channel drain to host DDR
+// (device->host == an S2MM shim allocation) lowers to an airrt.dma_memcpy_nd
+// whose data is produced ON-DEVICE (its producing air.channel.put lives in a
+// herd/segment and writes a disjoint L1 buffer). air-dependency cannot see the
+// implicit @channel put->get backpressure dependency through that scope/memref
+// boundary, so the drain's wait_all is scheduled EARLY -- ahead of the input/
+// weight DMAs that drive the compute. airrt-to-npu then emits its NpuDmaWaitOp
+// before those inputs are even issued, so the host blocks for data that cannot
+// exist yet and the drain captures nothing.
+//
+// Re-route every such device->host drain's event token to the `air.launch_end`
+// wait_all (and strip it from earlier wait_alls), so airrt-to-npu defers its
+// NpuDmaWaitOp to the launch terminator -- the issue-early/wait-late ordering
+// of the hand-written reference. This is the host-side realization of the
+// implicit channel backpressure dependency. Safe by construction: the launch
+// terminator is after every input DMA, so the device is fully driven before the
+// host waits.
+static void deferDeviceToHostDrainWaits(ModuleOp module) {
+  // Multi-launch lowers each launch to its OWN aie.device; recognize a
+  // device->host drain by searching every device for the shim allocation
+  // (a single first-device lookup would miss drains owned by the others).
+  SmallVector<AIE::DeviceOp> devices;
+  module.walk([&](AIE::DeviceOp d) { devices.push_back(d); });
+  if (devices.empty())
+    return;
+
+  auto isDeviceToHostDrain = [&](airrt::DmaMemcpyNdOp dma) -> bool {
+    auto md = dma->getAttrOfType<FlatSymbolRefAttr>("metadata");
+    if (!md)
+      return false;
+    for (AIE::DeviceOp d : devices) {
+      auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(d, md.getValue());
+      if (alloc)
+        return alloc.getChannelDir() == AIE::DMAChannelDir::S2MM;
+    }
+    return false;
+  };
+
+  module.walk([&](airrt::WaitAllOp launchEnd) {
+    if (!launchEnd->hasAttr("air.launch_end"))
+      return;
+    Block *blk = launchEnd->getBlock();
+    // This launch owns the ops in `blk` AFTER the previous air.launch_end
+    // (exclusive) up to this one (inclusive). Multiple launches lower into one
+    // runtime-sequence block, so scope every rewrite to this window -- never
+    // touch another launch's DMAs (e.g. don't hoist a later launch's drain
+    // ahead of an earlier launch's inputs).
+    Operation *windowBegin = &blk->front();
+    for (Operation &op : *blk) {
+      if (&op == launchEnd.getOperation())
+        break;
+      if (auto wa = dyn_cast<airrt::WaitAllOp>(&op))
+        if (wa->hasAttr("air.launch_end"))
+          windowBegin = op.getNextNode();
+    }
+    SmallVector<Operation *> windowOps;
+    for (Operation *o = windowBegin; o; o = o->getNextNode()) {
+      windowOps.push_back(o);
+      if (o == launchEnd.getOperation())
+        break;
+    }
+
+    // Collect device->host drain tokens issued in this launch's window.
+    llvm::SmallSetVector<Value, 8> drains;
+    for (Operation *op : windowOps) {
+      auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
+      if (dma && dma->getNumResults() && isDeviceToHostDrain(dma))
+        drains.insert(dma->getResult(0));
+    }
+    if (drains.empty())
+      return;
+    // Strip drain tokens from every wait_all in this window except launch_end,
+    // so no premature NpuDmaWaitOp is emitted for them.
+    for (Operation *op : windowOps) {
+      auto wa = dyn_cast<airrt::WaitAllOp>(op);
+      if (!wa || wa == launchEnd)
+        continue;
+      SmallVector<Value> kept;
+      for (Value v : wa->getOperands())
+        if (!drains.contains(v))
+          kept.push_back(v);
+      if (kept.size() != wa->getNumOperands())
+        wa->setOperands(kept);
+    }
+    // Ensure the launch terminator waits on every drain token.
+    SmallVector<Value> leOps(launchEnd->getOperands().begin(),
+                             launchEnd->getOperands().end());
+    for (Value t : drains)
+      if (!llvm::is_contained(leOps, t))
+        leOps.push_back(t);
+    launchEnd->setOperands(leOps);
+
+    // Deferring the WAIT is not enough: airrt-to-npu emits the drain's
+    // dma_start_task in program order, and the drain's airrt.dma_memcpy sits
+    // AFTER the input/weight DMAs (its launch-scope channel.get is emitted last
+    // in the runtime sequence). So the S2MM drain receiver is armed only after
+    // every blocking input DMA has been issued -- but those inputs drive a
+    // producer that backpressures on the drain having somewhere to write. With
+    // a multi-round on-chip producer (e.g. an MLP egress through an on-chip
+    // consumer) whose output exceeds the on-chip buffering, the producer stalls
+    // with no host receiver -> the input DMAs never complete -> the runtime
+    // never reaches the drain start -> deadlock.
+    //
+    // Hoist each drain's issue (its airrt.dma_memcpy and the in-block backward
+    // slice that computes its offsets/sizes) to BEFORE this launch's first
+    // input DMA, so the drain S2MM is armed EARLY (issue-early / wait-late,
+    // matching the hand-written reference's "arm the output S2MM early, wait
+    // last"). Moving value definitions earlier is dominance-safe; we only
+    // relocate ops that currently follow firstInput within this window.
+    airrt::DmaMemcpyNdOp firstInput;
+    for (Operation *op : windowOps) {
+      auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
+      if (dma && dma->getNumResults() && !isDeviceToHostDrain(dma)) {
+        firstInput = dma;
+        break;
+      }
+    }
+    if (!firstInput)
+      return;
+    BackwardSliceOptions sliceOpts;
+    sliceOpts.omitBlockArguments = true;
+    sliceOpts.filter = [&](Operation *o) { return o->getBlock() == blk; };
+    llvm::SetVector<Operation *> toHoist;
+    for (Operation *op : windowOps) {
+      auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
+      if (!dma || !dma->getNumResults() || !isDeviceToHostDrain(dma))
+        continue;
+      llvm::SetVector<Operation *> slice;
+      (void)getBackwardSlice(dma.getOperation(), &slice, sliceOpts);
+      for (Operation *s : slice)
+        toHoist.insert(s);
+      toHoist.insert(dma.getOperation());
+    }
+    // Relocate only the to-hoist ops that currently appear AFTER firstInput
+    // (within this window), preserving their relative order, to just before
+    // firstInput. Ops already ahead of firstInput already dominate it.
+    SmallVector<Operation *> ordered;
+    bool seenFirst = false;
+    for (Operation *op : windowOps) {
+      if (op == firstInput.getOperation()) {
+        seenFirst = true;
+        continue;
+      }
+      if (seenFirst && toHoist.contains(op))
+        ordered.push_back(op);
+    }
+    for (Operation *op : ordered)
+      op->moveBefore(firstInput);
+  });
+}
+
 class AIRLoweringPass : public air::impl::AIRLoweringBase<AIRLoweringPass> {
 
 public:
@@ -1381,6 +1533,13 @@ public:
       emitError(UnknownLoc::get(context), "error lowering air dialect\n");
       signalPassFailure();
     }
+
+    // Defer device->host channel-drain waits to the launch terminator so the
+    // implicit @channel put->get backpressure dependency is honored on the host
+    // side (issue-early/wait-late). Without this, drains whose data is produced
+    // on-device are awaited before the inputs that drive the compute are
+    // issued.
+    deferDeviceToHostDrainWaits(module);
 
     // Fold scf.if ops that became trivially redundant after segment-unroll
     // channel specialization. Both branches contain only airrt.wait_all +
