@@ -122,18 +122,24 @@ class NpuRunner:
             bfloat16
         )
 
-        # Per-model cache dirs (absolute, CWD-independent) so concurrent/
-        # back-to-back verify runs of different models never share the default
-        # shared/infra/kernel_cache/ and pick up each other's stale ELFs.
-        _cache_root = _THIS_DIR / "verify_kernel_cache"
-        self.prefill_cache = KernelCache(str(_cache_root / "prefill"), verbose=False)
+        # Reuse this model's build_peano kernel cache — the same dirs `make run`
+        # / `make profile` compile into — so verify/diagnosis and run/profile
+        # share one per-model cache (no recompile between commands). The path is
+        # absolute (anchored to _THIS_DIR) so it stays per-model and never
+        # contaminates another model's cache regardless of CWD.
+        _cache_root = _THIS_DIR / "build_peano"
+        self.prefill_cache = KernelCache(
+            str(_cache_root / "prefill_kernel_cache"), verbose=False
+        )
         compile_prefill_kernels(
             self.prefill_cache,
             config,
             seq_len=max_seq,
             cpu_attn=self.cpu_attn,
         )
-        self.decode_cache = KernelCache(str(_cache_root / "decode"), verbose=False)
+        self.decode_cache = KernelCache(
+            str(_cache_root / "decode_kernel_cache"), verbose=False
+        )
         compile_decode_kernels(self.decode_cache, config)
 
         prepare_runtime(

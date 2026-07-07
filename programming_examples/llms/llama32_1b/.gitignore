@@ -4,7 +4,6 @@ build_chess/
 __pycache__/
 *.pyc
 kernel_cache/
-verify_kernel_cache/
 air_project/
 .debug/
 .pytest_cache/
