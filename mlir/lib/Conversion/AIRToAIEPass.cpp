@@ -5206,6 +5206,8 @@ public:
         // can never fire). Without this the buf-free lock leaks N-1 every
         // dispatch, accumulating into a re-dispatch parity stall.
         lockAqValue *= n;
+        // getRefeedCount guarantees 1 < n <= INT32_MAX, so the narrowing is
+        // safe.
         if (auto initOpt = acqLockOp.getInit(); !initOpt || *initOpt < n)
           acqLockOp.setInit(static_cast<int32_t>(n));
       }

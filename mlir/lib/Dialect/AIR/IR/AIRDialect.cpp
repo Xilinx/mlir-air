@@ -3460,9 +3460,12 @@ LogicalResult air::ChannelOp::verify() {
     if (!rcInt)
       return emitOpError() << "\"" << attrs::RefeedCount
                            << "\" must be an integer attribute";
-    if (rcInt.getInt() < 1)
+    // The count sizes 32-bit AIE semaphore locks; reject values that would not
+    // fit so a malformed count is caught here rather than silently narrowed.
+    if (rcInt.getInt() < 1 ||
+        rcInt.getInt() > std::numeric_limits<int32_t>::max())
       return emitOpError() << "\"" << attrs::RefeedCount << "\" ("
-                           << rcInt.getInt() << ") must be >= 1";
+                           << rcInt.getInt() << ") must be in [1, INT32_MAX]";
   }
   return success();
 }

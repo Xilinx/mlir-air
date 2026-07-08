@@ -69,7 +69,7 @@ func.func @refeed() {
 
 // CHECK-LABEL: aie.device
 // CHECK: aie.lock(%{{.*}}, {{.*}}) {init = 4 : i32}
-// CHECK: aie.buffer(%{{.*}}) {air.refeed_count = 4 : i32
+// CHECK: aie.buffer{{.*}}air.refeed_count = 4 : i32
 // CHECK: aie.memtile_dma
 // CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, 4)
 // CHECK: aie.use_lock(%{{.*}}, Release, 4)
@@ -117,7 +117,7 @@ func.func @mt_refeed(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
 
 // CHECK-LABEL: aie.device
 // CHECK: %[[BUFFREE:.*]] = aie.lock(%{{.*}}) {init = 2 : i32}
-// CHECK: aie.buffer(%{{.*}}) {air.refeed_count = 2 : i32
+// CHECK: aie.buffer{{.*}}air.refeed_count = 2 : i32
 // CHECK: aie.memtile_dma
 // Drain (MM2S) re-send: releases the buf-free lock by 1 (not scaled).
 // CHECK: aie.use_lock(%[[BUFFREE]], Release, 1)
@@ -164,10 +164,10 @@ func.func @mt_refeed_chan(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
 // buffer / its locks use 2, and 6 appears nowhere in this design.
 
 // CHECK-LABEL: aie.device
-// CHECK: aie.buffer(%{{.*}}) {air.refeed_count = 2 : i32
+// CHECK: aie.buffer{{.*}}air.refeed_count = 2 : i32
 // The channel decl keeps its own count 6, but it must NOT reach the memtile
 // buffer or any lock: no buffer carries 6, no lock inits to / acquires 6.
-// CHECK-NOT: aie.buffer(%{{.*}}) {air.refeed_count = 6
+// CHECK-NOT: aie.buffer{{.*}}air.refeed_count = 6
 // CHECK-NOT: {init = 6 : i32}
 // CHECK-NOT: AcquireGreaterEqual, 6
 

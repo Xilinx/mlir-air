@@ -151,14 +151,20 @@ func.func @sym_get_no_rank(%m: memref<128xf32>) {
 // -----
 
 // Test: air.refeed_count of zero is rejected (must be >= 1).
-// expected-error @+1 {{'air.channel' op "air.refeed_count" (0) must be >= 1}}
+// expected-error @+1 {{'air.channel' op "air.refeed_count" (0) must be in [1, INT32_MAX]}}
 air.channel @refeed_zero [1, 1] {air.refeed_count = 0 : i32}
 
 // -----
 
 // Test: negative air.refeed_count is rejected.
-// expected-error @+1 {{'air.channel' op "air.refeed_count" (-2) must be >= 1}}
+// expected-error @+1 {{'air.channel' op "air.refeed_count" (-2) must be in [1, INT32_MAX]}}
 air.channel @refeed_neg [1, 1] {air.refeed_count = -2 : i32}
+
+// -----
+
+// Test: air.refeed_count that overflows the 32-bit lock range is rejected.
+// expected-error @+1 {{'air.channel' op "air.refeed_count" (4294967296) must be in [1, INT32_MAX]}}
+air.channel @refeed_huge [1, 1] {air.refeed_count = 4294967296 : i64}
 
 // -----
 
