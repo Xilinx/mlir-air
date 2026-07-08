@@ -1686,23 +1686,74 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       device->removeAttr(kNeedsLockResetAttr);
     });
 
-    // Hoist all herd RTP writes to the front of each runtime sequence (right
-    // after any leading load_pdi), so every RTP value is written BEFORE any
-    // data movement. RTP writes are emitted at the herd-load position, so with
-    // enough upstream DMA tasks they can be sequenced AFTER the DMAs that
-    // trigger the compute cores (the control program may even await a core's
-    // output before reaching the RTP write) -- the core then latches the stale
-    // (zero-initialized) RTP and produces wrong results. RTP writes carry their
-    // value as an attribute and have no SSA operands, so moving them to the
-    // front is always safe.
+    // Hoist each herd's RTP writes and herd-release set_locks to the front of
+    // their OWN configuration region, so every RTP value is latched and every
+    // core released before the data movement that region drives. RTP writes and
+    // set_locks are emitted at the herd-load position, which can fall after the
+    // DMAs that trigger the cores (the control program may even await a core's
+    // output before reaching them) -- the core then latches a stale (zero) RTP
+    // or is never released and produces no output. This ordering is not
+    // expressible in the async dependence graph (RTP writes have no SSA
+    // operands; set_locks are batched separately).
+    //
+    // The region is delimited by aiex.npu.load_pdi resets. A multi-iteration
+    // ELF launch re-arms DMA/lock state between iterations via load_pdi, and
+    // each iteration re-writes its own RTP and re-releases its cores. Hoisting
+    // to the GLOBAL front would then (a) clobber a later iteration's RTP onto
+    // an earlier iteration's slot and (b) move a release ahead of the load_pdi
+    // that re-initializes its lock, leaving the core unreleased after the
+    // reset. Scoping to the per-load_pdi region keeps both single-launch
+    // sequences (one region -> front of sequence) and multi-iteration sequences
+    // correct.
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
       Block &blk = seq.getBody().front();
-      // Anchor at the first op that is not a load_pdi, RTP write, set_lock, or
-      // an already-marked (air.runtime_hoist) DMA feed. Everything hoisted
-      // below is moved to just before this anchor, i.e. to the front of the
-      // sequence.
+      // Snapshot the op order; the load_pdi delimiters never move, and RTP/
+      // set_lock ops only move within their own region, so region membership
+      // computed from this snapshot stays valid across the moves below.
+      SmallVector<Operation *> ops;
+      for (auto &o : blk)
+        ops.push_back(&o);
+      for (size_t i = 0, e = ops.size(); i < e;) {
+        // Region [i, j): j indexes the next load_pdi delimiter (or the end).
+        size_t j = i;
+        while (j < e && !isa<AIEX::NpuLoadPdiOp>(ops[j]))
+          ++j;
+        // Anchor at the region's first op that is not an RTP write, set_lock,
+        // or an air.runtime_hoist feed -- i.e. the region's first data
+        // movement.
+        Operation *anchor = nullptr;
+        for (size_t k = i; k < j; ++k) {
+          if (isa<AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(ops[k]))
+            continue;
+          if (ops[k]->hasAttr("air.runtime_hoist"))
+            continue;
+          anchor = ops[k];
+          break;
+        }
+        if (anchor) {
+          // RTP writes first, then set_locks (release after RTP is latched),
+          // each preserving its intra-region relative order.
+          for (size_t k = i; k < j; ++k)
+            if (isa<AIEX::NpuWriteRTPOp>(ops[k]))
+              ops[k]->moveBefore(anchor);
+          for (size_t k = i; k < j; ++k)
+            if (isa<AIEX::SetLockOp>(ops[k]))
+              ops[k]->moveBefore(anchor);
+        }
+        i = (j < e) ? j + 1 : j;
+      }
+    });
+
+    // Hoist input DMA feeds (air.runtime_hoist) and enforce the
+    // append->readback barrier (air.await_appends). These opt-in orderings
+    // target a single configuration region, so anchor them at the global front
+    // of the sequence.
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      Block &blk = seq.getBody().front();
       Operation *anchor = nullptr;
       for (auto &o : blk) {
         if (isa<AIEX::NpuLoadPdiOp, AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(&o))
@@ -1714,25 +1765,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
       if (!anchor)
         return; // nothing to order before.
-      SmallVector<AIEX::NpuWriteRTPOp> rtps;
-      for (auto &o : blk)
-        if (auto r = dyn_cast<AIEX::NpuWriteRTPOp>(&o))
-          rtps.push_back(r);
-      // Also hoist the herd-release set_lock ops, so all core-release locks are
-      // set UPFRONT, before any DMA/wait. The pass otherwise batches the
-      // set_locks at the end of the sequence, so with persistent cores a
-      // sequence can await one group's output BEFORE the set_locks release the
-      // cores -> those cores never run -> zero output. Hoisting the set_locks
-      // to the front (after the RTP writes, before the first DMA) releases
-      // every core before any output is awaited.
-      SmallVector<AIEX::SetLockOp> setlocks;
-      for (auto &o : blk)
-        if (auto s = dyn_cast<AIEX::SetLockOp>(&o))
-          setlocks.push_back(s);
-      for (auto r : rtps)
-        r->moveBefore(anchor);
-      for (auto s : setlocks)
-        s->moveBefore(anchor);
       // Hoist input DMA feeds marked `air.runtime_hoist` ahead of the bulk
       // input-feed DMAs. Otherwise the control program can block on a later
       // input's dma_await -- whose consumer is stalled in a feedback loop
