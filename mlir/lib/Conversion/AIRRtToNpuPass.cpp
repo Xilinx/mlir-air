@@ -39,6 +39,22 @@
 
 using namespace mlir;
 
+// The AIEX npu.write32 / npu.write_rtp / npu.address_patch ops take their
+// scalar address/value/offset as i32 SSA operands (materialized via
+// arith.constant) rather than integer attributes.
+static Value makeI32Const(OpBuilder &b, Location loc, uint32_t v) {
+  return arith::ConstantOp::create(
+      b, loc, b.getI32Type(), b.getI32IntegerAttr(static_cast<int32_t>(v)));
+}
+
+static void emitNpuWrite32(OpBuilder &b, Location loc, uint32_t address,
+                           uint32_t value, FlatSymbolRefAttr buffer,
+                           IntegerAttr column, IntegerAttr row) {
+  xilinx::AIEX::NpuWrite32Op::create(b, loc, makeI32Const(b, loc, address),
+                                     makeI32Const(b, loc, value), buffer,
+                                     column, row);
+}
+
 // Path B: airrt-to-npu runs before aie-place-tiles (which now lives only in
 // aiecc). Read the shim col from either a physical aie.tile or, if the
 // shim hasn't been placed yet, the col hint on aie.logical_tile<...>(col,?).
@@ -745,8 +761,11 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
                 dyn_cast_if_present<arith::ConstantOp>(oper.getDefiningOp());
             if (constOp) {
               uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
-              AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(), name, rtp_slot,
-                                          v);
+              AIEX::NpuWriteRTPOp::create(
+                  rewriter, op.getLoc(),
+                  FlatSymbolRefAttr::get(rewriter.getContext(), name),
+                  rewriter.getUI32IntegerAttr(rtp_slot),
+                  makeI32Const(rewriter, op.getLoc(), v));
             }
             rtp_slot++;
           }
@@ -1854,6 +1873,30 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           a->moveBefore(barrierStart);
       }
     });
+
+    // The npu ops carry their scalar payload (address/value/offset) as
+    // arith.constant SSA operands. The reordering and cloning above can leave a
+    // constant after its use. Each such constant is single-use and freshly
+    // materialized, so sinking it to immediately before its user restores
+    // dominance regardless of how the op was moved.
+    module.walk([&](Operation *op) {
+      if (!isa<AIEX::NpuWrite32Op, AIEX::NpuWriteRTPOp,
+               AIEX::NpuAddressPatchOp>(op))
+        return;
+      OpBuilder b(op);
+      for (OpOperand &operand : op->getOpOperands()) {
+        Operation *def = operand.get().getDefiningOp();
+        if (!def || !isa<arith::ConstantOp>(def))
+          continue;
+        // A single-use constant can simply be sunk; a shared one (e.g. the same
+        // RTP value written to several herd buffers) is cloned so each user
+        // gets its own dominating def. Later cse folds any redundant copies.
+        if (def->hasOneUse())
+          def->moveBefore(op);
+        else
+          operand.set(b.clone(*def)->getResult(0));
+      }
+    });
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -2613,16 +2656,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       v0 |= (ports[i].second << (i * 8));
       v0 |= (ports[i].first << ((i * 8) + 5));
     }
-    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset, v0,
-                               nullptr, col, row);
+    emitNpuWrite32(builder, builder.getUnknownLoc(), offset, v0, nullptr, col,
+                   row);
     uint32_t v1 = 0;
     if (ports.size() > 4)
       for (unsigned i = 4; i < std::min(ports.size(), (size_t)8); i++) {
         v1 |= (ports[i].second << ((i - 4) * 8));
         v1 |= (ports[i].first << (((i - 4) * 8) + 5));
       }
-    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset + 0x4,
-                               v1, nullptr, col, row);
+    emitNpuWrite32(builder, builder.getUnknownLoc(), offset + 0x4, v1, nullptr,
+                   col, row);
   }
 
   // up to 8 events (up to 64 bits) will be written to the 8 event slots
@@ -2639,10 +2682,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       for (unsigned i = 4; i < std::min(events.size(), (size_t)8); i++)
         v1 |= ((events[i] & 0xff) << ((i - 4) * 8));
 
-    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset, v0,
-                               nullptr, col, row);
-    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset + 0x4,
-                               v1, nullptr, col, row);
+    emitNpuWrite32(builder, builder.getUnknownLoc(), offset, v0, nullptr, col,
+                   row);
+    emitNpuWrite32(builder, builder.getUnknownLoc(), offset + 0x4, v1, nullptr,
+                   col, row);
   }
 
   // configure events to monitor
@@ -2716,15 +2759,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           uint32_t core_reg_trace_control0 = 0x340D0;
           uint32_t core_reg_trace_control1 = 0x340D4;
           uint32_t core_event_broadcast_15 = 122;
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), core_reg_timer_control,
-              core_event_broadcast_15 << 8, nullptr, col, row);
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), core_reg_trace_control0,
-              core_event_broadcast_15 << 16, nullptr, col, row);
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), core_reg_trace_control1,
-              pkt_type << 12 | flowID, nullptr, col, row);
+          emitNpuWrite32(builder, builder.getUnknownLoc(),
+                         core_reg_timer_control, core_event_broadcast_15 << 8,
+                         nullptr, col, row);
+          emitNpuWrite32(builder, builder.getUnknownLoc(),
+                         core_reg_trace_control0, core_event_broadcast_15 << 16,
+                         nullptr, col, row);
+          emitNpuWrite32(builder, builder.getUnknownLoc(),
+                         core_reg_trace_control1, pkt_type << 12 | flowID,
+                         nullptr, col, row);
 
           // configure events to monitor
           // todo: allow user to specify?
@@ -2749,15 +2792,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           uint32_t mem_reg_trace_control0 = 0x940D0;
           uint32_t mem_reg_trace_control1 = 0x940D4;
           uint32_t mem_event_broadcast_15 = 157;
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), mem_reg_timer_control,
-              mem_event_broadcast_15 << 8, nullptr, col, row);
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), mem_reg_trace_control0,
-              mem_event_broadcast_15 << 16, nullptr, col, row);
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), mem_reg_trace_control1,
-              pkt_type << 12 | flowID, nullptr, col, row);
+          emitNpuWrite32(builder, builder.getUnknownLoc(),
+                         mem_reg_timer_control, mem_event_broadcast_15 << 8,
+                         nullptr, col, row);
+          emitNpuWrite32(builder, builder.getUnknownLoc(),
+                         mem_reg_trace_control0, mem_event_broadcast_15 << 16,
+                         nullptr, col, row);
+          emitNpuWrite32(builder, builder.getUnknownLoc(),
+                         mem_reg_trace_control1, pkt_type << 12 | flowID,
+                         nullptr, col, row);
 
           // configure events to monitor
           // todo: allow user to specify?
@@ -2805,8 +2848,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             /* d2_zero_after */ 0);
         uint32_t addr = (dstColIndex << target_model.getColumnShift()) |
                         (0x1D004 + bdID * 0x20);
-        AIEX::NpuAddressPatchOp::create(builder, builder.getUnknownLoc(), addr,
-                                        /* ddr_id */ 2, buff_offset);
+        AIEX::NpuAddressPatchOp::create(
+            builder, builder.getUnknownLoc(), builder.getUI32IntegerAttr(addr),
+            /* ddr_id */ builder.getI32IntegerAttr(2),
+            makeI32Const(builder, builder.getUnknownLoc(), buff_offset));
 
         int address;
         if (destPort.channel == 0)
@@ -2817,7 +2862,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           pktFlow->emitOpError("unknown trace dest.");
           return failure();
         }
-        AIEX::NpuWrite32Op::create(
+        emitNpuWrite32(
             builder, builder.getUnknownLoc(), address, bdID, nullptr,
             builder.getIntegerAttr(builder.getI32Type(), dstColIndex),
             builder.getIntegerAttr(builder.getI32Type(), dstRowIndex));
@@ -2826,12 +2871,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
       // broadcast event to sync timer
       auto zero = builder.getIntegerAttr(builder.getI32Type(), 0);
-      AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), 0x34000,
-                                 127 << 8, nullptr, zero, zero);
-      AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), 0x3404C, 127,
-                                 nullptr, zero, zero);
-      AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), 0x34008, 127,
-                                 nullptr, zero, zero);
+      emitNpuWrite32(builder, builder.getUnknownLoc(), 0x34000, 127 << 8,
+                     nullptr, zero, zero);
+      emitNpuWrite32(builder, builder.getUnknownLoc(), 0x3404C, 127, nullptr,
+                     zero, zero);
+      emitNpuWrite32(builder, builder.getUnknownLoc(), 0x34008, 127, nullptr,
+                     zero, zero);
     }
     return success();
   }
