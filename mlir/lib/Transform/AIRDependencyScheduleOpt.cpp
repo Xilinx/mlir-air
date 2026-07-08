@@ -3653,20 +3653,44 @@ public:
       if (!llvm::is_contained(vec, entry))
         vec.push_back(entry);
     };
-    // A constructed ping-pong loop whose channel.get(s) target a marked
-    // channel.
-    auto isMarkedRingLoop = [](scf::ForOp forOp) -> bool {
-      // Constructed form carries exactly the 4 ping-pong async tokens.
+    // The channel declaration `g` reads from, or null.
+    auto getDecl = [](air::ChannelGetOp g) -> Operation * {
+      auto d = air::getChannelDeclarationThroughSymbol(
+          cast<air::ChannelInterface>(g.getOperation()));
+      return d ? d.getOperation() : nullptr;
+    };
+    auto isMarked = [](Operation *decl) {
+      return decl && decl->hasAttr("air.shared_resident_ring");
+    };
+    // The set of channel declarations the loop's gets target, sorted for stable
+    // comparison and deduplicated. Chains are keyed on this so two loops merge
+    // only when they re-read the SAME streams -- loops reading different
+    // channels are never merged together (even if their buffer shapes
+    // coincide).
+    auto channelSet = [&](scf::ForOp forOp) {
+      SmallVector<Operation *> decls;
+      for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>())
+        if (auto *d = getDecl(g); d && !llvm::is_contained(decls, d))
+          decls.push_back(d);
+      llvm::sort(decls);
+      return decls;
+    };
+    // A constructed ping-pong loop (exactly 4 ping-pong async tokens) whose
+    // ring is shareable. The ping-pong ring rotates over ALL the loop's buffers
+    // as one unit, so it can only be shared when EVERY get in the loop targets
+    // a marked channel -- a loop mixing marked and unmarked gets is left
+    // untouched (the opt-in stays honest; an unmarked channel is never
+    // rewired).
+    auto isMarkedRingLoop = [&](scf::ForOp forOp) -> bool {
       if (forOp.getNumResults() != 4)
         return false;
-      bool marked = false;
+      bool any = false;
       for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>()) {
-        auto decl = air::getChannelDeclarationThroughSymbol(
-            cast<air::ChannelInterface>(g.getOperation()));
-        if (decl && decl->hasAttr("air.shared_resident_ring"))
-          marked = true;
+        if (!isMarked(getDecl(g)))
+          return false;
+        any = true;
       }
-      return marked;
+      return any;
     };
     // Ring buffers read by the loop, in channel.get program order.
     auto ringBuffers = [&](scf::ForOp forOp) {
@@ -3676,22 +3700,31 @@ public:
       return bufs;
     };
 
-    // Collect, per block, the ordered chain of marked ring loops.
-    SmallVector<SmallVector<scf::ForOp>> chains;
-    DenseMap<Block *, unsigned> blockToChain;
+    // Collect, per (block, channel-set), the ordered chain of ring loops.
+    struct Chain {
+      Block *block;
+      SmallVector<Operation *> channels;
+      SmallVector<scf::ForOp> loops;
+    };
+    SmallVector<Chain> chains;
     funcOp.walk([&](scf::ForOp forOp) {
       if (!isMarkedRingLoop(forOp))
         return;
-      Block *blk = forOp->getBlock();
-      auto it = blockToChain.find(blk);
-      if (it == blockToChain.end()) {
-        blockToChain[blk] = chains.size();
-        chains.push_back({forOp});
-      } else
-        chains[it->second].push_back(forOp);
+      SmallVector<Operation *> channels = channelSet(forOp);
+      Chain *dst = nullptr;
+      for (auto &c : chains)
+        if (c.block == forOp->getBlock() && c.channels == channels) {
+          dst = &c;
+          break;
+        }
+      if (!dst)
+        chains.push_back({forOp->getBlock(), channels, {forOp}});
+      else
+        dst->loops.push_back(forOp);
     });
 
-    for (auto &chain : chains) {
+    for (auto &chainRec : chains) {
+      auto &chain = chainRec.loops;
       if (chain.size() < 2)
         continue;
       // Owner buffers define the shared ring; all followers must match in count
