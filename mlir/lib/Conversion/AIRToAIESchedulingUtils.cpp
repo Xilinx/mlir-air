@@ -677,6 +677,42 @@ bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(
   return false;
 }
 
+// Same-logical-flow test: same channel declaration and same constant bundle
+// indices. A non-constant index cannot be proven equal, so it is distinct.
+static bool isSamePacketFlowEndpoint(air::MemcpyInterface a,
+                                     air::MemcpyInterface b) {
+  auto chanA = dyn_cast_if_present<air::ChannelInterface>(a.getOperation());
+  auto chanB = dyn_cast_if_present<air::ChannelInterface>(b.getOperation());
+  if (!chanA || !chanB)
+    return false;
+  if (air::getChannelDeclarationThroughSymbol(chanA) !=
+      air::getChannelDeclarationThroughSymbol(chanB))
+    return false;
+  auto idxA = chanA.getIndices();
+  auto idxB = chanB.getIndices();
+  if (idxA.size() != idxB.size())
+    return false;
+  for (auto [va, vb] : llvm::zip_equal(idxA, idxB)) {
+    auto ca = getConstantIntValue(va);
+    auto cb = getConstantIntValue(vb);
+    if (!ca || !cb || *ca != *cb)
+      return false;
+  }
+  return true;
+}
+
+bool xilinx::air::allocation_info_t::foundSamePacketFlowInTile(
+    AIE::TileLike tile, air::MemcpyInterface memcpyOp) {
+  if (!foundAlloc(tile))
+    return false;
+  for (auto o : memcpyOps) {
+    auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
+    if (existingMc && isSamePacketFlowEndpoint(existingMc, memcpyOp))
+      return true;
+  }
+  return false;
+}
+
 // DMAAllocator impl.
 
 // A simple selection sorting implementation.
@@ -1506,26 +1542,6 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     isPacketFlowOp = chanTypeRes.value() == "npu_dma_packet";
   }
 
-  // (sym, indices) endpoint key for a memcpy op — used to discriminate
-  // packet-flow collapse below. Two memcpys with the same (channel
-  // symbol, indices) tuple represent the same logical flow (different
-  // invocations of the same put-get pair); two memcpys with different
-  // (sym, indices) tuples represent DIFFERENT logical flows from
-  // potentially different sources.
-  auto endpointKey = [](air::MemcpyInterface mc)
-      -> std::optional<std::pair<StringRef, SmallVector<int64_t, 4>>> {
-    auto chan = dyn_cast<air::ChannelInterface>(mc.getOperation());
-    if (!chan)
-      return std::nullopt;
-    SmallVector<int64_t, 4> idx;
-    for (auto v : chan.getIndices()) {
-      auto c = getConstantIntValue(v);
-      idx.push_back(c.value_or(-1));
-    }
-    return std::make_pair(chan.getChanName(), idx);
-  };
-  auto newKey = endpointKey(memcpyOp);
-
   // Search for existing dma channel allocation
   unsigned num_allocs = 0;
   for (auto &t : *allocs) {
@@ -1535,27 +1551,13 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
-    // Search for existing packet-flow allocations on this tile, and try to
-    // reuse the channel allocation.
-    //
-    // EXCEPT: never collapse a channel marked air.dedicated_dma_channel with
-    // anything (in either direction) -- give it a private physical DMA channel.
-    //
-    // For the MM2S side (source-side memtile): promiscuous collapse is the
-    // intended behavior — multiple downstream consumers share one source MM2S
-    // port via pkt_id multiplexing (a broadcast packet channel emits to N L1
-    // destinations, or several packet channels multiplex one source port).
-    //
-    // For the S2MM side (receiver-side memtile): discriminate by (channel
-    // symbol, indices) endpoint key. Collapse only when the new memcpy and an
-    // existing one share the same key (same logical flow, possibly different
-    // invocations from scf.for unroll or ping-pong). Different (sym, indices)
-    // tuples mean different upstream sources and must NOT share one physical
-    // S2MM channel — each (src, dst) pair belongs on its own physical S2MM
-    // channel at the receiver memtile (a multi-source fan-in into a shared L2
-    // buffer needs one physical writer channel per source). Over-collapse
-    // silently merged N sources onto S2MM 0 of the dst memtile, blowing past
-    // the memtile_dma block budget once unrolling + ping-pong combined.
+    // Reuse an existing packet-flow channel on this tile via time
+    // multiplexing. Never collapse a channel marked air.dedicated_dma_channel
+    // (either direction). MM2S (source) side collapses promiscuously
+    // (broadcast fan-out / pkt_id multiplexing rely on it); S2MM (receiver)
+    // side collapses only flows proven identical (same channel decl + indices),
+    // since distinct sources fanning into one L2 buffer each need their own
+    // physical S2MM channel.
     if (isPacketFlowOp && t.foundPacketFlowAllocInTile(tile)) {
       bool tDedicated = false;
       for (auto o : t.memcpyOps) {
@@ -1566,22 +1568,8 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
         }
       }
       bool canCollapse = !memcpyIsDedicatedChannel(memcpyOp) && !tDedicated;
-      if (canCollapse && !isMM2S.value()) {
-        // S2MM-side: require (sym, indices) match.
-        canCollapse = false;
-        if (newKey.has_value()) {
-          for (auto o : t.memcpyOps) {
-            auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
-            if (!existingMc)
-              continue;
-            auto existingKey = endpointKey(existingMc);
-            if (existingKey == newKey) {
-              canCollapse = true;
-              break;
-            }
-          }
-        }
-      }
+      if (canCollapse && !isMM2S.value())
+        canCollapse = t.foundSamePacketFlowInTile(tile, memcpyOp);
       if (canCollapse) {
         t.memcpyOps.push_back(memcpyOp.getOperation());
         return t;
