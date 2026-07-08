@@ -147,3 +147,26 @@ func.func @sym_get_no_rank(%m: memref<128xf32>) {
   air.channel.get @sym_chan_get[] (%m[] [] []) : (memref<128xf32>)
   return
 }
+
+// -----
+
+// Test: air.refeed_count of zero is rejected (must be >= 1).
+// expected-error @+1 {{'air.channel' op "air.refeed_count" (0) must be >= 1}}
+air.channel @refeed_zero [1, 1] {air.refeed_count = 0 : i32}
+
+// -----
+
+// Test: negative air.refeed_count is rejected.
+// expected-error @+1 {{'air.channel' op "air.refeed_count" (-2) must be >= 1}}
+air.channel @refeed_neg [1, 1] {air.refeed_count = -2 : i32}
+
+// -----
+
+// Test: non-integer air.refeed_count is rejected.
+// expected-error @+1 {{'air.channel' op "air.refeed_count" must be an integer attribute}}
+air.channel @refeed_str [1, 1] {air.refeed_count = "4"}
+
+// -----
+
+// Test: valid air.refeed_count (positive test - should pass).
+air.channel @refeed_ok [1, 1] {air.refeed_count = 4 : i32}

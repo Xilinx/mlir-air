@@ -493,6 +493,25 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
   return air::ChannelOp();
 }
 
+int64_t air::getRefeedCount(Operation *op) {
+  if (!op)
+    return 1;
+  if (auto rc = op->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
+    if (rc.getInt() > 1)
+      return rc.getInt();
+  return 1;
+}
+
+int64_t air::getRefeedCount(air::ChannelInterface op) {
+  if (!op)
+    return 1;
+  // Per-emission override on the put/get takes precedence over the
+  // channel-level declaration.
+  if (int64_t n = getRefeedCount(op.getOperation()); n > 1)
+    return n;
+  return getRefeedCount(getChannelDeclarationThroughSymbol(op).getOperation());
+}
+
 // Get ChannelPutOp through ChannelOp
 std::vector<air::ChannelPutOp>
 air::getChannelPutOpThroughSymbol(air::ChannelOp channel, Operation *scope) {

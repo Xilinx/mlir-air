@@ -858,9 +858,7 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
   // deadlocks.
   int64_t wlockInit = init;
   if (UsesSemaphoreLocks)
-    if (auto rc = bufferOp->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
-      if (rc.getInt() > wlockInit)
-        wlockInit = rc.getInt();
+    wlockInit = std::max(wlockInit, air::getRefeedCount(bufferOp));
   auto wlock =
       UsesSemaphoreLocks ? allocateLockOp(device, tile, wlockInit) : rlock;
   lock_allocation_list.push_back({bufferOp, air_chan, channel, rlock, wlock});

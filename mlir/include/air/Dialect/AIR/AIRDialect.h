@@ -40,6 +40,9 @@ constexpr StringLiteral AppendBarrier = "air.append_barrier";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
 constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
+// Single-buffer count-free re-broadcast: N (>= 1) re-sends of one resident
+// buffer per production. Authoritative carrier is the air.channel declaration;
+// read via air::getRefeedCount. Verified on air.channel.
 constexpr StringLiteral RefeedCount = "air.refeed_count";
 } // namespace attrs
 

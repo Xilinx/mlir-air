@@ -114,6 +114,15 @@ DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 
 // Get channel declaration through channel symbol
 ChannelOp getChannelDeclarationThroughSymbol(ChannelInterface op);
+// Single-buffer count-free re-broadcast count (see AIRDialect.h
+// attrs::RefeedCount): N re-sends of one resident buffer per production. Reads
+// the count off `op` (per-emission override) falling back to its channel
+// declaration (the authoritative carrier). Returns 1 when absent / < 1 / not a
+// channel op. Single reader so the lock allocators cannot diverge on the value.
+int64_t getRefeedCount(ChannelInterface op);
+// Same, for a value already resolved to its buffer/alloc carrier (memtile L2
+// rendezvous buffer): reads air.refeed_count directly off `op`.
+int64_t getRefeedCount(Operation *op);
 // Get ChannelPutOps from ChannelOp
 std::vector<ChannelPutOp>
 getChannelPutOpThroughSymbol(ChannelOp channel, Operation *scope = nullptr);

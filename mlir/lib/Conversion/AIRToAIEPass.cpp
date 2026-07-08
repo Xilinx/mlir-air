@@ -2017,12 +2017,19 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
         tileCol - col_offset, tileRow - row_offset);
 
     // Propagate the count-free re-feed directive (N = re-broadcast count per
-    // fill) onto the buffer op. generateDmaBd reads it on the fill (S2MM) side
-    // and acquires/releases the read-lock xN so the count-free MM2S ring
-    // re-reads the resident buffer N times (a stride-0 memtile repeat is
-    // unsupported HW-side).
-    if (auto rc = alloc->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
-      buffer->setAttr(air::attrs::RefeedCount, rc);
+    // fill) onto the buffer op, the shared fill/drain rendezvous that
+    // generateDmaBd / getLockForDMA read on the fill (S2MM) side. The
+    // authoritative carrier is the outbound (MM2S) channel that re-sends this
+    // buffer N times; derive N from those puts via the shared helper, falling
+    // back to a directive stamped directly on the alloc.
+    int64_t refeedN = air::getRefeedCount(alloc.getOperation());
+    for (auto *user : alloc.getMemref().getUsers())
+      if (auto put = dyn_cast<air::ChannelPutOp>(user))
+        refeedN = std::max(
+            refeedN, air::getRefeedCount(cast<air::ChannelInterface>(user)));
+    if (refeedN > 1)
+      buffer->setAttr(air::attrs::RefeedCount,
+                      rewriter.getI32IntegerAttr(refeedN));
 
     rewriter.replaceOp(alloc, buffer->getResults());
     bufferToMemtileMap[buffer] = tile;
@@ -5185,20 +5192,12 @@ public:
     // re-reads it; the single core-side release must free N read-tokens so the
     // BD fires N times. (The N>1 loop the front-end emits is canonicalized away
     // before air-to-aie, so the count is carried on the channel/put, not
-    // inferred from a loop.) The count may be per-emission (on the put) or
-    // channel-level (on the channel declaration).
+    // inferred from a loop.)
     if (UsesSemaphoreLocks && !tileInbound.value()) {
-      int64_t n = 0;
-      if (auto rcOp =
-              memcpyOpIf->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
-        n = rcOp.getInt();
-      else if (auto chanIf =
-                   dyn_cast<air::ChannelInterface>(memcpyOpIf.getOperation())) {
-        if (auto chanDecl = air::getChannelDeclarationThroughSymbol(chanIf))
-          if (auto rc =
-                  chanDecl->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
-            n = rc.getInt();
-      }
+      int64_t n = 1;
+      if (auto chanIf =
+              dyn_cast<air::ChannelInterface>(memcpyOpIf.getOperation()))
+        n = air::getRefeedCount(chanIf);
       if (n > 1) {
         lockRelValue *= n;
         // Re-dispatch correctness: the DMA self-loop releases the buf-free
@@ -5483,14 +5482,13 @@ public:
     // the read-lock xN: the fill (S2MM) acquires the refill-lock xN (waits for
     // all N re-reads done before overwriting) and releases the read-lock xN
     // (enables N count-free MM2S re-reads). The MM2S side is unchanged (x1 per
-    // fire). N = air.refeed_count carried on the buffer op.
-    if (auto refeedAttr =
-            isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation())
-                ? bufferOp.getOperation()->template getAttrOfType<IntegerAttr>(
-                      air::attrs::RefeedCount)
-                : nullptr) {
-      int64_t refeedN = refeedAttr.getInt();
-      if (refeedN > 1 && UsesSemaphoreLocks && !isMM2S) {
+    // fire). N = air.refeed_count, propagated onto the memtile buffer op (the
+    // shared fill/drain rendezvous) by AllocL2BuffersPattern; read via the same
+    // helper the lock allocator uses so init and acq/rel cannot diverge.
+    if (isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation()) &&
+        UsesSemaphoreLocks && !isMM2S) {
+      int64_t refeedN = air::getRefeedCount(bufferOp.getOperation());
+      if (refeedN > 1) {
         lockAqValue = refeedN;
         lockRelValue = refeedN;
       }

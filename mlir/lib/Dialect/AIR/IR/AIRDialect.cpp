@@ -3451,6 +3451,19 @@ LogicalResult air::ChannelOp::verify() {
                << "(NumPy broadcasting rules)";
     }
   }
+
+  // air.refeed_count (single-buffer count-free re-broadcast) must be a positive
+  // integer count of re-sends. The channel declaration is its authoritative
+  // carrier.
+  if (auto rc = (*this)->getAttr(attrs::RefeedCount)) {
+    auto rcInt = dyn_cast<IntegerAttr>(rc);
+    if (!rcInt)
+      return emitOpError() << "\"" << attrs::RefeedCount
+                           << "\" must be an integer attribute";
+    if (rcInt.getInt() < 1)
+      return emitOpError() << "\"" << attrs::RefeedCount << "\" ("
+                           << rcInt.getInt() << ") must be >= 1";
+  }
   return success();
 }
 

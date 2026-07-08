@@ -106,6 +106,56 @@ func.func @mt_refeed(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
 
 // -----
 
+// Channel-carried memtile variant: the count lives on the OUTBOUND (drain)
+// channel declaration -- the authoritative carrier -- not on the alloc.
+// AllocL2BuffersPattern derives it from the drain put and stamps the memtile
+// buffer. Strong invariants, bound to the SAME buf-free lock (the one that
+// inits to N): the fill (S2MM) does AcquireGreaterEqual N, while each drain
+// (MM2S) re-send releases that lock by exactly 1 -- i.e. ONE fill enables N
+// drains and the MM2S side is NOT scaled. N=2 here (distinct from the N=4
+// cases above) to catch any hard-coded 4.
+
+// CHECK-LABEL: aie.device
+// CHECK: %[[BUFFREE:.*]] = aie.lock(%{{.*}}) {init = 2 : i32}
+// CHECK: aie.buffer(%{{.*}}) {air.refeed_count = 2 : i32
+// CHECK: aie.memtile_dma
+// Drain (MM2S) re-send: releases the buf-free lock by 1 (not scaled).
+// CHECK: aie.use_lock(%[[BUFFREE]], Release, 1)
+// Fill (S2MM): one fill waits for all N drains, acquiring the buf-free lock N.
+// CHECK: aie.use_lock(%[[BUFFREE]], AcquireGreaterEqual, 2)
+
+air.channel @cin2 [1, 1]
+air.channel @to_core2 [1, 1] {air.refeed_count = 2 : i32}
+air.channel @from_core2 [1, 1]
+air.channel @cout2 [1, 1]
+func.func @mt_refeed_chan(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+  %c1 = arith.constant 1 : index
+  air.channel.put @cin2[] (%arg0[] [] []) {id = 1 : i32} : (memref<64xi32>)
+  air.segment @seg0 {
+    %c1_0 = arith.constant 1 : index
+    %l2 = memref.alloc() : memref<64xi32, 1>
+    air.channel.get @cin2[] (%l2[] [] []) {id = 2 : i32} : (memref<64xi32, 1>)
+    air.channel.put @to_core2[] (%l2[] [] []) {id = 3 : i32} : (memref<64xi32, 1>)
+    air.herd tile(%tx, %ty) in (%sx = %c1_0, %sy = %c1_0) attributes {sym_name = "herd0"} {
+      %buf = memref.alloc() : memref<64xi32, 2>
+      %res = memref.alloc() : memref<64xi32, 2>
+      air.channel.get @to_core2[%tx, %ty] (%buf[] [] []) {id = 4 : i32} : (memref<64xi32, 2>)
+      air.channel.put @from_core2[%tx, %ty] (%res[] [] []) {id = 5 : i32} : (memref<64xi32, 2>)
+      memref.dealloc %buf : memref<64xi32, 2>
+      memref.dealloc %res : memref<64xi32, 2>
+    }
+    %l2o = memref.alloc() : memref<64xi32, 1>
+    air.channel.get @from_core2[] (%l2o[] [] []) {id = 6 : i32} : (memref<64xi32, 1>)
+    air.channel.put @cout2[] (%l2o[] [] []) {id = 7 : i32} : (memref<64xi32, 1>)
+    memref.dealloc %l2 : memref<64xi32, 1>
+    memref.dealloc %l2o : memref<64xi32, 1>
+  }
+  air.channel.get @cout2[] (%arg1[] [] []) {id = 8 : i32} : (memref<64xi32>)
+  return
+}
+
+// -----
+
 // Without air.refeed_count the producing core release stays 1 (no re-feed),
 // the buf-free acquire stays 1, and no lock inits to 4. (This section is last
 // so its CHECK-NOT window is not entered by the positive sections above.)
