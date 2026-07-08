@@ -6934,7 +6934,7 @@ private:
     bool foundLaunch = false;
     func.walk([&](air::LaunchOp launch) {
       foundLaunch = true;
-      if (launch->hasAttr("air.preserve_shim_dma_order")) {
+      if (launch->hasAttr(air::attrs::PreserveShimDmaOrder)) {
         // Propagate the marker onto this launch's channel ops so it survives
         // air-to-std (which copies discardable attrs onto airrt.dma_memcpy_nd)
         // and reaches airrt-to-npu, where it enables issue_token + bounded
@@ -6942,7 +6942,7 @@ private:
         // shim feeds.
         launch.walk([&](Operation *op) {
           if (isa<air::ChannelPutOp, air::ChannelGetOp>(op))
-            op->setAttr("air.preserve_shim_dma_order",
+            op->setAttr(air::attrs::PreserveShimDmaOrder,
                         mlir::UnitAttr::get(op->getContext()));
         });
         return;

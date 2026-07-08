@@ -125,6 +125,21 @@ static LogicalResult canonicalizeHierarchyOpArgs(T op,
 // AsyncOpInterface
 //===----------------------------------------------------------------------===//
 
+void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
+  // Memtile DMA channel-floor steer (reserve channels [0,N) for this flow),
+  // read by MemTileDMAAllocator at channel-allocation time.
+  if (auto mn = src->getAttrOfType<IntegerAttr>(attrs::MemtileDmaChannelMin))
+    dst->setAttr(attrs::MemtileDmaChannelMin, mn);
+  // Runtime-sequence ordering markers (input-feed hoist; append->readback RAW
+  // barrier and its participating appends), consumed by AIRRtToNpu.
+  if (auto rh = src->getAttr(attrs::RuntimeHoist))
+    dst->setAttr(attrs::RuntimeHoist, rh);
+  if (auto aa = src->getAttr(attrs::AwaitAppends))
+    dst->setAttr(attrs::AwaitAppends, aa);
+  if (auto ab = src->getAttr(attrs::AppendBarrier))
+    dst->setAttr(attrs::AppendBarrier, ab);
+}
+
 void air::addAsyncDependency(Operation *op, Value token) {
   op->insertOperands(0, {token});
   if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
@@ -3171,28 +3186,17 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
 
   if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
-  // Preserve the custom DMA-steering / runtime-ordering markers across this
-  // wrap/stride canonicalization; otherwise the discardable attrs are lost when
-  // the op is rebuilt and the AIRToAIE / AIRRtToNpu consumers never fire.
-  // Capture the markers BEFORE replaceOpWithNewOp erases `op` (reading them off
-  // `op` afterwards is a use-after-free), then re-apply them to the rebuilt op.
-  auto chanMin =
-      op->template getAttrOfType<IntegerAttr>("air.memtile_dma_channel_min");
-  auto runtimeHoist = op->getAttr("air.runtime_hoist");
-  auto awaitAppends = op->getAttr("air.await_appends");
-  auto appendBarrier = op->getAttr("air.append_barrier");
-  auto newOp = rewriter.replaceOpWithNewOp<OpT>(
-      op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
-      op.getIndices(), input_memref, offsets, sizes, strides,
+  // Build the rebuilt op first, carry the DMA-steering / runtime-ordering
+  // markers across this wrap/stride canonicalization while both ops are live
+  // (they are discardable attrs, otherwise lost on rebuild and the AIRToAIE /
+  // AIRRtToNpu consumers never fire), then replace -- so `op` is not read after
+  // it is erased.
+  auto newOp = rewriter.create<OpT>(
+      op.getLoc(), op->getResultTypes(), op.getAsyncDependencies(),
+      op.getChanName(), op.getIndices(), input_memref, offsets, sizes, strides,
       /*pad_before=*/padBefore, /*pad_after=*/padAfter);
-  if (chanMin)
-    newOp->setAttr("air.memtile_dma_channel_min", chanMin);
-  if (runtimeHoist)
-    newOp->setAttr("air.runtime_hoist", runtimeHoist);
-  if (awaitAppends)
-    newOp->setAttr("air.await_appends", awaitAppends);
-  if (appendBarrier)
-    newOp->setAttr("air.append_barrier", appendBarrier);
+  copyChannelSteeringAttrs(op, newOp);
+  rewriter.replaceOp(op, newOp->getResults());
 
   return success();
 }

@@ -948,7 +948,7 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
           dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation()))
     if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf))
       if (auto a = chanDecl->getAttrOfType<mlir::IntegerAttr>(
-              "air.tile_dma_channel")) {
+              air::attrs::TileDmaChannel)) {
         int pinned = (int)a.getInt();
         // Validate against the tile's available DMA channels for this
         // direction; an out-of-range pin would otherwise create an invalid
@@ -1509,7 +1509,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     // the underlying buffer was lowered.
     int minCh = 0;
     if (auto a = memcpyOp->getAttrOfType<IntegerAttr>(
-            "air.memtile_dma_channel_min")) {
+            air::attrs::MemtileDmaChannelMin)) {
       minCh = static_cast<int>(a.getInt());
       // Validate the floor: it must leave at least one usable channel
       // [minCh, memtile_dma_channels). An out-of-range floor would otherwise be
