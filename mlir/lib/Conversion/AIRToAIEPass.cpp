@@ -5303,7 +5303,7 @@ public:
 
       // Map key: repeat counts. Map value: vector of memcpy operations sharing
       // the same repeat count.
-      SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeat_counts =
+      llvm::MapVector<int, llvm::SetVector<Operation *>> repeat_counts =
           air::getRepeatCounts(memcpy_ops);
 
       // Note: we designate each unique repeat value in repeat_counts map with a

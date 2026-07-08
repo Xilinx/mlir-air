@@ -196,33 +196,11 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
   return one_d_offset;
 }
 
-// Innermost enclosing loop of `op` that lowers to a BD repeat count: an scf.for
-// or affine.for with a statically known trip count. Loop-likes that do NOT map
-// to a BD repeat (scf.forall, scf.while, dynamic-bound for) are transparent.
-// Both N-buffer-rotation detection and BD task partitioning key on this single
-// notion of "one loop" so they always agree on task boundaries.
-static Operation *getInnermostStaticRepeatLoop(Operation *op) {
-  for (Operation *parent = op->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (auto af = dyn_cast<affine::AffineForOp>(parent)) {
-      if (af.hasConstantBounds())
-        return parent;
-    } else if (auto sf = dyn_cast<scf::ForOp>(parent)) {
-      if (air::getStaticScfForTripCountAsInt(sf))
-        return parent;
-    }
-  }
-  return nullptr;
-}
-
-// Given a vector of memcpy operations, partition them into BD tasks. Each entry
-// is (repeat_count, ops) where ops form one BD chain repeated repeat_count+1
-// times. Tasks are keyed by the innermost enclosing repeating loop, so sibling
-// loops draining the same channel into distinct buffers become distinct tasks
-// even when their trip counts are equal (two entries may share a repeat_count).
-SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
+// Given a vector of memcpy operations, return a map of their repeat counts,
+// relative to a common ancestor region.
+llvm::MapVector<int, llvm::SetVector<Operation *>>
 air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
-  SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeatCounts;
+  llvm::MapVector<int, llvm::SetVector<Operation *>> repeatCounts;
   llvm::SetVector<Operation *> memcpyIOps;
   for (auto o : memcpy_ops) {
     memcpyIOps.insert(o);
@@ -388,23 +366,22 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
       uniqueBuffers.insert(chanOp.getMemref());
     }
 
-    // A genuine rotation interleaves buffers inside ONE shared steady-state
-    // loop (a software-pipelined loop unrolled across the buffer pool),
-    // optionally with peel/prologue sites sitting outside it. So exactly one
-    // enclosing loop holds multiple rotation sites. Sites spread across two or
-    // more distinct loops -- e.g. sibling get-loops that each drain the same
-    // resident stream in their own ping-pong ring -- are time-multiplexed block
-    // consumers, NOT a rotation: a single circular BD chain would mis-deliver
-    // (each loop would see only every Nth buffer). Sites that each sit alone in
-    // their own loop (zero shared loops) are block consumers too. Both fall
-    // through to per-op counted BDs.
+    // A genuine rotation interleaves buffers inside a shared loop (a peeled
+    // steady-state loop unrolled across the buffer pool), so at least two sites
+    // share one enclosing loop. Sites that each sit alone in their own loop are
+    // time-multiplexed block consumers, NOT a rotation -- a single circular BD
+    // chain would mis-deliver (each block would see only every Nth buffer). Let
+    // those fall through to per-op sequential BDs.
+    // Note: this is coarse -- any two sites sharing a loop marks the whole set
+    // as a rotation; a channel/tile mixing a rotation with block consumers on
+    // one DMA channel (not observed in practice) would be over-collapsed.
     llvm::DenseMap<Operation *, unsigned> loopSiteCount;
+    bool anySharedLoop = false;
     for (auto *op : ops)
-      if (auto *loop = getInnermostStaticRepeatLoop(op))
-        loopSiteCount[loop]++;
-    unsigned loopsWithMultipleSites = llvm::count_if(
-        loopSiteCount, [](const auto &entry) { return entry.second >= 2; });
-    if (loopsWithMultipleSites != 1)
+      if (auto loop = op->getParentOfType<LoopLikeOpInterface>())
+        if (++loopSiteCount[loop.getOperation()] >= 2)
+          anySharedLoop = true;
+    if (!anySharedLoop)
       return false;
 
     // Valid rotation: multiple unique buffers, total ops divisible by buffer
@@ -418,10 +395,9 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   // chain (infiniteBDLoopMode = true) instead of separate terminated tasks.
   if (detectNBufferRotation(memcpyIOps)) {
     SmallVector<Operation *> opVec = memcpyIOps.takeVector();
-    llvm::SetVector<Operation *> rotationOps;
-    for (auto *op : opVec)
-      rotationOps.insert(op);
-    repeatCounts.push_back({0, std::move(rotationOps)});
+    for (auto *op : opVec) {
+      repeatCounts[0].insert(op);
+    }
     return repeatCounts;
   }
 
@@ -432,38 +408,24 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   if (!commonRegion)
     return repeatCounts;
 
-  // Partition ops into BD tasks keyed by their innermost enclosing repeating
-  // loop (relative to the common region). Ops sharing a loop form one task
-  // (that loop's BD chain, e.g. a 2-deep ping-pong ring); sibling loops become
-  // distinct tasks even at equal trip counts. Ops with no enclosing loop (fully
-  // unrolled / peeled) share the null-key task. The task's repeat count is the
-  // product of all enclosing loop trip counts (trip count minus one).
-  llvm::MapVector<Operation *, std::pair<int, llvm::SetVector<Operation *>>>
-      partitions;
+  // Get each memcpy op's repeat count, relative to the common region.
   for (auto o : memcpyIOpVec) {
-    // Repeat count is the product of all enclosing static loop trip counts
-    // (relative to the common region); the task key is the innermost such loop.
     int tripCount = 1;
     Region *currRegion = o->getParentRegion();
     while (commonRegion->isAncestor(currRegion)) {
       Operation *parent = currRegion->getParentOp();
       currRegion = currRegion->getParentRegion();
-      if (auto affineFor = dyn_cast_if_present<affine::AffineForOp>(parent)) {
-        if (affineFor.hasConstantBounds())
-          tripCount *= *air::getStaticAffineForTripCountAsInt(affineFor);
-      } else if (auto scfFor = dyn_cast_if_present<scf::ForOp>(parent)) {
-        if (air::getStaticScfForTripCountAsInt(scfFor))
-          tripCount *= *air::getStaticScfForTripCountAsInt(scfFor);
+      auto affineFor = dyn_cast_if_present<affine::AffineForOp>(parent);
+      auto scfFor = dyn_cast_if_present<scf::ForOp>(parent);
+      if (affineFor && affineFor.hasConstantBounds()) {
+        tripCount *= *air::getStaticAffineForTripCountAsInt(affineFor);
+      } else if (scfFor && air::getStaticScfForTripCountAsInt(scfFor)) {
+        tripCount *= *air::getStaticScfForTripCountAsInt(scfFor);
       }
     }
     // In English, repeat count is trip count minus one.
-    auto &task = partitions[getInnermostStaticRepeatLoop(o)];
-    task.first = tripCount - 1;
-    task.second.insert(o);
+    repeatCounts[tripCount - 1].insert(o);
   }
-
-  for (auto &[loop, task] : partitions)
-    repeatCounts.push_back({task.first, std::move(task.second)});
 
   return repeatCounts;
 }

@@ -7,14 +7,14 @@
 
 // RUN: air-opt %s -air-label-scf-for-to-ping-pong -air-ping-pong-transform | FileCheck %s
 
-// Resident-ring sharing is auto-detected structurally (see
-// ping_pong_share_resident_ring_auto.mlir), so the `air.shared_resident_ring`
-// attribute on the channel decls is OPTIONAL -- accepted but not required. This
-// test keeps it (older / production IR may still emit it) and confirms such IR
-// still merges. Two sibling get-loops in one block re-read the SAME resident
-// streams (one consume pass each); the second loop is merged onto the first's
-// ring: ONE 2-deep ring (2 buffers per get x 2 gets = 4 buffers TOTAL, shared by
-// both loops), the rotation chained through the first loop's iter-arg results.
+// Shared-resident-ring ping-pong mode (opt-in via `air.shared_resident_ring` on
+// the channel decl). Two sibling get-loops in one block re-read the SAME
+// resident input stream (one consume pass each). Without the attribute each loop
+// gets its own 2-deep ring (4 buffers total); air-to-aie would then fuse them
+// into a 4-deep ring whose halves interleave coverage -- numerically wrong. With
+// the attribute the second loop is merged onto the first's ring: ONE 2-deep ring
+// (here 2 buffers per get x 2 gets = 4 buffers TOTAL, shared by both loops), the
+// rotation chained through the first loop's iter-arg results.
 
 // SHARED: the merged form allocates the ring exactly ONCE (4 allocs: x/w ping +
 // x/w pong) -- not 8 -- and the second loop chains its iter args from the first

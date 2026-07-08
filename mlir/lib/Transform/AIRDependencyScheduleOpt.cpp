@@ -62,30 +62,6 @@ namespace xilinx {
 namespace air {
 
 //===----------------------------------------------------------------------===//
-// Ping-pong ring ABI
-//
-// ConstructPingPongDependencyPattern rewrites a 2-deep ping-pong loop to carry
-// exactly these async iter-args/results. Downstream consumers (resident-ring
-// sharing) key off this shape, so the invariants live here in one place.
-//===----------------------------------------------------------------------===//
-
-// A constructed ping-pong loop carries exactly 4 async tokens.
-static constexpr unsigned kPingPongNumTokens = 4;
-
-// True if `forOp` has the constructed 2-deep ping-pong shape.
-static bool isConstructedPingPongLoop(scf::ForOp forOp) {
-  return forOp.getNumResults() == kPingPongNumTokens;
-}
-
-// The result token that stands in for the original loop's completion (the value
-// ConstructPingPongDependencyPattern rewires the pre-transform loop result to).
-static Value getPingPongDoneToken(scf::ForOp forOp) {
-  assert(isConstructedPingPongLoop(forOp) &&
-         "not a constructed ping-pong loop");
-  return forOp.getResult(1);
-}
-
-//===----------------------------------------------------------------------===//
 // Utility methods for op hoisting
 //===----------------------------------------------------------------------===//
 
@@ -1227,7 +1203,7 @@ struct ConstructPingPongDependencyPattern
         ping_pong_token_wait.getAsyncToken()};
     scf::ForOp new_loop_op =
         replaceForLoopAndAddIterArgs(rewriter, for_op, iter_operands);
-    for_op.getResult(0).replaceAllUsesWith(getPingPongDoneToken(new_loop_op));
+    for_op.getResult(0).replaceAllUsesWith(new_loop_op.getResult(1));
 
     // Collect ping/pong producer/consumer fronts and backs for ping pong
     // dependency edge connection
@@ -3672,112 +3648,58 @@ public:
     });
   }
 
-  // The set of channel declarations `forOp`'s channel.get(s) target, sorted by
-  // pointer for stable comparison and deduplicated. Empty if any get's channel
-  // cannot be resolved. A phase may re-read several resident streams (e.g. an
-  // activation and a weight), so this is a set, not a single channel.
-  SmallVector<Operation *> getGetChannelSet(scf::ForOp forOp) {
-    SmallVector<Operation *> decls;
-    for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>()) {
-      auto d = air::getChannelDeclarationThroughSymbol(
-          cast<air::ChannelInterface>(g.getOperation()));
-      if (!d)
-        return {};
-      if (!llvm::is_contained(decls, d.getOperation()))
-        decls.push_back(d.getOperation());
-    }
-    llvm::sort(decls);
-    return decls;
-  }
-
-  // Ring buffers read by the loop, in channel.get program order (deduplicated).
-  SmallVector<Value> getRingBuffers(scf::ForOp forOp) {
-    SmallVector<Value> bufs;
-    for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>())
-      if (!llvm::is_contained(bufs, g.getDstMemref()))
-        bufs.push_back(g.getDstMemref());
-    return bufs;
-  }
-
-  // A buffer is transient wrt `forOp` (safe to share) if it does not escape the
-  // loop: every use is either inside the loop body or a post-loop dealloc. If
-  // its contents outlive the loop (read by a later phase), sharing would
-  // clobber it, so bail.
-  bool ringBufferIsTransient(Value buf, scf::ForOp forOp) {
-    for (auto *user : buf.getUsers()) {
-      if (forOp->isProperAncestor(user))
-        continue; // used inside the loop
-      // Otherwise the only allowed use is a dealloc (optionally wrapped in an
-      // air.execute) that sits after the loop.
-      Operation *dealloc = user;
-      if (isa<air::ExecuteOp>(user))
-        dealloc = &user->getRegion(0).front().front();
-      if (isa<memref::DeallocOp>(dealloc))
-        continue;
-      return false;
-    }
-    return true;
-  }
-
-  // When several sibling constructed ping-pong get-loops in one block each
-  // build their own 2-deep ring off the SAME channel set and re-read those as
-  // resident streams (one consume pass per phase), share one physical ring
-  // among them. Each phase would otherwise allocate its own ring: N phases ->
-  // N*depth buffers
-  // + BDs on one DMA channel, which blows the tile's L1 / BD budget. Detected
-  // structurally (no attribute needed): loops are keyed by (block, channel
-  // set), their buffers must be transient (do not escape the loop) and match in
-  // count and element type; followers are rechained onto the owner loop's ring
-  // buffers and their duplicate allocs / deallocs / seed wait_alls are erased.
   void shareResidentRings(func::FuncOp funcOp) {
     auto pushUnique = [](auto &vec, auto entry) {
       if (!llvm::is_contained(vec, entry))
         vec.push_back(entry);
     };
-
-    // Collect, per (block, channel-set), the ordered chain of shareable ring
-    // loops. Keyed on the exact set of resident streams so two loops merge only
-    // when they re-read the SAME channels (not merely the same buffer shapes).
-    struct Chain {
-      Block *block;
-      SmallVector<Operation *> channels;
-      SmallVector<scf::ForOp> loops;
+    // A constructed ping-pong loop whose channel.get(s) target a marked
+    // channel.
+    auto isMarkedRingLoop = [](scf::ForOp forOp) -> bool {
+      // Constructed form carries exactly the 4 ping-pong async tokens.
+      if (forOp.getNumResults() != 4)
+        return false;
+      bool marked = false;
+      for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>()) {
+        auto decl = air::getChannelDeclarationThroughSymbol(
+            cast<air::ChannelInterface>(g.getOperation()));
+        if (decl && decl->hasAttr("air.shared_resident_ring"))
+          marked = true;
+      }
+      return marked;
     };
-    SmallVector<Chain> chains;
+    // Ring buffers read by the loop, in channel.get program order.
+    auto ringBuffers = [&](scf::ForOp forOp) {
+      SmallVector<Value> bufs;
+      for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>())
+        pushUnique(bufs, g.getDstMemref());
+      return bufs;
+    };
+
+    // Collect, per block, the ordered chain of marked ring loops.
+    SmallVector<SmallVector<scf::ForOp>> chains;
+    DenseMap<Block *, unsigned> blockToChain;
     funcOp.walk([&](scf::ForOp forOp) {
-      if (!air::isConstructedPingPongLoop(forOp))
+      if (!isMarkedRingLoop(forOp))
         return;
-      SmallVector<Operation *> channels = getGetChannelSet(forOp);
-      if (channels.empty())
-        return;
-      SmallVector<Value> bufs = getRingBuffers(forOp);
-      if (bufs.empty())
-        return;
-      for (auto b : bufs)
-        if (!ringBufferIsTransient(b, forOp))
-          return;
-      Chain *dst = nullptr;
-      for (auto &c : chains)
-        if (c.block == forOp->getBlock() && c.channels == channels) {
-          dst = &c;
-          break;
-        }
-      if (!dst)
-        chains.push_back({forOp->getBlock(), channels, {forOp}});
-      else
-        dst->loops.push_back(forOp);
+      Block *blk = forOp->getBlock();
+      auto it = blockToChain.find(blk);
+      if (it == blockToChain.end()) {
+        blockToChain[blk] = chains.size();
+        chains.push_back({forOp});
+      } else
+        chains[it->second].push_back(forOp);
     });
 
-    for (auto &chainRec : chains) {
-      auto &chain = chainRec.loops;
+    for (auto &chain : chains) {
       if (chain.size() < 2)
         continue;
       // Owner buffers define the shared ring; all followers must match in count
       // and element type, position-by-position, or we bail on this chain.
-      SmallVector<Value> ownerBufs = getRingBuffers(chain[0]);
+      SmallVector<Value> ownerBufs = ringBuffers(chain[0]);
       bool ok = !ownerBufs.empty();
       for (unsigned k = 1; k < chain.size() && ok; k++) {
-        auto fb = getRingBuffers(chain[k]);
+        auto fb = ringBuffers(chain[k]);
         if (fb.size() != ownerBufs.size()) {
           ok = false;
           break;
@@ -3804,13 +3726,13 @@ public:
       };
       SmallVector<Operation *> deadDeallocs = deallocExecsOf(ownerBufs);
       for (unsigned k = 1; k + 1 < chain.size(); k++)
-        for (auto *d : deallocExecsOf(getRingBuffers(chain[k])))
+        for (auto *d : deallocExecsOf(ringBuffers(chain[k])))
           pushUnique(deadDeallocs, d);
 
       // Merge each follower onto the owner's ring.
       SmallVector<Operation *> deadAllocs;
       for (unsigned k = 1; k < chain.size(); k++) {
-        auto followerBufs = getRingBuffers(chain[k]);
+        auto followerBufs = ringBuffers(chain[k]);
         for (auto b : followerBufs)
           if (auto *def = b.getDefiningOp())
             pushUnique(deadAllocs, def);
@@ -3828,7 +3750,7 @@ public:
       }
 
       // Drop the now-dead duplicate allocs and deallocs.
-      Value doneTok = air::getPingPongDoneToken(chain.back());
+      Value doneTok = chain.back().getResult(1);
       for (auto *d : deadDeallocs) {
         d->getResult(0).replaceAllUsesWith(doneTok);
         d->erase();
