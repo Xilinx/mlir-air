@@ -3221,5 +3221,96 @@ std::unique_ptr<Pass> createAIROverrideMemRefMemorySpacePass(
   return std::make_unique<AIROverrideMemRefMemorySpacePass>(options);
 }
 
+// Opt-in producer for air.refeed_count. See the pass description in Passes.td.
+class AIRAnnotateRefeedPass
+    : public air::impl::AIRAnnotateRefeedPassBase<AIRAnnotateRefeedPass> {
+public:
+  AIRAnnotateRefeedPass() = default;
+  AIRAnnotateRefeedPass(const AIRAnnotateRefeedPass &pass) {}
+  void runOnOperation() override;
+};
+
+void AIRAnnotateRefeedPass::runOnOperation() {
+  ModuleOp module = getOperation();
+  SmallVector<Operation *> markedLoops;
+  module.walk([&](Operation *op) {
+    if (isa<scf::ForOp, affine::AffineForOp>(op) &&
+        op->hasAttr(air::attrs::RefeedLoop))
+      markedLoops.push_back(op);
+  });
+
+  for (Operation *loopOp : markedLoops) {
+    Block *body = nullptr;
+    Value iv;
+    std::optional<int64_t> tripCount;
+    if (auto sfo = dyn_cast<scf::ForOp>(loopOp)) {
+      body = sfo.getBody();
+      iv = sfo.getInductionVar();
+      tripCount = air::getStaticScfForTripCountAsInt(sfo);
+    } else {
+      auto afo = cast<affine::AffineForOp>(loopOp);
+      body = afo.getBody();
+      iv = afo.getInductionVar();
+      tripCount = air::getStaticAffineForTripCountAsInt(afo);
+    }
+
+    // Safe shape only: no loop-carried values, a static trip count >= 2, and a
+    // body of exactly one loop-invariant air.channel.put.
+    if (loopOp->getNumResults()) {
+      loopOp->emitWarning("air.refeed_loop: loop-carried values unsupported; "
+                          "left unchanged");
+      continue;
+    }
+    if (!tripCount || *tripCount < 2) {
+      loopOp->emitWarning("air.refeed_loop: non-constant or trivial trip "
+                          "count; left unchanged");
+      continue;
+    }
+    if (body->getOperations().size() != 2) {
+      loopOp->emitWarning("air.refeed_loop: body is not a single channel.put; "
+                          "left unchanged");
+      continue;
+    }
+    auto put = dyn_cast<air::ChannelPutOp>(&body->front());
+    if (!put) {
+      loopOp->emitWarning("air.refeed_loop: body is not a single channel.put; "
+                          "left unchanged");
+      continue;
+    }
+    Region &region = loopOp->getRegion(0);
+    bool invariant = llvm::all_of(put->getOperands(), [&](Value v) {
+      if (v == iv)
+        return false;
+      if (Operation *def = v.getDefiningOp())
+        return !region.isAncestor(def->getParentRegion());
+      return true;
+    });
+    if (!invariant) {
+      loopOp->emitWarning(
+          "air.refeed_loop: channel.put is not loop-invariant; left unchanged");
+      continue;
+    }
+    auto chan = air::getChannelDeclarationThroughSymbol(put);
+    if (!chan) {
+      loopOp->emitWarning(
+          "air.refeed_loop: channel declaration not found; left unchanged");
+      continue;
+    }
+
+    // Record N = trip count on the channel declaration (authoritative carrier),
+    // then collapse the loop to its single put.
+    int64_t n =
+        std::max<int64_t>(air::getRefeedCount(chan.getOperation()), *tripCount);
+    OpBuilder builder(loopOp);
+    chan->setAttr(air::attrs::RefeedCount, builder.getI32IntegerAttr(n));
+    put->moveBefore(loopOp);
+    loopOp->erase();
+  }
+}
+
+std::unique_ptr<Pass> createAIRAnnotateRefeedPass() {
+  return std::make_unique<AIRAnnotateRefeedPass>();
+}
+
 } // namespace air
 } // namespace xilinx

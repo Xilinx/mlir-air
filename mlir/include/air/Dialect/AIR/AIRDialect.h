@@ -44,6 +44,11 @@ constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
 // buffer per production. Authoritative carrier is the air.channel declaration;
 // read via air::getRefeedCount. Verified on air.channel.
 constexpr StringLiteral RefeedCount = "air.refeed_count";
+// Opt-in front-end marker (unit attr) on an scf.for / affine.for whose body is
+// a single loop-invariant air.channel.put: the loop re-sends one resident
+// buffer once per iteration. The air-annotate-refeed pass reads its trip count
+// into attrs::RefeedCount on the channel and collapses the loop.
+constexpr StringLiteral RefeedLoop = "air.refeed_loop";
 } // namespace attrs
 
 // Copy the DMA-steering / runtime-ordering markers
