@@ -69,6 +69,16 @@ scf::ForOp getForRegionIterArgsOwner(Value val);
 scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val);
 // Get the parent air.launch_herd op of a tile id
 HerdOp getHerdArgOwner(Value val);
+// Returns true if the L1 buffer passed as kernel operand `memrefOperand` to
+// `herd` carries a cross-core producer/consumer dependence: some core reads the
+// buffer that a *different* core writes. Inferred purely from the per-core
+// access pattern by enumerating the herd iteration space and evaluating tile-id
+// guards (scf.if / scf.index_switch; affine.if and unanalyzable guards are
+// treated conservatively as reachable). This identifies shared L1 neighbor
+// buffers without any IR annotation. Returns false if `memrefOperand` is not a
+// kernel operand of `herd`, the buffer is not L1, the herd has a single core,
+// or the iteration extents are not statically known.
+bool herdBufferHasCrossCoreDependence(HerdOp herd, Value memrefOperand);
 // Get the parent air.hierarchy op of a tile id
 HierarchyInterface getHierarchyArgOwner(Value val);
 // Get the scf parent op from scf.yield op

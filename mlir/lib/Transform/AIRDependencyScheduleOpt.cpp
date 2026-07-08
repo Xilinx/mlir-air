@@ -7319,6 +7319,12 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
     for (auto memref : usedMemrefsDefedAbove) {
       if (!memrefIsOnlyUsedByOpOrByDealloc(op, memref))
         continue;
+      // Do not sink a shared L1 herd operand carrying a cross-core
+      // producer/consumer dependence into the SPMD herd body: sinking would
+      // give each core a private copy and break neighbor L1 communication.
+      if (auto herd = dyn_cast<air::HerdOp>(op.getOperation()))
+        if (air::herdBufferHasCrossCoreDependence(herd, memref))
+          continue;
       air::ExecuteOp allocExec = nullptr;
       air::ExecuteOp deallocExec = nullptr;
       memref::AllocOp alloc = nullptr;
