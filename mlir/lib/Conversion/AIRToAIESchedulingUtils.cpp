@@ -1075,6 +1075,12 @@ static int effectiveColForMemTileLTO(AIE::LogicalTileOp mtLTO) {
   return *cols.begin();
 }
 
+// Forward declaration: a channel declared with `air.dedicated_dma_channel`
+// must get its OWN physical DMA channel and never be packet-collapsed with
+// another flow on the same tile (defined below for the MemTile allocator;
+// the shim allocator's packet-reuse branch honors it too).
+static bool memcpyIsDedicatedChannel(air::MemcpyInterface mc);
+
 air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
     : air::DMAAllocator(device, air::MemorySpace::L3) {
   shim_dma_channels = 2;
@@ -1171,7 +1177,11 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   };
 
   // For packet flows: reuse the bucket's existing packet channel if any.
-  if (isPacketFlowOp) {
+  // EXCEPT a channel marked `air.dedicated_dma_channel`, which must get its own
+  // physical channel (mirrors MemTileDMAAllocator). This lets a column host
+  // BOTH a packet-multiplexed channel and a separate dedicated channel on the
+  // same column's other DMA channel.
+  if (isPacketFlowOp && !memcpyIsDedicatedChannel(memcpyOp)) {
     AIE::LogicalTileOp packetLT = nullptr;
     int packetCh = -1;
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
@@ -1445,6 +1455,19 @@ air::MemTileDMAAllocator::MemTileDMAAllocator(AIE::DeviceOp device)
   }
 }
 
+// A channel declared with `air.dedicated_dma_channel` must get its OWN physical
+// DMA channel and never be time-multiplexed (collapsed) with any other flow on
+// the same tile. Used to keep a latency-critical packet flow off a shared DMA
+// channel that another (e.g. later-phase) flow would otherwise collapse onto
+// and BD-order ahead of -- starving the first flow's consumer.
+static bool memcpyIsDedicatedChannel(air::MemcpyInterface mc) {
+  auto chan = dyn_cast_if_present<air::ChannelInterface>(mc.getOperation());
+  if (!chan)
+    return false;
+  auto decl = air::getChannelDeclarationThroughSymbol(chan);
+  return decl && decl->hasAttr("air.dedicated_dma_channel");
+}
+
 FailureOr<air::allocation_info_t>
 air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                                                 int chan) {
@@ -1484,10 +1507,22 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       return t;
     }
     // Search for existing packet-flow allocations on this tile, and try to
-    // reuse the channel allocation.
+    // reuse the channel allocation. EXCEPT: never collapse a channel marked
+    // air.dedicated_dma_channel with anything (in either direction) -- give it
+    // a private physical DMA channel.
     if (isPacketFlowOp && t.foundPacketFlowAllocInTile(tile)) {
-      t.memcpyOps.push_back(memcpyOp.getOperation());
-      return t;
+      bool tDedicated = false;
+      for (auto o : t.memcpyOps) {
+        auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
+        if (existingMc && memcpyIsDedicatedChannel(existingMc)) {
+          tDedicated = true;
+          break;
+        }
+      }
+      if (!memcpyIsDedicatedChannel(memcpyOp) && !tDedicated) {
+        t.memcpyOps.push_back(memcpyOp.getOperation());
+        return t;
+      }
     }
   }
   // Need to allocate a new one. TileLike.getNumSourceConnections /
