@@ -1508,12 +1508,20 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     // ComposeMemrefOpOnChannelOp), so it is available here regardless of how
     // the underlying buffer was lowered.
     int minCh = 0;
-    if (auto a =
-            memcpyOp->getAttrOfType<IntegerAttr>("air.memtile_dma_channel_min"))
+    if (auto a = memcpyOp->getAttrOfType<IntegerAttr>(
+            "air.memtile_dma_channel_min")) {
       minCh = static_cast<int>(a.getInt());
+      // Validate the floor: it must leave at least one usable channel
+      // [minCh, memtile_dma_channels). An out-of-range floor would otherwise be
+      // silently ignored (falling back to round-robin), defeating the steer.
+      if (minCh < 0 || minCh >= memtile_dma_channels)
+        return memcpyOp.emitOpError("air.memtile_dma_channel_min = ")
+               << minCh << " is out of range [0, " << memtile_dma_channels
+               << ") for the " << (isMM2S.value() ? "MM2S" : "S2MM")
+               << " DMA channels of this memtile";
+    }
     int avail = memtile_dma_channels - minCh;
-    chan = (minCh >= 0 && avail > 0) ? (minCh + (num_allocs % avail))
-                                     : (num_allocs % memtile_dma_channels);
+    chan = minCh + (num_allocs % avail);
   }
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
