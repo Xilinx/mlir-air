@@ -1015,6 +1015,31 @@ LogicalResult loopUnrollFullWithAsyncTokenPreserved(
   return success();
 }
 
+// Returns true if `forOp`'s trip count is provably a multiple of `factor`.
+// Conservatively handles the common dynamic case `for %i = 0 to (x * C) step 1`
+// where `C % factor == 0` (so the trip count `C * x` is divisible by `factor`),
+// in addition to constant trip counts.
+bool isTripCountDivisibleByFactor(scf::ForOp forOp, uint64_t factor) {
+  if (factor == 0)
+    return false;
+  if (auto ct = forOp.getStaticTripCount())
+    return (ct->getSExtValue() % (int64_t)factor) == 0;
+  // Dynamic bound: require lb == 0, step == 1, ub == muli(_, C) with
+  // C % factor == 0 (constant on either operand).
+  auto lb = getConstantIntValue(forOp.getLowerBound());
+  auto step = getConstantIntValue(forOp.getStep());
+  if (!lb || *lb != 0 || !step || *step != 1)
+    return false;
+  auto mul = forOp.getUpperBound().getDefiningOp<arith::MulIOp>();
+  if (!mul)
+    return false;
+  for (Value operand : {mul.getLhs(), mul.getRhs()})
+    if (auto c = getConstantIntValue(operand))
+      if (*c != 0 && (*c % (int64_t)factor) == 0)
+        return true;
+  return false;
+}
+
 // Unrolls an `scf.for` loop by a given factor while preserving async token
 // dependencies.
 //
@@ -1031,10 +1056,28 @@ LogicalResult loopUnrollByFactorWithAsyncTokenPreserved(
 
   Block *parentBlock = forOp->getBlock();
 
+  // For a dynamic bound that is provably divisible by the unroll factor (e.g.
+  // a runtime `2*J2` trip count unrolled by 2), MLIR still emits a runtime
+  // epilogue/remainder loop because it cannot statically prove divisibility.
+  // That dead remainder lowers to extra (never-filled) DMA BD ring slots and
+  // corrupts the count-free ring locks. Detect divisibility up front so we can
+  // erase the zero-trip epilogue afterwards.
+  bool divisible = isTripCountDivisibleByFactor(forOp, unrollFactor);
+
   // Unroll the loop by factor
-  if (failed(loopUnrollByFactor(forOp, unrollFactor, annotateFn))) {
+  auto info = loopUnrollByFactor(forOp, unrollFactor, annotateFn);
+  if (failed(info)) {
     forOp->emitOpError("failed to fully unroll.");
     return failure();
+  }
+
+  // Erase the provably-dead epilogue loop. With zero trip count its results
+  // equal its init args, so rewire result uses to the init args first.
+  if (divisible && info->epilogueLoopOp) {
+    scf::ForOp epi = *info->epilogueLoopOp;
+    for (auto [res, init] : llvm::zip(epi.getResults(), epi.getInitArgs()))
+      res.replaceAllUsesWith(init);
+    epi.erase();
   }
 
   preserveAsyncDependenciesAfterUnroll(*parentBlock);

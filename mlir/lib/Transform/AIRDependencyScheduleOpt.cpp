@@ -3614,7 +3614,21 @@ public:
         auto annotateFn = [](unsigned i, Operation *op, OpBuilder b) {
           op->setAttr("unrolled_iteration", b.getI32IntegerAttr(i));
         };
-        (void)loopUnrollByFactor(for_op, unroll_factor, annotateFn);
+        // When the trip count is provably divisible by the unroll factor (e.g.
+        // a runtime `2*J2` bound unrolled by 2), MLIR still emits a zero-trip
+        // runtime epilogue because it cannot statically prove divisibility.
+        // That dead remainder lowers to never-filled DMA BD ring slots and
+        // corrupts the count-free ring locks, so erase it.
+        bool divisible =
+            air::isTripCountDivisibleByFactor(for_op, unroll_factor);
+        auto info = loopUnrollByFactor(for_op, unroll_factor, annotateFn);
+        if (succeeded(info) && divisible && info->epilogueLoopOp) {
+          scf::ForOp epi = *info->epilogueLoopOp;
+          for (auto [res, init] :
+               llvm::zip(epi.getResults(), epi.getInitArgs()))
+            res.replaceAllUsesWith(init);
+          epi.erase();
+        }
       }
     });
   }
@@ -3632,6 +3646,130 @@ public:
       op->removeAttr("async_front");
       op->removeAttr("async_back");
     });
+  }
+
+  void shareResidentRings(func::FuncOp funcOp) {
+    auto pushUnique = [](auto &vec, auto entry) {
+      if (!llvm::is_contained(vec, entry))
+        vec.push_back(entry);
+    };
+    // A constructed ping-pong loop whose channel.get(s) target a marked
+    // channel.
+    auto isMarkedRingLoop = [](scf::ForOp forOp) -> bool {
+      // Constructed form carries exactly the 4 ping-pong async tokens.
+      if (forOp.getNumResults() != 4)
+        return false;
+      bool marked = false;
+      for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>()) {
+        auto decl = air::getChannelDeclarationThroughSymbol(
+            cast<air::ChannelInterface>(g.getOperation()));
+        if (decl && decl->hasAttr("air.shared_resident_ring"))
+          marked = true;
+      }
+      return marked;
+    };
+    // Ring buffers read by the loop, in channel.get program order.
+    auto ringBuffers = [&](scf::ForOp forOp) {
+      SmallVector<Value> bufs;
+      for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>())
+        pushUnique(bufs, g.getDstMemref());
+      return bufs;
+    };
+
+    // Collect, per block, the ordered chain of marked ring loops.
+    SmallVector<SmallVector<scf::ForOp>> chains;
+    DenseMap<Block *, unsigned> blockToChain;
+    funcOp.walk([&](scf::ForOp forOp) {
+      if (!isMarkedRingLoop(forOp))
+        return;
+      Block *blk = forOp->getBlock();
+      auto it = blockToChain.find(blk);
+      if (it == blockToChain.end()) {
+        blockToChain[blk] = chains.size();
+        chains.push_back({forOp});
+      } else
+        chains[it->second].push_back(forOp);
+    });
+
+    for (auto &chain : chains) {
+      if (chain.size() < 2)
+        continue;
+      // Owner buffers define the shared ring; all followers must match in count
+      // and element type, position-by-position, or we bail on this chain.
+      SmallVector<Value> ownerBufs = ringBuffers(chain[0]);
+      bool ok = !ownerBufs.empty();
+      for (unsigned k = 1; k < chain.size() && ok; k++) {
+        auto fb = ringBuffers(chain[k]);
+        if (fb.size() != ownerBufs.size()) {
+          ok = false;
+          break;
+        }
+        for (unsigned i = 0; i < fb.size(); i++)
+          if (fb[i].getType() != ownerBufs[i].getType())
+            ok = false;
+      }
+      if (!ok)
+        continue;
+
+      // The follower deallocs free the shared ring at the end; the owner's (and
+      // any middle loop's) deallocs would double-free, so drop them. Collect
+      // the dealloc-executes of every loop EXCEPT the last before any rewrite.
+      auto deallocExecsOf = [&](ArrayRef<Value> bufs) {
+        SmallVector<Operation *> execs;
+        for (auto b : bufs)
+          for (auto *u : b.getUsers())
+            if (isa<memref::DeallocOp>(u))
+              if (auto *p = u->getParentOp())
+                if (isa<air::ExecuteOp>(p))
+                  pushUnique(execs, p);
+        return execs;
+      };
+      SmallVector<Operation *> deadDeallocs = deallocExecsOf(ownerBufs);
+      for (unsigned k = 1; k + 1 < chain.size(); k++)
+        for (auto *d : deallocExecsOf(ringBuffers(chain[k])))
+          pushUnique(deadDeallocs, d);
+
+      // Merge each follower onto the owner's ring.
+      SmallVector<Operation *> deadAllocs;
+      for (unsigned k = 1; k < chain.size(); k++) {
+        auto followerBufs = ringBuffers(chain[k]);
+        for (auto b : followerBufs)
+          if (auto *def = b.getDefiningOp())
+            pushUnique(deadAllocs, def);
+        // Capture the wait_all (if any) that seeds this follower's init args;
+        // it becomes dead once we rechain the iter args.
+        for (auto init : chain[k].getInitArgs())
+          if (auto *def = init.getDefiningOp())
+            if (isa<air::WaitAllOp>(def))
+              pushUnique(deadAllocs, def);
+        // Reuse the owner's physical buffers.
+        for (unsigned i = 0; i < followerBufs.size(); i++)
+          followerBufs[i].replaceAllUsesWith(ownerBufs[i]);
+        // Continue the ring rotation from the previous loop's results.
+        chain[k].getInitArgsMutable().assign(chain[k - 1].getResults());
+      }
+
+      // Drop the now-dead duplicate allocs and deallocs.
+      Value doneTok = chain.back().getResult(1);
+      for (auto *d : deadDeallocs) {
+        d->getResult(0).replaceAllUsesWith(doneTok);
+        d->erase();
+      }
+      // Erase dead allocs / wait_alls to fixpoint (they form a token chain).
+      bool changed = true;
+      while (changed) {
+        changed = false;
+        SmallVector<Operation *> still;
+        for (auto *a : deadAllocs) {
+          if (a->use_empty()) {
+            a->erase();
+            changed = true;
+          } else
+            still.push_back(a);
+        }
+        deadAllocs = still;
+      }
+    }
   }
 
   void runOnOperation() override {
@@ -3652,6 +3790,10 @@ public:
     for (auto f : funcOps)
       runConstructPingPongDependencyPatterns(f);
     LLVM_DEBUG(llvm::dbgs() << "After construct:\n" << module << "\n");
+    for (auto f : funcOps)
+      shareResidentRings(f);
+    LLVM_DEBUG(llvm::dbgs() << "After share-resident-rings:\n"
+                            << module << "\n");
     for (auto f : funcOps)
       runCleanUpAttrs(f);
   }
