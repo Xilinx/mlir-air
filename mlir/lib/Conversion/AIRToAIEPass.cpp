@@ -2016,6 +2016,19 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
         tileCol - col_offset, tileRow - row_offset);
 
+    // Propagate the memtile L2 re-broadcast directive (mechanism 2: N re-reads
+    // of this resident buffer per fill) onto the buffer op, the shared
+    // fill/drain rendezvous that generateDmaBd / getLockForDMA read on the fill
+    // (S2MM) side. This count is carried on the ALLOC and is distinct from any
+    // channel-level re-feed (mechanism 1: the core-producer count on the
+    // channel, applied in allocateCoreLocksPerMemcpyOp). air-to-aie skips the
+    // channel re-feed for memtile producers, so the two must NOT be unified --
+    // read only the alloc directive here.
+    int64_t refeedN = air::getRefeedCount(alloc.getOperation());
+    if (refeedN > 1)
+      buffer->setAttr(air::attrs::RefeedCount,
+                      rewriter.getI32IntegerAttr(refeedN));
+
     rewriter.replaceOp(alloc, buffer->getResults());
     bufferToMemtileMap[buffer] = tile;
     return success();
@@ -5170,6 +5183,36 @@ public:
       alloc = memcpyOpIf.getSrcMemref();
     }
 
+    // Producer-side re-feed. An outbound channel put that re-sends ONE resident
+    // buffer N times (e.g. an activation output streamed once per GEMV
+    // row-block iteration) is expressed by air.refeed_count=N. The producing
+    // core writes the buffer once and the DMA's count-free self-loop BD
+    // re-reads it; the single core-side release must free N read-tokens so the
+    // BD fires N times. (The N>1 loop the front-end emits is canonicalized away
+    // before air-to-aie, so the count is carried on the channel/put, not
+    // inferred from a loop.)
+    if (UsesSemaphoreLocks && !tileInbound.value()) {
+      int64_t n = 1;
+      if (auto chanIf =
+              dyn_cast<air::ChannelInterface>(memcpyOpIf.getOperation()))
+        n = air::getRefeedCount(chanIf);
+      if (n > 1) {
+        lockRelValue *= n;
+        // Re-dispatch correctness: the DMA self-loop releases the buf-free
+        // (acquire) lock once per re-send, i.e. N times per dispatch, while the
+        // producing core overwrites the resident buffer only once. The core
+        // must re-acquire ALL N freed tokens before the next overwrite, and the
+        // buf-free lock must INIT to N (else the first dispatch's acquire>=N
+        // can never fire). Without this the buf-free lock leaks N-1 every
+        // dispatch, accumulating into a re-dispatch parity stall.
+        lockAqValue *= n;
+        // getRefeedCount guarantees 1 < n <= INT32_MAX, so the narrowing is
+        // safe.
+        if (auto initOpt = acqLockOp.getInit(); !initOpt || *initOpt < n)
+          acqLockOp.setInit(static_cast<int32_t>(n));
+      }
+    }
+
     // Detect if multiple outbound puts in this DMA allocation share the same
     // source buffer. When true, use per-put interleaved lock placement to
     // prevent the second put from overwriting the buffer before the DMA
@@ -5430,6 +5473,25 @@ public:
     } else {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.second : 1;
       lockRelValue = UsesSemaphoreLocks ? aie2LockVal.second : 0;
+    }
+    // Count-free re-fed broadcast/relay: the resident buffer is re-broadcast N
+    // times per fill, once per consumer row-block. On AIE2 memtile/core BDs
+    // this cannot be a stride-0 repeat dim (HW unsupported) nor a repeat_count
+    // BD (lock-once -> stale rebroadcast). It is realized as a count-free ring
+    // (the MM2S self-loops via infiniteBDLoopMode) driven by the FILL releasing
+    // the read-lock xN: the fill (S2MM) acquires the refill-lock xN (waits for
+    // all N re-reads done before overwriting) and releases the read-lock xN
+    // (enables N count-free MM2S re-reads). The MM2S side is unchanged (x1 per
+    // fire). N = air.refeed_count, propagated onto the memtile buffer op (the
+    // shared fill/drain rendezvous) by AllocL2BuffersPattern; read via the same
+    // helper the lock allocator uses so init and acq/rel cannot diverge.
+    if (isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation()) &&
+        UsesSemaphoreLocks && !isMM2S) {
+      int64_t refeedN = air::getRefeedCount(bufferOp.getOperation());
+      if (refeedN > 1) {
+        lockAqValue = refeedN;
+        lockRelValue = refeedN;
+      }
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
 

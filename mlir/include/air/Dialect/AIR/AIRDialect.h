@@ -41,10 +41,20 @@ constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
 constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
 constexpr StringLiteral DedicatedDmaChannel = "air.dedicated_dma_channel";
+// Single-buffer count-free re-broadcast: N (>= 1) re-sends of one resident
+// buffer per production. Authoritative carrier is the air.channel declaration;
+// read via air::getRefeedCount. Verified on air.channel.
+constexpr StringLiteral RefeedCount = "air.refeed_count";
+// Opt-in front-end marker (unit attr) on an scf.for / affine.for whose body is
+// a single loop-invariant air.channel.put: the loop re-sends one resident
+// buffer once per iteration. The air-annotate-refeed pass reads its trip count
+// into attrs::RefeedCount on the channel and collapses the loop.
+constexpr StringLiteral RefeedLoop = "air.refeed_loop";
 } // namespace attrs
 
 // Copy the DMA-steering / runtime-ordering markers
-// (attrs::MemtileDmaChannelMin, RuntimeHoist, AwaitAppends, AppendBarrier) that
+// (attrs::MemtileDmaChannelMin, RuntimeHoist, AwaitAppends, AppendBarrier,
+// RefeedCount) that
 // must survive channel-op re-instantiation from src to dst. Single source of
 // truth for the marker set, so copy sites (Util::copyPaddingAttributes,
 // ComposeMemrefOpOnChannelOp) cannot diverge. Both ops must be live (call

@@ -35,6 +35,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "iostream"
+#include <limits>
 
 #define DEBUG_TYPE "air-util"
 
@@ -491,6 +492,39 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
     }
   }
   return air::ChannelOp();
+}
+
+int64_t air::getRefeedCount(Operation *op) {
+  if (!op)
+    return 1;
+  auto rc = op->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount);
+  if (!rc)
+    return 1;
+  int64_t n = rc.getInt();
+  if (n <= 1)
+    return 1;
+  // The count sizes/initializes 32-bit AIE semaphore locks (allocateLockOp
+  // init, UseLockOp acquire/release). A value that does not fit int32 is
+  // malformed IR; narrowing it would silently mis-synchronize or deadlock the
+  // DMA. Guard here
+  // -- the single reader -- so every caller's narrowing cast is safe. Falling
+  // back to 1 (no re-feed) is the safe default; warn so it is not missed.
+  if (n > std::numeric_limits<int32_t>::max()) {
+    op->emitWarning("air.refeed_count ")
+        << n << " exceeds the 32-bit lock range; ignoring (treating as 1)";
+    return 1;
+  }
+  return n;
+}
+
+int64_t air::getRefeedCount(air::ChannelInterface op) {
+  if (!op)
+    return 1;
+  // Per-emission override on the put/get takes precedence over the
+  // channel-level declaration.
+  if (int64_t n = getRefeedCount(op.getOperation()); n > 1)
+    return n;
+  return getRefeedCount(getChannelDeclarationThroughSymbol(op).getOperation());
 }
 
 // Get ChannelPutOp through ChannelOp

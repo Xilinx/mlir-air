@@ -138,6 +138,10 @@ void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
     dst->setAttr(attrs::AwaitAppends, aa);
   if (auto ab = src->getAttr(attrs::AppendBarrier))
     dst->setAttr(attrs::AppendBarrier, ab);
+  // Producer-side re-feed count (single-buffer count-free re-broadcast), read
+  // by AIRToAIE's lock allocators.
+  if (auto rc = src->getAttrOfType<IntegerAttr>(attrs::RefeedCount))
+    dst->setAttr(attrs::RefeedCount, rc);
 }
 
 void air::addAsyncDependency(Operation *op, Value token) {
@@ -3446,6 +3450,22 @@ LogicalResult air::ChannelOp::verify() {
                << bcastVal << "): size must be 1 or equal to broadcast_shape "
                << "(NumPy broadcasting rules)";
     }
+  }
+
+  // air.refeed_count (single-buffer count-free re-broadcast) must be a positive
+  // integer count of re-sends. The channel declaration is its authoritative
+  // carrier.
+  if (auto rc = (*this)->getAttr(attrs::RefeedCount)) {
+    auto rcInt = dyn_cast<IntegerAttr>(rc);
+    if (!rcInt)
+      return emitOpError() << "\"" << attrs::RefeedCount
+                           << "\" must be an integer attribute";
+    // The count sizes 32-bit AIE semaphore locks; reject values that would not
+    // fit so a malformed count is caught here rather than silently narrowed.
+    if (rcInt.getInt() < 1 ||
+        rcInt.getInt() > std::numeric_limits<int32_t>::max())
+      return emitOpError() << "\"" << attrs::RefeedCount << "\" ("
+                           << rcInt.getInt() << ") must be in [1, INT32_MAX]";
   }
   return success();
 }
