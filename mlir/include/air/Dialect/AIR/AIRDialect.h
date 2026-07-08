@@ -40,6 +40,7 @@ constexpr StringLiteral AppendBarrier = "air.append_barrier";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
 constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
+constexpr StringLiteral DedicatedDmaChannel = "air.dedicated_dma_channel";
 } // namespace attrs
 
 // Copy the DMA-steering / runtime-ordering markers
