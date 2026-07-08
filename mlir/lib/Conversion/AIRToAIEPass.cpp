@@ -1519,8 +1519,12 @@ static std::optional<bool> evalConstBoolCond(Value cond) {
     }
   }
   if (auto ic = cond.getDefiningOp<arith::IndexCastOp>())
-    if (auto v = mlir::getConstantIntValue(ic.getIn()))
-      return *v != 0;
+    if (auto v = mlir::getConstantIntValue(ic.getIn())) {
+      unsigned dstBw = isa<IndexType>(ic.getType())
+                           ? 64
+                           : ic.getType().getIntOrFloatBitWidth();
+      return APInt(dstBw, *v).getBoolValue();
+    }
   return std::nullopt;
 }
 

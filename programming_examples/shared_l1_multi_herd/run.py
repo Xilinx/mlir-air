@@ -1,10 +1,12 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""AIR Shared L1 Buffer Dataflow Example
+"""AIR Shared L1 Buffer Dataflow Example (multi-herd producer/consumer)
 
-This script demonstrates data flowing through air herds via shared L1 buffers.
-The AIE architecture features shared L1 buffer across neighboring AIE tiles.
+This script demonstrates data flowing between TWO air herds via a shared L1
+buffer. The AIE architecture features shared L1 buffer across neighboring AIE
+tiles. For the single-herd (intra-herd, core-to-core) counterpart, see
+programming_examples/shared_l1_single_herd.
 
 A shared L1 buffer is represented via a memref with memory_space=2, that is
 allocated outside of both herds, but used by both herds via their args list.

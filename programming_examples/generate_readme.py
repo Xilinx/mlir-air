@@ -392,8 +392,14 @@ EXAMPLES = [
     },
     {
         "category": "Memory",
-        "name": "Shared L1 Buffer",
-        "path": "shared_l1",
+        "name": "Shared L1 Buffer (Multi-Herd)",
+        "path": "shared_l1_multi_herd",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Memory",
+        "name": "Shared L1 Buffer (Single-Herd)",
+        "path": "shared_l1_single_herd",
         "datatypes": "bf16",
     },
     {

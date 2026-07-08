@@ -1464,9 +1464,11 @@ private:
   scf::IndexSwitchOp
   convertScfIndexSwitchToAsync(RewriterBase &rewriter,
                                scf::IndexSwitchOp branch_op) {
-    // Create a new index_switch that yields an async token from each region.
-    SmallVector<Type> yielded_tys = {
-        air::AsyncTokenType::get(rewriter.getContext())};
+    // Preserve any existing result types; append the async token last so that
+    // insertLoopCarriedDepsInRegion (which appends the token to scf.yield) and
+    // the result ordering stay consistent.
+    SmallVector<Type> yielded_tys(branch_op.getResultTypes());
+    yielded_tys.push_back(air::AsyncTokenType::get(rewriter.getContext()));
     scf::IndexSwitchOp new_branch_op = scf::IndexSwitchOp::create(
         rewriter, branch_op.getLoc(), yielded_tys, branch_op.getArg(),
         branch_op.getCases(),
@@ -1489,6 +1491,12 @@ private:
       auto &body = o_r.front().getOperations();
       bb.splice(bb.begin(), body, body.begin(), --body.end());
     }
+
+    // Replace uses of old results with the corresponding new results (same
+    // index; the token is appended after, so existing indices are stable).
+    for (auto [old_r, new_r] :
+         llvm::zip(branch_op.getResults(), new_branch_op.getResults()))
+      old_r.replaceAllUsesWith(new_r);
 
     return new_branch_op;
   }

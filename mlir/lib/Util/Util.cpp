@@ -315,8 +315,12 @@ evalGuardUnderIvs(Value cond, const llvm::DenseMap<Value, int64_t> &ivVals) {
     }
   }
   if (auto ic = cond.getDefiningOp<arith::IndexCastOp>())
-    if (auto v = resolveUnderIvs(ic.getIn(), ivVals))
-      return *v != 0;
+    if (auto v = resolveUnderIvs(ic.getIn(), ivVals)) {
+      unsigned dstBw = isa<IndexType>(ic.getType())
+                           ? 64
+                           : ic.getType().getIntOrFloatBitWidth();
+      return APInt(dstBw, *v).getBoolValue();
+    }
   return std::nullopt;
 }
 
