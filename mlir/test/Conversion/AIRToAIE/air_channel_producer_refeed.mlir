@@ -106,14 +106,14 @@ func.func @mt_refeed(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
 
 // -----
 
-// Channel-carried memtile variant: the count lives on the OUTBOUND (drain)
-// channel declaration -- the authoritative carrier -- not on the alloc.
-// AllocL2BuffersPattern derives it from the drain put and stamps the memtile
-// buffer. Strong invariants, bound to the SAME buf-free lock (the one that
-// inits to N): the fill (S2MM) does AcquireGreaterEqual N, while each drain
-// (MM2S) re-send releases that lock by exactly 1 -- i.e. ONE fill enables N
-// drains and the MM2S side is NOT scaled. N=2 here (distinct from the N=4
-// cases above) to catch any hard-coded 4.
+// Memtile L2 re-broadcast (mechanism 2), N=2, with strong invariants bound to
+// the SAME buf-free lock (the one that inits to N): the fill (S2MM) does
+// AcquireGreaterEqual N, while each drain (MM2S) re-send releases that lock by
+// exactly 1 -- i.e. ONE fill enables N drains and the MM2S side is NOT scaled.
+// The count is carried on the ALLOC (mechanism 2) and is independent of any
+// channel-level re-feed (mechanism 1); AllocL2BuffersPattern reads the alloc
+// directive only. N=2 (distinct from the N=4 cases above) catches a hard-coded
+// 4 and any accidental unification with a channel count.
 
 // CHECK-LABEL: aie.device
 // CHECK: %[[BUFFREE:.*]] = aie.lock(%{{.*}}) {init = 2 : i32}
@@ -125,7 +125,7 @@ func.func @mt_refeed(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
 // CHECK: aie.use_lock(%[[BUFFREE]], AcquireGreaterEqual, 2)
 
 air.channel @cin2 [1, 1]
-air.channel @to_core2 [1, 1] {air.refeed_count = 2 : i32}
+air.channel @to_core2 [1, 1]
 air.channel @from_core2 [1, 1]
 air.channel @cout2 [1, 1]
 func.func @mt_refeed_chan(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
@@ -133,7 +133,7 @@ func.func @mt_refeed_chan(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
   air.channel.put @cin2[] (%arg0[] [] []) {id = 1 : i32} : (memref<64xi32>)
   air.segment @seg0 {
     %c1_0 = arith.constant 1 : index
-    %l2 = memref.alloc() : memref<64xi32, 1>
+    %l2 = memref.alloc() {air.refeed_count = 2 : i32} : memref<64xi32, 1>
     air.channel.get @cin2[] (%l2[] [] []) {id = 2 : i32} : (memref<64xi32, 1>)
     air.channel.put @to_core2[] (%l2[] [] []) {id = 3 : i32} : (memref<64xi32, 1>)
     air.herd tile(%tx, %ty) in (%sx = %c1_0, %sy = %c1_0) attributes {sym_name = "herd0"} {
@@ -151,6 +151,53 @@ func.func @mt_refeed_chan(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
     memref.dealloc %l2o : memref<64xi32, 1>
   }
   air.channel.get @cout2[] (%arg1[] [] []) {id = 8 : i32} : (memref<64xi32>)
+  return
+}
+
+// -----
+
+// Regression (flm_decode): the memtile L2 re-broadcast count (mechanism 2, on
+// the alloc = 2) and the drain channel's re-feed count (mechanism 1, on
+// @to_core3 = 6) are INDEPENDENT and must not be unified. The memtile buffer
+// must take the alloc's 2, never the channel's 6 -- picking 6 would make the
+// fill wait for 6 re-reads that only happen 2 times (deadlock). So the memtile
+// buffer / its locks use 2, and 6 appears nowhere in this design.
+
+// CHECK-LABEL: aie.device
+// CHECK: aie.buffer(%{{.*}}) {air.refeed_count = 2 : i32
+// The channel decl keeps its own count 6, but it must NOT reach the memtile
+// buffer or any lock: no buffer carries 6, no lock inits to / acquires 6.
+// CHECK-NOT: aie.buffer(%{{.*}}) {air.refeed_count = 6
+// CHECK-NOT: {init = 6 : i32}
+// CHECK-NOT: AcquireGreaterEqual, 6
+
+air.channel @cin3 [1, 1]
+air.channel @to_core3 [1, 1] {air.refeed_count = 6 : i32}
+air.channel @from_core3 [1, 1]
+air.channel @cout3 [1, 1]
+func.func @mt_refeed_independent(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+  %c1 = arith.constant 1 : index
+  air.channel.put @cin3[] (%arg0[] [] []) {id = 1 : i32} : (memref<64xi32>)
+  air.segment @seg0 {
+    %c1_0 = arith.constant 1 : index
+    %l2 = memref.alloc() {air.refeed_count = 2 : i32} : memref<64xi32, 1>
+    air.channel.get @cin3[] (%l2[] [] []) {id = 2 : i32} : (memref<64xi32, 1>)
+    air.channel.put @to_core3[] (%l2[] [] []) {id = 3 : i32} : (memref<64xi32, 1>)
+    air.herd tile(%tx, %ty) in (%sx = %c1_0, %sy = %c1_0) attributes {sym_name = "herd0"} {
+      %buf = memref.alloc() : memref<64xi32, 2>
+      %res = memref.alloc() : memref<64xi32, 2>
+      air.channel.get @to_core3[%tx, %ty] (%buf[] [] []) {id = 4 : i32} : (memref<64xi32, 2>)
+      air.channel.put @from_core3[%tx, %ty] (%res[] [] []) {id = 5 : i32} : (memref<64xi32, 2>)
+      memref.dealloc %buf : memref<64xi32, 2>
+      memref.dealloc %res : memref<64xi32, 2>
+    }
+    %l2o = memref.alloc() : memref<64xi32, 1>
+    air.channel.get @from_core3[] (%l2o[] [] []) {id = 6 : i32} : (memref<64xi32, 1>)
+    air.channel.put @cout3[] (%l2o[] [] []) {id = 7 : i32} : (memref<64xi32, 1>)
+    memref.dealloc %l2 : memref<64xi32, 1>
+    memref.dealloc %l2o : memref<64xi32, 1>
+  }
+  air.channel.get @cout3[] (%arg1[] [] []) {id = 8 : i32} : (memref<64xi32>)
   return
 }
 

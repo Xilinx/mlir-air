@@ -2016,17 +2016,15 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
         tileCol - col_offset, tileRow - row_offset);
 
-    // Propagate the count-free re-feed directive (N = re-broadcast count per
-    // fill) onto the buffer op, the shared fill/drain rendezvous that
-    // generateDmaBd / getLockForDMA read on the fill (S2MM) side. The
-    // authoritative carrier is the outbound (MM2S) channel that re-sends this
-    // buffer N times; derive N from those puts via the shared helper, falling
-    // back to a directive stamped directly on the alloc.
+    // Propagate the memtile L2 re-broadcast directive (mechanism 2: N re-reads
+    // of this resident buffer per fill) onto the buffer op, the shared
+    // fill/drain rendezvous that generateDmaBd / getLockForDMA read on the fill
+    // (S2MM) side. This count is carried on the ALLOC and is distinct from any
+    // channel-level re-feed (mechanism 1: the core-producer count on the
+    // channel, applied in allocateCoreLocksPerMemcpyOp). air-to-aie skips the
+    // channel re-feed for memtile producers, so the two must NOT be unified --
+    // read only the alloc directive here.
     int64_t refeedN = air::getRefeedCount(alloc.getOperation());
-    for (auto *user : alloc.getMemref().getUsers())
-      if (auto put = dyn_cast<air::ChannelPutOp>(user))
-        refeedN = std::max(
-            refeedN, air::getRefeedCount(cast<air::ChannelInterface>(user)));
     if (refeedN > 1)
       buffer->setAttr(air::attrs::RefeedCount,
                       rewriter.getI32IntegerAttr(refeedN));
