@@ -1275,12 +1275,12 @@ static SmallVector<Operation *> getLaunchWindow(airrt::WaitAllOp launchEnd) {
 //
 // Per launch window: (1) re-route every drain token to the air.launch_end
 // wait_all (stripping it from earlier wait_alls) so its wait is deferred; and
-// (2) hoist each drain's issue ahead of the launch's first input DMA so the
-// S2MM receiver is armed early. This is safe for the NPU runtime-sequence
-// model: the host never consumes an output mid-launch (the only in-launch
-// consumers are on-device, ordered by device DMA locks), so waiting at the
-// terminator and arming the receiver first cannot reorder a real host-visible
-// dependency.
+// (2) hoist each drain's issue ahead of the launch's compute dispatch so the
+// S2MM receiver is armed before the on-device producer runs. This is safe for
+// the NPU runtime-sequence model: the host never consumes an output mid-launch
+// (the only in-launch consumers are on-device, ordered by device DMA locks), so
+// waiting at the terminator and arming the receiver first cannot reorder a real
+// host-visible dependency.
 static void deferDeviceToHostDrainWaits(ModuleOp module) {
   auto isDrain = [](airrt::DmaMemcpyNdOp dma) {
     return dma->getNumResults() && air::isDeviceToHostShimDMA(dma);
@@ -1323,21 +1323,36 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     launchEnd->setOperands(leOps);
 
     // (2) Arm early: hoist each drain's issue (and the block-local slice
-    // computing its offsets/sizes) ahead of the first input DMA. Without this,
-    // airrt-to-npu emits the drain start after the blocking inputs; a
-    // multi-round on-chip producer whose output exceeds on-chip buffering then
-    // stalls with no host receiver -> the inputs never complete -> deadlock.
-    airrt::DmaMemcpyNdOp firstInput;
+    // computing its offsets/sizes) ahead of the point where the on-device
+    // producer is dispatched. Without this, airrt-to-npu emits the drain start
+    // after the producer runs; a multi-round on-chip producer whose output
+    // exceeds on-chip buffering then stalls with no host receiver -> the
+    // producer never completes -> deadlock.
+    //
+    // The producer is dispatched at this launch's compute-dispatch op
+    // (airrt.segment_load / airrt.herd_load), so any site before that arms the
+    // receiver in time. Prefer the first input DMA (arm the drain at the very
+    // front of the arm block); fall back to the compute dispatch when the
+    // launch has no host input DMA (e.g. a drain-only launch whose inputs are
+    // all on-device / L2-resident), so the drain is still armed before the
+    // producer instead of being left last.
+    Operation *anchor = nullptr;
     for (Operation *op : window)
       if (auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op))
         if (dma->getNumResults() && !isDrain(dma)) {
-          firstInput = dma;
+          anchor = op;
           break;
         }
-    if (!firstInput)
+    if (!anchor)
+      for (Operation *op : window)
+        if (isa<airrt::SegmentLoadOp, airrt::HerdLoadOp>(op)) {
+          anchor = op;
+          break;
+        }
+    if (!anchor)
       return;
 
-    Block *blk = firstInput->getBlock();
+    Block *blk = anchor->getBlock();
     BackwardSliceOptions sliceOpts;
     sliceOpts.omitBlockArguments = true;
     sliceOpts.filter = [&](Operation *o) { return o->getBlock() == blk; };
@@ -1354,20 +1369,20 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
       toHoist.insert(dma.getOperation());
     }
     // Relocate, in program order, only the to-hoist ops that currently follow
-    // firstInput; those already ahead of it already dominate it. Moving value
+    // the anchor; those already ahead of it already dominate it. Moving value
     // definitions earlier is dominance-safe.
     SmallVector<Operation *> ordered;
-    bool seenFirst = false;
+    bool seenAnchor = false;
     for (Operation *op : window) {
-      if (op == firstInput.getOperation()) {
-        seenFirst = true;
+      if (op == anchor) {
+        seenAnchor = true;
         continue;
       }
-      if (seenFirst && toHoist.contains(op))
+      if (seenAnchor && toHoist.contains(op))
         ordered.push_back(op);
     }
     for (Operation *op : ordered)
-      op->moveBefore(firstInput);
+      op->moveBefore(anchor);
   });
 }
 

@@ -155,3 +155,46 @@ module {
     return
   }
 }
+
+// -----
+
+// Drain-only launch: the segment produces an output that a launch-scope
+// air.channel.get drains to host DDR, but the launch has NO host->device input
+// DMA (its inputs are on-device / L2-resident). The drain must still be armed
+// BEFORE the on-device producer is dispatched, so its issue is hoisted ahead of
+// the compute dispatch (airrt.segment_load) even though there is no input DMA
+// to anchor on. Without this the drain S2MM is armed after the producer runs ->
+// a multi-round producer stalls with no receiver -> deadlock.
+
+// CHECK-LABEL: func.func @drain_only
+// The drain issue is hoisted ahead of the compute dispatch:
+// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @drainAlloc3{{.*}} : !airrt.event
+// CHECK: airrt.segment_load "segd3"
+
+module {
+  aie.device(npu1_1col) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @drainAlloc3(%t, S2MM, 0)
+  } {sym_name = "segd3"}
+  air.channel @drain3 [1, 1]
+  func.func @drain_only(%out: memref<64xi32>) {
+    %c1 = arith.constant 1 : index
+    %l = air.launch async (%i, %j) in (%si=%c1, %sj=%c1) args(%aout=%out) : memref<64xi32> {
+      // device->host drain only; no host->device input DMA in this launch.
+      %d = air.channel.get async  @drain3[] (%aout[] [] []) {id = 1 : i32, metadata = @drainAlloc3} : (memref<64xi32>)
+      %e = air.wait_all async [%d] {air.launch_end}
+      %s = air.segment @segd3 async {
+        %c1_0 = arith.constant 1 : index
+        %h = air.herd @h async  tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) {
+          %tok, %a = air.execute -> (memref<64xi32, 2>) {
+            %alloc = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %alloc : memref<64xi32, 2>
+          }
+          %pk = air.channel.put async [%tok]  @drain3[] (%a[] [] []) {id = 3 : i32} : (memref<64xi32, 2>)
+        }
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
