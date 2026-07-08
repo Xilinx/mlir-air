@@ -196,6 +196,25 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
   return one_d_offset;
 }
 
+// Innermost enclosing loop of `op` that lowers to a BD repeat count: an scf.for
+// or affine.for with a statically known trip count. Loop-likes that do NOT map
+// to a BD repeat (scf.forall, scf.while, dynamic-bound for) are transparent.
+// Both N-buffer-rotation detection and BD task partitioning key on this single
+// notion of "one loop" so they always agree on task boundaries.
+static Operation *getInnermostStaticRepeatLoop(Operation *op) {
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto af = dyn_cast<affine::AffineForOp>(parent)) {
+      if (af.hasConstantBounds())
+        return parent;
+    } else if (auto sf = dyn_cast<scf::ForOp>(parent)) {
+      if (air::getStaticScfForTripCountAsInt(sf))
+        return parent;
+    }
+  }
+  return nullptr;
+}
+
 // Given a vector of memcpy operations, partition them into BD tasks. Each entry
 // is (repeat_count, ops) where ops form one BD chain repeated repeat_count+1
 // times. Tasks are keyed by the innermost enclosing repeating loop, so sibling
@@ -381,8 +400,8 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
     // through to per-op counted BDs.
     llvm::DenseMap<Operation *, unsigned> loopSiteCount;
     for (auto *op : ops)
-      if (auto loop = op->getParentOfType<LoopLikeOpInterface>())
-        loopSiteCount[loop.getOperation()]++;
+      if (auto *loop = getInnermostStaticRepeatLoop(op))
+        loopSiteCount[loop]++;
     unsigned loopsWithMultipleSites = llvm::count_if(
         loopSiteCount, [](const auto &entry) { return entry.second >= 2; });
     if (loopsWithMultipleSites != 1)
@@ -422,26 +441,23 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   llvm::MapVector<Operation *, std::pair<int, llvm::SetVector<Operation *>>>
       partitions;
   for (auto o : memcpyIOpVec) {
+    // Repeat count is the product of all enclosing static loop trip counts
+    // (relative to the common region); the task key is the innermost such loop.
     int tripCount = 1;
-    Operation *innermostLoop = nullptr;
     Region *currRegion = o->getParentRegion();
     while (commonRegion->isAncestor(currRegion)) {
       Operation *parent = currRegion->getParentOp();
       currRegion = currRegion->getParentRegion();
-      auto affineFor = dyn_cast_if_present<affine::AffineForOp>(parent);
-      auto scfFor = dyn_cast_if_present<scf::ForOp>(parent);
-      if (affineFor && affineFor.hasConstantBounds()) {
-        tripCount *= *air::getStaticAffineForTripCountAsInt(affineFor);
-        if (!innermostLoop)
-          innermostLoop = parent;
-      } else if (scfFor && air::getStaticScfForTripCountAsInt(scfFor)) {
-        tripCount *= *air::getStaticScfForTripCountAsInt(scfFor);
-        if (!innermostLoop)
-          innermostLoop = parent;
+      if (auto affineFor = dyn_cast_if_present<affine::AffineForOp>(parent)) {
+        if (affineFor.hasConstantBounds())
+          tripCount *= *air::getStaticAffineForTripCountAsInt(affineFor);
+      } else if (auto scfFor = dyn_cast_if_present<scf::ForOp>(parent)) {
+        if (air::getStaticScfForTripCountAsInt(scfFor))
+          tripCount *= *air::getStaticScfForTripCountAsInt(scfFor);
       }
     }
     // In English, repeat count is trip count minus one.
-    auto &task = partitions[innermostLoop];
+    auto &task = partitions[getInnermostStaticRepeatLoop(o)];
     task.first = tripCount - 1;
     task.second.insert(o);
   }
