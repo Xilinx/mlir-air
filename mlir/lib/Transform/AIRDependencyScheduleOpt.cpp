@@ -6921,11 +6921,35 @@ private:
     // Collect launch regions to process. If there are no launches, fall back
     // to the function region (e.g. when channel ops are directly in the
     // function body).
+    //
+    // Opt-out: a launch carrying `air.preserve_shim_dma_order` keeps its
+    // air.channel.put/get program order untouched (no per-channel BD
+    // regrouping/folding). Required when sibling shim channels are coupled by a
+    // downstream broadcast/multicast consumer that advances all destinations in
+    // lockstep: the cross-channel (round-major) issue order is then
+    // semantically load-bearing but is not expressed as SSA dependences, so the
+    // default per-channel fold would reorder it into a non-drainable
+    // (deadlocking) schedule.
     SmallVector<Region *> regionsToProcess;
+    bool foundLaunch = false;
     func.walk([&](air::LaunchOp launch) {
+      foundLaunch = true;
+      if (launch->hasAttr(air::attrs::PreserveShimDmaOrder)) {
+        // Propagate the marker onto this launch's channel ops so it survives
+        // air-to-std (which copies discardable attrs onto airrt.dma_memcpy_nd)
+        // and reaches airrt-to-npu, where it enables issue_token + bounded
+        // double-buffered awaits (backpressure) for these lockstep-coupled
+        // shim feeds.
+        launch.walk([&](Operation *op) {
+          if (isa<air::ChannelPutOp, air::ChannelGetOp>(op))
+            op->setAttr(air::attrs::PreserveShimDmaOrder,
+                        mlir::UnitAttr::get(op->getContext()));
+        });
+        return;
+      }
       regionsToProcess.push_back(&launch.getRegion());
     });
-    if (regionsToProcess.empty())
+    if (!foundLaunch)
       regionsToProcess.push_back(&func.getRegion());
 
     for (Region *region : regionsToProcess) {

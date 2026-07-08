@@ -1554,6 +1554,7 @@ void air::copyPaddingAttributes(Operation *src, Operation *dst) {
     dst->setAttr("pad_before", padBefore);
   if (auto padAfter = src->getAttrOfType<DenseI32ArrayAttr>("pad_after"))
     dst->setAttr("pad_after", padAfter);
+  copyChannelSteeringAttrs(src, dst);
 }
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data

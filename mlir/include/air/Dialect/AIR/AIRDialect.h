@@ -30,6 +30,26 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
+// Attribute names for the DMA-steering / runtime-sequence-ordering markers.
+// Centralized so producers and consumers agree (a mistyped literal silently
+// no-ops). See the AIRRtToNpu / AIRToAIE passes for their semantics.
+namespace attrs {
+constexpr StringLiteral RuntimeHoist = "air.runtime_hoist";
+constexpr StringLiteral AwaitAppends = "air.await_appends";
+constexpr StringLiteral AppendBarrier = "air.append_barrier";
+constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
+constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
+constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
+} // namespace attrs
+
+// Copy the DMA-steering / runtime-ordering markers
+// (attrs::MemtileDmaChannelMin, RuntimeHoist, AwaitAppends, AppendBarrier) that
+// must survive channel-op re-instantiation from src to dst. Single source of
+// truth for the marker set, so copy sites (Util::copyPaddingAttributes,
+// ComposeMemrefOpOnChannelOp) cannot diverge. Both ops must be live (call
+// before erasing src).
+void copyChannelSteeringAttrs(Operation *src, Operation *dst);
+
 void registerAIRRtTranslations();
 
 class AsyncTokenType
