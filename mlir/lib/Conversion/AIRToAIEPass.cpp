@@ -2016,6 +2016,14 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
         tileCol - col_offset, tileRow - row_offset);
 
+    // Propagate the count-free re-feed directive (N = re-broadcast count per
+    // fill) onto the buffer op. generateDmaBd reads it on the fill (S2MM) side
+    // and acquires/releases the read-lock xN so the count-free MM2S ring
+    // re-reads the resident buffer N times (a stride-0 memtile repeat is
+    // unsupported HW-side).
+    if (auto rc = alloc->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
+      buffer->setAttr(air::attrs::RefeedCount, rc);
+
     rewriter.replaceOp(alloc, buffer->getResults());
     bufferToMemtileMap[buffer] = tile;
     return success();
@@ -5170,6 +5178,42 @@ public:
       alloc = memcpyOpIf.getSrcMemref();
     }
 
+    // Producer-side re-feed. An outbound channel put that re-sends ONE resident
+    // buffer N times (e.g. an activation output streamed once per GEMV
+    // row-block iteration) is expressed by air.refeed_count=N. The producing
+    // core writes the buffer once and the DMA's count-free self-loop BD
+    // re-reads it; the single core-side release must free N read-tokens so the
+    // BD fires N times. (The N>1 loop the front-end emits is canonicalized away
+    // before air-to-aie, so the count is carried on the channel/put, not
+    // inferred from a loop.) The count may be per-emission (on the put) or
+    // channel-level (on the channel declaration).
+    if (UsesSemaphoreLocks && !tileInbound.value()) {
+      int64_t n = 0;
+      if (auto rcOp =
+              memcpyOpIf->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
+        n = rcOp.getInt();
+      else if (auto chanIf =
+                   dyn_cast<air::ChannelInterface>(memcpyOpIf.getOperation())) {
+        if (auto chanDecl = air::getChannelDeclarationThroughSymbol(chanIf))
+          if (auto rc =
+                  chanDecl->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
+            n = rc.getInt();
+      }
+      if (n > 1) {
+        lockRelValue *= n;
+        // Re-dispatch correctness: the DMA self-loop releases the buf-free
+        // (acquire) lock once per re-send, i.e. N times per dispatch, while the
+        // producing core overwrites the resident buffer only once. The core
+        // must re-acquire ALL N freed tokens before the next overwrite, and the
+        // buf-free lock must INIT to N (else the first dispatch's acquire>=N
+        // can never fire). Without this the buf-free lock leaks N-1 every
+        // dispatch, accumulating into a re-dispatch parity stall.
+        lockAqValue *= n;
+        if (auto initOpt = acqLockOp.getInit(); !initOpt || *initOpt < n)
+          acqLockOp.setInit(static_cast<int32_t>(n));
+      }
+    }
+
     // Detect if multiple outbound puts in this DMA allocation share the same
     // source buffer. When true, use per-put interleaved lock placement to
     // prevent the second put from overwriting the buffer before the DMA
@@ -5430,6 +5474,26 @@ public:
     } else {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.second : 1;
       lockRelValue = UsesSemaphoreLocks ? aie2LockVal.second : 0;
+    }
+    // Count-free re-fed broadcast/relay: the resident buffer is re-broadcast N
+    // times per fill, once per consumer row-block. On AIE2 memtile/core BDs
+    // this cannot be a stride-0 repeat dim (HW unsupported) nor a repeat_count
+    // BD (lock-once -> stale rebroadcast). It is realized as a count-free ring
+    // (the MM2S self-loops via infiniteBDLoopMode) driven by the FILL releasing
+    // the read-lock xN: the fill (S2MM) acquires the refill-lock xN (waits for
+    // all N re-reads done before overwriting) and releases the read-lock xN
+    // (enables N count-free MM2S re-reads). The MM2S side is unchanged (x1 per
+    // fire). N = air.refeed_count carried on the buffer op.
+    if (auto refeedAttr =
+            isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation())
+                ? bufferOp.getOperation()->template getAttrOfType<IntegerAttr>(
+                      air::attrs::RefeedCount)
+                : nullptr) {
+      int64_t refeedN = refeedAttr.getInt();
+      if (refeedN > 1 && UsesSemaphoreLocks && !isMM2S) {
+        lockAqValue = refeedN;
+        lockRelValue = refeedN;
+      }
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
 

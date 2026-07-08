@@ -40,10 +40,12 @@ constexpr StringLiteral AppendBarrier = "air.append_barrier";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
 constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
+constexpr StringLiteral RefeedCount = "air.refeed_count";
 } // namespace attrs
 
 // Copy the DMA-steering / runtime-ordering markers
-// (attrs::MemtileDmaChannelMin, RuntimeHoist, AwaitAppends, AppendBarrier) that
+// (attrs::MemtileDmaChannelMin, RuntimeHoist, AwaitAppends, AppendBarrier,
+// RefeedCount) that
 // must survive channel-op re-instantiation from src to dst. Single source of
 // truth for the marker set, so copy sites (Util::copyPaddingAttributes,
 // ComposeMemrefOpOnChannelOp) cannot diverge. Both ops must be live (call

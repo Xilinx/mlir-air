@@ -849,7 +849,20 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
 
   OpBuilder builder(bufferOp);
   auto rlock = allocateLockOp(device, tile, 0);
-  auto wlock = UsesSemaphoreLocks ? allocateLockOp(device, tile, init) : rlock;
+  // air.refeed_count=N (single-buffer count-free re-broadcast): the fill (S2MM)
+  // does AcquireGreaterEqual N on the empty/write lock so that ONE fill enables
+  // N count-free MM2S re-broadcasts (generateDmaBd sets acq/rel = N for the
+  // fill BD when the buffer carries air.refeed_count). The write lock must
+  // therefore INIT to N -- with the default slot-count init the first
+  // AcquireGreaterEqual N can never fire and the producer feeding the buffer
+  // deadlocks.
+  int64_t wlockInit = init;
+  if (UsesSemaphoreLocks)
+    if (auto rc = bufferOp->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
+      if (rc.getInt() > wlockInit)
+        wlockInit = rc.getInt();
+  auto wlock =
+      UsesSemaphoreLocks ? allocateLockOp(device, tile, wlockInit) : rlock;
   lock_allocation_list.push_back({bufferOp, air_chan, channel, rlock, wlock});
   return std::make_pair(rlock, wlock);
 }
