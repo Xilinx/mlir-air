@@ -1,44 +1,31 @@
-//===- dedicated_dma_channel.mlir -------------------------------*- MLIR -*-===//
+//===- dedicated_dma_channel_order.mlir ------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-// A packet-flow channel marked `air.dedicated_dma_channel` must get its OWN
-// physical DMA channel and never be collapsed onto a packet-multiplexed channel
-// via the packet-reuse branch. This is honored by both the shim allocator (the
-// L3 puts) and the MemTile allocator (the L2 gets). Here three L3->L2 packet
-// channels share one shim column: the two unmarked ones time-multiplex their
-// physical channel, but the marked one (@pkt_in_2) is pinned to its own.
+// The `air.dedicated_dma_channel` guarantee must be order-independent: a marked
+// channel gets its own physical DMA channel even when it is declared/allocated
+// BEFORE the unmarked flows. This exercises the reverse of the packet-reuse
+// guard -- an unmarked flow must not collapse onto an already-allocated
+// dedicated channel. Here @pkt_in_0 is the marked one; it takes MM2S 0 and the
+// two unmarked flows time-multiplex MM2S 1.
 
 // RUN: air-opt %s -air-to-aie='row-offset=2 col-offset=0 device=npu1_1col' | FileCheck %s
 
-// MemTile side (S2MM): unmarked pkt_id 0/1 share S2MM 0; dedicated pkt_id 2 is
-// alone on S2MM 1 (packet flow ids follow channel decl order, so pkt_id 2 is
-// @pkt_in_2).
-// CHECK: aie.memtile_dma
-// CHECK: aie.dma_start(S2MM, 0
-// CHECK: pkt_id = 0
-// CHECK: pkt_id = 1
-// CHECK: aie.dma_start(S2MM, 1
-// CHECK: pkt_id = 2
-
-// Shim side (MM2S): unmarked pkt_in_0/1 share MM2S 0; dedicated pkt_in_2 -> MM2S 1.
 // CHECK: aie.shim_dma_allocation @air_pkt_in_0({{.*}}, MM2S, 0)
-// CHECK: aie.shim_dma_allocation @air_pkt_in_1({{.*}}, MM2S, 0)
+// CHECK: aie.shim_dma_allocation @air_pkt_in_1({{.*}}, MM2S, 1)
 // CHECK: aie.shim_dma_allocation @air_pkt_in_2({{.*}}, MM2S, 1)
 
 module {
-  air.channel @pkt_in_0 [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @pkt_in_0 [1, 1] {channel_type = "npu_dma_packet", air.dedicated_dma_channel}
   air.channel @pkt_in_1 [1, 1] {channel_type = "npu_dma_packet"}
-  air.channel @pkt_in_2 [1, 1] {channel_type = "npu_dma_packet", air.dedicated_dma_channel}
+  air.channel @pkt_in_2 [1, 1] {channel_type = "npu_dma_packet"}
   air.channel @to_core [1, 1]
   air.channel @from_core [1, 1]
   air.channel @out [1, 1]
-  func.func @func_dedicated(%arg0: memref<64xi32>, %arg1: memref<64xi32>, %arg2: memref<64xi32>, %arg3: memref<64xi32>) {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
+  func.func @func_dedicated_first(%arg0: memref<64xi32>, %arg1: memref<64xi32>, %arg2: memref<64xi32>, %arg3: memref<64xi32>) {
     air.channel.put @pkt_in_0[] (%arg0[] [] []) {id = 1 : i32} : (memref<64xi32>)
     air.channel.put @pkt_in_1[] (%arg1[] [] []) {id = 2 : i32} : (memref<64xi32>)
     air.channel.put @pkt_in_2[] (%arg2[] [] []) {id = 3 : i32} : (memref<64xi32>)

@@ -24,6 +24,24 @@
 
 using namespace mlir;
 
+namespace {
+// A channel declared with `air.dedicated_dma_channel` must get its OWN physical
+// DMA channel and never be time-multiplexed (packet-collapsed) with any other
+// flow on the same tile, in either direction. Used to keep a latency-critical
+// packet flow off a shared DMA channel that another (e.g. later-phase) flow
+// would otherwise collapse onto and BD-order ahead of -- starving the first
+// flow's consumer. Honored by the packet-reuse branches of both the shim and
+// MemTile DMA allocators.
+bool memcpyIsDedicatedChannel(xilinx::air::MemcpyInterface mc) {
+  auto chan = mlir::dyn_cast_if_present<xilinx::air::ChannelInterface>(
+      mc.getOperation());
+  if (!chan)
+    return false;
+  auto decl = xilinx::air::getChannelDeclarationThroughSymbol(chan);
+  return decl && decl->hasAttr(xilinx::air::attrs::DedicatedDmaChannel);
+}
+} // namespace
+
 namespace xilinx {
 
 FailureOr<bool> air::isTileInbound(air::MemcpyInterface memcpyOp,
@@ -1075,12 +1093,6 @@ static int effectiveColForMemTileLTO(AIE::LogicalTileOp mtLTO) {
   return *cols.begin();
 }
 
-// Forward declaration: a channel declared with `air.dedicated_dma_channel`
-// must get its OWN physical DMA channel and never be packet-collapsed with
-// another flow on the same tile (defined below for the MemTile allocator;
-// the shim allocator's packet-reuse branch honors it too).
-static bool memcpyIsDedicatedChannel(air::MemcpyInterface mc);
-
 air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
     : air::DMAAllocator(device, air::MemorySpace::L3) {
   shim_dma_channels = 2;
@@ -1177,10 +1189,13 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   };
 
   // For packet flows: reuse the bucket's existing packet channel if any.
-  // EXCEPT a channel marked `air.dedicated_dma_channel`, which must get its own
-  // physical channel (mirrors MemTileDMAAllocator). This lets a column host
-  // BOTH a packet-multiplexed channel and a separate dedicated channel on the
-  // same column's other DMA channel.
+  // EXCEPT `air.dedicated_dma_channel` (mirrors MemTileDMAAllocator), which is
+  // never collapsed in either direction: a dedicated flow does not reuse an
+  // existing packet channel (guarded here), and an unmarked flow does not reuse
+  // a channel that already hosts a dedicated flow (skipped in the walk below).
+  // This lets a column host BOTH a packet-multiplexed channel and a separate
+  // dedicated channel on the same column's other DMA channel, regardless of
+  // allocation order.
   if (isPacketFlowOp && !memcpyIsDedicatedChannel(memcpyOp)) {
     AIE::LogicalTileOp packetLT = nullptr;
     int packetCh = -1;
@@ -1191,16 +1206,23 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
           continue;
         if (t.dma_channel.direction != dir)
           continue;
+        bool tDedicated = false;
+        bool tPacket = false;
         for (auto o : t.memcpyOps) {
           auto mc = dyn_cast_if_present<air::MemcpyInterface>(o);
           if (!mc)
             continue;
           auto ct = air::getChannelType(mc);
-          if (succeeded(ct) && ct.value() == "npu_dma_packet") {
-            packetLT = lt;
-            packetCh = (int)t.dma_channel.channel;
-            return true;
-          }
+          if (succeeded(ct) && ct.value() == "npu_dma_packet")
+            tPacket = true;
+          if (memcpyIsDedicatedChannel(mc))
+            tDedicated = true;
+        }
+        // Never collapse onto a channel that hosts a dedicated flow.
+        if (tPacket && !tDedicated) {
+          packetLT = lt;
+          packetCh = (int)t.dma_channel.channel;
+          return true;
         }
       }
       return false;
@@ -1453,19 +1475,6 @@ air::MemTileDMAAllocator::MemTileDMAAllocator(AIE::DeviceOp device)
   for (int i = 0, e = aie_target.columns(); i < e; i++) {
     memtile_dma_columns.push_back(i);
   }
-}
-
-// A channel declared with `air.dedicated_dma_channel` must get its OWN physical
-// DMA channel and never be time-multiplexed (collapsed) with any other flow on
-// the same tile. Used to keep a latency-critical packet flow off a shared DMA
-// channel that another (e.g. later-phase) flow would otherwise collapse onto
-// and BD-order ahead of -- starving the first flow's consumer.
-static bool memcpyIsDedicatedChannel(air::MemcpyInterface mc) {
-  auto chan = dyn_cast_if_present<air::ChannelInterface>(mc.getOperation());
-  if (!chan)
-    return false;
-  auto decl = air::getChannelDeclarationThroughSymbol(chan);
-  return decl && decl->hasAttr("air.dedicated_dma_channel");
 }
 
 FailureOr<air::allocation_info_t>
