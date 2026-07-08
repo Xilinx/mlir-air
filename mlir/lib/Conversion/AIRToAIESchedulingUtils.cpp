@@ -949,7 +949,20 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf))
       if (auto a = chanDecl->getAttrOfType<mlir::IntegerAttr>(
               "air.tile_dma_channel")) {
-        chan = (int)a.getInt();
+        int pinned = (int)a.getInt();
+        // Validate against the tile's available DMA channels for this
+        // direction; an out-of-range pin would otherwise create an invalid
+        // allocation.
+        int numChans = isMM2S.value()
+                           ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
+                           : tile.getNumDestConnections(AIE::WireBundle::DMA);
+        if (pinned < 0 || pinned >= numChans)
+          return memcpyOp.emitOpError("air.tile_dma_channel = ")
+                 << pinned << " is out of range [0, " << numChans
+                 << ") for the " << (isMM2S.value() ? "MM2S" : "S2MM")
+                 << " DMA channels of tile (" << tile.getCol() << ", "
+                 << tile.getRow() << ")";
+        chan = pinned;
         chanPinned = true;
       }
 

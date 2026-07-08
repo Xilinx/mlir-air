@@ -3174,20 +3174,25 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
   // Preserve the custom DMA-steering / runtime-ordering markers across this
   // wrap/stride canonicalization; otherwise the discardable attrs are lost when
   // the op is rebuilt and the AIRToAIE / AIRRtToNpu consumers never fire.
+  // Capture the markers BEFORE replaceOpWithNewOp erases `op` (reading them off
+  // `op` afterwards is a use-after-free), then re-apply them to the rebuilt op.
   auto chanMin =
       op->template getAttrOfType<IntegerAttr>("air.memtile_dma_channel_min");
+  auto runtimeHoist = op->getAttr("air.runtime_hoist");
+  auto awaitAppends = op->getAttr("air.await_appends");
+  auto appendBarrier = op->getAttr("air.append_barrier");
   auto newOp = rewriter.replaceOpWithNewOp<OpT>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
       op.getIndices(), input_memref, offsets, sizes, strides,
       /*pad_before=*/padBefore, /*pad_after=*/padAfter);
   if (chanMin)
     newOp->setAttr("air.memtile_dma_channel_min", chanMin);
-  if (auto rh = op->getAttr("air.runtime_hoist"))
-    newOp->setAttr("air.runtime_hoist", rh);
-  if (auto aa = op->getAttr("air.await_appends"))
-    newOp->setAttr("air.await_appends", aa);
-  if (auto ab = op->getAttr("air.append_barrier"))
-    newOp->setAttr("air.append_barrier", ab);
+  if (runtimeHoist)
+    newOp->setAttr("air.runtime_hoist", runtimeHoist);
+  if (awaitAppends)
+    newOp->setAttr("air.await_appends", awaitAppends);
+  if (appendBarrier)
+    newOp->setAttr("air.append_barrier", appendBarrier);
 
   return success();
 }
