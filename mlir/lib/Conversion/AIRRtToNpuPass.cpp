@@ -581,12 +581,11 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // weight stream.
     if (op->hasAttr("air.runtime_hoist"))
       configTaskOp->setAttr("air.runtime_hoist", rewriter.getUnitAttr());
-    // Carry the append->readback barrier markers (set by
-    // deriveAppendReadbackBarriers from L3 aliasing) onto the task so the
-    // post-lowering ordering step can move each append's completion await
-    // before the readback's start (see the air.await_appends barrier below).
     if (op->hasAttr("air.await_appends"))
       configTaskOp->setAttr("air.await_appends", rewriter.getUnitAttr());
+    // Carry the append-barrier marker so the append->readback ordering step can
+    // find this append's completion await and move it before the tagged
+    // readback (see the air.await_appends barrier below).
     if (op->hasAttr("air.append_barrier"))
       configTaskOp->setAttr("air.append_barrier", rewriter.getUnitAttr());
 
@@ -1495,80 +1494,6 @@ LogicalResult enforceAIE2WrapLimit(ModuleOp module) {
   return success();
 }
 
-// Auto-derive the append->readback ordering barrier from L3 aliasing, so it
-// need not be spelled out with air.await_appends / air.append_barrier markers.
-//
-// A device->host S2MM drain (an "append") writes a range of an L3 host buffer;
-// a later host->device MM2S "readback" of an overlapping range of the SAME
-// buffer is a read-after-write on shared DDR. The async dependence graph does
-// not enforce it (the two DMAs use different channel symbols, and the drain's
-// completion wait is deferred), so the readback would race the drain's S2MM.
-// Detect the pair from the DMAs' memref + offset/size/stride (all present in
-// the IR) and tag the drain(s) air.append_barrier and the readback
-// air.await_appends
-// -- the same internal markers the runtime-sequence reorder already consumes.
-// Runs before DMA conversion so DmaToNpuPattern carries the tags onto the
-// tasks.
-static void deriveAppendReadbackBarriers(ModuleOp module) {
-  // Linear element span [lo, hi) of an airrt.dma_memcpy_nd access. nullopt when
-  // any bound is non-constant -> treated as may-overlap (conservative).
-  auto span =
-      [](airrt::DmaMemcpyNdOp d) -> std::optional<std::pair<int64_t, int64_t>> {
-    Value offs[4] = {d.getOffset3(), d.getOffset2(), d.getOffset1(),
-                     d.getOffset0()};
-    Value lens[4] = {d.getLength3(), d.getLength2(), d.getLength1(),
-                     d.getLength0()};
-    Value strs[4] = {d.getStride3(), d.getStride2(), d.getStride1(),
-                     d.getStride0()};
-    int64_t lo = 0, ext = 0;
-    for (int i = 0; i < 4; i++) {
-      auto o = getConstantIntValue(offs[i]);
-      auto l = getConstantIntValue(lens[i]);
-      auto s = getConstantIntValue(strs[i]);
-      if (!o || !l || !s)
-        return std::nullopt;
-      lo += *o * *s;
-      if (*l > 0)
-        ext += (*l - 1) * *s;
-    }
-    return std::make_pair(lo, lo + ext + 1);
-  };
-  auto mayOverlap = [&](airrt::DmaMemcpyNdOp a, airrt::DmaMemcpyNdOp b) {
-    if (a.getMemref() != b.getMemref())
-      return false;
-    auto sa = span(a), sb = span(b);
-    if (!sa || !sb)
-      return true; // non-constant bounds: cannot prove disjoint
-    return sa->first < sb->second && sb->first < sa->second;
-  };
-
-  module.walk([&](func::FuncOp f) {
-    SmallVector<airrt::DmaMemcpyNdOp> order;
-    f.walk([&](airrt::DmaMemcpyNdOp d) { order.push_back(d); });
-    for (size_t r = 0; r < order.size(); r++) {
-      auto rb = order[r];
-      // A readback is a host->device (MM2S) shim DMA reading a host buffer.
-      if (!rb->getAttrOfType<FlatSymbolRefAttr>("metadata"))
-        continue;
-      if (air::isDeviceToHostShimDMA(rb))
-        continue; // this is a drain, not a readback
-      SmallVector<airrt::DmaMemcpyNdOp> appends;
-      for (size_t w = 0; w < r; w++) {
-        auto dr = order[w];
-        if (!air::isDeviceToHostShimDMA(dr))
-          continue; // only device->host S2MM drains write DDR
-        if (mayOverlap(dr, rb))
-          appends.push_back(dr);
-      }
-      if (appends.empty())
-        continue;
-      rb->setAttr("air.await_appends", UnitAttr::get(rb.getContext()));
-      for (auto a : appends)
-        a->setAttr("air.append_barrier", UnitAttr::get(a.getContext()));
-    }
-  });
-}
-
 struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // Track pending main device creation - stores info needed to create main
   // device AFTER all argument-modifying patterns have run
@@ -1651,11 +1576,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // unrollAffineFors strips the loops, so the decision cannot be recomputed
     // afterwards.
     markDevicesNeedingLockReset(module);
-
-    // Auto-derive append->readback barriers from L3 aliasing (replaces the
-    // air.await_appends / air.append_barrier frontend markers). Must run before
-    // DMA conversion so DmaToNpuPattern carries the tags onto the tasks.
-    deriveAppendReadbackBarriers(module);
 
     generateNpuWaitFromAIRRtWaitAll(module);
 

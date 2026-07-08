@@ -3184,8 +3184,10 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
     newOp->setAttr("air.memtile_dma_channel_min", chanMin);
   if (auto rh = op->getAttr("air.runtime_hoist"))
     newOp->setAttr("air.runtime_hoist", rh);
-  // (The append->readback RAW barrier is not carried here: AIRRtToNpu derives
-  // it from L3 aliasing rather than a frontend marker.)
+  if (auto aa = op->getAttr("air.await_appends"))
+    newOp->setAttr("air.await_appends", aa);
+  if (auto ab = op->getAttr("air.append_barrier"))
+    newOp->setAttr("air.append_barrier", ab);
 
   return success();
 }

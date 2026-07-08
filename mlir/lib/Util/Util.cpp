@@ -1546,11 +1546,16 @@ void air::copyPaddingAttributes(Operation *src, Operation *dst) {
   // read it at channel-allocation time.
   if (auto mn = src->getAttrOfType<IntegerAttr>("air.memtile_dma_channel_min"))
     dst->setAttr("air.memtile_dma_channel_min", mn);
-  // Preserve the runtime-sequence input-feed hoist marker across channel-op
-  // re-instantiation, so AIRRtToNpu can consume it. (The append->readback RAW
-  // barrier is not carried here: AIRRtToNpu derives it from L3 aliasing.)
+  // Preserve the runtime-sequence ordering markers (an input feed hoisted ahead
+  // of the bulk stream; an append->readback RAW barrier and its participating
+  // appends) across channel-op re-instantiation, so AIRRtToNpu can consume
+  // them.
   if (auto rh = src->getAttr("air.runtime_hoist"))
     dst->setAttr("air.runtime_hoist", rh);
+  if (auto aa = src->getAttr("air.await_appends"))
+    dst->setAttr("air.await_appends", aa);
+  if (auto ab = src->getAttr("air.append_barrier"))
+    dst->setAttr("air.append_barrier", ab);
 }
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data
