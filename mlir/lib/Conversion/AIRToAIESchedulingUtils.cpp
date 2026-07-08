@@ -196,11 +196,14 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
   return one_d_offset;
 }
 
-// Given a vector of memcpy operations, return a map of their repeat counts,
-// relative to a common ancestor region.
-llvm::MapVector<int, llvm::SetVector<Operation *>>
+// Given a vector of memcpy operations, partition them into BD tasks. Each entry
+// is (repeat_count, ops) where ops form one BD chain repeated repeat_count+1
+// times. Tasks are keyed by the innermost enclosing repeating loop, so sibling
+// loops draining the same channel into distinct buffers become distinct tasks
+// even when their trip counts are equal (two entries may share a repeat_count).
+SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
 air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
-  llvm::MapVector<int, llvm::SetVector<Operation *>> repeatCounts;
+  SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeatCounts;
   llvm::SetVector<Operation *> memcpyIOps;
   for (auto o : memcpy_ops) {
     memcpyIOps.insert(o);
@@ -366,22 +369,23 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
       uniqueBuffers.insert(chanOp.getMemref());
     }
 
-    // A genuine rotation interleaves buffers inside a shared loop (a peeled
-    // steady-state loop unrolled across the buffer pool), so at least two sites
-    // share one enclosing loop. Sites that each sit alone in their own loop are
-    // time-multiplexed block consumers, NOT a rotation -- a single circular BD
-    // chain would mis-deliver (each block would see only every Nth buffer). Let
-    // those fall through to per-op sequential BDs.
-    // Note: this is coarse -- any two sites sharing a loop marks the whole set
-    // as a rotation; a channel/tile mixing a rotation with block consumers on
-    // one DMA channel (not observed in practice) would be over-collapsed.
+    // A genuine rotation interleaves buffers inside ONE shared steady-state
+    // loop (a software-pipelined loop unrolled across the buffer pool),
+    // optionally with peel/prologue sites sitting outside it. So exactly one
+    // enclosing loop holds multiple rotation sites. Sites spread across two or
+    // more distinct loops -- e.g. sibling get-loops that each drain the same
+    // resident stream in their own ping-pong ring -- are time-multiplexed block
+    // consumers, NOT a rotation: a single circular BD chain would mis-deliver
+    // (each loop would see only every Nth buffer). Sites that each sit alone in
+    // their own loop (zero shared loops) are block consumers too. Both fall
+    // through to per-op counted BDs.
     llvm::DenseMap<Operation *, unsigned> loopSiteCount;
-    bool anySharedLoop = false;
     for (auto *op : ops)
       if (auto loop = op->getParentOfType<LoopLikeOpInterface>())
-        if (++loopSiteCount[loop.getOperation()] >= 2)
-          anySharedLoop = true;
-    if (!anySharedLoop)
+        loopSiteCount[loop.getOperation()]++;
+    unsigned loopsWithMultipleSites = llvm::count_if(
+        loopSiteCount, [](const auto &entry) { return entry.second >= 2; });
+    if (loopsWithMultipleSites != 1)
       return false;
 
     // Valid rotation: multiple unique buffers, total ops divisible by buffer
@@ -395,9 +399,10 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   // chain (infiniteBDLoopMode = true) instead of separate terminated tasks.
   if (detectNBufferRotation(memcpyIOps)) {
     SmallVector<Operation *> opVec = memcpyIOps.takeVector();
-    for (auto *op : opVec) {
-      repeatCounts[0].insert(op);
-    }
+    llvm::SetVector<Operation *> rotationOps;
+    for (auto *op : opVec)
+      rotationOps.insert(op);
+    repeatCounts.push_back({0, std::move(rotationOps)});
     return repeatCounts;
   }
 
@@ -408,9 +413,17 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   if (!commonRegion)
     return repeatCounts;
 
-  // Get each memcpy op's repeat count, relative to the common region.
+  // Partition ops into BD tasks keyed by their innermost enclosing repeating
+  // loop (relative to the common region). Ops sharing a loop form one task
+  // (that loop's BD chain, e.g. a 2-deep ping-pong ring); sibling loops become
+  // distinct tasks even at equal trip counts. Ops with no enclosing loop (fully
+  // unrolled / peeled) share the null-key task. The task's repeat count is the
+  // product of all enclosing loop trip counts (trip count minus one).
+  llvm::MapVector<Operation *, std::pair<int, llvm::SetVector<Operation *>>>
+      partitions;
   for (auto o : memcpyIOpVec) {
     int tripCount = 1;
+    Operation *innermostLoop = nullptr;
     Region *currRegion = o->getParentRegion();
     while (commonRegion->isAncestor(currRegion)) {
       Operation *parent = currRegion->getParentOp();
@@ -419,13 +432,22 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
       auto scfFor = dyn_cast_if_present<scf::ForOp>(parent);
       if (affineFor && affineFor.hasConstantBounds()) {
         tripCount *= *air::getStaticAffineForTripCountAsInt(affineFor);
+        if (!innermostLoop)
+          innermostLoop = parent;
       } else if (scfFor && air::getStaticScfForTripCountAsInt(scfFor)) {
         tripCount *= *air::getStaticScfForTripCountAsInt(scfFor);
+        if (!innermostLoop)
+          innermostLoop = parent;
       }
     }
     // In English, repeat count is trip count minus one.
-    repeatCounts[tripCount - 1].insert(o);
+    auto &task = partitions[innermostLoop];
+    task.first = tripCount - 1;
+    task.second.insert(o);
   }
+
+  for (auto &[loop, task] : partitions)
+    repeatCounts.push_back({task.first, std::move(task.second)});
 
   return repeatCounts;
 }

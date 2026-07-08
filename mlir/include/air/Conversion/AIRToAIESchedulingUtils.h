@@ -50,9 +50,11 @@ bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 int64_t get1DOffset(SmallVector<Value> memcpy_offsets,
                     SmallVector<Value> memcpy_strides);
 
-// Given a vector of memcpy operations, return a map of their repeat counts,
-// relative to a common ancestor region.
-llvm::MapVector<int, llvm::SetVector<Operation *>>
+// Given a vector of memcpy operations, partition them into BD tasks. Each entry
+// is (repeat_count, ops) keyed by the innermost enclosing repeating loop, so
+// sibling loops draining one channel into distinct buffers become distinct
+// tasks even at equal trip counts (two entries may share a repeat_count).
+SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
 getRepeatCounts(std::vector<Operation *> memcpy_ops);
 
 std::vector<AIE::BDDimLayoutAttr>
