@@ -83,8 +83,7 @@ jobs:
       - name: Get llvm-aie
         run: |
           source air-venv/bin/activate
-          # Temp pin: latest llvm-aie nightly miscompiles int->float->int at -O2 (Xilinx/llvm-aie#1056). Revert once fixed upstream.
-          python3 -m pip install --upgrade --force-reinstall "llvm-aie==21.0.0.2026062301+cb664e8c" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          python3 -m pip install --upgrade --force-reinstall llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
       - name: Build and test mlir-air
         run: |

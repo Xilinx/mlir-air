@@ -51,8 +51,7 @@ export PYTHONPATH=${MLIR_AIE_INSTALL_DIR}/python:${PYTHONPATH}
 export LD_LIBRARY_PATH=${MLIR_AIE_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}
 
 # Install llvm-aie
-# Temp pin: latest llvm-aie nightly miscompiles int->float->int at -O2 (Xilinx/llvm-aie#1056). Revert once fixed upstream.
-python3 -m pip install --force-reinstall "llvm-aie==21.0.0.2026062301+cb664e8c" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+python3 -m pip install --upgrade --force-reinstall llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 PEANO_INSTALL_DIR="$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
 echo "WHL_LLVM_AIE DIR: $PEANO_INSTALL_DIR"
 
