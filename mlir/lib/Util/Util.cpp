@@ -1317,6 +1317,19 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
     erase_dims.push_back(i);
   }
 
+  // Empty list is the sentinel for "full-volume contiguous access" (see final
+  // block below). If erasing all dims but the access is partial, keep the
+  // innermost dim; eraseWrapNStrideDim composes outer offsets into inner dims.
+  int64_t access_volume = 1;
+  for (auto s : sizes)
+    if (auto c = getConstantIntValue(s))
+      access_volume *= *c;
+  if (!erase_dims.empty() &&
+      static_cast<size_t>(erase_dims.size()) == sizes.size() &&
+      access_volume != memref_volume)
+    erase_dims.erase(
+        erase_dims.begin()); // erase_dims is high-to-low; front() = innermost
+
   listsHaveChanged |=
       eraseWrapNStrideDim(builder, erase_dims, offsets, sizes, strides)
           .succeeded();

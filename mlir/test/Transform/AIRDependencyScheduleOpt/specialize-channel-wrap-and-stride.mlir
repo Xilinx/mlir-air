@@ -739,4 +739,50 @@ module {
     }
     return
   }
+
+  // Partial-access invariant: a size-1 access on a larger memref must not
+  // collapse offsets/sizes/strides to [] [] [] (full-volume sentinel).
+
+  // CHECK-LABEL: @partial_1d_offset0
+  // Offset-0, size-1 on memref<1024xbf16>: lists must remain non-empty.
+  // CHECK: air.channel.put async {{.*}}@chan_partial_0[] (%{{.*}}[%{{[a-z0-9_]+}}] [%{{[a-z0-9_]+}}] [%{{[a-z0-9_]+}}])
+  func.func @partial_1d_offset0(%arg0: memref<1024xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%x) in (%sx=%c1) args(%a=%arg0) : memref<1024xbf16> {
+      %c0 = arith.constant 0 : index
+      %c1i = arith.constant 1 : index
+      %1 = air.channel.put async @chan_partial_0[] (%a[%c0] [%c1i] [%c1i]) : (memref<1024xbf16>)
+    }
+    return
+  }
+
+  // CHECK-LABEL: @partial_1d_nonzero_offset
+  // Non-zero offset, size-1 on memref<1024xbf16>: lists must remain non-empty.
+  // CHECK: air.channel.put async {{.*}}@chan_partial_1[] (%{{.*}}[%{{[a-z0-9_]+}}] [%{{[a-z0-9_]+}}] [%{{[a-z0-9_]+}}])
+  func.func @partial_1d_nonzero_offset(%arg0: memref<1024xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%x) in (%sx=%c1) args(%a=%arg0) : memref<1024xbf16> {
+      %c5 = arith.constant 5 : index
+      %c1i = arith.constant 1 : index
+      %1 = air.channel.put async @chan_partial_1[] (%a[%c5] [%c1i] [%c1i]) : (memref<1024xbf16>)
+    }
+    return
+  }
+
+  // CHECK-LABEL: @partial_2d_outer_offset
+  // 2D all-size-1 access with outer offset: outer dim must be erased with its
+  // offset composed into the inner dim (5*32+0=160), not both dims collapsed to [].
+  // CHECK-DAG: %[[C160:.*]] = arith.constant 160 : index
+  // CHECK: air.channel.put async {{.*}}@chan_partial_2[] (%{{.*}}[%[[C160]]] [%{{[a-z0-9_]+}}] [%{{[a-z0-9_]+}}])
+  func.func @partial_2d_outer_offset(%arg0: memref<32x32xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%x) in (%sx=%c1) args(%a=%arg0) : memref<32x32xbf16> {
+      %c5 = arith.constant 5 : index
+      %c0 = arith.constant 0 : index
+      %c1i = arith.constant 1 : index
+      %c32 = arith.constant 32 : index
+      %1 = air.channel.put async @chan_partial_2[] (%a[%c5, %c0] [%c1i, %c1i] [%c32, %c1i]) : (memref<32x32xbf16>)
+    }
+    return
+  }
 }
