@@ -1,4 +1,4 @@
-//===- ping_pong_shared_resident_ring.mlir ---------------------*- MLIR -*-===//
+//===- ping_pong_share_resident_ring_diff_channel.mlir --------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -7,28 +7,22 @@
 
 // RUN: air-opt %s -air-label-scf-for-to-ping-pong -air-ping-pong-transform | FileCheck %s
 
-// Resident-ring sharing is auto-detected structurally (see
-// ping_pong_share_resident_ring_auto.mlir), so the `air.shared_resident_ring`
-// attribute on the channel decls is OPTIONAL -- accepted but not required. This
-// test keeps it (older / production IR may still emit it) and confirms such IR
-// still merges. Two sibling get-loops in one block re-read the SAME resident
-// streams (one consume pass each); the second loop is merged onto the first's
-// ring: ONE 2-deep ring (2 buffers per get x 2 gets = 4 buffers TOTAL, shared by
-// both loops), the rotation chained through the first loop's iter-arg results.
+// Negative: the two sibling get-loops sit in the same block and have identical
+// buffer shapes, but they read DIFFERENT channel sets (@inX/@inW vs @inY/@inZ).
+// They are distinct resident streams, so they must NOT be merged onto one ring
+// (sharing keys on the exact channel set, not merely on buffer shape). Each loop
+// keeps its own 2-deep ring: 8 allocs total, not 4.
 
-// SHARED: the merged form allocates the ring exactly ONCE (4 allocs: x/w ping +
-// x/w pong) -- not 8 -- and the second loop chains its iter args from the first
-// loop's results.
-// CHECK-LABEL: shared_ring
-// CHECK-COUNT-4: memref.alloc()
+// CHECK-LABEL: diff_channel
+// CHECK-COUNT-8: memref.alloc()
 // CHECK-NOT: memref.alloc()
-// CHECK: %[[L0:.*]]:4 = scf.for {{.*}} iter_args
-// CHECK: %[[L1:.*]]:4 = scf.for {{.*}} iter_args(%{{.*}} = %[[L0]]#0, %{{.*}} = %[[L0]]#1, %{{.*}} = %[[L0]]#2, %{{.*}} = %[[L0]]#3)
 
 module {
-  air.channel @inX [1] {air.shared_resident_ring}
-  air.channel @inW [1] {air.shared_resident_ring}
-  func.func @shared_ring() {
+  air.channel @inX [1]
+  air.channel @inW [1]
+  air.channel @inY [1]
+  air.channel @inZ [1]
+  func.func @diff_channel() {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%a, %b) in (%c=%c1, %d=%c1) {
       %1 = air.segment async {
@@ -62,12 +56,12 @@ module {
               %al = memref.alloc() : memref<256xi8, 2>
               air.execute_terminator %al : memref<256xi8, 2>
             }
-            %gx = air.channel.get async [%tx] @inX[] (%bx[] [] []) : (memref<256xi8, 2>)
+            %gx = air.channel.get async [%tx] @inY[] (%bx[] [] []) : (memref<256xi8, 2>)
             %tw, %bw = air.execute [%tt] -> (memref<2560xi8, 2>) {
               %al = memref.alloc() : memref<2560xi8, 2>
               air.execute_terminator %al : memref<2560xi8, 2>
             }
-            %gw = air.channel.get async [%tw] @inW[] (%bw[] [] []) : (memref<2560xi8, 2>)
+            %gw = air.channel.get async [%tw] @inZ[] (%bw[] [] []) : (memref<2560xi8, 2>)
             %cc = air.execute [%gx, %gw] {
               func.call @acc(%bx, %bw) : (memref<256xi8, 2>, memref<2560xi8, 2>) -> ()
             }
