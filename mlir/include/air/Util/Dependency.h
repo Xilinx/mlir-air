@@ -85,6 +85,10 @@ LogicalResult loopUnrollFullWithAsyncTokenPreserved(
 LogicalResult loopUnrollByFactorWithAsyncTokenPreserved(
     scf::ForOp forOp, uint64_t unrollFactor,
     function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn = nullptr);
+// Returns true if `forOp`'s trip count is provably a multiple of `factor`
+// (constant trip counts, or the dynamic case `for %i = 0 to (x * C) step 1`
+// with `C % factor == 0`). Used to drop the dead unroll epilogue.
+bool isTripCountDivisibleByFactor(scf::ForOp forOp, uint64_t factor);
 LogicalResult
 unrollScfParallel(OpBuilder builder, scf::ParallelOp par, IRMapping remap,
                   llvm::DenseMap<Operation *, SmallVector<Operation *>> &opMap);
