@@ -10,21 +10,25 @@
 // via the packet-reuse branch. This is honored by both the shim allocator (the
 // L3 puts) and the MemTile allocator (the L2 gets). Here three L3->L2 packet
 // channels share one shim column: the two unmarked ones time-multiplex their
-// physical channel, but the marked one (@pkt_in_2) is pinned to its own.
+// physical shim MM2S, but the marked one (@pkt_in_2) is pinned to its own.
 
 // RUN: air-opt %s -air-to-aie='row-offset=2 col-offset=0 device=npu1_1col' | FileCheck %s
 
-// MemTile side (S2MM): unmarked pkt_id 0/1 share S2MM 0; dedicated pkt_id 2 is
-// alone on S2MM 1 (packet flow ids follow channel decl order, so pkt_id 2 is
-// @pkt_in_2).
+// MemTile side (S2MM): the receiver applies source-tile discrimination, so each
+// distinct L3->L2 flow lands on its OWN physical S2MM channel (a dedicated
+// channel is therefore never at risk of collapse here). pkt ids follow channel
+// decl order (@pkt_in_0 -> 0, @pkt_in_1 -> 1, @pkt_in_2 -> 2).
 // CHECK: aie.memtile_dma
 // CHECK: aie.dma_start(S2MM, 0
 // CHECK: pkt_id = 0
-// CHECK: pkt_id = 1
 // CHECK: aie.dma_start(S2MM, 1
+// CHECK: pkt_id = 1
+// CHECK: aie.dma_start(S2MM, 2
 // CHECK: pkt_id = 2
 
-// Shim side (MM2S): unmarked pkt_in_0/1 share MM2S 0; dedicated pkt_in_2 -> MM2S 1.
+// Shim side (MM2S): the source keeps promiscuous packet multiplexing, so the
+// dedicated marker is what forces separation -- unmarked pkt_in_0/1 share
+// MM2S 0; dedicated pkt_in_2 -> its own MM2S 1.
 // CHECK: aie.shim_dma_allocation @air_pkt_in_0({{.*}}, MM2S, 0)
 // CHECK: aie.shim_dma_allocation @air_pkt_in_1({{.*}}, MM2S, 0)
 // CHECK: aie.shim_dma_allocation @air_pkt_in_2({{.*}}, MM2S, 1)
