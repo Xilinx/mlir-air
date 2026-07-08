@@ -401,30 +401,6 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
   DmaToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern<airrt::DmaMemcpyNdOp>(context, benefit) {}
 
-  // Helper to check if a DMA uses an S2MM (output/device-to-host) channel
-  bool isDeviceToHostChannel(airrt::DmaMemcpyNdOp op) const {
-    if (!op->hasAttr("metadata"))
-      return false;
-
-    auto metadata = op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
-    if (!metadata)
-      return false;
-
-    // Find the parent DeviceOp to look up the allocation
-    auto device = op->getParentOfType<AIE::DeviceOp>();
-    if (!device)
-      return false;
-
-    // Look up the ShimDMAAllocationOp for this metadata symbol
-    StringRef metadataStr = metadata.getValue();
-    auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, metadataStr);
-    if (!allocOp)
-      return false;
-
-    // S2MM = device to host = output = needs wait
-    return allocOp.getChannelDir() == AIE::DMAChannelDir::S2MM;
-  }
-
   LogicalResult
   matchAndRewrite(airrt::DmaMemcpyNdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -581,7 +557,7 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
 
     // Determine if this is an output (S2MM) channel
     // S2MM channels issue tokens by default, MM2S channels do not
-    bool issueToken = isDeviceToHostChannel(op);
+    bool issueToken = air::isDeviceToHostShimDMA(op);
 
     // Create DMAConfigureTaskForOp with proper repeat_count from highest
     // dimension

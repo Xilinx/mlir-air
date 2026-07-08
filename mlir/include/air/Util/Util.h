@@ -238,6 +238,14 @@ void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
 // discardable attr dictionary, so they must be copied explicitly.
 void copyPaddingAttributes(Operation *src, Operation *dst);
 
+// True iff `op`'s "metadata" FlatSymbolRefAttr resolves to an S2MM
+// (device->host / output) shim DMA allocation. The allocation is looked up in
+// `op`'s parent AIE::DeviceOp when it has one, otherwise in every AIE::DeviceOp
+// of the enclosing module (an airrt.dma_memcpy_nd still lives in a func before
+// air-to-std sinks it into its device). Returns false when there is no metadata
+// or no matching ShimDMAAllocationOp.
+bool isDeviceToHostShimDMA(Operation *op);
+
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
 bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
