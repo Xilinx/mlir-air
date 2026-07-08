@@ -13,18 +13,15 @@
 
 // CHECK-LABEL: func.func @multi_launch_npu
 // Both launches should generate their own airrt.dma_memcpy_nd operations
-// with separate segment_load calls - verifying serializeAsyncControlFlows is skipped for NPU.
-// Each launch's device->host drain (S2MM: Id2 / Id4) is hoisted ahead of its
-// own input DMA (MM2S: Id1 / Id3) -- arm the drain S2MM early (issue-early /
-// wait-late) -- and the hoist is scoped per-launch (the second launch's drain
-// is NOT moved ahead of the first launch's inputs).
+// with separate segment_load calls - verifying serializeAsyncControlFlows is skipped for NPU
+// First launch should have its DMA ops
 // CHECK: airrt.segment_load "segment_a"
-// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @airMemcpyId2
 // CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @airMemcpyId1
+// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @airMemcpyId2
 // Second launch should have its own separate DMA ops (not merged with first launch)
 // CHECK: airrt.segment_load "segment_b"
-// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @airMemcpyId4
 // CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @airMemcpyId3
+// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @airMemcpyId4
 
 module {
   // NPU2 device - should skip serializeAsyncControlFlows
