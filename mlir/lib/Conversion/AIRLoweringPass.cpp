@@ -1282,8 +1282,14 @@ static SmallVector<Operation *> getLaunchWindow(airrt::WaitAllOp launchEnd) {
 // waiting at the terminator and arming the receiver first cannot reorder a real
 // host-visible dependency.
 static void deferDeviceToHostDrainWaits(ModuleOp module) {
+  // A drain is a launch-scope *channel* get lowered to an S2MM shim DMA.
+  // Require the chan_name attribute (set only when lowering air.channel ops) so
+  // an explicitly-lowered air.dma_memcpy_nd that happens to be S2MM -- which
+  // may carry its own pre-DMA wait_all with real ordering -- is never
+  // reordered.
   auto isDrain = [](airrt::DmaMemcpyNdOp dma) {
-    return dma->getNumResults() && air::isDeviceToHostShimDMA(dma);
+    return dma->getNumResults() && dma->hasAttr("chan_name") &&
+           air::isDeviceToHostShimDMA(dma);
   };
 
   module.walk([&](airrt::WaitAllOp launchEnd) {
