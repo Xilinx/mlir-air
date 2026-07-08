@@ -772,7 +772,8 @@ module {
   // CHECK-LABEL: @partial_2d_outer_offset
   // 2D all-size-1 access with outer offset: outer dim must be erased with its
   // offset composed into the inner dim (5*32+0=160), not both dims collapsed to [].
-  // CHECK: air.channel.put async {{.*}}@chan_partial_2[] (%{{.*}}[%{{[a-z0-9_]+}}] [%{{[a-z0-9_]+}}] [%{{[a-z0-9_]+}}])
+  // CHECK-DAG: %[[C160:.*]] = arith.constant 160 : index
+  // CHECK: air.channel.put async {{.*}}@chan_partial_2[] (%{{.*}}[%[[C160]]] [%{{[a-z0-9_]+}}] [%{{[a-z0-9_]+}}])
   func.func @partial_2d_outer_offset(%arg0: memref<32x32xbf16>) {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%x) in (%sx=%c1) args(%a=%arg0) : memref<32x32xbf16> {
