@@ -1541,6 +1541,21 @@ void air::copyPaddingAttributes(Operation *src, Operation *dst) {
     dst->setAttr("pad_before", padBefore);
   if (auto padAfter = src->getAttrOfType<DenseI32ArrayAttr>("pad_after"))
     dst->setAttr("pad_after", padAfter);
+  // Preserve the memtile DMA channel-floor steer (reserve channels [0,N) for
+  // this flow) across channel-op re-instantiation, so MemTileDMAAllocator can
+  // read it at channel-allocation time.
+  if (auto mn = src->getAttrOfType<IntegerAttr>("air.memtile_dma_channel_min"))
+    dst->setAttr("air.memtile_dma_channel_min", mn);
+  // Preserve the runtime-sequence ordering markers (an input feed hoisted ahead
+  // of the bulk stream; an append->readback RAW barrier and its participating
+  // appends) across channel-op re-instantiation, so AIRRtToNpu can consume
+  // them.
+  if (auto rh = src->getAttr("air.runtime_hoist"))
+    dst->setAttr("air.runtime_hoist", rh);
+  if (auto aa = src->getAttr("air.await_appends"))
+    dst->setAttr("air.await_appends", aa);
+  if (auto ab = src->getAttr("air.append_barrier"))
+    dst->setAttr("air.append_barrier", ab);
 }
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data

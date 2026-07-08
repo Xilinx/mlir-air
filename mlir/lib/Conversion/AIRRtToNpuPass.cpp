@@ -555,9 +555,14 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     AIE::BDDimLayoutArrayAttr dimsAttr =
         AIE::BDDimLayoutArrayAttr::get(ctx, dimLayouts);
 
-    // Determine if this is an output (S2MM) channel
-    // S2MM channels issue tokens by default, MM2S channels do not
-    bool issueToken = air::isDeviceToHostShimDMA(op);
+    // Determine if this is an output (S2MM) channel.
+    // S2MM channels issue tokens by default, MM2S channels do not.
+    // Feeds marked `air.preserve_shim_dma_order` (lockstep-coupled shim feeds
+    // that opted out of per-channel BD folding) also issue a token so they can
+    // be awaited for bounded double-buffered backpressure (see
+    // synthesizeDoubleBufferedAwaits below).
+    bool paced = op->hasAttr("air.preserve_shim_dma_order");
+    bool issueToken = air::isDeviceToHostShimDMA(op) || paced;
 
     // Create DMAConfigureTaskForOp with proper repeat_count from highest
     // dimension
@@ -565,9 +570,24 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         rewriter, op.getLoc(),
         rewriter.getIndexType(),          // result type
         metadata,                         // alloc symbol reference
-        rewriter.getBoolAttr(issueToken), // issue_token = true for S2MM only
+        rewriter.getBoolAttr(issueToken), // issue_token = true for S2MM / paced
         rewriter.getI32IntegerAttr(repeatCount) // repeat_count from highest dim
     );
+    if (paced)
+      configTaskOp->setAttr("air.preserve_shim_dma_order",
+                            rewriter.getUnitAttr());
+    // Carry the runtime-sequence hoist marker onto the task so the
+    // post-lowering reordering step can move this input feed ahead of the
+    // weight stream.
+    if (op->hasAttr("air.runtime_hoist"))
+      configTaskOp->setAttr("air.runtime_hoist", rewriter.getUnitAttr());
+    if (op->hasAttr("air.await_appends"))
+      configTaskOp->setAttr("air.await_appends", rewriter.getUnitAttr());
+    // Carry the append-barrier marker so the append->readback ordering step can
+    // find this append's completion await and move it before the tagged
+    // readback (see the air.await_appends barrier below).
+    if (op->hasAttr("air.append_barrier"))
+      configTaskOp->setAttr("air.append_barrier", rewriter.getUnitAttr());
 
     // Create the body region of the configure task op
     Block *bodyBlock = rewriter.createBlock(&configTaskOp.getBody());
@@ -1665,6 +1685,117 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     module.walk([](xilinx::AIE::DeviceOp device) {
       device->removeAttr(kNeedsLockResetAttr);
     });
+
+    // Hoist all herd RTP writes to the front of each runtime sequence (right
+    // after any leading load_pdi), so every RTP value is written BEFORE any
+    // data movement. RTP writes are emitted at the herd-load position, so with
+    // enough upstream DMA tasks they can be sequenced AFTER the DMAs that
+    // trigger the compute cores (the control program may even await a core's
+    // output before reaching the RTP write) -- the core then latches the stale
+    // (zero-initialized) RTP and produces wrong results. RTP writes carry their
+    // value as an attribute and have no SSA operands, so moving them to the
+    // front is always safe.
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      Block &blk = seq.getBody().front();
+      // Anchor at the first op that is not a load_pdi, RTP write, set_lock, or
+      // an already-marked (air.runtime_hoist) DMA feed. Everything hoisted
+      // below is moved to just before this anchor, i.e. to the front of the
+      // sequence.
+      Operation *anchor = nullptr;
+      for (auto &o : blk) {
+        if (isa<AIEX::NpuLoadPdiOp, AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(&o))
+          continue;
+        if (o.hasAttr("air.runtime_hoist"))
+          continue;
+        anchor = &o;
+        break;
+      }
+      if (!anchor)
+        return; // nothing to order before.
+      SmallVector<AIEX::NpuWriteRTPOp> rtps;
+      for (auto &o : blk)
+        if (auto r = dyn_cast<AIEX::NpuWriteRTPOp>(&o))
+          rtps.push_back(r);
+      // Also hoist the herd-release set_lock ops, so all core-release locks are
+      // set UPFRONT, before any DMA/wait. The pass otherwise batches the
+      // set_locks at the end of the sequence, so with persistent cores a
+      // sequence can await one group's output BEFORE the set_locks release the
+      // cores -> those cores never run -> zero output. Hoisting the set_locks
+      // to the front (after the RTP writes, before the first DMA) releases
+      // every core before any output is awaited.
+      SmallVector<AIEX::SetLockOp> setlocks;
+      for (auto &o : blk)
+        if (auto s = dyn_cast<AIEX::SetLockOp>(&o))
+          setlocks.push_back(s);
+      for (auto r : rtps)
+        r->moveBefore(anchor);
+      for (auto s : setlocks)
+        s->moveBefore(anchor);
+      // Hoist input DMA feeds marked `air.runtime_hoist` ahead of the bulk
+      // input-feed DMAs. Otherwise the control program can block on a later
+      // input's dma_await -- whose consumer is stalled in a feedback loop
+      // waiting on the compute that the hoisted feed drives -- BEFORE it ever
+      // issues the hoisted feed, so that compute never receives its input,
+      // produces no output, and the sequence deadlocks. Each configure task and
+      // its single start task are moved together, preserving relative order.
+      SmallVector<AIEX::DMAConfigureTaskForOp> hoistCfgs;
+      for (auto &o : blk)
+        if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
+          if (c->hasAttr("air.runtime_hoist"))
+            hoistCfgs.push_back(c);
+      for (auto c : hoistCfgs) {
+        Operation *startOp = nullptr;
+        for (auto *u : c.getResult().getUsers())
+          if (isa<AIEX::DMAStartTaskOp>(u)) {
+            startOp = u;
+            break;
+          }
+        c->moveBefore(anchor);
+        if (startOp)
+          startOp->moveBefore(anchor);
+      }
+
+      // air.await_appends barrier: a same-L3 write-after-write / read-after-
+      // write ordering that the async dependence graph cannot express. A
+      // shared- DDR readback tagged `air.await_appends` must observe values
+      // written by one or more device-side appends (S2MM drains into that same
+      // DDR buffer), but an append's completion await is deferred to the launch
+      // terminator, so the readback -- issued in program order after the append
+      // START -- would race the append S2MM and read a stale slot. Each
+      // participating append is tagged `air.append_barrier`; move those
+      // appends' completion awaits to just BEFORE the tagged readback's start,
+      // so the runtime blocks on append completion before reading back.
+      AIEX::DMAStartTaskOp barrierStart = nullptr;
+      for (auto &o : blk) {
+        auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
+        if (!c || !c->hasAttr("air.await_appends"))
+          continue;
+        for (auto *u : c.getResult().getUsers())
+          if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u)) {
+            barrierStart = s;
+            break;
+          }
+        break;
+      }
+      if (barrierStart) {
+        SmallVector<AIEX::DMAAwaitTaskOp> appendAwaits;
+        for (auto &o : blk) {
+          auto a = dyn_cast<AIEX::DMAAwaitTaskOp>(&o);
+          if (!a)
+            continue;
+          auto cfg = dyn_cast_or_null<AIEX::DMAConfigureTaskForOp>(
+              a.getTask().getDefiningOp());
+          if (!cfg)
+            continue;
+          if (cfg->hasAttr("air.append_barrier"))
+            appendAwaits.push_back(a);
+        }
+        for (auto a : appendAwaits)
+          a->moveBefore(barrierStart);
+      }
+    });
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -2093,6 +2224,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             // S2MM (output): await task - waits for completion AND frees BD
             AIEX::DMAAwaitTaskOp::create(builder, waitOp.getLoc(),
                                          matchingConfigTask.getResult());
+          } else if (matchingConfigTask->hasAttr(
+                         "air.preserve_shim_dma_order")) {
+            // MM2S, paced: do not emit a fire-and-free here. Bounded
+            // double-buffered awaits are synthesized in
+            // synthesizeDoubleBufferedAwaits() below.
           } else {
             // MM2S (input): free task - just frees BD for reuse, no wait
             AIEX::DMAFreeTaskOp::create(builder, waitOp.getLoc(),
@@ -2102,6 +2238,66 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // Erase the NpuDmaWaitOp regardless of whether we found a match
         waitOp->erase();
       }
+
+      // Emit bounded double-buffered awaits for paced (lockstep-coupled) MM2S
+      // shim feeds. Must run after the default await/free emission above so it
+      // can rely on the per-task config ops being in final program order.
+      synthesizeDoubleBufferedAwaits(f, device, /*depth=*/2);
+    }
+  }
+
+  // For shim feeds marked `air.preserve_shim_dma_order`, replace fire-and-free
+  // with bounded double-buffered completion-token awaits. Such feeds are
+  // coupled by a downstream broadcast/multicast consumer that advances all its
+  // destinations in lockstep; with no backpressure the runtime over-commits one
+  // channel's in-flight BDs while sibling channels starve, and deadlocks.
+  // Keeping at most `depth` tasks in flight per channel (await task i-depth
+  // before reusing its BD at start i, then drain the final `depth`) bounds the
+  // in-flight set and preserves the drainable round-major schedule.
+  void synthesizeDoubleBufferedAwaits(func::FuncOp f, AIE::DeviceOp device,
+                                      unsigned depth) {
+    // Group marked MM2S config tasks per channel, in program order.
+    llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>> groups;
+    f.walk([&](AIEX::DMAConfigureTaskForOp ct) {
+      if (!ct->hasAttr("air.preserve_shim_dma_order"))
+        return;
+      StringRef md = ct.getAlloc().getLeafReference().getValue();
+      auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, md);
+      if (!allocOp || allocOp.getChannelDir() != AIE::DMAChannelDir::MM2S)
+        return;
+      groups[md].push_back(ct);
+    });
+    if (groups.empty())
+      return;
+    // Map each config task to its start op.
+    llvm::DenseMap<Operation *, AIEX::DMAStartTaskOp> startOf;
+    f.walk([&](AIEX::DMAStartTaskOp st) {
+      if (auto *def = st.getTask().getDefiningOp())
+        startOf[def] = st;
+    });
+    for (auto &kv : groups) {
+      auto &tasks = kv.second;
+      unsigned n = tasks.size();
+      if (n <= depth)
+        continue; // fits in flight; no pacing needed
+      // Before reusing task i's BD (start i), await task i-depth.
+      for (unsigned i = depth; i < n; i++) {
+        auto startOp = startOf.lookup(tasks[i].getOperation());
+        if (!startOp)
+          continue;
+        OpBuilder b(startOp);
+        AIEX::DMAAwaitTaskOp::create(b, startOp.getLoc(),
+                                     tasks[i - depth].getResult());
+      }
+      // Drain the final `depth` tasks after the last start.
+      auto lastStart = startOf.lookup(tasks[n - 1].getOperation());
+      if (!lastStart)
+        continue;
+      OpBuilder b(lastStart);
+      b.setInsertionPointAfter(lastStart);
+      for (unsigned j = n - depth; j < n; j++)
+        AIEX::DMAAwaitTaskOp::create(b, lastStart.getLoc(),
+                                     tasks[j].getResult());
     }
   }
 
