@@ -70,6 +70,12 @@ struct AIRToAIEConversionOptions {
   bool generate_shim_dma;
   bool insert_trace_packet_flow;
   bool use_lock_race_condition_fix;
+  // v2: daisy-chained lock emission for shared L2 buffers with
+  // fan-in (N writers + 1 reader) or fan-out (1 writer + N readers) sub-
+  // region access patterns. Emits 1 cap lock + N init=0 signal locks
+  // forming a strict producer-ordering chain, eliminating concurrent-
+  // access races on the memtile DMA. Mutually exclusive with v1.
+  bool use_lock_race_condition_fix_v2;
   AIE::AIEDevice device;
   unsigned stack_size;
 };
@@ -5529,7 +5535,8 @@ public:
                                        std::vector<Operation *>>
                            dma_memcpys,
                        dmaAllocatorTy dmaAlloc, mlir::Location loc, memOpTy mem,
-                       AIE::TileLike tile, bool lockRaceConditionFix = false) {
+                       AIE::TileLike tile, bool lockRaceConditionFix = false,
+                       bool lockRaceConditionFixV2 = false) {
 
     llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
                     std::vector<Operation *>>
@@ -5639,14 +5646,14 @@ public:
             memcpyOp->emitOpError("failed to get buffer.");
             return failure();
           }
-          auto locks = dmaAlloc.getLockForDMA(memcpyOp, tile,
-                                              bufferOp.value().getOperation(),
-                                              lockRaceConditionFix);
+          auto locks = dmaAlloc.getLockForDMA(
+              memcpyOp, tile, bufferOp.value().getOperation(),
+              lockRaceConditionFix, lockRaceConditionFixV2);
           if (failed(locks))
             return memcpyOp->emitOpError("failed to get lock for dma.");
-          auto newBD = generateDmaBd<bufferOpTy>(loc, dir, locks.value(), tile,
-                                                 targetModel, bd, memcpyOp,
-                                                 bufferOp.value(), chan);
+          auto newBD = generateDmaBd<bufferOpTy>(
+              loc, dir, locks.value(), tile, targetModel, bd, memcpyOp,
+              bufferOp.value(), chan, lockRaceConditionFixV2);
           // Attribute task_id is necessary to ensure that BDs do not get shared
           // across tasks, otherwise MLIR may fold BDs and cause BD sharing
           // across tasks.
@@ -5655,6 +5662,53 @@ public:
           newBD.value()->setAttr(
               "task_id",
               IntegerAttr::get(IntegerType::get(b.getContext(), 32), taskId));
+
+          // v2 chain-lock 2-slot ping-pong: splice a twin BD (on a second
+          // buffer instance, sharing the chain locks) between the primary BD
+          // and its next_bd target, giving producer-consumer overlap on the
+          // shared L2 buffer.
+          if constexpr (std::is_same_v<bufferOpTy, AIE::BufferOp>) {
+            if (lockRaceConditionFixV2 && task_ops.size() == 1) {
+              AIE::BufferOp primaryBuf = bufferOp.value();
+              if (air::isChainLockCandidate(primaryBuf)) {
+                auto clsOrFail =
+                    dmaAlloc.getOrCreateChainLockSet(primaryBuf, tile);
+                if (failed(clsOrFail))
+                  return primaryBuf->emitOpError(
+                      "v2 chain-lock: failed to look up chain lock set "
+                      "for ping-pong twin");
+                air::ChainLockSet *cls = clsOrFail.value();
+                if (cls->pp_slots == 1) {
+                  AIE::BufferOp twin = allocateBufferOp(
+                      this->BufferId, primaryBuf.getType(), tile,
+                      /*attr=*/nullptr, /*x=*/-1, /*y=*/-1);
+                  dmaAlloc.activateChainPingPong(*cls, twin);
+                }
+                if (cls->twin_buf) {
+                  // Splice bd_pong between bd and its current next_bd target.
+                  auto primaryNextBd = cast<AIE::NextBDOp>(bd->getTerminator());
+                  Block *origTarget = primaryNextBd.getDest();
+                  Block *bd_pong = new Block();
+                  bd_pong->insertBefore(end_bb);
+                  primaryNextBd->setSuccessor(bd_pong, 0);
+                  // Emit the twin's acq/dma_bd/rel into bd_pong using the
+                  // SAME lock pair (chain locks are shared across ping/pong).
+                  auto pongBD = generateDmaBd<bufferOpTy>(
+                      loc, dir, locks.value(), tile, targetModel, bd_pong,
+                      memcpyOp, cls->twin_buf, chan, lockRaceConditionFixV2);
+                  if (failed(pongBD))
+                    return cls->twin_buf->emitOpError(
+                        "v2 chain-lock: failed to generate ping-pong twin BD");
+                  pongBD.value()->setAttr(
+                      "task_id",
+                      IntegerAttr::get(IntegerType::get(b.getContext(), 32),
+                                       taskId));
+                  auto bd_pong_builder = OpBuilder::atBlockEnd(bd_pong);
+                  AIE::NextBDOp::create(bd_pong_builder, loc, origTarget);
+                }
+              }
+            }
+          }
         }
 
         AIE::DMAStartOp startOp = nullptr;
@@ -5684,7 +5738,8 @@ public:
   generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
                 std::pair<AIE::LockOp, AIE::LockOp> locks, AIE::TileLike tile,
                 const AIE::AIETargetModel &targetModel, Block *bd,
-                air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan) {
+                air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan,
+                bool lockRaceConditionFixV2 = false) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
@@ -5704,9 +5759,25 @@ public:
     if (memcpyOp->hasAttr("air.shared_prod_lock"))
       sharedLockCount = locks.second.getInit();
     bool useSharedL1LockCounts = sharedLockCount.has_value();
+    // v2: when the chain-lock template applies for this buffer (fan-in/
+    // fan-out shared L2 with per-stage signal locks), force per-BD lock
+    // acq/rel counts to 1. The chain semantics rely on each writer/
+    // reader holding/releasing exactly one token at a time; using the
+    // legacy `getLockValuePair`-derived counts (N for the multi-side)
+    // would break the chain because the multi-side BD would acquire/
+    // release N tokens against the cap lock (init=#slots), reverting
+    // to the legacy parallel-acquire behaviour.
+    // The 3-way (compute-tile) and chain-lock (memtile) cases are mutually
+    // exclusive, so a chained selection is unambiguous.
+    bool useChainLockCounts =
+        lockRaceConditionFixV2 &&
+        isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation()) &&
+        air::isChainLockCandidate(cast<AIE::BufferOp>(bufferOp.getOperation()));
     auto aie2LockVal =
         useSharedL1LockCounts
             ? std::pair<int64_t, int64_t>(*sharedLockCount, *sharedLockCount)
+        : useChainLockCounts
+            ? std::make_pair<int64_t, int64_t>(1, 1)
             : air::getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.first : 0;
@@ -6792,7 +6863,8 @@ public:
       if (failed(generateDmaBdProgram<air::MemTileDMAAllocator, AIE::BufferOp,
                                       AIE::MemTileDMAOp>(
               rewriter, target_model, memtile_dma_memcpys, memTileDmaAlloc, loc,
-              memTileDMA, tile, options.use_lock_race_condition_fix))) {
+              memTileDMA, tile, options.use_lock_race_condition_fix,
+              options.use_lock_race_condition_fix_v2))) {
         memTileDMA->emitOpError("failed to generate dma bd program.");
         return failure();
       }
@@ -7005,6 +7077,7 @@ public:
           /*.generate_shim_dma = */ clGenerateShimDMA,
           /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
           /*.use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
+          /*.use_lock_race_condition_fix_v2 = */ clUseLockRaceConditionFixV2,
           /*.device = */ *device,
           /*.stack_size = */ clStackSize};
 
@@ -7097,6 +7170,18 @@ public:
     OpBuilder builder(module);
     builder.setInsertionPointToStart(module.getBody());
 
+    // v1/v2 mutual exclusion: they apply different fixes to overlapping
+    // problem areas, and combining them would interleave dummy-op
+    // insertion (v1) with chain-lock allocation (v2) in ways that don't
+    // have a coherent semantics. Force the user to pick one.
+    if (clUseLockRaceConditionFix && clUseLockRaceConditionFixV2) {
+      module.emitOpError(
+          "use-lock-race-condition-fix and use-lock-race-condition-fix-v2 are "
+          "mutually exclusive; enable at most one");
+      signalPassFailure();
+      return;
+    }
+
     auto loc = builder.getUnknownLoc();
     auto module_meta = airrt::ModuleMetadataOp::create(builder, loc);
     builder.createBlock(&module_meta.getSegments());
@@ -7124,6 +7209,7 @@ public:
         /* .generate_shim_dma = */ clGenerateShimDMA,
         /* .insert_trace_packet_flow = */ clInsertTracePacketFlow,
         /* .use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
+        /* .use_lock_race_condition_fix_v2 = */ clUseLockRaceConditionFixV2,
         /* .device = */ *device,
         /* .stack_size = */ clStackSize};
     if (failed(createAIEModulesAndOutlineCores(module, aie_devices, options))) {
@@ -7648,6 +7734,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
       /* .generate_shim_dma = */ false,
       /* .insert_trace_packet_flow = */ false,
       /* .use_lock_race_condition_fix = */ true,
+      /* .use_lock_race_condition_fix_v2 = */ false,
       /* .device = */ *device};
   std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
   p.walk([&](air::HerdOp h) { aie_modules.push_back({aie_module, h}); });

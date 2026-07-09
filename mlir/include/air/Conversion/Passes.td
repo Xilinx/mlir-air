@@ -202,6 +202,16 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
           "Switch to enable a fix for lock race condition, which protects "
           "against the risk of race condition, at the cost of inserting extra "
           "dummy DMA BDs">,
+    Option<"clUseLockRaceConditionFixV2", "use-lock-race-condition-fix-v2",
+          "bool", /*default=*/"false",
+          "Enable daisy-chained lock emission for shared L2 buffers "
+          "with multi-writer + single-reader (fan-in) or single-writer + "
+          "multi-reader (fan-out) sub-region access patterns. Emits 1 capacity "
+          "lock + N init=0 signal locks per buffer chain, serializing writers "
+          "(or readers) via the chain to prevent concurrent-access races on "
+          "the memtile DMA. Mutually exclusive with use-lock-race-condition-fix. "
+          "Requires upstream to preserve the shared L2 buffer (typically via "
+          "`air.no_split` on the alloc).">,
     Option<"clStackSize", "stack-size", "unsigned", /*default=*/"1024",
           "Stack size in bytes to allocate per AIE core. Must be large enough "
           "to hold the full call chain stack depth including callee frames. "
