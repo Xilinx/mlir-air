@@ -1034,35 +1034,34 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   }
 
   // ========================================================================
-  // 3-WAY DETECTION: count DMA accessors of the shared buffer. An
+  // 3-WAY DETECTION: collect the DMA accessors of the shared buffer. An
   // air.channel.put whose source aliases the buffer becomes an MM2S BD that
   // READS the buffer out (DMA reader); an air.channel.get whose dest aliases
   // the buffer becomes an S2MM BD that WRITES it (DMA writer). These are the
   // "third participant" the core-only analysis above misses: with N writer
   // cores + 1 DMA reader on one buffer, the DMA is the
   // effective consumer. (At outline time the put/get still lives in the core
-  // body; it is hoisted to mem_X_Y later by lowerAIRMemcpyOp.)
-  int numDmaReaders = 0;
-  int numDmaWriters = 0;
+  // body; it is hoisted to mem_X_Y later by lowerAIRMemcpyOp.) We keep the ops
+  // themselves so the shared prod/cons identity can be stamped onto the op that
+  // becomes the DMA BD (see the 3-way carrier stash below).
+  SmallVector<Operation *> dmaAccessOps;
+  bool hasDmaReader = false;
+  bool hasDmaWriter = false;
   for (auto coreOp : coreOps) {
     coreOp.walk([&](Operation *op) {
-      if (isa<air::ChannelPutOp>(op)) {
-        for (Value operand : op->getOperands())
-          if (bufferAliases.contains(operand)) {
-            numDmaReaders++;
-            break;
-          }
-      } else if (isa<air::ChannelGetOp>(op)) {
-        for (Value operand : op->getOperands())
-          if (bufferAliases.contains(operand)) {
-            numDmaWriters++;
-            break;
-          }
-      }
+      bool isPut = isa<air::ChannelPutOp>(op);
+      bool isGet = isa<air::ChannelGetOp>(op);
+      if (!isPut && !isGet)
+        return;
+      for (Value operand : op->getOperands())
+        if (bufferAliases.contains(operand)) {
+          dmaAccessOps.push_back(op);
+          hasDmaReader |= isPut;
+          hasDmaWriter |= isGet;
+          break;
+        }
     });
   }
-  bool hasDmaReader = numDmaReaders > 0;
-  bool hasDmaWriter = numDmaWriters > 0;
 
   // 3-way share: the cores access the buffer ONE-SIDED (write-only or
   // read-only) AND a DMA participant supplies the missing side. This is the
@@ -1153,24 +1152,24 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
                << " - prod_lock(init=" << prodLockInit
                << "), cons_lock(init=" << consLockInit << ")\n");
 
-    // 3-way registry bridge: when a DMA participant accesses this shared
+    // 3-way carrier stash: when a DMA participant accesses this shared
     // buffer, the DMA BD's locks are allocated much later (getLockForDMA,
     // after lowerAIRMemcpyOp), in a phase that has no view of these
-    // prod/cons locks. Stash the lock symbol-refs + the per-side count as
-    // attributes on the buffer so getLockForDMA can resolve and reuse the
-    // SAME pair (instead of allocating a private channel-put pair, which
-    // would break the 3-way share with no error).
+    // prod/cons locks. Stamp the lock symbol-refs onto the channel put/get
+    // op that becomes the DMA BD (the op both phases touch), so getLockForDMA
+    // reads them off the op it is already processing and reuses the SAME pair
+    // (instead of allocating a private channel-put pair, which would break the
+    // 3-way share with no error). The per-side token count N is the prod
+    // lock's init; the DMA side reads it back via LockOp::getInit(), so no
+    // separate count attribute is carried.
     if (isThreeWay) {
       auto *ctx = aie_device.getContext();
-      sharedBuffer->setAttr(
-          "air.shared_prod_lock",
-          FlatSymbolRefAttr::get(ctx, prodLock.getSymName().value()));
-      sharedBuffer->setAttr(
-          "air.shared_cons_lock",
-          FlatSymbolRefAttr::get(ctx, consLock.getSymName().value()));
-      sharedBuffer->setAttr(
-          "air.shared_lock_count",
-          IntegerAttr::get(IntegerType::get(ctx, 64), prodLockInit));
+      auto prodRef = FlatSymbolRefAttr::get(ctx, prodLock.getSymName().value());
+      auto consRef = FlatSymbolRefAttr::get(ctx, consLock.getSymName().value());
+      for (auto *op : dmaAccessOps) {
+        op->setAttr("air.shared_prod_lock", prodRef);
+        op->setAttr("air.shared_cons_lock", consRef);
+      }
     }
   } else {
     // Mutex: allocate single lock initialized to 1 (available)
@@ -5353,12 +5352,11 @@ public:
     // this buffer was already emitted by allocateSharedL1BufferLocks (the
     // shared prod/cons wrapping around the core's kernel write). Emitting
     // another core-side lock here would double-acquire the prod lock and
-    // deadlock. Skip the core-side lock; the DMA-side BD still picks up the
-    // shared pair via getLockForDMA in generateDmaBdProgram.
-    if (auto buf =
-            dyn_cast_or_null<AIE::BufferOp>(bufferOp.value().getOperation()))
-      if (buf->hasAttr("air.shared_prod_lock"))
-        return success();
+    // deadlock. The op carries the shared prod/cons symbol-refs; skip the
+    // core-side lock. The DMA-side BD still picks up the shared pair via
+    // getLockForDMA in generateDmaBdProgram.
+    if (memcpyOpIf->hasAttr("air.shared_prod_lock"))
+      return success();
     auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, tile,
                                             bufferOp.value().getOperation(),
                                             /*lockRaceConditionFix*/ false);
@@ -5666,20 +5664,18 @@ public:
     b.setInsertionPointToStart(bd);
     int64_t lockAqValue = -1;
     int64_t lockRelValue = -1;
-    // 3-way shared L1: the buffer carries air.shared_lock_count = N (the
-    // number of producer cores). The DMA participant must acquire/release N
-    // tokens against the shared prod/cons pair (init=N / 0) so it drains all
-    // N writer releases per cycle.
-    Operation *bufOpForCount = bufferOp.getOperation();
-    IntegerAttr sharedCountAttr =
-        isa_and_nonnull<AIE::BufferOp>(bufOpForCount)
-            ? bufOpForCount->getAttrOfType<IntegerAttr>("air.shared_lock_count")
-            : nullptr;
-    bool useSharedL1LockCounts = (bool)sharedCountAttr;
+    // 3-way shared L1: the channel put/get op carries the shared prod/cons
+    // identity. The DMA participant must acquire/release N tokens against the
+    // shared prod/cons pair (init=N / 0) so it drains all N writer releases
+    // per cycle. N is the prod lock's init; getLockForDMA returns (cons, prod)
+    // for the shared case, so N = locks.second.getInit().
+    std::optional<int> sharedLockCount;
+    if (memcpyOp->hasAttr("air.shared_prod_lock"))
+      sharedLockCount = locks.second.getInit();
+    bool useSharedL1LockCounts = sharedLockCount.has_value();
     auto aie2LockVal =
         useSharedL1LockCounts
-            ? std::pair<int64_t, int64_t>(sharedCountAttr.getInt(),
-                                          sharedCountAttr.getInt())
+            ? std::pair<int64_t, int64_t>(*sharedLockCount, *sharedLockCount)
             : air::getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.first : 0;

@@ -35,9 +35,11 @@
 // ---- Core-side: prod/cons pair (NOT a mutex), N=2 on the prod lock. ----
 // CORE-DAG: %[[CONS_LOCK:.*]] = aie.lock(%{{.*}}, {{.*}}) {init = 0 : i32, sym_name = "shared_l1{{.*}}_cons_lock"}
 // CORE-DAG: %[[PROD_LOCK:.*]] = aie.lock(%{{.*}}, {{.*}}) {init = 2 : i32, sym_name = "shared_l1{{.*}}_prod_lock"}
-// The shared buffer carries the lock-registry attributes so getLockForDMA
-// can find the pair later. Attrs print alphabetically.
-// CORE: aie.buffer(%{{.*}}) {{.*}}air.shared_cons_lock{{.*}}air.shared_lock_count = 2{{.*}}air.shared_prod_lock{{.*}}sym_name = "shared_l1{{.*}}"
+// The channel put that becomes the MM2S DMA BD carries the shared prod/cons
+// lock symbol-refs so getLockForDMA reuses the pair later (the op is the
+// carrier, not the buffer). N is the prod lock init (=2), so no separate count
+// attribute. Attrs print alphabetically.
+// CORE-DAG: air.channel.put{{.*}}air.shared_cons_lock = @shared_l1{{.*}}_cons_lock{{.*}}air.shared_prod_lock = @shared_l1{{.*}}_prod_lock
 // No mutex anywhere.
 // CORE-NOT: _mutex_lock
 

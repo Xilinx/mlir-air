@@ -780,34 +780,32 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
       target_model.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
 
   // 3-way shared L1 branch (compute tile only). allocateSharedL1BufferLocks
-  // tagged this buffer with prod/cons lock symbol-refs because it is shared
-  // across N writer cores AND this DMA participant. Resolve and reuse that
-  // exact pair so all participants synchronize on the same locks, instead of
-  // allocating a private channel-put pair (which would silently break the
-  // 3-way share). Must precede the memtile and legacy reuse paths; gated on
-  // the shared-L1 attribute so existing callers are unaffected.
+  // stamped this channel put/get op with prod/cons lock symbol-refs because
+  // its buffer is shared across N writer cores AND this DMA participant.
+  // Resolve and reuse that exact pair so all participants synchronize on the
+  // same locks, instead of allocating a private channel-put pair (which would
+  // silently break the 3-way share). Keyed on the op's attribute (only present
+  // on genuine 3-way ops), so it takes precedence for those ops and leaves all
+  // other callers unaffected.
   if (!tileIsMemTile && UsesSemaphoreLocks) {
-    if (auto buf = dyn_cast_or_null<AIE::BufferOp>(bufferOp)) {
-      auto prodRef =
-          buf->getAttrOfType<FlatSymbolRefAttr>("air.shared_prod_lock");
-      auto consRef =
-          buf->getAttrOfType<FlatSymbolRefAttr>("air.shared_cons_lock");
-      if (prodRef && consRef) {
-        auto prodLock = dyn_cast_or_null<AIE::LockOp>(
-            SymbolTable::lookupSymbolIn(device, prodRef.getAttr()));
-        auto consLock = dyn_cast_or_null<AIE::LockOp>(
-            SymbolTable::lookupSymbolIn(device, consRef.getAttr()));
-        if (prodLock && consLock) {
-          // Return (cons, prod). generateDmaBd selects
-          // acq = isMM2S ? first : second, rel = isMM2S ? second : first.
-          // So MM2S reader acquires cons / releases prod; S2MM writer
-          // acquires prod / releases cons. Both directions are correct with
-          // this single ordering.
-          std::pair<AIE::LockOp, AIE::LockOp> pair = {consLock, prodLock};
-          lock_allocation_list.push_back(
-              {bufferOp, air_chan, channel, pair.first, pair.second});
-          return pair;
-        }
+    Operation *op = memcpyOp.getOperation();
+    auto prodRef = op->getAttrOfType<FlatSymbolRefAttr>("air.shared_prod_lock");
+    auto consRef = op->getAttrOfType<FlatSymbolRefAttr>("air.shared_cons_lock");
+    if (prodRef && consRef) {
+      auto prodLock = dyn_cast_or_null<AIE::LockOp>(
+          SymbolTable::lookupSymbolIn(device, prodRef.getAttr()));
+      auto consLock = dyn_cast_or_null<AIE::LockOp>(
+          SymbolTable::lookupSymbolIn(device, consRef.getAttr()));
+      if (prodLock && consLock) {
+        // Return (cons, prod). generateDmaBd selects
+        // acq = isMM2S ? first : second, rel = isMM2S ? second : first.
+        // So MM2S reader acquires cons / releases prod; S2MM writer
+        // acquires prod / releases cons. Both directions are correct with
+        // this single ordering.
+        std::pair<AIE::LockOp, AIE::LockOp> pair = {consLock, prodLock};
+        lock_allocation_list.push_back(
+            {bufferOp, air_chan, channel, pair.first, pair.second});
+        return pair;
       }
     }
   }
