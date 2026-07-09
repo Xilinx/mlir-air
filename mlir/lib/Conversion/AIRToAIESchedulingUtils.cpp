@@ -1591,9 +1591,17 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   }
 
   // Find a bucket LTO with a free channel in this direction; else open
-  // a new unhinted shim LTO.
+  // a new unhinted shim LTO. When shim-col-pinned, only reuse an LTO already
+  // on the pinned column -- otherwise a col-less (or off-column) bucket LTO
+  // would capture this flow on the non-packet/dedicated paths and silently
+  // drop the pin.
   AIE::LogicalTileOp tileLT = nullptr;
   walkBucketLTOs([&](AIE::LogicalTileOp lt) {
+    if (shimColPin >= 0) {
+      auto ltCol = lt.tryGetCol();
+      if (!ltCol || (int)*ltCol != shimColPin)
+        return false;
+    }
     if ((int)channelsUsedOn(lt).size() < shim_dma_channels) {
       tileLT = lt;
       return true;
