@@ -1284,22 +1284,47 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     coreInfos.push_back(info);
   }
 
-  // Detect cross-core scope asymmetry: any core with NULL lockScope (=
-  // access at core-body level / fallback) while another has a non-NULL
-  // scf.for lockScope. If asymmetric, force ALL cores to use the
-  // core-body-level "hoisted" emission below.
+  // Detect cross-core scope asymmetry that needs hoisting to core-body level.
+  //
+  // The genuine hazard is a core that accesses the buffer ONLY at core-body
+  // level (no enclosing scf.for at all) paired with a core that accesses it
+  // INSIDE a loop: the core-body-level participant cycles the shared lock once
+  // per AIE-core iter while the loop-nested participant cycles it once per loop
+  // iteration -> cadence mismatch / deadlock. Hoisting the loop-nested locks
+  // out to core-body level makes both cycle once per AIE-core iter. This is
+  // only correct when the core-body-level participant produces/consumes the
+  // buffer ONCE (e.g. a whole-buffer write read N times); hoisting is what the
+  // shared_l1_asymmetric_scope regression needs.
+  //
+  // It must NOT trigger when EVERY participant is loop-nested but merely lacks
+  // a single common enclosing loop (e.g. a producer that writes the buffer in
+  // a prologue AND inside its loop -> lockScope==null despite being
+  // loop-nested). Such buffers are reused per loop iteration and require
+  // per-iteration lock handoff; hoisting out of the loop would let the producer
+  // overwrite the buffer N times before the consumer reads (correctness bug /
+  // hang). So key the decision on core-body-only vs loop-nested, NOT on the
+  // presence of a single common loop (lockScope null-ness).
+  auto hasLoopNestedAccess = [&](PerCoreLockInfo &info) {
+    for (auto *op : info.accessingOps) {
+      for (Operation *p = op->getParentOp();
+           p && p != info.coreOp.getOperation(); p = p->getParentOp())
+        if (isa<scf::ForOp>(p))
+          return true;
+    }
+    return false;
+  };
   bool hoistAllToCoreBody = false;
   {
-    bool anyNull = false, anyNonNull = false;
+    bool anyCoreBodyOnly = false, anyLoopNested = false;
     for (auto &info : coreInfos) {
       if (info.accessingOps.empty())
         continue;
-      if (info.lockScope == nullptr)
-        anyNull = true;
+      if (hasLoopNestedAccess(info))
+        anyLoopNested = true;
       else
-        anyNonNull = true;
+        anyCoreBodyOnly = true;
     }
-    if (anyNull && anyNonNull) {
+    if (anyCoreBodyOnly && anyLoopNested) {
       hoistAllToCoreBody = true;
       sharedBuffer->emitWarning()
           << "shared L1 buffer " << bufName
