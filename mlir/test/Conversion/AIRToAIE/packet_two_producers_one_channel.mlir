@@ -8,8 +8,8 @@
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
 // N-producer -> 1-consumer PACKET convergence: a broadcast/assembly buffer
-// is fed by multiple producer cores writing
-// ONE memtile S2MM via packet flows, temporally). Distinct from
+// is fed by multiple producer cores writing ONE memtile S2MM via packet flows.
+// Distinct from
 // memtile_packet_two_sources_one_dst.mlir, which uses N DISTINCT channels (each
 // single-producer); here it is ONE channel @x with TWO puts from TWO distinct
 // producer tiles.
