@@ -1447,15 +1447,28 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
 
   std::vector<int> dma_ops_get_id = collectDmaIds(dma_ops);
 
-  // L3-direct broadcasts (channel decl carries `broadcast_shape`) bucket
-  // by their first-dest's incidental col/Op, which gives each broadcast
-  // its own shim LTO and overflows the ShimNOC col count. Spread them
-  // across existing shim LTOs instead (see fallback below).
+  // Single channel-decl lookup for the two attrs that steer shim bucketing:
+  //   `broadcast_shape`: L3-direct broadcasts bucket by their first-dest's
+  //     incidental col/Op, giving each broadcast its own shim LTO and
+  //     overflowing the ShimNOC col count; spread them across existing shim
+  //     LTOs instead (see fallback below).
+  //   `air.shim_col`: pin this flow's shim LogicalTileOp to a physical column
+  //     (applied to bucketCol below, after it is derived).
   bool isBroadcastL3Put = false;
+  int shimColPin = -1;
   if (auto chanIf =
           dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation())) {
-    if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf))
+    if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf)) {
       isBroadcastL3Put = chanDecl->hasAttr("broadcast_shape");
+      if (auto a = chanDecl->getAttrOfType<mlir::IntegerAttr>("air.shim_col")) {
+        int pin = (int)a.getInt();
+        int numCols = device.getTargetModel().columns();
+        if (pin < 0 || pin >= numCols)
+          return memcpyOp.emitOpError("air.shim_col column ")
+                 << pin << " is out of range [0, " << numCols << ")";
+        shimColPin = pin;
+      }
+    }
   }
 
   // Bucket key: the far-side col when known, else derive it from a memtile
@@ -1477,22 +1490,13 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     return -1;
   };
   int bucketCol = bucketColFor(col, otherSideOp);
-  // Shim-column pin: a channel decl carrying an `air.shim_col` IntegerAttr
-  // forces this flow into its own bucket AND pins the opened shim LogicalTileOp
-  // to that physical column (the placer honors LogicalTileOp's col attr via
-  // tryGetCol). Used to route flows that must land on DISTINCT free shim
-  // columns (e.g. two append streams onto separate shim cols). Without the
-  // column pin, a separate bucket alone yields a col-less LTO whose centroid
-  // falls on the (saturated) producer column.
-  int shimColPin = -1;
-  if (auto chanIf =
-          dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation())) {
-    if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf))
-      if (auto a = chanDecl->getAttrOfType<mlir::IntegerAttr>("air.shim_col")) {
-        shimColPin = (int)a.getInt();
-        bucketCol = shimColPin;
-      }
-  }
+  // A shim-col pin forces the flow into its own bucket keyed on the pinned
+  // column and pins the opened shim LogicalTileOp there (the placer honors the
+  // col attr via tryGetCol). Same-pin flows share that bucket/column; without
+  // the pin a separate bucket alone yields a col-less LTO whose centroid falls
+  // on the (saturated) producer column.
+  if (shimColPin >= 0)
+    bucketCol = shimColPin;
   auto sameBucket = [&](const allocation_info_t &t) {
     int tCol = bucketColFor(t.col, t.otherSideLTO);
     if (bucketCol >= 0 && tCol >= 0)
