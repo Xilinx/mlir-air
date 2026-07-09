@@ -2352,6 +2352,21 @@ void air::reorderL3PacketPutsByFlowOrder(
   }
 }
 
+// Resolve the memory space of one endpoint (source when isSource, else
+// destination) of a memcpy op via the air::MemcpyInterface, which already
+// abstracts the src/dst memref across channel puts/gets and dma_memcpy_nd. This
+// keeps the per-endpoint dispatch working uniformly for any MemcpyInterface op.
+static std::optional<air::MemorySpace>
+getMemcpyEndpointMemorySpace(Operation *o, bool isSource) {
+  auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(o);
+  if (!memcpyOpIf)
+    return std::nullopt;
+  Value ref = isSource ? memcpyOpIf.getSrcMemref() : memcpyOpIf.getDstMemref();
+  if (!ref)
+    return std::nullopt;
+  return air::getMemorySpace(llvm::cast<BaseMemRefType>(ref.getType()));
+}
+
 // Resolve the memory space of a single S2MM receiver op (the destination of
 // the data movement). A broadcast/demux flow may fan out to receivers in
 // DIFFERENT memory spaces (e.g. one dest is an L1 compute tile, others are L2
@@ -2359,13 +2374,7 @@ void air::reorderL3PacketPutsByFlowOrder(
 // flow's aggregate S2MM_memspace (which only records the last receiver seen).
 static std::optional<air::MemorySpace>
 getS2MMReceiverMemorySpace(Operation *o) {
-  if (auto get = dyn_cast_if_present<air::ChannelGetOp>(o))
-    return air::getMemorySpace(
-        llvm::cast<BaseMemRefType>(get.getMemref().getType()));
-  if (auto dma = dyn_cast_if_present<air::DmaMemcpyNdOp>(o))
-    return air::getMemorySpace(
-        llvm::cast<BaseMemRefType>(dma.getDstMemref().getType()));
-  return std::nullopt;
+  return getMemcpyEndpointMemorySpace(o, /*isSource=*/false);
 }
 
 // Resolve the memory space of a single MM2S producer op (the source of the data
@@ -2375,17 +2384,19 @@ getS2MMReceiverMemorySpace(Operation *o) {
 // on the flow's aggregate MM2S_memspace.
 static std::optional<air::MemorySpace>
 getMM2SProducerMemorySpace(Operation *o) {
-  if (auto put = dyn_cast_if_present<air::ChannelPutOp>(o))
-    return air::getMemorySpace(
-        llvm::cast<BaseMemRefType>(put.getMemref().getType()));
-  if (auto dma = dyn_cast_if_present<air::DmaMemcpyNdOp>(o))
-    return air::getMemorySpace(
-        llvm::cast<BaseMemRefType>(dma.getSrcMemref().getType()));
-  return std::nullopt;
+  return getMemcpyEndpointMemorySpace(o, /*isSource=*/true);
 }
 
-// The producer tile of an MM2S op, used as the packet grouping key: an L1
-// producer's parent aie.core tile, or an L2 producer's owning memtile.
+// The producer tile of an MM2S op, used as the grouping key that collapses
+// multiple puts from ONE producer tile (loop / ping-pong) onto a single MM2S
+// allocation while keeping DISTINCT producer tiles apart. Key identity:
+//   - L1 producer: the parent aie.core's tile op.
+//   - L2 producer: the owning tile of the source buffer -- a physical
+//     AIE::TileOp once placed, or the logical-tile op pre-placement.
+// The returned op is used only for pointer-identity comparison within one
+// flow's producer list, so a physical or logical tile op is equally valid as
+// long as one producer tile yields one stable key. Returns null when the tile
+// cannot be resolved (caller treats a null key as "ungroupable").
 static Operation *getMM2SProducerTileKey(Operation *o) {
   if (auto ms = getMM2SProducerMemorySpace(o)) {
     if (*ms == air::MemorySpace::L1) {
@@ -2394,8 +2405,7 @@ static Operation *getMM2SProducerTileKey(Operation *o) {
     } else if (*ms == air::MemorySpace::L2) {
       auto memcpyOpIf = cast<air::MemcpyInterface>(o);
       if (auto buf = getUnderlyingBufferOp(memcpyOpIf.getSrcMemref()))
-        return buf.getTile()
-            .getDefiningOp(); // TileOp or logical tile (pre-place)
+        return buf.getTile().getDefiningOp();
     }
   }
   return nullptr;
@@ -2443,6 +2453,11 @@ LogicalResult air::simpleDMAChannelAllocation(
           coreTile = core.getTileOp();
         }
         int idx = 0;
+        // Only PACKET flows group producers per distinct tile (each grouped
+        // producer gets its own packet_flow / MM2S alloc, all converging on the
+        // shared dest S2MM via a common pkt id). Non-packet (circuit / cascade)
+        // flows keep idx==0: their multiple MM2S ops are per-index / broadcast
+        // endpoints resolved elsewhere, not fan-in convergence onto one alloc.
         if (isPacket) {
           Operation *tileKey = getMM2SProducerTileKey(o);
           idx = -1;
@@ -2530,6 +2545,11 @@ LogicalResult air::simpleDMAChannelAllocation(
     // DMA channels for L2 receivers. Dispatch per-receiver so a broadcast/demux
     // flow with mixed-memspace dests gets each L2 dest a memtile channel here
     // (its L1 dests were allocated a tile channel above).
+    // Ordering invariant: moving L2 MM2S allocation into the first loop is safe
+    // because MM2S and S2MM draw from independent per-tile channel pools (a
+    // memtile has separate MM2S and S2MM DMA channel sets), so allocating all
+    // MM2S before all S2MM does not perturb S2MM channel assignments relative
+    // to the old interleaved order.
     for (size_t i = 0; i < f.S2MM.size(); i++) {
       for (auto o : f.S2MM[i]) {
         if (getS2MMReceiverMemorySpace(o) != air::MemorySpace::L2)
