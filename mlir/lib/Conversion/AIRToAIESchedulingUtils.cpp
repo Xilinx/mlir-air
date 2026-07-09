@@ -1760,21 +1760,24 @@ air::ShimDMAAllocator::foundFlowReuseOpportunity(
             f.S2MM_alloc[i].dma_channel.direction ==
                 alloc.dma_channel.direction &&
             f.S2MM_alloc[i].dma_channel.channel == alloc.dma_channel.channel) {
-          if (f.MM2S_alloc.getDmaTile() &&
-              f.MM2S_alloc.getDmaTile().isShimTile()) {
-            return f.MM2S_alloc;
+          for (auto &mm2s : f.MM2S_alloc) {
+            if (mm2s.getDmaTile() && mm2s.getDmaTile().isShimTile()) {
+              return mm2s;
+            }
           }
         }
       }
-    } else if (!isMM2S && f.MM2S_alloc.getDmaTile() == alloc.getDmaTile() &&
-               f.MM2S_alloc.dma_channel.direction ==
-                   alloc.dma_channel.direction &&
-               f.MM2S_alloc.dma_channel.channel == alloc.dma_channel.channel) {
-
-      for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
-        if (f.S2MM_alloc[i].getDmaTile() &&
-            f.S2MM_alloc[i].getDmaTile().isShimTile()) {
-          return f.S2MM_alloc[i];
+    } else {
+      for (auto &mm2s : f.MM2S_alloc) {
+        if (mm2s.getDmaTile() == alloc.getDmaTile() &&
+            mm2s.dma_channel.direction == alloc.dma_channel.direction &&
+            mm2s.dma_channel.channel == alloc.dma_channel.channel) {
+          for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
+            if (f.S2MM_alloc[i].getDmaTile() &&
+                f.S2MM_alloc[i].getDmaTile().isShimTile()) {
+              return f.S2MM_alloc[i];
+            }
+          }
         }
       }
     }
@@ -1938,21 +1941,24 @@ air::MemTileDMAAllocator::foundFlowReuseOpportunity(
             f.S2MM_alloc[i].dma_channel.direction ==
                 alloc.dma_channel.direction &&
             f.S2MM_alloc[i].dma_channel.channel == alloc.dma_channel.channel) {
-          if (f.MM2S_alloc.getDmaTile() &&
-              f.MM2S_alloc.getDmaTile().isMemTile()) {
-            return f.MM2S_alloc;
+          for (auto &mm2s : f.MM2S_alloc) {
+            if (mm2s.getDmaTile() && mm2s.getDmaTile().isMemTile()) {
+              return mm2s;
+            }
           }
         }
       }
-    } else if (isMM2S && f.MM2S_alloc.getDmaTile() == alloc.getDmaTile() &&
-               f.MM2S_alloc.dma_channel.direction ==
-                   alloc.dma_channel.direction &&
-               f.MM2S_alloc.dma_channel.channel == alloc.dma_channel.channel) {
-
-      for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
-        if (f.S2MM_alloc[i].getDmaTile() &&
-            f.S2MM_alloc[i].getDmaTile().isMemTile()) {
-          return f.S2MM_alloc[i];
+    } else {
+      for (auto &mm2s : f.MM2S_alloc) {
+        if (mm2s.getDmaTile() == alloc.getDmaTile() &&
+            mm2s.dma_channel.direction == alloc.dma_channel.direction &&
+            mm2s.dma_channel.channel == alloc.dma_channel.channel) {
+          for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
+            if (f.S2MM_alloc[i].getDmaTile() &&
+                f.S2MM_alloc[i].getDmaTile().isMemTile()) {
+              return f.S2MM_alloc[i];
+            }
+          }
         }
       }
     }
@@ -2155,6 +2161,11 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
     return memcpyOp->emitOpError("unrecognized memory space on memref");
   MM2S_memspace = *putMS;
   memcpyResourceType = chan.getChannelType().str();
+  // numMM2SAllocs (number of DISTINCT producer tiles) is computed during DMA
+  // channel allocation, where each put's tile is resolved -- a single producer
+  // doing multiple puts (loop / ping-pong) stays ONE producer, while distinct
+  // producer tiles (packet fan-in convergence) become N. See
+  // simpleDMAChannelAllocation.
   return success();
 }
 
@@ -2179,6 +2190,7 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::DmaMemcpyNdOp dmaMemcpyOp) {
                                            std::vector<Operation *>());
   S2MM = v1;
   S2MM_alloc = std::vector<air::allocation_info_t>(numS2MMAllocs);
+  MM2S_alloc = std::vector<air::allocation_info_t>(numMM2SAllocs);
   memcpyResourceType = "npu_dma_stream";
 }
 
@@ -2198,6 +2210,7 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
                                            std::vector<Operation *>());
   S2MM = v1;
   S2MM_alloc = std::vector<air::allocation_info_t>(numS2MMAllocs);
+  MM2S_alloc = std::vector<air::allocation_info_t>(numMM2SAllocs);
   memcpyResourceType = chan.getChannelType().str();
 }
 
@@ -2339,6 +2352,55 @@ void air::reorderL3PacketPutsByFlowOrder(
   }
 }
 
+// Resolve the memory space of a single S2MM receiver op (the destination of
+// the data movement). A broadcast/demux flow may fan out to receivers in
+// DIFFERENT memory spaces (e.g. one dest is an L1 compute tile, others are L2
+// memtile relays), so allocation must dispatch per-receiver rather than on the
+// flow's aggregate S2MM_memspace (which only records the last receiver seen).
+static std::optional<air::MemorySpace>
+getS2MMReceiverMemorySpace(Operation *o) {
+  if (auto get = dyn_cast_if_present<air::ChannelGetOp>(o))
+    return air::getMemorySpace(
+        llvm::cast<BaseMemRefType>(get.getMemref().getType()));
+  if (auto dma = dyn_cast_if_present<air::DmaMemcpyNdOp>(o))
+    return air::getMemorySpace(
+        llvm::cast<BaseMemRefType>(dma.getDstMemref().getType()));
+  return std::nullopt;
+}
+
+// Resolve the memory space of a single MM2S producer op (the source of the data
+// movement). A convergent flow may have producers in DIFFERENT memory spaces
+// (e.g. an L1 compute core + an L2 memtile both feeding one S2MM), so MM2S
+// allocation must dispatch per-producer rather than
+// on the flow's aggregate MM2S_memspace.
+static std::optional<air::MemorySpace>
+getMM2SProducerMemorySpace(Operation *o) {
+  if (auto put = dyn_cast_if_present<air::ChannelPutOp>(o))
+    return air::getMemorySpace(
+        llvm::cast<BaseMemRefType>(put.getMemref().getType()));
+  if (auto dma = dyn_cast_if_present<air::DmaMemcpyNdOp>(o))
+    return air::getMemorySpace(
+        llvm::cast<BaseMemRefType>(dma.getSrcMemref().getType()));
+  return std::nullopt;
+}
+
+// The producer tile of an MM2S op, used as the packet grouping key: an L1
+// producer's parent aie.core tile, or an L2 producer's owning memtile.
+static Operation *getMM2SProducerTileKey(Operation *o) {
+  if (auto ms = getMM2SProducerMemorySpace(o)) {
+    if (*ms == air::MemorySpace::L1) {
+      if (auto core = o->getParentOfType<AIE::CoreOp>())
+        return core.getTileOp().getOperation();
+    } else if (*ms == air::MemorySpace::L2) {
+      auto memcpyOpIf = cast<air::MemcpyInterface>(o);
+      if (auto buf = getUnderlyingBufferOp(memcpyOpIf.getSrcMemref()))
+        return buf.getTile()
+            .getDefiningOp(); // TileOp or logical tile (pre-place)
+    }
+  }
+  return nullptr;
+}
+
 // AIR channel to AIE flow scheduling strategy 1: round robin
 // Problem: no awareness wrt channel put and get pattern, leading to deadlocks
 LogicalResult air::simpleDMAChannelAllocation(
@@ -2354,8 +2416,83 @@ LogicalResult air::simpleDMAChannelAllocation(
     // dedicated late pass (see lowerAIRMMIOChannelOps).
     if (f.memcpyResourceType == "npu_mmio")
       continue;
-    if (f.MM2S_memspace == air::MemorySpace::L1) {
+    {
+      // Allocate MM2S producers. Dispatch PER-PRODUCER by memory space so a
+      // convergent packet flow with mixed-memspace producers (e.g. an L1
+      // compute core + an L2 memtile both feeding one S2MM) gets each its right
+      // DMA resource: L1 -> tile
+      // DMA channel (requires an aie.core parent), L2 -> memtile DMA channel.
+      // PACKET channels group producers by DISTINCT tile (L1 or L2), so each
+      // producer tile gets one packet_flow / MM2S alloc index. A single
+      // producer doing multiple puts (loop / ping-pong) stays ONE alloc.
+      // Non-packet (circuit/cascade) keeps single-alloc behavior (idx==0). L3
+      // (shim) producers are handled in the dedicated shim passes below.
+      bool isPacket = f.memcpyResourceType == "npu_dma_packet";
+      SmallVector<Operation *> producerTiles;
       for (auto o : f.MM2S) {
+        auto pms = getMM2SProducerMemorySpace(o);
+        if (pms != air::MemorySpace::L1 && pms != air::MemorySpace::L2)
+          continue;
+        auto memcpyOpIf = cast<air::MemcpyInterface>(o);
+        AIE::TileOp coreTile; // valid for L1 producers
+        if (pms == air::MemorySpace::L1) {
+          auto core = memcpyOpIf->getParentOfType<AIE::CoreOp>();
+          if (!core)
+            return memcpyOpIf->emitOpError(
+                "memcpy op not outlined in an aie.core op.");
+          coreTile = core.getTileOp();
+        }
+        int idx = 0;
+        if (isPacket) {
+          Operation *tileKey = getMM2SProducerTileKey(o);
+          idx = -1;
+          for (int k = 0; k < (int)producerTiles.size(); k++)
+            if (producerTiles[k] == tileKey) {
+              idx = k;
+              break;
+            }
+          if (idx < 0) {
+            idx = (int)producerTiles.size();
+            producerTiles.push_back(tileKey);
+          }
+        }
+        if ((int)f.MM2S_alloc.size() <= idx)
+          f.MM2S_alloc.resize(idx + 1);
+
+        FailureOr<air::allocation_info_t> alloc_res;
+        if (pms == air::MemorySpace::L1) {
+          if (f.memcpyResourceType == "npu_dma_stream" ||
+              f.memcpyResourceType == "npu_dma_packet") {
+            alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
+                memcpyOpIf, coreTile, f.MM2S_alloc[idx].dma_channel.channel);
+          } else if (f.memcpyResourceType == "npu_cascade") {
+            alloc_res = core_cascade_alloc.coreCascadeAlloc(memcpyOpIf);
+          }
+        } else { // L2 (memtile) producer
+          if (f.memcpyResourceType != "npu_dma_stream" &&
+              f.memcpyResourceType != "npu_dma_packet")
+            return memcpyOpIf->emitOpError(
+                "only supports npu_dma_stream or npu_dma_packet "
+                "connections at L2 memory");
+          alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
+        }
+        if (failed(alloc_res))
+          return failure();
+        f.MM2S_alloc[idx] = alloc_res.value();
+        if (!f.MM2S_alloc[idx].valid())
+          return failure();
+      }
+      if (isPacket && !producerTiles.empty())
+        f.numMM2SAllocs = (int)producerTiles.size();
+    }
+    // Allocate tile DMA channels for L1 receivers. Dispatch per-receiver (not
+    // on f.S2MM_memspace) so a broadcast/demux flow with mixed-memspace dests
+    // gets each L1 dest a tile DMA channel here; its L2 dests are allocated a
+    // memtile channel in the second pass below.
+    for (size_t i = 0; i < f.S2MM.size(); i++) {
+      for (auto o : f.S2MM[i]) {
+        if (getS2MMReceiverMemorySpace(o) != air::MemorySpace::L1)
+          continue;
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
         auto core = memcpyOpIf->getParentOfType<AIE::CoreOp>();
         if (!core) {
@@ -2368,7 +2505,7 @@ LogicalResult air::simpleDMAChannelAllocation(
         if (f.memcpyResourceType == "npu_dma_stream" ||
             f.memcpyResourceType == "npu_dma_packet") {
           alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
-              memcpyOpIf, tile, f.MM2S_alloc.dma_channel.channel);
+              memcpyOpIf, tile, f.S2MM_alloc[i].dma_channel.channel);
           if (failed(alloc_res))
             return failure();
         } else if (f.memcpyResourceType == "npu_cascade") {
@@ -2377,39 +2514,9 @@ LogicalResult air::simpleDMAChannelAllocation(
             return failure();
         }
 
-        f.MM2S_alloc = alloc_res.value();
-        if (!f.MM2S_alloc.valid())
+        f.S2MM_alloc[i] = alloc_res.value();
+        if (!f.S2MM_alloc[i].valid())
           return failure();
-      }
-    }
-    if (f.S2MM_memspace == air::MemorySpace::L1) {
-      for (size_t i = 0; i < f.S2MM.size(); i++) {
-        for (auto o : f.S2MM[i]) {
-          auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-          auto core = memcpyOpIf->getParentOfType<AIE::CoreOp>();
-          if (!core) {
-            return memcpyOpIf->emitOpError(
-                "memcpy op not outlined in an aie.core op.");
-          }
-          auto tile = core.getTileOp();
-
-          FailureOr<air::allocation_info_t> alloc_res;
-          if (f.memcpyResourceType == "npu_dma_stream" ||
-              f.memcpyResourceType == "npu_dma_packet") {
-            alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
-                memcpyOpIf, tile, f.S2MM_alloc[i].dma_channel.channel);
-            if (failed(alloc_res))
-              return failure();
-          } else if (f.memcpyResourceType == "npu_cascade") {
-            alloc_res = core_cascade_alloc.coreCascadeAlloc(memcpyOpIf);
-            if (failed(alloc_res))
-              return failure();
-          }
-
-          f.S2MM_alloc[i] = alloc_res.value();
-          if (!f.S2MM_alloc[i].valid())
-            return failure();
-        }
       }
     }
   }
@@ -2417,8 +2524,16 @@ LogicalResult air::simpleDMAChannelAllocation(
     // MMIO channels are not allocated to any DMA resource at L2 either.
     if (f.memcpyResourceType == "npu_mmio")
       continue;
-    if (f.MM2S_memspace == air::MemorySpace::L2) {
-      for (auto o : f.MM2S) {
+    // (L2 (memtile) MM2S producers are allocated in the unified per-producer
+    // MM2S pass above, which dispatches L1 -> tile DMA and L2 -> memtile DMA
+    // and groups packet producers across both memory spaces.) Allocate memtile
+    // DMA channels for L2 receivers. Dispatch per-receiver so a broadcast/demux
+    // flow with mixed-memspace dests gets each L2 dest a memtile channel here
+    // (its L1 dests were allocated a tile channel above).
+    for (size_t i = 0; i < f.S2MM.size(); i++) {
+      for (auto o : f.S2MM[i]) {
+        if (getS2MMReceiverMemorySpace(o) != air::MemorySpace::L2)
+          continue;
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
         // Report error if the data movement lowers to neither dma stream
         // (aie.flow) nor dma packet flow (aie.packet_flow).
@@ -2430,25 +2545,7 @@ LogicalResult air::simpleDMAChannelAllocation(
         auto alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
         if (failed(alloc_res) || !alloc_res->valid())
           return failure();
-        f.MM2S_alloc = alloc_res.value();
-      }
-    }
-    if (f.S2MM_memspace == air::MemorySpace::L2) {
-      for (size_t i = 0; i < f.S2MM.size(); i++) {
-        for (auto o : f.S2MM[i]) {
-          auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-          // Report error if the data movement lowers to neither dma stream
-          // (aie.flow) nor dma packet flow (aie.packet_flow).
-          if (f.memcpyResourceType != "npu_dma_stream" &&
-              f.memcpyResourceType != "npu_dma_packet")
-            return memcpyOpIf->emitOpError(
-                "only supports npu_dma_stream or npu_dma_packet "
-                "connections at L2 memory");
-          auto alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
-          if (failed(alloc_res) || !alloc_res->valid())
-            return failure();
-          f.S2MM_alloc[i] = alloc_res.value();
-        }
+        f.S2MM_alloc[i] = alloc_res.value();
       }
     }
   }
@@ -2484,6 +2581,7 @@ LogicalResult air::simpleDMAChannelAllocation(
     if (f.memcpyResourceType == "npu_mmio")
       return success();
     if (f.MM2S_memspace == air::MemorySpace::L3) {
+      // L3 (shim/host) producers stay single-producer (numMM2SAllocs==1).
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.MM2S) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
@@ -2501,7 +2599,7 @@ LogicalResult air::simpleDMAChannelAllocation(
               s2mmTile.tryGetRow().value_or(-1), f.S2MM[i]);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
-          f.MM2S_alloc = alloc_res.value();
+          f.MM2S_alloc[0] = alloc_res.value();
         }
       }
     }
@@ -2518,10 +2616,12 @@ LogicalResult air::simpleDMAChannelAllocation(
           return memcpyOpIf->emitOpError(
               "only supports npu_dma_stream or npu_dma_packet "
               "connections at L3 memory");
-        if (!f.MM2S_alloc.getDmaTile())
+        if (f.MM2S_alloc.empty() || !f.MM2S_alloc[0].getDmaTile())
           return memcpyOpIf->emitOpError(
               "failed to get MM2S tile for L3 allocation.");
-        auto mm2sTile = f.MM2S_alloc.getDmaTile();
+        // L3 (shim) S2MM consumer is single-producer (fan-in to a shim dest is
+        // unsupported); use the sole producer alloc.
+        auto mm2sTile = f.MM2S_alloc[0].getDmaTile();
         auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
             memcpyOpIf, mm2sTile, mm2sTile.tryGetCol().value_or(-1),
             mm2sTile.tryGetRow().value_or(-1), f.MM2S);
@@ -2573,8 +2673,12 @@ bool air::groupingMemcpysByLoop(
   std::map<AIE::CoreOp, std::vector<scf::ForOp>> for_loops_log_mm2s,
       for_loops_log_s2mm;
   for (auto &f : memcpy_flows) {
-    if (f.MM2S_memspace == air::MemorySpace::L1) {
+    {
+      // Group by loop only for L1 producers (dispatch per-producer, since a
+      // convergent flow may also have L2 memtile producers with no aie.core).
       for (auto o : f.MM2S) {
+        if (getMM2SProducerMemorySpace(o) != air::MemorySpace::L1)
+          continue;
         auto core = o->getParentOfType<AIE::CoreOp>();
         f.flow_op_group = foundInVector<scf::ForOp>(
             o->getParentOfType<scf::ForOp>(), for_loops_log_mm2s[core]);
@@ -2583,9 +2687,13 @@ bool air::groupingMemcpysByLoop(
         }
       }
     }
-    if (f.S2MM_memspace == air::MemorySpace::L1) {
+    {
+      // Group by loop only for L1 receivers (dispatch per-receiver, since a
+      // broadcast/demux flow may also have L2 dests with no aie.core parent).
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.S2MM[i]) {
+          if (getS2MMReceiverMemorySpace(o) != air::MemorySpace::L1)
+            continue;
           auto core = o->getParentOfType<AIE::CoreOp>();
           f.flow_op_group = foundInVector<scf::ForOp>(
               o->getParentOfType<scf::ForOp>(), for_loops_log_s2mm[core]);

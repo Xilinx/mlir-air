@@ -163,8 +163,12 @@ struct MemcpyBundleAsFlow {
                           // flows of the same index can share DMA channels)
   std::vector<allocation_info_t> S2MM_alloc;
   std::vector<std::vector<Operation *>> S2MM;
-  allocation_info_t MM2S_alloc;
-  std::vector<Operation *> MM2S; // air::ChannelPuts
+  // MM2S is symmetric to S2MM: one allocation per producer, to support N
+  // producers converging on a single destination S2MM (multi-producer packet
+  // flow). MM2S_alloc[j] pairs with MM2S[j]. Single-producer flows keep
+  // numMM2SAllocs == 1.
+  std::vector<allocation_info_t> MM2S_alloc;
+  std::vector<Operation *> MM2S; // air::ChannelPuts (one per producer)
   air::MemorySpace MM2S_memspace;
   air::MemorySpace S2MM_memspace;
   int numMM2SAllocs = 0;

@@ -4406,8 +4406,8 @@ public:
     //   Pass 2: intra-device packet flows (assignIntraDevicePacketID --
     //           lowest gap in claimedPacketIDs).
     //   Pass 3: stream and cascade flows (no pkt_id involved).
-    auto isInvalidAlloc = [&](air::MemcpyBundleAsFlow &f, int i) {
-      if (!f.MM2S_alloc.getDmaTile() || !f.S2MM_alloc[i].getDmaTile()) {
+    auto isInvalidAlloc = [&](air::MemcpyBundleAsFlow &f, int j, int i) {
+      if (!f.MM2S_alloc[j].getDmaTile() || !f.S2MM_alloc[i].getDmaTile()) {
         LLVM_DEBUG(llvm::dbgs()
                    << "AIRToAIE: skipping memcpy flow due to invalid DMA "
                       "tile allocation (MM2S or S2MM tile is null)\n");
@@ -4415,8 +4415,8 @@ public:
       }
       return false;
     };
-    auto isShimFlowAt = [&](air::MemcpyBundleAsFlow &f, int i) {
-      return f.MM2S_alloc.getDmaTile().isShimNOCorPLTile() ||
+    auto isShimFlowAt = [&](air::MemcpyBundleAsFlow &f, int j, int i) {
+      return f.MM2S_alloc[j].getDmaTile().isShimNOCorPLTile() ||
              f.S2MM_alloc[i].getDmaTile().isShimNOCorPLTile();
     };
     // The flow-op key for packetIDForChannelName is the air.channel symbol
@@ -4442,31 +4442,39 @@ public:
       return it->second;
     };
 
-    // Pass 1: shim packet flows.
+    // Pass 1: shim packet flows. Nested over producers (j) x dests (i): one
+    // packet_flow per (producer, dest). For multi-producer convergence the
+    // shared dest pkt id is memoized by channel name in assignOrLookupPacketID,
+    // so all producers of one channel land on the dest S2MM with the SAME id.
     for (auto &f : memcpy_flows) {
       if (f.memcpyResourceType != "npu_dma_packet")
         continue;
       for (int i = 0; i < f.numS2MMAllocs; i++) {
-        if (isInvalidAlloc(f, i))
-          continue;
-        if (!isShimFlowAt(f, i))
-          continue;
-        int flowID = assignOrLookupPacketID(f, /*isShim=*/true);
-        getPacketFlowOp(
-            aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-            AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
-            f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-            (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-        // Backlink: the host runtime keys packet identification on
-        // (shim tile, pkt_id), so the matching MM2S shim alloc carries the id.
-        for (auto &sa : shim_dma_alloc.mm2s_allocs) {
-          if (sa.getDmaTile().getOperation() ==
-                  f.MM2S_alloc.getDmaTile().getOperation() &&
-              sa.dma_channel == f.MM2S_alloc.dma_channel &&
-              sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
-              sa.dma_id == f.MM2S_alloc.dma_id) {
-            sa.packet_flow_id = flowID;
-            break;
+        for (int j = 0; j < f.numMM2SAllocs; j++) {
+          if (isInvalidAlloc(f, j, i))
+            continue;
+          if (!isShimFlowAt(f, j, i))
+            continue;
+          int flowID = assignOrLookupPacketID(f, /*isShim=*/true);
+          getPacketFlowOp(
+              aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
+              AIE::WireBundle::DMA,
+              (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+              f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
+              (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+          // Backlink: the host runtime keys packet identification on
+          // (shim tile, pkt_id), so the matching MM2S shim alloc carries the
+          // id.
+          for (auto &sa : shim_dma_alloc.mm2s_allocs) {
+            if (sa.getDmaTile().getOperation() ==
+                    f.MM2S_alloc[j].getDmaTile().getOperation() &&
+                sa.dma_channel == f.MM2S_alloc[j].dma_channel &&
+                sa.col == f.MM2S_alloc[j].col &&
+                sa.row == f.MM2S_alloc[j].row &&
+                sa.dma_id == f.MM2S_alloc[j].dma_id) {
+              sa.packet_flow_id = flowID;
+              break;
+            }
           }
         }
       }
@@ -4477,16 +4485,19 @@ public:
       if (f.memcpyResourceType != "npu_dma_packet")
         continue;
       for (int i = 0; i < f.numS2MMAllocs; i++) {
-        if (isInvalidAlloc(f, i))
-          continue;
-        if (isShimFlowAt(f, i))
-          continue;
-        int flowID = assignOrLookupPacketID(f, /*isShim=*/false);
-        getPacketFlowOp(
-            aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-            AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
-            f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-            (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+        for (int j = 0; j < f.numMM2SAllocs; j++) {
+          if (isInvalidAlloc(f, j, i))
+            continue;
+          if (isShimFlowAt(f, j, i))
+            continue;
+          int flowID = assignOrLookupPacketID(f, /*isShim=*/false);
+          getPacketFlowOp(
+              aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
+              AIE::WireBundle::DMA,
+              (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+              f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
+              (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+        }
       }
     }
 
@@ -4496,20 +4507,25 @@ public:
           f.memcpyResourceType != "npu_cascade")
         continue;
       for (int i = 0; i < f.numS2MMAllocs; i++) {
-        if (isInvalidAlloc(f, i))
-          continue;
-        if (f.memcpyResourceType == "npu_dma_stream")
-          getFlowOp(
-              aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-              AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
-              f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-              (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
-        else
-          getCascadeFlowOp(
-              aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-              AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
-              f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-              (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+        for (int j = 0; j < f.numMM2SAllocs; j++) {
+          if (isInvalidAlloc(f, j, i))
+            continue;
+          if (f.memcpyResourceType == "npu_dma_stream")
+            getFlowOp(aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                      AIE::WireBundle::DMA,
+                      (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                      f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                      AIE::WireBundle::DMA,
+                      (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+          else
+            getCascadeFlowOp(aie_device,
+                             f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                             AIE::WireBundle::DMA,
+                             (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                             f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                             AIE::WireBundle::DMA,
+                             (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+        }
       }
     }
     return success();
