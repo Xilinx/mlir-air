@@ -1477,6 +1477,22 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     return -1;
   };
   int bucketCol = bucketColFor(col, otherSideOp);
+  // Shim-column pin: a channel decl carrying an `air.shim_col` IntegerAttr
+  // forces this flow into its own bucket AND pins the opened shim LogicalTileOp
+  // to that physical column (the placer honors LogicalTileOp's col attr via
+  // tryGetCol). Used to route flows that must land on DISTINCT free shim
+  // columns (e.g. two append streams onto separate shim cols). Without the
+  // column pin, a separate bucket alone yields a col-less LTO whose centroid
+  // falls on the (saturated) producer column.
+  int shimColPin = -1;
+  if (auto chanIf =
+          dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation())) {
+    if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf))
+      if (auto a = chanDecl->getAttrOfType<mlir::IntegerAttr>("air.shim_col")) {
+        shimColPin = (int)a.getInt();
+        bucketCol = shimColPin;
+      }
+  }
   auto sameBucket = [&](const allocation_info_t &t) {
     int tCol = bucketColFor(t.col, t.otherSideLTO);
     if (bucketCol >= 0 && tCol >= 0)
@@ -1519,6 +1535,15 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     AIE::LogicalTileOp packetLT = nullptr;
     int packetCh = -1;
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
+      // When this flow is shim-col-pinned, only reuse a packet channel whose
+      // LogicalTileOp sits on the pinned column -- otherwise a previously
+      // opened (unpinned, off-column) packet LTO would capture this flow and
+      // silently ignore the pin.
+      if (shimColPin >= 0) {
+        auto ltCol = lt.tryGetCol();
+        if (!ltCol || (int)*ltCol != shimColPin)
+          return false;
+      }
       for (auto &t :
            llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
         if (t.dma_tile.getOperation() != lt.getOperation())
@@ -1648,11 +1673,12 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
         }
       }
     }
-    tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
-                                        AIE::AIETileType::ShimNOCTile,
-                                        /*col=*/IntegerAttr(),
-                                        /*row=*/IntegerAttr(),
-                                        /*allocation_scheme=*/StringAttr());
+    tileLT = AIE::LogicalTileOp::create(
+        b, device.getLoc(), AIE::AIETileType::ShimNOCTile,
+        /*col=*/shimColPin >= 0 ? b.getI32IntegerAttr(shimColPin)
+                                : IntegerAttr(),
+        /*row=*/IntegerAttr(),
+        /*allocation_scheme=*/StringAttr());
   }
 
   auto usedChans = channelsUsedOn(tileLT);
@@ -1666,8 +1692,13 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   if (dma_channel < 0)
     return memcpyOp.emitOpError("out of shim DMA channels");
 
+  // When shim-col-pinned, record the pinned col as this entry's col so
+  // sameBucket (which keys on t.col) groups same-pin packet flows together --
+  // letting two pinned packet channels packet-multiplex onto ONE shim
+  // LTO/channel at the pinned column instead of each opening its own LTO there.
+  int baseCol = shimColPin >= 0 ? shimColPin : col;
   auto baseRes = air::DMAAllocator::allocNewDmaChannel(
-      memcpyOp, tileLT, dma_channel, col, row, dma_ops_get_id);
+      memcpyOp, tileLT, dma_channel, baseCol, row, dma_ops_get_id);
   if (failed(baseRes))
     return baseRes;
   // Stamp the bucket key on the record the base allocator just pushed.
