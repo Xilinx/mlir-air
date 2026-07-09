@@ -2959,6 +2959,12 @@ struct SpecializeChannelBundlePattern
         new_chan->setAttr("broadcast_shape",
                           rewriter.getArrayAttr(ArrayRef(broadcast_shape)));
       }
+      // Propagate user-pinned packet_ids onto each split channel: flow creation
+      // only sees the split channels, so without this, indexed/convergent
+      // packet channels fall back to auto-assigned consecutive ids, which alias
+      // under the switchbox arbiter's binary-mask matching and deadlock.
+      if (auto pids = channel->getAttr("packet_ids"))
+        new_chan->setAttr("packet_ids", pids);
       std::vector<unsigned> position =
           air::getMDVectorFromIterator(bundle_size_stdvec, iter);
       for (auto put : channelPuts) {
@@ -4442,6 +4448,56 @@ public:
       return it->second;
     };
 
+    // Explicit per-destination packet ids pinned via the channel's `packet_ids`
+    // array attribute. Read on-demand from the channel op (kept off the
+    // MemcpyBundleAsFlow struct to avoid bloating it past the SmallVector
+    // inline-size budget).
+    auto getPinnedIDs = [](air::MemcpyBundleAsFlow &f) -> SmallVector<int> {
+      SmallVector<int> ids;
+      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op))
+        if (auto attr = chanOp->getAttrOfType<ArrayAttr>("packet_ids"))
+          for (auto idAttr : attr)
+            ids.push_back((int)cast<IntegerAttr>(idAttr).getInt());
+      return ids;
+    };
+
+    // Pre-claim every explicitly-pinned packet id so the auto-assigner for
+    // other flows skips them.
+    for (auto &f : memcpy_flows)
+      if (f.memcpyResourceType == "npu_dma_packet")
+        for (int id : getPinnedIDs(f))
+          claimedPacketIDs.insert(id);
+
+    // Packet ids to emit for destination i. Normally one id (the shared
+    // auto-assigned id memoized by channel name). When the channel pins
+    // `packet_ids`:
+    //   - N pinned ids with a SINGLE destination emits N flows (one per id) to
+    //     that one dest -- every id routes to the same buffer and the
+    //     kernel-written header carries the phase through to a later demux hop.
+    //   - N pinned ids with multiple dests demuxes per-destination (dest i uses
+    //     pinned[i]).
+    //   - a SINGLE pinned id (incl. same-id N-producer convergence) is recorded
+    //     in packetIDForChannelName so generateDmaBd STAMPS every producer
+    //     (MM2S) and receiver (S2MM) BD with that id. Without this the pinned
+    //     path left the map unset, so producers emitted UNTAGGED packets and
+    //     the switchbox could not route N same-id sources onto one slave port.
+    auto pktIDsForDest = [&](air::MemcpyBundleAsFlow &f, int i,
+                             bool isShim) -> SmallVector<int> {
+      auto pinned = getPinnedIDs(f);
+      if (pinned.empty())
+        return {assignOrLookupPacketID(f, isShim)};
+      if (pinned.size() == 1) {
+        std::string chanName = getChannelName(f);
+        if (!chanName.empty())
+          packetIDForChannelName[chanName] = pinned[0];
+      }
+      if (f.numS2MMAllocs == 1)
+        return pinned; // N ids -> the single destination
+      if (i < (int)pinned.size())
+        return {pinned[i]}; // per-destination demux
+      return {assignOrLookupPacketID(f, isShim)};
+    };
+
     // Pass 1: shim packet flows. Nested over producers (j) x dests (i): one
     // packet_flow per (producer, dest). For multi-producer convergence the
     // shared dest pkt id is memoized by channel name in assignOrLookupPacketID,
@@ -4455,25 +4511,27 @@ public:
             continue;
           if (!isShimFlowAt(f, j, i))
             continue;
-          int flowID = assignOrLookupPacketID(f, /*isShim=*/true);
-          getPacketFlowOp(
-              aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
-              AIE::WireBundle::DMA,
-              (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
-              f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-              (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-          // Backlink: the host runtime keys packet identification on
-          // (shim tile, pkt_id), so the matching MM2S shim alloc carries the
-          // id.
-          for (auto &sa : shim_dma_alloc.mm2s_allocs) {
-            if (sa.getDmaTile().getOperation() ==
-                    f.MM2S_alloc[j].getDmaTile().getOperation() &&
-                sa.dma_channel == f.MM2S_alloc[j].dma_channel &&
-                sa.col == f.MM2S_alloc[j].col &&
-                sa.row == f.MM2S_alloc[j].row &&
-                sa.dma_id == f.MM2S_alloc[j].dma_id) {
-              sa.packet_flow_id = flowID;
-              break;
+          for (int flowID : pktIDsForDest(f, i, /*isShim=*/true)) {
+            getPacketFlowOp(
+                aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                AIE::WireBundle::DMA,
+                (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                AIE::WireBundle::DMA,
+                (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+            // Backlink: the host runtime keys packet identification on
+            // (shim tile, pkt_id), so the matching MM2S shim alloc carries the
+            // id.
+            for (auto &sa : shim_dma_alloc.mm2s_allocs) {
+              if (sa.getDmaTile().getOperation() ==
+                      f.MM2S_alloc[j].getDmaTile().getOperation() &&
+                  sa.dma_channel == f.MM2S_alloc[j].dma_channel &&
+                  sa.col == f.MM2S_alloc[j].col &&
+                  sa.row == f.MM2S_alloc[j].row &&
+                  sa.dma_id == f.MM2S_alloc[j].dma_id) {
+                sa.packet_flow_id = flowID;
+                break;
+              }
             }
           }
         }
@@ -4490,13 +4548,15 @@ public:
             continue;
           if (isShimFlowAt(f, j, i))
             continue;
-          int flowID = assignOrLookupPacketID(f, /*isShim=*/false);
-          getPacketFlowOp(
-              aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
-              AIE::WireBundle::DMA,
-              (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
-              f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-              (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+          for (int flowID : pktIDsForDest(f, i, /*isShim=*/false)) {
+            getPacketFlowOp(
+                aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                AIE::WireBundle::DMA,
+                (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                AIE::WireBundle::DMA,
+                (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+          }
         }
       }
     }
