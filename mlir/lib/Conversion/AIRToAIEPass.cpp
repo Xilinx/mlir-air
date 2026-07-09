@@ -5433,15 +5433,10 @@ public:
               "task_id",
               IntegerAttr::get(IntegerType::get(b.getContext(), 32), taskId));
 
-          // v2 chain-lock 2-slot ping-pong: when the chain template fires
-          // for a memtile buffer, lazily allocate a twin BufferOp and
-          // splice a second BD between the primary BD and its existing
-          // next_bd target. Locks are shared across the two BDs (cap
-          // init = pp_slots, sig locks shared). Result:
-          //   bd (primary, uses buf_a)  next_bd → bd_pong
-          //   bd_pong (uses buf_b)      next_bd → <original target>
-          // Producer-consumer overlap on the L2 chain, matching a shared-L2
-          // 2-slot producer-consumer pattern.
+          // v2 chain-lock 2-slot ping-pong: splice a twin BD (on a second
+          // buffer instance, sharing the chain locks) between the primary BD
+          // and its next_bd target, giving producer-consumer overlap on the
+          // shared L2 buffer.
           if constexpr (std::is_same_v<bufferOpTy, AIE::BufferOp>) {
             if (lockRaceConditionFixV2 && task_ops.size() == 1) {
               AIE::BufferOp primaryBuf = bufferOp.value();
@@ -5454,22 +5449,10 @@ public:
                       "for ping-pong twin");
                 air::ChainLockSet *cls = clsOrFail.value();
                 if (cls->pp_slots == 1) {
-                  // Promote this chain-lock buffer to 2-slot
-                  // ping-pong: allocate twin BufferOp, bump cap_lock
-                  // init from 1 to 2, mark cls.pp_slots = 2. From here
-                  // on every subsequent BD on this buffer (any channel,
-                  // any direction) will see twin_buf != null and emit
-                  // the alternating pong BD. The cap-bump and twin
-                  // allocation happen atomically here so the chain is
-                  // never left in a cap=2 / 1-buffer state (which would
-                  // race write-after-read).
-                  cls->twin_buf = allocateBufferOp(
+                  AIE::BufferOp twin = allocateBufferOp(
                       this->BufferId, primaryBuf.getType(), tile,
                       /*attr=*/nullptr, /*x=*/-1, /*y=*/-1);
-                  cls->cap_lock->setAttr(
-                      "init", IntegerAttr::get(
-                                  IntegerType::get(b.getContext(), 32), 2));
-                  cls->pp_slots = 2;
+                  dmaAlloc.activateChainPingPong(*cls, twin);
                 }
                 if (cls->twin_buf) {
                   // Splice bd_pong between bd and its current next_bd target.

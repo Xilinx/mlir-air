@@ -512,62 +512,49 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
 // for the semantic description.
 // ----------------------------------------------------------------------
 
-// Count UNIQUE writer / reader endpoints on a memtile buffer's memref
-// result. Two memcpy ops with the same (channel symbol, indices) tuple
-// count as ONE endpoint — this dedupes the user list against scf.for
-// unroll / ping-pong duplication, which would otherwise inflate the
-// counts and break the fan-in/fan-out predicate.
-//
-// A "writer" is a memcpy op where the memref is the destination (S2MM
-// into memtile). A "reader" is one where the memref is the source
-// (MM2S out of memtile).
-//
-// For non-channel memcpy ops (legacy air.dma_memcpy_nd), each op
-// counts as its own unique endpoint (no symbol to dedupe on).
-static void countChainBufferRoles(AIE::BufferOp buf, int &numWriters,
-                                  int &numReaders) {
-  llvm::SetVector<std::pair<StringRef, SmallVector<int64_t, 4>>> uniqueWriters;
-  llvm::SetVector<std::pair<StringRef, SmallVector<int64_t, 4>>> uniqueReaders;
-  int rawWriterOps = 0;
-  int rawReaderOps = 0;
+// Endpoint identity for a channel memcpy: (channel symbol, constant indices).
+// Non-constant indices collapse to -1 so they still compare structurally.
+using ChainEndpointKey = std::pair<StringRef, SmallVector<int64_t, 4>>;
+static ChainEndpointKey getChainEndpointKey(air::ChannelInterface chan) {
+  SmallVector<int64_t, 4> idx;
+  for (auto v : chan.getIndices())
+    idx.push_back(getConstantIntValue(v).value_or(-1));
+  return {chan.getChanName(), idx};
+}
 
-  auto endpointKey = [](air::ChannelInterface chan)
-      -> std::pair<StringRef, SmallVector<int64_t, 4>> {
-    SmallVector<int64_t, 4> idx;
-    for (auto v : chan.getIndices()) {
-      auto c = getConstantIntValue(v);
-      idx.push_back(c.value_or(-1));
-    }
-    return {chan.getChanName(), idx};
-  };
-
+// Ordered list of one representative memcpy op per chain stage on `buf`, in
+// use-list order, filtered to one direction (writers = buffer is the DST/S2MM;
+// readers = buffer is the SRC/MM2S). Channel endpoints sharing the same
+// (symbol, indices) key collapse to one stage (dedupes scf.for unroll /
+// ping-pong duplication that would otherwise inflate the fan-in/out counts);
+// non-channel memcpy ops (legacy air.dma_memcpy_nd) have no symbol so each is
+// its own stage. Single source of truth: the stage count is the list size and
+// a memcpy op's stage index is its representative's position.
+static SmallVector<Operation *> getOrderedChainEndpoints(AIE::BufferOp buf,
+                                                         bool writers) {
+  SmallVector<Operation *> stages;
+  llvm::SetVector<ChainEndpointKey> seenKeys;
   for (auto user : buf.getResult().getUsers()) {
     auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
     if (!memcpyOp)
       continue;
     bool isWriter = (buf.getResult() == memcpyOp.getDstMemref());
     bool isReader = (buf.getResult() == memcpyOp.getSrcMemref());
-    if (!isWriter && !isReader)
+    if ((writers && !isWriter) || (!writers && !isReader))
       continue;
-
     if (auto chan = dyn_cast<air::ChannelInterface>(user)) {
-      auto key = endpointKey(chan);
-      if (isWriter)
-        uniqueWriters.insert(key);
-      else
-        uniqueReaders.insert(key);
-    } else {
-      // Non-channel memcpy (e.g. air.dma_memcpy_nd): no symbol to
-      // dedupe on, so count each op as its own endpoint.
-      if (isWriter)
-        rawWriterOps++;
-      else
-        rawReaderOps++;
-    }
+      if (seenKeys.insert(getChainEndpointKey(chan)))
+        stages.push_back(user);
+    } else
+      stages.push_back(user);
   }
+  return stages;
+}
 
-  numWriters = static_cast<int>(uniqueWriters.size()) + rawWriterOps;
-  numReaders = static_cast<int>(uniqueReaders.size()) + rawReaderOps;
+static void countChainBufferRoles(AIE::BufferOp buf, int &numWriters,
+                                  int &numReaders) {
+  numWriters = getOrderedChainEndpoints(buf, /*writers=*/true).size();
+  numReaders = getOrderedChainEndpoints(buf, /*writers=*/false).size();
 }
 
 bool air::isChainLockCandidate(AIE::BufferOp buf) {
@@ -602,62 +589,18 @@ int air::computeStageIndexForMemcpyOp(Operation *memcpyOp, AIE::BufferOp buf) {
   if (!mc || !buf)
     return -1;
   bool isWriter = (buf.getResult() == mc.getDstMemref());
-
-  // Compute this op's endpoint key so we can map identically-keyed ops
-  // (from scf.for unroll / ping-pong duplication) to the SAME stage
-  // index — they all share the same chain lock.
-  auto endpointKey = [](air::ChannelInterface chan)
-      -> std::pair<StringRef, SmallVector<int64_t, 4>> {
-    SmallVector<int64_t, 4> idx;
-    for (auto v : chan.getIndices()) {
-      auto c = getConstantIntValue(v);
-      idx.push_back(c.value_or(-1));
-    }
-    return {chan.getChanName(), idx};
-  };
-
+  auto stages = getOrderedChainEndpoints(buf, /*writers=*/isWriter);
   auto myChan = dyn_cast<air::ChannelInterface>(memcpyOp);
-  // Walk the buffer's user list in lexical / use-list order, dedupe
-  // matching-direction endpoints, and return the position of myKey in
-  // the deduped sequence.
-  llvm::SetVector<std::pair<StringRef, SmallVector<int64_t, 4>>> seenKeys;
-  int unkeyed_idx = 0;
-  for (auto user : buf.getResult().getUsers()) {
-    auto userMc = dyn_cast<air::MemcpyInterface>(user);
-    if (!userMc)
-      continue;
-    bool userIsWriter = (buf.getResult() == userMc.getDstMemref());
-    if (userIsWriter != isWriter)
-      continue;
-
-    if (auto userChan = dyn_cast<air::ChannelInterface>(user)) {
-      auto k = endpointKey(userChan);
-      // If myChan exists, return as soon as we see its key. The
-      // dedup index is determined by insertion order into seenKeys.
-      if (myChan) {
-        auto myKey = endpointKey(myChan);
-        if (k == myKey) {
-          // Insertion may happen now (first time) — its position is
-          // the current size before insert.
-          int existingPos = -1;
-          for (auto [i, kk] : llvm::enumerate(seenKeys))
-            if (kk == myKey) {
-              existingPos = static_cast<int>(i);
-              break;
-            }
-          if (existingPos >= 0)
-            return existingPos;
-          return static_cast<int>(seenKeys.size());
-        }
-      }
-      seenKeys.insert(k);
-    } else {
-      // Non-channel memcpy: each op is its own stage; we can only
-      // match by op identity in this branch.
-      if (user == memcpyOp)
-        return static_cast<int>(seenKeys.size()) + unkeyed_idx;
-      unkeyed_idx++;
-    }
+  for (auto [i, rep] : llvm::enumerate(stages)) {
+    if (myChan) {
+      // Identically-keyed ops (scf.for unroll / ping-pong duplication) share a
+      // stage, so match on the endpoint key rather than op identity.
+      auto repChan = dyn_cast<air::ChannelInterface>(rep);
+      if (repChan &&
+          getChainEndpointKey(repChan) == getChainEndpointKey(myChan))
+        return static_cast<int>(i);
+    } else if (rep == memcpyOp)
+      return static_cast<int>(i);
   }
   return -1;
 }
@@ -680,15 +623,10 @@ air::DMAAllocator::getOrCreateChainLockSet(AIE::BufferOp buf,
   cls.n_readers = nR;
   cls.primary_buf = buf;
 
-  // Conservative default: cap_init = 1 (single buffer slot). This is
-  // safe for any chain shape, including ones where pre-existing
-  // ping-pong (separate aie.buffer pairs entering the chain) already
-  // provides 2 slots. The 2-slot ping-pong fires only when
-  // generateDmaBdProgram successfully allocates a twin BufferOp and
-  // splices an alternating BD pair; at that point it bumps this
-  // cap_lock's init attribute from 1 to 2 (see setPingPongActive
-  // helper). Decoupling the cap bump from the twin install ensures
-  // we never under-count buffers and race-on-overwrite.
+  // Start single-slot (cap init = 1), which is safe for any chain shape. If
+  // generateDmaBdProgram later allocates a twin buffer it calls
+  // activateChainPingPong, which bumps the cap and pp_slots together so the
+  // slot count and buffer count never diverge.
   cls.pp_slots = 1;
   cls.cap_lock = allocateLockOp(device, tile, /*init=*/1);
 
@@ -701,6 +639,18 @@ air::DMAAllocator::getOrCreateChainLockSet(AIE::BufferOp buf,
 
   auto inserted = chain_lock_sets.insert({buf.getOperation(), std::move(cls)});
   return &inserted.first->second;
+}
+
+void air::DMAAllocator::activateChainPingPong(ChainLockSet &cls,
+                                              AIE::BufferOp twin) {
+  // Bump the twin buffer, slot count, and cap-lock init together: the cap
+  // (slot count) must always equal the number of buffer instances, so these
+  // updates are one atomic operation rather than three scattered writes.
+  cls.twin_buf = twin;
+  cls.pp_slots = 2;
+  cls.cap_lock->setAttr(
+      "init",
+      IntegerAttr::get(IntegerType::get(cls.cap_lock->getContext(), 32), 2));
 }
 
 std::pair<AIE::LockOp, AIE::LockOp>

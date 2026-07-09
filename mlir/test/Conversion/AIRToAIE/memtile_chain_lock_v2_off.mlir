@@ -38,10 +38,11 @@ func.func @memtile_fanin_default_legacy() {
       %c2 = arith.constant 2 : index
       %c3 = arith.constant 3 : index
       %c8 = arith.constant 8 : index
-      // Note: no `air.no_split` here. The splitter would normally break
-      // this into 4 buffers, but we use air.no_split anyway to demonstrate
-      // the legacy lowering path on the preserved buffer. Without v2, this
-      // emits the broken parallel-fire init=4 lock template.
+      // The splitter would normally break this into 4 buffers; air.no_split
+      // preserves it so this exercises the legacy counted-lock path on a
+      // shared buffer. Fan-in on one buffer is an unsupported config without
+      // v2, so the legacy init=4 template here is the pre-v2 status quo, not a
+      // separately validated pattern.
       %t, %l2 = air.execute -> (memref<4x8xbf16, 1>) {
         %alloc = memref.alloc() {air.no_split} : memref<4x8xbf16, 1>
         air.execute_terminator %alloc : memref<4x8xbf16, 1>

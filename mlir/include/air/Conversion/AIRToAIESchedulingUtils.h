@@ -237,6 +237,11 @@ public:
   FailureOr<ChainLockSet *> getOrCreateChainLockSet(AIE::BufferOp buf,
                                                     AIE::TileLike tile);
 
+  // v2: promote a chain-lock set to 2-slot ping-pong. Records the twin buffer,
+  // sets pp_slots = 2, and bumps cap_lock init to 2 together so the slot count
+  // and buffer-instance count stay in sync.
+  void activateChainPingPong(ChainLockSet &cls, AIE::BufferOp twin);
+
   // v2: pick the (acquire, release) lock pair for one BD's position in
   // the chain. `stage` is the per-direction stage index returned by
   // `computeStageIndexForMemcpyOp`.
