@@ -142,6 +142,9 @@ void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
   // by AIRToAIE's lock allocators.
   if (auto rc = src->getAttrOfType<IntegerAttr>(attrs::RefeedCount))
     dst->setAttr(attrs::RefeedCount, rc);
+  // User-pinned packet routing ids, read by AIRToAIE's packet-flow creation.
+  if (auto pids = src->getAttrOfType<ArrayAttr>(attrs::PacketIDs))
+    dst->setAttr(attrs::PacketIDs, pids);
 }
 
 void air::addAsyncDependency(Operation *op, Value token) {
@@ -3466,6 +3469,34 @@ LogicalResult air::ChannelOp::verify() {
         rcInt.getInt() > std::numeric_limits<int32_t>::max())
       return emitOpError() << "\"" << attrs::RefeedCount << "\" ("
                            << rcInt.getInt() << ") must be in [1, INT32_MAX]";
+  }
+
+  // packet_ids pins explicit switchbox routing ids; only meaningful for
+  // packet-switched channels. Each id must be a 5-bit AIE pkt_id and unique.
+  if (auto pids = (*this)->getAttr(attrs::PacketIDs)) {
+    auto arr = dyn_cast<ArrayAttr>(pids);
+    if (!arr)
+      return emitOpError() << "\"" << attrs::PacketIDs
+                           << "\" must be an array attribute";
+    if (chanType != "npu_dma_packet")
+      return emitOpError()
+             << "\"" << attrs::PacketIDs
+             << "\" is only valid on a \"npu_dma_packet\" channel";
+    uint32_t seen = 0;
+    for (auto idAttr : arr) {
+      auto idInt = dyn_cast<IntegerAttr>(idAttr);
+      if (!idInt)
+        return emitOpError() << "\"" << attrs::PacketIDs
+                             << "\" elements must be integer attributes";
+      int64_t id = idInt.getInt();
+      if (id < 0 || id > 31)
+        return emitOpError() << "\"" << attrs::PacketIDs << "\" id (" << id
+                             << ") must be in [0, 31]";
+      if (seen & (1u << id))
+        return emitOpError() << "\"" << attrs::PacketIDs << "\" id (" << id
+                             << ") is duplicated";
+      seen |= (1u << id);
+    }
   }
   return success();
 }

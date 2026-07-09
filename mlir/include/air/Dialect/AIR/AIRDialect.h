@@ -50,6 +50,14 @@ constexpr StringLiteral RefeedCount = "air.refeed_count";
 // buffer once per iteration. The air-annotate-refeed pass reads its trip count
 // into attrs::RefeedCount on the channel and collapses the loop.
 constexpr StringLiteral RefeedLoop = "air.refeed_loop";
+// User-pinned packet routing ids on an air.channel (channel_type
+// "npu_dma_packet"). One packet_flow per id: N ids to a single dest converge on
+// one buffer for a downstream demux hop; N ids to N dests route dest i with
+// pinned[i]. The compute core writes the id into the payload header, so the DMA
+// does not stamp/filter these -- the flows only install switchbox routes. Bare
+// spelling matches the broadcast_shape discardable-attr convention on
+// air.channel; read via air::ChannelOp::getPacketIDs. Verified on air.channel.
+constexpr StringLiteral PacketIDs = "packet_ids";
 } // namespace attrs
 
 // Copy the DMA-steering / runtime-ordering markers
