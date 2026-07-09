@@ -69,6 +69,7 @@ class XRTBackend(AirBackend):
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
+        use_lock_race_condition_fix_v2: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
         output_format: str = "xclbin",
@@ -133,6 +134,7 @@ class XRTBackend(AirBackend):
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
+        self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
         self.trace_offset = trace_offset
         self.trace_size = trace_size
         self.currently_loaded = False
@@ -326,6 +328,9 @@ class XRTBackend(AirBackend):
 
             if self.use_lock_race_condition_fix:
                 aircc_options += ["--use-lock-race-condition-fix"]
+
+            if self.use_lock_race_condition_fix_v2:
+                aircc_options += ["--use-lock-race-condition-fix-v2"]
 
             if self.trace_size != 0:
                 aircc_options += ["-trace-size"]

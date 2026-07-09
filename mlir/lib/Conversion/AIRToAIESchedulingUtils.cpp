@@ -507,6 +507,251 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
                           llvm::divideCeilSigned(write_counter, read_counter));
 }
 
+// ----------------------------------------------------------------------
+// v2 chain-lock helpers (use_lock_race_condition_fix_v2). See the header
+// for the semantic description.
+// ----------------------------------------------------------------------
+
+// Count UNIQUE writer / reader endpoints on a memtile buffer's memref
+// result. Two memcpy ops with the same (channel symbol, indices) tuple
+// count as ONE endpoint — this dedupes the user list against scf.for
+// unroll / ping-pong duplication, which would otherwise inflate the
+// counts and break the fan-in/fan-out predicate.
+//
+// A "writer" is a memcpy op where the memref is the destination (S2MM
+// into memtile). A "reader" is one where the memref is the source
+// (MM2S out of memtile).
+//
+// For non-channel memcpy ops (legacy air.dma_memcpy_nd), each op
+// counts as its own unique endpoint (no symbol to dedupe on).
+static void countChainBufferRoles(AIE::BufferOp buf, int &numWriters,
+                                  int &numReaders) {
+  llvm::SetVector<std::pair<StringRef, SmallVector<int64_t, 4>>> uniqueWriters;
+  llvm::SetVector<std::pair<StringRef, SmallVector<int64_t, 4>>> uniqueReaders;
+  int rawWriterOps = 0;
+  int rawReaderOps = 0;
+
+  auto endpointKey = [](air::ChannelInterface chan)
+      -> std::pair<StringRef, SmallVector<int64_t, 4>> {
+    SmallVector<int64_t, 4> idx;
+    for (auto v : chan.getIndices()) {
+      auto c = getConstantIntValue(v);
+      idx.push_back(c.value_or(-1));
+    }
+    return {chan.getChanName(), idx};
+  };
+
+  for (auto user : buf.getResult().getUsers()) {
+    auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
+    if (!memcpyOp)
+      continue;
+    bool isWriter = (buf.getResult() == memcpyOp.getDstMemref());
+    bool isReader = (buf.getResult() == memcpyOp.getSrcMemref());
+    if (!isWriter && !isReader)
+      continue;
+
+    if (auto chan = dyn_cast<air::ChannelInterface>(user)) {
+      auto key = endpointKey(chan);
+      if (isWriter)
+        uniqueWriters.insert(key);
+      else
+        uniqueReaders.insert(key);
+    } else {
+      // Non-channel memcpy (e.g. air.dma_memcpy_nd): no symbol to
+      // dedupe on, so count each op as its own endpoint.
+      if (isWriter)
+        rawWriterOps++;
+      else
+        rawReaderOps++;
+    }
+  }
+
+  numWriters = static_cast<int>(uniqueWriters.size()) + rawWriterOps;
+  numReaders = static_cast<int>(uniqueReaders.size()) + rawReaderOps;
+}
+
+bool air::isChainLockCandidate(AIE::BufferOp buf) {
+  if (!buf)
+    return false;
+  // Predicate is shape-based on the buffer's user list. Only L2 memtile
+  // buffers are eligible (this is a memtile-specific lock pattern).
+  auto memrefTy = dyn_cast<MemRefType>(buf.getResult().getType());
+  if (!memrefTy || !air::isL2(memrefTy))
+    return false;
+  int nW = 0, nR = 0;
+  countChainBufferRoles(buf, nW, nR);
+  // Fan-in: N writers (N>1) + 1 reader.
+  if (nW > 1 && nR == 1)
+    return true;
+  // Fan-out: 1 writer + N readers (N>1).
+  if (nW == 1 && nR > 1)
+    return true;
+  // Single-writer/single-reader (legacy 1:1) or MIMO (M writers + N
+  // readers) are NOT chain-lock candidates; legacy lock template
+  // applies.
+  return false;
+}
+
+void air::classifyChainBuffer(AIE::BufferOp buf, int &numWriters,
+                              int &numReaders) {
+  countChainBufferRoles(buf, numWriters, numReaders);
+}
+
+int air::computeStageIndexForMemcpyOp(Operation *memcpyOp, AIE::BufferOp buf) {
+  auto mc = dyn_cast<air::MemcpyInterface>(memcpyOp);
+  if (!mc || !buf)
+    return -1;
+  bool isWriter = (buf.getResult() == mc.getDstMemref());
+
+  // Compute this op's endpoint key so we can map identically-keyed ops
+  // (from scf.for unroll / ping-pong duplication) to the SAME stage
+  // index — they all share the same chain lock.
+  auto endpointKey = [](air::ChannelInterface chan)
+      -> std::pair<StringRef, SmallVector<int64_t, 4>> {
+    SmallVector<int64_t, 4> idx;
+    for (auto v : chan.getIndices()) {
+      auto c = getConstantIntValue(v);
+      idx.push_back(c.value_or(-1));
+    }
+    return {chan.getChanName(), idx};
+  };
+
+  auto myChan = dyn_cast<air::ChannelInterface>(memcpyOp);
+  // Walk the buffer's user list in lexical / use-list order, dedupe
+  // matching-direction endpoints, and return the position of myKey in
+  // the deduped sequence.
+  llvm::SetVector<std::pair<StringRef, SmallVector<int64_t, 4>>> seenKeys;
+  int unkeyed_idx = 0;
+  for (auto user : buf.getResult().getUsers()) {
+    auto userMc = dyn_cast<air::MemcpyInterface>(user);
+    if (!userMc)
+      continue;
+    bool userIsWriter = (buf.getResult() == userMc.getDstMemref());
+    if (userIsWriter != isWriter)
+      continue;
+
+    if (auto userChan = dyn_cast<air::ChannelInterface>(user)) {
+      auto k = endpointKey(userChan);
+      // If myChan exists, return as soon as we see its key. The
+      // dedup index is determined by insertion order into seenKeys.
+      if (myChan) {
+        auto myKey = endpointKey(myChan);
+        if (k == myKey) {
+          // Insertion may happen now (first time) — its position is
+          // the current size before insert.
+          int existingPos = -1;
+          for (auto [i, kk] : llvm::enumerate(seenKeys))
+            if (kk == myKey) {
+              existingPos = static_cast<int>(i);
+              break;
+            }
+          if (existingPos >= 0)
+            return existingPos;
+          return static_cast<int>(seenKeys.size());
+        }
+      }
+      seenKeys.insert(k);
+    } else {
+      // Non-channel memcpy: each op is its own stage; we can only
+      // match by op identity in this branch.
+      if (user == memcpyOp)
+        return static_cast<int>(seenKeys.size()) + unkeyed_idx;
+      unkeyed_idx++;
+    }
+  }
+  return -1;
+}
+
+FailureOr<air::ChainLockSet *>
+air::DMAAllocator::getOrCreateChainLockSet(AIE::BufferOp buf,
+                                           AIE::TileLike tile) {
+  if (!buf || !isChainLockCandidate(buf))
+    return failure();
+  auto it = chain_lock_sets.find(buf.getOperation());
+  if (it != chain_lock_sets.end())
+    return &it->second;
+
+  int nW = 0, nR = 0;
+  classifyChainBuffer(buf, nW, nR);
+  int nStages = (nW > 1) ? nW : nR; // fan-in or fan-out
+
+  ChainLockSet cls;
+  cls.n_writers = nW;
+  cls.n_readers = nR;
+  cls.primary_buf = buf;
+
+  // Conservative default: cap_init = 1 (single buffer slot). This is
+  // safe for any chain shape, including ones where pre-existing
+  // ping-pong (separate aie.buffer pairs entering the chain) already
+  // provides 2 slots. The 2-slot ping-pong fires only when
+  // generateDmaBdProgram successfully allocates a twin BufferOp and
+  // splices an alternating BD pair; at that point it bumps this
+  // cap_lock's init attribute from 1 to 2 (see setPingPongActive
+  // helper). Decoupling the cap bump from the twin install ensures
+  // we never under-count buffers and race-on-overwrite.
+  cls.pp_slots = 1;
+  cls.cap_lock = allocateLockOp(device, tile, /*init=*/1);
+
+  // N init=0 signal locks for the writer→writer (or reader→reader)
+  // transitions plus the producer→consumer (or last-reader→producer)
+  // handoff. Shared across both ping/pong instances.
+  cls.sig_locks.reserve(nStages);
+  for (int i = 0; i < nStages; i++)
+    cls.sig_locks.push_back(allocateLockOp(device, tile, 0));
+
+  auto inserted = chain_lock_sets.insert({buf.getOperation(), std::move(cls)});
+  return &inserted.first->second;
+}
+
+std::pair<AIE::LockOp, AIE::LockOp>
+air::DMAAllocator::pickChainBdLocks(const ChainLockSet &cls,
+                                    AIE::DMAChannelDir dir, int stage) {
+  // generateDmaBd interprets the returned pair as (rlock, wlock) — the
+  // legacy producer-consumer convention — and direction-dependently
+  // chooses which is acquired vs released:
+  //   S2MM (writer): acquireLock = pair.second (wlock),
+  //                  releaseLock = pair.first  (rlock)
+  //   MM2S (reader): acquireLock = pair.first  (rlock),
+  //                  releaseLock = pair.second (wlock)
+  // We map our chain-lock semantics onto this convention by populating
+  // `first` / `second` so that the direction-dependent acquire/release
+  // gives the correct chain semantics.
+  AIE::LockOp toAcquire, toRelease;
+
+  if (cls.isFanIn()) {
+    // Writers serialized W0 → W1 → ... → W{N-1} → Reader → Cap → W0
+    if (dir == AIE::DMAChannelDir::S2MM) {
+      // Writer stage `stage` (0..N-1)
+      toAcquire = (stage == 0) ? cls.cap_lock : cls.sig_locks[stage - 1];
+      toRelease = cls.sig_locks[stage];
+    } else {
+      // The single reader: acquire last signal lock, release cap lock.
+      toAcquire = cls.sig_locks[cls.n_writers - 1];
+      toRelease = cls.cap_lock;
+    }
+  } else {
+    // Fan-out: writer → Reader0 → Reader1 → ... → Reader{N-1} → Cap → writer
+    if (dir == AIE::DMAChannelDir::MM2S) {
+      // Reader stage `stage` (0..N-1)
+      toAcquire = cls.sig_locks[stage];
+      toRelease = (stage == cls.n_readers - 1) ? cls.cap_lock
+                                               : cls.sig_locks[stage + 1];
+    } else {
+      // The single writer: acquire cap lock, release first signal lock.
+      toAcquire = cls.cap_lock;
+      toRelease = cls.sig_locks[0];
+    }
+  }
+
+  // Map (toAcquire, toRelease) to (pair.first, pair.second) consistent
+  // with generateDmaBd's direction-dependent mapping:
+  //   S2MM: acquire = pair.second, release = pair.first
+  //   MM2S: acquire = pair.first,  release = pair.second
+  if (dir == AIE::DMAChannelDir::S2MM)
+    return std::make_pair(toRelease, toAcquire);
+  return std::make_pair(toAcquire, toRelease);
+}
+
 std::pair<int64_t, int64_t>
 air::getLockValuePair(const AIE::AIETargetModel &targetModel,
                       Value buffer_memref, air::ChannelOp air_chan) {
@@ -759,10 +1004,9 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
 
 // Allocate a reader/writer lock pair. These may be the same or different
 // locks depending on the target device.
-FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
-air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
-                                 AIE::TileLike tile, Operation *bufferOp,
-                                 bool lockRaceConditionFix) {
+FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
+    air::MemcpyInterface &memcpyOp, AIE::TileLike tile, Operation *bufferOp,
+    bool lockRaceConditionFix, bool lockRaceConditionFixV2) {
   auto alloc = lookupDMAAllocation(tile, memcpyOp);
   if (failed(alloc))
     return memcpyOp->emitOpError("failed to look up dma allocation.");
@@ -778,6 +1022,37 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
   const auto &target_model = device.getTargetModel();
   bool UsesSemaphoreLocks =
       target_model.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
+
+  // v2: chain-lock branch. Memtile-only; requires the buffer to be a
+  // shared L2 with fan-in or fan-out shape (predicate is shape-based).
+  // Takes precedence over the legacy / v1 paths when it applies.
+  if (lockRaceConditionFixV2 && tileIsMemTile && UsesSemaphoreLocks) {
+    auto buf = dyn_cast_or_null<AIE::BufferOp>(bufferOp);
+    if (buf && isChainLockCandidate(buf)) {
+      auto clsOrFail = getOrCreateChainLockSet(buf, tile);
+      if (failed(clsOrFail))
+        return memcpyOp->emitOpError(
+            "v2 chain-lock: failed to allocate chain lock set");
+      ChainLockSet *cls = clsOrFail.value();
+      int stage = computeStageIndexForMemcpyOp(memcpyOp.getOperation(), buf);
+      if (stage < 0)
+        return memcpyOp->emitOpError(
+            "v2 chain-lock: failed to determine BD stage index");
+      auto pair = pickChainBdLocks(*cls, channel.direction, stage);
+      // Register a lock_allocation_list entry so subsequent reuse-lookup
+      // queries on the same (buffer, channel) find the same pair —
+      // matches the legacy reuse model for the rare same-channel multi-BD
+      // case. Note: the chain-lock branch returns DIFFERENT pairs for
+      // different memcpy ops on the same buffer (one per stage), so the
+      // legacy "same buffer → same lock" reuse logic in the loop below
+      // does NOT apply for v2; we just record this BD's pair.
+      lock_allocation_list.push_back(
+          {bufferOp, air_chan, channel, pair.first, pair.second});
+      return pair;
+    }
+    // Fall through to the legacy path for non-candidate buffers (e.g.
+    // 1:1 single-writer single-reader L2 buffers, or MIMO buffers).
+  }
 
   if (UsesSemaphoreLocks) {
     if (air_chan) {

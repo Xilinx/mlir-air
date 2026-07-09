@@ -69,6 +69,7 @@ class XRTRunner:
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
+        use_lock_race_condition_fix_v2: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
         output_format: str = "xclbin",
@@ -141,6 +142,7 @@ class XRTRunner:
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
+        self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
         self.trace_offset = trace_offset
         self.trace_size = trace_size
         self.output_format = output_format
@@ -198,6 +200,7 @@ class XRTRunner:
             omit_auto_broadcast=self.omit_auto_broadcast,
             channel_multiplexing=self.channel_multiplexing,
             use_lock_race_condition_fix=self.use_lock_race_condition_fix,
+            use_lock_race_condition_fix_v2=self.use_lock_race_condition_fix_v2,
             trace_offset=self.trace_offset,
             trace_size=self.trace_size,
             output_format=self.output_format,
