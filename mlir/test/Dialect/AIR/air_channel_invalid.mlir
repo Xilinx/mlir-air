@@ -176,3 +176,38 @@ air.channel @refeed_str [1, 1] {air.refeed_count = "4"}
 
 // Test: valid air.refeed_count (positive test - should pass).
 air.channel @refeed_ok [1, 1] {air.refeed_count = 4 : i32}
+
+// -----
+
+// Test: packet_ids on a non-packet channel is rejected.
+// expected-error @+1 {{'air.channel' op "packet_ids" is only valid on a "npu_dma_packet" channel}}
+air.channel @pids_wrong_type [] {channel_type = "npu_dma_stream", packet_ids = [1, 2]}
+
+// -----
+
+// Test: packet_ids out of the 5-bit pkt_id range is rejected.
+// expected-error @+1 {{'air.channel' op "packet_ids" id (40) must be in [0, 31]}}
+air.channel @pids_range [] {channel_type = "npu_dma_packet", packet_ids = [40]}
+
+// -----
+
+// Test: negative packet_ids id is rejected.
+// expected-error @+1 {{'air.channel' op "packet_ids" id (-1) must be in [0, 31]}}
+air.channel @pids_neg [] {channel_type = "npu_dma_packet", packet_ids = [-1]}
+
+// -----
+
+// Test: duplicate packet_ids are rejected.
+// expected-error @+1 {{'air.channel' op "packet_ids" id (3) is duplicated}}
+air.channel @pids_dup [] {channel_type = "npu_dma_packet", packet_ids = [3, 3]}
+
+// -----
+
+// Test: non-integer packet_ids element is rejected.
+// expected-error @+1 {{'air.channel' op "packet_ids" elements must be integer attributes}}
+air.channel @pids_str [] {channel_type = "npu_dma_packet", packet_ids = ["x"]}
+
+// -----
+
+// Test: valid packet_ids (positive test - should pass).
+air.channel @pids_ok [] {channel_type = "npu_dma_packet", packet_ids = [1, 4]}
