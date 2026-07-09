@@ -44,11 +44,12 @@
 // CHECK: aie.core(%[[CONS_TILE]])
 // CHECK: aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, 1)
 // CHECK: scf.for
+// Negative: no acquire/release INSIDE the consumer's scf.for body.
+// (Pre-fix the inner-scope choice puts both lock ops inside the scf.for.)
+// CHECK-NOT: aie.use_lock
 // CHECK: }
 // CHECK: aie.use_lock(%[[PROD_LOCK]], Release, 1)
 
-// Negative: no acquire/release INSIDE the consumer's scf.for body.
-// (Pre-fix the inner-scope choice puts both lock ops inside the scf.for.)
 // CHECK: aie.core(%[[PROD_TILE]])
 
 module {

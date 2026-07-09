@@ -1394,24 +1394,30 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
                                numProducerCores);
       }
     } else {
-      // Fallback: no enclosing loop, wrap each op individually (original
-      // behavior)
-      // Compute the "wrapping op" for each accessing op: the closest
-      // ancestor whose parent op IS the AIE::CoreOp itself (i.e. a
-      // direct child of the core body). For accessing ops at core-body
-      // level this is the op itself; for ops inside an scf.for it's
-      // the scf.for. Wrapping those ops (instead of the inner access
-      // op) hoists the lock acquire/release out of inner loops,
-      // producing 1 acquire/release per AIE-core iter and avoiding the
-      // cross-core cadence mismatch deadlock when scopes are
-      // asymmetric.
+      // Fallback: no single enclosing scf.for contains all accesses.
+      //
+      // When hoistAllToCoreBody is set (asymmetric cross-core scopes), wrap
+      // the closest core-body-level ancestor of each accessing op (the direct
+      // child of the AIE::CoreOp): for a core-body-level access that is the op
+      // itself; for an op inside an scf.for it is the scf.for. This hoists the
+      // acquire/release out of inner loops so every core cycles the shared
+      // lock once per AIE-core iter, avoiding the cadence-mismatch deadlock.
+      //
+      // Otherwise preserve the original per-op wrapping (acquire/release
+      // around each accessing op), which is the pre-existing behavior for
+      // symmetric cores with no common enclosing loop.
       SetVector<Operation *> wrappingOps;
-      for (auto *op : accessingOps) {
-        Operation *stmt = op;
-        while (stmt && stmt->getParentOp() != coreOp.getOperation())
-          stmt = stmt->getParentOp();
-        if (stmt)
-          wrappingOps.insert(stmt);
+      if (hoistAllToCoreBody) {
+        for (auto *op : accessingOps) {
+          Operation *stmt = op;
+          while (stmt && stmt->getParentOp() != coreOp.getOperation())
+            stmt = stmt->getParentOp();
+          if (stmt)
+            wrappingOps.insert(stmt);
+        }
+      } else {
+        for (auto *op : accessingOps)
+          wrappingOps.insert(op);
       }
 
       for (auto *op : wrappingOps) {

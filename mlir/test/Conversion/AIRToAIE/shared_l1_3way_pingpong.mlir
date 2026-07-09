@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// 3-WAY shared L1 access WITH ping-pong (Part 2 of the shared-L1 primitive
-// primitive). Two shared L1 buffers (ping/pong), both owned by tile_0_2,
+// 3-WAY shared L1 access WITH ping-pong (Part 2 of the shared-L1 primitive).
+// Two shared L1 buffers (ping/pong), both owned by tile_0_2,
 // each accessed by the same 3-way pattern (helper write + main write +
 // mem_0_2 DMA read). Mirrors an N-writer + 1-reader shared L1 buffer.
 //
