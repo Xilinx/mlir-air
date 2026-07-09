@@ -211,17 +211,18 @@ airrt.module_metadata{
 #### Options
 
 ```
--row-offset                  : The default start row for any herds without 'y_loc' attribute.
--col-offset                  : The default start column for any herds without 'x_loc' attribute.
--emit-while-loop             : Emit a while(1) around the herd code in generated AIR.core ops.
--emit-herd-lock              : Acquire and release a lock at the start and end of herd execution. The default is to acquire lock 0 with value zero and release it with value 0. There is currently no way to override the default behavior.
--test-patterns               : Test the given patterns.
--device                      : AIE device to target.
--use-objectfifo              : Choose whether to lower data movement ops to aie.objectFifo, or directly to aie.locks.
--generate-shim-dma           : Choose whether to schedule shim data movement via generating AIE shim DMA program, or AIR runtime.
--insert-trace-packet-flow    : Create packet routed traces for cores and memtiles
--use-lock-race-condition-fix : Switch to enable a fix for lock race condition, which protects against the risk of race condition, at the cost of inserting extra dummy DMA BDs
--stack-size                  : Stack size in bytes to allocate per AIE core. Must be large enough to hold the full call chain stack depth including callee frames. Default is 1024 bytes.
+-row-offset                     : The default start row for any herds without 'y_loc' attribute.
+-col-offset                     : The default start column for any herds without 'x_loc' attribute.
+-emit-while-loop                : Emit a while(1) around the herd code in generated AIR.core ops.
+-emit-herd-lock                 : Acquire and release a lock at the start and end of herd execution. The default is to acquire lock 0 with value zero and release it with value 0. There is currently no way to override the default behavior.
+-test-patterns                  : Test the given patterns.
+-device                         : AIE device to target.
+-use-objectfifo                 : Choose whether to lower data movement ops to aie.objectFifo, or directly to aie.locks.
+-generate-shim-dma              : Choose whether to schedule shim data movement via generating AIE shim DMA program, or AIR runtime.
+-insert-trace-packet-flow       : Create packet routed traces for cores and memtiles
+-use-lock-race-condition-fix    : Switch to enable a fix for lock race condition, which protects against the risk of race condition, at the cost of inserting extra dummy DMA BDs
+-use-lock-race-condition-fix-v2 : Enable daisy-chained lock emission for shared L2 buffers with multi-writer + single-reader (fan-in) or single-writer + multi-reader (fan-out) sub-region access patterns. Emits 1 capacity lock + N init=0 signal locks per buffer chain, serializing writers (or readers) via the chain to prevent concurrent-access races on the memtile DMA. Mutually exclusive with use-lock-race-condition-fix. Requires upstream to preserve the shared L2 buffer (typically via `air.no_split` on the alloc).
+-stack-size                     : Stack size in bytes to allocate per AIE core. Must be large enough to hold the full call chain stack depth including callee frames. Default is 1024 bytes.
 ```
 
 ### `-air-to-async`
