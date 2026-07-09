@@ -986,6 +986,37 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
   bool UsesSemaphoreLocks =
       target_model.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
 
+  // 3-way shared L1 branch (compute tile only). allocateSharedL1BufferLocks
+  // stamped this channel put/get op with prod/cons lock symbol-refs because
+  // its buffer is shared across N writer cores AND this DMA participant.
+  // Resolve and reuse that exact pair so all participants synchronize on the
+  // same locks, instead of allocating a private channel-put pair (which would
+  // silently break the 3-way share). Keyed on the op's attribute (only present
+  // on genuine 3-way ops), so it takes precedence for those ops and leaves all
+  // other callers unaffected.
+  if (!tileIsMemTile && UsesSemaphoreLocks) {
+    Operation *op = memcpyOp.getOperation();
+    auto prodRef = op->getAttrOfType<FlatSymbolRefAttr>("air.shared_prod_lock");
+    auto consRef = op->getAttrOfType<FlatSymbolRefAttr>("air.shared_cons_lock");
+    if (prodRef && consRef) {
+      auto prodLock = dyn_cast_or_null<AIE::LockOp>(
+          SymbolTable::lookupSymbolIn(device, prodRef.getAttr()));
+      auto consLock = dyn_cast_or_null<AIE::LockOp>(
+          SymbolTable::lookupSymbolIn(device, consRef.getAttr()));
+      if (prodLock && consLock) {
+        // Return (cons, prod). generateDmaBd selects
+        // acq = isMM2S ? first : second, rel = isMM2S ? second : first.
+        // So MM2S reader acquires cons / releases prod; S2MM writer
+        // acquires prod / releases cons. Both directions are correct with
+        // this single ordering.
+        std::pair<AIE::LockOp, AIE::LockOp> pair = {consLock, prodLock};
+        lock_allocation_list.push_back(
+            {bufferOp, air_chan, channel, pair.first, pair.second});
+        return pair;
+      }
+    }
+  }
+
   // v2: chain-lock branch. Memtile-only; requires the buffer to be a
   // shared L2 with fan-in or fan-out shape (predicate is shape-based).
   // Takes precedence over the legacy / v1 paths when it applies.
