@@ -107,6 +107,19 @@ GPU channel types:
 If a channel broadcasts to multiple destinations, the optional `broadcast_shape` attribute
 annotates the output sizes after broadcasting. Broadcasting follows NumPy's broadcasting rules.
 
+### Packet ids
+A packet-switched channel (`channel_type = "npu_dma_packet"`) may pin explicit routing ids
+via the optional `packet_ids` array attribute (each id in `[0, 31]`, unique). One
+`aie.packet_flow` is emitted per id:
+- **N ids to one destination:** all ids route to the same buffer; a later demux hop keys off
+  the header carried by the payload.
+- **N ids to N destinations:** destination `i` is routed with `packet_ids[i]`, an indexed
+  fan-out landing each slice on a distinct, statically-known id.
+
+The compute core writes the routing id into the packet header word of the payload, so the DMA
+engine does not stamp/filter these ids; the flows only install switchbox routing entries.
+Without `packet_ids` a packet channel gets a single auto-assigned id.
+
 Example:
 
 ```mlir
@@ -133,6 +146,9 @@ air.channel @channel_5 [] {channel_type = "npu_mmio"}
 // A cross-GPU channel through the symmetric heap (GPU). Must appear inside
 // an air.rank scope; the indices on put/get encode the peer rank.
 air.channel @channel_6 [] {channel_type = "gpu_symmetric_heap"}
+
+// A packet-switched channel pinning two routing ids (NPU)
+air.channel @channel_7 [] {channel_type = "npu_dma_packet", packet_ids = [1, 4]}
 ```
 
 Interfaces: `Symbol`
