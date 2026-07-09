@@ -1034,6 +1034,51 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   }
 
   // ========================================================================
+  // 3-WAY DETECTION: count DMA accessors of the shared buffer. An
+  // air.channel.put whose source aliases the buffer becomes an MM2S BD that
+  // READS the buffer out (DMA reader); an air.channel.get whose dest aliases
+  // the buffer becomes an S2MM BD that WRITES it (DMA writer). These are the
+  // "third participant" the core-only analysis above misses: with N writer
+  // cores + 1 DMA reader on one buffer, the DMA is the
+  // effective consumer. (At outline time the put/get still lives in the core
+  // body; it is hoisted to mem_X_Y later by lowerAIRMemcpyOp.)
+  int numDmaReaders = 0;
+  int numDmaWriters = 0;
+  for (auto coreOp : coreOps) {
+    coreOp.walk([&](Operation *op) {
+      if (isa<air::ChannelPutOp>(op)) {
+        for (Value operand : op->getOperands())
+          if (bufferAliases.contains(operand)) {
+            numDmaReaders++;
+            break;
+          }
+      } else if (isa<air::ChannelGetOp>(op)) {
+        for (Value operand : op->getOperands())
+          if (bufferAliases.contains(operand)) {
+            numDmaWriters++;
+            break;
+          }
+      }
+    });
+  }
+  bool hasDmaReader = numDmaReaders > 0;
+  bool hasDmaWriter = numDmaWriters > 0;
+
+  // 3-way share: the cores access the buffer ONE-SIDED (write-only or
+  // read-only) AND a DMA participant supplies the missing side. This is the
+  // shared-L1 pattern (N writer cores + 1 DMA reader). It UPGRADES the
+  // would-be Mutex case to producer/consumer; it must NOT change the Skip
+  // case (a buffer touched only by a DMA and never by core compute keeps its
+  // locks from getLockForDMA as before). Requires AIE2 semaphore locks: the
+  // DMA-side reuse in getLockForDMA / generateDmaBd is UsesSemaphoreLocks-
+  // gated, so on AIE1 the DMA cannot share the prod/cons pair.
+  bool coreOneSidedProducer = hasAnyProducer && !hasAnyConsumer;
+  bool coreOneSidedConsumer = hasAnyConsumer && !hasAnyProducer;
+  bool isThreeWay =
+      usesSemaphoreLocks && ((coreOneSidedProducer && hasDmaReader) ||
+                             (coreOneSidedConsumer && hasDmaWriter));
+
+  // ========================================================================
   // DECISION: Determine lock strategy based on access patterns
   // ========================================================================
   enum class LockStrategy {
@@ -1044,20 +1089,27 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
 
   LockStrategy strategy;
   if (!hasAnyProducer && !hasAnyConsumer) {
-    // No operations access the buffer - skip lock insertion entirely
+    // No CORE operations access the buffer - skip lock insertion entirely.
+    // (A buffer touched only by DMA gets its locks from getLockForDMA.)
     strategy = LockStrategy::Skip;
     LLVM_DEBUG(llvm::dbgs()
                << "AIRToAIE: Skipping locks for shared L1 buffer " << bufName
                << " - no read/write operations detected\n");
-  } else if (hasAnyProducer && hasAnyConsumer) {
-    // Both readers and writers exist - use producer/consumer protocol
+  } else if ((hasAnyProducer && hasAnyConsumer) || isThreeWay) {
+    // Both readers and writers exist - use producer/consumer protocol. This
+    // covers the classic core-reader/core-writer case AND the 3-way case
+    // (one-sided cores + DMA other side), where the DMA participant is the
+    // counterpart that releases the lock and prevents the write-only deadlock
+    // the mutex path guards against.
     strategy = LockStrategy::ProducerConsumer;
     LLVM_DEBUG(
         llvm::dbgs()
         << "AIRToAIE: Using producer/consumer locks for shared L1 buffer "
-        << bufName << " - both readers and writers detected\n");
+        << bufName << " - both readers and writers detected"
+        << (isThreeWay ? " (3-way: includes DMA participant)" : "") << "\n");
   } else {
-    // Only writers OR only readers - use mutex to prevent deadlock
+    // Only writers OR only readers AND no DMA counterpart - use mutex to
+    // prevent deadlock
     strategy = LockStrategy::Mutex;
     // Emit warning about potential deadlock pattern that was avoided
     sharedBuffer->emitWarning()
@@ -1100,6 +1152,26 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
                << "AIRToAIE: Allocated producer/consumer locks for " << bufName
                << " - prod_lock(init=" << prodLockInit
                << "), cons_lock(init=" << consLockInit << ")\n");
+
+    // 3-way registry bridge: when a DMA participant accesses this shared
+    // buffer, the DMA BD's locks are allocated much later (getLockForDMA,
+    // after lowerAIRMemcpyOp), in a phase that has no view of these
+    // prod/cons locks. Stash the lock symbol-refs + the per-side count as
+    // attributes on the buffer so getLockForDMA can resolve and reuse the
+    // SAME pair (instead of allocating a private channel-put pair, which
+    // would break the 3-way share with no error).
+    if (isThreeWay) {
+      auto *ctx = aie_device.getContext();
+      sharedBuffer->setAttr(
+          "air.shared_prod_lock",
+          FlatSymbolRefAttr::get(ctx, prodLock.getSymName().value()));
+      sharedBuffer->setAttr(
+          "air.shared_cons_lock",
+          FlatSymbolRefAttr::get(ctx, consLock.getSymName().value()));
+      sharedBuffer->setAttr(
+          "air.shared_lock_count",
+          IntegerAttr::get(IntegerType::get(ctx, 64), prodLockInit));
+    }
   } else {
     // Mutex: allocate single lock initialized to 1 (available)
     mutexLock =
@@ -1118,12 +1190,37 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   // LOCK INSERTION: Insert lock pairs around buffer-accessing operations.
   // For inline MLIR kernels (memref.load/store in loops), locks are placed
   // at the outermost loop scope that contains ALL accesses, not per-op.
+  //
+  // Cross-core scope normalization: pre-fix, per-core lock scope was
+  // chosen independently. When producer and consumer cores accessed the
+  // buffer at different nesting depths (e.g. one inside an inner scf.for,
+  // the other at core-body level), the cadence of acquire/release
+  // mismatched (N-per-iter on one side, 1-per-iter on the other) →
+  // permanent stall after the first iteration. Two passes now:
+  //   (1) compute per-core (accessingOps, lockScope, roles)
+  //   (2) detect asymmetric scope (any NULL while any non-NULL); if so,
+  //       HOIST ALL cores to core-body level by wrapping the closest
+  //       ancestor of each accessing op that's a direct child of the
+  //       core op (== the core-body-level "statement"). This produces
+  //       1 acquire/release per AIE-core iteration regardless of inner
+  //       scf.for nesting and is the minimum shared-L1 invariant.
+  //   (3) emit per-core locks using the chosen scope.
   // ========================================================================
-  for (auto coreOp : coreOps) {
-    // Step 1: Collect all ops that access the shared buffer
+  struct PerCoreLockInfo {
+    AIE::CoreOp coreOp;
     SmallVector<Operation *> accessingOps;
-    bool coreIsProducer = false;
-    bool coreIsConsumer = false;
+    bool coreIsProducer;
+    bool coreIsConsumer;
+    Operation *lockScope;
+  };
+  SmallVector<PerCoreLockInfo> coreInfos;
+
+  for (auto coreOp : coreOps) {
+    PerCoreLockInfo info;
+    info.coreOp = coreOp;
+    info.coreIsProducer = false;
+    info.coreIsConsumer = false;
+    info.lockScope = nullptr;
 
     coreOp.walk([&](Operation *op) {
       bool accessesBuffer = false;
@@ -1156,34 +1253,110 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       }
 
       if (accessesBuffer) {
-        accessingOps.push_back(op);
+        info.accessingOps.push_back(op);
         if (isProducer)
-          coreIsProducer = true;
+          info.coreIsProducer = true;
         if (isConsumer)
-          coreIsConsumer = true;
+          info.coreIsConsumer = true;
       }
     });
 
-    if (accessingOps.empty())
+    if (info.accessingOps.empty()) {
+      coreInfos.push_back(info);
       continue;
+    }
 
-    // Step 2: Find the OUTERMOST scf.for that contains ALL accessing ops
-    Operation *lockScope = nullptr;
-    // Start from the first accessing op and walk up
-    Operation *candidate = accessingOps[0]->getParentOp();
+    // Find the OUTERMOST scf.for that contains ALL accessing ops
+    Operation *candidate = info.accessingOps[0]->getParentOp();
     while (candidate && candidate != coreOp.getOperation()) {
       if (isa<scf::ForOp>(candidate)) {
         bool containsAll = true;
-        for (auto *other : accessingOps) {
+        for (auto *other : info.accessingOps) {
           if (!candidate->isProperAncestor(other)) {
             containsAll = false;
             break;
           }
         }
         if (containsAll)
-          lockScope = candidate; // outermost so far; keep going up
+          info.lockScope = candidate;
       }
       candidate = candidate->getParentOp();
+    }
+    coreInfos.push_back(info);
+  }
+
+  // Detect cross-core scope asymmetry: any core with NULL lockScope (=
+  // access at core-body level / fallback) while another has a non-NULL
+  // scf.for lockScope. If asymmetric, force ALL cores to use the
+  // core-body-level "hoisted" emission below.
+  bool hoistAllToCoreBody = false;
+  {
+    bool anyNull = false, anyNonNull = false;
+    for (auto &info : coreInfos) {
+      if (info.accessingOps.empty())
+        continue;
+      if (info.lockScope == nullptr)
+        anyNull = true;
+      else
+        anyNonNull = true;
+    }
+    if (anyNull && anyNonNull) {
+      hoistAllToCoreBody = true;
+      sharedBuffer->emitWarning()
+          << "shared L1 buffer " << bufName
+          << ": asymmetric per-core lock scopes detected (some cores "
+             "access buffer at core-body level, others inside scf.for); "
+             "hoisting all locks to core-body level to avoid cadence "
+             "mismatch deadlock";
+    }
+  }
+
+  for (auto &info : coreInfos) {
+    auto coreOp = info.coreOp;
+    auto &accessingOps = info.accessingOps;
+    bool coreIsProducer = info.coreIsProducer;
+    bool coreIsConsumer = info.coreIsConsumer;
+    Operation *lockScope = hoistAllToCoreBody ? nullptr : info.lockScope;
+
+    if (accessingOps.empty())
+      continue;
+
+    // 3-way shared L1: wrap each accessing op INDIVIDUALLY (per-buffer
+    // bracketing) rather than hoisting acquire/release to the loop-body
+    // boundaries. Required when multiple shared buffers are ping-ponged in
+    // one loop body: allocateSharedL1BufferLocks runs once per shared buffer,
+    // and the for-body-boundary placement would batch every buffer's prod
+    // acquire at loop top (serializing ping vs pong). Per-op placement keeps
+    // each buffer's lock around only its own access; cadence stays 1-per-iter
+    // because the accessing op is inside the loop. Symmetric across cores
+    // (all writers access at the same nesting), so no cadence-mismatch risk.
+    if (isThreeWay) {
+      for (auto *op : accessingOps) {
+        OpBuilder builder(op);
+        auto loc = op->getLoc();
+        if (coreIsProducer && !coreIsConsumer) {
+          AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, loc, consLock,
+                                 AIE::LockAction::Release, 1);
+        } else if (coreIsConsumer && !coreIsProducer) {
+          AIE::UseLockOp::create(builder, loc, consLock, acqAction,
+                                 numProducerCores);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, loc, prodLock,
+                                 AIE::LockAction::Release, numProducerCores);
+        } else {
+          AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
+          AIE::UseLockOp::create(builder, loc, consLock, acqAction,
+                                 numProducerCores);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, loc, consLock,
+                                 AIE::LockAction::Release, 1);
+          AIE::UseLockOp::create(builder, loc, prodLock,
+                                 AIE::LockAction::Release, numProducerCores);
+        }
+      }
+      continue;
     }
 
     // Step 3: Insert locks at the determined scope
@@ -1224,7 +1397,25 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     } else {
       // Fallback: no enclosing loop, wrap each op individually (original
       // behavior)
+      // Compute the "wrapping op" for each accessing op: the closest
+      // ancestor whose parent op IS the AIE::CoreOp itself (i.e. a
+      // direct child of the core body). For accessing ops at core-body
+      // level this is the op itself; for ops inside an scf.for it's
+      // the scf.for. Wrapping those ops (instead of the inner access
+      // op) hoists the lock acquire/release out of inner loops,
+      // producing 1 acquire/release per AIE-core iter and avoiding the
+      // cross-core cadence mismatch deadlock when scopes are
+      // asymmetric.
+      SetVector<Operation *> wrappingOps;
       for (auto *op : accessingOps) {
+        Operation *stmt = op;
+        while (stmt && stmt->getParentOp() != coreOp.getOperation())
+          stmt = stmt->getParentOp();
+        if (stmt)
+          wrappingOps.insert(stmt);
+      }
+
+      for (auto *op : wrappingOps) {
         OpBuilder builder(op);
 
         if (strategy == LockStrategy::Mutex) {
@@ -5158,6 +5349,16 @@ public:
     if (failed(bufferOp)) {
       return memcpyOpIf->emitOpError("failed to get buffer.");
     }
+    // 3-way shared L1: the core-side acquire/release for a channel put/get on
+    // this buffer was already emitted by allocateSharedL1BufferLocks (the
+    // shared prod/cons wrapping around the core's kernel write). Emitting
+    // another core-side lock here would double-acquire the prod lock and
+    // deadlock. Skip the core-side lock; the DMA-side BD still picks up the
+    // shared pair via getLockForDMA in generateDmaBdProgram.
+    if (auto buf =
+            dyn_cast_or_null<AIE::BufferOp>(bufferOp.value().getOperation()))
+      if (buf->hasAttr("air.shared_prod_lock"))
+        return success();
     auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, tile,
                                             bufferOp.value().getOperation(),
                                             /*lockRaceConditionFix*/ false);
@@ -5465,8 +5666,21 @@ public:
     b.setInsertionPointToStart(bd);
     int64_t lockAqValue = -1;
     int64_t lockRelValue = -1;
+    // 3-way shared L1: the buffer carries air.shared_lock_count = N (the
+    // number of producer cores). The DMA participant must acquire/release N
+    // tokens against the shared prod/cons pair (init=N / 0) so it drains all
+    // N writer releases per cycle.
+    Operation *bufOpForCount = bufferOp.getOperation();
+    IntegerAttr sharedCountAttr =
+        isa_and_nonnull<AIE::BufferOp>(bufOpForCount)
+            ? bufOpForCount->getAttrOfType<IntegerAttr>("air.shared_lock_count")
+            : nullptr;
+    bool useSharedL1LockCounts = (bool)sharedCountAttr;
     auto aie2LockVal =
-        air::getLockValuePair(targetModel, bufferOp->getResult(0));
+        useSharedL1LockCounts
+            ? std::pair<int64_t, int64_t>(sharedCountAttr.getInt(),
+                                          sharedCountAttr.getInt())
+            : air::getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.first : 0;
       lockRelValue = UsesSemaphoreLocks ? aie2LockVal.first : 1;
