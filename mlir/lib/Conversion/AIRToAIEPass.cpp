@@ -2959,12 +2959,13 @@ struct SpecializeChannelBundlePattern
         new_chan->setAttr("broadcast_shape",
                           rewriter.getArrayAttr(ArrayRef(broadcast_shape)));
       }
-      // Propagate user-pinned packet_ids onto each split channel: flow creation
-      // only sees the split channels, so without this, indexed/convergent
-      // packet channels fall back to auto-assigned consecutive ids, which alias
-      // under the switchbox arbiter's binary-mask matching and deadlock.
-      if (auto pids = channel->getAttr("packet_ids"))
-        new_chan->setAttr("packet_ids", pids);
+      // Propagate DMA-steering markers (incl. user-pinned packet_ids) onto each
+      // split channel: flow creation only sees the split channels, so without
+      // this, indexed/convergent packet channels fall back to auto-assigned
+      // consecutive ids, which alias under the switchbox arbiter's binary-mask
+      // matching and deadlock. Routed through the single-source-of-truth helper
+      // so this copy site stays in sync with the marker set.
+      air::copyChannelSteeringAttrs(channel, new_chan);
       std::vector<unsigned> position =
           air::getMDVectorFromIterator(bundle_size_stdvec, iter);
       for (auto put : channelPuts) {
@@ -4455,9 +4456,13 @@ public:
     auto getPinnedIDs = [](air::MemcpyBundleAsFlow &f) -> SmallVector<int> {
       SmallVector<int> ids;
       if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op))
-        if (auto attr = chanOp->getAttrOfType<ArrayAttr>("packet_ids"))
+        if (auto attr = chanOp.getPacketIDs())
           for (auto idAttr : attr)
-            ids.push_back((int)cast<IntegerAttr>(idAttr).getInt());
+            // Verifier guarantees IntegerAttr elements in [0,31]; dyn_cast
+            // keeps the pass robust on unverified IR (skip non-integer
+            // entries).
+            if (auto idInt = dyn_cast<IntegerAttr>(idAttr))
+              ids.push_back((int)idInt.getInt());
       return ids;
     };
 
@@ -4481,6 +4486,13 @@ public:
     //     (MM2S) and receiver (S2MM) BD with that id. Without this the pinned
     //     path left the map unset, so producers emitted UNTAGGED packets and
     //     the switchbox could not route N same-id sources onto one slave port.
+    //   - MULTIPLE pinned ids are DELIBERATELY not recorded in
+    //     packetIDForChannelName: under the pinned-multi-id contract the
+    //     compute core writes the routing id into the payload header, so the
+    //     DMA must NOT stamp/filter (generateDmaBd +
+    //     labelMemcpyOpsWithPacketFlow both skip a channel with no map entry /
+    //     >1 pinned id). The packet_flow ops alone install the switchbox
+    //     routes.
     auto pktIDsForDest = [&](air::MemcpyBundleAsFlow &f, int i,
                              bool isShim) -> SmallVector<int> {
       auto pinned = getPinnedIDs(f);
@@ -4495,6 +4507,14 @@ public:
         return pinned; // N ids -> the single destination
       if (i < (int)pinned.size())
         return {pinned[i]}; // per-destination demux
+      // Fewer pinned ids than destinations: the surplus dests fall back to
+      // auto-assigned ids, silently mixing pinned + auto. Warn so this is not a
+      // surprise -- a well-formed demux pins exactly one id per destination.
+      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op))
+        chanOp->emitWarning()
+            << "packet_ids pins " << pinned.size() << " id(s) but channel has "
+            << f.numS2MMAllocs << " destinations; destination " << i
+            << " falls back to an auto-assigned id";
       return {assignOrLookupPacketID(f, isShim)};
     };
 
@@ -4511,7 +4531,14 @@ public:
             continue;
           if (!isShimFlowAt(f, j, i))
             continue;
-          for (int flowID : pktIDsForDest(f, i, /*isShim=*/true)) {
+          auto flowIDs = pktIDsForDest(f, i, /*isShim=*/true);
+          // A shim source feeding >1 pinned id follows the kernel-header
+          // contract (the core stamps the header), so no single id backlinks to
+          // the shim alloc -- recording one would falsely tag the MM2S op with
+          // a partial id (the last, pre-fix). Only the single-id path
+          // backlinks.
+          bool backlink = flowIDs.size() == 1;
+          for (int flowID : flowIDs) {
             getPacketFlowOp(
                 aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
                 AIE::WireBundle::DMA,
@@ -4519,6 +4546,8 @@ public:
                 f.S2MM_alloc[i].getDmaTile()->getResult(0),
                 AIE::WireBundle::DMA,
                 (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+            if (!backlink)
+              continue;
             // Backlink: the host runtime keys packet identification on
             // (shim tile, pkt_id), so the matching MM2S shim alloc carries the
             // id.
@@ -4805,6 +4834,16 @@ public:
                                              StringAttr dmaNameAttr,
                                              mlir::Value tileVal, int channel,
                                              int packetFlowId = -1) {
+    // Multi-id pinned channels follow the kernel-header contract: the core
+    // writes the routing id into the payload, so the shim DMA must not stamp a
+    // packet header. Skip before the runtime fallback below could tag it with
+    // an arbitrary flow id.
+    if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
+            memcpyOpIf.getOperation()))
+      if (auto chanOp = air::getChannelDeclarationThroughSymbol(ci))
+        if (auto pids = chanOp.getPacketIDs(); pids && pids.size() > 1)
+          return success();
+
     // When a packet flow ID is available (from flow creation phase), use
     // exact flow ID matching to disambiguate multiple flows sharing the
     // same shim DMA channel. Otherwise fall back to source-only lookup.
