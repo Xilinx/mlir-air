@@ -513,23 +513,31 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
 // ----------------------------------------------------------------------
 
 // Endpoint identity for a channel memcpy: (channel symbol, constant indices).
-// Non-constant indices collapse to -1 so they still compare structurally.
+// Returns nullopt if any bundle index is non-constant — such endpoints cannot
+// be proven equal, so they must NOT be deduped (collapsing distinct dynamic
+// endpoints would undercount writers/readers and mis-size the chain).
 using ChainEndpointKey = std::pair<StringRef, SmallVector<int64_t, 4>>;
-static ChainEndpointKey getChainEndpointKey(air::ChannelInterface chan) {
+static std::optional<ChainEndpointKey>
+getChainEndpointKey(air::ChannelInterface chan) {
   SmallVector<int64_t, 4> idx;
-  for (auto v : chan.getIndices())
-    idx.push_back(getConstantIntValue(v).value_or(-1));
-  return {chan.getChanName(), idx};
+  for (auto v : chan.getIndices()) {
+    auto c = getConstantIntValue(v);
+    if (!c)
+      return std::nullopt;
+    idx.push_back(*c);
+  }
+  return ChainEndpointKey{chan.getChanName(), idx};
 }
 
 // Ordered list of one representative memcpy op per chain stage on `buf`, in
 // use-list order, filtered to one direction (writers = buffer is the DST/S2MM;
 // readers = buffer is the SRC/MM2S). Channel endpoints sharing the same
-// (symbol, indices) key collapse to one stage (dedupes scf.for unroll /
-// ping-pong duplication that would otherwise inflate the fan-in/out counts);
-// non-channel memcpy ops (legacy air.dma_memcpy_nd) have no symbol so each is
-// its own stage. Single source of truth: the stage count is the list size and
-// a memcpy op's stage index is its representative's position.
+// (symbol, constant-indices) key collapse to one stage (dedupes scf.for unroll
+// / ping-pong duplication that would otherwise inflate the fan-in/out counts).
+// Endpoints without a provable key — non-channel memcpy (legacy
+// air.dma_memcpy_nd) or a channel with any dynamic index — are each their own
+// stage. Single source of truth: the stage count is the list size and a memcpy
+// op's stage index is its representative's position.
 static SmallVector<Operation *> getOrderedChainEndpoints(AIE::BufferOp buf,
                                                          bool writers) {
   SmallVector<Operation *> stages;
@@ -542,10 +550,12 @@ static SmallVector<Operation *> getOrderedChainEndpoints(AIE::BufferOp buf,
     bool isReader = (buf.getResult() == memcpyOp.getSrcMemref());
     if ((writers && !isWriter) || (!writers && !isReader))
       continue;
-    if (auto chan = dyn_cast<air::ChannelInterface>(user)) {
-      if (seenKeys.insert(getChainEndpointKey(chan)))
-        stages.push_back(user);
-    } else
+    std::optional<ChainEndpointKey> key;
+    if (auto chan = dyn_cast<air::ChannelInterface>(user))
+      key = getChainEndpointKey(chan);
+    // Dedupe only provably-equal keyed endpoints; everything else is its own
+    // stage.
+    if (!key || seenKeys.insert(*key))
       stages.push_back(user);
   }
   return stages;
@@ -591,15 +601,18 @@ int air::computeStageIndexForMemcpyOp(Operation *memcpyOp, AIE::BufferOp buf) {
   bool isWriter = (buf.getResult() == mc.getDstMemref());
   auto stages = getOrderedChainEndpoints(buf, /*writers=*/isWriter);
   auto myChan = dyn_cast<air::ChannelInterface>(memcpyOp);
+  std::optional<ChainEndpointKey> myKey =
+      myChan ? getChainEndpointKey(myChan) : std::nullopt;
   for (auto [i, rep] : llvm::enumerate(stages)) {
-    if (myChan) {
+    if (myKey) {
       // Identically-keyed ops (scf.for unroll / ping-pong duplication) share a
       // stage, so match on the endpoint key rather than op identity.
       auto repChan = dyn_cast<air::ChannelInterface>(rep);
-      if (repChan &&
-          getChainEndpointKey(repChan) == getChainEndpointKey(myChan))
+      auto repKey = repChan ? getChainEndpointKey(repChan) : std::nullopt;
+      if (repKey && *repKey == *myKey)
         return static_cast<int>(i);
     } else if (rep == memcpyOp)
+      // Unkeyed (non-channel or dynamic-index): match by op identity.
       return static_cast<int>(i);
   }
   return -1;

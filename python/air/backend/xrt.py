@@ -133,6 +133,11 @@ class XRTBackend(AirBackend):
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
+        if use_lock_race_condition_fix and use_lock_race_condition_fix_v2:
+            raise AirBackendError(
+                "use_lock_race_condition_fix and use_lock_race_condition_fix_v2 "
+                "are mutually exclusive; enable at most one"
+            )
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
         self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
         self.trace_offset = trace_offset
