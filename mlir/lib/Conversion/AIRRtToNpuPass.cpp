@@ -171,6 +171,50 @@ static bool deviceNeedsLockReset(xilinx::AIE::DeviceOp device) {
   return device->hasAttr(kNeedsLockResetAttr);
 }
 
+// Internal marker: the device's launch boundary runs MORE THAN ONCE per host
+// dispatch (a fused multi-iteration launch, e.g. an scf.for wrapping air.launch
+// to stitch N iterations into one dispatch). Such a launch must fully DRAIN
+// every shim channel at each iteration boundary before the next iteration's
+// feeds issue -- otherwise consecutive iterations overlap and a finite-depth
+// (e.g. 2-slot ping-pong) device lock accumulates an imbalance and deadlocks
+// after a few iterations. The single-dispatch shim drain that enforces this is
+// otherwise only emitted on the output-elf path (issue #1373); this marker
+// extends it to the multi-iteration xclbin path too. Computed while the
+// launch_end markers + their loops still exist (they are erased during
+// conversion), same as kNeedsLockResetAttr.
+static constexpr llvm::StringLiteral kMultiIterLaunchAttr =
+    "air.multi_iter_launch";
+
+// Number of launch iterations (stitched iterations) for a fused multi-iteration
+// launch, carried from markDevicesNeedingLockReset (computed from the unrolled
+// launch_end count) to synthesizeDoubleBufferedAwaits, which must segment its
+// per-channel paced-MM2S backpressure PER ITERATION so the double-buffered
+// pacing does not overlap a iteration boundary (which accumulates a 2-deep
+// in-flight imbalance and deadlocks after a couple of iterations).
+static constexpr llvm::StringLiteral kNumLaunchItersAttr =
+    "air.num_launch_iters";
+
+// Marks a runtime-sequence op emitted at a fused multi-iteration launch's
+// per-iteration boundary (the between-iteration full shim drain). Used
+// post-conversion as a region delimiter so the per-herd RTP-write / set_lock
+// hoisting stays scoped to each iteration's sub-sequence instead of collapsing
+// to the global front. Collapsing all N iterations' inits to the front stacks
+// N re-arms before any data movement and drops the per-iteration re-arm, which
+// deadlocks a finite-depth device lock after a couple of iterations. Mirrors
+// the region-delimiting role NpuLoadPdiOp plays on the ELF-reset path.
+static constexpr llvm::StringLiteral kLaunchIterBoundaryAttr =
+    "air.launch_iter_boundary";
+
+static bool deviceHasMultiIterLaunch(xilinx::AIE::DeviceOp device) {
+  return device->hasAttr(kMultiIterLaunchAttr);
+}
+
+static int64_t deviceNumLaunchIters(xilinx::AIE::DeviceOp device) {
+  if (auto a = device->getAttrOfType<mlir::IntegerAttr>(kNumLaunchItersAttr))
+    return a.getInt();
+  return 1;
+}
+
 // Compute and stamp the reset decision on every device. MUST run after
 // moveFuncOpToEndOfDeviceOp (so the control funcs, hence the launch_end
 // markers, are inside their devices) and before generateNpuWaitFromAIRRtWaitAll
@@ -180,6 +224,33 @@ static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
     if (deviceHasRepeatCountDMAs(device) || deviceHasSingleTripCascade(device))
       device->setAttr(kNeedsLockResetAttr,
                       mlir::UnitAttr::get(device.getContext()));
+    // Multi-iteration launch = a launch_end enclosed by a multi-trip loop, or
+    // several launch_end markers (an already-unrolled iteration loop). Single
+    // dispatch is exactly one launch_end not in a multi-trip loop (mirrors
+    // deviceHasSingleTripCascade's launch-count logic).
+    int64_t numLaunchEnds = 0;
+    bool anyMultiTrip = false;
+    device.walk([&](xilinx::airrt::WaitAllOp wa) {
+      if (!wa->hasAttr("air.launch_end"))
+        return;
+      ++numLaunchEnds;
+      if (enclosingLoopTrips(wa) != 1)
+        anyMultiTrip = true;
+    });
+    if (numLaunchEnds >= 1 && (numLaunchEnds > 1 || anyMultiTrip)) {
+      device->setAttr(kMultiIterLaunchAttr,
+                      mlir::UnitAttr::get(device.getContext()));
+      // The loop-unroll (unrollSCFFors) runs before this, so a fused scf.for
+      // over air.launch presents as `numLaunchEnds` unrolled launch_end markers
+      // == the iteration count. (If the loop somehow survived unrolling there
+      // is a single marker in a multi-trip loop; leave the count at 1 so the
+      // pacing stays per-loop-body, which is already correct in that form.)
+      if (numLaunchEnds > 1)
+        device->setAttr(kNumLaunchItersAttr,
+                        mlir::IntegerAttr::get(
+                            mlir::IntegerType::get(device.getContext(), 64),
+                            numLaunchEnds));
+    }
   });
 }
 
@@ -896,6 +967,12 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
+          // A fused multi-iteration launch (scf.for over air.launch stitching N
+          // iterations into one dispatch) needs the between-iteration shim
+          // drain on the xclbin (non-elf) path too: otherwise consecutive
+          // iterations overlap and a finite-depth device lock deadlocks after a
+          // few iterations.
+          bool multiIter = deviceHasMultiIterLaunch(device);
           if (outputElf && deviceNeedsLockReset(device)) {
             // Insert aiex.npu.load_pdi to reset DMA engine / cascade state
             // (repeat_count DMAs, or a single-trip cascade launch).
@@ -903,15 +980,21 @@ public:
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
-          } else if (outputElf) {
+          } else if (outputElf || multiIter) {
             // No PDI reload needed (no repeat_count DMAs), but still need
             // between-iteration synchronization to prevent the next
             // iteration's shim DMA configuration from racing with the
-            // current iteration's compute (issue #1373).
+            // current iteration's compute (issue #1373; extended to the
+            // multi-iteration xclbin path).
             rewriter.setInsertionPoint(op);
             for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
-              AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
-                                         alloc.getSymName());
+              auto w = AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                                  alloc.getSymName());
+              // Tag the fused multi-iteration boundary drain so the later
+              // RTP/set_lock hoist keeps each iteration's re-arm scoped to its
+              // own sub-sequence (see kLaunchIterBoundaryAttr).
+              if (multiIter)
+                w->setAttr(kLaunchIterBoundaryAttr, rewriter.getUnitAttr());
             }
           }
         }
@@ -1025,6 +1108,22 @@ public:
         }))
       return failure();
 
+    // A fused multi-iteration launch tags its per-iteration boundary drain so
+    // the later RTP/set_lock hoist stays scoped per iteration. The launch_end's
+    // own operand waits are the iteration's output (S2MM) drains -- they
+    // survive as DMAAwaitTaskOp -- so tagging them gives a boundary marker that
+    // is robust even when the extra all-shim drain below is all paced-MM2S
+    // (which emit no surviving op).
+    bool isLaunchEnd = op->hasAttr("air.launch_end");
+    bool multiIter = false;
+    if (isLaunchEnd) {
+      if (auto device = op->getParentOfType<AIE::DeviceOp>())
+        if (llvm::isa<AIE::BaseNPU2TargetModel>(device.getTargetModel()))
+          multiIter = deviceHasMultiIterLaunch(device);
+    }
+    bool tagBoundary = isLaunchEnd && multiIter;
+    bool taggedOne = false;
+
     llvm::SmallDenseSet<StringRef> waitedChannels;
     for (auto oper : op->getOperands()) {
       auto airrtDmaOp = oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
@@ -1039,7 +1138,11 @@ public:
       // The conversion to DMAAwaitTaskOp vs DMAFreeTaskOp happens later
       // based on channel direction
       StringRef metadata = metadataAttr.getValue();
-      AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
+      auto w = AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
+      if (tagBoundary) {
+        w->setAttr(kLaunchIterBoundaryAttr, rewriter.getUnitAttr());
+        taggedOne = true;
+      }
       waitedChannels.insert(metadata);
     }
 
@@ -1050,18 +1153,34 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
+          // A fused multi-iteration launch (scf.for over air.launch, e.g. N
+          // stitched iterations) must fence every iteration boundary even on
+          // the xclbin (non-elf) path: without it consecutive iterations
+          // overlap and a finite-depth device lock deadlocks after a few
+          // iterations.
           if (outputElf && deviceNeedsLockReset(device)) {
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
-          } else if (outputElf) {
+          } else if (outputElf || multiIter) {
             // No PDI reload needed, but emit NpuDmaWaitOp for any shim
             // channels not already waited on to synchronize before the
-            // next iteration (issue #1373).
+            // next iteration (issue #1373; extended to the multi-iteration
+            // xclbin path so each launch iteration fully drains).
             for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
-              if (!waitedChannels.contains(alloc.getSymName()))
-                AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
-                                           alloc.getSymName());
+              if (!waitedChannels.contains(alloc.getSymName())) {
+                auto w = AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                                    alloc.getSymName());
+                // Tag the fused multi-iteration boundary drain (see
+                // kLaunchIterBoundaryAttr) so the RTP/set_lock hoist stays
+                // scoped per iteration. Only needed if no operand wait above
+                // was tagged (those are the S2MM outputs that reliably
+                // survive).
+                if (tagBoundary && !taggedOne) {
+                  w->setAttr(kLaunchIterBoundaryAttr, rewriter.getUnitAttr());
+                  taggedOne = true;
+                }
+              }
             }
           }
         }
@@ -1696,29 +1815,34 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // expressible in the async dependence graph (RTP writes have no SSA
     // operands; set_locks are batched separately).
     //
-    // The region is delimited by aiex.npu.load_pdi resets. A multi-iteration
-    // ELF launch re-arms DMA/lock state between iterations via load_pdi, and
-    // each iteration re-writes its own RTP and re-releases its cores. Hoisting
-    // to the GLOBAL front would then (a) clobber a later iteration's RTP onto
-    // an earlier iteration's slot and (b) move a release ahead of the load_pdi
-    // that re-initializes its lock, leaving the core unreleased after the
-    // reset. Scoping to the per-load_pdi region keeps both single-launch
-    // sequences (one region -> front of sequence) and multi-iteration sequences
-    // correct.
+    // The region is delimited by aiex.npu.load_pdi resets (ELF path) or, on the
+    // fused multi-iteration xclbin path, by the per-iteration boundary drain
+    // tagged kLaunchIterBoundaryAttr (emitted at each launch_end). A
+    // multi-iteration launch re-arms DMA/lock state between iterations and each
+    // iteration re-writes its own RTP and re-releases its cores. Hoisting to
+    // the GLOBAL front would then (a) clobber a later iteration's RTP onto an
+    // earlier iteration's slot and (b) stack all N iterations' releases before
+    // any data movement, dropping the per-iteration re-arm -- which deadlocks a
+    // finite-depth device lock after a couple of iterations. Scoping to the
+    // per-boundary region keeps both single-launch sequences (one region ->
+    // front of sequence) and multi-iteration sequences correct.
+    auto isRegionDelimiter = [](Operation *o) {
+      return isa<AIEX::NpuLoadPdiOp>(o) || o->hasAttr(kLaunchIterBoundaryAttr);
+    };
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
       Block &blk = seq.getBody().front();
-      // Snapshot the op order; the load_pdi delimiters never move, and RTP/
-      // set_lock ops only move within their own region, so region membership
-      // computed from this snapshot stays valid across the moves below.
+      // Snapshot the op order; the delimiters never move, and RTP/set_lock ops
+      // only move within their own region, so region membership computed from
+      // this snapshot stays valid across the moves below.
       SmallVector<Operation *> ops;
       for (auto &o : blk)
         ops.push_back(&o);
       for (size_t i = 0, e = ops.size(); i < e;) {
-        // Region [i, j): j indexes the next load_pdi delimiter (or the end).
+        // Region [i, j): j indexes the next delimiter (or the end).
         size_t j = i;
-        while (j < e && !isa<AIEX::NpuLoadPdiOp>(ops[j]))
+        while (j < e && !isRegionDelimiter(ops[j]))
           ++j;
         // Anchor at the region's first op that is not an RTP write, set_lock,
         // or an air.runtime_hoist feed -- i.e. the region's first data
@@ -1876,6 +2000,21 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               "air.await_appends: readback tagged but no air.append_barrier "
               "appends found to await; no ordering was enforced");
       }
+    });
+
+    // Strip the internal per-iteration boundary marker now that the
+    // RTP/set_lock hoist has consumed it, so it does not leak into the emitted
+    // IR.
+    module.walk([](Operation *o) {
+      if (o->hasAttr(kLaunchIterBoundaryAttr))
+        o->removeAttr(kLaunchIterBoundaryAttr);
+    });
+    // Strip the internal multi-iteration launch markers -- all their consumers
+    // (the launch_end drain, per-iteration paced-MM2S segmentation) have run --
+    // so they do not leak into the emitted device IR.
+    module.walk([](xilinx::AIE::DeviceOp device) {
+      device->removeAttr(kMultiIterLaunchAttr);
+      device->removeAttr(kNumLaunchItersAttr);
     });
   }
 
@@ -2299,12 +2438,18 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           }
         }
 
+        // Carry a fused multi-iteration boundary tag from the drain wait onto
+        // the surviving task op so the RTP/set_lock hoist can use it as a
+        // per-iteration region delimiter (see kLaunchIterBoundaryAttr).
+        bool isBoundary = waitOp->hasAttr(kLaunchIterBoundaryAttr);
         if (matchingConfigTask) {
           OpBuilder builder(waitOp);
           if (isS2MM) {
             // S2MM (output): await task - waits for completion AND frees BD
-            AIEX::DMAAwaitTaskOp::create(builder, waitOp.getLoc(),
-                                         matchingConfigTask.getResult());
+            auto a = AIEX::DMAAwaitTaskOp::create(
+                builder, waitOp.getLoc(), matchingConfigTask.getResult());
+            if (isBoundary)
+              a->setAttr(kLaunchIterBoundaryAttr, builder.getUnitAttr());
           } else if (matchingConfigTask->hasAttr(
                          air::attrs::PreserveShimDmaOrder)) {
             // MM2S, paced: do not emit a fire-and-free here. Bounded
@@ -2312,8 +2457,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             // synthesizeDoubleBufferedAwaits() below.
           } else {
             // MM2S (input): free task - just frees BD for reuse, no wait
-            AIEX::DMAFreeTaskOp::create(builder, waitOp.getLoc(),
-                                        matchingConfigTask.getResult());
+            auto fr = AIEX::DMAFreeTaskOp::create(
+                builder, waitOp.getLoc(), matchingConfigTask.getResult());
+            if (isBoundary)
+              fr->setAttr(kLaunchIterBoundaryAttr, builder.getUnitAttr());
           }
         }
         // Erase the NpuDmaWaitOp regardless of whether we found a match
@@ -2356,37 +2503,81 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (auto *def = st.getTask().getDefiningOp())
         startOf[def] = st;
     });
-    for (auto &kv : groups) {
-      auto &tasks = kv.second;
+    // A fused multi-iteration launch (scf.for over air.launch, unrolled to N
+    // stitched iterations) must pace each channel PER ITERATION: the
+    // per-channel task list is the N iterations' feeds concatenated, and
+    // pacing/draining it as one list lets the double-buffered in-flight set
+    // straddle a iteration boundary, accumulating a `depth`-deep imbalance that
+    // deadlocks after a few iterations. Splitting into N equal contiguous
+    // segments and draining each segment's final `depth` before the next
+    // segment's first start makes every iteration's backpressure self-contained
+    // (one dispatch behaves like N drained dispatches). N==1 (single launch, or
+    // a surviving loop body) is the original whole-list behavior.
+    int64_t numIters = deviceNumLaunchIters(device);
+
+    // `fenceEnd` forces the segment's in-flight tail to be fully drained after
+    // its last start (a per-iteration fence) even when the segment fits in
+    // flight; used for the per-iteration segments of a fused multi-iteration
+    // launch. The whole-list single-dispatch call passes fenceEnd=false to keep
+    // the original behavior (no drain when the whole channel fits in flight).
+    auto paceSegment = [&](ArrayRef<AIEX::DMAConfigureTaskForOp> tasks,
+                           bool fenceEnd) {
       unsigned n = tasks.size();
-      if (n <= depth)
-        continue; // fits in flight; no pacing needed
+      if (n == 0)
+        return;
       // Before reusing task i's BD (start i), await task i-depth.
       for (unsigned i = depth; i < n; i++) {
-        auto startOp = startOf.lookup(tasks[i].getOperation());
+        AIEX::DMAConfigureTaskForOp ti = tasks[i];
+        AIEX::DMAConfigureTaskForOp tprev = tasks[i - depth];
+        auto startOp = startOf.lookup(ti.getOperation());
         if (!startOp) {
-          tasks[i]->emitWarning(
+          ti->emitWarning(
               "air.preserve_shim_dma_order: paced task has no dma_start_task; "
               "backpressure await was not inserted for it");
           continue;
         }
         OpBuilder b(startOp);
-        AIEX::DMAAwaitTaskOp::create(b, startOp.getLoc(),
-                                     tasks[i - depth].getResult());
+        AIEX::DMAAwaitTaskOp::create(b, startOp.getLoc(), tprev.getResult());
       }
-      // Drain the final `depth` tasks after the last start.
-      auto lastStart = startOf.lookup(tasks[n - 1].getOperation());
+      if (!fenceEnd && n <= depth)
+        return; // whole-list, fits in flight: no pacing/drain needed
+      // Drain the in-flight tail after the last start. For a per-iteration
+      // segment this fences the iteration: its feeds fully drain before the
+      // next iteration's first start. In-flight = the last `depth` tasks once
+      // pacing ran, or all `n` when the segment itself fits in flight (n <=
+      // depth).
+      AIEX::DMAConfigureTaskForOp tlast = tasks[n - 1];
+      auto lastStart = startOf.lookup(tlast.getOperation());
       if (!lastStart) {
-        tasks[n - 1]->emitWarning(
+        tlast->emitWarning(
             "air.preserve_shim_dma_order: last paced task has no "
             "dma_start_task; drain awaits were not inserted");
-        continue;
+        return;
       }
       OpBuilder b(lastStart);
       b.setInsertionPointAfter(lastStart);
-      for (unsigned j = n - depth; j < n; j++)
-        AIEX::DMAAwaitTaskOp::create(b, lastStart.getLoc(),
-                                     tasks[j].getResult());
+      unsigned drainStart = (n > depth) ? n - depth : 0;
+      for (unsigned j = drainStart; j < n; j++) {
+        AIEX::DMAConfigureTaskForOp tj = tasks[j];
+        AIEX::DMAAwaitTaskOp::create(b, lastStart.getLoc(), tj.getResult());
+      }
+    };
+
+    for (auto &kv : groups) {
+      auto &tasks = kv.second;
+      unsigned n = tasks.size();
+      // Segment per launch iteration when the iteration count divides the task
+      // count evenly (each iteration emits the same per-channel feeds).
+      // Otherwise fall back to whole-list pacing.
+      if (numIters > 1 && n % numIters == 0) {
+        unsigned seg = n / (unsigned)numIters;
+        for (int64_t it = 0; it < numIters; it++)
+          paceSegment(
+              ArrayRef<AIEX::DMAConfigureTaskForOp>(tasks).slice(it * seg, seg),
+              /*fenceEnd=*/true);
+      } else {
+        paceSegment(tasks, /*fenceEnd=*/false);
+      }
     }
   }
 
