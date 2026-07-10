@@ -2170,16 +2170,11 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     // air.herd operand), which has no single owning sub-buffer. Splitting such
     // a buffer would leave that use dangling on the original alloc, which is
     // then erased. Leave the buffer intact if any use escapes the
-    // {channel put/get, dealloc} set.
+    // {channel put/get, dealloc} set. air.execute is not IsolatedFromAbove, so
+    // an async dealloc is a memref.dealloc directly using the memref (matched
+    // below); the wrapping air.execute is never itself a user.
     auto isPartitionableUser = [](Operation *user) {
-      if (isa<air::ChannelPutOp, air::ChannelGetOp, memref::DeallocOp>(user))
-        return true;
-      // A dealloc wrapped in an air.execute is the async form of the above.
-      if (auto exec = dyn_cast<air::ExecuteOp>(user))
-        return llvm::any_of(exec.getChildOps(), [](Operation &child) {
-          return isa<memref::DeallocOp>(child);
-        });
-      return false;
+      return isa<air::ChannelPutOp, air::ChannelGetOp, memref::DeallocOp>(user);
     };
     if (llvm::any_of(memref.getUsers(), [&](Operation *user) {
           return !isPartitionableUser(user);
