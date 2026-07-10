@@ -2452,12 +2452,17 @@ void L2MemrefToMemTileMap(
     return pinned;
   };
 
-  SmallVector<int> bucketCols;
+  // Derive pins once here (deriveBucketPin emits warnings), then reuse the
+  // cached value on every downstream path so each invalid/conflicting pin is
+  // diagnosed exactly once.
+  SmallVector<int> bucketCols, bucketPins;
   bucketCols.reserve(memref_buckets.size());
+  bucketPins.reserve(memref_buckets.size());
   llvm::DenseMap<int, int> colDemand;
   for (auto &bucket : memref_buckets) {
     int col = deriveBucketCol(bucket);
     int pin = deriveBucketPin(bucket);
+    bucketPins.push_back(pin);
     if (pin >= 0)
       col = pin;
     bucketCols.push_back(col);
@@ -2535,7 +2540,7 @@ void L2MemrefToMemTileMap(
     int globalCounter = 0;
     for (size_t i = 0; i < memref_buckets.size(); i++) {
       auto &bucket = memref_buckets[i];
-      int pin = deriveBucketPin(bucket);
+      int pin = bucketPins[i];
       if (pin >= 0) {
         AIE::TileLike memtile = findOrCreateLtoForCol(pin);
         for (auto bucket_elem : bucket)
