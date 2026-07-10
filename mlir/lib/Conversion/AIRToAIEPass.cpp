@@ -70,6 +70,12 @@ struct AIRToAIEConversionOptions {
   bool generate_shim_dma;
   bool insert_trace_packet_flow;
   bool use_lock_race_condition_fix;
+  // v2: daisy-chained lock emission for shared L2 buffers with
+  // fan-in (N writers + 1 reader) or fan-out (1 writer + N readers) sub-
+  // region access patterns. Emits 1 cap lock + N init=0 signal locks
+  // forming a strict producer-ordering chain, eliminating concurrent-
+  // access races on the memtile DMA. Mutually exclusive with v1.
+  bool use_lock_race_condition_fix_v2;
   AIE::AIEDevice device;
   unsigned stack_size;
 };
@@ -925,6 +931,11 @@ static void collectBufferAliases(Value buffer,
   }
 }
 
+// Forward declaration (defined later): whether `op` executes within its
+// enclosing aie.core given the constant tile-index guards. Used to ignore
+// dead per-core branches (not yet folded) when analyzing shared L1 buffers.
+static bool accessReachableInCore(Operation *op);
+
 /// Allocate producer/consumer locks for shared L1 buffer synchronization.
 /// This enables safe inter-core communication via shared L1 memory.
 ///
@@ -986,6 +997,9 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
 
   for (auto coreOp : coreOps) {
     coreOp.walk([&](Operation *op) {
+      // Ignore accesses in dead per-core branches (not yet folded).
+      if (!accessReachableInCore(op))
+        return;
       // Check memory effects
       for (Value alias : bufferAliases) {
         if (hasEffect<MemoryEffects::Write>(op, alias))
@@ -1015,6 +1029,8 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   for (auto coreOp : coreOps) {
     bool coreIsProducer = false;
     coreOp.walk([&](Operation *op) {
+      if (!accessReachableInCore(op))
+        return;
       for (Value alias : bufferAliases) {
         if (hasEffect<MemoryEffects::Write>(op, alias))
           coreIsProducer = true;
@@ -1034,6 +1050,50 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   }
 
   // ========================================================================
+  // 3-WAY DETECTION: collect the DMA accessors of the shared buffer. An
+  // air.channel.put whose source aliases the buffer becomes an MM2S BD that
+  // READS the buffer out (DMA reader); an air.channel.get whose dest aliases
+  // the buffer becomes an S2MM BD that WRITES it (DMA writer). These are the
+  // "third participant" the core-only analysis above misses: with N writer
+  // cores + 1 DMA reader on one buffer, the DMA is the
+  // effective consumer. (At outline time the put/get still lives in the core
+  // body; it is hoisted to mem_X_Y later by lowerAIRMemcpyOp.) We keep the ops
+  // themselves so the shared prod/cons identity can be stamped onto the op that
+  // becomes the DMA BD (see the 3-way carrier stash below).
+  SmallVector<Operation *> dmaAccessOps;
+  bool hasDmaReader = false;
+  bool hasDmaWriter = false;
+  for (auto coreOp : coreOps) {
+    coreOp.walk([&](Operation *op) {
+      bool isPut = isa<air::ChannelPutOp>(op);
+      bool isGet = isa<air::ChannelGetOp>(op);
+      if (!isPut && !isGet)
+        return;
+      for (Value operand : op->getOperands())
+        if (bufferAliases.contains(operand)) {
+          dmaAccessOps.push_back(op);
+          hasDmaReader |= isPut;
+          hasDmaWriter |= isGet;
+          break;
+        }
+    });
+  }
+
+  // 3-way share: the cores access the buffer ONE-SIDED (write-only or
+  // read-only) AND a DMA participant supplies the missing side. This is the
+  // shared-L1 pattern (N writer cores + 1 DMA reader). It UPGRADES the
+  // would-be Mutex case to producer/consumer; it must NOT change the Skip
+  // case (a buffer touched only by a DMA and never by core compute keeps its
+  // locks from getLockForDMA as before). Requires AIE2 semaphore locks: the
+  // DMA-side reuse in getLockForDMA / generateDmaBd is UsesSemaphoreLocks-
+  // gated, so on AIE1 the DMA cannot share the prod/cons pair.
+  bool coreOneSidedProducer = hasAnyProducer && !hasAnyConsumer;
+  bool coreOneSidedConsumer = hasAnyConsumer && !hasAnyProducer;
+  bool isThreeWay =
+      usesSemaphoreLocks && ((coreOneSidedProducer && hasDmaReader) ||
+                             (coreOneSidedConsumer && hasDmaWriter));
+
+  // ========================================================================
   // DECISION: Determine lock strategy based on access patterns
   // ========================================================================
   enum class LockStrategy {
@@ -1044,20 +1104,27 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
 
   LockStrategy strategy;
   if (!hasAnyProducer && !hasAnyConsumer) {
-    // No operations access the buffer - skip lock insertion entirely
+    // No CORE operations access the buffer - skip lock insertion entirely.
+    // (A buffer touched only by DMA gets its locks from getLockForDMA.)
     strategy = LockStrategy::Skip;
     LLVM_DEBUG(llvm::dbgs()
                << "AIRToAIE: Skipping locks for shared L1 buffer " << bufName
                << " - no read/write operations detected\n");
-  } else if (hasAnyProducer && hasAnyConsumer) {
-    // Both readers and writers exist - use producer/consumer protocol
+  } else if ((hasAnyProducer && hasAnyConsumer) || isThreeWay) {
+    // Both readers and writers exist - use producer/consumer protocol. This
+    // covers the classic core-reader/core-writer case AND the 3-way case
+    // (one-sided cores + DMA other side), where the DMA participant is the
+    // counterpart that releases the lock and prevents the write-only deadlock
+    // the mutex path guards against.
     strategy = LockStrategy::ProducerConsumer;
     LLVM_DEBUG(
         llvm::dbgs()
         << "AIRToAIE: Using producer/consumer locks for shared L1 buffer "
-        << bufName << " - both readers and writers detected\n");
+        << bufName << " - both readers and writers detected"
+        << (isThreeWay ? " (3-way: includes DMA participant)" : "") << "\n");
   } else {
-    // Only writers OR only readers - use mutex to prevent deadlock
+    // Only writers OR only readers AND no DMA counterpart - use mutex to
+    // prevent deadlock
     strategy = LockStrategy::Mutex;
     // Emit warning about potential deadlock pattern that was avoided
     sharedBuffer->emitWarning()
@@ -1100,6 +1167,26 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
                << "AIRToAIE: Allocated producer/consumer locks for " << bufName
                << " - prod_lock(init=" << prodLockInit
                << "), cons_lock(init=" << consLockInit << ")\n");
+
+    // 3-way carrier stash: when a DMA participant accesses this shared
+    // buffer, the DMA BD's locks are allocated much later (getLockForDMA,
+    // after lowerAIRMemcpyOp), in a phase that has no view of these
+    // prod/cons locks. Stamp the lock symbol-refs onto the channel put/get
+    // op that becomes the DMA BD (the op both phases touch), so getLockForDMA
+    // reads them off the op it is already processing and reuses the SAME pair
+    // (instead of allocating a private channel-put pair, which would break the
+    // 3-way share with no error). The per-side token count N is the prod
+    // lock's init; the DMA side reads it back via LockOp::getInit(), so no
+    // separate count attribute is carried.
+    if (isThreeWay) {
+      auto *ctx = aie_device.getContext();
+      auto prodRef = FlatSymbolRefAttr::get(ctx, prodLock.getSymName().value());
+      auto consRef = FlatSymbolRefAttr::get(ctx, consLock.getSymName().value());
+      for (auto *op : dmaAccessOps) {
+        op->setAttr("air.shared_prod_lock", prodRef);
+        op->setAttr("air.shared_cons_lock", consRef);
+      }
+    }
   } else {
     // Mutex: allocate single lock initialized to 1 (available)
     mutexLock =
@@ -1118,14 +1205,41 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   // LOCK INSERTION: Insert lock pairs around buffer-accessing operations.
   // For inline MLIR kernels (memref.load/store in loops), locks are placed
   // at the outermost loop scope that contains ALL accesses, not per-op.
+  //
+  // Cross-core scope normalization: pre-fix, per-core lock scope was
+  // chosen independently. When producer and consumer cores accessed the
+  // buffer at different nesting depths (e.g. one inside an inner scf.for,
+  // the other at core-body level), the cadence of acquire/release
+  // mismatched (N-per-iter on one side, 1-per-iter on the other) →
+  // permanent stall after the first iteration. Two passes now:
+  //   (1) compute per-core (accessingOps, lockScope, roles)
+  //   (2) detect asymmetric scope (any NULL while any non-NULL); if so,
+  //       HOIST ALL cores to core-body level by wrapping the closest
+  //       ancestor of each accessing op that's a direct child of the
+  //       core op (== the core-body-level "statement"). This produces
+  //       1 acquire/release per AIE-core iteration regardless of inner
+  //       scf.for nesting and is the minimum shared-L1 invariant.
+  //   (3) emit per-core locks using the chosen scope.
   // ========================================================================
-  for (auto coreOp : coreOps) {
-    // Step 1: Collect all ops that access the shared buffer
+  struct PerCoreLockInfo {
+    AIE::CoreOp coreOp;
     SmallVector<Operation *> accessingOps;
-    bool coreIsProducer = false;
-    bool coreIsConsumer = false;
+    bool coreIsProducer;
+    bool coreIsConsumer;
+    Operation *lockScope;
+  };
+  SmallVector<PerCoreLockInfo> coreInfos;
+
+  for (auto coreOp : coreOps) {
+    PerCoreLockInfo info;
+    info.coreOp = coreOp;
+    info.coreIsProducer = false;
+    info.coreIsConsumer = false;
+    info.lockScope = nullptr;
 
     coreOp.walk([&](Operation *op) {
+      if (!accessReachableInCore(op))
+        return;
       bool accessesBuffer = false;
       bool isProducer = false;
       bool isConsumer = false;
@@ -1156,34 +1270,135 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       }
 
       if (accessesBuffer) {
-        accessingOps.push_back(op);
+        info.accessingOps.push_back(op);
         if (isProducer)
-          coreIsProducer = true;
+          info.coreIsProducer = true;
         if (isConsumer)
-          coreIsConsumer = true;
+          info.coreIsConsumer = true;
       }
     });
 
-    if (accessingOps.empty())
+    if (info.accessingOps.empty()) {
+      coreInfos.push_back(info);
       continue;
+    }
 
-    // Step 2: Find the OUTERMOST scf.for that contains ALL accessing ops
-    Operation *lockScope = nullptr;
-    // Start from the first accessing op and walk up
-    Operation *candidate = accessingOps[0]->getParentOp();
+    // Find the OUTERMOST scf.for that contains ALL accessing ops
+    Operation *candidate = info.accessingOps[0]->getParentOp();
     while (candidate && candidate != coreOp.getOperation()) {
       if (isa<scf::ForOp>(candidate)) {
         bool containsAll = true;
-        for (auto *other : accessingOps) {
+        for (auto *other : info.accessingOps) {
           if (!candidate->isProperAncestor(other)) {
             containsAll = false;
             break;
           }
         }
         if (containsAll)
-          lockScope = candidate; // outermost so far; keep going up
+          info.lockScope = candidate;
       }
       candidate = candidate->getParentOp();
+    }
+    coreInfos.push_back(info);
+  }
+
+  // Detect cross-core scope asymmetry that needs hoisting to core-body level.
+  //
+  // The genuine hazard is a core that accesses the buffer ONLY at core-body
+  // level (no enclosing scf.for at all) paired with a core that accesses it
+  // INSIDE a loop: the core-body-level participant cycles the shared lock once
+  // per AIE-core iter while the loop-nested participant cycles it once per loop
+  // iteration -> cadence mismatch / deadlock. Hoisting the loop-nested locks
+  // out to core-body level makes both cycle once per AIE-core iter. This is
+  // only correct when the core-body-level participant produces/consumes the
+  // buffer ONCE (e.g. a whole-buffer write read N times); hoisting is what the
+  // shared_l1_asymmetric_scope regression needs.
+  //
+  // It must NOT trigger when EVERY participant is loop-nested but merely lacks
+  // a single common enclosing loop (e.g. a producer that writes the buffer in
+  // a prologue AND inside its loop -> lockScope==null despite being
+  // loop-nested). Such buffers are reused per loop iteration and require
+  // per-iteration lock handoff; hoisting out of the loop would let the producer
+  // overwrite the buffer N times before the consumer reads (correctness bug /
+  // hang). So key the decision on core-body-only vs loop-nested, NOT on the
+  // presence of a single common loop (lockScope null-ness).
+  auto hasLoopNestedAccess = [&](PerCoreLockInfo &info) {
+    for (auto *op : info.accessingOps) {
+      for (Operation *p = op->getParentOp();
+           p && p != info.coreOp.getOperation(); p = p->getParentOp())
+        if (isa<scf::ForOp>(p))
+          return true;
+    }
+    return false;
+  };
+  bool hoistAllToCoreBody = false;
+  {
+    bool anyCoreBodyOnly = false, anyLoopNested = false;
+    for (auto &info : coreInfos) {
+      if (info.accessingOps.empty())
+        continue;
+      if (hasLoopNestedAccess(info))
+        anyLoopNested = true;
+      else
+        anyCoreBodyOnly = true;
+    }
+    if (anyCoreBodyOnly && anyLoopNested) {
+      hoistAllToCoreBody = true;
+      sharedBuffer->emitWarning()
+          << "shared L1 buffer " << bufName
+          << ": asymmetric per-core lock scopes detected (some cores "
+             "access buffer at core-body level, others inside scf.for); "
+             "hoisting all locks to core-body level to avoid cadence "
+             "mismatch deadlock";
+    }
+  }
+
+  for (auto &info : coreInfos) {
+    auto coreOp = info.coreOp;
+    auto &accessingOps = info.accessingOps;
+    bool coreIsProducer = info.coreIsProducer;
+    bool coreIsConsumer = info.coreIsConsumer;
+    Operation *lockScope = hoistAllToCoreBody ? nullptr : info.lockScope;
+
+    if (accessingOps.empty())
+      continue;
+
+    // 3-way shared L1: wrap each accessing op INDIVIDUALLY (per-buffer
+    // bracketing) rather than hoisting acquire/release to the loop-body
+    // boundaries. Required when multiple shared buffers are ping-ponged in
+    // one loop body: allocateSharedL1BufferLocks runs once per shared buffer,
+    // and the for-body-boundary placement would batch every buffer's prod
+    // acquire at loop top (serializing ping vs pong). Per-op placement keeps
+    // each buffer's lock around only its own access; cadence stays 1-per-iter
+    // because the accessing op is inside the loop. Symmetric across cores
+    // (all writers access at the same nesting), so no cadence-mismatch risk.
+    if (isThreeWay) {
+      for (auto *op : accessingOps) {
+        OpBuilder builder(op);
+        auto loc = op->getLoc();
+        if (coreIsProducer && !coreIsConsumer) {
+          AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, loc, consLock,
+                                 AIE::LockAction::Release, 1);
+        } else if (coreIsConsumer && !coreIsProducer) {
+          AIE::UseLockOp::create(builder, loc, consLock, acqAction,
+                                 numProducerCores);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, loc, prodLock,
+                                 AIE::LockAction::Release, numProducerCores);
+        } else {
+          AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
+          AIE::UseLockOp::create(builder, loc, consLock, acqAction,
+                                 numProducerCores);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, loc, consLock,
+                                 AIE::LockAction::Release, 1);
+          AIE::UseLockOp::create(builder, loc, prodLock,
+                                 AIE::LockAction::Release, numProducerCores);
+        }
+      }
+      continue;
     }
 
     // Step 3: Insert locks at the determined scope
@@ -1222,9 +1437,33 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
                                numProducerCores);
       }
     } else {
-      // Fallback: no enclosing loop, wrap each op individually (original
-      // behavior)
-      for (auto *op : accessingOps) {
+      // Fallback: no single enclosing scf.for contains all accesses.
+      //
+      // When hoistAllToCoreBody is set (asymmetric cross-core scopes), wrap
+      // the closest core-body-level ancestor of each accessing op (the direct
+      // child of the AIE::CoreOp): for a core-body-level access that is the op
+      // itself; for an op inside an scf.for it is the scf.for. This hoists the
+      // acquire/release out of inner loops so every core cycles the shared
+      // lock once per AIE-core iter, avoiding the cadence-mismatch deadlock.
+      //
+      // Otherwise preserve the original per-op wrapping (acquire/release
+      // around each accessing op), which is the pre-existing behavior for
+      // symmetric cores with no common enclosing loop.
+      SetVector<Operation *> wrappingOps;
+      if (hoistAllToCoreBody) {
+        for (auto *op : accessingOps) {
+          Operation *stmt = op;
+          while (stmt && stmt->getParentOp() != coreOp.getOperation())
+            stmt = stmt->getParentOp();
+          if (stmt)
+            wrappingOps.insert(stmt);
+        }
+      } else {
+        for (auto *op : accessingOps)
+          wrappingOps.insert(op);
+      }
+
+      for (auto *op : wrappingOps) {
         OpBuilder builder(op);
 
         if (strategy == LockStrategy::Mutex) {
@@ -1258,6 +1497,76 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       }
     }
   }
+}
+
+// Evaluate a boolean condition value to a compile-time constant, if possible.
+// Handles a constant i1, an arith.cmpi with constant operands, and an
+// arith.index_cast of a constant. Returns nullopt when not statically known.
+static std::optional<bool> evalConstBoolCond(Value cond) {
+  if (auto c = cond.getDefiningOp<arith::ConstantOp>())
+    if (auto ia = dyn_cast<IntegerAttr>(c.getValue()))
+      return ia.getValue().getBoolValue();
+  if (auto cmp = cond.getDefiningOp<arith::CmpIOp>()) {
+    auto l = mlir::getConstantIntValue(cmp.getLhs());
+    auto r = mlir::getConstantIntValue(cmp.getRhs());
+    if (l && r) {
+      unsigned bw = isa<IndexType>(cmp.getLhs().getType())
+                        ? 64
+                        : cmp.getLhs().getType().getIntOrFloatBitWidth();
+      return arith::applyCmpPredicate(cmp.getPredicate(),
+                                      APInt(bw, *l, /*isSigned=*/true),
+                                      APInt(bw, *r, /*isSigned=*/true));
+    }
+  }
+  if (auto ic = cond.getDefiningOp<arith::IndexCastOp>())
+    if (auto v = mlir::getConstantIntValue(ic.getIn())) {
+      unsigned dstBw = isa<IndexType>(ic.getType())
+                           ? 64
+                           : ic.getType().getIntOrFloatBitWidth();
+      return APInt(dstBw, *v).getBoolValue();
+    }
+  return std::nullopt;
+}
+
+// Determine whether `op` actually executes within its enclosing aie.core, by
+// evaluating the constant-operand tile-index guards (scf.if / scf.index_switch)
+// that enclose it. After core outlining the herd tile ids are constants, so
+// these guards are statically decidable. Any guard that cannot be evaluated
+// (e.g. affine.if, data-dependent) is conservatively treated as taken, i.e.
+// the op is assumed reachable -- matching the prior all-uses-count behavior.
+static bool accessReachableInCore(Operation *op) {
+  AIE::CoreOp core = op->getParentOfType<AIE::CoreOp>();
+  if (!core)
+    return false;
+  Operation *child = op;
+  for (Operation *p = op->getParentOp(); p && p != core.getOperation();
+       child = p, p = p->getParentOp()) {
+    Region *childRegion = child->getParentRegion();
+    if (auto sif = dyn_cast<scf::IfOp>(p)) {
+      if (auto c = evalConstBoolCond(sif.getCondition())) {
+        bool inThen = sif.getThenRegion().isAncestor(childRegion);
+        bool inElse = sif.getElseRegion().isAncestor(childRegion);
+        if (*c && inElse)
+          return false;
+        if (!*c && inThen)
+          return false;
+      }
+    } else if (auto sw = dyn_cast<scf::IndexSwitchOp>(p)) {
+      if (auto arg = mlir::getConstantIntValue(sw.getArg())) {
+        Region *selected = &sw.getDefaultRegion();
+        ArrayRef<int64_t> cases = sw.getCases();
+        for (size_t i = 0; i < cases.size(); ++i)
+          if (cases[i] == *arg) {
+            selected = &sw.getCaseRegions()[i];
+            break;
+          }
+        if (!selected->isAncestor(childRegion))
+          return false;
+      }
+    }
+    // affine.if / unknown guards: assume reachable (conservative).
+  }
+  return true;
 }
 
 LogicalResult createAIEModulesAndOutlineCores(
@@ -1406,6 +1715,13 @@ LogicalResult createAIEModulesAndOutlineCores(
       auto coreOp = user->getParentOfType<AIE::CoreOp>();
       if (!coreOp)
         continue;
+      // Only count a core if the use actually executes for that core's tile
+      // id. In an SPMD herd, per-core control flow (not yet folded) means every
+      // core textually references every operand; reachability filtering drops
+      // uses in dead per-core branches so a neighbor buffer maps to just its
+      // real producer/consumer cores.
+      if (!accessReachableInCore(user))
+        continue;
       sharedL1AllocsToCoreMap[memref.getDefiningOp()].insert(coreOp);
     }
   }
@@ -1442,8 +1758,18 @@ LogicalResult createAIEModulesAndOutlineCores(
     auto &coreOps = sharedL1AllocsToCoreMap[memref.getDefiningOp()];
     auto &herds = sharedL1AllocsToHerdMap[memref.getDefiningOp()];
 
-    if (herds.size() > 1) {
-      // SHARED L1 BUFFER: Multiple herds use the same memref
+    // A buffer is shared when used by multiple herds (inter-herd communication)
+    // OR when a single SPMD herd's neighbor cores hop data through it (a reader
+    // core that is not a writer core -- a cross-core producer/consumer). The
+    // latter is inferred purely from the IR's per-core access pattern; no
+    // annotation is required.
+    bool sharedAcrossHerds = herds.size() > 1;
+    bool sharedAcrossCores =
+        !sharedAcrossHerds && herds.size() == 1 &&
+        air::herdBufferHasCrossCoreDependence(*herds.begin(), memref);
+
+    if (sharedAcrossHerds || sharedAcrossCores) {
+      // SHARED L1 BUFFER: used by multiple cores/herds.
       // Allocate a single aie.buffer on one "owner" tile and have all cores
       // reference it. The downstream mlir-aie compiler will validate that
       // the tiles are adjacent and can share L1 memory.
@@ -1710,11 +2036,54 @@ struct SpecializeScfIfPattern : public OpRewritePattern<scf::IfOp> {
   }
 };
 
+// Specialize an scf.index_switch whose index argument is a compile-time
+// constant (an outlined herd tile id) into just the selected case body. Lets
+// per-core buffer selection via scf.index_switch be resolved the same way as
+// affine.if / scf.if in outlined cores.
+struct SpecializeScfIndexSwitchPattern
+    : public OpRewritePattern<scf::IndexSwitchOp> {
+  using OpRewritePattern<scf::IndexSwitchOp>::OpRewritePattern;
+
+  SpecializeScfIndexSwitchPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(scf::IndexSwitchOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op->getParentOfType<AIE::CoreOp>() &&
+        !op->getParentOfType<AIE::DeviceOp>())
+      return failure();
+
+    auto argConst = mlir::getConstantIntValue(op.getArg());
+    if (!argConst)
+      return failure();
+
+    Block *bb = nullptr;
+    ArrayRef<int64_t> cases = op.getCases();
+    for (size_t i = 0; i < cases.size(); ++i) {
+      if (cases[i] == *argConst) {
+        bb = &op.getCaseRegions()[i].front();
+        break;
+      }
+    }
+    if (!bb)
+      bb = &op.getDefaultRegion().front();
+
+    auto t = bb->getTerminator();
+    auto &ops = bb->getOperations();
+    op->getBlock()->getOperations().splice(Block::iterator(op), ops,
+                                           ops.begin(), --ops.end());
+    for (int i = 0, e = op.getNumResults(); i < e; i++)
+      op.getResult(i).replaceAllUsesWith(t->getOperand(i));
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 void specializeHerdAffineIf(AIE::DeviceOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<SpecializeAffineIfPattern>(ctx);
   patterns.insert<SpecializeScfIfPattern>(ctx);
+  patterns.insert<SpecializeScfIndexSwitchPattern>(ctx);
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
 
@@ -2016,6 +2385,19 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
         tileCol - col_offset, tileRow - row_offset);
 
+    // Propagate the memtile L2 re-broadcast directive (mechanism 2: N re-reads
+    // of this resident buffer per fill) onto the buffer op, the shared
+    // fill/drain rendezvous that generateDmaBd / getLockForDMA read on the fill
+    // (S2MM) side. This count is carried on the ALLOC and is distinct from any
+    // channel-level re-feed (mechanism 1: the core-producer count on the
+    // channel, applied in allocateCoreLocksPerMemcpyOp). air-to-aie skips the
+    // channel re-feed for memtile producers, so the two must NOT be unified --
+    // read only the alloc directive here.
+    int64_t refeedN = air::getRefeedCount(alloc.getOperation());
+    if (refeedN > 1)
+      buffer->setAttr(air::attrs::RefeedCount,
+                      rewriter.getI32IntegerAttr(refeedN));
+
     rewriter.replaceOp(alloc, buffer->getResults());
     bufferToMemtileMap[buffer] = tile;
     return success();
@@ -2080,17 +2462,59 @@ void L2MemrefToMemTileMap(
   // First stage in memref placement: grouping memrefs referenced by the same
   // air.channel.
   SmallVector<SmallVector<memref::AllocOp>> memref_buckets;
+  // `air.memtile_col` is the memtile-level analogue of `air.shim_col` (see
+  // AIRToAIESchedulingUtils.cpp). Two deliberate differences: (1) it is carried
+  // on the memref.alloc rather than the channel decl, because L2 placement
+  // buckets are keyed by alloc; (2) it is hint-only (an invalid column warns
+  // and falls through) rather than a hard error, because a memtile column that
+  // exists on one target may not on another and the hint should stay portable.
+  // Caveat: it is a discardable attr on memref.alloc, so set it late (after
+  // air-dependency) — earlier rewrites that reconstruct allocs may drop it.
+  // Returns the user-pinned col for an alloc if it carries
+  // `air.memtile_col`, else -1.
+  auto allocPinCol = [](memref::AllocOp a) -> int {
+    if (auto attr = a->getAttrOfType<IntegerAttr>("air.memtile_col"))
+      return static_cast<int>(attr.getInt());
+    return -1;
+  };
+  // True iff `alloc` shares an air.channel with any member of `bucket`.
+  auto sharesChannelWithBucket = [&](ArrayRef<memref::AllocOp> bucket,
+                                     memref::AllocOp alloc) {
+    for (auto bucket_elem : bucket)
+      if (areReferencedByTheSameAIRChannel(alloc.getMemref(),
+                                           bucket_elem.getMemref()))
+        return true;
+    return false;
+  };
+  // True iff `allocPin` (a valid pin, i.e. >= 0) conflicts with a distinct pin
+  // already present in `bucket`.
+  auto bucketHasConflictingPin = [&](ArrayRef<memref::AllocOp> bucket,
+                                     int allocPin) {
+    for (auto other : bucket) {
+      int otherPin = allocPinCol(other);
+      if (otherPin >= 0 && otherPin != allocPin)
+        return true;
+    }
+    return false;
+  };
   auto placeMemrefInSharedBucket =
       [&](SmallVector<SmallVector<memref::AllocOp>> &memref_buckets,
           memref::AllocOp alloc) {
+        int allocPin = allocPinCol(alloc);
         for (auto &bucket : memref_buckets) {
-          for (auto bucket_elem : bucket) {
-            if (areReferencedByTheSameAIRChannel(alloc.getMemref(),
-                                                 bucket_elem.getMemref())) {
-              bucket.push_back(alloc);
-              return true;
-            }
-          }
+          if (!sharesChannelWithBucket(bucket, alloc))
+            continue;
+          // Pin-aware bucketing: if the alloc carries an air.memtile_col pin
+          // distinct from any pin already in this bucket, skip it (don't
+          // merge) and keep scanning — the alloc may still share a channel
+          // with a different, pin-compatible bucket. Refusing the merge is
+          // what makes MT->MT hops expressible: two L2 buffers sharing one
+          // channel (the hop's intermediate) end up in DIFFERENT buckets, so
+          // the shared channel becomes a real cross-memtile flow.
+          if (allocPin >= 0 && bucketHasConflictingPin(bucket, allocPin))
+            continue;
+          bucket.push_back(alloc);
+          return true;
         }
         return false;
       };
@@ -2166,14 +2590,49 @@ void L2MemrefToMemTileMap(
     }
     return colHasMemTile(consensus) ? consensus : -1;
   };
+  // Resolve the single valid pin for a bucket. Invalid columns (no memtile in
+  // the target) warn and fall through. The conflict branch is a defensive net:
+  // placeMemrefInSharedBucket already refuses to merge allocs carrying distinct
+  // pins, so a bucket normally holds at most one distinct valid pin.
+  auto deriveBucketPin = [&](ArrayRef<memref::AllocOp> bucket) -> int {
+    int pinned = -1;
+    for (auto alloc : bucket) {
+      int col = allocPinCol(alloc);
+      if (col < 0)
+        continue;
+      if (!colHasMemTile(col)) {
+        alloc->emitWarning("air.memtile_col=")
+            << col << " has no memtile in target; ignoring";
+        continue;
+      }
+      if (pinned == -1)
+        pinned = col;
+      else if (pinned != col)
+        alloc->emitWarning("air.memtile_col=")
+            << col << " conflicts with bucket pin=" << pinned << "; ignoring";
+    }
+    return pinned;
+  };
 
-  SmallVector<int> bucketCols;
+  // Derive pins once here (deriveBucketPin emits warnings), then reuse the
+  // cached value on every downstream path so each invalid/conflicting pin is
+  // diagnosed exactly once.
+  SmallVector<int> bucketCols, bucketPins;
   bucketCols.reserve(memref_buckets.size());
+  bucketPins.reserve(memref_buckets.size());
   llvm::DenseMap<int, int> colDemand;
   for (auto &bucket : memref_buckets) {
     int col = deriveBucketCol(bucket);
+    int pin = deriveBucketPin(bucket);
+    bucketPins.push_back(pin);
+    if (pin >= 0)
+      col = pin;
     bucketCols.push_back(col);
-    if (col >= 0)
+    // Only affinity-derived cols feed the saturation trigger. A user pin is an
+    // explicit request that is honored on both branches, so it must not push
+    // the module into the saturation fallback and thereby perturb the
+    // placement of unrelated, unpinned buckets.
+    if (pin < 0 && col >= 0)
       colDemand[col]++;
   }
 
@@ -2194,32 +2653,8 @@ void L2MemrefToMemTileMap(
       break;
     }
 
-  if (saturated) {
-    // Multi-bucket shapes (operand classes like A/B/C) get a per-shape
-    // counter so each class restarts at memtile 0 and bucket-i maps to
-    // memtile-i; singleton shapes keep using a global counter so unrelated
-    // one-off buffers still spread across the pool.
-    auto bucketShape = [](SmallVectorImpl<memref::AllocOp> &bucket) -> Type {
-      return bucket.empty() ? Type() : bucket.front().getMemref().getType();
-    };
-    llvm::DenseMap<Type, int> shapeCount;
-    for (auto &bucket : memref_buckets)
-      shapeCount[bucketShape(bucket)]++;
-    llvm::DenseMap<Type, int> perShapeCounter;
-    int globalCounter = 0;
-    for (auto &bucket : memref_buckets) {
-      Type shape = bucketShape(bucket);
-      int slot =
-          (shapeCount[shape] > 1) ? perShapeCounter[shape]++ : globalCounter++;
-      auto memtile = memtiles[slot % memtiles.size()];
-      for (auto bucket_elem : bucket)
-        memrefToMemTileMap[bucket_elem] = memtile;
-    }
-    return;
-  }
-
-  // Col-affinity assignment: hint pre-emitted LTOs to derived cols and
-  // share one LTO per col. Spill over to round-robin for unhinted buckets.
+  // Hoisted out of the col-affinity branch so the saturation branch can
+  // also honor user pins via findOrCreateLtoForCol.
   OpBuilder builder(m);
   builder.setInsertionPointToStart(m.getBody());
   for (auto &o : m.getBody()->getOperations()) {
@@ -2256,6 +2691,40 @@ void L2MemrefToMemTileMap(
     colToMemtile[col] = tl;
     return tl;
   };
+
+  if (saturated) {
+    // Honor user pins even under saturation: pinned buckets route through
+    // findOrCreateLtoForCol so they land on their requested col; unpinned
+    // buckets distribute via the existing per-shape / global round-robin.
+    auto bucketShape = [](SmallVectorImpl<memref::AllocOp> &bucket) -> Type {
+      return bucket.empty() ? Type() : bucket.front().getMemref().getType();
+    };
+    llvm::DenseMap<Type, int> shapeCount;
+    for (auto &bucket : memref_buckets)
+      shapeCount[bucketShape(bucket)]++;
+    llvm::DenseMap<Type, int> perShapeCounter;
+    int globalCounter = 0;
+    for (size_t i = 0; i < memref_buckets.size(); i++) {
+      auto &bucket = memref_buckets[i];
+      int pin = bucketPins[i];
+      if (pin >= 0) {
+        AIE::TileLike memtile = findOrCreateLtoForCol(pin);
+        for (auto bucket_elem : bucket)
+          memrefToMemTileMap[bucket_elem] = memtile;
+        continue;
+      }
+      Type shape = bucketShape(bucket);
+      int slot =
+          (shapeCount[shape] > 1) ? perShapeCounter[shape]++ : globalCounter++;
+      auto memtile = memtiles[slot % memtiles.size()];
+      for (auto bucket_elem : bucket)
+        memrefToMemTileMap[bucket_elem] = memtile;
+    }
+    return;
+  }
+
+  // Col-affinity assignment: hint pre-emitted LTOs to derived cols and
+  // share one LTO per col. Spill over to round-robin for unhinted buckets.
 
   SmallVector<size_t> unhintedBuckets;
   for (size_t i = 0; i < memref_buckets.size(); i++) {
@@ -2719,8 +3188,40 @@ struct SpecializeChannelBundlePattern
         new_chan->setAttr("broadcast_shape",
                           rewriter.getArrayAttr(ArrayRef(broadcast_shape)));
       }
+      // Propagate DMA-steering markers (incl. user-pinned packet_ids and
+      // keep_pkt_header) onto each split channel: flow creation only sees the
+      // split channels, so without this, indexed/convergent packet channels
+      // fall back to auto-assigned consecutive ids, which alias under the
+      // switchbox arbiter's binary-mask matching and deadlock. Routed through
+      // the single-source-of-truth helper so this copy site stays in sync with
+      // the marker set.
+      air::copyChannelSteeringAttrs(channel, new_chan);
       std::vector<unsigned> position =
           air::getMDVectorFromIterator(bundle_size_stdvec, iter);
+      // keep_pkt_header is per-flow: only the split whose GET lands at offset 0
+      // keeps the header (it becomes the single routing header); the others
+      // strip it. But every split must still skip the static producer-BD stamp
+      // (the kernel already wrote the header), so mark all splits with
+      // SrcWritesPktHeader and drop KeepPktHeader (copied onto all splits
+      // above) from the non-offset-0 ones.
+      if (new_chan->hasAttr(air::attrs::KeepPktHeader)) {
+        new_chan->setAttr(air::attrs::SrcWritesPktHeader,
+                          rewriter.getUnitAttr());
+        bool writesOffsetZero = false;
+        for (auto get : channelGets) {
+          if (!areIdenticalVectors(
+                  air::convertVecOfConstIndexToVecOfUInt(get.getIndices()),
+                  position))
+            continue;
+          writesOffsetZero = llvm::all_of(get.getOffsets(), [](Value o) {
+            auto c = getConstantIntValue(o);
+            return c && *c == 0;
+          });
+          break;
+        }
+        if (!writesOffsetZero)
+          new_chan->removeAttr(air::attrs::KeepPktHeader);
+      }
       for (auto put : channelPuts) {
         auto indices_uint =
             air::convertVecOfConstIndexToVecOfUInt(put.getIndices());
@@ -3125,6 +3626,20 @@ static void removeDeadGlobalOps(AIE::DeviceOp device) {
     op->erase();
 }
 
+// A packet channel whose kernel writes the routing header into the payload
+// itself: the DMA must not stamp a static pkt_id (that would prepend a second
+// header word). True for multi-id pinned channels (the core writes the id) and
+// for keep_pkt_header / air.src_writes_pkt_header channels (the kernel writes
+// the whole header).
+static bool channelKernelWritesHeader(air::ChannelOp chanOp) {
+  if (!chanOp)
+    return false;
+  if (auto pids = chanOp.getPacketIDs(); pids && pids.size() > 1)
+    return true;
+  return chanOp->hasAttr(air::attrs::KeepPktHeader) ||
+         chanOp->hasAttr(air::attrs::SrcWritesPktHeader);
+}
+
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 
   uint64_t BufferId = 0;
@@ -3385,7 +3900,8 @@ public:
                                     xilinx::AIE::WireBundle sourceBundle,
                                     uint32_t sourceChannel, mlir::Value dest,
                                     xilinx::AIE::WireBundle destBundle,
-                                    uint32_t destChannel, int flowID) {
+                                    uint32_t destChannel, int flowID,
+                                    bool keepPktHeader = false) {
     AIE::PacketFlowOp packetFlowOp = nullptr;
     aie_device.walk([&](AIE::PacketFlowOp pktFlowOp) {
       auto pktSrcOp = getPacketSourceOpInPacketFlowOp(pktFlowOp, source);
@@ -3420,7 +3936,9 @@ public:
 
     builder.setInsertionPoint(aie_device.getBody()->getTerminator());
     return createPacketFlowOp(builder, flowID, source, sourceBundle,
-                              sourceChannel, dest, destBundle, destChannel);
+                              sourceChannel, dest, destBundle, destChannel,
+                              keepPktHeader ? builder.getBoolAttr(true)
+                                            : mlir::BoolAttr());
   }
 
   /// Query an existing packet flow operation from within the AIE device.
@@ -4166,8 +4684,8 @@ public:
     //   Pass 2: intra-device packet flows (assignIntraDevicePacketID --
     //           lowest gap in claimedPacketIDs).
     //   Pass 3: stream and cascade flows (no pkt_id involved).
-    auto isInvalidAlloc = [&](air::MemcpyBundleAsFlow &f, int i) {
-      if (!f.MM2S_alloc.getDmaTile() || !f.S2MM_alloc[i].getDmaTile()) {
+    auto isInvalidAlloc = [&](air::MemcpyBundleAsFlow &f, int j, int i) {
+      if (!f.MM2S_alloc[j].getDmaTile() || !f.S2MM_alloc[i].getDmaTile()) {
         LLVM_DEBUG(llvm::dbgs()
                    << "AIRToAIE: skipping memcpy flow due to invalid DMA "
                       "tile allocation (MM2S or S2MM tile is null)\n");
@@ -4175,8 +4693,8 @@ public:
       }
       return false;
     };
-    auto isShimFlowAt = [&](air::MemcpyBundleAsFlow &f, int i) {
-      return f.MM2S_alloc.getDmaTile().isShimNOCorPLTile() ||
+    auto isShimFlowAt = [&](air::MemcpyBundleAsFlow &f, int j, int i) {
+      return f.MM2S_alloc[j].getDmaTile().isShimNOCorPLTile() ||
              f.S2MM_alloc[i].getDmaTile().isShimNOCorPLTile();
     };
     // The flow-op key for packetIDForChannelName is the air.channel symbol
@@ -4202,31 +4720,120 @@ public:
       return it->second;
     };
 
-    // Pass 1: shim packet flows.
+    // Explicit per-destination packet ids pinned via the channel's `packet_ids`
+    // array attribute. Read on-demand from the channel op (kept off the
+    // MemcpyBundleAsFlow struct to avoid bloating it past the SmallVector
+    // inline-size budget).
+    auto getPinnedIDs = [](air::MemcpyBundleAsFlow &f) -> SmallVector<int> {
+      SmallVector<int> ids;
+      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op))
+        if (auto attr = chanOp.getPacketIDs())
+          for (auto idAttr : attr)
+            // Verifier guarantees IntegerAttr elements in [0,31]; dyn_cast
+            // keeps the pass robust on unverified IR (skip non-integer
+            // entries).
+            if (auto idInt = dyn_cast<IntegerAttr>(idAttr))
+              ids.push_back((int)idInt.getInt());
+      return ids;
+    };
+
+    // Pre-claim every explicitly-pinned packet id so the auto-assigner for
+    // other flows skips them.
+    for (auto &f : memcpy_flows)
+      if (f.memcpyResourceType == "npu_dma_packet")
+        for (int id : getPinnedIDs(f))
+          claimedPacketIDs.insert(id);
+
+    // Packet ids to emit for destination i. Normally one id (the shared
+    // auto-assigned id memoized by channel name). When the channel pins
+    // `packet_ids`:
+    //   - N pinned ids with a SINGLE destination emits N flows (one per id) to
+    //     that one dest -- every id routes to the same buffer and the
+    //     kernel-written header carries the phase through to a later demux hop.
+    //   - N pinned ids with multiple dests demuxes per-destination (dest i uses
+    //     pinned[i]).
+    //   - a SINGLE pinned id (incl. same-id N-producer convergence) is recorded
+    //     in packetIDForChannelName so generateDmaBd STAMPS every producer
+    //     (MM2S) and receiver (S2MM) BD with that id. Without this the pinned
+    //     path left the map unset, so producers emitted UNTAGGED packets and
+    //     the switchbox could not route N same-id sources onto one slave port.
+    //   - MULTIPLE pinned ids are DELIBERATELY not recorded in
+    //     packetIDForChannelName: under the pinned-multi-id contract the
+    //     compute core writes the routing id into the payload header, so the
+    //     DMA must NOT stamp/filter (generateDmaBd +
+    //     labelMemcpyOpsWithPacketFlow both skip a channel with no map entry /
+    //     >1 pinned id). The packet_flow ops alone install the switchbox
+    //     routes.
+    auto pktIDsForDest = [&](air::MemcpyBundleAsFlow &f, int i,
+                             bool isShim) -> SmallVector<int> {
+      auto pinned = getPinnedIDs(f);
+      if (pinned.empty())
+        return {assignOrLookupPacketID(f, isShim)};
+      if (pinned.size() == 1) {
+        std::string chanName = getChannelName(f);
+        if (!chanName.empty())
+          packetIDForChannelName[chanName] = pinned[0];
+      }
+      if (f.numS2MMAllocs == 1)
+        return pinned; // N ids -> the single destination
+      if (i < (int)pinned.size())
+        return {pinned[i]}; // per-destination demux
+      // Fewer pinned ids than destinations: the surplus dests fall back to
+      // auto-assigned ids, silently mixing pinned + auto. Warn so this is not a
+      // surprise -- a well-formed demux pins exactly one id per destination.
+      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op))
+        chanOp->emitWarning()
+            << "packet_ids pins " << pinned.size() << " id(s) but channel has "
+            << f.numS2MMAllocs << " destinations; destination " << i
+            << " falls back to an auto-assigned id";
+      return {assignOrLookupPacketID(f, isShim)};
+    };
+
+    // Pass 1: shim packet flows. Nested over producers (j) x dests (i): one
+    // packet_flow per (producer, dest). For multi-producer convergence the
+    // shared dest pkt id is memoized by channel name in assignOrLookupPacketID,
+    // so all producers of one channel land on the dest S2MM with the SAME id.
     for (auto &f : memcpy_flows) {
       if (f.memcpyResourceType != "npu_dma_packet")
         continue;
       for (int i = 0; i < f.numS2MMAllocs; i++) {
-        if (isInvalidAlloc(f, i))
-          continue;
-        if (!isShimFlowAt(f, i))
-          continue;
-        int flowID = assignOrLookupPacketID(f, /*isShim=*/true);
-        getPacketFlowOp(
-            aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-            AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
-            f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-            (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-        // Backlink: the host runtime keys packet identification on
-        // (shim tile, pkt_id), so the matching MM2S shim alloc carries the id.
-        for (auto &sa : shim_dma_alloc.mm2s_allocs) {
-          if (sa.getDmaTile().getOperation() ==
-                  f.MM2S_alloc.getDmaTile().getOperation() &&
-              sa.dma_channel == f.MM2S_alloc.dma_channel &&
-              sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
-              sa.dma_id == f.MM2S_alloc.dma_id) {
-            sa.packet_flow_id = flowID;
-            break;
+        for (int j = 0; j < f.numMM2SAllocs; j++) {
+          if (isInvalidAlloc(f, j, i))
+            continue;
+          if (!isShimFlowAt(f, j, i))
+            continue;
+          auto flowIDs = pktIDsForDest(f, i, /*isShim=*/true);
+          // A shim source feeding >1 pinned id follows the kernel-header
+          // contract (the core stamps the header), so no single id backlinks to
+          // the shim alloc -- recording one would falsely tag the MM2S op with
+          // a partial id (the last, pre-fix). Only the single-id path
+          // backlinks.
+          bool backlink = flowIDs.size() == 1;
+          for (int flowID : flowIDs) {
+            getPacketFlowOp(aie_device,
+                            f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                            f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.S2MM_alloc[i].dma_channel.channel,
+                            flowID, f.keep_pkt_header);
+            if (!backlink)
+              continue;
+            // Backlink: the host runtime keys packet identification on
+            // (shim tile, pkt_id), so the matching MM2S shim alloc carries the
+            // id.
+            for (auto &sa : shim_dma_alloc.mm2s_allocs) {
+              if (sa.getDmaTile().getOperation() ==
+                      f.MM2S_alloc[j].getDmaTile().getOperation() &&
+                  sa.dma_channel == f.MM2S_alloc[j].dma_channel &&
+                  sa.col == f.MM2S_alloc[j].col &&
+                  sa.row == f.MM2S_alloc[j].row &&
+                  sa.dma_id == f.MM2S_alloc[j].dma_id) {
+                sa.packet_flow_id = flowID;
+                break;
+              }
+            }
           }
         }
       }
@@ -4237,16 +4844,22 @@ public:
       if (f.memcpyResourceType != "npu_dma_packet")
         continue;
       for (int i = 0; i < f.numS2MMAllocs; i++) {
-        if (isInvalidAlloc(f, i))
-          continue;
-        if (isShimFlowAt(f, i))
-          continue;
-        int flowID = assignOrLookupPacketID(f, /*isShim=*/false);
-        getPacketFlowOp(
-            aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-            AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
-            f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-            (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+        for (int j = 0; j < f.numMM2SAllocs; j++) {
+          if (isInvalidAlloc(f, j, i))
+            continue;
+          if (isShimFlowAt(f, j, i))
+            continue;
+          for (int flowID : pktIDsForDest(f, i, /*isShim=*/false)) {
+            getPacketFlowOp(aie_device,
+                            f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                            f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.S2MM_alloc[i].dma_channel.channel,
+                            flowID, f.keep_pkt_header);
+          }
+        }
       }
     }
 
@@ -4256,20 +4869,25 @@ public:
           f.memcpyResourceType != "npu_cascade")
         continue;
       for (int i = 0; i < f.numS2MMAllocs; i++) {
-        if (isInvalidAlloc(f, i))
-          continue;
-        if (f.memcpyResourceType == "npu_dma_stream")
-          getFlowOp(
-              aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-              AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
-              f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-              (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
-        else
-          getCascadeFlowOp(
-              aie_device, f.MM2S_alloc.getDmaTile()->getResult(0),
-              AIE::WireBundle::DMA, (uint32_t)f.MM2S_alloc.dma_channel.channel,
-              f.S2MM_alloc[i].getDmaTile()->getResult(0), AIE::WireBundle::DMA,
-              (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+        for (int j = 0; j < f.numMM2SAllocs; j++) {
+          if (isInvalidAlloc(f, j, i))
+            continue;
+          if (f.memcpyResourceType == "npu_dma_stream")
+            getFlowOp(aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                      AIE::WireBundle::DMA,
+                      (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                      f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                      AIE::WireBundle::DMA,
+                      (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+          else
+            getCascadeFlowOp(aie_device,
+                             f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                             AIE::WireBundle::DMA,
+                             (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                             f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                             AIE::WireBundle::DMA,
+                             (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+        }
       }
     }
     return success();
@@ -4489,6 +5107,15 @@ public:
                                              StringAttr dmaNameAttr,
                                              mlir::Value tileVal, int channel,
                                              int packetFlowId = -1) {
+    // Kernel-writes-header channels must not be statically stamped, so the
+    // shim DMA does not prepend a second header word. Skip before the runtime
+    // fallback below could tag it with an arbitrary flow id.
+    if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
+            memcpyOpIf.getOperation()))
+      if (channelKernelWritesHeader(
+              air::getChannelDeclarationThroughSymbol(ci)))
+        return success();
+
     // When a packet flow ID is available (from flow creation phase), use
     // exact flow ID matching to disambiguate multiple flows sharing the
     // same shim DMA channel. Otherwise fall back to source-only lookup.
@@ -5145,6 +5772,15 @@ public:
     if (failed(bufferOp)) {
       return memcpyOpIf->emitOpError("failed to get buffer.");
     }
+    // 3-way shared L1: the core-side acquire/release for a channel put/get on
+    // this buffer was already emitted by allocateSharedL1BufferLocks (the
+    // shared prod/cons wrapping around the core's kernel write). Emitting
+    // another core-side lock here would double-acquire the prod lock and
+    // deadlock. The op carries the shared prod/cons symbol-refs; skip the
+    // core-side lock. The DMA-side BD still picks up the shared pair via
+    // getLockForDMA in generateDmaBdProgram.
+    if (memcpyOpIf->hasAttr("air.shared_prod_lock"))
+      return success();
     auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, tile,
                                             bufferOp.value().getOperation(),
                                             /*lockRaceConditionFix*/ false);
@@ -5168,6 +5804,36 @@ public:
       lockAqValue = UsesSemaphoreLocks ? 1 : 0;
       lockRelValue = UsesSemaphoreLocks ? 1 : 1;
       alloc = memcpyOpIf.getSrcMemref();
+    }
+
+    // Producer-side re-feed. An outbound channel put that re-sends ONE resident
+    // buffer N times (e.g. an activation output streamed once per GEMV
+    // row-block iteration) is expressed by air.refeed_count=N. The producing
+    // core writes the buffer once and the DMA's count-free self-loop BD
+    // re-reads it; the single core-side release must free N read-tokens so the
+    // BD fires N times. (The N>1 loop the front-end emits is canonicalized away
+    // before air-to-aie, so the count is carried on the channel/put, not
+    // inferred from a loop.)
+    if (UsesSemaphoreLocks && !tileInbound.value()) {
+      int64_t n = 1;
+      if (auto chanIf =
+              dyn_cast<air::ChannelInterface>(memcpyOpIf.getOperation()))
+        n = air::getRefeedCount(chanIf);
+      if (n > 1) {
+        lockRelValue *= n;
+        // Re-dispatch correctness: the DMA self-loop releases the buf-free
+        // (acquire) lock once per re-send, i.e. N times per dispatch, while the
+        // producing core overwrites the resident buffer only once. The core
+        // must re-acquire ALL N freed tokens before the next overwrite, and the
+        // buf-free lock must INIT to N (else the first dispatch's acquire>=N
+        // can never fire). Without this the buf-free lock leaks N-1 every
+        // dispatch, accumulating into a re-dispatch parity stall.
+        lockAqValue *= n;
+        // getRefeedCount guarantees 1 < n <= INT32_MAX, so the narrowing is
+        // safe.
+        if (auto initOpt = acqLockOp.getInit(); !initOpt || *initOpt < n)
+          acqLockOp.setInit(static_cast<int32_t>(n));
+      }
     }
 
     // Detect if multiple outbound puts in this DMA allocation share the same
@@ -5256,7 +5922,8 @@ public:
                                        std::vector<Operation *>>
                            dma_memcpys,
                        dmaAllocatorTy dmaAlloc, mlir::Location loc, memOpTy mem,
-                       AIE::TileLike tile, bool lockRaceConditionFix = false) {
+                       AIE::TileLike tile, bool lockRaceConditionFix = false,
+                       bool lockRaceConditionFixV2 = false) {
 
     llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
                     std::vector<Operation *>>
@@ -5366,14 +6033,14 @@ public:
             memcpyOp->emitOpError("failed to get buffer.");
             return failure();
           }
-          auto locks = dmaAlloc.getLockForDMA(memcpyOp, tile,
-                                              bufferOp.value().getOperation(),
-                                              lockRaceConditionFix);
+          auto locks = dmaAlloc.getLockForDMA(
+              memcpyOp, tile, bufferOp.value().getOperation(),
+              lockRaceConditionFix, lockRaceConditionFixV2);
           if (failed(locks))
             return memcpyOp->emitOpError("failed to get lock for dma.");
-          auto newBD = generateDmaBd<bufferOpTy>(loc, dir, locks.value(), tile,
-                                                 targetModel, bd, memcpyOp,
-                                                 bufferOp.value(), chan);
+          auto newBD = generateDmaBd<bufferOpTy>(
+              loc, dir, locks.value(), tile, targetModel, bd, memcpyOp,
+              bufferOp.value(), chan, lockRaceConditionFixV2);
           // Attribute task_id is necessary to ensure that BDs do not get shared
           // across tasks, otherwise MLIR may fold BDs and cause BD sharing
           // across tasks.
@@ -5382,6 +6049,60 @@ public:
           newBD.value()->setAttr(
               "task_id",
               IntegerAttr::get(IntegerType::get(b.getContext(), 32), taskId));
+
+          // v2 chain-lock 2-slot ping-pong: splice a twin BD (on a second
+          // buffer instance, sharing the chain locks) between the primary BD
+          // and its next_bd target, giving producer-consumer overlap on the
+          // shared L2 buffer.
+          if constexpr (std::is_same_v<bufferOpTy, AIE::BufferOp>) {
+            if (lockRaceConditionFixV2 && task_ops.size() == 1) {
+              AIE::BufferOp primaryBuf = bufferOp.value();
+              if (air::isChainLockCandidate(primaryBuf)) {
+                auto clsOrFail =
+                    dmaAlloc.getOrCreateChainLockSet(primaryBuf, tile);
+                if (failed(clsOrFail))
+                  return primaryBuf->emitOpError(
+                      "v2 chain-lock: failed to look up chain lock set "
+                      "for ping-pong twin");
+                air::ChainLockSet *cls = clsOrFail.value();
+                // A buffer carrying air.refeed_count is a single-buffer
+                // count-free re-broadcast: the resident data is re-sent N
+                // times without a refill. Allocating a 2-slot ping-pong twin
+                // would deadlock, since the second (pong) slot is never filled
+                // when the producer emits a single token. Keep refeed buffers
+                // single-buffer.
+                if (cls->pp_slots == 1 &&
+                    air::getRefeedCount(primaryBuf.getOperation()) <= 1) {
+                  AIE::BufferOp twin = allocateBufferOp(
+                      this->BufferId, primaryBuf.getType(), tile,
+                      /*attr=*/nullptr, /*x=*/-1, /*y=*/-1);
+                  dmaAlloc.activateChainPingPong(*cls, twin);
+                }
+                if (cls->twin_buf) {
+                  // Splice bd_pong between bd and its current next_bd target.
+                  auto primaryNextBd = cast<AIE::NextBDOp>(bd->getTerminator());
+                  Block *origTarget = primaryNextBd.getDest();
+                  Block *bd_pong = new Block();
+                  bd_pong->insertBefore(end_bb);
+                  primaryNextBd->setSuccessor(bd_pong, 0);
+                  // Emit the twin's acq/dma_bd/rel into bd_pong using the
+                  // SAME lock pair (chain locks are shared across ping/pong).
+                  auto pongBD = generateDmaBd<bufferOpTy>(
+                      loc, dir, locks.value(), tile, targetModel, bd_pong,
+                      memcpyOp, cls->twin_buf, chan, lockRaceConditionFixV2);
+                  if (failed(pongBD))
+                    return cls->twin_buf->emitOpError(
+                        "v2 chain-lock: failed to generate ping-pong twin BD");
+                  pongBD.value()->setAttr(
+                      "task_id",
+                      IntegerAttr::get(IntegerType::get(b.getContext(), 32),
+                                       taskId));
+                  auto bd_pong_builder = OpBuilder::atBlockEnd(bd_pong);
+                  AIE::NextBDOp::create(bd_pong_builder, loc, origTarget);
+                }
+              }
+            }
+          }
         }
 
         AIE::DMAStartOp startOp = nullptr;
@@ -5411,7 +6132,8 @@ public:
   generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
                 std::pair<AIE::LockOp, AIE::LockOp> locks, AIE::TileLike tile,
                 const AIE::AIETargetModel &targetModel, Block *bd,
-                air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan) {
+                air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan,
+                bool lockRaceConditionFixV2 = false) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
@@ -5422,14 +6144,60 @@ public:
     b.setInsertionPointToStart(bd);
     int64_t lockAqValue = -1;
     int64_t lockRelValue = -1;
+    // 3-way shared L1: the channel put/get op carries the shared prod/cons
+    // identity. The DMA participant must acquire/release N tokens against the
+    // shared prod/cons pair (init=N / 0) so it drains all N writer releases
+    // per cycle. N is the prod lock's init; getLockForDMA returns (cons, prod)
+    // for the shared case, so N = locks.second.getInit().
+    std::optional<int> sharedLockCount;
+    if (memcpyOp->hasAttr("air.shared_prod_lock"))
+      sharedLockCount = locks.second.getInit();
+    bool useSharedL1LockCounts = sharedLockCount.has_value();
+    // v2: when the chain-lock template applies for this buffer (fan-in/
+    // fan-out shared L2 with per-stage signal locks), force per-BD lock
+    // acq/rel counts to 1. The chain semantics rely on each writer/
+    // reader holding/releasing exactly one token at a time; using the
+    // legacy `getLockValuePair`-derived counts (N for the multi-side)
+    // would break the chain because the multi-side BD would acquire/
+    // release N tokens against the cap lock (init=#slots), reverting
+    // to the legacy parallel-acquire behaviour.
+    // The 3-way (compute-tile) and chain-lock (memtile) cases are mutually
+    // exclusive, so a chained selection is unambiguous.
+    bool useChainLockCounts =
+        lockRaceConditionFixV2 &&
+        isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation()) &&
+        air::isChainLockCandidate(cast<AIE::BufferOp>(bufferOp.getOperation()));
     auto aie2LockVal =
-        air::getLockValuePair(targetModel, bufferOp->getResult(0));
+        useSharedL1LockCounts
+            ? std::pair<int64_t, int64_t>(*sharedLockCount, *sharedLockCount)
+        : useChainLockCounts
+            ? std::make_pair<int64_t, int64_t>(1, 1)
+            : air::getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.first : 0;
       lockRelValue = UsesSemaphoreLocks ? aie2LockVal.first : 1;
     } else {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.second : 1;
       lockRelValue = UsesSemaphoreLocks ? aie2LockVal.second : 0;
+    }
+    // Count-free re-fed broadcast/relay: the resident buffer is re-broadcast N
+    // times per fill, once per consumer row-block. On AIE2 memtile/core BDs
+    // this cannot be a stride-0 repeat dim (HW unsupported) nor a repeat_count
+    // BD (lock-once -> stale rebroadcast). It is realized as a count-free ring
+    // (the MM2S self-loops via infiniteBDLoopMode) driven by the FILL releasing
+    // the read-lock xN: the fill (S2MM) acquires the refill-lock xN (waits for
+    // all N re-reads done before overwriting) and releases the read-lock xN
+    // (enables N count-free MM2S re-reads). The MM2S side is unchanged (x1 per
+    // fire). N = air.refeed_count, propagated onto the memtile buffer op (the
+    // shared fill/drain rendezvous) by AllocL2BuffersPattern; read via the same
+    // helper the lock allocator uses so init and acq/rel cannot diverge.
+    if (isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation()) &&
+        UsesSemaphoreLocks && !isMM2S) {
+      int64_t refeedN = air::getRefeedCount(bufferOp.getOperation());
+      if (refeedN > 1) {
+        lockAqValue = refeedN;
+        lockRelValue = refeedN;
+      }
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
 
@@ -5494,8 +6262,13 @@ public:
     AIE::PacketInfoAttr pktInfoAttr = nullptr;
     if (auto chanIfOp = dyn_cast_if_present<air::ChannelInterface>(
             memcpyOp.getOperation())) {
+      // Channels whose kernel writes the routing header itself must NOT be
+      // statically stamped: a static pkt_id would prepend a second header word
+      // and shift the payload.
+      bool kernelWritesHeader = channelKernelWritesHeader(
+          air::getChannelDeclarationThroughSymbol(chanIfOp));
       auto it = packetIDForChannelName.find(chanIfOp.getChanName().str());
-      if (it != packetIDForChannelName.end())
+      if (!kernelWritesHeader && it != packetIDForChannelName.end())
         pktInfoAttr =
             AIE::PacketInfoAttr::get(ndcpy->getContext(), 0, it->second);
     }
@@ -6489,7 +7262,8 @@ public:
       if (failed(generateDmaBdProgram<air::MemTileDMAAllocator, AIE::BufferOp,
                                       AIE::MemTileDMAOp>(
               rewriter, target_model, memtile_dma_memcpys, memTileDmaAlloc, loc,
-              memTileDMA, tile, options.use_lock_race_condition_fix))) {
+              memTileDMA, tile, options.use_lock_race_condition_fix,
+              options.use_lock_race_condition_fix_v2))) {
         memTileDMA->emitOpError("failed to generate dma bd program.");
         return failure();
       }
@@ -6702,6 +7476,7 @@ public:
           /*.generate_shim_dma = */ clGenerateShimDMA,
           /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
           /*.use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
+          /*.use_lock_race_condition_fix_v2 = */ clUseLockRaceConditionFixV2,
           /*.device = */ *device,
           /*.stack_size = */ clStackSize};
 
@@ -6794,6 +7569,18 @@ public:
     OpBuilder builder(module);
     builder.setInsertionPointToStart(module.getBody());
 
+    // v1/v2 mutual exclusion: they apply different fixes to overlapping
+    // problem areas, and combining them would interleave dummy-op
+    // insertion (v1) with chain-lock allocation (v2) in ways that don't
+    // have a coherent semantics. Force the user to pick one.
+    if (clUseLockRaceConditionFix && clUseLockRaceConditionFixV2) {
+      module.emitOpError(
+          "use-lock-race-condition-fix and use-lock-race-condition-fix-v2 are "
+          "mutually exclusive; enable at most one");
+      signalPassFailure();
+      return;
+    }
+
     auto loc = builder.getUnknownLoc();
     auto module_meta = airrt::ModuleMetadataOp::create(builder, loc);
     builder.createBlock(&module_meta.getSegments());
@@ -6821,6 +7608,7 @@ public:
         /* .generate_shim_dma = */ clGenerateShimDMA,
         /* .insert_trace_packet_flow = */ clInsertTracePacketFlow,
         /* .use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
+        /* .use_lock_race_condition_fix_v2 = */ clUseLockRaceConditionFixV2,
         /* .device = */ *device,
         /* .stack_size = */ clStackSize};
     if (failed(createAIEModulesAndOutlineCores(module, aie_devices, options))) {
@@ -7345,6 +8133,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
       /* .generate_shim_dma = */ false,
       /* .insert_trace_packet_flow = */ false,
       /* .use_lock_race_condition_fix = */ true,
+      /* .use_lock_race_condition_fix_v2 = */ false,
       /* .device = */ *device};
   std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
   p.walk([&](air::HerdOp h) { aie_modules.push_back({aie_module, h}); });

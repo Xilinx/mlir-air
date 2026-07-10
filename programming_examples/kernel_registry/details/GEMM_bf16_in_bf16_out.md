@@ -130,6 +130,20 @@ Shapes cover LLM weight-projection shapes (the four 2048-row entries) and a squa
 | 512×512×512 | 32/256/32/128 | 482 | 9.7e-3 | ✅ |
 | 1024×1024×1024 | 64/256/32/128 | 2502 | 9.9e-3 | ✅ |
 | 4096×4096×4096 | 64/512/32/128 | **8423** | 9.9e-3 | ✅ |
+| 2048×1024×2048 | 64/256/32/128 | 4425 | 9.9e-3 | ✅ Qwen3-0.6B Q proj |
+| 2048×2048×1024 | 64/256/32/128 | 5392 | 9.7e-3 | ✅ Qwen3-0.6B O proj |
+| 2048×3072×1024 | 64/256/32/128 | 6461 | 9.9e-3 | ✅ Qwen3-0.6B Down proj |
+| 2048×4864×896 | 64/256/32/32 | 3640 | 9.8e-3 | ✅ Qwen2.5-0.5B Down proj (N=896→TILE_N=32 HERD_N=4) |
+| 2048×1536×1536 | 64/256/32/128 | 4821 | 9.7e-3 | ✅ Qwen2.5-1.5B Q/O proj (N=1536=512·3→default TILE_N=128) |
+| 2048×8960×1536 | 64/256/32/128 | 8804 | 9.7e-3 | ✅ Qwen2.5-1.5B Down proj (N=1536→TILE_N=128; K=8960 tile_k_l2=256) |
+| 2048×3072×3072 | 64/256/32/128 | 7513 | 9.9e-3 | ✅ Llama-3.2-3B Q/O proj (square) |
+| 2048×3072×8192 | 64/256/32/128 | 7601 | 9.9e-3 | ✅ Llama-3.2-3B Gate/Up proj |
+| 2048×8192×3072 | 64/256/32/128 | 9092 | 9.7e-3 | ✅ Llama-3.2-3B Down proj |
+| 2048×2560×1024 | 64/256/32/128 | 6049 | 9.8e-3 | ✅ Qwen3-4B O proj (emb=2560) |
+| 2048×2560×4096 | 64/256/32/128 | 7034 | 9.8e-3 | ✅ Qwen3-4B Q proj (emb=2560→4096) |
+| 2048×2560×9728 | 64/**64**/32/128 | 5528 | 9.8e-3 | ✅ Qwen3-4B Gate/Up (N=9728: tile_k_l2≥128 DMA-stride fails; tile_k_l2=64 keeps high-prec, beats low) |
+| 2048×4096×2560 | 64/256/32/128 | 7560 | 9.9e-3 | ✅ Qwen3-4B O proj alt (4096→2560) |
+| 2048×9728×2560 | 64/256/32/128 | 8633 | 9.8e-3 | ✅ Qwen3-4B Down proj (9728→2560) |
 
 ### high-precision, `--method drain` (tile_m=32) — fastest at small / thin shapes
 
@@ -142,6 +156,10 @@ Shapes cover LLM weight-projection shapes (the four 2048-row entries) and a squa
 | 512×512×512 | 32/256/32/128 | **1703** | 9.3e-3 | ✅ |
 | 1024×1024×1024 | 32/256/32/128 | **4637** | 9.5e-3 | ✅ |
 | 4096×4096×4096 | 32/512/32/128 | 7002 | 9.4e-3 | ✅ |
+| 2048×1024×1024 | 32/256/32/128 | 4980 | 9.4e-3 | ✅ Qwen3-0.6B K/V proj (auto→drain; fused-cast over-allocs L1) |
+| 2048×896×896 | 32/128/32/32 | 2516 | 9.4e-3 | ✅ Qwen2.5-0.5B Q/O proj (N=896→TILE_N=32 HERD_N=4; HERD_N=1 fails at runtime) |
+| 2048×896×128 | 32/128/32/32 | 1890 | 9.4e-3 | ✅ Qwen2.5-0.5B K/V proj (thin N=128=4·32) |
+| 2048×1536×256 | 32/256/32/64 | 3770 | 9.3e-3 | ✅ Qwen2.5-1.5B K/V proj (thin N=256=4·64→TILE_N=64) |
 
 ### low-precision (`--high-precision false`), direct-codegen bf16
 
@@ -154,6 +172,19 @@ Shapes cover LLM weight-projection shapes (the four 2048-row entries) and a squa
 | 512×512×512 | 64/256/32/128 | 1750 | 1.0e-2 | 2.9e-3 | ✅ |
 | 1024×1024×1024 | 64/256/32/128 | 4456 | 1.1e-2 | 2.4e-3 | ✅ |
 | 4096×4096×4096 | 64/512/32/128 | 5509 | 1.5e-2 | 2.9e-3 | ✅ |
+| 2048×1024×3072 | 64/256/32/128 | 5006 | 1.1e-2 | 2.9e-3 | ✅ Qwen3-0.6B Gate/Up proj |
+| 2048×896×4864 | 64/128/32/64 | 4320 | 1.1e-2 | 2.9e-3 | ✅ Qwen2.5-0.5B Gate/Up proj (N=4864→TILE_N=64 HERD_N=4; high-prec atol artifact, see note) |
+| 2048×1536×8960 | 64/128/32/64 | 4165 | 1.2e-2 | 3.4e-3 | ✅ Qwen2.5-1.5B Gate/Up proj (N=8960→TILE_N=64; high-prec fused-cast compile-fails L1, low-prec needs tile_k_l2=128) |
+| 2048×2048×11008 | 64/128/32/64 | 4276 | 1.3e-2 | — | ✅ Qwen2.5-3B Gate/Up proj (N=11008→TILE_N=64; tile_k_l2=256 DMA-stride fails, needs tile_k_l2=128) |
+| 2048×2560×9728 | 64/128/32/64 | 4397 | 1.4e-2 | — | ✅ Qwen3-4B Gate/Up alt (low-prec; high-prec fused-cast tile_k_l2=64 is faster+more accurate, see fused-cast table) |
+
+> **Qwen2.5-1.5B note — 1536 is 512-aligned.** Unlike Qwen2.5-0.5B (896), Qwen2.5-1.5B's emb/q_dim = 1536 = 512·3 is divisible by the default `4·TILE_N = 512`, so **Q/O/Down (N=1536) place at the stock `TILE_N=128 HERD_N=4`** with no shrink. Only the thin **K/V (N=256 → TILE_N=64, drain)** and the wide **Gate/Up (N=8960 → TILE_N=64)** drop below 128. K=1536→`tile_k_l2=256` (1536/256=6); K=8960→`tile_k_l2=256` (8960/256=35). **Gate/Up (2048×1536×8960)**: the high-precision fused-cast at TILE_M=64/TILE_N=64 over-allocates L1 (NPU lowering pipeline fail); the low-precision direct path PASSES but only with `tile_k_l2=128` (tile_k_l2=256 also compile-fails at this N), at 1.2e-2 — the same Gate/Up tier-down as the smaller Qwen siblings. No padding was required for any Qwen2.5-1.5B shape.
+
+> **Qwen2.5-0.5B note — non-512-aligned N.** Qwen2.5's projection widths (896, 128, 4864) are not divisible by the default `4·TILE_N = 512`, and `HERD_N=1` (e.g. `TILE_N=128` for N=896) **fails at runtime** (`qds_device::wait() unexpected command state` — the fused-cast/drain paths assume the 8×4 array). Working config: keep `HERD_N=4`, shrink `TILE_N` so `4·TILE_N | N` (TILE_N=32 for N∈{896,128}, TILE_N=64 for N=4864). K=896→`tile_k_l2=128`, K=4864→`tile_k_l2=256`. The thin Q/O/K/V shapes need `--method drain` (`tile_m=32`; `tile_m=64` over-allocates L1). **Gate/Up (2048×896×4864)** is the same near-zero-reference atol artifact as Qwen3's Gate/Up: high-precision computes the in-tier result (9.4e-3) but the harness gate trips on 2 near-zero elements (abs_err ≈ 1.6–1.9e-3 > high-prec `atol = 1.5e-3`); PASSES on the low-precision direct path (`atol = 4e-3`). No padding was required for any Qwen2.5 shape.
+
+> **Qwen3-4B note — emb=2560 family.** All five Qwen3-4B projection shapes (2048×2560×{1024,4096,9728}, 2048×4096×2560, 2048×9728×2560) keep the **high-precision fused-cast** tier at the stock `TILE_N=128 HERD_N=4` (2560=512·5 and 9728=512·19 are both 512-aligned, no TILE_N shrink). The one wrinkle is the wide **Gate/Up (2048×2560×9728)**: at `tile_k_l2≥128` aiecc fails the `aie.dma_bd` stride check (stride = `tile_k_l2·N`; 256·9728=2490368 and 128·9728=1245184 both exceed the [1:1048576] range) — the same DMA-stride limit as Qwen2.5-3B Gate/Up. But unlike that sibling, here `tile_k_l2=64` (64·9728=622592 < limit) **places and keeps the high-precision tier** at 5528 GFLOPS / 9.8e-3, which is **strictly better than the low-precision direct path** (4397 GFLOPS / 1.4e-2). So best.high=fused-cast(tile_k_l2=64); the low-precision direct row is recorded for reference only. `2048×4096×2560` and `2048×9728×2560` (N=2560) place cleanly at tile_k_l2=256 (tile_k_l2=512 over-runs the DMA stride at N=2560).
+
+> **Qwen3-0.6B note.** For the Qwen3 projection shapes only the `auto`-selected high-precision method was swept (the other method's cell is left blank in the index). **Gate/Up (2048×1024×3072)** is listed here under low-precision: both high-precision methods compute the in-tier result (mean_rel_L1 = 9.4e-3) but the harness element-wise gate trips on a single near-zero-reference output element (abs_err ≈ 1.7e-3 > the high-precision `atol = 1.5e-3`); the shape PASSES on the low-precision direct path (`atol = 4e-3`). This is a harness tolerance edge, not a datapath failure — the same fused-cast/drain datapath passes for Q, O, and Down. If the high-precision tier is required for Gate/Up, relax the harness high-precision `atol` to match the other tiers (does not touch the GPU-standard `rtol`).
 
 **Reading the tables**:
 - **The `auto` cross-over holds**: fused-cast wins large (Down 8898, Gate/Up 6893, O 6215, 4096³ 8423), drain wins small/thin (K/V 5626, 1024³ 4637, 512³ 1703). The `M*K*N ≥ 4e9` threshold picks the bold winner for all 7 shapes. At the tiniest shape (512³) low-precision direct (1750) edges drain (1703) — but it's a precision tier worse; `--high-precision true` stays the safe default.

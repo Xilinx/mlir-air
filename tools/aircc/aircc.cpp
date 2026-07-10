@@ -227,6 +227,14 @@ static cl::opt<bool> useLockRaceConditionFix(
     cl::desc("Enable fix for lock race condition (inserts extra dummy BDs)"),
     cl::init(false), cl::cat(airCompilerOptions));
 
+static cl::opt<bool> useLockRaceConditionFixV2(
+    "use-lock-race-condition-fix-v2",
+    cl::desc("Enable daisy-chained lock emission for shared L2 "
+             "buffers with multi-writer + single-reader (or single-writer + "
+             "multi-reader) sub-region patterns. Mutually exclusive with "
+             "use-lock-race-condition-fix."),
+    cl::init(false), cl::cat(airCompilerOptions));
+
 enum PlacedIrVerifyMode { PIV_off, PIV_warn, PIV_error };
 
 static cl::opt<PlacedIrVerifyMode> placedIrVerifiers(
@@ -1084,6 +1092,8 @@ static LogicalResult runAieCompilation() {
       os << " insert-trace-packet-flow=true";
     os << " use-lock-race-condition-fix="
        << (useLockRaceConditionFix ? "true" : "false");
+    os << " use-lock-race-condition-fix-v2="
+       << (useLockRaceConditionFixV2 ? "true" : "false");
     if (stackSize.getNumOccurrences() > 0)
       os << " stack-size=" << stackSize.getValue();
     os << "}";

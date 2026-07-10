@@ -125,6 +125,33 @@ static LogicalResult canonicalizeHierarchyOpArgs(T op,
 // AsyncOpInterface
 //===----------------------------------------------------------------------===//
 
+void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
+  // Memtile DMA channel-floor steer (reserve channels [0,N) for this flow),
+  // read by MemTileDMAAllocator at channel-allocation time.
+  if (auto mn = src->getAttrOfType<IntegerAttr>(attrs::MemtileDmaChannelMin))
+    dst->setAttr(attrs::MemtileDmaChannelMin, mn);
+  // Runtime-sequence ordering markers (input-feed hoist; append->readback RAW
+  // barrier and its participating appends), consumed by AIRRtToNpu.
+  if (auto rh = src->getAttr(attrs::RuntimeHoist))
+    dst->setAttr(attrs::RuntimeHoist, rh);
+  if (auto aa = src->getAttr(attrs::AwaitAppends))
+    dst->setAttr(attrs::AwaitAppends, aa);
+  if (auto ab = src->getAttr(attrs::AppendBarrier))
+    dst->setAttr(attrs::AppendBarrier, ab);
+  // Producer-side re-feed count (single-buffer count-free re-broadcast), read
+  // by AIRToAIE's lock allocators.
+  if (auto rc = src->getAttrOfType<IntegerAttr>(attrs::RefeedCount))
+    dst->setAttr(attrs::RefeedCount, rc);
+  // User-pinned packet routing ids, read by AIRToAIE's packet-flow creation.
+  if (auto pids = src->getAttrOfType<ArrayAttr>(attrs::PacketIDs))
+    dst->setAttr(attrs::PacketIDs, pids);
+  // Kernel-writes-header marker. Copied verbatim;
+  // SpecializeChannelBundlePattern narrows it to the offset-0 bearer per-flow
+  // after this copy.
+  if (auto kph = src->getAttr(attrs::KeepPktHeader))
+    dst->setAttr(attrs::KeepPktHeader, kph);
+}
+
 void air::addAsyncDependency(Operation *op, Value token) {
   op->insertOperands(0, {token});
   if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
@@ -3171,10 +3198,17 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
 
   if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
-  rewriter.replaceOpWithNewOp<OpT>(
-      op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
-      op.getIndices(), input_memref, offsets, sizes, strides,
+  // Build the rebuilt op first, carry the DMA-steering / runtime-ordering
+  // markers across this wrap/stride canonicalization while both ops are live
+  // (they are discardable attrs, otherwise lost on rebuild and the AIRToAIE /
+  // AIRRtToNpu consumers never fire), then replace -- so `op` is not read after
+  // it is erased.
+  auto newOp = rewriter.create<OpT>(
+      op.getLoc(), op->getResultTypes(), op.getAsyncDependencies(),
+      op.getChanName(), op.getIndices(), input_memref, offsets, sizes, strides,
       /*pad_before=*/padBefore, /*pad_after=*/padAfter);
+  copyChannelSteeringAttrs(op, newOp);
+  rewriter.replaceOp(op, newOp->getResults());
 
   return success();
 }
@@ -3423,6 +3457,50 @@ LogicalResult air::ChannelOp::verify() {
                << ") is not compatible with broadcast_shape[" << i << "] ("
                << bcastVal << "): size must be 1 or equal to broadcast_shape "
                << "(NumPy broadcasting rules)";
+    }
+  }
+
+  // air.refeed_count (single-buffer count-free re-broadcast) must be a positive
+  // integer count of re-sends. The channel declaration is its authoritative
+  // carrier.
+  if (auto rc = (*this)->getAttr(attrs::RefeedCount)) {
+    auto rcInt = dyn_cast<IntegerAttr>(rc);
+    if (!rcInt)
+      return emitOpError() << "\"" << attrs::RefeedCount
+                           << "\" must be an integer attribute";
+    // The count sizes 32-bit AIE semaphore locks; reject values that would not
+    // fit so a malformed count is caught here rather than silently narrowed.
+    if (rcInt.getInt() < 1 ||
+        rcInt.getInt() > std::numeric_limits<int32_t>::max())
+      return emitOpError() << "\"" << attrs::RefeedCount << "\" ("
+                           << rcInt.getInt() << ") must be in [1, INT32_MAX]";
+  }
+
+  // packet_ids pins explicit switchbox routing ids; only meaningful for
+  // packet-switched channels. Each id must be a 5-bit AIE pkt_id and unique.
+  if (auto pids = (*this)->getAttr(attrs::PacketIDs)) {
+    auto arr = dyn_cast<ArrayAttr>(pids);
+    if (!arr)
+      return emitOpError() << "\"" << attrs::PacketIDs
+                           << "\" must be an array attribute";
+    if (chanType != "npu_dma_packet")
+      return emitOpError()
+             << "\"" << attrs::PacketIDs
+             << "\" is only valid on a \"npu_dma_packet\" channel";
+    uint32_t seen = 0;
+    for (auto idAttr : arr) {
+      auto idInt = dyn_cast<IntegerAttr>(idAttr);
+      if (!idInt)
+        return emitOpError() << "\"" << attrs::PacketIDs
+                             << "\" elements must be integer attributes";
+      int64_t id = idInt.getInt();
+      if (id < 0 || id > 31)
+        return emitOpError() << "\"" << attrs::PacketIDs << "\" id (" << id
+                             << ") must be in [0, 31]";
+      if (seen & (1u << id))
+        return emitOpError() << "\"" << attrs::PacketIDs << "\" id (" << id
+                             << ") is duplicated";
+      seen |= (1u << id);
     }
   }
   return success();

@@ -1040,6 +1040,22 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   ];
 }
 
+def AIRAnnotateRefeedPass: Pass<"air-annotate-refeed", "ModuleOp"> {
+  let summary = "Lower opt-in re-feed loops to air.refeed_count on the channel";
+  let constructor = "xilinx::air::createAIRAnnotateRefeedPass()";
+  let description = [{
+    Opt-in producer for the single-buffer count-free re-broadcast primitive.
+    An scf.for / affine.for tagged with the 'air.refeed_loop' unit attribute,
+    whose body is a single loop-invariant air.channel.put, expresses "re-send
+    one resident buffer once per iteration". This pass reads the loop's static
+    trip count N into 'air.refeed_count' on the put's channel declaration and
+    collapses the loop to the single put. Loops that do not match the safe shape
+    (non-constant trip count, body other than one invariant put, or loop-carried
+    values) are left unchanged. Not part of the default pipeline: the marker
+    asserts the re-feed semantics the front-end intends.
+  }];
+}
+
 def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "ModuleOp"> {
   let summary = "Hoist dma ops into perfectly nested loop";
   let constructor = "xilinx::air::createAIRIsolateAsyncDmaLoopNests()";

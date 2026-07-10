@@ -1,0 +1,24 @@
+# Additional Python packages for the Qwen2.5-1.5B example.
+#
+# These are *on top of* the mlir-air base environment (which already
+# provides numpy, ml_dtypes, filelock, pyxrt, etc.).
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# Qwen2.5-1.5B is openly licensed; no license acceptance is needed. Weights
+# download from the public HuggingFace repos on first use:
+#        https://huggingface.co/Qwen/Qwen2.5-1.5B
+#        https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct
+# For gated/private mirrors or to avoid rate limits, optionally authenticate:
+#   1. Create a read token at https://huggingface.co/settings/tokens
+#   2. `huggingface-cli login`  (or export HF_TOKEN=<token>)
+# See README.md for details.
+
+# Weight loading
+safetensors
+huggingface_hub
+
+# Tokenizer (chat template) and HuggingFace reference model (used by `make verify`)
+transformers
+torch

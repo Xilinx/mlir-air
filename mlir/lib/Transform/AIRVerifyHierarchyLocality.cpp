@@ -860,6 +860,13 @@ static LogicalResult verifyOne(xilinx::air::HierarchyInterface H, bool strict) {
     if (ivs.empty())
       continue; // every iteration dim is size 1 — nothing to check.
 
+    // A shared L1 buffer with a cross-core producer/consumer dependence (one
+    // core reads what another writes) is a legitimate non-partitioned herd
+    // operand -- neighbor tiles communicate through it. Accept it.
+    if (auto herd = dyn_cast<xilinx::air::HerdOp>(H.getOperation()))
+      if (xilinx::air::herdBufferHasCrossCoreDependence(herd, operand))
+        continue;
+
     // Two-pass check on terminals:
     //   Pass 1: look for any terminal that proves per-PE replication
     //           (e.g., air.channel.get/put with iv-dependent channel index

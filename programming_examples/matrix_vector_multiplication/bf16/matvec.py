@@ -29,7 +29,9 @@ range_ = for_
 
 
 @module_builder
-def build_module(m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out):
+def build_module(
+    m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out, link_with="mv.o"
+):
     assert (
         m % (tile_m * herd_m) == 0
     ), f"M ({m}) must be divisible by tile_m * herd_m ({tile_m * herd_m})"
@@ -97,7 +99,7 @@ def build_module(m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out):
         visibility="private",
     )
     for func in [matvec_func, linalg_fill_func]:
-        func.attributes["link_with"] = StringAttr.get("mv.o")
+        func.attributes["link_with"] = StringAttr.get(link_with)
         func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
 
     @FuncOp.from_py_func(memrefTyA, memrefTyB, memrefTyC)
@@ -250,7 +252,7 @@ def build_module(m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out):
                         src_strides=[1],
                     )
 
-                herd_body.attributes["link_with"] = StringAttr.get("mv.o")
+                herd_body.attributes["link_with"] = StringAttr.get(link_with)
 
                 # L2→L3: C
                 dma_memcpy_nd(

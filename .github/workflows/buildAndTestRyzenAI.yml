@@ -83,8 +83,7 @@ jobs:
       - name: Get llvm-aie
         run: |
           source air-venv/bin/activate
-          # Temp pin: latest llvm-aie nightly miscompiles int->float->int at -O2 (Xilinx/llvm-aie#1056). Revert once fixed upstream.
-          python3 -m pip install --upgrade --force-reinstall "llvm-aie==21.0.0.2026062301+cb664e8c" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          python3 -m pip install --upgrade --force-reinstall llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
       - name: Build and test mlir-air
         run: |
@@ -142,32 +141,36 @@ jobs:
           # Chess tests disabled to reduce CI time. Uncomment to re-enable:
           # ninja check-air-e2e-chess
 
-          # Install verify's Python dependencies (safetensors, transformers,
-          # torch, huggingface_hub). Required by both the main and gated
-          # `check-programming-examples-peano` invocations below: the int4
-          # verify lit is ungated and runs in the main step, while the bf16
-          # baseline's verify lit runs in the gated sub-shell.
+          # Install LLM Python dependencies (safetensors, transformers, torch,
+          # huggingface_hub). Required by all LLM compile and verify targets.
           pip install -r ../programming_examples/llms/llama32_1b/requirements.txt
 
-          # Programming examples set 1: peano tests (retry once on failure for flaky NPU tests).
-          # HF_TOKEN is NOT set here — REQUIRES: hf_token tests skip cleanly as
-          # UNSUPPORTED in this step. They are exercised in the targeted step below,
-          # which limits the secret's blast radius to just the gated tests.
+          # Programming examples: non-LLM peano tests.
+          # LLM tests are excluded here (--filter-out "llms/") and handled by
+          # the dedicated targets below, which run sequentially (-j1) to avoid
+          # concurrent NPU inference causing out-of-memory crashes.
           ninja check-programming-examples-peano || ninja check-programming-examples-peano
 
-          # Programming examples set 1b: hf_token-gated tests only.
-          # Scoped LIT --filter pattern matches any verify lit under
-          # programming_examples/llms/llama32_1b{,_int4}/ — currently just the
-          # bf16 baseline's run_npu2_verify.lit; kept here so future
-          # hf_token-requiring verify lits under either dir don't silently
-          # skip. HF_TOKEN is exported in a sub-shell so it's visible only to
-          # this single ninja invocation — the main check-programming-examples-peano
-          # step above never sees the token.
-          (
-            export HF_TOKEN="${{ secrets.HF_TOKEN }}"
-            export LIT_OPTS="$LIT_OPTS --filter llms/llama32_1b.*/run_npu2_verify"
-            ninja check-programming-examples-peano || ninja check-programming-examples-peano
-          )
+          # LLM compile gate: llama32_1b only (fast, no HF download, no NPU
+          # dispatch). Runs on every PR — no secrets needed. Sequential (-j1)
+          # is set in the CMake target definition.
+          ninja check-programming-examples-llms-compile-llama32_1b || ninja check-programming-examples-llms-compile-llama32_1b
+
+          # LLM full suite (all models compile + verify): run only when
+          # HF_TOKEN is available, i.e. on pushes to main or workflow_dispatch
+          # by repo owners. Fork PRs never have access to secrets so this block
+          # is effectively skipped for external contributors.
+          # Sequential (-j1) set in CMake target to prevent NPU OOM.
+          if [ -n "${{ secrets.HF_TOKEN }}" ]; then
+            # All-models compile (catches regressions in non-llama32_1b models)
+            ninja check-programming-examples-llms-compile || ninja check-programming-examples-llms-compile
+
+            # All-models verify (hf_token gated; HF_TOKEN scoped to sub-shell)
+            (
+              export HF_TOKEN="${{ secrets.HF_TOKEN }}"
+              ninja check-programming-examples-llms-verify || ninja check-programming-examples-llms-verify
+            )
+          fi
 
           # Chess tests disabled to reduce CI time. Uncomment to re-enable:
           # ninja check-programming-examples-chess

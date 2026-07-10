@@ -24,6 +24,24 @@
 
 using namespace mlir;
 
+namespace {
+// A channel declared with `air.dedicated_dma_channel` must get its OWN physical
+// DMA channel and never be time-multiplexed (packet-collapsed) with any other
+// flow on the same tile, in either direction. Used to keep a latency-critical
+// packet flow off a shared DMA channel that another (e.g. later-phase) flow
+// would otherwise collapse onto and BD-order ahead of -- starving the first
+// flow's consumer. Honored by the packet-reuse branches of both the shim and
+// MemTile DMA allocators.
+bool memcpyIsDedicatedChannel(xilinx::air::MemcpyInterface mc) {
+  auto chan = mlir::dyn_cast_if_present<xilinx::air::ChannelInterface>(
+      mc.getOperation());
+  if (!chan)
+    return false;
+  auto decl = xilinx::air::getChannelDeclarationThroughSymbol(chan);
+  return decl && decl->hasAttr(xilinx::air::attrs::DedicatedDmaChannel);
+}
+} // namespace
+
 namespace xilinx {
 
 FailureOr<bool> air::isTileInbound(air::MemcpyInterface memcpyOp,
@@ -366,6 +384,24 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
       uniqueBuffers.insert(chanOp.getMemref());
     }
 
+    // A genuine rotation interleaves buffers inside a shared loop (a peeled
+    // steady-state loop unrolled across the buffer pool), so at least two sites
+    // share one enclosing loop. Sites that each sit alone in their own loop are
+    // time-multiplexed block consumers, NOT a rotation -- a single circular BD
+    // chain would mis-deliver (each block would see only every Nth buffer). Let
+    // those fall through to per-op sequential BDs.
+    // Note: this is coarse -- any two sites sharing a loop marks the whole set
+    // as a rotation; a channel/tile mixing a rotation with block consumers on
+    // one DMA channel (not observed in practice) would be over-collapsed.
+    llvm::DenseMap<Operation *, unsigned> loopSiteCount;
+    bool anySharedLoop = false;
+    for (auto *op : ops)
+      if (auto loop = op->getParentOfType<LoopLikeOpInterface>())
+        if (++loopSiteCount[loop.getOperation()] >= 2)
+          anySharedLoop = true;
+    if (!anySharedLoop)
+      return false;
+
     // Valid rotation: multiple unique buffers, total ops divisible by buffer
     // count
     unsigned numBuffers = uniqueBuffers.size();
@@ -469,6 +505,220 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
   else
     return std::make_pair(1,
                           llvm::divideCeilSigned(write_counter, read_counter));
+}
+
+// ----------------------------------------------------------------------
+// v2 chain-lock helpers (use_lock_race_condition_fix_v2). See the header
+// for the semantic description.
+// ----------------------------------------------------------------------
+
+// Endpoint identity for a channel memcpy: (channel symbol, constant indices).
+// Returns nullopt if any bundle index is non-constant — such endpoints cannot
+// be proven equal, so they must NOT be deduped (collapsing distinct dynamic
+// endpoints would undercount writers/readers and mis-size the chain).
+using ChainEndpointKey = std::pair<StringRef, SmallVector<int64_t, 4>>;
+static std::optional<ChainEndpointKey>
+getChainEndpointKey(air::ChannelInterface chan) {
+  SmallVector<int64_t, 4> idx;
+  for (auto v : chan.getIndices()) {
+    auto c = getConstantIntValue(v);
+    if (!c)
+      return std::nullopt;
+    idx.push_back(*c);
+  }
+  return ChainEndpointKey{chan.getChanName(), idx};
+}
+
+// Ordered list of one representative memcpy op per chain stage on `buf`, in
+// use-list order, filtered to one direction (writers = buffer is the DST/S2MM;
+// readers = buffer is the SRC/MM2S). Channel endpoints sharing the same
+// (symbol, constant-indices) key collapse to one stage (dedupes scf.for unroll
+// / ping-pong duplication that would otherwise inflate the fan-in/out counts).
+// Endpoints without a provable key — non-channel memcpy (legacy
+// air.dma_memcpy_nd) or a channel with any dynamic index — are each their own
+// stage. Single source of truth: the stage count is the list size and a memcpy
+// op's stage index is its representative's position.
+static SmallVector<Operation *> getOrderedChainEndpoints(AIE::BufferOp buf,
+                                                         bool writers) {
+  SmallVector<Operation *> stages;
+  llvm::SetVector<ChainEndpointKey> seenKeys;
+  for (auto user : buf.getResult().getUsers()) {
+    auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
+    if (!memcpyOp)
+      continue;
+    bool isWriter = (buf.getResult() == memcpyOp.getDstMemref());
+    bool isReader = (buf.getResult() == memcpyOp.getSrcMemref());
+    if ((writers && !isWriter) || (!writers && !isReader))
+      continue;
+    std::optional<ChainEndpointKey> key;
+    if (auto chan = dyn_cast<air::ChannelInterface>(user))
+      key = getChainEndpointKey(chan);
+    // Dedupe only provably-equal keyed endpoints; everything else is its own
+    // stage.
+    if (!key || seenKeys.insert(*key))
+      stages.push_back(user);
+  }
+  return stages;
+}
+
+static void countChainBufferRoles(AIE::BufferOp buf, int &numWriters,
+                                  int &numReaders) {
+  numWriters = getOrderedChainEndpoints(buf, /*writers=*/true).size();
+  numReaders = getOrderedChainEndpoints(buf, /*writers=*/false).size();
+}
+
+bool air::isChainLockCandidate(AIE::BufferOp buf) {
+  if (!buf)
+    return false;
+  // Predicate is shape-based on the buffer's user list. Only L2 memtile
+  // buffers are eligible (this is a memtile-specific lock pattern).
+  auto memrefTy = dyn_cast<MemRefType>(buf.getResult().getType());
+  if (!memrefTy || !air::isL2(memrefTy))
+    return false;
+  int nW = 0, nR = 0;
+  countChainBufferRoles(buf, nW, nR);
+  // Fan-in: N writers (N>1) + 1 reader.
+  if (nW > 1 && nR == 1)
+    return true;
+  // Fan-out: 1 writer + N readers (N>1).
+  if (nW == 1 && nR > 1)
+    return true;
+  // Single-writer/single-reader (legacy 1:1) or MIMO (M writers + N
+  // readers) are NOT chain-lock candidates; legacy lock template
+  // applies.
+  return false;
+}
+
+void air::classifyChainBuffer(AIE::BufferOp buf, int &numWriters,
+                              int &numReaders) {
+  countChainBufferRoles(buf, numWriters, numReaders);
+}
+
+int air::computeStageIndexForMemcpyOp(Operation *memcpyOp, AIE::BufferOp buf) {
+  auto mc = dyn_cast<air::MemcpyInterface>(memcpyOp);
+  if (!mc || !buf)
+    return -1;
+  bool isWriter = (buf.getResult() == mc.getDstMemref());
+  auto stages = getOrderedChainEndpoints(buf, /*writers=*/isWriter);
+  auto myChan = dyn_cast<air::ChannelInterface>(memcpyOp);
+  std::optional<ChainEndpointKey> myKey =
+      myChan ? getChainEndpointKey(myChan) : std::nullopt;
+  for (auto [i, rep] : llvm::enumerate(stages)) {
+    if (myKey) {
+      // Identically-keyed ops (scf.for unroll / ping-pong duplication) share a
+      // stage, so match on the endpoint key rather than op identity.
+      auto repChan = dyn_cast<air::ChannelInterface>(rep);
+      auto repKey = repChan ? getChainEndpointKey(repChan) : std::nullopt;
+      if (repKey && *repKey == *myKey)
+        return static_cast<int>(i);
+    } else if (rep == memcpyOp)
+      // Unkeyed (non-channel or dynamic-index): match by op identity.
+      return static_cast<int>(i);
+  }
+  return -1;
+}
+
+FailureOr<air::ChainLockSet *>
+air::DMAAllocator::getOrCreateChainLockSet(AIE::BufferOp buf,
+                                           AIE::TileLike tile) {
+  if (!buf || !isChainLockCandidate(buf))
+    return failure();
+  auto it = chain_lock_sets.find(buf.getOperation());
+  if (it != chain_lock_sets.end())
+    return &it->second;
+
+  int nW = 0, nR = 0;
+  classifyChainBuffer(buf, nW, nR);
+  int nStages = (nW > 1) ? nW : nR; // fan-in or fan-out
+
+  ChainLockSet cls;
+  cls.n_writers = nW;
+  cls.n_readers = nR;
+  cls.primary_buf = buf;
+
+  // Start single-slot (cap init = 1), which is safe for any chain shape. If
+  // generateDmaBdProgram later allocates a twin buffer it calls
+  // activateChainPingPong, which bumps the cap and pp_slots together so the
+  // slot count and buffer count never diverge.
+  cls.pp_slots = 1;
+  // A refeed buffer (air.refeed_count=N, single-buffer count-free re-broadcast)
+  // needs the cap_lock primed to N: the first writer acquires cap >= N, and the
+  // single reader releases cap by 1 per re-send (N sends drain sig[last]=N and
+  // restore cap=N). Default init=1 would deadlock the first writer's acq>=N.
+  int capInit = static_cast<int>(
+      std::max<int64_t>(1, air::getRefeedCount(buf.getOperation())));
+  cls.cap_lock = allocateLockOp(device, tile, /*init=*/capInit);
+
+  // N init=0 signal locks for the writer→writer (or reader→reader)
+  // transitions plus the producer→consumer (or last-reader→producer)
+  // handoff. Shared across both ping/pong instances.
+  cls.sig_locks.reserve(nStages);
+  for (int i = 0; i < nStages; i++)
+    cls.sig_locks.push_back(allocateLockOp(device, tile, 0));
+
+  auto inserted = chain_lock_sets.insert({buf.getOperation(), std::move(cls)});
+  return &inserted.first->second;
+}
+
+void air::DMAAllocator::activateChainPingPong(ChainLockSet &cls,
+                                              AIE::BufferOp twin) {
+  // Bump the twin buffer, slot count, and cap-lock init together: the cap
+  // (slot count) must always equal the number of buffer instances, so these
+  // updates are one atomic operation rather than three scattered writes.
+  cls.twin_buf = twin;
+  cls.pp_slots = 2;
+  cls.cap_lock->setAttr(
+      "init",
+      IntegerAttr::get(IntegerType::get(cls.cap_lock->getContext(), 32), 2));
+}
+
+std::pair<AIE::LockOp, AIE::LockOp>
+air::DMAAllocator::pickChainBdLocks(const ChainLockSet &cls,
+                                    AIE::DMAChannelDir dir, int stage) {
+  // generateDmaBd interprets the returned pair as (rlock, wlock) — the
+  // legacy producer-consumer convention — and direction-dependently
+  // chooses which is acquired vs released:
+  //   S2MM (writer): acquireLock = pair.second (wlock),
+  //                  releaseLock = pair.first  (rlock)
+  //   MM2S (reader): acquireLock = pair.first  (rlock),
+  //                  releaseLock = pair.second (wlock)
+  // We map our chain-lock semantics onto this convention by populating
+  // `first` / `second` so that the direction-dependent acquire/release
+  // gives the correct chain semantics.
+  AIE::LockOp toAcquire, toRelease;
+
+  if (cls.isFanIn()) {
+    // Writers serialized W0 → W1 → ... → W{N-1} → Reader → Cap → W0
+    if (dir == AIE::DMAChannelDir::S2MM) {
+      // Writer stage `stage` (0..N-1)
+      toAcquire = (stage == 0) ? cls.cap_lock : cls.sig_locks[stage - 1];
+      toRelease = cls.sig_locks[stage];
+    } else {
+      // The single reader: acquire last signal lock, release cap lock.
+      toAcquire = cls.sig_locks[cls.n_writers - 1];
+      toRelease = cls.cap_lock;
+    }
+  } else {
+    // Fan-out: writer → Reader0 → Reader1 → ... → Reader{N-1} → Cap → writer
+    if (dir == AIE::DMAChannelDir::MM2S) {
+      // Reader stage `stage` (0..N-1)
+      toAcquire = cls.sig_locks[stage];
+      toRelease = (stage == cls.n_readers - 1) ? cls.cap_lock
+                                               : cls.sig_locks[stage + 1];
+    } else {
+      // The single writer: acquire cap lock, release first signal lock.
+      toAcquire = cls.cap_lock;
+      toRelease = cls.sig_locks[0];
+    }
+  }
+
+  // Map (toAcquire, toRelease) to (pair.first, pair.second) consistent
+  // with generateDmaBd's direction-dependent mapping:
+  //   S2MM: acquire = pair.second, release = pair.first
+  //   MM2S: acquire = pair.first,  release = pair.second
+  if (dir == AIE::DMAChannelDir::S2MM)
+    return std::make_pair(toRelease, toAcquire);
+  return std::make_pair(toAcquire, toRelease);
 }
 
 std::pair<int64_t, int64_t>
@@ -641,6 +891,42 @@ bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(
   return false;
 }
 
+// Same-logical-flow test: same channel declaration and same constant bundle
+// indices. A non-constant index cannot be proven equal, so it is distinct.
+static bool isSamePacketFlowEndpoint(air::MemcpyInterface a,
+                                     air::MemcpyInterface b) {
+  auto chanA = dyn_cast_if_present<air::ChannelInterface>(a.getOperation());
+  auto chanB = dyn_cast_if_present<air::ChannelInterface>(b.getOperation());
+  if (!chanA || !chanB)
+    return false;
+  if (air::getChannelDeclarationThroughSymbol(chanA) !=
+      air::getChannelDeclarationThroughSymbol(chanB))
+    return false;
+  auto idxA = chanA.getIndices();
+  auto idxB = chanB.getIndices();
+  if (idxA.size() != idxB.size())
+    return false;
+  for (auto [va, vb] : llvm::zip_equal(idxA, idxB)) {
+    auto ca = getConstantIntValue(va);
+    auto cb = getConstantIntValue(vb);
+    if (!ca || !cb || *ca != *cb)
+      return false;
+  }
+  return true;
+}
+
+bool xilinx::air::allocation_info_t::foundSamePacketFlowInTile(
+    AIE::TileLike tile, air::MemcpyInterface memcpyOp) {
+  if (!foundAlloc(tile))
+    return false;
+  for (auto o : memcpyOps) {
+    auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
+    if (existingMc && isSamePacketFlowEndpoint(existingMc, memcpyOp))
+      return true;
+  }
+  return false;
+}
+
 // DMAAllocator impl.
 
 // A simple selection sorting implementation.
@@ -687,10 +973,9 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
 
 // Allocate a reader/writer lock pair. These may be the same or different
 // locks depending on the target device.
-FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
-air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
-                                 AIE::TileLike tile, Operation *bufferOp,
-                                 bool lockRaceConditionFix) {
+FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
+    air::MemcpyInterface &memcpyOp, AIE::TileLike tile, Operation *bufferOp,
+    bool lockRaceConditionFix, bool lockRaceConditionFixV2) {
   auto alloc = lookupDMAAllocation(tile, memcpyOp);
   if (failed(alloc))
     return memcpyOp->emitOpError("failed to look up dma allocation.");
@@ -706,6 +991,68 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
   const auto &target_model = device.getTargetModel();
   bool UsesSemaphoreLocks =
       target_model.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
+
+  // 3-way shared L1 branch (compute tile only). allocateSharedL1BufferLocks
+  // stamped this channel put/get op with prod/cons lock symbol-refs because
+  // its buffer is shared across N writer cores AND this DMA participant.
+  // Resolve and reuse that exact pair so all participants synchronize on the
+  // same locks, instead of allocating a private channel-put pair (which would
+  // silently break the 3-way share). Keyed on the op's attribute (only present
+  // on genuine 3-way ops), so it takes precedence for those ops and leaves all
+  // other callers unaffected.
+  if (!tileIsMemTile && UsesSemaphoreLocks) {
+    Operation *op = memcpyOp.getOperation();
+    auto prodRef = op->getAttrOfType<FlatSymbolRefAttr>("air.shared_prod_lock");
+    auto consRef = op->getAttrOfType<FlatSymbolRefAttr>("air.shared_cons_lock");
+    if (prodRef && consRef) {
+      auto prodLock = dyn_cast_or_null<AIE::LockOp>(
+          SymbolTable::lookupSymbolIn(device, prodRef.getAttr()));
+      auto consLock = dyn_cast_or_null<AIE::LockOp>(
+          SymbolTable::lookupSymbolIn(device, consRef.getAttr()));
+      if (prodLock && consLock) {
+        // Return (cons, prod). generateDmaBd selects
+        // acq = isMM2S ? first : second, rel = isMM2S ? second : first.
+        // So MM2S reader acquires cons / releases prod; S2MM writer
+        // acquires prod / releases cons. Both directions are correct with
+        // this single ordering.
+        std::pair<AIE::LockOp, AIE::LockOp> pair = {consLock, prodLock};
+        lock_allocation_list.push_back(
+            {bufferOp, air_chan, channel, pair.first, pair.second});
+        return pair;
+      }
+    }
+  }
+
+  // v2: chain-lock branch. Memtile-only; requires the buffer to be a
+  // shared L2 with fan-in or fan-out shape (predicate is shape-based).
+  // Takes precedence over the legacy / v1 paths when it applies.
+  if (lockRaceConditionFixV2 && tileIsMemTile && UsesSemaphoreLocks) {
+    auto buf = dyn_cast_or_null<AIE::BufferOp>(bufferOp);
+    if (buf && isChainLockCandidate(buf)) {
+      auto clsOrFail = getOrCreateChainLockSet(buf, tile);
+      if (failed(clsOrFail))
+        return memcpyOp->emitOpError(
+            "v2 chain-lock: failed to allocate chain lock set");
+      ChainLockSet *cls = clsOrFail.value();
+      int stage = computeStageIndexForMemcpyOp(memcpyOp.getOperation(), buf);
+      if (stage < 0)
+        return memcpyOp->emitOpError(
+            "v2 chain-lock: failed to determine BD stage index");
+      auto pair = pickChainBdLocks(*cls, channel.direction, stage);
+      // Register a lock_allocation_list entry so subsequent reuse-lookup
+      // queries on the same (buffer, channel) find the same pair —
+      // matches the legacy reuse model for the rare same-channel multi-BD
+      // case. Note: the chain-lock branch returns DIFFERENT pairs for
+      // different memcpy ops on the same buffer (one per stage), so the
+      // legacy "same buffer → same lock" reuse logic in the loop below
+      // does NOT apply for v2; we just record this BD's pair.
+      lock_allocation_list.push_back(
+          {bufferOp, air_chan, channel, pair.first, pair.second});
+      return pair;
+    }
+    // Fall through to the legacy path for non-candidate buffers (e.g.
+    // 1:1 single-writer single-reader L2 buffers, or MIMO buffers).
+  }
 
   if (UsesSemaphoreLocks) {
     if (air_chan) {
@@ -831,7 +1178,21 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp,
 
   OpBuilder builder(bufferOp);
   auto rlock = allocateLockOp(device, tile, 0);
-  auto wlock = UsesSemaphoreLocks ? allocateLockOp(device, tile, init) : rlock;
+  // air.refeed_count=N (single-buffer count-free re-broadcast): the fill (S2MM)
+  // does AcquireGreaterEqual N on the empty/write lock so that ONE fill enables
+  // N count-free MM2S re-broadcasts (generateDmaBd sets acq/rel = N for the
+  // fill BD when the buffer carries air.refeed_count). The write lock must
+  // therefore INIT to N -- with the default slot-count init the first
+  // AcquireGreaterEqual N can never fire and the producer feeding the buffer
+  // deadlocks.
+  // getRefeedCount guarantees 1 <= count <= INT32_MAX, so this init fits the
+  // 32-bit lock without truncation.
+  int64_t wlockInit = init;
+  if (UsesSemaphoreLocks)
+    wlockInit = std::max(wlockInit, air::getRefeedCount(bufferOp));
+  auto wlock = UsesSemaphoreLocks
+                   ? allocateLockOp(device, tile, static_cast<int>(wlockInit))
+                   : rlock;
   lock_allocation_list.push_back({bufferOp, air_chan, channel, rlock, wlock});
   return std::make_pair(rlock, wlock);
 }
@@ -916,6 +1277,38 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     isPacketFlowOp = chanTypeRes.value() == "npu_dma_packet";
   }
 
+  // Compute-tile DMA channel pin: a channel decl carrying an
+  // `air.tile_dma_channel` IntegerAttr forces this flow onto that physical DMA
+  // channel index (the compute-tile analogue of the memtile
+  // `air.memtile_dma_channel_min` floor). Used when two flows on the same tile
+  // must keep fixed, distinct physical channels because their routes would
+  // otherwise collide. The pin is an explicit override: apply it even when a
+  // channel index was already chosen by the flow-level allocation phase
+  // (callers may pass a pre-set `chan`), otherwise convergent channels whose
+  // channel is fixed before this call would ignore the pin.
+  bool chanPinned = false;
+  if (auto chanIf =
+          dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation()))
+    if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf))
+      if (auto a = chanDecl->getAttrOfType<mlir::IntegerAttr>(
+              air::attrs::TileDmaChannel)) {
+        int pinned = (int)a.getInt();
+        // Validate against the tile's available DMA channels for this
+        // direction; an out-of-range pin would otherwise create an invalid
+        // allocation.
+        int numChans = isMM2S.value()
+                           ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
+                           : tile.getNumDestConnections(AIE::WireBundle::DMA);
+        if (pinned < 0 || pinned >= numChans)
+          return memcpyOp.emitOpError("air.tile_dma_channel = ")
+                 << pinned << " is out of range [0, " << numChans
+                 << ") for the " << (isMM2S.value() ? "MM2S" : "S2MM")
+                 << " DMA channels of tile (" << tile.getCol() << ", "
+                 << tile.getRow() << ")";
+        chan = pinned;
+        chanPinned = true;
+      }
+
   // Search for existing dma channel allocation
   unsigned num_allocs = 0;
   for (auto &t : *allocs) {
@@ -931,8 +1324,11 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       return t;
     }
     // Search for existing packet-flow allocations on this tile, and try to
-    // reuse the channel allocation.
-    if (isPacketFlowOp && t.foundPacketFlowAllocInTile(tile)) {
+    // reuse the channel allocation. Skipped when this flow is channel-pinned:
+    // the pin dictates the physical channel, and same-channel reuse is already
+    // handled above -- cross-channel packet reuse would silently override the
+    // pin.
+    if (isPacketFlowOp && !chanPinned && t.foundPacketFlowAllocInTile(tile)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
@@ -1057,15 +1453,28 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
 
   std::vector<int> dma_ops_get_id = collectDmaIds(dma_ops);
 
-  // L3-direct broadcasts (channel decl carries `broadcast_shape`) bucket
-  // by their first-dest's incidental col/Op, which gives each broadcast
-  // its own shim LTO and overflows the ShimNOC col count. Spread them
-  // across existing shim LTOs instead (see fallback below).
+  // Single channel-decl lookup for the two attrs that steer shim bucketing:
+  //   `broadcast_shape`: L3-direct broadcasts bucket by their first-dest's
+  //     incidental col/Op, giving each broadcast its own shim LTO and
+  //     overflowing the ShimNOC col count; spread them across existing shim
+  //     LTOs instead (see fallback below).
+  //   `air.shim_col`: pin this flow's shim LogicalTileOp to a physical column
+  //     (applied to bucketCol below, after it is derived).
   bool isBroadcastL3Put = false;
+  int shimColPin = -1;
   if (auto chanIf =
           dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation())) {
-    if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf))
+    if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf)) {
       isBroadcastL3Put = chanDecl->hasAttr("broadcast_shape");
+      if (auto a = chanDecl->getAttrOfType<mlir::IntegerAttr>("air.shim_col")) {
+        int pin = (int)a.getInt();
+        int numCols = device.getTargetModel().columns();
+        if (pin < 0 || pin >= numCols)
+          return memcpyOp.emitOpError("air.shim_col column ")
+                 << pin << " is out of range [0, " << numCols << ")";
+        shimColPin = pin;
+      }
+    }
   }
 
   // Bucket key: the far-side col when known, else derive it from a memtile
@@ -1087,6 +1496,13 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     return -1;
   };
   int bucketCol = bucketColFor(col, otherSideOp);
+  // A shim-col pin forces the flow into its own bucket keyed on the pinned
+  // column and pins the opened shim LogicalTileOp there (the placer honors the
+  // col attr via tryGetCol). Same-pin flows share that bucket/column; without
+  // the pin a separate bucket alone yields a col-less LTO whose centroid falls
+  // on the (saturated) producer column.
+  if (shimColPin >= 0)
+    bucketCol = shimColPin;
   auto sameBucket = [&](const allocation_info_t &t) {
     int tCol = bucketColFor(t.col, t.otherSideLTO);
     if (bucketCol >= 0 && tCol >= 0)
@@ -1118,26 +1534,49 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   };
 
   // For packet flows: reuse the bucket's existing packet channel if any.
-  if (isPacketFlowOp) {
+  // EXCEPT `air.dedicated_dma_channel` (mirrors MemTileDMAAllocator), which is
+  // never collapsed in either direction: a dedicated flow does not reuse an
+  // existing packet channel (guarded here), and an unmarked flow does not reuse
+  // a channel that already hosts a dedicated flow (skipped in the walk below).
+  // This lets a column host BOTH a packet-multiplexed channel and a separate
+  // dedicated channel on the same column's other DMA channel, regardless of
+  // allocation order.
+  if (isPacketFlowOp && !memcpyIsDedicatedChannel(memcpyOp)) {
     AIE::LogicalTileOp packetLT = nullptr;
     int packetCh = -1;
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
+      // When this flow is shim-col-pinned, only reuse a packet channel whose
+      // LogicalTileOp sits on the pinned column -- otherwise a previously
+      // opened (unpinned, off-column) packet LTO would capture this flow and
+      // silently ignore the pin.
+      if (shimColPin >= 0) {
+        auto ltCol = lt.tryGetCol();
+        if (!ltCol || (int)*ltCol != shimColPin)
+          return false;
+      }
       for (auto &t :
            llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
         if (t.dma_tile.getOperation() != lt.getOperation())
           continue;
         if (t.dma_channel.direction != dir)
           continue;
+        bool tDedicated = false;
+        bool tPacket = false;
         for (auto o : t.memcpyOps) {
           auto mc = dyn_cast_if_present<air::MemcpyInterface>(o);
           if (!mc)
             continue;
           auto ct = air::getChannelType(mc);
-          if (succeeded(ct) && ct.value() == "npu_dma_packet") {
-            packetLT = lt;
-            packetCh = (int)t.dma_channel.channel;
-            return true;
-          }
+          if (succeeded(ct) && ct.value() == "npu_dma_packet")
+            tPacket = true;
+          if (memcpyIsDedicatedChannel(mc))
+            tDedicated = true;
+        }
+        // Never collapse onto a channel that hosts a dedicated flow.
+        if (tPacket && !tDedicated) {
+          packetLT = lt;
+          packetCh = (int)t.dma_channel.channel;
+          return true;
         }
       }
       return false;
@@ -1158,9 +1597,17 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   }
 
   // Find a bucket LTO with a free channel in this direction; else open
-  // a new unhinted shim LTO.
+  // a new unhinted shim LTO. When shim-col-pinned, only reuse an LTO already
+  // on the pinned column -- otherwise a col-less (or off-column) bucket LTO
+  // would capture this flow on the non-packet/dedicated paths and silently
+  // drop the pin.
   AIE::LogicalTileOp tileLT = nullptr;
   walkBucketLTOs([&](AIE::LogicalTileOp lt) {
+    if (shimColPin >= 0) {
+      auto ltCol = lt.tryGetCol();
+      if (!ltCol || (int)*ltCol != shimColPin)
+        return false;
+    }
     if ((int)channelsUsedOn(lt).size() < shim_dma_channels) {
       tileLT = lt;
       return true;
@@ -1244,11 +1691,12 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
         }
       }
     }
-    tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
-                                        AIE::AIETileType::ShimNOCTile,
-                                        /*col=*/IntegerAttr(),
-                                        /*row=*/IntegerAttr(),
-                                        /*allocation_scheme=*/StringAttr());
+    tileLT = AIE::LogicalTileOp::create(
+        b, device.getLoc(), AIE::AIETileType::ShimNOCTile,
+        /*col=*/shimColPin >= 0 ? b.getI32IntegerAttr(shimColPin)
+                                : IntegerAttr(),
+        /*row=*/IntegerAttr(),
+        /*allocation_scheme=*/StringAttr());
   }
 
   auto usedChans = channelsUsedOn(tileLT);
@@ -1262,8 +1710,13 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   if (dma_channel < 0)
     return memcpyOp.emitOpError("out of shim DMA channels");
 
+  // When shim-col-pinned, record the pinned col as this entry's col so
+  // sameBucket (which keys on t.col) groups same-pin packet flows together --
+  // letting two pinned packet channels packet-multiplex onto ONE shim
+  // LTO/channel at the pinned column instead of each opening its own LTO there.
+  int baseCol = shimColPin >= 0 ? shimColPin : col;
   auto baseRes = air::DMAAllocator::allocNewDmaChannel(
-      memcpyOp, tileLT, dma_channel, col, row, dma_ops_get_id);
+      memcpyOp, tileLT, dma_channel, baseCol, row, dma_ops_get_id);
   if (failed(baseRes))
     return baseRes;
   // Stamp the bucket key on the record the base allocator just pushed.
@@ -1356,21 +1809,24 @@ air::ShimDMAAllocator::foundFlowReuseOpportunity(
             f.S2MM_alloc[i].dma_channel.direction ==
                 alloc.dma_channel.direction &&
             f.S2MM_alloc[i].dma_channel.channel == alloc.dma_channel.channel) {
-          if (f.MM2S_alloc.getDmaTile() &&
-              f.MM2S_alloc.getDmaTile().isShimTile()) {
-            return f.MM2S_alloc;
+          for (auto &mm2s : f.MM2S_alloc) {
+            if (mm2s.getDmaTile() && mm2s.getDmaTile().isShimTile()) {
+              return mm2s;
+            }
           }
         }
       }
-    } else if (!isMM2S && f.MM2S_alloc.getDmaTile() == alloc.getDmaTile() &&
-               f.MM2S_alloc.dma_channel.direction ==
-                   alloc.dma_channel.direction &&
-               f.MM2S_alloc.dma_channel.channel == alloc.dma_channel.channel) {
-
-      for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
-        if (f.S2MM_alloc[i].getDmaTile() &&
-            f.S2MM_alloc[i].getDmaTile().isShimTile()) {
-          return f.S2MM_alloc[i];
+    } else {
+      for (auto &mm2s : f.MM2S_alloc) {
+        if (mm2s.getDmaTile() == alloc.getDmaTile() &&
+            mm2s.dma_channel.direction == alloc.dma_channel.direction &&
+            mm2s.dma_channel.channel == alloc.dma_channel.channel) {
+          for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
+            if (f.S2MM_alloc[i].getDmaTile() &&
+                f.S2MM_alloc[i].getDmaTile().isShimTile()) {
+              return f.S2MM_alloc[i];
+            }
+          }
         }
       }
     }
@@ -1430,11 +1886,29 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
-    // Search for existing packet-flow allocations on this tile, and try to
-    // reuse the channel allocation.
+    // Reuse an existing packet-flow channel on this tile via time
+    // multiplexing. Never collapse a channel marked air.dedicated_dma_channel
+    // (either direction). MM2S (source) side collapses promiscuously
+    // (broadcast fan-out / pkt_id multiplexing rely on it); S2MM (receiver)
+    // side collapses only flows proven identical (same channel decl + indices),
+    // since distinct sources fanning into one L2 buffer each need their own
+    // physical S2MM channel.
     if (isPacketFlowOp && t.foundPacketFlowAllocInTile(tile)) {
-      t.memcpyOps.push_back(memcpyOp.getOperation());
-      return t;
+      bool tDedicated = false;
+      for (auto o : t.memcpyOps) {
+        auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
+        if (existingMc && memcpyIsDedicatedChannel(existingMc)) {
+          tDedicated = true;
+          break;
+        }
+      }
+      bool canCollapse = !memcpyIsDedicatedChannel(memcpyOp) && !tDedicated;
+      if (canCollapse && !isMM2S.value())
+        canCollapse = t.foundSamePacketFlowInTile(tile, memcpyOp);
+      if (canCollapse) {
+        t.memcpyOps.push_back(memcpyOp.getOperation());
+        return t;
+      }
     }
   }
   // Need to allocate a new one. TileLike.getNumSourceConnections /
@@ -1444,8 +1918,32 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   int memtile_dma_channels =
       isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
                      : tile.getNumDestConnections(AIE::WireBundle::DMA);
-  if (chan == -1)
-    chan = num_allocs % memtile_dma_channels;
+  if (chan == -1) {
+    // Channel-floor steer: a memtile DMA buffer whose defining op carries
+    // `air.memtile_dma_channel_min = N` reserves physical channels [0, N) on
+    // this memtile, so its flows land on [N, ...). Used when a broadcast's
+    // route on a low physical channel collides with another column flow
+    // transiting this memtile's switchbox. The attr rides on the memcpy
+    // (air.channel.put/get) op itself, set by the front end and preserved
+    // through the AIR pipeline (copyPaddingAttributes /
+    // ComposeMemrefOpOnChannelOp), so it is available here regardless of how
+    // the underlying buffer was lowered.
+    int minCh = 0;
+    if (auto a = memcpyOp->getAttrOfType<IntegerAttr>(
+            air::attrs::MemtileDmaChannelMin)) {
+      minCh = static_cast<int>(a.getInt());
+      // Validate the floor: it must leave at least one usable channel
+      // [minCh, memtile_dma_channels). An out-of-range floor would otherwise be
+      // silently ignored (falling back to round-robin), defeating the steer.
+      if (minCh < 0 || minCh >= memtile_dma_channels)
+        return memcpyOp.emitOpError("air.memtile_dma_channel_min = ")
+               << minCh << " is out of range [0, " << memtile_dma_channels
+               << ") for the " << (isMM2S.value() ? "MM2S" : "S2MM")
+               << " DMA channels of this memtile";
+    }
+    int avail = memtile_dma_channels - minCh;
+    chan = minCh + (num_allocs % avail);
+  }
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
 
@@ -1492,21 +1990,24 @@ air::MemTileDMAAllocator::foundFlowReuseOpportunity(
             f.S2MM_alloc[i].dma_channel.direction ==
                 alloc.dma_channel.direction &&
             f.S2MM_alloc[i].dma_channel.channel == alloc.dma_channel.channel) {
-          if (f.MM2S_alloc.getDmaTile() &&
-              f.MM2S_alloc.getDmaTile().isMemTile()) {
-            return f.MM2S_alloc;
+          for (auto &mm2s : f.MM2S_alloc) {
+            if (mm2s.getDmaTile() && mm2s.getDmaTile().isMemTile()) {
+              return mm2s;
+            }
           }
         }
       }
-    } else if (isMM2S && f.MM2S_alloc.getDmaTile() == alloc.getDmaTile() &&
-               f.MM2S_alloc.dma_channel.direction ==
-                   alloc.dma_channel.direction &&
-               f.MM2S_alloc.dma_channel.channel == alloc.dma_channel.channel) {
-
-      for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
-        if (f.S2MM_alloc[i].getDmaTile() &&
-            f.S2MM_alloc[i].getDmaTile().isMemTile()) {
-          return f.S2MM_alloc[i];
+    } else {
+      for (auto &mm2s : f.MM2S_alloc) {
+        if (mm2s.getDmaTile() == alloc.getDmaTile() &&
+            mm2s.dma_channel.direction == alloc.dma_channel.direction &&
+            mm2s.dma_channel.channel == alloc.dma_channel.channel) {
+          for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
+            if (f.S2MM_alloc[i].getDmaTile() &&
+                f.S2MM_alloc[i].getDmaTile().isMemTile()) {
+              return f.S2MM_alloc[i];
+            }
+          }
         }
       }
     }
@@ -1709,6 +2210,11 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
     return memcpyOp->emitOpError("unrecognized memory space on memref");
   MM2S_memspace = *putMS;
   memcpyResourceType = chan.getChannelType().str();
+  // numMM2SAllocs (number of DISTINCT producer tiles) is computed during DMA
+  // channel allocation, where each put's tile is resolved -- a single producer
+  // doing multiple puts (loop / ping-pong) stays ONE producer, while distinct
+  // producer tiles (packet fan-in convergence) become N. See
+  // simpleDMAChannelAllocation.
   return success();
 }
 
@@ -1733,6 +2239,7 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::DmaMemcpyNdOp dmaMemcpyOp) {
                                            std::vector<Operation *>());
   S2MM = v1;
   S2MM_alloc = std::vector<air::allocation_info_t>(numS2MMAllocs);
+  MM2S_alloc = std::vector<air::allocation_info_t>(numMM2SAllocs);
   memcpyResourceType = "npu_dma_stream";
 }
 
@@ -1752,7 +2259,9 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
                                            std::vector<Operation *>());
   S2MM = v1;
   S2MM_alloc = std::vector<air::allocation_info_t>(numS2MMAllocs);
+  MM2S_alloc = std::vector<air::allocation_info_t>(numMM2SAllocs);
   memcpyResourceType = chan.getChannelType().str();
+  keep_pkt_header = chan->hasAttr(air::attrs::KeepPktHeader);
 }
 
 } // namespace xilinx
@@ -1893,6 +2402,65 @@ void air::reorderL3PacketPutsByFlowOrder(
   }
 }
 
+// Resolve the memory space of one endpoint (source when isSource, else
+// destination) of a memcpy op via the air::MemcpyInterface, which already
+// abstracts the src/dst memref across channel puts/gets and dma_memcpy_nd. This
+// keeps the per-endpoint dispatch working uniformly for any MemcpyInterface op.
+static std::optional<air::MemorySpace>
+getMemcpyEndpointMemorySpace(Operation *o, bool isSource) {
+  auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(o);
+  if (!memcpyOpIf)
+    return std::nullopt;
+  Value ref = isSource ? memcpyOpIf.getSrcMemref() : memcpyOpIf.getDstMemref();
+  if (!ref)
+    return std::nullopt;
+  return air::getMemorySpace(llvm::cast<BaseMemRefType>(ref.getType()));
+}
+
+// Resolve the memory space of a single S2MM receiver op (the destination of
+// the data movement). A broadcast/demux flow may fan out to receivers in
+// DIFFERENT memory spaces (e.g. one dest is an L1 compute tile, others are L2
+// memtile relays), so allocation must dispatch per-receiver rather than on the
+// flow's aggregate S2MM_memspace (which only records the last receiver seen).
+static std::optional<air::MemorySpace>
+getS2MMReceiverMemorySpace(Operation *o) {
+  return getMemcpyEndpointMemorySpace(o, /*isSource=*/false);
+}
+
+// Resolve the memory space of a single MM2S producer op (the source of the data
+// movement). A convergent flow may have producers in DIFFERENT memory spaces
+// (e.g. an L1 compute core + an L2 memtile both feeding one S2MM), so MM2S
+// allocation must dispatch per-producer rather than
+// on the flow's aggregate MM2S_memspace.
+static std::optional<air::MemorySpace>
+getMM2SProducerMemorySpace(Operation *o) {
+  return getMemcpyEndpointMemorySpace(o, /*isSource=*/true);
+}
+
+// The producer tile of an MM2S op, used as the grouping key that collapses
+// multiple puts from ONE producer tile (loop / ping-pong) onto a single MM2S
+// allocation while keeping DISTINCT producer tiles apart. Key identity:
+//   - L1 producer: the parent aie.core's tile op.
+//   - L2 producer: the owning tile of the source buffer -- a physical
+//     AIE::TileOp once placed, or the logical-tile op pre-placement.
+// The returned op is used only for pointer-identity comparison within one
+// flow's producer list, so a physical or logical tile op is equally valid as
+// long as one producer tile yields one stable key. Returns null when the tile
+// cannot be resolved (caller treats a null key as "ungroupable").
+static Operation *getMM2SProducerTileKey(Operation *o) {
+  if (auto ms = getMM2SProducerMemorySpace(o)) {
+    if (*ms == air::MemorySpace::L1) {
+      if (auto core = o->getParentOfType<AIE::CoreOp>())
+        return core.getTileOp().getOperation();
+    } else if (*ms == air::MemorySpace::L2) {
+      auto memcpyOpIf = cast<air::MemcpyInterface>(o);
+      if (auto buf = getUnderlyingBufferOp(memcpyOpIf.getSrcMemref()))
+        return buf.getTile().getDefiningOp();
+    }
+  }
+  return nullptr;
+}
+
 // AIR channel to AIE flow scheduling strategy 1: round robin
 // Problem: no awareness wrt channel put and get pattern, leading to deadlocks
 LogicalResult air::simpleDMAChannelAllocation(
@@ -1908,8 +2476,88 @@ LogicalResult air::simpleDMAChannelAllocation(
     // dedicated late pass (see lowerAIRMMIOChannelOps).
     if (f.memcpyResourceType == "npu_mmio")
       continue;
-    if (f.MM2S_memspace == air::MemorySpace::L1) {
+    {
+      // Allocate MM2S producers. Dispatch PER-PRODUCER by memory space so a
+      // convergent packet flow with mixed-memspace producers (e.g. an L1
+      // compute core + an L2 memtile both feeding one S2MM) gets each its right
+      // DMA resource: L1 -> tile
+      // DMA channel (requires an aie.core parent), L2 -> memtile DMA channel.
+      // PACKET channels group producers by DISTINCT tile (L1 or L2), so each
+      // producer tile gets one packet_flow / MM2S alloc index. A single
+      // producer doing multiple puts (loop / ping-pong) stays ONE alloc.
+      // Non-packet (circuit/cascade) keeps single-alloc behavior (idx==0). L3
+      // (shim) producers are handled in the dedicated shim passes below.
+      bool isPacket = f.memcpyResourceType == "npu_dma_packet";
+      SmallVector<Operation *> producerTiles;
       for (auto o : f.MM2S) {
+        auto pms = getMM2SProducerMemorySpace(o);
+        if (pms != air::MemorySpace::L1 && pms != air::MemorySpace::L2)
+          continue;
+        auto memcpyOpIf = cast<air::MemcpyInterface>(o);
+        AIE::TileOp coreTile; // valid for L1 producers
+        if (pms == air::MemorySpace::L1) {
+          auto core = memcpyOpIf->getParentOfType<AIE::CoreOp>();
+          if (!core)
+            return memcpyOpIf->emitOpError(
+                "memcpy op not outlined in an aie.core op.");
+          coreTile = core.getTileOp();
+        }
+        int idx = 0;
+        // Only PACKET flows group producers per distinct tile (each grouped
+        // producer gets its own packet_flow / MM2S alloc, all converging on the
+        // shared dest S2MM via a common pkt id). Non-packet (circuit / cascade)
+        // flows keep idx==0: their multiple MM2S ops are per-index / broadcast
+        // endpoints resolved elsewhere, not fan-in convergence onto one alloc.
+        if (isPacket) {
+          Operation *tileKey = getMM2SProducerTileKey(o);
+          idx = -1;
+          for (int k = 0; k < (int)producerTiles.size(); k++)
+            if (producerTiles[k] == tileKey) {
+              idx = k;
+              break;
+            }
+          if (idx < 0) {
+            idx = (int)producerTiles.size();
+            producerTiles.push_back(tileKey);
+          }
+        }
+        if ((int)f.MM2S_alloc.size() <= idx)
+          f.MM2S_alloc.resize(idx + 1);
+
+        FailureOr<air::allocation_info_t> alloc_res;
+        if (pms == air::MemorySpace::L1) {
+          if (f.memcpyResourceType == "npu_dma_stream" ||
+              f.memcpyResourceType == "npu_dma_packet") {
+            alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
+                memcpyOpIf, coreTile, f.MM2S_alloc[idx].dma_channel.channel);
+          } else if (f.memcpyResourceType == "npu_cascade") {
+            alloc_res = core_cascade_alloc.coreCascadeAlloc(memcpyOpIf);
+          }
+        } else { // L2 (memtile) producer
+          if (f.memcpyResourceType != "npu_dma_stream" &&
+              f.memcpyResourceType != "npu_dma_packet")
+            return memcpyOpIf->emitOpError(
+                "only supports npu_dma_stream or npu_dma_packet "
+                "connections at L2 memory");
+          alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
+        }
+        if (failed(alloc_res))
+          return failure();
+        f.MM2S_alloc[idx] = alloc_res.value();
+        if (!f.MM2S_alloc[idx].valid())
+          return failure();
+      }
+      if (isPacket && !producerTiles.empty())
+        f.numMM2SAllocs = (int)producerTiles.size();
+    }
+    // Allocate tile DMA channels for L1 receivers. Dispatch per-receiver (not
+    // on f.S2MM_memspace) so a broadcast/demux flow with mixed-memspace dests
+    // gets each L1 dest a tile DMA channel here; its L2 dests are allocated a
+    // memtile channel in the second pass below.
+    for (size_t i = 0; i < f.S2MM.size(); i++) {
+      for (auto o : f.S2MM[i]) {
+        if (getS2MMReceiverMemorySpace(o) != air::MemorySpace::L1)
+          continue;
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
         auto core = memcpyOpIf->getParentOfType<AIE::CoreOp>();
         if (!core) {
@@ -1922,7 +2570,7 @@ LogicalResult air::simpleDMAChannelAllocation(
         if (f.memcpyResourceType == "npu_dma_stream" ||
             f.memcpyResourceType == "npu_dma_packet") {
           alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
-              memcpyOpIf, tile, f.MM2S_alloc.dma_channel.channel);
+              memcpyOpIf, tile, f.S2MM_alloc[i].dma_channel.channel);
           if (failed(alloc_res))
             return failure();
         } else if (f.memcpyResourceType == "npu_cascade") {
@@ -1931,39 +2579,9 @@ LogicalResult air::simpleDMAChannelAllocation(
             return failure();
         }
 
-        f.MM2S_alloc = alloc_res.value();
-        if (!f.MM2S_alloc.valid())
+        f.S2MM_alloc[i] = alloc_res.value();
+        if (!f.S2MM_alloc[i].valid())
           return failure();
-      }
-    }
-    if (f.S2MM_memspace == air::MemorySpace::L1) {
-      for (size_t i = 0; i < f.S2MM.size(); i++) {
-        for (auto o : f.S2MM[i]) {
-          auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-          auto core = memcpyOpIf->getParentOfType<AIE::CoreOp>();
-          if (!core) {
-            return memcpyOpIf->emitOpError(
-                "memcpy op not outlined in an aie.core op.");
-          }
-          auto tile = core.getTileOp();
-
-          FailureOr<air::allocation_info_t> alloc_res;
-          if (f.memcpyResourceType == "npu_dma_stream" ||
-              f.memcpyResourceType == "npu_dma_packet") {
-            alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
-                memcpyOpIf, tile, f.S2MM_alloc[i].dma_channel.channel);
-            if (failed(alloc_res))
-              return failure();
-          } else if (f.memcpyResourceType == "npu_cascade") {
-            alloc_res = core_cascade_alloc.coreCascadeAlloc(memcpyOpIf);
-            if (failed(alloc_res))
-              return failure();
-          }
-
-          f.S2MM_alloc[i] = alloc_res.value();
-          if (!f.S2MM_alloc[i].valid())
-            return failure();
-        }
       }
     }
   }
@@ -1971,8 +2589,21 @@ LogicalResult air::simpleDMAChannelAllocation(
     // MMIO channels are not allocated to any DMA resource at L2 either.
     if (f.memcpyResourceType == "npu_mmio")
       continue;
-    if (f.MM2S_memspace == air::MemorySpace::L2) {
-      for (auto o : f.MM2S) {
+    // (L2 (memtile) MM2S producers are allocated in the unified per-producer
+    // MM2S pass above, which dispatches L1 -> tile DMA and L2 -> memtile DMA
+    // and groups packet producers across both memory spaces.) Allocate memtile
+    // DMA channels for L2 receivers. Dispatch per-receiver so a broadcast/demux
+    // flow with mixed-memspace dests gets each L2 dest a memtile channel here
+    // (its L1 dests were allocated a tile channel above).
+    // Ordering invariant: moving L2 MM2S allocation into the first loop is safe
+    // because MM2S and S2MM draw from independent per-tile channel pools (a
+    // memtile has separate MM2S and S2MM DMA channel sets), so allocating all
+    // MM2S before all S2MM does not perturb S2MM channel assignments relative
+    // to the old interleaved order.
+    for (size_t i = 0; i < f.S2MM.size(); i++) {
+      for (auto o : f.S2MM[i]) {
+        if (getS2MMReceiverMemorySpace(o) != air::MemorySpace::L2)
+          continue;
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
         // Report error if the data movement lowers to neither dma stream
         // (aie.flow) nor dma packet flow (aie.packet_flow).
@@ -1984,25 +2615,7 @@ LogicalResult air::simpleDMAChannelAllocation(
         auto alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
         if (failed(alloc_res) || !alloc_res->valid())
           return failure();
-        f.MM2S_alloc = alloc_res.value();
-      }
-    }
-    if (f.S2MM_memspace == air::MemorySpace::L2) {
-      for (size_t i = 0; i < f.S2MM.size(); i++) {
-        for (auto o : f.S2MM[i]) {
-          auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-          // Report error if the data movement lowers to neither dma stream
-          // (aie.flow) nor dma packet flow (aie.packet_flow).
-          if (f.memcpyResourceType != "npu_dma_stream" &&
-              f.memcpyResourceType != "npu_dma_packet")
-            return memcpyOpIf->emitOpError(
-                "only supports npu_dma_stream or npu_dma_packet "
-                "connections at L2 memory");
-          auto alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
-          if (failed(alloc_res) || !alloc_res->valid())
-            return failure();
-          f.S2MM_alloc[i] = alloc_res.value();
-        }
+        f.S2MM_alloc[i] = alloc_res.value();
       }
     }
   }
@@ -2038,6 +2651,7 @@ LogicalResult air::simpleDMAChannelAllocation(
     if (f.memcpyResourceType == "npu_mmio")
       return success();
     if (f.MM2S_memspace == air::MemorySpace::L3) {
+      // L3 (shim/host) producers stay single-producer (numMM2SAllocs==1).
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.MM2S) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
@@ -2055,7 +2669,7 @@ LogicalResult air::simpleDMAChannelAllocation(
               s2mmTile.tryGetRow().value_or(-1), f.S2MM[i]);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
-          f.MM2S_alloc = alloc_res.value();
+          f.MM2S_alloc[0] = alloc_res.value();
         }
       }
     }
@@ -2072,10 +2686,12 @@ LogicalResult air::simpleDMAChannelAllocation(
           return memcpyOpIf->emitOpError(
               "only supports npu_dma_stream or npu_dma_packet "
               "connections at L3 memory");
-        if (!f.MM2S_alloc.getDmaTile())
+        if (f.MM2S_alloc.empty() || !f.MM2S_alloc[0].getDmaTile())
           return memcpyOpIf->emitOpError(
               "failed to get MM2S tile for L3 allocation.");
-        auto mm2sTile = f.MM2S_alloc.getDmaTile();
+        // L3 (shim) S2MM consumer is single-producer (fan-in to a shim dest is
+        // unsupported); use the sole producer alloc.
+        auto mm2sTile = f.MM2S_alloc[0].getDmaTile();
         auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
             memcpyOpIf, mm2sTile, mm2sTile.tryGetCol().value_or(-1),
             mm2sTile.tryGetRow().value_or(-1), f.MM2S);
@@ -2127,8 +2743,12 @@ bool air::groupingMemcpysByLoop(
   std::map<AIE::CoreOp, std::vector<scf::ForOp>> for_loops_log_mm2s,
       for_loops_log_s2mm;
   for (auto &f : memcpy_flows) {
-    if (f.MM2S_memspace == air::MemorySpace::L1) {
+    {
+      // Group by loop only for L1 producers (dispatch per-producer, since a
+      // convergent flow may also have L2 memtile producers with no aie.core).
       for (auto o : f.MM2S) {
+        if (getMM2SProducerMemorySpace(o) != air::MemorySpace::L1)
+          continue;
         auto core = o->getParentOfType<AIE::CoreOp>();
         f.flow_op_group = foundInVector<scf::ForOp>(
             o->getParentOfType<scf::ForOp>(), for_loops_log_mm2s[core]);
@@ -2137,9 +2757,13 @@ bool air::groupingMemcpysByLoop(
         }
       }
     }
-    if (f.S2MM_memspace == air::MemorySpace::L1) {
+    {
+      // Group by loop only for L1 receivers (dispatch per-receiver, since a
+      // broadcast/demux flow may also have L2 dests with no aie.core parent).
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.S2MM[i]) {
+          if (getS2MMReceiverMemorySpace(o) != air::MemorySpace::L1)
+            continue;
           auto core = o->getParentOfType<AIE::CoreOp>();
           f.flow_op_group = foundInVector<scf::ForOp>(
               o->getParentOfType<scf::ForOp>(), for_loops_log_s2mm[core]);

@@ -69,6 +69,16 @@ scf::ForOp getForRegionIterArgsOwner(Value val);
 scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val);
 // Get the parent air.launch_herd op of a tile id
 HerdOp getHerdArgOwner(Value val);
+// Returns true if the L1 buffer passed as kernel operand `memrefOperand` to
+// `herd` carries a cross-core producer/consumer dependence: some core reads the
+// buffer that a *different* core writes. Inferred purely from the per-core
+// access pattern by enumerating the herd iteration space and evaluating tile-id
+// guards (scf.if / scf.index_switch; affine.if and unanalyzable guards are
+// treated conservatively as reachable). This identifies shared L1 neighbor
+// buffers without any IR annotation. Returns false if `memrefOperand` is not a
+// kernel operand of `herd`, the buffer is not L1, the herd has a single core,
+// or the iteration extents are not statically known.
+bool herdBufferHasCrossCoreDependence(HerdOp herd, Value memrefOperand);
 // Get the parent air.hierarchy op of a tile id
 HierarchyInterface getHierarchyArgOwner(Value val);
 // Get the scf parent op from scf.yield op
@@ -114,6 +124,15 @@ DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 
 // Get channel declaration through channel symbol
 ChannelOp getChannelDeclarationThroughSymbol(ChannelInterface op);
+// Single-buffer count-free re-broadcast count (see AIRDialect.h
+// attrs::RefeedCount): N re-sends of one resident buffer per production. Reads
+// the count off `op` (per-emission override) falling back to its channel
+// declaration (the authoritative carrier). Returns 1 when absent / < 1 / not a
+// channel op. Single reader so the lock allocators cannot diverge on the value.
+int64_t getRefeedCount(ChannelInterface op);
+// Same, for a value already resolved to its buffer/alloc carrier (memtile L2
+// rendezvous buffer): reads air.refeed_count directly off `op`.
+int64_t getRefeedCount(Operation *op);
 // Get ChannelPutOps from ChannelOp
 std::vector<ChannelPutOp>
 getChannelPutOpThroughSymbol(ChannelOp channel, Operation *scope = nullptr);
@@ -237,6 +256,14 @@ void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
 // another. These are inherent ODS attributes and are not included in the
 // discardable attr dictionary, so they must be copied explicitly.
 void copyPaddingAttributes(Operation *src, Operation *dst);
+
+// True iff `op`'s "metadata" FlatSymbolRefAttr resolves to an S2MM
+// (device->host / output) shim DMA allocation. The allocation is looked up in
+// `op`'s parent AIE::DeviceOp when it has one, otherwise in every AIE::DeviceOp
+// of the enclosing module (an airrt.dma_memcpy_nd still lives in a func before
+// air-to-std sinks it into its device). Returns false when there is no metadata
+// or no matching ShimDMAAllocationOp.
+bool isDeviceToHostShimDMA(Operation *op);
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.

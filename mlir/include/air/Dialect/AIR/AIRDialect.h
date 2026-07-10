@@ -30,6 +30,58 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
+// Attribute names for the DMA-steering / runtime-sequence-ordering markers.
+// Centralized so producers and consumers agree (a mistyped literal silently
+// no-ops). See the AIRRtToNpu / AIRToAIE passes for their semantics.
+namespace attrs {
+constexpr StringLiteral RuntimeHoist = "air.runtime_hoist";
+constexpr StringLiteral AwaitAppends = "air.await_appends";
+constexpr StringLiteral AppendBarrier = "air.append_barrier";
+constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
+constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
+constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
+constexpr StringLiteral DedicatedDmaChannel = "air.dedicated_dma_channel";
+// Single-buffer count-free re-broadcast: N (>= 1) re-sends of one resident
+// buffer per production. Authoritative carrier is the air.channel declaration;
+// read via air::getRefeedCount. Verified on air.channel.
+constexpr StringLiteral RefeedCount = "air.refeed_count";
+// Opt-in front-end marker (unit attr) on an scf.for / affine.for whose body is
+// a single loop-invariant air.channel.put: the loop re-sends one resident
+// buffer once per iteration. The air-annotate-refeed pass reads its trip count
+// into attrs::RefeedCount on the channel and collapses the loop.
+constexpr StringLiteral RefeedLoop = "air.refeed_loop";
+// User-pinned packet routing ids on an air.channel (channel_type
+// "npu_dma_packet"). One packet_flow per id: N ids to a single dest converge on
+// one buffer for a downstream demux hop; N ids to N dests route dest i with
+// pinned[i]. The compute core writes the id into the payload header, so the DMA
+// does not stamp/filter these -- the flows only install switchbox routes. Bare
+// spelling matches the broadcast_shape discardable-attr convention on
+// air.channel; read via air::ChannelOp::getPacketIDs. Verified on air.channel.
+constexpr StringLiteral PacketIDs = "packet_ids";
+// The kernel writes the routing packet header into the payload itself.
+// air-to-aie must not stamp a static pkt_id on the producer BD (that would
+// prepend a second header word) and emits the aie.packet_flow with
+// {keep_pkt_header = true} so the switchbox keeps the header at the
+// destination. For a split bundle keep is per-flow (only the offset-0 bearer
+// keeps it); see SrcWritesPktHeader. Bare spelling matches the packet_flow attr
+// in the AIE dialect. Verified on air.channel.
+constexpr StringLiteral KeepPktHeader = "keep_pkt_header";
+// Bundle-wide derived marker set on every split of a KeepPktHeader channel: the
+// bundle source writes its own header, so no split's producer BD may be
+// stamped. Distinct from KeepPktHeader, which is per-flow (offset-0 bearer
+// only).
+constexpr StringLiteral SrcWritesPktHeader = "air.src_writes_pkt_header";
+} // namespace attrs
+
+// Copy the DMA-steering / runtime-ordering markers
+// (attrs::MemtileDmaChannelMin, RuntimeHoist, AwaitAppends, AppendBarrier,
+// RefeedCount, PacketIDs, KeepPktHeader) that must survive channel-op
+// re-instantiation from src to dst. Single source of truth for the marker set,
+// so copy sites (Util::copyPaddingAttributes, ComposeMemrefOpOnChannelOp,
+// SpecializeChannelBundlePattern) cannot diverge. Both ops must be live (call
+// before erasing src).
+void copyChannelSteeringAttrs(Operation *src, Operation *dst);
+
 void registerAIRRtTranslations();
 
 class AsyncTokenType

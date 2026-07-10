@@ -90,11 +90,13 @@ set(TEST_DEPENDS
   FileCheck count not
   )
 
-# Peano-only test suite
+# Peano-only test suite (non-LLM peano tests; filtered by filename suffix).
+# LLM tests are handled by the dedicated targets below so they can use -j1
+# (sequential) to avoid concurrent NPU inference OOM crashes.
 add_lit_testsuite(check-programming-examples-peano "Running AIR programming examples (Peano backend only)"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS ${AIR_TEST_LIT_ARGS} --filter "peano"
+  ARGS ${AIR_TEST_LIT_ARGS} --filter "peano" --filter-out "llms/"
 )
 set_target_properties(check-programming-examples-peano PROPERTIES FOLDER "Tests")
 
@@ -113,5 +115,38 @@ add_lit_testsuite(check-programming-examples "Running AIR programming examples (
   ARGS ${AIR_TEST_LIT_ARGS}
 )
 set_target_properties(check-programming-examples PROPERTIES FOLDER "Tests")
+
+# LLM compile-only suite: all models, no HF download, no NPU dispatch.
+# Matched by path (llms/.*/run_npu2_compile) so lit filename need NOT carry
+# any backend suffix. Sequential (-j1) because concurrent LLM compilations
+# can exhaust host memory on CI runners.
+add_lit_testsuite(check-programming-examples-llms-compile
+  "Running LLM compile-only tests (all models, sequential)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --filter "llms/.*/run_npu2_compile"
+)
+set_target_properties(check-programming-examples-llms-compile PROPERTIES FOLDER "Tests")
+
+# LLM compile-only suite: llama32_1b only (fast PR gate, always runs in CI).
+add_lit_testsuite(check-programming-examples-llms-compile-llama32_1b
+  "Running LLM compile test: llama32_1b only (PR gate)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --filter "llms/llama32_1b/run_npu2_compile"
+)
+set_target_properties(check-programming-examples-llms-compile-llama32_1b PROPERTIES FOLDER "Tests")
+
+# LLM verify suite: all models, requires hf_token + NPU.
+# Sequential (-j1) mandatory — concurrent LLM inference causes NPU OOM.
+# Not invoked in PR CI (hf_token unavailable in fork PRs); run by repo
+# owners via workflow_dispatch or post-merge CI with secrets available.
+add_lit_testsuite(check-programming-examples-llms-verify
+  "Running LLM end-to-end verify tests (all models, hf_token required, sequential)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --filter "llms/.*/run_npu2_verify"
+)
+set_target_properties(check-programming-examples-llms-verify PROPERTIES FOLDER "Tests")
 
 add_dependencies(check-all check-programming-examples)

@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -29,12 +30,14 @@
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "iostream"
+#include <limits>
 
 #define DEBUG_TYPE "air-util"
 
@@ -282,6 +285,160 @@ air::HerdOp air::getHerdArgOwner(Value val) {
   return dyn_cast_if_present<air::HerdOp>(containingOp);
 }
 
+namespace {
+// Resolve `v` to an integer under a specific herd tile-id assignment `ivVals`,
+// else a plain constant, else nullopt.
+static std::optional<int64_t>
+resolveUnderIvs(Value v, const llvm::DenseMap<Value, int64_t> &ivVals) {
+  auto it = ivVals.find(v);
+  if (it != ivVals.end())
+    return it->second;
+  return getConstantIntValue(v);
+}
+
+// Evaluate a boolean guard condition under a specific tile-id assignment.
+static std::optional<bool>
+evalGuardUnderIvs(Value cond, const llvm::DenseMap<Value, int64_t> &ivVals) {
+  if (auto c = cond.getDefiningOp<arith::ConstantOp>())
+    if (auto ia = dyn_cast<IntegerAttr>(c.getValue()))
+      return ia.getValue().getBoolValue();
+  if (auto cmp = cond.getDefiningOp<arith::CmpIOp>()) {
+    auto l = resolveUnderIvs(cmp.getLhs(), ivVals);
+    auto r = resolveUnderIvs(cmp.getRhs(), ivVals);
+    if (l && r) {
+      unsigned bw = isa<IndexType>(cmp.getLhs().getType())
+                        ? 64
+                        : cmp.getLhs().getType().getIntOrFloatBitWidth();
+      return arith::applyCmpPredicate(cmp.getPredicate(),
+                                      APInt(bw, *l, /*isSigned=*/true),
+                                      APInt(bw, *r, /*isSigned=*/true));
+    }
+  }
+  if (auto ic = cond.getDefiningOp<arith::IndexCastOp>())
+    if (auto v = resolveUnderIvs(ic.getIn(), ivVals)) {
+      unsigned dstBw = isa<IndexType>(ic.getType())
+                           ? 64
+                           : ic.getType().getIntOrFloatBitWidth();
+      return APInt(dstBw, *v).getBoolValue();
+    }
+  return std::nullopt;
+}
+
+// Whether `op` executes for the core identified by `ivVals`, by evaluating the
+// enclosing scf.if / scf.index_switch tile-id guards up to `body`. Guards that
+// cannot be evaluated (affine.if, data-dependent) are conservatively treated as
+// taken (reachable).
+static bool reachableUnderIvs(Operation *op, Region &body,
+                              const llvm::DenseMap<Value, int64_t> &ivVals) {
+  Operation *stop = body.getParentOp();
+  Operation *child = op;
+  for (Operation *p = op->getParentOp(); p && p != stop;
+       child = p, p = p->getParentOp()) {
+    Region *childRegion = child->getParentRegion();
+    if (auto sif = dyn_cast<scf::IfOp>(p)) {
+      if (auto c = evalGuardUnderIvs(sif.getCondition(), ivVals)) {
+        bool inThen = sif.getThenRegion().isAncestor(childRegion);
+        bool inElse = sif.getElseRegion().isAncestor(childRegion);
+        if (*c && inElse)
+          return false;
+        if (!*c && inThen)
+          return false;
+      }
+    } else if (auto sw = dyn_cast<scf::IndexSwitchOp>(p)) {
+      if (auto arg = resolveUnderIvs(sw.getArg(), ivVals)) {
+        Region *selected = &sw.getDefaultRegion();
+        ArrayRef<int64_t> cases = sw.getCases();
+        for (size_t i = 0; i < cases.size(); ++i)
+          if (cases[i] == *arg) {
+            selected = &sw.getCaseRegions()[i];
+            break;
+          }
+        if (!selected->isAncestor(childRegion))
+          return false;
+      }
+    }
+  }
+  return true;
+}
+} // namespace
+
+bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
+                                           Value memrefOperand) {
+  auto memrefTy = dyn_cast<MemRefType>(memrefOperand.getType());
+  if (!memrefTy || !air::isL1(memrefTy))
+    return false;
+  Value karg = herd.getTiedKernelArgument(memrefOperand);
+  if (!karg)
+    return false;
+
+  ArrayRef<BlockArgument> ids = herd.getIds();
+  SmallVector<int64_t> sizes;
+  for (Value sz : herd.getSizeOperands()) {
+    auto c = getConstantIntValue(sz);
+    if (!c || *c <= 0)
+      return false;
+    sizes.push_back(*c);
+  }
+  int64_t numCores = 1;
+  for (int64_t s : sizes)
+    numCores *= s;
+  if (numCores <= 1 || sizes.size() != ids.size())
+    return false;
+
+  // Collect the block arg and its view aliases (subview / collapse / expand /
+  // cast / transpose) so leaf read/write ops are reached.
+  llvm::SmallDenseSet<Value> aliases;
+  aliases.insert(karg);
+  SmallVector<Value> wl{karg};
+  while (!wl.empty()) {
+    Value v = wl.pop_back_val();
+    for (Operation *u : v.getUsers()) {
+      if (isa<memref::SubViewOp, memref::CollapseShapeOp, memref::ExpandShapeOp,
+              memref::CastOp, memref::ReinterpretCastOp, memref::TransposeOp>(
+              u)) {
+        Value r = u->getResult(0);
+        if (aliases.insert(r).second)
+          wl.push_back(r);
+      }
+    }
+  }
+
+  Region &body = herd.getBody();
+  llvm::SmallSet<int64_t, 8> readerCores, writerCores;
+  for (int64_t lin = 0; lin < numCores; ++lin) {
+    int64_t rem = lin;
+    llvm::DenseMap<Value, int64_t> ivVals;
+    for (size_t d = 0; d < sizes.size(); ++d) {
+      ivVals[ids[d]] = rem % sizes[d];
+      rem /= sizes[d];
+    }
+    for (Value alias : aliases) {
+      for (Operation *user : alias.getUsers()) {
+        if (!reachableUnderIvs(user, body, ivVals))
+          continue;
+        if (mlir::hasEffect<mlir::MemoryEffects::Write>(user, alias))
+          writerCores.insert(lin);
+        if (mlir::hasEffect<mlir::MemoryEffects::Read>(user, alias))
+          readerCores.insert(lin);
+        if (auto chan = dyn_cast<air::ChannelInterface>(user)) {
+          if (chan.getMemref() == alias) {
+            if (isa<air::ChannelGetOp>(user))
+              writerCores.insert(lin);
+            else
+              readerCores.insert(lin);
+          }
+        }
+      }
+    }
+  }
+  if (writerCores.empty())
+    return false;
+  for (int64_t r : readerCores)
+    if (!writerCores.contains(r))
+      return true;
+  return false;
+}
+
 // Get the parent air.hierarchy op of a tile id
 air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
   auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
@@ -491,6 +648,39 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
     }
   }
   return air::ChannelOp();
+}
+
+int64_t air::getRefeedCount(Operation *op) {
+  if (!op)
+    return 1;
+  auto rc = op->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount);
+  if (!rc)
+    return 1;
+  int64_t n = rc.getInt();
+  if (n <= 1)
+    return 1;
+  // The count sizes/initializes 32-bit AIE semaphore locks (allocateLockOp
+  // init, UseLockOp acquire/release). A value that does not fit int32 is
+  // malformed IR; narrowing it would silently mis-synchronize or deadlock the
+  // DMA. Guard here
+  // -- the single reader -- so every caller's narrowing cast is safe. Falling
+  // back to 1 (no re-feed) is the safe default; warn so it is not missed.
+  if (n > std::numeric_limits<int32_t>::max()) {
+    op->emitWarning("air.refeed_count ")
+        << n << " exceeds the 32-bit lock range; ignoring (treating as 1)";
+    return 1;
+  }
+  return n;
+}
+
+int64_t air::getRefeedCount(air::ChannelInterface op) {
+  if (!op)
+    return 1;
+  // Per-emission override on the put/get takes precedence over the
+  // channel-level declaration.
+  if (int64_t n = getRefeedCount(op.getOperation()); n > 1)
+    return n;
+  return getRefeedCount(getChannelDeclarationThroughSymbol(op).getOperation());
 }
 
 // Get ChannelPutOp through ChannelOp
@@ -1183,6 +1373,35 @@ int air::getDmaInnerElementAlignment(BaseMemRefType memrefTy, Operation *op) {
   return addrGenBits / elemBits;
 }
 
+// See header for the resolution rules.
+bool air::isDeviceToHostShimDMA(Operation *op) {
+#if AIR_ENABLE_AIE
+  auto md = op->getAttrOfType<FlatSymbolRefAttr>("metadata");
+  if (!md)
+    return false;
+  auto isS2MM = [&](AIE::DeviceOp d) -> std::optional<bool> {
+    if (auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(d, md.getValue()))
+      return alloc.getChannelDir() == AIE::DMAChannelDir::S2MM;
+    return std::nullopt;
+  };
+  if (auto d = op->getParentOfType<AIE::DeviceOp>())
+    if (auto dir = isS2MM(d))
+      return *dir;
+  bool result = false;
+  if (auto mod = op->getParentOfType<ModuleOp>())
+    mod.walk([&](AIE::DeviceOp d) {
+      if (auto dir = isS2MM(d)) {
+        result = *dir;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+  return result;
+#else
+  return false;
+#endif
+}
+
 // Largest factor of 'num' that is <= 'max' and a multiple of 'alignment'.
 // See header for rationale.
 int air::findLargestAlignedFactor(int num, int max, int alignment) {
@@ -1287,6 +1506,19 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
       continue;
     erase_dims.push_back(i);
   }
+
+  // Empty list is the sentinel for "full-volume contiguous access" (see final
+  // block below). If erasing all dims but the access is partial, keep the
+  // innermost dim; eraseWrapNStrideDim composes outer offsets into inner dims.
+  int64_t access_volume = 1;
+  for (auto s : sizes)
+    if (auto c = getConstantIntValue(s))
+      access_volume *= *c;
+  if (!erase_dims.empty() &&
+      static_cast<size_t>(erase_dims.size()) == sizes.size() &&
+      access_volume != memref_volume)
+    erase_dims.erase(
+        erase_dims.begin()); // erase_dims is high-to-low; front() = innermost
 
   listsHaveChanged |=
       eraseWrapNStrideDim(builder, erase_dims, offsets, sizes, strides)
@@ -1512,6 +1744,7 @@ void air::copyPaddingAttributes(Operation *src, Operation *dst) {
     dst->setAttr("pad_before", padBefore);
   if (auto padAfter = src->getAttrOfType<DenseI32ArrayAttr>("pad_after"))
     dst->setAttr("pad_after", padAfter);
+  copyChannelSteeringAttrs(src, dst);
 }
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data
