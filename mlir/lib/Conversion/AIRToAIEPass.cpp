@@ -2479,7 +2479,11 @@ void L2MemrefToMemTileMap(
     if (pin >= 0)
       col = pin;
     bucketCols.push_back(col);
-    if (col >= 0)
+    // Only affinity-derived cols feed the saturation trigger. A user pin is an
+    // explicit request that is honored on both branches, so it must not push
+    // the module into the saturation fallback and thereby perturb the
+    // placement of unrelated, unpinned buckets.
+    if (pin < 0 && col >= 0)
       colDemand[col]++;
   }
 
