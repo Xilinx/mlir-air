@@ -2320,6 +2320,14 @@ void L2MemrefToMemTileMap(
   // First stage in memref placement: grouping memrefs referenced by the same
   // air.channel.
   SmallVector<SmallVector<memref::AllocOp>> memref_buckets;
+  // `air.memtile_col` is the memtile-level analogue of `air.shim_col` (see
+  // AIRToAIESchedulingUtils.cpp). Two deliberate differences: (1) it is carried
+  // on the memref.alloc rather than the channel decl, because L2 placement
+  // buckets are keyed by alloc; (2) it is hint-only (an invalid column warns
+  // and falls through) rather than a hard error, because a memtile column that
+  // exists on one target may not on another and the hint should stay portable.
+  // Caveat: it is a discardable attr on memref.alloc, so set it late (after
+  // air-dependency) — earlier rewrites that reconstruct allocs may drop it.
   // Returns the user-pinned col for an alloc if it carries
   // `air.memtile_col`, else -1.
   auto allocPinCol = [](memref::AllocOp a) -> int {
@@ -2440,17 +2448,16 @@ void L2MemrefToMemTileMap(
     }
     return colHasMemTile(consensus) ? consensus : -1;
   };
-  // User-controlled memtile column pin via discardable
-  // `air.memtile_col` IntegerAttr on the memref.alloc op. Hint-only:
-  // invalid columns warn and fall through. Strict-first-wins on conflict
-  // within a bucket (bucket = allocs sharing one air.channel).
+  // Resolve the single valid pin for a bucket. Invalid columns (no memtile in
+  // the target) warn and fall through. The conflict branch is a defensive net:
+  // placeMemrefInSharedBucket already refuses to merge allocs carrying distinct
+  // pins, so a bucket normally holds at most one distinct valid pin.
   auto deriveBucketPin = [&](ArrayRef<memref::AllocOp> bucket) -> int {
     int pinned = -1;
     for (auto alloc : bucket) {
-      auto attr = alloc->getAttrOfType<IntegerAttr>("air.memtile_col");
-      if (!attr)
+      int col = allocPinCol(alloc);
+      if (col < 0)
         continue;
-      int col = static_cast<int>(attr.getInt());
       if (!colHasMemTile(col)) {
         alloc->emitWarning("air.memtile_col=")
             << col << " has no memtile in target; ignoring";
