@@ -15,10 +15,12 @@
 // splits the 256x256 buffer into four 64x256 fragments behind a new split
 // channel.
 
+// A split would introduce @channel_2 at module scope, before @test0 - assert
+// its absence before the label so the CHECK-NOT actually covers module scope.
+// CHECK-NOT: air.channel @channel_2
 // CHECK-LABEL: func.func @test0
 // CHECK: memref.alloc() {air.no_split} : memref<256x256xbf16, 1 : i32>
 // CHECK-NOT: memref<64x256xbf16, 1 : i32>
-// CHECK-NOT: air.channel @channel_2
 
 #map = affine_map<()[s0] -> (s0 * 256)>
 #map1 = affine_map<()[s0] -> (s0 * 64)>
@@ -261,12 +263,12 @@ func.func @test0_split(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16
 // is also honored: the pass checks the alloc's parent air.execute for
 // `air.no_split`. The 256x256 buffer is kept intact.
 
+// CHECK-NOT: air.channel @channel_2
 // CHECK-LABEL: func.func @test_exec_attr
 // CHECK: air.execute
 // CHECK: memref.alloc() : memref<256x256xbf16, 1 : i32>
 // CHECK: {air.no_split}
 // CHECK-NOT: memref<64x256xbf16, 1 : i32>
-// CHECK-NOT: air.channel @channel_2
 
 #map = affine_map<()[s0] -> (s0 * 256)>
 #map1 = affine_map<()[s0] -> (s0 * 64)>

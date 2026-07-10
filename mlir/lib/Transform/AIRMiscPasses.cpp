@@ -2167,8 +2167,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     // defeat the aggregation, overflowing the memtile BD limit.
     bool optOut = allocOp->hasAttr("air.no_split");
     if (!optOut)
-      if (auto exec =
-              dyn_cast_if_present<air::ExecuteOp>(allocOp->getParentOp()))
+      if (auto exec = allocOp->getParentOfType<air::ExecuteOp>())
         optOut = exec->hasAttr("air.no_split");
     if (optOut)
       continue;
