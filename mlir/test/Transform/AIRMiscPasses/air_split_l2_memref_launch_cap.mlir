@@ -81,7 +81,7 @@ func.func @test(%arg0: memref<128x1024xbf16>) {
       %p30 = air.channel.put async [%g3] @chan_out[%c3_0, %c0_0] (%a3[%c0_0, %c0_0] [%c8_0, %c512] [%c1024_0, %c1_0]) : (memref<8x1024xbf16, 1 : i32>)
       %p31 = air.channel.put async [%g3] @chan_out[%c3_0, %c1_0] (%a3[%c0_0, %c512] [%c8_0, %c512] [%c1024_0, %c1_0]) : (memref<8x1024xbf16, 1 : i32>)
       %c4_0 = arith.constant 4 : index
-      %h = air.herd @h async tile (%tx, %ty) in (%sx=%c4_0, %sy=%c2_0) args(%a=%a0, %b=%a1, %c=%a2, %d=%a3) : memref<8x1024xbf16, 1 : i32>, memref<8x1024xbf16, 1 : i32>, memref<8x1024xbf16, 1 : i32>, memref<8x1024xbf16, 1 : i32> {
+      %h = air.herd @h async tile (%tx, %ty) in (%sx=%c4_0, %sy=%c2_0) {
         %async_token_h, %r = air.execute -> (memref<8x512xbf16, 2 : i32>) {
           %alloc = memref.alloc() : memref<8x512xbf16, 2 : i32>
           air.execute_terminator %alloc : memref<8x512xbf16, 2 : i32>

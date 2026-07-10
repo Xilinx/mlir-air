@@ -2163,6 +2163,28 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     Value memref = allocOp.getMemref();
     if (auto exec = dyn_cast_if_present<air::ExecuteOp>(allocOp->getParentOp()))
       memref = exec->getResult(1);
+    // Precondition: partitioning is only defined for a buffer whose entire
+    // liveness is channel-mediated. `partitionMemref` rewrites the memref
+    // operand of each channel put/get onto a sub-buffer and moves the dealloc;
+    // it cannot redistribute any other use (e.g. the buffer captured as an
+    // air.herd operand), which has no single owning sub-buffer. Splitting such
+    // a buffer would leave that use dangling on the original alloc, which is
+    // then erased. Leave the buffer intact if any use escapes the
+    // {channel put/get, dealloc} set.
+    auto isPartitionableUser = [](Operation *user) {
+      if (isa<air::ChannelPutOp, air::ChannelGetOp, memref::DeallocOp>(user))
+        return true;
+      // A dealloc wrapped in an air.execute is the async form of the above.
+      if (auto exec = dyn_cast<air::ExecuteOp>(user))
+        return llvm::any_of(exec.getChildOps(), [](Operation &child) {
+          return isa<memref::DeallocOp>(child);
+        });
+      return false;
+    };
+    if (llvm::any_of(memref.getUsers(), [&](Operation *user) {
+          return !isPartitionableUser(user);
+        }))
+      continue;
     // Maps of MM2S and S2MM channels and their sub-channels.
     llvm::MapVector<air::ChannelOp, SmallVector<SmallVector<Value>>>
         MM2SChannels, S2MMChannels;
