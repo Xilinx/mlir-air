@@ -179,6 +179,11 @@ struct MemcpyBundleAsFlow {
   std::string
       memcpyResourceType; // The type of mechanism used for the memcpy op,
                           // including dma_stream, dma_packet, and cascade.
+  // When the source channel carries the `keep_pkt_header` attribute, the kernel
+  // writes the packet-header word itself and the resulting aie.packet_flow is
+  // emitted with {keep_pkt_header = true} so the switchbox keeps (does not
+  // strip) the header at the destination.
+  bool keep_pkt_header = false;
   LogicalResult pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp);
   LogicalResult pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp);
   LogicalResult pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp);
