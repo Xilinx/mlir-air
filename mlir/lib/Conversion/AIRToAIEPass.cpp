@@ -3717,7 +3717,7 @@ public:
     return createPacketFlowOp(builder, flowID, source, sourceBundle,
                               sourceChannel, dest, destBundle, destChannel,
                               keepPktHeader ? builder.getBoolAttr(true)
-                                            : mlir::BoolAttr(nullptr));
+                                            : mlir::BoolAttr());
   }
 
   /// Query an existing packet flow operation from within the AIE device.
