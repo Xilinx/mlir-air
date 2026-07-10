@@ -1807,51 +1807,120 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // appends' completion awaits to just BEFORE the tagged readback's start,
       // so the runtime blocks on append completion before reading back.
       //
-      // LIMITATION: only ONE readback per runtime sequence is supported (the
-      // barrier point is the first air.await_appends readback, and all tagged
-      // appends are ordered before it). A design with multiple independent
-      // readbacks gets a warning; generalizing to per-readback barriers is
-      // future work (see the tracking issue on removing these markers).
+      // A runtime sequence may contain MORE THAN ONE independent readback (e.g.
+      // an unrolled loop with N append/readback pairs). In that case each
+      // append's completion await is ordered before the FIRST tagged readback
+      // that follows the append in program order -- i.e. per readback, not
+      // collapsed onto the first readback (which would move a later append's
+      // await ahead of an earlier readback, violating SSA dominance and the
+      // append->readback ordering).
       SmallVector<AIEX::DMAConfigureTaskForOp> awaitCfgs;
       for (auto &o : blk)
         if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
           if (c->hasAttr(air::attrs::AwaitAppends))
             awaitCfgs.push_back(c);
-      if (awaitCfgs.size() > 1)
-        awaitCfgs.front()->emitWarning(
-            "air.await_appends: multiple tagged readbacks in one runtime "
-            "sequence; only the first is honored");
-      AIEX::DMAStartTaskOp barrierStart = nullptr;
-      if (!awaitCfgs.empty()) {
-        for (auto *u : awaitCfgs.front().getResult().getUsers())
-          if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u)) {
-            barrierStart = s;
-            break;
-          }
-        if (!barrierStart)
-          awaitCfgs.front()->emitWarning(
-              "air.await_appends: tagged readback has no dma_start_task; the "
-              "append barrier cannot be applied");
-      }
-      if (barrierStart) {
-        SmallVector<AIEX::DMAAwaitTaskOp> appendAwaits;
-        for (auto &o : blk) {
-          auto a = dyn_cast<AIEX::DMAAwaitTaskOp>(&o);
-          if (!a)
-            continue;
-          auto cfg = dyn_cast_or_null<AIEX::DMAConfigureTaskForOp>(
-              a.getTask().getDefiningOp());
-          if (!cfg)
-            continue;
-          if (cfg->hasAttr(air::attrs::AppendBarrier))
-            appendAwaits.push_back(a);
+      if (awaitCfgs.size() <= 1) {
+        // Single tagged readback (single-iteration / single-region design): the
+        // barrier point is that readback's start, and every air.append_barrier
+        // append is ordered before it.
+        AIEX::DMAStartTaskOp barrierStart = nullptr;
+        if (!awaitCfgs.empty()) {
+          for (auto *u : awaitCfgs.front().getResult().getUsers())
+            if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u)) {
+              barrierStart = s;
+              break;
+            }
+          if (!barrierStart)
+            awaitCfgs.front()->emitWarning(
+                "air.await_appends: tagged readback has no dma_start_task; the "
+                "append barrier cannot be applied");
         }
-        if (appendAwaits.empty())
-          barrierStart->emitWarning(
+        if (barrierStart) {
+          SmallVector<AIEX::DMAAwaitTaskOp> appendAwaits;
+          for (auto &o : blk) {
+            auto a = dyn_cast<AIEX::DMAAwaitTaskOp>(&o);
+            if (!a)
+              continue;
+            auto cfg = dyn_cast_or_null<AIEX::DMAConfigureTaskForOp>(
+                a.getTask().getDefiningOp());
+            if (!cfg)
+              continue;
+            if (cfg->hasAttr(air::attrs::AppendBarrier))
+              appendAwaits.push_back(a);
+          }
+          if (appendAwaits.empty())
+            barrierStart->emitWarning(
+                "air.await_appends: readback tagged but no air.append_barrier "
+                "appends found to await; no ordering was enforced");
+          for (auto a : appendAwaits)
+            a->moveBefore(barrierStart);
+        }
+      } else {
+        // Multiple tagged readbacks (e.g. an unrolled loop with N
+        // append/readback pairs). Apply a PER-READBACK barrier: each append's
+        // completion await is moved just before the FIRST tagged readback start
+        // that follows the append's own start in program order -- i.e. an
+        // append is awaited before the readback that consumes it, not collapsed
+        // onto the first readback (which would move a later append's await
+        // ahead of an earlier readback, violating SSA dominance and the
+        // append->readback ordering).
+        //
+        // Program-order index for every op in the block (append/readback starts
+        // do not move here -- only awaits are relocated -- so the indices stay
+        // valid for the interval decisions below).
+        DenseMap<Operation *, unsigned> order;
+        unsigned idx = 0;
+        for (auto &o : blk)
+          order[&o] = idx++;
+        // Tagged readback starts, in program order.
+        SmallVector<AIEX::DMAStartTaskOp> barrierStarts;
+        for (auto c : awaitCfgs) {
+          AIEX::DMAStartTaskOp s = nullptr;
+          for (auto *u : c.getResult().getUsers())
+            if (auto st = dyn_cast<AIEX::DMAStartTaskOp>(u)) {
+              s = st;
+              break;
+            }
+          if (!s)
+            c->emitWarning(
+                "air.await_appends: tagged readback has no dma_start_task; the "
+                "append barrier cannot be applied");
+          else
+            barrierStarts.push_back(s);
+        }
+        bool anyAppend = false;
+        for (auto &o : blk) {
+          auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
+          if (!cfg || !cfg->hasAttr(air::attrs::AppendBarrier))
+            continue;
+          anyAppend = true;
+          AIEX::DMAStartTaskOp aStart = nullptr;
+          AIEX::DMAAwaitTaskOp aAwait = nullptr;
+          for (auto *u : cfg.getResult().getUsers()) {
+            if (auto st = dyn_cast<AIEX::DMAStartTaskOp>(u))
+              aStart = st;
+            else if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(u))
+              aAwait = aw;
+          }
+          if (!aAwait)
+            continue;
+          unsigned apos = order[aStart ? aStart.getOperation() : &o];
+          AIEX::DMAStartTaskOp target = nullptr;
+          unsigned best = std::numeric_limits<unsigned>::max();
+          for (auto s : barrierStarts) {
+            unsigned sp = order[s.getOperation()];
+            if (sp > apos && sp < best) {
+              best = sp;
+              target = s;
+            }
+          }
+          if (target)
+            aAwait->moveBefore(target);
+        }
+        if (!anyAppend && !barrierStarts.empty())
+          barrierStarts.front()->emitWarning(
               "air.await_appends: readback tagged but no air.append_barrier "
               "appends found to await; no ordering was enforced");
-        for (auto a : appendAwaits)
-          a->moveBefore(barrierStart);
       }
     });
   }

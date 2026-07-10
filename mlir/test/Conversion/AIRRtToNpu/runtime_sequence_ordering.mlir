@@ -178,3 +178,61 @@ module {
     return
   }
 }
+
+// -----
+
+// (5) air.await_appends per-readback barrier: a runtime sequence may contain
+// MORE THAN ONE independent readback (e.g. an unrolled loop with N
+// append/readback pairs, each readback fed by several appends). Each append's
+// completion await is ordered before the readback that CONSUMES it -- the first
+// tagged readback that follows the append in program order -- NOT collapsed onto
+// the first readback (which would move a later readback's append awaits ahead of
+// an earlier readback, violating SSA dominance and the append->readback order).
+//
+// This mirrors the KV-cache shape: per iteration two appends (append0, append1)
+// drain into a shared buffer, then one readback reads it back.
+
+// CHECK-LABEL: aie.runtime_sequence @await_appends_multi
+// Iteration 0: readback0 awaits ITS OWN two appends (by SSA identity), then starts.
+// CHECK: %[[AK0:.*]] = aiex.dma_configure_task_for @appendK
+// CHECK: %[[AV0:.*]] = aiex.dma_configure_task_for @appendV
+// CHECK: %[[RB0:.*]] = aiex.dma_configure_task_for @readback
+// CHECK: aiex.dma_await_task(%[[AK0]])
+// CHECK: aiex.dma_await_task(%[[AV0]])
+// CHECK: aiex.dma_start_task(%[[RB0]])
+// Iteration 1: readback1 awaits ITS OWN two appends -- not iteration 0's, and
+// iteration 1's appends are NOT awaited before readback0 above.
+// CHECK: %[[AK1:.*]] = aiex.dma_configure_task_for @appendK
+// CHECK: %[[AV1:.*]] = aiex.dma_configure_task_for @appendV
+// CHECK: %[[RB1:.*]] = aiex.dma_configure_task_for @readback
+// CHECK: aiex.dma_await_task(%[[AK1]])
+// CHECK: aiex.dma_await_task(%[[AV1]])
+// CHECK: aiex.dma_start_task(%[[RB1]])
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @readback(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @appendK(%shim_noc_tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @appendV(%shim_noc_tile_0_0, S2MM, 1)
+  } {sym_name = "seg"}
+  airrt.module_metadata{}
+  func.func @await_appends_multi(%arg0: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c3_i32 = arith.constant 3 : i32
+    %c4_i32 = arith.constant 4 : i32
+    %p = airrt.segment_load "seg" : i64
+    // iteration 0: two appends then a readback that consumes them
+    %ak0 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendK, air.append_barrier} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %av0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendV, air.append_barrier} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %r0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @readback, air.await_appends} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    // iteration 1: two appends then a readback that consumes them
+    %ak1 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendK, air.append_barrier} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %av1 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendV, air.append_barrier} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %r1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @readback, air.await_appends} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    airrt.wait_all %ak0, %av0, %ak1, %av1
+    return
+  }
+}
