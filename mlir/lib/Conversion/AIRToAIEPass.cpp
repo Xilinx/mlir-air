@@ -5836,7 +5836,14 @@ public:
                       "v2 chain-lock: failed to look up chain lock set "
                       "for ping-pong twin");
                 air::ChainLockSet *cls = clsOrFail.value();
-                if (cls->pp_slots == 1) {
+                // A buffer carrying air.refeed_count is a single-buffer
+                // counting-lock re-broadcast: the resident data is re-sent N
+                // times without a refill. Allocating a 2-slot ping-pong twin
+                // would deadlock, since the second (pong) slot is never filled
+                // when the producer emits a single token. Keep refeed buffers
+                // single-buffer.
+                if (cls->pp_slots == 1 &&
+                    !primaryBuf->hasAttr(air::attrs::RefeedCount)) {
                   AIE::BufferOp twin = allocateBufferOp(
                       this->BufferId, primaryBuf.getType(), tile,
                       /*attr=*/nullptr, /*x=*/-1, /*y=*/-1);
