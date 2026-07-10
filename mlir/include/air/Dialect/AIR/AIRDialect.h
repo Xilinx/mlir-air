@@ -58,14 +58,27 @@ constexpr StringLiteral RefeedLoop = "air.refeed_loop";
 // spelling matches the broadcast_shape discardable-attr convention on
 // air.channel; read via air::ChannelOp::getPacketIDs. Verified on air.channel.
 constexpr StringLiteral PacketIDs = "packet_ids";
+// The kernel writes the routing packet header into the payload itself.
+// air-to-aie must not stamp a static pkt_id on the producer BD (that would
+// prepend a second header word) and emits the aie.packet_flow with
+// {keep_pkt_header = true} so the switchbox keeps the header at the
+// destination. For a split bundle keep is per-flow (only the offset-0 bearer
+// keeps it); see SrcWritesPktHeader. Bare spelling matches the packet_flow attr
+// in the AIE dialect. Verified on air.channel.
+constexpr StringLiteral KeepPktHeader = "keep_pkt_header";
+// Bundle-wide derived marker set on every split of a KeepPktHeader channel: the
+// bundle source writes its own header, so no split's producer BD may be
+// stamped. Distinct from KeepPktHeader, which is per-flow (offset-0 bearer
+// only).
+constexpr StringLiteral SrcWritesPktHeader = "air.src_writes_pkt_header";
 } // namespace attrs
 
 // Copy the DMA-steering / runtime-ordering markers
 // (attrs::MemtileDmaChannelMin, RuntimeHoist, AwaitAppends, AppendBarrier,
-// RefeedCount) that
-// must survive channel-op re-instantiation from src to dst. Single source of
-// truth for the marker set, so copy sites (Util::copyPaddingAttributes,
-// ComposeMemrefOpOnChannelOp) cannot diverge. Both ops must be live (call
+// RefeedCount, PacketIDs, KeepPktHeader) that must survive channel-op
+// re-instantiation from src to dst. Single source of truth for the marker set,
+// so copy sites (Util::copyPaddingAttributes, ComposeMemrefOpOnChannelOp,
+// SpecializeChannelBundlePattern) cannot diverge. Both ops must be live (call
 // before erasing src).
 void copyChannelSteeringAttrs(Operation *src, Operation *dst);
 

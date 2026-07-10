@@ -2959,15 +2959,40 @@ struct SpecializeChannelBundlePattern
         new_chan->setAttr("broadcast_shape",
                           rewriter.getArrayAttr(ArrayRef(broadcast_shape)));
       }
-      // Propagate DMA-steering markers (incl. user-pinned packet_ids) onto each
-      // split channel: flow creation only sees the split channels, so without
-      // this, indexed/convergent packet channels fall back to auto-assigned
-      // consecutive ids, which alias under the switchbox arbiter's binary-mask
-      // matching and deadlock. Routed through the single-source-of-truth helper
-      // so this copy site stays in sync with the marker set.
+      // Propagate DMA-steering markers (incl. user-pinned packet_ids and
+      // keep_pkt_header) onto each split channel: flow creation only sees the
+      // split channels, so without this, indexed/convergent packet channels
+      // fall back to auto-assigned consecutive ids, which alias under the
+      // switchbox arbiter's binary-mask matching and deadlock. Routed through
+      // the single-source-of-truth helper so this copy site stays in sync with
+      // the marker set.
       air::copyChannelSteeringAttrs(channel, new_chan);
       std::vector<unsigned> position =
           air::getMDVectorFromIterator(bundle_size_stdvec, iter);
+      // keep_pkt_header is per-flow: only the split whose GET lands at offset 0
+      // keeps the header (it becomes the single routing header); the others
+      // strip it. But every split must still skip the static producer-BD stamp
+      // (the kernel already wrote the header), so mark all splits with
+      // SrcWritesPktHeader and drop KeepPktHeader (copied onto all splits
+      // above) from the non-offset-0 ones.
+      if (new_chan->hasAttr(air::attrs::KeepPktHeader)) {
+        new_chan->setAttr(air::attrs::SrcWritesPktHeader,
+                          rewriter.getUnitAttr());
+        bool writesOffsetZero = false;
+        for (auto get : channelGets) {
+          if (!areIdenticalVectors(
+                  air::convertVecOfConstIndexToVecOfUInt(get.getIndices()),
+                  position))
+            continue;
+          writesOffsetZero = llvm::all_of(get.getOffsets(), [](Value o) {
+            auto c = getConstantIntValue(o);
+            return c && *c == 0;
+          });
+          break;
+        }
+        if (!writesOffsetZero)
+          new_chan->removeAttr(air::attrs::KeepPktHeader);
+      }
       for (auto put : channelPuts) {
         auto indices_uint =
             air::convertVecOfConstIndexToVecOfUInt(put.getIndices());
@@ -3372,6 +3397,20 @@ static void removeDeadGlobalOps(AIE::DeviceOp device) {
     op->erase();
 }
 
+// A packet channel whose kernel writes the routing header into the payload
+// itself: the DMA must not stamp a static pkt_id (that would prepend a second
+// header word). True for multi-id pinned channels (the core writes the id) and
+// for keep_pkt_header / air.src_writes_pkt_header channels (the kernel writes
+// the whole header).
+static bool channelKernelWritesHeader(air::ChannelOp chanOp) {
+  if (!chanOp)
+    return false;
+  if (auto pids = chanOp.getPacketIDs(); pids && pids.size() > 1)
+    return true;
+  return chanOp->hasAttr(air::attrs::KeepPktHeader) ||
+         chanOp->hasAttr(air::attrs::SrcWritesPktHeader);
+}
+
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 
   uint64_t BufferId = 0;
@@ -3632,7 +3671,8 @@ public:
                                     xilinx::AIE::WireBundle sourceBundle,
                                     uint32_t sourceChannel, mlir::Value dest,
                                     xilinx::AIE::WireBundle destBundle,
-                                    uint32_t destChannel, int flowID) {
+                                    uint32_t destChannel, int flowID,
+                                    bool keepPktHeader = false) {
     AIE::PacketFlowOp packetFlowOp = nullptr;
     aie_device.walk([&](AIE::PacketFlowOp pktFlowOp) {
       auto pktSrcOp = getPacketSourceOpInPacketFlowOp(pktFlowOp, source);
@@ -3667,7 +3707,9 @@ public:
 
     builder.setInsertionPoint(aie_device.getBody()->getTerminator());
     return createPacketFlowOp(builder, flowID, source, sourceBundle,
-                              sourceChannel, dest, destBundle, destChannel);
+                              sourceChannel, dest, destBundle, destChannel,
+                              keepPktHeader ? builder.getBoolAttr(true)
+                                            : mlir::BoolAttr());
   }
 
   /// Query an existing packet flow operation from within the AIE device.
@@ -4539,13 +4581,14 @@ public:
           // backlinks.
           bool backlink = flowIDs.size() == 1;
           for (int flowID : flowIDs) {
-            getPacketFlowOp(
-                aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
-                AIE::WireBundle::DMA,
-                (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
-                f.S2MM_alloc[i].getDmaTile()->getResult(0),
-                AIE::WireBundle::DMA,
-                (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+            getPacketFlowOp(aie_device,
+                            f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                            f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.S2MM_alloc[i].dma_channel.channel,
+                            flowID, f.keep_pkt_header);
             if (!backlink)
               continue;
             // Backlink: the host runtime keys packet identification on
@@ -4578,13 +4621,14 @@ public:
           if (isShimFlowAt(f, j, i))
             continue;
           for (int flowID : pktIDsForDest(f, i, /*isShim=*/false)) {
-            getPacketFlowOp(
-                aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
-                AIE::WireBundle::DMA,
-                (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
-                f.S2MM_alloc[i].getDmaTile()->getResult(0),
-                AIE::WireBundle::DMA,
-                (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+            getPacketFlowOp(aie_device,
+                            f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                            f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.S2MM_alloc[i].dma_channel.channel,
+                            flowID, f.keep_pkt_header);
           }
         }
       }
@@ -4834,15 +4878,14 @@ public:
                                              StringAttr dmaNameAttr,
                                              mlir::Value tileVal, int channel,
                                              int packetFlowId = -1) {
-    // Multi-id pinned channels follow the kernel-header contract: the core
-    // writes the routing id into the payload, so the shim DMA must not stamp a
-    // packet header. Skip before the runtime fallback below could tag it with
-    // an arbitrary flow id.
+    // Kernel-writes-header channels must not be statically stamped, so the
+    // shim DMA does not prepend a second header word. Skip before the runtime
+    // fallback below could tag it with an arbitrary flow id.
     if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
             memcpyOpIf.getOperation()))
-      if (auto chanOp = air::getChannelDeclarationThroughSymbol(ci))
-        if (auto pids = chanOp.getPacketIDs(); pids && pids.size() > 1)
-          return success();
+      if (channelKernelWritesHeader(
+              air::getChannelDeclarationThroughSymbol(ci)))
+        return success();
 
     // When a packet flow ID is available (from flow creation phase), use
     // exact flow ID matching to disambiguate multiple flows sharing the
@@ -5983,8 +6026,13 @@ public:
     AIE::PacketInfoAttr pktInfoAttr = nullptr;
     if (auto chanIfOp = dyn_cast_if_present<air::ChannelInterface>(
             memcpyOp.getOperation())) {
+      // Channels whose kernel writes the routing header itself must NOT be
+      // statically stamped: a static pkt_id would prepend a second header word
+      // and shift the payload.
+      bool kernelWritesHeader = channelKernelWritesHeader(
+          air::getChannelDeclarationThroughSymbol(chanIfOp));
       auto it = packetIDForChannelName.find(chanIfOp.getChanName().str());
-      if (it != packetIDForChannelName.end())
+      if (!kernelWritesHeader && it != packetIDForChannelName.end())
         pktInfoAttr =
             AIE::PacketInfoAttr::get(ndcpy->getContext(), 0, it->second);
     }
