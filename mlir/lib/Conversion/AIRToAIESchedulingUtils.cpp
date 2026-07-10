@@ -2255,7 +2255,7 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
   S2MM_alloc = std::vector<air::allocation_info_t>(numS2MMAllocs);
   MM2S_alloc = std::vector<air::allocation_info_t>(numMM2SAllocs);
   memcpyResourceType = chan.getChannelType().str();
-  keep_pkt_header = chan->hasAttr("keep_pkt_header");
+  keep_pkt_header = chan->hasAttr(air::attrs::KeepPktHeader);
 }
 
 } // namespace xilinx

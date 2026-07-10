@@ -145,6 +145,11 @@ void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
   // User-pinned packet routing ids, read by AIRToAIE's packet-flow creation.
   if (auto pids = src->getAttrOfType<ArrayAttr>(attrs::PacketIDs))
     dst->setAttr(attrs::PacketIDs, pids);
+  // Kernel-writes-header marker. Copied verbatim;
+  // SpecializeChannelBundlePattern narrows it to the offset-0 bearer per-flow
+  // after this copy.
+  if (auto kph = src->getAttr(attrs::KeepPktHeader))
+    dst->setAttr(attrs::KeepPktHeader, kph);
 }
 
 void air::addAsyncDependency(Operation *op, Value token) {

@@ -2959,61 +2959,39 @@ struct SpecializeChannelBundlePattern
         new_chan->setAttr("broadcast_shape",
                           rewriter.getArrayAttr(ArrayRef(broadcast_shape)));
       }
-      // Propagate DMA-steering markers (incl. user-pinned packet_ids) onto each
-      // split channel: flow creation only sees the split channels, so without
-      // this, indexed/convergent packet channels fall back to auto-assigned
-      // consecutive ids, which alias under the switchbox arbiter's binary-mask
-      // matching and deadlock. Routed through the single-source-of-truth helper
-      // so this copy site stays in sync with the marker set.
+      // Propagate DMA-steering markers (incl. user-pinned packet_ids and
+      // keep_pkt_header) onto each split channel: flow creation only sees the
+      // split channels, so without this, indexed/convergent packet channels
+      // fall back to auto-assigned consecutive ids, which alias under the
+      // switchbox arbiter's binary-mask matching and deadlock. Routed through
+      // the single-source-of-truth helper so this copy site stays in sync with
+      // the marker set.
       air::copyChannelSteeringAttrs(channel, new_chan);
       std::vector<unsigned> position =
           air::getMDVectorFromIterator(bundle_size_stdvec, iter);
-      // keep_pkt_header is per-FLOW, NOT per-channel: only the flow whose dest
-      // write lands at OFFSET 0 retains the packet header -- that one header
-      // becomes the single routing header of the re-emitted packet; every other
-      // contributor (nonzero offset) drops it. keep also couples to BD size
-      // (keep => payload+header, drop => payload); a wrong keep mismatches the
-      // BD word count and deadlocks. The dest of a split channel is its GET
-      // side, so the GET's offset decides keep. Two header modes, both meaning
-      // "the bundle SOURCE writes its own routing header": keep_pkt_header
-      // (gather: the offset-0 bearer keeps it, others strip) and
-      // strip_pkt_header (demux: EVERY dest strips it -> pure payload to the
-      // on-chip consumer). Either way mark EVERY split flow so generateDmaBd
-      // does NOT stamp a static pkt_id on the producer (MM2S) BD -- a static
-      // stamp would add a second header word and shift the payload by 2.
-      if (channel->hasAttr("keep_pkt_header") ||
-          channel->hasAttr("air.strip_pkt_header")) {
-        new_chan->setAttr("air.src_writes_pkt_header", rewriter.getUnitAttr());
-        // strip_pkt_header NEVER sets keep on any flow (keep=false everywhere
-        // -> the switchbox strips the kernel header at every dest).
-        // keep_pkt_header sets keep per-flow: only the flow whose GET lands at
-        // offset 0 keeps it.
-        if (channel->hasAttr("keep_pkt_header")) {
-          bool writesOffsetZero = false;
-          for (auto get : channelGets) {
-            auto gidx =
-                air::convertVecOfConstIndexToVecOfUInt(get.getIndices());
-            if (!areIdenticalVectors(gidx, position))
-              continue;
-            auto offs = get.getOffsets();
-            if (offs.empty()) {
-              writesOffsetZero = true;
-            } else {
-              writesOffsetZero = true;
-              for (auto o : offs) {
-                auto c = getConstantIntValue(o);
-                if (!c || *c != 0) {
-                  writesOffsetZero = false;
-                  break;
-                }
-              }
-            }
-            break;
-          }
-          if (writesOffsetZero)
-            new_chan->setAttr("keep_pkt_header",
-                              channel->getAttr("keep_pkt_header"));
+      // keep_pkt_header is per-flow: only the split whose GET lands at offset 0
+      // keeps the header (it becomes the single routing header); the others
+      // strip it. But every split must still skip the static producer-BD stamp
+      // (the kernel already wrote the header), so mark all splits with
+      // SrcWritesPktHeader and drop KeepPktHeader (copied onto all splits
+      // above) from the non-offset-0 ones.
+      if (new_chan->hasAttr(air::attrs::KeepPktHeader)) {
+        new_chan->setAttr(air::attrs::SrcWritesPktHeader,
+                          rewriter.getUnitAttr());
+        bool writesOffsetZero = false;
+        for (auto get : channelGets) {
+          if (!areIdenticalVectors(
+                  air::convertVecOfConstIndexToVecOfUInt(get.getIndices()),
+                  position))
+            continue;
+          writesOffsetZero = llvm::all_of(get.getOffsets(), [](Value o) {
+            auto c = getConstantIntValue(o);
+            return c && *c == 0;
+          });
+          break;
         }
+        if (!writesOffsetZero)
+          new_chan->removeAttr(air::attrs::KeepPktHeader);
       }
       for (auto put : channelPuts) {
         auto indices_uint =
@@ -3417,6 +3395,20 @@ static void removeDeadGlobalOps(AIE::DeviceOp device) {
   }
   for (auto op : deadGlobals)
     op->erase();
+}
+
+// A packet channel whose kernel writes the routing header into the payload
+// itself: the DMA must not stamp a static pkt_id (that would prepend a second
+// header word). True for multi-id pinned channels (the core writes the id) and
+// for keep_pkt_header / air.src_writes_pkt_header channels (the kernel writes
+// the whole header).
+static bool channelKernelWritesHeader(air::ChannelOp chanOp) {
+  if (!chanOp)
+    return false;
+  if (auto pids = chanOp.getPacketIDs(); pids && pids.size() > 1)
+    return true;
+  return chanOp->hasAttr(air::attrs::KeepPktHeader) ||
+         chanOp->hasAttr(air::attrs::SrcWritesPktHeader);
 }
 
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
@@ -4888,21 +4880,12 @@ public:
                                              int packetFlowId = -1) {
     // Kernel-writes-header channels must not be statically stamped, so the
     // shim DMA does not prepend a second header word. Skip before the runtime
-    // fallback below could tag it with an arbitrary flow id. Two cases:
-    //  - multi-id pinned channels (packet_ids > 1): the core writes the routing
-    //    id into the payload;
-    //  - keep_pkt_header / air.src_writes_pkt_header channels: the kernel
-    //  writes
-    //    the whole routing header.
+    // fallback below could tag it with an arbitrary flow id.
     if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
             memcpyOpIf.getOperation()))
-      if (auto chanOp = air::getChannelDeclarationThroughSymbol(ci)) {
-        if (auto pids = chanOp.getPacketIDs(); pids && pids.size() > 1)
-          return success();
-        if (chanOp->hasAttr("keep_pkt_header") ||
-            chanOp->hasAttr("air.src_writes_pkt_header"))
-          return success();
-      }
+      if (channelKernelWritesHeader(
+              air::getChannelDeclarationThroughSymbol(ci)))
+        return success();
 
     // When a packet flow ID is available (from flow creation phase), use
     // exact flow ID matching to disambiguate multiple flows sharing the
@@ -6043,14 +6026,11 @@ public:
     AIE::PacketInfoAttr pktInfoAttr = nullptr;
     if (auto chanIfOp = dyn_cast_if_present<air::ChannelInterface>(
             memcpyOp.getOperation())) {
-      // Channels whose kernel writes the routing header itself
-      // (keep_pkt_header, or the per-split air.src_writes_pkt_header marker set
-      // for such bundles) must NOT be statically stamped: a static pkt_id would
-      // prepend a second header word and shift the payload.
-      auto chanDecl = air::getChannelDeclarationThroughSymbol(chanIfOp);
-      bool kernelWritesHeader =
-          chanDecl && (chanDecl->hasAttr("keep_pkt_header") ||
-                       chanDecl->hasAttr("air.src_writes_pkt_header"));
+      // Channels whose kernel writes the routing header itself must NOT be
+      // statically stamped: a static pkt_id would prepend a second header word
+      // and shift the payload.
+      bool kernelWritesHeader = channelKernelWritesHeader(
+          air::getChannelDeclarationThroughSymbol(chanIfOp));
       auto it = packetIDForChannelName.find(chanIfOp.getChanName().str());
       if (!kernelWritesHeader && it != packetIDForChannelName.end())
         pktInfoAttr =
