@@ -74,7 +74,7 @@ func.func @test_s2mm(%arg0: memref<128x1024xbf16>) {
       %op2 = air.channel.put async [%p20, %p21] @chan_out[%c2_0] (%a2[] [] []) : (memref<8x1024xbf16, 1 : i32>)
       %op3 = air.channel.put async [%p30, %p31] @chan_out[%c3_0] (%a3[] [] []) : (memref<8x1024xbf16, 1 : i32>)
       %c4_0 = arith.constant 4 : index
-      %h = air.herd @h async tile (%tx, %ty) in (%sx=%c4_0, %sy=%c2_0) args(%a=%a0) : memref<8x1024xbf16, 1 : i32> {
+      %h = air.herd @h async tile (%tx, %ty) in (%sx=%c4_0, %sy=%c2_0) {
         %async_token_h, %r = air.execute -> (memref<8x512xbf16, 2 : i32>) {
           %alloc = memref.alloc() : memref<8x512xbf16, 2 : i32>
           air.execute_terminator %alloc : memref<8x512xbf16, 2 : i32>
