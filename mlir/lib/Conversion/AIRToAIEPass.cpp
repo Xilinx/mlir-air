@@ -2327,31 +2327,44 @@ void L2MemrefToMemTileMap(
       return static_cast<int>(attr.getInt());
     return -1;
   };
+  // True iff `alloc` shares an air.channel with any member of `bucket`.
+  auto sharesChannelWithBucket = [&](ArrayRef<memref::AllocOp> bucket,
+                                     memref::AllocOp alloc) {
+    for (auto bucket_elem : bucket)
+      if (areReferencedByTheSameAIRChannel(alloc.getMemref(),
+                                           bucket_elem.getMemref()))
+        return true;
+    return false;
+  };
+  // True iff `allocPin` (a valid pin, i.e. >= 0) conflicts with a distinct pin
+  // already present in `bucket`.
+  auto bucketHasConflictingPin = [&](ArrayRef<memref::AllocOp> bucket,
+                                     int allocPin) {
+    for (auto other : bucket) {
+      int otherPin = allocPinCol(other);
+      if (otherPin >= 0 && otherPin != allocPin)
+        return true;
+    }
+    return false;
+  };
   auto placeMemrefInSharedBucket =
       [&](SmallVector<SmallVector<memref::AllocOp>> &memref_buckets,
           memref::AllocOp alloc) {
         int allocPin = allocPinCol(alloc);
         for (auto &bucket : memref_buckets) {
-          for (auto bucket_elem : bucket) {
-            if (areReferencedByTheSameAIRChannel(alloc.getMemref(),
-                                                 bucket_elem.getMemref())) {
-              // Pin-aware bucketing: if the new alloc carries an
-              // air.memtile_col pin distinct from any pin already in this
-              // bucket, refuse to merge. This is what makes MT->MT hops
-              // expressible — two L2 buffers sharing one channel (the
-              // hop's intermediate) end up in DIFFERENT buckets, so the
-              // shared channel becomes a real cross-memtile flow.
-              if (allocPin >= 0) {
-                for (auto other : bucket) {
-                  int otherPin = allocPinCol(other);
-                  if (otherPin >= 0 && otherPin != allocPin)
-                    return false;
-                }
-              }
-              bucket.push_back(alloc);
-              return true;
-            }
-          }
+          if (!sharesChannelWithBucket(bucket, alloc))
+            continue;
+          // Pin-aware bucketing: if the alloc carries an air.memtile_col pin
+          // distinct from any pin already in this bucket, skip it (don't
+          // merge) and keep scanning — the alloc may still share a channel
+          // with a different, pin-compatible bucket. Refusing the merge is
+          // what makes MT->MT hops expressible: two L2 buffers sharing one
+          // channel (the hop's intermediate) end up in DIFFERENT buckets, so
+          // the shared channel becomes a real cross-memtile flow.
+          if (allocPin >= 0 && bucketHasConflictingPin(bucket, allocPin))
+            continue;
+          bucket.push_back(alloc);
+          return true;
         }
         return false;
       };
