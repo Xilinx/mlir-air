@@ -1461,6 +1461,46 @@ private:
     return new_branch_op;
   }
 
+  scf::IndexSwitchOp
+  convertScfIndexSwitchToAsync(RewriterBase &rewriter,
+                               scf::IndexSwitchOp branch_op) {
+    // Preserve any existing result types; append the async token last so that
+    // insertLoopCarriedDepsInRegion (which appends the token to scf.yield) and
+    // the result ordering stay consistent.
+    SmallVector<Type> yielded_tys(branch_op.getResultTypes());
+    yielded_tys.push_back(air::AsyncTokenType::get(rewriter.getContext()));
+    scf::IndexSwitchOp new_branch_op = scf::IndexSwitchOp::create(
+        rewriter, branch_op.getLoc(), yielded_tys, branch_op.getArg(),
+        branch_op.getCases(),
+        /*caseRegionsCount=*/branch_op.getCases().size());
+
+    if (auto attr = branch_op->getAttrOfType<StringAttr>(
+            SymbolTable::getSymbolAttrName()))
+      new_branch_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+
+    // Splice the operations from every region (default + cases), excluding the
+    // old terminator; insertLoopCarriedDepsInRegion appends the async yield.
+    auto old_regions = branch_op->getRegions();
+    auto new_regions = new_branch_op->getRegions();
+    for (auto [o_r, n_r] : llvm::zip_equal(old_regions, new_regions)) {
+      if (o_r.empty())
+        continue;
+      if (n_r.empty())
+        rewriter.createBlock(&n_r);
+      auto &bb = n_r.front().getOperations();
+      auto &body = o_r.front().getOperations();
+      bb.splice(bb.begin(), body, body.begin(), --body.end());
+    }
+
+    // Replace uses of old results with the corresponding new results (same
+    // index; the token is appended after, so existing indices are stable).
+    for (auto [old_r, new_r] :
+         llvm::zip(branch_op.getResults(), new_branch_op.getResults()))
+      old_r.replaceAllUsesWith(new_r);
+
+    return new_branch_op;
+  }
+
   // Elevating tokens from inside loop body to the yielded token, to maintain
   // legal domination T: loop type (scf::ForOp or scf::ParallelOp) U: source op
   // type
@@ -1605,9 +1645,13 @@ private:
     } else if (auto affineIfOp = dyn_cast_if_present<affine::AffineIfOp>(
                    branch_op.getOperation())) {
       return createAsyncRegionBranchOp(rewriter, affineIfOp);
+    } else if (auto indexSwitchOp = dyn_cast_if_present<scf::IndexSwitchOp>(
+                   branch_op.getOperation())) {
+      return createAsyncRegionBranchOp(rewriter, indexSwitchOp);
     } else {
       branch_op->emitOpError("unknown RegionBranchOpInterface op type. "
-                             "Currently supports scf.if.");
+                             "Currently supports scf.if / affine.if / "
+                             "scf.index_switch.");
       return failure();
     }
   }
@@ -1713,6 +1757,59 @@ private:
         new_branch_op.getOperation());
   }
 
+  FailureOr<RegionBranchOpInterface>
+  createAsyncRegionBranchOp(RewriterBase &rewriter,
+                            scf::IndexSwitchOp &branch_op) {
+    // Collect incoming async deps used across all (default + case) regions.
+    SmallVector<Value, 4> incoming_tokens;
+    SmallVector<Value, 4> constants;
+    llvm::SetVector<Value> region_args;
+    for (Region &region : branch_op->getRegions()) {
+      if (region.empty())
+        continue;
+      getUsedValuesDefinedAbove(region, region_args);
+      for (Value v : region_args) {
+        if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
+          constants.push_back(v);
+        else if (v.getDefiningOp()) {
+          if (auto v_op = mlir::dyn_cast_if_present<air::AsyncOpInterface>(
+                  v.getDefiningOp())) {
+            if (v_op.getAsyncToken() == v)
+              incoming_tokens.push_back(v);
+          } else if (isa_and_present<LoopLikeOpInterface,
+                                     RegionBranchOpInterface>(
+                         v.getDefiningOp())) {
+            auto v_op = v.getDefiningOp();
+            auto token = air::getAsyncTokenFromOp(v_op);
+            if (token && token == v)
+              incoming_tokens.push_back(v);
+          }
+        }
+      }
+    }
+    air::WaitAllOp waAtLoopBegin =
+        insertWaitAllOpAtLoopBegin<scf::IndexSwitchOp>(
+            rewriter, branch_op, "index_switch", incoming_tokens, constants);
+    scf::IndexSwitchOp new_branch_op =
+        convertScfIndexSwitchToAsync(rewriter, branch_op);
+
+    if (eraseOpWithCheck(rewriter, branch_op, "insertLoopCarriedDeps 5")
+            .failed()) {
+      signalPassFailure();
+    }
+
+    // Connect branch op regions to the overall dependency graph.
+    for (Region &branchReg : new_branch_op->getRegions()) {
+      for (Value tok : incoming_tokens) {
+        replaceAllUsesInRegionWith(tok, waAtLoopBegin.getAsyncToken(),
+                                   branchReg);
+      }
+    }
+
+    return dyn_cast_if_present<RegionBranchOpInterface>(
+        new_branch_op.getOperation());
+  }
+
   void insertLoopCarriedDepsInRegion(
       RewriterBase &rewriter, Region &region,
       SmallVector<Value, 1> yielded_tokens_in_loop_op) {
@@ -1728,9 +1825,10 @@ private:
     // Update op-to-graph map for wait_all ops
     wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
 
-    if (isa<scf::ForOp, scf::IfOp>(region.getParentOp())) {
-      // For scf::ForOp and scf::IfOp, preserve existing yield values and append
-      // async token
+    if (isa<scf::ForOp, scf::IfOp, scf::IndexSwitchOp>(region.getParentOp())) {
+      // For scf::ForOp / scf::IfOp / scf::IndexSwitchOp, preserve existing
+      // yield values and append the async token (all use an scf.yield
+      // terminator).
       SmallVector<Value, 4> yield_values;
 
       // Get existing yield if it exists and extract its operands

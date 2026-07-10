@@ -931,6 +931,11 @@ static void collectBufferAliases(Value buffer,
   }
 }
 
+// Forward declaration (defined later): whether `op` executes within its
+// enclosing aie.core given the constant tile-index guards. Used to ignore
+// dead per-core branches (not yet folded) when analyzing shared L1 buffers.
+static bool accessReachableInCore(Operation *op);
+
 /// Allocate producer/consumer locks for shared L1 buffer synchronization.
 /// This enables safe inter-core communication via shared L1 memory.
 ///
@@ -992,6 +997,9 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
 
   for (auto coreOp : coreOps) {
     coreOp.walk([&](Operation *op) {
+      // Ignore accesses in dead per-core branches (not yet folded).
+      if (!accessReachableInCore(op))
+        return;
       // Check memory effects
       for (Value alias : bufferAliases) {
         if (hasEffect<MemoryEffects::Write>(op, alias))
@@ -1021,6 +1029,8 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   for (auto coreOp : coreOps) {
     bool coreIsProducer = false;
     coreOp.walk([&](Operation *op) {
+      if (!accessReachableInCore(op))
+        return;
       for (Value alias : bufferAliases) {
         if (hasEffect<MemoryEffects::Write>(op, alias))
           coreIsProducer = true;
@@ -1228,6 +1238,8 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     info.lockScope = nullptr;
 
     coreOp.walk([&](Operation *op) {
+      if (!accessReachableInCore(op))
+        return;
       bool accessesBuffer = false;
       bool isProducer = false;
       bool isConsumer = false;
@@ -1487,6 +1499,76 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   }
 }
 
+// Evaluate a boolean condition value to a compile-time constant, if possible.
+// Handles a constant i1, an arith.cmpi with constant operands, and an
+// arith.index_cast of a constant. Returns nullopt when not statically known.
+static std::optional<bool> evalConstBoolCond(Value cond) {
+  if (auto c = cond.getDefiningOp<arith::ConstantOp>())
+    if (auto ia = dyn_cast<IntegerAttr>(c.getValue()))
+      return ia.getValue().getBoolValue();
+  if (auto cmp = cond.getDefiningOp<arith::CmpIOp>()) {
+    auto l = mlir::getConstantIntValue(cmp.getLhs());
+    auto r = mlir::getConstantIntValue(cmp.getRhs());
+    if (l && r) {
+      unsigned bw = isa<IndexType>(cmp.getLhs().getType())
+                        ? 64
+                        : cmp.getLhs().getType().getIntOrFloatBitWidth();
+      return arith::applyCmpPredicate(cmp.getPredicate(),
+                                      APInt(bw, *l, /*isSigned=*/true),
+                                      APInt(bw, *r, /*isSigned=*/true));
+    }
+  }
+  if (auto ic = cond.getDefiningOp<arith::IndexCastOp>())
+    if (auto v = mlir::getConstantIntValue(ic.getIn())) {
+      unsigned dstBw = isa<IndexType>(ic.getType())
+                           ? 64
+                           : ic.getType().getIntOrFloatBitWidth();
+      return APInt(dstBw, *v).getBoolValue();
+    }
+  return std::nullopt;
+}
+
+// Determine whether `op` actually executes within its enclosing aie.core, by
+// evaluating the constant-operand tile-index guards (scf.if / scf.index_switch)
+// that enclose it. After core outlining the herd tile ids are constants, so
+// these guards are statically decidable. Any guard that cannot be evaluated
+// (e.g. affine.if, data-dependent) is conservatively treated as taken, i.e.
+// the op is assumed reachable -- matching the prior all-uses-count behavior.
+static bool accessReachableInCore(Operation *op) {
+  AIE::CoreOp core = op->getParentOfType<AIE::CoreOp>();
+  if (!core)
+    return false;
+  Operation *child = op;
+  for (Operation *p = op->getParentOp(); p && p != core.getOperation();
+       child = p, p = p->getParentOp()) {
+    Region *childRegion = child->getParentRegion();
+    if (auto sif = dyn_cast<scf::IfOp>(p)) {
+      if (auto c = evalConstBoolCond(sif.getCondition())) {
+        bool inThen = sif.getThenRegion().isAncestor(childRegion);
+        bool inElse = sif.getElseRegion().isAncestor(childRegion);
+        if (*c && inElse)
+          return false;
+        if (!*c && inThen)
+          return false;
+      }
+    } else if (auto sw = dyn_cast<scf::IndexSwitchOp>(p)) {
+      if (auto arg = mlir::getConstantIntValue(sw.getArg())) {
+        Region *selected = &sw.getDefaultRegion();
+        ArrayRef<int64_t> cases = sw.getCases();
+        for (size_t i = 0; i < cases.size(); ++i)
+          if (cases[i] == *arg) {
+            selected = &sw.getCaseRegions()[i];
+            break;
+          }
+        if (!selected->isAncestor(childRegion))
+          return false;
+      }
+    }
+    // affine.if / unknown guards: assume reachable (conservative).
+  }
+  return true;
+}
+
 LogicalResult createAIEModulesAndOutlineCores(
     ModuleOp module,
     std::vector<std::tuple<AIE::DeviceOp, air::HerdOp,
@@ -1633,6 +1715,13 @@ LogicalResult createAIEModulesAndOutlineCores(
       auto coreOp = user->getParentOfType<AIE::CoreOp>();
       if (!coreOp)
         continue;
+      // Only count a core if the use actually executes for that core's tile
+      // id. In an SPMD herd, per-core control flow (not yet folded) means every
+      // core textually references every operand; reachability filtering drops
+      // uses in dead per-core branches so a neighbor buffer maps to just its
+      // real producer/consumer cores.
+      if (!accessReachableInCore(user))
+        continue;
       sharedL1AllocsToCoreMap[memref.getDefiningOp()].insert(coreOp);
     }
   }
@@ -1669,8 +1758,18 @@ LogicalResult createAIEModulesAndOutlineCores(
     auto &coreOps = sharedL1AllocsToCoreMap[memref.getDefiningOp()];
     auto &herds = sharedL1AllocsToHerdMap[memref.getDefiningOp()];
 
-    if (herds.size() > 1) {
-      // SHARED L1 BUFFER: Multiple herds use the same memref
+    // A buffer is shared when used by multiple herds (inter-herd communication)
+    // OR when a single SPMD herd's neighbor cores hop data through it (a reader
+    // core that is not a writer core -- a cross-core producer/consumer). The
+    // latter is inferred purely from the IR's per-core access pattern; no
+    // annotation is required.
+    bool sharedAcrossHerds = herds.size() > 1;
+    bool sharedAcrossCores =
+        !sharedAcrossHerds && herds.size() == 1 &&
+        air::herdBufferHasCrossCoreDependence(*herds.begin(), memref);
+
+    if (sharedAcrossHerds || sharedAcrossCores) {
+      // SHARED L1 BUFFER: used by multiple cores/herds.
       // Allocate a single aie.buffer on one "owner" tile and have all cores
       // reference it. The downstream mlir-aie compiler will validate that
       // the tiles are adjacent and can share L1 memory.
@@ -1937,11 +2036,54 @@ struct SpecializeScfIfPattern : public OpRewritePattern<scf::IfOp> {
   }
 };
 
+// Specialize an scf.index_switch whose index argument is a compile-time
+// constant (an outlined herd tile id) into just the selected case body. Lets
+// per-core buffer selection via scf.index_switch be resolved the same way as
+// affine.if / scf.if in outlined cores.
+struct SpecializeScfIndexSwitchPattern
+    : public OpRewritePattern<scf::IndexSwitchOp> {
+  using OpRewritePattern<scf::IndexSwitchOp>::OpRewritePattern;
+
+  SpecializeScfIndexSwitchPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(scf::IndexSwitchOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op->getParentOfType<AIE::CoreOp>() &&
+        !op->getParentOfType<AIE::DeviceOp>())
+      return failure();
+
+    auto argConst = mlir::getConstantIntValue(op.getArg());
+    if (!argConst)
+      return failure();
+
+    Block *bb = nullptr;
+    ArrayRef<int64_t> cases = op.getCases();
+    for (size_t i = 0; i < cases.size(); ++i) {
+      if (cases[i] == *argConst) {
+        bb = &op.getCaseRegions()[i].front();
+        break;
+      }
+    }
+    if (!bb)
+      bb = &op.getDefaultRegion().front();
+
+    auto t = bb->getTerminator();
+    auto &ops = bb->getOperations();
+    op->getBlock()->getOperations().splice(Block::iterator(op), ops,
+                                           ops.begin(), --ops.end());
+    for (int i = 0, e = op.getNumResults(); i < e; i++)
+      op.getResult(i).replaceAllUsesWith(t->getOperand(i));
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 void specializeHerdAffineIf(AIE::DeviceOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<SpecializeAffineIfPattern>(ctx);
   patterns.insert<SpecializeScfIfPattern>(ctx);
+  patterns.insert<SpecializeScfIndexSwitchPattern>(ctx);
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
 
