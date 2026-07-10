@@ -2320,13 +2320,34 @@ void L2MemrefToMemTileMap(
   // First stage in memref placement: grouping memrefs referenced by the same
   // air.channel.
   SmallVector<SmallVector<memref::AllocOp>> memref_buckets;
+  // Returns the user-pinned col for an alloc if it carries
+  // `air.memtile_col`, else -1.
+  auto allocPinCol = [](memref::AllocOp a) -> int {
+    if (auto attr = a->getAttrOfType<IntegerAttr>("air.memtile_col"))
+      return static_cast<int>(attr.getInt());
+    return -1;
+  };
   auto placeMemrefInSharedBucket =
       [&](SmallVector<SmallVector<memref::AllocOp>> &memref_buckets,
           memref::AllocOp alloc) {
+        int allocPin = allocPinCol(alloc);
         for (auto &bucket : memref_buckets) {
           for (auto bucket_elem : bucket) {
             if (areReferencedByTheSameAIRChannel(alloc.getMemref(),
                                                  bucket_elem.getMemref())) {
+              // Pin-aware bucketing: if the new alloc carries an
+              // air.memtile_col pin distinct from any pin already in this
+              // bucket, refuse to merge. This is what makes MT->MT hops
+              // expressible — two L2 buffers sharing one channel (the
+              // hop's intermediate) end up in DIFFERENT buckets, so the
+              // shared channel becomes a real cross-memtile flow.
+              if (allocPin >= 0) {
+                for (auto other : bucket) {
+                  int otherPin = allocPinCol(other);
+                  if (otherPin >= 0 && otherPin != allocPin)
+                    return false;
+                }
+              }
               bucket.push_back(alloc);
               return true;
             }
@@ -2406,12 +2427,39 @@ void L2MemrefToMemTileMap(
     }
     return colHasMemTile(consensus) ? consensus : -1;
   };
+  // User-controlled memtile column pin via discardable
+  // `air.memtile_col` IntegerAttr on the memref.alloc op. Hint-only:
+  // invalid columns warn and fall through. Strict-first-wins on conflict
+  // within a bucket (bucket = allocs sharing one air.channel).
+  auto deriveBucketPin = [&](ArrayRef<memref::AllocOp> bucket) -> int {
+    int pinned = -1;
+    for (auto alloc : bucket) {
+      auto attr = alloc->getAttrOfType<IntegerAttr>("air.memtile_col");
+      if (!attr)
+        continue;
+      int col = static_cast<int>(attr.getInt());
+      if (!colHasMemTile(col)) {
+        alloc->emitWarning("air.memtile_col=")
+            << col << " has no memtile in target; ignoring";
+        continue;
+      }
+      if (pinned == -1)
+        pinned = col;
+      else if (pinned != col)
+        alloc->emitWarning("air.memtile_col=")
+            << col << " conflicts with bucket pin=" << pinned << "; ignoring";
+    }
+    return pinned;
+  };
 
   SmallVector<int> bucketCols;
   bucketCols.reserve(memref_buckets.size());
   llvm::DenseMap<int, int> colDemand;
   for (auto &bucket : memref_buckets) {
     int col = deriveBucketCol(bucket);
+    int pin = deriveBucketPin(bucket);
+    if (pin >= 0)
+      col = pin;
     bucketCols.push_back(col);
     if (col >= 0)
       colDemand[col]++;
@@ -2434,32 +2482,8 @@ void L2MemrefToMemTileMap(
       break;
     }
 
-  if (saturated) {
-    // Multi-bucket shapes (operand classes like A/B/C) get a per-shape
-    // counter so each class restarts at memtile 0 and bucket-i maps to
-    // memtile-i; singleton shapes keep using a global counter so unrelated
-    // one-off buffers still spread across the pool.
-    auto bucketShape = [](SmallVectorImpl<memref::AllocOp> &bucket) -> Type {
-      return bucket.empty() ? Type() : bucket.front().getMemref().getType();
-    };
-    llvm::DenseMap<Type, int> shapeCount;
-    for (auto &bucket : memref_buckets)
-      shapeCount[bucketShape(bucket)]++;
-    llvm::DenseMap<Type, int> perShapeCounter;
-    int globalCounter = 0;
-    for (auto &bucket : memref_buckets) {
-      Type shape = bucketShape(bucket);
-      int slot =
-          (shapeCount[shape] > 1) ? perShapeCounter[shape]++ : globalCounter++;
-      auto memtile = memtiles[slot % memtiles.size()];
-      for (auto bucket_elem : bucket)
-        memrefToMemTileMap[bucket_elem] = memtile;
-    }
-    return;
-  }
-
-  // Col-affinity assignment: hint pre-emitted LTOs to derived cols and
-  // share one LTO per col. Spill over to round-robin for unhinted buckets.
+  // Hoisted out of the col-affinity branch so the saturation branch can
+  // also honor user pins via findOrCreateLtoForCol.
   OpBuilder builder(m);
   builder.setInsertionPointToStart(m.getBody());
   for (auto &o : m.getBody()->getOperations()) {
@@ -2496,6 +2520,40 @@ void L2MemrefToMemTileMap(
     colToMemtile[col] = tl;
     return tl;
   };
+
+  if (saturated) {
+    // Honor user pins even under saturation: pinned buckets route through
+    // findOrCreateLtoForCol so they land on their requested col; unpinned
+    // buckets distribute via the existing per-shape / global round-robin.
+    auto bucketShape = [](SmallVectorImpl<memref::AllocOp> &bucket) -> Type {
+      return bucket.empty() ? Type() : bucket.front().getMemref().getType();
+    };
+    llvm::DenseMap<Type, int> shapeCount;
+    for (auto &bucket : memref_buckets)
+      shapeCount[bucketShape(bucket)]++;
+    llvm::DenseMap<Type, int> perShapeCounter;
+    int globalCounter = 0;
+    for (size_t i = 0; i < memref_buckets.size(); i++) {
+      auto &bucket = memref_buckets[i];
+      int pin = deriveBucketPin(bucket);
+      if (pin >= 0) {
+        AIE::TileLike memtile = findOrCreateLtoForCol(pin);
+        for (auto bucket_elem : bucket)
+          memrefToMemTileMap[bucket_elem] = memtile;
+        continue;
+      }
+      Type shape = bucketShape(bucket);
+      int slot =
+          (shapeCount[shape] > 1) ? perShapeCounter[shape]++ : globalCounter++;
+      auto memtile = memtiles[slot % memtiles.size()];
+      for (auto bucket_elem : bucket)
+        memrefToMemTileMap[bucket_elem] = memtile;
+    }
+    return;
+  }
+
+  // Col-affinity assignment: hint pre-emitted LTOs to derived cols and
+  // share one LTO per col. Spill over to round-robin for unhinted buckets.
 
   SmallVector<size_t> unhintedBuckets;
   for (size_t i = 0; i < memref_buckets.size(); i++) {
