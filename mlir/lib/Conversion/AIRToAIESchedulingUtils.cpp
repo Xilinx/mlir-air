@@ -645,7 +645,8 @@ air::DMAAllocator::getOrCreateChainLockSet(AIE::BufferOp buf,
   // needs the cap_lock primed to N: the first writer acquires cap >= N, and the
   // single reader releases cap by 1 per re-send (N sends drain sig[last]=N and
   // restore cap=N). Default init=1 would deadlock the first writer's acq>=N.
-  int capInit = std::max<int64_t>(1, air::getRefeedCount(buf.getOperation()));
+  int capInit = static_cast<int>(
+      std::max<int64_t>(1, air::getRefeedCount(buf.getOperation())));
   cls.cap_lock = allocateLockOp(device, tile, /*init=*/capInit);
 
   // N init=0 signal locks for the writer→writer (or reader→reader)

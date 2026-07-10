@@ -24,8 +24,11 @@
 // CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 3 : i32}
 // CHECK-NOT: aie.lock(%[[MT]], {{[0-9]+}}) {init = 2 : i32}
 
-// Single buffer instance (no ping-pong twin), carrying the refeed count.
-// CHECK: aie.buffer(%[[MT]]) {air.refeed_count = 3 : i32, {{.*}} : memref<4x8xbf16, 1
+// Exactly ONE buffer instance on the memtile (no ping-pong twin), carrying the
+// refeed count. Attribute order is not guaranteed, so match the attr loosely.
+// CHECK-COUNT-1: aie.buffer(%[[MT]])
+// CHECK-SAME: air.refeed_count = 3 : i32
+// CHECK-NOT: aie.buffer(%[[MT]])
 
 // The reader BD self-loops (single-buffer ring), not a 2-BD alternation.
 // CHECK: aie.memtile_dma(%[[MT]])
