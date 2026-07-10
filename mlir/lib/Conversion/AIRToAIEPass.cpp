@@ -2462,17 +2462,59 @@ void L2MemrefToMemTileMap(
   // First stage in memref placement: grouping memrefs referenced by the same
   // air.channel.
   SmallVector<SmallVector<memref::AllocOp>> memref_buckets;
+  // `air.memtile_col` is the memtile-level analogue of `air.shim_col` (see
+  // AIRToAIESchedulingUtils.cpp). Two deliberate differences: (1) it is carried
+  // on the memref.alloc rather than the channel decl, because L2 placement
+  // buckets are keyed by alloc; (2) it is hint-only (an invalid column warns
+  // and falls through) rather than a hard error, because a memtile column that
+  // exists on one target may not on another and the hint should stay portable.
+  // Caveat: it is a discardable attr on memref.alloc, so set it late (after
+  // air-dependency) — earlier rewrites that reconstruct allocs may drop it.
+  // Returns the user-pinned col for an alloc if it carries
+  // `air.memtile_col`, else -1.
+  auto allocPinCol = [](memref::AllocOp a) -> int {
+    if (auto attr = a->getAttrOfType<IntegerAttr>("air.memtile_col"))
+      return static_cast<int>(attr.getInt());
+    return -1;
+  };
+  // True iff `alloc` shares an air.channel with any member of `bucket`.
+  auto sharesChannelWithBucket = [&](ArrayRef<memref::AllocOp> bucket,
+                                     memref::AllocOp alloc) {
+    for (auto bucket_elem : bucket)
+      if (areReferencedByTheSameAIRChannel(alloc.getMemref(),
+                                           bucket_elem.getMemref()))
+        return true;
+    return false;
+  };
+  // True iff `allocPin` (a valid pin, i.e. >= 0) conflicts with a distinct pin
+  // already present in `bucket`.
+  auto bucketHasConflictingPin = [&](ArrayRef<memref::AllocOp> bucket,
+                                     int allocPin) {
+    for (auto other : bucket) {
+      int otherPin = allocPinCol(other);
+      if (otherPin >= 0 && otherPin != allocPin)
+        return true;
+    }
+    return false;
+  };
   auto placeMemrefInSharedBucket =
       [&](SmallVector<SmallVector<memref::AllocOp>> &memref_buckets,
           memref::AllocOp alloc) {
+        int allocPin = allocPinCol(alloc);
         for (auto &bucket : memref_buckets) {
-          for (auto bucket_elem : bucket) {
-            if (areReferencedByTheSameAIRChannel(alloc.getMemref(),
-                                                 bucket_elem.getMemref())) {
-              bucket.push_back(alloc);
-              return true;
-            }
-          }
+          if (!sharesChannelWithBucket(bucket, alloc))
+            continue;
+          // Pin-aware bucketing: if the alloc carries an air.memtile_col pin
+          // distinct from any pin already in this bucket, skip it (don't
+          // merge) and keep scanning — the alloc may still share a channel
+          // with a different, pin-compatible bucket. Refusing the merge is
+          // what makes MT->MT hops expressible: two L2 buffers sharing one
+          // channel (the hop's intermediate) end up in DIFFERENT buckets, so
+          // the shared channel becomes a real cross-memtile flow.
+          if (allocPin >= 0 && bucketHasConflictingPin(bucket, allocPin))
+            continue;
+          bucket.push_back(alloc);
+          return true;
         }
         return false;
       };
@@ -2548,14 +2590,49 @@ void L2MemrefToMemTileMap(
     }
     return colHasMemTile(consensus) ? consensus : -1;
   };
+  // Resolve the single valid pin for a bucket. Invalid columns (no memtile in
+  // the target) warn and fall through. The conflict branch is a defensive net:
+  // placeMemrefInSharedBucket already refuses to merge allocs carrying distinct
+  // pins, so a bucket normally holds at most one distinct valid pin.
+  auto deriveBucketPin = [&](ArrayRef<memref::AllocOp> bucket) -> int {
+    int pinned = -1;
+    for (auto alloc : bucket) {
+      int col = allocPinCol(alloc);
+      if (col < 0)
+        continue;
+      if (!colHasMemTile(col)) {
+        alloc->emitWarning("air.memtile_col=")
+            << col << " has no memtile in target; ignoring";
+        continue;
+      }
+      if (pinned == -1)
+        pinned = col;
+      else if (pinned != col)
+        alloc->emitWarning("air.memtile_col=")
+            << col << " conflicts with bucket pin=" << pinned << "; ignoring";
+    }
+    return pinned;
+  };
 
-  SmallVector<int> bucketCols;
+  // Derive pins once here (deriveBucketPin emits warnings), then reuse the
+  // cached value on every downstream path so each invalid/conflicting pin is
+  // diagnosed exactly once.
+  SmallVector<int> bucketCols, bucketPins;
   bucketCols.reserve(memref_buckets.size());
+  bucketPins.reserve(memref_buckets.size());
   llvm::DenseMap<int, int> colDemand;
   for (auto &bucket : memref_buckets) {
     int col = deriveBucketCol(bucket);
+    int pin = deriveBucketPin(bucket);
+    bucketPins.push_back(pin);
+    if (pin >= 0)
+      col = pin;
     bucketCols.push_back(col);
-    if (col >= 0)
+    // Only affinity-derived cols feed the saturation trigger. A user pin is an
+    // explicit request that is honored on both branches, so it must not push
+    // the module into the saturation fallback and thereby perturb the
+    // placement of unrelated, unpinned buckets.
+    if (pin < 0 && col >= 0)
       colDemand[col]++;
   }
 
@@ -2576,32 +2653,8 @@ void L2MemrefToMemTileMap(
       break;
     }
 
-  if (saturated) {
-    // Multi-bucket shapes (operand classes like A/B/C) get a per-shape
-    // counter so each class restarts at memtile 0 and bucket-i maps to
-    // memtile-i; singleton shapes keep using a global counter so unrelated
-    // one-off buffers still spread across the pool.
-    auto bucketShape = [](SmallVectorImpl<memref::AllocOp> &bucket) -> Type {
-      return bucket.empty() ? Type() : bucket.front().getMemref().getType();
-    };
-    llvm::DenseMap<Type, int> shapeCount;
-    for (auto &bucket : memref_buckets)
-      shapeCount[bucketShape(bucket)]++;
-    llvm::DenseMap<Type, int> perShapeCounter;
-    int globalCounter = 0;
-    for (auto &bucket : memref_buckets) {
-      Type shape = bucketShape(bucket);
-      int slot =
-          (shapeCount[shape] > 1) ? perShapeCounter[shape]++ : globalCounter++;
-      auto memtile = memtiles[slot % memtiles.size()];
-      for (auto bucket_elem : bucket)
-        memrefToMemTileMap[bucket_elem] = memtile;
-    }
-    return;
-  }
-
-  // Col-affinity assignment: hint pre-emitted LTOs to derived cols and
-  // share one LTO per col. Spill over to round-robin for unhinted buckets.
+  // Hoisted out of the col-affinity branch so the saturation branch can
+  // also honor user pins via findOrCreateLtoForCol.
   OpBuilder builder(m);
   builder.setInsertionPointToStart(m.getBody());
   for (auto &o : m.getBody()->getOperations()) {
@@ -2638,6 +2691,40 @@ void L2MemrefToMemTileMap(
     colToMemtile[col] = tl;
     return tl;
   };
+
+  if (saturated) {
+    // Honor user pins even under saturation: pinned buckets route through
+    // findOrCreateLtoForCol so they land on their requested col; unpinned
+    // buckets distribute via the existing per-shape / global round-robin.
+    auto bucketShape = [](SmallVectorImpl<memref::AllocOp> &bucket) -> Type {
+      return bucket.empty() ? Type() : bucket.front().getMemref().getType();
+    };
+    llvm::DenseMap<Type, int> shapeCount;
+    for (auto &bucket : memref_buckets)
+      shapeCount[bucketShape(bucket)]++;
+    llvm::DenseMap<Type, int> perShapeCounter;
+    int globalCounter = 0;
+    for (size_t i = 0; i < memref_buckets.size(); i++) {
+      auto &bucket = memref_buckets[i];
+      int pin = bucketPins[i];
+      if (pin >= 0) {
+        AIE::TileLike memtile = findOrCreateLtoForCol(pin);
+        for (auto bucket_elem : bucket)
+          memrefToMemTileMap[bucket_elem] = memtile;
+        continue;
+      }
+      Type shape = bucketShape(bucket);
+      int slot =
+          (shapeCount[shape] > 1) ? perShapeCounter[shape]++ : globalCounter++;
+      auto memtile = memtiles[slot % memtiles.size()];
+      for (auto bucket_elem : bucket)
+        memrefToMemTileMap[bucket_elem] = memtile;
+    }
+    return;
+  }
+
+  // Col-affinity assignment: hint pre-emitted LTOs to derived cols and
+  // share one LTO per col. Spill over to round-robin for unhinted buckets.
 
   SmallVector<size_t> unhintedBuckets;
   for (size_t i = 0; i < memref_buckets.size(); i++) {
@@ -5978,7 +6065,14 @@ public:
                       "v2 chain-lock: failed to look up chain lock set "
                       "for ping-pong twin");
                 air::ChainLockSet *cls = clsOrFail.value();
-                if (cls->pp_slots == 1) {
+                // A buffer carrying air.refeed_count is a single-buffer
+                // count-free re-broadcast: the resident data is re-sent N
+                // times without a refill. Allocating a 2-slot ping-pong twin
+                // would deadlock, since the second (pong) slot is never filled
+                // when the producer emits a single token. Keep refeed buffers
+                // single-buffer.
+                if (cls->pp_slots == 1 &&
+                    air::getRefeedCount(primaryBuf.getOperation()) <= 1) {
                   AIE::BufferOp twin = allocateBufferOp(
                       this->BufferId, primaryBuf.getType(), tile,
                       /*attr=*/nullptr, /*x=*/-1, /*y=*/-1);
