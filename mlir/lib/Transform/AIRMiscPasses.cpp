@@ -2160,6 +2160,17 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   };
 
   for (auto allocOp : allocOps) {
+    // Opt-out: a `air.no_split` attribute on the alloc (or its enclosing
+    // air.execute wrapper) tells the pass to leave this L2 buffer intact. Used
+    // by hand-written aggregator patterns (e.g. a per-column output assembler)
+    // where splitting would multiply the launch-level shim endpoint count and
+    // defeat the aggregation, overflowing the memtile BD limit.
+    bool optOut = allocOp->hasAttr("air.no_split");
+    if (!optOut)
+      if (auto exec = allocOp->getParentOfType<air::ExecuteOp>())
+        optOut = exec->hasAttr("air.no_split");
+    if (optOut)
+      continue;
     Value memref = allocOp.getMemref();
     if (auto exec = dyn_cast_if_present<air::ExecuteOp>(allocOp->getParentOp()))
       memref = exec->getResult(1);
