@@ -172,9 +172,10 @@ class Channel(ChannelOp):
             Union[Sequence[Union[int, IntegerAttr, Operation, Value]], ArrayAttr]
         ] = None,
         size=None,
-        buffer_resources: Optional[Union[int, IntegerAttr]] = None,
         loc=None,
         ip=None,
+        *,
+        buffer_resources: Optional[Union[int, IntegerAttr]] = None,
     ):
         super().__init__(
             sym_name=sym_name,

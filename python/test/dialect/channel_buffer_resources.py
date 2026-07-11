@@ -14,8 +14,11 @@ from air.dialects.air import *
 
 @module_builder
 def build_module():
-    # Default: no buffer_resources attribute is emitted (depth stays 1).
+    # Default: no buffer_resources attribute is emitted (depth stays 1). The
+    # CHECK-NOT guards the region up to the next channel, so a stray attribute
+    # would fail the test rather than slip through the prefix match.
     # CHECK: air.channel @chan_default []
+    # CHECK-NOT: buffer_resources
     Channel("chan_default")
 
     # Explicit depth-2 FIFO via the python knob.
