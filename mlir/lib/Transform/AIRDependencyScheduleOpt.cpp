@@ -550,6 +550,15 @@ private:
   }
 };
 
+// An alloc is a hoisting target if it, or its parent air.execute, carries the
+// "hoist_alloc" attribute. Shared by the pattern and its seeding walk so the
+// two never drift apart.
+static bool isMarkedForHoist(memref::AllocOp allocOp) {
+  auto exec = allocOp->getParentOfType<air::ExecuteOp>();
+  return allocOp->hasAttr("hoist_alloc") ||
+         (exec && exec->hasAttr("hoist_alloc"));
+}
+
 struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
@@ -575,8 +584,7 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
     }
 
     // Check if alloc is the target
-    if (!alloc_op->hasAttr("hoist_alloc") &&
-        !alloc_exec->hasAttr("hoist_alloc"))
+    if (!isMarkedForHoist(alloc_op))
       return failure();
 
     // Get parent for loop
@@ -5244,9 +5252,7 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     // Hoisting only moves alloc/dealloc ops; later passes handle cleanup.
     SmallVector<Operation *> allocsToHoist;
     for_op.walk([&](memref::AllocOp allocOp) {
-      auto exec = allocOp->getParentOfType<air::ExecuteOp>();
-      if (allocOp->hasAttr("hoist_alloc") ||
-          (exec && exec->hasAttr("hoist_alloc")))
+      if (isMarkedForHoist(allocOp))
         allocsToHoist.push_back(allocOp);
     });
     if (!allocsToHoist.empty()) {
