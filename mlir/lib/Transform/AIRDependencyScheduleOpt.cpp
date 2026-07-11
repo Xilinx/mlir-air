@@ -5237,17 +5237,27 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     if (target_ops_sets.size() < 2)
       return failure();
 
-    // If necessary, hoist allocs out of the loops, too.
-    // Scope to the nearest IsolatedFromAbove ancestor to avoid O(N^2) cost
-    // when multiple launches each contain for loops.
-    RewritePatternSet patterns(f.getContext());
-    patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
-    auto *isolatedParent =
-        for_op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
-    if (isolatedParent)
-      (void)applyPatternsGreedily(isolatedParent, std::move(patterns));
-    else
-      (void)applyPatternsGreedily(f, std::move(patterns));
+    // If necessary, hoist allocs out of the loops, too. Seed the driver with
+    // only this loop's marked allocs (not a whole-region walk) and disable
+    // region simplification: this rewrite fires once per scf.for, so a
+    // full-region walk + DCE here is O(N^2) on large multi-loop modules.
+    // Hoisting only moves alloc/dealloc ops; later passes handle cleanup.
+    SmallVector<Operation *> allocsToHoist;
+    for_op.walk([&](memref::AllocOp allocOp) {
+      auto exec = allocOp->getParentOfType<air::ExecuteOp>();
+      if (allocOp->hasAttr("hoist_alloc") ||
+          (exec && exec->hasAttr("hoist_alloc")))
+        allocsToHoist.push_back(allocOp);
+    });
+    if (!allocsToHoist.empty()) {
+      RewritePatternSet patterns(f.getContext());
+      patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
+      GreedyRewriteConfig hoistCfg;
+      hoistCfg.setRegionSimplificationLevel(
+          GreedySimplifyRegionLevel::Disabled);
+      (void)applyOpPatternsGreedily(allocsToHoist, std::move(patterns),
+                                    hoistCfg);
+    }
 
     // Hoist ops out of each scf.for.
     llvm::SetVector<Operation *> erasedOps;

@@ -935,10 +935,15 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
   SmallVector<SmallVector<Operation *>> unrolledOps =
       collectOpsByScfForResultId(parentBlock, "scf.for_result_id");
 
+  // Pass 1: materialize any WaitAllOp wrappers for yield users up front.
+  // Batching all structural edits here keeps them from interleaving with the
+  // dominance queries below; interleaved inserts otherwise invalidate the
+  // block's op-order cache on every use, making isBeforeInBlock O(N^2) on
+  // large (fully-unrolled) blocks.
+  SmallVector<std::pair<SmallVector<Operation *> *, air::AsyncOpInterface>>
+      worklist;
   for (auto &vec : unrolledOps) {
-    auto tokenUses = getUsesOfAsyncTokens(vec);
-
-    for (OpOperand *use : tokenUses) {
+    for (OpOperand *use : getUsesOfAsyncTokens(vec)) {
       Operation *user = use->getOwner();
       if (auto yieldUser = dyn_cast_if_present<scf::YieldOp>(user)) {
         OpBuilder builder(yieldUser);
@@ -958,18 +963,21 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
             "iteration's dependency is preserved.");
         continue;
       }
+      worklist.push_back({&vec, asyncUser});
+    }
+  }
 
-      for (Operation *op : vec) {
-        if (!air::isAsyncOp(op))
-          continue;
-
-        // Only add dependency if SSA dominance is preserved
-        DominanceInfo domInfo(op);
-        if (!domInfo.properlyDominates(op, asyncUser))
-          continue;
-
-        air::addAsyncDependencyIfNew(asyncUser, air::getAsyncTokenFromOp(op));
-      }
+  // Pass 2: add async dependencies from each dominating unrolled op. Adding an
+  // async-dependency operand does not change the CFG, so a single DominanceInfo
+  // (and the op-order cache it relies on) stays valid across the whole loop.
+  DominanceInfo domInfo(parentBlock.getParentOp());
+  for (auto &[vec, asyncUser] : worklist) {
+    for (Operation *op : *vec) {
+      if (!air::isAsyncOp(op))
+        continue;
+      if (!domInfo.properlyDominates(op, asyncUser))
+        continue;
+      air::addAsyncDependencyIfNew(asyncUser, air::getAsyncTokenFromOp(op));
     }
   }
 }
