@@ -280,3 +280,66 @@ module {
     return
   }
 }
+
+// -----
+
+// (7) paced-MM2S per-iteration segmentation: a two-iteration unrolled launch
+// (two air.launch_end markers, NPU2, non-ELF) with 2 preserve_shim_dma_order
+// feeds per iteration. synthesizeDoubleBufferedAwaits must split the 4 feeds
+// into two 2-feed segments and fully drain each segment's tail before the next
+// iteration's first start -- so the in-flight window never straddles an
+// iteration boundary.
+//
+// With the whole-list fallback (no per-iteration segmentation), the 4 feeds
+// would be paced as one list: no mid-stream awaits (4 > depth=2 but T0 await
+// before T2 start), final drain of T2 and T3 only -- leaving T0 and T1
+// in-flight across the iteration boundary and accumulating a lock imbalance.
+// Correct behavior: iteration 0's T0+T1 are fully drained before T2 starts.
+
+// CHECK-LABEL: aie.runtime_sequence @paced_multiiter
+// Iteration 0: 2 paced feeds configured and started.
+// CHECK: %[[T0:.*]] = aiex.dma_configure_task_for @feed
+// CHECK: %[[T1:.*]] = aiex.dma_configure_task_for @feed
+// Iteration 0 segment drain (fenceEnd=true, n=2<=depth=2): both tasks drained
+// after T1's start, before iteration 1's T2.
+// CHECK: aiex.dma_await_task(%[[T0]])
+// CHECK: aiex.dma_await_task(%[[T1]])
+// Iteration 1: 2 paced feeds independently segmented.
+// CHECK: %[[T2:.*]] = aiex.dma_configure_task_for @feed
+// CHECK: %[[T3:.*]] = aiex.dma_configure_task_for @feed
+// Iteration 1 segment drain: both tasks drained after T3's start.
+// CHECK: aiex.dma_await_task(%[[T2]])
+// CHECK: aiex.dma_await_task(%[[T3]])
+module {
+  aie.device(npu2) @seg {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @feed(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @out(%shim_noc_tile_0_0, S2MM, 0)
+  } {sym_name = "seg"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "seg"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64,
+                           loc_x = 0 : i64, loc_y = 2 : i64,
+                           sym_name = "herd_0"}
+    }
+  }
+  func.func @paced_multiiter(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c5_i32 = arith.constant 5 : i32
+    %p = airrt.segment_load "seg" : i64
+    // iteration 0: 2 paced MM2S feeds + 1 S2MM output
+    %f0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feed, air.preserve_shim_dma_order} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %g0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feed, air.preserve_shim_dma_order} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %o0 = airrt.dma_memcpy_nd(%c5_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @out} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    airrt.wait_all %o0 {"air.launch_end"}
+    // iteration 1: 2 paced MM2S feeds + 1 S2MM output
+    %f1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feed, air.preserve_shim_dma_order} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %g1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feed, air.preserve_shim_dma_order} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %o1 = airrt.dma_memcpy_nd(%c5_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @out} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    airrt.wait_all %o1 {"air.launch_end"}
+    return
+  }
+}
