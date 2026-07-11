@@ -128,6 +128,23 @@ static int64_t enclosingLoopTrips(mlir::Operation *op) {
   return trips;
 }
 
+// Count air.launch_end markers in a device and whether any are enclosed by a
+// multi-trip loop. Returns {count, anyMultiTrip}. Both
+// deviceHasSingleTripCascade and markDevicesNeedingLockReset need this
+// information; centralizing it here avoids duplicating the walk.
+static std::pair<int64_t, bool> countLaunchEnds(xilinx::AIE::DeviceOp device) {
+  int64_t n = 0;
+  bool anyMultiTrip = false;
+  device.walk([&](xilinx::airrt::WaitAllOp wa) {
+    if (!wa->hasAttr("air.launch_end"))
+      return;
+    ++n;
+    if (enclosingLoopTrips(wa) != 1)
+      anyMultiTrip = true;
+  });
+  return {n, anyMultiTrip};
+}
+
 // Cascade core locks/credits need the per-launch reset only for a SINGLE-TRIP
 // launch: across a host re-dispatch they are stale and the kernel aborts on the
 // 2nd dispatch without the reset. A MULTI-ITERATION launch re-arms them every
@@ -143,15 +160,7 @@ static int64_t enclosingLoopTrips(mlir::Operation *op) {
 static bool deviceHasSingleTripCascade(xilinx::AIE::DeviceOp device) {
   if (!deviceHasCascade(device))
     return false;
-  int64_t numLaunchEnds = 0;
-  bool anyMultiTrip = false;
-  device.walk([&](xilinx::airrt::WaitAllOp wa) {
-    if (!wa->hasAttr("air.launch_end"))
-      return;
-    ++numLaunchEnds;
-    if (enclosingLoopTrips(wa) != 1)
-      anyMultiTrip = true;
-  });
+  auto [numLaunchEnds, anyMultiTrip] = countLaunchEnds(device);
   return numLaunchEnds == 1 && !anyMultiTrip;
 }
 
@@ -189,7 +198,7 @@ static constexpr llvm::StringLiteral kMultiIterLaunchAttr =
 // launch, carried from markDevicesNeedingLockReset (computed from the unrolled
 // launch_end count) to synthesizeDoubleBufferedAwaits, which must segment its
 // per-channel paced-MM2S backpressure PER ITERATION so the double-buffered
-// pacing does not overlap a iteration boundary (which accumulates a 2-deep
+// pacing does not overlap an iteration boundary (which accumulates a 2-deep
 // in-flight imbalance and deadlocks after a couple of iterations).
 static constexpr llvm::StringLiteral kNumLaunchItersAttr =
     "air.num_launch_iters";
@@ -228,15 +237,7 @@ static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
     // several launch_end markers (an already-unrolled iteration loop). Single
     // dispatch is exactly one launch_end not in a multi-trip loop (mirrors
     // deviceHasSingleTripCascade's launch-count logic).
-    int64_t numLaunchEnds = 0;
-    bool anyMultiTrip = false;
-    device.walk([&](xilinx::airrt::WaitAllOp wa) {
-      if (!wa->hasAttr("air.launch_end"))
-        return;
-      ++numLaunchEnds;
-      if (enclosingLoopTrips(wa) != 1)
-        anyMultiTrip = true;
-    });
+    auto [numLaunchEnds, anyMultiTrip] = countLaunchEnds(device);
     if (numLaunchEnds >= 1 && (numLaunchEnds > 1 || anyMultiTrip)) {
       device->setAttr(kMultiIterLaunchAttr,
                       mlir::UnitAttr::get(device.getContext()));
@@ -1186,6 +1187,11 @@ public:
         }
       }
     }
+    if (tagBoundary && !taggedOne)
+      op->emitWarning(
+          "air.multi_iter_launch: launch_end boundary has no "
+          "surviving DMA wait op to tag; per-iteration RTP/set_lock "
+          "scoping may be incorrect");
 
     // The WaitAllOp may have uses (other WaitAllOps depending on its result).
     // Replace with a new WaitAllOp with no operands to break the dependency
@@ -2507,8 +2513,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // stitched iterations) must pace each channel PER ITERATION: the
     // per-channel task list is the N iterations' feeds concatenated, and
     // pacing/draining it as one list lets the double-buffered in-flight set
-    // straddle a iteration boundary, accumulating a `depth`-deep imbalance that
-    // deadlocks after a few iterations. Splitting into N equal contiguous
+    // straddle an iteration boundary, accumulating a `depth`-deep imbalance
+    // that deadlocks after a few iterations. Splitting into N equal contiguous
     // segments and draining each segment's final `depth` before the next
     // segment's first start makes every iteration's backpressure self-contained
     // (one dispatch behaves like N drained dispatches). N==1 (single launch, or
@@ -2576,6 +2582,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               ArrayRef<AIEX::DMAConfigureTaskForOp>(tasks).slice(it * seg, seg),
               /*fenceEnd=*/true);
       } else {
+        if (numIters > 1)
+          tasks.front()->emitWarning(
+              "air.multi_iter_launch: MM2S task count (" + llvm::Twine(n) +
+              ") is not evenly divisible by iteration count (" +
+              llvm::Twine(numIters) +
+              "); falling back to whole-list pacing which may deadlock");
         paceSegment(tasks, /*fenceEnd=*/false);
       }
     }
