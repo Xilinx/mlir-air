@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner_type: [ amd8845hs, amdhx370 ]
+        runner_type: [ amdryzenai5pro340 ]
 
     steps:
 
