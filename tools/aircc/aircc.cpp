@@ -937,10 +937,10 @@ static LogicalResult runAieCompilation() {
   // targets npu2/AIE2P and is not supported on npu1/Phoenix.
   if (outputFormat == OF_elf &&
       deviceName.getValue().find("npu1") != std::string::npos) {
-    llvm::errs() << "Error: output_format='elf' is not supported for "
+    llvm::errs() << "Error: --output-format=elf is not supported for --device="
                  << deviceName.getValue()
-                 << " target. Use output_format='xclbin' (default) or "
-                    "output_format='pdi' for npu1.\n";
+                 << ". Use --output-format=xclbin (default) or "
+                    "--output-format=pdi for npu1.\n";
     return failure();
   }
 
@@ -1259,10 +1259,13 @@ static LogicalResult runAieCompilation() {
     }
     // OF_none = no output generation options
 
-    // NPU instruction generation (not for ELF mode, which embeds sequences).
-    // PDI mode still needs the instruction sequence as a sidecar file for the
-    // alternative runtime to program shim DMAs at dispatch time.
-    if (outputFormat != OF_elf) {
+    // NPU instruction generation.
+    // - ELF: sequences are embedded in the ELF by aiebu-asm, skip.
+    // - none: compile-only, no binary output requested, skip.
+    // - PDI: sidecar insts file needed by the alternative runtime to program
+    //   shim DMAs at dispatch time.
+    // - xclbin/txn: always needed.
+    if (outputFormat != OF_elf && outputFormat != OF_none) {
       aieccCmd.push_back("--aie-generate-npu-insts");
       aieccCmd.push_back("--npu-insts-name=" + instsFile);
     }

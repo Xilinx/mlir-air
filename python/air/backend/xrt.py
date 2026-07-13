@@ -529,6 +529,15 @@ class XRTBackend(AirBackend):
                 f"Cannot load XRTCompileArtifact because {artifact.output_binary} file does not exist"
             )
 
+        # PDI artifacts are intended for alternative (non-XRT) runtimes and
+        # cannot be loaded via this XRT-based load() path.
+        if artifact.output_binary.endswith(".pdi"):
+            raise AirBackendError(
+                "output_format='pdi' produces artifacts for alternative runtimes "
+                "and cannot be loaded via XRTBackend.load(). Pass the .pdi file "
+                "and accompanying .insts.bin to your target runtime directly."
+            )
+
         # Determine the loading mode based on file extension
         is_elf = artifact.output_binary.endswith(".elf")
 
