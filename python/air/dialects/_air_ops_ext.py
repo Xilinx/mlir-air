@@ -174,6 +174,8 @@ class Channel(ChannelOp):
         size=None,
         loc=None,
         ip=None,
+        *,
+        buffer_resources: Optional[Union[int, IntegerAttr]] = None,
     ):
         super().__init__(
             sym_name=sym_name,
@@ -181,6 +183,20 @@ class Channel(ChannelOp):
             loc=loc,
             ip=ip,
         )
+
+        # Optional objectFIFO depth knob: the `buffer_resources` attribute is
+        # consumed by AIRToAIEPass (AIRToAIEPass.cpp, ChannelOp::getBufferResources)
+        # as the depth of the lowered aie.objectfifo (default 1). Exposing it on the
+        # placed Channel wrapper lets dataflow pin a deeper FIFO (e.g. depth-2 for
+        # producer/consumer overlap) without hand-editing the IR.
+        if buffer_resources is not None:
+            if isinstance(buffer_resources, IntegerAttr):
+                buffer_resources_attr = buffer_resources
+            else:
+                buffer_resources_attr = IntegerAttr.get(
+                    IntegerType.get_signless(64), buffer_resources
+                )
+            super().attributes["buffer_resources"] = buffer_resources_attr
 
         if not (broadcast_shape is None):
             static_sizes = []
