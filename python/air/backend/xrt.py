@@ -238,11 +238,14 @@ class XRTBackend(AirBackend):
                     print("Failed to run xrt-smi, using default target device")
                     print(e)
 
-        # Validate output_format compatibility with target device
+        # Validate output_format compatibility with target device.
+        # Full ELF requires aiebu-asm aie2_config which targets npu2/AIE2P only.
+        # PDI output works on all NPU generations.
         if self.output_format == "elf" and "npu1" in target_device:
             raise AirBackendError(
                 f"output_format='elf' is not supported for {target_device} target. "
-                "ELF output format is only supported on npu2 and later devices."
+                "ELF output format is only supported on npu2 and later devices. "
+                "Use output_format='pdi' for a raw PDI alongside the NPU instruction sequence."
             )
 
         # Apply user-specified device column configuration if provided
@@ -277,6 +280,8 @@ class XRTBackend(AirBackend):
             output_binary = f"{output_binary_name}.elf"
         elif self.output_format == "txn":
             output_binary = f"{output_binary_name}.txn"
+        elif self.output_format == "pdi":
+            output_binary = f"{output_binary_name}.pdi"
         else:  # xclbin (default)
             output_binary = f"{output_binary_name}.xclbin"
 
@@ -297,6 +302,9 @@ class XRTBackend(AirBackend):
                 aircc_options += ["--elf-name", output_binary]
                 # Note: ELF mode features (main device wrapper, load_pdi) are
                 # automatically enabled by --output-format=elf in aircc
+            elif self.output_format == "pdi":
+                aircc_options += ["--pdi-name", output_binary]
+                aircc_options += ["-i", insts]
             else:
                 aircc_options += ["-o", output_binary]
                 aircc_options += ["-i", insts]
@@ -519,6 +527,15 @@ class XRTBackend(AirBackend):
         if not os.path.isfile(artifact.output_binary):
             raise AirBackendError(
                 f"Cannot load XRTCompileArtifact because {artifact.output_binary} file does not exist"
+            )
+
+        # PDI artifacts are intended for alternative (non-XRT) runtimes and
+        # cannot be loaded via this XRT-based load() path.
+        if artifact.output_binary.endswith(".pdi"):
+            raise AirBackendError(
+                "output_format='pdi' produces artifacts for alternative runtimes "
+                "and cannot be loaded via XRTBackend.load(). Pass the .pdi file "
+                "and accompanying .insts.bin to your target runtime directly."
             )
 
         # Determine the loading mode based on file extension
