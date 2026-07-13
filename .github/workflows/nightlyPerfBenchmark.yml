@@ -30,13 +30,15 @@ env:
   XILINXD_LICENSE_FILE: /opt/xilinx/Xilinx.lic
   VITIS: /opt/ryzen_ai-1.3.0.1/vitis_aie_essentials
   # Pinned run params, shared across the benchmark + extract steps for
-  # run-to-run comparability (single source of truth).
+  # run-to-run comparability (single source of truth). Model is data, not a
+  # fixed name — add further models incrementally without renaming anything.
+  BENCH_MODEL: llama32_1b
   BENCH_PROMPT: What is the capital of France?
   BENCH_N_TOKENS: "128"
 
 jobs:
   benchmark:
-    name: Nightly LLM Perf Benchmark (llama32_1b)
+    name: LLM perf benchmark
     runs-on: amdryzenai5pro340
 
     steps:
@@ -142,9 +144,8 @@ jobs:
           source /opt/xilinx/xrt/setup.sh
           export PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
 
-          pip install -r programming_examples/llms/llama32_1b/requirements.txt
-
-          MODEL_DIR=programming_examples/llms/llama32_1b
+          MODEL_DIR=programming_examples/llms/$BENCH_MODEL
+          pip install -r $MODEL_DIR/requirements.txt
 
           # Correctness gate — perf on wrong output is meaningless.
           make -C $MODEL_DIR compile PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
@@ -163,7 +164,7 @@ jobs:
           : "${MLIR_AIE_HASH:?HASH not found in utils/clone-mlir-aie.sh}"
           LLVM_AIE_VERSION=$(python3 -m pip show llvm-aie | awk '/^Version:/{print $2}')
           python3 programming_examples/llms/bench/extract_perf.py profile.txt \
-            --model llama32_1b \
+            --model "$BENCH_MODEL" \
             --runner amdryzenai5pro340 \
             --mlir-air-sha "${{ github.sha }}" \
             --mlir-aie-hash "$MLIR_AIE_HASH" \
@@ -179,7 +180,9 @@ jobs:
         run: |
           source air-venv/bin/activate
           {
-            echo "### Nightly LLM Perf Benchmark — llama32_1b"
+            echo "### LLM perf benchmark"
+            echo ""
+            echo "Model: \`$BENCH_MODEL\`"
             echo ""
             if [ -f perf.json ]; then
               TTFT=$(python3 -c "import json;print(json.load(open('perf.json'))['metrics']['ttft_ms'])")
@@ -198,7 +201,7 @@ jobs:
       - name: Upload perf artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama32_1b-perf-${{ github.run_id }}
+          name: perf-${{ env.BENCH_MODEL }}-${{ github.run_id }}
           path: |
             perf.json
             profile.txt
