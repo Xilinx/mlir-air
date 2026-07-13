@@ -41,7 +41,11 @@ def main():
     p.add_argument("--prompt", default="")
     args = p.parse_args()
 
-    text = open(args.input).read() if args.input else sys.stdin.read()
+    if args.input:
+        with open(args.input, encoding="utf-8") as f:
+            text = f.read()
+    else:
+        text = sys.stdin.read()
 
     # First token is produced at the end of NPU prefill, so prefill end-to-end
     # latency is the time-to-first-token. Decode throughput is the reciprocal

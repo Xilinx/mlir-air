@@ -29,6 +29,10 @@ env:
   DEBIAN_FRONTEND: noninteractive
   XILINXD_LICENSE_FILE: /opt/xilinx/Xilinx.lic
   VITIS: /opt/ryzen_ai-1.3.0.1/vitis_aie_essentials
+  # Pinned run params, shared across the benchmark + extract steps for
+  # run-to-run comparability (single source of truth).
+  BENCH_PROMPT: What is the capital of France?
+  BENCH_N_TOKENS: "128"
 
 jobs:
   benchmark:
@@ -141,7 +145,6 @@ jobs:
           pip install -r programming_examples/llms/llama32_1b/requirements.txt
 
           MODEL_DIR=programming_examples/llms/llama32_1b
-          PROMPT="What is the capital of France?"
 
           # Correctness gate — perf on wrong output is meaningless.
           make -C $MODEL_DIR compile PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
@@ -149,13 +152,16 @@ jobs:
 
           # Perf capture — pinned MODEL/N_TOKENS/PROMPT for run-to-run comparability.
           make -C $MODEL_DIR profile PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR \
-            MODEL=base N_TOKENS=128 PROMPT="$PROMPT" | tee profile.txt
+            MODEL=base N_TOKENS="$BENCH_N_TOKENS" PROMPT="$BENCH_PROMPT" | tee profile.txt
 
       - name: Extract perf numbers
         run: |
           source air-venv/bin/activate
-          MLIR_AIE_HASH=$(grep -m1 -oP '(^|\s)HASH=\K[0-9a-f]+' utils/clone-mlir-aie.sh)
-          LLVM_AIE_VERSION=$(python3 -m pip show llvm-aie | grep ^Version: | awk '{print $2}')
+          # Portable extraction (no GNU-only grep -P); fails the step if the
+          # HASH line ever disappears from clone-mlir-aie.sh.
+          MLIR_AIE_HASH=$(awk -F= '$1 ~ /(^| )HASH$/ {print $2; exit}' utils/clone-mlir-aie.sh)
+          : "${MLIR_AIE_HASH:?HASH not found in utils/clone-mlir-aie.sh}"
+          LLVM_AIE_VERSION=$(python3 -m pip show llvm-aie | awk '/^Version:/{print $2}')
           python3 programming_examples/llms/bench/extract_perf.py profile.txt \
             --model llama32_1b \
             --runner amdryzenai5pro340 \
@@ -163,8 +169,8 @@ jobs:
             --mlir-aie-hash "$MLIR_AIE_HASH" \
             --llvm-aie-version "$LLVM_AIE_VERSION" \
             --model-variant base \
-            --n-tokens 128 \
-            --prompt "What is the capital of France?" \
+            --n-tokens "$BENCH_N_TOKENS" \
+            --prompt "$BENCH_PROMPT" \
             > perf.json
           cat perf.json
 
