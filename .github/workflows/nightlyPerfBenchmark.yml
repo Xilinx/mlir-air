@@ -142,7 +142,13 @@ jobs:
 
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           source /opt/xilinx/xrt/setup.sh
-          export PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
+
+          # Kernel compile runs via `make` (not lit), so it does not inherit the
+          # AIE tool paths lit injects from the CMake build. Source the repo env
+          # helper so aie-opt / MLIR_AIE_INSTALL_DIR / air bindings resolve.
+          MLIR_AIE_DIR=$(python3 -m pip show mlir_aie | awk '/^Location:/{print $2}')/mlir_aie
+          PEANO_DIR=$(python3 -m pip show llvm-aie | awk '/^Location:/{print $2}')/llvm-aie
+          source utils/env_setup.sh "$(pwd)/install" "$MLIR_AIE_DIR" "$PEANO_DIR" "$(pwd)/mlir-aie/mlir"
 
           MODEL_DIR=programming_examples/llms/$BENCH_MODEL
           pip install -r $MODEL_DIR/requirements.txt
