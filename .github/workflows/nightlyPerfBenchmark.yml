@@ -27,12 +27,12 @@ env:
   DEBIAN_FRONTEND: noninteractive
   XILINXD_LICENSE_FILE: /opt/xilinx/Xilinx.lic
   VITIS: /opt/ryzen_ai-1.3.0.1/vitis_aie_essentials
-  # Pinned run params shared across steps (single source of truth). Models are
-  # data, not fixed names — extend BENCH_MODELS to cover more without renaming.
-  # Space-separated list of model dirs under programming_examples/llms/.
-  BENCH_MODELS: "llama32_1b llama32_1b_int4 llama32_3b qwen25_0_5b qwen25_1_5b qwen25_3b qwen3_0_6b qwen3_1_7b qwen3_4b smollm2_1_7b"
-  BENCH_PROMPT: What is the capital of France?
-  BENCH_N_TOKENS: "128"
+  # The lit/ninja targets run every llms/*/run_npu2_{verify,profile} model. The
+  # 3B/4B models are excluded on this runner: their verify holds the HF bf16
+  # reference + NPU host weights simultaneously and OOM-kills the job (~32GB
+  # RAM), and they dominate runtime/downloads. Re-include by narrowing this
+  # regex once the runner has more RAM. Matched against lit test names.
+  LIT_FILTER_OUT: "llms/(llama32_3b|qwen25_3b|qwen3_4b)/"
 
 jobs:
   benchmark:
@@ -41,7 +41,7 @@ jobs:
     # Bound total runtime so stuck NPU dispatch/downloads can't occupy the
     # dedicated runner indefinitely. Covers a full build + all models (each
     # model is also individually bounded by `timeout` in run_models.sh).
-    timeout-minutes: 240
+    timeout-minutes: 300
 
     steps:
 
