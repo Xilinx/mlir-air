@@ -134,6 +134,39 @@ jobs:
           pip install $PWD/../python/spensor
           popd
 
+      # TEMP diagnostic: the backend resolves npu1 on this runner (detection
+      # fails silently). Print what the runner actually exposes so we can see
+      # why pyxrt / xrt-smi detection fails here. Remove once understood.
+      - name: Diagnose NPU device detection
+        if: always()
+        run: |
+          source air-venv/bin/activate
+          [ -f /opt/xilinx/xrt/setup.sh ] && source /opt/xilinx/xrt/setup.sh || true
+          MLIR_AIE_DIR=$(python3 -m pip show mlir_aie | awk '/^Location:/{print $2}')/mlir_aie
+          export PYTHONPATH="$(pwd)/install/python:$MLIR_AIE_DIR/python:/opt/xilinx/xrt/python:$PYTHONPATH"
+          echo "===== DEVICE DETECTION DIAGNOSTICS ====="
+          echo "python3: $(which python3)"; python3 --version
+          echo "PYTHONPATH=$PYTHONPATH"
+          echo "--- ls /opt/xilinx/xrt/python ---"; ls -la /opt/xilinx/xrt/python 2>&1 | head
+          echo "--- ls /dev/accel ---"; ls -la /dev/accel 2>&1 | head
+          echo "--- which xrt-smi ---"; which xrt-smi 2>&1 || echo "(not on PATH)"
+          echo "--- ls /opt/xilinx/xrt/bin/xrt-smi ---"; ls -la /opt/xilinx/xrt/bin/xrt-smi 2>&1 || true
+          echo "--- xrt-smi examine ---"; xrt-smi examine 2>&1 | head -30; echo "xrt-smi exit=${PIPESTATUS[0]}"
+          echo "--- import pyxrt + device name ---"
+          python3 -c "
+          try:
+              import pyxrt
+              print('pyxrt imported from:', pyxrt.__file__)
+              try:
+                  d = pyxrt.device(0)
+                  print('device name:', repr(d.get_info(pyxrt.xrt_info_device.name)))
+              except Exception as e:
+                  print('pyxrt.device(0) failed:', repr(e))
+          except Exception as e:
+              print('import pyxrt failed:', repr(e))
+          "
+          echo "===== END DIAGNOSTICS ====="
+
       - name: Run benchmark (verify gate + profile capture)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
