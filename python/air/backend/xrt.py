@@ -294,6 +294,8 @@ class XRTBackend(AirBackend):
             aircc_options = [
                 "--device",
                 target_device,
+                "-j",
+                "1",
                 "air.mlir",
             ]
 
