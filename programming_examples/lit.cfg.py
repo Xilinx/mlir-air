@@ -134,6 +134,12 @@ if os.environ.get("HF_TOKEN"):
 else:
     print("HF_TOKEN not set; hf_token feature disabled.")
 
+# Forward HF Hub download tuning if the host set it (e.g. the perf runner sets
+# HF_HUB_DISABLE_XET=1 because the hf_xet backend stalls there). Propagated only
+# when present, so it's a no-op on hosts that don't set it.
+if os.environ.get("HF_HUB_DISABLE_XET"):
+    llvm_config.with_environment("HF_HUB_DISABLE_XET", os.environ["HF_HUB_DISABLE_XET"])
+
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
 llvm_config.use_default_substitutions()
