@@ -168,7 +168,7 @@ jobs:
           export MLIR_AIE_INSTALL_DIR="$MLIR_AIE_DIR"
           export PEANO_INSTALL_DIR="$PEANO_DIR"
           export PATH="$(pwd)/install/bin:$MLIR_AIE_DIR/bin:$PEANO_DIR/bin:$PATH"
-          export PYTHONPATH="$(pwd)/install/python:$MLIR_AIE_DIR/python:/opt/xilinx/xrt/python:$PYTHONPATH"
+          export PYTHONPATH="$(pwd)/install/python:$MLIR_AIE_DIR/python:/opt/xilinx/xrt/python${PYTHONPATH:+:$PYTHONPATH}"
 
           MODEL_DIR=programming_examples/llms/$BENCH_MODEL
           pip install -r $MODEL_DIR/requirements.txt
