@@ -5,13 +5,12 @@
 // (plain multiply/accumulate), so forward to the plain intrinsics.
 #if defined(__AIENGINE__) && !defined(__chess__)
 #include <aiev2intrin.h>
-__attribute__((always_inline)) inline
-v16accfloat mul_elem_16_conf(v16float a, v16float b, int /*conf*/) {
+__attribute__((always_inline)) inline v16accfloat
+mul_elem_16_conf(v16float a, v16float b, int /*conf*/) {
   return mul_elem_16(a, b);
 }
-__attribute__((always_inline)) inline
-v16accfloat mac_elem_16_conf(v16float a, v16float b, v16accfloat acc,
-                             int, int, int) {
+__attribute__((always_inline)) inline v16accfloat
+mac_elem_16_conf(v16float a, v16float b, v16accfloat acc, int, int, int) {
   return mac_elem_16(a, b, acc);
 }
 #endif
