@@ -815,7 +815,7 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
 
             auto constOp =
                 dyn_cast_if_present<arith::ConstantOp>(oper.getDefiningOp());
-            if (constOp) {
+            if (constOp && isa<IntegerType, IndexType>(oper.getType())) {
               uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
               Value vVal = arith::ConstantOp::create(
                   rewriter, op.getLoc(), rewriter.getI32Type(),

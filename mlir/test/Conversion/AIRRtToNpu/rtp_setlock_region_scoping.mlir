@@ -29,9 +29,7 @@
 // CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
 // CHECK: aiex.dma_configure_task_for @feedIn
 // Iteration 1's RTP (9) must NOT appear before the first reset (no clobber).
-// (The CHECK-NOT for the old integer-literal form is no longer needed since
-// the new SSA form uses a named constant that can't be matched by the old
-// integer pattern; dominance is verified structurally by the positive CHECKs.)
+// CHECK-NOT: arith.constant 9 : i32
 // CHECK: aiex.npu.load_pdi {device_ref = @seg_reset}
 // Iteration 1: RTP (9) + release land AFTER the reset, before iteration 1's feed.
 // CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
