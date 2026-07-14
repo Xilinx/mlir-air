@@ -46,7 +46,7 @@ INT4_GS      ?= 128
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf \
 	-Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body \
-	-DNDEBUG -I ${AIEOPT_DIR}/include
+	-DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
 compile-kernel-int4:
 	mkdir -p $(BUILD_DIR)

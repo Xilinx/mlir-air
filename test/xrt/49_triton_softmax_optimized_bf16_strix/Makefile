@@ -66,7 +66,7 @@ endif
 
 # Compiler flags for Peano
 WARNING_FLAGS := -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
-PEANO_FLAGS := -O2 -std=c++20 --target=$(AIE_TARGET) $(WARNING_FLAGS) -DNDEBUG -I$(AIEOPT_DIR)/include
+PEANO_FLAGS := -O2 -std=c++20 --target=$(AIE_TARGET) $(WARNING_FLAGS) -DNDEBUG -I$(AIEOPT_DIR)/include -D__AIE_API_AIE_ADF_HPP__
 
 # PowerShell detection for WSL
 TEST_POWERSHELL := $(shell command -v powershell.exe >/dev/null 2>&1 && echo yes || echo no)
