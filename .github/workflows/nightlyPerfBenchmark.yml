@@ -153,6 +153,12 @@ jobs:
           # detection and NPU dispatch. Each GHA step is a fresh shell.
           sudo prlimit -lunlimited --pid $$
 
+          # Install every model's Python deps (transformers/safetensors/torch/
+          # huggingface_hub) — the lit-run inference imports them.
+          for req in programming_examples/llms/*/requirements.txt; do
+            pip install -q -r "$req"
+          done
+
           # Run all models through the maintained lit/ninja targets (lit injects
           # the AIE tool env from the CMake build). lit runs every model even if
           # one fails, so a run reports each model's status; ninja returns
