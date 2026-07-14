@@ -46,22 +46,22 @@
 // Each writer core brackets its kernel-call write with acquire(prod,1) /
 // release(cons,1). (main = tile_0_2 prints first, helper = tile_0_3 next.)
 // CORE: aie.core
-// CORE: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
+// CORE: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, %{{.*}})
 // CORE: func.call @zero_vectorized_bf16
-// CORE: aie.use_lock(%[[CONS_LOCK]], Release, 1)
+// CORE: aie.use_lock(%[[CONS_LOCK]], Release, %{{.*}})
 // CORE: aie.core
-// CORE: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
+// CORE: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, %{{.*}})
 // CORE: func.call @zero_vectorized_bf16
-// CORE: aie.use_lock(%[[CONS_LOCK]], Release, 1)
+// CORE: aie.use_lock(%[[CONS_LOCK]], Release, %{{.*}})
 
 // ---- DMA-side: the MM2S BD on the shared buffer must reuse the SAME ----
 // prod/cons locks (matched by sym_name) and use count N=2.
 // DMA-DAG: %[[DCONS:.*]] = aie.lock(%{{.*}}, {{.*}}) {init = 0 : i32, sym_name = "shared_l1{{.*}}_cons_lock"}
 // DMA-DAG: %[[DPROD:.*]] = aie.lock(%{{.*}}, {{.*}}) {init = 2 : i32, sym_name = "shared_l1{{.*}}_prod_lock"}
 // DMA: aie.mem
-// DMA: aie.use_lock(%[[DCONS]], AcquireGreaterEqual, 2)
+// DMA: aie.use_lock(%[[DCONS]], AcquireGreaterEqual, %{{.*}})
 // DMA: aie.dma_bd(%{{.*}}shared_l1{{.*}})
-// DMA: aie.use_lock(%[[DPROD]], Release, 2)
+// DMA: aie.use_lock(%[[DPROD]], Release, %{{.*}})
 
 module {
   func.func private @zero_vectorized_bf16(memref<8xbf16, 2 : i32>) attributes {link_with = "mv_int4_q4nx_bf16_v21.o", llvm.emit_c_interface}

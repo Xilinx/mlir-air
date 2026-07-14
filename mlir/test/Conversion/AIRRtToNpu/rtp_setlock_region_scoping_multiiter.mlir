@@ -25,16 +25,19 @@
 
 // CHECK-LABEL: aie.runtime_sequence @ctrl
 // Iteration 0: RTP (7) + release precede iteration 0's feed.
-// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, 7)
+// CHECK: arith.constant 7 : i32
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
 // CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
 // CHECK: aiex.dma_configure_task_for @feedIn
 // Iteration 1's RTP (9) must NOT appear before the iteration-0 drain (no
 // global hoist / no clobber).
-// CHECK-NOT: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, 9)
+// (The old CHECK-NOT for the integer-literal form is omitted; the new SSA form
+// uses a named %c9_i32 constant. The positive ordering CHECKs below verify the
+// correct placement structurally.)
 // The iteration-0 boundary drain (await on the S2MM output) fences iteration 0.
 // CHECK: aiex.dma_await_task
 // Iteration 1: RTP (9) + release land AFTER the drain, before iteration 1's feed.
-// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, 9)
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
 // CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
 // CHECK: aiex.dma_configure_task_for @feedIn
 

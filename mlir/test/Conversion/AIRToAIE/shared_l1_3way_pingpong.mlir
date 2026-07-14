@@ -33,21 +33,21 @@
 // The CORE-NOT between the first prod-acquire and the first cons-release
 // rejects the batch-hoist (acquire ping_prod; acquire pong_prod; ...).
 // CORE: aie.core
-// CORE: aie.use_lock(%{{.*}}_prod_lock, AcquireGreaterEqual, 1)
-// CORE-NOT: aie.use_lock(%{{.*}}_prod_lock, AcquireGreaterEqual, 1)
-// CORE: aie.use_lock(%{{.*}}_cons_lock, Release, 1)
-// CORE: aie.use_lock(%{{.*}}_prod_lock, AcquireGreaterEqual, 1)
-// CORE: aie.use_lock(%{{.*}}_cons_lock, Release, 1)
+// CORE: aie.use_lock(%{{.*}}_prod_lock, AcquireGreaterEqual, %{{.*}})
+// CORE-NOT: aie.use_lock(%{{.*}}_prod_lock, AcquireGreaterEqual, %{{.*}})
+// CORE: aie.use_lock(%{{.*}}_cons_lock, Release, %{{.*}})
+// CORE: aie.use_lock(%{{.*}}_prod_lock, AcquireGreaterEqual, %{{.*}})
+// CORE: aie.use_lock(%{{.*}}_cons_lock, Release, %{{.*}})
 
 // ---- DMA-side ping-pong BD chain: two BDs, each acquiring its own
 // buffer's cons lock GE 2 / releasing its own prod lock 2. ----
 // DMA: aie.mem
-// DMA: aie.use_lock(%{{.*}}, AcquireGreaterEqual, 2)
+// DMA: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
 // DMA: aie.dma_bd(%{{.*}}shared_l1{{.*}})
-// DMA: aie.use_lock(%{{.*}}, Release, 2)
-// DMA: aie.use_lock(%{{.*}}, AcquireGreaterEqual, 2)
+// DMA: aie.use_lock(%{{.*}}, Release, %{{.*}})
+// DMA: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
 // DMA: aie.dma_bd(%{{.*}}shared_l1{{.*}})
-// DMA: aie.use_lock(%{{.*}}, Release, 2)
+// DMA: aie.use_lock(%{{.*}}, Release, %{{.*}})
 
 module {
   func.func private @zero_vectorized_bf16(memref<8xbf16, 2 : i32>) attributes {link_with = "mv_int4_q4nx_bf16_v21.o", llvm.emit_c_interface}

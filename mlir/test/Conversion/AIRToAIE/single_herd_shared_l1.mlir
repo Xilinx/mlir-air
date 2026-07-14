@@ -34,14 +34,14 @@
 
 // Reader core (tile_0_3) is emitted first.
 // CHECK: aie.core(%[[READER]])
-// CHECK: aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, 1)
-// CHECK: aie.use_lock(%[[PROD_LOCK]], Release, 1)
+// CHECK: aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK: aie.use_lock(%[[PROD_LOCK]], Release, %{{.*}})
 
 // Writer core (tile_0_2) is emitted second.
 // CHECK: aie.core(%[[WRITER]])
-// CHECK: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
+// CHECK: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, %{{.*}})
 // CHECK: vector.transfer_write {{.*}}, %[[SHARED_BUF]]
-// CHECK: aie.use_lock(%[[CONS_LOCK]], Release, 1)
+// CHECK: aie.use_lock(%[[CONS_LOCK]], Release, %{{.*}})
 
 module {
   func.func @single_herd_shared_l1() {

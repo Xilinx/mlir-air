@@ -27,32 +27,68 @@ module {
   air.channel @channel_2 [1, 1]
   air.channel @channel_3 [1, 1]
   func.func @func0(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
-// CHECK:      aiex.npu.write32 {address = 606208 : ui32, column = 0 : i32, row = 1 : i32, value = 40192 : ui32}
-// CHECK:      aiex.npu.write32 {address = 606416 : ui32, column = 0 : i32, row = 1 : i32, value = 10289152 : ui32}
-// CHECK:      aiex.npu.write32 {address = 606420 : ui32, column = 0 : i32, row = 1 : i32, value = 12288 : ui32}
-// CHECK:      aiex.npu.write32 {address = 606432 : ui32, column = 0 : i32, row = 1 : i32, value = 22041688 : ui32}
-// CHECK:      aiex.npu.write32 {address = 606436 : ui32, column = 0 : i32, row = 1 : i32, value = 1549821032 : ui32}
-// CHECK:      aiex.npu.write32 {address = 724736 : ui32, column = 0 : i32, row = 1 : i32, value = 2236704 : ui32}
-// CHECK:      aiex.npu.write32 {address = 724740 : ui32, column = 0 : i32, row = 1 : i32, value = 197121 : ui32}
+// CHECK:      arith.constant 606208 : i32
+// CHECK:      arith.constant 40192 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 1 : i32}
+// CHECK:      arith.constant 606416 : i32
+// CHECK:      arith.constant 10289152 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 1 : i32}
+// CHECK:      arith.constant 606420 : i32
+// CHECK:      arith.constant 12288 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 1 : i32}
+// CHECK:      arith.constant 606432 : i32
+// CHECK:      arith.constant 22041688 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 1 : i32}
+// CHECK:      arith.constant 606436 : i32
+// CHECK:      arith.constant 1549821032 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 1 : i32}
+// CHECK:      arith.constant 724736 : i32
+// CHECK:      arith.constant 2236704 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 1 : i32}
+// CHECK:      arith.constant 724740 : i32
+// CHECK:      arith.constant 197121 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 1 : i32}
 // CHECK:      aiex.npu.writebd {bd_id = 15 : i32, buffer_length = 16384 : i32, buffer_offset = 65536 : i32, column = 0 : i32
 // CHECK-SAME: enable_packet = 1 : i32
 // CHECK-SAME: packet_id = 0 : i32, packet_type = 3 : i32
-// CHECK:      aiex.npu.address_patch {addr = 119268 : ui32, arg_idx = 2 : i32, arg_plus = 65536 : i32}
-// CHECK:      aiex.npu.write32 {address = 119308 : ui32, column = 0 : i32, row = 0 : i32, value = 15 : ui32}
-// CHECK:      aiex.npu.write32 {address = 212992 : ui32, column = 0 : i32, row = 2 : i32, value = 31232 : ui32}
-// CHECK:      aiex.npu.write32 {address = 213200 : ui32, column = 0 : i32, row = 2 : i32, value = 7995392 : ui32}
-// CHECK:      aiex.npu.write32 {address = 213204 : ui32, column = 0 : i32, row = 2 : i32, value = 1 : ui32}
-// CHECK:      aiex.npu.write32 {address = 213216 : ui32, column = 0 : i32, row = 2 : i32, value = 18948645 : ui32}
-// CHECK:      aiex.npu.write32 {address = 213220 : ui32, column = 0 : i32, row = 2 : i32, value = 741165903 : ui32}
-// CHECK:      aiex.npu.write32 {address = 261888 : ui32, column = 0 : i32, row = 2 : i32, value = 289 : ui32}
+// CHECK:      aiex.npu.address_patch({{.*}}) {addr = 119268 : ui32, arg_idx = 2 : i32}
+// CHECK:      arith.constant 119308 : i32
+// CHECK:      arith.constant 15 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 0 : i32}
+// CHECK:      arith.constant 212992 : i32
+// CHECK:      arith.constant 31232 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 2 : i32}
+// CHECK:      arith.constant 213200 : i32
+// CHECK:      arith.constant 7995392 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 2 : i32}
+// CHECK:      arith.constant 213204 : i32
+// CHECK:      arith.constant 1 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 2 : i32}
+// CHECK:      arith.constant 213216 : i32
+// CHECK:      arith.constant 18948645 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 2 : i32}
+// CHECK:      arith.constant 213220 : i32
+// CHECK:      arith.constant 741165903 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 2 : i32}
+// CHECK:      arith.constant 261888 : i32
+// CHECK:      arith.constant 289 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 2 : i32}
 // CHECK:      aiex.npu.writebd {bd_id = 14 : i32, buffer_length = 16384 : i32, buffer_offset = 65536 : i32, column = 0 : i32
 // CHECK-SAME: enable_packet = 1 : i32
 // CHECK-SAME: packet_id = 1 : i32, packet_type = 0 : i32
-// CHECK:      aiex.npu.address_patch {addr = 119236 : ui32, arg_idx = 2 : i32, arg_plus = 65536 : i32}
-// CHECK:      aiex.npu.write32 {address = 119308 : ui32, column = 0 : i32, row = 0 : i32, value = 14 : ui32}
-// CHECK:      aiex.npu.write32 {address = 212992 : ui32, column = 0 : i32, row = 0 : i32, value = 32512 : ui32}
-// CHECK:      aiex.npu.write32 {address = 213068 : ui32, column = 0 : i32, row = 0 : i32, value = 127 : ui32}
-// CHECK:      aiex.npu.write32 {address = 213000 : ui32, column = 0 : i32, row = 0 : i32, value = 127 : ui32}
+// CHECK:      aiex.npu.address_patch({{.*}}) {addr = 119236 : ui32, arg_idx = 2 : i32}
+// CHECK:      arith.constant 119308 : i32
+// CHECK:      arith.constant 14 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 0 : i32}
+// CHECK:      arith.constant 212992 : i32
+// CHECK:      arith.constant 32512 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 0 : i32}
+// CHECK:      arith.constant 213068 : i32
+// CHECK:      arith.constant 127 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 0 : i32}
+// CHECK:      arith.constant 213000 : i32
+// CHECK:      arith.constant 127 : i32
+// CHECK:      aiex.npu.write32({{.*}}, {{.*}}) {column = 0 : i32, row = 0 : i32}
 
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64

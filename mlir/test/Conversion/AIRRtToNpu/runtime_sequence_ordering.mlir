@@ -66,7 +66,8 @@ module {
 // CHECK-LABEL: aie.runtime_sequence @rtp_hoist
 // The RTP write and set_lock are hoisted ahead of the input DMA even though the
 // herd_load that emits them appears after it in program order.
-// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, 5)
+// CHECK: arith.constant 5 : i32
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
 // CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
 // CHECK: aiex.dma_configure_task_for @weightIn
 module {
