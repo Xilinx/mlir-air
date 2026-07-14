@@ -202,16 +202,12 @@ try:
             ("%PEANO_INSTALL_DIR", os.path.dirname(config.peano_tools_dir))
         )
         print("Peano found: " + os.path.join(config.peano_tools_dir, "llc"))
-        aie_include = os.path.join(config.aie_obj_root, "include")
         peano_flags = (
-            "-O2 -std=c++20 -DNDEBUG -mllvm -aie-disable-fold-imm -I{}".format(
-                aie_include
+            "-O2 -std=c++20 -DNDEBUG -mllvm -aie-disable-fold-imm"
+            " -D__AIE_API_AIE_ADF_HPP__ -I{}".format(
+                os.path.join(config.aie_obj_root, "include")
             )
         )
-        if config.vitis_aietools_dir:
-            peano_flags += " -I{}".format(
-                os.path.join(config.vitis_aietools_dir, "include")
-            )
         config.substitutions.append(("%peano_flags", peano_flags))
     else:
         print("Peano not detected at expected path:", config.peano_tools_dir)
