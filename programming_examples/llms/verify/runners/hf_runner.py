@@ -56,8 +56,11 @@ class HfRunner:
         self.max_seq = max_seq
         self.lite_mode = lite_mode
         if model is None:
+            # low_cpu_mem_usage avoids the ~2x transient allocation during
+            # from_pretrained (random init + loaded copy), which OOMs the
+            # perf runner on the larger (3B/4B) references.
             self.model = AutoModelForCausalLM.from_pretrained(
-                model_name, torch_dtype=torch.bfloat16
+                model_name, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True
             )
         else:
             self.model = model
