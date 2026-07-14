@@ -142,6 +142,7 @@ jobs:
         run: |
           source air-venv/bin/activate
           [ -f /opt/xilinx/xrt/setup.sh ] && source /opt/xilinx/xrt/setup.sh || true
+          sudo prlimit -lunlimited --pid $$
           MLIR_AIE_DIR=$(python3 -m pip show mlir_aie | awk '/^Location:/{print $2}')/mlir_aie
           export PYTHONPATH="$(pwd)/install/python:$MLIR_AIE_DIR/python:/opt/xilinx/xrt/python:$PYTHONPATH"
           echo "===== DEVICE DETECTION DIAGNOSTICS ====="
@@ -151,7 +152,7 @@ jobs:
           echo "--- ls /dev/accel ---"; ls -la /dev/accel 2>&1 | head
           echo "--- which xrt-smi ---"; which xrt-smi 2>&1 || echo "(not on PATH)"
           echo "--- ls /opt/xilinx/xrt/bin/xrt-smi ---"; ls -la /opt/xilinx/xrt/bin/xrt-smi 2>&1 || true
-          echo "--- xrt-smi examine ---"; xrt-smi examine 2>&1 | head -30; echo "xrt-smi exit=${PIPESTATUS[0]}"
+          echo "--- xrt-smi examine ---"; { xrt-smi examine 2>&1 | head -30; echo "xrt-smi exit=${PIPESTATUS[0]}"; } || true
           echo "--- import pyxrt + device name ---"
           python3 -c "
           try:
@@ -175,6 +176,12 @@ jobs:
 
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           source /opt/xilinx/xrt/setup.sh
+
+          # Raise memlock: the NPU driver mmaps ~64MB of locked memory; the
+          # default RLIMIT_MEMLOCK makes that fail with EAGAIN, which breaks
+          # device detection (xrt-smi/pyxrt) and NPU dispatch. Each GHA step is
+          # a fresh shell, so this must be set here, not only in the build step.
+          sudo prlimit -lunlimited --pid $$
 
           # Compile + inference run via `make` (not lit), so replicate the tool
           # env lit injects from the CMake build: PYTHONPATH + tool dirs on PATH.
