@@ -196,47 +196,75 @@ class XRTBackend(AirBackend):
             if self.verbose:
                 print(f"Using explicitly specified target device: {target_device}")
         else:
-            # Try to auto-detect device via xrt-smi
-            target_device = "npu1"  # Default fallback
+            # Auto-detect device. Prefer the pyxrt API (robust: no subprocess or
+            # PATH dependency), mirroring mlir-aie's hostruntime.py. Fall back to
+            # parsing `xrt-smi examine` (for hosts without the XRT Python
+            # bindings), then to the npu1 default.
+            target_device = None
+
+            # 1. pyxrt device-name query.
             try:
-                xrtsmi = shutil.which("xrt-smi") or "/opt/xilinx/xrt/bin/xrt-smi"
-                result = subprocess.run(
-                    [xrtsmi, "examine"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=10,
-                )
-                if result.returncode != 0:
-                    if self.verbose:
-                        print(
-                            f"xrt-smi exited with code {result.returncode}, "
-                            f"using default target device"
-                        )
-                        stderr = result.stderr.decode("utf-8").strip()
-                        if stderr:
-                            print(f"xrt-smi stderr: {stderr}")
-                else:
-                    output_lc = result.stdout.decode("utf-8").lower()
-                    # Use case-insensitive substring matching against NPU_MODELS,
-                    # aligned with mlir-aie's hostruntime.py approach.
-                    detected = False
-                    for version, keywords in NPU_MODELS.items():
-                        if any(kw.lower() in output_lc for kw in keywords):
-                            target_device = version
-                            detected = True
-                            if self.verbose:
-                                print(f"Detected NPU device: {version}")
-                            break
-                    if not detected:
-                        print(
-                            f"WARNING: xrt-smi did not report a recognized NPU model. "
-                            f"Supported: {dict(NPU_MODELS)}. "
-                            f"Falling back to '{target_device}'."
-                        )
+                import pyxrt
+
+                device_name = pyxrt.device(0).get_info(pyxrt.xrt_info_device.name)
+                for version, keywords in NPU_MODELS.items():
+                    if any(kw.lower() in device_name.lower() for kw in keywords):
+                        target_device = version
+                        if self.verbose:
+                            print(
+                                f"Detected NPU device via pyxrt: {version} "
+                                f"({device_name})"
+                            )
+                        break
+                if target_device is None:
+                    print(
+                        f"WARNING: pyxrt reported device '{device_name}', which is "
+                        f"not a recognized NPU model. Supported: {dict(NPU_MODELS)}."
+                    )
             except Exception as e:
                 if self.verbose:
-                    print("Failed to run xrt-smi, using default target device")
-                    print(e)
+                    print(f"pyxrt device detection unavailable: {e}")
+
+            # 2. xrt-smi examine fallback.
+            if target_device is None:
+                try:
+                    xrtsmi = shutil.which("xrt-smi") or "/opt/xilinx/xrt/bin/xrt-smi"
+                    result = subprocess.run(
+                        [xrtsmi, "examine"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=10,
+                    )
+                    if result.returncode != 0:
+                        if self.verbose:
+                            print(
+                                f"xrt-smi exited with code {result.returncode}, "
+                                f"using default target device"
+                            )
+                            stderr = result.stderr.decode("utf-8").strip()
+                            if stderr:
+                                print(f"xrt-smi stderr: {stderr}")
+                    else:
+                        output_lc = result.stdout.decode("utf-8").lower()
+                        for version, keywords in NPU_MODELS.items():
+                            if any(kw.lower() in output_lc for kw in keywords):
+                                target_device = version
+                                if self.verbose:
+                                    print(f"Detected NPU device via xrt-smi: {version}")
+                                break
+                        if target_device is None:
+                            print(
+                                f"WARNING: xrt-smi did not report a recognized NPU "
+                                f"model. Supported: {dict(NPU_MODELS)}."
+                            )
+                except Exception as e:
+                    if self.verbose:
+                        print("Failed to run xrt-smi, using default target device")
+                        print(e)
+
+            # 3. Default fallback.
+            if target_device is None:
+                target_device = "npu1"
 
         # Validate output_format compatibility with target device
         if self.output_format == "elf" and "npu1" in target_device:
