@@ -40,6 +40,9 @@ jobs:
   benchmark:
     name: LLM perf benchmark
     runs-on: amdryzenai5pro340
+    # Bound total runtime so a stuck NPU dispatch or model download can't
+    # occupy the dedicated runner indefinitely.
+    timeout-minutes: 90
 
     steps:
 
@@ -135,14 +138,37 @@ jobs:
           popd
 
       - name: Run benchmark (verify gate + profile capture)
+        timeout-minutes: 40
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Force the classic HTTPS CDN download path. The hf_xet transfer
+          # backend stalls at 0% on this runner (Xet CAS endpoint unreachable),
+          # hanging the model fetch indefinitely.
+          HF_HUB_DISABLE_XET: "1"
         run: |
           source air-venv/bin/activate
 
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           source /opt/xilinx/xrt/setup.sh
-          export PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
+
+          # Raise memlock: the NPU driver mmaps ~64MB of locked memory; the
+          # default RLIMIT_MEMLOCK makes that fail with EAGAIN, which breaks
+          # device detection (xrt-smi/pyxrt) and NPU dispatch. Each GHA step is
+          # a fresh shell, so this must be set here, not only in the build step.
+          sudo prlimit -lunlimited --pid $$
+
+          # Compile + inference run via `make` (not lit), so replicate the tool
+          # env lit injects from the CMake build: PYTHONPATH + tool dirs on PATH.
+          # Deliberately do NOT set LD_LIBRARY_PATH — env_setup.sh would place
+          # LLVM/MLIR libs there, which the backend's `xrt-smi examine` subprocess
+          # inherits and crashes on, silently falling back to npu1 (breaking ELF
+          # output). air/mlir_aie libs resolve via RPATH, exactly as under lit.
+          MLIR_AIE_DIR=$(python3 -m pip show mlir_aie | awk '/^Location:/{print $2}')/mlir_aie
+          PEANO_DIR=$(python3 -m pip show llvm-aie | awk '/^Location:/{print $2}')/llvm-aie
+          export MLIR_AIE_INSTALL_DIR="$MLIR_AIE_DIR"
+          export PEANO_INSTALL_DIR="$PEANO_DIR"
+          export PATH="$(pwd)/install/bin:$MLIR_AIE_DIR/bin:$PEANO_DIR/bin:$PATH"
+          export PYTHONPATH="$(pwd)/install/python:$MLIR_AIE_DIR/python:/opt/xilinx/xrt/python:$PYTHONPATH"
 
           MODEL_DIR=programming_examples/llms/$BENCH_MODEL
           pip install -r $MODEL_DIR/requirements.txt
