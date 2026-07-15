@@ -318,11 +318,19 @@ jobs:
 
       # Refresh the GitHub Pages docs so the "Nightly LLM Benchmark" section
       # picks up this run's perf.json. generateDocs.yml downloads the latest
-      # successful nightly artifact when it regenerates the page. Runs whenever
-      # a perf.json was produced (even a partial run), not gated on the job's
-      # overall result.
+      # nightly artifact (any conclusion) when it regenerates the page. Runs
+      # whenever a perf.json was produced (even a partial run), not gated on the
+      # job's overall result. Best-effort: never fails the benchmark job if the
+      # gh CLI is missing on the runner or the dispatch call errors.
       - name: Refresh docs page
         if: always() && hashFiles('perf.json') != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run generateDocs.yml --repo ${{ github.repository }} --ref main
+        run: |
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "gh CLI not available; skipping docs refresh dispatch"
+            exit 0
+          fi
+          gh workflow run generateDocs.yml --repo ${{ github.repository }} --ref main \
+            || echo "generateDocs dispatch failed; page will refresh on next push/nightly"

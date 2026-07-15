@@ -534,11 +534,18 @@ def render_llm_benchmark(perf_path):
             f"| {verify} |"
         )
 
-    # Provenance from the first record (all share one nightly run's toolchain).
-    first = recs[0]
-    tc = first.get("toolchain", {})
-    date = (first.get("timestamp_utc") or "")[:10]
-    runner = first.get("runner", "")
+    # Provenance: all rows in a run share one toolchain/date, but a partially
+    # written artifact may leave some rows' fields blank. Take the date from the
+    # newest timestamp present, and the toolchain/runner from the newest record
+    # that actually carries toolchain info (fall back to the first record).
+    prov = max(
+        (r for r in recs if (r.get("toolchain") or {}).get("mlir_air_sha")),
+        key=lambda r: r.get("timestamp_utc") or "",
+        default=recs[0],
+    )
+    tc = prov.get("toolchain", {})
+    date = max((r.get("timestamp_utc") or "" for r in recs), default="")[:10]
+    runner = prov.get("runner", "")
     air = (tc.get("mlir_air_sha") or "")[:7]
     aie = (tc.get("mlir_aie_hash") or "")[:7]
     peano = tc.get("llvm_aie_version") or ""
@@ -565,7 +572,7 @@ End-to-end LLM inference performance on the AMD Ryzen AI (Strix, NPU2) benchmark
 |:------|--------:|----------:|---------------:|:------:|
 {table}
 
-\U0001f7e2 verify passed &nbsp; \U0001f534 verify failed &nbsp; — metric not captured (e.g. the model's profile run failed)
+\U0001f7e2 verify passed &nbsp; \U0001f534 verify failed &nbsp; ⚪ verify skipped &nbsp; — metric not captured (e.g. the model's profile run failed)
 
 _{provenance}_
 
