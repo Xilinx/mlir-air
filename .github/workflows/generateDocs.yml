@@ -14,10 +14,12 @@ jobs:
     name: Generate Documentation
     runs-on: ubuntu-22.04    
     
-    # Grant GITHUB_TOKEN the permissions required to make a Pages deployment
+    # contents: write for the Pages deployment; actions: read to download the
+    # latest nightly LLM perf artifact from nightlyPerfBenchmark.yml.
     permissions:
       contents: write
-      
+      actions: read
+
     steps:
       - name: Configure Environment
         run: echo "$GITHUB_WORKSPACE/llvm/install/bin" >> $GITHUB_PATH
@@ -82,6 +84,40 @@ jobs:
 
           utils/github-build-mlir-aie.sh
 
+      # Pull perf.json from the most recent nightly LLM benchmark that produced
+      # an artifact so generate_readme.py can render the "Nightly LLM Benchmark"
+      # section. We intentionally do NOT filter on run conclusion: a run where a
+      # model failed verify goes red but still uploads a perf.json (if:always),
+      # and that partial/failed state is exactly what we want on the dashboard —
+      # filtering to success-only would instead show stale passing data and hide
+      # the failure. Runs that died before producing an artifact (e.g. build
+      # broke) are skipped in favor of the next one. Never fails the docs build:
+      # if nothing is downloadable, the section is simply omitted.
+      - name: Fetch latest nightly LLM perf
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for RID in $(gh run list --repo ${{ github.repository }} \
+              --workflow nightlyPerfBenchmark.yml -L 8 \
+              --json databaseId --jq '.[].databaseId'); do
+            echo "Trying perf artifact from nightly run $RID..."
+            # Fresh dir each attempt so a prior partial download can't leave a
+            # stale perf.json behind.
+            rm -rf /tmp/llmperf
+            gh run download "$RID" --repo ${{ github.repository }} \
+              --name "perf-$RID" --dir /tmp/llmperf 2>/dev/null || true
+            # Only accept a run whose artifact actually contains perf.json (an
+            # upload could exist without it if the combine step failed).
+            if [ -f /tmp/llmperf/perf.json ]; then
+              echo "Using perf.json from run $RID"
+              break
+            fi
+          done
+          test -f /tmp/llmperf/perf.json \
+            && echo "perf.json fetched" \
+            || echo "no nightly perf artifact with perf.json available; LLM section will be omitted"
+
       # Build the repo test target in release mode to build and test.
       - name: Build Docs
         run: |
@@ -109,7 +145,8 @@ jobs:
           mkdir -p build_release/docs/programming_examples
           python3 programming_examples/generate_readme.py \
             --output build_release/docs/programming_examples/index.md \
-            --base-url https://github.com/Xilinx/mlir-air/tree/main/programming_examples/
+            --base-url https://github.com/Xilinx/mlir-air/tree/main/programming_examples/ \
+            --llm-perf /tmp/llmperf/perf.json
 
       - name: Save LLVM Version
         run: |
