@@ -143,13 +143,75 @@ def prepare_runtime(
     #    prefill pass via static_input_indices).
     preload_prefill_weights(weights, config, prefill_cache, seq_len, rope_lut_bf16)
 
+    # 3b. Originals are now resident in the prefill per-layer BOs. The prefill
+    #    block runner still rebuilds its arg lists via np.asarray(lw.wX).reshape,
+    #    so we cannot drop the attributes outright — instead swap each for a
+    #    zero-stride broadcast of the same shape. reshape stays a no-op view and
+    #    load_and_run skips the static re-write, but the backing buffer collapses
+    #    to a single element (~7 GB reclaimed on 4B).
+    _free_original_weight_numpy(weights, config)
+
     # 4. Pre-load decode weights into per-layer BOs + LM-head GEMV.
     _preload_decode_weights(decode_cache, weights, config)
+
+    # 5. Decode weights are resident in per-layer BOs; drop the host
+    #    GEMV-transposed copies (passed via static_input_indices at inference,
+    #    so only their dtype is read afterward). Originals stay because the
+    #    prefill block runner rebuilds its arg lists from them each pass.
+    _free_transposed_weight_numpy(weights, config)
 
     t_prep = time.time() - t0
     print(f"  Runtime prepared in {t_prep:.1f}s")
     prefill_cache.profiler.preprocessing_s = t_prep
     decode_cache.profiler.preprocessing_s = t_prep
+
+
+def _free_original_weight_numpy(weights, config):
+    """Collapse the host numpy *originals* to zero-stride broadcasts after
+    prefill preload.
+
+    The prefill block runner rebuilds its arg lists each pass with
+    np.asarray(lw.wX).reshape(...); a broadcast of the same shape keeps that a
+    no-op view while dropping the buffer to one element. The weights are already
+    resident in the prefill per-layer BOs and passed via static_input_indices,
+    so the placeholder is never read for data.
+    """
+    import gc
+
+    z = np.zeros((), dtype=bfloat16)
+    for layer_idx in range(config.n_layers):
+        lw = weights.layers[layer_idx]
+        for attr in ("wq", "wk", "wv", "wo", "w_gate", "w_up", "w_down"):
+            a = getattr(lw, attr, None)
+            if a is not None and getattr(a, "size", 0) > 1:
+                setattr(lw, attr, np.broadcast_to(z, a.shape))
+    gc.collect()
+
+
+def _free_transposed_weight_numpy(weights, config):
+    """Release the host numpy GEMV-transposed decode weights after preload.
+
+    They are resident in the decode per-layer BOs and passed via
+    static_input_indices at inference, so `load_and_run` only reads their dtype.
+    Replacing each with a 0-element bf16 stand-in frees a full weight set
+    (scales with model size).
+    """
+    import gc
+
+    for layer_idx in range(config.n_layers):
+        lw = weights.layers[layer_idx]
+        for attr in (
+            "_wq_t",
+            "_wk_t",
+            "_wv_t",
+            "_wo_t",
+            "_wgate_t",
+            "_wup_t",
+            "_wdown_t",
+        ):
+            if hasattr(lw, attr):
+                setattr(lw, attr, np.empty(0, dtype=bfloat16))
+    gc.collect()
 
 
 def _preload_decode_weights(decode_cache, weights, config):

@@ -149,4 +149,17 @@ add_lit_testsuite(check-programming-examples-llms-verify
 )
 set_target_properties(check-programming-examples-llms-verify PROPERTIES FOLDER "Tests")
 
+# LLM profiling suite: all models, requires hf_token + NPU. Compiles then
+# profiles each model, emitting <model>.perf.json (TTFT + decode tok/s) next to
+# the run. Sequential (-j1) — concurrent LLM inference causes NPU OOM. Not a PR
+# gate (needs secrets + the dedicated perf runner); driven by the nightly perf
+# workflow. Correctness is gated separately by the verify suite above.
+add_lit_testsuite(check-programming-examples-llms-profile
+  "Running LLM profiling (all models, hf_token required, sequential)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --filter "llms/.*/run_npu2_profile"
+)
+set_target_properties(check-programming-examples-llms-profile PROPERTIES FOLDER "Tests")
+
 add_dependencies(check-all check-programming-examples)

@@ -186,10 +186,18 @@ def prepare_runtime(
     # 4. Pre-load prefill weights into per-layer BOs
     preload_prefill_weights(weights, config, prefill_cache, seq_len, rope_lut_bf16)
 
-    # 5. Pre-load decode weights into per-layer BOs
+    # 5. Originals are now resident in the prefill BOs and the GEMV-transposed
+    #    copies exist; drop the host originals BEFORE decode preload so they
+    #    don't stack with the decode BOs at the memory peak.
+    _free_original_weight_numpy(weights, config)
+
+    # 6. Pre-load decode weights into per-layer BOs
     #    (lm_head_gemv 8-partition weights here are also reused by prefill's
     #    last-token projection — refactored from full-seq GEMM for ~150 ms savings)
     _preload_decode_weights(decode_cache, weights, config)
+
+    # 7. Decode weights are now resident too; drop the transposed host copies.
+    _free_transposed_weight_numpy(weights, config)
 
     # Note: NPU warmup pass not needed here — the NPU prefill keeps
     # the NPU active. Only needed in llama32_1b_decode.py where CPU prefill
@@ -201,6 +209,56 @@ def prepare_runtime(
     # outside per-query wall but useful context).
     prefill_cache.profiler.preprocessing_s = t_prep
     decode_cache.profiler.preprocessing_s = t_prep
+
+
+def _empty_bf16():
+    return np.empty(0, dtype=bfloat16)
+
+
+def _free_original_weight_numpy(weights, config):
+    """Release the host numpy *originals* after prefill preload.
+
+    The originals are resident in the prefill per-layer BOs; inference passes
+    them via static_input_indices, so `load_and_run` skips the host->device
+    re-write and only touches array *metadata* (dtype) thereafter. Replacing
+    each with a 0-element bf16 stand-in (and dropping the prefill arg-cache
+    views that pin them) frees one full weight set (~1.9 GB on 1B).
+    """
+    import gc
+
+    ac = getattr(run_transformer_block, "_arg_cache", {})
+    for layer_idx in range(config.n_layers):
+        rms = ac.get(f"rms_gemms_rope_L{layer_idx}")
+        if rms is not None:
+            rms_args = rms[0]
+            for i in (3, 5, 7):  # wq, wk, wv (views pinning the originals)
+                rms_args[i] = _empty_bf16()
+        offn = ac.get(f"o_ffn_L{layer_idx}")
+        if offn is not None:
+            for i in (1, 7, 9, 12):  # wo, w_gate, w_up, w_down
+                offn[i] = _empty_bf16()
+        lw = weights.layers[layer_idx]
+        for attr in ("wq", "wk", "wv", "wo", "w_gate", "w_up", "w_down"):
+            if hasattr(lw, attr):
+                setattr(lw, attr, _empty_bf16())
+    gc.collect()
+
+
+def _free_transposed_weight_numpy(weights, config):
+    """Release the host numpy GEMV-transposed copies after decode preload.
+
+    Same rationale as _free_original_weight_numpy: the transposed weights are
+    resident in the decode per-layer BOs and only their dtype is read at
+    inference. Frees the second full weight set (~1.9 GB on 1B).
+    """
+    import gc
+
+    for layer_idx in range(config.n_layers):
+        lw = weights.layers[layer_idx]
+        for attr in ("_wq_t", "_wk_t", "_wv_t", "_wo_t", "_wdown_t", "_wgateup_t"):
+            if hasattr(lw, attr):
+                setattr(lw, attr, _empty_bf16())
+    gc.collect()
 
 
 def _preload_decode_weights(decode_cache, weights, config):

@@ -149,10 +149,42 @@ def prepare_runtime(
     # 4. Pre-load decode weights into per-layer BOs + LM-head GEMV.
     _preload_decode_weights(decode_cache, weights, config)
 
+    # 5. Decode weights are now resident in per-layer BOs; drop the host
+    #    GEMV-transposed copies (decode passes them via static_input_indices,
+    #    so only their dtype is read afterward). Originals are kept because the
+    #    prefill block runner rebuilds its arg lists from them each pass.
+    _free_transposed_weight_numpy(weights, config)
+
     t_prep = time.time() - t0
     print(f"  Runtime prepared in {t_prep:.1f}s")
     prefill_cache.profiler.preprocessing_s = t_prep
     decode_cache.profiler.preprocessing_s = t_prep
+
+
+def _free_transposed_weight_numpy(weights, config):
+    """Release the host numpy GEMV-transposed decode weights after preload.
+
+    They are resident in the decode per-layer BOs and passed via
+    static_input_indices at inference, so `load_and_run` only reads their dtype.
+    Replacing each with a 0-element bf16 stand-in frees a full weight set
+    (scales with model size).
+    """
+    import gc
+
+    for layer_idx in range(config.n_layers):
+        lw = weights.layers[layer_idx]
+        for attr in (
+            "_wq_t",
+            "_wk_t",
+            "_wv_t",
+            "_wo_t",
+            "_wgate_t",
+            "_wup_t",
+            "_wdown_t",
+        ):
+            if hasattr(lw, attr):
+                setattr(lw, attr, np.empty(0, dtype=bfloat16))
+    gc.collect()
 
 
 def _preload_decode_weights(decode_cache, weights, config):

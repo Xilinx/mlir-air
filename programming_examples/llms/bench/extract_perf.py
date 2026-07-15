@@ -1,10 +1,11 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Extract end-to-end latency numbers from `make profile` stdout into JSON.
+"""Extract latency/throughput from `make profile` stdout into JSON.
 
 Decoupled from model code: parses the human-readable summary printed by the
-LLM inference scripts. Exits non-zero if an expected metric line is missing,
-so silent format drift fails the nightly instead of publishing empty numbers.
+LLM inference scripts. Output is heterogeneous across models, so each metric is
+extracted from any of the known line formats and left null when absent (a
+missing metric is not fatal — some models legitimately don't emit all lines).
 """
 
 import argparse
@@ -13,32 +14,51 @@ import json
 import re
 import sys
 
-PREFILL_RE = re.compile(r"End-to-end \(prefill, per query\)\s+([\d.]+)\s*ms")
-DECODE_RE = re.compile(r"End-to-end \(per token\)\s+([\d.]+)\s*ms")
+# TTFT: qwen/llama3b/int4/smollm print "Time to first token (TTFT): X.XXs";
+# llama32_1b prints "End-to-end (prefill, per query)  N ms".
+TTFT_S_RE = re.compile(r"Time to first token \(TTFT\):\s*([\d.]+)\s*s")
+PREFILL_MS_RE = re.compile(r"End-to-end \(prefill, per query\)\s+([\d.]+)\s*ms")
+
+# Decode throughput: qwen family + llama3b print "(X.XX tok/s)";
+# llama32_1b prints "End-to-end (per token)  N ms" (throughput = 1000/ms).
+TOKS_RE = re.compile(r"\(([\d.]+)\s*tok/s\)")
+DECODE_MS_RE = re.compile(r"End-to-end \(per token\)\s+([\d.]+)\s*ms")
 
 
-def _find(pattern, text, label):
-    m = pattern.search(text)
-    if m is None:
-        sys.exit(f"error: could not find '{label}' latency line in profile output")
-    return float(m.group(1))
+def _ttft_ms(text):
+    m = TTFT_S_RE.search(text)
+    if m:
+        return round(float(m.group(1)) * 1000.0, 2)
+    m = PREFILL_MS_RE.search(text)
+    if m:
+        return round(float(m.group(1)), 2)
+    return None
+
+
+def _decode_tok_s(text):
+    m = TOKS_RE.search(text)
+    if m:
+        return round(float(m.group(1)), 2)
+    m = DECODE_MS_RE.search(text)
+    if m:
+        ms = float(m.group(1))
+        return round(1000.0 / ms, 2) if ms else None
+    return None
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "input",
-        nargs="?",
-        help="profile stdout file (default: read stdin)",
-    )
-    p.add_argument("--model", default="llama32_1b")
+    p.add_argument("input", nargs="?", help="profile stdout file (default: stdin)")
+    p.add_argument("--model", default="")
     p.add_argument("--runner", default="")
+    p.add_argument("--verify-status", default="", choices=["", "pass", "fail"])
     p.add_argument("--mlir-air-sha", default="")
     p.add_argument("--mlir-aie-hash", default="")
     p.add_argument("--llvm-aie-version", default="")
-    p.add_argument("--model-variant", default="")
-    p.add_argument("--n-tokens", type=int, default=0)
-    p.add_argument("--prompt", default="")
+    # Default None (-> JSON null) so an unset run param is not misreported as a
+    # real value (e.g. n_tokens: 0). The profile lit tests don't pass these.
+    p.add_argument("--n-tokens", type=int, default=None)
+    p.add_argument("--prompt", default=None)
     args = p.parse_args()
 
     if args.input:
@@ -47,12 +67,6 @@ def main():
     else:
         text = sys.stdin.read()
 
-    # First token is produced at the end of NPU prefill, so prefill end-to-end
-    # latency is the time-to-first-token. Decode throughput is the reciprocal
-    # of per-token latency.
-    ttft_ms = _find(PREFILL_RE, text, "prefill")
-    decode_ms_per_token = _find(DECODE_RE, text, "decode")
-
     data = {
         "model": args.model,
         "timestamp_utc": datetime.datetime.now(datetime.timezone.utc)
@@ -60,9 +74,10 @@ def main():
         .isoformat()
         .replace("+00:00", "Z"),
         "runner": args.runner,
+        "verify_status": args.verify_status,
         "metrics": {
-            "ttft_ms": ttft_ms,
-            "decode_tokens_per_sec": round(1000.0 / decode_ms_per_token, 2),
+            "ttft_ms": _ttft_ms(text),
+            "decode_tokens_per_sec": _decode_tok_s(text),
         },
         "toolchain": {
             "mlir_air_sha": args.mlir_air_sha,
@@ -70,7 +85,6 @@ def main():
             "llvm_aie_version": args.llvm_aie_version,
         },
         "run_params": {
-            "model_variant": args.model_variant,
             "n_tokens": args.n_tokens,
             "prompt": args.prompt,
         },

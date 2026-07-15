@@ -147,6 +147,13 @@ def prepare_runtime(
     # Prefill BOs (reuse 1b).
     preload_prefill_weights(weights, config, prefill_cache, seq_len, rope_lut_bf16)
 
+    # Originals are resident in the prefill BOs; drop the host copies. The 1b
+    # preload pinned them via its module-level arg cache, and our own block
+    # runner rebuilds arg lists via np.asarray(lw.wX).reshape — so null the arg
+    # cache slots and swap each field for a same-shape zero-stride broadcast
+    # (reshape stays a no-op view; the buffer collapses to one element).
+    _free_original_weight_numpy(weights, config)
+
     # Decode BOs: rms_gemv_rope per-layer + LM-head GEMV. NO o_gemv_ffn.
     _preload_decode_weights(decode_cache, weights, config)
 
@@ -154,6 +161,39 @@ def prepare_runtime(
     print(f"  Runtime prepared in {t_prep:.1f}s")
     prefill_cache.profiler.preprocessing_s = t_prep
     decode_cache.profiler.preprocessing_s = t_prep
+
+
+def _free_original_weight_numpy(weights, config):
+    """Release the host numpy originals after prefill preload.
+
+    Two pins to clear: (1) the imported llama32_1b preload stashes weight views
+    in llama32_1b_prefill.run_transformer_block._arg_cache; null those slots.
+    (2) our own block runner rebuilds arg lists from lw.wX via reshape, so swap
+    each field for a same-shape zero-stride broadcast (reshape stays a no-op
+    view). Weights are resident in the prefill BOs and passed as static inputs,
+    so the placeholders are never read for data.
+    """
+    import gc
+
+    from llama32_1b_prefill import run_transformer_block as _rtb_1b
+
+    ac = getattr(_rtb_1b, "_arg_cache", {})
+    z = np.zeros((), dtype=bfloat16)
+    for layer_idx in range(config.n_layers):
+        rms = ac.get(f"rms_gemms_rope_L{layer_idx}")
+        if rms is not None:
+            for i in (3, 5, 7):  # wq, wk, wv
+                rms[0][i] = np.empty(0, dtype=bfloat16)
+        offn = ac.get(f"o_ffn_L{layer_idx}")
+        if offn is not None:
+            for i in (1, 7, 9, 12):  # wo, w_gate, w_up, w_down
+                offn[i] = np.empty(0, dtype=bfloat16)
+        lw = weights.layers[layer_idx]
+        for attr in ("wq", "wk", "wv", "wo", "w_gate", "w_up", "w_down"):
+            a = getattr(lw, attr, None)
+            if a is not None and getattr(a, "size", 0) > 1:
+                setattr(lw, attr, np.broadcast_to(z, a.shape))
+    gc.collect()
 
 
 def _preload_decode_weights(decode_cache, weights, config):

@@ -328,6 +328,12 @@ class KernelCache:
         self.artifacts = {}  # name -> XRTCompileArtifact
         self._loaded = {}  # name -> (backend, invoker) for XRT context reuse
         self._cached_bos = {}  # name -> list of xrt.bo for BO reuse
+        # Pool of BOs shared across bo_keys (see shared_nonstatic in
+        # load_and_run). Keyed by (name, arg_index, size_bytes) so every
+        # per-layer bo_key of a kernel reuses ONE transient buffer instead of
+        # allocating its own — collapses the prefill activation-scratch
+        # footprint from N_layers copies to 1.
+        self._shared_bos = {}
 
     def _log(self, msg):
         if self.verbose:
@@ -429,6 +435,7 @@ class KernelCache:
         static_input_indices=None,
         intermediate_indices=None,
         bo_key=None,
+        shared_nonstatic=False,
     ):
         """Load cached kernel and execute with BO reuse.
 
@@ -454,9 +461,27 @@ class KernelCache:
                 the same xrt.bo objects, which combined with static_input_indices
                 enables write-once-read-many for weights. Default uses the kernel
                 name (one BO set shared across all calls to that kernel).
+            shared_nonstatic: When True, every arg index NOT in
+                static_input_indices draws its BO from a process-wide pool
+                (self._shared_bos) keyed by (name, arg_index, size) instead of
+                the per-bo_key set. Static weight BOs stay per-layer (must
+                persist); transient buffers (dynamic inputs, intermediates,
+                outputs) are consumed within a single sequential kernel launch,
+                so one shared buffer per arg suffices across all layers. Used by
+                prefill to avoid holding N_layers copies of the seq_len-sized
+                activation scratch.
+                CONTRACT/FOOTGUN: returned outputs for shared (non-static) indices
+                are zero-copy views into the shared BO and are OVERWRITTEN by the
+                next load_and_run call that reuses that arg's shared buffer. Safe
+                only for callers that consume each output before the next call
+                (the prefill layer loop does). Any caller that PERSISTS outputs
+                across calls (e.g. per-layer diagnosis capture) must copy them, or
+                must not pass shared_nonstatic=True.
 
         Returns:
-            Tuple of numpy arrays (all kernel outputs)
+            Tuple of numpy arrays (all kernel outputs). With shared_nonstatic=True
+            the non-static entries are views into shared BOs — see the footgun
+            note above; copy them if you need to keep them past the next call.
         """
         import filelock
         import pyxrt as xrt
@@ -493,21 +518,30 @@ class KernelCache:
         static_indices = set(static_input_indices or [])
         intermediate_set = set(intermediate_indices or [])
 
+        shared_idx = (
+            set(range(len(inputs))) - static_indices if shared_nonstatic else set()
+        )
+
+        def _alloc_bo(i, s):
+            if is_elf:
+                return xrt.ext.bo(backend.device, s)
+            return xrt.bo(
+                backend.device, s, xrt.bo.host_only, backend.kernel.group_id(i + 3)
+            )
+
         first_call = _bo_key not in self._cached_bos
         if first_call:
             bos = []
             for i, s in enumerate(sizes_in_bytes):
-                if is_elf:
-                    bos.append(xrt.ext.bo(backend.device, s))
+                if i in shared_idx:
+                    sk = (name, i, s)
+                    bo = self._shared_bos.get(sk)
+                    if bo is None:
+                        bo = _alloc_bo(i, s)
+                        self._shared_bos[sk] = bo
+                    bos.append(bo)
                 else:
-                    bos.append(
-                        xrt.bo(
-                            backend.device,
-                            s,
-                            xrt.bo.host_only,
-                            backend.kernel.group_id(i + 3),
-                        )
-                    )
+                    bos.append(_alloc_bo(i, s))
             self._cached_bos[_bo_key] = bos
             # Sync instruction BO once (only needed for xclbin mode)
             if not is_elf and backend.bo_instr is not None:

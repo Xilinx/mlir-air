@@ -2,13 +2,11 @@
 # SPDX-License-Identifier: MIT
 #
 # Nightly LLM end-to-end performance benchmark on the dedicated Krackan Point
-# runner (Ryzen AI 5 PRO 340, label `amdryzenai5pro340`). Runs the correctness
-# gate (verify) then captures perf (profile), extracts the end-to-end latency
-# numbers into perf.json, and uploads it as an artifact. Kept out of the per-PR
-# matrix so perf numbers are contention-free.
-#
-# PR #1 of 2: capture + upload artifact only. A later PR wires up GitHub Pages
-# rendering of the history.
+# runner (Ryzen AI 5 PRO 340, label `amdryzenai5pro340`). Builds mlir-air once,
+# then for every model in BENCH_MODELS runs the correctness gate (verify) and
+# captures perf (profile), collecting TTFT + decode tok/s into perf.json and
+# uploading it as an artifact. Kept out of the per-PR matrix so perf numbers are
+# contention-free. The job goes red if any model's compile/verify fails.
 
 name: Nightly LLM Perf Benchmark
 
@@ -29,20 +27,23 @@ env:
   DEBIAN_FRONTEND: noninteractive
   XILINXD_LICENSE_FILE: /opt/xilinx/Xilinx.lic
   VITIS: /opt/ryzen_ai-1.3.0.1/vitis_aie_essentials
-  # Pinned run params, shared across the benchmark + extract steps for
-  # run-to-run comparability (single source of truth). Model is data, not a
-  # fixed name — add further models incrementally without renaming anything.
-  BENCH_MODEL: llama32_1b
-  BENCH_PROMPT: What is the capital of France?
-  BENCH_N_TOKENS: "128"
+  # The lit/ninja targets run every llms/*/run_npu2_{verify,profile} model. The
+  # 3B/4B models used to OOM-kill this ~32GB runner (their verify held the HF
+  # bf16 reference + NPU host weights simultaneously). They now fit: the runtime
+  # weight preload shares prefill activation-scratch BOs across layers and drops
+  # the host numpy weight duplicates once resident in BOs, and verify runs the
+  # NPU-capture and HF-compare phases as separate subprocesses so the reference
+  # never coexists with the NPU peak. Measured verify peaks: llama32_3b ~24GB,
+  # qwen25_3b ~25GB, qwen3_4b ~27GB. No LIT_FILTER_OUT needed.
 
 jobs:
   benchmark:
     name: LLM perf benchmark
     runs-on: amdryzenai5pro340
-    # Bound total runtime so a stuck NPU dispatch or model download can't
-    # occupy the dedicated runner indefinitely.
-    timeout-minutes: 90
+    # Bound total runtime so stuck NPU dispatch/downloads can't occupy the
+    # dedicated runner indefinitely. Covers a full build + all models (each
+    # model is also individually bounded by `timeout` in run_models.sh).
+    timeout-minutes: 300
 
     steps:
 
@@ -137,97 +138,124 @@ jobs:
           pip install $PWD/../python/spensor
           popd
 
-      - name: Run benchmark (verify gate + profile capture)
-        timeout-minutes: 40
+      - name: Verify + profile all models
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          # Force the classic HTTPS CDN download path. The hf_xet transfer
-          # backend stalls at 0% on this runner (Xet CAS endpoint unreachable),
-          # hanging the model fetch indefinitely.
+          # Force the classic HTTPS CDN download path (forwarded into lit tests
+          # by programming_examples/lit.cfg.py). The hf_xet backend stalls at 0%
+          # on this runner (Xet CAS endpoint unreachable).
           HF_HUB_DISABLE_XET: "1"
+          # Serve weights from the runner's persistent HF cache without any
+          # network access. The runner's HF egress is flaky (intermittent
+          # "Connection reset by peer"), and from_pretrained does a network HEAD
+          # even for cached files; offline mode skips it. Seed/refresh the cache
+          # via the manual "Download LLM Weights" workflow (downloadLLMWeights.yml)
+          # before running this. Forwarded into lit tests by lit.cfg.py.
+          HF_HUB_OFFLINE: "1"
         run: |
           source air-venv/bin/activate
-
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           source /opt/xilinx/xrt/setup.sh
 
           # Raise memlock: the NPU driver mmaps ~64MB of locked memory; the
-          # default RLIMIT_MEMLOCK makes that fail with EAGAIN, which breaks
-          # device detection (xrt-smi/pyxrt) and NPU dispatch. Each GHA step is
-          # a fresh shell, so this must be set here, not only in the build step.
+          # default RLIMIT_MEMLOCK makes that fail with EAGAIN, breaking device
+          # detection and NPU dispatch. Each GHA step is a fresh shell.
           sudo prlimit -lunlimited --pid $$
 
-          # Compile + inference run via `make` (not lit), so replicate the tool
-          # env lit injects from the CMake build: PYTHONPATH + tool dirs on PATH.
-          # Deliberately do NOT set LD_LIBRARY_PATH — env_setup.sh would place
-          # LLVM/MLIR libs there, which the backend's `xrt-smi examine` subprocess
-          # inherits and crashes on, silently falling back to npu1 (breaking ELF
-          # output). air/mlir_aie libs resolve via RPATH, exactly as under lit.
-          MLIR_AIE_DIR=$(python3 -m pip show mlir_aie | awk '/^Location:/{print $2}')/mlir_aie
-          PEANO_DIR=$(python3 -m pip show llvm-aie | awk '/^Location:/{print $2}')/llvm-aie
-          export MLIR_AIE_INSTALL_DIR="$MLIR_AIE_DIR"
-          export PEANO_INSTALL_DIR="$PEANO_DIR"
-          export PATH="$(pwd)/install/bin:$MLIR_AIE_DIR/bin:$PEANO_DIR/bin:$PATH"
-          export PYTHONPATH="$(pwd)/install/python:$MLIR_AIE_DIR/python:/opt/xilinx/xrt/python${PYTHONPATH:+:$PYTHONPATH}"
+          # Install every model's Python deps (transformers/safetensors/torch/
+          # huggingface_hub) — the lit-run inference imports them.
+          for req in programming_examples/llms/*/requirements.txt; do
+            pip install -q -r "$req"
+          done
 
-          MODEL_DIR=programming_examples/llms/$BENCH_MODEL
-          pip install -r $MODEL_DIR/requirements.txt
+          # Run all models through the maintained lit/ninja targets (lit injects
+          # the AIE tool env from the CMake build). lit runs every model even if
+          # one fails, so a run reports each model's status; ninja returns
+          # non-zero if any failed. Per-model wall time is bounded via LIT_OPTS.
+          rc=0
+          pushd build_assert
+          # Correctness gate (strict): red if any model's verify fails.
+          LIT_OPTS="--timeout 1800 --xunit-xml-output $OLDPWD/verify.xml" \
+            ninja check-programming-examples-llms-verify || rc=1
+          # Perf capture: writes <model>.perf.json under test/llms/<model>/.
+          LIT_OPTS="--timeout 1800" \
+            ninja check-programming-examples-llms-profile || rc=1
+          popd
+          exit $rc
 
-          # Correctness gate — perf on wrong output is meaningless.
-          make -C $MODEL_DIR compile PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
-          make -C $MODEL_DIR verify  PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
-
-          # Perf capture — pinned MODEL/N_TOKENS/PROMPT for run-to-run comparability.
-          make -C $MODEL_DIR profile PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR \
-            MODEL=base N_TOKENS="$BENCH_N_TOKENS" PROMPT="$BENCH_PROMPT" | tee profile.txt
-
-      - name: Extract perf numbers
+      - name: Combine perf JSON
+        if: always()
         run: |
           source air-venv/bin/activate
-          # Portable extraction (no GNU-only grep -P); fails the step if the
-          # HASH line ever disappears from clone-mlir-aie.sh.
           MLIR_AIE_HASH=$(awk -F= '$1 ~ /(^| )HASH$/ {print $2; exit}' utils/clone-mlir-aie.sh)
-          : "${MLIR_AIE_HASH:?HASH not found in utils/clone-mlir-aie.sh}"
+          # Fail fast if the script stopped emitting HASH=... (drift), rather
+          # than silently publishing perf results with an empty toolchain hash.
+          if [ -z "$MLIR_AIE_HASH" ]; then
+            echo "ERROR: could not parse HASH from utils/clone-mlir-aie.sh" >&2
+            exit 1
+          fi
           LLVM_AIE_VERSION=$(python3 -m pip show llvm-aie | awk '/^Version:/{print $2}')
-          python3 programming_examples/llms/bench/extract_perf.py profile.txt \
-            --model "$BENCH_MODEL" \
-            --runner amdryzenai5pro340 \
-            --mlir-air-sha "${{ github.sha }}" \
-            --mlir-aie-hash "$MLIR_AIE_HASH" \
-            --llvm-aie-version "$LLVM_AIE_VERSION" \
-            --model-variant base \
-            --n-tokens "$BENCH_N_TOKENS" \
-            --prompt "$BENCH_PROMPT" \
-            > perf.json
-          cat perf.json
+          mkdir -p perf_out
+          python3 - "$MLIR_AIE_HASH" "$LLVM_AIE_VERSION" "${{ github.sha }}" <<'PY'
+          import glob, json, os, re, shutil, sys
+          import xml.etree.ElementTree as ET
+
+          aie_hash, peano_ver, air_sha = sys.argv[1], sys.argv[2], sys.argv[3]
+
+          # Per-model verify pass/fail from the verify xunit output.
+          vstatus = {}
+          if os.path.exists("verify.xml"):
+              for tc in ET.parse("verify.xml").getroot().iter("testcase"):
+                  name = (tc.get("classname") or "") + " " + (tc.get("name") or "")
+                  m = re.search(r"llms/([^/ ]+)/run_npu2_verify", name)
+                  if m:
+                      failed = next(tc.iter("failure"), None) is not None
+                      vstatus[m.group(1)] = "fail" if failed else "pass"
+
+          recs = []
+          for f in sorted(glob.glob("build_assert/test/llms/**/*.perf.json", recursive=True)):
+              d = json.load(open(f))
+              d["runner"] = "amdryzenai5pro340"
+              d["toolchain"] = {
+                  "mlir_air_sha": air_sha,
+                  "mlir_aie_hash": aie_hash,
+                  "llvm_aie_version": peano_ver,
+              }
+              d["verify_status"] = vstatus.get(d["model"], "")
+              recs.append(d)
+              prof = os.path.join(os.path.dirname(f), "profile.txt")
+              if os.path.exists(prof):
+                  shutil.copy(prof, f"perf_out/{d['model']}.profile.txt")
+
+          json.dump(recs, open("perf.json", "w"), indent=2)
+          print(json.dumps(recs, indent=2))
+          PY
 
       - name: Job summary
         if: always()
         run: |
           source air-venv/bin/activate
-          {
-            echo "### LLM perf benchmark"
-            echo ""
-            echo "Model: \`$BENCH_MODEL\`"
-            echo ""
-            if [ -f perf.json ]; then
-              TTFT=$(python3 -c "import json;print(json.load(open('perf.json'))['metrics']['ttft_ms'])")
-              TPS=$(python3 -c "import json;print(json.load(open('perf.json'))['metrics']['decode_tokens_per_sec'])")
-              echo "**verify (correctness gate): PASS**"
-              echo ""
-              echo "| Metric | Value |"
-              echo "| --- | --- |"
-              echo "| TTFT (prefill) | ${TTFT} ms |"
-              echo "| Decode throughput | ${TPS} tok/s |"
-            else
-              echo "**FAILED before perf capture** — see step logs (verify gate or profile did not complete)."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          recs = json.load(open("perf.json")) if os.path.exists("perf.json") else []
+          print("### LLM perf benchmark\n")
+          if not recs:
+              print("**No results produced** — see step logs.")
+          else:
+              print("| model | verify | TTFT (ms) | tok/s |")
+              print("| --- | --- | --- | --- |")
+              for d in sorted(recs, key=lambda r: r["model"]):
+                  m = d["metrics"]
+                  print(f"| {d['model']} | {d['verify_status'] or '?'} | "
+                        f"{m['ttft_ms']} | {m['decode_tokens_per_sec']} |")
+          PY
 
       - name: Upload perf artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: perf-${{ env.BENCH_MODEL }}-${{ github.run_id }}
+          name: perf-${{ github.run_id }}
           path: |
             perf.json
-            profile.txt
+            perf_out/
+            verify.xml
