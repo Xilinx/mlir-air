@@ -120,16 +120,11 @@ set_target_properties(check-programming-examples PROPERTIES FOLDER "Tests")
 # Matched by path (llms/.*/run_npu2_compile) so lit filename need NOT carry
 # any backend suffix. Sequential (-j1) because concurrent LLM compilations
 # can exhaust host memory on CI runners.
-# llama32_1b_int4 is excluded: its `make compile` builds all three prefill
-# backends and exceeds the PR CI's 600s per-test timeout. Its kernels are
-# covered end to end by the nightly LLM perf benchmark instead — the int4
-# decode + bf16 prefill via run_npu2_profile's compile-inference, and the
-# bfp16 prefill via run_npu2_verify_prefill_bfp16.
 add_lit_testsuite(check-programming-examples-llms-compile
   "Running LLM compile-only tests (all models, sequential)"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS ${AIR_TEST_LIT_ARGS} -j1 --filter "llms/.*/run_npu2_compile" --filter-out "llms/llama32_1b_int4/"
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --filter "llms/.*/run_npu2_compile"
 )
 set_target_properties(check-programming-examples-llms-compile PROPERTIES FOLDER "Tests")
 
