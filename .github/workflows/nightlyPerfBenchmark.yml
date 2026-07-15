@@ -202,15 +202,31 @@ jobs:
 
           aie_hash, peano_ver, air_sha = sys.argv[1], sys.argv[2], sys.argv[3]
 
-          # Per-model verify pass/fail from the verify xunit output.
+          # Per-model verify status from the verify xunit output. A model may
+          # contribute several run_npu2_verify* lits (e.g. int4 ships a skipped
+          # REQUIRES:false one plus a passing bfp16-prefill one); collapse with
+          # precedence fail > pass > skip so a real result beats a skip.
           vstatus = {}
+          rank = {"skip": 0, "pass": 1, "fail": 2}
           if os.path.exists("verify.xml"):
               for tc in ET.parse("verify.xml").getroot().iter("testcase"):
                   name = (tc.get("classname") or "") + " " + (tc.get("name") or "")
-                  m = re.search(r"llms/([^/ ]+)/run_npu2_verify", name)
-                  if m:
-                      failed = next(tc.iter("failure"), None) is not None
-                      vstatus[m.group(1)] = "fail" if failed else "pass"
+                  # xunit stores the dir in classname (…llms/<model>) and the lit
+                  # in name (run_npu2_verify.lit), joined here by a space — so the
+                  # separator before run_npu2_verify is " " or "/".
+                  m = re.search(r"llms/([^/ ]+)[ /]run_npu2_verify", name)
+                  if not m:
+                      continue
+                  if next(tc.iter("failure"), None) is not None:
+                      st = "fail"
+                  elif next(tc.iter("skipped"), None) is not None:
+                      st = "skip"
+                  else:
+                      st = "pass"
+                  model = m.group(1)
+                  prev = vstatus.get(model)
+                  if prev is None or rank[st] > rank[prev]:
+                      vstatus[model] = st
 
           recs = []
           for f in sorted(glob.glob("build_assert/test/llms/**/*.perf.json", recursive=True)):
@@ -242,11 +258,12 @@ jobs:
           if not recs:
               print("**No results produced** — see step logs.")
           else:
-              print("| model | verify | TTFT (ms) | tok/s |")
-              print("| --- | --- | --- | --- |")
+              print("| model | verify | ctx | TTFT (ms) | tok/s |")
+              print("| --- | --- | --- | --- | --- |")
               for d in sorted(recs, key=lambda r: r["model"]):
                   m = d["metrics"]
                   print(f"| {d['model']} | {d['verify_status'] or '?'} | "
+                        f"{m.get('context_len') or '?'} | "
                         f"{m['ttft_ms']} | {m['decode_tokens_per_sec']} |")
           PY
 
