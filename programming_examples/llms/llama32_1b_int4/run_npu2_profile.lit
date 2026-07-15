@@ -1,20 +1,21 @@
 // (c) Copyright 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// llama32_1b_int4 profiling: compile then profile on NPU2, capturing TTFT + decode
-// throughput into llama32_1b_int4.perf.json via bench/extract_perf.py. Perf is best-effort
-// (a model that does not print a metric yields null); this test gates only that
-// profiling ran end to end. Collected by the CI target
-// check-programming-examples-llms-profile. Correctness is gated separately by
-// run_npu2_verify.lit.
+// llama32_1b_int4 profiling: compile the e2e inference ELFs (bf16 NPU prefill +
+// int4 NPU decode) then run prefill+decode on NPU2, capturing TTFT + int4 decode
+// throughput + context length into llama32_1b_int4.perf.json via
+// bench/extract_perf.py. Perf is best-effort (a model that does not print a metric
+// yields null); this test gates only that profiling ran end to end. Collected by
+// the CI target check-programming-examples-llms-profile. Correctness is gated
+// separately by run_npu2_verify.lit.
 //
-// REQUIRES: ryzen_ai_npu2, peano, hf_token
+// REQUIRES: ryzen_ai_npu2, peano, hf_token, hfweights_amd_llama_3_2_1b_instruct_awq_uint4_asym_g128_bf16_lmhead
 //
 // RUN: mkdir -p test_peano_profile
 // RUN: cd test_peano_profile
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile compile-inference PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: make -f %S/Makefile profile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR N_TOKENS=128 PROMPT="What is the capital of France?" | tee profile.txt
-// RUN: %PYTHON %S/../bench/extract_perf.py profile.txt --model llama32_1b_int4 > llama32_1b_int4.perf.json
+// RUN: %PYTHON %S/../bench/extract_perf.py profile.txt --model llama32_1b_int4 --n-tokens 128 > llama32_1b_int4.perf.json
 // RUN: FileCheck %s < llama32_1b_int4.perf.json
 // CHECK: "model": "llama32_1b_int4"

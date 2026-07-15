@@ -17,7 +17,7 @@
 // reference. So if this lit is ever promoted into CI, it needs only
 // ryzen_ai_npu2 + peano — no secret.
 //
-// REQUIRES: ryzen_ai_npu2, peano
+// REQUIRES: ryzen_ai_npu2, peano, hfweights_huggingfacetb_smollm2_1_7b_instruct
 //
 // RUN: mkdir -p test_peano_verify
 // RUN: cd test_peano_verify

@@ -145,6 +145,40 @@ if os.environ.get("HF_HUB_DISABLE_XET"):
 if os.environ.get("HF_HUB_OFFLINE"):
     llvm_config.with_environment("HF_HUB_OFFLINE", os.environ["HF_HUB_OFFLINE"])
 
+
+# Gate each LLM example on the weights it loads actually being present in the
+# local HF cache, so the suite runs whatever is seeded and auto-includes a model
+# the moment its weights land -- no hardcoded exclusion to maintain. Each model's
+# verify/profile .lit declares `REQUIRES: hfweights_<normalized repo id>`; here we
+# add that feature for every repo present in the cache. The scan is a local disk
+# read (offline-safe); a no-op if huggingface_hub is unimportable or the cache is
+# empty, in which case those tests report UNSUPPORTED instead of failing on a
+# missing checkpoint. The perf runner's HF egress is flaky, so weights are seeded
+# out of band; this keeps CI green on a partially-seeded cache.
+def _hf_weight_feature(repo_id):
+    return "hfweights_" + re.sub(r"[^a-z0-9]+", "_", repo_id.lower()).strip("_")
+
+
+try:
+    from huggingface_hub import scan_cache_dir
+    from huggingface_hub.utils import CacheNotFound
+
+    try:
+        _hf_cache = scan_cache_dir()
+    except CacheNotFound:
+        _hf_cache = None
+    if _hf_cache is not None:
+        _seeded = sorted(
+            _hf_weight_feature(r.repo_id)
+            for r in _hf_cache.repos
+            if any(rev.size_on_disk > 0 for rev in r.revisions)
+        )
+        for _feat in _seeded:
+            config.available_features.add(_feat)
+        print("HF weights present -> features:", ", ".join(_seeded) or "(none)")
+except ImportError:
+    print("huggingface_hub not importable; hfweights_* features disabled.")
+
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
 llvm_config.use_default_substitutions()

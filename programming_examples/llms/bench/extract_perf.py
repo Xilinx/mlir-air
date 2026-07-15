@@ -20,9 +20,16 @@ TTFT_S_RE = re.compile(r"Time to first token \(TTFT\):\s*([\d.]+)\s*s")
 PREFILL_MS_RE = re.compile(r"End-to-end \(prefill, per query\)\s+([\d.]+)\s*ms")
 
 # Decode throughput: qwen family + llama3b print "(X.XX tok/s)";
-# llama32_1b prints "End-to-end (per token)  N ms" (throughput = 1000/ms).
+# llama32_1b prints "End-to-end (per token)  N ms" (throughput = 1000/ms);
+# the int4 inference driver prints "Tokens/second: X.XX".
 TOKS_RE = re.compile(r"\(([\d.]+)\s*tok/s\)")
 DECODE_MS_RE = re.compile(r"End-to-end \(per token\)\s+([\d.]+)\s*ms")
+TOKS_LABEL_RE = re.compile(r"Tokens/second:\s*([\d.]+)")
+
+# Context length = prefill sequence length the decode ran against (KV-cache
+# depth), which tok/s depends on. Every inference driver prints
+# "... Inference: prompt_len=N, n_tokens=...".
+CTX_RE = re.compile(r"prompt_len[=:]\s*(\d+)")
 
 
 def _ttft_ms(text):
@@ -43,7 +50,15 @@ def _decode_tok_s(text):
     if m:
         ms = float(m.group(1))
         return round(1000.0 / ms, 2) if ms else None
+    m = TOKS_LABEL_RE.search(text)
+    if m:
+        return round(float(m.group(1)), 2)
     return None
+
+
+def _context_len(text):
+    m = CTX_RE.search(text)
+    return int(m.group(1)) if m else None
 
 
 def main():
@@ -78,6 +93,7 @@ def main():
         "metrics": {
             "ttft_ms": _ttft_ms(text),
             "decode_tokens_per_sec": _decode_tok_s(text),
+            "context_len": _context_len(text),
         },
         "toolchain": {
             "mlir_air_sha": args.mlir_air_sha,
