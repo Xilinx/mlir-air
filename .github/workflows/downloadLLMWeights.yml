@@ -11,8 +11,13 @@
 #
 # Run this ONCE, and again only after adding a new model or clearing the cache.
 # It is workflow_dispatch ONLY: never scheduled, never on push/PR, so it cannot
-# slow down normal CI. The before/after `scan-cache` output is the evidence that
-# a download landed in the cache the nightly reads.
+# slow down normal CI. The before/after cache scan is the evidence that a
+# download landed in the cache the nightly reads.
+#
+# Uses the huggingface_hub Python API (snapshot_download / scan_cache_dir), not
+# the CLI: the `huggingface-cli` command was renamed to `hf` and now no-ops in
+# recent huggingface_hub (>=1.x), so the CLI path silently fails. The Python API
+# is stable across versions.
 
 name: Download LLM Weights (manual)
 
@@ -44,57 +49,82 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Set up huggingface_hub CLI
+      - name: Set up huggingface_hub
         run: |
           python3.12 -m venv hf-venv
           source hf-venv/bin/activate
           pip install --upgrade pip
-          pip install "huggingface_hub[cli]"
+          pip install huggingface_hub
 
       - name: Show HF cache BEFORE
         run: |
           source hf-venv/bin/activate
-          echo "HF cache dir: ${HF_HOME:-$HOME/.cache/huggingface}"
-          huggingface-cli scan-cache || echo "(cache empty or not yet created)"
+          python3 - <<'PY'
+          from huggingface_hub import scan_cache_dir
+          from huggingface_hub.utils import CacheNotFound
+          try:
+              info = scan_cache_dir()
+          except CacheNotFound:
+              print("(cache not created yet)")
+          else:
+              for r in sorted(info.repos, key=lambda r: r.repo_id):
+                  print(f"{r.repo_id:60s} {r.size_on_disk_str:>10s}  "
+                        f"revs={len(list(r.revisions))}")
+              print(f"TOTAL on disk: {info.size_on_disk_str}")
+          PY
 
       - name: Download all model weights
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           source hf-venv/bin/activate
+          python3 - <<'PY'
+          import sys, time
+          from huggingface_hub import snapshot_download
 
-          # Model list lives in programming_examples/llms/hf_models.txt (single
-          # source of truth). Ignore blank lines and '#' comments.
-          list=programming_examples/llms/hf_models.txt
-          mapfile -t models < <(grep -vE '^[[:space:]]*(#|$)' "$list")
-          echo "Seeding ${#models[@]} models from $list"
+          # Weight/config/tokenizer files only (skip .pth/.gguf/.bin duplicates).
+          PATTERNS = ["*.safetensors", "*.json", "*.txt", "*.model",
+                      "tokenizer*", "*.tiktoken"]
 
-          rc=0
-          for m in "${models[@]}"; do
-            echo "::group::download $m"
-            ok=0
-            # Retry per model: the runner's HF egress drops connections at random.
-            for attempt in 1 2 3 4 5; do
-              if huggingface-cli download "$m" \
-                   --include "*.safetensors" "*.json" "*.txt" "*.model" \
-                             "tokenizer*" "*.tiktoken"; then
-                ok=1
-                break
-              fi
-              echo "attempt $attempt failed for $m; retrying in $((attempt * 15))s"
-              sleep $((attempt * 15))
-            done
-            if [ "$ok" -ne 1 ]; then
-              echo "ERROR: failed to download $m after 5 attempts"
-              rc=1
-            fi
-            echo "::endgroup::"
-          done
-          exit $rc
+          # Single source of truth for the model list.
+          models = [s.strip()
+                    for s in open("programming_examples/llms/hf_models.txt")
+                    if s.strip() and not s.strip().startswith("#")]
+          print(f"Seeding {len(models)} models", flush=True)
+
+          rc = 0
+          for m in models:
+              ok = False
+              # Retry per model: the runner's HF egress drops connections at random.
+              for attempt in range(1, 6):
+                  try:
+                      snapshot_download(m, allow_patterns=PATTERNS)
+                      print(f"OK  {m}", flush=True)
+                      ok = True
+                      break
+                  except Exception as e:
+                      print(f"attempt {attempt} failed for {m}: {e}", flush=True)
+                      time.sleep(attempt * 15)
+              if not ok:
+                  print(f"ERROR: failed to download {m} after 5 attempts", flush=True)
+                  rc = 1
+          sys.exit(rc)
+          PY
 
       - name: Show HF cache AFTER
         if: always()
         run: |
           source hf-venv/bin/activate
-          echo "HF cache dir: ${HF_HOME:-$HOME/.cache/huggingface}"
-          huggingface-cli scan-cache
+          python3 - <<'PY'
+          from huggingface_hub import scan_cache_dir
+          from huggingface_hub.utils import CacheNotFound
+          try:
+              info = scan_cache_dir()
+          except CacheNotFound:
+              print("(cache not created)")
+          else:
+              for r in sorted(info.repos, key=lambda r: r.repo_id):
+                  print(f"{r.repo_id:60s} {r.size_on_disk_str:>10s}  "
+                        f"revs={len(list(r.revisions))}")
+              print(f"TOTAL on disk: {info.size_on_disk_str}")
+          PY
