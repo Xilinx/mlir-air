@@ -151,26 +151,12 @@ jobs:
           # concurrent NPU inference causing out-of-memory crashes.
           ninja check-programming-examples-peano || ninja check-programming-examples-peano
 
-          # LLM compile gate: llama32_1b only (fast, no HF download, no NPU
-          # dispatch). Runs on every PR — no secrets needed. Sequential (-j1)
-          # is set in the CMake target definition.
-          ninja check-programming-examples-llms-compile-llama32_1b || ninja check-programming-examples-llms-compile-llama32_1b
-
-          # LLM full suite (all models compile + verify): run only when
-          # HF_TOKEN is available, i.e. on pushes to main or workflow_dispatch
-          # by repo owners. Fork PRs never have access to secrets so this block
-          # is effectively skipped for external contributors.
-          # Sequential (-j1) set in CMake target to prevent NPU OOM.
-          if [ -n "${{ secrets.HF_TOKEN }}" ]; then
-            # All-models compile (catches regressions in non-llama32_1b models)
-            ninja check-programming-examples-llms-compile || ninja check-programming-examples-llms-compile
-
-            # All-models verify (hf_token gated; HF_TOKEN scoped to sub-shell)
-            (
-              export HF_TOKEN="${{ secrets.HF_TOKEN }}"
-              ninja check-programming-examples-llms-verify || ninja check-programming-examples-llms-verify
-            )
-          fi
+          # LLM compile/verify are intentionally NOT run here. They are covered
+          # end to end (compile + verify + perf, all models) by the dedicated
+          # nightly benchmark (nightlyPerfBenchmark.yml) on the Krackan runner,
+          # which serves weights from a warm offline HF cache. Running them in
+          # the per-PR matrix duplicated that work, was slow (int4's compile
+          # alone exceeds the 600s per-test timeout), and needed HF secrets.
 
           # Chess tests disabled to reduce CI time. Uncomment to re-enable:
           # ninja check-programming-examples-chess
