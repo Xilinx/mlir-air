@@ -40,6 +40,11 @@ jobs:
   benchmark:
     name: LLM perf benchmark
     runs-on: amdryzenai5pro340
+    # actions: write so the final step can dispatch generateDocs.yml to refresh
+    # the GitHub Pages LLM benchmark section with this run's perf.json artifact.
+    permissions:
+      contents: read
+      actions: write
     # Bound total runtime so stuck NPU dispatch/downloads can't occupy the
     # dedicated runner indefinitely. Covers a full build + all models (each
     # model is also individually bounded by `timeout` in run_models.sh).
@@ -197,7 +202,7 @@ jobs:
           LLVM_AIE_VERSION=$(python3 -m pip show llvm-aie | awk '/^Version:/{print $2}')
           mkdir -p perf_out
           python3 - "$MLIR_AIE_HASH" "$LLVM_AIE_VERSION" "${{ github.sha }}" <<'PY'
-          import glob, json, os, re, shutil, sys
+          import datetime, glob, json, os, re, shutil, sys
           import xml.etree.ElementTree as ET
 
           aie_hash, peano_ver, air_sha = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -243,6 +248,40 @@ jobs:
               if os.path.exists(prof):
                   shutil.copy(prof, f"perf_out/{d['model']}.profile.txt")
 
+          # Surface models that ran verify but produced no profile record (their
+          # profile compile/run failed): emit a null-metric row so the failure is
+          # visible on the dashboard instead of the model silently disappearing.
+          # Skip "skip" models (e.g. gated qwen3_4b) — those are intentionally
+          # not benchmarked, not failures.
+          profiled = {d["model"] for d in recs}
+          now = (
+              datetime.datetime.now(datetime.timezone.utc)
+              .replace(microsecond=0)
+              .isoformat()
+              .replace("+00:00", "Z")
+          )
+          for model, st in vstatus.items():
+              if model in profiled or st == "skip":
+                  continue
+              recs.append({
+                  "model": model,
+                  "timestamp_utc": now,
+                  "runner": "amdryzenai5pro340",
+                  "verify_status": st,
+                  "metrics": {
+                      "ttft_ms": None,
+                      "decode_tokens_per_sec": None,
+                      "context_len": None,
+                  },
+                  "toolchain": {
+                      "mlir_air_sha": air_sha,
+                      "mlir_aie_hash": aie_hash,
+                      "llvm_aie_version": peano_ver,
+                  },
+                  "run_params": {"n_tokens": None, "prompt": None},
+              })
+
+          recs.sort(key=lambda r: r["model"])
           json.dump(recs, open("perf.json", "w"), indent=2)
           print(json.dumps(recs, indent=2))
           PY
@@ -276,3 +315,14 @@ jobs:
             perf.json
             perf_out/
             verify.xml
+
+      # Refresh the GitHub Pages docs so the "Nightly LLM Benchmark" section
+      # picks up this run's perf.json. generateDocs.yml downloads the latest
+      # successful nightly artifact when it regenerates the page. Runs whenever
+      # a perf.json was produced (even a partial run), not gated on the job's
+      # overall result.
+      - name: Refresh docs page
+        if: always() && hashFiles('perf.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run generateDocs.yml --repo ${{ github.repository }} --ref main
