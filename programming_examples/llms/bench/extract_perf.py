@@ -55,8 +55,10 @@ def main():
     p.add_argument("--mlir-air-sha", default="")
     p.add_argument("--mlir-aie-hash", default="")
     p.add_argument("--llvm-aie-version", default="")
-    p.add_argument("--n-tokens", type=int, default=0)
-    p.add_argument("--prompt", default="")
+    # Default None (-> JSON null) so an unset run param is not misreported as a
+    # real value (e.g. n_tokens: 0). The profile lit tests don't pass these.
+    p.add_argument("--n-tokens", type=int, default=None)
+    p.add_argument("--prompt", default=None)
     args = p.parse_args()
 
     if args.input:

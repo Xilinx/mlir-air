@@ -188,6 +188,12 @@ jobs:
         run: |
           source air-venv/bin/activate
           MLIR_AIE_HASH=$(awk -F= '$1 ~ /(^| )HASH$/ {print $2; exit}' utils/clone-mlir-aie.sh)
+          # Fail fast if the script stopped emitting HASH=... (drift), rather
+          # than silently publishing perf results with an empty toolchain hash.
+          if [ -z "$MLIR_AIE_HASH" ]; then
+            echo "ERROR: could not parse HASH from utils/clone-mlir-aie.sh" >&2
+            exit 1
+          fi
           LLVM_AIE_VERSION=$(python3 -m pip show llvm-aie | awk '/^Version:/{print $2}')
           mkdir -p perf_out
           python3 - "$MLIR_AIE_HASH" "$LLVM_AIE_VERSION" "${{ github.sha }}" <<'PY'

@@ -42,6 +42,8 @@ jobs:
     timeout-minutes: 240
 
     steps:
+      - uses: actions/checkout@v3
+
       - name: Set up huggingface_hub CLI
         run: |
           python3.12 -m venv hf-venv
@@ -61,27 +63,11 @@ jobs:
         run: |
           source hf-venv/bin/activate
 
-          # Every HF repo the llms/ verify + profile paths load (base + instruct
-          # variants + the int4 AWQ source). Keep in sync with the model IDs in
-          # programming_examples/llms/*/{verify_adapter,*_inference}.py.
-          models=(
-            meta-llama/Llama-3.2-1B
-            meta-llama/Llama-3.2-1B-Instruct
-            meta-llama/Llama-3.2-3B
-            meta-llama/Llama-3.2-3B-Instruct
-            Qwen/Qwen2.5-0.5B
-            Qwen/Qwen2.5-0.5B-Instruct
-            Qwen/Qwen2.5-1.5B
-            Qwen/Qwen2.5-1.5B-Instruct
-            Qwen/Qwen2.5-3B
-            Qwen/Qwen2.5-3B-Instruct
-            Qwen/Qwen3-0.6B
-            Qwen/Qwen3-1.7B
-            Qwen/Qwen3-4B
-            HuggingFaceTB/SmolLM2-1.7B
-            HuggingFaceTB/SmolLM2-1.7B-Instruct
-            amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead
-          )
+          # Model list lives in programming_examples/llms/hf_models.txt (single
+          # source of truth). Ignore blank lines and '#' comments.
+          list=programming_examples/llms/hf_models.txt
+          mapfile -t models < <(grep -vE '^[[:space:]]*(#|$)' "$list")
+          echo "Seeding ${#models[@]} models from $list"
 
           rc=0
           for m in "${models[@]}"; do

@@ -58,10 +58,17 @@ class HfRunner:
         if model is None:
             # low_cpu_mem_usage avoids the ~2x transient allocation during
             # from_pretrained (random init + loaded copy), which OOMs the
-            # perf runner on the larger (3B/4B) references.
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True
-            )
+            # perf runner on the larger (3B/4B) references. It needs the optional
+            # `accelerate` package; fall back to a plain load (accepting the
+            # transient spike) if it's missing so verify still runs on clean envs.
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_name, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True
+                )
+            except ImportError:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_name, torch_dtype=torch.bfloat16
+                )
         else:
             self.model = model
         self.model.eval()

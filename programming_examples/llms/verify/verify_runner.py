@@ -292,10 +292,6 @@ def main():
         f"hf_ref={hf_ref_model}, mode={report.config['mode']}, lite={lite}"
     )
     tokenizer = _get_tokenizer(model_name)
-    # The HF runner needs its own tokenizer instance (matched to the HF ref
-    # model). For bf16 this is the same checkpoint as model_name; for int4
-    # adapter overrides hf_reference() to the upstream un-quantized model.
-    hf_tokenizer = _get_tokenizer(hf_ref_model)
 
     # Runner builders are deferred so each gate phase constructs only the model
     # it needs. The NPU host weights and the HF bf16 reference are each multi-GB;

@@ -470,9 +470,18 @@ class KernelCache:
                 so one shared buffer per arg suffices across all layers. Used by
                 prefill to avoid holding N_layers copies of the seq_len-sized
                 activation scratch.
+                CONTRACT/FOOTGUN: returned outputs for shared (non-static) indices
+                are zero-copy views into the shared BO and are OVERWRITTEN by the
+                next load_and_run call that reuses that arg's shared buffer. Safe
+                only for callers that consume each output before the next call
+                (the prefill layer loop does). Any caller that PERSISTS outputs
+                across calls (e.g. per-layer diagnosis capture) must copy them, or
+                must not pass shared_nonstatic=True.
 
         Returns:
-            Tuple of numpy arrays (all kernel outputs)
+            Tuple of numpy arrays (all kernel outputs). With shared_nonstatic=True
+            the non-static entries are views into shared BOs — see the footgun
+            note above; copy them if you need to keep them past the next call.
         """
         import filelock
         import pyxrt as xrt
