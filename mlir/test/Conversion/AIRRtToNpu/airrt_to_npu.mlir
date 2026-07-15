@@ -14,10 +14,10 @@
 // CHECK: aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
 // CHECK: aie.runtime_sequence @func0(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId2 {
-// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<64xi32>, 0, 64
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<64xi32> offset = 0 len = 64
 // CHECK:   aiex.dma_start_task
 // CHECK:   %[[T1:.*]] = aiex.dma_configure_task_for @airMemcpyId7 {
-// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<64xi32>, 0, 64
+// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<64xi32> offset = 0 len = 64
 // CHECK:   } {issue_token = true}
 // CHECK:   aiex.dma_start_task(%[[T1]])
 // CHECK: }
@@ -54,10 +54,10 @@ module {
 // CHECK: aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
 // CHECK: aie.runtime_sequence @func1(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId2 {
-// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<64xi32>, 0, 64
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<64xi32> offset = 0 len = 64
 // CHECK:   aiex.dma_start_task
 // CHECK:   %[[T1:.*]] = aiex.dma_configure_task_for @airMemcpyId7 {
-// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<64xi32>, 0, 64
+// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<64xi32> offset = 0 len = 64
 // CHECK:   } {issue_token = true}
 // CHECK:   aiex.dma_start_task(%[[T1]])
 // CHECK:   aiex.dma_await_task(%[[T1]])
@@ -100,16 +100,16 @@ module {
 // CHECK: aie.shim_dma_allocation @airMemcpyId5(%shim_noc_tile_0_0, MM2S, 0)
 // CHECK: aie.runtime_sequence @func2(%[[VAL_0:.*]]: memref<32x32xi32>, %[[VAL_1:.*]]: memref<32x32xi32>, %[[VAL_2:.*]]: memref<32x32xi32>) {
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId5 {
-// CHECK:     aie.dma_bd(%[[VAL_2]] : memref<32x32xi32>, 0, 1024
+// CHECK:     aie.dma_bd(%[[VAL_2]] : memref<32x32xi32> offset = 0 len = 1024
 // CHECK:   aiex.dma_start_task
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId5 {
-// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<32x32xi32>, 0, 1024
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<32x32xi32> offset = 0 len = 1024
 // CHECK:   aiex.dma_start_task
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId5 {
-// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<32x32xi32>, 0, 1024
+// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<32x32xi32> offset = 0 len = 1024
 // CHECK:   aiex.dma_start_task
 // CHECK:   %[[T3:.*]] = aiex.dma_configure_task_for @airMemcpyId16 {
-// CHECK:     aie.dma_bd(%[[VAL_2]] : memref<32x32xi32>, 0, 1024
+// CHECK:     aie.dma_bd(%[[VAL_2]] : memref<32x32xi32> offset = 0 len = 1024
 // CHECK:   } {issue_token = true}
 // CHECK:   aiex.dma_start_task(%[[T3]])
 // CHECK:   aiex.dma_await_task(%[[T3]])
@@ -162,22 +162,22 @@ module {
 // CHECK-LABEL: aie.device(npu1_2col) @segment_0 {
 // CHECK:  aie.runtime_sequence @func3(%[[ARG0:.*]]: memref<8x8xi32>)
 // CHECK:  %[[T0:.*]] = aiex.dma_configure_task_for @airMemcpyId14 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32>, 0, 16
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32> offset = 0 len = 16
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task(%[[T0]])
 // CHECK:  aiex.dma_await_task(%[[T0]])
 // CHECK:  %[[T1:.*]] = aiex.dma_configure_task_for @airMemcpyId14 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32>, 4, 16
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32> offset = 4 len = 16
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task(%[[T1]])
 // CHECK:  aiex.dma_await_task(%[[T1]])
 // CHECK:  %[[T2:.*]] = aiex.dma_configure_task_for @airMemcpyId14 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32>, 32, 16
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32> offset = 32 len = 16
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task(%[[T2]])
 // CHECK:  aiex.dma_await_task(%[[T2]])
 // CHECK:  %[[T3:.*]] = aiex.dma_configure_task_for @airMemcpyId14 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32>, 36, 16
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32> offset = 36 len = 16
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task(%[[T3]])
 // CHECK:  aiex.dma_await_task(%[[T3]])
@@ -227,19 +227,19 @@ module {
 // CHECK-LABEL: aie.device(npu1_2col) @segment_0
 // CHECK:  aie.runtime_sequence @func4(%[[ARG0:.*]]: memref<8x8xi32>)
 // CHECK:  %[[T0:.*]] = aiex.dma_configure_task_for @air_channel_1 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32>, 0, 16
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32> offset = 0 len = 16
 // CHECK:  aiex.dma_start_task(%[[T0]])
 // CHECK:  aiex.dma_await_task(%[[T0]])
 // CHECK:  %[[T1:.*]] = aiex.dma_configure_task_for @air_channel_1 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32>, 4, 16
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32> offset = 4 len = 16
 // CHECK:  aiex.dma_start_task(%[[T1]])
 // CHECK:  aiex.dma_await_task(%[[T1]])
 // CHECK:  %[[T2:.*]] = aiex.dma_configure_task_for @air_channel_1 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32>, 32, 16
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32> offset = 32 len = 16
 // CHECK:  aiex.dma_start_task(%[[T2]])
 // CHECK:  aiex.dma_await_task(%[[T2]])
 // CHECK:  %[[T3:.*]] = aiex.dma_configure_task_for @air_channel_1 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32>, 36, 16
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8x8xi32> offset = 36 len = 16
 // CHECK:  aiex.dma_start_task(%[[T3]])
 // CHECK:  aiex.dma_await_task(%[[T3]])
 
@@ -322,7 +322,7 @@ module {
 // CHECK-LABEL: aie.runtime_sequence @func11
 // CHECK-SAME: %arg0: memref<128x128xbf16>
 // CHECK-NEXT: aiex.dma_configure_task_for @md0 {
-// CHECK:        aie.dma_bd(%arg0 : memref<128x128xbf16>, 0, 4096
+// CHECK:        aie.dma_bd(%arg0 : memref<128x128xbf16> offset = 0 len = 4096
 // CHECK: } {repeat_count = 3 : i32}
 // CHECK: aiex.dma_start_task
 module {
@@ -350,7 +350,7 @@ module {
 // CHECK-LABEL: aie.runtime_sequence @func12
 // CHECK-SAME: %arg0: memref<32xbf16>
 // CHECK-NEXT: aiex.dma_configure_task_for @md0 {
-// CHECK:        aie.dma_bd(%arg0 : memref<32xbf16>, 0, 32
+// CHECK:        aie.dma_bd(%arg0 : memref<32xbf16> offset = 0 len = 32
 // CHECK:      aiex.dma_start_task
 module {
   aie.device(npu1_1col) {
@@ -463,67 +463,67 @@ module {
 // CHECK-LABEL: aie.device(npu1_1col)
 // CHECK:  aie.runtime_sequence @func18(%[[ARG0:.*]]: memref<8192x32768xi32>)
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 0, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 0 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 64, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 64 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 128, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 128 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 192, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 192 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 2097152, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 2097152 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 2097216, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 2097216 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 2097280, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 2097280 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 2097344, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 2097344 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 4194304, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 4194304 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 4194368, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 4194368 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 4194432, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 4194432 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 4194496, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 4194496 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 6291456, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 6291456 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 6291520, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 6291520 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 6291584, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 6291584 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 // CHECK:  aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32>, 6291648, 4096, [<size = 64, stride = 32768>, <size = 64, stride = 1>])
+// CHECK:    aie.dma_bd(%[[ARG0]] : memref<8192x32768xi32> offset = 6291648 len = 4096 sizes = [64, 64] strides = [32768, 1])
 // CHECK:  } {issue_token = true}
 // CHECK:  aiex.dma_start_task
 
@@ -599,19 +599,19 @@ module {
 
 // CHECK-LABEL: aie.runtime_sequence @func21
 // CHECK: aiex.dma_configure_task_for @airMemcpyId10 {
-// CHECK:   aie.dma_bd(%arg0 : memref<9728x2432xbf16>, 0, 8192, [<size = 38, stride = 155648>, <size = 2, stride = 64>, <size = 64, stride = 2432>, <size = 64, stride = 1>])
+// CHECK:   aie.dma_bd(%arg0 : memref<9728x2432xbf16> offset = 0 len = 8192 sizes = [38, 2, 64, 64] strides = [155648, 64, 2432, 1])
 // CHECK: } {repeat_count = 37 : i32}
 // CHECK: aiex.dma_start_task
 // CHECK: aiex.dma_configure_task_for @airMemcpyId10 {
-// CHECK:   aie.dma_bd(%arg0 : memref<9728x2432xbf16>, 5914624, 8192, [<size = 38, stride = 155648>, <size = 2, stride = 64>, <size = 64, stride = 2432>, <size = 64, stride = 1>])
+// CHECK:   aie.dma_bd(%arg0 : memref<9728x2432xbf16> offset = 5914624 len = 8192 sizes = [38, 2, 64, 64] strides = [155648, 64, 2432, 1])
 // CHECK: } {repeat_count = 37 : i32}
 // CHECK: aiex.dma_start_task
 // CHECK: aiex.dma_configure_task_for @airMemcpyId10 {
-// CHECK:   aie.dma_bd(%arg0 : memref<9728x2432xbf16>, 11829248, 8192, [<size = 38, stride = 155648>, <size = 2, stride = 64>, <size = 64, stride = 2432>, <size = 64, stride = 1>])
+// CHECK:   aie.dma_bd(%arg0 : memref<9728x2432xbf16> offset = 11829248 len = 8192 sizes = [38, 2, 64, 64] strides = [155648, 64, 2432, 1])
 // CHECK: } {repeat_count = 37 : i32}
 // CHECK: aiex.dma_start_task
 // CHECK: aiex.dma_configure_task_for @airMemcpyId10 {
-// CHECK:   aie.dma_bd(%arg0 : memref<9728x2432xbf16>, 17743872, 8192, [<size = 38, stride = 155648>, <size = 2, stride = 64>, <size = 64, stride = 2432>, <size = 64, stride = 1>])
+// CHECK:   aie.dma_bd(%arg0 : memref<9728x2432xbf16> offset = 17743872 len = 8192 sizes = [38, 2, 64, 64] strides = [155648, 64, 2432, 1])
 // CHECK: } {repeat_count = 37 : i32}
 // CHECK: aiex.dma_start_task
 
@@ -793,12 +793,12 @@ module {
 // CHECK-LABEL: aie.device(npu1_1col) @segment0
 // CHECK: aie.runtime_sequence @packet_attr_transfer(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId2 {
-// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<64xi32>, 0, 64,{{.*}}) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>}
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<64xi32> offset = 0 len = 64 sizes = [64] strides = [0]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>}
 // CHECK:   }
 // CHECK:   aiex.dma_start_task
 // CHECK:   %[[T1:.*]] = aiex.dma_configure_task_for @airMemcpyId7 {
 // CHECK-NOT: packet
-// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<64xi32>, 0, 64
+// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<64xi32> offset = 0 len = 64
 // CHECK:   } {issue_token = true}
 // CHECK:   aiex.dma_start_task(%[[T1]])
 // CHECK: }
@@ -833,7 +833,7 @@ module {
 // CHECK-LABEL: aie.device(npu1_1col) @segment0
 // CHECK: aie.runtime_sequence @packet_attr_with_dims(%[[VAL_0:.*]]: memref<32x64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId2 {
-// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<32x64xi32>, 0, 128, [<size = 2, stride = 64>{{.*}}]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>}
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<32x64xi32> offset = 0 len = 128 sizes = [2, 64] strides = [64, 0]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>}
 // CHECK:   }
 // CHECK:   aiex.dma_start_task
 
@@ -868,7 +868,7 @@ module {
 // CHECK-LABEL: aie.runtime_sequence @broadcast_stride_zero
 // CHECK-SAME: %[[ARG0:.*]]: memref<64xbf16>
 // CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId2 {
-// CHECK:        aie.dma_bd(%[[ARG0]] : memref<64xbf16>, 0, 64, [<size = 64, stride = 1>])
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<64xbf16> offset = 0 len = 64 sizes = [64] strides = [1])
 // CHECK: } {repeat_count = 3 : i32}
 // CHECK: aiex.dma_start_task
 module {
@@ -899,7 +899,7 @@ module {
 // CHECK-LABEL: aie.runtime_sequence @broadcast_stride_zero_dim2
 // CHECK-SAME: %[[ARG0:.*]]: memref<256xbf16>
 // CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId3 {
-// CHECK:        aie.dma_bd(%[[ARG0]] : memref<256xbf16>, 0, 128, [<size = 2, stride = 128>, <size = 64, stride = 1>])
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<256xbf16> offset = 0 len = 128 sizes = [2, 64] strides = [128, 1])
 // CHECK: } {repeat_count = 2 : i32}
 // CHECK: aiex.dma_start_task
 module {
@@ -935,7 +935,7 @@ module {
 // CHECK-LABEL: aie.runtime_sequence @broadcast_stride_zero_nested
 // CHECK-SAME: %[[ARG0:.*]]: memref<64xbf16>
 // CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId4 {
-// CHECK:        aie.dma_bd(%[[ARG0]] : memref<64xbf16>, 0, 64, [<size = 64, stride = 1>])
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<64xbf16> offset = 0 len = 64 sizes = [64] strides = [1])
 // CHECK: } {repeat_count = 11 : i32}
 // CHECK: aiex.dma_start_task
 module {
@@ -975,7 +975,7 @@ module {
 // CHECK-LABEL: aie.runtime_sequence @bd_repeat_dim_size1_gap
 // CHECK-SAME: %[[ARG0:.*]]: memref<512x512xbf16>
 // CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId5 {
-// CHECK:        aie.dma_bd(%[[ARG0]] : memref<512x512xbf16>, 64, 8192, [<size = 4, stride = 65536>, <size = 1, stride = 64>, <size = 128, stride = 512>, <size = 64, stride = 1>])
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<512x512xbf16> offset = 64 len = 8192 sizes = [4, 1, 128, 64] strides = [65536, 64, 512, 1])
 // CHECK: } {repeat_count = 3 : i32}
 // CHECK: aiex.dma_start_task
 module {

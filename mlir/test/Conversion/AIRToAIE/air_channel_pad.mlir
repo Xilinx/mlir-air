@@ -16,9 +16,8 @@
 
 // CHECK:       aie.memtile_dma(%[[TILE_L2]])
 // The MM2S DMA BD from memtile to compute tile should have padding
-// CHECK:             aie.dma_bd({{.*}}, 0, 16,
-// CHECK-SAME:            [<size = 13, stride = 1>],
-// CHECK-SAME:            [<const_pad_before = 2, const_pad_after = 1>])
+// CHECK:             aie.dma_bd({{.*}} offset = 0 len = 16 sizes = [13] strides = [1]
+// CHECK-SAME:            pad [<const_pad_before = 2, const_pad_after = 1>])
 
 module {
   air.channel @L3ToL2 [1, 1]

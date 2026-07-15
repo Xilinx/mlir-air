@@ -107,12 +107,12 @@ module {
     // This mimics the test 31 pattern - device @herd_0 with @kernel sequence
     aie.runtime_sequence @kernel(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: memref<*xf32>) {
       %0 = aiex.dma_configure_task_for @air_channel_0_0 {
-        aie.dma_bd(%arg0 : memref<*xf32>, 0, 128, [<size = 16, stride = 256>, <size = 16, stride = 2>, <size = 4, stride = 64>, <size = 2, stride = 1>])
+        aie.dma_bd(%arg0 : memref<*xf32> offset = 0 len = 128 sizes = [16, 16, 4, 2] strides = [256, 2, 64, 1])
         aie.end
       } {repeat_count = 15 : i32}
       aiex.dma_start_task(%0)
       %1 = aiex.dma_configure_task_for @air_channel_2_0 {
-        aie.dma_bd(%arg2 : memref<*xf32>, 0, 128, [<size = 16, stride = 256>, <size = 16, stride = 2>, <size = 4, stride = 64>, <size = 2, stride = 1>])
+        aie.dma_bd(%arg2 : memref<*xf32> offset = 0 len = 128 sizes = [16, 16, 4, 2] strides = [256, 2, 64, 1])
         aie.end
       } {issue_token = true, repeat_count = 15 : i32}
       aiex.dma_start_task(%1)
