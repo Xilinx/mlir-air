@@ -35,8 +35,8 @@
 // CHECK:       aie.mem(%[[TILE]])
 // CHECK-DAG:     aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 5)
 // CHECK-DAG:     aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 3)
-// CHECK-DAG:     aie.dma_bd(%{{.*}} : memref<32x32xbf16, 2>, 0, 1024) {task_id = 0
-// CHECK-DAG:     aie.dma_bd(%{{.*}} : memref<32x32xbf16, 2>, 0, 1024) {task_id = 1
+// CHECK-DAG:     aie.dma_bd(%{{.*}} : memref<32x32xbf16, 2> offset = 0 len = 1024) {task_id = 0
+// CHECK-DAG:     aie.dma_bd(%{{.*}} : memref<32x32xbf16, 2> offset = 0 len = 1024) {task_id = 1
 // CHECK-DAG:     aie.end
 
 air.channel @channel_0 [1, 1]

@@ -12,7 +12,7 @@
 // generateDmaBd). This is the DMA-stamped path (contrast the multi-id
 // kernel-header contract, where BDs are deliberately left untagged).
 
-// CHECK: aie.dma_bd(%{{.*}} : memref<80xbf16, 2>, 14, 66) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>
+// CHECK: aie.dma_bd(%{{.*}} : memref<80xbf16, 2> offset = 14 len = 66) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>
 // CHECK: aie.packet_flow(3) {
 
 air.channel @m [1, 1] {channel_type = "npu_dma_packet", packet_ids = [3]}

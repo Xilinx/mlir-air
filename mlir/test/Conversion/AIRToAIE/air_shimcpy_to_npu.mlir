@@ -19,7 +19,7 @@
 // CHECK:    %[[VAL_6:.*]] = aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:  ^bb1:
 // CHECK:    aie.use_lock(%[[VAL_2]], AcquireGreaterEqual, %{{.*}})
-// CHECK:    aie.dma_bd(%[[VAL_4]] : memref<1024xi32, 2>, 0, 1024)
+// CHECK:    aie.dma_bd(%[[VAL_4]] : memref<1024xi32, 2> offset = 0 len = 1024)
 // CHECK:    aie.use_lock(%[[VAL_3]], Release, %{{.*}})
 // CHECK:    aie.next_bd ^bb1
 // CHECK:  ^bb2:
@@ -66,7 +66,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   %[[VAL_9:.*]] = aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:
 // CHECK:   aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.dma_bd(%[[VAL_7]] : memref<512xi32, 2>, 0, 512)
+// CHECK:   aie.dma_bd(%[[VAL_7]] : memref<512xi32, 2> offset = 0 len = 512)
 // CHECK:   aie.use_lock(%[[VAL_4]], Release, %{{.*}})
 // CHECK:   aie.next_bd ^bb1
 // CHECK: ^bb2:
@@ -75,7 +75,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   %[[VAL_10:.*]] = aie.dma_start(S2MM, 0, ^bb4, ^bb2)
 // CHECK: ^bb4:
 // CHECK:   aie.use_lock(%[[VAL_2]], AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.dma_bd(%[[VAL_6]] : memref<1024xi32, 2>, 0, 1024)
+// CHECK:   aie.dma_bd(%[[VAL_6]] : memref<1024xi32, 2> offset = 0 len = 1024)
 // CHECK:   aie.use_lock(%[[VAL_3]], Release, %{{.*}})
 // CHECK:   aie.next_bd ^bb4
 // CHECK: }
@@ -130,7 +130,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_7]] : memref<512xi32, 2>, 0, 512)
+// CHECK:           aie.dma_bd(%[[VAL_7]] : memref<512xi32, 2> offset = 0 len = 512)
 // CHECK:           aie.use_lock(%[[VAL_4]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
@@ -139,7 +139,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb4, ^bb2)
 // CHECK:         ^bb4:
 // CHECK:           aie.use_lock(%[[VAL_2]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_6]] : memref<1024xi32, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_6]] : memref<1024xi32, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_3]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb4
 // CHECK:         }
@@ -200,7 +200,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_20]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_23]] : memref<1024xi32, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_23]] : memref<1024xi32, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_19]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
@@ -209,7 +209,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb4, ^bb2)
 // CHECK:         ^bb4:
 // CHECK:           aie.use_lock(%[[VAL_17]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_23]] : memref<1024xi32, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_23]] : memref<1024xi32, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_18]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb4
 // CHECK:         }
@@ -238,7 +238,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:
 // CHECK:   aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1>, 0, 1024)
+// CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1> offset = 0 len = 1024)
 // CHECK:   aie.use_lock(%[[VAL_7]], Release, %{{.*}})
 // CHECK:   aie.next_bd ^bb1
 // CHECK: ^bb2:
@@ -247,21 +247,21 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb5)
 // CHECK: ^bb4:
 // CHECK:   aie.use_lock(%[[VAL_6]], AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1>, 0, 1024)
+// CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1> offset = 0 len = 1024)
 // CHECK:   aie.use_lock(%[[VAL_5]], Release, %{{.*}})
 // CHECK:   aie.next_bd ^bb4
 // CHECK: ^bb5:
 // CHECK:   aie.dma_start(S2MM, 0, ^bb6, ^bb7)
 // CHECK: ^bb6:
 // CHECK:   aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1>, 0, 1024)
+// CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1> offset = 0 len = 1024)
 // CHECK:   aie.use_lock(%[[VAL_8]], Release, %{{.*}})
 // CHECK:   aie.next_bd ^bb6
 // CHECK: ^bb7:
 // CHECK:   aie.dma_start(S2MM, 1, ^bb8, ^bb2)
 // CHECK: ^bb8:
 // CHECK:   aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1>, 0, 1024)
+// CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1> offset = 0 len = 1024)
 // CHECK:   aie.use_lock(%[[VAL_6]], Release, %{{.*}})
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
@@ -340,9 +340,9 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // Race-condition fix for func5 produces a memtile_dma with paired MM2S/S2MM
 // channels that recycle the same buffer with sizes 1024, 512, 1024, 0.
 // RACECONDFIX-LABEL: aie.memtile_dma
-// RACECONDFIX-DAG: aie.dma_bd(%{{.*}} : memref<1024xi32, 1>, 0, 1024)
-// RACECONDFIX-DAG: aie.dma_bd(%{{.*}} : memref<1024xi32, 1>, 0, 512)
-// RACECONDFIX-DAG: aie.dma_bd(%{{.*}} : memref<1024xi32, 1>, 0, 0)
+// RACECONDFIX-DAG: aie.dma_bd(%{{.*}} : memref<1024xi32, 1> offset = 0 len = 1024)
+// RACECONDFIX-DAG: aie.dma_bd(%{{.*}} : memref<1024xi32, 1> offset = 0 len = 512)
+// RACECONDFIX-DAG: aie.dma_bd(%{{.*}} : memref<1024xi32, 1> offset = 0 len = 0)
 // RACECONDFIX: @func5
 
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
@@ -475,21 +475,21 @@ func.func @func6(%arg5 : memref<8x8xi32>) {
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.dma_bd({{.*}} : memref<4x4xi32, 1>, 0, 16)
+// CHECK:   aie.dma_bd({{.*}} : memref<4x4xi32, 1> offset = 0 len = 16)
 // CHECK:   aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   aie.next_bd ^bb1
 // CHECK: ^bb3:  // pred: ^bb0
 // CHECK:   aie.dma_start(S2MM, 0, ^bb4, ^bb5)
 // CHECK: ^bb4:  // 2 preds: ^bb3, ^bb4
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.dma_bd({{.*}} : memref<4x4xi32, 1>, 0, 16)
+// CHECK:   aie.dma_bd({{.*}} : memref<4x4xi32, 1> offset = 0 len = 16)
 // CHECK:   aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   aie.next_bd ^bb4
 // CHECK: ^bb5:  // pred: ^bb3
 // CHECK:   aie.dma_start(S2MM, 1, ^bb6, ^bb2)
 // CHECK: ^bb6:  // 2 preds: ^bb5, ^bb6
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.dma_bd({{.*}} : memref<8x16xi32, 1>, 0, 16, [<size = 4, stride = 16>, <size = 4, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<8x16xi32, 1> offset = 0 len = 16 sizes = [4, 4] strides = [16, 1])
 // CHECK:   aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   aie.next_bd ^bb6
 // CHECK: @func7
@@ -532,7 +532,7 @@ func.func @func7(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.dma_bd({{.*}} : memref<64x256xi32, 1>, 8192, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<64x256xi32, 1> offset = 8192 len = 8192 sizes = [8, 32, 32] strides = [32, 256, 1])
 // CHECK:   aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   aie.next_bd ^bb1
 // CHECK: ^bb2:  // pred: ^bb0
@@ -568,15 +568,15 @@ func.func @func8(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // CHECK: aie.device(npu1)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
-// CHECK:   aie.dma_bd({{.*}} : memref<32xf32, 2>, 0, 32)
+// CHECK:   aie.dma_bd({{.*}} : memref<32xf32, 2> offset = 0 len = 32)
 // CHECK: %[[tileDMA_0_3:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
-// CHECK:   aie.dma_bd({{.*}} : memref<32xf32, 2>, 0, 32)
+// CHECK:   aie.dma_bd({{.*}} : memref<32xf32, 2> offset = 0 len = 32)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
-// CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 0, 32)
+// CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1> offset = 0 len = 32)
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
-// CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 32, 32)
+// CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1> offset = 32 len = 32)
 // CHECK: @func9
 // RACECONDFIX: @func9
 #map = affine_map<()[s0] -> (s0 * 32)>
@@ -631,15 +631,15 @@ func.func @func9(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // CHECK: aie.device(npu1)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
-// CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 2>, 0, 8192)
+// CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 2> offset = 0 len = 8192)
 // CHECK: %[[tileDMA_0_3:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
-// CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 2>, 0, 8192)
+// CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 2> offset = 0 len = 8192)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
-// CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 1>, 0, 8192)
+// CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 1> offset = 0 len = 8192)
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
-// CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 1>, 0, 8192)
+// CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 1> offset = 0 len = 8192)
 // CHECK: @func10
 // RACECONDFIX: @func10
 #map = affine_map<()[s0] -> (s0 * 32)>
@@ -694,15 +694,15 @@ func.func @func10(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // CHECK: aie.device(npu1)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
-// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 0, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2> offset = 0 len = 8192 sizes = [8, 32, 32] strides = [32, 256, 1])
 // CHECK: %[[tileDMA_0_3:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
-// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 0, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2> offset = 0 len = 8192 sizes = [8, 32, 32] strides = [32, 256, 1])
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
-// CHECK:   memref<32x256xbf16, 1>, 0, 8192)
+// CHECK:   memref<32x256xbf16, 1> offset = 0 len = 8192)
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
-// CHECK:   memref<32x256xbf16, 1>, 0, 8192)
+// CHECK:   memref<32x256xbf16, 1> offset = 0 len = 8192)
 // CHECK: @func11
 // RACECONDFIX: @func11
 #map = affine_map<()[s0] -> (s0 * 32)>
@@ -790,11 +790,11 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
 
 // RACECONDFIX: aie.device(npu1)
 // RACECONDFIX: aie.memtile_dma(%[[mem_tile_0_1:.*]])
-// RACECONDFIX-COUNT-3: aie.dma_bd(%[[buf19:.*]] : memref<64x256xbf16, 1>, 0, 0)
-// RACECONDFIX: aie.dma_bd(%[[buf19]] : memref<64x256xbf16, 1>, 0, 16384)
+// RACECONDFIX-COUNT-3: aie.dma_bd(%[[buf19:.*]] : memref<64x256xbf16, 1> offset = 0 len = 0)
+// RACECONDFIX: aie.dma_bd(%[[buf19]] : memref<64x256xbf16, 1> offset = 0 len = 16384)
 // RACECONDFIX: aie.memtile_dma(%[[mem_tile_1_1:.*]])
-// RACECONDFIX-COUNT-11: aie.dma_bd(%[[buf18:.*]] : memref<64x256xbf16, 1>, 0, 0)
-// RACECONDFIX: aie.dma_bd(%[[buf18]] : memref<64x256xbf16, 1>, 0, 16384)
+// RACECONDFIX-COUNT-11: aie.dma_bd(%[[buf18:.*]] : memref<64x256xbf16, 1> offset = 0 len = 0)
+// RACECONDFIX: aie.dma_bd(%[[buf18]] : memref<64x256xbf16, 1> offset = 0 len = 16384)
 // RACECONDFIX: @func12
 
 #map = affine_map<()[s0] -> (s0 * 256)>
@@ -923,7 +923,7 @@ module {
 // CHECK:    %[[VAL_1:.*]] = aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK:  ^bb1:
 // CHECK:    aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:    aie.dma_bd(%{{.*}} : memref<1x1x16x16x4x4xf32, 2 : i32>, 0, 4096, [<size = 64, stride = 4>, <size = 16, stride = 256>, <size = 4, stride = 1>])
+// CHECK:    aie.dma_bd(%{{.*}} : memref<1x1x16x16x4x4xf32, 2 : i32> offset = 0 len = 4096 sizes = [64, 16, 4] strides = [4, 256, 1])
 // CHECK:    aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:    aie.next_bd ^bb1
 // CHECK:  ^bb2:
@@ -1442,7 +1442,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:      ^bb1:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32>, 0, 2048, [<size = 8, stride = 8>, <size = 32, stride = 64>, <size = 8, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      ^bb2:
@@ -1451,7 +1451,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
 // CHECK:      ^bb4:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32>, 0, 6144, [<size = 24, stride = 4>, <size = 64, stride = 96>, <size = 4, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 4>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 4>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      }
@@ -1459,7 +1459,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:      ^bb1:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32>, 0, 2048, [<size = 8, stride = 8>, <size = 32, stride = 64>, <size = 8, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      ^bb2:
@@ -1468,7 +1468,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
 // CHECK:      ^bb4:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32>, 0, 6144, [<size = 24, stride = 4>, <size = 64, stride = 96>, <size = 4, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      }
@@ -1476,7 +1476,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:      ^bb1:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32>, 0, 2048, [<size = 8, stride = 8>, <size = 32, stride = 64>, <size = 8, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 2>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 2>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      ^bb2:
@@ -1485,7 +1485,7 @@ module {
 // CHECK:        %{{.*}} = aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
 // CHECK:      ^bb4:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32>, 0, 6144, [<size = 24, stride = 4>, <size = 64, stride = 96>, <size = 4, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 6>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 6>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      }
@@ -1493,7 +1493,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:      ^bb1:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32>, 0, 2048, [<size = 8, stride = 8>, <size = 32, stride = 64>, <size = 8, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      ^bb2:
@@ -1502,7 +1502,7 @@ module {
 // CHECK:        %{{.*}} = aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
 // CHECK:      ^bb4:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32>, 0, 6144, [<size = 24, stride = 4>, <size = 64, stride = 96>, <size = 4, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 7>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 7>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      }

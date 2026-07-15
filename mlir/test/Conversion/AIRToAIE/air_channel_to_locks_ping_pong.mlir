@@ -19,12 +19,12 @@
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[CLOCK_PROD]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[CBUF_A]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[CBUF_A]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[CLOCK_CONS]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
 // CHECK:           aie.use_lock(%[[CLOCK_PROD]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[CBUF_B]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[CBUF_B]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[CLOCK_CONS]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
@@ -50,7 +50,7 @@
 // CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[MLOCK_CONS]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[MBUF]] : memref<32x32xbf16, 1>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[MBUF]] : memref<32x32xbf16, 1> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[MLOCK_PROD]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
@@ -113,12 +113,12 @@ func.func @multi_memcpys_over_time() {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_11]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_11]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_8]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
 // CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_8]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
@@ -137,12 +137,12 @@ func.func @multi_memcpys_over_time() {
 // CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_13]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_13]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_3]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
 // CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_14]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_14]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_3]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
@@ -217,12 +217,12 @@ func.func @core_to_core_ping_pong() {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_11]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_11]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_8]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
 // CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_8]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
@@ -241,12 +241,12 @@ func.func @core_to_core_ping_pong() {
 // CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_13]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_13]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_3]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
 // CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[VAL_14]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_14]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
 // CHECK:           aie.use_lock(%[[VAL_3]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
@@ -329,7 +329,7 @@ func.func @core_to_core_ping_pong() {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[CLOCK_PROD]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.dma_bd(%[[CBUF]] : memref<1x1x4x8x4x8xi32, 2 : i32>, 0, 1024) {task_id = 0 : i32}
+// CHECK:           aie.dma_bd(%[[CBUF]] : memref<1x1x4x8x4x8xi32, 2 : i32> offset = 0 len = 1024) {task_id = 0 : i32}
 // CHECK:           aie.use_lock(%[[CLOCK_CONS]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:  // pred: ^bb0

@@ -63,7 +63,7 @@ module {
     ^bb1:
       %c1_i32 = arith.constant 1 : i32
       aie.use_lock(%lock_0_2_2, AcquireGreaterEqual, %c1_i32)
-      aie.dma_bd(%buf0 : memref<32xi32, 2 : i32>, 0, 32) {task_id = 0 : i32}
+      aie.dma_bd(%buf0 : memref<32xi32, 2 : i32> offset = 0 len = 32) {task_id = 0 : i32}
       %c1_i32_1 = arith.constant 1 : i32
       aie.use_lock(%lock_0_2_1, Release, %c1_i32_1)
       aie.next_bd ^bb1
@@ -74,7 +74,7 @@ module {
     ^bb4:
       %c1_i32_2 = arith.constant 1 : i32
       aie.use_lock(%lock_0_2, AcquireGreaterEqual, %c1_i32_2)
-      aie.dma_bd(%buf1 : memref<32xi32, 2 : i32>, 0, 32) {task_id = 0 : i32}
+      aie.dma_bd(%buf1 : memref<32xi32, 2 : i32> offset = 0 len = 32) {task_id = 0 : i32}
       %c1_i32_3 = arith.constant 1 : i32
       aie.use_lock(%lock_0_2_0, Release, %c1_i32_3)
       aie.next_bd ^bb4
@@ -129,7 +129,7 @@ module {
     ^bb1:
       %c1_i32_9 = arith.constant 1 : i32
       aie.use_lock(%lock_0_2_2, AcquireGreaterEqual, %c1_i32_9)
-      aie.dma_bd(%buf2 : memref<32xi32, 2 : i32>, 0, 32) {task_id = 0 : i32}
+      aie.dma_bd(%buf2 : memref<32xi32, 2 : i32> offset = 0 len = 32) {task_id = 0 : i32}
       %c1_i32_10 = arith.constant 1 : i32
       aie.use_lock(%lock_0_2_1, Release, %c1_i32_10)
       aie.next_bd ^bb1
@@ -140,7 +140,7 @@ module {
     ^bb4:
       %c1_i32_11 = arith.constant 1 : i32
       aie.use_lock(%lock_0_2, AcquireGreaterEqual, %c1_i32_11)
-      aie.dma_bd(%buf3 : memref<32xi32, 2 : i32>, 0, 32) {task_id = 0 : i32}
+      aie.dma_bd(%buf3 : memref<32xi32, 2 : i32> offset = 0 len = 32) {task_id = 0 : i32}
       %c1_i32_12 = arith.constant 1 : i32
       aie.use_lock(%lock_0_2_0, Release, %c1_i32_12)
       aie.next_bd ^bb4

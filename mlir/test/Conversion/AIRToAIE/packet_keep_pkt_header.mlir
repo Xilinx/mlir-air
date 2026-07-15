@@ -14,7 +14,7 @@
 //   - NOT statically stamp a pkt_id on the producer BD (a static stamp would
 //     prepend a second header word and shift the payload).
 
-// CHECK: aie.dma_bd({{.*}}memref<8xbf16, 2>, 0, 8) {task_id = 0 : i32}
+// CHECK: aie.dma_bd({{.*}}memref<8xbf16, 2> offset = 0 len = 8) {task_id = 0 : i32}
 // CHECK-NOT: packet = #aie.packet_info
 // CHECK: aie.packet_flow(0) {
 // CHECK-NEXT: aie.packet_source<%{{.*}}, DMA : 0>
