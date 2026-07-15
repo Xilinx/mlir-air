@@ -1,0 +1,114 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# Manual-only: pre-seed every LLM's HuggingFace weights into the dedicated
+# Krackan runner's persistent HF cache (~/.cache/huggingface, which survives
+# across CI runs on this self-hosted runner). The nightly perf benchmark then
+# runs with HF_HUB_OFFLINE=1 and never touches the network — the runner's HF
+# egress is flaky (intermittent "Connection reset by peer"), and from_pretrained
+# does a network HEAD even for cached files, so offline + a warm cache is the
+# only reliable combination.
+#
+# Run this ONCE, and again only after adding a new model or clearing the cache.
+# It is workflow_dispatch ONLY: never scheduled, never on push/PR, so it cannot
+# slow down normal CI. The before/after `scan-cache` output is the evidence that
+# a download landed in the cache the nightly reads.
+
+name: Download LLM Weights (manual)
+
+on:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+# Never run two seeding jobs at once (they share one on-disk cache).
+concurrency:
+  group: download-llm-weights
+  cancel-in-progress: false
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  # Force the classic HTTPS CDN path; the hf_xet backend stalls on this runner.
+  HF_HUB_DISABLE_XET: "1"
+
+jobs:
+  download:
+    name: Seed LLM weights into runner HF cache
+    # MUST be the same runner the nightly perf benchmark uses, so the cache is
+    # shared. Runs as the same user (gh-runner) => same ~/.cache/huggingface.
+    runs-on: amdryzenai5pro340
+    timeout-minutes: 240
+
+    steps:
+      - name: Set up huggingface_hub CLI
+        run: |
+          python3.12 -m venv hf-venv
+          source hf-venv/bin/activate
+          pip install --upgrade pip
+          pip install "huggingface_hub[cli]"
+
+      - name: Show HF cache BEFORE
+        run: |
+          source hf-venv/bin/activate
+          echo "HF cache dir: ${HF_HOME:-$HOME/.cache/huggingface}"
+          huggingface-cli scan-cache || echo "(cache empty or not yet created)"
+
+      - name: Download all model weights
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          source hf-venv/bin/activate
+
+          # Every HF repo the llms/ verify + profile paths load (base + instruct
+          # variants + the int4 AWQ source). Keep in sync with the model IDs in
+          # programming_examples/llms/*/{verify_adapter,*_inference}.py.
+          models=(
+            meta-llama/Llama-3.2-1B
+            meta-llama/Llama-3.2-1B-Instruct
+            meta-llama/Llama-3.2-3B
+            meta-llama/Llama-3.2-3B-Instruct
+            Qwen/Qwen2.5-0.5B
+            Qwen/Qwen2.5-0.5B-Instruct
+            Qwen/Qwen2.5-1.5B
+            Qwen/Qwen2.5-1.5B-Instruct
+            Qwen/Qwen2.5-3B
+            Qwen/Qwen2.5-3B-Instruct
+            Qwen/Qwen3-0.6B
+            Qwen/Qwen3-1.7B
+            Qwen/Qwen3-4B
+            HuggingFaceTB/SmolLM2-1.7B
+            HuggingFaceTB/SmolLM2-1.7B-Instruct
+            amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead
+          )
+
+          rc=0
+          for m in "${models[@]}"; do
+            echo "::group::download $m"
+            ok=0
+            # Retry per model: the runner's HF egress drops connections at random.
+            for attempt in 1 2 3 4 5; do
+              if huggingface-cli download "$m" \
+                   --include "*.safetensors" "*.json" "*.txt" "*.model" \
+                             "tokenizer*" "*.tiktoken"; then
+                ok=1
+                break
+              fi
+              echo "attempt $attempt failed for $m; retrying in $((attempt * 15))s"
+              sleep $((attempt * 15))
+            done
+            if [ "$ok" -ne 1 ]; then
+              echo "ERROR: failed to download $m after 5 attempts"
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $rc
+
+      - name: Show HF cache AFTER
+        if: always()
+        run: |
+          source hf-venv/bin/activate
+          echo "HF cache dir: ${HF_HOME:-$HOME/.cache/huggingface}"
+          huggingface-cli scan-cache

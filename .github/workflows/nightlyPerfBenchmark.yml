@@ -145,6 +145,13 @@ jobs:
           # by programming_examples/lit.cfg.py). The hf_xet backend stalls at 0%
           # on this runner (Xet CAS endpoint unreachable).
           HF_HUB_DISABLE_XET: "1"
+          # Serve weights from the runner's persistent HF cache without any
+          # network access. The runner's HF egress is flaky (intermittent
+          # "Connection reset by peer"), and from_pretrained does a network HEAD
+          # even for cached files; offline mode skips it. Seed/refresh the cache
+          # via the manual "Download LLM Weights" workflow (downloadLLMWeights.yml)
+          # before running this. Forwarded into lit tests by lit.cfg.py.
+          HF_HUB_OFFLINE: "1"
         run: |
           source air-venv/bin/activate
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH

@@ -137,6 +137,14 @@ else:
 if os.environ.get("HF_HUB_DISABLE_XET"):
     llvm_config.with_environment("HF_HUB_DISABLE_XET", os.environ["HF_HUB_DISABLE_XET"])
 
+# Forward HF_HUB_OFFLINE when the host sets it (the perf runner sets it to 1 so
+# from_pretrained serves the pre-seeded weight cache without a network HEAD --
+# the runner's HF egress is flaky). lit sanitizes the environment, so tests only
+# see vars explicitly forwarded here. No-op when unset. Weights are seeded by the
+# manual downloadLLMWeights.yml workflow.
+if os.environ.get("HF_HUB_OFFLINE"):
+    llvm_config.with_environment("HF_HUB_OFFLINE", os.environ["HF_HUB_OFFLINE"])
+
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
 llvm_config.use_default_substitutions()
