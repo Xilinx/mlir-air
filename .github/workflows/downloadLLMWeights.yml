@@ -82,9 +82,13 @@ jobs:
           import sys, time
           from huggingface_hub import snapshot_download
 
-          # Weight/config/tokenizer files only (skip .pth/.gguf/.bin duplicates).
-          PATTERNS = ["*.safetensors", "*.json", "*.txt", "*.model",
-                      "tokenizer*", "*.tiktoken"]
+          # Weight/config/tokenizer files only.
+          ALLOW = ["*.safetensors", "*.json", "*.txt", "*.model", "*.tiktoken"]
+          # Skip files transformers/our loader never use but that otherwise make
+          # snapshot_download report the snapshot "incomplete" if they fail to
+          # fetch on the flaky link: the Llama `original/` dir (sentencepiece +
+          # consolidated.pth duplicate of the fast tokenizer) and license blurbs.
+          IGNORE = ["original/*", "LICENSE*", "USE_POLICY*"]
 
           # Single source of truth for the model list.
           models = [s.strip()
@@ -95,18 +99,24 @@ jobs:
           rc = 0
           for m in models:
               ok = False
-              # Retry per model: the runner's HF egress drops connections at random.
-              for attempt in range(1, 6):
+              # Retry per model: the runner's HF egress drops connections at
+              # random. snapshot_download resumes already-fetched files, so each
+              # attempt makes progress. max_workers=1 keeps one connection open
+              # at a time (gentler on the flaky link).
+              for attempt in range(1, 9):
                   try:
-                      snapshot_download(m, allow_patterns=PATTERNS)
+                      snapshot_download(
+                          m, allow_patterns=ALLOW, ignore_patterns=IGNORE,
+                          max_workers=1,
+                      )
                       print(f"OK  {m}", flush=True)
                       ok = True
                       break
                   except Exception as e:
                       print(f"attempt {attempt} failed for {m}: {e}", flush=True)
-                      time.sleep(attempt * 15)
+                      time.sleep(min(attempt * 15, 60))
               if not ok:
-                  print(f"ERROR: failed to download {m} after 5 attempts", flush=True)
+                  print(f"ERROR: failed to download {m} after 8 attempts", flush=True)
                   rc = 1
           sys.exit(rc)
           PY
