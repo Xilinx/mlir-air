@@ -625,18 +625,6 @@ Most examples with a `Makefile` support `make run` (compile and execute on hardw
 python3 run.py                    # compile and run (XRTRunner)
 python3 run.py --print-module-only  # print IR only
 ```
-
-## Benchmarking
-
-The [matrix multiplication](matrix_multiplication/) examples include sweep infrastructure for measuring end-to-end latency across problem sizes:
-
-```bash
-cd matrix_multiplication/bf16
-make sweep4x4    # sweep problem sizes 256-2048 with a 4x4 herd
-make profile     # profile a single 1024^3 problem on hardware
-```
-
-Sweep results are saved as CSV files for analysis. See the [bf16 README](matrix_multiplication/bf16/README.md) for details on tile size configuration and architecture selection.
 """
 
 
