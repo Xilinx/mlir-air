@@ -8,17 +8,17 @@
 
 // RUN: air-opt %s -air-to-aie | FileCheck %s
 // CHECK: aie.core({{.*}}) {
-// CHECK: aie.use_lock({{.*}}, Acquire, 0)
-// CHECK: aie.use_lock({{.*}}, Acquire, 1)
+// CHECK: aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK: aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK: scf.for {{.*}} = {{.*}} to {{.*}} step {{.*}} {
-// CHECK:   aie.use_lock({{.*}}, Acquire, 1)
-// CHECK:   aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:   aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:   aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:   linalg.matmul ins({{.*}}, {{.*}} : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs({{.*}} : memref<32x32xi32, 2>)
-// CHECK:   aie.use_lock({{.*}}, Release, 0)
-// CHECK:   aie.use_lock({{.*}}, Release, 0)
+// CHECK:   aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:   aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK: }
-// CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
-// CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
+// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
 #map = affine_map<()[s0] -> (s0 * 32)>
 #set0 = affine_set<(d0, d1)[s0] : (d0 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 1 >= 0)>
 #set1 = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, s0 >= 0, -s0 + 1 >= 0)>

@@ -8,10 +8,14 @@
 // RUN: air-opt -airrt-to-npu -split-input-file %s | FileCheck %s
 
 // CHECK-LABEL: func1
-// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_1_2, 0, 11)
-// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_1_2, 1, 22)
-// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_1_3, 0, 11)
-// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_1_3, 1, 22)
+// CHECK: arith.constant 11 : i32
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_1_2, 0, %{{.*}}) : i32
+// CHECK: arith.constant 22 : i32
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_1_2, 1, %{{.*}}) : i32
+// CHECK: arith.constant 11 : i32
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_1_3, 0, %{{.*}}) : i32
+// CHECK: arith.constant 22 : i32
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_1_3, 1, %{{.*}}) : i32
 
 module {
   aie.device(npu1) @segment {
@@ -40,7 +44,8 @@ module {
 // CHECK-LABEL: module
 // CHECK: aie.device(npu1) @segment_0
 // CHECK: aie.runtime_sequence @func2
-// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, 5)
+// CHECK: arith.constant 5 : i32
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
 // CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
 
 module {

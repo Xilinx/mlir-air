@@ -18,7 +18,7 @@ OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
-PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
+PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
 # GEMV dimensions: C[M] = A[M,K] @ B[K]
 # tile_m=2 with 8 cols and K=8192: A_L2 = 8*2*8192*2 = 256KB < 512KB

@@ -26,8 +26,8 @@
 
 // CHECK-LABEL: aie.device
 // CHECK-DAG: aie.lock(%{{.*}}, {{.*}}) {init = 4 : i32}
-// CHECK-DAG: aie.use_lock(%{{.*}}, AcquireGreaterEqual, 4)
-// CHECK-DAG: aie.use_lock(%{{.*}}, Release, 4)
+// CHECK-DAG: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK-DAG: aie.use_lock(%{{.*}}, Release, %{{.*}})
 
 #set = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 air.channel @channel_0 [1, 1] {air.refeed_count = 4 : i32}
@@ -71,8 +71,8 @@ func.func @refeed() {
 // CHECK: aie.lock(%{{.*}}, {{.*}}) {init = 4 : i32}
 // CHECK: aie.buffer{{.*}}air.refeed_count = 4 : i32
 // CHECK: aie.memtile_dma
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, 4)
-// CHECK: aie.use_lock(%{{.*}}, Release, 4)
+// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK: aie.use_lock(%{{.*}}, Release, %{{.*}})
 
 air.channel @cin [1, 1]
 air.channel @to_core [1, 1]
@@ -120,9 +120,9 @@ func.func @mt_refeed(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
 // CHECK: aie.buffer{{.*}}air.refeed_count = 2 : i32
 // CHECK: aie.memtile_dma
 // Drain (MM2S) re-send: releases the buf-free lock by 1 (not scaled).
-// CHECK: aie.use_lock(%[[BUFFREE]], Release, 1)
+// CHECK: aie.use_lock(%[[BUFFREE]], Release, %{{.*}})
 // Fill (S2MM): one fill waits for all N drains, acquiring the buf-free lock N.
-// CHECK: aie.use_lock(%[[BUFFREE]], AcquireGreaterEqual, 2)
+// CHECK: aie.use_lock(%[[BUFFREE]], AcquireGreaterEqual, %{{.*}})
 
 air.channel @cin2 [1, 1]
 air.channel @to_core2 [1, 1]

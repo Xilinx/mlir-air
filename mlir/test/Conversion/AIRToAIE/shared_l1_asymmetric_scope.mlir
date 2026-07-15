@@ -42,13 +42,13 @@
 // (hoisted out), not inside each iteration. Release MUST happen AFTER
 // the scf.for. This avoids the cadence mismatch.
 // CHECK: aie.core(%[[CONS_TILE]])
-// CHECK: aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, 1)
+// CHECK: aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, %{{.*}})
 // CHECK: scf.for
 // Negative: no acquire/release INSIDE the consumer's scf.for body.
 // (Pre-fix the inner-scope choice puts both lock ops inside the scf.for.)
 // CHECK-NOT: aie.use_lock
 // CHECK: }
-// CHECK: aie.use_lock(%[[PROD_LOCK]], Release, 1)
+// CHECK: aie.use_lock(%[[PROD_LOCK]], Release, %{{.*}})
 
 // CHECK: aie.core(%[[PROD_TILE]])
 

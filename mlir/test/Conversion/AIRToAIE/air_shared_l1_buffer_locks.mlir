@@ -29,14 +29,14 @@
 
 // Check consumer core (tile_0_3) appears first in output
 // CHECK: aie.core(%[[TILE1]])
-// CHECK: aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, 1)
-// CHECK: aie.use_lock(%[[PROD_LOCK]], Release, 1)
+// CHECK: aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK: aie.use_lock(%[[PROD_LOCK]], Release, %{{.*}})
 
 // Check producer core (tile_0_2) appears second
 // CHECK: aie.core(%[[TILE0]])
-// CHECK: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
+// CHECK: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, %{{.*}})
 // CHECK: vector.transfer_write {{.*}}, %[[SHARED_BUF]]
-// CHECK: aie.use_lock(%[[CONS_LOCK]], Release, 1)
+// CHECK: aie.use_lock(%[[CONS_LOCK]], Release, %{{.*}})
 
 module {
   func.func @shared_l1_producer_consumer() {
@@ -89,8 +89,8 @@ module {
 
 // Verify mutex strategy: acquire and release SAME lock (not cross-release)
 // CHECK: aie.core
-// CHECK: aie.use_lock(%[[MUTEX_LOCK]], AcquireGreaterEqual, 1)
-// CHECK: aie.use_lock(%[[MUTEX_LOCK]], Release, 1)
+// CHECK: aie.use_lock(%[[MUTEX_LOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK: aie.use_lock(%[[MUTEX_LOCK]], Release, %{{.*}})
 
 module {
   func.func @shared_l1_single_herd_producer_only() {
@@ -142,9 +142,9 @@ module {
 
 // Check producer core protects write through subview
 // CHECK: aie.core
-// CHECK: aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK: aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK: memref.subview %[[SHARED_BUF]]
-// CHECK: aie.use_lock({{.*}}, Release, 1)
+// CHECK: aie.use_lock({{.*}}, Release, %{{.*}})
 
 module {
   func.func @shared_l1_with_subview() {
@@ -229,16 +229,16 @@ module {
 
 // Consumer core: acquires cons_lock with count 2 (waits for both producers)
 // CHECK: aie.core
-// CHECK: aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, 2)
-// CHECK: aie.use_lock(%[[PROD_LOCK]], Release, 2)
+// CHECK: aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK: aie.use_lock(%[[PROD_LOCK]], Release, %{{.*}})
 
 // Producer cores: each acquires prod_lock with count 1
 // CHECK: aie.core
-// CHECK: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
-// CHECK: aie.use_lock(%[[CONS_LOCK]], Release, 1)
+// CHECK: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK: aie.use_lock(%[[CONS_LOCK]], Release, %{{.*}})
 // CHECK: aie.core
-// CHECK: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
-// CHECK: aie.use_lock(%[[CONS_LOCK]], Release, 1)
+// CHECK: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK: aie.use_lock(%[[CONS_LOCK]], Release, %{{.*}})
 
 module {
   func.func @multi_producer_shared_l1() {

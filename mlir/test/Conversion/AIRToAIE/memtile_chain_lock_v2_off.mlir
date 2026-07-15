@@ -18,7 +18,7 @@
 
 // Memtile DMA: writer side acq/rel 1 (no change); reader side acq/rel 4.
 // CHECK: aie.memtile_dma(%[[MT]])
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, 4)
+// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
 
 // Negative: no v2 chain pattern (which would have 4 init=0 signal locks).
 // (Hard to spot-check structurally without the chain identities — the

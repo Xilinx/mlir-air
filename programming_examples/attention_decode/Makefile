@@ -18,7 +18,7 @@ WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty
 # -Os (aggressive size opt) keeps the AIE2P core ELF under the 16 KB
 # program memory limit when rms shares a tile with vecmat + attn +
 # softmax + RoPE (-O2 builds ~18 KB for N_IN=2048 TILE_K=128).
-PEANOWRAP2P_FLAGS = -Os -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 -I ${AIEOPT_DIR}/include
+PEANOWRAP2P_FLAGS = -Os -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
 # ============================================================================
 # attn_decode_npu2: per-token attention block (RMSNorm + QKV GEMV + RoPE +

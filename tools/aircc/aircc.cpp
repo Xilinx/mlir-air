@@ -1290,6 +1290,10 @@ static LogicalResult runAieCompilation() {
 
     aieccCmd.push_back("-O");
     aieccCmd.push_back("3");
+    // aiecc defaults to -j 0 (auto CPU count) since mlir-aie commit 1ba5b5c.
+    // Force sequential core compilation to avoid parallel xchesscc crashes.
+    aieccCmd.push_back("-j");
+    aieccCmd.push_back("1");
 
     // bf16 emulation
     if (bf16Emulation)

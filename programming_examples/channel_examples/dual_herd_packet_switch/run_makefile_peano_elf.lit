@@ -8,3 +8,7 @@
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile run OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: PASS!
+//
+// XFAIL: *
+// Full-ELF with >5 host buffers emits a spurious DDR-aperture offset on arg>=5.
+// Fixed by mlir-aie PR #3345 (runtime-gated offset); un-XFAIL after that lands.

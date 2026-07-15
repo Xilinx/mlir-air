@@ -203,7 +203,8 @@ try:
         )
         print("Peano found: " + os.path.join(config.peano_tools_dir, "llc"))
         peano_flags = (
-            "-O2 -std=c++20 -DNDEBUG -mllvm -aie-disable-fold-imm -I{}".format(
+            "-O2 -std=c++20 -DNDEBUG -mllvm -aie-disable-fold-imm"
+            " -D__AIE_API_AIE_ADF_HPP__ -I{}".format(
                 os.path.join(config.aie_obj_root, "include")
             )
         )
