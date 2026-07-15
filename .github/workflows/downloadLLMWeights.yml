@@ -15,9 +15,10 @@
 # download landed in the cache the nightly reads.
 #
 # Uses the huggingface_hub Python API (snapshot_download / scan_cache_dir), not
-# the CLI: the `huggingface-cli` command was renamed to `hf` and now no-ops in
-# recent huggingface_hub (>=1.x), so the CLI path silently fails. The Python API
-# is stable across versions.
+# the CLI: in huggingface_hub >=1.x the command was renamed to `hf` and the
+# legacy `huggingface-cli download` invocation is deprecated -- it prints a
+# deprecation notice and no longer performs the download, so seeding fails. The
+# Python API is stable across versions.
 
 name: Download LLM Weights
 
@@ -105,7 +106,7 @@ jobs:
         run: |
           source hf-venv/bin/activate
           python3 - <<'PY'
-          import random, sys, time
+          import random, sys, time, traceback
           from huggingface_hub import snapshot_download
 
           # Weight/config/tokenizer files only.
@@ -145,6 +146,10 @@ jobs:
                       print(f"attempt {attempt} failed for {m}: "
                             f"{type(e).__name__}: {e}", flush=True)
                       if attempt == ATTEMPTS:
+                          # Full traceback on the final attempt so a non-transient
+                          # cause (auth/permission, a bug) is diagnosable from the
+                          # logs rather than hidden behind repeated str(e) lines.
+                          traceback.print_exc()
                           break
                       delay = min(300, 10 * (2 ** (attempt - 1))) + random.uniform(0, 5)
                       print(f"  retrying in {delay:.1f}s", flush=True)
