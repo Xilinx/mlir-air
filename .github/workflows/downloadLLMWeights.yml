@@ -19,7 +19,7 @@
 # recent huggingface_hub (>=1.x), so the CLI path silently fails. The Python API
 # is stable across versions.
 
-name: Download LLM Weights (manual)
+name: Download LLM Weights
 
 on:
   workflow_dispatch:
