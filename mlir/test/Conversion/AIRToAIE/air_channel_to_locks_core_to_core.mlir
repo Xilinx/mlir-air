@@ -9,46 +9,46 @@
 
 // one-to-one communication
 // CHECK: aie.device
-// CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
-// CHECK:         %[[VAL_2:.*]] = aie.tile(2, 4)
-// CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 1)
-// CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 0)
-// CHECK:         %[[VAL_5:.*]] = aie.lock(%[[VAL_2]], 1)
-// CHECK:         %[[VAL_6:.*]] = aie.lock(%[[VAL_2]], 0)
-// CHECK:         %[[VAL_7:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_1:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[VAL_2:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 1)
+// CHECK-DAG:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 0)
+// CHECK-DAG:         %[[VAL_5:.*]] = aie.lock(%[[VAL_2]], 1)
+// CHECK-DAG:         %[[VAL_6:.*]] = aie.lock(%[[VAL_2]], 0)
+// CHECK-DAG:         %[[VAL_7:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:    aie.mem(%[[VAL_2]])  {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
-// CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_7]] : memref<32x32xbf16, 2>, 0, 1024)
-// CHECK:           aie.use_lock(%[[VAL_6]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, %{{.*}})
+// CHECK:           aie.dma_bd(%[[VAL_7]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
+// CHECK:           aie.use_lock(%[[VAL_6]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
 // CHECK:           aie.end
 // CHECK:         }
 
 // CHECK:    aie.core(%[[VAL_2]])  {
-// CHECK:           aie.use_lock(%[[VAL_6]], AcquireGreaterEqual, 1)
-// CHECK:           aie.use_lock(%[[VAL_5]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_6]], AcquireGreaterEqual, %{{.*}})
+// CHECK:           aie.use_lock(%[[VAL_5]], Release, %{{.*}})
 // CHECK:           aie.end
 // CHECK:         }
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
 // CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
-// CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_8]] : memref<32x32xbf16, 2>, 0, 1024)
-// CHECK:           aie.use_lock(%[[VAL_3]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, %{{.*}})
+// CHECK:           aie.dma_bd(%[[VAL_8]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
+// CHECK:           aie.use_lock(%[[VAL_3]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
 // CHECK:           aie.end
 // CHECK:         }
 
 // CHECK:    aie.core(%[[VAL_1]])  {
-// CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, 1)
-// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, %{{.*}})
+// CHECK:           aie.use_lock(%[[VAL_4]], Release, %{{.*}})
 // CHECK:           aie.end
 // CHECK:         }
 
@@ -88,14 +88,14 @@ func.func @one_to_one() {
 
 // two-to-two parallel dataflow
 // CHECK: aie.device
-// CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
-// CHECK:         %[[VAL_2:.*]] = aie.tile(3, 3)
-// CHECK:         %[[VAL_3:.*]] = aie.tile(2, 4)
-// CHECK:         %[[VAL_4:.*]] = aie.tile(3, 4)
-// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_4]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_15:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_16:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_1:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[VAL_2:.*]] = aie.tile(3, 3)
+// CHECK-DAG:         %[[VAL_3:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[VAL_4:.*]] = aie.tile(3, 4)
+// CHECK-DAG:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_4]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_15:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_16:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:         aie.flow(%[[VAL_3]], DMA : 0, %[[VAL_4]], DMA : 0)
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)
@@ -133,14 +133,14 @@ func.func @two_to_two() {
 
 // one-to-two core-to-core broadcast
 // CHECK: aie.device
-// CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
-// CHECK:         %[[VAL_2:.*]] = aie.tile(3, 3)
-// CHECK:         %[[VAL_3:.*]] = aie.tile(2, 4)
-// CHECK:         %[[VAL_4:.*]] = aie.tile(3, 4)
-// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_4]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_15:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_16:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_1:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[VAL_2:.*]] = aie.tile(3, 3)
+// CHECK-DAG:         %[[VAL_3:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[VAL_4:.*]] = aie.tile(3, 4)
+// CHECK-DAG:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_4]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_15:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[VAL_16:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_4]], DMA : 0)
@@ -189,10 +189,10 @@ func.func @one_to_two() {
 
 // Core-to-core cascade flow
 // CHECK: aie.device
-// CHECK:         %[[tile_2_3:.*]] = aie.tile(2, 3)
-// CHECK:         %[[tile_2_4:.*]] = aie.tile(2, 4)
-// CHECK:         %[[tile_2_5:.*]] = aie.tile(2, 5)
-// CHECK:         %[[tile_2_6:.*]] = aie.tile(2, 6)
+// CHECK-DAG:         %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[tile_2_5:.*]] = aie.tile(2, 5)
+// CHECK-DAG:         %[[tile_2_6:.*]] = aie.tile(2, 6)
 // CHECK:         aie.core(%[[tile_2_6]])
 // CHECK:           %[[CST:.*]] = arith.constant 0 : i32
 // CHECK:           linalg.add
@@ -241,7 +241,7 @@ func.func @one_to_two() {
 
 #set = affine_set<()[s0] : (s0 - 3 == 0)>
 #set1 = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
-air.channel @channel_0 [3] {channel_type = "cascade"}
+air.channel @channel_0 [3] {channel_type = "npu_cascade"}
 air.channel @channel_1 [1]
 air.channel @channel_2 [1]
 func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
@@ -334,10 +334,10 @@ func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
 
 // Core-to-core cascade flow; collapse memref shape using memref.collapse_shape, to enforce 1D vector for aie.put/get_cascade.
 // CHECK: aie.device
-// CHECK:         %[[tile_2_3:.*]] = aie.tile(2, 3)
-// CHECK:         %[[tile_2_4:.*]] = aie.tile(2, 4)
-// CHECK:         %[[tile_2_5:.*]] = aie.tile(2, 5)
-// CHECK:         %[[tile_2_6:.*]] = aie.tile(2, 6)
+// CHECK-DAG:         %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[tile_2_5:.*]] = aie.tile(2, 5)
+// CHECK-DAG:         %[[tile_2_6:.*]] = aie.tile(2, 6)
 // CHECK:         aie.core(%[[tile_2_6]])
 // CHECK:           %[[CST:.*]] = arith.constant 0 : i32
 // CHECK:           linalg.add
@@ -393,7 +393,7 @@ func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
 #set = affine_set<()[s0] : (s0 - 3 == 0)>
 #set1 = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
 module {
-  air.channel @channel_0 [3] {channel_type = "cascade"}
+  air.channel @channel_0 [3] {channel_type = "npu_cascade"}
   air.channel @channel_1 [1]
   air.channel @channel_2 [1]
   func.func @cascade2(%arg0: memref<1x1x2048xi32>, %arg1: memref<1x1x2048xi32>) {
@@ -484,8 +484,8 @@ module {
 // Test cascade flattening with 2D memref (32x64 = 2048 elements, same total as 1D test)
 // The memref is flattened to 1D before tiling for cascade transfer
 // CHECK: aie.device
-// CHECK:         %[[tile_2_3:.*]] = aie.tile(2, 3)
-// CHECK:         %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[tile_2_4:.*]] = aie.tile(2, 4)
 // CHECK:         aie.core(%[[tile_2_4]])
 // CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1]
 // CHECK:           scf.for %[[arg:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
@@ -496,7 +496,7 @@ module {
 // Test 2D memref flattening for cascade
 #set_2d = affine_set<()[s0] : (s0 - 1 == 0)>
 module {
-  air.channel @cascade_2d [1] {channel_type = "cascade"}
+  air.channel @cascade_2d [1] {channel_type = "npu_cascade"}
   func.func @cascade_2d_flatten(%arg0: memref<32x64xi32>) {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0) : memref<32x64xi32> attributes {id = 1 : i32} {
@@ -531,8 +531,8 @@ module {
 // Test cascade flattening with 4D memref (2x4x8x32 = 2048 elements)
 // The memref is flattened from 4D to 1D before tiling for cascade transfer
 // CHECK: aie.device
-// CHECK:         %[[tile_2_3:.*]] = aie.tile(2, 3)
-// CHECK:         %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[tile_2_4:.*]] = aie.tile(2, 4)
 // CHECK:         aie.core(%[[tile_2_4]])
 // CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2, 3]
 // CHECK:           scf.for %[[arg:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
@@ -543,7 +543,7 @@ module {
 // Test 4D memref flattening for cascade
 #set_4d = affine_set<()[s0] : (s0 - 1 == 0)>
 module {
-  air.channel @cascade_4d [1] {channel_type = "cascade"}
+  air.channel @cascade_4d [1] {channel_type = "npu_cascade"}
   func.func @cascade_4d_flatten(%arg0: memref<2x4x8x32xi32>) {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0) : memref<2x4x8x32xi32> attributes {id = 1 : i32} {
@@ -577,8 +577,8 @@ module {
 
 // Test cascade with bf16 element type (cascade width 512 bits = 32 bf16 elements per tile)
 // CHECK: aie.device
-// CHECK:         %[[tile_2_3:.*]] = aie.tile(2, 3)
-// CHECK:         %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[tile_2_4:.*]] = aie.tile(2, 4)
 // CHECK:         aie.core(%[[tile_2_4]])
 // CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1]
 // CHECK:           scf.for %[[arg:.*]] = %c0{{.*}} to %c1024{{.*}} step %c32{{.*}} {
@@ -589,7 +589,7 @@ module {
 // Test bf16 cascade flattening (different tile size due to element width)
 #set_bf16 = affine_set<()[s0] : (s0 - 1 == 0)>
 module {
-  air.channel @cascade_bf16 [1] {channel_type = "cascade"}
+  air.channel @cascade_bf16 [1] {channel_type = "npu_cascade"}
   func.func @cascade_bf16_flatten(%arg0: memref<32x32xbf16>) {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0) : memref<32x32xbf16> attributes {id = 1 : i32} {
@@ -624,10 +624,10 @@ module {
 // Core-to-core cascade flow; vectorizing channel.put/get with for loops, to fulfill the AIE cascade width requirment.
 // With pre-flattening: the memref is collapsed first, then tiled with a single 1D scf.for loop.
 // CHECK: aie.device
-// CHECK:         %[[tile_2_3:.*]] = aie.tile(2, 3)
-// CHECK:         %[[tile_2_4:.*]] = aie.tile(2, 4)
-// CHECK:         %[[tile_2_5:.*]] = aie.tile(2, 5)
-// CHECK:         %[[tile_2_6:.*]] = aie.tile(2, 6)
+// CHECK-DAG:         %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK-DAG:         %[[tile_2_5:.*]] = aie.tile(2, 5)
+// CHECK-DAG:         %[[tile_2_6:.*]] = aie.tile(2, 6)
 // CHECK:         aie.core(%[[tile_2_6]])
 // CHECK:           %[[CST:.*]] = arith.constant 0 : i32
 // CHECK:           linalg.add
@@ -684,7 +684,7 @@ module {
 #set = affine_set<()[s0] : (s0 - 3 == 0)>
 #set1 = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
 module {
-  air.channel @channel_0 [3] {channel_type = "cascade"}
+  air.channel @channel_0 [3] {channel_type = "npu_cascade"}
   air.channel @channel_1 [1]
   air.channel @channel_2 [1]
   func.func @cascade3(%arg0: memref<1x1x2048xi32>, %arg1: memref<1x1x2048xi32>) {

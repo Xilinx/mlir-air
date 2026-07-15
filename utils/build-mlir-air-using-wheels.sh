@@ -40,7 +40,7 @@ echo "WHL_MLIR DIR: $WHL_MLIR_DIR"
 # Install mlir-aie from wheel
 pushd my_install
 MLIR_AIE_VERSION=$($(dirname ${SCRIPT_PATH})/clone-mlir-aie.sh --get-wheel-version)
-python3 -m pip install mlir_aie==$MLIR_AIE_VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/
+python3 -m pip install mlir_aie==$MLIR_AIE_VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4/
 popd
 export MLIR_AIE_INSTALL_DIR="$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie"
 echo "WHL_AIE DIR: $MLIR_AIE_INSTALL_DIR"
@@ -50,7 +50,7 @@ export PATH=${MLIR_AIE_INSTALL_DIR}/bin:${PATH}
 export PYTHONPATH=${MLIR_AIE_INSTALL_DIR}/python:${PYTHONPATH}
 export LD_LIBRARY_PATH=${MLIR_AIE_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}
 
-# Install llvm-aie (latest nightly)
+# Install llvm-aie
 python3 -m pip install --upgrade --force-reinstall llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 PEANO_INSTALL_DIR="$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
 echo "WHL_LLVM_AIE DIR: $PEANO_INSTALL_DIR"

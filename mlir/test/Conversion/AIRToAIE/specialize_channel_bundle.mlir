@@ -8,8 +8,8 @@
 // RUN: air-opt %s --air-to-aie='test-patterns=specialize-channel-bundle' --split-input-file | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcvc1902) {
-// CHECK:   %[[VAL_0:.*]] = aie.tile(1, 1)
-// CHECK:   %[[VAL_1:.*]] = aie.tile(1, 2)
+// CHECK-DAG:   %[[VAL_0:.*]] = aie.tile(1, 1)
+// CHECK-DAG:   %[[VAL_1:.*]] = aie.tile(1, 2)
 // CHECK-COUNT-8:    air.channel @{{.*}}[1, 1]
 // CHECK:   %[[VAL_2:.*]] = aie.core(%[[VAL_1]]) {
 // CHECK:     air.channel.get @channel{{.*}}[]
@@ -57,8 +57,8 @@ aie.device(xcvc1902) {
 // -----
 
 // CHECK-LABEL:   aie.device(xcvc1902) {
-// CHECK:   %[[VAL_0:.*]] = aie.tile(1, 1)
-// CHECK:   %[[VAL_1:.*]] = aie.tile(1, 2)
+// CHECK-DAG:   %[[VAL_0:.*]] = aie.tile(1, 1)
+// CHECK-DAG:   %[[VAL_1:.*]] = aie.tile(1, 2)
 // CHECK-COUNT-8:    air.channel @{{.*}}[1, 1]
 // CHECK:   %[[VAL_2:.*]] = aie.core(%[[VAL_1]]) {
 // CHECK:     %[[VAL_3:.*]] = air.channel.get async @channel{{.*}}[]

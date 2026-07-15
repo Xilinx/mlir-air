@@ -17,6 +17,8 @@ OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
+PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
 # GEMV dimensions: C[M] = A[M,K] @ B[K]
 # tile_m=2 with 8 cols and K=8192: A_L2 = 8*2*8192*2 = 256KB < 512KB
@@ -31,7 +33,6 @@ all: run
 
 print:
 	${powershell} python3 ${srcdir}/matvec_cascade.py $(OUTPUT_FORMAT_FLAG) -p --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
-
 run:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/matvec_cascade.py $(OUTPUT_FORMAT_FLAG) --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE) $(if $(DEBUG_IR),--debug-ir) || \
@@ -44,6 +45,7 @@ run:
 	   false)
 
 profile: build-test-exe
+	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/matvec_cascade.py $(OUTPUT_FORMAT_FLAG) --compile-mode compile-and-xclbin --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M $(M) -K $(K)
 
@@ -62,6 +64,62 @@ profile_4col:
 	$(MAKE) profile M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_COLS=4 N_CASCADE=4
 
 build-test-exe:
+	@$(MAKE) build-test-exe-impl SRC=test.cpp OUT=test.exe
+
+# Fused GEMV + residual add: D[M] = A[M,K] @ B[K] + R[M]
+# R is staged as one bulk [tile_m] L3->L2 transfer per launch iter, so
+# the AIE DMA 4-byte alignment requirement is on tile_m (asserted in
+# matvec_cascade_add.py): tile_m * sizeof(bf16) >= 4, i.e. tile_m >= 2.
+# M_INPUT (= rows per inner kernel iter) can be any divisor of tile_m.
+
+print_add:
+	${powershell} python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) -p --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
+
+run_add:
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE) $(if $(DEBUG_IR),--debug-ir)
+
+build-test-add-exe:
+	@$(MAKE) build-test-exe-impl SRC=test_add.cpp OUT=test_add.exe
+
+profile_add: build-test-add-exe
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/matvec_cascade_add.py $(OUTPUT_FORMAT_FLAG) --compile-mode compile-and-xclbin --m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_add.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M $(M) -K $(K)
+
+# 8 columns x 4 cascade tiles, fused GEMV+add
+run_add_8col:
+	$(MAKE) run_add M=2048 K=8192 TILE_M=2 M_INPUT=1 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf
+
+profile_add_8col:
+	$(MAKE) profile_add M=2048 K=8192 TILE_M=2 M_INPUT=1 HERD_COLS=8 N_CASCADE=4
+
+# Two-tile-per-col matvec + residual add: D[M] = A[M,K] @ B[K] + R[M]
+# matvec_2tile_add.py links mv_bf16.o for its zero/matvec/partial+r kernels.
+TILE_M_2T   ?= 8
+K_CHUNK_2T  ?= 512
+
+compile-mv-bf16:
+	mkdir -p $(BUILD_DIR)
+	@if [ -z "$(PEANO_INSTALL_DIR)" ]; then \
+		echo "Error: PEANO_INSTALL_DIR not set (source utils/env_setup.sh)."; \
+		exit 1; \
+	fi
+	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} \
+		-DDIM_M=$(TILE_M_2T) -DDIM_K=$(K_CHUNK_2T) \
+		-c ${srcdir}/mv_bf16.cc -o $(BUILD_DIR)/mv_bf16.o
+
+print_2tile_add:
+	${powershell} python3 ${srcdir}/matvec_2tile_add.py $(OUTPUT_FORMAT_FLAG) -p \
+		--m $(M) --k $(K) --tile-m $(TILE_M_2T) --k-chunk $(K_CHUNK_2T) --herd-cols $(HERD_COLS)
+
+run_2tile_add: compile-mv-bf16
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
+	  ${powershell} python3 ${srcdir}/matvec_2tile_add.py $(OUTPUT_FORMAT_FLAG) \
+		--m $(M) --k $(K) --tile-m $(TILE_M_2T) --k-chunk $(K_CHUNK_2T) --herd-cols $(HERD_COLS)
+
+build-test-exe-impl:
 	@GPP=$$( \
 		for bin in /usr/bin/g++-*; do \
 			ver=$$(echo $$bin | grep -oE '[0-9]+$$'); \
@@ -82,9 +140,9 @@ build-test-exe:
 		echo "Error: AIEOPT_DIR environment variable not set. Please make sure to have sourced utils/env_setup.sh."; \
 		exit 1; \
 	fi; \
-	echo "Using compiler: $$GPP"; \
+	echo "Using compiler: $$GPP for $(SRC) -> $(OUT)"; \
 	mkdir -p $(BUILD_DIR); \
-	cd $(BUILD_DIR) && $$GPP ${srcdir}/test.cpp -o test.exe -std=c++23 -Wall \
+	cd $(BUILD_DIR) && $$GPP ${srcdir}/$(SRC) -o $(OUT) -std=c++23 -Wall \
 		-I$$XILINX_XRT/include -L$$XILINX_XRT/lib \
 		-I$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/include \
 		-L$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/lib \

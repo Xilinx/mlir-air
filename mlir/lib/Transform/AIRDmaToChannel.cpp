@@ -131,11 +131,17 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
                        clonedScfLoopOps.end());
     } else if (auto channel_op =
                    dyn_cast_if_present<air::ChannelInterface>(o)) {
-      if (o.hasAttr("loop-carried-dep") &&
-          o.getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() ==
-              "internalGetPut") {
-        // Found channel op labelled as "internalGetPut", which
-        // shouldn't be hoisted
+      auto depAttr = o.getAttrOfType<StringAttr>("loop-carried-dep");
+      bool isInternalGetPut =
+          depAttr && depAttr.getValue().str() == "internalGetPut";
+      // A user-written channel op pulled into the backward slice as a
+      // transitive dependency of a DMA being hoisted. It has "hoist"
+      // (guaranteed true here — line 119 filters non-hoist ops) but no
+      // "loop-carried-dep" (only DMA-derived channel ops receive that
+      // attribute; see labelBackwardSlice below). Must not be cloned to
+      // segment level — replace with wait_all to preserve async token chain.
+      bool isUserWrittenChannel = !depAttr;
+      if (isInternalGetPut || isUserWrittenChannel) {
         if (air::isAsyncOp(&o)) {
           auto wa_op =
               air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
@@ -489,7 +495,7 @@ createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
 
   auto channel_op = air::ChannelOp::create(
       builder, loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
-      builder.getStringAttr("dma_stream"));
+      builder.getStringAttr("npu_dma_stream"));
 
   builder.restoreInsertionPoint(insertionCheckpoint);
 
@@ -814,16 +820,23 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
       }
     }
     // Get constant values used by backward slices, and add to backward
-    // slices.
+    // slices. Collect into a temporary first: inserting into backwardSlice
+    // from within this loop can reallocate the SetVector's backing storage and
+    // invalidate the range-for iterator (a SIGSEGV reproducible when the
+    // hoisted op nests under enough affine.if/scf.if regions, e.g. a cascade
+    // GEMV). Newly added ops are always constants (no regions), so deferring
+    // their insertion does not change the result.
+    SmallVector<Operation *> constantsToAdd;
     for (auto o : backwardSlice) {
       for (auto &region : o->getRegions()) {
-        visitUsedValuesDefinedAbove(region, [&backwardSlice](OpOperand *use) {
+        visitUsedValuesDefinedAbove(region, [&constantsToAdd](OpOperand *use) {
           if (getConstantIntValue(use->get())) {
-            backwardSlice.insert(use->get().getDefiningOp());
+            constantsToAdd.push_back(use->get().getDefiningOp());
           }
         });
       }
     }
+    backwardSlice.insert(constantsToAdd.begin(), constantsToAdd.end());
 
     // Don't miss out the backward slices of air.execute op's child ops.
     auto backwardSliceCopy = backwardSlice;
@@ -839,6 +852,13 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // Label backward slices with attribute; ops not labelled with "hoist" flag
     // shall either not get hoisted, if IR is not async, or become air.wait_all
     // (null op) after being hoisted.
+    //
+    // Note: user-written channel ops may end up in backwardSlice as transitive
+    // dependencies (e.g., a broadcast ChannelGet whose token feeds a wait_all
+    // gating the DMA's loop). These ops receive "hoist" here but intentionally
+    // do NOT receive "loop-carried-dep" — cloneOpsInBlock uses the absence of
+    // "loop-carried-dep" to distinguish them from DMA-derived channel ops and
+    // replaces them with wait_all instead of cloning to segment level.
     backwardSlice.insert(externalGetPuts.begin(), externalGetPuts.end());
     for (auto b : backwardSlice) {
       b->setAttr("hoist", StringAttr::get(ctx, "dep"));
@@ -1590,7 +1610,13 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         if (!chanOp)
           continue;
 
-        bool isAlreadyPacket = (chanOp.getChannelType() == "dma_packet");
+        // mmio channels are runtime-sequence MMIO writes, not shim DMA, so
+        // they neither contribute to per-column shim pressure nor are
+        // eligible for dma_packet upgrade.
+        if (chanOp.getChannelType() == "npu_mmio")
+          continue;
+
+        bool isAlreadyPacket = (chanOp.getChannelType() == "npu_dma_packet");
         auto channelName = chanOp.getSymName();
 
         // Check if this channel has a herd-side endpoint in this segment.
@@ -1703,7 +1729,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
                            << pressure << " exceeds shim DMA limit of "
                            << shimChannelsPerCol << ")";
         for (auto chanOp : channels) {
-          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+          chanOp.setChannelType(StringAttr::get(context, "npu_dma_packet"));
         }
       };
 
@@ -1714,9 +1740,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
                             << inputChannels.size() + outputChannels.size()
                             << " shim-bound channels to dma_packet";
         for (auto chanOp : inputChannels)
-          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+          chanOp.setChannelType(StringAttr::get(context, "npu_dma_packet"));
         for (auto chanOp : outputChannels)
-          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+          chanOp.setChannelType(StringAttr::get(context, "npu_dma_packet"));
         return;
       }
 

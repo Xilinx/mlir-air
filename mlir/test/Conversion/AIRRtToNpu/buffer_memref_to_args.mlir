@@ -12,13 +12,13 @@
 // CHECK-LABEL: aie.device(npu1_1col)
 // CHECK: aie.runtime_sequence @func0(%[[VAL_0:.*]]: memref<8x16xi32>, %[[VAL_1:.*]]: memref<16x8xi32>, %[[VAL_2:.*]]: memref<8x8xi32>) {
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId4 {
-// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<8x16xi32>, 0, 128
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<8x16xi32> offset = 0 len = 128
 // CHECK:   aiex.dma_start_task
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId4 {
-// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<16x8xi32>, 0, 128
+// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<16x8xi32> offset = 0 len = 128
 // CHECK:   aiex.dma_start_task
 // CHECK:   %[[T2:.*]] = aiex.dma_configure_task_for @airMemcpyId16 {
-// CHECK:     aie.dma_bd(%[[VAL_2]] : memref<8x8xi32>, 0, 64
+// CHECK:     aie.dma_bd(%[[VAL_2]] : memref<8x8xi32> offset = 0 len = 64
 // CHECK:   } {issue_token = true}
 // CHECK:   aiex.dma_start_task(%[[T2]])
 
@@ -63,13 +63,13 @@ module {
 // CHECK-LABEL: aie.device(npu1_1col)
 // CHECK: aie.runtime_sequence @func1(%[[VAL_0:.*]]: memref<8x16xi32>, %[[VAL_1:.*]]: memref<16x8xi32>, %[[VAL_2:.*]]: memref<8x8xi32>) {
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId4 {
-// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<8x16xi32>, 0, 128
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<8x16xi32> offset = 0 len = 128
 // CHECK:   aiex.dma_start_task
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId4 {
-// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<16x8xi32>, 0, 128
+// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<16x8xi32> offset = 0 len = 128
 // CHECK:   aiex.dma_start_task
 // CHECK:   %[[T2:.*]] = aiex.dma_configure_task_for @airMemcpyId16 {
-// CHECK:     aie.dma_bd(%[[VAL_2]] : memref<8x8xi32>, 0, 64
+// CHECK:     aie.dma_bd(%[[VAL_2]] : memref<8x8xi32> offset = 0 len = 64
 // CHECK:   } {issue_token = true}
 // CHECK:   aiex.dma_start_task(%[[T2]])
 
@@ -129,13 +129,13 @@ module {
 // CHECK-LABEL: aie.device(npu1_1col)
 // CHECK: aie.runtime_sequence @func2(%[[VAL_0:.*]]: memref<2048x2048xbf16>, %[[VAL_1:.*]]: memref<2048x2048xbf16>, %[[VAL_2:.*]]: memref<2048x2048xbf16>) {
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId4 {
-// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<2048x2048xbf16>, 0, 262144
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<2048x2048xbf16> offset = 0 len = 262144
 // CHECK:   aiex.dma_start_task
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId7 {
-// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<2048x2048xbf16>, 0, 262144
+// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<2048x2048xbf16> offset = 0 len = 262144
 // CHECK:   aiex.dma_start_task
 // CHECK:   %[[T2:.*]] = aiex.dma_configure_task_for @airMemcpyId26 {
-// CHECK:     aie.dma_bd(%[[VAL_2]] : memref<2048x2048xbf16>, 0, 16384
+// CHECK:     aie.dma_bd(%[[VAL_2]] : memref<2048x2048xbf16> offset = 0 len = 16384
 // CHECK:   } {issue_token = true}
 // CHECK:   aiex.dma_start_task(%[[T2]])
 

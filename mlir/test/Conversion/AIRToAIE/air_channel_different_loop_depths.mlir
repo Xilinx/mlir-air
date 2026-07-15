@@ -13,8 +13,8 @@
 // loops via while(true) and the BD keeps accepting data from the same buffer.
 
 // CHECK: aie.device
-// CHECK:         %[[TILE:.*]] = aie.tile(2, 3)
-// CHECK:         %[[BUF:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[TILE:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[BUF:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // Verify single cycling BD (NOT sequential tasks):
 // CHECK:    aie.mem(%[[TILE]])  {

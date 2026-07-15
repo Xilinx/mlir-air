@@ -12,7 +12,7 @@
 // CHECK: func.func @channel
 // CHECK: %[[V1:.*]] = air.channel.put async [{{.*}}] @channel_1[{{.*}}, {{.*}}]
 // CHECK: %[[V2:.*]] = air.channel.get async [{{.*}}] @channel_1[{{.*}}, {{.*}}]
-air.channel @channel_1 [2,2] {channel_type = "dma_stream"}
+air.channel @channel_1 [2,2] {channel_type = "npu_dma_stream"}
 func.func @channel() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -35,7 +35,7 @@ func.func @channel() {
 // CHECK: func.func @fork
 // CHECK: %[[V1:.*]] = air.channel.put async [{{.*}}] @bcast[] ({{.*}}[{{.*}},{{.*}}]
 // CHECK: air.channel.get @bcast[{{.*}}, {{.*}}] ({{.*}}[] [] []) 
-air.channel @bcast [2,1] {channel_type = "dma_stream"}
+air.channel @bcast [2,1] {channel_type = "npu_dma_stream"}
 func.func @fork() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -55,7 +55,7 @@ func.func @fork() {
 // CHECK: func.func @distribute
 // CHECK: air.channel.put @merge[{{.*}}, {{.*}}] ({{.*}}[
 // CHECK: %[[V2:.*]] = air.channel.get async [{{.*}}] @merge[]
-air.channel @merge[2,2] {channel_type = "dma_stream"}
+air.channel @merge[2,2] {channel_type = "npu_dma_stream"}
 func.func @distribute() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -74,11 +74,11 @@ func.func @distribute() {
   return 
 } 
 
-// CHECK: air.channel @packet_flow [2, 2] {channel_type = "dma_packet"}
+// CHECK: air.channel @packet_flow [2, 2] {channel_type = "npu_dma_packet"}
 // CHECK: func.func @packet_flow_func
 // CHECK: %[[V1:.*]] = air.channel.put async [{{.*}}] @packet_flow[{{.*}}, {{.*}}]
 // CHECK: %[[V2:.*]] = air.channel.get async [{{.*}}] @packet_flow[{{.*}}, {{.*}}]
-air.channel @packet_flow[2,2] {channel_type = "dma_packet"}
+air.channel @packet_flow[2,2] {channel_type = "npu_dma_packet"}
 func.func @packet_flow_func() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -98,7 +98,7 @@ func.func @packet_flow_func() {
   return 
 } 
 
-// CHECK: air.channel @cascade [3] {channel_type = "cascade"}
+// CHECK: air.channel @cascade [3] {channel_type = "npu_cascade"}
 // CHECK: func.func @cascade_func
 // CHECK: affine.if
 // CHECK: air.channel.put  @cascade[%{{.*}}]
@@ -110,7 +110,7 @@ func.func @packet_flow_func() {
 // CHECK: air.channel.get  @cascade[%{{.*}}]
 #set = affine_set<()[s0] : (s0 == 0)>
 #set1 = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
-air.channel @cascade [3] {channel_type = "cascade"}
+air.channel @cascade [3] {channel_type = "npu_cascade"}
 func.func @cascade_func() {
   %c4 = arith.constant 4 : index
   %c1_0 = arith.constant 1 : index
@@ -137,3 +137,16 @@ func.func @cascade_func() {
   }
   return
 }
+
+// -----
+
+// CHECK: air.channel @mmio_chan
+// CHECK-SAME: channel_type = "npu_mmio"
+air.channel @mmio_chan [] {channel_type = "npu_mmio"}
+
+// -----
+
+// Round-trip: gpu_symmetric_heap channel parses and prints correctly.
+// CHECK: air.channel @sym_heap_chan
+// CHECK-SAME: channel_type = "gpu_symmetric_heap"
+air.channel @sym_heap_chan [] {channel_type = "gpu_symmetric_heap"}

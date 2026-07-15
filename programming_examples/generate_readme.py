@@ -56,6 +56,24 @@ EXAMPLES = [
     },
     {
         "category": "Linear Algebra",
+        "name": "Matrix-Vector Multiplication (AWQ int4)",
+        "path": "matrix_vector_multiplication/int4_awq",
+        "datatypes": "int4 weights / bf16 activations",
+    },
+    {
+        "category": "Linear Algebra",
+        "name": "Matrix Multiplication (AWQ int4)",
+        "path": "matrix_multiplication/int4_awq",
+        "datatypes": "int4 weights / bf16 activations",
+    },
+    {
+        "category": "Linear Algebra",
+        "name": "Matrix Multiplication (bf16 x bfp16ebs8)",
+        "path": "matrix_multiplication/bf16_x_bfp16",
+        "datatypes": "bf16 activations / bfp16ebs8 weights",
+    },
+    {
+        "category": "Linear Algebra",
         "name": "AXPY",
         "path": "axpy",
         "datatypes": "bf16",
@@ -172,6 +190,12 @@ EXAMPLES = [
         "category": "LLM Kernels",
         "name": "Multi-Head Attention (LLaMA2)",
         "path": "llama2_mha",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "LLM Kernels",
+        "name": "Attention (Decode)",
+        "path": "attention_decode",
         "datatypes": "bf16",
     },
     {
@@ -332,6 +356,12 @@ EXAMPLES = [
     },
     {
         "category": "CNN",
+        "name": "Conv2d 14x14",
+        "path": "conv2d_14x14",
+        "datatypes": "ui8/i8",
+    },
+    {
+        "category": "CNN",
         "name": "Bottleneck",
         "path": "bottleneck",
         "datatypes": "bf16",
@@ -362,8 +392,14 @@ EXAMPLES = [
     },
     {
         "category": "Memory",
-        "name": "Shared L1 Buffer",
-        "path": "shared_l1",
+        "name": "Shared L1 Buffer (Multi-Herd)",
+        "path": "shared_l1_multi_herd",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Memory",
+        "name": "Shared L1 Buffer (Single-Herd)",
+        "path": "shared_l1_single_herd",
         "datatypes": "bf16",
     },
     {

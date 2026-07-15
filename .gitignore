@@ -1,3 +1,11 @@
+# Version-control .claude/skills/ (the shared LLM-deployment skills) while
+# keeping every other .claude/ entry (personal settings, worktrees, memory,
+# IDE config) local and untracked. `!.claude/` also guards against
+# environments that globally ignore .claude/ (e.g. a ~/.gitignore_global rule).
+!.claude/
+.claude/*
+!.claude/skills/
+
 # make artifacts
 CMakeFiles/
 CMakeCache.txt

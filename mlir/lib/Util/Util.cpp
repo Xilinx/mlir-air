@@ -9,10 +9,16 @@
 #include "air/Util/Util.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#if AIR_ENABLE_AIE
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIE/IR/AIETargetModel.h"
+#endif
+
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -21,13 +27,17 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "iostream"
+#include <limits>
 
 #define DEBUG_TYPE "air-util"
 
@@ -275,6 +285,160 @@ air::HerdOp air::getHerdArgOwner(Value val) {
   return dyn_cast_if_present<air::HerdOp>(containingOp);
 }
 
+namespace {
+// Resolve `v` to an integer under a specific herd tile-id assignment `ivVals`,
+// else a plain constant, else nullopt.
+static std::optional<int64_t>
+resolveUnderIvs(Value v, const llvm::DenseMap<Value, int64_t> &ivVals) {
+  auto it = ivVals.find(v);
+  if (it != ivVals.end())
+    return it->second;
+  return getConstantIntValue(v);
+}
+
+// Evaluate a boolean guard condition under a specific tile-id assignment.
+static std::optional<bool>
+evalGuardUnderIvs(Value cond, const llvm::DenseMap<Value, int64_t> &ivVals) {
+  if (auto c = cond.getDefiningOp<arith::ConstantOp>())
+    if (auto ia = dyn_cast<IntegerAttr>(c.getValue()))
+      return ia.getValue().getBoolValue();
+  if (auto cmp = cond.getDefiningOp<arith::CmpIOp>()) {
+    auto l = resolveUnderIvs(cmp.getLhs(), ivVals);
+    auto r = resolveUnderIvs(cmp.getRhs(), ivVals);
+    if (l && r) {
+      unsigned bw = isa<IndexType>(cmp.getLhs().getType())
+                        ? 64
+                        : cmp.getLhs().getType().getIntOrFloatBitWidth();
+      return arith::applyCmpPredicate(cmp.getPredicate(),
+                                      APInt(bw, *l, /*isSigned=*/true),
+                                      APInt(bw, *r, /*isSigned=*/true));
+    }
+  }
+  if (auto ic = cond.getDefiningOp<arith::IndexCastOp>())
+    if (auto v = resolveUnderIvs(ic.getIn(), ivVals)) {
+      unsigned dstBw = isa<IndexType>(ic.getType())
+                           ? 64
+                           : ic.getType().getIntOrFloatBitWidth();
+      return APInt(dstBw, *v).getBoolValue();
+    }
+  return std::nullopt;
+}
+
+// Whether `op` executes for the core identified by `ivVals`, by evaluating the
+// enclosing scf.if / scf.index_switch tile-id guards up to `body`. Guards that
+// cannot be evaluated (affine.if, data-dependent) are conservatively treated as
+// taken (reachable).
+static bool reachableUnderIvs(Operation *op, Region &body,
+                              const llvm::DenseMap<Value, int64_t> &ivVals) {
+  Operation *stop = body.getParentOp();
+  Operation *child = op;
+  for (Operation *p = op->getParentOp(); p && p != stop;
+       child = p, p = p->getParentOp()) {
+    Region *childRegion = child->getParentRegion();
+    if (auto sif = dyn_cast<scf::IfOp>(p)) {
+      if (auto c = evalGuardUnderIvs(sif.getCondition(), ivVals)) {
+        bool inThen = sif.getThenRegion().isAncestor(childRegion);
+        bool inElse = sif.getElseRegion().isAncestor(childRegion);
+        if (*c && inElse)
+          return false;
+        if (!*c && inThen)
+          return false;
+      }
+    } else if (auto sw = dyn_cast<scf::IndexSwitchOp>(p)) {
+      if (auto arg = resolveUnderIvs(sw.getArg(), ivVals)) {
+        Region *selected = &sw.getDefaultRegion();
+        ArrayRef<int64_t> cases = sw.getCases();
+        for (size_t i = 0; i < cases.size(); ++i)
+          if (cases[i] == *arg) {
+            selected = &sw.getCaseRegions()[i];
+            break;
+          }
+        if (!selected->isAncestor(childRegion))
+          return false;
+      }
+    }
+  }
+  return true;
+}
+} // namespace
+
+bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
+                                           Value memrefOperand) {
+  auto memrefTy = dyn_cast<MemRefType>(memrefOperand.getType());
+  if (!memrefTy || !air::isL1(memrefTy))
+    return false;
+  Value karg = herd.getTiedKernelArgument(memrefOperand);
+  if (!karg)
+    return false;
+
+  ArrayRef<BlockArgument> ids = herd.getIds();
+  SmallVector<int64_t> sizes;
+  for (Value sz : herd.getSizeOperands()) {
+    auto c = getConstantIntValue(sz);
+    if (!c || *c <= 0)
+      return false;
+    sizes.push_back(*c);
+  }
+  int64_t numCores = 1;
+  for (int64_t s : sizes)
+    numCores *= s;
+  if (numCores <= 1 || sizes.size() != ids.size())
+    return false;
+
+  // Collect the block arg and its view aliases (subview / collapse / expand /
+  // cast / transpose) so leaf read/write ops are reached.
+  llvm::SmallDenseSet<Value> aliases;
+  aliases.insert(karg);
+  SmallVector<Value> wl{karg};
+  while (!wl.empty()) {
+    Value v = wl.pop_back_val();
+    for (Operation *u : v.getUsers()) {
+      if (isa<memref::SubViewOp, memref::CollapseShapeOp, memref::ExpandShapeOp,
+              memref::CastOp, memref::ReinterpretCastOp, memref::TransposeOp>(
+              u)) {
+        Value r = u->getResult(0);
+        if (aliases.insert(r).second)
+          wl.push_back(r);
+      }
+    }
+  }
+
+  Region &body = herd.getBody();
+  llvm::SmallSet<int64_t, 8> readerCores, writerCores;
+  for (int64_t lin = 0; lin < numCores; ++lin) {
+    int64_t rem = lin;
+    llvm::DenseMap<Value, int64_t> ivVals;
+    for (size_t d = 0; d < sizes.size(); ++d) {
+      ivVals[ids[d]] = rem % sizes[d];
+      rem /= sizes[d];
+    }
+    for (Value alias : aliases) {
+      for (Operation *user : alias.getUsers()) {
+        if (!reachableUnderIvs(user, body, ivVals))
+          continue;
+        if (mlir::hasEffect<mlir::MemoryEffects::Write>(user, alias))
+          writerCores.insert(lin);
+        if (mlir::hasEffect<mlir::MemoryEffects::Read>(user, alias))
+          readerCores.insert(lin);
+        if (auto chan = dyn_cast<air::ChannelInterface>(user)) {
+          if (chan.getMemref() == alias) {
+            if (isa<air::ChannelGetOp>(user))
+              writerCores.insert(lin);
+            else
+              readerCores.insert(lin);
+          }
+        }
+      }
+    }
+  }
+  if (writerCores.empty())
+    return false;
+  for (int64_t r : readerCores)
+    if (!writerCores.contains(r))
+      return true;
+  return false;
+}
+
 // Get the parent air.hierarchy op of a tile id
 air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
   auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
@@ -313,6 +477,33 @@ air::getStaticAffineForTripCountAsInt(affine::AffineForOp for_op) {
         for_op.getStepAsInt());
   }
   return output;
+}
+
+std::optional<int64_t> air::getStaticTripCountInRange(Operation *inner,
+                                                      Operation *outer) {
+  int64_t trip = 1;
+  // Use llvm::MulOverflow instead of __builtin_mul_overflow so the code
+  // builds on MSVC (the Windows CI does not provide the GCC/Clang builtin).
+  auto checkedMul = [&](int64_t factor) -> bool {
+    int64_t product;
+    if (llvm::MulOverflow(trip, factor, product))
+      return false;
+    trip = product;
+    return true;
+  };
+  for (Operation *p = inner ? inner->getParentOp() : nullptr; p && p != outer;
+       p = p->getParentOp()) {
+    if (auto sfo = dyn_cast<scf::ForOp>(p)) {
+      auto tc = getStaticScfForTripCountAsInt(sfo);
+      if (!tc || !checkedMul(*tc))
+        return std::nullopt;
+    } else if (auto afo = dyn_cast<affine::AffineForOp>(p)) {
+      auto tc = getStaticAffineForTripCountAsInt(afo);
+      if (!tc || !checkedMul(*tc))
+        return std::nullopt;
+    }
+  }
+  return trip;
 }
 
 // Get operation's "id" attribute
@@ -459,6 +650,39 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
   return air::ChannelOp();
 }
 
+int64_t air::getRefeedCount(Operation *op) {
+  if (!op)
+    return 1;
+  auto rc = op->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount);
+  if (!rc)
+    return 1;
+  int64_t n = rc.getInt();
+  if (n <= 1)
+    return 1;
+  // The count sizes/initializes 32-bit AIE semaphore locks (allocateLockOp
+  // init, UseLockOp acquire/release). A value that does not fit int32 is
+  // malformed IR; narrowing it would silently mis-synchronize or deadlock the
+  // DMA. Guard here
+  // -- the single reader -- so every caller's narrowing cast is safe. Falling
+  // back to 1 (no re-feed) is the safe default; warn so it is not missed.
+  if (n > std::numeric_limits<int32_t>::max()) {
+    op->emitWarning("air.refeed_count ")
+        << n << " exceeds the 32-bit lock range; ignoring (treating as 1)";
+    return 1;
+  }
+  return n;
+}
+
+int64_t air::getRefeedCount(air::ChannelInterface op) {
+  if (!op)
+    return 1;
+  // Per-emission override on the put/get takes precedence over the
+  // channel-level declaration.
+  if (int64_t n = getRefeedCount(op.getOperation()); n > 1)
+    return n;
+  return getRefeedCount(getChannelDeclarationThroughSymbol(op).getOperation());
+}
+
 // Get ChannelPutOp through ChannelOp
 std::vector<air::ChannelPutOp>
 air::getChannelPutOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
@@ -522,7 +746,7 @@ FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {
   auto chanIfOp =
       dyn_cast_if_present<air::ChannelInterface>(memcpyIfOp.getOperation());
   if (!chanIfOp)
-    return StringRef("dma_stream");
+    return StringRef("npu_dma_stream");
   auto chanOp = getChannelDeclarationThroughSymbol(chanIfOp);
   if (chanOp) {
     return chanOp.getChannelType();
@@ -824,19 +1048,18 @@ char air::checkOpOperandReadOrWrite(Value v, Operation *owner) {
 }
 char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
   auto owner = op_operand.getOwner();
-  // If used in DmaMemcpy Op
-  if (auto dma = dyn_cast_if_present<xilinx::air::DmaMemcpyNdOp>(owner)) {
-    if (op_operand.is(dma.getSrcMemref())) {
-      return 'r';
-    } else if (op_operand.is(dma.getDstMemref())) {
-      return 'w';
-    } else {
-      return 'u';
-    }
-  }
+  // Generic side-effect query first. air.dma_memcpy_nd declares
+  // MemReadAt<src> + MemWriteAt<dst>, so it answers here without an
+  // explicit dialect branch. air.channel.put/get do not yet declare
+  // effects (channel-resource modeling is a separate followup) and
+  // continue to use the dialect-specific branches below.
+  if (mlir::hasEffect<mlir::MemoryEffects::Write>(owner, op_operand.get()))
+    return 'w';
+  if (mlir::hasEffect<mlir::MemoryEffects::Read>(owner, op_operand.get()))
+    return 'r';
   // If used in Channel Put Op
-  else if (auto channel_put =
-               dyn_cast_if_present<xilinx::air::ChannelPutOp>(owner)) {
+  if (auto channel_put =
+          dyn_cast_if_present<xilinx::air::ChannelPutOp>(owner)) {
     if (op_operand.is(channel_put.getSrc())) {
       return 'r';
     } else {
@@ -1127,10 +1350,81 @@ int air::findLargestFactor(int num, int max) {
   return largestLowFactor;
 }
 
+// Fallback shim address-gen granularity when we can't reach an AIE::DeviceOp
+// to query the target model. Matches AIETargetModel::getAddressGenGranularity
+// for AIE2 and AIE2P. The dynamic lookup below is preferred when available so
+// future devices with a different value just work.
+static constexpr unsigned kAIEShimAddrGenBitsFallback = 32;
+
+int air::getDmaInnerElementAlignment(BaseMemRefType memrefTy, Operation *op) {
+  if (!memrefTy || !op)
+    return 1;
+  DataLayout dl = DataLayout::closest(op);
+  unsigned elemBits = dl.getTypeSizeInBits(memrefTy.getElementType());
+  if (elemBits == 0)
+    return 1;
+  unsigned addrGenBits = kAIEShimAddrGenBitsFallback;
+#if AIR_ENABLE_AIE
+  if (auto dev = op->getParentOfType<AIE::DeviceOp>())
+    addrGenBits = dev.getTargetModel().getAddressGenGranularity();
+#endif
+  if (elemBits >= addrGenBits)
+    return 1;
+  return addrGenBits / elemBits;
+}
+
+// See header for the resolution rules.
+bool air::isDeviceToHostShimDMA(Operation *op) {
+#if AIR_ENABLE_AIE
+  auto md = op->getAttrOfType<FlatSymbolRefAttr>("metadata");
+  if (!md)
+    return false;
+  auto isS2MM = [&](AIE::DeviceOp d) -> std::optional<bool> {
+    if (auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(d, md.getValue()))
+      return alloc.getChannelDir() == AIE::DMAChannelDir::S2MM;
+    return std::nullopt;
+  };
+  if (auto d = op->getParentOfType<AIE::DeviceOp>())
+    if (auto dir = isS2MM(d))
+      return *dir;
+  bool result = false;
+  if (auto mod = op->getParentOfType<ModuleOp>())
+    mod.walk([&](AIE::DeviceOp d) {
+      if (auto dir = isS2MM(d)) {
+        result = *dir;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+  return result;
+#else
+  return false;
+#endif
+}
+
+// Largest factor of 'num' that is <= 'max' and a multiple of 'alignment'.
+// See header for rationale.
+int air::findLargestAlignedFactor(int num, int max, int alignment) {
+  if (alignment <= 1)
+    return findLargestFactor(num, max);
+  if (max < alignment)
+    return 0;
+  int alignedMax = (max / alignment) * alignment;
+  for (int candidate = alignedMax; candidate >= alignment;
+       candidate -= alignment) {
+    if (num % candidate == 0)
+      return candidate;
+  }
+  return 0;
+}
+
 // Canonicalize wrap and stride lists by removing redundant dimensions.
-LogicalResult air::canonicalizeWrapAndStrideList(
-    OpBuilder &builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
-    SmallVector<Value> &strides, int memref_volume, int maxSize) {
+LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
+                                                 SmallVector<Value> &offsets,
+                                                 SmallVector<Value> &sizes,
+                                                 SmallVector<Value> &strides,
+                                                 int memref_volume, int maxSize,
+                                                 int innerAlignment) {
   // AIE2 hardware constraints. TODO: import these info from target model.
   const int AIE2_STRIDE_UPPER_BOUND = 1048576;
   bool listsHaveChanged = false;
@@ -1160,8 +1454,20 @@ LogicalResult air::canonicalizeWrapAndStrideList(
     if (const_wrap <= maxSize)
       continue;
     // Found dimension with illegal wrap. Tiling. (Prefers smaller outer wrap
-    // values, as long as stride fits)
-    int a_wrap = findLargestFactor(const_wrap, maxSize);
+    // values, as long as stride fits.) For the contiguous innermost dim
+    // (stride==1), require the new inner wrap to be a multiple of
+    // innerAlignment elements so the resulting d0 byte size stays aligned to
+    // the shim address granularity (e.g. 4 B for bf16 / i8). Falls back to
+    // findLargestFactor when innerAlignment <= 1 or stride != 1.
+    int a_wrap =
+        (const_stride == 1)
+            ? findLargestAlignedFactor(const_wrap, maxSize, innerAlignment)
+            : findLargestFactor(const_wrap, maxSize);
+    // No aligned factor exists. Leave the dim oversized and let the
+    // downstream shim lowering (tileIllegalWrapDim in AIRRtToNpuPass) emit
+    // the diagnostic with full op context.
+    if (a_wrap == 0)
+      continue;
     int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
     int new_a_stride = const_stride * a_wrap;
     if (memref_volume != 1)
@@ -1200,6 +1506,19 @@ LogicalResult air::canonicalizeWrapAndStrideList(
       continue;
     erase_dims.push_back(i);
   }
+
+  // Empty list is the sentinel for "full-volume contiguous access" (see final
+  // block below). If erasing all dims but the access is partial, keep the
+  // innermost dim; eraseWrapNStrideDim composes outer offsets into inner dims.
+  int64_t access_volume = 1;
+  for (auto s : sizes)
+    if (auto c = getConstantIntValue(s))
+      access_volume *= *c;
+  if (!erase_dims.empty() &&
+      static_cast<size_t>(erase_dims.size()) == sizes.size() &&
+      access_volume != memref_volume)
+    erase_dims.erase(
+        erase_dims.begin()); // erase_dims is high-to-low; front() = innermost
 
   listsHaveChanged |=
       eraseWrapNStrideDim(builder, erase_dims, offsets, sizes, strides)
@@ -1425,6 +1744,7 @@ void air::copyPaddingAttributes(Operation *src, Operation *dst) {
     dst->setAttr("pad_before", padBefore);
   if (auto padAfter = src->getAttrOfType<DenseI32ArrayAttr>("pad_after"))
     dst->setAttr("pad_after", padAfter);
+  copyChannelSteeringAttrs(src, dst);
 }
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data
@@ -1442,15 +1762,53 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
     if (stepsize && *stepsize == 1)
       return true;
   }
-  unsigned stride_factor = 1;
+  uint64_t stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
     auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
+    // Conservative: a non-constant wrap or stride can't be proven default.
+    if (!stepsize || !wrap)
+      return false;
     if (*wrap == 1 && *stepsize == 0)
       continue; // dummy dimension.
-    if (*stepsize != stride_factor)
+    if (static_cast<uint64_t>(*stepsize) != stride_factor)
       return false;
-    stride_factor *= *wrap;
+    stride_factor *= static_cast<uint64_t>(*wrap);
+  }
+  return true;
+}
+
+// True when the wraps/strides lower to a single linear shim BD: a contiguous
+// row-major body, optionally preceded by outer size==1 dummies or outer
+// stride==0 dims (the latter fold into the BD repeat_count). Inner stride==0
+// with size>1 is rejected -- it cannot fold into one linear BD.
+bool air::isContiguousRowMajorOrRepeated(SmallVector<Value> sizes,
+                                         SmallVector<Value> strides) {
+  if (sizes.size() != strides.size())
+    return false;
+  if (sizes.empty())
+    return true;
+  int firstBodyDim = 0;
+  for (; firstBodyDim < static_cast<int>(sizes.size()); ++firstBodyDim) {
+    auto sz = mlir::getConstantIntValue(sizes[firstBodyDim]);
+    auto st = mlir::getConstantIntValue(strides[firstBodyDim]);
+    if (!sz || !st)
+      return false;
+    if (*sz == 1 || *st == 0)
+      continue;
+    break;
+  }
+  uint64_t stride_factor = 1;
+  for (int i = static_cast<int>(sizes.size()) - 1; i >= firstBodyDim; --i) {
+    auto sz = mlir::getConstantIntValue(sizes[i]);
+    auto st = mlir::getConstantIntValue(strides[i]);
+    if (!sz || !st)
+      return false;
+    if (*sz == 1)
+      continue;
+    if (static_cast<uint64_t>(*st) != stride_factor)
+      return false;
+    stride_factor *= static_cast<uint64_t>(*sz);
   }
   return true;
 }

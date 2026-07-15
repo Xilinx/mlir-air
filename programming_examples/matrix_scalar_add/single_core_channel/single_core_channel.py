@@ -50,15 +50,6 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                         sizes=tile_size,
                         strides=[image_width, 1],
                     )
-
-                    # Write data back out to the channel tile by tile
-                    ChannelGet(
-                        "ChanOut",
-                        b,
-                        offsets=[offset0, offset1],
-                        sizes=tile_size,
-                        strides=[image_width, 1],
-                    )
                     yield_([])
                 yield_([])
 
@@ -117,6 +108,23 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                         DeallocOp(tile_out)
 
                         yield_([])
+
+            # Write data back out to the channel tile by tile
+            for offset0 in range_(
+                0, tile_height * (image_height // tile_height), tile_height
+            ):
+                for offset1 in range_(
+                    0, tile_width * (image_width // tile_width), tile_width
+                ):
+                    ChannelGet(
+                        "ChanOut",
+                        b,
+                        offsets=[offset0, offset1],
+                        sizes=tile_size,
+                        strides=[image_width, 1],
+                    )
+                    yield_([])
+                yield_([])
 
 
 if __name__ == "__main__":

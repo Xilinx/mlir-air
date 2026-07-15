@@ -1,0 +1,32 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// LLAMA-3.2-1B compile-only smoke test: builds every prefill + decode kernel
+// ELF through the AIR -> AIE -> aiecc -> Peano pipeline. No NPU dispatch and
+// no HuggingFace weight download — this is the signal that fork PR CI can
+// always give us (it does not require `hf_token`, so unlike `run_npu2_verify`
+// it is not skipped when HF_TOKEN is unset).
+//
+// Pairs with run_npu2_verify.lit (end-to-end correctness gate against HF
+// bf16, gated by hf_token) — together they cover "does it still compile?"
+// without secrets and "does it still produce correct output?" with secrets.
+//
+// Gated on ryzen_ai_npu2 because the example hardcodes the AIE2P target
+// throughout its kernel builders (shared/infra/external_kernels.py uses
+// --target=aie2p-none-unknown-elf, shared/builders/gemm_builder.py uses
+// arch="aie2p"); running this on a non-NPU2 context would compile artifacts
+// that cannot be exercised on the host runner. The actual compile does not
+// touch the NPU device, so any NPU2-capable runner is sufficient.
+//
+// Collected by the dedicated CI target check-programming-examples-llms-compile-llama32_1b
+// via path-based --filter "llms/llama32_1b/run_npu2_compile" — no filename
+// suffix required. See programming_examples/CMakeLists.txt for the target
+// definitions.
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_npu2_compile
+// RUN: cd test_npu2_compile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: Compilation passed.

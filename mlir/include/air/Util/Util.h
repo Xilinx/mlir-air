@@ -69,6 +69,16 @@ scf::ForOp getForRegionIterArgsOwner(Value val);
 scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val);
 // Get the parent air.launch_herd op of a tile id
 HerdOp getHerdArgOwner(Value val);
+// Returns true if the L1 buffer passed as kernel operand `memrefOperand` to
+// `herd` carries a cross-core producer/consumer dependence: some core reads the
+// buffer that a *different* core writes. Inferred purely from the per-core
+// access pattern by enumerating the herd iteration space and evaluating tile-id
+// guards (scf.if / scf.index_switch; affine.if and unanalyzable guards are
+// treated conservatively as reachable). This identifies shared L1 neighbor
+// buffers without any IR annotation. Returns false if `memrefOperand` is not a
+// kernel operand of `herd`, the buffer is not L1, the herd has a single core,
+// or the iteration extents are not statically known.
+bool herdBufferHasCrossCoreDependence(HerdOp herd, Value memrefOperand);
 // Get the parent air.hierarchy op of a tile id
 HierarchyInterface getHierarchyArgOwner(Value val);
 // Get the scf parent op from scf.yield op
@@ -80,6 +90,12 @@ T getScfParentOpFromYieldOp(Operation *yield) {
 std::optional<int64_t> getStaticScfForTripCountAsInt(scf::ForOp for_op);
 std::optional<int64_t>
 getStaticAffineForTripCountAsInt(affine::AffineForOp for_op);
+
+// Multiplies static trip counts of every scf.for / affine.for strictly between
+// `inner` and `outer` in the parent-op chain. Returns nullopt if any such loop
+// has a non-static trip count; returns 1 if no loops sit between.
+std::optional<int64_t> getStaticTripCountInRange(Operation *inner,
+                                                 Operation *outer);
 
 // Erase a kernel operand from air.hierarchy op
 void eraseAIRHierarchyOperand(HierarchyInterface op, unsigned index);
@@ -108,6 +124,15 @@ DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 
 // Get channel declaration through channel symbol
 ChannelOp getChannelDeclarationThroughSymbol(ChannelInterface op);
+// Single-buffer count-free re-broadcast count (see AIRDialect.h
+// attrs::RefeedCount): N re-sends of one resident buffer per production. Reads
+// the count off `op` (per-emission override) falling back to its channel
+// declaration (the authoritative carrier). Returns 1 when absent / < 1 / not a
+// channel op. Single reader so the lock allocators cannot diverge on the value.
+int64_t getRefeedCount(ChannelInterface op);
+// Same, for a value already resolved to its buffer/alloc carrier (memtile L2
+// rendezvous buffer): reads air.refeed_count directly off `op`.
+int64_t getRefeedCount(Operation *op);
 // Get ChannelPutOps from ChannelOp
 std::vector<ChannelPutOp>
 getChannelPutOpThroughSymbol(ChannelOp channel, Operation *scope = nullptr);
@@ -192,10 +217,33 @@ LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
 // Find the largest factor of 'num' which is not larger than 'max'.
 int findLargestFactor(int num, int max);
 
+// Largest factor of 'num' that is <= 'max' and a multiple of 'alignment'.
+// Returns 0 when no aligned factor exists, so the caller can emit a
+// diagnostic instead of silently producing misaligned IR. With alignment<=1
+// behaves as findLargestFactor.
+int findLargestAlignedFactor(int num, int max, int alignment);
+
+// Element-count alignment required so that an inner DMA wrap stays a
+// multiple of the AIE shim address granularity. Queries the parent
+// AIE::DeviceOp's target model when reachable (preferred); otherwise falls
+// back to 32 bits (the AIE2 / AIE2P value). Returns 1 when each element
+// already meets or exceeds the granularity (e.g. f32, i32); 2 for bf16/i16;
+// 4 for i8/ui8. 'op' is used both to find the DeviceOp ancestor and to
+// resolve the DataLayout via DataLayout::closest().
+int getDmaInnerElementAlignment(mlir::BaseMemRefType memrefTy,
+                                mlir::Operation *op);
+
 // Canonicalize wrap and stride lists, by removing redundant dimensions.
-LogicalResult canonicalizeWrapAndStrideList(
-    OpBuilder &builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
-    SmallVector<Value> &strides, int memref_volume, int maxSize = -1);
+// 'innerAlignment' constrains the contiguous innermost dim (stride==1) when
+// it must be split: the new inner wrap is forced to be a multiple of
+// 'innerAlignment' elements (e.g. 2 for bf16 on a 4-byte shim BD). Pass 1
+// (the default) when no extra constraint applies.
+LogicalResult canonicalizeWrapAndStrideList(OpBuilder &builder,
+                                            SmallVector<Value> &offsets,
+                                            SmallVector<Value> &sizes,
+                                            SmallVector<Value> &strides,
+                                            int memref_volume, int maxSize = -1,
+                                            int innerAlignment = 1);
 
 // If wrap-and-stride lists are empty, populate them with default data access
 // layout (contiguous, row-major).
@@ -209,10 +257,24 @@ void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
 // discardable attr dictionary, so they must be copied explicitly.
 void copyPaddingAttributes(Operation *src, Operation *dst);
 
+// True iff `op`'s "metadata" FlatSymbolRefAttr resolves to an S2MM
+// (device->host / output) shim DMA allocation. The allocation is looked up in
+// `op`'s parent AIE::DeviceOp when it has one, otherwise in every AIE::DeviceOp
+// of the enclosing module (an airrt.dma_memcpy_nd still lives in a func before
+// air-to-std sinks it into its device). Returns false when there is no metadata
+// or no matching ShimDMAAllocationOp.
+bool isDeviceToHostShimDMA(Operation *op);
+
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
 bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
                                 SmallVector<Value> memcpy_strides);
+// True when the wraps/strides lower to a single linear shim BD: contiguous
+// row-major body, optionally preceded by outer size==1 dummies or outer
+// stride==0 (BD repeat) dims. Such a transfer is exempt from the per-dim
+// 10-bit wrap-size limit.
+bool isContiguousRowMajorOrRepeated(SmallVector<Value> sizes,
+                                    SmallVector<Value> strides);
 // Check if the volume of sizes equals the volume of the memref.
 // Return true if equal, and return false if any size value is not constant,
 // or memref shape isn't static.

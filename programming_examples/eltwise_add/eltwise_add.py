@@ -258,7 +258,18 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--perf-iters",
+        type=int,
+        default=0,
+        dest="perf_iters",
+        help="If >0, time the kernel over this many iters (after warmup) and "
+        "print Latency + bandwidth in addition to the correctness check",
+    )
     args = parser.parse_args()
+
+    if args.perf_iters < 0:
+        parser.error("--perf-iters must be >= 0")
 
     if args.dtype == "bf16":
         INPUT_DATATYPE = bfloat16
@@ -278,31 +289,24 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.random.uniform(0, 4, args.n).astype(INPUT_DATATYPE)
-    input_b = np.random.uniform(0, 4, args.n).astype(INPUT_DATATYPE)
+    # Use N(0,1) (matching the GPU test standard) so the correctness check sees
+    # a realistic signed distribution rather than an all-positive one. Generate
+    # in float32 (not the default float64) to avoid a large f64 intermediate.
+    rng = np.random.default_rng(0)
+    input_a_f32 = rng.standard_normal(args.n, dtype=np.float32)
+    input_b_f32 = rng.standard_normal(args.n, dtype=np.float32)
+    input_a = input_a_f32.astype(INPUT_DATATYPE)
+    input_b = input_b_f32.astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
 
-        # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
-        num_samples = 100
-        sampled_indices = np.vstack(
-            [
-                np.random.randint(0, args.n, num_samples),  # i indices
-            ]
+        # Reference computed in FP32, then rounded to the output dtype (a
+        # bf16-rounded reference when dtype=bf16) — matches how a GPU/HF bf16
+        # elementwise op is verified. Add the actual bf16-rounded operands in
+        # f32 so the reference sees the same inputs the kernel does.
+        ref = (input_a.astype(np.float32) + input_b.astype(np.float32)).astype(
+            INPUT_DATATYPE
         )
-
-        # Compute reference results for sampled indices
-        sampled_values = np.array(
-            [input_a[i] + input_b[i] for i in zip(*sampled_indices)],
-            dtype=INPUT_DATATYPE,
-        )
-
-        # Store as a dictionary
-        sampled_data = {
-            "shape": (args.n),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
 
         ###### Compile and test
         runner = XRTRunner(
@@ -311,15 +315,23 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="eltwise_add",
             runtime_loop_tiling_sizes=[4, 4],
+            report_precision=True,
+            n_perf_iters=args.perf_iters,
         )
-        # BF16 has ~0.8% relative precision; use looser tolerance
-        rtol = 0.01 if INPUT_DATATYPE == bfloat16 else 1e-3
+        # Two dtype branches only (--dtype choices = bf16 | f32):
+        #   bf16: canonical rtol 1.6e-2; add is exact-to-bf16-round
+        #         (mean_rel_L1 ~1.9e-3), atol sized to the measured worst-case
+        #         single-element bf16 round (~3e-2).
+        #   f32:  effectively exact, so tight rtol/atol.
+        rtol = 1.6e-2 if INPUT_DATATYPE == bfloat16 else 1e-3
+        atol = 5e-2 if INPUT_DATATYPE == bfloat16 else 1e-5
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_a, input_b],
-                stochastic_expected_outputs=[sampled_data],
+                expected_outputs=[ref],
                 rtol=rtol,
+                atol=atol,
             )
         )
 

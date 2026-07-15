@@ -16,6 +16,7 @@
 #include <numeric>
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIE/Transforms/AIEPlacer.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
@@ -41,6 +42,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -68,6 +70,12 @@ struct AIRToAIEConversionOptions {
   bool generate_shim_dma;
   bool insert_trace_packet_flow;
   bool use_lock_race_condition_fix;
+  // v2: daisy-chained lock emission for shared L2 buffers with
+  // fan-in (N writers + 1 reader) or fan-out (1 writer + N readers) sub-
+  // region access patterns. Emits 1 cap lock + N init=0 signal locks
+  // forming a strict producer-ordering chain, eliminating concurrent-
+  // access races on the memtile DMA. Mutually exclusive with v1.
+  bool use_lock_race_condition_fix_v2;
   AIE::AIEDevice device;
   unsigned stack_size;
 };
@@ -107,50 +115,68 @@ int getMemcpySizesAsInt(Value memref, SmallVector<Value> sizes) {
   }
 }
 
+// Allocator for shim NOC tiles. AIR no longer makes shim placement decisions;
+// each call to getShimTile() emits an unplaced aie.logical_tile<ShimNOCTile>.
+// resolveLogicalShimTiles() runs the placer after channel lowering completes
+// to convert them into physical aie.tile ops. The placer's
+// findTileWithCapacity / hasAvailableChannels logic in mlir-aie absorbs the
+// channel-aware merging that used to live here. See RFC #1567.
 struct ShimTileAllocator {
 
-  std::vector<int> shim_columns;
-  int shim_dma_channels;
   const AIE::AIETargetModel &aie_target;
+  // Channel symbol names that went through getShimTile(); consumed downstream
+  // for objectfifo metadata labeling.
+  std::vector<std::string> chan_names;
+  // Logical shim tiles emitted during channel lowering, one per call. Each
+  // is a fresh op created via the active PatternRewriter; entries are
+  // cleared and replaced with physical aie.tile by resolveLogicalShimTiles.
+  std::vector<AIE::LogicalTileOp> logical_shim_tiles;
 
-  struct shim_allocation_info_t {
-    int shim_col;
-    int available_channels;
-    std::vector<std::string> chan_names;
-  };
+  ShimTileAllocator(const AIE::AIETargetModel &target) : aie_target(target) {}
 
-  std::vector<shim_allocation_info_t> mm2s_allocs, s2mm_allocs;
-
-  ShimTileAllocator(const AIE::AIETargetModel &target) : aie_target(target) {
-    for (int i = 0, e = aie_target.columns(); i < e; i++) {
-      if (aie_target.isShimNOCTile(i, 0)) {
-        shim_columns.push_back(i);
-        shim_dma_channels = aie_target.getNumDestSwitchboxConnections(
-            i, 0, AIE::WireBundle::FIFO);
-      }
-    }
+  // Emit a fresh aie.logical_tile<ShimNOCTile>(?, ?) and return its result.
+  // No round-robin column selection, no per-direction capacity tracking; the
+  // placer handles all of that. Must be called from inside a pattern with an
+  // active rewriter, since the result is immediately consumed by ops the
+  // rewriter is building.
+  Value getShimTile(PatternRewriter &rewriter, AIE::DeviceOp aie_device,
+                    std::string chan_name) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(aie_device.getBody());
+    auto logical = AIE::LogicalTileOp::create(
+        rewriter, aie_device.getLoc(), AIE::AIETileType::ShimNOCTile,
+        /*col=*/IntegerAttr(),
+        /*row=*/IntegerAttr(),
+        /*allocation_scheme=*/StringAttr());
+    logical_shim_tiles.push_back(logical);
+    chan_names.push_back(chan_name);
+    return logical.getResult();
   }
 
-  AIE::TileOp getShimTile(AIE::DeviceOp aie_device,
-                          air::MemorySpace src_memory_space,
-                          air::MemorySpace dst_memory_space,
-                          std::string chan_name) {
-    bool isMM2S = (src_memory_space < dst_memory_space);
-    auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+  // Resolve all aie.logical_tile<ShimNOCTile> into physical aie.tile via the
+  // SequentialPlacer. Must be called after channel lowering completes — once
+  // the greedy rewriter has settled — so no Operation* is held across rewrite
+  // iterations.
+  LogicalResult resolveLogicalShimTiles(AIE::DeviceOp aie_device) {
+    if (logical_shim_tiles.empty())
+      return success();
 
-    // return first available shim tile with a free channel
-    for (auto &t : *allocs) {
-      if (t.available_channels > 0) {
-        t.available_channels -= 1;
-        t.chan_names.push_back(chan_name);
-        return air::getPhysTileOp(aie_device, t.shim_col, 0);
-      }
+    AIE::SequentialPlacer placer;
+    placer.initialize(aie_target);
+    if (failed(placer.place(aie_device)))
+      return aie_device.emitError("failed to place logical shim tiles");
+
+    for (auto logical : logical_shim_tiles) {
+      auto placement = placer.getPlacement(logical.getOperation());
+      if (!placement)
+        return logical.emitError("no placement for logical shim tile");
+      auto physTile =
+          air::getPhysTileOp(aie_device, placement->col, placement->row);
+      logical.getResult().replaceAllUsesWith(physTile.getResult());
+      logical.erase();
     }
-    auto shim_col = shim_columns[allocs->size()];
-    auto shim_tile = air::getPhysTileOp(aie_device, shim_col, 0);
-    allocs->push_back({shim_col, shim_dma_channels - 1, {chan_name}});
-
-    return shim_tile;
+    logical_shim_tiles.clear();
+    return success();
   }
 };
 
@@ -168,25 +194,28 @@ std::string createSymbolName(Operation *symbol_table, std::string dma_name) {
   return cname;
 }
 
+// Accepts either a physical AIE::TileOp or an unplaced AIE::LogicalTileOp via
+// the AIE::TileLike interface.
 AIE::BufferOp allocateBufferOp(uint64_t &BufferId, MemRefType memrefTy,
-                               AIE::TileOp tile,
+                               AIE::TileLike tileLike,
                                mlir::StringAttr attr = nullptr, int x = -1,
                                int y = -1) {
-
-  OpBuilder builder(tile);
-  Operation *t = tile.getOperation();
-  while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+  Operation *tileOp = tileLike.getOperation();
+  OpBuilder builder(tileOp);
+  Operation *t = tileOp;
+  while (isa_and_present<AIE::TileLike>(t->getNextNode()))
     t = t->getNextNode();
   builder.setInsertionPointAfter(t);
   AIE::BufferOp bufferOp = AIE::BufferOp::create(
-      builder, tile->getLoc(), memrefTy, tile, /*sym_name*/ nullptr,
+      builder, tileOp->getLoc(), memrefTy, tileOp->getResult(0),
+      /*sym_name*/ nullptr,
       /*address*/ nullptr, /*initial_value*/ nullptr,
       /*mem_bank*/ nullptr);
 
   std::stringstream ss =
       air::generateBufferNameInStringStream("buf", BufferId, attr, x, y);
   bufferOp->setAttr(SymbolTable::getSymbolAttrName(),
-                    StringAttr::get(tile->getContext(), ss.str()));
+                    StringAttr::get(tileOp->getContext(), ss.str()));
 
   return bufferOp;
 }
@@ -201,10 +230,9 @@ void setAIEDeviceDataLayout(OpBuilder &builder, AIE::DeviceOp aie_dev) {
   aie_dev->setAttr(DLTIDialect::kDataLayoutAttrName, dlSpec);
 }
 
-void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
-                     air::HerdOp h,
-                     std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
-                     AIRToAIEConversionOptions &options) {
+LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
+                              air::HerdOp h,
+                              AIRToAIEConversionOptions &options) {
   builder.setInsertionPointToStart(aie_device.getBody());
 
   int64_t herd_size_x = h.getNumCols();
@@ -243,11 +271,18 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       auto phys_x = x + col_offset;
       auto phys_y = y + row_offset;
 
-      // make the aie.tile
+      // Emit aie.logical_tile<CoreTile>(phys_x, phys_y) and resolve via
+      // mlir-aie's SequentialPlacer (RFC #1567 Stage A milestone 4). For
+      // this milestone we keep both coordinates fully constrained, so the
+      // Compute tiles here are fully constrained to (phys_x, phys_y) by the
+      // AIR herd; we can resolve directly to a physical aie.tile without any
+      // placer involvement. (Memtiles and shim tiles take the LTO route — see
+      // outlineAIEMemtiles and ShimDMAAllocator::allocNewDmaChannel — and let
+      // the downstream `aie-place-tiles` pass pick rows/columns.)
       auto tile = air::getPhysTileOp(aie_device, phys_x, phys_y);
 
       Operation *t = tile.getOperation();
-      while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+      while (isa_and_present<AIE::TileLike>(t->getNextNode()))
         t = t->getNextNode();
       builder.setInsertionPointAfter(t);
 
@@ -262,7 +297,19 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         core = AIE::CoreOp::create(builder, hloc, tile);
         if (options.stack_size != 1024)
           core.setStackSize(options.stack_size);
-        tileToHerdMap[tile] = h;
+        // Persist herd metadata as aie.core attributes so downstream code
+        // doesn't need a tileToHerdMap to recover (RFC #1567 Stage C #3).
+        // air.herd_local_id stores the per-cell (x, y) within the herd;
+        // air.herd_size stores the herd's (x_size, y_size); air.herd_name
+        // stores the herd's symbol name when available.
+        core->setAttr("air.herd_local_id",
+                      builder.getDenseI64ArrayAttr(
+                          {static_cast<int64_t>(x), static_cast<int64_t>(y)}));
+        core->setAttr("air.herd_size",
+                      builder.getDenseI64ArrayAttr({herd_size_x, herd_size_y}));
+        if (auto sym =
+                h->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+          core->setAttr("air.herd_name", sym);
         if (auto a = h->getAttrOfType<StringAttr>("link_with"))
           core->setAttr("link_with", a);
       }
@@ -585,16 +632,19 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       launch_bb->walk([&](air::HerdTerminatorOp op) { op->erase(); });
     }
   }
+  return success();
 }
 
 // Get all tile ops representing memtiles from device op.
-std::vector<AIE::TileOp> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
-  std::vector<AIE::TileOp> memtiles;
-  for (auto t : d.getOps<AIE::TileOp>()) {
-    if (t.isMemTile()) {
+// Return all memtile-typed tile-defining ops in the device, as TileLike.
+// Picks up both physical AIE::TileOp (post-aie-place-tiles) and unplaced
+// AIE::LogicalTileOp emitted by outlineAIEMemtiles. Callers that need a
+// physical TileOp must check the underlying op type before casting.
+std::vector<AIE::TileLike> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
+  std::vector<AIE::TileLike> memtiles;
+  for (auto t : d.getBody()->getOps<AIE::TileLike>())
+    if (t.isMemTile())
       memtiles.push_back(t);
-    }
-  }
   return memtiles;
 }
 
@@ -749,9 +799,9 @@ AIE::AIEDevice computeSubDeviceType(AIE::AIEDevice origDevice,
   }
 }
 
-void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
-                        air::SegmentOp seg,
-                        AIRToAIEConversionOptions &options) {
+LogicalResult outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
+                                 air::SegmentOp seg,
+                                 AIRToAIEConversionOptions &options) {
   builder.setInsertionPointToStart(aie_device.getBody());
 
   int64_t seg_size_x = 1;
@@ -769,6 +819,33 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
     }
   }
 
+  // Extend to the max herd column footprint inside the segment. When the
+  // segment carries no explicit x_size (Python sugar like
+  // `@segment(name="seg")` defaults to 1x1), it doesn't reflect the actual
+  // physical column extent the herds will occupy. Memtile is column-bound
+  // so we need one logical memtile per column the herds will land on, or
+  // L2 buffers for distinct columns wrap-collide onto the same memtile
+  // LTO and the placer fails (matvec_2tile_add 8-col reproduces this).
+  // Falling back to herd footprint matches what an explicitly-sized
+  // segment (e.g. matmul_i8 with x_size=8) already gets.
+  int64_t herd_max_x = 0;
+  seg.walk([&](air::HerdOp h) {
+    int64_t x_loc = 0;
+    if (auto loc = h->getAttrOfType<IntegerAttr>("x_loc"))
+      x_loc = loc.getInt();
+    int64_t x_size = 1;
+    auto sizeOperands = h.getSizeOperands();
+    if (!sizeOperands.empty()) {
+      if (auto cst = sizeOperands[0].getDefiningOp<arith::ConstantIndexOp>())
+        x_size = cst.value();
+      else if (auto cst = sizeOperands[0].getDefiningOp<arith::ConstantOp>())
+        if (auto intAttr = dyn_cast_if_present<IntegerAttr>(cst.getValue()))
+          x_size = intAttr.getInt();
+    }
+    herd_max_x = std::max(herd_max_x, x_loc + x_size);
+  });
+  seg_size_x = std::max(seg_size_x, herd_max_x);
+
   seg.walk([&](air::ChannelInterface op) {
     if (!aie_device.lookupSymbol(op.getChanName())) {
       auto ch = air::getChannelDeclarationThroughSymbol(op);
@@ -779,23 +856,48 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
   // use the command line offsets unless the attribute is present
   int64_t col_offset = options.col_offset;
 
+  // Emit each memtile as an unplaced aie.logical_tile<MemTile>(col, ?) and
+  // leave it logical. The downstream `aie-place-tiles` pass picks the row
+  // (and may merge multiple LTOs onto one physical memtile when DMA capacity
+  // permits). The column is constrained because the segment owns that column.
+  //
+  // Skip columns that have no memtile in this device (e.g., out-of-range
+  // columns due to a too-large segment x_size + col_offset). The placer is
+  // strict on out-of-range hints, so we filter here.
+  const auto &targetModel = aie_device.getTargetModel();
+  auto colHasMemTile = [&](int col) {
+    if (col < 0 || col >= targetModel.columns())
+      return false;
+    for (int row = 0; row < targetModel.rows(); row++)
+      if (targetModel.isMemTile(col, row))
+        return true;
+    return false;
+  };
+
+  // Emit one unhinted memtile LTO per logical memtile slot the segment
+  // needs; aie-place-tiles assigns the col. The merge-ltos=false pass
+  // option (set by aircc) keeps each LTO on its own physical memtile.
+  SmallVector<AIE::LogicalTileOp> logicalMemTiles;
   for (auto x = 0; x < seg_size_x; x++) {
-    // auto segloc = seg.getLoc();
     auto phys_x = x + col_offset;
-    // TODO: Hard coded memtile row to be 1 here.
-    auto phys_y = 1;
+    if (!colHasMemTile(phys_x))
+      continue;
+    logicalMemTiles.push_back(AIE::LogicalTileOp::create(
+        builder, aie_device.getLoc(), AIE::AIETileType::MemTile,
+        /*col=*/IntegerAttr(),
+        /*row=*/IntegerAttr(),
+        /*allocation_scheme=*/StringAttr()));
+  }
 
-    // make the aie.tile
-    AIE::TileOp tile = air::getPhysTileOp(aie_device, phys_x, phys_y);
-
-    // Create a temporary buffer allocated to the memtile. This prevents
-    // an unused memtile from being folded away before the L2 allocation pass.
-    auto memrefTy =
-        MemRefType::get(SmallVector<int64_t>{1}, builder.getI8Type());
-    static uint64_t BufferId = 0;
+  // Anchor each emitted memtile with a tiny L2 buffer so it isn't folded
+  // away before L2 allocation runs.
+  auto memrefTy = MemRefType::get(SmallVector<int64_t>{1}, builder.getI8Type());
+  static uint64_t BufferId = 0;
+  for (auto tile : logicalMemTiles) {
     allocateBufferOp(BufferId, memrefTy, tile,
                      builder.getStringAttr("__L2_tmp"));
   }
+  return success();
 }
 
 template <typename T>
@@ -828,6 +930,11 @@ static void collectBufferAliases(Value buffer,
     }
   }
 }
+
+// Forward declaration (defined later): whether `op` executes within its
+// enclosing aie.core given the constant tile-index guards. Used to ignore
+// dead per-core branches (not yet folded) when analyzing shared L1 buffers.
+static bool accessReachableInCore(Operation *op);
 
 /// Allocate producer/consumer locks for shared L1 buffer synchronization.
 /// This enables safe inter-core communication via shared L1 memory.
@@ -890,6 +997,9 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
 
   for (auto coreOp : coreOps) {
     coreOp.walk([&](Operation *op) {
+      // Ignore accesses in dead per-core branches (not yet folded).
+      if (!accessReachableInCore(op))
+        return;
       // Check memory effects
       for (Value alias : bufferAliases) {
         if (hasEffect<MemoryEffects::Write>(op, alias))
@@ -919,6 +1029,8 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   for (auto coreOp : coreOps) {
     bool coreIsProducer = false;
     coreOp.walk([&](Operation *op) {
+      if (!accessReachableInCore(op))
+        return;
       for (Value alias : bufferAliases) {
         if (hasEffect<MemoryEffects::Write>(op, alias))
           coreIsProducer = true;
@@ -938,6 +1050,50 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   }
 
   // ========================================================================
+  // 3-WAY DETECTION: collect the DMA accessors of the shared buffer. An
+  // air.channel.put whose source aliases the buffer becomes an MM2S BD that
+  // READS the buffer out (DMA reader); an air.channel.get whose dest aliases
+  // the buffer becomes an S2MM BD that WRITES it (DMA writer). These are the
+  // "third participant" the core-only analysis above misses: with N writer
+  // cores + 1 DMA reader on one buffer, the DMA is the
+  // effective consumer. (At outline time the put/get still lives in the core
+  // body; it is hoisted to mem_X_Y later by lowerAIRMemcpyOp.) We keep the ops
+  // themselves so the shared prod/cons identity can be stamped onto the op that
+  // becomes the DMA BD (see the 3-way carrier stash below).
+  SmallVector<Operation *> dmaAccessOps;
+  bool hasDmaReader = false;
+  bool hasDmaWriter = false;
+  for (auto coreOp : coreOps) {
+    coreOp.walk([&](Operation *op) {
+      bool isPut = isa<air::ChannelPutOp>(op);
+      bool isGet = isa<air::ChannelGetOp>(op);
+      if (!isPut && !isGet)
+        return;
+      for (Value operand : op->getOperands())
+        if (bufferAliases.contains(operand)) {
+          dmaAccessOps.push_back(op);
+          hasDmaReader |= isPut;
+          hasDmaWriter |= isGet;
+          break;
+        }
+    });
+  }
+
+  // 3-way share: the cores access the buffer ONE-SIDED (write-only or
+  // read-only) AND a DMA participant supplies the missing side. This is the
+  // shared-L1 pattern (N writer cores + 1 DMA reader). It UPGRADES the
+  // would-be Mutex case to producer/consumer; it must NOT change the Skip
+  // case (a buffer touched only by a DMA and never by core compute keeps its
+  // locks from getLockForDMA as before). Requires AIE2 semaphore locks: the
+  // DMA-side reuse in getLockForDMA / generateDmaBd is UsesSemaphoreLocks-
+  // gated, so on AIE1 the DMA cannot share the prod/cons pair.
+  bool coreOneSidedProducer = hasAnyProducer && !hasAnyConsumer;
+  bool coreOneSidedConsumer = hasAnyConsumer && !hasAnyProducer;
+  bool isThreeWay =
+      usesSemaphoreLocks && ((coreOneSidedProducer && hasDmaReader) ||
+                             (coreOneSidedConsumer && hasDmaWriter));
+
+  // ========================================================================
   // DECISION: Determine lock strategy based on access patterns
   // ========================================================================
   enum class LockStrategy {
@@ -948,20 +1104,27 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
 
   LockStrategy strategy;
   if (!hasAnyProducer && !hasAnyConsumer) {
-    // No operations access the buffer - skip lock insertion entirely
+    // No CORE operations access the buffer - skip lock insertion entirely.
+    // (A buffer touched only by DMA gets its locks from getLockForDMA.)
     strategy = LockStrategy::Skip;
     LLVM_DEBUG(llvm::dbgs()
                << "AIRToAIE: Skipping locks for shared L1 buffer " << bufName
                << " - no read/write operations detected\n");
-  } else if (hasAnyProducer && hasAnyConsumer) {
-    // Both readers and writers exist - use producer/consumer protocol
+  } else if ((hasAnyProducer && hasAnyConsumer) || isThreeWay) {
+    // Both readers and writers exist - use producer/consumer protocol. This
+    // covers the classic core-reader/core-writer case AND the 3-way case
+    // (one-sided cores + DMA other side), where the DMA participant is the
+    // counterpart that releases the lock and prevents the write-only deadlock
+    // the mutex path guards against.
     strategy = LockStrategy::ProducerConsumer;
     LLVM_DEBUG(
         llvm::dbgs()
         << "AIRToAIE: Using producer/consumer locks for shared L1 buffer "
-        << bufName << " - both readers and writers detected\n");
+        << bufName << " - both readers and writers detected"
+        << (isThreeWay ? " (3-way: includes DMA participant)" : "") << "\n");
   } else {
-    // Only writers OR only readers - use mutex to prevent deadlock
+    // Only writers OR only readers AND no DMA counterpart - use mutex to
+    // prevent deadlock
     strategy = LockStrategy::Mutex;
     // Emit warning about potential deadlock pattern that was avoided
     sharedBuffer->emitWarning()
@@ -1004,6 +1167,26 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
                << "AIRToAIE: Allocated producer/consumer locks for " << bufName
                << " - prod_lock(init=" << prodLockInit
                << "), cons_lock(init=" << consLockInit << ")\n");
+
+    // 3-way carrier stash: when a DMA participant accesses this shared
+    // buffer, the DMA BD's locks are allocated much later (getLockForDMA,
+    // after lowerAIRMemcpyOp), in a phase that has no view of these
+    // prod/cons locks. Stamp the lock symbol-refs onto the channel put/get
+    // op that becomes the DMA BD (the op both phases touch), so getLockForDMA
+    // reads them off the op it is already processing and reuses the SAME pair
+    // (instead of allocating a private channel-put pair, which would break the
+    // 3-way share with no error). The per-side token count N is the prod
+    // lock's init; the DMA side reads it back via LockOp::getInit(), so no
+    // separate count attribute is carried.
+    if (isThreeWay) {
+      auto *ctx = aie_device.getContext();
+      auto prodRef = FlatSymbolRefAttr::get(ctx, prodLock.getSymName().value());
+      auto consRef = FlatSymbolRefAttr::get(ctx, consLock.getSymName().value());
+      for (auto *op : dmaAccessOps) {
+        op->setAttr("air.shared_prod_lock", prodRef);
+        op->setAttr("air.shared_cons_lock", consRef);
+      }
+    }
   } else {
     // Mutex: allocate single lock initialized to 1 (available)
     mutexLock =
@@ -1022,14 +1205,41 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   // LOCK INSERTION: Insert lock pairs around buffer-accessing operations.
   // For inline MLIR kernels (memref.load/store in loops), locks are placed
   // at the outermost loop scope that contains ALL accesses, not per-op.
+  //
+  // Cross-core scope normalization: pre-fix, per-core lock scope was
+  // chosen independently. When producer and consumer cores accessed the
+  // buffer at different nesting depths (e.g. one inside an inner scf.for,
+  // the other at core-body level), the cadence of acquire/release
+  // mismatched (N-per-iter on one side, 1-per-iter on the other) →
+  // permanent stall after the first iteration. Two passes now:
+  //   (1) compute per-core (accessingOps, lockScope, roles)
+  //   (2) detect asymmetric scope (any NULL while any non-NULL); if so,
+  //       HOIST ALL cores to core-body level by wrapping the closest
+  //       ancestor of each accessing op that's a direct child of the
+  //       core op (== the core-body-level "statement"). This produces
+  //       1 acquire/release per AIE-core iteration regardless of inner
+  //       scf.for nesting and is the minimum shared-L1 invariant.
+  //   (3) emit per-core locks using the chosen scope.
   // ========================================================================
-  for (auto coreOp : coreOps) {
-    // Step 1: Collect all ops that access the shared buffer
+  struct PerCoreLockInfo {
+    AIE::CoreOp coreOp;
     SmallVector<Operation *> accessingOps;
-    bool coreIsProducer = false;
-    bool coreIsConsumer = false;
+    bool coreIsProducer;
+    bool coreIsConsumer;
+    Operation *lockScope;
+  };
+  SmallVector<PerCoreLockInfo> coreInfos;
+
+  for (auto coreOp : coreOps) {
+    PerCoreLockInfo info;
+    info.coreOp = coreOp;
+    info.coreIsProducer = false;
+    info.coreIsConsumer = false;
+    info.lockScope = nullptr;
 
     coreOp.walk([&](Operation *op) {
+      if (!accessReachableInCore(op))
+        return;
       bool accessesBuffer = false;
       bool isProducer = false;
       bool isConsumer = false;
@@ -1060,34 +1270,135 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       }
 
       if (accessesBuffer) {
-        accessingOps.push_back(op);
+        info.accessingOps.push_back(op);
         if (isProducer)
-          coreIsProducer = true;
+          info.coreIsProducer = true;
         if (isConsumer)
-          coreIsConsumer = true;
+          info.coreIsConsumer = true;
       }
     });
 
-    if (accessingOps.empty())
+    if (info.accessingOps.empty()) {
+      coreInfos.push_back(info);
       continue;
+    }
 
-    // Step 2: Find the OUTERMOST scf.for that contains ALL accessing ops
-    Operation *lockScope = nullptr;
-    // Start from the first accessing op and walk up
-    Operation *candidate = accessingOps[0]->getParentOp();
+    // Find the OUTERMOST scf.for that contains ALL accessing ops
+    Operation *candidate = info.accessingOps[0]->getParentOp();
     while (candidate && candidate != coreOp.getOperation()) {
       if (isa<scf::ForOp>(candidate)) {
         bool containsAll = true;
-        for (auto *other : accessingOps) {
+        for (auto *other : info.accessingOps) {
           if (!candidate->isProperAncestor(other)) {
             containsAll = false;
             break;
           }
         }
         if (containsAll)
-          lockScope = candidate; // outermost so far; keep going up
+          info.lockScope = candidate;
       }
       candidate = candidate->getParentOp();
+    }
+    coreInfos.push_back(info);
+  }
+
+  // Detect cross-core scope asymmetry that needs hoisting to core-body level.
+  //
+  // The genuine hazard is a core that accesses the buffer ONLY at core-body
+  // level (no enclosing scf.for at all) paired with a core that accesses it
+  // INSIDE a loop: the core-body-level participant cycles the shared lock once
+  // per AIE-core iter while the loop-nested participant cycles it once per loop
+  // iteration -> cadence mismatch / deadlock. Hoisting the loop-nested locks
+  // out to core-body level makes both cycle once per AIE-core iter. This is
+  // only correct when the core-body-level participant produces/consumes the
+  // buffer ONCE (e.g. a whole-buffer write read N times); hoisting is what the
+  // shared_l1_asymmetric_scope regression needs.
+  //
+  // It must NOT trigger when EVERY participant is loop-nested but merely lacks
+  // a single common enclosing loop (e.g. a producer that writes the buffer in
+  // a prologue AND inside its loop -> lockScope==null despite being
+  // loop-nested). Such buffers are reused per loop iteration and require
+  // per-iteration lock handoff; hoisting out of the loop would let the producer
+  // overwrite the buffer N times before the consumer reads (correctness bug /
+  // hang). So key the decision on core-body-only vs loop-nested, NOT on the
+  // presence of a single common loop (lockScope null-ness).
+  auto hasLoopNestedAccess = [&](PerCoreLockInfo &info) {
+    for (auto *op : info.accessingOps) {
+      for (Operation *p = op->getParentOp();
+           p && p != info.coreOp.getOperation(); p = p->getParentOp())
+        if (isa<scf::ForOp>(p))
+          return true;
+    }
+    return false;
+  };
+  bool hoistAllToCoreBody = false;
+  {
+    bool anyCoreBodyOnly = false, anyLoopNested = false;
+    for (auto &info : coreInfos) {
+      if (info.accessingOps.empty())
+        continue;
+      if (hasLoopNestedAccess(info))
+        anyLoopNested = true;
+      else
+        anyCoreBodyOnly = true;
+    }
+    if (anyCoreBodyOnly && anyLoopNested) {
+      hoistAllToCoreBody = true;
+      sharedBuffer->emitWarning()
+          << "shared L1 buffer " << bufName
+          << ": asymmetric per-core lock scopes detected (some cores "
+             "access buffer at core-body level, others inside scf.for); "
+             "hoisting all locks to core-body level to avoid cadence "
+             "mismatch deadlock";
+    }
+  }
+
+  for (auto &info : coreInfos) {
+    auto coreOp = info.coreOp;
+    auto &accessingOps = info.accessingOps;
+    bool coreIsProducer = info.coreIsProducer;
+    bool coreIsConsumer = info.coreIsConsumer;
+    Operation *lockScope = hoistAllToCoreBody ? nullptr : info.lockScope;
+
+    if (accessingOps.empty())
+      continue;
+
+    // 3-way shared L1: wrap each accessing op INDIVIDUALLY (per-buffer
+    // bracketing) rather than hoisting acquire/release to the loop-body
+    // boundaries. Required when multiple shared buffers are ping-ponged in
+    // one loop body: allocateSharedL1BufferLocks runs once per shared buffer,
+    // and the for-body-boundary placement would batch every buffer's prod
+    // acquire at loop top (serializing ping vs pong). Per-op placement keeps
+    // each buffer's lock around only its own access; cadence stays 1-per-iter
+    // because the accessing op is inside the loop. Symmetric across cores
+    // (all writers access at the same nesting), so no cadence-mismatch risk.
+    if (isThreeWay) {
+      for (auto *op : accessingOps) {
+        OpBuilder builder(op);
+        auto loc = op->getLoc();
+        if (coreIsProducer && !coreIsConsumer) {
+          AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, loc, consLock,
+                                 AIE::LockAction::Release, 1);
+        } else if (coreIsConsumer && !coreIsProducer) {
+          AIE::UseLockOp::create(builder, loc, consLock, acqAction,
+                                 numProducerCores);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, loc, prodLock,
+                                 AIE::LockAction::Release, numProducerCores);
+        } else {
+          AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
+          AIE::UseLockOp::create(builder, loc, consLock, acqAction,
+                                 numProducerCores);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, loc, consLock,
+                                 AIE::LockAction::Release, 1);
+          AIE::UseLockOp::create(builder, loc, prodLock,
+                                 AIE::LockAction::Release, numProducerCores);
+        }
+      }
+      continue;
     }
 
     // Step 3: Insert locks at the determined scope
@@ -1126,9 +1437,33 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
                                numProducerCores);
       }
     } else {
-      // Fallback: no enclosing loop, wrap each op individually (original
-      // behavior)
-      for (auto *op : accessingOps) {
+      // Fallback: no single enclosing scf.for contains all accesses.
+      //
+      // When hoistAllToCoreBody is set (asymmetric cross-core scopes), wrap
+      // the closest core-body-level ancestor of each accessing op (the direct
+      // child of the AIE::CoreOp): for a core-body-level access that is the op
+      // itself; for an op inside an scf.for it is the scf.for. This hoists the
+      // acquire/release out of inner loops so every core cycles the shared
+      // lock once per AIE-core iter, avoiding the cadence-mismatch deadlock.
+      //
+      // Otherwise preserve the original per-op wrapping (acquire/release
+      // around each accessing op), which is the pre-existing behavior for
+      // symmetric cores with no common enclosing loop.
+      SetVector<Operation *> wrappingOps;
+      if (hoistAllToCoreBody) {
+        for (auto *op : accessingOps) {
+          Operation *stmt = op;
+          while (stmt && stmt->getParentOp() != coreOp.getOperation())
+            stmt = stmt->getParentOp();
+          if (stmt)
+            wrappingOps.insert(stmt);
+        }
+      } else {
+        for (auto *op : accessingOps)
+          wrappingOps.insert(op);
+      }
+
+      for (auto *op : wrappingOps) {
         OpBuilder builder(op);
 
         if (strategy == LockStrategy::Mutex) {
@@ -1164,11 +1499,80 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   }
 }
 
-void createAIEModulesAndOutlineCores(
+// Evaluate a boolean condition value to a compile-time constant, if possible.
+// Handles a constant i1, an arith.cmpi with constant operands, and an
+// arith.index_cast of a constant. Returns nullopt when not statically known.
+static std::optional<bool> evalConstBoolCond(Value cond) {
+  if (auto c = cond.getDefiningOp<arith::ConstantOp>())
+    if (auto ia = dyn_cast<IntegerAttr>(c.getValue()))
+      return ia.getValue().getBoolValue();
+  if (auto cmp = cond.getDefiningOp<arith::CmpIOp>()) {
+    auto l = mlir::getConstantIntValue(cmp.getLhs());
+    auto r = mlir::getConstantIntValue(cmp.getRhs());
+    if (l && r) {
+      unsigned bw = isa<IndexType>(cmp.getLhs().getType())
+                        ? 64
+                        : cmp.getLhs().getType().getIntOrFloatBitWidth();
+      return arith::applyCmpPredicate(cmp.getPredicate(),
+                                      APInt(bw, *l, /*isSigned=*/true),
+                                      APInt(bw, *r, /*isSigned=*/true));
+    }
+  }
+  if (auto ic = cond.getDefiningOp<arith::IndexCastOp>())
+    if (auto v = mlir::getConstantIntValue(ic.getIn())) {
+      unsigned dstBw = isa<IndexType>(ic.getType())
+                           ? 64
+                           : ic.getType().getIntOrFloatBitWidth();
+      return APInt(dstBw, *v).getBoolValue();
+    }
+  return std::nullopt;
+}
+
+// Determine whether `op` actually executes within its enclosing aie.core, by
+// evaluating the constant-operand tile-index guards (scf.if / scf.index_switch)
+// that enclose it. After core outlining the herd tile ids are constants, so
+// these guards are statically decidable. Any guard that cannot be evaluated
+// (e.g. affine.if, data-dependent) is conservatively treated as taken, i.e.
+// the op is assumed reachable -- matching the prior all-uses-count behavior.
+static bool accessReachableInCore(Operation *op) {
+  AIE::CoreOp core = op->getParentOfType<AIE::CoreOp>();
+  if (!core)
+    return false;
+  Operation *child = op;
+  for (Operation *p = op->getParentOp(); p && p != core.getOperation();
+       child = p, p = p->getParentOp()) {
+    Region *childRegion = child->getParentRegion();
+    if (auto sif = dyn_cast<scf::IfOp>(p)) {
+      if (auto c = evalConstBoolCond(sif.getCondition())) {
+        bool inThen = sif.getThenRegion().isAncestor(childRegion);
+        bool inElse = sif.getElseRegion().isAncestor(childRegion);
+        if (*c && inElse)
+          return false;
+        if (!*c && inThen)
+          return false;
+      }
+    } else if (auto sw = dyn_cast<scf::IndexSwitchOp>(p)) {
+      if (auto arg = mlir::getConstantIntValue(sw.getArg())) {
+        Region *selected = &sw.getDefaultRegion();
+        ArrayRef<int64_t> cases = sw.getCases();
+        for (size_t i = 0; i < cases.size(); ++i)
+          if (cases[i] == *arg) {
+            selected = &sw.getCaseRegions()[i];
+            break;
+          }
+        if (!selected->isAncestor(childRegion))
+          return false;
+      }
+    }
+    // affine.if / unknown guards: assume reachable (conservative).
+  }
+  return true;
+}
+
+LogicalResult createAIEModulesAndOutlineCores(
     ModuleOp module,
     std::vector<std::tuple<AIE::DeviceOp, air::HerdOp,
                            AIRToAIEConversionOptions>> &aie_modules,
-    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
     AIRToAIEConversionOptions &options) {
 
   SmallVector<air::SegmentOp> segments;
@@ -1183,12 +1587,12 @@ void createAIEModulesAndOutlineCores(
   for (auto seg : segments) {
     // Validate segment unroll factors - Y-dimension unrolling is not supported
     if (failed(validateSegmentUnrollFactors(seg)))
-      return;
+      return failure();
 
     // Get segment unroll factors
     auto unrollFactors = getSegmentUnrollFactors(seg);
     if (failed(unrollFactors))
-      return;
+      return failure();
     auto [unrollX, unrollY] = *unrollFactors;
     int64_t totalUnroll = unrollX * unrollY;
 
@@ -1251,7 +1655,8 @@ void createAIEModulesAndOutlineCores(
         });
         // If the device has memtiles, then outline memtiles
         if (aie_dev.getTargetModel().getNumMemTileRows()) {
-          outlineAIEMemtiles(builder, aie_dev, seg, iter_options);
+          if (failed(outlineAIEMemtiles(builder, aie_dev, seg, iter_options)))
+            return failure();
         }
       }
     }
@@ -1281,7 +1686,8 @@ void createAIEModulesAndOutlineCores(
     auto h = std::get<1>(p);
     auto device_options = std::get<2>(p);
     OpBuilder builder(aie_dev);
-    outlineAIECores(builder, aie_dev, h, tileToHerdMap, device_options);
+    if (failed(outlineAIECores(builder, aie_dev, h, device_options)))
+      return failure();
   }
   // Outline any L1 memref allocs used by herds but located outside of any herd
   // This includes both local L1 buffers (used by single herd) and shared L1
@@ -1308,6 +1714,13 @@ void createAIEModulesAndOutlineCores(
     for (auto user : memref.getUsers()) {
       auto coreOp = user->getParentOfType<AIE::CoreOp>();
       if (!coreOp)
+        continue;
+      // Only count a core if the use actually executes for that core's tile
+      // id. In an SPMD herd, per-core control flow (not yet folded) means every
+      // core textually references every operand; reachability filtering drops
+      // uses in dead per-core branches so a neighbor buffer maps to just its
+      // real producer/consumer cores.
+      if (!accessReachableInCore(user))
         continue;
       sharedL1AllocsToCoreMap[memref.getDefiningOp()].insert(coreOp);
     }
@@ -1345,8 +1758,18 @@ void createAIEModulesAndOutlineCores(
     auto &coreOps = sharedL1AllocsToCoreMap[memref.getDefiningOp()];
     auto &herds = sharedL1AllocsToHerdMap[memref.getDefiningOp()];
 
-    if (herds.size() > 1) {
-      // SHARED L1 BUFFER: Multiple herds use the same memref
+    // A buffer is shared when used by multiple herds (inter-herd communication)
+    // OR when a single SPMD herd's neighbor cores hop data through it (a reader
+    // core that is not a writer core -- a cross-core producer/consumer). The
+    // latter is inferred purely from the IR's per-core access pattern; no
+    // annotation is required.
+    bool sharedAcrossHerds = herds.size() > 1;
+    bool sharedAcrossCores =
+        !sharedAcrossHerds && herds.size() == 1 &&
+        air::herdBufferHasCrossCoreDependence(*herds.begin(), memref);
+
+    if (sharedAcrossHerds || sharedAcrossCores) {
+      // SHARED L1 BUFFER: used by multiple cores/herds.
       // Allocate a single aie.buffer on one "owner" tile and have all cores
       // reference it. The downstream mlir-aie compiler will validate that
       // the tiles are adjacent and can share L1 memory.
@@ -1441,6 +1864,7 @@ void createAIEModulesAndOutlineCores(
       }
     }
   }
+  return success();
 }
 
 bool isInSet(IntegerSet is) {
@@ -1612,11 +2036,54 @@ struct SpecializeScfIfPattern : public OpRewritePattern<scf::IfOp> {
   }
 };
 
+// Specialize an scf.index_switch whose index argument is a compile-time
+// constant (an outlined herd tile id) into just the selected case body. Lets
+// per-core buffer selection via scf.index_switch be resolved the same way as
+// affine.if / scf.if in outlined cores.
+struct SpecializeScfIndexSwitchPattern
+    : public OpRewritePattern<scf::IndexSwitchOp> {
+  using OpRewritePattern<scf::IndexSwitchOp>::OpRewritePattern;
+
+  SpecializeScfIndexSwitchPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(scf::IndexSwitchOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op->getParentOfType<AIE::CoreOp>() &&
+        !op->getParentOfType<AIE::DeviceOp>())
+      return failure();
+
+    auto argConst = mlir::getConstantIntValue(op.getArg());
+    if (!argConst)
+      return failure();
+
+    Block *bb = nullptr;
+    ArrayRef<int64_t> cases = op.getCases();
+    for (size_t i = 0; i < cases.size(); ++i) {
+      if (cases[i] == *argConst) {
+        bb = &op.getCaseRegions()[i].front();
+        break;
+      }
+    }
+    if (!bb)
+      bb = &op.getDefaultRegion().front();
+
+    auto t = bb->getTerminator();
+    auto &ops = bb->getOperations();
+    op->getBlock()->getOperations().splice(Block::iterator(op), ops,
+                                           ops.begin(), --ops.end());
+    for (int i = 0, e = op.getNumResults(); i < e; i++)
+      op.getResult(i).replaceAllUsesWith(t->getOperand(i));
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 void specializeHerdAffineIf(AIE::DeviceOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<SpecializeAffineIfPattern>(ctx);
   patterns.insert<SpecializeScfIfPattern>(ctx);
+  patterns.insert<SpecializeScfIndexSwitchPattern>(ctx);
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
 
@@ -1718,6 +2185,18 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     if (fop->hasAttr("unroll")) {
       new_fop->setAttr("unroll", fop->getAttr("unroll"));
     }
+    // Preserve user-attached loop_annotation (e.g., unroll-disable for
+    // Peano). Without this, Peano -O2 aggressively unrolls small-trip
+    // loops and blows program memory on AIE2P.
+    if (fop->hasAttr("loop_annotation")) {
+      new_fop->setAttr("loop_annotation", fop->getAttr("loop_annotation"));
+    }
+    // Preserve the user-facing ping-pong opt-out so labeling later in
+    // the pipeline still sees it.
+    if (fop->hasAttr("air.disable_ping_pong")) {
+      new_fop->setAttr("air.disable_ping_pong",
+                       fop->getAttr("air.disable_ping_pong"));
+    }
 
     // use the new for op's results
     int idx = 0;
@@ -1804,11 +2283,8 @@ void lowerScfAirTokens(AIE::DeviceOp m) {
 struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
-  AllocL1BuffersPattern(MLIRContext *ctx,
-                        std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
-                        uint64_t &bufferId)
-      : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap),
-        BufferId(bufferId) {}
+  AllocL1BuffersPattern(MLIRContext *ctx, uint64_t &bufferId)
+      : OpRewritePattern(ctx), BufferId(bufferId) {}
 
   LogicalResult matchAndRewrite(memref::AllocOp alloc,
                                 PatternRewriter &rewriter) const override {
@@ -1827,27 +2303,30 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     if (!air::isL1(memrefTy))
       return failure();
 
-    auto herd = tileToHerdMap[tile];
-    int64_t col_offset = 0;
-    int64_t row_offset = 0;
-    if (herd) {
-      auto c = herd.getColOffset();
-      auto r = herd.getRowOffset();
-      col_offset = c ? *c : 0;
-      row_offset = r ? *r : 0;
+    // Read herd-local (x, y) from the aie.core attribute set at outline
+    // time (RFC #1567 Stage C #3). Fall back to physical coords when the
+    // attribute isn't present (e.g. cores not produced by outlineAIECores).
+    int64_t herd_local_x = tile.getCol();
+    int64_t herd_local_y = tile.getRow();
+    if (auto idAttr =
+            core->getAttrOfType<DenseI64ArrayAttr>("air.herd_local_id")) {
+      auto ids = idAttr.asArrayRef();
+      if (ids.size() == 2) {
+        herd_local_x = ids[0];
+        herd_local_y = ids[1];
+      }
     }
 
     auto buffer = allocateBufferOp(
         BufferId, memrefTy, tile,
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-        tile.getCol() - col_offset, tile.getRow() - row_offset);
+        herd_local_x, herd_local_y);
 
     rewriter.replaceOp(alloc, buffer->getResults());
     return success();
   }
 
 private:
-  std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
   uint64_t &BufferId;
 };
 
@@ -1855,8 +2334,9 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
   AllocL2BuffersPattern(
-      MLIRContext *ctx, std::map<memref::AllocOp, AIE::TileOp> &memrefToTileMap,
-      std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+      MLIRContext *ctx,
+      std::map<memref::AllocOp, AIE::TileLike> &memrefToTileMap,
+      std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap,
       uint64_t &bufferId)
       : OpRewritePattern(ctx), memrefToTileMap(memrefToTileMap),
         BufferId(bufferId), bufferToMemtileMap(bufferToMemtileMap) {}
@@ -1883,7 +2363,7 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
       alloc->emitOpError("alloc not found in memrefToTileMap.");
       return failure();
     }
-    AIE::TileOp tile = memrefToTileMap[alloc];
+    AIE::TileLike tile = memrefToTileMap[alloc];
     if (!tile)
       return failure();
 
@@ -1896,10 +2376,27 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
       col_offset = c ? *c : 0;
       row_offset = r ? *r : 0;
     }
+    // For unplaced memtiles (LogicalTileOp before aie-place-tiles runs)
+    // tryGetCol/Row return nullopt; the buffer name suffix falls back to -1.
+    int64_t tileCol = tile.tryGetCol().value_or(0);
+    int64_t tileRow = tile.tryGetRow().value_or(0);
     AIE::BufferOp buffer = allocateBufferOp(
         BufferId, memrefTy, tile,
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-        tile.getCol() - col_offset, tile.getRow() - row_offset);
+        tileCol - col_offset, tileRow - row_offset);
+
+    // Propagate the memtile L2 re-broadcast directive (mechanism 2: N re-reads
+    // of this resident buffer per fill) onto the buffer op, the shared
+    // fill/drain rendezvous that generateDmaBd / getLockForDMA read on the fill
+    // (S2MM) side. This count is carried on the ALLOC and is distinct from any
+    // channel-level re-feed (mechanism 1: the core-producer count on the
+    // channel, applied in allocateCoreLocksPerMemcpyOp). air-to-aie skips the
+    // channel re-feed for memtile producers, so the two must NOT be unified --
+    // read only the alloc directive here.
+    int64_t refeedN = air::getRefeedCount(alloc.getOperation());
+    if (refeedN > 1)
+      buffer->setAttr(air::attrs::RefeedCount,
+                      rewriter.getI32IntegerAttr(refeedN));
 
     rewriter.replaceOp(alloc, buffer->getResults());
     bufferToMemtileMap[buffer] = tile;
@@ -1907,17 +2404,15 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   }
 
 private:
-  std::map<memref::AllocOp, AIE::TileOp> &memrefToTileMap;
+  std::map<memref::AllocOp, AIE::TileLike> &memrefToTileMap;
   uint64_t &BufferId;
-  std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
+  std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap;
 };
 
-void allocL1Buffers(AIE::DeviceOp m,
-                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
-                    uint64_t &BufferId) {
+void allocL1Buffers(AIE::DeviceOp m, uint64_t &BufferId) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
+  patterns.insert<AllocL1BuffersPattern>(ctx, BufferId);
   // AllocL1TensorsPattern
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
@@ -1949,35 +2444,77 @@ bool areReferencedByTheSameAIRChannel(Value memref_a, Value memref_b) {
 
 void L2MemrefToMemTileMap(
     AIE::DeviceOp m,
-    std::map<memref::AllocOp, AIE::TileOp> &memrefToMemTileMap) {
+    std::map<memref::AllocOp, AIE::TileLike> &memrefToMemTileMap) {
   std::vector<memref::AllocOp> allocs;
   m.walk([&](memref::AllocOp alloc) {
     if (air::isL2(llvm::cast<MemRefType>(alloc.getMemref().getType()))) {
       allocs.push_back(alloc);
     }
   });
-  std::vector<AIE::TileOp> memtiles = getMemtilesFromDeviceOp(m);
-
-  // Allocation of L2 memrefs in segment to (memtile) tile ops
-  std::map<AIE::TileOp, uint32_t> memtileToSizeMap;
-  for (auto t : memtiles) {
-    memtileToSizeMap[t] = m.getTargetModel().getMemTileSize();
+  std::vector<AIE::TileLike> memtiles = getMemtilesFromDeviceOp(m);
+  if (memtiles.empty()) {
+    if (!allocs.empty())
+      m.emitWarning("L2 memrefs present but no memtiles available; skipping "
+                    "memtile placement");
+    return;
   }
 
   // First stage in memref placement: grouping memrefs referenced by the same
   // air.channel.
   SmallVector<SmallVector<memref::AllocOp>> memref_buckets;
+  // `air.memtile_col` is the memtile-level analogue of `air.shim_col` (see
+  // AIRToAIESchedulingUtils.cpp). Two deliberate differences: (1) it is carried
+  // on the memref.alloc rather than the channel decl, because L2 placement
+  // buckets are keyed by alloc; (2) it is hint-only (an invalid column warns
+  // and falls through) rather than a hard error, because a memtile column that
+  // exists on one target may not on another and the hint should stay portable.
+  // Caveat: it is a discardable attr on memref.alloc, so set it late (after
+  // air-dependency) — earlier rewrites that reconstruct allocs may drop it.
+  // Returns the user-pinned col for an alloc if it carries
+  // `air.memtile_col`, else -1.
+  auto allocPinCol = [](memref::AllocOp a) -> int {
+    if (auto attr = a->getAttrOfType<IntegerAttr>("air.memtile_col"))
+      return static_cast<int>(attr.getInt());
+    return -1;
+  };
+  // True iff `alloc` shares an air.channel with any member of `bucket`.
+  auto sharesChannelWithBucket = [&](ArrayRef<memref::AllocOp> bucket,
+                                     memref::AllocOp alloc) {
+    for (auto bucket_elem : bucket)
+      if (areReferencedByTheSameAIRChannel(alloc.getMemref(),
+                                           bucket_elem.getMemref()))
+        return true;
+    return false;
+  };
+  // True iff `allocPin` (a valid pin, i.e. >= 0) conflicts with a distinct pin
+  // already present in `bucket`.
+  auto bucketHasConflictingPin = [&](ArrayRef<memref::AllocOp> bucket,
+                                     int allocPin) {
+    for (auto other : bucket) {
+      int otherPin = allocPinCol(other);
+      if (otherPin >= 0 && otherPin != allocPin)
+        return true;
+    }
+    return false;
+  };
   auto placeMemrefInSharedBucket =
       [&](SmallVector<SmallVector<memref::AllocOp>> &memref_buckets,
           memref::AllocOp alloc) {
+        int allocPin = allocPinCol(alloc);
         for (auto &bucket : memref_buckets) {
-          for (auto bucket_elem : bucket) {
-            if (areReferencedByTheSameAIRChannel(alloc.getMemref(),
-                                                 bucket_elem.getMemref())) {
-              bucket.push_back(alloc);
-              return true;
-            }
-          }
+          if (!sharesChannelWithBucket(bucket, alloc))
+            continue;
+          // Pin-aware bucketing: if the alloc carries an air.memtile_col pin
+          // distinct from any pin already in this bucket, skip it (don't
+          // merge) and keep scanning — the alloc may still share a channel
+          // with a different, pin-compatible bucket. Refusing the merge is
+          // what makes MT->MT hops expressible: two L2 buffers sharing one
+          // channel (the hop's intermediate) end up in DIFFERENT buckets, so
+          // the shared channel becomes a real cross-memtile flow.
+          if (allocPin >= 0 && bucketHasConflictingPin(bucket, allocPin))
+            continue;
+          bucket.push_back(alloc);
+          return true;
         }
         return false;
       };
@@ -1986,194 +2523,245 @@ void L2MemrefToMemTileMap(
       memref_buckets.push_back(SmallVector<memref::AllocOp>{alloc});
     }
   }
-  // Second stage in memref placement: round-robin placement of memref groups
-  // to memtiles. This distributes buffer count evenly, which correlates well
-  // with DMA channel/BD pressure.
-  int memtile_id = 0;
-  for (auto &bucket : memref_buckets) {
-    for (auto bucket_elem : bucket) {
-      MemRefType ty = llvm::cast<MemRefType>(bucket_elem.getMemref().getType());
-      auto memref_vol =
-          air::getElementSizeInBytes(ty) * air::getTensorVolume(ty);
-      memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
-      memrefToMemTileMap[bucket_elem] = memtiles[memtile_id];
-    }
-    memtile_id++;
-    memtile_id %= memtiles.size();
-  }
-
-  // Third stage: column-affinity optimization via pairwise swaps.
+  // Second stage in memref placement: try column-affinity assignment, but
+  // fall back to round-robin when any one column would be saturated.
   //
-  // The round-robin above distributes DMA pressure evenly but ignores
-  // topology. When a bucket's channels all connect to cores in a single
-  // column, placing it on that column's memtile avoids cross-column routing.
-  // We improve locality by swapping pairs of buckets between memtiles when:
-  //   - at least one bucket moves closer to its affinity column, and
-  //   - neither bucket moves further from its affinity column, and
-  //   - both memtiles have enough capacity after the swap.
-  // Because swaps are count-neutral (each memtile keeps the same number of
-  // buckets), DMA channel/BD pressure remains balanced.
-
-  // Build column-to-memtile-index map.
-  DenseMap<int, int> colToMemtileIdx;
-  for (int i = 0; i < (int)memtiles.size(); i++) {
-    assert(!colToMemtileIdx.count(memtiles[i].getCol()) &&
-           "multiple memtiles in same column not supported by column-affinity "
-           "optimization");
-    colToMemtileIdx[memtiles[i].getCol()] = i;
-  }
-
-  // Cache channel → connected core columns.
-  DenseMap<air::ChannelOp, SmallVector<int>> channelToCoreCols;
-  auto getCoreCols = [&](air::ChannelOp channelOp) -> ArrayRef<int> {
-    auto it = channelToCoreCols.find(channelOp);
-    if (it != channelToCoreCols.end())
-      return it->second;
-    llvm::SmallSetVector<int, 8> cols;
-    for (auto put : air::getChannelPutOpThroughSymbol(channelOp, m))
-      if (auto core = put->getParentOfType<AIE::CoreOp>())
-        cols.insert(core.getTileOp().getCol());
-    for (auto get : air::getChannelGetOpThroughSymbol(channelOp, m))
-      if (auto core = get->getParentOfType<AIE::CoreOp>())
-        cols.insert(core.getTileOp().getCol());
-    auto &entry = channelToCoreCols[channelOp];
-    entry.assign(cols.begin(), cols.end());
-    return entry;
+  // Col-affinity (preferred): each bucket targets the column of its
+  // consumer core. Memtile LTO at col X holds buckets whose consumer
+  // herds are at col X. The placer with merge-logical-tiles=false lands
+  // each col-hinted LTO at its physical memtile, so round-trip
+  // core->memtile flow stays intra-column. Avoids the matmul_i8
+  // Triton-XDNA#50 pathfinder latency regression from cross-col flows.
+  //
+  // Saturation fallback: when all consumer herds share one column (e.g.
+  // flash_attention with 6 herds all defaulting to col 0), concentrating
+  // every bucket onto a single memtile exhausts its 16-lock budget. If
+  // any column would receive more buckets than one memtile can hold,
+  // revert to round-robin across the full LTO pool.
+  const auto &targetModel = m.getTargetModel();
+  auto colHasMemTile = [&](int col) {
+    if (col < 0 || col >= targetModel.columns())
+      return false;
+    for (int row = 0; row < targetModel.rows(); row++)
+      if (targetModel.isMemTile(col, row))
+        return true;
+    return false;
   };
-
-  // Compute affinity column for each bucket (-1 = no single-column affinity).
-  SmallVector<int> bucketAffinityCol(memref_buckets.size(), -1);
-  for (int bi = 0; bi < (int)memref_buckets.size(); bi++) {
-    llvm::SmallSetVector<int, 8> cols;
-    for (auto alloc : memref_buckets[bi]) {
+  auto otherSideCoreCol = [&](StringRef channelName, bool weAreThePut) -> int {
+    int col = -1;
+    m.walk([&](air::ChannelInterface chIf) {
+      if (chIf.getChanName() != channelName)
+        return WalkResult::advance();
+      bool isOurSide = (weAreThePut == isa<air::ChannelPutOp>(*chIf));
+      if (isOurSide)
+        return WalkResult::advance();
+      auto core = chIf->getParentOfType<AIE::CoreOp>();
+      if (!core)
+        return WalkResult::advance();
+      auto tile =
+          dyn_cast_if_present<AIE::TileOp>(core.getTile().getDefiningOp());
+      if (!tile)
+        return WalkResult::advance();
+      int c = tile.getCol();
+      if (col == -1)
+        col = c;
+      else if (col != c)
+        col = -2;
+      return WalkResult::advance();
+    });
+    return col < 0 ? -1 : col;
+  };
+  auto deriveBucketCol = [&](ArrayRef<memref::AllocOp> bucket) -> int {
+    int consensus = -1;
+    for (auto alloc : bucket) {
       for (auto user : alloc.getMemref().getUsers()) {
-        auto chanIf = dyn_cast<air::ChannelInterface>(user);
-        if (!chanIf)
+        auto ch = dyn_cast_if_present<air::ChannelInterface>(user);
+        if (!ch)
           continue;
-        auto channelOp = air::getChannelDeclarationThroughSymbol(chanIf);
-        if (!channelOp)
+        bool weArePut = isa<air::ChannelPutOp>(*ch);
+        int cand = otherSideCoreCol(ch.getChanName(), weArePut);
+        if (cand < 0)
           continue;
-        for (int c : getCoreCols(channelOp))
-          cols.insert(c);
+        if (consensus == -1)
+          consensus = cand;
+        else if (consensus != cand)
+          return -1;
       }
     }
-    if (cols.size() == 1)
-      bucketAffinityCol[bi] = cols.front();
-    LLVM_DEBUG(llvm::dbgs()
-               << "L2MemrefToMemTileMap: bucket " << bi << " has "
-               << memref_buckets[bi].size() << " alloc(s), affinity col = "
-               << bucketAffinityCol[bi] << "\n");
-  }
-
-  // Compute bucket sizes.
-  SmallVector<uint32_t> bucketSizes(memref_buckets.size(), 0);
-  for (int bi = 0; bi < (int)memref_buckets.size(); bi++) {
-    for (auto alloc : memref_buckets[bi]) {
-      MemRefType ty = llvm::cast<MemRefType>(alloc.getMemref().getType());
-      bucketSizes[bi] +=
-          air::getElementSizeInBytes(ty) * air::getTensorVolume(ty);
+    return colHasMemTile(consensus) ? consensus : -1;
+  };
+  // Resolve the single valid pin for a bucket. Invalid columns (no memtile in
+  // the target) warn and fall through. The conflict branch is a defensive net:
+  // placeMemrefInSharedBucket already refuses to merge allocs carrying distinct
+  // pins, so a bucket normally holds at most one distinct valid pin.
+  auto deriveBucketPin = [&](ArrayRef<memref::AllocOp> bucket) -> int {
+    int pinned = -1;
+    for (auto alloc : bucket) {
+      int col = allocPinCol(alloc);
+      if (col < 0)
+        continue;
+      if (!colHasMemTile(col)) {
+        alloc->emitWarning("air.memtile_col=")
+            << col << " has no memtile in target; ignoring";
+        continue;
+      }
+      if (pinned == -1)
+        pinned = col;
+      else if (pinned != col)
+        alloc->emitWarning("air.memtile_col=")
+            << col << " conflicts with bucket pin=" << pinned << "; ignoring";
     }
+    return pinned;
+  };
+
+  // Derive pins once here (deriveBucketPin emits warnings), then reuse the
+  // cached value on every downstream path so each invalid/conflicting pin is
+  // diagnosed exactly once.
+  SmallVector<int> bucketCols, bucketPins;
+  bucketCols.reserve(memref_buckets.size());
+  bucketPins.reserve(memref_buckets.size());
+  llvm::DenseMap<int, int> colDemand;
+  for (auto &bucket : memref_buckets) {
+    int col = deriveBucketCol(bucket);
+    int pin = deriveBucketPin(bucket);
+    bucketPins.push_back(pin);
+    if (pin >= 0)
+      col = pin;
+    bucketCols.push_back(col);
+    // Only affinity-derived cols feed the saturation trigger. A user pin is an
+    // explicit request that is honored on both branches, so it must not push
+    // the module into the saturation fallback and thereby perturb the
+    // placement of unrelated, unpinned buckets.
+    if (pin < 0 && col >= 0)
+      colDemand[col]++;
   }
 
-  // Record current memtile index for each bucket.
-  SmallVector<int> bucketMemtileIdx(memref_buckets.size());
-  for (int bi = 0; bi < (int)memref_buckets.size(); bi++) {
-    auto alloc0 = memref_buckets[bi][0];
-    auto tile = memrefToMemTileMap[alloc0];
-    for (int mi = 0; mi < (int)memtiles.size(); mi++) {
-      if (memtiles[mi] == tile) {
-        bucketMemtileIdx[bi] = mi;
+  // Saturation check: col-affinity is only safe when each column would
+  // receive at most one bucket. With more, downstream allocation tends
+  // to ping-pong L1 buffers to keep up with the concentrated L2->L1 flow
+  // (flash_attention/dataflow_based: 9 buckets across 3 cols → col 0
+  // gets 5-6 buckets → L1 doubled to 6 buffers on tile (1,2) → 65536B,
+  // over the 64KB budget). Fall back to round-robin across the full LTO
+  // pool to match the pre-Path-B distribution that flash_attention
+  // relied on, while still keeping the matvec case (1 bucket per col)
+  // on the col-affinity path.
+  constexpr int kBucketsPerMemtileBudget = 1;
+  bool saturated = false;
+  for (auto &kv : colDemand)
+    if (kv.second > kBucketsPerMemtileBudget) {
+      saturated = true;
+      break;
+    }
+
+  // Hoisted out of the col-affinity branch so the saturation branch can
+  // also honor user pins via findOrCreateLtoForCol.
+  OpBuilder builder(m);
+  builder.setInsertionPointToStart(m.getBody());
+  for (auto &o : m.getBody()->getOperations()) {
+    if (isa<AIE::TileOp, AIE::LogicalTileOp>(o))
+      builder.setInsertionPointAfter(&o);
+    else
+      break;
+  }
+  llvm::DenseMap<int, AIE::TileLike> colToMemtile;
+  llvm::SmallPtrSet<Operation *, 8> claimedLtos;
+  auto findOrCreateLtoForCol = [&](int col) -> AIE::TileLike {
+    auto it = colToMemtile.find(col);
+    if (it != colToMemtile.end())
+      return it->second;
+    for (auto memtile : memtiles) {
+      if (claimedLtos.contains(memtile.getOperation()))
+        continue;
+      auto preLto = dyn_cast<AIE::LogicalTileOp>(memtile.getOperation());
+      if (!preLto || preLto.getCol().has_value())
+        continue;
+      preLto.setColAttr(builder.getI32IntegerAttr(col));
+      claimedLtos.insert(memtile.getOperation());
+      colToMemtile[col] = memtile;
+      return memtile;
+    }
+    auto newLto = AIE::LogicalTileOp::create(
+        builder, m.getLoc(), AIE::AIETileType::MemTile,
+        /*col=*/builder.getI32IntegerAttr(col),
+        /*row=*/IntegerAttr(),
+        /*allocation_scheme=*/StringAttr());
+    AIE::TileLike tl = newLto;
+    memtiles.push_back(tl);
+    claimedLtos.insert(newLto.getOperation());
+    colToMemtile[col] = tl;
+    return tl;
+  };
+
+  if (saturated) {
+    // Honor user pins even under saturation: pinned buckets route through
+    // findOrCreateLtoForCol so they land on their requested col; unpinned
+    // buckets distribute via the existing per-shape / global round-robin.
+    auto bucketShape = [](SmallVectorImpl<memref::AllocOp> &bucket) -> Type {
+      return bucket.empty() ? Type() : bucket.front().getMemref().getType();
+    };
+    llvm::DenseMap<Type, int> shapeCount;
+    for (auto &bucket : memref_buckets)
+      shapeCount[bucketShape(bucket)]++;
+    llvm::DenseMap<Type, int> perShapeCounter;
+    int globalCounter = 0;
+    for (size_t i = 0; i < memref_buckets.size(); i++) {
+      auto &bucket = memref_buckets[i];
+      int pin = bucketPins[i];
+      if (pin >= 0) {
+        AIE::TileLike memtile = findOrCreateLtoForCol(pin);
+        for (auto bucket_elem : bucket)
+          memrefToMemTileMap[bucket_elem] = memtile;
+        continue;
+      }
+      Type shape = bucketShape(bucket);
+      int slot =
+          (shapeCount[shape] > 1) ? perShapeCounter[shape]++ : globalCounter++;
+      auto memtile = memtiles[slot % memtiles.size()];
+      for (auto bucket_elem : bucket)
+        memrefToMemTileMap[bucket_elem] = memtile;
+    }
+    return;
+  }
+
+  // Col-affinity assignment: hint pre-emitted LTOs to derived cols and
+  // share one LTO per col. Spill over to round-robin for unhinted buckets.
+
+  SmallVector<size_t> unhintedBuckets;
+  for (size_t i = 0; i < memref_buckets.size(); i++) {
+    if (bucketCols[i] < 0) {
+      unhintedBuckets.push_back(i);
+      continue;
+    }
+    AIE::TileLike memtile = findOrCreateLtoForCol(bucketCols[i]);
+    for (auto bucket_elem : memref_buckets[i])
+      memrefToMemTileMap[bucket_elem] = memtile;
+  }
+  int rr = 0;
+  for (size_t bi : unhintedBuckets) {
+    AIE::TileLike memtile = nullptr;
+    for (auto m2 : memtiles) {
+      if (!claimedLtos.contains(m2.getOperation())) {
+        memtile = m2;
+        claimedLtos.insert(m2.getOperation());
         break;
       }
     }
-  }
-
-  // Helper: does bucket bi sit on its affinity column's memtile?
-  auto isOnAffinityMemtile = [&](int bi) -> bool {
-    if (bucketAffinityCol[bi] < 0)
-      return false;
-    auto it = colToMemtileIdx.find(bucketAffinityCol[bi]);
-    return it != colToMemtileIdx.end() && it->second == bucketMemtileIdx[bi];
-  };
-
-  // Try pairwise swaps. Iterate all bucket pairs (i, j) on different
-  // memtiles. A swap is beneficial if it strictly improves affinity for at
-  // least one bucket without hurting the other.
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    for (int i = 0; i < (int)memref_buckets.size(); i++) {
-      if (bucketAffinityCol[i] < 0)
-        continue; // no affinity preference
-      if (isOnAffinityMemtile(i))
-        continue; // already optimal
-      auto affinityIt = colToMemtileIdx.find(bucketAffinityCol[i]);
-      if (affinityIt == colToMemtileIdx.end())
-        continue;
-      int targetMtIdx = affinityIt->second;
-
-      for (int j = 0; j < (int)memref_buckets.size(); j++) {
-        if (i == j)
-          continue;
-        if (bucketMemtileIdx[j] != targetMtIdx)
-          continue; // j is not on i's target memtile
-
-        // Don't swap if j is already on its own affinity memtile.
-        if (isOnAffinityMemtile(j))
-          continue;
-
-        // Check capacity: can the memtiles accommodate the swap?
-        int mtI = bucketMemtileIdx[i];
-        int mtJ = bucketMemtileIdx[j]; // == targetMtIdx
-        int32_t deltaI = (int32_t)bucketSizes[j] - (int32_t)bucketSizes[i];
-        int32_t deltaJ = (int32_t)bucketSizes[i] - (int32_t)bucketSizes[j];
-        if ((int32_t)memtileToSizeMap[memtiles[mtI]] + deltaI < 0)
-          continue;
-        if ((int32_t)memtileToSizeMap[memtiles[mtJ]] + deltaJ < 0)
-          continue;
-
-        // Perform the swap.
-        LLVM_DEBUG(llvm::dbgs()
-                   << "L2MemrefToMemTileMap: swapping bucket " << i
-                   << " (affinity col " << bucketAffinityCol[i]
-                   << ", on memtile " << mtI << ") with bucket " << j
-                   << " (affinity col " << bucketAffinityCol[j]
-                   << ", on memtile " << mtJ << ")\n");
-        memtileToSizeMap[memtiles[mtI]] += deltaI;
-        memtileToSizeMap[memtiles[mtJ]] += deltaJ;
-        bucketMemtileIdx[i] = mtJ;
-        bucketMemtileIdx[j] = mtI;
-        for (auto alloc : memref_buckets[i])
-          memrefToMemTileMap[alloc] = memtiles[mtJ];
-        for (auto alloc : memref_buckets[j])
-          memrefToMemTileMap[alloc] = memtiles[mtI];
-        changed = true;
-        break; // restart inner loop for bucket i (it moved)
-      }
-      if (changed)
-        break; // restart outer loop
+    if (!memtile) {
+      memtile = memtiles[rr % memtiles.size()];
+      rr++;
     }
+    for (auto bucket_elem : memref_buckets[bi])
+      memrefToMemTileMap[bucket_elem] = memtile;
   }
-  LLVM_DEBUG({
-    int swappedCount = 0;
-    for (int bi = 0; bi < (int)memref_buckets.size(); bi++) {
-      if (isOnAffinityMemtile(bi))
-        swappedCount++;
-    }
-    llvm::dbgs() << "L2MemrefToMemTileMap: column-affinity optimization "
-                    "placed "
-                 << swappedCount << " of " << memref_buckets.size()
-                 << " bucket(s) on their affinity memtile\n";
-  });
 }
 
 void allocL2Buffers(AIE::DeviceOp m,
-                    std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+                    std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap,
                     uint64_t &BufferId) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   if (m.getTargetModel().getNumMemTileRows()) {
-    std::map<memref::AllocOp, AIE::TileOp> memrefToTileMap;
+    std::map<memref::AllocOp, AIE::TileLike> memrefToTileMap;
     L2MemrefToMemTileMap(m, memrefToTileMap);
     patterns.insert<AllocL2BuffersPattern>(ctx, memrefToTileMap,
                                            bufferToMemtileMap, BufferId);
@@ -2199,7 +2787,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
   LowerAIRChannelsPattern(
       MLIRContext *ctx, ShimTileAllocator &shimTileAlloc,
-      std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+      std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap,
       std::map<Operation *, AIE::ObjectFifoCreateOp> &linksToComplete)
       : OpRewritePattern(ctx), shimTileAlloc(shimTileAlloc),
         bufferToMemtileMap(bufferToMemtileMap),
@@ -2260,9 +2848,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       }
     } else {
       // put from L3
-      producerTile = shimTileAlloc.getShimTile(device, air::MemorySpace::L3,
-                                               air::MemorySpace::L1,
-                                               channel.getName().str());
+      producerTile =
+          shimTileAlloc.getShimTile(rewriter, device, channel.getName().str());
     }
 
     // put/get come in pairs, if one is missing then it's L3
@@ -2300,17 +2887,42 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     }
     for (int i = 0; i < expectedGets - (int)channelGets.size(); i++) {
       // get from L3
-      consumerTile = shimTileAlloc.getShimTile(device, air::MemorySpace::L1,
-                                               air::MemorySpace::L3,
-                                               channel.getName().str());
+      consumerTile =
+          shimTileAlloc.getShimTile(rewriter, device, channel.getName().str());
       consumers.push_back(consumerTile);
     }
 
     if (!datatype)
       return failure();
 
-    // create objFifo
-    rewriter.setInsertionPoint(*(device.getOps<AIE::CoreOp>().begin()));
+    // create objFifo. Path B emits MemTile (and ShimNOC) as
+    // aie.logical_tile, and those LTOs can sit anywhere in the device body
+    // (e.g. after the cores) once the __L2_tmp anchor buffers are erased
+    // and the greedy rewriter has reordered things. Hoist any out-of-order
+    // tile-likes to the front of the body so the producer/consumer tile
+    // operands always dominate the objfifo, then insert the objfifo right
+    // after the last tile-like op.
+    Block *body = device.getBody();
+    Operation *firstNonTile = nullptr;
+    SmallVector<Operation *> tilesToHoist;
+    for (auto &op : *body) {
+      if (!isa<AIE::TileOp, AIE::LogicalTileOp>(op)) {
+        if (!firstNonTile)
+          firstNonTile = &op;
+      } else if (firstNonTile) {
+        tilesToHoist.push_back(&op);
+      }
+    }
+    for (auto *t : tilesToHoist)
+      t->moveBefore(firstNonTile);
+
+    rewriter.setInsertionPointToStart(body);
+    for (auto &op : body->getOperations()) {
+      if (isa<AIE::TileOp, AIE::LogicalTileOp>(op))
+        rewriter.setInsertionPointAfter(&op);
+      else
+        break;
+    }
     AIE::ObjectFifoCreateOp objFifo = createObjectFifo(
         rewriter, datatype, producerTile, consumers,
         channel.getBufferResources(), "air_" + channel.getName().str());
@@ -2405,8 +3017,10 @@ private:
     } else if (mem_space == air::MemorySpace::L2) {
       if (bufferToMemtileMap.find(dyn_cast_if_present<AIE::BufferOp>(
               op.getMemref().getDefiningOp())) != bufferToMemtileMap.end()) {
-        *tile = bufferToMemtileMap[dyn_cast_if_present<AIE::BufferOp>(
-            op.getMemref().getDefiningOp())];
+        AIE::TileLike memtile =
+            bufferToMemtileMap[dyn_cast_if_present<AIE::BufferOp>(
+                op.getMemref().getDefiningOp())];
+        *tile = memtile->getResult(0);
       } else {
         return op.emitOpError("missing L2 alloc");
       }
@@ -2497,7 +3111,7 @@ private:
   }
 
   ShimTileAllocator &shimTileAlloc;
-  std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
+  std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap;
   std::map<Operation *, AIE::ObjectFifoCreateOp> &linksToComplete;
 };
 
@@ -2505,15 +3119,22 @@ private:
 // and with ObjectFifoAcquireOp<Producer/Consumer>. It also erases memref allocs
 // as the objFifo lowering allocates its own memory. It replaces the associated
 // memref deallocs with ObjectFifoReleaseOps.
-void lowerAIRChannels(
-    AIE::DeviceOp &d, ShimTileAllocator &s,
-    std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap) {
+LogicalResult
+lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &s,
+                 std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
   std::map<Operation *, AIE::ObjectFifoCreateOp> linksToComplete;
   patterns.insert<LowerAIRChannelsPattern>(ctx, s, bufferToMemtileMap,
                                            linksToComplete);
   (void)applyPatternsGreedily(d, std::move(patterns));
+  // Leave shim LTOs unresolved here. Downstream `aie-place-tiles` (invoked
+  // from aircc after air-merge-unrolled-devices) sees the full set of
+  // aie.objectfifo connections and resolves shim/memtile LTOs together via
+  // the same Adjacency-driven placer that mlir-aie's native ObjectFifo
+  // flow uses. Doing it in-AIR with SequentialPlacer would lose that
+  // objfifo-aware placement context.
+  return success();
 }
 
 struct SpecializeChannelBundlePattern
@@ -2534,6 +3155,15 @@ struct SpecializeChannelBundlePattern
       return failure();
 
     if (channel.getBundleSize() <= 1)
+      return failure();
+
+    // mmio channels are handled directly by lowerAIRMMIOChannelOps, which
+    // matches host-side puts to per-core gets by constant index across the
+    // full bundle. Splitting the bundle here would orphan the original
+    // host-side puts (they sit outside the device, where this pattern's
+    // rewrites don't reach), leaving them to fail later as
+    // "no matching device-side air.channel.get".
+    if (channel.getChannelType() == "npu_mmio")
       return failure();
 
     std::vector<air::ChannelPutOp> channelPuts =
@@ -2558,8 +3188,40 @@ struct SpecializeChannelBundlePattern
         new_chan->setAttr("broadcast_shape",
                           rewriter.getArrayAttr(ArrayRef(broadcast_shape)));
       }
+      // Propagate DMA-steering markers (incl. user-pinned packet_ids and
+      // keep_pkt_header) onto each split channel: flow creation only sees the
+      // split channels, so without this, indexed/convergent packet channels
+      // fall back to auto-assigned consecutive ids, which alias under the
+      // switchbox arbiter's binary-mask matching and deadlock. Routed through
+      // the single-source-of-truth helper so this copy site stays in sync with
+      // the marker set.
+      air::copyChannelSteeringAttrs(channel, new_chan);
       std::vector<unsigned> position =
           air::getMDVectorFromIterator(bundle_size_stdvec, iter);
+      // keep_pkt_header is per-flow: only the split whose GET lands at offset 0
+      // keeps the header (it becomes the single routing header); the others
+      // strip it. But every split must still skip the static producer-BD stamp
+      // (the kernel already wrote the header), so mark all splits with
+      // SrcWritesPktHeader and drop KeepPktHeader (copied onto all splits
+      // above) from the non-offset-0 ones.
+      if (new_chan->hasAttr(air::attrs::KeepPktHeader)) {
+        new_chan->setAttr(air::attrs::SrcWritesPktHeader,
+                          rewriter.getUnitAttr());
+        bool writesOffsetZero = false;
+        for (auto get : channelGets) {
+          if (!areIdenticalVectors(
+                  air::convertVecOfConstIndexToVecOfUInt(get.getIndices()),
+                  position))
+            continue;
+          writesOffsetZero = llvm::all_of(get.getOffsets(), [](Value o) {
+            auto c = getConstantIntValue(o);
+            return c && *c == 0;
+          });
+          break;
+        }
+        if (!writesOffsetZero)
+          new_chan->removeAttr(air::attrs::KeepPktHeader);
+      }
       for (auto put : channelPuts) {
         auto indices_uint =
             air::convertVecOfConstIndexToVecOfUInt(put.getIndices());
@@ -2677,9 +3339,13 @@ private:
     SmallVector<Value> offsets = ci.getOffsets();
     SmallVector<Value> wraps = ci.getSizes();
     SmallVector<Value> strides = ci.getStrides();
+    auto memrefTy = llvm::dyn_cast<BaseMemRefType>(ci.getMemref().getType());
+    int innerAlignment =
+        memrefTy ? air::getDmaInnerElementAlignment(memrefTy, ci) : 1;
     (void)air::canonicalizeWrapAndStrideList(
         builder, offsets, wraps, strides,
-        air::getTensorVolume(ci.getMemref().getType()), maxSize);
+        air::getTensorVolume(ci.getMemref().getType()), maxSize,
+        innerAlignment);
     air::ChannelInterface new_ci = nullptr;
     if (isa<air::ChannelPutOp>(ci))
       new_ci = air::ChannelPutOp::create(
@@ -2960,6 +3626,20 @@ static void removeDeadGlobalOps(AIE::DeviceOp device) {
     op->erase();
 }
 
+// A packet channel whose kernel writes the routing header into the payload
+// itself: the DMA must not stamp a static pkt_id (that would prepend a second
+// header word). True for multi-id pinned channels (the core writes the id) and
+// for keep_pkt_header / air.src_writes_pkt_header channels (the kernel writes
+// the whole header).
+static bool channelKernelWritesHeader(air::ChannelOp chanOp) {
+  if (!chanOp)
+    return false;
+  if (auto pids = chanOp.getPacketIDs(); pids && pids.size() > 1)
+    return true;
+  return chanOp->hasAttr(air::attrs::KeepPktHeader) ||
+         chanOp->hasAttr(air::attrs::SrcWritesPktHeader);
+}
+
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 
   uint64_t BufferId = 0;
@@ -2975,8 +3655,7 @@ public:
   // Returns failure() if any transformation stage fails.
   LogicalResult
   runDevicePipeline(AIE::DeviceOp device, ModuleOp module, air::HerdOp herd,
-                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
-                    std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+                    std::map<AIE::BufferOp, AIE::TileLike> &bufferToMemtileMap,
                     AIRToAIEConversionOptions &options, bool useObjFifo,
                     PipelineStage stopAfter = PipelineStage::Complete) {
 
@@ -3048,11 +3727,12 @@ public:
       air::renumberMemcpyIfOps(&device.getRegion());
       LowerAIRPingPong(device);
       allocL2Buffers(device, bufferToMemtileMap, BufferId);
-      lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap);
-      allocL1Buffers(device, tileToHerdMap, BufferId);
+      if (failed(lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap)))
+        return failure();
+      allocL1Buffers(device, BufferId);
     } else {
       specializeL2MemrefsIntoMemtiles(device);
-      allocL1Buffers(device, tileToHerdMap, BufferId);
+      allocL1Buffers(device, BufferId);
       allocL2Buffers(device, bufferToMemtileMap, BufferId);
     }
     if (stopAfter == PipelineStage::AfterAllocBuffers)
@@ -3173,13 +3853,13 @@ public:
   }
 
   AIE::PacketFlowOp
-  createPacketFlowOp(OpBuilder &builder, int &flowID, Value source,
+  createPacketFlowOp(OpBuilder &builder, int flowID, Value source,
                      xilinx::AIE::WireBundle sourceBundle,
                      uint32_t sourceChannel, Value dest,
                      xilinx::AIE::WireBundle destBundle, uint32_t destChannel,
                      mlir::BoolAttr keep_pkt_header = nullptr) {
     AIE::PacketFlowOp pktFlow = AIE::PacketFlowOp::create(
-        builder, builder.getUnknownLoc(), flowID++, keep_pkt_header, nullptr);
+        builder, builder.getUnknownLoc(), flowID, keep_pkt_header, nullptr);
     Region &r_pktFlow = pktFlow.getPorts();
     Block *b_pktFlow = builder.createBlock(&r_pktFlow);
     builder.setInsertionPointToStart(b_pktFlow);
@@ -3191,6 +3871,27 @@ public:
     return pktFlow;
   }
 
+  // Assign a pkt_id for a shim (or trace) packet flow: monotonic global
+  // counter, skipping any id already claimed by an intra-device flow in this
+  // device. Records the assignment in claimedPacketIDs.
+  int assignShimPacketID() {
+    while (claimedPacketIDs.count(nextGlobalShimPacketID))
+      ++nextGlobalShimPacketID;
+    int id = nextGlobalShimPacketID++;
+    claimedPacketIDs.insert(id);
+    return id;
+  }
+
+  // Assign a pkt_id for an intra-device packet flow: lowest pkt_id not yet
+  // claimed in this device. Records the assignment in claimedPacketIDs.
+  int assignIntraDevicePacketID() {
+    int id = 0;
+    while (claimedPacketIDs.count(id))
+      ++id;
+    claimedPacketIDs.insert(id);
+    return id;
+  }
+
   // This method generates broadcast packet flow if found multiple flows with
   // the same source. TODO: packet flows sharing source do not always mean
   // broadcast.
@@ -3199,7 +3900,8 @@ public:
                                     xilinx::AIE::WireBundle sourceBundle,
                                     uint32_t sourceChannel, mlir::Value dest,
                                     xilinx::AIE::WireBundle destBundle,
-                                    uint32_t destChannel, int &flowID) {
+                                    uint32_t destChannel, int flowID,
+                                    bool keepPktHeader = false) {
     AIE::PacketFlowOp packetFlowOp = nullptr;
     aie_device.walk([&](AIE::PacketFlowOp pktFlowOp) {
       auto pktSrcOp = getPacketSourceOpInPacketFlowOp(pktFlowOp, source);
@@ -3234,7 +3936,9 @@ public:
 
     builder.setInsertionPoint(aie_device.getBody()->getTerminator());
     return createPacketFlowOp(builder, flowID, source, sourceBundle,
-                              sourceChannel, dest, destBundle, destChannel);
+                              sourceChannel, dest, destBundle, destChannel,
+                              keepPktHeader ? builder.getBoolAttr(true)
+                                            : mlir::BoolAttr());
   }
 
   /// Query an existing packet flow operation from within the AIE device.
@@ -3255,47 +3959,14 @@ public:
       return AIE::PacketFlowOp(); // Only air.channel_interface ops support
                                   // packet-flow routing.
 
-    // Convert a flow map from Operation pointers to channel symbol names.
-    // This is necessary because air.channel declarations are duplicated
-    // under aie.device op and its parent module op, requiring symbol-based
-    // matching.
-    auto buildFlowIdMap =
-        [](const SetVector<Operation *> &fmap) -> std::vector<std::string> {
-      std::vector<std::string> result;
-      for (auto op : fmap) {
-        auto flowChanOp = dyn_cast_if_present<air::ChannelOp>(op);
-        if (!flowChanOp) {
-          result.push_back("");
-          continue;
-        }
-        result.push_back(flowChanOp.getSymName().str());
-      }
-      return result;
-    };
-
-    // Search both flow maps by channel name. Channel names are unique symbols,
-    // so each channel appears in exactly one map. We search the shim (device-
-    // host) map first, then the intra-device map.
-    //
-    // Note: we cannot reliably determine which map to search from the memcpy
-    // op alone, because ChannelPutOp::getDstMemref() and ChannelGetOp::
-    // getSrcMemref() return nullptr by design (the other end of a channel op
-    // is implicit via the channel symbol). Searching both maps directly is
-    // simpler and always correct.
-    std::string chanName = chanIfOp.getChanName().str();
-
-    for (const auto &flowMap : {std::cref(shimFlowOpToFlowIdMap),
-                                std::cref(intraDeviceFlowOpToFlowIdMap)}) {
-      auto flowStrings = buildFlowIdMap(flowMap.get());
-      auto it = llvm::find(flowStrings, chanName);
-      if (it != flowStrings.end()) {
-        int flowID = std::distance(flowStrings.begin(), it);
-        return findPacketFlowOp(source, sourceBundle, sourceChannel,
-                                /*checkFlowID=*/true, flowID);
-      }
-    }
-
-    return AIE::PacketFlowOp();
+    // packetIDForChannelName stores the pkt_id assigned at flow-creation time,
+    // keyed by air.channel symbol name. Symbol names are stable across the
+    // aie.device / parent module duplication of air.channel decls.
+    auto it = packetIDForChannelName.find(chanIfOp.getChanName().str());
+    if (it == packetIDForChannelName.end())
+      return AIE::PacketFlowOp();
+    return findPacketFlowOp(source, sourceBundle, sourceChannel,
+                            /*checkFlowID=*/true, it->second);
   }
 
   /// Query an existing packet flow operation from the runtime function.
@@ -3866,7 +4537,7 @@ public:
   // memtiles being allocated to) separate memrefs.
   void specializeL2MemrefsIntoMemtiles(AIE::DeviceOp d) {
     // Get all memtiles to place L2 memrefs onto.
-    std::vector<AIE::TileOp> memtiles = getMemtilesFromDeviceOp(d);
+    std::vector<AIE::TileLike> memtiles = getMemtilesFromDeviceOp(d);
     if (memtiles.empty())
       return;
     int maxMemtileSrcConnections =
@@ -3983,6 +4654,11 @@ public:
       }
     }
 
+    // Align shared-MM2S packet pkt_ids and launch-side L3 put IR order with
+    // the receiver mem chain (herd-source order). See helper docs.
+    air::sortPacketShimFlowsByReceiverOrder(memcpy_flows, aie_device);
+    air::reorderL3PacketPutsByFlowOrder(aie_device, memcpy_flows);
+
     // Step 2: Allocate tile DMA channels, shim DMA channels and shim tiles
     auto r = simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
                                         memtile_dma_alloc, tile_dma_alloc,
@@ -3994,73 +4670,223 @@ public:
     // ping-pong deadlock.
     tile_dma_alloc.sortMemcpyOps(dma_memcpy_ops);
 
-    // Step 4: Connect flows
-    for (auto &f : memcpy_flows) {
-      for (int i = 0; i < f.numS2MMAllocs; i++) {
-        // Skip if either MM2S or S2MM tile allocation is invalid
-        if (!f.MM2S_alloc.getDmaTile() || !f.S2MM_alloc[i].getDmaTile()) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "AIRToAIE: skipping memcpy flow due to invalid DMA "
-                        "tile allocation (MM2S or S2MM tile is null)\n");
-          continue;
-        }
-        // Determine if this is a device-host flow (involves shim tiles)
-        bool isShimFlow = f.MM2S_alloc.getDmaTile().isShimNOCorPLTile() ||
-                          f.S2MM_alloc[i].getDmaTile().isShimNOCorPLTile();
+    // Step 4: Connect flows.
+    //
+    // Packet flows are assigned pkt_ids in two passes so that within one
+    // device, no two packet flows share a pkt_id. (Pre-fix: shim and intra-
+    // device flows ran independent 0-based counters, the first of each got
+    // pkt_id=0, and switchbox arbiters silently mis-routed where their
+    // physical routes crossed.) Each air.channel symbol maps to exactly one
+    // pkt_id, recorded in packetIDForChannelName for broadcast reuse and for
+    // lookup by getExistingPacketFlowOpFromDevice.
+    //
+    //   Pass 1: shim packet flows (assignShimPacketID -- monotonic global).
+    //   Pass 2: intra-device packet flows (assignIntraDevicePacketID --
+    //           lowest gap in claimedPacketIDs).
+    //   Pass 3: stream and cascade flows (no pkt_id involved).
+    auto isInvalidAlloc = [&](air::MemcpyBundleAsFlow &f, int j, int i) {
+      if (!f.MM2S_alloc[j].getDmaTile() || !f.S2MM_alloc[i].getDmaTile()) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "AIRToAIE: skipping memcpy flow due to invalid DMA "
+                      "tile allocation (MM2S or S2MM tile is null)\n");
+        return true;
+      }
+      return false;
+    };
+    auto isShimFlowAt = [&](air::MemcpyBundleAsFlow &f, int j, int i) {
+      return f.MM2S_alloc[j].getDmaTile().isShimNOCorPLTile() ||
+             f.S2MM_alloc[i].getDmaTile().isShimNOCorPLTile();
+    };
+    // The flow-op key for packetIDForChannelName is the air.channel symbol
+    // name. air.channel decls are duplicated under aie.device and its parent
+    // module, so symbol name is the stable identifier across both contexts.
+    auto getChannelName = [](air::MemcpyBundleAsFlow &f) -> std::string {
+      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op))
+        return chanOp.getSymName().str();
+      return {};
+    };
+    // Assign or reuse a pkt_id for a packet flow. air.channel-rooted flows
+    // dedupe by symbol name (broadcast: one source -> multiple receivers
+    // share a pkt_id). Non-channel packet flows get a fresh id per call.
+    auto assignOrLookupPacketID = [&](air::MemcpyBundleAsFlow &f,
+                                      bool isShim) -> int {
+      std::string chanName = getChannelName(f);
+      if (chanName.empty())
+        return isShim ? assignShimPacketID() : assignIntraDevicePacketID();
+      auto [it, inserted] = packetIDForChannelName.try_emplace(chanName, -1);
+      if (inserted)
+        it->second =
+            isShim ? assignShimPacketID() : assignIntraDevicePacketID();
+      return it->second;
+    };
 
-        if (f.memcpyResourceType == "dma_packet") {
-          // Use appropriate flow map based on whether flow involves shim tiles
-          if (isShimFlow) {
-            // Device-host flows use global shim flow ID
-            shimFlowOpToFlowIdMap.insert(f.air_flow_op);
-            auto it = llvm::find(shimFlowOpToFlowIdMap, f.air_flow_op);
-            int flowID = std::distance(shimFlowOpToFlowIdMap.begin(), it);
-            auto pktFlowOp = getPacketFlowOp(
-                aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
-                (uint32_t)f.MM2S_alloc.dma_channel.channel,
-                f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
-                (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-            // Update global shim flow ID following the local packet assignment.
-            globalShimFlowID = std::max(globalShimFlowID, flowID);
-            // Store flow ID in matching MM2S shim alloc for labeling phase.
-            // Use the packet flow op's actual ID, not the mutated flowID
-            // (createPacketFlowOp post-increments flowID by reference).
-            int storedFlowID = pktFlowOp ? pktFlowOp.getID() : flowID;
+    // Explicit per-destination packet ids pinned via the channel's `packet_ids`
+    // array attribute. Read on-demand from the channel op (kept off the
+    // MemcpyBundleAsFlow struct to avoid bloating it past the SmallVector
+    // inline-size budget).
+    auto getPinnedIDs = [](air::MemcpyBundleAsFlow &f) -> SmallVector<int> {
+      SmallVector<int> ids;
+      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op))
+        if (auto attr = chanOp.getPacketIDs())
+          for (auto idAttr : attr)
+            // Verifier guarantees IntegerAttr elements in [0,31]; dyn_cast
+            // keeps the pass robust on unverified IR (skip non-integer
+            // entries).
+            if (auto idInt = dyn_cast<IntegerAttr>(idAttr))
+              ids.push_back((int)idInt.getInt());
+      return ids;
+    };
+
+    // Pre-claim every explicitly-pinned packet id so the auto-assigner for
+    // other flows skips them.
+    for (auto &f : memcpy_flows)
+      if (f.memcpyResourceType == "npu_dma_packet")
+        for (int id : getPinnedIDs(f))
+          claimedPacketIDs.insert(id);
+
+    // Packet ids to emit for destination i. Normally one id (the shared
+    // auto-assigned id memoized by channel name). When the channel pins
+    // `packet_ids`:
+    //   - N pinned ids with a SINGLE destination emits N flows (one per id) to
+    //     that one dest -- every id routes to the same buffer and the
+    //     kernel-written header carries the phase through to a later demux hop.
+    //   - N pinned ids with multiple dests demuxes per-destination (dest i uses
+    //     pinned[i]).
+    //   - a SINGLE pinned id (incl. same-id N-producer convergence) is recorded
+    //     in packetIDForChannelName so generateDmaBd STAMPS every producer
+    //     (MM2S) and receiver (S2MM) BD with that id. Without this the pinned
+    //     path left the map unset, so producers emitted UNTAGGED packets and
+    //     the switchbox could not route N same-id sources onto one slave port.
+    //   - MULTIPLE pinned ids are DELIBERATELY not recorded in
+    //     packetIDForChannelName: under the pinned-multi-id contract the
+    //     compute core writes the routing id into the payload header, so the
+    //     DMA must NOT stamp/filter (generateDmaBd +
+    //     labelMemcpyOpsWithPacketFlow both skip a channel with no map entry /
+    //     >1 pinned id). The packet_flow ops alone install the switchbox
+    //     routes.
+    auto pktIDsForDest = [&](air::MemcpyBundleAsFlow &f, int i,
+                             bool isShim) -> SmallVector<int> {
+      auto pinned = getPinnedIDs(f);
+      if (pinned.empty())
+        return {assignOrLookupPacketID(f, isShim)};
+      if (pinned.size() == 1) {
+        std::string chanName = getChannelName(f);
+        if (!chanName.empty())
+          packetIDForChannelName[chanName] = pinned[0];
+      }
+      if (f.numS2MMAllocs == 1)
+        return pinned; // N ids -> the single destination
+      if (i < (int)pinned.size())
+        return {pinned[i]}; // per-destination demux
+      // Fewer pinned ids than destinations: the surplus dests fall back to
+      // auto-assigned ids, silently mixing pinned + auto. Warn so this is not a
+      // surprise -- a well-formed demux pins exactly one id per destination.
+      if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op))
+        chanOp->emitWarning()
+            << "packet_ids pins " << pinned.size() << " id(s) but channel has "
+            << f.numS2MMAllocs << " destinations; destination " << i
+            << " falls back to an auto-assigned id";
+      return {assignOrLookupPacketID(f, isShim)};
+    };
+
+    // Pass 1: shim packet flows. Nested over producers (j) x dests (i): one
+    // packet_flow per (producer, dest). For multi-producer convergence the
+    // shared dest pkt id is memoized by channel name in assignOrLookupPacketID,
+    // so all producers of one channel land on the dest S2MM with the SAME id.
+    for (auto &f : memcpy_flows) {
+      if (f.memcpyResourceType != "npu_dma_packet")
+        continue;
+      for (int i = 0; i < f.numS2MMAllocs; i++) {
+        for (int j = 0; j < f.numMM2SAllocs; j++) {
+          if (isInvalidAlloc(f, j, i))
+            continue;
+          if (!isShimFlowAt(f, j, i))
+            continue;
+          auto flowIDs = pktIDsForDest(f, i, /*isShim=*/true);
+          // A shim source feeding >1 pinned id follows the kernel-header
+          // contract (the core stamps the header), so no single id backlinks to
+          // the shim alloc -- recording one would falsely tag the MM2S op with
+          // a partial id (the last, pre-fix). Only the single-id path
+          // backlinks.
+          bool backlink = flowIDs.size() == 1;
+          for (int flowID : flowIDs) {
+            getPacketFlowOp(aie_device,
+                            f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                            f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.S2MM_alloc[i].dma_channel.channel,
+                            flowID, f.keep_pkt_header);
+            if (!backlink)
+              continue;
+            // Backlink: the host runtime keys packet identification on
+            // (shim tile, pkt_id), so the matching MM2S shim alloc carries the
+            // id.
             for (auto &sa : shim_dma_alloc.mm2s_allocs) {
-              if (sa.getDmaTile() == f.MM2S_alloc.getDmaTile() &&
-                  sa.dma_channel == f.MM2S_alloc.dma_channel &&
-                  sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
-                  sa.dma_id == f.MM2S_alloc.dma_id) {
-                sa.packet_flow_id = storedFlowID;
+              if (sa.getDmaTile().getOperation() ==
+                      f.MM2S_alloc[j].getDmaTile().getOperation() &&
+                  sa.dma_channel == f.MM2S_alloc[j].dma_channel &&
+                  sa.col == f.MM2S_alloc[j].col &&
+                  sa.row == f.MM2S_alloc[j].row &&
+                  sa.dma_id == f.MM2S_alloc[j].dma_id) {
+                sa.packet_flow_id = flowID;
                 break;
               }
             }
-          } else {
-            // Intra-device flows use per-device flow ID (can restart from 0)
-            intraDeviceFlowOpToFlowIdMap.insert(f.air_flow_op);
-            auto it = llvm::find(intraDeviceFlowOpToFlowIdMap, f.air_flow_op);
-            int flowID =
-                std::distance(intraDeviceFlowOpToFlowIdMap.begin(), it);
-            getPacketFlowOp(
-                aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
-                (uint32_t)f.MM2S_alloc.dma_channel.channel,
-                f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
-                (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-            // Update intra-device flow ID following the local packet
-            // assignment.
-            intraDeviceFlowID = std::max(intraDeviceFlowID, flowID);
           }
-        } else if (f.memcpyResourceType == "dma_stream")
-          getFlowOp(aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
-                    (uint32_t)f.MM2S_alloc.dma_channel.channel,
-                    f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
-                    (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
-        else if (f.memcpyResourceType == "cascade") {
-          getCascadeFlowOp(aie_device, f.MM2S_alloc.getDmaTile(),
-                           AIE::WireBundle::DMA,
-                           (uint32_t)f.MM2S_alloc.dma_channel.channel,
-                           f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
-                           (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+        }
+      }
+    }
+
+    // Pass 2: intra-device packet flows.
+    for (auto &f : memcpy_flows) {
+      if (f.memcpyResourceType != "npu_dma_packet")
+        continue;
+      for (int i = 0; i < f.numS2MMAllocs; i++) {
+        for (int j = 0; j < f.numMM2SAllocs; j++) {
+          if (isInvalidAlloc(f, j, i))
+            continue;
+          if (isShimFlowAt(f, j, i))
+            continue;
+          for (int flowID : pktIDsForDest(f, i, /*isShim=*/false)) {
+            getPacketFlowOp(aie_device,
+                            f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                            f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                            AIE::WireBundle::DMA,
+                            (uint32_t)f.S2MM_alloc[i].dma_channel.channel,
+                            flowID, f.keep_pkt_header);
+          }
+        }
+      }
+    }
+
+    // Pass 3: stream and cascade flows.
+    for (auto &f : memcpy_flows) {
+      if (f.memcpyResourceType != "npu_dma_stream" &&
+          f.memcpyResourceType != "npu_cascade")
+        continue;
+      for (int i = 0; i < f.numS2MMAllocs; i++) {
+        for (int j = 0; j < f.numMM2SAllocs; j++) {
+          if (isInvalidAlloc(f, j, i))
+            continue;
+          if (f.memcpyResourceType == "npu_dma_stream")
+            getFlowOp(aie_device, f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                      AIE::WireBundle::DMA,
+                      (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                      f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                      AIE::WireBundle::DMA,
+                      (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+          else
+            getCascadeFlowOp(aie_device,
+                             f.MM2S_alloc[j].getDmaTile()->getResult(0),
+                             AIE::WireBundle::DMA,
+                             (uint32_t)f.MM2S_alloc[j].dma_channel.channel,
+                             f.S2MM_alloc[i].getDmaTile()->getResult(0),
+                             AIE::WireBundle::DMA,
+                             (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
         }
       }
     }
@@ -4100,7 +4926,15 @@ public:
     }
 
     for (auto &t : allocs) {
-      AIE::TileOp tileOp = t.getDmaTile();
+      // Shim DMA tiles are emitted as logical tiles by ShimDMAAllocator and
+      // resolved to physical TileOps by mlir-aie's `aie-place-tiles` pass,
+      // which runs (in aircc) BEFORE this metadata is consumed. At AIR-to-AIE
+      // time the col is therefore not yet known; write tryGetCol() and
+      // accept -1 when unplaced. The downstream metadata-fixup pass (run
+      // after aie-place-tiles) patches the "location" field for entries
+      // whose shim tile got a physical column from the placer.
+      AIE::TileLike tileLike = t.getDmaTile();
+      int64_t shimCol = tileLike ? tileLike.tryGetCol().value_or(-1) : -1;
       int64_t col = t.col - col_offset;
       int64_t row = t.row - row_offset;
       int64_t chan = dir == AIE::DMAChannelDir::MM2S ? t.dma_channel.channel + 2
@@ -4121,9 +4955,8 @@ public:
                                        builder.getI64IntegerAttr(col)));
         attrs.push_back(NamedAttribute(StringAttr::get(ctx, "channel"),
                                        builder.getI64IntegerAttr(chan)));
-        attrs.push_back(
-            NamedAttribute(StringAttr::get(ctx, "location"),
-                           builder.getI64IntegerAttr(tileOp.getCol())));
+        attrs.push_back(NamedAttribute(StringAttr::get(ctx, "location"),
+                                       builder.getI64IntegerAttr(shimCol)));
         push_back_if_unique<Attribute>(dma_allocations,
                                        DictionaryAttr::get(ctx, attrs));
       }
@@ -4267,21 +5100,32 @@ public:
   }
 
   // Annotate AIR DMA ops that correspond to a SHIM DMA allocation with packet
-  // information, specifically for MM2S (host-to-AIE) directions.
+  // information, specifically for MM2S (host-to-AIE) directions. The tile
+  // operand is passed as a Value so it works for both physical aie.tile and
+  // unplaced aie.logical_tile.
   LogicalResult labelMemcpyOpsWithPacketFlow(air::MemcpyInterface memcpyOpIf,
                                              StringAttr dmaNameAttr,
-                                             AIE::TileOp tileOp, int channel,
+                                             mlir::Value tileVal, int channel,
                                              int packetFlowId = -1) {
+    // Kernel-writes-header channels must not be statically stamped, so the
+    // shim DMA does not prepend a second header word. Skip before the runtime
+    // fallback below could tag it with an arbitrary flow id.
+    if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
+            memcpyOpIf.getOperation()))
+      if (channelKernelWritesHeader(
+              air::getChannelDeclarationThroughSymbol(ci)))
+        return success();
+
     // When a packet flow ID is available (from flow creation phase), use
     // exact flow ID matching to disambiguate multiple flows sharing the
     // same shim DMA channel. Otherwise fall back to source-only lookup.
     AIE::PacketFlowOp pktFlowOp;
     if (packetFlowId >= 0)
-      pktFlowOp = findPacketFlowOp(tileOp, AIE::WireBundle::DMA, channel,
+      pktFlowOp = findPacketFlowOp(tileVal, AIE::WireBundle::DMA, channel,
                                    /*checkFlowID=*/true, packetFlowId);
     if (!pktFlowOp)
       pktFlowOp = getExistingPacketFlowOpFromRuntime(
-          tileOp, AIE::WireBundle::DMA, channel);
+          tileVal, AIE::WireBundle::DMA, channel);
     if (!pktFlowOp)
       return success();
 
@@ -4460,6 +5304,41 @@ public:
       }
     }
 
+    // Sort each bucket lexicographically by its far-end tile's (col, row).
+    // The bucket order determines per-device shim allocation naming
+    // (outD_0, outD_1, ...) at line ~4711, which is what
+    // getIndexToMetadataArrayFromChannelIndices indexes into via the
+    // row-major formula (`idx[0]*dims[1] + idx[1]`). Without this sort the
+    // bucket arrives in whatever order shimSideMemcpyIfOps was traversed,
+    // which is col-fast/row-slow in physical tile order — opposite of the
+    // formula's row-fast convention. The two coincide only when any dim
+    // == 1, so 1D-style herds work but 2D channels with both dims > 1
+    // misroute off-diagonal channel instances.
+    // Sorting by (col, row) lex gives col-slow/row-fast iteration, which
+    // matches `idx[0]=cx` (slow) and `idx[1]=cy` (fast) when channel index
+    // [i,j] corresponds to herd tile (i,j) at (x_loc+i, y_loc+j).
+    for (auto &kv : shimChanSymbolToAlloc) {
+      auto &allocVec = kv.second;
+      if (allocVec.size() <= 1)
+        continue;
+      auto getFarEndCoords = [](air::allocation_info_t &t) {
+        std::pair<int64_t, int64_t> coords{-1, -1};
+        if (!t.otherSideLTO)
+          return coords;
+        if (auto tileLike = dyn_cast<AIE::TileLike>(t.otherSideLTO)) {
+          coords.first = tileLike.tryGetCol().value_or(-1);
+          coords.second = tileLike.tryGetRow().value_or(-1);
+        }
+        return coords;
+      };
+      std::stable_sort(allocVec.begin(), allocVec.end(),
+                       [&](air::allocation_info_t a, air::allocation_info_t b) {
+                         auto ca = getFarEndCoords(a);
+                         auto cb = getFarEndCoords(b);
+                         return ca < cb;
+                       });
+    }
+
     // Capture errors when any shim memcpy op fails to link to shim allocation.
     // When skipUnlinked is true (segment-unrolled per-device processing),
     // unlinked ops belong to other devices and are silently skipped.
@@ -4518,7 +5397,8 @@ public:
         builder.setInsertionPoint(deviceOp.getBody()->getTerminator());
         if (!SymbolTable::lookupSymbolIn(deviceOp, shim_name)) {
           auto shimAllocationOp = AIE::ShimDMAAllocationOp::create(
-              builder, builder.getUnknownLoc(), shim_name_attr, t.getDmaTile(),
+              builder, builder.getUnknownLoc(), shim_name_attr,
+              t.getDmaTile()->getResult(0),
               AIE::DMAChannelDirAttr::get(ctx, dir),
               builder.getI64IntegerAttr(t.dma_channel.channel),
               /*plio*/ builder.getBoolAttr(false),
@@ -4554,7 +5434,7 @@ public:
         // specifically for MM2S (host-to-AIE) directions.
         if (dir == AIE::DMAChannelDir::MM2S)
           if (failed(labelMemcpyOpsWithPacketFlow(
-                  memcpyIfOp, shim_name_attr, t.getDmaTile(),
+                  memcpyIfOp, shim_name_attr, t.getDmaTile()->getResult(0),
                   t.dma_channel.channel, t.packet_flow_id)))
             return failure();
       }
@@ -4880,19 +5760,28 @@ public:
       OpBuilder builder, air::MemcpyInterface memcpyOpIf,
       llvm::SetVector<Operation *> &allocs_to_remap,
       const AIE::AIETargetModel &targetModel,
-      air::TileDMAAllocator &tileDmaAlloc, int x, int y) {
+      air::TileDMAAllocator &tileDmaAlloc, AIE::TileOp tile) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
-    auto dma_alloc = tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf);
+    auto dma_alloc = tileDmaAlloc.lookupDMAAllocation(tile, memcpyOpIf);
     if (failed(dma_alloc)) {
       return memcpyOpIf->emitOpError("failed to look up dma allocation.");
     }
     auto tile_channel = dma_alloc.value().dma_channel;
-    auto bufferOp = tileDmaAlloc.getBuffer(BufferId, x, y, memcpyOpIf);
+    auto bufferOp = tileDmaAlloc.getBuffer(BufferId, tile, memcpyOpIf);
     if (failed(bufferOp)) {
       return memcpyOpIf->emitOpError("failed to get buffer.");
     }
-    auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, x, y,
+    // 3-way shared L1: the core-side acquire/release for a channel put/get on
+    // this buffer was already emitted by allocateSharedL1BufferLocks (the
+    // shared prod/cons wrapping around the core's kernel write). Emitting
+    // another core-side lock here would double-acquire the prod lock and
+    // deadlock. The op carries the shared prod/cons symbol-refs; skip the
+    // core-side lock. The DMA-side BD still picks up the shared pair via
+    // getLockForDMA in generateDmaBdProgram.
+    if (memcpyOpIf->hasAttr("air.shared_prod_lock"))
+      return success();
+    auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, tile,
                                             bufferOp.value().getOperation(),
                                             /*lockRaceConditionFix*/ false);
     if (failed(locks))
@@ -4915,6 +5804,36 @@ public:
       lockAqValue = UsesSemaphoreLocks ? 1 : 0;
       lockRelValue = UsesSemaphoreLocks ? 1 : 1;
       alloc = memcpyOpIf.getSrcMemref();
+    }
+
+    // Producer-side re-feed. An outbound channel put that re-sends ONE resident
+    // buffer N times (e.g. an activation output streamed once per GEMV
+    // row-block iteration) is expressed by air.refeed_count=N. The producing
+    // core writes the buffer once and the DMA's count-free self-loop BD
+    // re-reads it; the single core-side release must free N read-tokens so the
+    // BD fires N times. (The N>1 loop the front-end emits is canonicalized away
+    // before air-to-aie, so the count is carried on the channel/put, not
+    // inferred from a loop.)
+    if (UsesSemaphoreLocks && !tileInbound.value()) {
+      int64_t n = 1;
+      if (auto chanIf =
+              dyn_cast<air::ChannelInterface>(memcpyOpIf.getOperation()))
+        n = air::getRefeedCount(chanIf);
+      if (n > 1) {
+        lockRelValue *= n;
+        // Re-dispatch correctness: the DMA self-loop releases the buf-free
+        // (acquire) lock once per re-send, i.e. N times per dispatch, while the
+        // producing core overwrites the resident buffer only once. The core
+        // must re-acquire ALL N freed tokens before the next overwrite, and the
+        // buf-free lock must INIT to N (else the first dispatch's acquire>=N
+        // can never fire). Without this the buf-free lock leaks N-1 every
+        // dispatch, accumulating into a re-dispatch parity stall.
+        lockAqValue *= n;
+        // getRefeedCount guarantees 1 < n <= INT32_MAX, so the narrowing is
+        // safe.
+        if (auto initOpt = acqLockOp.getInit(); !initOpt || *initOpt < n)
+          acqLockOp.setInit(static_cast<int32_t>(n));
+      }
     }
 
     // Detect if multiple outbound puts in this DMA allocation share the same
@@ -5003,7 +5922,8 @@ public:
                                        std::vector<Operation *>>
                            dma_memcpys,
                        dmaAllocatorTy dmaAlloc, mlir::Location loc, memOpTy mem,
-                       int x, int y, bool lockRaceConditionFix = false) {
+                       AIE::TileLike tile, bool lockRaceConditionFix = false,
+                       bool lockRaceConditionFixV2 = false) {
 
     llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
                     std::vector<Operation *>>
@@ -5095,19 +6015,32 @@ public:
             next_bd->insertBefore(end_bb);
             AIE::NextBDOp::create(b, loc, next_bd);
           }
-          auto bufferOp = dmaAlloc.getBuffer(BufferId, x, y, memcpyOp);
+          // ShimDMA/MemTileDMA/TileDMA getBuffer subclass APIs still take
+          // AIE::TileOp; the tile parameter is unused by Shim/MemTile (which
+          // derive the buffer from the memcpy op) and used only as the owner
+          // tile by TileDMAAllocator. For TileDMA, `tile` here is always
+          // physical (compute tiles use getPhysTileOp), so cast<TileOp> is
+          // safe. Shim/MemTile may pass an LTO; the cast is unsafe in that
+          // case but the body never dereferences the tile value, so the
+          // cast<>'s null cast (to nullptr_t) does not blow up.
+          auto bufferOp =
+              dmaAlloc.getBuffer(BufferId,
+                                 dyn_cast<AIE::TileOp>(tile.getOperation())
+                                     ? cast<AIE::TileOp>(tile.getOperation())
+                                     : nullptr,
+                                 memcpyOp);
           if (failed(bufferOp)) {
             memcpyOp->emitOpError("failed to get buffer.");
             return failure();
           }
-          auto locks = dmaAlloc.getLockForDMA(memcpyOp, x, y,
-                                              bufferOp.value().getOperation(),
-                                              lockRaceConditionFix);
+          auto locks = dmaAlloc.getLockForDMA(
+              memcpyOp, tile, bufferOp.value().getOperation(),
+              lockRaceConditionFix, lockRaceConditionFixV2);
           if (failed(locks))
             return memcpyOp->emitOpError("failed to get lock for dma.");
-          auto newBD = generateDmaBd<bufferOpTy>(loc, dir, locks.value(), x, y,
-                                                 targetModel, bd, memcpyOp,
-                                                 bufferOp.value(), chan);
+          auto newBD = generateDmaBd<bufferOpTy>(
+              loc, dir, locks.value(), tile, targetModel, bd, memcpyOp,
+              bufferOp.value(), chan, lockRaceConditionFixV2);
           // Attribute task_id is necessary to ensure that BDs do not get shared
           // across tasks, otherwise MLIR may fold BDs and cause BD sharing
           // across tasks.
@@ -5116,6 +6049,60 @@ public:
           newBD.value()->setAttr(
               "task_id",
               IntegerAttr::get(IntegerType::get(b.getContext(), 32), taskId));
+
+          // v2 chain-lock 2-slot ping-pong: splice a twin BD (on a second
+          // buffer instance, sharing the chain locks) between the primary BD
+          // and its next_bd target, giving producer-consumer overlap on the
+          // shared L2 buffer.
+          if constexpr (std::is_same_v<bufferOpTy, AIE::BufferOp>) {
+            if (lockRaceConditionFixV2 && task_ops.size() == 1) {
+              AIE::BufferOp primaryBuf = bufferOp.value();
+              if (air::isChainLockCandidate(primaryBuf)) {
+                auto clsOrFail =
+                    dmaAlloc.getOrCreateChainLockSet(primaryBuf, tile);
+                if (failed(clsOrFail))
+                  return primaryBuf->emitOpError(
+                      "v2 chain-lock: failed to look up chain lock set "
+                      "for ping-pong twin");
+                air::ChainLockSet *cls = clsOrFail.value();
+                // A buffer carrying air.refeed_count is a single-buffer
+                // count-free re-broadcast: the resident data is re-sent N
+                // times without a refill. Allocating a 2-slot ping-pong twin
+                // would deadlock, since the second (pong) slot is never filled
+                // when the producer emits a single token. Keep refeed buffers
+                // single-buffer.
+                if (cls->pp_slots == 1 &&
+                    air::getRefeedCount(primaryBuf.getOperation()) <= 1) {
+                  AIE::BufferOp twin = allocateBufferOp(
+                      this->BufferId, primaryBuf.getType(), tile,
+                      /*attr=*/nullptr, /*x=*/-1, /*y=*/-1);
+                  dmaAlloc.activateChainPingPong(*cls, twin);
+                }
+                if (cls->twin_buf) {
+                  // Splice bd_pong between bd and its current next_bd target.
+                  auto primaryNextBd = cast<AIE::NextBDOp>(bd->getTerminator());
+                  Block *origTarget = primaryNextBd.getDest();
+                  Block *bd_pong = new Block();
+                  bd_pong->insertBefore(end_bb);
+                  primaryNextBd->setSuccessor(bd_pong, 0);
+                  // Emit the twin's acq/dma_bd/rel into bd_pong using the
+                  // SAME lock pair (chain locks are shared across ping/pong).
+                  auto pongBD = generateDmaBd<bufferOpTy>(
+                      loc, dir, locks.value(), tile, targetModel, bd_pong,
+                      memcpyOp, cls->twin_buf, chan, lockRaceConditionFixV2);
+                  if (failed(pongBD))
+                    return cls->twin_buf->emitOpError(
+                        "v2 chain-lock: failed to generate ping-pong twin BD");
+                  pongBD.value()->setAttr(
+                      "task_id",
+                      IntegerAttr::get(IntegerType::get(b.getContext(), 32),
+                                       taskId));
+                  auto bd_pong_builder = OpBuilder::atBlockEnd(bd_pong);
+                  AIE::NextBDOp::create(bd_pong_builder, loc, origTarget);
+                }
+              }
+            }
+          }
         }
 
         AIE::DMAStartOp startOp = nullptr;
@@ -5143,9 +6130,10 @@ public:
   template <typename bufferOpTy>
   FailureOr<AIE::DMABDOp>
   generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
-                std::pair<AIE::LockOp, AIE::LockOp> locks, int x, int y,
+                std::pair<AIE::LockOp, AIE::LockOp> locks, AIE::TileLike tile,
                 const AIE::AIETargetModel &targetModel, Block *bd,
-                air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan) {
+                air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan,
+                bool lockRaceConditionFixV2 = false) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
@@ -5156,14 +6144,60 @@ public:
     b.setInsertionPointToStart(bd);
     int64_t lockAqValue = -1;
     int64_t lockRelValue = -1;
+    // 3-way shared L1: the channel put/get op carries the shared prod/cons
+    // identity. The DMA participant must acquire/release N tokens against the
+    // shared prod/cons pair (init=N / 0) so it drains all N writer releases
+    // per cycle. N is the prod lock's init; getLockForDMA returns (cons, prod)
+    // for the shared case, so N = locks.second.getInit().
+    std::optional<int> sharedLockCount;
+    if (memcpyOp->hasAttr("air.shared_prod_lock"))
+      sharedLockCount = locks.second.getInit();
+    bool useSharedL1LockCounts = sharedLockCount.has_value();
+    // v2: when the chain-lock template applies for this buffer (fan-in/
+    // fan-out shared L2 with per-stage signal locks), force per-BD lock
+    // acq/rel counts to 1. The chain semantics rely on each writer/
+    // reader holding/releasing exactly one token at a time; using the
+    // legacy `getLockValuePair`-derived counts (N for the multi-side)
+    // would break the chain because the multi-side BD would acquire/
+    // release N tokens against the cap lock (init=#slots), reverting
+    // to the legacy parallel-acquire behaviour.
+    // The 3-way (compute-tile) and chain-lock (memtile) cases are mutually
+    // exclusive, so a chained selection is unambiguous.
+    bool useChainLockCounts =
+        lockRaceConditionFixV2 &&
+        isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation()) &&
+        air::isChainLockCandidate(cast<AIE::BufferOp>(bufferOp.getOperation()));
     auto aie2LockVal =
-        air::getLockValuePair(targetModel, bufferOp->getResult(0));
+        useSharedL1LockCounts
+            ? std::pair<int64_t, int64_t>(*sharedLockCount, *sharedLockCount)
+        : useChainLockCounts
+            ? std::make_pair<int64_t, int64_t>(1, 1)
+            : air::getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.first : 0;
       lockRelValue = UsesSemaphoreLocks ? aie2LockVal.first : 1;
     } else {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.second : 1;
       lockRelValue = UsesSemaphoreLocks ? aie2LockVal.second : 0;
+    }
+    // Count-free re-fed broadcast/relay: the resident buffer is re-broadcast N
+    // times per fill, once per consumer row-block. On AIE2 memtile/core BDs
+    // this cannot be a stride-0 repeat dim (HW unsupported) nor a repeat_count
+    // BD (lock-once -> stale rebroadcast). It is realized as a count-free ring
+    // (the MM2S self-loops via infiniteBDLoopMode) driven by the FILL releasing
+    // the read-lock xN: the fill (S2MM) acquires the refill-lock xN (waits for
+    // all N re-reads done before overwriting) and releases the read-lock xN
+    // (enables N count-free MM2S re-reads). The MM2S side is unchanged (x1 per
+    // fire). N = air.refeed_count, propagated onto the memtile buffer op (the
+    // shared fill/drain rendezvous) by AllocL2BuffersPattern; read via the same
+    // helper the lock allocator uses so init and acq/rel cannot diverge.
+    if (isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation()) &&
+        UsesSemaphoreLocks && !isMM2S) {
+      int64_t refeedN = air::getRefeedCount(bufferOp.getOperation());
+      if (refeedN > 1) {
+        lockAqValue = refeedN;
+        lockRelValue = refeedN;
+      }
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
 
@@ -5207,15 +6241,36 @@ public:
                                : AIE::LockAction::Acquire,
                            lockAqValue);
 
-    // Packet flow routing: get packet flow id.
-    auto aie_device = bufferOp->template getParentOfType<AIE::DeviceOp>();
-    auto tileOp = air::getPhysTileOpOrNull(aie_device, x, y);
-    auto pktFlowOp = getExistingPacketFlowOpFromDevice(
-        tileOp, AIE::WireBundle::DMA, chan, memcpyOp);
+    // Packet flow routing: tag every BD (sender AND receiver) for a packet
+    // channel with its pkt_id so the AIE switchbox and the receiving DMA's
+    // per-BD packet-filter can demux. Pre-fix the lookup walked
+    // PacketFlowOps by source, so receiver-side BDs (whose source value is
+    // a different tile from the BD's owner) found nothing; the
+    // `isMM2S && pktFlowOp` guard then dropped the filter entirely on the
+    // receiver side. Result: a receiver channel multiplexed by two packet
+    // flows (e.g. tile_0_2 S2MM 0 fed by gamma + res1ToCons in the
+    // la_lgu_ld_cascade_fused design) accepted any arriving packet into
+    // whichever BD was active, corrupting data and deadlocking on the
+    // rate-imbalanced flow whose ping-pong BD slot got the wrong source's
+    // packets. Each receiver memcpy op already emits its own BD in the
+    // channel chain, so per-pkt_id filtering happens naturally once each
+    // BD carries the right filter.
+    //
+    // Look up the pkt_id from packetIDForChannelName directly using the
+    // air.channel symbol name. Non-packet channels (no entry) get no
+    // filter -- same behaviour as today for circuit flows.
     AIE::PacketInfoAttr pktInfoAttr = nullptr;
-    if (isMM2S && pktFlowOp) {
-      auto packetID = pktFlowOp.getID();
-      pktInfoAttr = AIE::PacketInfoAttr::get(ndcpy->getContext(), 0, packetID);
+    if (auto chanIfOp = dyn_cast_if_present<air::ChannelInterface>(
+            memcpyOp.getOperation())) {
+      // Channels whose kernel writes the routing header itself must NOT be
+      // statically stamped: a static pkt_id would prepend a second header word
+      // and shift the payload.
+      bool kernelWritesHeader = channelKernelWritesHeader(
+          air::getChannelDeclarationThroughSymbol(chanIfOp));
+      auto it = packetIDForChannelName.find(chanIfOp.getChanName().str());
+      if (!kernelWritesHeader && it != packetIDForChannelName.end())
+        pktInfoAttr =
+            AIE::PacketInfoAttr::get(ndcpy->getContext(), 0, it->second);
     }
 
     std::vector<AIE::BDDimLayoutAttr> dims =
@@ -5399,19 +6454,19 @@ public:
     return aieDmaBdOp;
   }
 
-  // Converts an air.channel.put/get operation with channel_type = "cascade"
+  // Converts an air.channel.put/get operation with channel_type = "npu_cascade"
   // into aie.get/put_cascade + vector.transfer_read/write sequence.
   // The conversion flattens the entire memref into a 1-D vector to match
   // the cascade data format expected by the AIE put/get_cascade ops.
   LogicalResult ConvertCascadeChannelIfToAIE(RewriterBase &rewriter,
                                              air::ChannelInterface op) {
-    // Match only if the associated channel has channel_type = "cascade".
+    // Match only if the associated channel has channel_type = "npu_cascade".
     auto chan = air::getChannelDeclarationThroughSymbol(op);
     if (!chan)
       return op->emitOpError("cannot resolve channel symbol");
 
-    if (chan.getChannelType().str() != "cascade")
-      return op->emitOpError("channel_type is not cascade");
+    if (chan.getChannelType().str() != "npu_cascade")
+      return op->emitOpError("channel_type is not npu_cascade");
 
     Location loc = op.getLoc();
     Value memref = op.getMemref();
@@ -5483,13 +6538,13 @@ public:
 
   FailureOr<air::ChannelInterface> TileCascadeChannelIfUsingScfFor(
       RewriterBase &rewriter, air::ChannelInterface op, unsigned cascadeWidth) {
-    // Match only if the associated channel has channel_type = "cascade".
+    // Match only if the associated channel has channel_type = "npu_cascade".
     auto chan = air::getChannelDeclarationThroughSymbol(op);
     if (!chan)
       return op->emitOpError("cannot resolve channel symbol");
 
-    if (chan.getChannelType().str() != "cascade")
-      return op->emitOpError("channel_type is not cascade");
+    if (chan.getChannelType().str() != "npu_cascade")
+      return op->emitOpError("channel_type is not npu_cascade");
 
     Location loc = op.getLoc();
     Value memref = op.getMemref();
@@ -5583,20 +6638,354 @@ public:
     return failure();
   }
 
-  AIE::ShimDMAOp getShimDMAOp(AIE::TileOp tile) {
-    auto users = tile.getResult().getUsers();
+  AIE::ShimDMAOp getShimDMAOp(AIE::TileLike tile) {
+    auto users = tile->getResult(0).getUsers();
     for (auto user : users)
       if (auto shimDMAOp = dyn_cast_if_present<AIE::ShimDMAOp>(*user))
         return shimDMAOp;
     return nullptr;
   }
 
-  AIE::MemTileDMAOp getMemTileDMAOp(AIE::TileOp tile) {
-    auto users = tile.getResult().getUsers();
+  AIE::MemTileDMAOp getMemTileDMAOp(AIE::TileLike tile) {
+    auto users = tile->getResult(0).getUsers();
     for (auto user : users)
       if (auto memTileDMAOp = dyn_cast_if_present<AIE::MemTileDMAOp>(*user))
         return memTileDMAOp;
     return nullptr;
+  }
+
+  // Lower mmio-typed channels into runtime-sequence MMIO writes.
+  //
+  // For each `air.channel @c [...] {channel_type = "npu_mmio"}`:
+  //   * each `air.channel.get @c` inside an `aie.core` is replaced by an
+  //     erase — the destination L1 `aie.buffer` is populated by the host
+  //     before the core runs, so the get is a no-op;
+  //   * each `air.channel.put @c` outside the device (i.e. living in the
+  //     L3/launch-side `func.func` that becomes the runtime sequence) is
+  //     rewritten to `aiex.npu.blockwrite` targeting the L1 buffer's
+  //     symbol with the put's source memref as the data payload.
+  //
+  // V1 restrictions enforced here:
+  //   * the put's source must be a `memref.get_global` of a constant
+  //     `memref.global`, because `aiex.npu.blockwrite` encodes the data
+  //     directly in the instruction stream;
+  //   * the get's destination must resolve to an `aie.buffer` (it must be
+  //     an L1 allocation, already converted by air-to-aie);
+  //   * non-broadcast pairs match by equal constant indices; non-constant
+  //     indices and host-side puts with no matching get are hard errors.
+  //   * the source `memref.global` must have no users outside the put's
+  //     enclosing func (V1 limitation; see Comment 2 in PR #1568).
+  LogicalResult lowerAIRMMIOChannelOps(AIE::DeviceOp device) {
+    IRRewriter rewriter(device->getContext());
+
+    // Collect all mmio channel decls reachable from this device.
+    SmallVector<air::ChannelOp> mmioChannels;
+    auto collectMMIO = [&](Operation *root) {
+      root->walk([&](air::ChannelOp chan) {
+        if (chan.getChannelType() == "npu_mmio")
+          if (!llvm::is_contained(mmioChannels, chan))
+            mmioChannels.push_back(chan);
+      });
+    };
+    collectMMIO(device);
+    if (auto module = device->getParentOfType<ModuleOp>())
+      collectMMIO(module);
+
+    // Helper to compare two ValueRange of indices for constant equality.
+    auto constIndices = [](ValueRange v) {
+      return getConstantIntValues(getAsOpFoldResult(v));
+    };
+    auto sameConstIndices = [&](ValueRange a, ValueRange b) {
+      auto av = constIndices(a), bv = constIndices(b);
+      return av && bv && *av == *bv;
+    };
+
+    // Helper: trace a memref Value back through launch/segment/herd block
+    // arguments and trivial view ops to a defining `memref.get_global`.
+    // The put often appears inside an `air.launch` body, where its source
+    // is a kernel block-arg whose backing operand outside the launch is
+    // the actual `memref.get_global`.
+    auto getSourceGlobal = [](Value v) -> memref::GetGlobalOp {
+      while (v) {
+        if (auto gg = v.getDefiningOp<memref::GetGlobalOp>())
+          return gg;
+        if (Operation *def = v.getDefiningOp()) {
+          if (auto cs = dyn_cast<memref::CastOp>(def)) {
+            v = cs.getSource();
+            continue;
+          }
+          return nullptr;
+        }
+        // No defining op — `v` is a block argument. Walk to the
+        // corresponding kernel operand of the enclosing launch/segment/herd.
+        auto ba = dyn_cast<BlockArgument>(v);
+        if (!ba)
+          return nullptr;
+        Operation *parent = ba.getOwner()->getParentOp();
+        Value next = nullptr;
+        if (auto launch = dyn_cast_if_present<air::LaunchOp>(parent)) {
+          auto args = launch.getKernelArguments();
+          auto operands = launch.getKernelOperands();
+          for (size_t i = 0; i < args.size(); i++)
+            if (args[i] == ba) {
+              next = operands[i];
+              break;
+            }
+        } else if (auto seg = dyn_cast_if_present<air::SegmentOp>(parent)) {
+          auto args = seg.getKernelArguments();
+          auto operands = seg.getKernelOperands();
+          for (size_t i = 0; i < args.size(); i++)
+            if (args[i] == ba) {
+              next = operands[i];
+              break;
+            }
+        } else if (auto herd = dyn_cast_if_present<air::HerdOp>(parent)) {
+          auto args = herd.getKernelArguments();
+          auto operands = herd.getKernelOperands();
+          for (size_t i = 0; i < args.size(); i++)
+            if (args[i] == ba) {
+              next = operands[i];
+              break;
+            }
+        }
+        if (!next)
+          return nullptr;
+        v = next;
+      }
+      return nullptr;
+    };
+
+    // Helper: trace a memref Value back through trivial view ops to its
+    // defining aie.buffer, if any.
+    auto getDefiningBuffer = [](Value v) -> AIE::BufferOp {
+      while (v) {
+        if (auto buf = v.getDefiningOp<AIE::BufferOp>())
+          return buf;
+        // Peel through common view-style ops that don't change the buffer
+        // identity.
+        Operation *def = v.getDefiningOp();
+        if (!def)
+          return nullptr;
+        if (auto sv = dyn_cast<memref::SubViewOp>(def)) {
+          v = sv.getSource();
+          continue;
+        }
+        if (auto cs = dyn_cast<memref::CastOp>(def)) {
+          v = cs.getSource();
+          continue;
+        }
+        return nullptr;
+      }
+      return nullptr;
+    };
+
+    Operation *root = device->getParentOp();
+    while (root && !isa<ModuleOp>(root))
+      root = root->getParentOp();
+    if (!root)
+      root = device->getParentOp();
+
+    for (auto chan : mmioChannels) {
+      auto chanName = chan.getSymName();
+
+      SmallVector<air::ChannelPutOp> hostPuts;
+      SmallVector<air::ChannelPutOp> devicePuts;
+      SmallVector<air::ChannelGetOp> deviceGets;
+      SmallVector<air::ChannelGetOp> hostGets;
+      // air-to-aie's pre-processing clones each L3 channel.put into the
+      // device with its source rebound to an aie.external_buffer (so that
+      // later flow allocation can route through shim DMA). For mmio we
+      // bypass shim DMA entirely, so those device-side puts are pure
+      // artifacts and must be discarded — keep only puts in the L3 control
+      // func, where the original `memref.get_global` source is reachable
+      // via launch / segment / herd kernel args.
+      root->walk([&](air::ChannelPutOp put) {
+        if (put.getChanName() != chanName)
+          return;
+        if (put->getParentOfType<AIE::DeviceOp>())
+          devicePuts.push_back(put);
+        else
+          hostPuts.push_back(put);
+      });
+      // Gets exist in two places after air-to-aie outlining:
+      //   * inside `aie.core` ops within the device (the lowered form,
+      //     where the destination is an `aie.buffer` whose sym_name is
+      //     what blockwrite needs to reference),
+      //   * inside the original `air.herd` body in the L3 control func
+      //     (kept around for AIRLoweringPass; destination is a plain
+      //     `memref.alloc`, no aie.buffer to reference).
+      // Both must go for mmio. Use the device-side gets for buffer lookup;
+      // erase the host-side gets without any further processing.
+      device.walk([&](air::ChannelGetOp get) {
+        if (get.getChanName() == chanName)
+          deviceGets.push_back(get);
+      });
+      root->walk([&](air::ChannelGetOp get) {
+        if (get.getChanName() != chanName)
+          return;
+        if (get->getParentOfType<AIE::DeviceOp>())
+          return;
+        hostGets.push_back(get);
+      });
+
+      if (hostPuts.empty() && devicePuts.empty() && deviceGets.empty() &&
+          hostGets.empty())
+        continue;
+
+      // mmio has no hardware broadcast. When the channel is declared with a
+      // `broadcast_shape`, the lowering instead emits one blockwrite per
+      // destination buffer carrying the same payload — the controller
+      // writes each tile individually. This matches the shape of
+      // `q_n8_w128` in MMIO_BENCHMARK.md, which proved sub-microsecond per
+      // write at LLaMA-3.2-1B Q sizes.
+      bool isBcast = chan.isBroadcast();
+
+      // Non-broadcast pairs match by constant-index equality. A non-
+      // constant index would silently fail every match and the put would
+      // be erased below with no blockwrite emitted — reject up front.
+      if (!isBcast) {
+        auto rejectIfNonConst = [&](Operation *op, ValueRange indices,
+                                    StringRef kind) -> LogicalResult {
+          if (constIndices(indices))
+            return success();
+          return op->emitOpError("channel_type=\"npu_mmio\" non-broadcast ")
+                 << kind << " requires compile-time constant indices";
+        };
+        for (auto put : hostPuts)
+          if (failed(rejectIfNonConst(put, put.getIndices(), "put")))
+            return failure();
+        for (auto get : deviceGets)
+          if (failed(rejectIfNonConst(get, get.getIndices(), "get")))
+            return failure();
+      }
+
+      // For each L3-side put, find every matching get and stamp the
+      // source data onto the destination L1 buffer's `initial_value`
+      // attribute. Match rule:
+      //   * non-broadcast: indices must be constant-equal between put/get;
+      //   * broadcast: every device-side get on this channel matches every
+      //     put (one put fans out to all destinations).
+      //
+      // The aie.buffer initial_value is loaded into the tile by
+      // AIERTControl::initBuffers (XAie_DataMemBlockWrite) at device-init
+      // time — before any core starts. This eliminates the host↔core
+      // race that would arise from placing the data delivery in the
+      // runtime sequence (where blockwrites would race CDO-started cores).
+      // It also handles bf16/other float types natively, so no i32
+      // repack is required.
+      for (auto put : hostPuts) {
+        Value src = put.getMemref();
+        memref::GetGlobalOp getGlobalOp = getSourceGlobal(src);
+        if (!getGlobalOp)
+          return put.emitOpError(
+              "channel_type=\"npu_mmio\" put requires source memref defined by "
+              "memref.get_global of a constant memref.global");
+
+        StringAttr origName = getGlobalOp.getNameAttr().getAttr();
+        Operation *moduleOp = device->getParentOp();
+        while (moduleOp && !isa<ModuleOp>(moduleOp))
+          moduleOp = moduleOp->getParentOp();
+        auto moduleGlobal = dyn_cast_if_present<memref::GlobalOp>(
+            moduleOp ? SymbolTable::lookupSymbolIn(moduleOp, origName)
+                     : nullptr);
+        if (!moduleGlobal)
+          return getGlobalOp.emitOpError(
+              "channel_type=\"npu_mmio\" lowering: cannot find memref.global "
+              "for the put source at module scope");
+
+        auto initOpt = moduleGlobal.getInitialValue();
+        auto initDense =
+            initOpt ? dyn_cast<DenseElementsAttr>(*initOpt) : nullptr;
+        if (!initDense)
+          return put.emitOpError(
+              "channel_type=\"npu_mmio\" source memref.global must have a "
+              "DenseElementsAttr initializer");
+
+        unsigned matchCount = 0;
+        for (auto get : deviceGets) {
+          if (!isBcast && !sameConstIndices(put.getIndices(), get.getIndices()))
+            continue;
+          AIE::BufferOp bufferOp = getDefiningBuffer(get.getMemref());
+          if (!bufferOp)
+            return get.emitOpError(
+                "channel_type=\"npu_mmio\" get destination does not resolve to "
+                "an aie.buffer (must be an L1 allocation)");
+
+          // Element type and total element count must match between source
+          // and destination so the DenseElementsAttr is valid for the
+          // buffer's memref type.
+          auto bufMemTy = bufferOp.getType();
+          auto srcMemTy = cast<MemRefType>(getGlobalOp.getType());
+          if (bufMemTy.getElementType() != srcMemTy.getElementType())
+            return get.emitOpError("channel_type=\"npu_mmio\" "
+                                   "source/destination element type "
+                                   "mismatch (source: ")
+                   << srcMemTy.getElementType()
+                   << ", destination: " << bufMemTy.getElementType() << ")";
+          if (bufMemTy.getNumElements() != srcMemTy.getNumElements())
+            return get.emitOpError("channel_type=\"npu_mmio\" "
+                                   "source/destination element count "
+                                   "mismatch (source: ")
+                   << srcMemTy.getNumElements()
+                   << ", destination: " << bufMemTy.getNumElements() << ")";
+
+          // Reshape the source DenseElementsAttr to match the destination
+          // buffer's tensor shape (same bytes, possibly different rank).
+          auto bufTensorTy = RankedTensorType::get(bufMemTy.getShape(),
+                                                   bufMemTy.getElementType());
+          auto reshapedInit = initDense.reshape(bufTensorTy);
+
+          if (auto existing = bufferOp.getInitialValue())
+            return bufferOp.emitOpError(
+                "channel_type=\"npu_mmio\" destination aie.buffer already has "
+                "an "
+                "initial_value; cannot stamp two sources into one buffer");
+          bufferOp.setInitialValueAttr(reshapedInit);
+          ++matchCount;
+        }
+        if (matchCount == 0)
+          return put.emitOpError(
+              "channel_type=\"npu_mmio\" put has no matching "
+              "device-side air.channel.get");
+      }
+
+      // Erase all mmio puts (host-side ones have been replaced with
+      // blockwrite; device-side ones are pure pre-processing artifacts
+      // and have no representation in the lowered IR).
+      auto erasePut = [](air::ChannelPutOp put) {
+        if (auto async = dyn_cast<air::AsyncOpInterface>(put.getOperation())) {
+          if (async.getAsyncToken()) {
+            OpBuilder b(put);
+            put->replaceAllUsesWith(air::WaitAllOp::create(
+                b, put.getLoc(), air::AsyncTokenType::get(put.getContext()),
+                async.getAsyncDependencies()));
+          }
+        }
+        put->erase();
+      };
+      for (auto put : hostPuts)
+        erasePut(put);
+      for (auto put : devicePuts)
+        erasePut(put);
+      // Erase all mmio gets — the destination L1 buffer is populated by
+      // the blockwrite issued from the host before the core starts.
+      auto eraseGet = [](air::ChannelGetOp get) {
+        if (auto async = dyn_cast<air::AsyncOpInterface>(get.getOperation())) {
+          if (async.getAsyncToken()) {
+            OpBuilder b(get);
+            get->replaceAllUsesWith(air::WaitAllOp::create(
+                b, get.getLoc(), air::AsyncTokenType::get(get.getContext()),
+                async.getAsyncDependencies()));
+          }
+        }
+        get->erase();
+      };
+      for (auto get : deviceGets)
+        eraseGet(get);
+      for (auto get : hostGets)
+        eraseGet(get);
+    }
+    return success();
   }
 
   template <typename T>
@@ -5626,15 +7015,13 @@ public:
 
     for (AIE::CoreOp core : cores) {
       AIE::TileOp tile = core.getTileOp();
-      auto x = tile.getCol();
-      auto y = tile.getRow();
 
       // emit the acquire and release of the L1 buffer locks
       // lock_allocation_list lock_allocs;
       llvm::SetVector<Operation *> allocs_to_remap;
 
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         for (auto o : alloc.memcpyOps) {
           if (!o)
@@ -5644,13 +7031,13 @@ public:
             return o->emitOpError("does not have air::MemcpyInterface");
           if (failed(allocateCoreLocksPerMemcpyOp(rewriter, memcpyOpIf,
                                                   allocs_to_remap, target_model,
-                                                  tileDmaAlloc, x, y))) {
+                                                  tileDmaAlloc, tile))) {
             return o->emitOpError("failed to allocate core locks");
           }
         }
       }
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         for (auto o : alloc.memcpyOps) {
           if (!o)
@@ -5660,7 +7047,7 @@ public:
             return o->emitOpError("does not have air::MemcpyInterface");
           if (failed(allocateCoreLocksPerMemcpyOp(rewriter, memcpyOpIf,
                                                   allocs_to_remap, target_model,
-                                                  tileDmaAlloc, x, y))) {
+                                                  tileDmaAlloc, tile))) {
             return o->emitOpError("failed to allocate core locks");
           }
         }
@@ -5691,7 +7078,7 @@ public:
           tile_dma_memcpys;
 
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
             alloc.dma_channel.direction, alloc.dma_channel.channel};
@@ -5700,7 +7087,7 @@ public:
         }
       }
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
-        if (!alloc.foundAlloc(x, y))
+        if (!alloc.foundAlloc(tile))
           continue;
         std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
             alloc.dma_channel.direction, alloc.dma_channel.channel};
@@ -5721,7 +7108,7 @@ public:
       if (failed(generateDmaBdProgram<air::TileDMAAllocator, AIE::BufferOp,
                                       AIE::MemOp>(
               rewriter, target_model, tile_dma_memcpys, tileDmaAlloc, loc, mem,
-              x, y))) {
+              tile))) {
         mem->emitOpError("failed to generate dma bd program.");
         return failure();
       }
@@ -5731,7 +7118,7 @@ public:
       for (auto *allocList : {&core_cascade_alloc.cascade_put_allocs,
                               &core_cascade_alloc.cascade_get_allocs}) {
         for (auto &alloc : *allocList) {
-          if (!alloc.foundAlloc(x, y))
+          if (!alloc.foundAlloc(tile))
             continue;
           for (auto o : alloc.memcpyOps) {
             if (!o)
@@ -5755,13 +7142,16 @@ public:
 
     // Generate L3 DMA program
 
-    // Gather all shim tiles and memtiles used in design
-    std::vector<AIE::TileOp> shimtiles;
-    std::vector<AIE::TileOp> memTileTiles;
+    // Gather all shim tiles and memtiles used in design. Both physical
+    // (AIE::TileOp) and unplaced (AIE::LogicalTileOp) entries flow through
+    // here uniformly via TileLike; the downstream aie.shim_dma /
+    // aie.memtile_dma ops accept any Index-typed tile operand.
+    std::vector<AIE::TileLike> shimtiles;
+    std::vector<AIE::TileLike> memTileTiles;
     for (auto &alloc : shimDmaAlloc.mm2s_allocs) {
       auto tile = alloc.getDmaTile();
       if (tile.isShimTile())
-        push_back_if_unique<AIE::TileOp>(shimtiles, tile);
+        push_back_if_unique<AIE::TileLike>(shimtiles, tile);
       else {
         tile->emitOpError(
             "tile is logged for shim DMA allocation, but is not shim tile.");
@@ -5771,7 +7161,7 @@ public:
     for (auto &alloc : memTileDmaAlloc.mm2s_allocs) {
       auto tile = alloc.getDmaTile();
       if (tile.isMemTile())
-        push_back_if_unique<AIE::TileOp>(memTileTiles, tile);
+        push_back_if_unique<AIE::TileLike>(memTileTiles, tile);
       else {
         tile->emitOpError(
             "tile is logged for memtile DMA allocation, but is not memtile.");
@@ -5784,16 +7174,13 @@ public:
       shimtiles.clear();
 
     for (auto tile : shimtiles) {
-      auto x = tile.getCol();
-      auto y = tile.getRow();
-
       // Collect memcpy ops wrt each DMA channel
       llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
                       std::vector<Operation *>>
           shim_dma_memcpys;
 
       for (auto &alloc : shimDmaAlloc.mm2s_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -5802,7 +7189,7 @@ public:
         }
       }
       for (auto &alloc : shimDmaAlloc.s2mm_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -5815,8 +7202,9 @@ public:
       AIE::ShimDMAOp shimDMA = getShimDMAOp(tile);
       if (!shimDMA) {
         rewriter.setInsertionPoint(device.getBody()->getTerminator());
-        shimDMA = AIE::ShimDMAOp::create(rewriter, rewriter.getUnknownLoc(),
-                                         rewriter.getIndexType(), tile);
+        shimDMA =
+            AIE::ShimDMAOp::create(rewriter, rewriter.getUnknownLoc(),
+                                   rewriter.getIndexType(), tile->getResult(0));
       }
 
       auto loc = rewriter.getUnknownLoc();
@@ -5825,7 +7213,7 @@ public:
       if (failed(generateDmaBdProgram<air::ShimDMAAllocator,
                                       AIE::ExternalBufferOp, AIE::ShimDMAOp>(
               rewriter, target_model, shim_dma_memcpys, shimDmaAlloc, loc,
-              shimDMA, x, y))) {
+              shimDMA, tile))) {
         shimDMA->emitOpError("failed to generate dma bd program.");
         return failure();
       }
@@ -5834,9 +7222,6 @@ public:
     // Generate L2 DMA program
 
     for (auto tile : memTileTiles) {
-      auto x = tile.getCol();
-      auto y = tile.getRow();
-
       // Collect memcpy ops wrt each DMA channel from chessboard; make aie.mem
       // dmabd program
       llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
@@ -5844,7 +7229,7 @@ public:
           memtile_dma_memcpys;
 
       for (auto &alloc : memTileDmaAlloc.mm2s_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -5853,7 +7238,7 @@ public:
         }
       }
       for (auto &alloc : memTileDmaAlloc.s2mm_allocs) {
-        if (alloc.foundAlloc(x, y)) {
+        if (alloc.foundAlloc(tile)) {
           std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
               alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
@@ -5867,7 +7252,8 @@ public:
       if (!memTileDMA) {
         rewriter.setInsertionPoint(device.getBody()->getTerminator());
         memTileDMA = AIE::MemTileDMAOp::create(
-            rewriter, rewriter.getUnknownLoc(), rewriter.getIndexType(), tile);
+            rewriter, rewriter.getUnknownLoc(), rewriter.getIndexType(),
+            tile->getResult(0));
       }
 
       auto loc = rewriter.getUnknownLoc();
@@ -5876,7 +7262,8 @@ public:
       if (failed(generateDmaBdProgram<air::MemTileDMAAllocator, AIE::BufferOp,
                                       AIE::MemTileDMAOp>(
               rewriter, target_model, memtile_dma_memcpys, memTileDmaAlloc, loc,
-              memTileDMA, x, y, options.use_lock_race_condition_fix))) {
+              memTileDMA, tile, options.use_lock_race_condition_fix,
+              options.use_lock_race_condition_fix_v2))) {
         memTileDMA->emitOpError("failed to generate dma bd program.");
         return failure();
       }
@@ -5895,6 +7282,15 @@ public:
       alloc.memcpyOps.clear();
     for (auto &alloc : tileDmaAlloc.s2mm_allocs)
       alloc.memcpyOps.clear();
+
+    // Lower channel_type="npu_mmio" puts/gets into runtime-sequence blockwrites
+    // before the generic erase loop below removes the underlying air ops.
+    // Only meaningful for the ChannelInterface specialization; for the
+    // DmaMemcpyNd specialization there are no air.channel ops to convert.
+    if constexpr (std::is_same_v<T, air::ChannelInterface>) {
+      if (failed(lowerAIRMMIOChannelOps(device)))
+        return failure();
+    }
 
     // erase the memcpy operations in aie.device
     std::vector<Operation *> memcpy_ops;
@@ -5925,6 +7321,70 @@ public:
       tiles[{colIndex, rowIndex}] = tile;
     }
 
+    // On AIE2 core tiles the only legal switchbox destinations for the
+    // Trace source bundle are FIFO and South (see AIE2TargetModel::
+    // isLegalTileConnection in mlir-aie's AIETargetModel.cpp). When the
+    // South channels of a compute-tile switchbox are already saturated by
+    // circuit-switched data flows (the tile's own outbound DMA flow plus
+    // any passthrough from tiles above it in the same column), the
+    // pathfinder can't route Trace through South, falls back to the
+    // Trace<->DMA0 hardware mux, and ends up generating an
+    // 'aie.packet_rules source=DMA:0' that collides with the circuit
+    // 'aie.connect source=DMA:0' for the local data flow:
+    //   'aie.packet_rules' op packet switched source DMA0 cannot match
+    //   another connect or masterset operation
+    // (regressed by mlir-aie #3139 centroid-ing the data shim onto the
+    // herd column, which concentrates all data flows on a single column
+    // and saturates every south channel of every compute tile in that
+    // column.)
+    //
+    // Estimate the south-bound circuit pressure on each compute tile and
+    // skip trace emission when the pressure would consume every South
+    // channel. Pressure for tile (col, row) = local outbound circuit
+    // flows that exit south + outbound circuit flows from tiles strictly
+    // above (col, row) in the same column (since the pathfinder routes
+    // them straight down through (col, row)'s switchbox).
+    const int southCapacity = 4; // AIE2 compute tile: South ch 0..3
+    DenseMap<int, SmallVector<int>> colToSouthRows;
+    auto getTileLike = [](Value v) -> AIE::TileLike {
+      return dyn_cast_or_null<AIE::TileLike>(v.getDefiningOp());
+    };
+    for (auto flow : device.getOps<AIE::FlowOp>()) {
+      auto srcT = getTileLike(flow.getSource());
+      auto dstT = getTileLike(flow.getDest());
+      if (!srcT || !dstT)
+        continue;
+      if (!srcT.isCoreTile())
+        continue;
+      auto srcCol = srcT.tryGetCol(), srcRow = srcT.tryGetRow();
+      auto dstCol = dstT.tryGetCol(), dstRow = dstT.tryGetRow();
+      if (!srcCol || !srcRow)
+        continue;
+      // Same-column south-bound flow: dst col matches src col, dst row
+      // strictly less than src row. If dst has unknown coords (logical
+      // memtile awaiting placement), assume it lands on the same column
+      // as its consumer core (the herd column) -- which is the typical
+      // post-#3139 placement and the case that triggers the conflict.
+      bool isSouth = false;
+      if (dstCol && dstRow)
+        isSouth = (*dstCol == *srcCol) && (*dstRow < *srcRow);
+      else if (dstT.isMemTile())
+        isSouth = true; // unplaced memtile assumed south of the herd
+      if (!isSouth)
+        continue;
+      colToSouthRows[*srcCol].push_back(*srcRow);
+    }
+    auto southPressureAt = [&](int col, int row) -> int {
+      int pressure = 0;
+      auto it = colToSouthRows.find(col);
+      if (it == colToSouthRows.end())
+        return 0;
+      for (int r : it->second)
+        if (r >= row)
+          ++pressure;
+      return pressure;
+    };
+
     // Create packet flows
     for (auto srcTile : device.getOps<AIE::TileOp>()) {
       int srcColIndex = srcTile.colIndex();
@@ -5933,6 +7393,9 @@ public:
 
       if (target_model.isCoreTile(srcColIndex, srcRowIndex) ||
           target_model.isMemTile(srcColIndex, srcRowIndex)) {
+        if (target_model.isCoreTile(srcColIndex, srcRowIndex) &&
+            southPressureAt(srcColIndex, srcRowIndex) >= southCapacity)
+          continue;
         int destColIndex = srcColIndex; // todo: allocation?
         int destRowIndex = 0;
         if (!tiles[{destColIndex, destRowIndex}]) {
@@ -5947,9 +7410,12 @@ public:
 
         builder.setInsertionPoint(device.getBody()->getTerminator());
         auto keep_pkt_header = builder.getBoolAttr(true);
-        // Trace flows go to shim tiles, so use global shim flow ID
+        // Trace packets terminate at shim DMA -> draw from the shim id pool.
+        // assignShimPacketID skips ids already claimed by intra-device flows
+        // placed earlier in this device (latent collision: pre-redesign trace
+        // could reuse an id from the device's intra-device pass).
         (void)createPacketFlowOp(
-            builder, globalShimFlowID, srcTile, AIE::WireBundle::Trace, 0,
+            builder, assignShimPacketID(), srcTile, AIE::WireBundle::Trace, 0,
             destTile, AIE::WireBundle::DMA, destChan, keep_pkt_header);
       }
     }
@@ -5961,8 +7427,7 @@ public:
     auto ctx = m->getContext();
 
     RewritePatternSet patterns(ctx);
-    std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
-    std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
+    std::map<AIE::BufferOp, AIE::TileLike> bufferToMemtileMap;
 
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
@@ -6011,13 +7476,17 @@ public:
           /*.generate_shim_dma = */ clGenerateShimDMA,
           /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
           /*.use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
+          /*.use_lock_race_condition_fix_v2 = */ clUseLockRaceConditionFixV2,
           /*.device = */ *device,
           /*.stack_size = */ clStackSize};
 
       // Pre-pipeline: renumber memcpy ops at module level
       air::renumberMemcpyIfOps(&m.getRegion());
 
-      createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
+      if (failed(createAIEModulesAndOutlineCores(m, aie_modules, options))) {
+        signalPassFailure();
+        return;
+      }
 
       // Determine the pipeline stage to stop at based on test pattern flags
       PipelineStage stopStage =
@@ -6035,9 +7504,9 @@ public:
         seen.insert(d);
 
         // Run shared pipeline with the specified breakpoint
-        if (failed(runDevicePipeline(d, parentModule, h, tileToHerdMap,
-                                     bufferToMemtileMap, device_options,
-                                     clUseObjFifo, stopStage))) {
+        if (failed(runDevicePipeline(d, parentModule, h, bufferToMemtileMap,
+                                     device_options, clUseObjFifo,
+                                     stopStage))) {
           signalPassFailure();
           return;
         }
@@ -6054,8 +7523,8 @@ public:
     if (clTestPatterns.find("lower-air-execute") != std::string::npos)
       patterns.insert<LowerAIRExecutePattern>(ctx);
     if (clTestPatterns.find("alloc-l1-buffers") != std::string::npos)
-      patterns.insert<AllocL1BuffersPattern, AllocL1BuffersPattern>(
-          ctx, tileToHerdMap, BufferId);
+      patterns.insert<AllocL1BuffersPattern, AllocL1BuffersPattern>(ctx,
+                                                                    BufferId);
     if (clTestPatterns.find("specialize-affine-if") != std::string::npos)
       patterns.insert<SpecializeAffineIfPattern>(ctx);
     if (clTestPatterns.find("specialize-scf-if") != std::string::npos)
@@ -6083,6 +7552,10 @@ public:
 
     if (patterns.getNativePatterns().size())
       (void)applyPatternsGreedily(m, std::move(patterns));
+
+    // Shim LTOs emitted by the test-path LowerAIRChannelsPattern are left
+    // unresolved here, matching the production path. Downstream
+    // `aie-place-tiles` resolves them with full objfifo connectivity.
   }
 
   void runOnOperation() override {
@@ -6096,6 +7569,18 @@ public:
     OpBuilder builder(module);
     builder.setInsertionPointToStart(module.getBody());
 
+    // v1/v2 mutual exclusion: they apply different fixes to overlapping
+    // problem areas, and combining them would interleave dummy-op
+    // insertion (v1) with chain-lock allocation (v2) in ways that don't
+    // have a coherent semantics. Force the user to pick one.
+    if (clUseLockRaceConditionFix && clUseLockRaceConditionFixV2) {
+      module.emitOpError(
+          "use-lock-race-condition-fix and use-lock-race-condition-fix-v2 are "
+          "mutually exclusive; enable at most one");
+      signalPassFailure();
+      return;
+    }
+
     auto loc = builder.getUnknownLoc();
     auto module_meta = airrt::ModuleMetadataOp::create(builder, loc);
     builder.createBlock(&module_meta.getSegments());
@@ -6107,8 +7592,7 @@ public:
         std::tuple<AIE::DeviceOp, air::HerdOp, AIRToAIEConversionOptions>>
         aie_devices;
 
-    std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
-    std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
+    std::map<AIE::BufferOp, AIE::TileLike> bufferToMemtileMap;
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
       module.emitOpError("Invalid aie.device option");
@@ -6124,10 +7608,13 @@ public:
         /* .generate_shim_dma = */ clGenerateShimDMA,
         /* .insert_trace_packet_flow = */ clInsertTracePacketFlow,
         /* .use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
+        /* .use_lock_race_condition_fix_v2 = */ clUseLockRaceConditionFixV2,
         /* .device = */ *device,
         /* .stack_size = */ clStackSize};
-    createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
-                                    options);
+    if (failed(createAIEModulesAndOutlineCores(module, aie_devices, options))) {
+      signalPassFailure();
+      return;
+    }
 
     std::set<AIE::DeviceOp> seen;
     DenseSet<func::FuncOp> shimUnrolledFuncs;
@@ -6141,10 +7628,11 @@ public:
         continue;
       seen.insert(device);
 
-      // Reset per-device flow tracking for segment unroll.
-      // Each isolated device can reuse packet IDs starting from 0.
-      intraDeviceFlowID = 0;
-      intraDeviceFlowOpToFlowIdMap.clear();
+      // Reset per-device packet-flow tracking for segment unroll. Each
+      // isolated device assigns its own pkt_ids; shim ids are drawn from a
+      // global counter (nextGlobalShimPacketID) for cross-device uniqueness.
+      packetIDForChannelName.clear();
+      claimedPacketIDs.clear();
 
       // The shim tile allocation is not unified for dma and channel lowering
       // so we disallow a mix of dma and channel ops.
@@ -6186,8 +7674,12 @@ public:
         air::renumberMemcpyIfOps(&device.getRegion());
         LowerAIRPingPong(device);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
-        lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap);
-        allocL1Buffers(device, tileToHerdMap, BufferId);
+        if (failed(
+                lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap))) {
+          signalPassFailure();
+          return;
+        }
+        allocL1Buffers(device, BufferId);
       } else {
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ true,
@@ -6202,7 +7694,7 @@ public:
             device->hasAttr("segment_unroll_y"))
           removeOrphanedChannels(device);
         specializeL2MemrefsIntoMemtiles(device);
-        allocL1Buffers(device, tileToHerdMap, BufferId);
+        allocL1Buffers(device, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
         air::renumberMemcpyIfOps(&device.getRegion(),
                                  chan_renumber_reverse_map);
@@ -6346,12 +7838,8 @@ public:
           if (!o->getParentOfType<air::HerdOp>())
             channel_ops.push_back(o);
         });
-        for (auto &t : shimTileAlloc.s2mm_allocs)
-          for (auto n : t.chan_names)
-            labelAIRDmaOpsWithMetadataObjFifo(channel_ops, n, chan_to_chan_map);
-        for (auto &t : shimTileAlloc.mm2s_allocs)
-          for (auto n : t.chan_names)
-            labelAIRDmaOpsWithMetadataObjFifo(channel_ops, n, chan_to_chan_map);
+        for (auto &n : shimTileAlloc.chan_names)
+          labelAIRDmaOpsWithMetadataObjFifo(channel_ops, n, chan_to_chan_map);
       }
 
       RewritePatternSet patterns(ctx);
@@ -6377,19 +7865,23 @@ public:
     }
   }
 
-  // Intra-device flow ID tracking (reset per device for segment unroll)
-  // These flows are between tiles within the same device and can safely
-  // reuse packet IDs across isolated devices.
-  int intraDeviceFlowID = 0;
-  SetVector<Operation *>
-      intraDeviceFlowOpToFlowIdMap; // Ordered set for intra-device flows
-
-  // Device-host (shim) flow ID tracking (persists globally across devices)
-  // These flows involve shim tiles and require globally unique IDs since
-  // all devices share the host interface/NoC.
-  int globalShimFlowID = 0;
-  SetVector<Operation *>
-      shimFlowOpToFlowIdMap; // Ordered set for device-host flows
+  // Packet-flow id tracking.
+  //
+  // Per-device (reset each device):
+  //   packetIDForChannelName: air.channel symbol -> assigned pkt_id. Drives
+  //     reuse for broadcast (one source, many receivers) and lookup from
+  //     downstream lowering. Keyed by symbol name because air.channel decls
+  //     are duplicated under aie.device and its parent module.
+  //   claimedPacketIDs: pkt_ids already assigned in this device. Drives gap-
+  //     finding for intra-device flows and skip-on-collision for trace/shim.
+  //
+  // Global (persists across devices):
+  //   nextGlobalShimPacketID: monotonic source for shim (and trace) pkt_ids.
+  //     Shim flows require global uniqueness because the host runtime keys
+  //     packet identification on (shim tile, pkt_id).
+  llvm::StringMap<int> packetIDForChannelName;
+  llvm::SmallSet<int, 32> claimedPacketIDs;
+  int nextGlobalShimPacketID = 0;
 
 private:
   // Collapses the innermost `numDims` dimensions of a MemRef `val` into a
@@ -6641,10 +8133,10 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
       /* .generate_shim_dma = */ false,
       /* .insert_trace_packet_flow = */ false,
       /* .use_lock_race_condition_fix = */ true,
+      /* .use_lock_race_condition_fix_v2 = */ false,
       /* .device = */ *device};
   std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
   p.walk([&](air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
-  std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
     air::HerdOp h = std::get<1>(p);
@@ -6655,14 +8147,15 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     setAIEDeviceDataLayout(rewriter, devOp);
     AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter,
                                     devOp.getLoc());
-    outlineAIECores(rewriter, devOp, h, tileToHerdMap, options);
+    if (failed(outlineAIECores(rewriter, devOp, h, options)))
+      return failure();
 
     auto ctx = aie_module->getContext();
     RewritePatternSet patterns(ctx);
     patterns.insert<SpecializeAffineIfPattern>(ctx);
     patterns.insert<SpecializeScfIfPattern>(ctx);
     patterns.insert<LowerAIRExecutePattern>(ctx);
-    patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
+    patterns.insert<AllocL1BuffersPattern>(ctx, BufferId);
     air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
     (void)applyPatternsGreedily(aie_module, std::move(patterns));
   }

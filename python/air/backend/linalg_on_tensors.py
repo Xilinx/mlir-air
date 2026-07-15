@@ -23,7 +23,7 @@ import air.compiler.util
 # Used to get the paths used to configure aircc
 from air.compiler.aircc.configure import *
 
-import shutil
+from air.tools import resolve_tool
 import subprocess
 
 import ctypes
@@ -187,11 +187,13 @@ class LinalgOnTensorsAirBackend(AirBackend):
             with open("torch.mlir", "w") as f:
                 f.write(str(air_module))
 
-            aircc_exe = shutil.which("aircc")
-            if not aircc_exe:
-                raise RuntimeError("aircc binary not found in PATH")
+            # Invoke the C++ aircc binary. Prefer the tool bundled in the wheel.
+            try:
+                aircc_exe = resolve_tool("aircc")
+            except RuntimeError as exc:
+                raise RuntimeError(str(exc)) from exc
             result = subprocess.run(
-                [aircc_exe] + aircc_options,
+                [str(aircc_exe)] + aircc_options,
                 capture_output=True,
                 text=True,
             )

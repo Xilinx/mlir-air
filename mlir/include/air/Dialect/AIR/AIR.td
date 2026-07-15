@@ -37,6 +37,7 @@ def air_RankOp : air_Op<"rank", [air_AsyncOpInterface,
                                   AttrSizedOperandSegments,
                                   IsolatedFromAbove,
                                   AffineScope,
+                                  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getEntrySuccessorOperands", "getSuccessorInputs", "getRegionInvocationBounds"]>,
                                   SingleBlockImplicitTerminator<"RankTerminatorOp">]>,
                          Arguments<(ins OptionalAttr<SymbolNameAttr>:$sym_name,
                                         Variadic<air_AsyncToken>:$async_dependencies,
@@ -142,6 +143,7 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
                                      AttrSizedOperandSegments,
                                      IsolatedFromAbove,
                                      AffineScope,
+                                     DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getEntrySuccessorOperands", "getSuccessorInputs", "getRegionInvocationBounds"]>,
                                      SingleBlockImplicitTerminator<"LaunchTerminatorOp">]>,
                           Arguments<(ins OptionalAttr<SymbolNameAttr>:$sym_name,
                                          Variadic<air_AsyncToken>:$async_dependencies,
@@ -231,6 +233,7 @@ def air_SegmentOp : air_Op<"segment", [air_AsyncOpInterface,
                                            AttrSizedOperandSegments,
                                            IsolatedFromAbove,
                                            AffineScope,
+                                           DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getEntrySuccessorOperands", "getSuccessorInputs", "getRegionInvocationBounds"]>,
                                            SingleBlockImplicitTerminator<"SegmentTerminatorOp">]>,
                         Arguments<(ins OptionalAttr<SymbolNameAttr>:$sym_name,
                                        Variadic<air_AsyncToken>:$async_dependencies,
@@ -351,6 +354,7 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
                                  AttrSizedOperandSegments,
                                  IsolatedFromAbove,
                                  AffineScope,
+                                 DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getEntrySuccessorOperands", "getSuccessorInputs", "getRegionInvocationBounds"]>,
                                  SingleBlockImplicitTerminator<"HerdTerminatorOp">]>,
                         Arguments<(ins OptionalAttr<SymbolNameAttr>:$sym_name,
                                        OptionalAttr<StrAttr>:$link_with,
@@ -462,16 +466,20 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
   let summary = "dma operator";
   let arguments = (
     ins Variadic<air_AsyncToken>:$async_dependencies,
-        AnyRankedOrUnrankedMemRef:$dst,
+        Arg<AnyRankedOrUnrankedMemRef, "destination memref",
+            [MemWriteAt<0, FullEffect>]>:$dst,
         Variadic<Index>:$dst_offsets,
         Variadic<Index>:$dst_sizes,
         Variadic<Index>:$dst_strides,
-        AnyRankedOrUnrankedMemRef:$src,
+        Arg<AnyRankedOrUnrankedMemRef, "source memref",
+            [MemReadAt<0, FullEffect>]>:$src,
         Variadic<Index>:$src_offsets,
         Variadic<Index>:$src_sizes,
         Variadic<Index>:$src_strides,
         OptionalAttr<DenseI32ArrayAttr>:$pad_before,
-        OptionalAttr<DenseI32ArrayAttr>:$pad_after
+        OptionalAttr<DenseI32ArrayAttr>:$pad_after,
+        OptionalAttr<I64Attr>:$src_rank,
+        OptionalAttr<I64Attr>:$dst_rank
   );
   let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
@@ -481,7 +489,15 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     `(` type($dst) `,` type($src) `)`
   }];
   let description = [{
-    dma operator
+    N-dimensional strided bulk copy between two memrefs.
+
+    Optional `src_rank` / `dst_rank` integer attributes name a peer rank in the
+    enclosing `air.rank` scope. When present, the corresponding memref is
+    interpreted as living on rank R's symmetric heap rather than on the local
+    process. These attributes are only valid for `air.symmetric`-tagged memref
+    allocations and require an enclosing `air.rank`. Lowering for these
+    attributes will be added by a future GPU pass (planned: `air-cross-rank-
+    dma-to-mgpu`); this PR introduces only the IR surface and verifier rules.
   }];
   let extraClassDeclaration = [{
     Value getSrcMemref() { return getSrc(); }
@@ -495,7 +511,31 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     bool hasPadding() {
       return getPadBefore().has_value();
     }
+    bool hasCrossRank() {
+      return getSrcRank().has_value() || getDstRank().has_value();
+    }
   }];
+  let builders = [
+    // Backward-compatible builder: defaults src_rank/dst_rank to absent.
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::mlir::Value":$dst,
+                   "::mlir::ValueRange":$dst_offsets,
+                   "::mlir::ValueRange":$dst_sizes,
+                   "::mlir::ValueRange":$dst_strides,
+                   "::mlir::Value":$src,
+                   "::mlir::ValueRange":$src_offsets,
+                   "::mlir::ValueRange":$src_sizes,
+                   "::mlir::ValueRange":$src_strides,
+                   "::mlir::DenseI32ArrayAttr":$pad_before,
+                   "::mlir::DenseI32ArrayAttr":$pad_after), [{
+      build($_builder, $_state, resultTypes, async_dependencies, dst,
+            dst_offsets, dst_sizes, dst_strides, src,
+            src_offsets, src_sizes, src_strides, pad_before, pad_after,
+            /*src_rank=*/IntegerAttr(),
+            /*dst_rank=*/IntegerAttr());
+    }]>
+  ];
   let hasCanonicalizer = 1;
   let hasVerifier = 1;
 }
@@ -529,7 +569,7 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
 def air_ChannelOp : air_Op<"channel", [Symbol]>,
     Arguments<(ins SymbolNameAttr:$sym_name,
                    DefaultValuedAttr<I64ArrayAttr, "{}">:$size,
-                   DefaultValuedAttr<StrAttr, "\"dma_stream\"">:$channel_type)> {
+                   DefaultValuedAttr<StrAttr, "\"npu_dma_stream\"">:$channel_type)> {
   let assemblyFormat = [{
     $sym_name $size attr-dict
   }];
@@ -537,40 +577,88 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
   let description = [{
     Operation to represent a communication channel as a point-to-point connection between two memrefs.
     The array following the channel name symbol represents the channel's dimensional sizes. Default
-    size, with empty size array, is 1. The data movement mechanism that the channel uses is controlled 
+    size, with empty size array, is 1. The data movement mechanism that the channel uses is controlled
     by the `channel_type` attribute.
 
     ### Channel Types
-    The `channel_type` attribute is a string that determines the mechanism used for data movement:
-    - **"dma_stream"** (default):  
+    The `channel_type` attribute is a string that determines the mechanism used for data movement.
+    Values are namespaced by backend: NPU (AIE) channels use the `npu_` prefix; GPU channels use
+    the `gpu_` prefix.
+
+    NPU (AIE) channel types:
+    - **"npu_dma_stream"** (default):
       Use DMA engines to send and receive data, with routing performed over a streaming interconnect.
-    - **"dma_packet"**:  
+    - **"npu_dma_packet"**:
       Use DMA engines to send and receive data, with routing performed over a packet-switched network.
-    - **"cascade"**:  
+    - **"npu_cascade"**:
       Use processor cores to send and receive data via cascade connections between adjacent tiles.
+    - **"npu_mmio"**:
+      Use host-side MMIO writes (e.g. `aiex.npu.blockwrite`) issued from the runtime
+      sequence to deliver a constant payload directly into a tile-local L1 buffer.
+      No DMA channel, no shim allocation, no flow is reserved.
+      Verifier-enforced constraints on the put/get sites:
+        * the `put` source memref must live in L3 (`memory_space=0`);
+        * the `get` destination memref must live in L1 (`memory_space=2`).
+      The lowering further requires the put source to be a constant
+      `memref.get_global`. The consumer-side `get` lowers to a no-op
+      because the L1 buffer is already populated when the core begins executing.
+
+    GPU channel types:
+    - **"gpu_symmetric_heap"**:
+      Cross-GPU messaging through the symmetric heap runtime
+      (`runtime_lib/airgpu/symmetric_heap.{h,cpp}`). The channel must be enclosed
+      by an `air.rank` op; the put/get sites use rank indices to address peer
+      heaps. Lowering will be added by a future GPU pass (planned:
+      `air-gpu-channel-to-mgpu`) which expands put/get to peer-mapped
+      `mgpuMemcpy` calls plus a barrier; this PR introduces only the IR
+      surface and verifier rules.
 
     ### Broadcasting
-    If a channel broadcasts to multiple destinations, the optional `broadcast_shape` attribute  
+    If a channel broadcasts to multiple destinations, the optional `broadcast_shape` attribute
     annotates the output sizes after broadcasting. Broadcasting follows NumPy's broadcasting rules.
+
+    ### Packet ids
+    A packet-switched channel (`channel_type = "npu_dma_packet"`) may pin explicit routing ids
+    via the optional `packet_ids` array attribute (each id in `[0, 31]`, unique). One
+    `aie.packet_flow` is emitted per id:
+    - **N ids to one destination:** all ids route to the same buffer; a later demux hop keys off
+      the header carried by the payload.
+    - **N ids to N destinations:** destination `i` is routed with `packet_ids[i]`, an indexed
+      fan-out landing each slice on a distinct, statically-known id.
+
+    The compute core writes the routing id into the packet header word of the payload, so the DMA
+    engine does not stamp/filter these ids; the flows only install switchbox routing entries.
+    Without `packet_ids` a packet channel gets a single auto-assigned id.
 
     Example:
 
     ```mlir
-    // An array of 4 x 4 streaming DMA channels
-    air.channel @channel_0 [4, 4] {channel_type = "dma_stream"}
+    // An array of 4 x 4 streaming DMA channels (NPU)
+    air.channel @channel_0 [4, 4] {channel_type = "npu_dma_stream"}
 
-    // A streaming DMA channel broadcasting to 4 destinations
-    air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_stream"}
+    // A streaming DMA channel broadcasting to 4 destinations (NPU)
+    air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "npu_dma_stream"}
 
-    // An array of 1 x 4 streaming DMA channels broadcasting to 4 x 4 destinations.
+    // An array of 1 x 4 streaming DMA channels broadcasting to 4 x 4 destinations (NPU).
     // Broadcasting follows NumPy's rules.
-    air.channel @channel_2 [1, 4] {broadcast_shape = [4, 4], channel_type = "dma_stream"}
+    air.channel @channel_2 [1, 4] {broadcast_shape = [4, 4], channel_type = "npu_dma_stream"}
 
-    // A packet-switched DMA channel
-    air.channel @channel_3 [] {channel_type = "dma_packet"}
+    // A packet-switched DMA channel (NPU)
+    air.channel @channel_3 [] {channel_type = "npu_dma_packet"}
 
-    // A cascade channel using core-to-core cascade connections
-    air.channel @channel_4 [] {channel_type = "cascade"}
+    // A cascade channel using core-to-core cascade connections (NPU)
+    air.channel @channel_4 [] {channel_type = "npu_cascade"}
+
+    // An MMIO channel: the put writes a constant from host into L1 of each
+    // get's destination tile via runtime-sequence blockwrites (NPU)
+    air.channel @channel_5 [] {channel_type = "npu_mmio"}
+
+    // A cross-GPU channel through the symmetric heap (GPU). Must appear inside
+    // an air.rank scope; the indices on put/get encode the peer rank.
+    air.channel @channel_6 [] {channel_type = "gpu_symmetric_heap"}
+
+    // A packet-switched channel pinning two routing ids (NPU)
+    air.channel @channel_7 [] {channel_type = "npu_dma_packet", packet_ids = [1, 4]}
     ```
   }];
   let extraClassDeclaration = [{
@@ -583,6 +671,9 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
     int getBroadcastDimension();
     ArrayAttr getBroadcastShape() {
       return getOperation()->getAttrOfType<ArrayAttr>("broadcast_shape");
+    }
+    ArrayAttr getPacketIDs() {
+      return getOperation()->getAttrOfType<ArrayAttr>("packet_ids");
     }
     int getBroadcastNum() {
       int broadcastNum = 1;
@@ -791,7 +882,8 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
 // AIR asynchronous region for dynamic event dispatching.
 
 def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTerminatorOp">,
-                                       air_AsyncOpInterface]> {
+                                       air_AsyncOpInterface,
+                                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let arguments = (
     ins Variadic<air_AsyncToken>:$async_dependencies
   );
@@ -851,6 +943,43 @@ def air_ExecuteTerminatorOp : air_Op<"execute_terminator", [HasParent<"ExecuteOp
 
   let assemblyFormat =
       [{  attr-dict ($results^ `:` type($results))? }];
+}
+
+def air_TranslateOp : air_Op<"translate",
+                              [Pure, AllTypesMatch<["source", "result"]>]>,
+                       Arguments<(ins AnyMemRef:$source,
+                                      Index:$from_rank,
+                                      Index:$to_rank,
+                                      MemRefRankOf<[Index], [1]>:$heap_bases)>,
+                       Results<(outs AnyMemRef:$result)> {
+  let summary = "Re-express a symmetric-heap memref in another rank's address space";
+  let description = [{
+    Produces a memref of the same type as `$source` whose underlying
+    pointer references the corresponding allocation on `$to_rank`. The
+    `$source` memref is assumed to live on `$from_rank`'s symmetric heap.
+    The translation is the pointer rebase
+
+        peer_va = bases[to_rank] + (source_ptr - bases[from_rank])
+
+    where `$heap_bases` is a 1-D memref of `index`-typed pointer values
+    (per-rank symmetric-heap base addresses) obtained from the
+    `mgpuGetHeapBases()` runtime hook. The host typically wraps the raw
+    runtime pointer as a `memref<?xindex>` once and threads it through
+    `gpu.launch_func` as a kernel argument. No data is moved; this op
+    produces a value-level "view" of peer memory.
+
+    Folds to `$source` when `$from_rank` and `$to_rank` are statically
+    equal.
+
+    Both ranks must address the same collective allocation on the
+    symmetric heap (i.e. `$source` must trace back to a
+    `memref.alloc {air.symmetric}`). Using this op outside that contract
+    is undefined.
+  }];
+  let assemblyFormat =
+      [{ $source `,` $from_rank `,` $to_rank `,` $heap_bases
+         attr-dict `:` type($source) `,` type($heap_bases) }];
+  let hasFolder = 1;
 }
 
 // AIR custom op, as a handle for a user-provided AIE kernel

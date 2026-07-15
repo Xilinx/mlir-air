@@ -28,6 +28,7 @@
 
 #if AIR_ENABLE_AIE
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIE/Transforms/AIEPasses.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #endif
 
@@ -206,12 +207,10 @@ static cl::opt<bool>
 
 static cl::list<unsigned> runtimeLoopTilingSizes(
     "air-runtime-loop-tiling-sizes",
-    cl::desc("Tiling factors for runtime host affine loop nest. "
+    cl::desc("Tiling factors for the shim DMA BD optimization pass "
+             "(forwarded to air-opt-shim-dma-bds as shim-dma-tile-sizes). "
              "Omit to disable tiling; provide one or more values to enable."),
     cl::cat(airCompilerOptions));
-
-// Track whether the flag was present on the command line at all
-static bool runtimeLoopTilingSizesPresent = false;
 
 static cl::opt<bool> omitAutoBroadcast(
     "omit-auto-broadcast",
@@ -228,13 +227,37 @@ static cl::opt<bool> useLockRaceConditionFix(
     cl::desc("Enable fix for lock race condition (inserts extra dummy BDs)"),
     cl::init(false), cl::cat(airCompilerOptions));
 
-enum OutputFormatKind { OF_xclbin, OF_txn, OF_elf, OF_none };
+static cl::opt<bool> useLockRaceConditionFixV2(
+    "use-lock-race-condition-fix-v2",
+    cl::desc("Enable daisy-chained lock emission for shared L2 "
+             "buffers with multi-writer + single-reader (or single-writer + "
+             "multi-reader) sub-region patterns. Mutually exclusive with "
+             "use-lock-race-condition-fix."),
+    cl::init(false), cl::cat(airCompilerOptions));
+
+enum PlacedIrVerifyMode { PIV_off, PIV_warn, PIV_error };
+
+static cl::opt<PlacedIrVerifyMode> placedIrVerifiers(
+    "placed-ir-verifiers",
+    cl::desc(
+        "Run AIR verifier passes on the placed IR before lowering to AIE."),
+    cl::values(clEnumValN(PIV_off, "off", "Skip the verifier passes."),
+               clEnumValN(PIV_warn, "warn", "Run; warn on undecidable cases."),
+               clEnumValN(PIV_error, "error",
+                          "Run; error on undecidable cases.")),
+    cl::init(PIV_error), cl::cat(airCompilerOptions));
+
+enum OutputFormatKind { OF_xclbin, OF_txn, OF_elf, OF_pdi, OF_none };
 
 static cl::opt<OutputFormatKind> outputFormat(
     "output-format", cl::desc("Output format for the generated binary"),
     cl::values(clEnumValN(OF_xclbin, "xclbin", "Generate xclbin"),
                clEnumValN(OF_txn, "txn", "Generate transaction binary"),
-               clEnumValN(OF_elf, "elf", "Generate ELF"),
+               clEnumValN(OF_elf, "elf",
+                          "Generate full ELF (npu2 and later only)"),
+               clEnumValN(OF_pdi, "pdi",
+                          "Generate PDI binary alongside NPU instruction "
+                          "sequence (for alternative runtimes)"),
                clEnumValN(OF_none, "none", "Compile-only, no binary output")),
     cl::init(OF_xclbin), cl::cat(airCompilerOptions));
 
@@ -261,6 +284,11 @@ static cl::opt<std::string>
     elfName("elf-name",
             cl::desc("Output filename for full ELF (--output-format=elf)"),
             cl::init("aie.elf"), cl::cat(airCompilerOptions));
+
+static cl::opt<std::string>
+    pdiName("pdi-name",
+            cl::desc("Output filename for PDI binary (--output-format=pdi)"),
+            cl::init("aie.pdi"), cl::cat(airCompilerOptions));
 
 static cl::opt<bool>
     debugIr("debug-ir",
@@ -794,7 +822,7 @@ static LogicalResult runGpuCompilation() {
 //===----------------------------------------------------------------------===//
 
 /// Build the AIR optimization pass pipeline string.
-static std::string buildOptimizationPipeline() {
+static std::string buildOptimizationPipeline(int resolvedNumCols) {
   std::string pipeline;
   raw_string_ostream os(pipeline);
 
@@ -825,7 +853,16 @@ static std::string buildOptimizationPipeline() {
 
   // L2 splitting (skip for npu_1col)
   if (deviceName.getValue().find("npu_1col") == std::string::npos) {
-    os << ",func.func(air-split-l2-memref),canonicalize,cse";
+    // Per-direction launch-arg channel cap. The split pass may multiply the
+    // number of launch-scope (L3-touching) channel endpoints; the AIE shim
+    // budget is (num_cols * 2) per direction (2 MM2S + 2 S2MM per shim col).
+    // resolvedNumCols already encodes per-device defaults; a non-positive
+    // value disables the cap (legacy behavior).
+    unsigned cap = resolvedNumCols > 0 ? unsigned(resolvedNumCols) * 2 : 0;
+    os << ",func.func(air-split-l2-memref{"
+       << "max-launch-channels-mm2s=" << cap << " "
+       << "max-launch-channels-s2mm=" << cap << "})"
+       << ",canonicalize,cse";
     os << ",air-isolate-async-dma-loop-nests{scope=launch},canonicalize,cse";
   }
 
@@ -896,11 +933,14 @@ static LogicalResult runAieCompilation() {
                  << deviceName.getValue() << "\n";
   }
 
-  // Validate output format
+  // Validate output format: full ELF requires aiebu-asm aie2_config which
+  // targets npu2/AIE2P and is not supported on npu1/Phoenix.
   if (outputFormat == OF_elf &&
       deviceName.getValue().find("npu1") != std::string::npos) {
-    llvm::errs() << "Error: output_format='elf' is not supported for "
-                 << deviceName.getValue() << " target.\n";
+    llvm::errs() << "Error: --output-format=elf is not supported for --device="
+                 << deviceName.getValue()
+                 << ". Use --output-format=xclbin (default) or "
+                    "--output-format=pdi for npu1.\n";
     return failure();
   }
 
@@ -937,6 +977,12 @@ static LogicalResult runAieCompilation() {
   // --- Set up MLIR context and parse input ---
   mlir::registerAllPasses();
   xilinx::air::registerAllPasses();
+#if AIR_ENABLE_AIE
+  // Required so we can invoke `aie-place-tiles` from the AIE-side pipeline
+  // below — AIR emits aie.logical_tile<...>(...) for memtiles and shim
+  // tiles, and aie-place-tiles resolves them to physical aie.tile ops.
+  xilinx::AIE::registerAIEPasses();
+#endif
 
   DialectRegistry registry;
   registerAllDialects(registry);
@@ -989,12 +1035,10 @@ static LogicalResult runAieCompilation() {
 
     // Add optimization passes for NPU targets
     if (deviceName.getValue().find("npu") != std::string::npos) {
-      os << "," << buildOptimizationPipeline();
+      os << "," << buildOptimizationPipeline(resolvedNumCols);
     }
 
-    // Collapse herd and place
-    os << ",func.func(air-collapse-herd{max-col-size=4})";
-    os << ",canonicalize,cse";
+    // Place herds
     os << ",air-place-herds{";
     os << "num-rows=" << resolvedNumRows;
     os << " num-cols=" << resolvedNumCols;
@@ -1030,7 +1074,23 @@ static LogicalResult runAieCompilation() {
                              placedModule.get())))
     return failure();
 
+  // Run AIR verifier passes on the placed IR, gated by --placed-ir-verifiers.
+  if (placedIrVerifiers != PIV_off) {
+    std::string strict = (placedIrVerifiers == PIV_error) ? "true" : "false";
+    std::string pipeline =
+        "builtin.module(air-verify-hierarchy-locality{strict=" + strict + "})";
+    if (failed(runPassPipeline(pipeline, placedModule.get())))
+      return failure();
+  }
+
   // --- AIR to AIE conversion ---
+  // After air-to-aie + air-merge-unrolled-devices the device contains
+  // aie.logical_tile<...>(...) ops for memtiles and shim DMA tiles. We
+  // intentionally do NOT resolve those LTOs here — the aieModule we save
+  // (and pass to aiecc) is left with LTOs so aiecc's own placement
+  // pipeline runs aie-place-tiles with the full objfifo/flow connectivity
+  // visible. The npuModule clone below picks up its own copy of place-
+  // tiles before airrt-to-npu (which needs physical shim cols).
   std::string airToAiePipeline;
   {
     raw_string_ostream os(airToAiePipeline);
@@ -1044,10 +1104,21 @@ static LogicalResult runAieCompilation() {
       os << " insert-trace-packet-flow=true";
     os << " use-lock-race-condition-fix="
        << (useLockRaceConditionFix ? "true" : "false");
+    os << " use-lock-race-condition-fix-v2="
+       << (useLockRaceConditionFixV2 ? "true" : "false");
     if (stackSize.getNumOccurrences() > 0)
       os << " stack-size=" << stackSize.getValue();
     os << "}";
     os << ",air-merge-unrolled-devices";
+#if AIR_ENABLE_AIE
+    // AIR emits unhinted shim/memtile aie.logical_tile ops. Run
+    // aie-place-tiles here so the saved aieModule already has physical
+    // aie.tile ops; aiecc's runPlacementPipeline will see no logical
+    // tiles and no-op via its hasLogicalTileOps guard.
+    // merge-logical-tiles=false keeps the placer from collapsing AIR's
+    // pre-aggregated logical tiles onto shared physical tiles.
+    os << ",aie.device(aie-place-tiles{merge-logical-tiles=false})";
+#endif
     os << ")";
   }
 
@@ -1074,22 +1145,12 @@ static LogicalResult runAieCompilation() {
     {
       raw_string_ostream os(shimBdPass);
       os << "func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue();
-      // Default tiling sizes [4, 4] unless overridden.
-      // If flag was explicitly passed with no values, disable tiling.
-      std::vector<unsigned> tilingSizes;
-      if (!runtimeLoopTilingSizesPresent) {
-        tilingSizes = {}; // Default: no tiling when flag not used
-      } else {
-        tilingSizes.assign(runtimeLoopTilingSizes.begin(),
-                           runtimeLoopTilingSizes.end());
-        // Flag present but empty = disable tiling (no sizes)
-      }
-      if (!tilingSizes.empty()) {
+      if (!runtimeLoopTilingSizes.empty()) {
         os << " shim-dma-tile-sizes=";
-        for (size_t i = 0; i < tilingSizes.size(); ++i) {
+        for (size_t i = 0; i < runtimeLoopTilingSizes.size(); ++i) {
           if (i > 0)
             os << ",";
-          os << tilingSizes[i];
+          os << runtimeLoopTilingSizes[i];
         }
       }
       os << "})";
@@ -1111,6 +1172,14 @@ static LogicalResult runAieCompilation() {
     {
       raw_string_ostream os(npuPipeline);
       os << "builtin.module(";
+      // No aie-place-tiles here. AIR sets a col hint on every shim
+      // aie.logical_tile (matching the compute-side col), and the
+      // downstream aiecc placer respects those hints — so airrt-to-npu's
+      // LTO-aware getColFromTileValue() reads the same col aiecc will
+      // pick. Calling the placer here too would mean two independent
+      // placement runs (this one + aiecc's), and any drift between them
+      // produces NPU instructions targeting different shim cols than the
+      // cores aiecc actually places. Place once, in aiecc only.
       os << shimBdPass;
       os << ",canonicalize,cse";
       os << ",air-to-std";
@@ -1184,17 +1253,25 @@ static LogicalResult runAieCompilation() {
       aieccCmd.push_back("--xclbin-name=" + xclbinFile);
     } else if (outputFormat == OF_txn) {
       aieccCmd.push_back("--aie-generate-txn");
+    } else if (outputFormat == OF_pdi) {
+      aieccCmd.push_back("--aie-generate-pdi");
+      aieccCmd.push_back("--pdi-name=" + pdiName.getValue());
     }
     // OF_none = no output generation options
 
-    // NPU instruction generation (not for ELF mode)
-    if (outputFormat != OF_elf) {
+    // NPU instruction generation.
+    // - ELF: sequences are embedded in the ELF by aiebu-asm, skip.
+    // - none: compile-only, no binary output requested, skip.
+    // - PDI: sidecar insts file needed by the alternative runtime to program
+    //   shim DMAs at dispatch time.
+    // - xclbin/txn: always needed.
+    if (outputFormat != OF_elf && outputFormat != OF_none) {
       aieccCmd.push_back("--aie-generate-npu-insts");
       aieccCmd.push_back("--npu-insts-name=" + instsFile);
     }
 
-    // Xclbin metadata (not for ELF mode)
-    if (outputFormat != OF_elf) {
+    // Xclbin metadata (xclbin mode only)
+    if (outputFormat == OF_xclbin) {
       if (!kernelName.empty())
         aieccCmd.push_back("--xclbin-kernel-name=" + kernelName.getValue());
       if (!instanceName.empty())
@@ -1213,6 +1290,10 @@ static LogicalResult runAieCompilation() {
 
     aieccCmd.push_back("-O");
     aieccCmd.push_back("3");
+    // aiecc defaults to -j 0 (auto CPU count) since mlir-aie commit 1ba5b5c.
+    // Force sequential core compilation to avoid parallel xchesscc crashes.
+    aieccCmd.push_back("-j");
+    aieccCmd.push_back("1");
 
     // bf16 emulation
     if (bf16Emulation)
@@ -1668,10 +1749,6 @@ int main(int argc, char **argv) {
   // argparse nargs="?" const="all".
   if (omitPingpong.getNumOccurrences() > 0 && omitPingpong.getValue().empty())
     omitPingpong.setValue("all");
-
-  // Track whether --air-runtime-loop-tiling-sizes was explicitly passed
-  runtimeLoopTilingSizesPresent =
-      runtimeLoopTilingSizes.getNumOccurrences() > 0;
 
   // Dispatch based on target
   if (target.getValue() == "gpu") {

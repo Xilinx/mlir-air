@@ -26,8 +26,6 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 "canonicalize", "cse"  
 ["air-specialize-channel-wrap-and-stride"](#air-specialize-channel-wrap-and-stride)  
 "canonicalize", "cse"
-["func.func(air-collapse-herd{max-col-size=4})"](#air-collapse-herd)  
-'canonicalize', 'cse'  
 ["air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}"](#air-place-herds)  
 'canonicalize', 'cse'  
 'func.func(air-renumber-dma)'
@@ -54,7 +52,7 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 |Outline L2 memrefs to memtile buffers    |   <br> <ul><li>`func.func(air-split-l2-memref)`</li></ul>    |   Tiling L2 memrefs based on parallelizable data movements, explicitly represented via `scf.parallel` or `air.channel.put/get` operations, in order to maximize memtile bandwidth utilization. |
 |Memtile DMA BD Optimization    |   <br> <ul><li>`air-isolate-async-dma-loop-nests`</li><li>`func.func(air-loop-fusion)`</li><li>`air-specialize-channel-wrap-and-stride`</li></ul>    |   Lowering L2 control flow program into finite-state machines made of Block Descriptors as states. |
 |Double buffering    |   <br> <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform{keep-memref-dealloc=true}`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. |
-|Outline air.herd to aie.tiles    |   <br> <ul><li>`func.func(air-collapse-herd{max-col-size=4})`</li><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Reshaping and placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. |
+|Outline air.herd to aie.tiles    |   <br> <ul><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. |
 |Convert MLIR-AIR to MLIR-AIE    |   <br> <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
 |SHIM DMA BD Optimization    |   <br> <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-npu`</li></ul>    |   Converting the control code via AIRRt and AIEX.NPU dialect to NPU SHIM DMA instruction sequence. |
 ||||||
@@ -995,32 +993,6 @@ air.channel.get  @channel_2[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c4, %c4, %c32
 The pass adjusts the wraps (`sizes`) and strides of the data movement operations into eliminating any perfectly nested parent `scf.for` loop nests, and transforming them as new highest dimensions of offsets, wraps and strides lists, where the lower bounds become additional offsets, trip counts become additional wraps, and step sizes are used to infer additional strides.
 
 The pass also identifies and eliminates any redundant entries in the `offsets`, `sizes` and `strides` lists of the data movement operations, facilitating downstream passes which map those lists to hardware-constrained n-dimensional DMA Block Descriptors.
-
-### air-collapse-herd
-
-Transforms the shape of `air.herd` by attempting to collapse to occupy complete columns on AIE device.
-
-*Input IR:*
-```
-air.herd tile (%x, %y) in (%sx=%c2, %sy=%c2) {
-  %c0 = arith.constant 0 : index
-  ...
-}
-```
-The input IR has the L1 memory management and computation encapsulated within `air.herd`.
-
-*Output IR:*
-```
-air.herd  tile (%arg0, %arg1) in (%arg2=%c1, %arg3=%c4) {
-  %c0 = arith.constant 0 : index
-  %c2 = arith.constant 2 : index
-  %0 = arith.remsi %arg1, %c2 : index
-  %1 = arith.divsi %arg1, %c2 : index
-  ...
-  air.herd_terminator
-}
-```
-The pass attempts to collapse the `air.herd` to the left, attempting to occupy complete columns of AIE tiles. The attempt will stop if the number of tiles in `air.herd` exceeds the user provided `max-col-size` option.
 
 ### air-place-herds
 

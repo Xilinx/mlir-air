@@ -8,15 +8,15 @@
 // RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='use-objectfifo=true device=xcve2802' --canonicalize | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) @segment_0 {
-// CHECK:    %[[VAL_0:.*]] = aie.tile(1, 1)
-// CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
-// CHECK:    %[[VAL_3:.*]] = aie.tile(2, 0)
-// CHECK:    aie.objectfifo @air_channel_1(%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:    aie.objectfifo @air_channel_0(%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK-DAG:    %[[MEMTILE:.*]] = aie.logical_tile<MemTile>({{.*}}, ?)
+// CHECK-DAG:    %[[CORE:.*]] = aie.tile(5, 3)
+// CHECK-DAG:    %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
+// CHECK:    aie.objectfifo @air_channel_0(%[[SHIM]], {%[[MEMTILE]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo.link [@air_channel_0] -> [@air_channel_1]([] [])
-// CHECK:    %[[VAL_4:.*]] = aie.core(%[[VAL_2]]) {
+// CHECK:    aie.objectfifo @air_channel_1(%[[MEMTILE]], {%[[CORE]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK:    %[[VAL_4:.*]] = aie.core(%[[CORE]]) {
 // CHECK:      %[[VAL_5:.*]] = aie.objectfifo.acquire @air_channel_1(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:      %[[VAL_6:.*]] = aie.objectfifo.subview.access %[[VAL_5]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      %{{.*}} = aie.objectfifo.subview.access %[[VAL_5]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:      aie.objectfifo.release @air_channel_1(Consume, 1)
 // CHECK:      aie.end
 // CHECK:    }

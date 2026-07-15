@@ -1040,6 +1040,22 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   ];
 }
 
+def AIRAnnotateRefeedPass: Pass<"air-annotate-refeed", "ModuleOp"> {
+  let summary = "Lower opt-in re-feed loops to air.refeed_count on the channel";
+  let constructor = "xilinx::air::createAIRAnnotateRefeedPass()";
+  let description = [{
+    Opt-in producer for the single-buffer count-free re-broadcast primitive.
+    An scf.for / affine.for tagged with the 'air.refeed_loop' unit attribute,
+    whose body is a single loop-invariant air.channel.put, expresses "re-send
+    one resident buffer once per iteration". This pass reads the loop's static
+    trip count N into 'air.refeed_count' on the put's channel declaration and
+    collapses the loop to the single put. Loops that do not match the safe shape
+    (non-constant trip count, body other than one invariant put, or loop-carried
+    values) are left unchanged. Not part of the default pipeline: the marker
+    asserts the re-feed semantics the front-end intends.
+  }];
+}
+
 def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "ModuleOp"> {
   let summary = "Hoist dma ops into perfectly nested loop";
   let constructor = "xilinx::air::createAIRIsolateAsyncDmaLoopNests()";
@@ -1134,7 +1150,17 @@ def AIROptimizeShimDMABDs: Pass<"air-opt-shim-dma-bds", "func::FuncOp"> {
           /*default=*/"\"xcvc1902\"",
            "AIE device to target.">,
     ListOption<"clTileSizes", "shim-dma-tile-sizes", "unsigned",
-               "Shim dma tiling sizes, tiling shim dma bds into smaller repeating ones",
+               "Shim dma tiling sizes (global override). Wins over per-launch "
+               "attribute when non-empty. A single value of 0 (sentinel) "
+               "disables tiling for all launches. When empty, each "
+               "`air.launch` op may carry an "
+               "`air.shim_dma_tile_sizes = array<i64: ...>` attribute to "
+               "opt in to tiling for that launch only "
+               "(single value 0 = skip this launch, single value N = "
+               "auto-expand to perfectly-nested depth, multi-value = use "
+               "literally). Default when neither global nor per-launch is "
+               "set: skip tiling (wrap-stride fold collapses loops into "
+               "multi-D BD descriptors).",
                "llvm::cl::ZeroOrMore">,
   ];
 }
@@ -1166,6 +1192,52 @@ def AIRShrinkMemrefSizesByAccess: Pass<"air-shrink-memref-sizes-by-access", "fun
   let description = [{
     Shrink the size of each memref based on the actual access pattern. This avoids allocating buffers which are too large.
   }];
+}
+
+def AIRVerifyHierarchyLocality :
+    Pass<"air-verify-hierarchy-locality", "ModuleOp"> {
+  let summary = "Verify locality of kernel operands at the hierarchy's "
+                "matching memory level.";
+  let constructor =
+      "xilinx::air::createAIRVerifyHierarchyLocalityPass()";
+  let description = [{
+    Statically detect data races on memrefs that an air.launch /
+    air.segment / air.herd passes to itself as kernel operands.
+
+    Each hierarchy op iterates over an N-dimensional grid (its IVs) and
+    has a "natural" memory level: air.herd corresponds to L1 (per-PE
+    scratchpad), air.segment to L2 (segment-shared), air.launch to L3
+    (host/system). When an operand's memref memory space matches the
+    hierarchy's natural level, every distinct iteration instance must
+    use a *different* memory region — otherwise iterations race on the
+    same buffer.
+
+    For each such operand the pass requires one of:
+
+      (R1) The defining op is inside the hierarchy body. Region cloning
+           during outlining gives each iteration instance its own copy.
+
+      (R2) The operand is defined outside, but its access regions over
+           the iteration space are statically provable as pairwise
+           disjoint (i.e., distinct iv tuples touch disjoint memory).
+
+    Operands at a memory level *different* from the hierarchy's natural
+    level (e.g., an L3 buffer passed into a herd as a fetch source) are
+    not subject to this rule and the pass stays silent on them.
+
+    The pass is read-only: on a violation it emits an op-level
+    diagnostic and signals pass failure; it never mutates IR.
+
+    `strict` controls behavior when the analysis can't decide
+    (e.g., dynamic sizes, opaque func.call): true reports an error,
+    false reports a warning and continues. Definitive races are always
+    reported as errors regardless of `strict`.
+  }];
+  let options = [
+    Option<"strict", "strict", "bool", /*default=*/"true",
+           "When access analysis is inconclusive, fail (true) "
+           "or warn-and-continue (false).">
+  ];
 }
 
 def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "ModuleOp"> {
@@ -1271,20 +1343,6 @@ def AIRLowerHerdParallelPass : Pass<"air-lower-herd-parallel", "func::FuncOp"> {
 def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-with-tile", "func::FuncOp"> {
   let summary = "Label broadcasted channel ops with tile coordinates.";
   let constructor = "xilinx::air::createAIRLabelBroadcastChannelWithTilePass()";
-}
-
-def AIRCollapseHerdPass : Pass<"air-collapse-herd", "func::FuncOp"> {
-  let summary = "Collapse a multi-dimensional air.herd into a single column.";
-  let constructor = "xilinx::air::createAIRCollapseHerdPass()";
-  let options = [
-    Option<"clMaxColSize", "max-col-size", "int", /*default=*/"-1",
-           "The maximum column size after collapse, before collapse is cancelled. Disabled by default.">
-  ];
-  let description = [{
-    The pass attempts to collapse the air.herd to the left, attempting to occupy 
-    complete columns of AIE tiles. The attempt will stop if the number of tiles in 
-    air.herd exceeds the user provided max-col-size option.
-  }];
 }
 
 def AIRFuseNestedHerdPass : Pass<"air-fuse-nested-herd", "func::FuncOp"> {
@@ -1512,6 +1570,10 @@ def AIRSplitL2MemrefForBufferConstraintPass : Pass<"air-split-l2-memref", "func:
   let options = [
     Option<"clNumTilesPerL2Tile", "tiles-per-l2-tile", "unsigned", /*default=*/"4",
            "Number of compute tiles per L2 memory tile. Used to estimate if an air.segment shall allocate to multiple L2 memory tiles, and therefore requires L2 memref splitting.">,
+    Option<"clMaxLaunchChannelsMM2S", "max-launch-channels-mm2s", "unsigned", /*default=*/"0",
+           "Per-launch cap on the number of distinct launch-scope channel endpoints in the MM2S direction (air.channel.put ops directly under air.launch, i.e. not nested in any air.segment). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).">,
+    Option<"clMaxLaunchChannelsS2MM", "max-launch-channels-s2mm", "unsigned", /*default=*/"0",
+           "Per-launch cap on the number of distinct launch-scope channel endpoints in the S2MM direction (air.channel.get ops directly under air.launch, i.e. not nested in any air.segment). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).">,
   ];
 }
 

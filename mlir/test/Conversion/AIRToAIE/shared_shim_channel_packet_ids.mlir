@@ -25,8 +25,8 @@
 
 module {
   // Two dma_packet channels from L3 to L1, sharing the same shim column.
-  air.channel @chan_a [1, 1] {channel_type = "dma_packet"}
-  air.channel @chan_b [1, 1] {channel_type = "dma_packet"}
+  air.channel @chan_a [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @chan_b [1, 1] {channel_type = "npu_dma_packet"}
 
   func.func @test_shared_shim_packet_ids(%arg0: memref<64xbf16>, %arg1: memref<64xbf16>) {
     %0 = air.launch async () in () args(%in0=%arg0, %in1=%arg1) : memref<64xbf16>, memref<64xbf16> attributes {id = 1 : i32} {

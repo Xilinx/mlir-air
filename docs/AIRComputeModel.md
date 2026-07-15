@@ -618,17 +618,13 @@ The meaning of "contiguous" and the constraints imposed on iteration space
 dimensions depend on the target backend:
 
 - **AIE (NPU)**: A herd defines a logical rectangular array of compute units.
-  The compiler may **reshape** the iteration space (e.g., collapse a 2D herd
-  into a 1D arrangement) via the `AIRCollapseHerdPass`. Reshaping is inhibited
-  automatically when the herd body uses cascade channels (`channel_type =
-  "cascade"`), because cascade connections are topology-dependent and cannot
-  survive reindexing. Explicit placement attributes (`x_loc`, `y_loc`,
-  `x_size`, `y_size`) on the enclosing segment also constrain the legal shapes
-  by fixing the tile footprint. The pass accepts a `max-col-size` option to
-  bound the width of the collapsed arrangement. A dedicated per-herd attribute
-  to disable reshaping independently of these conditions is not yet
-  implemented. The resulting contiguous rectangular region of physical tiles is
-  determined after any reshaping has been applied.
+  The herd's declared 2D shape (`x_size`, `y_size`) is preserved through
+  placement; choose the shape that matches the desired physical footprint
+  (e.g., a single column of 4 tiles is `sizes=[1, 4]`, not `sizes=[4, 1]`).
+  Explicit placement attributes (`x_loc`, `y_loc`, `x_size`, `y_size`) on the
+  enclosing segment further constrain the legal placement region by fixing the
+  tile footprint. The resulting contiguous rectangular region of physical
+  tiles is determined by the herd's declared shape and the segment's anchor.
 
 - **GPU (AMD MI3xx family)**: A herd executes entirely within a single Compute
   Unit (CU), with PE instances mapped to individual warps. The combined
@@ -670,13 +666,30 @@ address spaces of the operand memrefs and mapped to the appropriate hardware mec
 An empty `[offsets]`, `[sizes]`, or `[strides]` list for a side means the entire memref
 is addressed with unit strides.
 
+#### Cross-rank addressing (multi-GPU)
+
+Optional `src_rank` / `dst_rank` integer attributes name a peer rank in the
+enclosing `air.rank` scope. When present, the corresponding memref is
+interpreted as living on rank R's symmetric heap rather than on the local
+process. The verifier requires the op to be enclosed by an `air.rank` and the
+referenced memref to be `air.symmetric`-tagged (see §2.7). Lowering for the
+GPU backend (planned: `air-cross-rank-dma-to-mgpu`) will expand these into
+`mgpuGetHeapBases()`-based peer-VA arithmetic + `mgpuMemcpy`; the NPU
+backend does not support these attributes.
+
+```
+// Read 1024 floats from rank 0's symmetric buffer into local L1.
+air.dma_memcpy_nd (%local[][][], %sym[][][]) {src_rank = 0 : i64}
+    : (memref<1024xf32, 2>, memref<1024xf32, 0>)
+```
+
 ---
 
 ### 2.5 `air.channel`, `air.channel.put`, `air.channel.get`
 
 ```
 // Channel declaration — at module scope
-air.channel @name [dim₀, dim₁, …] {channel_type = "dma_stream", depth = <N>}
+air.channel @name [dim₀, dim₁, …] {channel_type = "npu_dma_stream", depth = <N>}
 
 // Synchronous put/get — block until the transfer completes
 air.channel.put @name[indices] (src[offsets][sizes][strides]) : (type_src)
@@ -696,13 +709,17 @@ them independently and to introduce double-buffering.
 A channel may be an array (e.g., `[4, 4]` for a 4×4 array). The `indices` operand on
 `put`/`get` selects the specific channel within the array.
 
-The `channel_type` attribute controls the underlying mechanism:
+The `channel_type` attribute controls the underlying mechanism. Values are
+namespaced by backend: NPU (AIE) channels use the `npu_` prefix; GPU channels
+use the `gpu_` prefix.
 
 | Value | Mechanism |
 |-------|-----------|
-| `"dma_stream"` (default) | DMA engines with streaming (circuit-switched) interconnect |
-| `"dma_packet"` | DMA engines with packet-switched interconnect |
-| `"cascade"` | Core-to-core cascade connections between adjacent tiles |
+| `"npu_dma_stream"` (default) | NPU: DMA engines with streaming (circuit-switched) interconnect |
+| `"npu_dma_packet"` | NPU: DMA engines with packet-switched interconnect |
+| `"npu_cascade"` | NPU: Core-to-core cascade connections between adjacent tiles |
+| `"npu_mmio"` | NPU: Host-side MMIO blockwrites delivering a constant payload into a tile-local L1 buffer |
+| `"gpu_symmetric_heap"` | GPU: Cross-rank messaging through the symmetric heap runtime (XGMI peer-mapped VMem). Requires an enclosing `air.rank` scope. |
 
 The `broadcast_shape` attribute enables one-to-many communication following NumPy
 broadcasting rules.
@@ -796,6 +813,28 @@ in the async dependency graph.
 
 ---
 
+### 2.7 `air.symmetric` memref attribute (multi-GPU)
+
+A `memref.alloc` op may carry the unit attribute `air.symmetric` to indicate
+that the allocation should be backed by the **symmetric heap** runtime. Every
+rank in the enclosing `air.rank` scope performs the same allocation in lockstep,
+so each rank has a memref of the same size at the same offset within the heap.
+Cross-rank addressing (via `air.dma_memcpy_nd` `src_rank`/`dst_rank` attributes
+or `air.channel` with `channel_type = "gpu_symmetric_heap"`) refers to peer
+ranks' symmetric memrefs at the same logical offset.
+
+```
+%buf = memref.alloc() {air.symmetric} : memref<1024xf32>
+```
+
+The GPU lowering (planned: `air-symmetric-alloc-to-mgpu`) will route such
+allocations through `mgpuSymmetricAlloc` (`runtime_lib/airgpu/gpu_runtime.cpp`)
+instead of plain `mgpuMemAlloc`. Peer ranks' base pointers are obtained at
+runtime via `mgpuGetHeapBases()`. The NPU backend does not interpret this
+attribute.
+
+---
+
 ## 3. NPU (AIE) Backend Mapping
 
 On AMD Versal AI Engine (AIE) and Ryzen AI NPU targets the three-level hierarchy maps
@@ -847,14 +886,14 @@ four-level mapping with nested segments is used to achieve full-device occupancy
 |-------------|------------|
 | `air.launch (%bx,%by) in (%gbx,%gby)` | `gpu.launch` grid: `gridDim = (gbx, gby, 1)` |
 | `air.segment` | Workgroup (thread block); the segment body runs within a single `gpu.launch` |
-| `air.herd tile (%x,%y) in (%bx,%by)` | Thread block dimensions: `blockDim = (bx, by, 1)` |
-| Herd tile index `(%x, %y)` | `(threadIdx.x, threadIdx.y)` |
+| `air.herd tile (%x,%y) in (%bx,%by)` | Thread block dimensions: `blockDim = (bx * wave_size, by, 1)`, with each PE materialised as one wavefront |
+| Herd tile index `(%x, %y)` | warp-id within block: `(threadIdx.x / wave_size, threadIdx.y)` |
 | Launch index `(%bx, %by)` | `(blockIdx.x, blockIdx.y)` |
 
 The `air.launch` iteration space becomes the **grid** (number of thread blocks), and
-the `air.herd` iteration space becomes the **block** (number of threads per block).
+the `air.herd` iteration space becomes the **block** (number of wavefronts per block).
 The `air.segment` body is the thread-block body: code that runs once per workgroup before
-and after the per-thread `air.herd` body.
+and after the per-PE `air.herd` body.
 
 After translation the hierarchy is flattened: `air.segment` and `air.herd` are erased
 and their bodies are moved into the enclosing `gpu.launch` region. The
@@ -948,8 +987,9 @@ air.launch (%bx, %by) in (%nbx=%c32, %nby=%c32)
       …
       gpu.barrier
 
-      // 256 herd tiles (threads) compute the outer product
-      air.herd @herd_0 tile (%tx, %ty) in (%ntx=%c256, %nty=%c1)
+      // 4 herd tiles (PEs = wavefronts) compute the outer product;
+      // 4 PEs × 64 lanes/PE = 256 work items on MI3xx.
+      air.herd @herd_0 tile (%tx, %ty) in (%ntx=%c4, %nty=%c1)
                args(%As=%As, %Bs=%Bs, …) : … {
         // L1 accumulation registers (VGPRs)
         %acc = memref.alloc() : memref<64xf32, 2>  // L1 → private/VGPRs
@@ -965,7 +1005,7 @@ air.launch (%bx, %by) in (%nbx=%c32, %nby=%c32)
 The mapping:
 - `air.launch` → `gpu.launch` with `gridDim = (32, 32, 1)`
 - `air.segment` → workgroup body (executed once per thread block)
-- `air.herd tile (%tx, .) in (%c256, %c1)` → `blockDim = (256, 1, 1)`, `threadIdx.x` = `%tx`
+- `air.herd tile (%tx, .) in (%c4, %c1)` → `blockDim = (4 * wave_size, 1, 1)`; `%tx` is the warp-id within the block; lane index inside the PE comes from `gpu.lane_id`
 - L2 memrefs (space 1) → LDS (shared memory)
 - L1 memrefs (space 2) → VGPRs / private scratch
 
@@ -995,11 +1035,17 @@ See [buildingGPU.md](buildingGPU.md) for build instructions and the complete
 |---------|-----------|-------------|
 | `air.launch` iteration point | Device-level work unit | One GPU thread block |
 | `air.segment` | Rectangle of AIE tiles + memory tiles | Thread block workgroup body |
-| `air.herd` tile | Single AIE compute tile | Single GPU thread |
+| `air.herd` tile | Single AIE compute tile | Single GPU wavefront |
 | L1 (space 2) | 32 KB tile-local data memory | Thread-private VGPRs / scratch |
 | L2 (space 1) | Memory tiles / URAMs | LDS (shared memory, ~64 KB / CU) |
 | L3 (space 0) | DDR via NOC | HBM via global memory |
-| `dma_memcpy_nd` | AIE Shim/Tile DMA engines | SCF load/store loops |
-| `channel` (`dma_stream`) | Streaming AXI-S switch | — (not yet mapped to GPU) |
-| Synchronization | AIE locks | `gpu.barrier` |
+| `dma_memcpy_nd` (intra-rank) | AIE Shim/Tile DMA engines | SCF load/store loops |
+| `dma_memcpy_nd` (cross-rank, `src_rank`/`dst_rank`) | — | Symmetric heap peer addressing (planned) |
+| `channel` (`npu_dma_stream`) | Streaming AXI-S switch | n/a |
+| `channel` (`npu_dma_packet`) | Packet-switched AXI-S overlay | n/a |
+| `channel` (`npu_cascade`) | Core cascade interface | n/a |
+| `channel` (`npu_mmio`) | Host MMIO blockwrite | n/a |
+| `channel` (`gpu_symmetric_heap`) | n/a | Symmetric heap peer addressing (planned) |
+| `air.symmetric` memref alloc | n/a | `mgpuSymmetricAlloc` (planned) |
+| Synchronization | AIE locks | `gpu.barrier` (intra-rank), `mgpuBarrier` (cross-rank) |
 | `!air.token` (dependency) | AIE runtime completion signals | GPU stream/event dependencies |

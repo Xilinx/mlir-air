@@ -8,6 +8,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#include "mlir/Analysis/AliasAnalysis/LocalAliasAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -20,21 +21,31 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <iostream>
+#include <limits>
 
 using namespace mlir;
 
 #include "air/Dialect/AIR/AIRDialect.cpp.inc"
 #include "air/Dialect/AIR/AIREnums.cpp.inc"
 
+#define GET_ATTRDEF_CLASSES
+#include "air/Dialect/AIR/AIRAttrs.cpp.inc"
+
 namespace xilinx {
 
 void air::airDialect::initialize() {
   addTypes<AsyncTokenType, UniverseType>();
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "air/Dialect/AIR/AIRAttrs.cpp.inc"
+      >();
   addOperations<
 #define GET_OP_LIST
 #include "air/Dialect/AIR/AIR.cpp.inc"
@@ -114,6 +125,33 @@ static LogicalResult canonicalizeHierarchyOpArgs(T op,
 // AsyncOpInterface
 //===----------------------------------------------------------------------===//
 
+void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
+  // Memtile DMA channel-floor steer (reserve channels [0,N) for this flow),
+  // read by MemTileDMAAllocator at channel-allocation time.
+  if (auto mn = src->getAttrOfType<IntegerAttr>(attrs::MemtileDmaChannelMin))
+    dst->setAttr(attrs::MemtileDmaChannelMin, mn);
+  // Runtime-sequence ordering markers (input-feed hoist; append->readback RAW
+  // barrier and its participating appends), consumed by AIRRtToNpu.
+  if (auto rh = src->getAttr(attrs::RuntimeHoist))
+    dst->setAttr(attrs::RuntimeHoist, rh);
+  if (auto aa = src->getAttr(attrs::AwaitAppends))
+    dst->setAttr(attrs::AwaitAppends, aa);
+  if (auto ab = src->getAttr(attrs::AppendBarrier))
+    dst->setAttr(attrs::AppendBarrier, ab);
+  // Producer-side re-feed count (single-buffer count-free re-broadcast), read
+  // by AIRToAIE's lock allocators.
+  if (auto rc = src->getAttrOfType<IntegerAttr>(attrs::RefeedCount))
+    dst->setAttr(attrs::RefeedCount, rc);
+  // User-pinned packet routing ids, read by AIRToAIE's packet-flow creation.
+  if (auto pids = src->getAttrOfType<ArrayAttr>(attrs::PacketIDs))
+    dst->setAttr(attrs::PacketIDs, pids);
+  // Kernel-writes-header marker. Copied verbatim;
+  // SpecializeChannelBundlePattern narrows it to the offset-0 bearer per-flow
+  // after this copy.
+  if (auto kph = src->getAttr(attrs::KeepPktHeader))
+    dst->setAttr(attrs::KeepPktHeader, kph);
+}
+
 void air::addAsyncDependency(Operation *op, Value token) {
   op->insertOperands(0, {token});
   if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
@@ -145,6 +183,33 @@ void air::eraseAsyncDependency(Operation *op, unsigned index) {
     sizes.push_back(size);
   --sizes.front();
   op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
+}
+
+void air::walkAsyncTokenConsumers(Operation *root,
+                                  llvm::SetVector<Operation *> &consumers) {
+  // `expanded` dedupes tokens; this is what bounds the worklist.
+  llvm::SmallPtrSet<Value, 16> expanded;
+  SmallVector<Value> tokenWorklist;
+  auto enqueue = [&](Value v) {
+    if (!v || !isa<air::AsyncTokenType>(v.getType()))
+      return;
+    if (expanded.insert(v).second)
+      tokenWorklist.push_back(v);
+  };
+  for (Value res : root->getResults())
+    enqueue(res);
+  while (!tokenWorklist.empty()) {
+    Value tok = tokenWorklist.pop_back_val();
+    for (OpOperand &use : tok.getUses()) {
+      Operation *user = use.getOwner();
+      consumers.insert(user);
+      for (Value res : user->getResults())
+        enqueue(res);
+      if (auto loop = dyn_cast<LoopLikeOpInterface>(user))
+        if (BlockArgument iterArg = loop.getTiedLoopRegionIterArg(&use))
+          enqueue(iterArg);
+    }
+  }
 }
 
 static ParseResult parseAsyncDependencies(
@@ -205,6 +270,41 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 template <class OpT>
 static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                              PatternRewriter &rewriter) {
+  // Fallback for the AIR-domain assumption that distinct top-level memref
+  // SSA values address distinct storage; upstream alias analysis cannot
+  // make that claim because MLIR has no noalias on func args. Aliasing
+  // here gates dead-edge removal, so over-approximation only suppresses
+  // an optimization (#1559).
+  auto getRoot = [](Value v) -> Value {
+    while (true) {
+      if (auto view = v.getDefiningOp<ViewLikeOpInterface>()) {
+        v = view.getViewSource();
+        continue;
+      }
+      if (auto barg = dyn_cast<BlockArgument>(v)) {
+        Operation *parent = barg.getOwner()->getParentOp();
+        if (auto h = dyn_cast_if_present<air::HierarchyInterface>(parent)) {
+          if (Value outer = h.getTiedKernelOperand(barg)) {
+            v = outer;
+            continue;
+          }
+        }
+        if (auto loop = dyn_cast_if_present<LoopLikeOpInterface>(parent)) {
+          if (OpOperand *init = loop.getTiedLoopInit(barg)) {
+            v = init->get();
+            continue;
+          }
+        }
+      }
+      return v;
+    }
+  };
+  mlir::LocalAliasAnalysis aliasAnalysis;
+  auto mayAlias = [&aliasAnalysis, &getRoot](Value a, Value b) {
+    if (aliasAnalysis.alias(a, b).isNo())
+      return false;
+    return getRoot(a) == getRoot(b);
+  };
   auto getAllReadAccess = [](Operation *op) {
     SmallVector<Value> operands;
     if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(op)) {
@@ -226,33 +326,6 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return operands;
   };
-  auto getAllMemrefsReadByOp = [getAllReadAccess](Operation *o) {
-    llvm::SetVector<Value> memrefs;
-    auto opReadAccesses = getAllReadAccess(o);
-    memrefs.insert(opReadAccesses.begin(), opReadAccesses.end());
-    SmallVector<Region *> regions;
-    for (auto &region : o->getRegions())
-      regions.push_back(&region);
-    // If air.wait_all, then we analyze the dependency by collecting all
-    // operations that depend on it.
-    auto waitAllOp = dyn_cast_if_present<air::WaitAllOp>(o);
-    if (waitAllOp && waitAllOp.getAsyncToken()) {
-      for (auto user : waitAllOp.getAsyncToken().getUsers()) {
-        auto userReadAccesses = getAllReadAccess(user);
-        memrefs.insert(userReadAccesses.begin(), userReadAccesses.end());
-        for (auto &region : user->getRegions())
-          regions.push_back(&region);
-      }
-    }
-    for (auto region : regions) {
-      visitUsedValuesDefinedAbove(*region, [&memrefs,
-                                            getAllReadAccess](OpOperand *use) {
-        if (llvm::is_contained(getAllReadAccess(use->getOwner()), use->get()))
-          memrefs.insert(use->get());
-      });
-    }
-    return memrefs;
-  };
   auto getAllWriteAccess = [](Operation *op) {
     SmallVector<Value> operands;
     if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(op)) {
@@ -266,44 +339,47 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                        op)) {
       if (memcpy.getDstMemref())
         operands.push_back(memcpy.getDstMemref());
-    } else { // If unknown op, then assume all operands and results are written
-             // to.
-      for (auto oper :
-           llvm::concat<Value>(op->getOperands(), op->getResults())) {
-        if (!isa<MemRefType>(oper.getType()))
-          continue;
-        operands.push_back(oper);
+    } else {
+      // Operands only — results are fresh SSA values, not writes through
+      // pre-existing storage. Body writes are picked up by the region walk
+      // in getAllMemrefsAccessedByOp.
+      for (auto oper : op->getOperands()) {
+        if (isa<MemRefType>(oper.getType()))
+          operands.push_back(oper);
       }
     }
     return operands;
   };
-  auto getAllMemrefsWrittenByOp = [getAllWriteAccess](Operation *o) {
-    llvm::SetVector<Value> memrefs;
-    auto opWriteAccesses = getAllWriteAccess(o);
-    memrefs.insert(opWriteAccesses.begin(), opWriteAccesses.end());
-    SmallVector<Region *> regions;
-    for (auto &region : o->getRegions())
-      regions.push_back(&region);
-    // If air.wait_all, then we analyze the dependency by collecting all
-    // operations that depend on it.
-    auto waitAllOp = dyn_cast_if_present<air::WaitAllOp>(o);
-    if (waitAllOp && waitAllOp.getAsyncToken()) {
-      for (auto user : waitAllOp.getAsyncToken().getUsers()) {
-        auto userWriteAccesses = getAllWriteAccess(user);
-        memrefs.insert(userWriteAccesses.begin(), userWriteAccesses.end());
-        for (auto &region : user->getRegions())
+  // walkConsumers=true unions accesses from `o`'s transitive async-token
+  // consumers (required for sync primitives, #1559). Must be false on the
+  // source side or the source inherits its own sink's accesses.
+  auto getAllMemrefsAccessedByOp =
+      [](Operation *o, bool walkConsumers,
+         llvm::function_ref<SmallVector<Value>(Operation *)> accessFn) {
+        llvm::SetVector<Value> memrefs;
+        for (Value v : accessFn(o))
+          memrefs.insert(v);
+        SmallVector<Region *> regions;
+        for (auto &region : o->getRegions())
           regions.push_back(&region);
-      }
-    }
-    for (auto region : regions) {
-      visitUsedValuesDefinedAbove(*region, [&memrefs,
-                                            getAllWriteAccess](OpOperand *use) {
-        if (llvm::is_contained(getAllWriteAccess(use->getOwner()), use->get()))
-          memrefs.insert(use->get());
-      });
-    }
-    return memrefs;
-  };
+        if (walkConsumers && isa<air::AsyncOpInterface>(o)) {
+          llvm::SetVector<Operation *> consumers;
+          air::walkAsyncTokenConsumers(o, consumers);
+          for (auto user : consumers) {
+            for (Value v : accessFn(user))
+              memrefs.insert(v);
+            for (auto &region : user->getRegions())
+              regions.push_back(&region);
+          }
+        }
+        for (auto region : regions) {
+          visitUsedValuesDefinedAbove(*region, [&](OpOperand *use) {
+            if (llvm::is_contained(accessFn(use->getOwner()), use->get()))
+              memrefs.insert(use->get());
+          });
+        }
+        return memrefs;
+      };
   auto getAllSymbolRefAccess = [](Operation *o) {
     SmallVector<SymbolRefAttr> result;
     for (NamedAttribute attr : o->getAttrs()) {
@@ -361,8 +437,10 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
         }
         return result;
       };
-  auto memrefsReadBySinkOp = getAllMemrefsReadByOp(op.getOperation());
-  auto memrefsWrittenBySinkOp = getAllMemrefsWrittenByOp(op.getOperation());
+  auto memrefsReadBySinkOp = getAllMemrefsAccessedByOp(
+      op.getOperation(), /*walkConsumers=*/true, getAllReadAccess);
+  auto memrefsWrittenBySinkOp = getAllMemrefsAccessedByOp(
+      op.getOperation(), /*walkConsumers=*/true, getAllWriteAccess);
   auto resourcesUsedBySinkOp = getSymbolRefsUsedByOp(op.getOperation());
   // make a list of new async token operands
   std::function<void(SmallVector<Value>, SmallVector<Value> &)>
@@ -384,9 +462,10 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
   for (auto v : directDeps) {
     // don't include any false (RAR) dependencies
     if (v.getDefiningOp()) {
-      auto memrefsReadBySourceOp = getAllMemrefsReadByOp(v.getDefiningOp());
-      auto memrefsWrittenBySourceOp =
-          getAllMemrefsWrittenByOp(v.getDefiningOp());
+      auto memrefsReadBySourceOp = getAllMemrefsAccessedByOp(
+          v.getDefiningOp(), /*walkConsumers=*/false, getAllReadAccess);
+      auto memrefsWrittenBySourceOp = getAllMemrefsAccessedByOp(
+          v.getDefiningOp(), /*walkConsumers=*/false, getAllWriteAccess);
       auto resourcesUsedBySourceOp = getSymbolRefsUsedByOp(v.getDefiningOp());
       bool sourceOpTouchesMemref =
           llvm::range_size(llvm::concat<Value>(memrefsReadBySourceOp,
@@ -395,18 +474,20 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
           llvm::range_size(llvm::concat<Value>(memrefsReadBySinkOp,
                                                memrefsWrittenBySinkOp)) != 0;
       if (sourceOpTouchesMemref && sinkOpTouchesMemref) {
-        bool RAWNotFound = llvm::none_of(
-            memrefsWrittenBySourceOp, [&memrefsReadBySinkOp](Value v) {
-              return llvm::is_contained(memrefsReadBySinkOp, v);
-            });
-        bool WARNotFound = llvm::none_of(
-            memrefsReadBySourceOp, [&memrefsWrittenBySinkOp](Value v) {
-              return llvm::is_contained(memrefsWrittenBySinkOp, v);
-            });
-        bool WAWNotFound = llvm::none_of(
-            memrefsWrittenBySourceOp, [&memrefsWrittenBySinkOp](Value v) {
-              return llvm::is_contained(memrefsWrittenBySinkOp, v);
-            });
+        auto anyAlias = [&](const llvm::SetVector<Value> &as,
+                            const llvm::SetVector<Value> &bs) {
+          for (Value a : as)
+            for (Value b : bs)
+              if (mayAlias(a, b))
+                return true;
+          return false;
+        };
+        bool RAWNotFound =
+            !anyAlias(memrefsWrittenBySourceOp, memrefsReadBySinkOp);
+        bool WARNotFound =
+            !anyAlias(memrefsReadBySourceOp, memrefsWrittenBySinkOp);
+        bool WAWNotFound =
+            !anyAlias(memrefsWrittenBySourceOp, memrefsWrittenBySinkOp);
         bool noSharedResource = llvm::none_of(
             resourcesUsedBySourceOp, [&resourcesUsedBySinkOp](SymbolRefAttr r) {
               return llvm::is_contained(resourcesUsedBySinkOp, r);
@@ -792,6 +873,53 @@ unsigned air::LaunchOp::getNumDims() {
   return segment_sizes[1];
 }
 
+// Hierarchy body invokes once per iteration-space coordinate — product of
+// the size operands when all are constant, Unknown otherwise.
+static InvocationBounds computeHierarchyBounds(ArrayRef<Attribute> operands,
+                                               unsigned sizeStart,
+                                               unsigned numDims) {
+  constexpr uint64_t kMaxUnsigned = std::numeric_limits<unsigned>::max();
+  uint64_t product = 1;
+  for (unsigned i = 0; i < numDims; ++i) {
+    auto intAttr = dyn_cast_if_present<IntegerAttr>(operands[sizeStart + i]);
+    if (!intAttr)
+      return InvocationBounds::getUnknown();
+    int64_t v = intAttr.getInt();
+    if (v < 0)
+      return InvocationBounds::getUnknown();
+    uint64_t uv = static_cast<uint64_t>(v);
+    if (uv != 0 && product > kMaxUnsigned / uv)
+      return InvocationBounds::getUnknown();
+    product *= uv;
+  }
+  unsigned n = static_cast<unsigned>(product);
+  return InvocationBounds(n, n);
+}
+
+OperandRange air::LaunchOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::LaunchOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::LaunchOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
+}
+void air::LaunchOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  bounds.push_back(computeHierarchyBounds(
+      operands, getAsyncDependencies().size(), getNumDims()));
+}
+
 //
 // RankOp
 //
@@ -1170,6 +1298,30 @@ unsigned air::RankOp::getNumDims() {
   return segment_sizes[2];
 }
 
+OperandRange air::RankOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::RankOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::RankOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
+}
+void air::RankOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  unsigned sizeStart = getAsyncDependencies().size() + (getUniverse() ? 1 : 0);
+  bounds.push_back(computeHierarchyBounds(operands, sizeStart, getNumDims()));
+}
+
 LogicalResult air::RankOp::verify() {
   // RankOp may be nested inside air.launch (for multi-GPU parallelism),
   // but not inside air.segment, air.herd, or another air.rank.
@@ -1447,6 +1599,30 @@ unsigned air::SegmentOp::getNumDims() {
   return segment_sizes[1];
 }
 
+OperandRange air::SegmentOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::SegmentOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::SegmentOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
+}
+void air::SegmentOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  bounds.push_back(computeHierarchyBounds(
+      operands, getAsyncDependencies().size(), getNumDims()));
+}
+
 /// Utility function to verify that all memref.alloc operations within a region
 /// have a memory space at least as local as the specified minimum.
 /// For example, minMemorySpace=L2 means allocations must be L2 or L1;
@@ -1460,6 +1636,12 @@ static LogicalResult verifyAllocMemorySpace(OpT op,
   WalkResult result =
       op.getBody().walk([&](memref::AllocOp allocOp) -> WalkResult {
         auto memrefType = allocOp.getType();
+        // Symmetric-heap allocations are always permitted regardless of the
+        // enclosing scope's per-level constraint — they target HBM via the
+        // GPU runtime, not the NPU memory hierarchy.
+        if (isa_and_nonnull<air::SymmetricHeapMemorySpaceAttr>(
+                memrefType.getMemorySpace()))
+          return WalkResult::advance();
         unsigned memorySpace = memrefType.getMemorySpaceAsInt();
 
         // Verify that the memory space is at least as local as the minimum.
@@ -1518,6 +1700,11 @@ static Value getDirectlyAccessedMemref(Operation *op) {
 /// can only access their local L1 memory directly; non-local memory must be
 /// staged via DMA. This checks low-level load/store and vector transfer ops
 /// but not higher-level ops (linalg, memref.copy) that are lowered later.
+///
+/// Memrefs whose `memory_space` is `#air.symmetric_heap` are exempt: that
+/// attribute marks GPU symmetric-heap (HBM) memory, which any kernel thread
+/// can address directly via XGMI. The NPU per-level access constraint does
+/// not apply.
 static LogicalResult
 verifyComputeMemoryAccess(air::HerdOp op, air::MemorySpace minMemorySpace) {
   auto minVal = static_cast<uint32_t>(minMemorySpace);
@@ -1527,6 +1714,11 @@ verifyComputeMemoryAccess(air::HerdOp op, air::MemorySpace minMemorySpace) {
       return WalkResult::advance();
     auto memrefType = dyn_cast<MemRefType>(memref.getType());
     if (!memrefType)
+      return WalkResult::advance();
+    // Skip the per-level check for symmetric-heap memrefs (GPU only): they
+    // live in HBM and are reachable from kernel threads by direct addressing.
+    if (isa_and_nonnull<air::SymmetricHeapMemorySpaceAttr>(
+            memrefType.getMemorySpace()))
       return WalkResult::advance();
     unsigned memorySpace = memrefType.getMemorySpaceAsInt();
     if (memorySpace < minVal) {
@@ -1803,7 +1995,7 @@ Value air::HerdOp::getKernelOperand(unsigned i) {
 }
 
 ArrayRef<BlockArgument> air::HerdOp::getKernelArguments() {
-  return getBody().front().getArguments().drop_front(4);
+  return getBody().front().getArguments().drop_front(getNumDims() * 2);
 }
 
 BlockArgument air::HerdOp::getKernelArgument(unsigned i) {
@@ -1815,6 +2007,30 @@ unsigned air::HerdOp::getNumDims() {
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
+}
+
+OperandRange air::HerdOp::getEntrySuccessorOperands(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return getKernelOperands();
+  auto end = (*this)->operand_end();
+  return OperandRange(end, end);
+}
+ValueRange air::HerdOp::getSuccessorInputs(RegionSuccessor succ) {
+  if (succ.getSuccessor() == &getBody())
+    return ValueRange(getKernelArguments());
+  return {};
+}
+void air::HerdOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent())
+    regions.push_back(RegionSuccessor(&getBody()));
+  else
+    regions.push_back(RegionSuccessor::parent());
+}
+void air::HerdOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
+  bounds.push_back(computeHierarchyBounds(
+      operands, getAsyncDependencies().size(), getNumDims()));
 }
 
 uint64_t air::HerdOp::getNumCols() {
@@ -1846,6 +2062,58 @@ LogicalResult air::ExecuteOp::verify() {
     return emitOpError("ExecuteOp should have non-empty body.");
 
   return success();
+}
+
+// Mirror body effects up to the execute op. Inner Allocate effects on
+// yielded values get retargeted to the outer result so alias analysis
+// can prove distinct execute-yielded memrefs NoAlias. Inner ops with no
+// declared effects fall back to conservative R+W+Free unless upstream
+// can prove them effect-free.
+void air::ExecuteOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (getBody().empty())
+    return;
+  llvm::SmallDenseMap<Value, OpResult> yieldToResult;
+  if (auto execTerm = dyn_cast_if_present<air::ExecuteTerminatorOp>(
+          getBody().getTerminator())) {
+    unsigned numYields = execTerm->getNumOperands();
+    unsigned firstYieldResult = getNumResults() - numYields;
+    for (unsigned i = 0; i < numYields; ++i)
+      yieldToResult[execTerm->getOperand(i)] =
+          cast<OpResult>(getResult(firstYieldResult + i));
+  }
+  bool sawUnknownOp = false;
+  getBody().walk([&](Operation *inner) {
+    if (inner == getBody().getTerminator())
+      return;
+    auto effectOp = dyn_cast<MemoryEffectOpInterface>(inner);
+    if (!effectOp) {
+      if (mlir::isMemoryEffectFree(inner))
+        return;
+      sawUnknownOp = true;
+      return;
+    }
+    SmallVector<MemoryEffects::EffectInstance> innerEffects;
+    effectOp.getEffects(innerEffects);
+    for (auto &e : innerEffects) {
+      if (isa<MemoryEffects::Allocate>(e.getEffect())) {
+        Value v = e.getValue();
+        auto it = v ? yieldToResult.find(v) : yieldToResult.end();
+        if (it != yieldToResult.end())
+          effects.emplace_back(e.getEffect(), it->second, e.getResource());
+      } else {
+        effects.emplace_back(e.getEffect(), e.getResource());
+      }
+    }
+  });
+  if (sawUnknownOp) {
+    effects.emplace_back(MemoryEffects::Read::get(),
+                         SideEffects::DefaultResource::get());
+    effects.emplace_back(MemoryEffects::Write::get(),
+                         SideEffects::DefaultResource::get());
+    effects.emplace_back(MemoryEffects::Free::get(),
+                         SideEffects::DefaultResource::get());
+  }
 }
 
 static LogicalResult FoldExecute(air::ExecuteOp op, PatternRewriter &rewriter) {
@@ -1885,19 +2153,10 @@ static LogicalResult FoldExecute(air::ExecuteOp op, PatternRewriter &rewriter) {
 
   // if we get here then only the async token result has uses.
 
-  // Don't fold if body contains ops with memory write side effects
-  // (e.g., memref.store). These ops must be preserved even if the
-  // execute's async token becomes unused due to wait_all folding.
-  for (auto &bodyOp : body.without_terminator()) {
-    if (auto memEffects =
-            dyn_cast_if_present<MemoryEffectOpInterface>(bodyOp)) {
-      SmallVector<MemoryEffects::EffectInstance> effects;
-      memEffects.getEffects(effects);
-      for (auto &effect : effects)
-        if (isa<MemoryEffects::Write>(effect.getEffect()))
-          return failure();
-    }
-  }
+  // ExecuteOp::getEffects mirrors body effects up; an inner Write or any
+  // unknown-effect op blocks folding.
+  if (mlir::mightHaveEffect<MemoryEffects::Write>(op))
+    return failure();
 
   // if there are extra results than async token, and none of them are used,
   // then replace the execute with a wait_all no-op.
@@ -2049,7 +2308,7 @@ static bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
     if (stepsize && *stepsize == 1)
       return true;
   }
-  unsigned stride_factor = 1;
+  uint64_t stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
     if (!stepsize)
@@ -2059,9 +2318,9 @@ static bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
       return false;
     if (*wrap == 1 && *stepsize == 0)
       continue; // dummy dimension.
-    if (*stepsize != stride_factor)
+    if (static_cast<uint64_t>(*stepsize) != stride_factor)
       return false;
-    stride_factor *= *wrap;
+    stride_factor *= static_cast<uint64_t>(*wrap);
   }
   return true;
 }
@@ -2602,6 +2861,51 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
         return emitOpError("padding values must be <= 65535");
     }
   }
+
+  // Cross-rank addressing requires an enclosing air.rank scope, and the
+  // peer-side memref (when it is a direct memref.alloc result) must carry
+  // the air.symmetric attribute.
+  if (hasCrossRank()) {
+    Operation *p = (*this)->getParentOp();
+    while (p && !isa<air::RankOp>(p))
+      p = p->getParentOp();
+    if (!p)
+      return emitOpError("src_rank/dst_rank attributes require an enclosing "
+                         "air.rank scope");
+
+    // Rank indices are non-negative. Use the typed *Attr accessor instead
+    // of the generated getSrcRank()/getDstRank() (those return uint64_t
+    // for OptionalAttr<I64Attr>, so a comparison against 0 is meaningless
+    // for negative values stored as i64).
+    if (auto srAttr = getSrcRankAttr()) {
+      int64_t sr = srAttr.getInt();
+      if (sr < 0)
+        return emitOpError() << "src_rank must be >= 0, got " << sr;
+    }
+    if (auto drAttr = getDstRankAttr()) {
+      int64_t dr = drAttr.getInt();
+      if (dr < 0)
+        return emitOpError() << "dst_rank must be >= 0, got " << dr;
+    }
+
+    auto requireSymmetricAlloc = [&](Value v, StringRef side) -> LogicalResult {
+      auto alloc = v.getDefiningOp<memref::AllocOp>();
+      if (!alloc)
+        return success(); // Block args / non-alloc sources are user-trusted.
+      if (!alloc->hasAttr("air.symmetric"))
+        return emitOpError() << side
+                             << " memref is referenced cross-rank but its "
+                                "memref.alloc lacks the \"air.symmetric\" "
+                                "attribute";
+      return success();
+    };
+    if (getSrcRank().has_value() &&
+        failed(requireSymmetricAlloc(getSrc(), "src")))
+      return failure();
+    if (getDstRank().has_value() &&
+        failed(requireSymmetricAlloc(getDst(), "dst")))
+      return failure();
+  }
   return success();
 }
 
@@ -2838,46 +3142,37 @@ static LogicalResult FoldMemrefCastOnChannelOp(OpT op,
   return success();
 }
 
+// Resolve the air.channel declaration referenced by a channel interface op.
+// Wraps `SymbolTable::lookupNearestSymbolFrom`, which walks up to the
+// nearest enclosing SymbolTable and queries it. This dialect file cannot
+// depend on Util/Util.cpp (the dependency points the other way), so the
+// `air::getChannelDeclarationThroughSymbol` helper there can't be used —
+// but the MLIR core utility serves the same role for the verifier /
+// canonicalizer call sites in this file (channels are visible from the
+// nearest SymbolTable above the put/get).
+static air::ChannelOp resolveChannelDecl(air::ChannelInterface op) {
+  if (!op)
+    return air::ChannelOp();
+  return SymbolTable::lookupNearestSymbolFrom<air::ChannelOp>(
+      op.getOperation(), StringAttr::get(op->getContext(), op.getChanName()));
+}
+
 template <typename OpT>
 static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
                                                 PatternRewriter &rewriter) {
-
-  // Lambda version of `getChannelDeclarationThroughSymbol` method defined in
-  // `Util/Utils.cpp`. It is duplicated here because `Util/Utils.cpp` depends on
-  // this file, so direct inclusion is not possible.
-  auto getChannelDeclarationThroughSymbol = [](air::ChannelInterface op) {
-    if (!op)
-      // Return an empty ChannelOp if the input operation is invalid.
-      return air::ChannelOp();
-
-    // Traverse up through the operation's parents until a symbol table is
-    // found.
-    Operation *parent = op;
-    while ((parent = parent->getParentOp())) {
-      if (parent->hasTrait<OpTrait::SymbolTable>()) {
-        auto st = mlir::SymbolTable::lookupSymbolIn(parent, op.getChanName());
-        if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(st))
-          return chanOp;
-      }
-    }
-
-    // No matching channel declaration found in any enclosing symbol tables.
-    return air::ChannelOp();
-  };
-
   // Extract the memref operand from the operation.
   Value memref = op.getMemref();
   if (!memref)
     // If there is no associated memref, signal a failure.
     return failure();
   // Resolve the channel declaration for the given channel interface operation.
-  air::ChannelOp chan = getChannelDeclarationThroughSymbol(op);
+  air::ChannelOp chan = resolveChannelDecl(op);
   if (!chan)
     // If the channel declaration cannot be resolved, signal a failure.
     return failure();
-  // If the channel is of type "cascade", try to fold memref.cast but skip full
-  // composition
-  if (chan.getChannelType() == "cascade")
+  // If the channel is of type "npu_cascade", try to fold memref.cast but skip
+  // full composition
+  if (chan.getChannelType() == "npu_cascade")
     return FoldMemrefCastOnChannelOp(op, rewriter);
 
   // Init. memref type and offsets from memref's defining op's input type
@@ -2903,10 +3198,17 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
 
   if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
-  rewriter.replaceOpWithNewOp<OpT>(
-      op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
-      op.getIndices(), input_memref, offsets, sizes, strides,
+  // Build the rebuilt op first, carry the DMA-steering / runtime-ordering
+  // markers across this wrap/stride canonicalization while both ops are live
+  // (they are discardable attrs, otherwise lost on rebuild and the AIRToAIE /
+  // AIRRtToNpu consumers never fire), then replace -- so `op` is not read after
+  // it is erased.
+  auto newOp = rewriter.create<OpT>(
+      op.getLoc(), op->getResultTypes(), op.getAsyncDependencies(),
+      op.getChanName(), op.getIndices(), input_memref, offsets, sizes, strides,
       /*pad_before=*/padBefore, /*pad_after=*/padAfter);
+  copyChannelSteeringAttrs(op, newOp);
+  rewriter.replaceOp(op, newOp->getResults());
 
   return success();
 }
@@ -2955,6 +3257,31 @@ LogicalResult air::ChannelPutOp::verify() {
              << "channel index " << i
              << " is an scf.for induction variable; channel bundle indices "
                 "must not be temporal scf.for induction variables";
+  }
+
+  // For channel_type="npu_mmio", the put runs from the host runtime sequence
+  // and writes into a tile-local L1 buffer. Its source memref must
+  // therefore live in L3 (host memory). Allow lookup-failure to silently
+  // pass — that's a separate diagnostic surface.
+  if (auto chan = resolveChannelDecl(*this)) {
+    if (chan.getChannelType() == "npu_mmio") {
+      auto memrefTy = dyn_cast<MemRefType>(getMemref().getType());
+      if (memrefTy && memrefTy.getMemorySpaceAsInt() != 0)
+        return emitOpError() << "channel_type=\"npu_mmio\" put source must be "
+                                "in L3 (memory_space=0), got memory_space="
+                             << memrefTy.getMemorySpaceAsInt();
+    }
+    // For channel_type="gpu_symmetric_heap", the put must be inside an
+    // air.rank scope (cross-rank addressing requires a multi-rank world).
+    if (chan.getChannelType() == "gpu_symmetric_heap") {
+      Operation *p = (*this)->getParentOp();
+      while (p && !isa<air::RankOp>(p))
+        p = p->getParentOp();
+      if (!p)
+        return emitOpError()
+               << "channel_type=\"gpu_symmetric_heap\" put requires an "
+                  "enclosing air.rank scope";
+    }
   }
 
   auto padBefore = getPadBefore();
@@ -3032,6 +3359,32 @@ LogicalResult air::ChannelGetOp::verify() {
                 "must not be temporal scf.for induction variables";
   }
 
+  // For channel_type="npu_mmio", the destination must be a tile-local L1
+  // buffer (memory_space=2): the host writes into it via runtime-sequence
+  // blockwrites before the consuming core starts. L2/L3 destinations have
+  // no representation in the lowered IR.
+  if (auto chan = resolveChannelDecl(*this)) {
+    if (chan.getChannelType() == "npu_mmio") {
+      auto memrefTy = dyn_cast<MemRefType>(getMemref().getType());
+      if (memrefTy && memrefTy.getMemorySpaceAsInt() != 2)
+        return emitOpError()
+               << "channel_type=\"npu_mmio\" get destination must be "
+                  "in L1 (memory_space=2), got memory_space="
+               << memrefTy.getMemorySpaceAsInt();
+    }
+    // For channel_type="gpu_symmetric_heap", the get must be inside an
+    // air.rank scope.
+    if (chan.getChannelType() == "gpu_symmetric_heap") {
+      Operation *p = (*this)->getParentOp();
+      while (p && !isa<air::RankOp>(p))
+        p = p->getParentOp();
+      if (!p)
+        return emitOpError()
+               << "channel_type=\"gpu_symmetric_heap\" get requires an "
+                  "enclosing air.rank scope";
+    }
+  }
+
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -3062,6 +3415,19 @@ void air::ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 //
 
 LogicalResult air::ChannelOp::verify() {
+  // Allow-list of supported channel_type values. Values are namespaced by
+  // backend: NPU (AIE) channels use the "npu_" prefix, GPU channels use the
+  // "gpu_" prefix. Adding a new transport requires both an entry here and a
+  // lowering branch in the appropriate conversion pass.
+  StringRef chanType = getChannelType();
+  if (chanType != "npu_dma_stream" && chanType != "npu_dma_packet" &&
+      chanType != "npu_cascade" && chanType != "npu_mmio" &&
+      chanType != "gpu_symmetric_heap")
+    return emitOpError() << "unsupported channel_type \"" << chanType
+                         << "\"; expected one of \"npu_dma_stream\", "
+                            "\"npu_dma_packet\", \"npu_cascade\", "
+                            "\"npu_mmio\", or \"gpu_symmetric_heap\"";
+
   if (isBroadcast()) {
     auto bundle_size = getSize();
     auto broadcast_shape = getBroadcastShape();
@@ -3091,6 +3457,50 @@ LogicalResult air::ChannelOp::verify() {
                << ") is not compatible with broadcast_shape[" << i << "] ("
                << bcastVal << "): size must be 1 or equal to broadcast_shape "
                << "(NumPy broadcasting rules)";
+    }
+  }
+
+  // air.refeed_count (single-buffer count-free re-broadcast) must be a positive
+  // integer count of re-sends. The channel declaration is its authoritative
+  // carrier.
+  if (auto rc = (*this)->getAttr(attrs::RefeedCount)) {
+    auto rcInt = dyn_cast<IntegerAttr>(rc);
+    if (!rcInt)
+      return emitOpError() << "\"" << attrs::RefeedCount
+                           << "\" must be an integer attribute";
+    // The count sizes 32-bit AIE semaphore locks; reject values that would not
+    // fit so a malformed count is caught here rather than silently narrowed.
+    if (rcInt.getInt() < 1 ||
+        rcInt.getInt() > std::numeric_limits<int32_t>::max())
+      return emitOpError() << "\"" << attrs::RefeedCount << "\" ("
+                           << rcInt.getInt() << ") must be in [1, INT32_MAX]";
+  }
+
+  // packet_ids pins explicit switchbox routing ids; only meaningful for
+  // packet-switched channels. Each id must be a 5-bit AIE pkt_id and unique.
+  if (auto pids = (*this)->getAttr(attrs::PacketIDs)) {
+    auto arr = dyn_cast<ArrayAttr>(pids);
+    if (!arr)
+      return emitOpError() << "\"" << attrs::PacketIDs
+                           << "\" must be an array attribute";
+    if (chanType != "npu_dma_packet")
+      return emitOpError()
+             << "\"" << attrs::PacketIDs
+             << "\" is only valid on a \"npu_dma_packet\" channel";
+    uint32_t seen = 0;
+    for (auto idAttr : arr) {
+      auto idInt = dyn_cast<IntegerAttr>(idAttr);
+      if (!idInt)
+        return emitOpError() << "\"" << attrs::PacketIDs
+                             << "\" elements must be integer attributes";
+      int64_t id = idInt.getInt();
+      if (id < 0 || id > 31)
+        return emitOpError() << "\"" << attrs::PacketIDs << "\" id (" << id
+                             << ") must be in [0, 31]";
+      if (seen & (1u << id))
+        return emitOpError() << "\"" << attrs::PacketIDs << "\" id (" << id
+                             << ") is duplicated";
+      seen |= (1u << id);
     }
   }
   return success();
@@ -3287,6 +3697,20 @@ ParseResult air::CustomOp::parse(OpAsmParser &parser, OperationState &result) {
   result.addAttribute(getOperandSegmentSizeAttr(),
                       parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
   return success();
+}
+
+//
+// TranslateOp
+//
+
+OpFoldResult air::TranslateOp::fold(FoldAdaptor adaptor) {
+  if (getFromRank() == getToRank())
+    return getSource();
+  auto fromAttr = dyn_cast_if_present<IntegerAttr>(adaptor.getFromRank());
+  auto toAttr = dyn_cast_if_present<IntegerAttr>(adaptor.getToRank());
+  if (fromAttr && toAttr && fromAttr.getValue() == toAttr.getValue())
+    return getSource();
+  return {};
 }
 
 } // namespace xilinx

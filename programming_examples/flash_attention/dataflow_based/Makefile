@@ -29,11 +29,11 @@ WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty
 AIE_TARGET ?= aie2
 
 ifeq ($(AIE_TARGET),aie2p)
-  PEANOWRAP_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
+  PEANOWRAP_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
   ATTN_CC = ${srcdir}/attn_aie2p.cc
   BFP16_FLAG = -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 else
-  PEANOWRAP_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
+  PEANOWRAP_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
   ATTN_CC = ${srcdir}/attn.cc
   BFP16_FLAG =
 endif

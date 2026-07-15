@@ -9,6 +9,7 @@
 #ifndef AIR_OPS_BASE
 #define AIR_OPS_BASE
 
+include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpBase.td"
 
@@ -66,7 +67,12 @@ def air_Dialect : Dialect {
 
   }];
   let useDefaultTypePrinterParser = 1;
+  let useDefaultAttributePrinterParser = 1;
 }
+
+// Base class for AIR dialect attributes.
+class air_Attr<string name, list<Trait> traits = []>
+    : AttrDef<air_Dialect, name, traits>;
 
 def air_AnyScalarOrTensor : TypeConstraint<Or<[AnySignlessInteger.predicate,
                                            AnyFloat.predicate,
@@ -85,6 +91,25 @@ def MemorySpace: I32EnumAttr<"MemorySpace", "AIR Memory Space IDs",
   [L1, L2, L3]> {
 
   let cppNamespace = "xilinx::air";
+}
+
+// Symmetric-heap memory space.
+//
+// Marker attribute used as a memref `memory_space` to indicate the memref
+// is backed by the symmetric-heap (cross-rank XGMI-accessible HBM on GPU
+// targets). Unlike the integer MemorySpace enum (L1/L2/L3 = NPU memory
+// hierarchy), this attribute does not participate in the strict per-level
+// access constraints — direct loads/stores from inside `air.herd` bodies
+// are allowed because GPU kernels can reach HBM (and peer-mapped HBM)
+// directly. The `air-symmetric-alloc-to-mgpu` pass dispatches on this
+// attribute to lower `memref.alloc` ops to `mgpuSymmetricAlloc` runtime
+// calls.
+//
+// Usage:
+//   memref<32xi32, #air.symmetric_heap>
+def SymmetricHeapMemorySpace_Attr : air_Attr<"SymmetricHeapMemorySpace"> {
+  let mnemonic = "symmetric_heap";
+  let summary = "Symmetric-heap memory space (cross-rank XGMI-accessible HBM)";
 }
 
 def air_AsyncToken : DialectType<

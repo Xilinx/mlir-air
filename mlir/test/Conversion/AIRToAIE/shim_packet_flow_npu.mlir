@@ -8,9 +8,9 @@
 
 // RUN: air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1_1col})' --split-input-file -verify-diagnostics | FileCheck %s
 
-// CHECK: %[[VAL0:.*]] = aie.tile(0, 1)
-// CHECK: %[[VAL1:.*]] = aie.tile(0, 2)
-// CHECK: %[[VAL2:.*]] = aie.tile(0, 0)
+// CHECK-DAG: %[[VAL0:.*]] = aie.logical_tile<MemTile>({{.*}}, ?)
+// CHECK-DAG: %[[VAL1:.*]] = aie.tile(0, 2)
+// CHECK-DAG: %[[VAL2:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK: aie.packet_flow(0) {
 // CHECK:   aie.packet_source<%[[VAL2]], DMA : 0>
 // CHECK:   aie.packet_dest<%[[VAL0]], DMA : 0>
@@ -23,7 +23,7 @@
 // CHECK: @func0
 // CHECK: air.channel.put  @channel_0[] {{.*}} metadataArray = [{base = "air_channel_0", index = 0 : i32}], packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
 #map2 = affine_map<(d0) -> (d0)>
-air.channel @channel_0 [1, 1] {channel_type = "dma_packet"}
+air.channel @channel_0 [1, 1] {channel_type = "npu_dma_packet"}
 air.channel @channel_1 [1, 1]
 air.channel @channel_2 [1, 1]
 air.channel @channel_3 [1, 1]
@@ -67,9 +67,9 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 
 // Asynchronous version
 
-// CHECK: %[[VAL0:.*]] = aie.tile(0, 1)
-// CHECK: %[[VAL1:.*]] = aie.tile(0, 2)
-// CHECK: %[[VAL2:.*]] = aie.tile(0, 0)
+// CHECK-DAG: %[[VAL0:.*]] = aie.logical_tile<MemTile>({{.*}}, ?)
+// CHECK-DAG: %[[VAL1:.*]] = aie.tile(0, 2)
+// CHECK-DAG: %[[VAL2:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
 // CHECK: aie.packet_flow(0) {
 // CHECK:   aie.packet_source<%[[VAL2]], DMA : 0>
 // CHECK:   aie.packet_dest<%[[VAL0]], DMA : 0>
@@ -83,7 +83,7 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK: air.channel.put async @channel_0[] {{.*}} metadataArray = [{base = "air_channel_0", index = 0 : i32}], packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
 #map = affine_map<(d0) -> (d0)>
 module {
-  air.channel @channel_0 [1, 1] {channel_type = "dma_packet"}
+  air.channel @channel_0 [1, 1] {channel_type = "npu_dma_packet"}
   air.channel @channel_1 [1, 1]
   air.channel @channel_2 [1, 1]
   air.channel @channel_3 [1, 1]

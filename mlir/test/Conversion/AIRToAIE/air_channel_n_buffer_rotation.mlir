@@ -8,14 +8,17 @@
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
 // 4-buffer rotation should generate single circular BD chain, not terminated sequences.
-// This tests the N-buffer rotation detection in getRepeatCounts().
+// Here all four gets are fully unrolled with equal (trivial) trip counts, so
+// getRepeatCounts() groups them into one repeat-count bucket regardless of the
+// detectNBufferRotation shared-loop path; see air_channel_peeled_rotation.mlir
+// for the unequal-trip case that exercises detectNBufferRotation directly.
 
 // CHECK: aie.device
-// CHECK:         %[[TILE:.*]] = aie.tile(2, 3)
-// CHECK:         %[[BUF3:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[BUF2:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[TILE:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[BUF3:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[BUF2:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // Verify circular BD chain: bb1 -> bb2 -> bb3 -> bb4 -> bb1 (loops back)
 // CHECK:    aie.mem(%[[TILE]])  {

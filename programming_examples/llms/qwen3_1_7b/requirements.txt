@@ -1,0 +1,21 @@
+# Additional Python packages for the Qwen3-1.7B example.
+#
+# These are *on top of* the mlir-air base environment (which already
+# provides numpy, ml_dtypes, filelock, pyxrt, etc.).
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# Qwen3-1.7B is openly licensed (Apache-2.0), so no license acceptance is
+# required. To download weights you only need a HuggingFace account/token:
+#   1. Create a read token at https://huggingface.co/settings/tokens
+#   2. `huggingface-cli login`  (or export HF_TOKEN=<token>)
+# See README.md / docs/usage.md for details.
+
+# Weight loading
+safetensors
+huggingface_hub
+
+# Tokenizer (chat template) and HuggingFace reference model (used by `make verify`)
+transformers
+torch

@@ -59,6 +59,10 @@ jobs:
           pushd mlir-aie
           pip install -r python/requirements.txt
           pip install -r python/requirements_ml.txt
+          # requirements_ml.txt pins torch==2.12.0+cpu, which downgrades the
+          # nightly torch installed in Setup. Reinstall the matching stable
+          # torchvision so torchvision::nms is registered against torch 2.12.
+          pip install "torchvision==0.27.1+cpu" --index-url https://download.pytorch.org/whl/cpu
           pip install -r python/requirements_dev.txt
 
           VERSION=$(utils/clone-llvm.sh --get-wheel-version)
@@ -74,7 +78,7 @@ jobs:
           source air-venv/bin/activate
           MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
           pip install mlir_aie==$MLIR_AIE_VERSION \
-            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4/
 
       - name: Get llvm-aie
         run: |
@@ -87,6 +91,7 @@ jobs:
 
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           source /opt/xilinx/xrt/setup.sh
+
           WHL_MLIR_DIR=$(pwd)/mlir-aie/mlir
           MLIR_AIE_INSTALL_DIR="$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie"
           PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
@@ -136,8 +141,22 @@ jobs:
           # Chess tests disabled to reduce CI time. Uncomment to re-enable:
           # ninja check-air-e2e-chess
 
-          # Programming examples set 1: peano tests (retry once on failure for flaky NPU tests)
+          # Install LLM Python dependencies (safetensors, transformers, torch,
+          # huggingface_hub). Required by all LLM compile and verify targets.
+          pip install -r ../programming_examples/llms/llama32_1b/requirements.txt
+
+          # Programming examples: non-LLM peano tests.
+          # LLM tests are excluded here (--filter-out "llms/") and handled by
+          # the dedicated targets below, which run sequentially (-j1) to avoid
+          # concurrent NPU inference causing out-of-memory crashes.
           ninja check-programming-examples-peano || ninja check-programming-examples-peano
+
+          # LLM compile/verify are intentionally NOT run here. They are covered
+          # end to end (compile + verify + perf, all models) by the dedicated
+          # nightly benchmark (nightlyPerfBenchmark.yml) on the Krackan runner,
+          # which serves weights from a warm offline HF cache. Running them in
+          # the per-PR matrix duplicated that work, was slow (int4's compile
+          # alone exceeds the 600s per-test timeout), and needed HF secrets.
 
           # Chess tests disabled to reduce CI time. Uncomment to re-enable:
           # ninja check-programming-examples-chess

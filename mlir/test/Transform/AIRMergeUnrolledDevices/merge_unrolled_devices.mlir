@@ -61,18 +61,22 @@ module {
     %mem_0_2 = aie.mem(%tile_0_2) {
       %0 = aie.dma_start(MM2S, 0, ^bb1, ^bb3)
     ^bb1:
-      aie.use_lock(%lock_0_2_2, AcquireGreaterEqual, 1)
-      aie.dma_bd(%buf0 : memref<32xi32, 2 : i32>, 0, 32) {task_id = 0 : i32}
-      aie.use_lock(%lock_0_2_1, Release, 1)
+      %c1_i32 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_2, AcquireGreaterEqual, %c1_i32)
+      aie.dma_bd(%buf0 : memref<32xi32, 2 : i32> offset = 0 len = 32) {task_id = 0 : i32}
+      %c1_i32_1 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_1, Release, %c1_i32_1)
       aie.next_bd ^bb1
     ^bb2:
       aie.end
     ^bb3:
       %1 = aie.dma_start(S2MM, 0, ^bb4, ^bb2)
     ^bb4:
-      aie.use_lock(%lock_0_2, AcquireGreaterEqual, 1)
-      aie.dma_bd(%buf1 : memref<32xi32, 2 : i32>, 0, 32) {task_id = 0 : i32}
-      aie.use_lock(%lock_0_2_0, Release, 1)
+      %c1_i32_2 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2, AcquireGreaterEqual, %c1_i32_2)
+      aie.dma_bd(%buf1 : memref<32xi32, 2 : i32> offset = 0 len = 32) {task_id = 0 : i32}
+      %c1_i32_3 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_0, Release, %c1_i32_3)
       aie.next_bd ^bb4
     }
     %core_0_2 = aie.core(%tile_0_2) {
@@ -82,19 +86,24 @@ module {
       %c0 = arith.constant 0 : index
       cf.br ^bb1
     ^bb1:
-      aie.use_lock(%lock_0_2_1, AcquireGreaterEqual, 1)
-      aie.use_lock(%__air_herd_lock_0_2, AcquireGreaterEqual, 1)
+      %c1_i32_4 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_1, AcquireGreaterEqual, %c1_i32_4)
+      %c1_i32_5 = arith.constant 1 : i32
+      aie.use_lock(%__air_herd_lock_0_2, AcquireGreaterEqual, %c1_i32_5)
       cf.br ^bb2
     ^bb2:
-      aie.use_lock(%lock_0_2_0, AcquireGreaterEqual, 1)
+      %c1_i32_6 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_0, AcquireGreaterEqual, %c1_i32_6)
       scf.for %arg0 = %c0 to %c32 step %c1 {
         %0 = memref.load %buf1[%arg0] : memref<32xi32, 2 : i32>
         %1 = arith.addi %0, %c10_i32 : i32
         memref.store %1, %buf0[%arg0] : memref<32xi32, 2 : i32>
       } {loop_annotation = #loop_annotation}
       func.call @extern_kernel(%buf0) : (memref<32xi32, 2 : i32>) -> ()
-      aie.use_lock(%lock_0_2, Release, 1)
-      aie.use_lock(%lock_0_2_2, Release, 1)
+      %c1_i32_7 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2, Release, %c1_i32_7)
+      %c1_i32_8 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_2, Release, %c1_i32_8)
       cf.br ^bb1
     }
     air.channel @channel_2 [1, 1]
@@ -118,18 +127,22 @@ module {
     %mem_0_2 = aie.mem(%tile_0_2) {
       %0 = aie.dma_start(MM2S, 0, ^bb1, ^bb3)
     ^bb1:
-      aie.use_lock(%lock_0_2_2, AcquireGreaterEqual, 1)
-      aie.dma_bd(%buf2 : memref<32xi32, 2 : i32>, 0, 32) {task_id = 0 : i32}
-      aie.use_lock(%lock_0_2_1, Release, 1)
+      %c1_i32_9 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_2, AcquireGreaterEqual, %c1_i32_9)
+      aie.dma_bd(%buf2 : memref<32xi32, 2 : i32> offset = 0 len = 32) {task_id = 0 : i32}
+      %c1_i32_10 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_1, Release, %c1_i32_10)
       aie.next_bd ^bb1
     ^bb2:
       aie.end
     ^bb3:
       %1 = aie.dma_start(S2MM, 0, ^bb4, ^bb2)
     ^bb4:
-      aie.use_lock(%lock_0_2, AcquireGreaterEqual, 1)
-      aie.dma_bd(%buf3 : memref<32xi32, 2 : i32>, 0, 32) {task_id = 0 : i32}
-      aie.use_lock(%lock_0_2_0, Release, 1)
+      %c1_i32_11 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2, AcquireGreaterEqual, %c1_i32_11)
+      aie.dma_bd(%buf3 : memref<32xi32, 2 : i32> offset = 0 len = 32) {task_id = 0 : i32}
+      %c1_i32_12 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_0, Release, %c1_i32_12)
       aie.next_bd ^bb4
     }
     %core_0_2 = aie.core(%tile_0_2) {
@@ -139,19 +152,24 @@ module {
       %c0 = arith.constant 0 : index
       cf.br ^bb1
     ^bb1:
-      aie.use_lock(%lock_0_2_1, AcquireGreaterEqual, 1)
-      aie.use_lock(%__air_herd_lock_0_2, AcquireGreaterEqual, 1)
+      %c1_i32_13 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_1, AcquireGreaterEqual, %c1_i32_13)
+      %c1_i32_14 = arith.constant 1 : i32
+      aie.use_lock(%__air_herd_lock_0_2, AcquireGreaterEqual, %c1_i32_14)
       cf.br ^bb2
     ^bb2:
-      aie.use_lock(%lock_0_2_0, AcquireGreaterEqual, 1)
+      %c1_i32_15 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_0, AcquireGreaterEqual, %c1_i32_15)
       scf.for %arg0 = %c0 to %c32 step %c1 {
         %0 = memref.load %buf3[%arg0] : memref<32xi32, 2 : i32>
         %1 = arith.addi %0, %c10_i32 : i32
         memref.store %1, %buf2[%arg0] : memref<32xi32, 2 : i32>
       } {loop_annotation = #loop_annotation}
       func.call @extern_kernel(%buf2) : (memref<32xi32, 2 : i32>) -> ()
-      aie.use_lock(%lock_0_2, Release, 1)
-      aie.use_lock(%lock_0_2_2, Release, 1)
+      %c1_i32_16 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2, Release, %c1_i32_16)
+      %c1_i32_17 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2_2, Release, %c1_i32_17)
       cf.br ^bb1
     }
     air.channel @channel_3 [1, 1]

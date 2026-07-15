@@ -1,0 +1,10 @@
+# Internal working notes (for discussion/iteration — NOT for upstream).
+# Any file whose basename starts with internal_ is local-only.
+internal_*
+**/internal_*
+
+# Local-only planning doc — our own kernel-adding tracker, not for upstream.
+kernel_adding_todolist.md
+
+# skills workplace
+.add-kernel/

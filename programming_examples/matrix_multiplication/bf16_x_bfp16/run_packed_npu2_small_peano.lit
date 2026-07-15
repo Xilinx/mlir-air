@@ -1,0 +1,14 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_bf16_x_bfp16_npu2_small_peano
+// RUN: cd test_bf16_x_bfp16_npu2_small_peano
+// RUN: make -f %S/Makefile clean
+//
+// bf16 A x bfp16ebs8 B -> bf16 C mixed-precision GEMM smoke: single PE,
+// 64x64x64 tile, no K loop. Smallest config that exercises the full
+// AIR -> AIE pipeline with the bfp16ebs8 type-pun across the AIR boundary.
+// RUN: make -f %S/Makefile run M=64 K=64 N=64 TILE_M=64 TILE_K_L1=64 TILE_N=64 HERD_M=1 HERD_N=1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PASS!

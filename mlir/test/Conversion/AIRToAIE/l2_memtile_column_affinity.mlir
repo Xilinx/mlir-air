@@ -5,41 +5,32 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Tests column-affinity optimization in L2 memref-to-memtile assignment.
+// Tests round-robin L2 memref-to-memtile LTO assignment after the
+// column-affinity optimization was removed (RFC #1567 Stage C #4).
 //
-// Setup: 3 memtile columns (5, 6, 7), 4 L2 allocs with affinities:
-//   alloc_0 -> affinity col 6 (via ch_a, gets in core at col 6)
-//   alloc_1 -> affinity col 7 (via ch_b, gets in core at col 7)
-//   alloc_2 -> affinity col 5 (via ch_c, gets in core at col 5)
-//   alloc_3 -> affinity col 5 (via ch_d, gets in core at col 5)
+// Setup: xcve2802 has 3 memtile columns; AIR allocates 3 unhinted MemTile
+// LTOs and round-robins 4 L2 allocs across them — the 4th wraps and shares
+// LTO 0 with the 1st. Physical column placement is deferred to mlir-aie's
+// SequentialPlacer (flow-aware via Xilinx/mlir-aie#3055).
 //
-// Without column-affinity swaps, round-robin gives:
-//   alloc_0 -> memtile col 5 (WRONG, wants col 6)
-//   alloc_1 -> memtile col 6 (WRONG, wants col 7)
-//   alloc_2 -> memtile col 7 (WRONG, wants col 5)
-//   alloc_3 -> memtile col 5 (correct)
-//
-// With column-affinity swaps:
-//   alloc_0 -> memtile col 6 (correct, swapped with alloc_1)
-//   alloc_1 -> memtile col 7 (correct, swapped with alloc_2)
-//   alloc_2 -> memtile col 5 (correct, landed here after chain)
-//   alloc_3 -> memtile col 5 (correct, unchanged)
+// Round-robin (slot order, not col order):
+//   alloc_0 (32xi32)  -> LTO 0
+//   alloc_1 (64xi32)  -> LTO 1
+//   alloc_2 (128xi32) -> LTO 2
+//   alloc_3 (16xi32)  -> LTO 0 (wraps)
 
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=5 device=xcve2802 use-objectfifo=false" | FileCheck %s
 
-// Memtile tiles at row 1 (xcve2802 memtile row)
-// CHECK-DAG:  %[[MT5:.*]] = aie.tile(5, 1)
-// CHECK-DAG:  %[[MT6:.*]] = aie.tile(6, 1)
-// CHECK-DAG:  %[[MT7:.*]] = aie.tile(7, 1)
+// 3 distinct unhinted MemTile LTOs (physical col chosen by aie-place-tiles).
+// CHECK-DAG:  aie.logical_tile<MemTile>(?, ?)
+// CHECK-DAG:  aie.logical_tile<MemTile>(?, ?)
+// CHECK-DAG:  aie.logical_tile<MemTile>(?, ?)
 
-// alloc_0 (ch_a, affinity col 6) -> memtile col 6
-// CHECK-DAG:  aie.buffer(%[[MT6]]) {{{.*}}} : memref<32xi32, 1>
-// alloc_1 (ch_b, affinity col 7) -> memtile col 7
-// CHECK-DAG:  aie.buffer(%[[MT7]]) {{{.*}}} : memref<64xi32, 1>
-// alloc_2 (ch_c, affinity col 5) -> memtile col 5
-// CHECK-DAG:  aie.buffer(%[[MT5]]) {{{.*}}} : memref<128xi32, 1>
-// alloc_3 (ch_d, affinity col 5) -> memtile col 5
-// CHECK-DAG:  aie.buffer(%[[MT5]]) {{{.*}}} : memref<16xi32, 1>
+// All 4 L2 allocs lowered to memtile buffers, sizes preserved.
+// CHECK-DAG:  aie.buffer({{.*}}) {{{.*}}} : memref<32xi32, 1>
+// CHECK-DAG:  aie.buffer({{.*}}) {{{.*}}} : memref<64xi32, 1>
+// CHECK-DAG:  aie.buffer({{.*}}) {{{.*}}} : memref<128xi32, 1>
+// CHECK-DAG:  aie.buffer({{.*}}) {{{.*}}} : memref<16xi32, 1>
 
 module {
   // Per-column channels (each connects one L2 alloc to one column's core)

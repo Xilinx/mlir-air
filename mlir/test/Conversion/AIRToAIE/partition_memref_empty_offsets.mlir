@@ -15,9 +15,11 @@
 // RUN: air-opt %s -air-to-aie='device=npu1' | FileCheck %s
 
 // The L2 buffer should remain as a single unpartitioned buffer on the memtile,
-// because the empty-offset channel.put prevents partitioning.
+// because the empty-offset channel.put prevents partitioning. AIR emits a
+// MemTile LTO with the column-1 hint; the downstream aie-place-tiles pass
+// resolves it to a physical tile.
 // CHECK-LABEL: aie.device(npu1)
-// CHECK:         %[[MEMTILE:.*]] = aie.tile(1, 1)
+// CHECK-DAG:         %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(?, ?)
 // CHECK:         aie.buffer(%[[MEMTILE]]) {{{.*}}} : memref<256x256xbf16, 1>
 // CHECK-NOT:     aie.buffer(%[[MEMTILE]]) {{{.*}}} : memref<{{.*}}xbf16, 1>
 

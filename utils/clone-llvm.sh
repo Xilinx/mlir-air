@@ -12,10 +12,14 @@
 #
 # This script is called from the github workflows.
 #
+# As of the ROCm/llvm-project migration, LLVM is sourced from the ROCm fork
+# (github.com/ROCm/llvm-project) rather than upstream llvm/llvm-project, to
+# match the MLIR distro wheels mlir-aie builds against.
+#
 ##===----------------------------------------------------------------------===##
 
-export commithash=278dba37d0acb40984ea1970288108c70ff11164
-DATETIME=2026031922
+export commithash=46fcb339fb61119b337f973c7ca9e710a319fdd0
+DATETIME=2026071405
 WHEEL_VERSION=23.0.0.$DATETIME+${commithash:0:8}
 
 if [ x"$1" == x--get-wheel-version ]; then
@@ -27,7 +31,7 @@ target_dir=llvm
 
 # clone llvm if it is not there already
 if [[ ! -d $target_dir ]]; then
-  git clone --depth 1 https://github.com/llvm/llvm-project.git $target_dir
+  git clone --depth 1 https://github.com/ROCm/llvm-project.git $target_dir
 fi
 
 pushd $target_dir

@@ -32,6 +32,13 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
       _mlir_libs/_site_initialize_0.py
   )
 
+  declare_mlir_python_sources(AirPythonSources.Tools
+    ADD_TO_PARENT AirPythonSources
+    ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
+    SOURCES
+      tools.py
+  )
+
   declare_mlir_python_sources(AirPythonExtensions)
 
   declare_mlir_python_sources(AirPythonSources.Dialects

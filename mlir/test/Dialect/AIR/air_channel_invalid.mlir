@@ -81,3 +81,133 @@ func.func @channel_get_temporal_for_iv(%m: memref<64xi32>) {
   }
   return
 }
+
+// -----
+
+// Test: unsupported channel_type string is rejected by the verifier.
+// expected-error @+1 {{'air.channel' op unsupported channel_type "ddr_stream"; expected one of "npu_dma_stream", "npu_dma_packet", "npu_cascade", "npu_mmio", or "gpu_symmetric_heap"}}
+air.channel @bad_chan_type [] {channel_type = "ddr_stream"}
+
+// -----
+
+// Test: mmio channel put source must be in L3 (memory_space=0).
+air.channel @mmio_bad_put [] {channel_type = "npu_mmio"}
+func.func @mmio_put_wrong_memspace(%m: memref<8xi32, 2>) {
+  // expected-error @+1 {{'air.channel.put' op channel_type="npu_mmio" put source must be in L3 (memory_space=0), got memory_space=2}}
+  air.channel.put @mmio_bad_put[] (%m[] [] []) : (memref<8xi32, 2>)
+  return
+}
+
+// -----
+
+// Test: mmio channel get destination must be in L1 (memory_space=2).
+air.channel @mmio_bad_get [] {channel_type = "npu_mmio"}
+func.func @mmio_get_wrong_memspace(%m: memref<8xi32, 1>) {
+  // expected-error @+1 {{'air.channel.get' op channel_type="npu_mmio" get destination must be in L1 (memory_space=2), got memory_space=1}}
+  air.channel.get @mmio_bad_get[] (%m[] [] []) : (memref<8xi32, 1>)
+  return
+}
+
+// -----
+
+// Test: mmio put with L2 source is also rejected (only L3 is allowed).
+air.channel @mmio_bad_put_l2 [] {channel_type = "npu_mmio"}
+func.func @mmio_put_l2(%m: memref<8xi32, 1>) {
+  // expected-error @+1 {{'air.channel.put' op channel_type="npu_mmio" put source must be in L3 (memory_space=0), got memory_space=1}}
+  air.channel.put @mmio_bad_put_l2[] (%m[] [] []) : (memref<8xi32, 1>)
+  return
+}
+
+// -----
+
+// Test: mmio get with L3 destination is rejected (only L1 is allowed).
+air.channel @mmio_bad_get_l3 [] {channel_type = "npu_mmio"}
+func.func @mmio_get_l3(%m: memref<8xi32>) {
+  // expected-error @+1 {{'air.channel.get' op channel_type="npu_mmio" get destination must be in L1 (memory_space=2), got memory_space=0}}
+  air.channel.get @mmio_bad_get_l3[] (%m[] [] []) : (memref<8xi32>)
+  return
+}
+
+// -----
+
+// Test: gpu_symmetric_heap put outside an air.rank scope is rejected.
+air.channel @sym_chan_put [] {channel_type = "gpu_symmetric_heap"}
+func.func @sym_put_no_rank(%m: memref<128xf32>) {
+  // expected-error @+1 {{'air.channel.put' op channel_type="gpu_symmetric_heap" put requires an enclosing air.rank scope}}
+  air.channel.put @sym_chan_put[] (%m[] [] []) : (memref<128xf32>)
+  return
+}
+
+// -----
+
+// Test: gpu_symmetric_heap get outside an air.rank scope is rejected.
+air.channel @sym_chan_get [] {channel_type = "gpu_symmetric_heap"}
+func.func @sym_get_no_rank(%m: memref<128xf32>) {
+  // expected-error @+1 {{'air.channel.get' op channel_type="gpu_symmetric_heap" get requires an enclosing air.rank scope}}
+  air.channel.get @sym_chan_get[] (%m[] [] []) : (memref<128xf32>)
+  return
+}
+
+// -----
+
+// Test: air.refeed_count of zero is rejected (must be >= 1).
+// expected-error @+1 {{'air.channel' op "air.refeed_count" (0) must be in [1, INT32_MAX]}}
+air.channel @refeed_zero [1, 1] {air.refeed_count = 0 : i32}
+
+// -----
+
+// Test: negative air.refeed_count is rejected.
+// expected-error @+1 {{'air.channel' op "air.refeed_count" (-2) must be in [1, INT32_MAX]}}
+air.channel @refeed_neg [1, 1] {air.refeed_count = -2 : i32}
+
+// -----
+
+// Test: air.refeed_count that overflows the 32-bit lock range is rejected.
+// expected-error @+1 {{'air.channel' op "air.refeed_count" (4294967296) must be in [1, INT32_MAX]}}
+air.channel @refeed_huge [1, 1] {air.refeed_count = 4294967296 : i64}
+
+// -----
+
+// Test: non-integer air.refeed_count is rejected.
+// expected-error @+1 {{'air.channel' op "air.refeed_count" must be an integer attribute}}
+air.channel @refeed_str [1, 1] {air.refeed_count = "4"}
+
+// -----
+
+// Test: valid air.refeed_count (positive test - should pass).
+air.channel @refeed_ok [1, 1] {air.refeed_count = 4 : i32}
+
+// -----
+
+// Test: packet_ids on a non-packet channel is rejected.
+// expected-error @+1 {{'air.channel' op "packet_ids" is only valid on a "npu_dma_packet" channel}}
+air.channel @pids_wrong_type [] {channel_type = "npu_dma_stream", packet_ids = [1, 2]}
+
+// -----
+
+// Test: packet_ids out of the 5-bit pkt_id range is rejected.
+// expected-error @+1 {{'air.channel' op "packet_ids" id (40) must be in [0, 31]}}
+air.channel @pids_range [] {channel_type = "npu_dma_packet", packet_ids = [40]}
+
+// -----
+
+// Test: negative packet_ids id is rejected.
+// expected-error @+1 {{'air.channel' op "packet_ids" id (-1) must be in [0, 31]}}
+air.channel @pids_neg [] {channel_type = "npu_dma_packet", packet_ids = [-1]}
+
+// -----
+
+// Test: duplicate packet_ids are rejected.
+// expected-error @+1 {{'air.channel' op "packet_ids" id (3) is duplicated}}
+air.channel @pids_dup [] {channel_type = "npu_dma_packet", packet_ids = [3, 3]}
+
+// -----
+
+// Test: non-integer packet_ids element is rejected.
+// expected-error @+1 {{'air.channel' op "packet_ids" elements must be integer attributes}}
+air.channel @pids_str [] {channel_type = "npu_dma_packet", packet_ids = ["x"]}
+
+// -----
+
+// Test: valid packet_ids (positive test - should pass).
+air.channel @pids_ok [] {channel_type = "npu_dma_packet", packet_ids = [1, 4]}

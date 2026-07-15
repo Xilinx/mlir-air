@@ -45,6 +45,7 @@ set(CONVERSION_LINK_LIBS
 if(AIR_ENABLE_AIE)
   list(APPEND CONVERSION_LINK_LIBS
     AIE
+    AIETransforms
     AIEX
   )
 endif()
@@ -55,7 +56,11 @@ if(AIR_ENABLE_GPU)
   set(GPU_PASS_DEPENDS AIRGPUConversionPassIncGen)
   list(APPEND CONVERSION_SOURCES
     AIRToROCDLPass.cpp
+    AIRTranslateToLLVMPass.cpp
     GPUKernelOutlinePass.cpp
+    AIRRankToMgpuPass.cpp
+    AIRSymmetricAllocToMgpuPass.cpp
+    AIRGpuChannelToCachelinePass.cpp
   )
   list(APPEND CONVERSION_LINK_LIBS
     MLIRGPUDialect

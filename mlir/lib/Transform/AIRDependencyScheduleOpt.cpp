@@ -32,6 +32,7 @@
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -765,6 +766,35 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   return newHerdOp;
 }
 
+// Returns true iff the op's only memory effects (recursively through nested
+// regions) are `Free` effects — i.e. it does pure cleanup. Used by
+// MergeAIRHerdsPattern to exclude such ops from a herd group's "live-out"
+// async tokens, since downstream memref-flow-aware canonicalisation may
+// drop dependency edges that point to freed memory.
+//
+// `air.execute` and other container ops without the MemoryEffectOpInterface
+// or HasRecursiveMemoryEffects trait are opaque to MLIR's standard helpers,
+// so we walk into nested regions ourselves. Ops with no interface contribute
+// nothing to the tally; the walk descends into their bodies and inspects the
+// leaf ops there.
+//
+// Returns false for ops whose body mixes `Free` with any
+// `Read`/`Write`/`Allocate` (the non-Free effects are real work) and for ops
+// whose effects are entirely empty (a pure compute op, not cleanup).
+static bool isFreeOnlyOp(Operation *op) {
+  bool sawFree = false;
+  bool sawNonFree = false;
+  op->walk([&](Operation *child) {
+    if (mlir::hasEffect<MemoryEffects::Free>(child))
+      sawFree = true;
+    if (mlir::hasEffect<MemoryEffects::Read>(child) ||
+        mlir::hasEffect<MemoryEffects::Write>(child) ||
+        mlir::hasEffect<MemoryEffects::Allocate>(child))
+      sawNonFree = true;
+  });
+  return sawFree && !sawNonFree;
+}
+
 // Merge all herds which are (1) sharing one common parent region and (2) using
 // the same symname into one herd.
 struct MergeAIRHerdsPattern : public OpRewritePattern<air::HerdOp> {
@@ -815,20 +845,54 @@ struct MergeAIRHerdsPattern : public OpRewritePattern<air::HerdOp> {
         }))
       return failure();
 
-    // Merge all herds with the same herd name into one.
+    // Single pass over the herds to collect the merged-herd inputs:
+    //   * kernelOperands  — union of all kernel operands.
+    //   * tokenToHerdIdx  — map from each herd's async token to its index;
+    //                       used both to identify inter-herd vs external
+    //                       deps and (later) to look up the predecessor
+    //                       index without an O(N) scan.
     llvm::SetVector<Value> kernelOperands;
-    for (auto h : herdsWithSameName)
+    llvm::DenseMap<Value, unsigned> tokenToHerdIdx;
+    for (unsigned i = 0; i < herdsWithSameName.size(); i++) {
+      auto h = herdsWithSameName[i];
       kernelOperands.insert(h.getKernelOperands().begin(),
                             h.getKernelOperands().end());
+      if (h.getAsyncToken())
+        tokenToHerdIdx[h.getAsyncToken()] = i;
+    }
+
+    // Classify each herd's async deps:
+    //   * External deps become the merged herd's async dep list (deduped).
+    //   * Inter-herd deps (a dep token is another merged herd's async
+    //     token) are recorded for later barrier insertion. The walk visits
+    //     herds in ForwardDominance order so any inter-herd dep target
+    //     necessarily has a smaller index than the dependent herd.
+    SmallVector<Value> mergedExternalDeps;
+    llvm::SetVector<Value> seenDeps;
+    llvm::DenseMap<unsigned, SmallVector<unsigned>> interHerdDeps;
+    for (unsigned i = 0; i < herdsWithSameName.size(); i++) {
+      for (auto dep : herdsWithSameName[i].getAsyncDependencies()) {
+        auto it = tokenToHerdIdx.find(dep);
+        if (it != tokenToHerdIdx.end())
+          interHerdDeps[i].push_back(it->second);
+        else if (seenDeps.insert(dep))
+          mergedExternalDeps.push_back(dep);
+      }
+    }
+
     rewriter.setInsertionPointAfter(herdsWithSameName.back());
     auto newMergedHerd = air::HerdOp::create(
-        rewriter, herdOp->getLoc(),
-        herdsWithSameName.back().getAsyncDependencies(),
+        rewriter, herdOp->getLoc(), mergedExternalDeps,
         herdOp.getSizeOperands(), kernelOperands.takeVector(),
         (bool)herdOp.getAsyncToken(), herdOp->getAttrs());
     rewriter.setInsertionPointToStart(&newMergedHerd.getBody().front());
     IRMapping remap;
-    for (auto h : herdsWithSameName) {
+
+    // Clone ops from each herd into the merged body, tracking the last
+    // async token produced by each herd's group for inter-herd barriers.
+    SmallVector<Value> lastAsyncTokenPerHerd(herdsWithSameName.size());
+    for (unsigned herdIdx = 0; herdIdx < herdsWithSameName.size(); herdIdx++) {
+      auto h = herdsWithSameName[herdIdx];
       // Update "link_with" attr
       if (h.getLinkWith())
         newMergedHerd.setLinkWith(h.getLinkWith());
@@ -840,9 +904,86 @@ struct MergeAIRHerdsPattern : public OpRewritePattern<air::HerdOp> {
         remap.map(h.getKernelArgument(i),
                   newMergedHerd.getTiedKernelArgument(
                       h.getTiedKernelOperand(h.getKernelArgument(i))));
-      // Clone ops
-      for (auto &o : h.getBody().front().without_terminator())
-        rewriter.clone(o, remap);
+
+      // If this herd depends on a predecessor herd, insert a wait_all
+      // barrier that collects the predecessor's last async tokens.
+      Value barrierToken;
+      if (interHerdDeps.count(herdIdx)) {
+        SmallVector<Value> barrierDeps;
+        for (unsigned predIdx : interHerdDeps[herdIdx]) {
+          if (lastAsyncTokenPerHerd[predIdx])
+            barrierDeps.push_back(lastAsyncTokenPerHerd[predIdx]);
+        }
+        if (!barrierDeps.empty()) {
+          auto barrierWaitAll = xilinx::air::WaitAllOp::create(
+              rewriter, h->getLoc(), air::AsyncTokenType::get(h->getContext()),
+              barrierDeps);
+          barrierToken = barrierWaitAll.getAsyncToken();
+        }
+      }
+
+      // Clone ops, injecting the barrier dependency where needed.
+      // addAsyncDependencyIfNew dispatches over AsyncOpInterface, scf.for,
+      // scf.parallel and affine.if — covering all op shapes that may appear
+      // at the top of a herd body.
+      SmallVector<Operation *> clonedOps;
+      for (auto &o : h.getBody().front().without_terminator()) {
+        auto *cloned = rewriter.clone(o, remap);
+        if (barrierToken)
+          air::addAsyncDependencyIfNew(cloned, barrierToken);
+        clonedOps.push_back(cloned);
+      }
+
+      // Compute this group's live-out async tokens — tokens produced by
+      // cloned ops that no other op in the group consumes. A single
+      // overwriting `lastToken` would miss parallel fan-out at the end of
+      // a herd body (e.g. two independent channel.puts), causing the next
+      // herd's barrier to wait on only one branch.
+      //
+      // Skip dealloc executes: their tokens reference freed memory, and
+      // downstream memref-flow-aware canonicalisation may drop dependency
+      // edges to ops that access different memory, weakening the barrier.
+      llvm::SmallPtrSet<Operation *, 16> clonedSet(clonedOps.begin(),
+                                                   clonedOps.end());
+      SmallVector<Value> liveOuts;
+      for (Operation *cloned : clonedOps) {
+        // Skip ops whose only memory effect is `Free` — their tokens
+        // reference freed memory and downstream canonicalisation may drop
+        // edges to ops accessing different memory. Generalises over a bare
+        // `memref.dealloc` and any container that wraps one (air.execute,
+        // scf.for, etc.).
+        if (isFreeOnlyOp(cloned))
+          continue;
+        Value tok = air::getAsyncTokenFromOp(cloned);
+        if (!tok)
+          continue;
+        // A user nested inside another cloned top-level op (e.g. inside an
+        // scf.for body) still counts as in-group: walk up to the top-level
+        // ancestor to test membership. Free-only users are ignored — if a
+        // real-work token's only consumer is a dealloc-only op, the
+        // real-work token is still a live-out (the dealloc consumer is
+        // skipped above and its "freed memory" token shouldn't anchor the
+        // group's completion signal either).
+        bool hasInGroupUser = llvm::any_of(tok.getUsers(), [&](Operation *u) {
+          Operation *top = u;
+          while (top && !clonedSet.contains(top))
+            top = top->getParentOp();
+          return top != nullptr && !isFreeOnlyOp(top);
+        });
+        if (!hasInGroupUser)
+          liveOuts.push_back(tok);
+      }
+
+      Value lastToken;
+      if (liveOuts.size() == 1) {
+        lastToken = liveOuts.front();
+      } else if (liveOuts.size() > 1) {
+        auto joinWaitAll = xilinx::air::WaitAllOp::create(
+            rewriter, clonedOps.back()->getLoc(),
+            air::AsyncTokenType::get(rewriter.getContext()), liveOuts);
+        lastToken = joinWaitAll.getAsyncToken();
+      }
+      lastAsyncTokenPerHerd[herdIdx] = lastToken;
     }
 
     // Erase original herds; replace async token uses if async.
@@ -1075,47 +1216,56 @@ struct ConstructPingPongDependencyPattern
     SmallVector<Operation *> pong_consumer_fronts;
     SmallVector<Operation *> pong_consumer_backs;
 
-    new_loop_op.getBody()->walk([&](Operation *op) {
-      if (op->hasAttr("ping_pong") || op->hasAttr("unrolled_iteration")) {
-        auto ping_pong_id =
-            op->hasAttr("ping_pong")
-                ? (op->getAttrOfType<IntegerAttr>("ping_pong").getUInt())
-                : (op->getAttrOfType<IntegerAttr>("unrolled_iteration")
-                       .getInt());
-        // "Ping" producer fronts
-        if (op->hasAttr("async_front") && ping_pong_id == 0) {
-          ping_producer_fronts.push_back(op);
-        }
-        // "Pong" producer fronts
-        else if (op->hasAttr("async_front") && ping_pong_id == 1) {
-          pong_producer_fronts.push_back(op);
-        }
-        // "Ping" consumer backs
-        else if (op->hasAttr("async_back") && ping_pong_id == 0) {
-          ping_consumer_backs.push_back(op);
-        }
-        // "Pong" consumer backs
-        else if (op->hasAttr("async_back") && ping_pong_id == 1) {
-          pong_consumer_backs.push_back(op);
-        }
-        // "Ping" producer backs
-        if (op->hasAttr("producer") && ping_pong_id == 0) {
-          ping_producer_backs.push_back(op);
-        }
-        // "Pong" producer backs
-        if (op->hasAttr("producer") && ping_pong_id == 1) {
-          pong_producer_backs.push_back(op);
-        }
-        // "Ping" consumer fronts
-        if (op->hasAttr("consumer") && ping_pong_id == 0) {
-          ping_consumer_fronts.push_back(op);
-        }
-        // "Pong" consumer fronts
-        if (op->hasAttr("consumer") && ping_pong_id == 1) {
-          pong_consumer_fronts.push_back(op);
-        }
-      }
-    });
+    // Classify a single op by its ping_pong / async_front / async_back /
+    // producer / consumer annotations into the appropriate bucket. Shared
+    // between the inner-scf.for branch and the general branch below to keep
+    // the two paths in lockstep — any future bucket / attr change is made
+    // exactly once.
+    auto classifyOp = [&](Operation *op) {
+      if (!op->hasAttr("ping_pong") && !op->hasAttr("unrolled_iteration"))
+        return;
+      auto ping_pong_id =
+          op->hasAttr("ping_pong")
+              ? (op->getAttrOfType<IntegerAttr>("ping_pong").getUInt())
+              : (op->getAttrOfType<IntegerAttr>("unrolled_iteration").getInt());
+      if (op->hasAttr("async_front") && ping_pong_id == 0)
+        ping_producer_fronts.push_back(op);
+      else if (op->hasAttr("async_front") && ping_pong_id == 1)
+        pong_producer_fronts.push_back(op);
+      else if (op->hasAttr("async_back") && ping_pong_id == 0)
+        ping_consumer_backs.push_back(op);
+      else if (op->hasAttr("async_back") && ping_pong_id == 1)
+        pong_consumer_backs.push_back(op);
+      if (op->hasAttr("producer") && ping_pong_id == 0)
+        ping_producer_backs.push_back(op);
+      if (op->hasAttr("producer") && ping_pong_id == 1)
+        pong_producer_backs.push_back(op);
+      if (op->hasAttr("consumer") && ping_pong_id == 0)
+        ping_consumer_fronts.push_back(op);
+      if (op->hasAttr("consumer") && ping_pong_id == 1)
+        pong_consumer_fronts.push_back(op);
+    };
+
+    // Walk new_loop_op's body, but do NOT descend into nested scf.for ops:
+    // the greedy rewriter may have already pp-transformed an inner scf.for,
+    // in which case its body carries the inner loop's own ping_pong /
+    // producer / consumer / async_front / async_back annotations. Picking
+    // those up here would wire an outer-scope sink to an inner-region SSA
+    // value, producing "operand #0 does not dominate this use". The inner
+    // scf.for op itself is still classified — it may legitimately be a
+    // producer / consumer of the outer-level buffer — we only prune its
+    // body. Pre-order is required: WalkResult::skip prunes regions not yet
+    // visited, so under post-order the body has already been walked by the
+    // time the parent's callback fires.
+    new_loop_op.getBody()->walk<WalkOrder::PreOrder>(
+        [&](Operation *op) -> WalkResult {
+          classifyOp(op);
+          // Block::walk starts inside the body, so new_loop_op itself is
+          // never visited — every scf.for we see here is a nested one.
+          if (isa<scf::ForOp>(op))
+            return WalkResult::skip();
+          return WalkResult::advance();
+        });
 
     // Part 2: Connect producers
     for (auto sink : ping_producer_fronts) {
@@ -1440,42 +1590,173 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                     std::string omitMemorySpace)
       : OpRewritePattern(ctx), omitMemorySpace(omitMemorySpace) {}
 
+  // Shared predicate for the rewriter and the nested-loop suppression check.
+  // Rejects loops whose candidate alloc receives >1 channel.get per outer
+  // iteration -- the K fills are sequential overwrites; doubling the buffer
+  // doesn't decouple them and the downstream ping-pong transform miscompiles.
+  // `allocsOut`, if non-null, receives the matched allocs on success.
+  static bool isPingPongCandidate(scf::ForOp forOp, StringRef omitMemorySpace,
+                                  SmallVectorImpl<Operation *> *allocsOut) {
+    if (forOp->hasAttr("unroll"))
+      return false;
+    // User-facing opt-out: an scf.for in the candidate's region tree
+    // (including the candidate itself) carrying `air.disable_ping_pong`
+    // disables PP labeling for the enclosing candidate. Used by designs
+    // that know PP is unsafe or unprofitable for the surrounding loop
+    // -- e.g. an inner scf.for with vector iter_args, which today
+    // miscompiles under PP body duplication. Attaching the attr at the
+    // bug site (the inner loop) is more robust than attaching on the
+    // outer candidate, because compiler passes that rebuild fresh
+    // scf.for ops mostly leave pure-compute inner loops intact.
+    if (forOp->hasAttr("air.disable_ping_pong"))
+      return false;
+    bool optedOut = false;
+    forOp.getBody()->walk([&](scf::ForOp inner) -> WalkResult {
+      if (inner->hasAttr("air.disable_ping_pong")) {
+        optedOut = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (optedOut)
+      return false;
+    SmallVector<Operation *> allocs;
+    for (auto exec : forOp.getOps<air::ExecuteOp>()) {
+      for (auto alloc : exec.getOps<memref::AllocOp>()) {
+        auto ty = llvm::cast<MemRefType>(alloc.getType());
+        if (!omitMemorySpace.empty()) {
+          if (omitMemorySpace == "L1" && air::isL1(ty))
+            return false;
+          if (omitMemorySpace == "L2" && air::isL2(ty))
+            return false;
+        }
+        allocs.push_back(alloc.getOperation());
+      }
+    }
+    if (allocs.empty())
+      return false;
+
+    // Each air.execute wraps a single memref.alloc and yields it as the
+    // non-token result at index 1 (see AIR.td and HoistMemallocInForPattern).
+    // Map every alias (bare alloc result and execute yield) to the bare alloc
+    // result as canonical key so a get-via-yield and a get-via-bare don't
+    // count as separate destinations for the same buffer.
+    llvm::DenseMap<Value, Value> aliasToCanonical;
+    for (auto *allocOp : allocs) {
+      Value canonical = allocOp->getResult(0);
+      aliasToCanonical[canonical] = canonical;
+      if (auto exec = allocOp->getParentOfType<air::ExecuteOp>();
+          exec && exec->getNumResults() >= 2)
+        aliasToCanonical[exec->getResults()[1]] = canonical;
+    }
+
+    // Reject if any candidate alloc has >1 channel.get/iter, or if any
+    // intervening loop has a non-static trip count (can't bound the count).
+    //
+    // Channel.gets dispatched by `air-specialize-dma-broadcast` into a chain
+    // of `affine.if` branches all read into the same alloc but only ONE runs
+    // per iter — which is safe for ping-pong. To distinguish that case from
+    // genuinely unsafe multi-fill, check mutual exclusivity directly: two
+    // gets to the same alloc are safe iff they share a common `affine.if`
+    // ancestor where they sit in different regions (then-vs-else). Any other
+    // arrangement — siblings under separate top-level affine.ifs, two gets
+    // in the same `then`/`else` block of one ladder, gets entirely outside
+    // any affine.if — implies both can execute in the same iter, so reject.
+    llvm::SmallDenseMap<Value, SmallVector<Operation *>, 4> getsByAlloc;
+    bool reject = false;
+    forOp.getBody()->walk<WalkOrder::PreOrder>(
+        [&](Operation *op) -> WalkResult {
+          if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(op))
+            return WalkResult::skip();
+          auto getOp = dyn_cast<air::ChannelGetOp>(op);
+          if (!getOp)
+            return WalkResult::advance();
+          auto it = aliasToCanonical.find(getOp.getMemref());
+          if (it == aliasToCanonical.end())
+            return WalkResult::advance();
+          auto trip = air::getStaticTripCountInRange(op, forOp.getOperation());
+          if (!trip || *trip > 1) {
+            reject = true;
+            return WalkResult::interrupt();
+          }
+          getsByAlloc[it->second].push_back(op);
+          return WalkResult::advance();
+        });
+    if (reject)
+      return false;
+
+    // For each op, collect the (affine.if, region) chain that encloses it,
+    // stopping at forOp's body.
+    auto getAffineIfPath = [&](Operation *op) {
+      SmallVector<std::pair<Operation *, Region *>, 4> path;
+      for (Region *r = op->getParentRegion();
+           r && r->getParentOp() && r->getParentOp() != forOp.getOperation();
+           r = r->getParentOp()->getParentRegion()) {
+        if (isa<mlir::affine::AffineIfOp>(r->getParentOp()))
+          path.emplace_back(r->getParentOp(), r);
+      }
+      return path;
+    };
+    // Two ops are mutually exclusive at runtime iff some common affine.if
+    // ancestor places them in different regions (one in `then`, the other
+    // in `else`).
+    auto areMutuallyExclusive = [&](Operation *a, Operation *b) {
+      auto pa = getAffineIfPath(a);
+      auto pb = getAffineIfPath(b);
+      for (auto &[aIf, aReg] : pa)
+        for (auto &[bIf, bReg] : pb)
+          if (aIf == bIf && aReg != bReg)
+            return true;
+      return false;
+    };
+    for (auto &kv : getsByAlloc) {
+      auto &gets = kv.second;
+      for (size_t i = 0; i < gets.size(); ++i)
+        for (size_t j = i + 1; j < gets.size(); ++j)
+          if (!areMutuallyExclusive(gets[i], gets[j]))
+            return false;
+    }
+
+    if (allocsOut)
+      *allocsOut = std::move(allocs);
+    return true;
+  }
+
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
 
-    // Check if the loop has been labelled
-    if (for_op->hasAttr("unroll"))
-      return failure();
-
-    // Check if the loop has child air.execute event containing memref.alloc
     SmallVector<Operation *> alloc_ops;
-    for (auto child_exec : for_op.getOps<air::ExecuteOp>()) {
-      for (auto child_alloc : child_exec.getOps<memref::AllocOp>()) {
-        alloc_ops.push_back(child_alloc.getOperation());
-      }
-    }
-    if (alloc_ops.empty())
+    if (!isPingPongCandidate(for_op, omitMemorySpace, &alloc_ops))
       return failure();
 
-    // Check if we should skip this loop based on memory space
-    if (!omitMemorySpace.empty()) {
-      bool shouldSkip = false;
-      for (auto op : alloc_ops) {
-        auto alloc_op = dyn_cast_if_present<memref::AllocOp>(op);
-        if (!alloc_op)
-          continue;
-        auto memref_type = llvm::cast<MemRefType>(alloc_op.getType());
-
-        // Check if this alloc's memory space matches the omit criteria
-        if ((omitMemorySpace == "L1" && air::isL1(memref_type)) ||
-            (omitMemorySpace == "L2" && air::isL2(memref_type))) {
-          shouldSkip = true;
-          break;
-        }
-      }
-      if (shouldSkip)
-        return failure();
-    }
+    // Skip outer loop if any nested scf.for in the same async scope is itself
+    // a labeling candidate (or already labeled). This avoids cascading
+    // pingpong unrolls, e.g. matvec-add where the outer M-loop has a per-iter
+    // partial alloc and the inner K-loop has per-iter A/B allocs: labeling
+    // both would expand the inner body 2x for the outer pingpong AND 2x for
+    // the inner pingpong, producing 4 buffer instances for A/B instead of 2.
+    // Only the deepest qualifying loop in any nest gets labeled. Sibling fors
+    // at the same depth are labeled independently. Nested loops inside an
+    // air.herd / air.segment / air.launch are in a different scope and do not
+    // count, so the walk stops at those boundaries.
+    bool hasLabelableNestedFor = false;
+    for_op.getBody()->walk<WalkOrder::PreOrder>(
+        [&](Operation *op) -> WalkResult {
+          if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(op))
+            return WalkResult::skip();
+          auto innerFor = dyn_cast<scf::ForOp>(op);
+          if (!innerFor)
+            return WalkResult::advance();
+          if (innerFor->hasAttr("unroll") ||
+              isPingPongCandidate(innerFor, omitMemorySpace,
+                                  /*allocsOut=*/nullptr)) {
+            hasLabelableNestedFor = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+    if (hasLabelableNestedFor)
+      return failure();
 
     // Label the scf.for loop and all its child memref.allocs
     int unroll_factor = 2; // Unroll factor hardened as 2. TODO: add support for
@@ -2055,9 +2336,14 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     SmallVector<Value> strides = channel_op.getStrides();
 
     OpBuilder b(channel_op);
+    auto memrefTy =
+        llvm::dyn_cast<BaseMemRefType>(channel_op.getMemref().getType());
+    int innerAlignment =
+        memrefTy ? air::getDmaInnerElementAlignment(memrefTy, channel_op) : 1;
     (void)canonicalizeWrapAndStrideList(
         b, offsets, wraps, strides,
-        air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
+        air::getTensorVolume(channel_op.getMemref().getType()), maxSize,
+        innerAlignment);
 
     // If empty offsets/sizes/strides, then populate the lists with default
     // values.
@@ -2065,15 +2351,57 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       populateDefaultWrapsAndStrides(b, channel_op.getMemref(), offsets, wraps,
                                      strides);
 
-    // Check if the number of wrap-and-stride dims exceed maxNumDims. TODO:
-    // expand this to take into account more wrap-and-stride constraints.
-    int numActualWrapDims = 0; // Count the number of actual hardware wrap
-                               // dimensions, with wrap value greater than one.
+    int numActualWrapDims = 0;
     for (auto v : wraps) {
       if (*getConstantIntValue(v) > 1)
         numActualWrapDims++;
     }
-    if (maxNumDims >= 0 && numActualWrapDims > maxNumDims - 1)
+    // Pre-fold gate. At the maxNumDims boundary, admit only when some
+    // parent IV reaches an offset that canonicalize can collapse: offset[0]
+    // (outermost) or any offset whose wrap is statically 1 (size-1 dim
+    // erased by canonicalize). Memtile pass only (skipZeroStride=true).
+    bool admitBoundary = false;
+    if (skipZeroStride && maxNumDims >= 0 && numActualWrapDims == maxNumDims) {
+      SmallVector<Value> origOffsets = channel_op.getOffsets();
+      SmallVector<Value> origWraps = channel_op.getSizes();
+      SmallVector<scf::ForOp> parentForOps;
+      Operation *parent = channel_op->getParentOp();
+      while (parent) {
+        if (auto pf = dyn_cast<scf::ForOp>(parent))
+          parentForOps.push_back(pf);
+        if (parent == for_op)
+          break;
+        parent = parent->getParentOp();
+      }
+      auto reachesIV = [&](Value v, Value iv) -> bool {
+        if (v == iv)
+          return true;
+        Operation *defOp = v.getDefiningOp();
+        if (auto exec = dyn_cast_if_present<air::ExecuteOp>(defOp))
+          defOp = &exec.getChildOps().front();
+        if (defOp && isa<arith::AddIOp>(defOp)) {
+          for (Value oper : defOp->getOperands())
+            if (oper == iv)
+              return true;
+        }
+        return false;
+      };
+      for (unsigned i = 0; i < origOffsets.size() && !admitBoundary; ++i) {
+        bool slotIsCollapsible = (i == 0);
+        if (!slotIsCollapsible && i < origWraps.size())
+          if (auto cw = getConstantIntValue(origWraps[i]))
+            slotIsCollapsible = (*cw == 1);
+        if (!slotIsCollapsible)
+          continue;
+        for (auto pf : parentForOps)
+          if (reachesIV(origOffsets[i], pf.getInductionVar())) {
+            admitBoundary = true;
+            break;
+          }
+      }
+    }
+    int effectiveMax = admitBoundary ? maxNumDims : (maxNumDims - 1);
+    if (maxNumDims >= 0 && numActualWrapDims > effectiveMax)
       return failure();
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
@@ -2084,8 +2412,22 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
+        air::getTensorVolume(channel_op.getMemref().getType()), maxSize,
+        innerAlignment);
 
+    // Post-fold legality: reject when canonicalize did not bring the active
+    // dim count back within maxNumDims. The rejection falls through to
+    // AIRUnrollScfForIntoBDChain, which unrolls at the AIR level and
+    // preserves per-op paired waits.
+    if (maxNumDims >= 0) {
+      int postFoldActiveDims = 0;
+      for (auto v : wraps) {
+        if (auto cv = getConstantIntValue(v); cv && *cv > 1)
+          postFoldActiveDims++;
+      }
+      if (postFoldActiveDims > maxNumDims)
+        return failure();
+    }
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
     if (enableRepeatAtHighestDim && !wraps.empty()) {
       // Force bump up number of dims to maxNumDims.
@@ -2245,6 +2587,71 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
       if (isa<air::AsyncTokenType>(resTy))
         resAsyncTokenCount++;
     if (resAsyncTokenCount > 1)
+      return failure();
+
+    // Reject unroll of a deeply-nested redundant-repeat cascade: if no
+    // enclosing IV reaches any channel offset and the compound trip
+    // count exceeds the per-channel lock capacity, unrolling would emit
+    // K chained identical ops and downstream air-to-aie would set the
+    // lock init count to K, breaking per-iter pairing. Leaving the loop
+    // intact keeps init=1 with an implicit per-iter BD repeat.
+    constexpr int64_t kRedundantUnrollLockLimit = 16;
+    auto satMul = [](int64_t a, int64_t b) -> int64_t {
+      if (a < 0 || b < 0)
+        return -1;
+      int64_t prod;
+      if (llvm::MulOverflow(a, b, prod) || prod > kRedundantUnrollLockLimit)
+        return kRedundantUnrollLockLimit + 1;
+      return prod;
+    };
+    SmallVector<Value> enclosingIVs{for_op.getInductionVar()};
+    int64_t compoundTrip =
+        air::getStaticScfForTripCountAsInt(for_op).value_or(-1);
+    for (Operation *p = for_op->getParentOp(); p; p = p->getParentOp()) {
+      if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(p))
+        break;
+      if (auto pf = dyn_cast<scf::ForOp>(p)) {
+        enclosingIVs.push_back(pf.getInductionVar());
+        auto t = air::getStaticScfForTripCountAsInt(pf);
+        compoundTrip = t ? satMul(compoundTrip, *t) : -1;
+      }
+    }
+    // True iff `v` transitively depends on some enclosing IV via its
+    // def-use chain (handles arith ops, affine.apply, index_cast,
+    // air.execute wrappers).
+    auto ivReachesValue = [&](Value v) -> bool {
+      SmallVector<Value> worklist{v};
+      llvm::SmallPtrSet<Value, 8> seen;
+      while (!worklist.empty()) {
+        Value cur = worklist.pop_back_val();
+        if (!seen.insert(cur).second)
+          continue;
+        for (Value iv : enclosingIVs)
+          if (cur == iv)
+            return true;
+        Operation *def = cur.getDefiningOp();
+        if (!def)
+          continue;
+        if (auto exec = dyn_cast<air::ExecuteOp>(def))
+          for (Operation &child : exec.getChildOps())
+            for (Value oper : child.getOperands())
+              worklist.push_back(oper);
+        else
+          for (Value oper : def->getOperands())
+            worklist.push_back(oper);
+      }
+      return false;
+    };
+    bool someIVInOffsets = false;
+    for_op.getBody()->walk([&](air::ChannelInterface chan) {
+      for (Value off : chan.getOffsets())
+        if (ivReachesValue(off)) {
+          someIVInOffsets = true;
+          return WalkResult::interrupt();
+        }
+      return WalkResult::advance();
+    });
+    if (!someIVInOffsets && compoundTrip > kRedundantUnrollLockLimit)
       return failure();
 
     // Unroll loop; preserve async tokens after unroll.
@@ -2464,9 +2871,13 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
       if (padBeforeCheck)
         return failure();
       // Canonicalize offsets/sizes/strides using a helper function.
+      auto memrefTy = llvm::dyn_cast<BaseMemRefType>(op.getMemref().getType());
+      int innerAlignment =
+          memrefTy ? air::getDmaInnerElementAlignment(memrefTy, op) : 1;
       if (failed(canonicalizeWrapAndStrideList(
               rewriter, offsets, sizes, strides,
-              air::getTensorVolume(op.getMemref().getType()), maxSize)))
+              air::getTensorVolume(op.getMemref().getType()), maxSize,
+              innerAlignment)))
         return failure();
 
       // When highest-dimension repeat is active, pad offsets/sizes/strides to
@@ -3203,7 +3614,21 @@ public:
         auto annotateFn = [](unsigned i, Operation *op, OpBuilder b) {
           op->setAttr("unrolled_iteration", b.getI32IntegerAttr(i));
         };
-        (void)loopUnrollByFactor(for_op, unroll_factor, annotateFn);
+        // When the trip count is provably divisible by the unroll factor (e.g.
+        // a runtime `2*J2` bound unrolled by 2), MLIR still emits a zero-trip
+        // runtime epilogue because it cannot statically prove divisibility.
+        // That dead remainder lowers to never-filled DMA BD ring slots and
+        // corrupts the count-free ring locks, so erase it.
+        bool divisible =
+            air::isTripCountDivisibleByFactor(for_op, unroll_factor);
+        auto info = loopUnrollByFactor(for_op, unroll_factor, annotateFn);
+        if (succeeded(info) && divisible && info->epilogueLoopOp) {
+          scf::ForOp epi = *info->epilogueLoopOp;
+          for (auto [res, init] :
+               llvm::zip(epi.getResults(), epi.getInitArgs()))
+            res.replaceAllUsesWith(init);
+          epi.erase();
+        }
       }
     });
   }
@@ -3221,6 +3646,163 @@ public:
       op->removeAttr("async_front");
       op->removeAttr("async_back");
     });
+  }
+
+  void shareResidentRings(func::FuncOp funcOp) {
+    auto pushUnique = [](auto &vec, auto entry) {
+      if (!llvm::is_contained(vec, entry))
+        vec.push_back(entry);
+    };
+    // The channel declaration `g` reads from, or null.
+    auto getDecl = [](air::ChannelGetOp g) -> Operation * {
+      auto d = air::getChannelDeclarationThroughSymbol(
+          cast<air::ChannelInterface>(g.getOperation()));
+      return d ? d.getOperation() : nullptr;
+    };
+    auto isMarked = [](Operation *decl) {
+      return decl && decl->hasAttr("air.shared_resident_ring");
+    };
+    // The set of channel declarations the loop's gets target, sorted for stable
+    // comparison and deduplicated. Chains are keyed on this so two loops merge
+    // only when they re-read the SAME streams -- loops reading different
+    // channels are never merged together (even if their buffer shapes
+    // coincide).
+    auto channelSet = [&](scf::ForOp forOp) {
+      SmallVector<Operation *> decls;
+      for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>())
+        if (auto *d = getDecl(g); d && !llvm::is_contained(decls, d))
+          decls.push_back(d);
+      llvm::sort(decls);
+      return decls;
+    };
+    // A constructed ping-pong loop (exactly 4 ping-pong async tokens) whose
+    // ring is shareable. The ping-pong ring rotates over ALL the loop's buffers
+    // as one unit, so it can only be shared when EVERY get in the loop targets
+    // a marked channel -- a loop mixing marked and unmarked gets is left
+    // untouched (the opt-in stays honest; an unmarked channel is never
+    // rewired).
+    auto isMarkedRingLoop = [&](scf::ForOp forOp) -> bool {
+      if (forOp.getNumResults() != 4)
+        return false;
+      bool any = false;
+      for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>()) {
+        if (!isMarked(getDecl(g)))
+          return false;
+        any = true;
+      }
+      return any;
+    };
+    // Ring buffers read by the loop, in channel.get program order.
+    auto ringBuffers = [&](scf::ForOp forOp) {
+      SmallVector<Value> bufs;
+      for (auto g : forOp.getBody()->getOps<air::ChannelGetOp>())
+        pushUnique(bufs, g.getDstMemref());
+      return bufs;
+    };
+
+    // Collect, per (block, channel-set), the ordered chain of ring loops.
+    struct Chain {
+      Block *block;
+      SmallVector<Operation *> channels;
+      SmallVector<scf::ForOp> loops;
+    };
+    SmallVector<Chain> chains;
+    funcOp.walk([&](scf::ForOp forOp) {
+      if (!isMarkedRingLoop(forOp))
+        return;
+      SmallVector<Operation *> channels = channelSet(forOp);
+      Chain *dst = nullptr;
+      for (auto &c : chains)
+        if (c.block == forOp->getBlock() && c.channels == channels) {
+          dst = &c;
+          break;
+        }
+      if (!dst)
+        chains.push_back({forOp->getBlock(), channels, {forOp}});
+      else
+        dst->loops.push_back(forOp);
+    });
+
+    for (auto &chainRec : chains) {
+      auto &chain = chainRec.loops;
+      if (chain.size() < 2)
+        continue;
+      // Owner buffers define the shared ring; all followers must match in count
+      // and element type, position-by-position, or we bail on this chain.
+      SmallVector<Value> ownerBufs = ringBuffers(chain[0]);
+      bool ok = !ownerBufs.empty();
+      for (unsigned k = 1; k < chain.size() && ok; k++) {
+        auto fb = ringBuffers(chain[k]);
+        if (fb.size() != ownerBufs.size()) {
+          ok = false;
+          break;
+        }
+        for (unsigned i = 0; i < fb.size(); i++)
+          if (fb[i].getType() != ownerBufs[i].getType())
+            ok = false;
+      }
+      if (!ok)
+        continue;
+
+      // The follower deallocs free the shared ring at the end; the owner's (and
+      // any middle loop's) deallocs would double-free, so drop them. Collect
+      // the dealloc-executes of every loop EXCEPT the last before any rewrite.
+      auto deallocExecsOf = [&](ArrayRef<Value> bufs) {
+        SmallVector<Operation *> execs;
+        for (auto b : bufs)
+          for (auto *u : b.getUsers())
+            if (isa<memref::DeallocOp>(u))
+              if (auto *p = u->getParentOp())
+                if (isa<air::ExecuteOp>(p))
+                  pushUnique(execs, p);
+        return execs;
+      };
+      SmallVector<Operation *> deadDeallocs = deallocExecsOf(ownerBufs);
+      for (unsigned k = 1; k + 1 < chain.size(); k++)
+        for (auto *d : deallocExecsOf(ringBuffers(chain[k])))
+          pushUnique(deadDeallocs, d);
+
+      // Merge each follower onto the owner's ring.
+      SmallVector<Operation *> deadAllocs;
+      for (unsigned k = 1; k < chain.size(); k++) {
+        auto followerBufs = ringBuffers(chain[k]);
+        for (auto b : followerBufs)
+          if (auto *def = b.getDefiningOp())
+            pushUnique(deadAllocs, def);
+        // Capture the wait_all (if any) that seeds this follower's init args;
+        // it becomes dead once we rechain the iter args.
+        for (auto init : chain[k].getInitArgs())
+          if (auto *def = init.getDefiningOp())
+            if (isa<air::WaitAllOp>(def))
+              pushUnique(deadAllocs, def);
+        // Reuse the owner's physical buffers.
+        for (unsigned i = 0; i < followerBufs.size(); i++)
+          followerBufs[i].replaceAllUsesWith(ownerBufs[i]);
+        // Continue the ring rotation from the previous loop's results.
+        chain[k].getInitArgsMutable().assign(chain[k - 1].getResults());
+      }
+
+      // Drop the now-dead duplicate allocs and deallocs.
+      Value doneTok = chain.back().getResult(1);
+      for (auto *d : deadDeallocs) {
+        d->getResult(0).replaceAllUsesWith(doneTok);
+        d->erase();
+      }
+      // Erase dead allocs / wait_alls to fixpoint (they form a token chain).
+      bool changed = true;
+      while (changed) {
+        changed = false;
+        SmallVector<Operation *> still;
+        for (auto *a : deadAllocs) {
+          if (a->use_empty()) {
+            a->erase();
+            changed = true;
+          } else
+            still.push_back(a);
+        }
+        deadAllocs = still;
+      }
+    }
   }
 
   void runOnOperation() override {
@@ -3241,6 +3823,10 @@ public:
     for (auto f : funcOps)
       runConstructPingPongDependencyPatterns(f);
     LLVM_DEBUG(llvm::dbgs() << "After construct:\n" << module << "\n");
+    for (auto f : funcOps)
+      shareResidentRings(f);
+    LLVM_DEBUG(llvm::dbgs() << "After share-resident-rings:\n"
+                            << module << "\n");
     for (auto f : funcOps)
       runCleanUpAttrs(f);
   }
@@ -4975,7 +5561,7 @@ struct ShrinkMemrefSizesByAccessPattern
     if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc->getParentOp()))
       memref = exec->getResult(1);
 
-    if (alloc->hasAttr("shrinkage"))
+    if (alloc->hasAttr("air.shrinkage"))
       return failure();
 
     // Get dealloc.
@@ -5011,7 +5597,7 @@ struct ShrinkMemrefSizesByAccessPattern
         if (updateAccessPatternAfterShrinkage(chanOp, memref_shape,
                                               overall_access_bounds, rewriter)
                 .failed()) {
-          alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
+          alloc->setAttr("air.shrinkage", rewriter.getBoolAttr(false));
           return failure();
         }
       }
@@ -5023,7 +5609,7 @@ struct ShrinkMemrefSizesByAccessPattern
         if (updateAccessPatternAfterShrinkage(subViewOp, users,
                                               overall_access_bounds, rewriter)
                 .failed()) {
-          alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
+          alloc->setAttr("air.shrinkage", rewriter.getBoolAttr(false));
           return failure();
         }
       }
@@ -5035,13 +5621,13 @@ struct ShrinkMemrefSizesByAccessPattern
         if (transReadOp) {
           if (updateAccessPatternAfterShrinkage(transReadOp, rewriter)
                   .failed()) {
-            alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
+            alloc->setAttr("air.shrinkage", rewriter.getBoolAttr(false));
             return failure();
           }
         } else if (transWriteOp) {
           if (updateAccessPatternAfterShrinkage(transWriteOp, rewriter)
                   .failed()) {
-            alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
+            alloc->setAttr("air.shrinkage", rewriter.getBoolAttr(false));
             return failure();
           }
         }
@@ -5061,11 +5647,17 @@ struct ShrinkMemrefSizesByAccessPattern
             rewriter, execOp->getLoc(),
             air::AsyncTokenType::get(rewriter.getContext()), newMemrefType,
             execOp.getAsyncDependencies());
+        // Mark the wrapping air.execute (more durable across canonicalize
+        // than an attribute on the inner alloc, which gets stripped by
+        // op folding) so downstream passes / verifier can recognize this
+        // as a shrunk-by-pipeline alloc whose lowering will replicate per
+        // PE.
+        newExecOp->setAttr("air.shrinkage", rewriter.getBoolAttr(true));
         Block *async_exec_bb = rewriter.createBlock(&newExecOp.getRegion());
         rewriter.setInsertionPointToStart(async_exec_bb);
         auto newAlloc =
             memref::AllocOp::create(rewriter, alloc->getLoc(), newMemrefType);
-        newAlloc->setAttr("shrinkage", rewriter.getBoolAttr(true));
+        newAlloc->setAttr("air.shrinkage", rewriter.getBoolAttr(true));
         air::ExecuteTerminatorOp::create(rewriter, rewriter.getUnknownLoc(),
                                          newAlloc.getResult());
         for (unsigned i = 0; i < execOp->getNumResults(); i++)
@@ -5084,7 +5676,7 @@ struct ShrinkMemrefSizesByAccessPattern
         rewriter.setInsertionPoint(alloc);
         auto newAlloc =
             memref::AllocOp::create(rewriter, alloc->getLoc(), newMemrefType);
-        newAlloc->setAttr("shrinkage", rewriter.getBoolAttr(true));
+        newAlloc->setAttr("air.shrinkage", rewriter.getBoolAttr(true));
         alloc.getResult().replaceAllUsesWith(newAlloc.getResult());
         rewriter.eraseOp(alloc);
       }
@@ -6009,7 +6601,7 @@ public:
     // Update func.call declaration post memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
     funcOp.walk([&](memref::AllocOp op) {
-      if (op->hasAttr("shrinkage"))
+      if (op->hasAttr("air.shrinkage"))
         shrunkMemallocs.push_back(op);
     });
 
@@ -6063,7 +6655,7 @@ public:
     }
     (void)applyPatternsGreedily(func, std::move(patterns));
     runPostProcPatterns(func);
-    func.walk([&](memref::AllocOp op) { op->removeAttr("shrinkage"); });
+    func.walk([&](memref::AllocOp op) { op->removeAttr("air.shrinkage"); });
   }
 
 private:
@@ -6209,7 +6801,8 @@ public:
       : AIROptimizeShimDMABDsBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect>();
+    registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect,
+                    mlir::affine::AffineDialect>();
   }
 
   void runOnOperation() override {
@@ -6267,11 +6860,26 @@ public:
     };
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(shimFors.front());
-    SmallVector<Value> optTileSizes = convertVecOfIntToVecOfValue(
-        rewriter,
-        SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
-    // Helper function getting the actual tiling sizes based on the specified
-    // loop band's depth and trip counts.
+
+    // Sentinel `shim-dma-tile-sizes=0`: globally disable tiling for every
+    // launch. Loops pass through un-tiled and the post-pass wrap-stride
+    // fold collapses them into multi-D BD descriptors. Useful as a kill
+    // switch when a per-launch attribute is preferred for selective
+    // re-enabling.
+    bool tilingDisabled = clTileSizes.size() == 1 && clTileSizes[0] == 0;
+    if (!tilingDisabled && llvm::is_contained(clTileSizes, 0u)) {
+      func.emitError("shim-dma-tile-sizes=0 is only valid as a single-value "
+                     "sentinel; got a list containing 0");
+      signalPassFailure();
+      return;
+    }
+
+    SmallVector<Value> optTileSizes;
+    if (!tilingDisabled && !clTileSizes.empty()) {
+      optTileSizes = convertVecOfIntToVecOfValue(
+          rewriter,
+          SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
+    }
     auto getActualTileSizesPerScfRoot = [](OpBuilder &b, scf::ForOp root,
                                            SmallVector<Value> optTileSizes) {
       OpBuilder::InsertionGuard guard(b);
@@ -6290,13 +6898,80 @@ public:
       }
       return actualTileSizes;
     };
-    // Tile each for loop band operated by shim dma bds.
+    // Tile-size vector of length = root's perfectly-nested depth, filled
+    // with `value`. Used by the per-launch attribute auto-expand path.
+    auto tileSizesByDepth = [&](scf::ForOp root, unsigned value) {
+      SmallVector<scf::ForOp> nested;
+      getPerfectlyNestedLoops(nested, root);
+      unsigned depth = std::max((size_t)1, nested.size());
+      rewriter.setInsertionPoint(root);
+      return convertVecOfIntToVecOfValue(rewriter,
+                                         SmallVector<unsigned>(depth, value));
+    };
     llvm::SetVector<scf::ForOp> forLoopsToUnroll;
+    llvm::SetVector<air::LaunchOp> tiledLaunches;
+    if (tilingDisabled)
+      shimFors.clear();
     for (auto forOp : shimFors) {
-      if (optTileSizes.empty())
-        break;
+      auto enclosingLaunch = forOp->getParentOfType<air::LaunchOp>();
+      // Per-loop tile decision flow:
+      //   1. global CLI non-empty -> use as tile sizes
+      //   2. else: per-launch `air.shim_dma_tile_sizes` attribute:
+      //         single value 0  -> skip tiling for this launch
+      //         single value N  -> auto-expand to perfectly-nested depth
+      //         multi-value     -> use literally
+      //   3. else: skip tiling (wrap-stride fold collapses loops into
+      //      multi-D BD descriptors -- pre-#1616 default behavior).
+      SmallVector<Value> perLoopTileSizes;
+      DenseI64ArrayAttr launchAttr =
+          enclosingLaunch ? enclosingLaunch->getAttrOfType<DenseI64ArrayAttr>(
+                                "air.shim_dma_tile_sizes")
+                          : nullptr;
+      if (!optTileSizes.empty()) {
+        perLoopTileSizes = optTileSizes;
+      } else if (launchAttr) {
+        // Validate: empty rejected; single [0] is the skip-tile sentinel;
+        // any other value must be > 0 (multi-value 0 would later reach
+        // findLargestFactor(_, 0); negative would wrap when cast to unsigned).
+        ArrayRef<int64_t> attrSizes = launchAttr.asArrayRef();
+        if (attrSizes.empty()) {
+          enclosingLaunch->emitOpError(
+              "air.shim_dma_tile_sizes must not be empty");
+          signalPassFailure();
+          return;
+        }
+        bool isSkipSentinel = attrSizes.size() == 1 && attrSizes[0] == 0;
+        if (!isSkipSentinel) {
+          for (int64_t v : attrSizes) {
+            if (v <= 0) {
+              enclosingLaunch->emitOpError(
+                  "air.shim_dma_tile_sizes values must be > 0 (use "
+                  "single-value [0] for the skip-tile sentinel)");
+              signalPassFailure();
+              return;
+            }
+          }
+        }
+        if (isSkipSentinel)
+          continue;
+        if (attrSizes.size() == 1) {
+          perLoopTileSizes =
+              tileSizesByDepth(forOp, static_cast<unsigned>(attrSizes[0]));
+        } else {
+          rewriter.setInsertionPoint(forOp);
+          perLoopTileSizes = convertVecOfIntToVecOfValue(
+              rewriter,
+              SmallVector<unsigned>(attrSizes.begin(), attrSizes.end()));
+        }
+      } else {
+        // No CLI, no attribute -> skip tiling (pre-#1616 default).
+        continue;
+      }
+      assert(!perLoopTileSizes.empty());
+      if (enclosingLaunch)
+        tiledLaunches.insert(enclosingLaunch);
       SmallVector<Value> actualTileSizes =
-          getActualTileSizesPerScfRoot(rewriter, forOp, optTileSizes);
+          getActualTileSizesPerScfRoot(rewriter, forOp, perLoopTileSizes);
       auto tiledLoops = tilePerfectlyNested(forOp, ArrayRef(actualTileSizes));
 
       // Fixup loop-carried deps in tiled loops
@@ -6384,34 +7059,22 @@ public:
     // Apply DMA folding.
     applyAIRL3DmaFoldingPatterns(func, *device);
 
-    if (forLoopsToUnroll.empty()) {
-      // If no loop unrolling was performed, gather all air.channel_put/get
-      // tokens from block, and generate a blocking wait all.
-      SmallVector<Block *> funcAndLaunchBlocks(1, &func.getBody().front());
-      func.walk([&funcAndLaunchBlocks](air::LaunchOp launch) {
-        if (air::isAsyncOp(launch))
-          funcAndLaunchBlocks.push_back(&launch.getRegion().front());
-      });
-      for (auto blk : funcAndLaunchBlocks) {
-        {
-          OpBuilder::InsertionGuard guard(rewriter);
-          SmallVector<Value> chanTokens;
-          for (auto chan : blk->getOps<air::ChannelInterface>())
-            if (air::isAsyncOp(chan))
-              chanTokens.push_back(air::getAsyncTokenFromOp(chan));
-
-          if (blk->mightHaveTerminator())
-            rewriter.setInsertionPoint(blk->getTerminator());
-          else
-            rewriter.setInsertionPointToEnd(blk);
-          auto launchEndWaitAll =
-              air::WaitAllOp::create(rewriter, rewriter.getUnknownLoc(),
-                                     /*result_type*/ Type(), chanTokens);
-          // Label this wait_all as the end of a launch body so that later
-          // passes can identify it for reconfiguration operations.
-          launchEndWaitAll->setAttr("air.launch_end", rewriter.getUnitAttr());
-        }
-      }
+    // Fallback end-of-block wait_all: func body when nothing tiled anywhere,
+    // plus every async launch whose shim fors did NOT get tiled. Uses
+    // generateWaitAllToTerminateBlock to gather all dangling async tokens
+    // (tokens inside surviving scf.fors would be missed otherwise).
+    SmallVector<Block *> blocksToFixup;
+    if (forLoopsToUnroll.empty())
+      blocksToFixup.push_back(&func.getBody().front());
+    func.walk([&](air::LaunchOp launch) {
+      if (air::isAsyncOp(launch) && !tiledLaunches.contains(launch))
+        blocksToFixup.push_back(&launch.getRegion().front());
+    });
+    for (auto blk : blocksToFixup) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto launchEndWaitAll = air::generateWaitAllToTerminateBlock(
+          *blk, rewriter, /*isBlocking=*/true);
+      launchEndWaitAll->setAttr("air.launch_end", rewriter.getUnitAttr());
     }
   }
 
@@ -6433,11 +7096,35 @@ private:
     // Collect launch regions to process. If there are no launches, fall back
     // to the function region (e.g. when channel ops are directly in the
     // function body).
+    //
+    // Opt-out: a launch carrying `air.preserve_shim_dma_order` keeps its
+    // air.channel.put/get program order untouched (no per-channel BD
+    // regrouping/folding). Required when sibling shim channels are coupled by a
+    // downstream broadcast/multicast consumer that advances all destinations in
+    // lockstep: the cross-channel (round-major) issue order is then
+    // semantically load-bearing but is not expressed as SSA dependences, so the
+    // default per-channel fold would reorder it into a non-drainable
+    // (deadlocking) schedule.
     SmallVector<Region *> regionsToProcess;
+    bool foundLaunch = false;
     func.walk([&](air::LaunchOp launch) {
+      foundLaunch = true;
+      if (launch->hasAttr(air::attrs::PreserveShimDmaOrder)) {
+        // Propagate the marker onto this launch's channel ops so it survives
+        // air-to-std (which copies discardable attrs onto airrt.dma_memcpy_nd)
+        // and reaches airrt-to-npu, where it enables issue_token + bounded
+        // double-buffered awaits (backpressure) for these lockstep-coupled
+        // shim feeds.
+        launch.walk([&](Operation *op) {
+          if (isa<air::ChannelPutOp, air::ChannelGetOp>(op))
+            op->setAttr(air::attrs::PreserveShimDmaOrder,
+                        mlir::UnitAttr::get(op->getContext()));
+        });
+        return;
+      }
       regionsToProcess.push_back(&launch.getRegion());
     });
-    if (regionsToProcess.empty())
+    if (!foundLaunch)
       regionsToProcess.push_back(&func.getRegion());
 
     for (Region *region : regionsToProcess) {
@@ -6449,7 +7136,8 @@ private:
           /*maxNumDims=*/maxNumDims,
           /*maxSize=*/maxSize,
           /*enableForLoopUnrolling=*/enableForLoopUnrolling,
-          /*enableRepeatAtHighestDim=*/true);
+          /*enableRepeatAtHighestDim=*/true,
+          /*skipZeroStride=*/false);
     }
   }
 };
@@ -6631,6 +7319,12 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
     for (auto memref : usedMemrefsDefedAbove) {
       if (!memrefIsOnlyUsedByOpOrByDealloc(op, memref))
         continue;
+      // Do not sink a shared L1 herd operand carrying a cross-core
+      // producer/consumer dependence into the SPMD herd body: sinking would
+      // give each core a private copy and break neighbor L1 communication.
+      if (auto herd = dyn_cast<air::HerdOp>(op.getOperation()))
+        if (air::herdBufferHasCrossCoreDependence(herd, memref))
+          continue;
       air::ExecuteOp allocExec = nullptr;
       air::ExecuteOp deallocExec = nullptr;
       memref::AllocOp alloc = nullptr;
@@ -6861,7 +7555,7 @@ public:
     // Update func.call declaration after memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
     funcOp.walk([&](memref::AllocOp op) {
-      if (op->hasAttr("shrinkage"))
+      if (op->hasAttr("air.shrinkage"))
         shrunkMemallocs.push_back(op);
     });
     // Find indirect funcCall users of memref.

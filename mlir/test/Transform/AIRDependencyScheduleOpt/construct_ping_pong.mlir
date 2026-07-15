@@ -623,3 +623,74 @@ module {
     return
   }
 }
+
+// Regression: nested scf.for loops, both matching the ping-pong pattern.
+// The greedy rewriter processes the inner scf.for first (bottom-up),
+// leaving inner-region ops annotated with
+// ping_pong/producer/consumer/async_front/async_back. The outer rewrite
+// must not pick up those inner-region annotations when wiring its own
+// dependency edges -- doing so references inner-region SSA values from
+// outer scope ("operand #0 does not dominate this use"). Pass succeeds
+// iff the classification walk prunes nested scf.for bodies.
+// CHECK-LABEL: nested_ping_pong
+// CHECK: scf.for {{.*}} -> (!air.async.token, !air.async.token, !air.async.token, !air.async.token)
+// CHECK:   scf.for {{.*}} -> (!air.async.token, !air.async.token, !air.async.token, !air.async.token)
+// CHECK:   scf.yield {{.*}} : !air.async.token, !air.async.token, !air.async.token, !air.async.token
+
+air.channel @nested_ch_in [1, 1]
+air.channel @nested_ch_mid [1, 1]
+air.channel @nested_ch_out [1, 1]
+func.func @nested_ping_pong() {
+  %c1 = arith.constant 1 : index
+  %0 = air.launch async (%arg0, %arg1) in (%arg2=%c1, %arg3=%c1) attributes {id = 1 : i32} {
+    %1 = air.segment async {
+      %c0_0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c128_0 = arith.constant 128 : index
+      %c256_0 = arith.constant 256 : index
+      %async_token_out, %results_out = air.execute -> (memref<32x32xbf16, 1>) {
+        %alloc = memref.alloc() : memref<32x32xbf16, 1>
+        air.execute_terminator %alloc : memref<32x32xbf16, 1>
+      } {unrolled_iteration = 1 : i32}
+      %async_token_out1, %results_out1 = air.execute [%async_token_out] -> (memref<32x32xbf16, 1>) {
+        %alloc = memref.alloc() : memref<32x32xbf16, 1>
+        air.execute_terminator %alloc : memref<32x32xbf16, 1>
+      } {unrolled_iteration = 0 : i32}
+      %outer_for = scf.for %arg_o = %c0_0 to %c256_0 step %c128_0 iter_args(%tok_o = %async_token_out1) -> (!air.async.token) {
+        %get_o0 = air.channel.get async [%tok_o] @nested_ch_in[] (%results_out1[] [] []) {async_front = true, unrolled_iteration = 0 : i32} : (memref<32x32xbf16, 1>)
+        %async_token_in, %results_in = air.execute [%get_o0] -> (memref<32x32xbf16, 2>) {
+          %alloc = memref.alloc() : memref<32x32xbf16, 2>
+          air.execute_terminator %alloc : memref<32x32xbf16, 2>
+        } {unrolled_iteration = 1 : i32}
+        %async_token_in1, %results_in1 = air.execute [%async_token_in] -> (memref<32x32xbf16, 2>) {
+          %alloc = memref.alloc() : memref<32x32xbf16, 2>
+          air.execute_terminator %alloc : memref<32x32xbf16, 2>
+        } {unrolled_iteration = 0 : i32}
+        %inner_for = scf.for %arg_i = %c0_0 to %c128_0 step %c1_0 iter_args(%tok_i = %async_token_in1) -> (!air.async.token) {
+          %get_i0 = air.channel.get async [%tok_i] @nested_ch_mid[] (%results_in1[] [] []) {async_front = true, unrolled_iteration = 0 : i32} : (memref<32x32xbf16, 2>)
+          %put_i0 = air.channel.put async [%get_i0] @nested_ch_out[] (%results_in1[] [] []) {async_back = true, unrolled_iteration = 0 : i32} : (memref<32x32xbf16, 2>)
+          %get_i1 = air.channel.get async [%put_i0] @nested_ch_mid[] (%results_in[] [] []) {async_front = true, unrolled_iteration = 1 : i32} : (memref<32x32xbf16, 2>)
+          %put_i1 = air.channel.put async [%get_i1] @nested_ch_out[] (%results_in[] [] []) {async_back = true, unrolled_iteration = 1 : i32} : (memref<32x32xbf16, 2>)
+          scf.yield %put_i1 : !air.async.token
+        } {unroll = 2 : i32}
+        %dealloc_in = air.execute [%inner_for] {
+          memref.dealloc %results_in1 : memref<32x32xbf16, 2>
+        } {unrolled_iteration = 0 : i32}
+        %dealloc_in1 = air.execute [%inner_for] {
+          memref.dealloc %results_in : memref<32x32xbf16, 2>
+        } {unrolled_iteration = 1 : i32}
+        %put_o0 = air.channel.put async [%inner_for] @nested_ch_in[] (%results_out1[] [] []) {async_back = true, unrolled_iteration = 0 : i32} : (memref<32x32xbf16, 1>)
+        %get_o1 = air.channel.get async [%put_o0] @nested_ch_in[] (%results_out[] [] []) {async_front = true, unrolled_iteration = 1 : i32} : (memref<32x32xbf16, 1>)
+        %put_o1 = air.channel.put async [%get_o1] @nested_ch_in[] (%results_out[] [] []) {async_back = true, unrolled_iteration = 1 : i32} : (memref<32x32xbf16, 1>)
+        scf.yield %put_o1 : !air.async.token
+      } {unroll = 2 : i32}
+      %dealloc_out = air.execute [%outer_for] {
+        memref.dealloc %results_out1 : memref<32x32xbf16, 1>
+      } {unrolled_iteration = 0 : i32}
+      %dealloc_out1 = air.execute [%outer_for] {
+        memref.dealloc %results_out : memref<32x32xbf16, 1>
+      } {unrolled_iteration = 1 : i32}
+    }
+  }
+  return
+}

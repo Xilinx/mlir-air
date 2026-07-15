@@ -14,23 +14,22 @@
 // second put from overwriting the buffer before the DMA reads the first.
 
 // CHECK: aie.device
-// CHECK:         %[[TILE_MT:.*]] = aie.tile(2, 1)
-// CHECK:         %[[TILE:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[TILE:.*]] = aie.tile(2, 3)
 
 // One lock pair for the compute tile's MM2S channel (wlock init=1, rlock init=0)
-// CHECK:         %[[WLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 1 : i32}
-// CHECK:         %[[RLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 0 : i32}
+// CHECK-DAG:         %[[WLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 1 : i32}
+// CHECK-DAG:         %[[RLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 0 : i32}
 
 // One shared buffer
-// CHECK:         %[[BUF:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK-DAG:         %[[BUF:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // DMA program: single BD using the shared buffer and lock pair
 // CHECK:    aie.mem(%[[TILE]])  {
 // CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
-// CHECK:           aie.use_lock(%[[RLOCK]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[BUF]] : memref<32x32xbf16, 2>, 0, 1024)
-// CHECK:           aie.use_lock(%[[WLOCK]], Release, 1)
+// CHECK:           aie.use_lock(%[[RLOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK:           aie.dma_bd(%[[BUF]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
+// CHECK:           aie.use_lock(%[[WLOCK]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
 // CHECK:           aie.end
@@ -38,10 +37,10 @@
 
 // Core body: interleaved acquire(wlock)/release(rlock) per put, NOT batched
 // CHECK:    aie.core(%[[TILE]])  {
-// CHECK:           aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, 1)
-// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, 1)
-// CHECK-NEXT:      aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, 1)
-// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, 1)
+// CHECK:           aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, %{{.*}})
+// CHECK-NEXT:      aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, %{{.*}})
 // CHECK:           aie.end
 // CHECK:         }
 

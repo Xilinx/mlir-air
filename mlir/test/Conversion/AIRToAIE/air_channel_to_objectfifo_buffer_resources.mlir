@@ -8,10 +8,10 @@
 // RUN: air-opt %s --air-to-aie='test-patterns=lower-air-channels' --split-input-file | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcvc1902) {
-// CHECK:   %[[VAL_0:.*]] = aie.tile(1, 1)
-// CHECK:   %[[VAL_1:.*]] = aie.tile(1, 2)
-// CHECK:   aie.objectfifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 2 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:   aie.objectfifo @[[VAL_3:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK-DAG:   %[[VAL_0:.*]] = aie.tile(1, 1)
+// CHECK-DAG:   %[[VAL_1:.*]] = aie.tile(1, 2)
+// CHECK-DAG:   aie.objectfifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 2 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK-DAG:   aie.objectfifo @[[VAL_3:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:   %[[VAL_4:.*]] = aie.core(%[[VAL_1]]) {
 // CHECK:     %[[VAL_5:.*]] = aie.objectfifo.acquire @[[VAL_3]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
 // CHECK:     %[[VAL_6:.*]] = aie.objectfifo.subview.access %[[VAL_5]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
@@ -64,10 +64,10 @@ aie.device(xcvc1902) {
 // -----
 
 // CHECK-LABEL:   aie.device(xcvc1902) {
-// CHECK:   %[[VAL_0:.*]] = aie.tile(1, 1)
-// CHECK:   %[[VAL_1:.*]] = aie.tile(1, 2)
-// CHECK:   aie.objectfifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 2 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:   aie.objectfifo @[[VAL_3:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK-DAG:   %[[VAL_0:.*]] = aie.tile(1, 1)
+// CHECK-DAG:   %[[VAL_1:.*]] = aie.tile(1, 2)
+// CHECK-DAG:   aie.objectfifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 2 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK-DAG:   aie.objectfifo @[[VAL_3:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:   %[[VAL_4:.*]] = aie.core(%[[VAL_1]]) {
 // CHECK:     %[[VAL_5:.*]] = aie.objectfifo.acquire @[[VAL_3]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
 // CHECK:     %[[VAL_6:.*]] = aie.objectfifo.subview.access %[[VAL_5]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>

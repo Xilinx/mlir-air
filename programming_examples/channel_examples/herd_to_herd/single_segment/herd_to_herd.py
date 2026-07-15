@@ -70,9 +70,6 @@ def build_module():
             # Fetch all input data into the channel
             ChannelPut("ChanIn", a)
 
-            # Push all output data out of the channel
-            ChannelGet("ChanOut", b)
-
             @segment(name="seg")
             def segment_body():
 
@@ -125,6 +122,9 @@ def build_module():
 
                     DeallocOp(image_in)
                     DeallocOp(image_out)
+
+            # Push all output data out of the channel
+            ChannelGet("ChanOut", b)
 
 
 if __name__ == "__main__":

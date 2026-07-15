@@ -69,6 +69,7 @@ class XRTRunner:
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
+        use_lock_race_condition_fix_v2: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
         output_format: str = "xclbin",
@@ -82,6 +83,10 @@ class XRTRunner:
         bf16_emulation: bool = False,
         target_device: str = None,
         stack_size: int = 1024,
+        n_perf_iters: int = 0,
+        n_warmup_iters: int = 10,
+        perf_flops: float = None,
+        report_precision: bool = False,
     ):
         """
         Args:
@@ -90,7 +95,7 @@ class XRTRunner:
             omit_pingpong: configure aircc to omit the generation of ping-pong buffering for specific memory levels. Supported values: "", "L1", "L2", "all". Empty string means no omission (default).
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
-            runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
+            runtime_loop_tiling_sizes: tile sizes forwarded through XRTBackend to aircc as --air-runtime-loop-tiling-sizes, which the shim DMA BD optimization pass (air-opt-shim-dma-bds) consumes as shim-dma-tile-sizes. Omit or pass an empty list to skip tiling.
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
@@ -111,6 +116,18 @@ class XRTRunner:
             target_device: specify target device explicitly ("npu1", "npu2", etc.). If None, will attempt auto-detection.
             stack_size: stack size in bytes per AIE core (default: 1024). Increase when
                 kernels have deep call chains (e.g., scalar fdiv needs ~1152 bytes).
+            n_perf_iters: when > 0, time the kernel over this many iterations (after
+                n_warmup_iters warmup runs) and print the average Latency (us). Default
+                0 disables timing, preserving the original single-shot behavior.
+            n_warmup_iters: warmup iterations excluded from timing when n_perf_iters > 0.
+            perf_flops: total floating-point op count (e.g. 2*M*K*N for GEMM/GEMV) used
+                to additionally report Throughput in GFLOP/s. Leave None for kernels
+                whose FLOP count is not meaningful (e.g. RMSNorm, RoPE, eltwise) — then
+                only Latency is printed.
+            report_precision: when True, the output check prints error statistics
+                (mean relative L1, plus max/p99 of relative and absolute error) even
+                when the test passes — useful for seeing how much tolerance margin a
+                kernel actually has. Default False (no extra output).
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -125,6 +142,7 @@ class XRTRunner:
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
+        self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
         self.trace_offset = trace_offset
         self.trace_size = trace_size
         self.output_format = output_format
@@ -138,6 +156,11 @@ class XRTRunner:
         self.bf16_emulation = bf16_emulation
         self.target_device = target_device
         self.stack_size = stack_size
+        self.n_perf_iters = n_perf_iters
+        self.n_warmup_iters = n_warmup_iters
+        self.perf_flops = perf_flops
+        self.last_latency_us = None
+        self.report_precision = report_precision
 
     def run_test(
         self,
@@ -177,6 +200,7 @@ class XRTRunner:
             omit_auto_broadcast=self.omit_auto_broadcast,
             channel_multiplexing=self.channel_multiplexing,
             use_lock_race_condition_fix=self.use_lock_race_condition_fix,
+            use_lock_race_condition_fix_v2=self.use_lock_race_condition_fix_v2,
             trace_offset=self.trace_offset,
             trace_size=self.trace_size,
             output_format=self.output_format,
@@ -189,6 +213,8 @@ class XRTRunner:
             bf16_emulation=self.bf16_emulation,
             target_device=self.target_device,
             stack_size=self.stack_size,
+            n_perf_iters=self.n_perf_iters,
+            n_warmup_iters=self.n_warmup_iters,
         )
 
         # Use per-test trace file if provided, otherwise use instance default
@@ -267,6 +293,15 @@ class XRTRunner:
             module_function = backend.load(compiled_module)
             actual_outputs = module_function(*expanded_inputs)
 
+        # Surface timing collected by the backend invoker (if n_perf_iters > 0).
+        self.last_latency_us = getattr(backend, "last_latency_us", None)
+        if self.n_perf_iters > 0 and self.last_latency_us is not None:
+            line = f"Latency (us): {self.last_latency_us:.1f}"
+            if self.perf_flops is not None:
+                gflops = self.perf_flops / (self.last_latency_us * 1e-6) / 1e9
+                line += f" | Throughput: {gflops:.6e} GFLOP/s"
+            print(line)
+
         backend.unload()
 
         # Remove input slots from the received outputs first
@@ -337,6 +372,25 @@ class XRTRunner:
 
         return return_code
 
+    def _print_precision(self, i, actual_f64, expected_f64, rtol, atol):
+        """Print error statistics for one output (called when report_precision).
+
+        mean_rel_L1 (mean|a-e| / mean|e|) is the robust headline metric — it does
+        not blow up where the reference is near zero. The max of relative and
+        absolute error gives the worst-case point. Both are cheap (mean/max only,
+        no sorting) so this stays light even on full-size outputs.
+        """
+        abs_err = np.abs(actual_f64 - expected_f64)
+        rel_err = abs_err / (np.abs(expected_f64) + 1e-30)
+        mean_rel_l1 = abs_err.mean() / (np.abs(expected_f64).mean() + 1e-30)
+        print(
+            f"[precision] Output {i} ({abs_err.size} elements): "
+            f"mean_rel_L1={mean_rel_l1:.3e} | "
+            f"rel_err max={rel_err.max():.3e} | "
+            f"abs_err max={abs_err.max():.3e} | "
+            f"rtol={rtol:.1e} atol={atol:.1e}"
+        )
+
     def _check_outputs(
         self,
         actual_outputs: List[np.ndarray],
@@ -370,6 +424,11 @@ class XRTRunner:
                 if expected.dtype == bfloat16:
                     expected = expected.astype(np.float64)
                     actual = actual.astype(np.float64)
+
+                if self.report_precision:
+                    # bf16 is already upcast to f64 above; other float dtypes
+                    # (f16/f32/f64) are fine for the error arithmetic as-is.
+                    self._print_precision(i, actual, expected, rtol, atol)
 
                 # Element-wise tolerance check
                 elementwise_ok = True
@@ -505,6 +564,14 @@ class XRTRunner:
                     expected["values"] = expected["values"].astype(np.float64)
                     actual = actual.astype(np.float64)
                 actual_stochastic = actual[tuple(expected["indices"])]
+                if self.report_precision:
+                    self._print_precision(
+                        i,
+                        np.asarray(actual_stochastic, dtype=np.float64),
+                        np.asarray(expected["values"], dtype=np.float64),
+                        rtol,
+                        atol,
+                    )
                 close_mask = np.isclose(
                     actual_stochastic, expected["values"], rtol=rtol, atol=atol
                 )

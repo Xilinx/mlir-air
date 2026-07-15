@@ -804,6 +804,15 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   if (auto attr =
           for_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
     new_for_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+  // Preserve loop_annotation (user code attaches it to disable Peano
+  // unrolling). Without this, Peano -O2 aggressively unrolls small-trip
+  // loops and blows program memory.
+  if (auto attr = for_op->getAttr("loop_annotation"))
+    new_for_op->setAttr("loop_annotation", attr);
+  // Preserve the user-facing ping-pong opt-out so labeling later still
+  // sees it.
+  if (auto attr = for_op->getAttr("air.disable_ping_pong"))
+    new_for_op->setAttr("air.disable_ping_pong", attr);
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
@@ -1235,6 +1244,31 @@ LogicalResult loopUnrollFullWithAsyncTokenPreserved(
   return success();
 }
 
+// Returns true if `forOp`'s trip count is provably a multiple of `factor`.
+// Conservatively handles the common dynamic case `for %i = 0 to (x * C) step 1`
+// where `C % factor == 0` (so the trip count `C * x` is divisible by `factor`),
+// in addition to constant trip counts.
+bool isTripCountDivisibleByFactor(scf::ForOp forOp, uint64_t factor) {
+  if (factor == 0)
+    return false;
+  if (auto ct = forOp.getStaticTripCount())
+    return (ct->getSExtValue() % (int64_t)factor) == 0;
+  // Dynamic bound: require lb == 0, step == 1, ub == muli(_, C) with
+  // C % factor == 0 (constant on either operand).
+  auto lb = getConstantIntValue(forOp.getLowerBound());
+  auto step = getConstantIntValue(forOp.getStep());
+  if (!lb || *lb != 0 || !step || *step != 1)
+    return false;
+  auto mul = forOp.getUpperBound().getDefiningOp<arith::MulIOp>();
+  if (!mul)
+    return false;
+  for (Value operand : {mul.getLhs(), mul.getRhs()})
+    if (auto c = getConstantIntValue(operand))
+      if (*c != 0 && (*c % (int64_t)factor) == 0)
+        return true;
+  return false;
+}
+
 // Unrolls an `scf.for` loop by a given factor while preserving async token
 // dependencies.
 //
@@ -1251,10 +1285,28 @@ LogicalResult loopUnrollByFactorWithAsyncTokenPreserved(
 
   Block *parentBlock = forOp->getBlock();
 
+  // For a dynamic bound that is provably divisible by the unroll factor (e.g.
+  // a runtime `2*J2` trip count unrolled by 2), MLIR still emits a runtime
+  // epilogue/remainder loop because it cannot statically prove divisibility.
+  // That dead remainder lowers to extra (never-filled) DMA BD ring slots and
+  // corrupts the count-free ring locks. Detect divisibility up front so we can
+  // erase the zero-trip epilogue afterwards.
+  bool divisible = isTripCountDivisibleByFactor(forOp, unrollFactor);
+
   // Unroll the loop by factor
-  if (failed(loopUnrollByFactor(forOp, unrollFactor, annotateFn))) {
+  auto info = loopUnrollByFactor(forOp, unrollFactor, annotateFn);
+  if (failed(info)) {
     forOp->emitOpError("failed to fully unroll.");
     return failure();
+  }
+
+  // Erase the provably-dead epilogue loop. With zero trip count its results
+  // equal its init args, so rewire result uses to the init args first.
+  if (divisible && info->epilogueLoopOp) {
+    scf::ForOp epi = *info->epilogueLoopOp;
+    for (auto [res, init] : llvm::zip(epi.getResults(), epi.getInitArgs()))
+      res.replaceAllUsesWith(init);
+    epi.erase();
   }
 
   preserveAsyncDependenciesAfterUnroll(*parentBlock);
@@ -2695,10 +2747,23 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
       if (op == src_op)
         continue; // Avoid dep to itself
       if (graph.g[TRVertex].asyncEventType == "for_loop") {
-        auto value = getLoopCarriedTokenFromScfOp(
-            dyn_cast_if_present<scf::ForOp>(src_op), "argument");
-        if (value)
-          async_op.addAsyncDependency(value);
+        auto for_op = dyn_cast_if_present<scf::ForOp>(src_op);
+        if (for_op) {
+          if (for_op->isAncestor(op)) {
+            // Destination is inside the loop: use iter_arg (block argument).
+            auto value = getLoopCarriedTokenFromScfOp(for_op, "argument");
+            if (value)
+              async_op.addAsyncDependency(value);
+          } else {
+            // Destination is outside (after) the loop: use loop result.
+            for (auto res : for_op->getResults()) {
+              if (isa<air::AsyncTokenType>(res.getType())) {
+                async_op.addAsyncDependency(res);
+                break;
+              }
+            }
+          }
+        }
       } else if (graph.g[TRVertex].asyncEventType == "parallel_loop") {
         auto value = getLoopCarriedTokenFromScfOp(
             dyn_cast_if_present<scf::ParallelOp>(src_op));
@@ -2817,11 +2882,17 @@ dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     for (auto dep : dep_list) {
       if (dep.getDefiningOp() &&
           isa<air::HierarchyInterface>(dep.getDefiningOp())) {
-        eraseAsyncDependencyFromAsyncOp(exec_op, dep);
         hasDepToHier = true;
       }
     }
     if (hasDepToHier) {
+      // Snapshot before erasing to avoid mutating OperandRange while iterating.
+      for (auto dep : llvm::to_vector(dep_list)) {
+        if (dep.getDefiningOp() &&
+            isa<air::HierarchyInterface>(dep.getDefiningOp())) {
+          eraseAsyncDependencyFromAsyncOp(exec_op, dep);
+        }
+      }
       // Trace dependency of op again
       if (failed(
               depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
@@ -2837,6 +2908,52 @@ dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
                                  exec_op);
     }
   }
+
+  // Also re-trace dependencies for air.herd ops that depend on hierarchy ops.
+  // When a herd depends on another herd, the dependency may have been
+  // established via a loop that was later folded by canonicalize, losing the
+  // intermediate dependency. Re-tracing memory deps through kernel operands
+  // recovers the correct ordering.
+  SmallVector<air::HerdOp> herd_ops;
+  func.walk([&](air::HerdOp herd_op) { herd_ops.push_back(herd_op); });
+  for (auto herd_op : herd_ops) {
+    bool hasDepToHier = false;
+    auto dep_list = herd_op.getAsyncDependencies();
+    for (auto dep : dep_list) {
+      if (dep.getDefiningOp() &&
+          isa<air::HierarchyInterface>(dep.getDefiningOp())) {
+        hasDepToHier = true;
+      }
+    }
+    if (!hasDepToHier)
+      continue;
+
+    // Build partial memref list from herd's kernel operands.
+    SmallVector<air::partialMemref, 1> herd_memref_accesses;
+    for (unsigned i = 0; i < herd_op.getNumKernelOperands(); i++) {
+      auto operand = herd_op.getKernelOperand(i);
+      if (isa<BaseMemRefType>(operand.getType())) {
+        herd_memref_accesses.push_back(air::partialMemref(operand));
+      }
+    }
+    if (herd_memref_accesses.empty())
+      continue;
+
+    // Erase hierarchy deps and re-trace.
+    for (auto dep : llvm::to_vector(dep_list)) {
+      if (dep.getDefiningOp() &&
+          isa<air::HierarchyInterface>(dep.getDefiningOp())) {
+        eraseAsyncDependencyFromAsyncOp(herd_op, dep);
+      }
+    }
+    if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+            herd_memref_accesses, herd_op, "RAW")))
+      return failure();
+    if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+            herd_memref_accesses, herd_op, "WAW/WAR")))
+      return failure();
+  }
+
   return success();
 }
 

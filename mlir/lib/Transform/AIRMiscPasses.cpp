@@ -1129,129 +1129,6 @@ void AIRLabelBroadcastChannelWithTilePass::runOnOperation() {
   });
 }
 
-// Returns true if the enclosing segment (or launch/func if no segment)
-// of the given herd contains any cascade channel usage. When any herd
-// in a segment uses cascade, ALL herds in that segment must skip
-// collapsing to maintain consistent spatial dimensions for placement.
-// Cascade connections are peer-to-peer between neighboring tiles, and
-// selectively collapsing some herds but not others creates incompatible
-// dimension mixes that break the placement pass.
-static bool segmentUsesCascade(air::HerdOp herd) {
-  Operation *container = herd->getParentOfType<air::SegmentOp>();
-  if (!container)
-    container = herd->getParentOfType<air::LaunchOp>();
-  if (!container)
-    container = herd->getParentOfType<func::FuncOp>();
-  if (!container)
-    return false;
-
-  auto result = container->walk([&](air::ChannelInterface chanOp) {
-    auto channelDecl = air::getChannelDeclarationThroughSymbol(chanOp);
-    if (channelDecl && channelDecl.getChannelType() == "cascade")
-      return WalkResult::interrupt();
-    return WalkResult::advance();
-  });
-  return result.wasInterrupted();
-}
-
-class AIRCollapseHerdPass
-    : public air::impl::AIRCollapseHerdPassBase<AIRCollapseHerdPass> {
-
-public:
-  AIRCollapseHerdPass() = default;
-  AIRCollapseHerdPass(const AIRCollapseHerdPass &pass){};
-  AIRCollapseHerdPass(const ::xilinx::air::AIRCollapseHerdPassOptions &options)
-      : AIRCollapseHerdPassBase(options) {}
-
-  void runOnOperation() override;
-
-private:
-};
-
-void AIRCollapseHerdPass::runOnOperation() {
-  SmallVector<air::HerdOp> herds;
-  auto func = getOperation();
-  int maximumColumnSize = clMaxColSize;
-  if (clMaxColSize == -1)
-    maximumColumnSize = INT_MAX; // max-col-size disabled.
-  func.walk([&](air::HerdOp op) {
-    if (op.getNumDims() != 2)
-      return;
-    // Skip all herds in segments that use cascade channels. Cascade
-    // connections are peer-to-peer between neighboring tiles, and
-    // collapsing any herd in such a segment would create dimension
-    // mismatches that break placement.
-    if (segmentUsesCascade(op))
-      return;
-    if (op.getNumCols() != 1 &&
-        op.getNumRows() * op.getNumCols() <= (unsigned)maximumColumnSize)
-      herds.push_back(op);
-  });
-
-  for (auto h : herds) {
-    OpBuilder outsideBuilder(h);
-    Location loc = h.getLoc();
-
-    if (h.getNumDims() != 2)
-      continue;
-    SmallVector<unsigned> dims = {0, 1};
-
-    // Combine iteration spaces.
-    SmallVector<Value, 3> lowerBounds, upperBounds, steps;
-    auto cst0 = arith::ConstantIndexOp::create(outsideBuilder, loc, 0);
-    auto cst1 = arith::ConstantIndexOp::create(outsideBuilder, loc, 1);
-
-    // Compute total size = dim0 * dim1
-    Value newUpperBound =
-        arith::ConstantIndexOp::create(outsideBuilder, loc, 1);
-    for (auto idx : dims) {
-      newUpperBound = arith::MulIOp::create(
-          outsideBuilder, loc, newUpperBound,
-          h->getOperand(h.getAsyncDependencies().size() + idx));
-    }
-
-    // Collapse to (1, M*N) — single column, all rows.
-    lowerBounds.push_back(cst0);
-    steps.push_back(cst1);
-    upperBounds.push_back(cst1);
-    lowerBounds.push_back(cst0);
-    steps.push_back(cst1);
-    upperBounds.push_back(newUpperBound);
-
-    OpBuilder insideBuilder(h);
-    insideBuilder.setInsertionPointToStart(&h.getBody().front());
-
-    // old_upper_bound is always from the second original dimension (dims[1]),
-    // since the rem/div decomposition reconstructs: dim1 = combined % N,
-    // dim0 = combined / N, where N is the original second dimension size.
-    auto old_upper_bound = mlir::getConstantIntValue(
-        h.getOperand(h.getAsyncDependencies().size() + dims[1]));
-    if (!old_upper_bound)
-      return; // Found air.herd with dynamic shape. NYI.
-    auto old_upper_b_v =
-        arith::ConstantIndexOp::create(insideBuilder, loc, *old_upper_bound);
-
-    // Determine the current induction value's current loop iteration
-    Value iv_other = arith::RemSIOp::create(insideBuilder, loc, h.getIds()[1],
-                                            old_upper_b_v);
-    llvm::cast<Value>(h.getIds()[1])
-        .replaceAllUsesExcept(iv_other, iv_other.getDefiningOp());
-
-    // Remove the effect of the current induction value to prepare for
-    // the next value.
-    Value iv_iter = arith::DivSIOp::create(insideBuilder, loc, h.getIds()[1],
-                                           old_upper_b_v);
-    replaceAllUsesInRegionWith(h.getIds()[0], iv_iter, h.getBody());
-
-    // Update upper bounds.
-    int operandsIdxOffset = h.getAsyncDependencies().size();
-    for (unsigned i = operandsIdxOffset; i < operandsIdxOffset + h.getNumDims();
-         i++) {
-      h->getOpOperand(i).assign(upperBounds[i - operandsIdxOffset]);
-    }
-  }
-}
-
 // Controls the dimension ordering for the fused herd:
 // - OuterInner: outer herd's non-unit dimension first, then inner's
 // - InnerOuter: inner herd's non-unit dimension first, then outer's
@@ -1712,12 +1589,19 @@ FailureOr<Value> tileChannelOpByFactor(
             getUsedValuesDefinedAbove(execOp.getRegion(), opers);
             originalApplyOperands = llvm::to_vector(opers);
           } else {
-            if (air::isDefaultDataAccessPattern(originalChanOp.getSizes(),
-                                                originalChanOp.getStrides()))
-              originalApplyOperands.push_back(zeroIdx);
+            // Why: the base offset is independent of the access pattern;
+            // propagate any non-zero base on the split dim instead of zeroing
+            // it just because the access happens to be contiguous.
+            Value baseOffset =
+                (size_t)splitDimOnOffsets < originalChanOp.getOffsets().size()
+                    ? originalChanOp.getOffsets()[splitDimOnOffsets]
+                    : Value();
+            std::optional<int64_t> baseConst =
+                baseOffset ? getConstantIntValue(baseOffset) : std::nullopt;
+            if (baseOffset && (!baseConst || *baseConst != 0))
+              originalApplyOperands.push_back(baseOffset);
             else
-              originalApplyOperands.push_back(
-                  originalChanOp.getOffsets()[splitDimOnOffsets]);
+              originalApplyOperands.push_back(zeroIdx);
           }
           return originalApplyOperands;
         };
@@ -2213,6 +2097,53 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   // the memref being accessed by multiple unique channel puts/gets.
   llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy> targetMemrefsToInfoMap;
 
+  // Launch-level endpoint cap state. Each approved split multiplies the
+  // post-split endpoint count on the single-channel-side symbol. Track those
+  // multipliers across iterations so the cap check sees the cumulative effect
+  // (otherwise N allocs sharing one symbol can each pass an isolated check yet
+  // collectively overflow the cap).
+  // rawLaunchEndpoints[launch][{symRef, isPut}] = distinct launch-level
+  //   (sym, indices) endpoint count in the IR before any splits.
+  // committedFactor[{launch, symRef}] = cumulative multiplier from approved
+  //   splits affecting `symRef` in this launch (defaults to 1).
+  llvm::DenseMap<air::LaunchOp,
+                 llvm::DenseMap<std::pair<StringRef, unsigned>, unsigned>>
+      rawLaunchEndpoints;
+  llvm::DenseMap<std::pair<air::LaunchOp, StringRef>, unsigned> committedFactor;
+  auto getRawLaunchEndpoints = [&rawLaunchEndpoints](air::LaunchOp launch)
+      -> const llvm::DenseMap<std::pair<StringRef, unsigned>, unsigned> & {
+    auto cached = rawLaunchEndpoints.find(launch);
+    if (cached != rawLaunchEndpoints.end())
+      return cached->second;
+    // Per (sym, isPut) bucket: collected SmallVector<Value> indices, deduped
+    // by SSA identity. Same pattern as `push_back_if_unique` used elsewhere
+    // in this file.
+    llvm::DenseMap<std::pair<StringRef, unsigned>,
+                   SmallVector<SmallVector<Value, 4>, 4>>
+        seenIndices;
+    launch.walk([&](air::ChannelInterface ci) {
+      // Launch-level = not nested in any segment within this launch.
+      if (ci->getParentOfType<air::SegmentOp>())
+        return WalkResult::advance();
+      unsigned isPut = isa<air::ChannelPutOp>(ci.getOperation()) ? 1u : 0u;
+      auto key = std::make_pair(ci.getChanName(), isPut);
+      SmallVector<Value, 4> idx(ci.getIndices().begin(), ci.getIndices().end());
+      auto &bucket = seenIndices[key];
+      if (!llvm::is_contained(bucket, idx))
+        bucket.push_back(std::move(idx));
+      return WalkResult::advance();
+    });
+    auto &out = rawLaunchEndpoints[launch];
+    for (auto &kv : seenIndices)
+      out[kv.first] = kv.second.size();
+    return out;
+  };
+  auto effectiveFactor = [&committedFactor](air::LaunchOp launch,
+                                            StringRef sym) -> unsigned {
+    auto it = committedFactor.find({launch, sym});
+    return it == committedFactor.end() ? 1u : it->second;
+  };
+
   // If there is an affine.apply operating on offsets[offsetDim], then
   // log the affine.map.
   auto getAffineMapOnMemrefSplitDim = [](air::ChannelInterface chanOp,
@@ -2229,9 +2160,37 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   };
 
   for (auto allocOp : allocOps) {
+    // Opt-out: a `air.no_split` attribute on the alloc (or its enclosing
+    // air.execute wrapper) tells the pass to leave this L2 buffer intact. Used
+    // by hand-written aggregator patterns (e.g. a per-column output assembler)
+    // where splitting would multiply the launch-level shim endpoint count and
+    // defeat the aggregation, overflowing the memtile BD limit.
+    bool optOut = allocOp->hasAttr("air.no_split");
+    if (!optOut)
+      if (auto exec = allocOp->getParentOfType<air::ExecuteOp>())
+        optOut = exec->hasAttr("air.no_split");
+    if (optOut)
+      continue;
     Value memref = allocOp.getMemref();
     if (auto exec = dyn_cast_if_present<air::ExecuteOp>(allocOp->getParentOp()))
       memref = exec->getResult(1);
+    // Precondition: partitioning is only defined for a buffer whose entire
+    // liveness is channel-mediated. `partitionMemref` rewrites the memref
+    // operand of each channel put/get onto a sub-buffer and moves the dealloc;
+    // it cannot redistribute any other use (e.g. the buffer captured as an
+    // air.herd operand), which has no single owning sub-buffer. Splitting such
+    // a buffer would leave that use dangling on the original alloc, which is
+    // then erased. Leave the buffer intact if any use escapes the
+    // {channel put/get, dealloc} set. air.execute is not IsolatedFromAbove, so
+    // an async dealloc is a memref.dealloc directly using the memref (matched
+    // below); the wrapping air.execute is never itself a user.
+    auto isPartitionableUser = [](Operation *user) {
+      return isa<air::ChannelPutOp, air::ChannelGetOp, memref::DeallocOp>(user);
+    };
+    if (llvm::any_of(memref.getUsers(), [&](Operation *user) {
+          return !isPartitionableUser(user);
+        }))
+      continue;
     // Maps of MM2S and S2MM channels and their sub-channels.
     llvm::MapVector<air::ChannelOp, SmallVector<SmallVector<Value>>>
         MM2SChannels, S2MMChannels;
@@ -2303,6 +2262,81 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     if (getChanCount(S2MMChannels) == 1)
       if (isSplittingChannelPutsOnHerd())
         continue;
+
+    // Launch-level endpoint cap. Splitting tiles the single-channel side from
+    // 1 → tilingFactor instances per memref. When that channel has any
+    // launch-level put/get ops (here: ChannelInterface ops directly under
+    // air.launch, i.e. not nested in any air.segment — the structural proxy
+    // used in `getRawLaunchEndpoints`), tiling multiplies the per-launch
+    // endpoint count for that direction. Skip the split when doing so would
+    // push the total past the user-supplied cap. The cap expresses the
+    // AIR-level budget for launch-scope channels in one launch; backends map
+    // it to their own resource (e.g. shim DMAs for AIE).
+    // Track commit (a few lines below) so cumulative splits across allocs
+    // sharing one channel symbol are accounted for.
+    StringRef pendingCommitSym;
+    air::LaunchOp pendingCommitLaunch;
+    unsigned pendingCommitFactor = 1;
+    if (clMaxLaunchChannelsMM2S != 0 || clMaxLaunchChannelsS2MM != 0) {
+      auto launch = allocOp->getParentOfType<air::LaunchOp>();
+      air::ChannelOp singleChan = nullptr;
+      // Single side of the memref → opposite side is what appears on the
+      // channel's launch-level endpoints:
+      //   memref S2MM (gets-into-memref) single → channel puts at launch
+      //                                            → launch MM2S direction
+      //   memref MM2S (puts-from-memref) single → channel gets at launch
+      //                                            → launch S2MM direction
+      bool launchDirIsMM2S = false;
+      if (getChanCount(MM2SChannels) > 1 && getChanCount(S2MMChannels) == 1) {
+        singleChan = S2MMChannels.begin()->first;
+        launchDirIsMM2S = true;
+      } else if (getChanCount(S2MMChannels) > 1 &&
+                 getChanCount(MM2SChannels) == 1) {
+        singleChan = MM2SChannels.begin()->first;
+        launchDirIsMM2S = false;
+      }
+      unsigned cap =
+          launchDirIsMM2S ? clMaxLaunchChannelsMM2S : clMaxLaunchChannelsS2MM;
+      if (launch && singleChan && cap != 0) {
+        StringRef singleSym = singleChan.getSymName();
+        unsigned launchDirKey = launchDirIsMM2S ? 1u : 0u;
+        const auto &rawEndpoints = getRawLaunchEndpoints(launch);
+        auto thisRawIt = rawEndpoints.find({singleSym, launchDirKey});
+        unsigned thisRaw =
+            thisRawIt == rawEndpoints.end() ? 0u : thisRawIt->second;
+        // If the single-channel side has no launch-level ops, splitting it
+        // is free at the launch level (e.g. memtile↔compute only). Allow.
+        if (thisRaw > 0) {
+          unsigned currentTotal = 0;
+          for (auto &kv : rawEndpoints)
+            if (kv.first.second == launchDirKey)
+              currentTotal +=
+                  kv.second * effectiveFactor(launch, kv.first.first);
+          unsigned currFactor = effectiveFactor(launch, singleSym);
+          // Splitting a memref reshapes its single-side channel symbol once;
+          // multiple allocs sharing that symbol are tiled in lockstep, so the
+          // symbol's effective multiplier is max(currFactor, tilingFactor),
+          // not a product. Only the delta over what's already committed adds
+          // to the launch-level endpoint count.
+          unsigned newFactor = std::max(currFactor, (unsigned)tilingFactor);
+          unsigned hypTotal = currentTotal + thisRaw * (newFactor - currFactor);
+          if (hypTotal > cap) {
+            allocOp->emitRemark("air-split-l2-memref: skipping split (factor=")
+                << tilingFactor << ") on L2 alloc via channel @" << singleSym
+                << " to avoid pushing launch "
+                << (launchDirIsMM2S ? "MM2S" : "S2MM")
+                << " endpoint count from " << currentTotal << " to " << hypTotal
+                << " (cap=" << cap << ")";
+            continue;
+          }
+          // Plan commit; finalize once the alloc is recorded in the split
+          // plan below.
+          pendingCommitLaunch = launch;
+          pendingCommitSym = singleSym;
+          pendingCommitFactor = newFactor;
+        }
+      }
+    }
 
     llvm::MapVector<int, SmallVector<infoEntryTy>> infoEntryMap;
     std::optional<int> splitDimOffset = std::nullopt;
@@ -2411,6 +2445,10 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
                                            infoEntryMap};
       }
     }
+    // Commit the planned cap multiplier now that this alloc is recorded.
+    if (pendingCommitLaunch)
+      committedFactor[{pendingCommitLaunch, pendingCommitSym}] =
+          pendingCommitFactor;
   }
   return targetMemrefsToInfoMap;
 }
@@ -3181,15 +3219,6 @@ std::unique_ptr<Pass> createAIRLabelBroadcastChannelWithTilePass() {
   return std::make_unique<AIRLabelBroadcastChannelWithTilePass>();
 }
 
-std::unique_ptr<Pass> createAIRCollapseHerdPass() {
-  return std::make_unique<AIRCollapseHerdPass>();
-}
-
-std::unique_ptr<Pass>
-createAIRCollapseHerdPass(AIRCollapseHerdPassOptions options) {
-  return std::make_unique<AIRCollapseHerdPass>(options);
-}
-
 std::unique_ptr<Pass> createAIRFuseNestedHerdPass() {
   return std::make_unique<AIRFuseNestedHerdPass>();
 }
@@ -3218,6 +3247,97 @@ std::unique_ptr<Pass> createAIROverrideMemRefMemorySpacePass() {
 std::unique_ptr<Pass> createAIROverrideMemRefMemorySpacePass(
     AIROverrideMemRefMemorySpaceOptions options) {
   return std::make_unique<AIROverrideMemRefMemorySpacePass>(options);
+}
+
+// Opt-in producer for air.refeed_count. See the pass description in Passes.td.
+class AIRAnnotateRefeedPass
+    : public air::impl::AIRAnnotateRefeedPassBase<AIRAnnotateRefeedPass> {
+public:
+  AIRAnnotateRefeedPass() = default;
+  AIRAnnotateRefeedPass(const AIRAnnotateRefeedPass &pass) {}
+  void runOnOperation() override;
+};
+
+void AIRAnnotateRefeedPass::runOnOperation() {
+  ModuleOp module = getOperation();
+  SmallVector<Operation *> markedLoops;
+  module.walk([&](Operation *op) {
+    if (isa<scf::ForOp, affine::AffineForOp>(op) &&
+        op->hasAttr(air::attrs::RefeedLoop))
+      markedLoops.push_back(op);
+  });
+
+  for (Operation *loopOp : markedLoops) {
+    Block *body = nullptr;
+    Value iv;
+    std::optional<int64_t> tripCount;
+    if (auto sfo = dyn_cast<scf::ForOp>(loopOp)) {
+      body = sfo.getBody();
+      iv = sfo.getInductionVar();
+      tripCount = air::getStaticScfForTripCountAsInt(sfo);
+    } else {
+      auto afo = cast<affine::AffineForOp>(loopOp);
+      body = afo.getBody();
+      iv = afo.getInductionVar();
+      tripCount = air::getStaticAffineForTripCountAsInt(afo);
+    }
+
+    // Safe shape only: no loop-carried values, a static trip count >= 2, and a
+    // body of exactly one loop-invariant air.channel.put.
+    if (loopOp->getNumResults()) {
+      loopOp->emitWarning("air.refeed_loop: loop-carried values unsupported; "
+                          "left unchanged");
+      continue;
+    }
+    if (!tripCount || *tripCount < 2) {
+      loopOp->emitWarning("air.refeed_loop: non-constant or trivial trip "
+                          "count; left unchanged");
+      continue;
+    }
+    if (body->getOperations().size() != 2) {
+      loopOp->emitWarning("air.refeed_loop: body is not a single channel.put; "
+                          "left unchanged");
+      continue;
+    }
+    auto put = dyn_cast<air::ChannelPutOp>(&body->front());
+    if (!put) {
+      loopOp->emitWarning("air.refeed_loop: body is not a single channel.put; "
+                          "left unchanged");
+      continue;
+    }
+    Region &region = loopOp->getRegion(0);
+    bool invariant = llvm::all_of(put->getOperands(), [&](Value v) {
+      if (v == iv)
+        return false;
+      if (Operation *def = v.getDefiningOp())
+        return !region.isAncestor(def->getParentRegion());
+      return true;
+    });
+    if (!invariant) {
+      loopOp->emitWarning(
+          "air.refeed_loop: channel.put is not loop-invariant; left unchanged");
+      continue;
+    }
+    auto chan = air::getChannelDeclarationThroughSymbol(put);
+    if (!chan) {
+      loopOp->emitWarning(
+          "air.refeed_loop: channel declaration not found; left unchanged");
+      continue;
+    }
+
+    // Record N = trip count on the channel declaration (authoritative carrier),
+    // then collapse the loop to its single put.
+    int64_t n =
+        std::max<int64_t>(air::getRefeedCount(chan.getOperation()), *tripCount);
+    OpBuilder builder(loopOp);
+    chan->setAttr(air::attrs::RefeedCount, builder.getI32IntegerAttr(n));
+    put->moveBefore(loopOp);
+    loopOp->erase();
+  }
+}
+
+std::unique_ptr<Pass> createAIRAnnotateRefeedPass() {
+  return std::make_unique<AIRAnnotateRefeedPass>();
 }
 
 } // namespace air

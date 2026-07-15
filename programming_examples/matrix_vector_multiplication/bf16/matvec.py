@@ -29,7 +29,9 @@ range_ = for_
 
 
 @module_builder
-def build_module(m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out):
+def build_module(
+    m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out, link_with="mv.o"
+):
     assert (
         m % (tile_m * herd_m) == 0
     ), f"M ({m}) must be divisible by tile_m * herd_m ({tile_m * herd_m})"
@@ -97,7 +99,7 @@ def build_module(m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out):
         visibility="private",
     )
     for func in [matvec_func, linalg_fill_func]:
-        func.attributes["link_with"] = StringAttr.get("mv.o")
+        func.attributes["link_with"] = StringAttr.get(link_with)
         func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
 
     @FuncOp.from_py_func(memrefTyA, memrefTyB, memrefTyC)
@@ -250,7 +252,7 @@ def build_module(m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out):
                         src_strides=[1],
                     )
 
-                herd_body.attributes["link_with"] = StringAttr.get("mv.o")
+                herd_body.attributes["link_with"] = StringAttr.get(link_with)
 
                 # L2→L3: C
                 dma_memcpy_nd(
@@ -349,8 +351,19 @@ if __name__ == "__main__":
         dest="debug_ir",
         help="Emit IR after each pass into debug_ir/ directory",
     )
+    parser.add_argument(
+        "--perf-iters",
+        type=int,
+        default=0,
+        dest="perf_iters",
+        help="If >0, time the kernel over this many iters (after 10 warmup) and "
+        "print Latency + GFLOPs in addition to the correctness check",
+    )
 
     args = parser.parse_args()
+
+    if args.perf_iters < 0:
+        parser.error("--perf-iters must be >= 0")
 
     mlir_module = build_module(
         args.m,
@@ -382,13 +395,16 @@ if __name__ == "__main__":
             instance_name="matvec_bf16",
             debug_ir=args.debug_ir,
             use_lock_race_condition_fix=True,
+            report_precision=True,
+            n_perf_iters=args.perf_iters,
+            perf_flops=((2.0 * args.m * args.k) if args.perf_iters > 0 else None),
         )
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_a, input_b],
                 expected_outputs=[output_c],
-                rtol=0.04,
+                rtol=1.6e-2,
                 atol=1e-3,
             )
         )

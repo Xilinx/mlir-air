@@ -8,36 +8,32 @@
 // RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) @segment_0 {
-// CHECK:   %[[VAL_0:.*]] = aie.tile(2, 0)
-// CHECK:   %[[VAL_1:.*]] = aie.tile(5, 1)
-// CHECK:   %[[VAL_3:.*]] = aie.tile(5, 3)
-// CHECK:   %[[VAL_4:.*]] = aie.tile(6, 3)
-// CHECK:   %[[VAL_5:.*]] = aie.tile(5, 4)
-// CHECK:   %[[VAL_6:.*]] = aie.tile(6, 4)
-// CHECK:   aie.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
-// CHECK:   aie.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
-// CHECK:   aie.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
-// CHECK:   aie.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_5]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_5]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_5]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   aie.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   %[[VAL_13:.*]] = aie.mem(%[[VAL_6]]) {
-// CHECK:   %[[VAL_14:.*]] = aie.core(%[[VAL_6]]) {
-// CHECK:   %[[VAL_15:.*]] = aie.mem(%[[VAL_5]]) {
-// CHECK:   %[[VAL_16:.*]] = aie.core(%[[VAL_5]]) {
-// CHECK:   %[[VAL_17:.*]] = aie.mem(%[[VAL_4]]) {
-// CHECK:   %[[VAL_18:.*]] = aie.core(%[[VAL_4]]) {
-// CHECK:   %[[VAL_19:.*]] = aie.mem(%[[VAL_3]]) {
-// CHECK:   %[[VAL_20:.*]] = aie.core(%[[VAL_3]]) {
-// CHECK:   aie.memtile_dma(%[[VAL_1]]) {
+// CHECK-DAG:   %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:   %[[T_5_3:.*]] = aie.tile(5, 3)
+// CHECK-DAG:   %[[T_6_3:.*]] = aie.tile(6, 3)
+// CHECK-DAG:   %[[T_5_4:.*]] = aie.tile(5, 4)
+// CHECK-DAG:   %[[T_6_4:.*]] = aie.tile(6, 4)
+// CHECK:   aie.buffer(%[[T_6_4]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_6_4]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_6_4]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_5_4]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_5_4]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_5_4]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_6_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_6_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_6_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_5_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_5_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[T_5_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.core(%[[T_6_4]]) {
+// CHECK:   aie.core(%[[T_5_4]]) {
+// CHECK:   aie.core(%[[T_6_3]]) {
+// CHECK:   aie.core(%[[T_5_3]]) {
+// CHECK-DAG:   %[[MEMTILE:.*]] = aie.logical_tile<MemTile>(?, ?)
+// CHECK-DAG:   aie.buffer(%[[MEMTILE]]){{.*}}memref<64x64xi32, 1>
+// CHECK-DAG:   aie.buffer(%[[MEMTILE]]){{.*}}memref<64x64xi32, 1>
+// CHECK-DAG:   aie.buffer(%[[MEMTILE]]){{.*}}memref<64x64xi32, 1>
+// CHECK:   aie.memtile_dma(%[[MEMTILE]]) {
 
 
 #map = affine_map<()[s0] -> (s0 * 64)>

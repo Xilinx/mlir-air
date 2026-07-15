@@ -15,7 +15,10 @@ OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
-PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
+# Peano's aie2 backend implements the plain mul_elem_16/mac_elem_16 float
+# intrinsics but not the _conf variants that stock Xilinx/aie_api calls; the
+# shim forwards _conf->plain (aie_api always passes conf=0). See the header.
+PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__ -include ${srcdir}/aie2_fp32_conf_shim.h -mllvm -aie-disable-fold-imm
 
 all: run
 

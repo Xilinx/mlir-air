@@ -39,6 +39,38 @@
 
 using namespace mlir;
 
+// Path B: airrt-to-npu runs before aie-place-tiles (which now lives only in
+// aiecc). Read the shim col from either a physical aie.tile or, if the
+// shim hasn't been placed yet, the col hint on aie.logical_tile<...>(col,?).
+// AIR sets that hint to the compute-side col so the placer's hint-respecting
+// behavior gives the same physical col here as it will downstream.
+// Returns -1 if neither is available.
+static int getColFromTileValue(mlir::Value tile) {
+  if (!tile)
+    return -1;
+  mlir::Operation *def = tile.getDefiningOp();
+  if (auto t = llvm::dyn_cast_or_null<xilinx::AIE::TileOp>(def))
+    return t.getCol();
+  if (auto lto = llvm::dyn_cast_or_null<xilinx::AIE::LogicalTileOp>(def))
+    if (auto col = lto.tryGetCol())
+      return *col;
+  return -1;
+}
+
+// True if `tile` is a shim tile defining op. Accepts either a physical
+// aie.tile or an unplaced aie.logical_tile<ShimNOCTile|ShimPLTile>.
+static bool isShimTileValue(mlir::Value tile) {
+  if (!tile)
+    return false;
+  mlir::Operation *def = tile.getDefiningOp();
+  if (auto t = llvm::dyn_cast_or_null<xilinx::AIE::TileOp>(def))
+    return t.isShimTile();
+  if (auto lto = llvm::dyn_cast_or_null<xilinx::AIE::LogicalTileOp>(def))
+    return lto.getTileType() == xilinx::AIE::AIETileType::ShimNOCTile ||
+           lto.getTileType() == xilinx::AIE::AIETileType::ShimPLTile;
+  return false;
+}
+
 // Helper function to check if an aie.device contains core/memtile DMAs with
 // repeat_count > 0. This indicates that the DMA engine state needs to be reset
 // after each launch to avoid stale repeat counters affecting the next launch.
@@ -53,6 +85,174 @@ static bool deviceHasRepeatCountDMAs(xilinx::AIE::DeviceOp device) {
   });
 
   return hasRepeatCount;
+}
+
+// Helper function to check if an aie.device uses the cascade bus (cascade flows
+// or core-side get/put_cascade). Cascade core locks/credits, like repeat_count
+// DMA state, must be re-armed after each launch via the load_pdi reset (which
+// runs initLocks). A single-trip launch has repeat_count == 0, so
+// deviceHasRepeatCountDMAs() misses cascade kernels -> they abort on the 2nd
+// host dispatch ("qds_device::wait() unexpected command state"). Detecting
+// cascade lets the existing reset path fire for single-trip cascade too.
+static bool deviceHasCascade(xilinx::AIE::DeviceOp device) {
+  bool hasCascade = false;
+  device.walk([&](mlir::Operation *op) {
+    if (llvm::isa<xilinx::AIE::CascadeFlowOp, xilinx::AIE::GetCascadeOp,
+                  xilinx::AIE::PutCascadeOp>(op))
+      hasCascade = true;
+  });
+  return hasCascade;
+}
+
+// Static trip count of the affine loops enclosing `op` (1 if none). Used to
+// tell a SINGLE-TRIP launch (the launch boundary runs once per host dispatch)
+// from a MULTI-ITERATION launch (the boundary sits inside an iteration loop,
+// e.g. flash-attention's lq_iters loop). A non-constant affine loop or any scf
+// loop is treated as multi-trip. Must be evaluated before unrollAffineFors
+// strips these loops.
+static int64_t enclosingLoopTrips(mlir::Operation *op) {
+  int64_t trips = 1;
+  for (mlir::Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
+    if (auto forOp = llvm::dyn_cast<mlir::affine::AffineForOp>(p)) {
+      if (!forOp.hasConstantBounds())
+        return std::numeric_limits<int64_t>::max();
+      int64_t lb = forOp.getConstantLowerBound();
+      int64_t ub = forOp.getConstantUpperBound();
+      int64_t step = forOp.getStepAsInt();
+      int64_t n = (step > 0 && ub > lb) ? (ub - lb + step - 1) / step : 1;
+      trips *= n;
+    } else if (llvm::isa<mlir::scf::ForOp, mlir::scf::WhileOp>(p)) {
+      return std::numeric_limits<int64_t>::max();
+    }
+  }
+  return trips;
+}
+
+// Count air.launch_end markers in a device and whether any are enclosed by a
+// multi-trip loop. Returns {count, anyMultiTrip}. Both
+// deviceHasSingleTripCascade and markDevicesNeedingLockReset need this
+// information; centralizing it here avoids duplicating the walk.
+static std::pair<int64_t, bool> countLaunchEnds(xilinx::AIE::DeviceOp device) {
+  int64_t n = 0;
+  bool anyMultiTrip = false;
+  device.walk([&](xilinx::airrt::WaitAllOp wa) {
+    if (!wa->hasAttr("air.launch_end"))
+      return;
+    ++n;
+    if (enclosingLoopTrips(wa) != 1)
+      anyMultiTrip = true;
+  });
+  return {n, anyMultiTrip};
+}
+
+// Cascade core locks/credits need the per-launch reset only for a SINGLE-TRIP
+// launch: across a host re-dispatch they are stale and the kernel aborts on the
+// 2nd dispatch without the reset. A MULTI-ITERATION launch re-arms them every
+// iteration on its own, so inserting the reset between iterations is
+// unnecessary and costs a load_pdi PDI reload per boundary (a silent perf
+// regression, e.g. flash-attention prefill). A multi-iteration launch presents
+// two ways depending on whether its iteration loop survived: either one
+// air.launch_end inside a multi-trip loop, or -- once the loop is unrolled --
+// several air.launch_end markers. Single-trip is therefore exactly one
+// air.launch_end that is not enclosed by a multi-trip loop. MUST be evaluated
+// before the launch_end wait_all ops are converted/erased and before
+// unrollAffineFors -- see markDevicesNeedingLockReset.
+static bool deviceHasSingleTripCascade(xilinx::AIE::DeviceOp device) {
+  if (!deviceHasCascade(device))
+    return false;
+  auto [numLaunchEnds, anyMultiTrip] = countLaunchEnds(device);
+  return numLaunchEnds == 1 && !anyMultiTrip;
+}
+
+// Internal marker carrying the per-launch reset decision from
+// markDevicesNeedingLockReset() (computed while the launch_end markers and
+// their loops still exist) to the load_pdi insertion and reset-clone sites.
+// Stripped at the end of the pass.
+static constexpr llvm::StringLiteral kNeedsLockResetAttr =
+    "air.needs_lock_reset";
+
+// A device needs the per-launch lock/DMA-state reset (load_pdi + initLocks) if
+// it has repeat_count DMAs OR is a single-trip cascade launch. The decision is
+// cached on the device because the launch_end markers it depends on are erased
+// during conversion (and the loops unrolled afterwards), so it cannot be
+// recomputed at the insertion / reset-clone sites.
+static bool deviceNeedsLockReset(xilinx::AIE::DeviceOp device) {
+  return device->hasAttr(kNeedsLockResetAttr);
+}
+
+// Internal marker: the device's launch boundary runs MORE THAN ONCE per host
+// dispatch (a fused multi-iteration launch, e.g. an scf.for wrapping air.launch
+// to stitch N iterations into one dispatch). Such a launch must fully DRAIN
+// every shim channel at each iteration boundary before the next iteration's
+// feeds issue -- otherwise consecutive iterations overlap and a finite-depth
+// (e.g. 2-slot ping-pong) device lock accumulates an imbalance and deadlocks
+// after a few iterations. The single-dispatch shim drain that enforces this is
+// otherwise only emitted on the output-elf path (issue #1373); this marker
+// extends it to the multi-iteration xclbin path too. Computed while the
+// launch_end markers + their loops still exist (they are erased during
+// conversion), same as kNeedsLockResetAttr.
+static constexpr llvm::StringLiteral kMultiIterLaunchAttr =
+    "air.multi_iter_launch";
+
+// Number of launch iterations (stitched iterations) for a fused multi-iteration
+// launch, carried from markDevicesNeedingLockReset (computed from the unrolled
+// launch_end count) to synthesizeDoubleBufferedAwaits, which must segment its
+// per-channel paced-MM2S backpressure PER ITERATION so the double-buffered
+// pacing does not overlap an iteration boundary (which accumulates a 2-deep
+// in-flight imbalance and deadlocks after a couple of iterations).
+static constexpr llvm::StringLiteral kNumLaunchItersAttr =
+    "air.num_launch_iters";
+
+// Marks a runtime-sequence op emitted at a fused multi-iteration launch's
+// per-iteration boundary (the between-iteration full shim drain). Used
+// post-conversion as a region delimiter so the per-herd RTP-write / set_lock
+// hoisting stays scoped to each iteration's sub-sequence instead of collapsing
+// to the global front. Collapsing all N iterations' inits to the front stacks
+// N re-arms before any data movement and drops the per-iteration re-arm, which
+// deadlocks a finite-depth device lock after a couple of iterations. Mirrors
+// the region-delimiting role NpuLoadPdiOp plays on the ELF-reset path.
+static constexpr llvm::StringLiteral kLaunchIterBoundaryAttr =
+    "air.launch_iter_boundary";
+
+static bool deviceHasMultiIterLaunch(xilinx::AIE::DeviceOp device) {
+  return device->hasAttr(kMultiIterLaunchAttr);
+}
+
+static int64_t deviceNumLaunchIters(xilinx::AIE::DeviceOp device) {
+  if (auto a = device->getAttrOfType<mlir::IntegerAttr>(kNumLaunchItersAttr))
+    return a.getInt();
+  return 1;
+}
+
+// Compute and stamp the reset decision on every device. MUST run after
+// moveFuncOpToEndOfDeviceOp (so the control funcs, hence the launch_end
+// markers, are inside their devices) and before generateNpuWaitFromAIRRtWaitAll
+// / unrollAffineFors (which erase the markers and strip the loops).
+static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
+  module.walk([&](xilinx::AIE::DeviceOp device) {
+    if (deviceHasRepeatCountDMAs(device) || deviceHasSingleTripCascade(device))
+      device->setAttr(kNeedsLockResetAttr,
+                      mlir::UnitAttr::get(device.getContext()));
+    // Multi-iteration launch = a launch_end enclosed by a multi-trip loop, or
+    // several launch_end markers (an already-unrolled iteration loop). Single
+    // dispatch is exactly one launch_end not in a multi-trip loop (mirrors
+    // deviceHasSingleTripCascade's launch-count logic).
+    auto [numLaunchEnds, anyMultiTrip] = countLaunchEnds(device);
+    if (numLaunchEnds >= 1 && (numLaunchEnds > 1 || anyMultiTrip)) {
+      device->setAttr(kMultiIterLaunchAttr,
+                      mlir::UnitAttr::get(device.getContext()));
+      // The loop-unroll (unrollSCFFors) runs before this, so a fused scf.for
+      // over air.launch presents as `numLaunchEnds` unrolled launch_end markers
+      // == the iteration count. (If the loop somehow survived unrolling there
+      // is a single marker in a multi-trip loop; leave the count at 1 so the
+      // pacing stays per-loop-body, which is already correct in that form.)
+      if (numLaunchEnds > 1)
+        device->setAttr(kNumLaunchItersAttr,
+                        mlir::IntegerAttr::get(
+                            mlir::IntegerType::get(device.getContext(), 64),
+                            numLaunchEnds));
+    }
+  });
 }
 
 namespace {
@@ -273,30 +473,6 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
   DmaToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern<airrt::DmaMemcpyNdOp>(context, benefit) {}
 
-  // Helper to check if a DMA uses an S2MM (output/device-to-host) channel
-  bool isDeviceToHostChannel(airrt::DmaMemcpyNdOp op) const {
-    if (!op->hasAttr("metadata"))
-      return false;
-
-    auto metadata = op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
-    if (!metadata)
-      return false;
-
-    // Find the parent DeviceOp to look up the allocation
-    auto device = op->getParentOfType<AIE::DeviceOp>();
-    if (!device)
-      return false;
-
-    // Look up the ShimDMAAllocationOp for this metadata symbol
-    StringRef metadataStr = metadata.getValue();
-    auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, metadataStr);
-    if (!allocOp)
-      return false;
-
-    // S2MM = device to host = output = needs wait
-    return allocOp.getChannelDir() == AIE::DMAChannelDir::S2MM;
-  }
-
   LogicalResult
   matchAndRewrite(airrt::DmaMemcpyNdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -451,9 +627,14 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     AIE::BDDimLayoutArrayAttr dimsAttr =
         AIE::BDDimLayoutArrayAttr::get(ctx, dimLayouts);
 
-    // Determine if this is an output (S2MM) channel
-    // S2MM channels issue tokens by default, MM2S channels do not
-    bool issueToken = isDeviceToHostChannel(op);
+    // Determine if this is an output (S2MM) channel.
+    // S2MM channels issue tokens by default, MM2S channels do not.
+    // Feeds marked `air.preserve_shim_dma_order` (lockstep-coupled shim feeds
+    // that opted out of per-channel BD folding) also issue a token so they can
+    // be awaited for bounded double-buffered backpressure (see
+    // synthesizeDoubleBufferedAwaits below).
+    bool paced = op->hasAttr(air::attrs::PreserveShimDmaOrder);
+    bool issueToken = air::isDeviceToHostShimDMA(op) || paced;
 
     // Create DMAConfigureTaskForOp with proper repeat_count from highest
     // dimension
@@ -461,9 +642,24 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         rewriter, op.getLoc(),
         rewriter.getIndexType(),          // result type
         metadata,                         // alloc symbol reference
-        rewriter.getBoolAttr(issueToken), // issue_token = true for S2MM only
+        rewriter.getBoolAttr(issueToken), // issue_token = true for S2MM / paced
         rewriter.getI32IntegerAttr(repeatCount) // repeat_count from highest dim
     );
+    if (paced)
+      configTaskOp->setAttr(air::attrs::PreserveShimDmaOrder,
+                            rewriter.getUnitAttr());
+    // Carry the runtime-sequence hoist marker onto the task so the
+    // post-lowering reordering step can move this input feed ahead of the
+    // weight stream.
+    if (op->hasAttr(air::attrs::RuntimeHoist))
+      configTaskOp->setAttr(air::attrs::RuntimeHoist, rewriter.getUnitAttr());
+    if (op->hasAttr(air::attrs::AwaitAppends))
+      configTaskOp->setAttr(air::attrs::AwaitAppends, rewriter.getUnitAttr());
+    // Carry the append-barrier marker so the append->readback ordering step can
+    // find this append's completion await and move it before the tagged
+    // readback (see the air.await_appends barrier below).
+    if (op->hasAttr(air::attrs::AppendBarrier))
+      configTaskOp->setAttr(air::attrs::AppendBarrier, rewriter.getUnitAttr());
 
     // Create the body region of the configure task op
     Block *bodyBlock = rewriter.createBlock(&configTaskOp.getBody());
@@ -619,10 +815,13 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
 
             auto constOp =
                 dyn_cast_if_present<arith::ConstantOp>(oper.getDefiningOp());
-            if (constOp) {
+            if (constOp && isa<IntegerType, IndexType>(oper.getType())) {
               uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
+              Value vVal = arith::ConstantOp::create(
+                  rewriter, op.getLoc(), rewriter.getI32Type(),
+                  rewriter.getI32IntegerAttr(v));
               AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(), name, rtp_slot,
-                                          v);
+                                          vVal);
             }
             rtp_slot++;
           }
@@ -750,9 +949,10 @@ public:
 // Erase remaining WaitAllOps that weren't converted to NpuDmaWaitOp.
 // These are pure synchronization ops that don't generate NPU ops.
 // For WaitAllOps with "air.launch_end" attribute, we may need to insert
-// aiex.npu.load_pdi to reset the DMA engine state if:
+// aiex.npu.load_pdi to reset the DMA engine / cascade state if:
 // 1. output-elf mode is enabled, AND
-// 2. The device contains core/memtile DMAs with repeat_count > 0
+// 2. deviceNeedsLockReset(device) -- i.e. the device has core/memtile DMAs
+//    with repeat_count > 0, OR is a single-trip cascade launch.
 class AIRRtWaitAllOpConversion : public OpConversionPattern<airrt::WaitAllOp> {
 public:
   AIRRtWaitAllOpConversion(MLIRContext *context, bool outputElf,
@@ -771,22 +971,34 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          if (outputElf && deviceHasRepeatCountDMAs(device)) {
-            // Insert aiex.npu.load_pdi to reset DMA engine state when
-            // core/memtile DMAs have repeat_count > 0.
+          // A fused multi-iteration launch (scf.for over air.launch stitching N
+          // iterations into one dispatch) needs the between-iteration shim
+          // drain on the xclbin (non-elf) path too: otherwise consecutive
+          // iterations overlap and a finite-depth device lock deadlocks after a
+          // few iterations.
+          bool multiIter = deviceHasMultiIterLaunch(device);
+          if (outputElf && deviceNeedsLockReset(device)) {
+            // Insert aiex.npu.load_pdi to reset DMA engine / cascade state
+            // (repeat_count DMAs, or a single-trip cascade launch).
             rewriter.setInsertionPoint(op);
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
-          } else if (outputElf) {
+          } else if (outputElf || multiIter) {
             // No PDI reload needed (no repeat_count DMAs), but still need
             // between-iteration synchronization to prevent the next
             // iteration's shim DMA configuration from racing with the
-            // current iteration's compute (issue #1373).
+            // current iteration's compute (issue #1373; extended to the
+            // multi-iteration xclbin path).
             rewriter.setInsertionPoint(op);
             for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
-              AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
-                                         alloc.getSymName());
+              auto w = AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                                  alloc.getSymName());
+              // Tag the fused multi-iteration boundary drain so the later
+              // RTP/set_lock hoist keeps each iteration's re-arm scoped to its
+              // own sub-sequence (see kLaunchIterBoundaryAttr).
+              if (multiIter)
+                w->setAttr(kLaunchIterBoundaryAttr, rewriter.getUnitAttr());
             }
           }
         }
@@ -830,8 +1042,9 @@ public:
     if (!contains_relevant_ops)
       return failure();
 
-    auto seq = AIE::RuntimeSequenceOp::create(rewriter, op->getLoc(),
-                                              op.getSymNameAttr());
+    auto seq = AIE::RuntimeSequenceOp::create(
+        rewriter, op->getLoc(), op.getSymNameAttr(),
+        /*emit_parameter_sync_preamble=*/nullptr);
     seq.getBody().push_back(new Block);
 
     // Add and remap the arguments
@@ -899,6 +1112,22 @@ public:
         }))
       return failure();
 
+    // A fused multi-iteration launch tags its per-iteration boundary drain so
+    // the later RTP/set_lock hoist stays scoped per iteration. The launch_end's
+    // own operand waits are the iteration's output (S2MM) drains -- they
+    // survive as DMAAwaitTaskOp -- so tagging them gives a boundary marker that
+    // is robust even when the extra all-shim drain below is all paced-MM2S
+    // (which emit no surviving op).
+    bool isLaunchEnd = op->hasAttr("air.launch_end");
+    bool multiIter = false;
+    if (isLaunchEnd) {
+      if (auto device = op->getParentOfType<AIE::DeviceOp>())
+        if (llvm::isa<AIE::BaseNPU2TargetModel>(device.getTargetModel()))
+          multiIter = deviceHasMultiIterLaunch(device);
+    }
+    bool tagBoundary = isLaunchEnd && multiIter;
+    bool taggedOne = false;
+
     llvm::SmallDenseSet<StringRef> waitedChannels;
     for (auto oper : op->getOperands()) {
       auto airrtDmaOp = oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
@@ -913,7 +1142,11 @@ public:
       // The conversion to DMAAwaitTaskOp vs DMAFreeTaskOp happens later
       // based on channel direction
       StringRef metadata = metadataAttr.getValue();
-      AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
+      auto w = AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
+      if (tagBoundary) {
+        w->setAttr(kLaunchIterBoundaryAttr, rewriter.getUnitAttr());
+        taggedOne = true;
+      }
       waitedChannels.insert(metadata);
     }
 
@@ -924,23 +1157,44 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          if (outputElf && deviceHasRepeatCountDMAs(device)) {
+          // A fused multi-iteration launch (scf.for over air.launch, e.g. N
+          // stitched iterations) must fence every iteration boundary even on
+          // the xclbin (non-elf) path: without it consecutive iterations
+          // overlap and a finite-depth device lock deadlocks after a few
+          // iterations.
+          if (outputElf && deviceNeedsLockReset(device)) {
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
-          } else if (outputElf) {
+          } else if (outputElf || multiIter) {
             // No PDI reload needed, but emit NpuDmaWaitOp for any shim
             // channels not already waited on to synchronize before the
-            // next iteration (issue #1373).
+            // next iteration (issue #1373; extended to the multi-iteration
+            // xclbin path so each launch iteration fully drains).
             for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
-              if (!waitedChannels.contains(alloc.getSymName()))
-                AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
-                                           alloc.getSymName());
+              if (!waitedChannels.contains(alloc.getSymName())) {
+                auto w = AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                                    alloc.getSymName());
+                // Tag the fused multi-iteration boundary drain (see
+                // kLaunchIterBoundaryAttr) so the RTP/set_lock hoist stays
+                // scoped per iteration. Only needed if no operand wait above
+                // was tagged (those are the S2MM outputs that reliably
+                // survive).
+                if (tagBoundary && !taggedOne) {
+                  w->setAttr(kLaunchIterBoundaryAttr, rewriter.getUnitAttr());
+                  taggedOne = true;
+                }
+              }
             }
           }
         }
       }
     }
+    if (tagBoundary && !taggedOne)
+      op->emitWarning(
+          "air.multi_iter_launch: launch_end boundary has no "
+          "surviving DMA wait op to tag; per-iteration RTP/set_lock "
+          "scoping may be incorrect");
 
     // The WaitAllOp may have uses (other WaitAllOps depending on its result).
     // Replace with a new WaitAllOp with no operands to break the dependency
@@ -1110,7 +1364,8 @@ AIE::DeviceOp createMainDeviceWrapper(
   // Create runtime_sequence inside main device
   builder.setInsertionPointToStart(mainDeviceBody);
   auto mainSeq = AIE::RuntimeSequenceOp::create(
-      builder, loc, builder.getStringAttr(mainSeqName.str()));
+      builder, loc, builder.getStringAttr(mainSeqName.str()),
+      /*emit_parameter_sync_preamble=*/nullptr);
   mainSeq.getBody().push_back(new Block);
 
   // Add arguments to runtime_sequence based on first device's signature
@@ -1164,11 +1419,14 @@ const int AIE2_STRIDE_UPPER_BOUND = 1048576;
 const int AIE2_DIM_COUNT = 4;
 
 bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
-  SmallVector<Value> wrap_list;
-  wrap_list.push_back(dma.getLength3());
-  wrap_list.push_back(dma.getLength2());
-  wrap_list.push_back(dma.getLength1());
-  wrap_list.push_back(dma.getLength0());
+  // Linear shim BDs (contiguous row-major + optional outer dummies/repeat)
+  // use the wide buffer_length register and bypass the per-dim 10-bit limit.
+  SmallVector<Value> wrap_list{dma.getLength3(), dma.getLength2(),
+                               dma.getLength1(), dma.getLength0()};
+  SmallVector<Value> stride_list{dma.getStride3(), dma.getStride2(),
+                                 dma.getStride1(), dma.getStride0()};
+  if (air::isContiguousRowMajorOrRepeated(wrap_list, stride_list))
+    return false;
   for (unsigned i = 0; i < wrap_list.size(); i++) {
     if (auto const_val = getConstantIntValue(wrap_list[i])) {
       // Detected wrap that goes beyond the AIE2 hardware limit.
@@ -1179,40 +1437,7 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   return false;
 }
 
-// Find the largest factor of 'num' which is not larger than 'max'. Ref:
-// https://github.com/nod-ai/iree-amd-aie/blob/main/compiler/plugins/target/AMD-AIE/iree-amd-aie/Transforms/AMDAIEUtils.cpp#L334
-int findLargestFactor(int num, int max) {
-  // No factors less than or equal to 0 exist
-  if (max <= 0)
-    return 0;
-
-  // Do O(1) instead of O(sqrt(num)) computation for this common case.
-  if (num <= max) {
-    return num;
-  }
-
-  int largestLowFactor = 1;
-  for (int lowFactor = 2; lowFactor <= max; ++lowFactor) {
-    const int highFactor = num / lowFactor;
-
-    // This early exit is what makes this O(sqrt(num)) instead of O(num).
-    if (highFactor < lowFactor)
-      return largestLowFactor;
-
-    const bool areActuallyFactors = num % lowFactor == 0;
-    if (areActuallyFactors) {
-      // We're certain that here lowFactor <= highFactor, and highFactor is
-      // descending in this loop. So we can return immediately if highFactor
-      // is good.
-      if (highFactor <= max)
-        return highFactor;
-      largestLowFactor = lowFactor;
-    }
-  }
-  return largestLowFactor;
-}
-
-void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
+LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto loc = memcpy_op->getLoc();
   auto ctx = memcpy_op->getContext();
   auto oper_begin = memcpy_op.getOperands().begin();
@@ -1221,13 +1446,30 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   SmallVector<Value> strides(oper_begin + 12, oper_begin + 16);
   OpBuilder builder(memcpy_op);
 
+  auto memrefTy =
+      llvm::dyn_cast<BaseMemRefType>(memcpy_op.getMemref().getType());
+  int innerAlignment =
+      memrefTy ? air::getDmaInnerElementAlignment(memrefTy, memcpy_op) : 1;
+
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
     if (const_wrap >= AIE2_WRAP_UPPER_BOUNDS[i]) {
-      // Found dimension with illegal wrap. Tiling. (Prefers smaller outer
-      // wrap values, as long as stride fits)
-      int a_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1);
+      // Found dimension with illegal wrap. Prefers smaller outer wrap as
+      // long as stride fits. For stride==1, force the inner wrap to a
+      // multiple of innerAlignment elements so its byte size stays aligned
+      // to the shim address granularity (otherwise aie.dma_bd rejects it).
+      int alignment = (const_stride == 1) ? innerAlignment : 1;
+      int a_wrap = air::findLargestAlignedFactor(
+          const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1, alignment);
+      if (a_wrap == 0) {
+        return memcpy_op.emitOpError()
+               << "cannot tile dim " << i << " of size " << const_wrap
+               << " into shim-legal chunks: no factor in [" << alignment << ", "
+               << (AIE2_WRAP_UPPER_BOUNDS[i] - 1) << "] is a multiple of "
+               << alignment
+               << " elements. Reshape the transfer or pad the inner dimension.";
+      }
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
       int new_a_stride = const_stride * a_wrap;
       auto volume = air::getTensorVolume(
@@ -1357,9 +1599,10 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   }
 
   memcpy_op.erase();
+  return success();
 }
 
-void enforceAIE2WrapLimit(ModuleOp module) {
+LogicalResult enforceAIE2WrapLimit(ModuleOp module) {
   // Identify airrt.dma_memcpy_nd ops that violate the AIE2 wrap size
   // constraint.
   SmallVector<airrt::DmaMemcpyNdOp> target_airrt_dmas;
@@ -1374,7 +1617,9 @@ void enforceAIE2WrapLimit(ModuleOp module) {
 
   // Enforce the AIE2 wrap limit by tiling that dimension.
   for (auto memcpy_op : target_airrt_dmas)
-    tileIllegalWrapDim(memcpy_op);
+    if (failed(tileIllegalWrapDim(memcpy_op)))
+      return failure();
+  return success();
 }
 
 struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
@@ -1452,10 +1697,21 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // 2. NpuDmaWaitOp uses symbol reference (can be created before DMA
     // conversion)
     // 3. After this, DMA tokens can be safely purged
+
+    // Decide the per-launch lock/DMA reset for each device now, while the
+    // launch_end markers (and the loops that mark a multi-iteration launch) are
+    // still present: the conversion below erases the markers and
+    // unrollAffineFors strips the loops, so the decision cannot be recomputed
+    // afterwards.
+    markDevicesNeedingLockReset(module);
+
     generateNpuWaitFromAIRRtWaitAll(module);
 
     // Enforce AIE2 hardware constraints.
-    enforceAIE2WrapLimit(module);
+    if (failed(enforceAIE2WrapLimit(module))) {
+      signalPassFailure();
+      return;
+    }
 
     // Simplify arith ops (from airrt)
     RewritePatternSet canoPatterns_3(ctx);
@@ -1538,8 +1794,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       signalPassFailure();
 
     // Create a lightweight copy of the segment device (without core
-    // bodies/ELFs) and redirect between-iteration load_pdi to it.
-    createLightweightResetDevice(module);
+    // bodies/ELFs) and redirect between-iteration load_pdi to it. Only needed
+    // in ELF output mode -- load_pdi is never emitted otherwise, so the clone
+    // would be dead IR.
+    if (clOutputElf)
+      createLightweightResetDevice(module);
 
     // Generate main device wrapper if needed. This handles two mutually
     // exclusive cases:
@@ -1548,6 +1807,259 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // This MUST run at the very end after ALL patterns that modify
     // runtime_sequence arguments.
     generateMainDeviceIfNeeded(module);
+
+    // Strip the internal reset-decision marker so it does not leak into the
+    // emitted IR (the reset clones copy it too).
+    module.walk([](xilinx::AIE::DeviceOp device) {
+      device->removeAttr(kNeedsLockResetAttr);
+    });
+
+    // Hoist each herd's RTP writes and herd-release set_locks to the front of
+    // their OWN configuration region, so every RTP value is latched and every
+    // core released before the data movement that region drives. RTP writes and
+    // set_locks are emitted at the herd-load position, which can fall after the
+    // DMAs that trigger the cores (the control program may even await a core's
+    // output before reaching them) -- the core then latches a stale (zero) RTP
+    // or is never released and produces no output. This ordering is not
+    // expressible in the async dependence graph (RTP writes have no SSA
+    // operands; set_locks are batched separately).
+    //
+    // The region is delimited by aiex.npu.load_pdi resets (ELF path) or, on the
+    // fused multi-iteration xclbin path, by the per-iteration boundary drain
+    // tagged kLaunchIterBoundaryAttr (emitted at each launch_end). A
+    // multi-iteration launch re-arms DMA/lock state between iterations and each
+    // iteration re-writes its own RTP and re-releases its cores. Hoisting to
+    // the GLOBAL front would then (a) clobber a later iteration's RTP onto an
+    // earlier iteration's slot and (b) stack all N iterations' releases before
+    // any data movement, dropping the per-iteration re-arm -- which deadlocks a
+    // finite-depth device lock after a couple of iterations. Scoping to the
+    // per-boundary region keeps both single-launch sequences (one region ->
+    // front of sequence) and multi-iteration sequences correct.
+    auto isRegionDelimiter = [](Operation *o) {
+      return isa<AIEX::NpuLoadPdiOp>(o) || o->hasAttr(kLaunchIterBoundaryAttr);
+    };
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      Block &blk = seq.getBody().front();
+      // Snapshot the op order; the delimiters never move, and RTP/set_lock ops
+      // only move within their own region, so region membership computed from
+      // this snapshot stays valid across the moves below.
+      SmallVector<Operation *> ops;
+      for (auto &o : blk)
+        ops.push_back(&o);
+      for (size_t i = 0, e = ops.size(); i < e;) {
+        // Region [i, j): j indexes the next delimiter (or the end).
+        size_t j = i;
+        while (j < e && !isRegionDelimiter(ops[j]))
+          ++j;
+        // Anchor at the region's first op that is not an RTP write, set_lock,
+        // or an air.runtime_hoist feed -- i.e. the region's first data
+        // movement.
+        Operation *anchor = nullptr;
+        for (size_t k = i; k < j; ++k) {
+          if (isa<AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(ops[k]))
+            continue;
+          if (ops[k]->hasAttr(air::attrs::RuntimeHoist))
+            continue;
+          anchor = ops[k];
+          break;
+        }
+        if (anchor) {
+          // RTP writes first, then set_locks (release after RTP is latched),
+          // each preserving its intra-region relative order.
+          // When moving an NpuWriteRTPOp, also ensure any arith.ConstantOp
+          // that defines its SSA value operand precedes it. The AIEX API now
+          // materializes the RTP value as an SSA operand rather than an
+          // attribute, so the constant must dominate the RTP op. If the
+          // constant's block position would end up after the moved RTP write,
+          // clone it immediately before the RTP op instead.
+          for (size_t k = i; k < j; ++k) {
+            if (!isa<AIEX::NpuWriteRTPOp>(ops[k]))
+              continue;
+            ops[k]->moveBefore(anchor);
+            // After moving, check each operand: if its defining constant now
+            // comes after the rtp_write in the block, insert a clone before it.
+            for (OpOperand &operandUse : ops[k]->getOpOperands()) {
+              Value operand = operandUse.get();
+              auto *defOp = operand.getDefiningOp();
+              if (!defOp || !isa<arith::ConstantOp>(defOp))
+                continue;
+              if (defOp->getBlock() != ops[k]->getBlock())
+                continue;
+              // Walk forward from the rtp_write; if we reach defOp, it is
+              // after the rtp_write (dominance violation).
+              bool defIsAfter = false;
+              for (Operation *cur = ops[k]->getNextNode(); cur != nullptr;
+                   cur = cur->getNextNode()) {
+                if (cur == defOp) {
+                  defIsAfter = true;
+                  break;
+                }
+              }
+              if (defIsAfter) {
+                // Clone the constant immediately before the rtp_write and
+                // redirect this operand to the clone.
+                OpBuilder b(ops[k]);
+                Operation *cloned = b.clone(*defOp);
+                operandUse.set(cloned->getResult(0));
+              }
+            }
+          }
+          for (size_t k = i; k < j; ++k)
+            if (isa<AIEX::SetLockOp>(ops[k]))
+              ops[k]->moveBefore(anchor);
+        }
+        i = (j < e) ? j + 1 : j;
+      }
+    });
+
+    // Hoist input DMA feeds (air.runtime_hoist) and enforce the
+    // append->readback barrier (air.await_appends). These opt-in orderings
+    // target a single configuration region, so anchor them at the global front
+    // of the sequence.
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      Block &blk = seq.getBody().front();
+      Operation *anchor = nullptr;
+      for (auto &o : blk) {
+        if (isa<AIEX::NpuLoadPdiOp, AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(&o))
+          continue;
+        if (o.hasAttr(air::attrs::RuntimeHoist))
+          continue;
+        anchor = &o;
+        break;
+      }
+      if (!anchor)
+        return; // nothing to order before.
+      // Hoist input DMA feeds marked `air.runtime_hoist` ahead of the bulk
+      // input-feed DMAs. Otherwise the control program can block on a later
+      // input's dma_await -- whose consumer is stalled in a feedback loop
+      // waiting on the compute that the hoisted feed drives -- BEFORE it ever
+      // issues the hoisted feed, so that compute never receives its input,
+      // produces no output, and the sequence deadlocks. Each configure task and
+      // its single start task are moved together, preserving relative order.
+      SmallVector<AIEX::DMAConfigureTaskForOp> hoistCfgs;
+      for (auto &o : blk)
+        if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
+          if (c->hasAttr(air::attrs::RuntimeHoist))
+            hoistCfgs.push_back(c);
+      for (auto c : hoistCfgs) {
+        Operation *startOp = nullptr;
+        for (auto *u : c.getResult().getUsers())
+          if (isa<AIEX::DMAStartTaskOp>(u)) {
+            startOp = u;
+            break;
+          }
+        c->moveBefore(anchor);
+        if (startOp)
+          startOp->moveBefore(anchor);
+        else
+          // A present marker that cannot be honored is a silent-deadlock
+          // hazard; surface it rather than dropping the requested ordering
+          // quietly.
+          c->emitWarning("air.runtime_hoist: no matching dma_start_task; the "
+                         "feed was hoisted but its start was not, so the "
+                         "requested ordering may not take effect");
+      }
+
+      // air.await_appends barrier: a same-L3 write-after-write / read-after-
+      // write ordering that the async dependence graph cannot express. A
+      // shared- DDR readback tagged `air.await_appends` must observe values
+      // written by one or more device-side appends (S2MM drains into that same
+      // DDR buffer), but an append's completion await is deferred to the launch
+      // terminator, so the readback -- issued in program order after the append
+      // START -- would race the append S2MM and read a stale slot. Each
+      // participating append is tagged `air.append_barrier`; move those
+      // appends' completion awaits to just BEFORE the tagged readback's start,
+      // so the runtime blocks on append completion before reading back.
+      //
+      // A runtime sequence may contain one or MORE independent readbacks (e.g.
+      // an unrolled loop with N append/readback pairs). Each append's
+      // completion await is moved before the FIRST tagged readback start that
+      // follows the append in program order -- the readback that consumes it.
+      // Collapsing every append onto the first readback would move a later
+      // readback's append await ahead of an earlier readback, violating SSA
+      // dominance and the append->readback ordering. With a single readback
+      // this reduces to moving every append's await before that one readback.
+      SmallVector<AIEX::DMAConfigureTaskForOp> awaitCfgs;
+      for (auto &o : blk)
+        if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
+          if (c->hasAttr(air::attrs::AwaitAppends))
+            awaitCfgs.push_back(c);
+      if (!awaitCfgs.empty()) {
+        // First dma_start_task among a configure task's users, if any.
+        auto getStart = [](AIEX::DMAConfigureTaskForOp c) {
+          for (auto *u : c.getResult().getUsers())
+            if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u))
+              return s;
+          return AIEX::DMAStartTaskOp(nullptr);
+        };
+        // Program-order index for every op in the block. Only awaits are
+        // relocated below (append/readback starts stay put), so the indices
+        // used for the interval decisions remain valid throughout.
+        DenseMap<Operation *, unsigned> order;
+        unsigned idx = 0;
+        for (auto &o : blk)
+          order[&o] = idx++;
+        // Tagged readback starts, in program order.
+        SmallVector<AIEX::DMAStartTaskOp> barrierStarts;
+        for (auto c : awaitCfgs) {
+          if (auto s = getStart(c))
+            barrierStarts.push_back(s);
+          else
+            c->emitWarning(
+                "air.await_appends: tagged readback has no dma_start_task; the "
+                "append barrier cannot be applied");
+        }
+        bool anyAppendAwait = false;
+        for (auto &o : blk) {
+          auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
+          if (!cfg || !cfg->hasAttr(air::attrs::AppendBarrier))
+            continue;
+          AIEX::DMAAwaitTaskOp aAwait = nullptr;
+          for (auto *u : cfg.getResult().getUsers())
+            if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(u))
+              aAwait = aw;
+          if (!aAwait)
+            continue;
+          anyAppendAwait = true;
+          AIEX::DMAStartTaskOp aStart = getStart(cfg);
+          unsigned apos = order[aStart ? aStart.getOperation() : &o];
+          AIEX::DMAStartTaskOp target = nullptr;
+          unsigned best = std::numeric_limits<unsigned>::max();
+          for (auto s : barrierStarts) {
+            unsigned sp = order[s.getOperation()];
+            if (sp > apos && sp < best) {
+              best = sp;
+              target = s;
+            }
+          }
+          if (target)
+            aAwait->moveBefore(target);
+        }
+        if (!anyAppendAwait && !barrierStarts.empty())
+          barrierStarts.front()->emitWarning(
+              "air.await_appends: readback tagged but no air.append_barrier "
+              "appends found to await; no ordering was enforced");
+      }
+    });
+
+    // Strip the internal per-iteration boundary marker now that the
+    // RTP/set_lock hoist has consumed it, so it does not leak into the emitted
+    // IR.
+    module.walk([](Operation *o) {
+      if (o->hasAttr(kLaunchIterBoundaryAttr))
+        o->removeAttr(kLaunchIterBoundaryAttr);
+    });
+    // Strip the internal multi-iteration launch markers -- all their consumers
+    // (the launch_end drain, per-iteration paced-MM2S segmentation) have run --
+    // so they do not leak into the emitted device IR.
+    module.walk([](xilinx::AIE::DeviceOp device) {
+      device->removeAttr(kMultiIterLaunchAttr);
+      device->removeAttr(kNumLaunchItersAttr);
+    });
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -1819,7 +2331,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   void createLightweightResetDevice(ModuleOp module) {
     SmallVector<std::pair<AIE::DeviceOp, std::string>> devicesToClone;
     module.walk([&](AIE::DeviceOp device) {
-      if (!deviceHasRepeatCountDMAs(device))
+      if (!deviceNeedsLockReset(device))
         return;
       if (device.getSymName().empty())
         return;
@@ -1950,8 +2462,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           auto objFifo = device.lookupSymbol<AIE::ObjectFifoCreateOp>(metadata);
           if (objFifo) {
             for (auto consumerTileOp : objFifo.getConsumerTiles()) {
-              auto consTileOp = consumerTileOp.getDefiningOp<AIE::TileOp>();
-              if (consTileOp && consTileOp.isShimTile()) {
+              if (isShimTileValue(consumerTileOp)) {
                 isS2MM = true;
                 break;
               }
@@ -1971,20 +2482,151 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           }
         }
 
+        // Carry a fused multi-iteration boundary tag from the drain wait onto
+        // the surviving task op so the RTP/set_lock hoist can use it as a
+        // per-iteration region delimiter (see kLaunchIterBoundaryAttr).
+        bool isBoundary = waitOp->hasAttr(kLaunchIterBoundaryAttr);
         if (matchingConfigTask) {
           OpBuilder builder(waitOp);
           if (isS2MM) {
             // S2MM (output): await task - waits for completion AND frees BD
-            AIEX::DMAAwaitTaskOp::create(builder, waitOp.getLoc(),
-                                         matchingConfigTask.getResult());
+            auto a = AIEX::DMAAwaitTaskOp::create(
+                builder, waitOp.getLoc(), matchingConfigTask.getResult());
+            if (isBoundary)
+              a->setAttr(kLaunchIterBoundaryAttr, builder.getUnitAttr());
+          } else if (matchingConfigTask->hasAttr(
+                         air::attrs::PreserveShimDmaOrder)) {
+            // MM2S, paced: do not emit a fire-and-free here. Bounded
+            // double-buffered awaits are synthesized in
+            // synthesizeDoubleBufferedAwaits() below.
           } else {
             // MM2S (input): free task - just frees BD for reuse, no wait
-            AIEX::DMAFreeTaskOp::create(builder, waitOp.getLoc(),
-                                        matchingConfigTask.getResult());
+            auto fr = AIEX::DMAFreeTaskOp::create(
+                builder, waitOp.getLoc(), matchingConfigTask.getResult());
+            if (isBoundary)
+              fr->setAttr(kLaunchIterBoundaryAttr, builder.getUnitAttr());
           }
         }
         // Erase the NpuDmaWaitOp regardless of whether we found a match
         waitOp->erase();
+      }
+
+      // Emit bounded double-buffered awaits for paced (lockstep-coupled) MM2S
+      // shim feeds. Must run after the default await/free emission above so it
+      // can rely on the per-task config ops being in final program order.
+      synthesizeDoubleBufferedAwaits(f, device, /*depth=*/2);
+    }
+  }
+
+  // For shim feeds marked `air.preserve_shim_dma_order`, replace fire-and-free
+  // with bounded double-buffered completion-token awaits. Such feeds are
+  // coupled by a downstream broadcast/multicast consumer that advances all its
+  // destinations in lockstep; with no backpressure the runtime over-commits one
+  // channel's in-flight BDs while sibling channels starve, and deadlocks.
+  // Keeping at most `depth` tasks in flight per channel (await task i-depth
+  // before reusing its BD at start i, then drain the final `depth`) bounds the
+  // in-flight set and preserves the drainable round-major schedule.
+  void synthesizeDoubleBufferedAwaits(func::FuncOp f, AIE::DeviceOp device,
+                                      unsigned depth) {
+    // Group marked MM2S config tasks per channel, in program order.
+    llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>> groups;
+    f.walk([&](AIEX::DMAConfigureTaskForOp ct) {
+      if (!ct->hasAttr(air::attrs::PreserveShimDmaOrder))
+        return;
+      StringRef md = ct.getAlloc().getLeafReference().getValue();
+      auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, md);
+      if (!allocOp || allocOp.getChannelDir() != AIE::DMAChannelDir::MM2S)
+        return;
+      groups[md].push_back(ct);
+    });
+    if (groups.empty())
+      return;
+    // Map each config task to its start op.
+    llvm::DenseMap<Operation *, AIEX::DMAStartTaskOp> startOf;
+    f.walk([&](AIEX::DMAStartTaskOp st) {
+      if (auto *def = st.getTask().getDefiningOp())
+        startOf[def] = st;
+    });
+    // A fused multi-iteration launch (scf.for over air.launch, unrolled to N
+    // stitched iterations) must pace each channel PER ITERATION: the
+    // per-channel task list is the N iterations' feeds concatenated, and
+    // pacing/draining it as one list lets the double-buffered in-flight set
+    // straddle an iteration boundary, accumulating a `depth`-deep imbalance
+    // that deadlocks after a few iterations. Splitting into N equal contiguous
+    // segments and draining each segment's final `depth` before the next
+    // segment's first start makes every iteration's backpressure self-contained
+    // (one dispatch behaves like N drained dispatches). N==1 (single launch, or
+    // a surviving loop body) is the original whole-list behavior.
+    int64_t numIters = deviceNumLaunchIters(device);
+
+    // `fenceEnd` forces the segment's in-flight tail to be fully drained after
+    // its last start (a per-iteration fence) even when the segment fits in
+    // flight; used for the per-iteration segments of a fused multi-iteration
+    // launch. The whole-list single-dispatch call passes fenceEnd=false to keep
+    // the original behavior (no drain when the whole channel fits in flight).
+    auto paceSegment = [&](ArrayRef<AIEX::DMAConfigureTaskForOp> tasks,
+                           bool fenceEnd) {
+      unsigned n = tasks.size();
+      if (n == 0)
+        return;
+      // Before reusing task i's BD (start i), await task i-depth.
+      for (unsigned i = depth; i < n; i++) {
+        AIEX::DMAConfigureTaskForOp ti = tasks[i];
+        AIEX::DMAConfigureTaskForOp tprev = tasks[i - depth];
+        auto startOp = startOf.lookup(ti.getOperation());
+        if (!startOp) {
+          ti->emitWarning(
+              "air.preserve_shim_dma_order: paced task has no dma_start_task; "
+              "backpressure await was not inserted for it");
+          continue;
+        }
+        OpBuilder b(startOp);
+        AIEX::DMAAwaitTaskOp::create(b, startOp.getLoc(), tprev.getResult());
+      }
+      if (!fenceEnd && n <= depth)
+        return; // whole-list, fits in flight: no pacing/drain needed
+      // Drain the in-flight tail after the last start. For a per-iteration
+      // segment this fences the iteration: its feeds fully drain before the
+      // next iteration's first start. In-flight = the last `depth` tasks once
+      // pacing ran, or all `n` when the segment itself fits in flight (n <=
+      // depth).
+      AIEX::DMAConfigureTaskForOp tlast = tasks[n - 1];
+      auto lastStart = startOf.lookup(tlast.getOperation());
+      if (!lastStart) {
+        tlast->emitWarning(
+            "air.preserve_shim_dma_order: last paced task has no "
+            "dma_start_task; drain awaits were not inserted");
+        return;
+      }
+      OpBuilder b(lastStart);
+      b.setInsertionPointAfter(lastStart);
+      unsigned drainStart = (n > depth) ? n - depth : 0;
+      for (unsigned j = drainStart; j < n; j++) {
+        AIEX::DMAConfigureTaskForOp tj = tasks[j];
+        AIEX::DMAAwaitTaskOp::create(b, lastStart.getLoc(), tj.getResult());
+      }
+    };
+
+    for (auto &kv : groups) {
+      auto &tasks = kv.second;
+      unsigned n = tasks.size();
+      // Segment per launch iteration when the iteration count divides the task
+      // count evenly (each iteration emits the same per-channel feeds).
+      // Otherwise fall back to whole-list pacing.
+      if (numIters > 1 && n % numIters == 0) {
+        unsigned seg = n / (unsigned)numIters;
+        for (int64_t it = 0; it < numIters; it++)
+          paceSegment(
+              ArrayRef<AIEX::DMAConfigureTaskForOp>(tasks).slice(it * seg, seg),
+              /*fenceEnd=*/true);
+      } else {
+        if (numIters > 1)
+          tasks.front()->emitWarning(
+              "air.multi_iter_launch: MM2S task count (" + llvm::Twine(n) +
+              ") is not evenly divisible by iteration count (" +
+              llvm::Twine(numIters) +
+              "); falling back to whole-list pacing which may deadlock");
+        paceSegment(tasks, /*fenceEnd=*/false);
       }
     }
   }
@@ -2041,17 +2683,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // within THIS device only
       DenseMap<StringRef, StringRef> uniqueAllocMap;
       for (auto alloc : allocs) {
-        AIE::TileOp shimtile = alloc.getTileOp();
         std::tuple<bool, int, int> allocInfo = {
             alloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
-            alloc.getChannelIndex(), shimtile.getCol()};
+            alloc.getChannelIndex(), getColFromTileValue(alloc.getTile())};
 
         auto it =
             llvm::find_if(uniqueAllocs, [&](AIE::ShimDMAAllocationOp ualloc) {
-              AIE::TileOp shimtile = ualloc.getTileOp();
               std::tuple<bool, int, int> uallocInfo = {
                   ualloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
-                  ualloc.getChannelIndex(), shimtile.getCol()};
+                  ualloc.getChannelIndex(),
+                  getColFromTileValue(ualloc.getTile())};
               return allocInfo == uallocInfo;
             });
         if (it != uniqueAllocs.end()) {
@@ -2236,16 +2877,26 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       v0 |= (ports[i].second << (i * 8));
       v0 |= (ports[i].first << ((i * 8) + 5));
     }
-    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset, v0,
-                               nullptr, col, row);
+    auto loc0 = builder.getUnknownLoc();
+    auto i32Ty = builder.getI32Type();
+    Value addrVal0 = arith::ConstantOp::create(
+        builder, loc0, i32Ty, builder.getI32IntegerAttr(offset));
+    Value dataVal0 = arith::ConstantOp::create(builder, loc0, i32Ty,
+                                               builder.getI32IntegerAttr(v0));
+    AIEX::NpuWrite32Op::create(builder, loc0, addrVal0, dataVal0,
+                               FlatSymbolRefAttr{}, col, row);
     uint32_t v1 = 0;
     if (ports.size() > 4)
       for (unsigned i = 4; i < std::min(ports.size(), (size_t)8); i++) {
         v1 |= (ports[i].second << ((i - 4) * 8));
         v1 |= (ports[i].first << (((i - 4) * 8) + 5));
       }
-    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset + 0x4,
-                               v1, nullptr, col, row);
+    Value addrVal1 = arith::ConstantOp::create(
+        builder, loc0, i32Ty, builder.getI32IntegerAttr(offset + 0x4));
+    Value dataVal1 = arith::ConstantOp::create(builder, loc0, i32Ty,
+                                               builder.getI32IntegerAttr(v1));
+    AIEX::NpuWrite32Op::create(builder, loc0, addrVal1, dataVal1,
+                               FlatSymbolRefAttr{}, col, row);
   }
 
   // up to 8 events (up to 64 bits) will be written to the 8 event slots
@@ -2262,10 +2913,20 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       for (unsigned i = 4; i < std::min(events.size(), (size_t)8); i++)
         v1 |= ((events[i] & 0xff) << ((i - 4) * 8));
 
-    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset, v0,
-                               nullptr, col, row);
-    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset + 0x4,
-                               v1, nullptr, col, row);
+    auto loc1 = builder.getUnknownLoc();
+    auto i32Ty1 = builder.getI32Type();
+    Value addrV0 = arith::ConstantOp::create(builder, loc1, i32Ty1,
+                                             builder.getI32IntegerAttr(offset));
+    Value dataV0 = arith::ConstantOp::create(builder, loc1, i32Ty1,
+                                             builder.getI32IntegerAttr(v0));
+    AIEX::NpuWrite32Op::create(builder, loc1, addrV0, dataV0,
+                               FlatSymbolRefAttr{}, col, row);
+    Value addrV1 = arith::ConstantOp::create(
+        builder, loc1, i32Ty1, builder.getI32IntegerAttr(offset + 0x4));
+    Value dataV1 = arith::ConstantOp::create(builder, loc1, i32Ty1,
+                                             builder.getI32IntegerAttr(v1));
+    AIEX::NpuWrite32Op::create(builder, loc1, addrV1, dataV1,
+                               FlatSymbolRefAttr{}, col, row);
   }
 
   // configure events to monitor
@@ -2285,6 +2946,18 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (f.getBody().empty())
         continue;
       builder.setInsertionPointToStart(&f.front());
+      // Helper: emit NpuWrite32Op from integer address/value literals.
+      auto makeNpuWrite32Fn = [&](uint32_t addr, uint32_t val,
+                                  IntegerAttr colAttr, IntegerAttr rowAttr) {
+        auto loc = builder.getUnknownLoc();
+        auto ty = builder.getI32Type();
+        Value addrV = arith::ConstantOp::create(
+            builder, loc, ty, builder.getI32IntegerAttr(addr));
+        Value dataV = arith::ConstantOp::create(builder, loc, ty,
+                                                builder.getI32IntegerAttr(val));
+        AIEX::NpuWrite32Op::create(builder, loc, addrV, dataV,
+                                   FlatSymbolRefAttr{}, colAttr, rowAttr);
+      };
       for (auto pktFlow : d.getOps<AIE::PacketFlowOp>()) {
         Region &r = pktFlow.getPorts();
         Block &b = r.front();
@@ -2331,7 +3004,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         buff_offset += dstColIndex * buff_size;
         auto col = builder.getIntegerAttr(builder.getI32Type(), srcColIndex);
         auto row = builder.getIntegerAttr(builder.getI32Type(), srcRowIndex);
-
         // configure tile trace
         if (target_model.isCoreTile(srcColIndex, srcRowIndex)) {
           // event boardcast to sync timer
@@ -2339,15 +3011,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           uint32_t core_reg_trace_control0 = 0x340D0;
           uint32_t core_reg_trace_control1 = 0x340D4;
           uint32_t core_event_broadcast_15 = 122;
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), core_reg_timer_control,
-              core_event_broadcast_15 << 8, nullptr, col, row);
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), core_reg_trace_control0,
-              core_event_broadcast_15 << 16, nullptr, col, row);
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), core_reg_trace_control1,
-              pkt_type << 12 | flowID, nullptr, col, row);
+          makeNpuWrite32Fn(core_reg_timer_control, core_event_broadcast_15 << 8,
+                           col, row);
+          makeNpuWrite32Fn(core_reg_trace_control0,
+                           core_event_broadcast_15 << 16, col, row);
+          makeNpuWrite32Fn(core_reg_trace_control1, pkt_type << 12 | flowID,
+                           col, row);
 
           // configure events to monitor
           // todo: allow user to specify?
@@ -2372,15 +3041,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           uint32_t mem_reg_trace_control0 = 0x940D0;
           uint32_t mem_reg_trace_control1 = 0x940D4;
           uint32_t mem_event_broadcast_15 = 157;
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), mem_reg_timer_control,
-              mem_event_broadcast_15 << 8, nullptr, col, row);
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), mem_reg_trace_control0,
-              mem_event_broadcast_15 << 16, nullptr, col, row);
-          AIEX::NpuWrite32Op::create(
-              builder, builder.getUnknownLoc(), mem_reg_trace_control1,
-              pkt_type << 12 | flowID, nullptr, col, row);
+          makeNpuWrite32Fn(mem_reg_timer_control, mem_event_broadcast_15 << 8,
+                           col, row);
+          makeNpuWrite32Fn(mem_reg_trace_control0, mem_event_broadcast_15 << 16,
+                           col, row);
+          makeNpuWrite32Fn(mem_reg_trace_control1, pkt_type << 12 | flowID, col,
+                           row);
 
           // configure events to monitor
           // todo: allow user to specify?
@@ -2428,8 +3094,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             /* d2_zero_after */ 0);
         uint32_t addr = (dstColIndex << target_model.getColumnShift()) |
                         (0x1D004 + bdID * 0x20);
-        AIEX::NpuAddressPatchOp::create(builder, builder.getUnknownLoc(), addr,
-                                        /* ddr_id */ 2, buff_offset);
+        {
+          auto patchLoc = builder.getUnknownLoc();
+          Value buffOffsetVal =
+              arith::ConstantOp::create(builder, patchLoc, builder.getI32Type(),
+                                        builder.getI32IntegerAttr(buff_offset));
+          AIEX::NpuAddressPatchOp::create(builder, patchLoc, addr,
+                                          /* ddr_id */ 2, buffOffsetVal);
+        }
 
         int address;
         if (destPort.channel == 0)
@@ -2440,8 +3112,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           pktFlow->emitOpError("unknown trace dest.");
           return failure();
         }
-        AIEX::NpuWrite32Op::create(
-            builder, builder.getUnknownLoc(), address, bdID, nullptr,
+        makeNpuWrite32Fn(
+            address, bdID,
             builder.getIntegerAttr(builder.getI32Type(), dstColIndex),
             builder.getIntegerAttr(builder.getI32Type(), dstRowIndex));
         chanToIdMap[dstColIndex]--;
@@ -2449,12 +3121,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
       // broadcast event to sync timer
       auto zero = builder.getIntegerAttr(builder.getI32Type(), 0);
-      AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), 0x34000,
-                                 127 << 8, nullptr, zero, zero);
-      AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), 0x3404C, 127,
-                                 nullptr, zero, zero);
-      AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), 0x34008, 127,
-                                 nullptr, zero, zero);
+      makeNpuWrite32Fn(0x34000, 127 << 8, zero, zero);
+      makeNpuWrite32Fn(0x3404C, 127, zero, zero);
+      makeNpuWrite32Fn(0x34008, 127, zero, zero);
     }
     return success();
   }
@@ -2492,20 +3161,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (d) {
         if (auto infoOp = AIE::ShimDMAAllocationOp::getForSymbol(
                 d, dma.getMetadata().getRootReference())) {
-          AIE::TileOp shimtile = infoOp.getTileOp();
-          col = shimtile.getCol();
+          col = getColFromTileValue(infoOp.getTile());
         } else if (auto objFifoCreateOp = getObjectFifoCreateOpForSymbol(
                        objectFifoCreateOps,
                        dma.getMetadata().getLeafReference().getValue())) {
-          auto prodTileOp =
-              objFifoCreateOp->getProducerTile().getDefiningOp<AIE::TileOp>();
-          if (prodTileOp.isShimTile())
-            col = prodTileOp.colIndex();
+          if (isShimTileValue(objFifoCreateOp->getProducerTile()))
+            col = getColFromTileValue(objFifoCreateOp->getProducerTile());
           for (auto consumerTileOp : objFifoCreateOp->getConsumerTiles()) {
-            auto consTileOp = consumerTileOp.getDefiningOp<AIE::TileOp>();
-            if (consTileOp.isShimTile()) {
-              col = consTileOp.colIndex();
-            }
+            if (isShimTileValue(consumerTileOp))
+              col = getColFromTileValue(consumerTileOp);
           }
         }
       }

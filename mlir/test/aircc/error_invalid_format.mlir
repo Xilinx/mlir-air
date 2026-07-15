@@ -9,7 +9,7 @@
 
 // RUN: not aircc %s --device=npu1 --output-format=elf --tmpdir=%t 2>&1 | FileCheck %s
 
-// CHECK: Error: output_format='elf' is not supported for npu1
+// CHECK: Error: --output-format=elf is not supported for --device=npu1
 
 module {
   func.func @copy(%arg0: memref<1024xui8>, %arg1: memref<1024xui8>) {

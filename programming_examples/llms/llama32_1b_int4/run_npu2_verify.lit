@@ -1,0 +1,17 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// LLAMA-3.2-1B int4-AWQ verify gate: top-K token-level inclusion check
+// via the shared verify/ framework. NPU (bf16 prefill on dequantized
+// AWQ + int4 decode) vs HF bf16 reference (built from the AMD AWQ
+// checkpoint's config + AWQ-dequant weights — no upstream meta-llama
+// download). 2 prompts × 32 greedy tokens, k=5. Mirrors the bf16
+// sibling's run_npu2_verify.lit methodology.
+//
+// REQUIRES: false
+//
+// RUN: mkdir -p test_peano_verify
+// RUN: cd test_peano_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: [verify] PASS

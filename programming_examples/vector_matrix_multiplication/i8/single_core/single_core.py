@@ -118,13 +118,6 @@ def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out):
                 sizes=[k, tile_n],
                 strides=[n, 1],
             )
-            ChannelGet(
-                "cL2ToL3",
-                l3_c_data,
-                offsets=[launch_offset_y],
-                sizes=[tile_n],
-                strides=[1],
-            )
 
             @segment(name="vecmat_i8_0")
             def segment_body():
@@ -209,15 +202,6 @@ def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out):
                     )
                     yield_([])
 
-                l2_c_data = AllocOp(l2MemrefTyC, [], [])
-                ChannelGet(
-                    "cL1ToL2",
-                    l2_c_data,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
-
                 @herd(name="herd_0", sizes=[1, 1])
                 def herd_body(_tx, _ty, _sx, _sy):
 
@@ -267,6 +251,15 @@ def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out):
 
                 herd_body.attributes["link_with"] = StringAttr.get("vm.o")
 
+                l2_c_data = AllocOp(l2MemrefTyC, [], [])
+                ChannelGet(
+                    "cL1ToL2",
+                    l2_c_data,
+                    offsets=[],
+                    sizes=[],
+                    strides=[],
+                )
+
                 ChannelPut(
                     "cL2ToL3",
                     l2_c_data,
@@ -277,6 +270,14 @@ def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out):
                 DeallocOp(l2_a_data)
                 DeallocOp(l2_b_data)
                 DeallocOp(l2_c_data)
+
+            ChannelGet(
+                "cL2ToL3",
+                l3_c_data,
+                offsets=[launch_offset_y],
+                sizes=[tile_n],
+                strides=[1],
+            )
 
 
 if __name__ == "__main__":

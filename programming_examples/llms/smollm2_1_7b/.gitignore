@@ -1,0 +1,34 @@
+# Build / kernel cache artifacts
+build_peano/
+build_chess/
+__pycache__/
+*.pyc
+kernel_cache/
+air_project/
+.debug/
+.pytest_cache/
+
+# Stray artifacts from running scripts outside build_*/ (xrt.py + external_kernels.py
+# write these to CWD by design — `make compile/run/verify` cd into BUILD_DIR first,
+# but ad-hoc `python3 verify/verify_runner.py` from this dir will leak them here).
+air.mlir
+air.elf
+air.xclbin
+air.insts.bin
+*.o
+
+# Local-only experimental and ad-hoc test directories
+test_swiglu/
+test_swiglu_llama/
+test_swiglu_2048/
+flash_attn_issue/
+
+# Dev-only docs and artifacts (kept locally for development reference;
+# excluded from upstream PR to keep the example focused).
+docs/development_progress/
+docs/report/
+docs/issues/
+test_hf_model/
+# Deployment-process progress tracker (phase status / blockers / follow-ups) —
+# a dev artifact like docs/development_progress/, not part of the shipped example.
+TODO.md

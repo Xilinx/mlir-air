@@ -75,7 +75,7 @@ jobs:
           MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
           echo "mlir-aie wheel version: $MLIR_AIE_VERSION"
           pip install mlir_aie==$MLIR_AIE_VERSION \
-            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4/
 
       - name: Get cmakeModules
         run: |

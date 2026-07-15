@@ -1,0 +1,85 @@
+# Qwen2.5-0.5B BF16 Inference on AMD NPU2 (MLIR-AIR)
+
+End-to-end Qwen2.5-0.5B (0.5B parameter, BF16) inference running on AMD NPU2
+(AIE2P) hardware via MLIR-AIR. Supports both prefill (seq_len=2048) and
+autoregressive decode with a KV cache. Built kernel-first on the shared LLM
+infrastructure (`../shared/`, `../verify/`) and the `../llama32_1b/` reference
+exemplar; the Qwen2.5-specific deltas (QKV bias instead of QK-norm, non-aligned
+dims 896/4864/128, head_dim=64, eps=1e-6, vocab=151936) are handled in the
+prefill / decode block runners and fused onto the NPU.
+
+## Performance
+
+Measured on NPU2 (AIE2P), `make profile N_TOKENS=32`, 2026-06-28.
+
+| Phase | Measured | Notes |
+|-------|----------|-------|
+| Prefill / TTFT (2048 tokens) | **0.99 s wall** | head_dim=64 → seq-first FA (no transpose); NPU-kernel time ~0.80 s |
+| Decode / TPOT (steady-state) | **11.9 tok/s** | 24 layers, NPU-compute-bound; only cheap single-token glue stays on host |
+
+## Model Config
+
+24 layers, emb_dim=896, n_heads=14, head_dim=64, n_kv_heads=2 (GQA group=7),
+q_dim=896, kv_dim=128, hidden_dim=4864, vocab_size=151936, BF16,
+rope_theta=1000000, eps=1e-6, tied embeddings (lm_head = embed_tokens),
+**QKV bias** (q/k/v projection bias — the key Qwen2.5 delta vs Llama/Qwen3;
+there is NO QK-norm).
+
+## Prerequisites
+
+1. **MLIR-AIR base environment** — AMD NPU2 hardware, Peano compiler, the
+   project's standard env: `source utils/env_setup.sh ...`
+
+2. **Extra Python packages** (on top of the base):
+   ```bash
+   pip install -r requirements.txt
+   ```
+   Installs `safetensors`, `huggingface_hub`, `transformers`, and `torch`
+   (used by `make verify` for the HuggingFace bf16 reference comparison).
+
+3. **HuggingFace model access** (one-time):
+   - Qwen2.5-0.5B is openly licensed: https://huggingface.co/Qwen/Qwen2.5-0.5B
+   - Weights are auto-downloaded on the first `make run` and cached under
+     `~/.cache/huggingface/hub/`.
+
+## Quick Start
+
+```bash
+# One-time: compile all kernels (cached to disk)
+make compile
+
+# Run inference (instruct model by default; up to 1000 tokens, stops early on EOT)
+make run
+
+# Custom prompt / token budget
+make run PROMPT="How does photosynthesis work?" N_TOKENS=64
+
+# Run with profiling breakdown (per-kernel + per-phase)
+make profile
+
+# Top-k token-level correctness gate (NPU bf16 vs HF transformers bf16,
+# 2 prompts × 32 greedy tokens, k=5) — the production-readiness gate
+make verify
+
+# Per-layer cosine diagnosis lens (informational, single prompt)
+make diagnosis
+```
+
+## Verification
+
+`make verify` is the PASS/FAIL gate: it greedily decodes 32 tokens on the NPU
+and on HF transformers (bf16) for each prompt and checks that every NPU token is
+in HF's top-5 set at that position. Current status: **PASS, exit 0, 2/2 prompts**.
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `qwen25_0_5b_inference.py` | Unified prefill + decode driver (`prepare_runtime` does all one-time init outside the timed region) |
+| `qwen25_0_5b_prefill.py` | Prefill kernel builders + `run_transformer_block_qwen25` + `preload_prefill_weights` |
+| `qwen25_0_5b_decode.py` | Decode kernel builders + `run_decode_block` (KV cache) |
+| `qwen25_0_5b_weights.py` | Weight loading from HuggingFace safetensors (incl. QKV bias, tied lm_head) |
+| `qwen25_0_5b_cpu_helpers.py` | NumPy helpers shared by production + verify: `rms_norm`, `attention_reference`, `softmax` |
+| `verify_adapter.py` | Hooks this model's prefill/decode into the shared `../verify/` subsystem |
+| `Makefile` | compile / run / profile / chat / verify / verify-full / diagnosis / clean |
+| `ARCHITECTURE.md` | Per-layer kernel sequence, NPU/CPU mapping, runtime flow, deltas |

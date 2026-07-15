@@ -12,9 +12,11 @@
 
 // RUN: air-opt %s -air-to-aie='device=npu2' | FileCheck %s
 
+// AIR emits a ShimNOCTile LTO with column hint 0; compute tile is placed
+// directly. The downstream aie-place-tiles pass resolves the LTO.
 // CHECK: aie.device(npu2) @add_three
-// CHECK:   %[[SHIM3:.*]] = aie.tile(0, 0)
-// CHECK:   %[[TILE3:.*]] = aie.tile(0, 2)
+// CHECK-DAG:   %[[SHIM3:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:   %[[TILE3:.*]] = aie.tile(0, 2)
 // CHECK:   aie.lock(%[[TILE3]]
 // CHECK:   aie.buffer(%[[TILE3]])
 // CHECK:   aie.mem(%[[TILE3]])
@@ -30,8 +32,8 @@
 // CHECK: }
 
 // CHECK: aie.device(npu2) @add_two
-// CHECK:   %[[SHIM2:.*]] = aie.tile(0, 0)
-// CHECK:   %[[TILE2:.*]] = aie.tile(0, 2)
+// CHECK-DAG:   %[[SHIM2:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// CHECK-DAG:   %[[TILE2:.*]] = aie.tile(0, 2)
 // CHECK:   aie.lock(%[[TILE2]]
 // CHECK:   aie.buffer(%[[TILE2]])
 // CHECK:   aie.mem(%[[TILE2]])

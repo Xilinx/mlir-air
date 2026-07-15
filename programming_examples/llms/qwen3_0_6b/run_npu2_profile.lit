@@ -1,0 +1,20 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// qwen3_0_6b profiling: compile then profile on NPU2, capturing TTFT + decode
+// throughput into qwen3_0_6b.perf.json via bench/extract_perf.py. Perf is best-effort
+// (a model that does not print a metric yields null); this test gates only that
+// profiling ran end to end. Collected by the CI target
+// check-programming-examples-llms-profile. Correctness is gated separately by
+// run_npu2_verify.lit.
+//
+// REQUIRES: ryzen_ai_npu2, peano, hf_token, hfweights_qwen_qwen3_0_6b
+//
+// RUN: mkdir -p test_peano_profile
+// RUN: cd test_peano_profile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile profile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR N_TOKENS=128 PROMPT="What is the capital of France?" | tee profile.txt
+// RUN: %PYTHON %S/../bench/extract_perf.py profile.txt --model qwen3_0_6b > qwen3_0_6b.perf.json
+// RUN: FileCheck %s < qwen3_0_6b.perf.json
+// CHECK: "model": "qwen3_0_6b"

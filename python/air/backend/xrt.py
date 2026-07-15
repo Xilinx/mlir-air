@@ -18,6 +18,9 @@ import numpy as np
 import os
 import shutil
 import subprocess
+import time
+
+from air.tools import resolve_tool
 
 from ml_dtypes import bfloat16
 
@@ -66,6 +69,7 @@ class XRTBackend(AirBackend):
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
+        use_lock_race_condition_fix_v2: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
         output_format: str = "xclbin",
@@ -77,6 +81,8 @@ class XRTBackend(AirBackend):
         debug_ir: bool = False,
         bf16_emulation: bool = False,
         stack_size: int = 1024,
+        n_perf_iters: int = 0,
+        n_warmup_iters: int = 10,
     ):
         """Constructor for XRTBackend
 
@@ -87,7 +93,7 @@ class XRTBackend(AirBackend):
             omit_pingpong: configure aircc to omit the generation of ping-pong buffering for specific memory levels. Supported values: "", "L1", "L2", "all". Empty string means no omission (default).
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
-            runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
+            runtime_loop_tiling_sizes: tile sizes forwarded to aircc as --air-runtime-loop-tiling-sizes, which the shim DMA BD optimization pass (air-opt-shim-dma-bds) consumes as shim-dma-tile-sizes. Omit or pass an empty list to skip tiling.
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
@@ -106,6 +112,12 @@ class XRTBackend(AirBackend):
             bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
             stack_size: stack size in bytes per AIE core (default: 1024). Increase when
                 kernels have deep call chains (e.g., scalar fdiv needs ~1152 bytes).
+            n_perf_iters: when > 0, the loaded invoker times the kernel over this many
+                iterations (after n_warmup_iters warmup runs) and stores the average
+                wall-clock latency in microseconds on self.last_latency_us. Only the
+                kernel invocation + wait is timed (buffer sync is excluded). Default 0
+                disables timing, preserving the original single-shot behavior.
+            n_warmup_iters: warmup iterations excluded from timing when n_perf_iters > 0.
         """
         super().__init__()
         self.verbose = verbose
@@ -121,7 +133,13 @@ class XRTBackend(AirBackend):
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
+        if use_lock_race_condition_fix and use_lock_race_condition_fix_v2:
+            raise AirBackendError(
+                "use_lock_race_condition_fix and use_lock_race_condition_fix_v2 "
+                "are mutually exclusive; enable at most one"
+            )
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
+        self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
         self.trace_offset = trace_offset
         self.trace_size = trace_size
         self.currently_loaded = False
@@ -133,6 +151,13 @@ class XRTBackend(AirBackend):
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
         self.bf16_emulation = bf16_emulation
+        if not isinstance(n_perf_iters, int) or n_perf_iters < 0:
+            raise ValueError("`n_perf_iters` must be a non-negative integer")
+        if not isinstance(n_warmup_iters, int) or n_warmup_iters < 0:
+            raise ValueError("`n_warmup_iters` must be a non-negative integer")
+        self.n_perf_iters = n_perf_iters
+        self.n_warmup_iters = n_warmup_iters
+        self.last_latency_us = None
         if not isinstance(stack_size, int) or stack_size <= 0:
             raise ValueError("`stack_size` must be a positive integer")
         self.stack_size = stack_size
@@ -213,11 +238,14 @@ class XRTBackend(AirBackend):
                     print("Failed to run xrt-smi, using default target device")
                     print(e)
 
-        # Validate output_format compatibility with target device
+        # Validate output_format compatibility with target device.
+        # Full ELF requires aiebu-asm aie2_config which targets npu2/AIE2P only.
+        # PDI output works on all NPU generations.
         if self.output_format == "elf" and "npu1" in target_device:
             raise AirBackendError(
                 f"output_format='elf' is not supported for {target_device} target. "
-                "ELF output format is only supported on npu2 and later devices."
+                "ELF output format is only supported on npu2 and later devices. "
+                "Use output_format='pdi' for a raw PDI alongside the NPU instruction sequence."
             )
 
         # Apply user-specified device column configuration if provided
@@ -252,6 +280,8 @@ class XRTBackend(AirBackend):
             output_binary = f"{output_binary_name}.elf"
         elif self.output_format == "txn":
             output_binary = f"{output_binary_name}.txn"
+        elif self.output_format == "pdi":
+            output_binary = f"{output_binary_name}.pdi"
         else:  # xclbin (default)
             output_binary = f"{output_binary_name}.xclbin"
 
@@ -272,6 +302,9 @@ class XRTBackend(AirBackend):
                 aircc_options += ["--elf-name", output_binary]
                 # Note: ELF mode features (main device wrapper, load_pdi) are
                 # automatically enabled by --output-format=elf in aircc
+            elif self.output_format == "pdi":
+                aircc_options += ["--pdi-name", output_binary]
+                aircc_options += ["-i", insts]
             else:
                 aircc_options += ["-o", output_binary]
                 aircc_options += ["-i", insts]
@@ -308,6 +341,9 @@ class XRTBackend(AirBackend):
 
             if self.use_lock_race_condition_fix:
                 aircc_options += ["--use-lock-race-condition-fix"]
+
+            if self.use_lock_race_condition_fix_v2:
+                aircc_options += ["--use-lock-race-condition-fix-v2"]
 
             if self.trace_size != 0:
                 aircc_options += ["-trace-size"]
@@ -352,18 +388,17 @@ class XRTBackend(AirBackend):
                 print("Running aircc with options:", " ".join(aircc_options))
 
             # Write the in-memory module to the input file expected by aircc
+            module_str = str(air_module)
             with open("air.mlir", "w") as f:
-                f.write(str(air_module))
+                f.write(module_str)
 
-            # Invoke the C++ aircc binary
-            aircc_exe = shutil.which("aircc")
-            if not aircc_exe:
-                raise AirBackendError(
-                    "aircc binary not found in PATH. "
-                    "Ensure mlir-air is installed and aircc is on PATH."
-                )
+            # Invoke the C++ aircc binary. Prefer the tool bundled in the wheel.
+            try:
+                aircc_exe = resolve_tool("aircc")
+            except RuntimeError as exc:
+                raise AirBackendError(str(exc)) from exc
             result = subprocess.run(
-                [aircc_exe] + aircc_options,
+                [str(aircc_exe)] + aircc_options,
                 capture_output=True,
                 text=True,
             )
@@ -374,6 +409,23 @@ class XRTBackend(AirBackend):
         # For ELF mode, the kernel identifier is "main:instance_name"
         # This is used when loading the ELF via xrt.ext.kernel()
         if self.output_format == "elf" and self.instance_name != "":
+            # Validate that instance_name matches a function in the module.
+            # For ELF output, instance_name must match the
+            # @FuncOp.from_py_func function name.
+            import re
+
+            func_names = re.findall(r"func\.func @(\w+)\(", module_str)
+            if func_names and self.instance_name not in func_names:
+                import warnings
+
+                warnings.warn(
+                    f"instance_name='{self.instance_name}' does not match any "
+                    f"function in the module (available: {func_names}). "
+                    f"For ELF output, instance_name must match the "
+                    f"@FuncOp.from_py_func function name. "
+                    f"Using the wrong name may cause ERT_CMD_STATE_TIMEOUT or a runtime deadlock.",
+                    stacklevel=2,
+                )
             elf_kernel = f"main:{self.instance_name}"
         else:
             elf_kernel = kernel
@@ -477,6 +529,15 @@ class XRTBackend(AirBackend):
                 f"Cannot load XRTCompileArtifact because {artifact.output_binary} file does not exist"
             )
 
+        # PDI artifacts are intended for alternative (non-XRT) runtimes and
+        # cannot be loaded via this XRT-based load() path.
+        if artifact.output_binary.endswith(".pdi"):
+            raise AirBackendError(
+                "output_format='pdi' produces artifacts for alternative runtimes "
+                "and cannot be loaded via XRTBackend.load(). Pass the .pdi file "
+                "and accompanying .insts.bin to your target runtime directly."
+            )
+
         # Determine the loading mode based on file extension
         is_elf = artifact.output_binary.endswith(".elf")
 
@@ -505,25 +566,49 @@ class XRTBackend(AirBackend):
                 # Use xrt.ext.bo for ELF mode (simpler, no group_id needed)
                 bos = [xrt.ext.bo(self.device, s) for s in sizes_in_bytes]
 
+                # Map each BO once and keep the mapped numpy array alive. All
+                # host<->device data movement goes through these mapped arrays +
+                # bo.sync(); bo.write()/bo.read() are avoided because they
+                # misbehave under numpy 2.x with older pyxrt.
+                bo_maps = [
+                    np.frombuffer(bos[i].map(), dtype=np.uint8)
+                    for i in range(len(args))
+                ]
+
                 for i, a in enumerate(args):
                     if a.dtype == bfloat16:
                         a = a.view(np.int16)
-                    bos[i].write(a, 0)
+                    bo_maps[i][: sizes_in_bytes[i]] = np.frombuffer(
+                        np.ascontiguousarray(a).tobytes(), dtype=np.uint8
+                    )
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
                 # Use xrt.run for ELF mode
                 run = xrt.run(self.kernel)
                 for i, bo in enumerate(bos):
                     run.set_arg(i, bo)
-                run.start()
-                run.wait2()
+                if self.n_perf_iters > 0:
+                    # Time only run.start()+wait2(), averaged over n_perf_iters
+                    # after n_warmup_iters warmup runs (buffer sync excluded).
+                    for _ in range(self.n_warmup_iters):
+                        run.start()
+                        run.wait2()
+                    t0 = time.perf_counter()
+                    for _ in range(self.n_perf_iters):
+                        run.start()
+                        run.wait2()
+                    t1 = time.perf_counter()
+                    self.last_latency_us = (t1 - t0) / self.n_perf_iters * 1e6
+                else:
+                    run.start()
+                    run.wait2()
 
-                for i, a in enumerate(args):
+                for i in range(len(args)):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
                 return tuple(
                     [
-                        bos[i].read(s, 0).view(args[i].dtype)
-                        for i, s in enumerate(sizes_in_bytes)
+                        np.frombuffer(bo_maps[i].tobytes(), dtype=args[i].dtype)
+                        for i in range(len(args))
                     ]
                 )
 
@@ -551,7 +636,7 @@ class XRTBackend(AirBackend):
             # load the instructions as a numpy array
             with open(artifact.insts, "rb") as f:
                 instr_data = f.read()
-                self.instr_v = np.frombuffer(instr_data, dtype=np.uint32)
+                self.instr_v = np.frombuffer(instr_data, dtype=np.uint32).copy()
 
             self.bo_instr = xrt.bo(
                 self.device,
@@ -559,7 +644,7 @@ class XRTBackend(AirBackend):
                 xrt.bo.cacheable,
                 self.kernel.group_id(1),
             )
-            self.bo_instr.write(self.instr_v, 0)
+            self.bo_instr.write(self.instr_v.tobytes(), 0)
 
             def invoker(*args):
                 # limit arg length to 5
@@ -573,23 +658,47 @@ class XRTBackend(AirBackend):
                     for i, s in enumerate(sizes_in_bytes)
                 ]
 
+                # Map each host_only BO once and keep the mapped numpy array
+                # alive. All host<->device data movement goes through these
+                # mapped arrays + bo.sync(); bo.write()/bo.read() are avoided
+                # because they misbehave under numpy 2.x with older pyxrt.
+                # This mirrors mlir-aie's XRTTensor implementation.
+                bo_maps = [
+                    np.frombuffer(bos[i].map(), dtype=np.uint8)
+                    for i in range(len(args))
+                ]
+
                 self.bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
                 for i, a in enumerate(args):
                     if a.dtype == bfloat16:
                         # store bfloat16 in binary as int16
                         a = a.view(np.int16)
-                    bos[i].write(a, 0)
+                    bo_maps[i][: sizes_in_bytes[i]] = np.frombuffer(
+                        np.ascontiguousarray(a).tobytes(), dtype=np.uint8
+                    )
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
-                h = self.kernel(3, self.bo_instr, len(self.instr_v), *bos)
-                h.wait()
+                if self.n_perf_iters > 0:
+                    # Time only the kernel invocation + wait, averaged over
+                    # n_perf_iters after n_warmup_iters warmup runs (buffer sync
+                    # excluded — matches the C++ test-harness timing range).
+                    for _ in range(self.n_warmup_iters):
+                        self.kernel(3, self.bo_instr, len(self.instr_v), *bos).wait()
+                    t0 = time.perf_counter()
+                    for _ in range(self.n_perf_iters):
+                        self.kernel(3, self.bo_instr, len(self.instr_v), *bos).wait()
+                    t1 = time.perf_counter()
+                    self.last_latency_us = (t1 - t0) / self.n_perf_iters * 1e6
+                else:
+                    h = self.kernel(3, self.bo_instr, len(self.instr_v), *bos)
+                    h.wait()
 
-                for i, a in enumerate(args):
+                for i in range(len(args)):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
                 return tuple(
                     [
-                        bos[i].read(s, 0).view(args[i].dtype)
-                        for i, s in enumerate(sizes_in_bytes)
+                        np.frombuffer(bo_maps[i].tobytes(), dtype=args[i].dtype)
+                        for i in range(len(args))
                     ]
                 )
 

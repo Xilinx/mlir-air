@@ -14,16 +14,15 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=ae8ed9dac665a4bc2668399a91a4fdf0b34d177a
-DATETIME=2026041305
-WHEEL_VERSION=0.0.1.$DATETIME+${HASH:0:7}
+export HASH=157e8b8c967e47ea19bda83a6972f7c1cf0e4e13
+WHEEL_VERSION=1.3.5.dev62+g${HASH:0:7}
 
 if [ x"$1" == x--get-wheel-version ]; then
   echo $WHEEL_VERSION
   exit 0
 fi
 
-MLIR_PYTHON_EXTRAS_SHORTHASH=a6ab724
+MLIR_PYTHON_EXTRAS_SHORTHASH=a736a7d
 
 if [ x"$1" == x--get-mlir-python-extras-version ]; then
   echo $MLIR_PYTHON_EXTRAS_SHORTHASH
