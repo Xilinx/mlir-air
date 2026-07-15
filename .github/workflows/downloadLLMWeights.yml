@@ -56,6 +56,28 @@ jobs:
           pip install --upgrade pip
           pip install huggingface_hub
 
+      - name: Diagnose HF connectivity
+        # Pinpoint where the runner's connection to HF is reset: a failing
+        # metadata curl => firewall/proxy/TLS path to huggingface.co; metadata
+        # OK but snapshot_download still fails => redirected CDN/Xet blob route.
+        # Best-effort (never fails the job); token is kept out of the output.
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        continue-on-error: true
+        run: |
+          source hf-venv/bin/activate
+          python3 -c 'import huggingface_hub as h; print("huggingface_hub:", h.__version__)'
+          echo "--- proxy / HF env (token redacted) ---"
+          env | grep -Ei '^(http|https|no)_proxy=|^HF_' | grep -vi 'HF_TOKEN' | sort || true
+          echo "--- curl HF API metadata for a previously-failing repo ---"
+          curl -sS -v --retry 3 --retry-all-errors --connect-timeout 30 --max-time 120 \
+            -H "Authorization: Bearer ${HF_TOKEN}" \
+            "https://huggingface.co/api/models/meta-llama/Llama-3.2-3B" \
+            -o /tmp/llama-3b-metadata.json 2>&1 \
+            | grep -viE 'authorization:|bearer' || true
+          echo "--- metadata bytes fetched ---"
+          wc -c /tmp/llama-3b-metadata.json || true
+
       - name: Show HF cache BEFORE
         run: |
           source hf-venv/bin/activate
@@ -76,10 +98,14 @@ jobs:
       - name: Download all model weights
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Give slow metadata/file responses more room (secondary to retries;
+          # won't cure a hard TCP reset, but harmless and helps slow routes).
+          HF_HUB_ETAG_TIMEOUT: "60"
+          HF_HUB_DOWNLOAD_TIMEOUT: "600"
         run: |
           source hf-venv/bin/activate
           python3 - <<'PY'
-          import sys, time
+          import random, sys, time
           from huggingface_hub import snapshot_download
 
           # Weight/config/tokenizer files only.
@@ -96,14 +122,17 @@ jobs:
                     if s.strip() and not s.strip().startswith("#")]
           print(f"Seeding {len(models)} models", flush=True)
 
+          ATTEMPTS = 8
           rc = 0
           for m in models:
               ok = False
-              # Retry per model: the runner's HF egress drops connections at
-              # random. snapshot_download resumes already-fetched files, so each
-              # attempt makes progress. max_workers=1 keeps one connection open
-              # at a time (gentler on the flaky link).
-              for attempt in range(1, 9):
+              # The runner's HF egress resets connections intermittently.
+              # snapshot_download resumes already-fetched files, so each attempt
+              # makes progress; max_workers=1 keeps a single connection open
+              # (gentler on the flaky link); exponential backoff + jitter waits
+              # out the bad window (~10, 20, 40, 80, 160, 300s) instead of
+              # hammering the same reset.
+              for attempt in range(1, ATTEMPTS + 1):
                   try:
                       snapshot_download(
                           m, allow_patterns=ALLOW, ignore_patterns=IGNORE,
@@ -113,10 +142,16 @@ jobs:
                       ok = True
                       break
                   except Exception as e:
-                      print(f"attempt {attempt} failed for {m}: {e}", flush=True)
-                      time.sleep(min(attempt * 15, 60))
+                      print(f"attempt {attempt} failed for {m}: "
+                            f"{type(e).__name__}: {e}", flush=True)
+                      if attempt == ATTEMPTS:
+                          break
+                      delay = min(300, 10 * (2 ** (attempt - 1))) + random.uniform(0, 5)
+                      print(f"  retrying in {delay:.1f}s", flush=True)
+                      time.sleep(delay)
               if not ok:
-                  print(f"ERROR: failed to download {m} after 8 attempts", flush=True)
+                  print(f"ERROR: failed to download {m} after {ATTEMPTS} attempts",
+                        flush=True)
                   rc = 1
           sys.exit(rc)
           PY
