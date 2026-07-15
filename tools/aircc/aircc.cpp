@@ -247,13 +247,17 @@ static cl::opt<PlacedIrVerifyMode> placedIrVerifiers(
                           "Run; error on undecidable cases.")),
     cl::init(PIV_error), cl::cat(airCompilerOptions));
 
-enum OutputFormatKind { OF_xclbin, OF_txn, OF_elf, OF_none };
+enum OutputFormatKind { OF_xclbin, OF_txn, OF_elf, OF_pdi, OF_none };
 
 static cl::opt<OutputFormatKind> outputFormat(
     "output-format", cl::desc("Output format for the generated binary"),
     cl::values(clEnumValN(OF_xclbin, "xclbin", "Generate xclbin"),
                clEnumValN(OF_txn, "txn", "Generate transaction binary"),
-               clEnumValN(OF_elf, "elf", "Generate ELF"),
+               clEnumValN(OF_elf, "elf",
+                          "Generate full ELF (npu2 and later only)"),
+               clEnumValN(OF_pdi, "pdi",
+                          "Generate PDI binary alongside NPU instruction "
+                          "sequence (for alternative runtimes)"),
                clEnumValN(OF_none, "none", "Compile-only, no binary output")),
     cl::init(OF_xclbin), cl::cat(airCompilerOptions));
 
@@ -280,6 +284,11 @@ static cl::opt<std::string>
     elfName("elf-name",
             cl::desc("Output filename for full ELF (--output-format=elf)"),
             cl::init("aie.elf"), cl::cat(airCompilerOptions));
+
+static cl::opt<std::string>
+    pdiName("pdi-name",
+            cl::desc("Output filename for PDI binary (--output-format=pdi)"),
+            cl::init("aie.pdi"), cl::cat(airCompilerOptions));
 
 static cl::opt<bool>
     debugIr("debug-ir",
@@ -924,11 +933,14 @@ static LogicalResult runAieCompilation() {
                  << deviceName.getValue() << "\n";
   }
 
-  // Validate output format
+  // Validate output format: full ELF requires aiebu-asm aie2_config which
+  // targets npu2/AIE2P and is not supported on npu1/Phoenix.
   if (outputFormat == OF_elf &&
       deviceName.getValue().find("npu1") != std::string::npos) {
-    llvm::errs() << "Error: output_format='elf' is not supported for "
-                 << deviceName.getValue() << " target.\n";
+    llvm::errs() << "Error: --output-format=elf is not supported for --device="
+                 << deviceName.getValue()
+                 << ". Use --output-format=xclbin (default) or "
+                    "--output-format=pdi for npu1.\n";
     return failure();
   }
 
@@ -1241,17 +1253,25 @@ static LogicalResult runAieCompilation() {
       aieccCmd.push_back("--xclbin-name=" + xclbinFile);
     } else if (outputFormat == OF_txn) {
       aieccCmd.push_back("--aie-generate-txn");
+    } else if (outputFormat == OF_pdi) {
+      aieccCmd.push_back("--aie-generate-pdi");
+      aieccCmd.push_back("--pdi-name=" + pdiName.getValue());
     }
     // OF_none = no output generation options
 
-    // NPU instruction generation (not for ELF mode)
-    if (outputFormat != OF_elf) {
+    // NPU instruction generation.
+    // - ELF: sequences are embedded in the ELF by aiebu-asm, skip.
+    // - none: compile-only, no binary output requested, skip.
+    // - PDI: sidecar insts file needed by the alternative runtime to program
+    //   shim DMAs at dispatch time.
+    // - xclbin/txn: always needed.
+    if (outputFormat != OF_elf && outputFormat != OF_none) {
       aieccCmd.push_back("--aie-generate-npu-insts");
       aieccCmd.push_back("--npu-insts-name=" + instsFile);
     }
 
-    // Xclbin metadata (not for ELF mode)
-    if (outputFormat != OF_elf) {
+    // Xclbin metadata (xclbin mode only)
+    if (outputFormat == OF_xclbin) {
       if (!kernelName.empty())
         aieccCmd.push_back("--xclbin-kernel-name=" + kernelName.getValue());
       if (!instanceName.empty())
@@ -1270,6 +1290,10 @@ static LogicalResult runAieCompilation() {
 
     aieccCmd.push_back("-O");
     aieccCmd.push_back("3");
+    // aiecc defaults to -j 0 (auto CPU count) since mlir-aie commit 1ba5b5c.
+    // Force sequential core compilation to avoid parallel xchesscc crashes.
+    aieccCmd.push_back("-j");
+    aieccCmd.push_back("1");
 
     // bf16 emulation
     if (bf16Emulation)

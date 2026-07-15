@@ -14,7 +14,7 @@
 // Plain contiguous bf16, inner 131136 (>> 1023): single BD, no tiling.
 
 // CHECK-LABEL: aie.device(npu1)
-// CHECK: aie.dma_bd(%arg0 : memref<131136xbf16>, 0, 131136, [<size = 131136, stride = 1>])
+// CHECK: aie.dma_bd(%arg0 : memref<131136xbf16> offset = 0 len = 131136 sizes = [131136] strides = [1])
 
 module {
   aie.device(npu1) {
@@ -43,7 +43,7 @@ module {
 // tileIllegalWrapDim; now passes through as a single linear BD.
 
 // CHECK-LABEL: aie.device(npu1)
-// CHECK: aie.dma_bd(%arg0 : memref<2049xbf16>, 0, 2049, [<size = 2049, stride = 1>])
+// CHECK: aie.dma_bd(%arg0 : memref<2049xbf16> offset = 0 len = 2049 sizes = [2049] strides = [1])
 
 module {
   aie.device(npu1) {
@@ -72,7 +72,7 @@ module {
 // Folds into repeat_count=7 + one linear BD of 2048. Must NOT be tiled.
 
 // CHECK-LABEL: aie.device(npu1)
-// CHECK: aie.dma_bd(%arg0 : memref<2048xbf16>, 0, 2048, [<size = 2048, stride = 1>])
+// CHECK: aie.dma_bd(%arg0 : memref<2048xbf16> offset = 0 len = 2048 sizes = [2048] strides = [1])
 // CHECK: repeat_count = 7 : i32
 
 module {
@@ -102,7 +102,7 @@ module {
 // NPU2: same linearization on AIE2P. Guards against device divergence.
 
 // CHECK-LABEL: aie.device(npu2)
-// CHECK: aie.dma_bd(%arg0 : memref<131136xbf16>, 0, 131136, [<size = 131136, stride = 1>])
+// CHECK: aie.dma_bd(%arg0 : memref<131136xbf16> offset = 0 len = 131136 sizes = [131136] strides = [1])
 
 module {
   aie.device(npu2) {

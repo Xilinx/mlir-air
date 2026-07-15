@@ -22,79 +22,79 @@
 // CHECK-COUNT-5:    aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK:   aie.mem(%[[VAL_5]])
 // CHECK:   aie.core(%[[VAL_5]]) {
-// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
-// CHECK:     aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:     scf.for
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:       linalg.matmul
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:       linalg.matmul
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     }
-// CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
-// CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
+// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   }
 // CHECK:   aie.mem(%[[VAL_4]])
 // CHECK:   aie.core(%[[VAL_4]])
-// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
-// CHECK:     aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:     scf.for
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:       linalg.matmul
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:       linalg.matmul
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     }
-// CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
-// CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
+// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   }
 // CHECK:   aie.mem(%[[VAL_3]])
 // CHECK:   aie.core(%[[VAL_3]])
-// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
-// CHECK:     aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:     scf.for
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:       linalg.matmul
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:       linalg.matmul
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     }
-// CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
-// CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
+// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   }
 // CHECK:   aie.mem(%[[VAL_2]])
 // CHECK:   aie.core(%[[VAL_2]])
-// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
-// CHECK:     aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:     scf.for
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:       linalg.matmul
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
-// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
 // CHECK:       linalg.matmul
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
-// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     }
-// CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
-// CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
+// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   }
 
 #map = affine_map<()[s0] -> (s0 * 32)>

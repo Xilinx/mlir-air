@@ -22,7 +22,7 @@
 // yielding an inner segment of 192 * 2 B = 384 B (4-B aligned).
 
 // CHECK-LABEL: aie.device(npu1)
-// CHECK: aie.dma_bd(%arg0 : memref<262273xbf16>, 0, 131136, [<size = 2, stride = 131137>, <size = 1, stride = 0>, <size = 683, stride = 192>, <size = 192, stride = 1>])
+// CHECK: aie.dma_bd(%arg0 : memref<262273xbf16> offset = 0 len = 131136 sizes = [2, 1, 683, 192] strides = [131137, 0, 192, 1])
 
 module {
   aie.device(npu1) {
@@ -55,7 +55,7 @@ module {
 // already covers the full granularity.
 
 // CHECK-LABEL: aie.device(npu1)
-// CHECK: aie.dma_bd(%arg0 : memref<262273xf32>, 0, 131136, [<size = 2, stride = 131137>, <size = 1, stride = 0>, <size = 192, stride = 683>, <size = 683, stride = 1>])
+// CHECK: aie.dma_bd(%arg0 : memref<262273xf32> offset = 0 len = 131136 sizes = [2, 1, 192, 683] strides = [131137, 0, 683, 1])
 
 module {
   aie.device(npu1) {
@@ -121,7 +121,7 @@ module {
 // inner wrap drops to 4 (* 1 B = 4 B aligned) and the outer wrap becomes 257.
 
 // CHECK-LABEL: aie.device(npu1)
-// CHECK: aie.dma_bd(%arg0 : memref<2057xi8>, 0, 1028, [<size = 2, stride = 1029>, <size = 1, stride = 0>, <size = 257, stride = 4>, <size = 4, stride = 1>])
+// CHECK: aie.dma_bd(%arg0 : memref<2057xi8> offset = 0 len = 1028 sizes = [2, 1, 257, 4] strides = [1029, 0, 4, 1])
 
 module {
   aie.device(npu1) {
@@ -153,7 +153,7 @@ module {
 // device divergence going unnoticed.
 
 // CHECK-LABEL: aie.device(npu2)
-// CHECK: aie.dma_bd(%arg0 : memref<262273xbf16>, 0, 131136, [<size = 2, stride = 131137>, <size = 1, stride = 0>, <size = 683, stride = 192>, <size = 192, stride = 1>])
+// CHECK: aie.dma_bd(%arg0 : memref<262273xbf16> offset = 0 len = 131136 sizes = [2, 1, 683, 192] strides = [131137, 0, 192, 1])
 
 module {
   aie.device(npu2) {

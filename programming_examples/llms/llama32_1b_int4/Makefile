@@ -175,11 +175,11 @@ diagnosis:
 ## Run with per-kernel + per-layer profiling instrumentation.
 profile:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_prefill.py \
-		--prefill-dtype $(PREFILL_DTYPE) --model $(MODEL) \
-		--prompt "$(PROMPT)" --n-layers $(N_LAYERS) --topk $(TOPK) \
-		--profile \
-		--cache-dir $(srcdir)/verify_kernel_cache
+	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_int4_inference.py \
+		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" \
+		--model-path $(MODEL) \
+		--prefill-cache-dir $(PREFILL_INF_CACHE) \
+		--decode-cache-dir $(DECODE_INF_CACHE)
 
 ## ============================================================
 ## End-to-end inference (bf16 NPU prefill + int4 NPU decode)

@@ -14,10 +14,10 @@
 // CHECK:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:    cf.br ^bb1
 // CHECK:  ^bb1:
-// CHECK:    aie.use_lock(%[[VAL_2]], Acquire, 0)
+// CHECK:    aie.use_lock(%[[VAL_2]], Acquire, %{{.*}})
 // CHECK:    cf.br ^bb2
 // CHECK:  ^bb2:
-// CHECK:    aie.use_lock(%[[VAL_2]], Release, 0)
+// CHECK:    aie.use_lock(%[[VAL_2]], Release, %{{.*}})
 // CHECK:    aie.end
 
 // NPU1-LABEL: aie.device(npu1)
@@ -49,26 +49,26 @@ module {
 // CHECK:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:    cf.br ^bb1
 // CHECK:  ^bb1:
-// CHECK:    aie.use_lock(%[[HERD_LOCK]], Acquire, 0)
+// CHECK:    aie.use_lock(%[[HERD_LOCK]], Acquire, %{{.*}})
 // CHECK:    cf.br ^bb2
 // CHECK:  ^bb2:
-// CHECK:    aie.use_lock(%[[LOCK_0]], Acquire, 1)
-// CHECK:    aie.use_lock(%[[LOCK_0]], Release, 0)
-// CHECK:    aie.use_lock(%[[HERD_LOCK]], Release, 0)
+// CHECK:    aie.use_lock(%[[LOCK_0]], Acquire, %{{.*}})
+// CHECK:    aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
+// CHECK:    aie.use_lock(%[[HERD_LOCK]], Release, %{{.*}})
 // CHECK:    aie.end
 
 // NPU1-LABEL: aie.device(npu1)
 // NPU1:  %[[VAL_0:.*]] = aie.tile(1, 2)
 // NPU1:  %[[LOCK_0:.*]] = aie.lock(%[[VAL_0]],
 // NPU1:  %[[LOCK_1:.*]] = aie.lock(%[[VAL_0]],
-// NPU1:  %[[BUF_0:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<1024xi32, 2> 
+// NPU1:  %[[BUF_0:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<1024xi32, 2>
 // NPU1:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // NPU1:    cf.br ^bb1
 // NPU1:  ^bb1:
 // NPU1:    cf.br ^bb2
 // NPU1:  ^bb2:
-// NPU1:    aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, 1)
-// NPU1:    aie.use_lock(%[[LOCK_0]], Release, 1)
+// NPU1:    aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, %{{.*}})
+// NPU1:    aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
 // NPU1:    aie.end
 
 module {
@@ -99,12 +99,12 @@ module {
 // CHECK:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:    cf.br ^bb1
 // CHECK:  ^bb1:
-// CHECK:    aie.use_lock(%[[HERD_LOCK]], Acquire, 0)
+// CHECK:    aie.use_lock(%[[HERD_LOCK]], Acquire, %{{.*}})
 // CHECK:    cf.br ^bb2
 // CHECK:  ^bb2:
-// CHECK:    aie.use_lock(%[[LOCK_0]], Acquire, 1)
-// CHECK-DAG:    aie.use_lock(%[[LOCK_0]], Release, 0)
-// CHECK-DAG:    aie.use_lock(%[[HERD_LOCK]], Release, 0)
+// CHECK:    aie.use_lock(%[[LOCK_0]], Acquire, %{{.*}})
+// CHECK-DAG:    aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
+// CHECK-DAG:    aie.use_lock(%[[HERD_LOCK]], Release, %{{.*}})
 // CHECK:    aie.end
 
 // NPU1-LABEL: aie.device(npu1)
@@ -117,8 +117,8 @@ module {
 // NPU1:  ^bb1:
 // NPU1:    cf.br ^bb2
 // NPU1:  ^bb2:
-// NPU1:    aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, 1)
-// NPU1:    aie.use_lock(%[[LOCK_0]], Release, 1)
+// NPU1:    aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, %{{.*}})
+// NPU1:    aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
 // NPU1:    aie.end
 
 module {
@@ -149,16 +149,16 @@ module {
 // CHECK:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:    cf.br ^bb1
 // CHECK:  ^bb1:
-// CHECK:    aie.use_lock(%[[HERD_LOCK]], Acquire, 0)
+// CHECK:    aie.use_lock(%[[HERD_LOCK]], Acquire, %{{.*}})
 // CHECK:    cf.br ^bb2
 // CHECK:  ^bb2:
-// CHECK:    aie.use_lock(%[[LOCK_0]], Acquire, 1)
-// CHECK:    aie.use_lock(%[[LOCK_0]], Release, 0)
+// CHECK:    aie.use_lock(%[[LOCK_0]], Acquire, %{{.*}})
+// CHECK:    aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
 // CHECK:    scf.for
-// CHECK:      aie.use_lock(%[[LOCK_0]], Acquire, 1)
-// CHECK:      aie.use_lock(%[[LOCK_0]], Release, 0)
+// CHECK:      aie.use_lock(%[[LOCK_0]], Acquire, %{{.*}})
+// CHECK:      aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
 // CHECK:    }
-// CHECK:    aie.use_lock(%[[HERD_LOCK]], Release, 0)
+// CHECK:    aie.use_lock(%[[HERD_LOCK]], Release, %{{.*}})
 // CHECK:    aie.end
 
 // NPU1-LABEL: aie.device(npu1)
@@ -171,11 +171,11 @@ module {
 // NPU1:  ^bb1:
 // NPU1:    cf.br ^bb2
 // NPU1:  ^bb2:
-// NPU1:    aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, 1)
-// NPU1:    aie.use_lock(%[[LOCK_0]], Release, 1)
+// NPU1:    aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, %{{.*}})
+// NPU1:    aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
 // NPU1:    scf.for
-// NPU1:      aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, 1)
-// NPU1:      aie.use_lock(%[[LOCK_0]], Release, 1)
+// NPU1:      aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, %{{.*}})
+// NPU1:      aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
 // NPU1:    }
 // NPU1:    aie.end
 
@@ -217,16 +217,16 @@ module {
 // CHECK:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:    cf.br ^bb1
 // CHECK:  ^bb1:
-// CHECK:    aie.use_lock(%[[HERD_LOCK]], Acquire, 0)
+// CHECK:    aie.use_lock(%[[HERD_LOCK]], Acquire, %{{.*}})
 // CHECK:    cf.br ^bb2
 // CHECK:  ^bb2:
-// CHECK:    aie.use_lock(%[[LOCK_0]], Acquire, 1)
-// CHECK:    aie.use_lock(%[[LOCK_0]], Release, 0)
+// CHECK:    aie.use_lock(%[[LOCK_0]], Acquire, %{{.*}})
+// CHECK:    aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
 // CHECK:    scf.for
-// CHECK:      aie.use_lock(%[[LOCK_0]], Acquire, 1)
-// CHECK:      aie.use_lock(%[[LOCK_0]], Release, 0)
+// CHECK:      aie.use_lock(%[[LOCK_0]], Acquire, %{{.*}})
+// CHECK:      aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
 // CHECK:    }
-// CHECK:    aie.use_lock(%[[HERD_LOCK]], Release, 0)
+// CHECK:    aie.use_lock(%[[HERD_LOCK]], Release, %{{.*}})
 // CHECK:    aie.end
 
 // NPU1-LABEL: aie.device(npu1)
@@ -239,11 +239,11 @@ module {
 // NPU1:  ^bb1:
 // NPU1:    cf.br ^bb2
 // NPU1:  ^bb2:
-// NPU1:    aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, 1)
-// NPU1:    aie.use_lock(%[[LOCK_0]], Release, 1)
+// NPU1:    aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, %{{.*}})
+// NPU1:    aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
 // NPU1:    scf.for
-// NPU1:      aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, 1)
-// NPU1:      aie.use_lock(%[[LOCK_0]], Release, 1)
+// NPU1:      aie.use_lock(%[[LOCK_1]], AcquireGreaterEqual, %{{.*}})
+// NPU1:      aie.use_lock(%[[LOCK_0]], Release, %{{.*}})
 // NPU1:    }
 // NPU1:    aie.end
 

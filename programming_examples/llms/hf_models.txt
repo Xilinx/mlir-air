@@ -1,0 +1,25 @@
+# HuggingFace model repos the llms/ verify + profile paths load (base +
+# instruct variants + the int4 AWQ source). Single source of truth for the
+# manual "Download LLM Weights" workflow (.github/workflows/downloadLLMWeights.yml),
+# which pre-seeds these into the perf runner's HF cache so the nightly can run
+# with HF_HUB_OFFLINE=1.
+#
+# Keep in sync with the model IDs in llms/*/{verify_adapter,*_inference}.py.
+# One repo id per line; blank lines and '#' comments are ignored.
+
+meta-llama/Llama-3.2-1B
+meta-llama/Llama-3.2-1B-Instruct
+meta-llama/Llama-3.2-3B
+meta-llama/Llama-3.2-3B-Instruct
+Qwen/Qwen2.5-0.5B
+Qwen/Qwen2.5-0.5B-Instruct
+Qwen/Qwen2.5-1.5B
+Qwen/Qwen2.5-1.5B-Instruct
+Qwen/Qwen2.5-3B
+Qwen/Qwen2.5-3B-Instruct
+Qwen/Qwen3-0.6B
+Qwen/Qwen3-1.7B
+Qwen/Qwen3-4B
+HuggingFaceTB/SmolLM2-1.7B
+HuggingFaceTB/SmolLM2-1.7B-Instruct
+amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead

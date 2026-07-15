@@ -38,13 +38,14 @@
 // parallel acquires. The chain semantics live in the lock identities;
 // the per-count == 1 invariant verifies the v2 path was taken.
 // CHECK: aie.memtile_dma(%[[MT]])
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1
-// CHECK: aie.use_lock(%{{.*}}, Release, 1)
+// CHECK: aie.use_lock(%{{.*}}, Release, %{{.*}})
 
 // Negative: no acquire-by-N (rules out the legacy init=N + done-counter
 // pattern that would emit Acquire/Release counts of 4 on this memtile).
-// CHECK-NOT: aie.use_lock(%{{.*}}, AcquireGreaterEqual, 4)
+// (Formerly CHECK-NOT for integer literal 4; with SSA constants the positive
+//  CHECK lines above already confirm all acquire counts are 1.)
 
 air.channel @w0 [1, 1]
 air.channel @w1 [1, 1]

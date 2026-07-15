@@ -24,9 +24,9 @@
 
 // CHECK: aie.memtile_dma
 // CHECK: aie.dma_start(S2MM, 0
-// CHECK: aie.dma_bd(%{{.*}} : memref<2x8xbf16, 1>, 0, 8) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
+// CHECK: aie.dma_bd(%{{.*}} : memref<2x8xbf16, 1> offset = 0 len = 8) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
 // CHECK: aie.dma_start(S2MM, 1
-// CHECK: aie.dma_bd(%{{.*}} : memref<2x8xbf16, 1>, 8, 8) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>
+// CHECK: aie.dma_bd(%{{.*}} : memref<2x8xbf16, 1> offset = 8 len = 8) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>
 
 air.channel @w0 [1, 1] {channel_type = "npu_dma_packet"}
 air.channel @w1 [1, 1] {channel_type = "npu_dma_packet"}

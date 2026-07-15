@@ -13,7 +13,7 @@
 // a packet header (packetIDForChannelName is intentionally left unset for >1
 // pinned id). The producer BD carries only its task_id, no packet_info.
 
-// CHECK: aie.dma_bd(%{{.*}} : memref<80xbf16, 2>, 14, 66) {task_id = 0 : i32}
+// CHECK: aie.dma_bd(%{{.*}} : memref<80xbf16, 2> offset = 14 len = 66) {task_id = 0 : i32}
 // CHECK-NOT: packet = #aie.packet_info
 // CHECK: aie.packet_flow(2) {
 // CHECK: aie.packet_flow(5) {

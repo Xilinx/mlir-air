@@ -27,9 +27,9 @@
 // CHECK:    aie.mem(%[[TILE]])  {
 // CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
-// CHECK:           aie.use_lock(%[[RLOCK]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[BUF]] : memref<32x32xbf16, 2>, 0, 1024)
-// CHECK:           aie.use_lock(%[[WLOCK]], Release, 1)
+// CHECK:           aie.use_lock(%[[RLOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK:           aie.dma_bd(%[[BUF]] : memref<32x32xbf16, 2> offset = 0 len = 1024)
+// CHECK:           aie.use_lock(%[[WLOCK]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
 // CHECK:           aie.end
@@ -37,10 +37,10 @@
 
 // Core body: interleaved acquire(wlock)/release(rlock) per put, NOT batched
 // CHECK:    aie.core(%[[TILE]])  {
-// CHECK:           aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, 1)
-// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, 1)
-// CHECK-NEXT:      aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, 1)
-// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, 1)
+// CHECK:           aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, %{{.*}})
+// CHECK-NEXT:      aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, %{{.*}})
 // CHECK:           aie.end
 // CHECK:         }
 

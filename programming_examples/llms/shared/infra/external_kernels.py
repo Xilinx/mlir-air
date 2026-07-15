@@ -64,6 +64,13 @@ _PEANO_FLAGS = [
     "-std=c++20",
     "--target=aie2p-none-unknown-elf",
     "-DNDEBUG",
+    # Short-circuit aie_api's ADF graph headers: aie.hpp -> aie_adf.hpp (guarded
+    # by __AIE_API_AIE_ADF_HPP__) -> adf/stream.hpp -> #include <adf.h>. adf.h is
+    # a Vitis-only header absent from the Peano include path, so without this
+    # guard the compile fails with "'adf.h' file not found". These compute
+    # kernels don't use the ADF stream API; the XRT kernel tests pass the same
+    # define.
+    "-D__AIE_API_AIE_ADF_HPP__",
     "-Wno-parentheses",
     "-Wno-attributes",
     "-Wno-macro-redefined",

@@ -321,6 +321,7 @@ def run_transformer_block(
         static_input_indices={1, 3, 5, 7, 9, 10},  # weights + LUTs
         intermediate_indices=_rms_inter,
         bo_key=_rms_key,
+        shared_nonstatic=True,
     )
     v = results[8].reshape(seq_len, kv_dim)
     q_roped = results[11].reshape(seq_len, n_heads * head_dim)
@@ -422,6 +423,7 @@ def run_transformer_block(
         static_input_indices={1, 5, 7, 9, 12},  # wo, ffn_norm_w, w_gate, w_up, w_down
         intermediate_indices=_inter,
         bo_key=_offn_key,
+        shared_nonstatic=True,
     )
     output_bf16 = results[_out_idx].reshape(seq_len, emb_dim)
     intermediates["ffn_out"] = output_bf16
@@ -499,6 +501,7 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             static_input_indices={1, 3, 5, 7, 9, 10},
             intermediate_indices=_rms_inter_warm,
             bo_key=f"rms_gemms_rope_L{layer_idx}",
+            shared_nonstatic=True,
         )
 
         # o_ffn warmup (allocate + write weights). Fused-cast layout: all-bf16
@@ -534,6 +537,7 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             static_input_indices={1, 5, 7, 9, 12},
             intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18},
             bo_key=f"o_ffn_L{layer_idx}",
+            shared_nonstatic=True,
         )
 
     cache.profiler.enabled = profiler_enabled

@@ -909,6 +909,7 @@ def _fused_qknorm_rope_call(
         static_input_indices={1, 3, 5, 7, 9, 10, 13, 14},
         intermediate_indices=inter,
         bo_key=f"rms_qkv_qknorm_rope_L{layer_idx}",
+        shared_nonstatic=True,
     )
 
 
@@ -988,6 +989,7 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             static_input_indices={1, 5},
             intermediate_indices={2, 4, 6} | ores_inter,
             bo_key=f"o_res_norm_L{layer_idx}",
+            shared_nonstatic=True,
         )
 
         # gate: static {1}. Output gate (arg2). fused-cast -> f32 scratch tail.
@@ -1011,6 +1013,7 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             static_input_indices={1},
             intermediate_indices=gate_int,
             bo_key=f"gate_L{layer_idx}",
+            shared_nonstatic=True,
         )
 
         # up: static {1}. Output up (arg2). fused-cast -> f32 scratch tail.
@@ -1034,6 +1037,7 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             static_input_indices={1},
             intermediate_indices=up_int,
             bo_key=f"up_L{layer_idx}",
+            shared_nonstatic=True,
         )
 
         # SwiGLU: NPU ELF (no static weights — only warms the per-layer BO set).
@@ -1046,6 +1050,7 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             output_indices=[2],
             intermediate_indices={2},
             bo_key=f"swiglu_L{layer_idx}",
+            shared_nonstatic=True,
         )
 
         # down_add: static {1}.
@@ -1071,6 +1076,7 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             static_input_indices={1},
             intermediate_indices={2, 4} | down_inter,
             bo_key=f"down_add_L{layer_idx}",
+            shared_nonstatic=True,
         )
 
     cache.profiler.enabled = profiler_enabled
@@ -1201,6 +1207,7 @@ def run_transformer_block_qwen3(
         static_input_indices={1, 5},
         intermediate_indices={2, 4, 6} | ores_inter,
         bo_key=f"o_res_norm_L{layer_idx}",
+        shared_nonstatic=True,
     )
     res1 = ores_res[4].reshape(seq_len, emb_dim)
     normed2 = ores_res[6].reshape(seq_len, emb_dim)
@@ -1224,6 +1231,7 @@ def run_transformer_block_qwen3(
         static_input_indices={1},
         intermediate_indices=gate_int,
         bo_key=f"gate_L{layer_idx}",
+        shared_nonstatic=True,
     )
     gate = gate_res[2].reshape(seq_len, hidden_dim)
 
@@ -1246,6 +1254,7 @@ def run_transformer_block_qwen3(
         static_input_indices={1},
         intermediate_indices=up_int,
         bo_key=f"up_L{layer_idx}",
+        shared_nonstatic=True,
     )
     up = up_res[2].reshape(seq_len, hidden_dim)
 
@@ -1259,6 +1268,7 @@ def run_transformer_block_qwen3(
         output_indices=[2],
         intermediate_indices={2},
         bo_key=f"swiglu_L{layer_idx}",
+        shared_nonstatic=True,
     )
     swiglu = sw_res[2].reshape(seq_len, hidden_dim)
 
@@ -1285,6 +1295,7 @@ def run_transformer_block_qwen3(
         static_input_indices={1},
         intermediate_indices={2, 4} | down_inter,
         bo_key=f"down_add_L{layer_idx}",
+        shared_nonstatic=True,
     )
     output_bf16 = down_res[4].reshape(seq_len, emb_dim)
     inter["ffn_out"] = output_bf16

@@ -66,7 +66,8 @@ module {
 // CHECK-LABEL: aie.runtime_sequence @rtp_hoist
 // The RTP write and set_lock are hoisted ahead of the input DMA even though the
 // herd_load that emits them appears after it in program order.
-// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, 5)
+// CHECK: arith.constant 5 : i32
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
 // CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
 // CHECK: aiex.dma_configure_task_for @weightIn
 module {
@@ -175,6 +176,171 @@ module {
     %1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feed, air.preserve_shim_dma_order} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     %2 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feed, air.preserve_shim_dma_order} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     airrt.wait_all %0, %1, %2
+    return
+  }
+}
+
+// -----
+
+// (5) air.await_appends per-readback barrier: a runtime sequence may contain
+// MORE THAN ONE independent readback (e.g. an unrolled loop with N
+// append/readback pairs, each readback fed by several appends). Each append's
+// completion await is ordered before the readback that CONSUMES it -- the first
+// tagged readback that follows the append in program order -- NOT collapsed onto
+// the first readback (which would move a later readback's append awaits ahead of
+// an earlier readback, violating SSA dominance and the append->readback order).
+//
+// This mirrors the KV-cache shape: per iteration two appends (append0, append1)
+// drain into a shared buffer, then one readback reads it back.
+
+// CHECK-LABEL: aie.runtime_sequence @await_appends_multi
+// Iteration 0: readback0 awaits ITS OWN two appends (by SSA identity), then starts.
+// CHECK: %[[AK0:.*]] = aiex.dma_configure_task_for @appendK
+// CHECK: %[[AV0:.*]] = aiex.dma_configure_task_for @appendV
+// CHECK: %[[RB0:.*]] = aiex.dma_configure_task_for @readback
+// CHECK: aiex.dma_await_task(%[[AK0]])
+// CHECK: aiex.dma_await_task(%[[AV0]])
+// CHECK: aiex.dma_start_task(%[[RB0]])
+// Iteration 1: readback1 awaits ITS OWN two appends -- not iteration 0's, and
+// iteration 1's appends are NOT awaited before readback0 above.
+// CHECK: %[[AK1:.*]] = aiex.dma_configure_task_for @appendK
+// CHECK: %[[AV1:.*]] = aiex.dma_configure_task_for @appendV
+// CHECK: %[[RB1:.*]] = aiex.dma_configure_task_for @readback
+// CHECK: aiex.dma_await_task(%[[AK1]])
+// CHECK: aiex.dma_await_task(%[[AV1]])
+// CHECK: aiex.dma_start_task(%[[RB1]])
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @readback(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @appendK(%shim_noc_tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @appendV(%shim_noc_tile_0_0, S2MM, 1)
+  } {sym_name = "seg"}
+  airrt.module_metadata{}
+  func.func @await_appends_multi(%arg0: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c3_i32 = arith.constant 3 : i32
+    %c4_i32 = arith.constant 4 : i32
+    %p = airrt.segment_load "seg" : i64
+    // iteration 0: two appends then a readback that consumes them
+    %ak0 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendK, air.append_barrier} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %av0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendV, air.append_barrier} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %r0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @readback, air.await_appends} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    // iteration 1: two appends then a readback that consumes them
+    %ak1 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendK, air.append_barrier} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %av1 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendV, air.append_barrier} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %r1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @readback, air.await_appends} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    airrt.wait_all %ak0, %av0, %ak1, %av1
+    return
+  }
+}
+
+// -----
+
+// (6) A trailing air.append_barrier append with NO tagged readback following it
+// must be left deferred: its completion await is NOT hoisted before an earlier
+// readback. Only an append the readback CONSUMES -- one that precedes it -- is
+// awaited before that readback's start. This guards the "first following
+// readback" match: an append with no following readback finds no target.
+
+// CHECK-LABEL: aie.runtime_sequence @await_appends_trailing
+// CHECK: %[[A0:.*]] = aiex.dma_configure_task_for @appendK
+// CHECK: %[[RB:.*]] = aiex.dma_configure_task_for @readback
+// The consumed append (before the readback) is awaited before the readback start.
+// CHECK: aiex.dma_await_task(%[[A0]])
+// CHECK: aiex.dma_start_task(%[[RB]])
+// The trailing append is configured after the readback start; its await is NOT
+// hoisted, so it stays after that start.
+// CHECK: %[[A1:.*]] = aiex.dma_configure_task_for @appendV
+// CHECK: aiex.dma_await_task(%[[A1]])
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @readback(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @appendK(%shim_noc_tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @appendV(%shim_noc_tile_0_0, S2MM, 1)
+  } {sym_name = "seg"}
+  airrt.module_metadata{}
+  func.func @await_appends_trailing(%arg0: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c3_i32 = arith.constant 3 : i32
+    %c4_i32 = arith.constant 4 : i32
+    %p = airrt.segment_load "seg" : i64
+    // append0 then the readback that consumes it
+    %a0 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendK, air.append_barrier} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %r0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @readback, air.await_appends} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    // trailing append with no readback after it
+    %a1 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendV, air.append_barrier} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    airrt.wait_all %a0, %a1
+    return
+  }
+}
+
+// -----
+
+// (7) paced-MM2S per-iteration segmentation: a two-iteration unrolled launch
+// (two air.launch_end markers, NPU2, non-ELF) with 2 preserve_shim_dma_order
+// feeds per iteration. synthesizeDoubleBufferedAwaits must split the 4 feeds
+// into two 2-feed segments and fully drain each segment's tail before the next
+// iteration's first start -- so the in-flight window never straddles an
+// iteration boundary.
+//
+// With the whole-list fallback (no per-iteration segmentation), the 4 feeds
+// would be paced as one list: no mid-stream awaits (4 > depth=2 but T0 await
+// before T2 start), final drain of T2 and T3 only -- leaving T0 and T1
+// in-flight across the iteration boundary and accumulating a lock imbalance.
+// Correct behavior: iteration 0's T0+T1 are fully drained before T2 starts.
+
+// CHECK-LABEL: aie.runtime_sequence @paced_multiiter
+// Iteration 0: 2 paced feeds configured and started.
+// CHECK: %[[T0:.*]] = aiex.dma_configure_task_for @feed
+// CHECK: %[[T1:.*]] = aiex.dma_configure_task_for @feed
+// Iteration 0 segment drain (fenceEnd=true, n=2<=depth=2): both tasks drained
+// after T1's start, before iteration 1's T2.
+// CHECK: aiex.dma_await_task(%[[T0]])
+// CHECK: aiex.dma_await_task(%[[T1]])
+// Iteration 1: 2 paced feeds independently segmented.
+// CHECK: %[[T2:.*]] = aiex.dma_configure_task_for @feed
+// CHECK: %[[T3:.*]] = aiex.dma_configure_task_for @feed
+// Iteration 1 segment drain: both tasks drained after T3's start.
+// CHECK: aiex.dma_await_task(%[[T2]])
+// CHECK: aiex.dma_await_task(%[[T3]])
+module {
+  aie.device(npu2) @seg {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @feed(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @out(%shim_noc_tile_0_0, S2MM, 0)
+  } {sym_name = "seg"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "seg"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64,
+                           loc_x = 0 : i64, loc_y = 2 : i64,
+                           sym_name = "herd_0"}
+    }
+  }
+  func.func @paced_multiiter(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c5_i32 = arith.constant 5 : i32
+    %p = airrt.segment_load "seg" : i64
+    // iteration 0: 2 paced MM2S feeds + 1 S2MM output
+    %f0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feed, air.preserve_shim_dma_order} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %g0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feed, air.preserve_shim_dma_order} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %o0 = airrt.dma_memcpy_nd(%c5_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @out} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    airrt.wait_all %o0 {"air.launch_end"}
+    // iteration 1: 2 paced MM2S feeds + 1 S2MM output
+    %f1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feed, air.preserve_shim_dma_order} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %g1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feed, air.preserve_shim_dma_order} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %o1 = airrt.dma_memcpy_nd(%c5_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @out} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    airrt.wait_all %o1 {"air.launch_end"}
     return
   }
 }

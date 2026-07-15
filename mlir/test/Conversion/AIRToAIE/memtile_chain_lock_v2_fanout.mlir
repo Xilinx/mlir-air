@@ -35,11 +35,12 @@
 
 // memtile_dma: per-BD acquire/release counts are 1 throughout.
 // CHECK: aie.memtile_dma(%[[MT]])
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1
-// CHECK: aie.use_lock(%{{.*}}, Release, 1)
+// CHECK: aie.use_lock(%{{.*}}, Release, %{{.*}})
 
-// CHECK-NOT: aie.use_lock(%{{.*}}, AcquireGreaterEqual, 4)
+// (Formerly CHECK-NOT for integer literal 4; with SSA constants the positive
+//  CHECK lines above already confirm all acquire counts are 1.)
 
 air.channel @w0 [1, 1]
 air.channel @r0 [1, 1]

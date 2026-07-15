@@ -146,6 +146,12 @@ def prepare_runtime(
     #    prefill pass via static_input_indices).
     preload_prefill_weights(weights, config, prefill_cache, seq_len, rope_lut_bf16)
 
+    # Originals are resident in the prefill per-layer BOs; the block runner
+    # rebuilds arg lists via np.asarray(lw.wX).reshape, so swap each for a
+    # same-shape zero-stride broadcast (reshape stays a no-op view, buffer
+    # collapses to one element) instead of dropping the attribute.
+    _free_original_weight_numpy(weights, config)
+
     # 4. Pre-load decode weights into per-layer BOs + LM-head GEMV.
     _preload_decode_weights(decode_cache, weights, config)
 
@@ -153,6 +159,22 @@ def prepare_runtime(
     print(f"  Runtime prepared in {t_prep:.1f}s")
     prefill_cache.profiler.preprocessing_s = t_prep
     decode_cache.profiler.preprocessing_s = t_prep
+
+
+def _free_original_weight_numpy(weights, config):
+    """Collapse host numpy originals to zero-stride broadcasts after prefill
+    preload. Weights are resident in the prefill BOs and passed as static
+    inputs, so only their dtype/shape metadata is read afterward."""
+    import gc
+
+    z = np.zeros((), dtype=bfloat16)
+    for layer_idx in range(config.n_layers):
+        lw = weights.layers[layer_idx]
+        for attr in ("wq", "wk", "wv", "wo", "w_gate", "w_up", "w_down"):
+            a = getattr(lw, attr, None)
+            if a is not None and getattr(a, "size", 0) > 1:
+                setattr(lw, attr, np.broadcast_to(z, a.shape))
+    gc.collect()
 
 
 def _preload_decode_weights(decode_cache, weights, config):
