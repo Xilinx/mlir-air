@@ -559,6 +559,7 @@ def _fused_qknorm_rope_call(
         static_input_indices={1, 3, 5, 7, 9, 10, 13, 14},
         intermediate_indices=inter,
         bo_key=f"rms_qkv_qknorm_rope_L{layer_idx}",
+        shared_nonstatic=True,
     )
 
 
@@ -651,6 +652,7 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             static_input_indices={1, 5, 7, 9, 12},
             intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18},
             bo_key=f"o_ffn_qwen_L{layer_idx}",
+            shared_nonstatic=True,
         )
 
     cache.profiler.enabled = profiler_enabled
@@ -768,6 +770,7 @@ def run_transformer_block_qwen3(
         static_input_indices={1, 5, 7, 9, 12},
         intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18},
         bo_key=f"o_ffn_qwen_L{layer_idx}",
+        shared_nonstatic=True,
     )
     output_bf16 = results[14].reshape(seq_len, emb_dim)
     inter["ffn_out"] = output_bf16

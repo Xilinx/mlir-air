@@ -36,6 +36,8 @@ from __future__ import annotations
 import argparse
 import functools
 import importlib
+import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -164,6 +166,23 @@ def _run_diagnosis(npu, hf, prompt_tokens, report, n_layers):
         )
 
 
+def _strip_opt(argv, opt):
+    """Return argv with `--opt value` (or `--opt=value`) pairs removed, so the
+    auto orchestrator can re-invoke itself with a fresh --gate-phase/--gate-file."""
+    out, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == opt:
+            i += 2
+            continue
+        if a.startswith(opt + "="):
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    return out
+
+
 def _load_adapter(dotted_path: str):
     """Import the model's verify_adapter module by dotted path.
 
@@ -224,6 +243,23 @@ def main():
         help="Cap the number of prompts run in --prompts topk_token mode. "
         "Default: run all prompts in the file.",
     )
+    p.add_argument(
+        "--gate-phase",
+        choices=["auto", "both", "capture-npu", "compare-hf"],
+        default="auto",
+        help="topk_token memory strategy. 'auto' (default) runs the NPU and HF "
+        "halves in separate subprocesses so their weights never co-reside "
+        "(peak RAM = max(NPU, HF) instead of the sum). 'capture-npu' / "
+        "'compare-hf' are the individual phases (used internally by auto, and "
+        "usable standalone to run the HF compare on a different host). 'both' "
+        "is the legacy single-process path (higher peak; for debugging).",
+    )
+    p.add_argument(
+        "--gate-file",
+        default=None,
+        help="Path for the NPU capture handoff (chosen + top-k token ids). "
+        "Required for --gate-phase capture-npu/compare-hf; auto uses a temp file.",
+    )
     args = p.parse_args()
 
     adapter = _load_adapter(args.runner)
@@ -260,43 +296,56 @@ def main():
     # model). For bf16 this is the same checkpoint as model_name; for int4
     # adapter overrides hf_reference() to the upstream un-quantized model.
     hf_tokenizer = _get_tokenizer(hf_ref_model)
-    print("[verify] building NPU runner via adapter...")
-    npu = adapter.build_runner(
-        model_name=model_name,
-        config=config,
-        max_seq=max_seq,
-        tokenizer=tokenizer,
-        npu_attn=(args.npu_attn == "on"),
-        lite_mode=lite,
-    )
-    from runners.hf_runner import HfRunner
 
-    # Optional adapter hook: produce a custom HF model (e.g. meta-llama
-    # architecture with AWQ-dequantized weights patched in) so the verify
-    # gate isolates NPU drift from quantization error. When absent, fall
-    # back to plain `from_pretrained(hf_ref_model)`.
-    hf_model = None
-    if hasattr(adapter, "build_hf_model"):
-        print(f"[verify] adapter is building custom HF reference model...")
-        hf_model = adapter.build_hf_model(
-            npu_model_name=model_name,
-            hf_ref_model=hf_ref_model,
-            config=config,
-        )
-    print(f"[verify] building HF runner ({hf_ref_model}, lite={lite}, may download)...")
-    try:
-        hf = HfRunner(
-            model_name=hf_ref_model,
+    # Runner builders are deferred so each gate phase constructs only the model
+    # it needs. The NPU host weights and the HF bf16 reference are each multi-GB;
+    # keeping them out of the same process (see --gate-phase auto below) halves
+    # peak host RAM and is what lets the 3B/4B models fit.
+    def build_npu():
+        print("[verify] building NPU runner via adapter...")
+        return adapter.build_runner(
+            model_name=model_name,
             config=config,
             max_seq=max_seq,
+            tokenizer=tokenizer,
+            npu_attn=(args.npu_attn == "on"),
             lite_mode=lite,
-            model=hf_model,
         )
-    except Exception as e:
-        print(f"[verify] HF runner unavailable: {e}", file=sys.stderr)
-        sys.exit(1)
+
+    def build_hf():
+        from runners.hf_runner import HfRunner
+
+        # Optional adapter hook: produce a custom HF model (e.g. meta-llama
+        # architecture with AWQ-dequantized weights patched in) so the verify
+        # gate isolates NPU drift from quantization error.
+        hf_model = None
+        if hasattr(adapter, "build_hf_model"):
+            print("[verify] adapter is building custom HF reference model...")
+            hf_model = adapter.build_hf_model(
+                npu_model_name=model_name,
+                hf_ref_model=hf_ref_model,
+                config=config,
+            )
+        print(
+            f"[verify] building HF runner ({hf_ref_model}, lite={lite}, may download)..."
+        )
+        try:
+            return HfRunner(
+                model_name=hf_ref_model,
+                config=config,
+                max_seq=max_seq,
+                lite_mode=lite,
+                model=hf_model,
+            )
+        except Exception as e:
+            print(f"[verify] HF runner unavailable: {e}", file=sys.stderr)
+            sys.exit(1)
 
     if not in_verify_mode:
+        # Diagnosis needs the NPU and HF models co-resident (per-layer compare).
+        # It is informational, not the gate, so it keeps the single-process path.
+        npu = build_npu()
+        hf = build_hf()
         prompt_tokens, _ = _tokenize(args.prompt, model_name)
         if len(prompt_tokens) > max_seq:
             prompt_tokens = prompt_tokens[:max_seq]
@@ -327,35 +376,101 @@ def main():
     report.set_prompts(prompts)
     report.config["prompts_file"] = str(prompts_path)
     report.config["max_prompts"] = args.max_prompts
+
+    def _prompt_tokens(prompt):
+        ptoks, _ = _tokenize(prompt, model_name)
+        return ptoks[:max_seq] if len(ptoks) > max_seq else ptoks
+
+    # auto: run the NPU capture and HF compare halves as separate subprocesses
+    # so the NPU weights are reclaimed (process exit) before the HF reference
+    # loads. Peak host RAM = max(NPU, HF) instead of the sum.
+    if args.gate_phase == "auto":
+        import subprocess
+        import tempfile
+
+        gate_file = args.gate_file or os.path.join(
+            tempfile.gettempdir(), f"verify_gate_{os.getpid()}.json"
+        )
+        passthrough = _strip_opt(
+            _strip_opt(sys.argv[1:], "--gate-phase"), "--gate-file"
+        )
+        cmd = [sys.executable, sys.argv[0]] + passthrough + ["--gate-file", gate_file]
+        print("[verify] auto: NPU capture phase (subprocess)...")
+        rc = subprocess.run(cmd + ["--gate-phase", "capture-npu"]).returncode
+        if rc != 0:
+            sys.exit(rc)
+        print("[verify] auto: HF compare phase (subprocess)...")
+        rc = subprocess.run(cmd + ["--gate-phase", "compare-hf"]).returncode
+        try:
+            os.remove(gate_file)
+        except OSError:
+            pass
+        sys.exit(rc)
+
     print(
         f"[verify] top-k token gate: {len(prompts)} prompts × "
         f"{GATE_N_TOKENS} tokens, k={GATE_K} (from {prompts_path.name})"
     )
+
+    # capture-npu: build only the NPU runner; dump chosen + top-k per prompt.
+    if args.gate_phase == "capture-npu":
+        if not args.gate_file:
+            sys.exit("--gate-phase capture-npu requires --gate-file")
+        npu = build_npu()
+        captured = {}
+        for pi, prompt in enumerate(prompts):
+            print(f"[verify] prompt {pi + 1}/{len(prompts)}: NPU greedy decode...")
+            chosen, topk = _generate_with_topk(
+                npu, _prompt_tokens(prompt), GATE_N_TOKENS, GATE_K
+            )
+            captured[str(pi)] = {
+                "chosen": [int(c) for c in chosen],
+                "topk": [[int(t) for t in row] for row in topk],
+            }
+        with open(args.gate_file, "w") as f:
+            json.dump(captured, f)
+        print(f"[verify] NPU capture written to {args.gate_file}")
+        return
+
+    # compare-hf loads the NPU capture; both builds the NPU inline (legacy).
+    if args.gate_phase == "compare-hf":
+        if not args.gate_file:
+            sys.exit("--gate-phase compare-hf requires --gate-file")
+        with open(args.gate_file) as f:
+            npu_data = json.load(f)
+    else:  # both: single-process (higher peak; debugging / non-split hosts)
+        npu = build_npu()
+        npu_data = None
+    hf = build_hf()
+
+    def _decorate(rec, test_seq):
+        rec.test_chosen_text_at_div = _decode_token_for_display(
+            tokenizer, rec.test_chosen_at_div
+        )
+        rec.ref_chosen_text_at_div = _decode_token_for_display(
+            tokenizer, rec.ref_chosen_at_div
+        )
+        if rec.divergence_step is not None and rec.divergence_step > 0:
+            prefix_ids = [int(t) for t in test_seq[: rec.divergence_step]]
+            rec.agreed_prefix_text = f'"{_md_escape(tokenizer.decode(prefix_ids))}"'
+        elif rec.divergence_step == 0:
+            rec.agreed_prefix_text = '""'
+        return rec
+
     for pi, prompt in enumerate(prompts):
         short = (prompt[:60] + "…") if len(prompt) > 60 else prompt
         print(f"[verify] prompt {pi + 1}/{len(prompts)}: {short!r}")
-        ptoks, tokenizer = _tokenize(prompt, model_name)
-        if len(ptoks) > max_seq:
-            ptoks = ptoks[:max_seq]
-        print(f"[verify]   NPU greedy decode ({GATE_N_TOKENS} tokens)...")
-        npu_chosen, npu_topk = _generate_with_topk(npu, ptoks, GATE_N_TOKENS, GATE_K)
+        ptoks = _prompt_tokens(prompt)
+        if npu_data is not None:
+            npu_chosen = npu_data[str(pi)]["chosen"]
+            npu_topk = npu_data[str(pi)]["topk"]
+        else:
+            print(f"[verify]   NPU greedy decode ({GATE_N_TOKENS} tokens)...")
+            npu_chosen, npu_topk = _generate_with_topk(
+                npu, ptoks, GATE_N_TOKENS, GATE_K
+            )
         print(f"[verify]   HF greedy decode ({GATE_N_TOKENS} tokens)...")
         hf_chosen, hf_topk = _generate_with_topk(hf, ptoks, GATE_N_TOKENS, GATE_K)
-
-        def _decorate(rec, test_seq):
-            rec.test_chosen_text_at_div = _decode_token_for_display(
-                tokenizer, rec.test_chosen_at_div
-            )
-            rec.ref_chosen_text_at_div = _decode_token_for_display(
-                tokenizer, rec.ref_chosen_at_div
-            )
-            if rec.divergence_step is not None and rec.divergence_step > 0:
-                prefix_ids = [int(t) for t in test_seq[: rec.divergence_step]]
-                rec.agreed_prefix_text = f'"{_md_escape(tokenizer.decode(prefix_ids))}"'
-            elif rec.divergence_step == 0:
-                rec.agreed_prefix_text = '""'
-            return rec
-
         rec = compute_topk_set_check(
             test_chosen=npu_chosen,
             test_topk=npu_topk,
