@@ -6786,6 +6786,86 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
   }
 };
 
+// Re-establish an async drain token on a launch-scope scf.index_switch that
+// selects per-iteration host feeds (a fused multi-iteration launch may wrap
+// each iteration's L3->L2 feeds in an scf.index_switch). air-dependency
+// async-converts it,
+// but a subsequent canonicalize drops the switch's unused async-token result --
+// trapping the branch feeds' tokens inside its regions, so the launch-block
+// drain (generateWaitAllToTerminateBlock, later folded into air.launch_end)
+// finds no dangling token and the launch_end marker is never built. Without
+// air.launch_end the fused launch is not detected as multi-iteration
+// (markDevicesNeedingLockReset) so no per-wave boundary/pacing is emitted.
+// Rebuild the switch with a trailing !air.async.token result whose regions each
+// yield a wait_all over their dangling tokens, so the scf.for conversion below
+// threads it into the loop-carried drain. Mirrors convertScfIndexSwitchToAsync
+// but standalone (no ExecuteGraph).
+static scf::IndexSwitchOp restoreIndexSwitchDrainToken(scf::IndexSwitchOp sw,
+                                                       OpBuilder &b) {
+  auto tokTy = air::AsyncTokenType::get(sw.getContext());
+  // Already async: nothing to do.
+  if (sw.getNumResults() &&
+      isa<air::AsyncTokenType>(sw.getResult(sw.getNumResults() - 1).getType()))
+    return sw;
+  // Only rebuild if some region actually holds a dangling async token.
+  auto regionHasDanglingToken = [](Region &r) {
+    if (r.empty())
+      return false;
+    for (Operation &o : r.front().without_terminator())
+      for (Value res : o.getResults())
+        if (isa<air::AsyncTokenType>(res.getType()) && res.use_empty())
+          return true;
+    return false;
+  };
+  if (llvm::none_of(sw->getRegions(),
+                    [&](Region &r) { return regionHasDanglingToken(r); }))
+    return sw;
+
+  b.setInsertionPoint(sw);
+  SmallVector<Type> resTys(sw.getResultTypes());
+  resTys.push_back(tokTy);
+  auto newSw = scf::IndexSwitchOp::create(b, sw.getLoc(), resTys, sw.getArg(),
+                                          sw.getCases(), sw.getCases().size());
+  if (auto attr =
+          sw->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+    newSw->setAttr(SymbolTable::getSymbolAttrName(), attr);
+  // Move ops (excluding the old terminator) into the new regions.
+  for (auto [oR, nR] : llvm::zip_equal(sw->getRegions(), newSw->getRegions())) {
+    if (oR.empty())
+      continue;
+    if (nR.empty())
+      b.createBlock(&nR);
+    auto &nbb = nR.front().getOperations();
+    auto &obb = oR.front().getOperations();
+    nbb.splice(nbb.begin(), obb, obb.begin(), --obb.end());
+  }
+  // Terminate each region with a yield of a wait_all over its dangling tokens.
+  for (Region &nR : newSw->getRegions()) {
+    if (nR.empty())
+      b.createBlock(&nR);
+    Block &blk = nR.front();
+    SmallVector<Value> dangling;
+    for (Operation &o : blk.without_terminator())
+      for (Value res : o.getResults())
+        if (isa<air::AsyncTokenType>(res.getType()) && res.use_empty())
+          dangling.push_back(res);
+    SmallVector<Value> yieldVals;
+    if (blk.mightHaveTerminator())
+      if (auto y = dyn_cast<scf::YieldOp>(blk.getTerminator())) {
+        yieldVals.append(y.getOperands().begin(), y.getOperands().end());
+        y.erase();
+      }
+    b.setInsertionPointToEnd(&blk);
+    auto wa = air::WaitAllOp::create(b, sw.getLoc(), tokTy, dangling);
+    yieldVals.push_back(wa.getResult(0));
+    scf::YieldOp::create(b, sw.getLoc(), yieldVals);
+  }
+  for (auto [o, n] : llvm::zip(sw.getResults(), newSw.getResults()))
+    o.replaceAllUsesWith(n);
+  sw.erase();
+  return newSw;
+}
+
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient shim dma block
 // descriptors (BD).
@@ -6826,6 +6906,21 @@ public:
       // folding and finish.
       applyAIRL3DmaFoldingPatterns(func, *device);
       return;
+    }
+
+    // Re-establish drain tokens on any sync launch-scope scf.index_switch
+    // (mode-select host feeds) before the launch is serialized into scf.for, so
+    // AIRLaunchToScfForPattern's generateWaitAllToTerminateBlock threads the
+    // switch's branch-feed tokens into the loop-carried drain / air.launch_end.
+    {
+      OpBuilder b(ctx);
+      SmallVector<scf::IndexSwitchOp> switchesToFix;
+      func.walk([&](air::LaunchOp launch) {
+        for (auto sw : launch.getBody().front().getOps<scf::IndexSwitchOp>())
+          switchesToFix.push_back(sw);
+      });
+      for (auto sw : switchesToFix)
+        restoreIndexSwitchDrainToken(sw, b);
     }
 
     // Convert air.launch to scf.for.

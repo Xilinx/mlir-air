@@ -1140,6 +1140,35 @@ public:
   }
 };
 
+class ScfIndexSwitchOpConversion
+    : public OpConversionPattern<scf::IndexSwitchOp> {
+public:
+  using OpConversionPattern<scf::IndexSwitchOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::IndexSwitchOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    scf::IndexSwitchOp newOp = dyn_cast_if_present<scf::IndexSwitchOp>(
+        rewriter.cloneWithoutRegions(*op.getOperation()));
+    for (unsigned i = 0; i < op->getNumRegions(); i++)
+      rewriter.inlineRegionBefore(op->getRegion(i), newOp->getRegion(i),
+                                  newOp->getRegion(i).end());
+
+    // Update the switch arg and convert region + result types (air.async.token
+    // -> airrt.event), mirroring ScfForOpConversion.
+    newOp->setOperands(adaptor.getOperands());
+    for (unsigned i = 0; i < newOp->getNumRegions(); i++)
+      if (failed(rewriter.convertRegionTypes(&newOp->getRegion(i),
+                                             *typeConverter)))
+        return failure();
+    for (auto result : newOp.getResults())
+      result.setType(typeConverter->convertType(result.getType()));
+
+    rewriter.replaceOp(op, newOp.getResults());
+    return success();
+  }
+};
+
 class ScfParOpConversion : public OpConversionPattern<scf::ParallelOp> {
 public:
   using OpConversionPattern<scf::ParallelOp>::OpConversionPattern;
@@ -1478,6 +1507,14 @@ public:
       }
       return true;
     });
+    target.addDynamicallyLegalOp<scf::IndexSwitchOp>(
+        [&](scf::IndexSwitchOp op) {
+          for (auto v : op.getResults()) {
+            if (llvm::isa<air::AsyncTokenType>(v.getType()))
+              return false;
+          }
+          return true;
+        });
     target.addIllegalOp<air::WaitAllOp>();
     target.addLegalOp<UnrealizedConversionCastOp>();
 
@@ -1489,11 +1526,12 @@ public:
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);
 
-    air_patterns.add<
-        ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
-        ScfParOpConversion, ScfReduceReturnOpConversion, ScfReduceOpConversion,
-        AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion>(converter,
-                                                                      context);
+    air_patterns
+        .add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
+             ScfIndexSwitchOpConversion, ScfParOpConversion,
+             ScfReduceReturnOpConversion, ScfReduceOpConversion,
+             AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion>(
+            converter, context);
 
     // Build channel counterpart cache to avoid O(n) module walks per channel
     // op during conversion. Without this cache, each of the N channel ops
