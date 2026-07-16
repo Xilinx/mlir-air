@@ -20,11 +20,13 @@
 
 // RUN: air-opt %s -air-to-aie='row-offset=2 col-offset=0 device=npu1_1col' | FileCheck %s
 
-// The offset arithmetic for @pkt_in_1 must remain before its put after reorder.
+// The offset arithmetic for @pkt_in_1 must remain before its put after reorder,
+// and the put must still consume the second arith.addi's result.
+// CHECK-LABEL: func.func @func_l3_put_offset
 // CHECK: air.channel.put @pkt_in_0
-// CHECK: arith.addi
-// CHECK: arith.addi
-// CHECK: air.channel.put @pkt_in_1
+// CHECK: %[[BASE:.*]] = arith.addi
+// CHECK: %[[OFF:.*]] = arith.addi %[[BASE]]
+// CHECK: air.channel.put @pkt_in_1[] (%{{.*}}[%[[OFF]]]
 
 module {
   air.channel @pkt_in_0 [1, 1] {channel_type = "npu_dma_packet"}

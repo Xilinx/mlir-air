@@ -8,8 +8,6 @@
 #include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Util/Util.h"
 
-#include "mlir/Analysis/SliceAnalysis.h"
-
 #include "aie/Dialect/AIE/Transforms/AIEPlacer.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -2399,25 +2397,12 @@ void air::reorderL3PacketPutsByFlowOrder(
       prevByBlock[blk] = put;
       continue;
     }
-    put->moveAfter(it->second);
-    // moveAfter relocates only the put op. Its wrap-and-stride operands
-    // (offset/size/stride) may be produced by same-block ops -- e.g. an
-    // arith.addi computing a per-iteration DDR offset -- which are left in
-    // place and can now follow the put, violating SSA dominance ("operand #N
-    // does not dominate this use"). Pull any same-block backward-slice op that
-    // now trails the put back to just before it, in topological (deps-first)
-    // order so the operands' mutual order stays valid. All such ops are pure
-    // index arithmetic, so relocating them is side-effect free; operands that
-    // already dominate the put are left untouched.
-    Block *pblk = put->getBlock();
-    BackwardSliceOptions bsOpts;
-    bsOpts.omitBlockArguments = true;
-    bsOpts.filter = [&](Operation *o) { return o->getBlock() == pblk; };
-    llvm::SetVector<Operation *> slice;
-    (void)getBackwardSlice(put.getOperation(), &slice, bsOpts);
-    for (Operation *s : slice)
-      if (put.getOperation()->isBeforeInBlock(s))
-        s->moveBefore(put.getOperation());
+    // Move the put after its flow-order predecessor, carrying its wrap-and-
+    // stride operand slice (e.g. an arith.addi computing a per-iteration DDR
+    // offset) so SSA dominance holds. A put whose slice contains a side-
+    // effecting op is left in place rather than reordered unsafely.
+    (void)air::moveWithPureBackwardSlice(put.getOperation(), it->second,
+                                         /*after=*/true);
     prevByBlock[blk] = put;
   }
 }

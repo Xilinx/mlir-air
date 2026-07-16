@@ -28,6 +28,7 @@
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
@@ -2647,6 +2648,30 @@ Operation *air::cloneOpAndOperands(RewriterBase &rewriter, IRMapping &remap,
   // 3) Finally clone the target op itself.
   auto new_op = rewriter.clone(*op, remap);
   return new_op;
+}
+
+bool air::moveWithPureBackwardSlice(Operation *op, Operation *dest,
+                                    bool after) {
+  Block *blk = op->getBlock();
+  BackwardSliceOptions bsOpts;
+  bsOpts.omitBlockArguments = true;
+  bsOpts.filter = [&](Operation *o) { return o->getBlock() == blk; };
+  llvm::SetVector<Operation *> slice;
+  (void)getBackwardSlice(op, &slice, bsOpts);
+  // Relocating a side-effecting op could cross a hazard; bail and let the
+  // caller skip the reorder rather than risk changing semantics.
+  if (llvm::any_of(slice, [](Operation *o) { return !isMemoryEffectFree(o); }))
+    return false;
+  if (after)
+    op->moveAfter(dest);
+  else
+    op->moveBefore(dest);
+  // getBackwardSlice yields deps-first order; pulling each trailing slice op to
+  // just before `op` in that order keeps the operands' mutual order valid.
+  for (Operation *s : slice)
+    if (op->isBeforeInBlock(s))
+      s->moveBefore(op);
+  return true;
 }
 
 bool air::opOrAncestorIsDominantOver(Operation *a, Operation *b) {
