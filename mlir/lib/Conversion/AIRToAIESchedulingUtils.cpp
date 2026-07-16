@@ -2397,7 +2397,12 @@ void air::reorderL3PacketPutsByFlowOrder(
       prevByBlock[blk] = put;
       continue;
     }
-    put->moveAfter(it->second);
+    // Move the put after its flow-order predecessor, carrying its wrap-and-
+    // stride operand slice (e.g. an arith.addi computing a per-iteration DDR
+    // offset) so SSA dominance holds. A put whose slice contains a side-
+    // effecting op is left in place rather than reordered unsafely.
+    (void)air::moveWithPureBackwardSlice(put.getOperation(), it->second,
+                                         /*after=*/true);
     prevByBlock[blk] = put;
   }
 }

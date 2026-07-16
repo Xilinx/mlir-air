@@ -368,6 +368,13 @@ void getBackwardSliceInRegion(OpBuilder builder, Region *region,
                               SmallVectorImpl<Value> &vals,
                               SetVector<Operation *> &backwardSlices);
 
+// Move `op` next to `dest` (after it when `after`, else before), bringing its
+// same-block backward slice along so SSA dominance is preserved: any slice op
+// that ends up trailing `op` is pulled back before it, deps-first. Done only if
+// every slice op is memory-effect-free; otherwise nothing is moved and false is
+// returned, so the caller can avoid a reorder that would strand an impure dep.
+bool moveWithPureBackwardSlice(Operation *op, Operation *dest, bool after);
+
 // Buffer all allocations of memref directly within the func op's body into the
 // func op's arguments.
 void populateBufferMemrefToFuncArgsPattern(RewritePatternSet &patterns);

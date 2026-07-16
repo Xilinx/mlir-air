@@ -15,8 +15,6 @@
 #include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
-
-#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
@@ -32,7 +30,6 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -1358,37 +1355,15 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     if (!anchor)
       return;
 
-    Block *blk = anchor->getBlock();
-    BackwardSliceOptions sliceOpts;
-    sliceOpts.omitBlockArguments = true;
-    sliceOpts.filter = [&](Operation *o) { return o->getBlock() == blk; };
-    llvm::SetVector<Operation *> toHoist;
-    for (auto dma : drainDmas) {
-      llvm::SetVector<Operation *> slice;
-      (void)getBackwardSlice(dma.getOperation(), &slice, sliceOpts);
-      // A side-effecting producer must not be reordered across the intervening
-      // input DMAs; leave such a drain in place rather than risk a hazard.
-      if (llvm::any_of(slice,
-                       [](Operation *o) { return !isMemoryEffectFree(o); }))
-        continue;
-      toHoist.insert(slice.begin(), slice.end());
-      toHoist.insert(dma.getOperation());
-    }
-    // Relocate, in program order, only the to-hoist ops that currently follow
-    // the anchor; those already ahead of it already dominate it. Moving value
-    // definitions earlier is dominance-safe.
-    SmallVector<Operation *> ordered;
-    bool seenAnchor = false;
-    for (Operation *op : window) {
-      if (op == anchor) {
-        seenAnchor = true;
-        continue;
-      }
-      if (seenAnchor && toHoist.contains(op))
-        ordered.push_back(op);
-    }
-    for (Operation *op : ordered)
-      op->moveBefore(anchor);
+    // Relocate each drain that currently follows the anchor to just before it,
+    // carrying its same-block operand slice so dominance holds (deps-first).
+    // Drains already ahead of the anchor already dominate it and are left
+    // alone. A drain whose slice contains a side-effecting op is left in place
+    // rather than reordered across the intervening input DMAs.
+    for (auto dma : drainDmas)
+      if (anchor->isBeforeInBlock(dma.getOperation()))
+        (void)air::moveWithPureBackwardSlice(dma.getOperation(), anchor,
+                                             /*after=*/false);
   });
 }
 
