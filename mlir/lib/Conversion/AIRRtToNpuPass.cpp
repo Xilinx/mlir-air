@@ -544,7 +544,10 @@ struct FoldConstIndexSwitchPattern
         rewriter.setInsertionPoint(wa);
         auto nwa = airrt::WaitAllOp::create(rewriter, wa.getLoc(),
                                             wa->getResultTypes(), newOperands);
-        nwa->setAttrs(wa->getDiscardableAttrDictionary());
+        // Copy the full attribute set (matching AIRRtDialect's FoldWaitAll) so
+        // the air.launch_end marker -- load-bearing for multi-iteration launch
+        // detection and wave tagging -- is preserved on the rebuilt op.
+        nwa->setAttrs(wa->getAttrs());
         rewriter.replaceOp(wa, nwa->getResults());
       }
     }
