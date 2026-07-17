@@ -71,6 +71,13 @@ constexpr StringLiteral KeepPktHeader = "keep_pkt_header";
 // stamped. Distinct from KeepPktHeader, which is per-flow (offset-0 bearer
 // only).
 constexpr StringLiteral SrcWritesPktHeader = "air.src_writes_pkt_header";
+// Per-op launch-iteration ("wave") index (i64) on runtime-sequence ops of a
+// fused multi-iteration launch. Assigned in AIRRtToNpu right after the fused
+// launch loop is unrolled (program order still reflects wave membership) and
+// propagated onto the ops each airrt op lowers to, so downstream per-wave
+// ordering (RTP arm / set_lock / output-S2MM hoist) groups by this index
+// instead of inferring wave boundaries from op positions.
+constexpr StringLiteral LaunchWave = "air.launch_wave";
 } // namespace attrs
 
 // Copy the DMA-steering / runtime-ordering markers

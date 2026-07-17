@@ -6798,8 +6798,9 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
 // (markDevicesNeedingLockReset) so no per-wave boundary/pacing is emitted.
 // Rebuild the switch with a trailing !air.async.token result whose regions each
 // yield a wait_all over their dangling tokens, so the scf.for conversion below
-// threads it into the loop-carried drain. Mirrors convertScfIndexSwitchToAsync
-// but standalone (no ExecuteGraph).
+// threads it into the loop-carried drain. Shares the switch rebuild with
+// air-dependency's convertScfIndexSwitchToAsync via
+// air::rebuildIndexSwitchWithTrailingAsyncToken.
 static scf::IndexSwitchOp restoreIndexSwitchDrainToken(scf::IndexSwitchOp sw,
                                                        OpBuilder &b) {
   auto tokTy = air::AsyncTokenType::get(sw.getContext());
@@ -6821,24 +6822,9 @@ static scf::IndexSwitchOp restoreIndexSwitchDrainToken(scf::IndexSwitchOp sw,
                     [&](Region &r) { return regionHasDanglingToken(r); }))
     return sw;
 
-  b.setInsertionPoint(sw);
-  SmallVector<Type> resTys(sw.getResultTypes());
-  resTys.push_back(tokTy);
-  auto newSw = scf::IndexSwitchOp::create(b, sw.getLoc(), resTys, sw.getArg(),
-                                          sw.getCases(), sw.getCases().size());
-  if (auto attr =
-          sw->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-    newSw->setAttr(SymbolTable::getSymbolAttrName(), attr);
-  // Move ops (excluding the old terminator) into the new regions.
-  for (auto [oR, nR] : llvm::zip_equal(sw->getRegions(), newSw->getRegions())) {
-    if (oR.empty())
-      continue;
-    if (nR.empty())
-      b.createBlock(&nR);
-    auto &nbb = nR.front().getOperations();
-    auto &obb = oR.front().getOperations();
-    nbb.splice(nbb.begin(), obb, obb.begin(), --obb.end());
-  }
+  // Shared rebuild (new switch + trailing async token + region splice + RAUW);
+  // this caller then populates each region's wait_all yield and erases sw.
+  auto newSw = air::rebuildIndexSwitchWithTrailingAsyncToken(b, sw);
   // Terminate each region with a yield of a wait_all over its dangling tokens.
   for (Region &nR : newSw->getRegions()) {
     if (nR.empty())
@@ -6860,8 +6846,7 @@ static scf::IndexSwitchOp restoreIndexSwitchDrainToken(scf::IndexSwitchOp sw,
     yieldVals.push_back(wa.getResult(0));
     scf::YieldOp::create(b, sw.getLoc(), yieldVals);
   }
-  for (auto [o, n] : llvm::zip(sw.getResults(), newSw.getResults()))
-    o.replaceAllUsesWith(n);
+  // The helper already RAUW'd the original results onto newSw.
   sw.erase();
   return newSw;
 }
