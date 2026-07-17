@@ -273,6 +273,32 @@ scf::ParallelOp air::getParallelRegionInitValsOwner(Operation *op, Value val) {
   return scf::ParallelOp();
 }
 
+scf::IndexSwitchOp
+air::rebuildIndexSwitchWithTrailingAsyncToken(OpBuilder &b,
+                                              scf::IndexSwitchOp sw) {
+  SmallVector<Type> resTys(sw.getResultTypes());
+  resTys.push_back(air::AsyncTokenType::get(sw.getContext()));
+  b.setInsertionPoint(sw);
+  auto newSw = scf::IndexSwitchOp::create(b, sw.getLoc(), resTys, sw.getArg(),
+                                          sw.getCases(), sw.getCases().size());
+  if (auto attr =
+          sw->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+    newSw->setAttr(SymbolTable::getSymbolAttrName(), attr);
+  // Move ops (excluding the old terminator) into the new regions.
+  for (auto [oR, nR] : llvm::zip_equal(sw->getRegions(), newSw->getRegions())) {
+    if (oR.empty())
+      continue;
+    if (nR.empty())
+      b.createBlock(&nR);
+    auto &nbb = nR.front().getOperations();
+    auto &obb = oR.front().getOperations();
+    nbb.splice(nbb.begin(), obb, obb.begin(), --obb.end());
+  }
+  for (auto [o, n] : llvm::zip(sw.getResults(), newSw.getResults()))
+    o.replaceAllUsesWith(n);
+  return newSw;
+}
+
 // Get the parent air.launch_herd op of a tile id
 air::HerdOp air::getHerdArgOwner(Value val) {
   auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);

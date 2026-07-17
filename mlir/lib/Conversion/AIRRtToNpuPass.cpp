@@ -22,6 +22,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -203,17 +204,6 @@ static constexpr llvm::StringLiteral kMultiIterLaunchAttr =
 static constexpr llvm::StringLiteral kNumLaunchItersAttr =
     "air.num_launch_iters";
 
-// Marks a runtime-sequence op emitted at a fused multi-iteration launch's
-// per-iteration boundary (the between-iteration full shim drain). Used
-// post-conversion as a region delimiter so the per-herd RTP-write / set_lock
-// hoisting stays scoped to each iteration's sub-sequence instead of collapsing
-// to the global front. Collapsing all N iterations' inits to the front stacks
-// N re-arms before any data movement and drops the per-iteration re-arm, which
-// deadlocks a finite-depth device lock after a couple of iterations. Mirrors
-// the region-delimiting role NpuLoadPdiOp plays on the ELF-reset path.
-static constexpr llvm::StringLiteral kLaunchIterBoundaryAttr =
-    "air.launch_iter_boundary";
-
 static bool deviceHasMultiIterLaunch(xilinx::AIE::DeviceOp device) {
   return device->hasAttr(kMultiIterLaunchAttr);
 }
@@ -222,6 +212,35 @@ static int64_t deviceNumLaunchIters(xilinx::AIE::DeviceOp device) {
   if (auto a = device->getAttrOfType<mlir::IntegerAttr>(kNumLaunchItersAttr))
     return a.getInt();
   return 1;
+}
+
+// Stamp a per-op launch-iteration ("wave") index on the source airrt ops of a
+// fused multi-iteration launch (airrt.dma_memcpy_nd / airrt.herd_load). Must
+// run after the fused launch loop is unrolled (so each iteration's ops are laid
+// out contiguously and program order reflects wave membership) and before the
+// launch_end airrt.wait_all markers are lowered away. The index rides through
+// lowering onto the emitted DMAConfigureTaskForOp / NpuWriteRTPOp / SetLockOp,
+// so the downstream per-wave hoist groups by index rather than inferring wave
+// boundaries from op positions. Gated to fused devices; single-dispatch funcs
+// are left untagged (wave 0 everywhere) for byte-identical output.
+static void assignLaunchWaveIndices(mlir::ModuleOp module) {
+  module.walk([&](mlir::func::FuncOp f) {
+    if (f.getBody().empty())
+      return;
+    auto device = f->getParentOfType<xilinx::AIE::DeviceOp>();
+    if (!device || !deviceHasMultiIterLaunch(device))
+      return;
+    int64_t wave = 0;
+    auto i64 = mlir::IntegerType::get(f.getContext(), 64);
+    f.walk<mlir::WalkOrder::PreOrder>([&](mlir::Operation *op) {
+      if (isa<xilinx::airrt::DmaMemcpyNdOp, xilinx::airrt::HerdLoadOp>(op))
+        op->setAttr(xilinx::air::attrs::LaunchWave,
+                    mlir::IntegerAttr::get(i64, wave));
+      if (auto w = dyn_cast<xilinx::airrt::WaitAllOp>(op))
+        if (w->hasAttr("air.launch_end"))
+          wave++;
+    });
+  });
 }
 
 // Compute and stamp the reset decision on every device. MUST run after
@@ -467,6 +486,77 @@ struct RelocateAssumeAlignmentOp
   }
 };
 
+// Fold a constant-index scf.index_switch on the host (runtime-sequence) side.
+// After the fused per-wave launch loop is fully unrolled (unrollSCFFors), the
+// wave induction variable becomes a constant in each copy, so a launch-scope
+// scf.index_switch that selects per-wave host feeds (each wave may run a
+// different per-wave mode) has a constant condition. Inline the selected branch
+// so its feed ops land
+// directly in the runtime-sequence body -- an scf.index_switch cannot be a
+// parent of aiex.dma_configure_task_for. On-core (CoreOp) index_switches carry
+// a runtime RTP arm and are lowered elsewhere, so they are left untouched.
+struct FoldConstIndexSwitchPattern
+    : public OpRewritePattern<scf::IndexSwitchOp> {
+  using OpRewritePattern<scf::IndexSwitchOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(scf::IndexSwitchOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getParentOfType<AIE::CoreOp>())
+      return failure();
+    auto argConst = mlir::getConstantIntValue(op.getArg());
+    if (!argConst)
+      return failure();
+    Region *reg = nullptr;
+    ArrayRef<int64_t> cases = op.getCases();
+    for (size_t i = 0; i < cases.size(); ++i) {
+      if (cases[i] == *argConst) {
+        reg = &op.getCaseRegions()[i];
+        break;
+      }
+    }
+    if (!reg)
+      reg = &op.getDefaultRegion();
+    Block &bb = reg->front();
+    auto yield = cast<scf::YieldOp>(bb.getTerminator());
+    SmallVector<Value> results(yield.getOperands());
+    rewriter.eraseOp(yield);
+    // If the switch carried an async drain token (a fused per-wave mode switch
+    // wrapping host feeds is made async upstream so shim-dma-bds can build the
+    // launch_end drain), sever the drain's dependency on it. At this stage feed
+    // synchronization is handled by NpuDmaWaitOp on channels; the launch_end
+    // wait_all only needs its marker attribute (already counted by
+    // markDevicesNeedingLockReset). Rebuild each consuming airrt.wait_all
+    // without the switch-token operand, so the token becomes dead and the
+    // switch (and its inlined branch wait_all) can be erased cleanly -- a
+    // surviving airrt.wait_all -> launch_end wait_all token chain otherwise
+    // breaks the dialect conversion's erase ordering.
+    if (op.getNumResults() > 0 &&
+        isa<airrt::EventType>(op.getResult(op.getNumResults() - 1).getType())) {
+      Value switchTok = op.getResult(op.getNumResults() - 1);
+      SmallVector<Operation *> users(switchTok.getUsers());
+      for (Operation *u : users) {
+        auto wa = dyn_cast<airrt::WaitAllOp>(u);
+        if (!wa)
+          continue;
+        SmallVector<Value> newOperands;
+        for (Value v : wa->getOperands())
+          if (v != switchTok)
+            newOperands.push_back(v);
+        rewriter.setInsertionPoint(wa);
+        auto nwa = airrt::WaitAllOp::create(rewriter, wa.getLoc(),
+                                            wa->getResultTypes(), newOperands);
+        // Copy the full attribute set (matching AIRRtDialect's FoldWaitAll) so
+        // the air.launch_end marker -- load-bearing for multi-iteration launch
+        // detection and wave tagging -- is preserved on the rebuilt op.
+        nwa->setAttrs(wa->getAttrs());
+        rewriter.replaceOp(wa, nwa->getResults());
+      }
+    }
+    rewriter.inlineBlockBefore(&bb, op);
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
   using OpConversionPattern<airrt::DmaMemcpyNdOp>::OpConversionPattern;
 
@@ -660,6 +750,11 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // readback (see the air.await_appends barrier below).
     if (op->hasAttr(air::attrs::AppendBarrier))
       configTaskOp->setAttr(air::attrs::AppendBarrier, rewriter.getUnitAttr());
+    // Carry the fused-launch wave index so the per-wave
+    // RTP/set_lock/output-S2MM hoist can group this feed by its launch
+    // iteration.
+    if (auto wave = op->getAttr(air::attrs::LaunchWave))
+      configTaskOp->setAttr(air::attrs::LaunchWave, wave);
 
     // Create the body region of the configure task op
     Block *bodyBlock = rewriter.createBlock(&configTaskOp.getBody());
@@ -785,6 +880,10 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
       }
     }
 
+    // Fused-launch wave index (if any): propagated onto the emitted RTP writes
+    // and set_locks so the per-wave hoist groups this arm by its iteration.
+    auto waveAttr = op->getAttr(air::attrs::LaunchWave);
+
     // for each herd core, emit write_rtp ops for every herd operand
     // followed by a write32 to the herd lock, setting it to 1.
     for (int phys_x = loc_x; phys_x < size_x + loc_x; phys_x++) {
@@ -820,8 +919,10 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
               Value vVal = arith::ConstantOp::create(
                   rewriter, op.getLoc(), rewriter.getI32Type(),
                   rewriter.getI32IntegerAttr(v));
-              AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(), name, rtp_slot,
-                                          vVal);
+              auto rtpOp = AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(),
+                                                       name, rtp_slot, vVal);
+              if (waveAttr)
+                rtpOp->setAttr(air::attrs::LaunchWave, waveAttr);
             }
             rtp_slot++;
           }
@@ -846,8 +947,11 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
         if (!lockOp)
           continue;
 
-        AIEX::SetLockOp::create(rewriter, op.getLoc(), lockOp.getResult(),
-                                rewriter.getI32IntegerAttr(1));
+        auto setLockOp =
+            AIEX::SetLockOp::create(rewriter, op.getLoc(), lockOp.getResult(),
+                                    rewriter.getI32IntegerAttr(1));
+        if (waveAttr)
+          setLockOp->setAttr(air::attrs::LaunchWave, waveAttr);
       }
     }
     rewriter.eraseOp(op);
@@ -991,15 +1095,9 @@ public:
             // current iteration's compute (issue #1373; extended to the
             // multi-iteration xclbin path).
             rewriter.setInsertionPoint(op);
-            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
-              auto w = AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
-                                                  alloc.getSymName());
-              // Tag the fused multi-iteration boundary drain so the later
-              // RTP/set_lock hoist keeps each iteration's re-arm scoped to its
-              // own sub-sequence (see kLaunchIterBoundaryAttr).
-              if (multiIter)
-                w->setAttr(kLaunchIterBoundaryAttr, rewriter.getUnitAttr());
-            }
+            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>())
+              AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                         alloc.getSymName());
           }
         }
       }
@@ -1112,12 +1210,6 @@ public:
         }))
       return failure();
 
-    // A fused multi-iteration launch tags its per-iteration boundary drain so
-    // the later RTP/set_lock hoist stays scoped per iteration. The launch_end's
-    // own operand waits are the iteration's output (S2MM) drains -- they
-    // survive as DMAAwaitTaskOp -- so tagging them gives a boundary marker that
-    // is robust even when the extra all-shim drain below is all paced-MM2S
-    // (which emit no surviving op).
     bool isLaunchEnd = op->hasAttr("air.launch_end");
     bool multiIter = false;
     if (isLaunchEnd) {
@@ -1125,8 +1217,6 @@ public:
         if (llvm::isa<AIE::BaseNPU2TargetModel>(device.getTargetModel()))
           multiIter = deviceHasMultiIterLaunch(device);
     }
-    bool tagBoundary = isLaunchEnd && multiIter;
-    bool taggedOne = false;
 
     llvm::SmallDenseSet<StringRef> waitedChannels;
     for (auto oper : op->getOperands()) {
@@ -1142,11 +1232,7 @@ public:
       // The conversion to DMAAwaitTaskOp vs DMAFreeTaskOp happens later
       // based on channel direction
       StringRef metadata = metadataAttr.getValue();
-      auto w = AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
-      if (tagBoundary) {
-        w->setAttr(kLaunchIterBoundaryAttr, rewriter.getUnitAttr());
-        taggedOne = true;
-      }
+      AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
       waitedChannels.insert(metadata);
     }
 
@@ -1171,30 +1257,14 @@ public:
             // channels not already waited on to synchronize before the
             // next iteration (issue #1373; extended to the multi-iteration
             // xclbin path so each launch iteration fully drains).
-            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
-              if (!waitedChannels.contains(alloc.getSymName())) {
-                auto w = AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
-                                                    alloc.getSymName());
-                // Tag the fused multi-iteration boundary drain (see
-                // kLaunchIterBoundaryAttr) so the RTP/set_lock hoist stays
-                // scoped per iteration. Only needed if no operand wait above
-                // was tagged (those are the S2MM outputs that reliably
-                // survive).
-                if (tagBoundary && !taggedOne) {
-                  w->setAttr(kLaunchIterBoundaryAttr, rewriter.getUnitAttr());
-                  taggedOne = true;
-                }
-              }
-            }
+            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>())
+              if (!waitedChannels.contains(alloc.getSymName()))
+                AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                           alloc.getSymName());
           }
         }
       }
     }
-    if (tagBoundary && !taggedOne)
-      op->emitWarning(
-          "air.multi_iter_launch: launch_end boundary has no "
-          "surviving DMA wait op to tag; per-iteration RTP/set_lock "
-          "scoping may be incorrect");
 
     // The WaitAllOp may have uses (other WaitAllOps depending on its result).
     // Replace with a new WaitAllOp with no operands to break the dependency
@@ -1691,6 +1761,28 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     }
 
+    // Fold constant-condition launch-scope scf.index_switch after unrolling.
+    // A fused per-wave launch that selects per-wave host feeds via an
+    // scf.index_switch(select(wave_iv < K, ...)) has a constant condition once
+    // the wave loop is unrolled; the arith chain (cmpi/select/index_cast) folds
+    // to a constant and the switch's chosen branch must be inlined so its feed
+    // ops sit directly in the runtime sequence (an index_switch cannot parent
+    // aiex.dma_configure_task_for). Runs the arith folds + branch inlining
+    // greedily so the chain collapses in one sweep.
+    {
+      RewritePatternSet p(ctx);
+      arith::CmpIOp::getCanonicalizationPatterns(p, ctx);
+      arith::SelectOp::getCanonicalizationPatterns(p, ctx);
+      arith::IndexCastOp::getCanonicalizationPatterns(p, ctx);
+      arith::ExtUIOp::getCanonicalizationPatterns(p, ctx);
+      arith::ExtSIOp::getCanonicalizationPatterns(p, ctx);
+      arith::AddIOp::getCanonicalizationPatterns(p, ctx);
+      arith::MulIOp::getCanonicalizationPatterns(p, ctx);
+      arith::SubIOp::getCanonicalizationPatterns(p, ctx);
+      p.insert<FoldConstIndexSwitchPattern>(ctx);
+      (void)applyPatternsGreedily(module, std::move(p));
+    }
+
     // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
     // This must happen BEFORE DMA conversion because:
     // 1. WaitAllOp has SSA operands to DmaMemcpyNdOp event tokens
@@ -1704,6 +1796,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // unrollAffineFors strips the loops, so the decision cannot be recomputed
     // afterwards.
     markDevicesNeedingLockReset(module);
+
+    // Tag each fused-launch source airrt op with its wave index while the
+    // launch_end markers are still present and program order reflects wave
+    // membership (before the markers are lowered by the next step).
+    assignLaunchWaveIndices(module);
 
     generateNpuWaitFromAIRRtWaitAll(module);
 
@@ -1824,19 +1921,40 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // expressible in the async dependence graph (RTP writes have no SSA
     // operands; set_locks are batched separately).
     //
-    // The region is delimited by aiex.npu.load_pdi resets (ELF path) or, on the
-    // fused multi-iteration xclbin path, by the per-iteration boundary drain
-    // tagged kLaunchIterBoundaryAttr (emitted at each launch_end). A
-    // multi-iteration launch re-arms DMA/lock state between iterations and each
-    // iteration re-writes its own RTP and re-releases its cores. Hoisting to
-    // the GLOBAL front would then (a) clobber a later iteration's RTP onto an
-    // earlier iteration's slot and (b) stack all N iterations' releases before
-    // any data movement, dropping the per-iteration re-arm -- which deadlocks a
-    // finite-depth device lock after a couple of iterations. Scoping to the
-    // per-boundary region keeps both single-launch sequences (one region ->
-    // front of sequence) and multi-iteration sequences correct.
+    // For single-dispatch sequences the region is delimited by
+    // aiex.npu.load_pdi resets (ELF path); each region's own RTP block hoists
+    // to the front of its own feeds. Fused multi-iteration launches take the
+    // wave-keyed path below instead (each arm is placed by its air.launch_wave
+    // index).
     auto isRegionDelimiter = [](Operation *o) {
-      return isa<AIEX::NpuLoadPdiOp>(o) || o->hasAttr(kLaunchIterBoundaryAttr);
+      return isa<AIEX::NpuLoadPdiOp>(o);
+    };
+    // Move an NpuWriteRTPOp before `anchor`, cloning any defining
+    // arith.ConstantOp operand that would otherwise end up after it. The #1732
+    // AIEX API materializes the RTP value as an SSA operand (not an attribute),
+    // so the constant must dominate the moved RTP write.
+    auto moveRtpBefore = [](Operation *rtp, Operation *anchor) {
+      rtp->moveBefore(anchor);
+      for (OpOperand &operandUse : rtp->getOpOperands()) {
+        Value operand = operandUse.get();
+        auto *defOp = operand.getDefiningOp();
+        if (!defOp || !isa<arith::ConstantOp>(defOp))
+          continue;
+        if (defOp->getBlock() != rtp->getBlock())
+          continue;
+        bool defIsAfter = false;
+        for (Operation *cur = rtp->getNextNode(); cur != nullptr;
+             cur = cur->getNextNode())
+          if (cur == defOp) {
+            defIsAfter = true;
+            break;
+          }
+        if (defIsAfter) {
+          OpBuilder b(rtp);
+          Operation *cloned = b.clone(*defOp);
+          operandUse.set(cloned->getResult(0));
+        }
+      }
     };
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
@@ -1848,69 +1966,143 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       SmallVector<Operation *> ops;
       for (auto &o : blk)
         ops.push_back(&o);
-      for (size_t i = 0, e = ops.size(); i < e;) {
-        // Region [i, j): j indexes the next delimiter (or the end).
-        size_t j = i;
-        while (j < e && !isRegionDelimiter(ops[j]))
-          ++j;
-        // Anchor at the region's first op that is not an RTP write, set_lock,
-        // or an air.runtime_hoist feed -- i.e. the region's first data
-        // movement.
-        Operation *anchor = nullptr;
-        for (size_t k = i; k < j; ++k) {
-          if (isa<AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(ops[k]))
+
+      auto device = seq->getParentOfType<xilinx::AIE::DeviceOp>();
+      bool fused = device && deviceHasMultiIterLaunch(device);
+      auto getWave = [](Operation *o) -> std::optional<int64_t> {
+        if (auto a = o->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
+          return a.getInt();
+        return std::nullopt;
+      };
+
+      if (fused) {
+        // Wave-keyed arm placement. Every RTP write / set_lock carries the wave
+        // index of the herd_load it lowered from; move it before the first data
+        // movement of the same wave (that wave's first feed), RTP writes first
+        // then set_locks, preserving program order within a wave. This is
+        // authoritative: no inference of which wave an arm belongs to from its
+        // position in the flattened sequence.
+        llvm::DenseMap<int64_t, Operation *> waveAnchor;
+        for (Operation *o : ops) {
+          if (isa<AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(o))
             continue;
-          if (ops[k]->hasAttr(air::attrs::RuntimeHoist))
+          if (o->hasAttr(air::attrs::RuntimeHoist))
             continue;
-          anchor = ops[k];
-          break;
+          if (auto w = getWave(o))
+            waveAnchor.try_emplace(*w, o);
         }
-        if (anchor) {
-          // RTP writes first, then set_locks (release after RTP is latched),
-          // each preserving its intra-region relative order.
-          // When moving an NpuWriteRTPOp, also ensure any arith.ConstantOp
-          // that defines its SSA value operand precedes it. The AIEX API now
-          // materializes the RTP value as an SSA operand rather than an
-          // attribute, so the constant must dominate the RTP op. If the
-          // constant's block position would end up after the moved RTP write,
-          // clone it immediately before the RTP op instead.
-          for (size_t k = i; k < j; ++k) {
-            if (!isa<AIEX::NpuWriteRTPOp>(ops[k]))
-              continue;
-            ops[k]->moveBefore(anchor);
-            // After moving, check each operand: if its defining constant now
-            // comes after the rtp_write in the block, insert a clone before it.
-            for (OpOperand &operandUse : ops[k]->getOpOperands()) {
-              Value operand = operandUse.get();
-              auto *defOp = operand.getDefiningOp();
-              if (!defOp || !isa<arith::ConstantOp>(defOp))
-                continue;
-              if (defOp->getBlock() != ops[k]->getBlock())
-                continue;
-              // Walk forward from the rtp_write; if we reach defOp, it is
-              // after the rtp_write (dominance violation).
-              bool defIsAfter = false;
-              for (Operation *cur = ops[k]->getNextNode(); cur != nullptr;
-                   cur = cur->getNextNode()) {
-                if (cur == defOp) {
-                  defIsAfter = true;
-                  break;
-                }
-              }
-              if (defIsAfter) {
-                // Clone the constant immediately before the rtp_write and
-                // redirect this operand to the clone.
-                OpBuilder b(ops[k]);
-                Operation *cloned = b.clone(*defOp);
-                operandUse.set(cloned->getResult(0));
-              }
+        for (Operation *o : ops)
+          if (isa<AIEX::NpuWriteRTPOp>(o))
+            if (auto w = getWave(o)) {
+              auto it = waveAnchor.find(*w);
+              if (it != waveAnchor.end())
+                moveRtpBefore(o, it->second);
             }
+        for (Operation *o : ops)
+          if (isa<AIEX::SetLockOp>(o))
+            if (auto w = getWave(o)) {
+              auto it = waveAnchor.find(*w);
+              if (it != waveAnchor.end())
+                o->moveBefore(it->second);
+            }
+      } else {
+        // Single-dispatch (non-fused): hoist each delimiter-bounded region's
+        // own RTP block (RTP writes first, then set_locks) to the front of its
+        // own feeds. Anchor = first data movement (not an RTP write, set_lock,
+        // or air.runtime_hoist feed).
+        struct RegionInfo {
+          Operation *anchor = nullptr;
+          SmallVector<Operation *> rtps;
+          SmallVector<Operation *> locks;
+        };
+        SmallVector<RegionInfo> regions;
+        for (size_t i = 0, e = ops.size(); i < e;) {
+          size_t j = i;
+          while (j < e && !isRegionDelimiter(ops[j]))
+            ++j;
+          RegionInfo r;
+          for (size_t k = i; k < j; ++k) {
+            if (isa<AIEX::NpuWriteRTPOp>(ops[k]))
+              r.rtps.push_back(ops[k]);
+            else if (isa<AIEX::SetLockOp>(ops[k]))
+              r.locks.push_back(ops[k]);
+            else if (!ops[k]->hasAttr(air::attrs::RuntimeHoist) && !r.anchor)
+              r.anchor = ops[k];
           }
-          for (size_t k = i; k < j; ++k)
-            if (isa<AIEX::SetLockOp>(ops[k]))
-              ops[k]->moveBefore(anchor);
+          regions.push_back(r);
+          i = (j < e) ? j + 1 : j;
         }
-        i = (j < e) ? j + 1 : j;
+        for (auto &r : regions) {
+          if (!r.anchor)
+            continue;
+          for (auto *rtp : r.rtps)
+            moveRtpBefore(rtp, r.anchor);
+          for (auto *lk : r.locks)
+            lk->moveBefore(r.anchor);
+        }
+      }
+    });
+
+    // Per-wave output-S2MM-first ordering for fused multi-iteration launches.
+    // The runtime emits each wave's output S2MM (core->DDR) tasks AFTER that
+    // wave's input MM2S feeds (they follow the
+    // producing air.channel.get in program order). An output S2MM must be armed
+    // BEFORE its producing core hands off data, else the core blocks releasing
+    // its output buffer lock (the S2MM BD is not yet running to drain it) while
+    // the control program is still issuing later input feeds -> deadlock. A
+    // single-mode sequence already arms its outputs first; extend that
+    // to each fused wave by hoisting the wave's output-S2MM configure+start
+    // ahead of the wave's first input feed (after the arm/set_lock block the
+    // RTP hoist just placed). The output drain (dma_await_task) stays at the
+    // wave boundary (emitted by generateAwaitsFromWaitAllOps). Gated to fused
+    // multi-iteration launches so single-dispatch sequences are byte-identical.
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      auto device = seq->getParentOfType<xilinx::AIE::DeviceOp>();
+      if (!device || !deviceHasMultiIterLaunch(device))
+        return;
+      auto isS2MMOutput = [&](AIEX::DMAConfigureTaskForOp cfg) {
+        StringRef sym = cfg.getAlloc().getLeafReference().getValue();
+        auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(device, sym);
+        return alloc && alloc.getChannelDir() == AIE::DMAChannelDir::S2MM;
+      };
+      auto getWave = [](Operation *o) -> std::optional<int64_t> {
+        if (auto a = o->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
+          return a.getInt();
+        return std::nullopt;
+      };
+      Block &blk = seq.getBody().front();
+      SmallVector<Operation *> ops;
+      for (auto &o : blk)
+        ops.push_back(&o);
+      // Wave-keyed: for each wave, its first input feed (an MM2S configure) is
+      // the anchor; hoist that wave's output-S2MM configure+start ahead of it.
+      llvm::DenseMap<int64_t, Operation *> waveInputAnchor;
+      for (Operation *o : ops) {
+        auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
+        if (!cfg || isS2MMOutput(cfg))
+          continue;
+        if (auto w = getWave(o))
+          waveInputAnchor.try_emplace(*w, o);
+      }
+      for (Operation *o : ops) {
+        auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
+        if (!cfg || !isS2MMOutput(cfg))
+          continue;
+        auto w = getWave(o);
+        if (!w)
+          continue;
+        auto it = waveInputAnchor.find(*w);
+        if (it == waveInputAnchor.end())
+          continue;
+        Operation *anchor = it->second;
+        if (!cfg->isBeforeInBlock(anchor))
+          cfg->moveBefore(anchor);
+        // its single start task moves with it, staying right after the cfg.
+        for (auto *u : cfg.getResult().getUsers())
+          if (isa<AIEX::DMAStartTaskOp>(u) && !u->isBeforeInBlock(anchor))
+            u->moveBefore(anchor);
       }
     });
 
@@ -2046,12 +2238,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     });
 
-    // Strip the internal per-iteration boundary marker now that the
-    // RTP/set_lock hoist has consumed it, so it does not leak into the emitted
-    // IR.
+    // Strip the internal per-op wave index now that all per-wave ordering
+    // (paced segmentation, RTP/set_lock hoist, output-S2MM hoist) has consumed
+    // it, so it does not leak into the emitted IR.
     module.walk([](Operation *o) {
-      if (o->hasAttr(kLaunchIterBoundaryAttr))
-        o->removeAttr(kLaunchIterBoundaryAttr);
+      if (o->hasAttr(air::attrs::LaunchWave))
+        o->removeAttr(air::attrs::LaunchWave);
     });
     // Strip the internal multi-iteration launch markers -- all their consumers
     // (the launch_end drain, per-iteration paced-MM2S segmentation) have run --
@@ -2423,6 +2615,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (f.getBody().empty())
         continue;
 
+      mlir::DominanceInfo domInfo(f);
+
       // First pass: collect all DMAConfigureTaskForOp per channel in order
       // Map from metadata symbol -> list of ConfigTasks in order
       llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>>
@@ -2470,30 +2664,41 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           }
         }
 
-        // Find the next ConfigTask for this channel
+        // Find the next ConfigTask for this channel.
+        //
+        // The Nth wait for a channel awaits its Nth config in FIFO order, BUT
+        // only if that config dominates the wait. A fused multi-iteration
+        // launch with HETEROGENEOUS waves (some waves use a channel and
+        // others do not) emits a per-iteration all-shim
+        // boundary drain that waits on EVERY channel at each boundary. For a
+        // channel with no config in the current wave, FIFO would otherwise pair
+        // that boundary wait with a config from a LATER wave -- producing a
+        // dma_await_task whose config operand does not dominate it
+        // (use-before-def). That invalid IR is not caught until
+        // ControlFuncConversion clones the func (the clone leaves the await
+        // referencing the un-mapped original config, crossing into the new
+        // runtime_sequence -> erase-with-uses assert). Guard the match on
+        // dominance: if the next unconsumed config does not dominate this wait,
+        // leave it for a later (dominated) wait and emit no await here.
         AIEX::DMAConfigureTaskForOp matchingConfigTask = nullptr;
         auto it = channelToConfigTasks.find(metadata);
         if (it != channelToConfigTasks.end()) {
           auto &configTasks = it->second;
           unsigned &nextIdx = channelToNextConfigIdx[metadata];
-          if (nextIdx < configTasks.size()) {
+          if (nextIdx < configTasks.size() &&
+              domInfo.properlyDominates(configTasks[nextIdx].getOperation(),
+                                        waitOp.getOperation())) {
             matchingConfigTask = configTasks[nextIdx];
             nextIdx++;
           }
         }
 
-        // Carry a fused multi-iteration boundary tag from the drain wait onto
-        // the surviving task op so the RTP/set_lock hoist can use it as a
-        // per-iteration region delimiter (see kLaunchIterBoundaryAttr).
-        bool isBoundary = waitOp->hasAttr(kLaunchIterBoundaryAttr);
         if (matchingConfigTask) {
           OpBuilder builder(waitOp);
           if (isS2MM) {
             // S2MM (output): await task - waits for completion AND frees BD
-            auto a = AIEX::DMAAwaitTaskOp::create(
-                builder, waitOp.getLoc(), matchingConfigTask.getResult());
-            if (isBoundary)
-              a->setAttr(kLaunchIterBoundaryAttr, builder.getUnitAttr());
+            AIEX::DMAAwaitTaskOp::create(builder, waitOp.getLoc(),
+                                         matchingConfigTask.getResult());
           } else if (matchingConfigTask->hasAttr(
                          air::attrs::PreserveShimDmaOrder)) {
             // MM2S, paced: do not emit a fire-and-free here. Bounded
@@ -2501,10 +2706,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             // synthesizeDoubleBufferedAwaits() below.
           } else {
             // MM2S (input): free task - just frees BD for reuse, no wait
-            auto fr = AIEX::DMAFreeTaskOp::create(
-                builder, waitOp.getLoc(), matchingConfigTask.getResult());
-            if (isBoundary)
-              fr->setAttr(kLaunchIterBoundaryAttr, builder.getUnitAttr());
+            AIEX::DMAFreeTaskOp::create(builder, waitOp.getLoc(),
+                                        matchingConfigTask.getResult());
           }
         }
         // Erase the NpuDmaWaitOp regardless of whether we found a match
@@ -2607,13 +2810,53 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     };
 
+    // Assign each paced MM2S config task to its launch iteration (wave) from
+    // the air.launch_wave index it carries (propagated from the source
+    // airrt.dma_memcpy_nd). This tolerates HETEROGENEOUS waves (a channel
+    // present in only some waves): each channel is segmented by the waves in
+    // which it actually appears, so no channel's in-flight set straddles a mode
+    // transition.
+    llvm::DenseMap<Operation *, int64_t> taskWave;
+    bool sawWave = false;
+    f.walk([&](AIEX::DMAConfigureTaskForOp ct) {
+      if (!ct->hasAttr(air::attrs::PreserveShimDmaOrder))
+        return;
+      if (auto a = ct->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave)) {
+        taskWave[ct.getOperation()] = a.getInt();
+        sawWave = true;
+      }
+    });
+
     for (auto &kv : groups) {
       auto &tasks = kv.second;
       unsigned n = tasks.size();
       // Segment per launch iteration when the iteration count divides the task
       // count evenly (each iteration emits the same per-channel feeds).
       // Otherwise fall back to whole-list pacing.
-      if (numIters > 1 && n % numIters == 0) {
+      if (numIters > 1 && sawWave) {
+        // Boundary-delimited per-wave segmentation. Each contiguous run of
+        // same-wave tasks is paced+fenced independently, so a channel absent
+        // from some waves simply contributes fewer segments (no assumption that
+        // every wave emits the same per-channel feed count).
+        SmallVector<AIEX::DMAConfigureTaskForOp> seg;
+        int64_t segWave = -1;
+        auto flush = [&]() {
+          if (!seg.empty()) {
+            paceSegment(seg, /*fenceEnd=*/true);
+            seg.clear();
+          }
+        };
+        for (auto ct : tasks) {
+          auto wi = taskWave.find(ct.getOperation());
+          int64_t w = (wi != taskWave.end()) ? wi->second : segWave;
+          if (w != segWave) {
+            flush();
+            segWave = w;
+          }
+          seg.push_back(ct);
+        }
+        flush();
+      } else if (numIters > 1 && n % numIters == 0) {
         unsigned seg = n / (unsigned)numIters;
         for (int64_t it = 0; it < numIters; it++)
           paceSegment(
