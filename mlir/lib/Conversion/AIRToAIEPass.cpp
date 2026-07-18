@@ -3505,17 +3505,33 @@ void unifyIndexSwitchArmBuffers(AIE::DeviceOp d) {
             return true;
         return false;
       };
-      auto isArmVaryingGet = [&](SmallVector<air::ChannelInterface> &ops) {
-        if (ops.size() < 2)
-          return false;
-        if (!isa<air::ChannelGetOp>(ops[0].getOperation()))
-          return false;
+      // A channel name's byChan bucket holds BOTH gets and puts; this
+      // dedication is about S2MM (get) channels only, so classify from the get
+      // ops alone. Filtering here (rather than assuming ops[0] is a get) keeps
+      // the result independent of get/put visitation order within the bucket.
+      auto getsOf = [](SmallVector<air::ChannelInterface> &ops) {
+        SmallVector<air::ChannelInterface> gets;
+        for (auto ci : ops)
+          if (isa<air::ChannelGetOp>(ci.getOperation()))
+            gets.push_back(ci);
+        return gets;
+      };
+      auto armsOf = [&](SmallVector<air::ChannelInterface> &ops) {
         llvm::SmallSet<unsigned, 4> arms;
         for (auto ci : ops)
           arms.insert(opRegion[ci.getOperation()]);
-        if (arms.size() < 2)
+        return arms;
+      };
+      // A get channel is "arm-varying" if its gets span >= 2 arms and at least
+      // one is nested in an scf.for (its dynamic read count differs across
+      // arms; e.g. a variable-trip loop in one arm vs a couple of fixed reads
+      // in the other). Such a channel must own a dedicated count-free S2MM;
+      // fixed (non-loop) gets can safely converge on one channel.
+      auto isArmVaryingGet = [&](SmallVector<air::ChannelInterface> &ops) {
+        SmallVector<air::ChannelInterface> gets = getsOf(ops);
+        if (gets.size() < 2 || armsOf(gets).size() < 2)
           return false;
-        return llvm::any_of(ops, [&](air::ChannelInterface ci) {
+        return llvm::any_of(gets, [&](air::ChannelInterface ci) {
           return opInLoopWithinSwitch(ci.getOperation());
         });
       };
@@ -3526,32 +3542,20 @@ void unifyIndexSwitchArmBuffers(AIE::DeviceOp d) {
       // physical S2MM channels. A lone get channel is already unshared.
       int numArmGetChans = 0;
       for (auto &e : byChan) {
-        auto &os = e.second;
-        if (os.size() < 2 || !isa<air::ChannelGetOp>(os[0].getOperation()))
-          continue;
-        llvm::SmallSet<unsigned, 4> a;
-        for (auto ci : os)
-          a.insert(opRegion[ci.getOperation()]);
-        if (a.size() >= 2)
+        SmallVector<air::ChannelInterface> gets = getsOf(e.second);
+        if (gets.size() >= 2 && armsOf(gets).size() >= 2)
           numArmGetChans++;
       }
       if (anyVaryingGet && numArmGetChans >= 2) {
         int dedicatedIdx = 1;
         for (auto &entry : byChan) {
-          SmallVector<air::ChannelInterface> &ops = entry.second;
-          if (ops.size() < 2)
+          SmallVector<air::ChannelInterface> gets = getsOf(entry.second);
+          if (gets.size() < 2 || armsOf(gets).size() < 2)
             continue;
-          if (!isa<air::ChannelGetOp>(ops[0].getOperation()))
-            continue;
-          llvm::SmallSet<unsigned, 4> arms;
-          for (auto ci : ops)
-            arms.insert(opRegion[ci.getOperation()]);
-          if (arms.size() < 2)
-            continue;
-          Operation *decl = air::getChannelDeclarationThroughSymbol(ops[0]);
+          Operation *decl = air::getChannelDeclarationThroughSymbol(gets[0]);
           if (!decl)
             continue;
-          int pin = isArmVaryingGet(ops) ? dedicatedIdx++ : 0;
+          int pin = isArmVaryingGet(entry.second) ? dedicatedIdx++ : 0;
           decl->setAttr(
               air::attrs::TileDmaChannel,
               IntegerAttr::get(IntegerType::get(sw.getContext(), 32), pin));
