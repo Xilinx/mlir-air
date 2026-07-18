@@ -581,6 +581,13 @@ bool air::isChainLockCandidate(AIE::BufferOp buf) {
   // buffers are eligible (this is a memtile-specific lock pattern).
   if (!isL2MemtileBuffer(buf))
     return false;
+  // Opt-out: a buffer explicitly pinned with `air.no_chain_lock` keeps the
+  // legacy counted-lock template. Used for fan-out broadcast buffers whose N
+  // readers are independent compute cores (e.g. a per-column weight fan): the
+  // v2 daisy-chain serializes those readers unnecessarily and can deadlock
+  // when it competes with a fan-in chain under multi-block streaming.
+  if (buf->hasAttr("air.no_chain_lock"))
+    return false;
   int nW = 0, nR = 0;
   countChainBufferRoles(buf, nW, nR);
   // Fan-in: N writers (N>1) + 1 reader.
