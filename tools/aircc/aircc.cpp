@@ -1046,6 +1046,11 @@ static LogicalResult runAieCompilation() {
     os << " col-anchor=" << (resolvedColOffset + traceColOffset);
     os << "}";
     os << ",canonicalize,cse";
+    // Preserve air.channel FIFO order across temporally-reused channels. Runs
+    // after fusion+canonicalize so it adds direct op-to-op deps (which survive)
+    // rather than loop-carried ordering deps (which canonicalize strips). No
+    // canonicalize runs after this point in the pipeline.
+    os << ",air-enforce-channel-fifo-order";
     os << ",func.func(air-renumber-dma)";
     os << ")";
   }
