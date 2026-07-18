@@ -589,6 +589,24 @@ bool air::isChainLockCandidate(AIE::BufferOp buf) {
   return false;
 }
 
+// True iff `buf` is an L2 memtile buffer that is FILLED by DMA (>=1 writer
+// endpoint) but NEVER READ (0 reader endpoints) within the segment -- a "pure
+// drain" (e.g. a readback whose data is discarded). Such a buffer's receiving
+// BD must SELF-RECYCLE on a single lock: there is no consumer to release a
+// separate producer lock or acquire a separate handoff lock, so the legacy
+// producer/consumer pair (acquire wlock / release rlock) fires exactly once
+// then DEADLOCKS on the next dispatch re-acquiring wlock.
+static bool isConsumerlessMemtileDrain(AIE::BufferOp buf) {
+  if (!buf)
+    return false;
+  auto memrefTy = dyn_cast<MemRefType>(buf.getResult().getType());
+  if (!memrefTy || !air::isL2(memrefTy))
+    return false;
+  int nW = 0, nR = 0;
+  countChainBufferRoles(buf, nW, nR);
+  return nW >= 1 && nR == 0;
+}
+
 void air::classifyChainBuffer(AIE::BufferOp buf, int &numWriters,
                               int &numReaders) {
   countChainBufferRoles(buf, numWriters, numReaders);
@@ -1175,6 +1193,21 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
     init_pair =
         getLockValuePair(target_model, bufferOp->getResult(0), air_chan);
   auto init = std::max(init_pair.first, init_pair.second);
+
+  // Consumerless memtile drain: emit ONE self-recycling lock (returned as both
+  // pair elements) so the receiving BD acquires AND releases the same lock and
+  // re-arms every dispatch. A distinct producer/consumer pair would deadlock on
+  // the 2nd dispatch (no consumer to release the producer lock). generateDmaBd
+  // emits acquire(self,1)/release(self,1) automatically when both pair elements
+  // are the same lock. Scoped by nR==0 -> mutually exclusive with the
+  // chain-lock / shared-L1 / producer->consumer paths above.
+  if (UsesSemaphoreLocks && tileIsMemTile &&
+      isConsumerlessMemtileDrain(dyn_cast_or_null<AIE::BufferOp>(bufferOp))) {
+    auto selfLock = allocateLockOp(device, tile, std::max<int64_t>(init, 1));
+    lock_allocation_list.push_back(
+        {bufferOp, air_chan, channel, selfLock, selfLock});
+    return std::make_pair(selfLock, selfLock);
+  }
 
   OpBuilder builder(bufferOp);
   auto rlock = allocateLockOp(device, tile, 0);
