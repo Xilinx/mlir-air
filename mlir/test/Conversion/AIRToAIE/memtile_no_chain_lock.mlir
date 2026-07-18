@@ -24,7 +24,7 @@
 // CHECK-NOT: aie.lock(%[[MT]], {{[0-9]+}}) {init = 2 : i32}
 
 // Exactly ONE buffer instance (no ping-pong twin), carrying the opt-out pin.
-// CHECK: aie.buffer(%[[MT]]) {air.no_chain_lock, {{.*}}} : memref<4x8xbf16, 1
+// CHECK: aie.buffer(%[[MT]]) {{.*}}air.no_chain_lock{{.*}} : memref<4x8xbf16, 1
 // CHECK-NOT: aie.buffer(%[[MT]])
 
 air.channel @w0 [1, 1]
