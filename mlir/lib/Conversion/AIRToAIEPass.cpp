@@ -2403,8 +2403,8 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     // fan-out broadcast buffers (e.g. a per-column weight fan read by N
     // distinct compute cores) on the legacy counted-lock template instead of
     // the v2 daisy-chain, which over-serializes independent readers.
-    if (alloc->hasAttr("air.no_chain_lock"))
-      buffer->setAttr("air.no_chain_lock", rewriter.getUnitAttr());
+    if (alloc->hasAttr(air::attrs::NoChainLock))
+      buffer->setAttr(air::attrs::NoChainLock, rewriter.getUnitAttr());
 
     rewriter.replaceOp(alloc, buffer->getResults());
     bufferToMemtileMap[buffer] = tile;
