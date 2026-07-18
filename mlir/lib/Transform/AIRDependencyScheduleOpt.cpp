@@ -4031,6 +4031,65 @@ public:
 private:
 };
 
+// A single air.channel is an ordered FIFO. air-dependency only orders channel
+// ops that share a buffer, so ops on the same channel + same indices + same
+// direction that touch different buffers (e.g. two phases temporally reusing
+// one channel) are left unordered and lower to racing BD chains. This pass adds
+// a direct async dependency from each such op to the nearest preceding matching
+// op in the same block. It runs late (after channel fusion collapses loop nests
+// into single ops), so the deps are direct op-to-op edges that survive later
+// canonicalization (loop-carried ordering deps do not). It only orders
+// same-block ops (post-fusion collapsed channel ops); it does not order ops
+// still nested in distinct loops.
+class AIREnforceChannelFifoOrder
+    : public xilinx::air::impl::AIREnforceChannelFifoOrderBase<
+          AIREnforceChannelFifoOrder> {
+public:
+  AIREnforceChannelFifoOrder() = default;
+  AIREnforceChannelFifoOrder(const AIREnforceChannelFifoOrder &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
+  void runOnOperation() override {
+    getOperation().walk([&](air::ChannelInterface sink) {
+      auto sinkAsync = dyn_cast<air::AsyncOpInterface>(sink.getOperation());
+      if (!sinkAsync || !sinkAsync.getAsyncToken())
+        return;
+      bool sinkIsPut = isa<air::ChannelPutOp>(sink.getOperation());
+      auto sinkIndices = sink.getIndices();
+      // Walk backward in the same block to the nearest matching channel op.
+      for (Operation *prevOp = sink.getOperation()->getPrevNode(); prevOp;
+           prevOp = prevOp->getPrevNode()) {
+        auto prev = dyn_cast<air::ChannelInterface>(prevOp);
+        if (!prev)
+          continue;
+        if (isa<air::ChannelPutOp>(prevOp) != sinkIsPut)
+          continue;
+        if (prev.getChanName() != sink.getChanName())
+          continue;
+        auto prevIndices = prev.getIndices();
+        if (prevIndices.size() != sinkIndices.size())
+          continue;
+        bool sameIdx = true;
+        for (auto it : llvm::zip(prevIndices, sinkIndices))
+          if (!areEqualIndices(std::get<0>(it), std::get<1>(it))) {
+            sameIdx = false;
+            break;
+          }
+        if (!sameIdx)
+          continue;
+        auto prevAsync = dyn_cast<air::AsyncOpInterface>(prevOp);
+        if (!prevAsync || !prevAsync.getAsyncToken())
+          continue;
+        addAsyncDependencyIfNew(sink.getOperation(), prevAsync.getAsyncToken());
+        break; // nearest match only; transitive order covers the rest
+      }
+    });
+  }
+};
+
 // A pass which transform multiple channel ops into one, where the data movement
 // is time-multiplexed.
 class AIRFuseChannels
@@ -7752,6 +7811,10 @@ std::unique_ptr<Pass> createAIRSpecializeChannelWrapAndStridePattern() {
 
 std::unique_ptr<Pass> createAIRUnrollChannelByFactorPattern() {
   return std::make_unique<AIRUnrollChannelByFactorPattern>();
+}
+
+std::unique_ptr<Pass> createAIREnforceChannelFifoOrder() {
+  return std::make_unique<AIREnforceChannelFifoOrder>();
 }
 
 std::unique_ptr<Pass> createAIRFuseChannels() {
