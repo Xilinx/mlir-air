@@ -583,12 +583,23 @@ bool air::isChainLockCandidate(AIE::BufferOp buf) {
     return false;
   int nW = 0, nR = 0;
   countChainBufferRoles(buf, nW, nR);
-  // Fan-in: N writers (N>1) + 1 reader.
+  // Fan-in: N writers (N>1) + 1 reader. The chain-lock is required here to
+  // prevent write-side corruption, so the opt-out below is NOT honored.
   if (nW > 1 && nR == 1)
     return true;
   // Fan-out: 1 writer + N readers (N>1).
-  if (nW == 1 && nR > 1)
+  if (nW == 1 && nR > 1) {
+    // Opt-out: a buffer explicitly pinned with `air.no_chain_lock` keeps the
+    // legacy counted-lock template. Used for fan-out broadcast buffers whose N
+    // readers are independent compute cores (e.g. a per-column weight fan):
+    // concurrent reads never conflict, so the daisy-chain only over-serializes
+    // them and can deadlock against a competing fan-in chain under multi-block
+    // streaming. Scoped to fan-out: reverting fan-in to the counted lock would
+    // reintroduce the very race the chain-lock fixes.
+    if (buf->hasAttr(air::attrs::NoChainLock))
+      return false;
     return true;
+  }
   // Single-writer/single-reader (legacy 1:1) or MIMO (M writers + N
   // readers) are NOT chain-lock candidates; legacy lock template
   // applies.
