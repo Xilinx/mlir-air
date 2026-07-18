@@ -4031,6 +4031,62 @@ public:
 private:
 };
 
+// Endpoint identity of an air.channel.put/get: which channel, which direction,
+// and the per-dimension indices (kept as both SSA Values and constant folds so
+// callers can pick their own equality/independence policy). Shared by the FIFO
+// ordering and loop-isolation passes below.
+struct ChannelEndpointKey {
+  StringRef name;
+  bool isPut;
+  SmallVector<Value> indices;
+  SmallVector<std::optional<int64_t>> constIndices;
+};
+
+static ChannelEndpointKey getChannelEndpointKey(air::ChannelInterface chan) {
+  ChannelEndpointKey k;
+  k.name = chan.getChanName();
+  k.isPut = isa<air::ChannelPutOp>(chan.getOperation());
+  for (auto idx : chan.getIndices()) {
+    k.indices.push_back(idx);
+    k.constIndices.push_back(getConstantIntValue(idx));
+  }
+  return k;
+}
+
+// FIFO policy: two endpoints address the same channel slot iff same channel,
+// same direction, same index arity, and every index provably equal. Unknown
+// (non-constant, non-identical) indices are treated as NOT equal so no false
+// ordering edge is added.
+static bool sameChannelEndpoint(const ChannelEndpointKey &a,
+                                const ChannelEndpointKey &b) {
+  if (a.isPut != b.isPut || a.name != b.name)
+    return false;
+  if (a.indices.size() != b.indices.size())
+    return false;
+  for (auto it : llvm::zip(a.indices, b.indices))
+    if (!areEqualIndices(std::get<0>(it), std::get<1>(it)))
+      return false;
+  return true;
+}
+
+// Isolation policy: same-direction endpoints on the same channel whose indices
+// are not provably distinct constitute an ordering resource dependency. Unknown
+// (non-constant) indices are treated as possibly-dependent so the two ops are
+// not split into independent loops. Returns false when independence is proven
+// (some dimension has both indices constant and unequal).
+static bool channelEndpointsResourceDep(const ChannelEndpointKey &a,
+                                        const ChannelEndpointKey &b) {
+  if (a.isPut != b.isPut || a.name != b.name)
+    return false;
+  if (a.constIndices.size() != b.constIndices.size())
+    return true; // arity mismatch: cannot prove independent -> dependent
+  for (unsigned i = 0; i < a.constIndices.size(); i++)
+    if (a.constIndices[i] && b.constIndices[i] &&
+        *a.constIndices[i] != *b.constIndices[i])
+      return false; // proven independent
+  return true;
+}
+
 // A single air.channel is an ordered FIFO. air-dependency only orders channel
 // ops that share a buffer, so ops on the same channel + same indices + same
 // direction that touch different buffers (e.g. two phases temporally reusing
@@ -4046,45 +4102,33 @@ class AIREnforceChannelFifoOrder
           AIREnforceChannelFifoOrder> {
 public:
   AIREnforceChannelFifoOrder() = default;
-  AIREnforceChannelFifoOrder(const AIREnforceChannelFifoOrder &pass) {}
-
-  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<scf::SCFDialect, air::airDialect>();
-  }
 
   void runOnOperation() override {
-    getOperation().walk([&](air::ChannelInterface sink) {
-      auto sinkAsync = dyn_cast<air::AsyncOpInterface>(sink.getOperation());
-      if (!sinkAsync || !sinkAsync.getAsyncToken())
+    // Per block, remember the async token of the most recent channel op for
+    // each distinct endpoint. walk() visits ops in program order within a
+    // block, so linking each op to its last-seen matching token yields a
+    // nearest-preceding FIFO chain in a single O(N) pass. Keying by block
+    // confines ordering to same-block siblings (the post-fusion collapsed
+    // channel ops); ops still nested in distinct loops are out of scope.
+    llvm::DenseMap<Block *, SmallVector<std::pair<ChannelEndpointKey, Value>>>
+        lastSeen;
+    getOperation().walk([&](air::ChannelInterface chan) {
+      auto async = dyn_cast<air::AsyncOpInterface>(chan.getOperation());
+      if (!async || !async.getAsyncToken())
         return;
-      bool sinkIsPut = isa<air::ChannelPutOp>(sink.getOperation());
-      auto sinkIndices = sink.getIndices();
-      // Walk backward in the same block to the nearest matching channel op.
-      for (Operation *prevOp = sink.getOperation()->getPrevNode(); prevOp;
-           prevOp = prevOp->getPrevNode()) {
-        auto prev = dyn_cast<air::ChannelInterface>(prevOp);
-        if (!prev)
-          continue;
-        if (isa<air::ChannelPutOp>(prevOp) != sinkIsPut)
-          continue;
-        if (prev.getChanName() != sink.getChanName())
-          continue;
-        auto prevIndices = prev.getIndices();
-        if (prevIndices.size() != sinkIndices.size())
-          continue;
-        bool sameIdx = true;
-        for (auto it : llvm::zip(prevIndices, sinkIndices))
-          if (!areEqualIndices(std::get<0>(it), std::get<1>(it))) {
-            sameIdx = false;
-            break;
-          }
-        if (!sameIdx)
-          continue;
-        auto prevAsync = dyn_cast<air::AsyncOpInterface>(prevOp);
-        if (!prevAsync || !prevAsync.getAsyncToken())
-          continue;
-        addAsyncDependencyIfNew(sink.getOperation(), prevAsync.getAsyncToken());
-        break; // nearest match only; transitive order covers the rest
+      ChannelEndpointKey key = getChannelEndpointKey(chan);
+      auto &bucket = lastSeen[chan->getBlock()];
+      Value *slot = nullptr;
+      for (auto &entry : bucket)
+        if (sameChannelEndpoint(entry.first, key)) {
+          slot = &entry.second;
+          break;
+        }
+      if (slot) {
+        addAsyncDependencyIfNew(chan.getOperation(), *slot);
+        *slot = async.getAsyncToken();
+      } else {
+        bucket.push_back({std::move(key), async.getAsyncToken()});
       }
     });
   }
@@ -5418,25 +5462,14 @@ private:
           }
           return connectedComponents;
         };
-    // Precompute channel info per candidate op, walking nested ops once.
-    // Each entry is (channel_name, is_put, const_indices, memref).
-    struct ChanKey {
-      StringRef name;
-      bool isPut;
-      SmallVector<std::optional<int64_t>> constIndices;
-      Value memref; // The memref operand of the channel op.
-    };
-    llvm::DenseMap<Operation *, SmallVector<ChanKey>> candidateChanKeys;
+    // Precompute channel endpoint keys per candidate op, walking nested ops
+    // once.
+    llvm::DenseMap<Operation *, SmallVector<ChannelEndpointKey>>
+        candidateChanKeys;
     for (auto op : candidate_ops) {
-      SmallVector<ChanKey> keys;
+      SmallVector<ChannelEndpointKey> keys;
       auto collect = [&](air::ChannelInterface chan) {
-        ChanKey k;
-        k.name = chan.getChanName();
-        k.isPut = isa<air::ChannelPutOp>(chan.getOperation());
-        for (auto idx : chan.getIndices())
-          k.constIndices.push_back(getConstantIntValue(idx));
-        k.memref = chan.getMemref();
-        keys.push_back(std::move(k));
+        keys.push_back(getChannelEndpointKey(chan));
       };
       if (auto chan = dyn_cast<air::ChannelInterface>(op))
         collect(chan);
@@ -5450,35 +5483,11 @@ private:
     // pattern from splitting same-channel, same-direction ops at
     // different loop depths into independent loops, which would break
     // the per-iteration interleaving needed by cycling tile BD chains.
-    //
-    // Also treats same-direction channel ops accessing the same memref as
-    // dependent, even with different channel names.  This handles the case
-    // where scf.if-based DMA padding splits a single logical DMA into two
-    // channels (one padded, one non-padded) that both target the same L2
-    // buffer.  Without this, the isolation pass may hoist them into separate
-    // loops, dropping channel.get ops for the padded variant.
     auto haveChannelResourceDep = [&](Operation *a, Operation *b) -> bool {
-      for (auto &keyA : candidateChanKeys[a]) {
-        for (auto &keyB : candidateChanKeys[b]) {
-          if (keyA.isPut != keyB.isPut)
-            continue;
-          if (keyA.name == keyB.name) {
-            // Same channel name: check indices as before.
-            if (keyA.constIndices.size() != keyB.constIndices.size())
-              return true;
-            bool provenIndependent = false;
-            for (unsigned i = 0; i < keyA.constIndices.size(); i++) {
-              if (keyA.constIndices[i] && keyB.constIndices[i] &&
-                  *keyA.constIndices[i] != *keyB.constIndices[i]) {
-                provenIndependent = true;
-                break;
-              }
-            }
-            if (!provenIndependent)
-              return true;
-          }
-        }
-      }
+      for (auto &keyA : candidateChanKeys[a])
+        for (auto &keyB : candidateChanKeys[b])
+          if (channelEndpointsResourceDep(keyA, keyB))
+            return true;
       return false;
     };
     llvm::MapVector<Operation *, SmallVector<Operation *>> depGraph;
