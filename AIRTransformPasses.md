@@ -536,6 +536,24 @@ air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
 -force-shim-packet-flow    : Unconditionally mark all shim-bound channels (both input and output) as dma_packet, to enable time-multiplexed sharing with control packet flows.
 ```
 
+### `-air-enforce-channel-fifo-order`
+
+_Serialize same-channel async ops to preserve FIFO order_
+
+A single air.channel is an ordered FIFO, but air-dependency only orders
+channel ops that share a buffer. Ops on the same channel + same indices +
+same direction (put/put or get/get) that touch different buffers (e.g. two
+phases of a kernel temporally reusing one input/output channel) are left
+unordered and lower to racing BD chains. This pass adds a direct async
+dependency from each such op to the nearest preceding matching one in the
+same block. It runs late (after channel fusion has collapsed loop nests into
+single ops), so the deps are direct op-to-op edges that survive later
+canonicalization, unlike loop-carried ordering deps.
+
+NOTE: it only orders same-block ops (post-fusion collapsed channel ops); it
+does not order ops still nested in distinct loops (those would need
+loop-carried deps, which canonicalize strips).
+
 ### `-air-example-pass`
 
 _Skeleton module op pass_
