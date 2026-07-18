@@ -6,6 +6,10 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
+// The self-recycling drain lock must be emitted identically on all three lock
+// paths, including the daisy-chained race-condition fixes (v1/v2).
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 use-lock-race-condition-fix=true" | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 use-lock-race-condition-fix-v2=true" | FileCheck %s
 
 // An L2 memtile buffer that is DMA-filled (a channel.get writes into it) but is
 // never read out (no channel.put reads it) within the segment is a "pure drain"
@@ -19,10 +23,16 @@
 // a consumerless L2 buffer (memref<32xi32, 1>) that gets the self lock.
 
 // CHECK: aie.memtile_dma
-// The live relay buffer (memref<64xi32, 1>) appears as two BDs (MM2S drain to
-// the core + S2MM fill); advance past both.
-// CHECK: aie.dma_bd(%{{.*}} : memref<64xi32, 1>
-// CHECK: aie.dma_bd(%{{.*}} : memref<64xi32, 1>
+// Negative control -- the live relay buffer (memref<64xi32, 1>) keeps a DISTINCT
+// producer/consumer lock pair in a crossed pattern: the S2MM fill acquires lock A
+// and releases lock B, then the MM2S forward-to-core acquires B and releases A.
+// A != B is proven structurally by the crossed reuse of the two capture vars.
+// CHECK: aie.use_lock(%[[LIVE_A:.*]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: aie.dma_bd(%{{.*}} : memref<64xi32, 1>
+// CHECK-NEXT: aie.use_lock(%[[LIVE_B:.*]], Release, %{{.*}})
+// CHECK: aie.use_lock(%[[LIVE_B]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: aie.dma_bd(%{{.*}} : memref<64xi32, 1>
+// CHECK-NEXT: aie.use_lock(%[[LIVE_A]], Release, %{{.*}})
 // The consumerless drain's S2MM BD (memref<32xi32, 1>) acquires and releases
 // the SAME lock (self-recycling), not a distinct producer/consumer pair.
 // CHECK: aie.use_lock(%[[DRAIN:.*]], AcquireGreaterEqual, %{{.*}})

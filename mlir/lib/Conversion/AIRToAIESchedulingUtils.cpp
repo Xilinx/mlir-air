@@ -567,13 +567,19 @@ static void countChainBufferRoles(AIE::BufferOp buf, int &numWriters,
   numReaders = getOrderedChainEndpoints(buf, /*writers=*/false).size();
 }
 
-bool air::isChainLockCandidate(AIE::BufferOp buf) {
+// Eligibility guard shared by the memtile-specific lock predicates: only a
+// non-null L2 (memtile) buffer qualifies.
+static bool isL2MemtileBuffer(AIE::BufferOp buf) {
   if (!buf)
     return false;
+  auto memrefTy = dyn_cast<MemRefType>(buf.getResult().getType());
+  return memrefTy && air::isL2(memrefTy);
+}
+
+bool air::isChainLockCandidate(AIE::BufferOp buf) {
   // Predicate is shape-based on the buffer's user list. Only L2 memtile
   // buffers are eligible (this is a memtile-specific lock pattern).
-  auto memrefTy = dyn_cast<MemRefType>(buf.getResult().getType());
-  if (!memrefTy || !air::isL2(memrefTy))
+  if (!isL2MemtileBuffer(buf))
     return false;
   int nW = 0, nR = 0;
   countChainBufferRoles(buf, nW, nR);
@@ -597,13 +603,10 @@ bool air::isChainLockCandidate(AIE::BufferOp buf) {
 // producer/consumer pair (acquire wlock / release rlock) fires exactly once
 // then DEADLOCKS on the next dispatch re-acquiring wlock.
 static bool isConsumerlessMemtileDrain(AIE::BufferOp buf) {
-  if (!buf)
-    return false;
-  auto memrefTy = dyn_cast<MemRefType>(buf.getResult().getType());
-  if (!memrefTy || !air::isL2(memrefTy))
+  if (!isL2MemtileBuffer(buf))
     return false;
   int nW = 0, nR = 0;
-  countChainBufferRoles(buf, nW, nR);
+  air::classifyChainBuffer(buf, nW, nR);
   return nW >= 1 && nR == 0;
 }
 
@@ -1203,7 +1206,8 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
   // chain-lock / shared-L1 / producer->consumer paths above.
   if (UsesSemaphoreLocks && tileIsMemTile &&
       isConsumerlessMemtileDrain(dyn_cast_or_null<AIE::BufferOp>(bufferOp))) {
-    auto selfLock = allocateLockOp(device, tile, std::max<int64_t>(init, 1));
+    auto selfLock = allocateLockOp(
+        device, tile, static_cast<int>(std::max<int64_t>(init, 1)));
     lock_allocation_list.push_back(
         {bufferOp, air_chan, channel, selfLock, selfLock});
     return std::make_pair(selfLock, selfLock);
