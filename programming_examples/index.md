@@ -87,19 +87,19 @@ End-to-end LLM inference performance on the AMD Ryzen AI (Krackan Point, NPU2) b
 
 | Model | Context | TTFT (ms) | Decode (tok/s) | Verify |
 |:------|--------:|----------:|---------------:|:------:|
-| llama32_1b | 2048 | 1320.0 | 9.14 | 🟢 |
-| llama32_1b_int4 | 2048 | 1400.0 | 14.36 | 🟢 |
-| llama32_3b | 2048 | 32340.0 | 3.92 | 🟢 |
-| qwen25_0_5b | 2048 | 1110.0 | 11.01 | 🟢 |
-| qwen25_1_5b | 2048 | 2600.0 | 6.61 | 🟢 |
-| qwen25_3b | 2048 | 4790.0 | 3.77 | 🟢 |
-| qwen3_0_6b | 2048 | 1740.0 | 9.87 | 🟢 |
-| qwen3_1_7b | 2048 | 2490.0 | 5.82 | 🟢 |
-| smollm2_1_7b | 2048 | 2210.0 | 5.99 | 🟢 |
+| llama32_1b | 2048 | 1340.0 | 8.29 | 🟢 |
+| llama32_1b_int4 | 2048 | 1330.0 | 16.33 | 🟢 |
+| llama32_3b | 2048 | 21410.0 | 4.31 | 🟢 |
+| qwen25_0_5b | 2048 | 1060.0 | 12.63 | 🟢 |
+| qwen25_1_5b | 2048 | 2690.0 | 6.43 | 🟢 |
+| qwen25_3b | 2048 | 4750.0 | 3.91 | 🟢 |
+| qwen3_0_6b | 2048 | 1740.0 | 9.49 | 🟢 |
+| qwen3_1_7b | 2048 | 2490.0 | 5.61 | 🟢 |
+| smollm2_1_7b | 2048 | 2250.0 | 6.04 | 🟢 |
 
 🟢 verify passed &nbsp; 🔴 verify failed &nbsp; ⚪ verify skipped &nbsp; — metric not captured (e.g. the model's profile run failed)
 
-_Last updated 2026-07-18 · runner amdryzenai5pro340 · mlir-air 47e0389 · mlir-aie 157e8b8 · llvm-aie 21.0.0.2026071801+ce8c0f8f_
+_Last updated 2026-07-19 · runner amdryzenai5pro340 · mlir-air 0a2dc35 · mlir-aie 157e8b8 · llvm-aie 21.0.0.2026071901+ce8c0f8f_
 
 
 ## Getting Started

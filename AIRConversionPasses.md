@@ -390,7 +390,8 @@ module {
 #### Options
 
 ```
--trace-size   : Trace buffer size for cores and memtiles (in bytes)
--trace-offset : Trace buffer offset appended to ddr_id=2
--output-elf   : Enable ELF output mode. When set, generates a main aie.device wrapper with configure/run ops.
+-trace-size        : Trace buffer size for cores and memtiles (in bytes)
+-trace-offset      : Trace buffer offset appended to ddr_id=2
+-output-elf        : Enable ELF output mode. When set, generates a main aie.device wrapper with configure/run ops.
+-coalesce-shim-dma : Coalesce consecutive contiguous shim DMA transfers on the same channel (marked air.preserve_shim_dma_order) into a single wide transfer, reducing the number of host-issued DMA task configure/start/await triplets. Opt-in: this reorders a channel's paced feeds ahead of the sibling-channel interleave, so enable it only for feeds verified numerically equivalent when coalesced.
 ```
