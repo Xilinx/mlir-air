@@ -426,11 +426,13 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
           "Enable ELF output mode. When set, generates a main aie.device "
           "wrapper with configure/run ops.">,
     Option<"clCoalesceShimDma", "coalesce-shim-dma", "bool",
-          /*default=*/"true",
+          /*default=*/"false",
           "Coalesce consecutive contiguous shim DMA transfers on the same "
           "channel (marked air.preserve_shim_dma_order) into a single wide "
           "transfer, reducing the number of host-issued DMA task "
-          "configure/start/await triplets.">
+          "configure/start/await triplets. Opt-in: this reorders a channel's "
+          "paced feeds ahead of the sibling-channel interleave, so enable it "
+          "only for feeds verified numerically equivalent when coalesced.">
   ];
   let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
 }

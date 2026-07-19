@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -airrt-to-npu -split-input-file %s | FileCheck %s
-// RUN: air-opt -airrt-to-npu="coalesce-shim-dma=false" -split-input-file %s | FileCheck %s --check-prefix=NOCOAL
+// RUN: air-opt -airrt-to-npu="coalesce-shim-dma=true" -split-input-file %s | FileCheck %s
+// RUN: air-opt -airrt-to-npu -split-input-file %s | FileCheck %s --check-prefix=NOCOAL
 
 // Three consecutive contiguous MM2S transfers on the same channel, marked
 // air.preserve_shim_dma_order, at contiguous source offsets 0/2048/4096 (each
