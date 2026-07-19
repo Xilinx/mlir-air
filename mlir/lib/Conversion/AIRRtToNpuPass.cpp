@@ -1778,12 +1778,13 @@ static void coalesceShimDmaOrder(ModuleOp module) {
       auto &entries = kv.second;
       if (entries.size() < 2)
         continue;
-      // Sort by source offset so contiguous runs are adjacent. Round-major
-      // emission puts the lowest-offset op earliest in program order, so the
-      // run's first (kept) op is also its natural start position.
-      llvm::stable_sort(entries, [](const Entry &a, const Entry &b) {
-        return a.offset < b.offset;
-      });
+      // Entries are in program (walk) order. Merge only ops that are BOTH
+      // consecutive in program order AND contiguous in source offset
+      // (entries[k+1].offset == entries[k].offset + entries[k].len). This
+      // preserves the channel's original delivery order: we never reorder a
+      // later-program-order op ahead of an earlier one, so a channel whose
+      // program order is not monotonically increasing by offset is coalesced
+      // only where the program already delivers a contiguous run.
       size_t i = 0;
       while (i < entries.size()) {
         size_t j = i;
@@ -1809,7 +1810,7 @@ static void coalesceShimDmaOrder(ModuleOp module) {
                 b, first.getLoc(), b.getI64Type(), b.getI64IntegerAttr(total));
             first.getLength0Mutable().assign(newLen);
             // Mark the merged feed so the double-buffered await synthesis paces
-            // this channel at depth 1 (no cross-run/cross-phase overlap).
+            // it with the cross-channel phase barrier (no cross-run overlap).
             first->setAttr(air::attrs::CoalescedShimFeed, b.getUnitAttr());
             for (size_t k = i + 1; k <= j; k++) {
               auto d = entries[k].op;
@@ -3047,19 +3048,20 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
 
     for (auto &kv : groups) {
-      auto &tasks = kv.second;
-      unsigned n = tasks.size();
       // Coalesced feeds are paced by the cross-channel phase barrier below
       // (each coalesced task is a whole contiguous run feeding a distinct
       // consumer; per-channel pacing cannot prevent phase p of channel A
-      // overlapping phase p-1 of channels B/C/D). Skip them here.
-      bool isCoalesced = false;
-      for (auto ct : tasks)
-        if (ct->hasAttr(air::attrs::CoalescedShimFeed)) {
-          isCoalesced = true;
-          break;
-        }
-      if (isCoalesced)
+      // overlapping phase p-1 of channels B/C/D). Pace only the NON-coalesced
+      // tasks here: a channel may hold a mix (a coalesced contiguous run plus
+      // isolated non-contiguous fragments), and those fragments still need
+      // per-channel backpressure -- filtering instead of skipping the whole
+      // channel avoids leaving them with no synthesized awaits.
+      SmallVector<AIEX::DMAConfigureTaskForOp> tasks;
+      for (auto ct : kv.second)
+        if (!ct->hasAttr(air::attrs::CoalescedShimFeed))
+          tasks.push_back(ct);
+      unsigned n = tasks.size();
+      if (n == 0)
         continue;
       // Segment per launch iteration when the iteration count divides the task
       // count evenly (each iteration emits the same per-channel feeds).

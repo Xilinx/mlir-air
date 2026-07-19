@@ -249,3 +249,89 @@ module {
     return
   }
 }
+
+// -----
+
+// Program-order preservation: two contiguous transfers emitted in DESCENDING
+// offset order (2048 then 0) are NOT merged, because they are not
+// consecutive-and-contiguous in program order. Merging by a global offset sort
+// would reorder the channel's byte delivery, so it must not happen.
+
+// CHECK-LABEL: aie.device(npu2)
+// CHECK: aie.dma_bd(%arg0 : memref<4096xbf16> offset = 2048 len = 2048 sizes = [2048] strides = [1])
+// CHECK: aie.dma_bd(%arg0 : memref<4096xbf16> offset = 0 len = 2048 sizes = [2048] strides = [1])
+// CHECK-NOT: len = 4096
+
+module {
+  aie.device(npu2) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @chA(%t, MM2S, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<4096xbf16>) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c2048 = arith.constant 2048 : i64
+    %c4 = arith.constant 4 : i32
+    %0 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c2048], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order} : (i32, i64, i64, memref<4096xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c0], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order} : (i32, i64, i64, memref<4096xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %p = airrt.segment_load "forward_0" : i64
+    return
+  }
+}
+
+// -----
+
+// Mixed channel: one contiguous run ({0,2048} -> merged, barrier-drained) plus
+// three isolated non-contiguous fragments on the SAME channel. The fragments
+// are not coalesced and must still receive per-channel double-buffered awaits
+// (they are filtered out of the barrier but NOT skipped) -- otherwise they run
+// with no backpressure and can deadlock.
+
+// CHECK-LABEL: aie.device(npu2)
+// The coalesced run (len 4096) drained by the barrier:
+// CHECK: aie.dma_bd(%arg0 : memref<32768xbf16> offset = 0 len = 4096
+// CHECK: aiex.dma_start_task([[C:%[0-9]+]])
+// CHECK: aiex.dma_await_task([[C]])
+// The three fragments still get per-channel depth-2 pacing (their own awaits):
+// CHECK: aie.dma_bd(%arg0 : memref<32768xbf16> offset = 8192 len = 2048
+// CHECK: aiex.dma_start_task([[F0:%[0-9]+]])
+// CHECK: aie.dma_bd(%arg0 : memref<32768xbf16> offset = 16384 len = 2048
+// CHECK: aiex.dma_start_task([[F1:%[0-9]+]])
+// CHECK: aie.dma_bd(%arg0 : memref<32768xbf16> offset = 24576 len = 2048
+// CHECK: aiex.dma_await_task([[F0]])
+// CHECK: aiex.dma_start_task([[F2:%[0-9]+]])
+// CHECK: aiex.dma_await_task([[F1]])
+// CHECK: aiex.dma_await_task([[F2]])
+
+module {
+  aie.device(npu2) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @chA(%t, MM2S, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<32768xbf16>) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c2048 = arith.constant 2048 : i64
+    %c8192 = arith.constant 8192 : i64
+    %c16384 = arith.constant 16384 : i64
+    %c24576 = arith.constant 24576 : i64
+    %c4 = arith.constant 4 : i32
+    %0 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c0], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order} : (i32, i64, i64, memref<32768xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c2048], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order} : (i32, i64, i64, memref<32768xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %2 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c8192], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order} : (i32, i64, i64, memref<32768xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %3 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c16384], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order} : (i32, i64, i64, memref<32768xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %4 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c24576], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order} : (i32, i64, i64, memref<32768xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %p = airrt.segment_load "forward_0" : i64
+    return
+  }
+}
