@@ -2929,7 +2929,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // launch. The whole-list single-dispatch call passes fenceEnd=false to keep
     // the original behavior (no drain when the whole channel fits in flight).
     auto paceSegment = [&](ArrayRef<AIEX::DMAConfigureTaskForOp> tasks,
-                           bool fenceEnd, unsigned depth) {
+                           bool fenceEnd) {
       unsigned n = tasks.size();
       if (n == 0)
         return;
@@ -3073,7 +3073,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         int64_t segWave = -1;
         auto flush = [&]() {
           if (!seg.empty()) {
-            paceSegment(seg, /*fenceEnd=*/true, depth);
+            paceSegment(seg, /*fenceEnd=*/true);
             seg.clear();
           }
         };
@@ -3092,7 +3092,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         for (int64_t it = 0; it < numIters; it++)
           paceSegment(
               ArrayRef<AIEX::DMAConfigureTaskForOp>(tasks).slice(it * seg, seg),
-              /*fenceEnd=*/true, depth);
+              /*fenceEnd=*/true);
       } else {
         if (numIters > 1)
           tasks.front()->emitWarning(
@@ -3100,7 +3100,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               ") is not evenly divisible by iteration count (" +
               llvm::Twine(numIters) +
               "); falling back to whole-list pacing which may deadlock");
-        paceSegment(tasks, /*fenceEnd=*/false, depth);
+        paceSegment(tasks, /*fenceEnd=*/false);
       }
     }
   }
