@@ -38,6 +38,14 @@ constexpr StringLiteral RuntimeHoist = "air.runtime_hoist";
 constexpr StringLiteral AwaitAppends = "air.await_appends";
 constexpr StringLiteral AppendBarrier = "air.append_barrier";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
+// Marker on a shim MM2S configure task produced by the coalesce-shim-dma merge:
+// its BD covers a whole contiguous run merged from several smaller feeds, so
+// consecutive coalesced tasks on the same channel may feed distinct downstream
+// consumers and must NOT be kept in flight together. The backpressure paces
+// such tasks with a cross-channel barrier (drain a group of coalesced transfers
+// before starting the next group), reproducing the drain schedule of the
+// un-coalesced feed.
+constexpr StringLiteral CoalescedShimFeed = "air.coalesced_shim_feed";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
 constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
 constexpr StringLiteral DedicatedDmaChannel = "air.dedicated_dma_channel";
