@@ -750,6 +750,11 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // readback (see the air.await_appends barrier below).
     if (op->hasAttr(air::attrs::AppendBarrier))
       configTaskOp->setAttr(air::attrs::AppendBarrier, rewriter.getUnitAttr());
+    // Carry the coalesced-feed marker so the double-buffered await synthesis
+    // paces this merged channel at depth 1 (no cross-run overlap).
+    if (op->hasAttr(air::attrs::CoalescedShimFeed))
+      configTaskOp->setAttr(air::attrs::CoalescedShimFeed,
+                            rewriter.getUnitAttr());
     // Carry the fused-launch wave index so the per-wave
     // RTP/set_lock/output-S2MM hoist can group this feed by its launch
     // iteration.
@@ -1672,6 +1677,155 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   return success();
 }
 
+// Coalesce consecutive contiguous shim DMA transfers on the same channel
+// (marked air.preserve_shim_dma_order) into one wide contiguous transfer.
+//
+// A large host feed can be lowered as many small per-block shim transfers, each
+// of which the shim sequencer executes as a separate configure/start/await
+// triplet. That per-triplet microcontroller overhead can dominate the dataflow
+// floor. Merging a run of same-channel BDs whose source offsets are contiguous
+// (offset[k+1] == offset[k] + len[k]) into a single BD collapses the triplet
+// count without touching the device configuration: the receiving memtile ring
+// drains the wider stream via backpressure exactly as it drained the fragments.
+//
+// Only pure contiguous 1D runs are merged, producing a linear row-major BD.
+// Such a BD uses the wide buffer_length register and bypasses the per-dim wrap
+// limit (see violatesAIE2WrapLimit / isContiguousRowMajorOrRepeated), so the
+// coalesced transfer remains a single DMA task. Gated to
+// air.preserve_shim_dma_order feeds -- the lockstep-coupled shim feeds that
+// already opt out of the per-channel BD fold -- because the merge reorders the
+// channel's transfers ahead of the sibling-channel round-major interleave; that
+// reorder is numerically equivalent to the fragmented feed (verified
+// output-identical on an exercising design).
+static void coalesceShimDmaOrder(ModuleOp module) {
+  SmallVector<func::FuncOp> funcOps;
+  module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
+
+  // Return (totalOffset, len) for a pure contiguous 1D transfer, or nullopt if
+  // the op is not a mergeable contiguous 1D transfer (non-constant descriptor,
+  // multi-dim wrap, or non-unit inner stride).
+  auto describe =
+      [](airrt::DmaMemcpyNdOp d) -> std::optional<std::pair<int64_t, int64_t>> {
+    // Never merge packet-switched transfers: consecutive BDs on one channel may
+    // carry different packet ids (different routing destinations). Merging them
+    // into one BD would send all data with the first id, starving the other
+    // destinations and deadlocking. Only circuit-switched feeds (no packet) are
+    // safe to coalesce.
+    if (d->hasAttr("packet"))
+      return std::nullopt;
+    auto o3 = getConstantIntValue(d.getOffset3());
+    auto o2 = getConstantIntValue(d.getOffset2());
+    auto o1 = getConstantIntValue(d.getOffset1());
+    auto o0 = getConstantIntValue(d.getOffset0());
+    auto l3 = getConstantIntValue(d.getLength3());
+    auto l2 = getConstantIntValue(d.getLength2());
+    auto l1 = getConstantIntValue(d.getLength1());
+    auto l0 = getConstantIntValue(d.getLength0());
+    auto s3 = getConstantIntValue(d.getStride3());
+    auto s2 = getConstantIntValue(d.getStride2());
+    auto s1 = getConstantIntValue(d.getStride1());
+    auto s0 = getConstantIntValue(d.getStride0());
+    if (!o3 || !o2 || !o1 || !o0 || !l3 || !l2 || !l1 || !l0 || !s3 || !s2 ||
+        !s1 || !s0)
+      return std::nullopt;
+    // Pure contiguous 1D: only the innermost dim carries data, unit inner
+    // stride (the higher dims are size-1 dummies).
+    if (*l3 != 1 || *l2 != 1 || *l1 != 1 || *s0 != 1)
+      return std::nullopt;
+    int64_t totalOffset =
+        (*o3) * (*s3) + (*o2) * (*s2) + (*o1) * (*s1) + (*o0) * (*s0);
+    return std::make_pair(totalOffset, *l0);
+  };
+
+  for (auto f : funcOps) {
+    // Collect paced shim feeds (program order preserved by the walk).
+    SmallVector<airrt::DmaMemcpyNdOp> paced;
+    f.walk([&](airrt::DmaMemcpyNdOp dma) {
+      if (dma->hasAttr(air::attrs::PreserveShimDmaOrder))
+        paced.push_back(dma);
+    });
+    if (paced.size() < 2)
+      continue;
+
+    // Group by (launch wave, channel metadata symbol, source memref). The wave
+    // key prevents merging a channel's feed across launch iterations: in a
+    // fused multi-iteration launch each wave loads a distinct slice and has its
+    // own per-wave arming that must sit between waves, so wave N+1's feed must
+    // not be delivered inside wave N even if their source offsets happen to be
+    // contiguous.
+    struct Entry {
+      airrt::DmaMemcpyNdOp op;
+      int64_t offset;
+      int64_t len;
+    };
+    llvm::MapVector<std::tuple<int64_t, StringRef, void *>, SmallVector<Entry>>
+        groups;
+    for (auto d : paced) {
+      auto desc = describe(d);
+      if (!desc)
+        continue;
+      auto md = d->getAttrOfType<FlatSymbolRefAttr>("metadata");
+      if (!md)
+        continue;
+      int64_t wave = -1;
+      if (auto w = d->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
+        wave = w.getInt();
+      groups[{wave, md.getValue(), d.getMemref().getAsOpaquePointer()}]
+          .push_back({d, desc->first, desc->second});
+    }
+
+    for (auto &kv : groups) {
+      auto &entries = kv.second;
+      if (entries.size() < 2)
+        continue;
+      // Entries are in program (walk) order. Merge only ops that are BOTH
+      // consecutive in program order AND contiguous in source offset
+      // (entries[k+1].offset == entries[k].offset + entries[k].len). This
+      // preserves the channel's original delivery order: we never reorder a
+      // later-program-order op ahead of an earlier one, so a channel whose
+      // program order is not monotonically increasing by offset is coalesced
+      // only where the program already delivers a contiguous run.
+      size_t i = 0;
+      while (i < entries.size()) {
+        size_t j = i;
+        int64_t end = entries[i].offset + entries[i].len;
+        while (j + 1 < entries.size() && entries[j + 1].offset == end) {
+          j++;
+          end = entries[j].offset + entries[j].len;
+        }
+        if (j > i) {
+          // Merge run [i..j]: enlarge the first op's innermost length to cover
+          // the whole run, then erase the rest (redirecting their event tokens
+          // to the merged op so any WaitAll dependencies stay valid).
+          auto first = entries[i].op;
+          // Only merge if the merged op can carry the redirected tokens.
+          bool tokensOk = true;
+          for (size_t k = i + 1; k <= j && tokensOk; k++)
+            if (entries[k].op.getEvent() && !first.getEvent())
+              tokensOk = false;
+          if (tokensOk) {
+            int64_t total = end - entries[i].offset;
+            OpBuilder b(first);
+            auto newLen = arith::ConstantOp::create(
+                b, first.getLoc(), b.getI64Type(), b.getI64IntegerAttr(total));
+            first.getLength0Mutable().assign(newLen);
+            // Mark the merged feed so the double-buffered await synthesis paces
+            // it with the cross-channel phase barrier (no cross-run overlap).
+            first->setAttr(air::attrs::CoalescedShimFeed, b.getUnitAttr());
+            for (size_t k = i + 1; k <= j; k++) {
+              auto d = entries[k].op;
+              if (d.getEvent() && first.getEvent())
+                d.getEvent().replaceAllUsesWith(first.getEvent());
+              d.erase();
+            }
+          }
+        }
+        i = j + 1;
+      }
+    }
+  }
+}
+
 LogicalResult enforceAIE2WrapLimit(ModuleOp module) {
   // Identify airrt.dma_memcpy_nd ops that violate the AIE2 wrap size
   // constraint.
@@ -1801,6 +1955,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // launch_end markers are still present and program order reflects wave
     // membership (before the markers are lowered by the next step).
     assignLaunchWaveIndices(module);
+
+    // Coalesce contiguous same-channel paced shim feeds into wider
+    // transfers before the wait-generation and wrap-enforcement steps, so
+    // fewer DMA tasks and awaits are emitted. Runs after wave tagging (the kept
+    // op keeps its wave attribute) and before WaitAll->wait conversion (erased
+    // ops' event tokens are redirected to the merged op).
+    if (clCoalesceShimDma)
+      coalesceShimDmaOrder(module);
 
     generateNpuWaitFromAIRRtWaitAll(module);
 
@@ -2827,9 +2989,80 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     });
 
+    // Cross-channel phase barrier for coalesced feeds. After coalescing, each
+    // channel contributes one task per phase, emitted phase-major across
+    // channels (all channels' phase p, then all channels' phase p+1, ...). Each
+    // phase feeds a distinct downstream consumer, so overlapping two phases
+    // deadlocks (a per-channel double-buffer would keep phase p of one channel
+    // in flight while a sibling channel is still on phase p-1). Instead drain
+    // every channel's phase-p transfer before any phase-(p+1) transfer starts:
+    // fire all of a phase in parallel, then await the whole phase. A new phase
+    // group begins whenever a channel repeats in program order (robust to
+    // varying per-phase channel counts and to fused multi-iteration launches,
+    // whose waves just append more phase groups).
+    {
+      SmallVector<AIEX::DMAConfigureTaskForOp> coalTasks;
+      f.walk([&](AIEX::DMAConfigureTaskForOp ct) {
+        if (!ct->hasAttr(air::attrs::CoalescedShimFeed))
+          return;
+        StringRef md = ct.getAlloc().getLeafReference().getValue();
+        auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, md);
+        if (allocOp && allocOp.getChannelDir() == AIE::DMAChannelDir::MM2S)
+          coalTasks.push_back(ct);
+      });
+      if (!coalTasks.empty()) {
+        SmallVector<SmallVector<AIEX::DMAConfigureTaskForOp>> phaseGroups;
+        SmallVector<AIEX::DMAConfigureTaskForOp> cur;
+        llvm::DenseSet<StringRef> seen;
+        for (auto ct : coalTasks) {
+          StringRef c = ct.getAlloc().getLeafReference().getValue();
+          if (seen.contains(c)) {
+            phaseGroups.push_back(cur);
+            cur.clear();
+            seen.clear();
+          }
+          cur.push_back(ct);
+          seen.insert(c);
+        }
+        if (!cur.empty())
+          phaseGroups.push_back(cur);
+        for (auto &grp : phaseGroups) {
+          // Insert the phase's awaits after its last start (program order), so
+          // the whole phase drains before the next phase's first start.
+          AIEX::DMAStartTaskOp lastStart = nullptr;
+          for (auto ct : grp) {
+            auto st = startOf.lookup(ct.getOperation());
+            if (!st)
+              continue;
+            if (!lastStart || lastStart->isBeforeInBlock(st))
+              lastStart = st;
+          }
+          if (!lastStart)
+            continue;
+          OpBuilder b(lastStart);
+          b.setInsertionPointAfter(lastStart);
+          for (auto ct : grp)
+            AIEX::DMAAwaitTaskOp::create(b, lastStart.getLoc(), ct.getResult());
+        }
+      }
+    }
+
     for (auto &kv : groups) {
-      auto &tasks = kv.second;
+      // Coalesced feeds are paced by the cross-channel phase barrier below
+      // (each coalesced task is a whole contiguous run feeding a distinct
+      // consumer; per-channel pacing cannot prevent phase p of channel A
+      // overlapping phase p-1 of channels B/C/D). Pace only the NON-coalesced
+      // tasks here: a channel may hold a mix (a coalesced contiguous run plus
+      // isolated non-contiguous fragments), and those fragments still need
+      // per-channel backpressure -- filtering instead of skipping the whole
+      // channel avoids leaving them with no synthesized awaits.
+      SmallVector<AIEX::DMAConfigureTaskForOp> tasks;
+      for (auto ct : kv.second)
+        if (!ct->hasAttr(air::attrs::CoalescedShimFeed))
+          tasks.push_back(ct);
       unsigned n = tasks.size();
+      if (n == 0)
+        continue;
       // Segment per launch iteration when the iteration count divides the task
       // count evenly (each iteration emits the same per-channel feeds).
       // Otherwise fall back to whole-list pacing.
