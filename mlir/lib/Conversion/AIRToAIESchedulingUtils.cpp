@@ -567,26 +567,58 @@ static void countChainBufferRoles(AIE::BufferOp buf, int &numWriters,
   numReaders = getOrderedChainEndpoints(buf, /*writers=*/false).size();
 }
 
-bool air::isChainLockCandidate(AIE::BufferOp buf) {
+// Eligibility guard shared by the memtile-specific lock predicates: only a
+// non-null L2 (memtile) buffer qualifies.
+static bool isL2MemtileBuffer(AIE::BufferOp buf) {
   if (!buf)
     return false;
+  auto memrefTy = dyn_cast<MemRefType>(buf.getResult().getType());
+  return memrefTy && air::isL2(memrefTy);
+}
+
+bool air::isChainLockCandidate(AIE::BufferOp buf) {
   // Predicate is shape-based on the buffer's user list. Only L2 memtile
   // buffers are eligible (this is a memtile-specific lock pattern).
-  auto memrefTy = dyn_cast<MemRefType>(buf.getResult().getType());
-  if (!memrefTy || !air::isL2(memrefTy))
+  if (!isL2MemtileBuffer(buf))
     return false;
   int nW = 0, nR = 0;
   countChainBufferRoles(buf, nW, nR);
-  // Fan-in: N writers (N>1) + 1 reader.
+  // Fan-in: N writers (N>1) + 1 reader. The chain-lock is required here to
+  // prevent write-side corruption, so the opt-out below is NOT honored.
   if (nW > 1 && nR == 1)
     return true;
   // Fan-out: 1 writer + N readers (N>1).
-  if (nW == 1 && nR > 1)
+  if (nW == 1 && nR > 1) {
+    // Opt-out: a buffer explicitly pinned with `air.no_chain_lock` keeps the
+    // legacy counted-lock template. Used for fan-out broadcast buffers whose N
+    // readers are independent compute cores (e.g. a per-column weight fan):
+    // concurrent reads never conflict, so the daisy-chain only over-serializes
+    // them and can deadlock against a competing fan-in chain under multi-block
+    // streaming. Scoped to fan-out: reverting fan-in to the counted lock would
+    // reintroduce the very race the chain-lock fixes.
+    if (buf->hasAttr(air::attrs::NoChainLock))
+      return false;
     return true;
+  }
   // Single-writer/single-reader (legacy 1:1) or MIMO (M writers + N
   // readers) are NOT chain-lock candidates; legacy lock template
   // applies.
   return false;
+}
+
+// True iff `buf` is an L2 memtile buffer that is FILLED by DMA (>=1 writer
+// endpoint) but NEVER READ (0 reader endpoints) within the segment -- a "pure
+// drain" (e.g. a readback whose data is discarded). Such a buffer's receiving
+// BD must SELF-RECYCLE on a single lock: there is no consumer to release a
+// separate producer lock or acquire a separate handoff lock, so the legacy
+// producer/consumer pair (acquire wlock / release rlock) fires exactly once
+// then DEADLOCKS on the next dispatch re-acquiring wlock.
+static bool isConsumerlessMemtileDrain(AIE::BufferOp buf) {
+  if (!isL2MemtileBuffer(buf))
+    return false;
+  int nW = 0, nR = 0;
+  air::classifyChainBuffer(buf, nW, nR);
+  return nW >= 1 && nR == 0;
 }
 
 void air::classifyChainBuffer(AIE::BufferOp buf, int &numWriters,
@@ -1175,6 +1207,22 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
     init_pair =
         getLockValuePair(target_model, bufferOp->getResult(0), air_chan);
   auto init = std::max(init_pair.first, init_pair.second);
+
+  // Consumerless memtile drain: emit ONE self-recycling lock (returned as both
+  // pair elements) so the receiving BD acquires AND releases the same lock and
+  // re-arms every dispatch. A distinct producer/consumer pair would deadlock on
+  // the 2nd dispatch (no consumer to release the producer lock). generateDmaBd
+  // emits acquire(self,1)/release(self,1) automatically when both pair elements
+  // are the same lock. Scoped by nR==0 -> mutually exclusive with the
+  // chain-lock / shared-L1 / producer->consumer paths above.
+  if (UsesSemaphoreLocks && tileIsMemTile &&
+      isConsumerlessMemtileDrain(dyn_cast_or_null<AIE::BufferOp>(bufferOp))) {
+    auto selfLock = allocateLockOp(
+        device, tile, static_cast<int>(std::max<int64_t>(init, 1)));
+    lock_allocation_list.push_back(
+        {bufferOp, air_chan, channel, selfLock, selfLock});
+    return std::make_pair(selfLock, selfLock);
+  }
 
   OpBuilder builder(bufferOp);
   auto rlock = allocateLockOp(device, tile, 0);
@@ -2397,7 +2445,12 @@ void air::reorderL3PacketPutsByFlowOrder(
       prevByBlock[blk] = put;
       continue;
     }
-    put->moveAfter(it->second);
+    // Move the put after its flow-order predecessor, carrying its wrap-and-
+    // stride operand slice (e.g. an arith.addi computing a per-iteration DDR
+    // offset) so SSA dominance holds. A put whose slice contains a side-
+    // effecting op is left in place rather than reordered unsafely.
+    (void)air::moveWithPureBackwardSlice(put.getOperation(), it->second,
+                                         /*after=*/true);
     prevByBlock[blk] = put;
   }
 }

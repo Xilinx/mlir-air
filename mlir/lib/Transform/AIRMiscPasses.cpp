@@ -2165,10 +2165,10 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     // by hand-written aggregator patterns (e.g. a per-column output assembler)
     // where splitting would multiply the launch-level shim endpoint count and
     // defeat the aggregation, overflowing the memtile BD limit.
-    bool optOut = allocOp->hasAttr("air.no_split");
+    bool optOut = allocOp->hasAttr(air::attrs::NoSplit);
     if (!optOut)
       if (auto exec = allocOp->getParentOfType<air::ExecuteOp>())
-        optOut = exec->hasAttr("air.no_split");
+        optOut = exec->hasAttr(air::attrs::NoSplit);
     if (optOut)
       continue;
     Value memref = allocOp.getMemref();

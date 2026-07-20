@@ -15,8 +15,6 @@
 #include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
-
-#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
@@ -32,7 +30,6 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -1143,6 +1140,35 @@ public:
   }
 };
 
+class ScfIndexSwitchOpConversion
+    : public OpConversionPattern<scf::IndexSwitchOp> {
+public:
+  using OpConversionPattern<scf::IndexSwitchOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::IndexSwitchOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    scf::IndexSwitchOp newOp = dyn_cast_if_present<scf::IndexSwitchOp>(
+        rewriter.cloneWithoutRegions(*op.getOperation()));
+    for (unsigned i = 0; i < op->getNumRegions(); i++)
+      rewriter.inlineRegionBefore(op->getRegion(i), newOp->getRegion(i),
+                                  newOp->getRegion(i).end());
+
+    // Update the switch arg and convert region + result types (air.async.token
+    // -> airrt.event), mirroring ScfForOpConversion.
+    newOp->setOperands(adaptor.getOperands());
+    for (unsigned i = 0; i < newOp->getNumRegions(); i++)
+      if (failed(rewriter.convertRegionTypes(&newOp->getRegion(i),
+                                             *typeConverter)))
+        return failure();
+    for (auto result : newOp.getResults())
+      result.setType(typeConverter->convertType(result.getType()));
+
+    rewriter.replaceOp(op, newOp.getResults());
+    return success();
+  }
+};
+
 class ScfParOpConversion : public OpConversionPattern<scf::ParallelOp> {
 public:
   using OpConversionPattern<scf::ParallelOp>::OpConversionPattern;
@@ -1358,37 +1384,15 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     if (!anchor)
       return;
 
-    Block *blk = anchor->getBlock();
-    BackwardSliceOptions sliceOpts;
-    sliceOpts.omitBlockArguments = true;
-    sliceOpts.filter = [&](Operation *o) { return o->getBlock() == blk; };
-    llvm::SetVector<Operation *> toHoist;
-    for (auto dma : drainDmas) {
-      llvm::SetVector<Operation *> slice;
-      (void)getBackwardSlice(dma.getOperation(), &slice, sliceOpts);
-      // A side-effecting producer must not be reordered across the intervening
-      // input DMAs; leave such a drain in place rather than risk a hazard.
-      if (llvm::any_of(slice,
-                       [](Operation *o) { return !isMemoryEffectFree(o); }))
-        continue;
-      toHoist.insert(slice.begin(), slice.end());
-      toHoist.insert(dma.getOperation());
-    }
-    // Relocate, in program order, only the to-hoist ops that currently follow
-    // the anchor; those already ahead of it already dominate it. Moving value
-    // definitions earlier is dominance-safe.
-    SmallVector<Operation *> ordered;
-    bool seenAnchor = false;
-    for (Operation *op : window) {
-      if (op == anchor) {
-        seenAnchor = true;
-        continue;
-      }
-      if (seenAnchor && toHoist.contains(op))
-        ordered.push_back(op);
-    }
-    for (Operation *op : ordered)
-      op->moveBefore(anchor);
+    // Relocate each drain that currently follows the anchor to just before it,
+    // carrying its same-block operand slice so dominance holds (deps-first).
+    // Drains already ahead of the anchor already dominate it and are left
+    // alone. A drain whose slice contains a side-effecting op is left in place
+    // rather than reordered across the intervening input DMAs.
+    for (auto dma : drainDmas)
+      if (anchor->isBeforeInBlock(dma.getOperation()))
+        (void)air::moveWithPureBackwardSlice(dma.getOperation(), anchor,
+                                             /*after=*/false);
   });
 }
 
@@ -1503,6 +1507,14 @@ public:
       }
       return true;
     });
+    target.addDynamicallyLegalOp<scf::IndexSwitchOp>(
+        [&](scf::IndexSwitchOp op) {
+          for (auto v : op.getResults()) {
+            if (llvm::isa<air::AsyncTokenType>(v.getType()))
+              return false;
+          }
+          return true;
+        });
     target.addIllegalOp<air::WaitAllOp>();
     target.addLegalOp<UnrealizedConversionCastOp>();
 
@@ -1514,11 +1526,12 @@ public:
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);
 
-    air_patterns.add<
-        ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
-        ScfParOpConversion, ScfReduceReturnOpConversion, ScfReduceOpConversion,
-        AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion>(converter,
-                                                                      context);
+    air_patterns
+        .add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
+             ScfIndexSwitchOpConversion, ScfParOpConversion,
+             ScfReduceReturnOpConversion, ScfReduceOpConversion,
+             AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion>(
+            converter, context);
 
     // Build channel counterpart cache to avoid O(n) module walks per channel
     // op during conversion. Without this cache, each of the N channel ops

@@ -67,6 +67,15 @@ uint64_t getElementSizeInBytes(const mlir::Type ty);
 scf::ForOp getForRegionIterArgsOwner(Value val);
 // Get the parent scf.parallel op of an init_val
 scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val);
+// Rebuild an scf.index_switch with an extra trailing !air.async.token result.
+// Creates a new switch (same arg/cases, original result types plus a trailing
+// async token), copies the symbol attr, splices each region's ops (excluding
+// the terminator) into the new regions, and RAUWs the original results. Does
+// NOT add region terminators and does NOT erase `sw`: the caller populates each
+// region's async yield and erases the old op in its own idiom.
+scf::IndexSwitchOp
+rebuildIndexSwitchWithTrailingAsyncToken(OpBuilder &b, scf::IndexSwitchOp sw);
+
 // Get the parent air.launch_herd op of a tile id
 HerdOp getHerdArgOwner(Value val);
 // Returns true if the L1 buffer passed as kernel operand `memrefOperand` to
@@ -367,6 +376,13 @@ bool hasNElements(Block *block, unsigned N);
 void getBackwardSliceInRegion(OpBuilder builder, Region *region,
                               SmallVectorImpl<Value> &vals,
                               SetVector<Operation *> &backwardSlices);
+
+// Move `op` next to `dest` (after it when `after`, else before), bringing its
+// same-block backward slice along so SSA dominance is preserved: any slice op
+// that ends up trailing `op` is pulled back before it, deps-first. Done only if
+// every slice op is memory-effect-free; otherwise nothing is moved and false is
+// returned, so the caller can avoid a reorder that would strand an impure dep.
+bool moveWithPureBackwardSlice(Operation *op, Operation *dest, bool after);
 
 // Buffer all allocations of memref directly within the func op's body into the
 // func op's arguments.

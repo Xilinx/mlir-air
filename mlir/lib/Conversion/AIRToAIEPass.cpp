@@ -2398,6 +2398,14 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
       buffer->setAttr(air::attrs::RefeedCount,
                       rewriter.getI32IntegerAttr(refeedN));
 
+    // Propagate the opt-out chain-lock pin from the source alloc to the
+    // lowered buffer so isChainLockCandidate can exclude it. Used to keep
+    // fan-out broadcast buffers (e.g. a per-column weight fan read by N
+    // distinct compute cores) on the legacy counted-lock template instead of
+    // the v2 daisy-chain, which over-serializes independent readers.
+    if (alloc->hasAttr(air::attrs::NoChainLock))
+      buffer->setAttr(air::attrs::NoChainLock, rewriter.getUnitAttr());
+
     rewriter.replaceOp(alloc, buffer->getResults());
     bufferToMemtileMap[buffer] = tile;
     return success();
@@ -3392,6 +3400,245 @@ void specializeChannelBundle(
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
+// Maps used by the index_switch arm-buffer helpers below: channel name ->
+// arm-sibling channel ops, and each op -> its arm (region) index, so a channel
+// can be required to span >= 2 mutually-exclusive arms.
+using ArmChannelMap =
+    llvm::MapVector<StringRef, SmallVector<air::ChannelInterface>>;
+using ArmRegionMap = llvm::DenseMap<Operation *, unsigned>;
+
+// (a) Break get->put zero-copy passthrough relays inside the switch. If a
+// buffer is filled by an air.channel.get (S2MM) and forwarded by an
+// air.channel.put (MM2S) using the SAME memref, the per-channel buffer-unify
+// (c) would merge the get and put onto one cross-channel buffer -> a DMA relay
+// whose S2MM and MM2S halves hold distinct lock pairs and deadlock. Split them:
+// keep the get's buffer, copy it into a fresh hoisted buffer, and forward that
+// from the put. The memref.copy lowers to a core loop (lowerMemRefCopyToLoops).
+static void breakIndexSwitchGetPutRelays(scf::IndexSwitchOp sw,
+                                         ArrayRef<Region *> regions) {
+  llvm::DenseSet<Value> getBufs;
+  for (Region *r : regions)
+    r->walk([&](air::ChannelGetOp g) { getBufs.insert(g.getMemref()); });
+  SmallVector<air::ChannelPutOp> relayPuts;
+  for (Region *r : regions)
+    r->walk([&](air::ChannelPutOp p) {
+      if (getBufs.contains(p.getMemref()))
+        relayPuts.push_back(p);
+    });
+  for (auto p : relayPuts) {
+    Value src = p.getMemref();
+    auto ty = dyn_cast<MemRefType>(src.getType());
+    if (!ty)
+      continue;
+    OpBuilder hb(sw);
+    Value m2 = memref::AllocOp::create(hb, sw.getLoc(), ty);
+    OpBuilder cb(p);
+    memref::CopyOp::create(cb, p.getLoc(), src, m2);
+    src.replaceUsesWithIf(
+        m2, [&](OpOperand &use) { return use.getOwner() == p.getOperation(); });
+    OpBuilder db(sw->getBlock(), std::next(Block::iterator(sw)));
+    memref::DeallocOp::create(db, sw.getLoc(), m2);
+  }
+}
+
+// (b) Structure-A channel dedication: a core's S2MM-input (get) channels are
+// multiplexed onto the tile's (few) physical S2MM channels. An arm-VARYING get
+// channel (its producer only fires in one arm) must NOT share a physical S2MM
+// with fixed channels, or in the idle arm its BD sits at the head of the
+// channel queue and ahead-blocks. Pin the get channels: fixed (same buffer both
+// arms) -> physical channel 0 (they converge harmlessly); each arm-varying get
+// -> its own dedicated physical channel (1, 2, ...). Only applied to
+// index_switches that actually contain an arm-varying get.
+static void dedicateArmVaryingGetChannels(scf::IndexSwitchOp sw,
+                                          ArmChannelMap &byChan,
+                                          ArmRegionMap &opRegion) {
+  // A get op is "loop-variable" within an arm if it is nested in an scf.for
+  // inside the switch: its dynamic read count then differs across arms.
+  auto opInLoopWithinSwitch = [&](Operation *op) {
+    for (Operation *p = op->getParentOp(); p && p != sw.getOperation();
+         p = p->getParentOp())
+      if (isa<scf::ForOp>(p))
+        return true;
+    return false;
+  };
+  // A channel name's byChan bucket holds BOTH gets and puts; this dedication is
+  // about S2MM (get) channels only, so classify from the get ops alone.
+  // Filtering here (rather than assuming ops[0] is a get) keeps the result
+  // independent of get/put visitation order within the bucket.
+  auto getsOf = [](SmallVector<air::ChannelInterface> &ops) {
+    SmallVector<air::ChannelInterface> gets;
+    for (auto ci : ops)
+      if (isa<air::ChannelGetOp>(ci.getOperation()))
+        gets.push_back(ci);
+    return gets;
+  };
+  auto armsOf = [&](SmallVector<air::ChannelInterface> &ops) {
+    llvm::SmallSet<unsigned, 4> arms;
+    for (auto ci : ops)
+      arms.insert(opRegion[ci.getOperation()]);
+    return arms;
+  };
+  // A get channel is "arm-varying" if its gets span >= 2 arms and at least one
+  // is nested in an scf.for (its dynamic read count differs across arms; e.g. a
+  // variable-trip loop in one arm vs a couple of fixed reads in the other).
+  // Such a channel must own a dedicated count-free S2MM; fixed (non-loop) gets
+  // can safely converge on one channel.
+  auto isArmVaryingGet = [&](SmallVector<air::ChannelInterface> &ops) {
+    SmallVector<air::ChannelInterface> gets = getsOf(ops);
+    if (gets.size() < 2 || armsOf(gets).size() < 2)
+      return false;
+    return llvm::any_of(gets, [&](air::ChannelInterface ci) {
+      return opInLoopWithinSwitch(ci.getOperation());
+    });
+  };
+  bool anyVaryingGet =
+      llvm::any_of(byChan, [&](auto &e) { return isArmVaryingGet(e.second); });
+  // Count distinct get channels that span >= 2 arms: dedication is only needed
+  // when several such channels would multiplex onto the tile's few physical
+  // S2MM channels. A lone get channel is already unshared.
+  int numArmGetChans = 0;
+  for (auto &e : byChan) {
+    SmallVector<air::ChannelInterface> gets = getsOf(e.second);
+    if (gets.size() >= 2 && armsOf(gets).size() >= 2)
+      numArmGetChans++;
+  }
+  if (!anyVaryingGet || numArmGetChans < 2)
+    return;
+  int dedicatedIdx = 1;
+  for (auto &entry : byChan) {
+    SmallVector<air::ChannelInterface> gets = getsOf(entry.second);
+    if (gets.size() < 2 || armsOf(gets).size() < 2)
+      continue;
+    Operation *decl = air::getChannelDeclarationThroughSymbol(gets[0]);
+    if (!decl)
+      continue;
+    int pin = isArmVaryingGet(entry.second) ? dedicatedIdx++ : 0;
+    decl->setAttr(air::attrs::TileDmaChannel,
+                  IntegerAttr::get(IntegerType::get(sw.getContext(), 32), pin));
+  }
+}
+
+// (c) Unify per-arm buffers of a same-channel onto ONE shared buffer. For each
+// channel whose ops span >= 2 arms and use >= 2 distinct same-typed buffers,
+// hoist one shared alloc above the switch, redirect every arm buffer to it
+// (erasing the per-arm allocs + deallocs), and emit one dealloc after the
+// switch. Only one arm runs per dispatch, so the arms share one count-free
+// ring.
+static void unifyOnChipArmBuffers(scf::IndexSwitchOp sw, ArmChannelMap &byChan,
+                                  ArmRegionMap &opRegion) {
+  for (auto &entry : byChan) {
+    SmallVector<air::ChannelInterface> &ops = entry.second;
+    if (ops.size() < 2)
+      continue;
+    // Must span >= 2 distinct arms.
+    llvm::SmallSet<unsigned, 4> arms;
+    for (auto ci : ops)
+      arms.insert(opRegion[ci.getOperation()]);
+    if (arms.size() < 2)
+      continue;
+    // Only act when >= 2 distinct buffers are in use (else already unified).
+    Value firstBuf = ops[0].getMemref();
+    auto memrefTy = dyn_cast<MemRefType>(firstBuf.getType());
+    if (!memrefTy)
+      continue;
+    bool allSame = llvm::all_of(ops, [&](air::ChannelInterface ci) {
+      return ci.getMemref() == firstBuf;
+    });
+    if (allSame)
+      continue;
+    // All arm buffers must share the same memref type.
+    bool sameTy = llvm::all_of(ops, [&](air::ChannelInterface ci) {
+      return ci.getMemref().getType() == memrefTy;
+    });
+    if (!sameTy)
+      continue;
+
+    // Hoist one shared buffer above the switch.
+    OpBuilder b(sw);
+    Value shared = memref::AllocOp::create(b, sw.getLoc(), memrefTy);
+
+    // Redirect every distinct arm buffer to the shared buffer, erasing the
+    // per-arm alloc + its deallocs.
+    llvm::SmallPtrSet<Operation *, 8> handledAllocs;
+    for (auto ci : ops) {
+      Value armBuf = ci.getMemref();
+      if (armBuf == shared)
+        continue;
+      Operation *allocOp = armBuf.getDefiningOp();
+      if (!allocOp || !isa<memref::AllocOp>(allocOp) ||
+          handledAllocs.count(allocOp))
+        continue;
+      handledAllocs.insert(allocOp);
+      SmallVector<Operation *> deallocs;
+      for (Operation *u : armBuf.getUsers())
+        if (isa<memref::DeallocOp>(u))
+          deallocs.push_back(u);
+      armBuf.replaceAllUsesWith(shared);
+      for (Operation *dop : deallocs)
+        dop->erase();
+      allocOp->erase();
+    }
+    // One dealloc after the switch.
+    OpBuilder db(sw->getBlock(), std::next(Block::iterator(sw)));
+    memref::DeallocOp::create(db, sw.getLoc(), shared);
+  }
+}
+
+// For a scf.index_switch whose mutually-exclusive arms each consume the SAME
+// air.channel into DIFFERENT per-arm on-chip (L1/L2) buffers, unify those arm
+// buffers onto ONE shared buffer + one count-free ring. Only one arm executes
+// per dispatch, so per-arm buffers/DMA tasks are redundant: distinct dma_start
+// tasks on the same physical channel ahead-block the idle arm's task at the
+// head of the channel queue and stall the active arm (and the extra unaccounted
+// buffers unbalance the lock contract). This is the device-IR companion to the
+// fused multi-iteration launch runtime support: the runtime feeds one channel
+// across heterogeneous waves; this pass makes the on-chip consumer a single
+// shared ring instead of one buffer per wave-arm. Runs three phases per switch:
+// (a) break get->put relays, (b) dedicate arm-varying get channels, (c) unify
+// the per-arm buffers.
+static void unifyIndexSwitchArmBuffers(AIE::DeviceOp d) {
+  SmallVector<scf::IndexSwitchOp> switches;
+  d.walk([&](scf::IndexSwitchOp sw) { switches.push_back(sw); });
+  for (auto sw : switches) {
+    SmallVector<Region *> regions;
+    for (Region &r : sw.getCaseRegions())
+      regions.push_back(&r);
+    regions.push_back(&sw.getDefaultRegion());
+
+    // Only touch ON-CHIP (L1/L2) switches. Skip the launch-scope host-feed
+    // selector, whose arms move L3/DDR host memrefs (launch args) and whose
+    // condition is the per-wave launch index: that switch is lowered by the
+    // fused multi-iteration launch runtime path. Mutating it here (relay break
+    // / channel dedication / buffer hoist) orphans its wave-selector arith.cmpi
+    // when air-to-aie later dissolves the launch.
+    bool hasOnChipBuf = false;
+    for (Region *r : regions)
+      r->walk([&](air::ChannelInterface ci) {
+        if (auto mt = dyn_cast<MemRefType>(ci.getMemref().getType())) {
+          unsigned sp = mt.getMemorySpaceAsInt();
+          if (sp == 1 || sp == 2)
+            hasOnChipBuf = true;
+        }
+      });
+    if (!hasOnChipBuf)
+      continue;
+
+    ArmChannelMap byChan;
+    ArmRegionMap opRegion;
+    for (auto it : llvm::enumerate(regions)) {
+      unsigned ri = it.index();
+      it.value()->walk([&](air::ChannelInterface ci) {
+        byChan[ci.getChanName()].push_back(ci);
+        opRegion[ci.getOperation()] = ri;
+      });
+    }
+
+    breakIndexSwitchGetPutRelays(sw, regions);
+    dedicateArmVaryingGetChannels(sw, byChan, opRegion);
+    unifyOnChipArmBuffers(sw, byChan, opRegion);
+  }
+}
+
 // Remove orphaned specialized channels after specializeChannelBundle.
 // An orphaned channel is one that has puts but no gets, or gets but no puts.
 // This happens when cloning L3 ops to all devices, but each device only
@@ -3719,6 +3966,7 @@ public:
     if (device->hasAttr("segment_unroll_x") ||
         device->hasAttr("segment_unroll_y"))
       removeOrphanedChannels(device);
+    unifyIndexSwitchArmBuffers(device);
     if (stopAfter == PipelineStage::AfterSpecializeChannel)
       return success();
 
@@ -7671,6 +7919,7 @@ public:
         if (device->hasAttr("segment_unroll_x") ||
             device->hasAttr("segment_unroll_y"))
           removeOrphanedChannels(device);
+        unifyIndexSwitchArmBuffers(device);
         air::renumberMemcpyIfOps(&device.getRegion());
         LowerAIRPingPong(device);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
@@ -7693,6 +7942,7 @@ public:
         if (device->hasAttr("segment_unroll_x") ||
             device->hasAttr("segment_unroll_y"))
           removeOrphanedChannels(device);
+        unifyIndexSwitchArmBuffers(device);
         specializeL2MemrefsIntoMemtiles(device);
         allocL1Buffers(device, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);

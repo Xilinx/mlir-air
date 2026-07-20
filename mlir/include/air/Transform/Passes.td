@@ -1056,6 +1056,26 @@ def AIRAnnotateRefeedPass: Pass<"air-annotate-refeed", "ModuleOp"> {
   }];
 }
 
+def AIREnforceChannelFifoOrder: Pass<"air-enforce-channel-fifo-order", "ModuleOp"> {
+  let summary = "Serialize same-channel async ops to preserve FIFO order";
+  let constructor = "xilinx::air::createAIREnforceChannelFifoOrder()";
+  let description = [{
+    A single air.channel is an ordered FIFO, but air-dependency only orders
+    channel ops that share a buffer. Ops on the same channel + same indices +
+    same direction (put/put or get/get) that touch different buffers (e.g. two
+    phases of a kernel temporally reusing one input/output channel) are left
+    unordered and lower to racing BD chains. This pass adds a direct async
+    dependency from each such op to the nearest preceding matching one in the
+    same block. It runs late (after channel fusion has collapsed loop nests into
+    single ops), so the deps are direct op-to-op edges that survive later
+    canonicalization, unlike loop-carried ordering deps.
+
+    NOTE: it only orders same-block ops (post-fusion collapsed channel ops); it
+    does not order ops still nested in distinct loops (those would need
+    loop-carried deps, which canonicalize strips).
+  }];
+}
+
 def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "ModuleOp"> {
   let summary = "Hoist dma ops into perfectly nested loop";
   let constructor = "xilinx::air::createAIRIsolateAsyncDmaLoopNests()";
