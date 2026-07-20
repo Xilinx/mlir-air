@@ -235,6 +235,14 @@ static cl::opt<bool> useLockRaceConditionFixV2(
              "use-lock-race-condition-fix."),
     cl::init(false), cl::cat(airCompilerOptions));
 
+static cl::opt<bool> coalesceShimDma(
+    "coalesce-shim-dma",
+    cl::desc("Coalesce consecutive contiguous shim DMA transfers on the same "
+             "channel (marked air.preserve_shim_dma_order) into a single wide "
+             "transfer, reducing host-issued DMA task triplets. Opt-in: enable "
+             "only for feeds verified numerically equivalent when coalesced."),
+    cl::init(false), cl::cat(airCompilerOptions));
+
 enum PlacedIrVerifyMode { PIV_off, PIV_warn, PIV_error };
 
 static cl::opt<PlacedIrVerifyMode> placedIrVerifiers(
@@ -1046,6 +1054,11 @@ static LogicalResult runAieCompilation() {
     os << " col-anchor=" << (resolvedColOffset + traceColOffset);
     os << "}";
     os << ",canonicalize,cse";
+    // Preserve air.channel FIFO order across temporally-reused channels. Runs
+    // after fusion+canonicalize so it adds direct op-to-op deps (which survive)
+    // rather than loop-carried ordering deps (which canonicalize strips). No
+    // canonicalize runs after this point in the pipeline.
+    os << ",air-enforce-channel-fifo-order";
     os << ",func.func(air-renumber-dma)";
     os << ")";
   }
@@ -1165,6 +1178,7 @@ static LogicalResult runAieCompilation() {
       os << " trace-offset=" << traceOffset;
       bool outputElf = (outputFormat == OF_elf);
       os << " output-elf=" << (outputElf ? "true" : "false");
+      os << " coalesce-shim-dma=" << (coalesceShimDma ? "true" : "false");
       os << "}";
     }
 

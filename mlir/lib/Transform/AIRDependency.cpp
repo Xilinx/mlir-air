@@ -1464,41 +1464,10 @@ private:
   scf::IndexSwitchOp
   convertScfIndexSwitchToAsync(RewriterBase &rewriter,
                                scf::IndexSwitchOp branch_op) {
-    // Preserve any existing result types; append the async token last so that
-    // insertLoopCarriedDepsInRegion (which appends the token to scf.yield) and
-    // the result ordering stay consistent.
-    SmallVector<Type> yielded_tys(branch_op.getResultTypes());
-    yielded_tys.push_back(air::AsyncTokenType::get(rewriter.getContext()));
-    scf::IndexSwitchOp new_branch_op = scf::IndexSwitchOp::create(
-        rewriter, branch_op.getLoc(), yielded_tys, branch_op.getArg(),
-        branch_op.getCases(),
-        /*caseRegionsCount=*/branch_op.getCases().size());
-
-    if (auto attr = branch_op->getAttrOfType<StringAttr>(
-            SymbolTable::getSymbolAttrName()))
-      new_branch_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
-
-    // Splice the operations from every region (default + cases), excluding the
-    // old terminator; insertLoopCarriedDepsInRegion appends the async yield.
-    auto old_regions = branch_op->getRegions();
-    auto new_regions = new_branch_op->getRegions();
-    for (auto [o_r, n_r] : llvm::zip_equal(old_regions, new_regions)) {
-      if (o_r.empty())
-        continue;
-      if (n_r.empty())
-        rewriter.createBlock(&n_r);
-      auto &bb = n_r.front().getOperations();
-      auto &body = o_r.front().getOperations();
-      bb.splice(bb.begin(), body, body.begin(), --body.end());
-    }
-
-    // Replace uses of old results with the corresponding new results (same
-    // index; the token is appended after, so existing indices are stable).
-    for (auto [old_r, new_r] :
-         llvm::zip(branch_op.getResults(), new_branch_op.getResults()))
-      old_r.replaceAllUsesWith(new_r);
-
-    return new_branch_op;
+    // Append the async token result, splice regions (excluding terminators) and
+    // RAUW; insertLoopCarriedDepsInRegion appends the async yields afterwards
+    // and the caller erases branch_op.
+    return air::rebuildIndexSwitchWithTrailingAsyncToken(rewriter, branch_op);
   }
 
   // Elevating tokens from inside loop body to the yielded token, to maintain

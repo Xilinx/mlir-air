@@ -70,6 +70,7 @@ class XRTBackend(AirBackend):
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
         use_lock_race_condition_fix_v2: bool = False,
+        coalesce_shim_dma: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
         output_format: str = "xclbin",
@@ -97,6 +98,7 @@ class XRTBackend(AirBackend):
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
+            coalesce_shim_dma: configure aircc to coalesce consecutive contiguous shim DMA transfers on the same channel (marked air.preserve_shim_dma_order) into a single wide transfer, reducing host-issued DMA task triplets. Opt-in: only enable for feeds verified numerically equivalent when coalesced.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
             output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn, elf].
@@ -140,6 +142,7 @@ class XRTBackend(AirBackend):
             )
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
         self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
+        self.coalesce_shim_dma = coalesce_shim_dma
         self.trace_offset = trace_offset
         self.trace_size = trace_size
         self.currently_loaded = False
@@ -344,6 +347,9 @@ class XRTBackend(AirBackend):
 
             if self.use_lock_race_condition_fix_v2:
                 aircc_options += ["--use-lock-race-condition-fix-v2"]
+
+            if self.coalesce_shim_dma:
+                aircc_options += ["--coalesce-shim-dma"]
 
             if self.trace_size != 0:
                 aircc_options += ["-trace-size"]

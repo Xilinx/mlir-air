@@ -38,6 +38,14 @@ constexpr StringLiteral RuntimeHoist = "air.runtime_hoist";
 constexpr StringLiteral AwaitAppends = "air.await_appends";
 constexpr StringLiteral AppendBarrier = "air.append_barrier";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
+// Marker on a shim MM2S configure task produced by the coalesce-shim-dma merge:
+// its BD covers a whole contiguous run merged from several smaller feeds, so
+// consecutive coalesced tasks on the same channel may feed distinct downstream
+// consumers and must NOT be kept in flight together. The backpressure paces
+// such tasks with a cross-channel barrier (drain a group of coalesced transfers
+// before starting the next group), reproducing the drain schedule of the
+// un-coalesced feed.
+constexpr StringLiteral CoalescedShimFeed = "air.coalesced_shim_feed";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
 constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
 constexpr StringLiteral DedicatedDmaChannel = "air.dedicated_dma_channel";
@@ -71,6 +79,27 @@ constexpr StringLiteral KeepPktHeader = "keep_pkt_header";
 // stamped. Distinct from KeepPktHeader, which is per-flow (offset-0 bearer
 // only).
 constexpr StringLiteral SrcWritesPktHeader = "air.src_writes_pkt_header";
+// Per-op launch-iteration ("wave") index (i64) on runtime-sequence ops of a
+// fused multi-iteration launch. Assigned in AIRRtToNpu right after the fused
+// launch loop is unrolled (program order still reflects wave membership) and
+// propagated onto the ops each airrt op lowers to, so downstream per-wave
+// ordering (RTP arm / set_lock / output-S2MM hoist) groups by this index
+// instead of inferring wave boundaries from op positions.
+constexpr StringLiteral LaunchWave = "air.launch_wave";
+// Opt-out (unit attr) on a shared-L2 memref.alloc: keep the buffer on the
+// legacy counted-lock template even under use-lock-race-condition-fix-v2,
+// instead of the daisy-chained chain-lock. Honored only for fan-out broadcast
+// buffers, whose N readers are independent compute cores: the chain-lock
+// over-serializes those reads and can deadlock against a competing fan-in
+// chain. Must be tagged on the alloc itself (the air.execute wrapper is already
+// lowered away by the time AIRToAIE reads it); propagated onto the lowered
+// AIE::BufferOp so air::isChainLockCandidate can exclude it.
+constexpr StringLiteral NoChainLock = "air.no_chain_lock";
+// Opt-out (unit attr) on a shared-L2 memref.alloc (or its enclosing
+// air.execute): leave this L2 buffer intact instead of partitioning it. Used by
+// hand-written aggregator patterns where splitting would multiply the
+// launch-level shim endpoint count.
+constexpr StringLiteral NoSplit = "air.no_split";
 } // namespace attrs
 
 // Copy the DMA-steering / runtime-ordering markers

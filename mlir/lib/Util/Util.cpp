@@ -28,6 +28,7 @@
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
@@ -270,6 +271,32 @@ scf::ParallelOp air::getParallelRegionInitValsOwner(Operation *op, Value val) {
     }
   }
   return scf::ParallelOp();
+}
+
+scf::IndexSwitchOp
+air::rebuildIndexSwitchWithTrailingAsyncToken(OpBuilder &b,
+                                              scf::IndexSwitchOp sw) {
+  SmallVector<Type> resTys(sw.getResultTypes());
+  resTys.push_back(air::AsyncTokenType::get(sw.getContext()));
+  b.setInsertionPoint(sw);
+  auto newSw = scf::IndexSwitchOp::create(b, sw.getLoc(), resTys, sw.getArg(),
+                                          sw.getCases(), sw.getCases().size());
+  if (auto attr =
+          sw->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+    newSw->setAttr(SymbolTable::getSymbolAttrName(), attr);
+  // Move ops (excluding the old terminator) into the new regions.
+  for (auto [oR, nR] : llvm::zip_equal(sw->getRegions(), newSw->getRegions())) {
+    if (oR.empty())
+      continue;
+    if (nR.empty())
+      b.createBlock(&nR);
+    auto &nbb = nR.front().getOperations();
+    auto &obb = oR.front().getOperations();
+    nbb.splice(nbb.begin(), obb, obb.begin(), --obb.end());
+  }
+  for (auto [o, n] : llvm::zip(sw.getResults(), newSw.getResults()))
+    o.replaceAllUsesWith(n);
+  return newSw;
 }
 
 // Get the parent air.launch_herd op of a tile id
@@ -2647,6 +2674,30 @@ Operation *air::cloneOpAndOperands(RewriterBase &rewriter, IRMapping &remap,
   // 3) Finally clone the target op itself.
   auto new_op = rewriter.clone(*op, remap);
   return new_op;
+}
+
+bool air::moveWithPureBackwardSlice(Operation *op, Operation *dest,
+                                    bool after) {
+  Block *blk = op->getBlock();
+  BackwardSliceOptions bsOpts;
+  bsOpts.omitBlockArguments = true;
+  bsOpts.filter = [&](Operation *o) { return o->getBlock() == blk; };
+  llvm::SetVector<Operation *> slice;
+  (void)getBackwardSlice(op, &slice, bsOpts);
+  // Relocating a side-effecting op could cross a hazard; bail and let the
+  // caller skip the reorder rather than risk changing semantics.
+  if (llvm::any_of(slice, [](Operation *o) { return !isMemoryEffectFree(o); }))
+    return false;
+  if (after)
+    op->moveAfter(dest);
+  else
+    op->moveBefore(dest);
+  // getBackwardSlice yields deps-first order; pulling each trailing slice op to
+  // just before `op` in that order keeps the operands' mutual order valid.
+  for (Operation *s : slice)
+    if (op->isBeforeInBlock(s))
+      s->moveBefore(op);
+  return true;
 }
 
 bool air::opOrAncestorIsDominantOver(Operation *a, Operation *b) {
