@@ -5348,6 +5348,11 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     if (target_ops_sets.size() < 2)
       return failure();
 
+    // Mark the allocs to hoist only now that we know this loop will be split,
+    // so every marked alloc sits under this loop and the seeding walk below is
+    // complete.
+    markAllocsToHoist(for_op, target_ops_sets);
+
     // If necessary, hoist allocs out of the loops, too. Seed the driver with
     // only this loop's marked allocs (not a whole-region walk) and disable
     // region simplification: this rewrite fires once per scf.for, so a
@@ -5527,20 +5532,27 @@ private:
     };
     for (auto &setVec : target_ops_sets)
       sortSetVectorByOpOrder(setVec);
+  }
 
-    // Check if any memref.alloc needs to be hoisted.
-    for (auto o : candidate_ops) {
-      SmallVector<Value, 2> operand_memrefs;
-      for (auto operand : o->getOperands())
-        if (isa_and_present<MemRefType>(operand.getType()))
-          operand_memrefs.push_back(operand);
-      for (auto memref : operand_memrefs) {
-        auto exec = dyn_cast_if_present<air::ExecuteOp>(memref.getDefiningOp());
-        if (!exec)
-          continue;
-        if (for_op->isProperAncestor(exec))
-          exec->setAttr("hoist_alloc",
-                        mlir::BoolAttr::get(exec->getContext(), true));
+  // Mark the in-loop allocs feeding this loop's target ops so they get hoisted
+  // out before the loop is split. Kept separate from identifyTargetOpsInSCFFor
+  // and invoked only after the caller commits to splitting (target set >= 2),
+  // so a marked alloc always sits under the currently-processed loop -- the
+  // seeding walk in matchAndRewrite is then complete.
+  void markAllocsToHoist(
+      scf::ForOp for_op,
+      SmallVector<llvm::SetVector<Operation *>> &target_ops_sets) const {
+    for (auto &set : target_ops_sets) {
+      for (Operation *o : set) {
+        for (auto operand : o->getOperands()) {
+          if (!isa_and_present<MemRefType>(operand.getType()))
+            continue;
+          auto exec =
+              dyn_cast_if_present<air::ExecuteOp>(operand.getDefiningOp());
+          if (exec && for_op->isProperAncestor(exec))
+            exec->setAttr("hoist_alloc",
+                          mlir::BoolAttr::get(exec->getContext(), true));
+        }
       }
     }
   }
