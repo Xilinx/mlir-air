@@ -47,6 +47,14 @@ jobs:
         with:
           key: ${{ runner.os }}-lintformat-${{ steps.get-submodule-hash.outputs.hash }}
           max-size: 1G
+      # ccache defaults to comparing the compiler by mtime; on ephemeral CI
+      # runners the compiler is reinstalled each run with a fresh mtime, so
+      # every object misses even when the cache restores. Compare by content.
+      - name: Configure ccache
+        shell: bash
+        run: |
+          ccache --set-config=compiler_check=content
+          ccache --set-config=sloppiness=locale,time_macros
 
       - name: Build and Install libxaie
         run: utils/github-clone-build-libxaie.sh
