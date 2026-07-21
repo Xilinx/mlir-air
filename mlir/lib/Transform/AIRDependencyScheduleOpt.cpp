@@ -550,6 +550,15 @@ private:
   }
 };
 
+// An alloc is a hoisting target if it, or its parent air.execute, carries the
+// "hoist_alloc" attribute. Shared by the pattern and its seeding walk so the
+// two never drift apart.
+static bool isMarkedForHoist(memref::AllocOp allocOp) {
+  auto exec = allocOp->getParentOfType<air::ExecuteOp>();
+  return allocOp->hasAttr("hoist_alloc") ||
+         (exec && exec->hasAttr("hoist_alloc"));
+}
+
 struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
@@ -575,8 +584,7 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
     }
 
     // Check if alloc is the target
-    if (!alloc_op->hasAttr("hoist_alloc") &&
-        !alloc_exec->hasAttr("hoist_alloc"))
+    if (!isMarkedForHoist(alloc_op))
       return failure();
 
     // Get parent for loop
@@ -5340,17 +5348,30 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     if (target_ops_sets.size() < 2)
       return failure();
 
-    // If necessary, hoist allocs out of the loops, too.
-    // Scope to the nearest IsolatedFromAbove ancestor to avoid O(N^2) cost
-    // when multiple launches each contain for loops.
-    RewritePatternSet patterns(f.getContext());
-    patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
-    auto *isolatedParent =
-        for_op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
-    if (isolatedParent)
-      (void)applyPatternsGreedily(isolatedParent, std::move(patterns));
-    else
-      (void)applyPatternsGreedily(f, std::move(patterns));
+    // Mark the allocs to hoist only now that we know this loop will be split,
+    // so every marked alloc sits under this loop and the seeding walk below is
+    // complete.
+    markAllocsToHoist(for_op, target_ops_sets);
+
+    // If necessary, hoist allocs out of the loops, too. Seed the driver with
+    // only this loop's marked allocs (not a whole-region walk) and disable
+    // region simplification: this rewrite fires once per scf.for, so a
+    // full-region walk + DCE here is O(N^2) on large multi-loop modules.
+    // Hoisting only moves alloc/dealloc ops; later passes handle cleanup.
+    SmallVector<Operation *> allocsToHoist;
+    for_op.walk([&](memref::AllocOp allocOp) {
+      if (isMarkedForHoist(allocOp))
+        allocsToHoist.push_back(allocOp);
+    });
+    if (!allocsToHoist.empty()) {
+      RewritePatternSet patterns(f.getContext());
+      patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
+      GreedyRewriteConfig hoistCfg;
+      hoistCfg.setRegionSimplificationLevel(
+          GreedySimplifyRegionLevel::Disabled);
+      (void)applyOpPatternsGreedily(allocsToHoist, std::move(patterns),
+                                    hoistCfg);
+    }
 
     // Hoist ops out of each scf.for.
     llvm::SetVector<Operation *> erasedOps;
@@ -5511,20 +5532,27 @@ private:
     };
     for (auto &setVec : target_ops_sets)
       sortSetVectorByOpOrder(setVec);
+  }
 
-    // Check if any memref.alloc needs to be hoisted.
-    for (auto o : candidate_ops) {
-      SmallVector<Value, 2> operand_memrefs;
-      for (auto operand : o->getOperands())
-        if (isa_and_present<MemRefType>(operand.getType()))
-          operand_memrefs.push_back(operand);
-      for (auto memref : operand_memrefs) {
-        auto exec = dyn_cast_if_present<air::ExecuteOp>(memref.getDefiningOp());
-        if (!exec)
-          continue;
-        if (for_op->isProperAncestor(exec))
-          exec->setAttr("hoist_alloc",
-                        mlir::BoolAttr::get(exec->getContext(), true));
+  // Mark the in-loop allocs feeding this loop's target ops so they get hoisted
+  // out before the loop is split. Kept separate from identifyTargetOpsInSCFFor
+  // and invoked only after the caller commits to splitting (target set >= 2),
+  // so a marked alloc always sits under the currently-processed loop -- the
+  // seeding walk in matchAndRewrite is then complete.
+  void markAllocsToHoist(
+      scf::ForOp for_op,
+      SmallVector<llvm::SetVector<Operation *>> &target_ops_sets) const {
+    for (auto &set : target_ops_sets) {
+      for (Operation *o : set) {
+        for (auto operand : o->getOperands()) {
+          if (!isa_and_present<MemRefType>(operand.getType()))
+            continue;
+          auto exec =
+              dyn_cast_if_present<air::ExecuteOp>(operand.getDefiningOp());
+          if (exec && for_op->isProperAncestor(exec))
+            exec->setAttr("hoist_alloc",
+                          mlir::BoolAttr::get(exec->getContext(), true));
+        }
       }
     }
   }

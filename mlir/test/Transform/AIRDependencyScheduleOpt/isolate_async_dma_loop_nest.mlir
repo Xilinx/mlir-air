@@ -1451,3 +1451,79 @@ module {
     return
   }
 }
+
+// -----
+
+// Alloc hoisting is seeded per-loop, not over the whole enclosing region. Two
+// independent launches each have a two-subgraph loop sharing one in-loop alloc,
+// so each loop can only split after its own alloc is hoisted out. Verifies both
+// launches are hoisted independently (regression guard against dropping the
+// other launch's allocs when the seed set is scoped to a single scf.for).
+
+// CHECK-LABEL: @func_multi_launch_hoist
+// CHECK: air.launch
+// CHECK: air.segment
+// CHECK: air.execute
+// CHECK-NEXT: memref.alloc
+// CHECK-NEXT: air.execute_terminator
+// CHECK-NEXT: }
+// CHECK-NEXT: scf.for
+// CHECK-NEXT: air.channel.put
+// CHECK: scf.for
+// CHECK-NEXT: air.channel.put
+// CHECK: air.launch
+// CHECK: air.segment
+// CHECK: air.execute
+// CHECK-NEXT: memref.alloc
+// CHECK-NEXT: air.execute_terminator
+// CHECK-NEXT: }
+// CHECK-NEXT: scf.for
+// CHECK-NEXT: air.channel.put
+// CHECK: scf.for
+// CHECK-NEXT: air.channel.put
+
+module {
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1]
+  air.channel @channel_2 [1, 1]
+  air.channel @channel_3 [1, 1]
+  func.func @func_multi_launch_hoist() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg_0 async  {
+        %c0 = arith.constant 0 : index
+        %c3 = arith.constant 3 : index
+        %c1 = arith.constant 1 : index
+        %2 = air.wait_all async
+        %3 = scf.for %arg0 = %c0 to %c3 step %c1 iter_args(%arg1 = %2) -> (!air.async.token) {
+          %async_token, %results = air.execute -> (memref<48xbf16, 1 : i32>) {
+            %alloc = memref.alloc() : memref<48xbf16, 1 : i32>
+            air.execute_terminator %alloc : memref<48xbf16, 1 : i32>
+          }
+          %4 = air.channel.put async [%async_token]  @channel_0[] (%results[] [] []) {id = 12 : i32} : (memref<48xbf16, 1 : i32>)
+          %5 = air.channel.put async [%async_token]  @channel_1[] (%results[] [] []) {id = 13 : i32} : (memref<48xbf16, 1 : i32>)
+          %wa = air.wait_all async [%4, %5]
+          scf.yield %4 : !air.async.token
+        }
+      }
+    }
+    %10 = air.launch async () in () {
+      %11 = air.segment @seg_1 async  {
+        %c0 = arith.constant 0 : index
+        %c3 = arith.constant 3 : index
+        %c1 = arith.constant 1 : index
+        %12 = air.wait_all async
+        %13 = scf.for %arg0 = %c0 to %c3 step %c1 iter_args(%arg1 = %12) -> (!air.async.token) {
+          %async_token, %results = air.execute -> (memref<48xbf16, 1 : i32>) {
+            %alloc = memref.alloc() : memref<48xbf16, 1 : i32>
+            air.execute_terminator %alloc : memref<48xbf16, 1 : i32>
+          }
+          %14 = air.channel.put async [%async_token]  @channel_2[] (%results[] [] []) {id = 14 : i32} : (memref<48xbf16, 1 : i32>)
+          %15 = air.channel.put async [%async_token]  @channel_3[] (%results[] [] []) {id = 15 : i32} : (memref<48xbf16, 1 : i32>)
+          %wa = air.wait_all async [%14, %15]
+          scf.yield %14 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
