@@ -176,6 +176,23 @@ jobs:
         with:
           submodules: "true"
 
+      # Cross-run ccache. The 8 matrix legs are separate parallel jobs, so they
+      # cannot share a live cache within a run; reuse is run to run. run_id in
+      # the save key writes a fresh immutable entry each run, and restore-keys
+      # drops it so a leg restores its own latest prior cache. The second
+      # fallback, on RTTI alone, lets a cold or evicted leg warm the
+      # Python-independent C++ core from a same-RTTI sibling; ccache content-
+      # hashes preprocessed source, so each leg still rebuilds its own
+      # version-specific Python bindings.
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.ccache-air-wheels
+          key: air-wheels-ccache-${{ matrix.ENABLE_RTTI }}-${{ matrix.python_version }}-${{ github.run_id }}
+          restore-keys: |
+            air-wheels-ccache-${{ matrix.ENABLE_RTTI }}-${{ matrix.python_version }}-
+            air-wheels-ccache-${{ matrix.ENABLE_RTTI }}-
+
       - uses: uraimo/run-on-arch-action@v2.7.0
         name: Build mlir-air
         id: runcmd
@@ -202,7 +219,25 @@ jobs:
               yum install -y python${{ matrix.python_version }} python${{ matrix.python_version }}-devel
             fi
 
-            yum install -y ninja-build clang lld zip unzip binutils
+            yum install -y ninja-build clang lld zip unzip binutils xz
+
+            # ccache lives under the workspace dir, which run-on-arch mounts
+            # into the manylinux container so the cached objects are visible to
+            # the build. Installed as a static binary so it does not depend on
+            # the image's yum repos. compiler_check=content because the
+            # container compiler has an unstable mtime that would otherwise miss
+            # every object; sloppiness stays at locale,time_macros so no stale
+            # object is served.
+            CCACHE_VERSION=4.10.2
+            curl -sSL "https://github.com/ccache/ccache/releases/download/v${CCACHE_VERSION}/ccache-${CCACHE_VERSION}-linux-x86_64.tar.xz" -o /tmp/ccache.tar.xz
+            tar -xf /tmp/ccache.tar.xz -C /tmp
+            cp "/tmp/ccache-${CCACHE_VERSION}-linux-x86_64/ccache" /usr/local/bin/ccache
+            export CCACHE_DIR=${{ github.workspace }}/.ccache-air-wheels
+            mkdir -p "$CCACHE_DIR"
+            ccache --set-config=compiler_check=content
+            ccache --set-config=sloppiness=locale,time_macros
+            ccache --set-config=max_size=2G
+            ccache -z
 
             python${{ matrix.python_version }} -m venv ${{ github.workspace }}/air-venv
             source ${{ github.workspace }}/air-venv/bin/activate
@@ -248,9 +283,13 @@ jobs:
             pushd utils/mlir_air_wheels
 
             pip install setuptools wheel auditwheel patchelf importlib_metadata
+            # Route the compile through ccache (setup.py appends CMAKE_ARGS).
+            export CMAKE_ARGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ${CMAKE_ARGS:-}"
             CIBW_ARCHS=x86_64 pip wheel . -v -w $WHEELHOUSE_DIR --no-build-isolation
 
             popd
+
+            ccache -s
 
             auditwheel repair -w $WHEELHOUSE_DIR/repaired_wheel $WHEELHOUSE_DIR/mlir_air*.whl --plat manylinux_2_35_x86_64 --exclude libmlir_async_runtime.so --exclude libmlir_c_runner_utils.so --exclude libmlir_float16_utils.so --exclude libmlir_runner_utils.so --exclude libmlir_apfloat_wrappers.so
 
