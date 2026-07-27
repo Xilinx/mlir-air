@@ -66,6 +66,7 @@ def build_module(
     num_kv_heads=None,
     causal=False,
     num_heads_per_unroll=2,
+    causal_skip=True,
 ):
     """Build flash attention module with selective Q capture pattern.
 
@@ -86,6 +87,15 @@ def build_module(
             Acts as the physical-column multiplier — physical columns =
             num_heads_per_unroll * num_q_tiles (must be <= 8 on NPU2). Requires
             num_heads % num_heads_per_unroll == 0.
+        causal_skip: Under causal masking, skip the matmul/softmax/PV for
+            fully-future K-blocks (kv_block > q_block) instead of computing them
+            and then masking to -inf. Numerically identical (a fully-masked block
+            contributes exactly exp(-inf)=0), and it reuses the same block
+            indices the mask already computes, so it is correct wherever the mask
+            is. DMA gets/puts stay unconditional (channels balanced); a skipped
+            block leaves the stage's neutral local so the cascade merge is an
+            identity. Saves the wasted block-matmul (grows with sequence length).
+            Default on; no effect when causal=False.
     """
     # Validate
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
@@ -694,7 +704,29 @@ def build_module(
                         g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
                         CallOp([], "zero_fill_g_bf16", [g1d])
 
-                        # 2. dk_chunks loop: K get + matmul (accumulate G)
+                        # causal_skip: precompute this block's (q_block, kv_block)
+                        # so a fully-future block (kv_block > q_block) skips its
+                        # matmul/softmax/PV — the stage's neutral local (init)
+                        # then makes the cascade merge an identity, matching the
+                        # compute-then-mask-to-(-inf) path.
+                        do_compute = None
+                        if causal and causal_skip:
+                            c_cps_i32 = ConstantOp(i32, chunks_per_stage)
+                            ty_i32 = arith.IndexCastOp(i32, ty).result
+                            chunk_i32 = arith.IndexCastOp(i32, chunk_iter).result
+                            kv_base = arith.MulIOp(ty_i32, c_cps_i32)
+                            skip_kv_block = arith.AddIOp(kv_base.result, chunk_i32)
+                            q_base = load(counter_buf, [c0_ctr])
+                            tx_i32 = arith.IndexCastOp(i32, tx).result
+                            skip_q_block = arith.AddIOp(q_base, tx_i32)
+                            do_compute = arith.CmpIOp(
+                                arith.CmpIPredicate.sle,
+                                skip_kv_block.result,
+                                skip_q_block.result,
+                            ).result
+
+                        # 2. dk_chunks loop: K get (kept — balances the memtile
+                        #    relay) + matmul (guarded in causal_skip mode).
                         for dk_c in range(dk_chunks):
                             for s in range(NS):
                                 if_qk_k = affine.AffineIfOp(
@@ -709,7 +741,21 @@ def build_module(
                                     )
                                     affine.AffineYieldOp([])
                             # Matmul Q_dk_slice @ K_dk_slice^T → G (accumulate)
-                            CallOp([], "matmul_a_b_bf16", [q_bufs[dk_c], qk, g1d])
+                            if do_compute is not None:
+                                if_mm = scf.IfOp(do_compute)
+                                with InsertionPoint(if_mm.then_block):
+                                    CallOp(
+                                        [],
+                                        "matmul_a_b_bf16",
+                                        [q_bufs[dk_c], qk, g1d],
+                                    )
+                                    scf.YieldOp([])
+                            else:
+                                CallOp(
+                                    [],
+                                    "matmul_a_b_bf16",
+                                    [q_bufs[dk_c], qk, g1d],
+                                )
 
                         # 3. V get via affine.if per stage (AFTER dk_chunks)
                         #    — 3D index with head dim
@@ -726,51 +772,67 @@ def build_module(
                                 )
                                 affine.AffineYieldOp([])
 
-                        # 4b. Apply causal mask (after matmul, before softmax)
-                        if causal:
-                            c_cps_i32 = ConstantOp(i32, chunks_per_stage)
-                            ty_i32 = arith.IndexCastOp(i32, ty).result
-                            chunk_i32 = arith.IndexCastOp(
-                                i32,
-                                chunk_iter,
-                            ).result
-                            kv_base = arith.MulIOp(ty_i32, c_cps_i32)
-                            kv_block = arith.AddIOp(
-                                kv_base.result,
-                                chunk_i32,
-                            )
-                            q_base = load(counter_buf, [c0_ctr])
-                            tx_i32 = arith.IndexCastOp(i32, tx).result
-                            q_block = arith.AddIOp(q_base, tx_i32)
+                        # 4+5. Causal mask + softmax + PV + accumulate. In
+                        # causal_skip mode the whole block is gated on do_compute
+                        # (past/diagonal only); a future block is left neutral.
+                        def _mask_softmax():
+                            if causal:
+                                if causal_skip:
+                                    q_blk_r = skip_q_block.result
+                                    kv_blk_r = skip_kv_block.result
+                                else:
+                                    c_cps_i32 = ConstantOp(i32, chunks_per_stage)
+                                    ty_i32 = arith.IndexCastOp(i32, ty).result
+                                    chunk_i32 = arith.IndexCastOp(
+                                        i32,
+                                        chunk_iter,
+                                    ).result
+                                    kv_base = arith.MulIOp(ty_i32, c_cps_i32)
+                                    kv_block = arith.AddIOp(
+                                        kv_base.result,
+                                        chunk_i32,
+                                    )
+                                    q_base = load(counter_buf, [c0_ctr])
+                                    tx_i32 = arith.IndexCastOp(i32, tx).result
+                                    q_block = arith.AddIOp(q_base, tx_i32)
+                                    q_blk_r = q_block.result
+                                    kv_blk_r = kv_block.result
+                                CallOp(
+                                    [],
+                                    "apply_causal_mask",
+                                    [g, q_blk_r, kv_blk_r],
+                                )
+                            s_tmp = AllocOp(up_l1_t, [], [])
+                            r_tmp = AllocOp(up_l1_t, [], [])
                             CallOp(
                                 [],
-                                "apply_causal_mask",
-                                [g, q_block.result, kv_block.result],
+                                "fused_softmax",
+                                [g1d, up_buf, s_tmp.result, r_tmp.result],
                             )
+                            CallOp([], "mul_r_gp", [r_tmp.result, gp])
+                            CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+                            c0_i32 = ConstantOp(i32, 0)
+                            CallOp(
+                                [],
+                                "accum_sp_r_s",
+                                [sp_buf, r_tmp.result, s_tmp.result],
+                            )
+                            CallOp(
+                                [],
+                                "vector_copy_32elems",
+                                [c0_i32, s_tmp.result, sp_buf],
+                            )
+                            DeallocOp(s_tmp)
+                            DeallocOp(r_tmp)
 
-                        # 5. Softmax + accumulate
-                        s_tmp = AllocOp(up_l1_t, [], [])
-                        r_tmp = AllocOp(up_l1_t, [], [])
-                        CallOp(
-                            [],
-                            "fused_softmax",
-                            [g1d, up_buf, s_tmp.result, r_tmp.result],
-                        )
-                        CallOp([], "mul_r_gp", [r_tmp.result, gp])
-                        CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
-                        c0_i32 = ConstantOp(i32, 0)
-                        CallOp(
-                            [],
-                            "accum_sp_r_s",
-                            [sp_buf, r_tmp.result, s_tmp.result],
-                        )
-                        CallOp(
-                            [],
-                            "vector_copy_32elems",
-                            [c0_i32, s_tmp.result, sp_buf],
-                        )
-                        DeallocOp(s_tmp)
-                        DeallocOp(r_tmp)
+                        if do_compute is not None:
+                            if_cmp = scf.IfOp(do_compute)
+                            with InsertionPoint(if_cmp.then_block):
+                                _mask_softmax()
+                                scf.YieldOp([])
+                        else:
+                            _mask_softmax()
+
                         yield_([])
 
                     # === CASCADE MERGE (last/middle/first) ===
@@ -1257,6 +1319,15 @@ if __name__ == "__main__":
         help="Enable causal masking (autoregressive attention)",
     )
     parser.add_argument(
+        "--no-causal-skip",
+        action="store_false",
+        dest="causal_skip",
+        default=True,
+        help="Disable the causal block-skip (compute-then-mask every K-block). "
+        "The skip is ON by default under --causal and is numerically identical; "
+        "it just avoids the wasted matmul on fully-future blocks.",
+    )
+    parser.add_argument(
         "--perf-iters",
         type=int,
         default=0,
@@ -1300,6 +1371,7 @@ if __name__ == "__main__":
         num_kv_heads=num_kv_heads,
         causal=causal,
         num_heads_per_unroll=num_heads_per_unroll,
+        causal_skip=args.causal_skip,
     )
 
     if args.print_module_only:
