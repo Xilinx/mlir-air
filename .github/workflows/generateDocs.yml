@@ -121,7 +121,8 @@ jobs:
       # Pull the append-only time series from the durable `perf-history` branch
       # (accumulated by nightlyPerfBenchmark.yml) so generate_perf_history.py can
       # render the perf-history.html chart page. Best-effort: if the branch
-      # doesn't exist yet (before the first nightly), the page is simply omitted.
+      # doesn't exist yet (before the first nightly), no history is fetched and
+      # the generator emits an empty-state page (so the dashboard link is stable).
       - name: Fetch perf history
         continue-on-error: true
         run: |
@@ -129,9 +130,9 @@ jobs:
           if git fetch --depth 1 origin perf-history 2>/dev/null; then
             git show FETCH_HEAD:history.ndjson > /tmp/llmperf_history/history.ndjson \
               && echo "history.ndjson fetched" \
-              || echo "perf-history branch has no history.ndjson; page will be omitted"
+              || echo "perf-history branch has no history.ndjson; empty-state page will be generated"
           else
-            echo "no perf-history branch yet; page will be omitted"
+            echo "no perf-history branch yet; empty-state page will be generated"
           fi
 
       # Build the repo test target in release mode to build and test.
@@ -163,7 +164,7 @@ jobs:
             --output build_release/docs/programming_examples/index.md \
             --base-url https://github.com/Xilinx/mlir-air/tree/main/programming_examples/ \
             --llm-perf /tmp/llmperf/perf.json
-          # Perf history chart page (omitted if no history.ndjson was fetched).
+          # Perf history chart page (empty-state page if no history was fetched).
           python3 programming_examples/generate_perf_history.py \
             --history /tmp/llmperf_history/history.ndjson \
             --output build_release/docs/programming_examples/perf-history.html

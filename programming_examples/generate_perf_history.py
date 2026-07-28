@@ -135,7 +135,9 @@ def _series(rows, models, labels, metric):
                 "pointBorderWidth": 3,
                 "spanGaps": False,
                 "tension": 0.2,
-                "_meta": metas,
+                # Non-reserved key: Chart.js has historically used dataset._meta
+                # internally, so keep our per-point metadata under our own name.
+                "verifyMeta": metas,
             }
         )
     return datasets
@@ -189,7 +191,7 @@ function makeChart(canvasId, datasets, yLabel) {{
         tooltip: {{
           callbacks: {{
             afterLabel: function(item) {{
-              const meta = item.dataset._meta && item.dataset._meta[item.dataIndex];
+              const meta = item.dataset.verifyMeta && item.dataset.verifyMeta[item.dataIndex];
               if (!meta) return '';
               let s = 'commit ' + meta.sha;
               if (meta.verify) s += '  (verify: ' + meta.verify + ')';
@@ -214,8 +216,41 @@ makeChart('decode', DECODE_DATASETS, 'Decode throughput (tok/s) — higher is be
 """
 
 
+EMPTY_TEMPLATE = """\
+<!doctype html>
+<html lang="en-US">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MLIR-AIR — LLM Performance History</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         max-width: 1000px; margin: 0 auto; padding: 24px; color: #1b1f23; }}
+  h1 {{ font-size: 1.6rem; margin-bottom: 4px; }}
+  .sub {{ color: #586069; }}
+  a {{ color: #0366d6; }}
+</style>
+</head>
+<body>
+<p><a href="index.html">&larr; Back to Programming Examples dashboard</a></p>
+<h1>LLM Performance History (NPU2)</h1>
+<p class="sub">No nightly performance history has been recorded yet. Charts will appear here once the
+nightly LLM benchmark has published its first datapoints.</p>
+</body>
+</html>
+"""
+
+
 def generate_html(rows):
-    """Render the full self-contained HTML page from history rows."""
+    """Render the full self-contained HTML page from history rows.
+
+    Always returns a valid page: with no rows it renders an empty-state page so
+    the dashboard's link to perf-history.html never 404s (the link is emitted
+    whenever the benchmark section renders, which can precede the first history
+    write).
+    """
+    if not rows:
+        return EMPTY_TEMPLATE.format()
     labels = sorted({r.get("date") for r in rows if r.get("date")})
     models = _model_order(rows)
     ttft = _series(rows, models, labels, "ttft_ms")
@@ -240,11 +275,9 @@ def main():
     args = ap.parse_args()
 
     rows = load_history(args.history)
-    if not rows:
-        print(f"no history rows at {args.history}; page not generated")
-        return 0
-
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    # Always write a page (empty-state when there are no rows) so the dashboard
+    # link to perf-history.html is stable and never 404s.
     args.output.write_text(generate_html(rows))
     print(f"Generated {args.output} ({len(rows)} rows)")
     return 0

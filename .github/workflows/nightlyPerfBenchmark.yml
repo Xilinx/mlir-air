@@ -290,10 +290,11 @@ jobs:
           PY
 
       # Append this run's datapoints to the durable `perf-history` branch so the
-      # docs build can plot TTFT/decode over time. Idempotent on run_id, so a
-      # re-dispatched nightly won't double-count. Best-effort: never reds the
-      # benchmark job. The nightly concurrency group serializes runs, so there
-      # is no push race on the branch.
+      # docs build can plot TTFT/decode over time. Idempotent on run_id, so
+      # re-running this same workflow run won't double-count (a freshly
+      # dispatched run gets a new run_id and is new data, as intended).
+      # Best-effort: never reds the benchmark job. The nightly concurrency group
+      # serializes runs, so there is no push race on the branch.
       - name: Append perf history
         if: always() && hashFiles('perf.json') != ''
         continue-on-error: true

@@ -7,8 +7,9 @@ The nightly LLM benchmark (nightlyPerfBenchmark.yml) produces a per-run
 line of `history.ndjson` on the durable `perf-history` branch so the docs build
 can plot TTFT / decode throughput over time.
 
-Idempotent: if any row for this run_id already exists, nothing is appended (so
-a re-dispatched or re-run nightly does not double-count).
+Idempotent on run_id: if any row for this run_id already exists, nothing is
+appended, so re-running the *same* workflow run does not double-count. (A newly
+dispatched run gets a fresh run_id and is treated as new data, as intended.)
 
 Usage:
   python3 append_history.py --perf perf.json --history history.ndjson --run-id 123
@@ -42,19 +43,23 @@ def _flat_rows(recs, run_id):
 
 
 def _existing_run_ids(history_path):
-    """Return the set of run_ids already recorded in history.ndjson."""
+    """Return the set of run_ids already recorded in history.ndjson.
+
+    Streamed line-by-line so memory stays bounded as the history grows.
+    """
     ids = set()
     p = Path(history_path)
     if not p.is_file():
         return ids
-    for line in p.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            ids.add(json.loads(line).get("run_id"))
-        except json.JSONDecodeError:
-            continue
+    with p.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ids.add(json.loads(line).get("run_id"))
+            except json.JSONDecodeError:
+                continue
     return ids
 
 
@@ -80,7 +85,13 @@ def main():
     if not perf_path.is_file():
         print(f"no perf.json at {perf_path}; nothing to append")
         return 0
-    recs = json.loads(perf_path.read_text())
+    try:
+        recs = json.loads(perf_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        # Best-effort: a missing/corrupt/partial perf.json should not crash the
+        # CI step (which is itself continue-on-error), just skip this run.
+        print(f"could not read {perf_path} ({e}); nothing to append")
+        return 0
     if not recs:
         print("perf.json is empty; nothing to append")
         return 0
