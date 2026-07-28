@@ -87,21 +87,21 @@ End-to-end LLM inference performance on the AMD Ryzen AI (Krackan Point, NPU2) b
 
 | Model | Context | TTFT (ms) | Decode (tok/s) | Verify |
 |:------|--------:|----------:|---------------:|:------:|
-| [llama32_1b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b/) ([HF](https://huggingface.co/meta-llama/Llama-3.2-1B)) | 2048 | 1340.0 | 8.58 | 🟢 |
-| [llama32_1b_int4](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_int4/) ([HF](https://huggingface.co/amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead)) | 2048 | 1360.0 | 12.43 | 🟢 |
-| [llama32_3b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b/) ([HF](https://huggingface.co/meta-llama/Llama-3.2-3B)) | 2048 | 23290.0 | 4.27 | 🟢 |
-| [qwen25_0_5b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_0_5b/) ([HF](https://huggingface.co/Qwen/Qwen2.5-0.5B)) | 2048 | 1080.0 | 10.45 | 🟢 |
-| [qwen25_1_5b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_1_5b/) ([HF](https://huggingface.co/Qwen/Qwen2.5-1.5B)) | 2048 | 2630.0 | 6.53 | 🟢 |
-| [qwen25_3b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b/) ([HF](https://huggingface.co/Qwen/Qwen2.5-3B)) | 2048 | 4750.0 | 3.77 | 🟢 |
-| [qwen3_0_6b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/) ([HF](https://huggingface.co/Qwen/Qwen3-0.6B)) | 2048 | 1720.0 | 9.41 | 🟢 |
-| [qwen3_1_7b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_1_7b/) ([HF](https://huggingface.co/Qwen/Qwen3-1.7B)) | 2048 | 2490.0 | 5.77 | 🟢 |
-| [smollm2_1_7b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm2_1_7b/) ([HF](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B)) | 2048 | 2420.0 | 5.96 | 🟢 |
+| [llama32_1b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b/) ([HF](https://huggingface.co/meta-llama/Llama-3.2-1B)) | 2048 | 1370.0 | 9.14 | 🟢 |
+| [llama32_1b_int4](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_int4/) ([HF](https://huggingface.co/amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead)) | 2048 | 1320.0 | 16.17 | 🟢 |
+| [llama32_3b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b/) ([HF](https://huggingface.co/meta-llama/Llama-3.2-3B)) | 2048 | 24590.0 | 4.29 | 🟢 |
+| [qwen25_0_5b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_0_5b/) ([HF](https://huggingface.co/Qwen/Qwen2.5-0.5B)) | 2048 | 1020.0 | 10.43 | 🟢 |
+| [qwen25_1_5b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_1_5b/) ([HF](https://huggingface.co/Qwen/Qwen2.5-1.5B)) | 2048 | 2620.0 | 6.58 | 🟢 |
+| [qwen25_3b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b/) ([HF](https://huggingface.co/Qwen/Qwen2.5-3B)) | 2048 | 4750.0 | 3.9 | 🟢 |
+| [qwen3_0_6b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/) ([HF](https://huggingface.co/Qwen/Qwen3-0.6B)) | 2048 | 1790.0 | 9.5 | 🟢 |
+| [qwen3_1_7b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_1_7b/) ([HF](https://huggingface.co/Qwen/Qwen3-1.7B)) | 2048 | 2480.0 | 5.45 | 🟢 |
+| [smollm2_1_7b](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm2_1_7b/) ([HF](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B)) | 2048 | 2260.0 | 6.06 | 🟢 |
 
 🟢 verify passed &nbsp; 🔴 verify failed &nbsp; ⚪ verify skipped &nbsp; — metric not captured (e.g. the model's profile run failed)
 
 📈 [Performance history over time](perf-history.html) — per-nightly TTFT and decode throughput plotted per model.
 
-_Last updated 2026-07-28 · runner amdryzenai5pro340 · mlir-air 57779a1 · mlir-aie 157e8b8 · llvm-aie 21.0.0.2026072801+b123f3d6_
+_Last updated 2026-07-28 · runner amdryzenai5pro340 · mlir-air 9d2fca9 · mlir-aie 157e8b8 · llvm-aie 21.0.0.2026072801+b123f3d6_
 
 
 ## Getting Started

@@ -4,18 +4,66 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MLIR-AIR — LLM Performance History</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
          max-width: 1000px; margin: 0 auto; padding: 24px; color: #1b1f23; }
   h1 { font-size: 1.6rem; margin-bottom: 4px; }
-  .sub { color: #586069; }
+  .sub { color: #586069; margin-top: 0; }
+  .chart-box { margin: 32px 0; }
   a { color: #0366d6; }
+  .legend-note { color: #586069; font-size: 0.85rem; }
 </style>
 </head>
 <body>
 <p><a href="index.html">&larr; Back to Programming Examples dashboard</a></p>
 <h1>LLM Performance History (NPU2)</h1>
-<p class="sub">No nightly performance history has been recorded yet. Charts will appear here once the
-nightly LLM benchmark has published its first datapoints.</p>
+<p class="sub">Per-nightly end-to-end inference performance on the AMD Ryzen AI (Krackan Point, NPU2)
+benchmark runner. Each point is one nightly build, labeled by date; hover to see the commit SHA and
+verify status. A <span style="color:#d32f2f; font-weight:700;">red &#10007; marker</span> flags a nightly
+whose correctness verify failed (the marker shape, not just its color, signals the failure).</p>
+<p class="legend-note">Click a model in a legend to toggle its line.</p>
+
+<div class="chart-box"><canvas id="ttft"></canvas></div>
+<div class="chart-box"><canvas id="decode"></canvas></div>
+
+<script>
+const LABELS = ["2026-07-28"];
+const TTFT_DATASETS = [{"label": "llama32_1b", "data": [1370.0], "borderColor": "#1f77b4", "backgroundColor": "#1f77b4", "pointBackgroundColor": ["#1f77b4"], "pointBorderColor": ["#1f77b4"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "llama32_1b_int4", "data": [1320.0], "borderColor": "#2ca02c", "backgroundColor": "#2ca02c", "pointBackgroundColor": ["#2ca02c"], "pointBorderColor": ["#2ca02c"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "llama32_3b", "data": [24590.0], "borderColor": "#9467bd", "backgroundColor": "#9467bd", "pointBackgroundColor": ["#9467bd"], "pointBorderColor": ["#9467bd"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "qwen25_0_5b", "data": [1020.0], "borderColor": "#17becf", "backgroundColor": "#17becf", "pointBackgroundColor": ["#17becf"], "pointBorderColor": ["#17becf"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "qwen25_1_5b", "data": [2620.0], "borderColor": "#bcbd22", "backgroundColor": "#bcbd22", "pointBackgroundColor": ["#bcbd22"], "pointBorderColor": ["#bcbd22"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "qwen25_3b", "data": [4750.0], "borderColor": "#e377c2", "backgroundColor": "#e377c2", "pointBackgroundColor": ["#e377c2"], "pointBorderColor": ["#e377c2"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "qwen3_0_6b", "data": [1790.0], "borderColor": "#7f7f7f", "backgroundColor": "#7f7f7f", "pointBackgroundColor": ["#7f7f7f"], "pointBorderColor": ["#7f7f7f"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "qwen3_1_7b", "data": [2480.0], "borderColor": "#393b79", "backgroundColor": "#393b79", "pointBackgroundColor": ["#393b79"], "pointBorderColor": ["#393b79"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "smollm2_1_7b", "data": [2260.0], "borderColor": "#1b9e77", "backgroundColor": "#1b9e77", "pointBackgroundColor": ["#1b9e77"], "pointBorderColor": ["#1b9e77"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}];
+const DECODE_DATASETS = [{"label": "llama32_1b", "data": [9.14], "borderColor": "#1f77b4", "backgroundColor": "#1f77b4", "pointBackgroundColor": ["#1f77b4"], "pointBorderColor": ["#1f77b4"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "llama32_1b_int4", "data": [16.17], "borderColor": "#2ca02c", "backgroundColor": "#2ca02c", "pointBackgroundColor": ["#2ca02c"], "pointBorderColor": ["#2ca02c"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "llama32_3b", "data": [4.29], "borderColor": "#9467bd", "backgroundColor": "#9467bd", "pointBackgroundColor": ["#9467bd"], "pointBorderColor": ["#9467bd"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "qwen25_0_5b", "data": [10.43], "borderColor": "#17becf", "backgroundColor": "#17becf", "pointBackgroundColor": ["#17becf"], "pointBorderColor": ["#17becf"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "qwen25_1_5b", "data": [6.58], "borderColor": "#bcbd22", "backgroundColor": "#bcbd22", "pointBackgroundColor": ["#bcbd22"], "pointBorderColor": ["#bcbd22"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "qwen25_3b", "data": [3.9], "borderColor": "#e377c2", "backgroundColor": "#e377c2", "pointBackgroundColor": ["#e377c2"], "pointBorderColor": ["#e377c2"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "qwen3_0_6b", "data": [9.5], "borderColor": "#7f7f7f", "backgroundColor": "#7f7f7f", "pointBackgroundColor": ["#7f7f7f"], "pointBorderColor": ["#7f7f7f"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "qwen3_1_7b", "data": [5.45], "borderColor": "#393b79", "backgroundColor": "#393b79", "pointBackgroundColor": ["#393b79"], "pointBorderColor": ["#393b79"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}, {"label": "smollm2_1_7b", "data": [6.06], "borderColor": "#1b9e77", "backgroundColor": "#1b9e77", "pointBackgroundColor": ["#1b9e77"], "pointBorderColor": ["#1b9e77"], "pointStyle": ["circle"], "pointRadius": [4], "pointHoverRadius": [6], "pointBorderWidth": 3, "spanGaps": false, "tension": 0.2, "verifyMeta": [{"sha": "9d2fca9", "verify": "pass"}]}];
+
+function makeChart(canvasId, datasets, yLabel) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  return new Chart(ctx, {
+    type: 'line',
+    data: { labels: LABELS, datasets: datasets },
+    options: {
+      responsive: true,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        title: { display: true, text: yLabel },
+        tooltip: {
+          callbacks: {
+            afterLabel: function(item) {
+              const meta = item.dataset.verifyMeta && item.dataset.verifyMeta[item.dataIndex];
+              if (!meta) return '';
+              let s = 'commit ' + meta.sha;
+              if (meta.verify) s += '  (verify: ' + meta.verify + ')';
+              return s;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { title: { display: true, text: 'nightly (date)' } },
+        y: { title: { display: true, text: yLabel }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+makeChart('ttft', TTFT_DATASETS, 'TTFT (ms) — lower is better');
+makeChart('decode', DECODE_DATASETS, 'Decode throughput (tok/s) — higher is better');
+</script>
 </body>
 </html>
