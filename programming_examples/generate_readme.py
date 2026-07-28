@@ -606,6 +606,8 @@ End-to-end LLM inference performance on the AMD Ryzen AI (Krackan Point, NPU2) b
 
 \U0001f7e2 verify passed &nbsp; \U0001f534 verify failed &nbsp; ⚪ verify skipped &nbsp; — metric not captured (e.g. the model's profile run failed)
 
+\U0001f4c8 [Performance history over time](perf-history.html) — per-nightly TTFT and decode throughput plotted per model.
+
 _{provenance}_
 
 """
