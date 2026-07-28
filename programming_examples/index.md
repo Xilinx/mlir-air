@@ -99,6 +99,8 @@ End-to-end LLM inference performance on the AMD Ryzen AI (Krackan Point, NPU2) b
 
 🟢 verify passed &nbsp; 🔴 verify failed &nbsp; ⚪ verify skipped &nbsp; — metric not captured (e.g. the model's profile run failed)
 
+📈 [Performance history over time](perf-history.html) — per-nightly TTFT and decode throughput plotted per model.
+
 _Last updated 2026-07-28 · runner amdryzenai5pro340 · mlir-air 57779a1 · mlir-aie 157e8b8 · llvm-aie 21.0.0.2026072801+b123f3d6_
 
 
