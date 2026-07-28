@@ -13,25 +13,28 @@ Work that uses MLIR-AIR should cite the toolchain paper:
 
 > E. Wang, S. Bayliss, A. Bisca, Z. Blair, S. Chowdhary, K. Denolf, J. Fifield,
 > B. Freiberger, E. Hunhoff, P. James-Roxby, J. Lo, J. Melber, S. Neuendorffer,
-> E. Richter, A. Rösti, J. Setoain, G. Singh, E. Taka, P. Vasireddy, Z. Yu,
+> E. Richter, A. Rosti, J. Setoain, G. Singh, E. Taka, P. Vasireddy, Z. Yu,
 > N. Zhang, and J. Zhuang. "From Loop Nests to Silicon: Mapping AI Workloads
-> onto AMD NPUs with MLIR-AIR." arXiv:2510.14871, 2025.
-> <https://arxiv.org/abs/2510.14871>
+> onto AMD NPUs with MLIR-AIR." ACM Transactions on Reconfigurable Technology
+> and Systems (TRETS), 19(2), Article 28, June 2026.
+> <https://doi.org/10.1145/3785670>
 
 ```bibtex
-@article{wang2025mlirair,
-  title   = {From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs
-             with MLIR-AIR},
-  author  = {Wang, Erwei and Bayliss, Samuel and Bisca, Andra and Blair, Zachary
-             and Chowdhary, Sangeeta and Denolf, Kristof and Fifield, Jeff and
-             Freiberger, Brandon and Hunhoff, Erika and James-Roxby, Phil and
-             Lo, Jack and Melber, Joseph and Neuendorffer, Stephen and
-             Richter, Eddie and R{\"o}sti, Andre and Setoain, Javier and
-             Singh, Gagandeep and Taka, Endri and Vasireddy, Pranathi and
-             Yu, Zhewen and Zhang, Niansong and Zhuang, Jinming},
-  journal = {arXiv preprint arXiv:2510.14871},
-  year    = {2025},
-  url     = {https://arxiv.org/abs/2510.14871}
+@article{10.1145/3785670,
+  author     = {Wang, Erwei and Bayliss, Samuel and Bisca, Andra and Blair, Zachary and Chowdhary, Sangeeta and Denolf, Kristof and Fifield, Jeff and Freiberger, Brandon and Hunhoff, Erika and James-Roxby, Phil and Lo, Jack and Melber, Joseph and Neuendorffer, Stephen and Richter, Eddie and Rosti, Andre and Setoain, Javier and Singh, Gagandeep and Taka, Endri and Vasireddy, Pranathi and Yu, Zhewen and Zhang, Niansong and Zhuang, Jinming},
+  title      = {From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs with MLIR-AIR},
+  year       = {2026},
+  issue_date = {June 2026},
+  volume     = {19},
+  number     = {2},
+  issn       = {1936-7406},
+  url        = {https://doi.org/10.1145/3785670},
+  doi        = {10.1145/3785670},
+  journal    = {ACM Trans. Reconfigurable Technol. Syst.},
+  month      = may,
+  articleno  = {28},
+  numpages   = {36},
+  keywords   = {Compiler, dataflow architecture, hardware acceleration, machine learning, reconfigurable technology, spatial architecture.}
 }
 ```
 
