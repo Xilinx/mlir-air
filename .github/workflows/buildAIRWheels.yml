@@ -224,12 +224,14 @@ jobs:
             # ccache lives under the workspace dir, which run-on-arch mounts
             # into the manylinux container so the cached objects are visible to
             # the build. Installed as a static binary so it does not depend on
-            # the image's yum repos. compiler_check=content because the
-            # container compiler has an unstable mtime that would otherwise miss
-            # every object; sloppiness stays at locale,time_macros so no stale
-            # object is served.
+            # the image's yum repos; landing it on PATH is what routes the
+            # compile through it, because the wheel's setup.py adds the CMake
+            # compiler launcher when it finds ccache. compiler_check=content
+            # because the container compiler has an unstable mtime that would
+            # otherwise miss every object; sloppiness stays at
+            # locale,time_macros so no stale object is served.
             CCACHE_VERSION=4.10.2
-            curl -sSL "https://github.com/ccache/ccache/releases/download/v${CCACHE_VERSION}/ccache-${CCACHE_VERSION}-linux-x86_64.tar.xz" -o /tmp/ccache.tar.xz
+            curl -fsSL "https://github.com/ccache/ccache/releases/download/v${CCACHE_VERSION}/ccache-${CCACHE_VERSION}-linux-x86_64.tar.xz" -o /tmp/ccache.tar.xz
             tar -xf /tmp/ccache.tar.xz -C /tmp
             cp "/tmp/ccache-${CCACHE_VERSION}-linux-x86_64/ccache" /usr/local/bin/ccache
             export CCACHE_DIR=${{ github.workspace }}/.ccache-air-wheels
@@ -283,8 +285,6 @@ jobs:
             pushd utils/mlir_air_wheels
 
             pip install setuptools wheel auditwheel patchelf importlib_metadata
-            # Route the compile through ccache (setup.py appends CMAKE_ARGS).
-            export CMAKE_ARGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ${CMAKE_ARGS:-}"
             CIBW_ARCHS=x86_64 pip wheel . -v -w $WHEELHOUSE_DIR --no-build-isolation
 
             popd
