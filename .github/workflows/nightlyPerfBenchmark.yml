@@ -42,8 +42,11 @@ jobs:
     runs-on: amdryzenai5pro340
     # actions: write so the final step can dispatch generateDocs.yml to refresh
     # the GitHub Pages LLM benchmark section with this run's perf.json artifact.
+    # contents: write so the "Append perf history" step can push this run's
+    # datapoints onto the durable `perf-history` branch (the time-series the
+    # perf-history.html chart page is built from).
     permissions:
-      contents: read
+      contents: write
       actions: write
     # Bound total runtime so stuck NPU dispatch/downloads can't occupy the
     # dedicated runner indefinitely. Covers a full build + all models (each
@@ -285,6 +288,48 @@ jobs:
           json.dump(recs, open("perf.json", "w"), indent=2)
           print(json.dumps(recs, indent=2))
           PY
+
+      # Append this run's datapoints to the durable `perf-history` branch so the
+      # docs build can plot TTFT/decode over time. Idempotent on run_id, so
+      # re-running this same workflow run won't double-count (a freshly
+      # dispatched run gets a new run_id and is new data, as intended).
+      # Best-effort: never reds the benchmark job. The nightly concurrency group
+      # serializes runs, so there is no push race on the branch.
+      - name: Append perf history
+        if: always() && hashFiles('perf.json') != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          REPO="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          workdir=$(mktemp -d)
+          if git ls-remote --exit-code --heads "$REPO" perf-history >/dev/null 2>&1; then
+            git clone --branch perf-history --single-branch --depth 50 "$REPO" "$workdir"
+          else
+            # First ever run: create the orphan branch with an empty history.
+            git clone --depth 1 "$REPO" "$workdir"
+            pushd "$workdir"
+            git checkout --orphan perf-history
+            git rm -rf . >/dev/null 2>&1 || true
+            : > history.ndjson
+            popd
+          fi
+          python3 programming_examples/llms/bench/append_history.py \
+            --perf perf.json \
+            --history "$workdir/history.ndjson" \
+            --run-id "${{ github.run_id }}"
+          pushd "$workdir"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add history.ndjson
+            git commit -m "perf-history: nightly ${{ github.sha }} run ${{ github.run_id }}"
+            git push origin HEAD:perf-history
+          else
+            echo "no history change; nothing to push"
+          fi
+          popd
 
       - name: Job summary
         if: always()
