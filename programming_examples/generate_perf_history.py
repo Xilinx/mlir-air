@@ -161,7 +161,7 @@ HTML_TEMPLATE = """\
          max-width: 1000px; margin: 0 auto; padding: 24px; color: #1b1f23; }}
   h1 {{ font-size: 1.6rem; margin-bottom: 4px; }}
   .sub {{ color: #586069; margin-top: 0; }}
-  .chart-box {{ margin: 32px 0; }}
+  .chart-box {{ position: relative; height: 380px; margin: 32px 0; }}
   a {{ color: #0366d6; }}
   .legend-note {{ color: #586069; font-size: 0.85rem; }}
 </style>
@@ -190,6 +190,7 @@ function makeChart(canvasId, datasets, yLabel) {{
     data: {{ labels: LABELS, datasets: datasets }},
     options: {{
       responsive: true,
+      maintainAspectRatio: false,
       interaction: {{ mode: 'nearest', intersect: false }},
       plugins: {{
         title: {{ display: true, text: yLabel }},
@@ -278,6 +279,32 @@ def generate_html(rows, window=DEFAULT_WINDOW):
     )
 
 
+def generate_embed_md(rows, window=DEFAULT_WINDOW):
+    """Render the charts as a Markdown page for embedding in the MkDocs site.
+
+    Reuses the standalone HTML but drops the page-level `<body>` styling,
+    back-link, and duplicate `<h1>` so the charts render inside the Material
+    theme chrome instead of restyling the whole page.
+    """
+    if not rows:
+        return (
+            "# LLM Performance History\n\n"
+            "No nightly performance history has been recorded yet. Charts will "
+            "appear here once the nightly LLM benchmark has published its first "
+            "datapoints.\n"
+        )
+    import re
+
+    html = generate_html(rows, window)
+    style = re.search(r"<style>(.*?)</style>", html, re.S).group(1)
+    style = re.sub(r"\s*body\s*\{.*?\}", "", style, flags=re.S)  # drop body rule
+    cdn = re.search(r'<script src="https://cdn[^>]*></script>', html).group(0)
+    body = re.search(r"<body>(.*?)</body>", html, re.S).group(1)
+    body = re.sub(r'<p><a href="index.html">.*?</a></p>\s*', "", body, flags=re.S)
+    body = re.sub(r"<h1>.*?</h1>\s*", "", body, count=1, flags=re.S)
+    return f"# LLM Performance History\n\n{cdn}\n<style>{style}</style>\n{body}\n"
+
+
 def main():
     ap = argparse.ArgumentParser(description="Generate the LLM perf history page.")
     ap.add_argument("--history", required=True, help="Path to history.ndjson")
@@ -285,7 +312,13 @@ def main():
         "--output",
         type=Path,
         default=SCRIPT_DIR / "perf-history.html",
-        help="Output HTML path (default: programming_examples/perf-history.html)",
+        help="Output path (default: programming_examples/perf-history.html)",
+    )
+    ap.add_argument(
+        "--embed",
+        action="store_true",
+        help="Emit a Markdown page for embedding in the MkDocs site instead of "
+        "a standalone HTML page.",
     )
     ap.add_argument(
         "--window",
@@ -298,9 +331,13 @@ def main():
 
     rows = load_history(args.history)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    # Always write a page (empty-state when there are no rows) so the dashboard
-    # link to perf-history.html is stable and never 404s.
-    args.output.write_text(generate_html(rows, args.window))
+    # Always write a page (empty-state when there are no rows) so the site's
+    # link to this page is stable and never 404s.
+    args.output.write_text(
+        generate_embed_md(rows, args.window)
+        if args.embed
+        else generate_html(rows, args.window)
+    )
     print(f"Generated {args.output} ({len(rows)} rows)")
     return 0
 

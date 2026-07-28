@@ -1,0 +1,129 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# MkDocs + Material configuration for the MLIR-AIR documentation site.
+# Deployed as versioned docs via `mike` from .github/workflows/generateDocs.yml.
+
+site_name: MLIR-AIR
+site_description: >-
+  Compiler infrastructure for mapping AI workloads onto AMD NPUs and Versal AI
+  Engine arrays through MLIR dialects.
+site_author: AMD Advanced Micro Devices
+repo_name: Xilinx/mlir-air
+repo_url: https://github.com/Xilinx/mlir-air
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+# Files that live in docs/ (for GitHub browsing) but are not published pages:
+# the repo README, build files, and the docs intentionally kept off the site.
+exclude_docs: |
+  /README.md
+  Gemfile
+  *.gemspec
+  CMakeLists.txt
+  /aircc.md
+  /AIRRunner.md
+  /trace.md
+  /AIRCorrectnessChecker.md
+  /building.md
+  /buildingVCK5000.md
+  /vck190_microblaze_firmware.md
+  /running.md
+  /testing.md
+
+# Source links (to repo files) and generated pages are handled at build time;
+# don't fail the build on links MkDocs can't resolve statically.
+validation:
+  links:
+    absolute_links: ignore
+    unrecognized_links: ignore
+    not_found: warn
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.copy
+    - toc.follow
+
+extra_css:
+  - assets/css/air.css
+
+extra:
+  version:
+    provider: mike
+    default: latest
+    alias: true
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Xilinx/mlir-air
+      name: mlir-air on GitHub
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - getting_started.md
+    - Ryzen AI (Linux): buildingRyzenLin.md
+    - GPU (Linux): buildingGPU.md
+  - Programming Guide:
+    - programming_guide.md
+    - Compute Model: AIRComputeModel.md
+    - Async Concurrency: AIRAsyncConcurrency.md
+    - GEMM Case Study: GEMMCaseStudy.md
+  - Programming Examples: programming_examples/index.md
+  - LLMs on NPU:
+    - llms/index.md
+    - Performance History: llms/perf-history.md
+  - Official AI Skills: ai_skills.md
+  - MLIR Reference:
+    - mlir_reference.md
+    - AIR Dialect: AIRDialect.md
+    - AIRRt Dialect: AIRRtDialect.md
+    - Conversion Passes: AIRConversionPasses.md
+    - Transform Passes: AIRTransformPasses.md
+    - Transform Ops: AIRTransformOps.md
+  - Used in / Cited in: used_in.md
