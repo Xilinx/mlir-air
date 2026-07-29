@@ -12,10 +12,10 @@ on:
 jobs:
   build-docs:
     name: Generate Documentation
-    runs-on: ubuntu-22.04    
-    
-    # contents: write for the Pages deployment; actions: read to download the
-    # latest nightly LLM perf artifact from nightlyPerfBenchmark.yml.
+    runs-on: ubuntu-22.04
+
+    # contents: write for the mike/Pages deployment (pushes to gh-pages);
+    # actions: read to download the latest nightly LLM perf artifact.
     permissions:
       contents: write
       actions: read
@@ -24,12 +24,12 @@ jobs:
       - name: Configure Environment
         run: echo "$GITHUB_WORKSPACE/llvm/install/bin" >> $GITHUB_PATH
 
-      # Clone the repo and its submodules. Do shallow clone to save clone
-      # time.
+      # mike needs the full gh-pages history to update versions.json, so fetch
+      # all history (not a shallow clone).
       - name: Get repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
           submodules: "true"
 
       - uses: actions/setup-python@v5
@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build clang lld
-      
+
       - name: Install Ninja
         uses: llvm/actions/install-ninja@55d844821959226fab4911f96f37071c1d4c3268
 
@@ -84,59 +84,11 @@ jobs:
 
           utils/github-build-mlir-aie.sh
 
-      # Pull perf.json from the most recent nightly LLM benchmark that produced
-      # an artifact so generate_readme.py can render the "Nightly LLM Benchmark"
-      # section. We intentionally do NOT filter on run conclusion: a run where a
-      # model failed verify goes red but still uploads a perf.json (if:always),
-      # and that partial/failed state is exactly what we want on the dashboard —
-      # filtering to success-only would instead show stale passing data and hide
-      # the failure. Runs that died before producing an artifact (e.g. build
-      # broke) are skipped in favor of the next one. Never fails the docs build:
-      # if nothing is downloadable, the section is simply omitted.
-      - name: Fetch latest nightly LLM perf
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          for RID in $(gh run list --repo ${{ github.repository }} \
-              --workflow nightlyPerfBenchmark.yml -L 8 \
-              --json databaseId --jq '.[].databaseId'); do
-            echo "Trying perf artifact from nightly run $RID..."
-            # Fresh dir each attempt so a prior partial download can't leave a
-            # stale perf.json behind.
-            rm -rf /tmp/llmperf
-            gh run download "$RID" --repo ${{ github.repository }} \
-              --name "perf-$RID" --dir /tmp/llmperf 2>/dev/null || true
-            # Only accept a run whose artifact actually contains perf.json (an
-            # upload could exist without it if the combine step failed).
-            if [ -f /tmp/llmperf/perf.json ]; then
-              echo "Using perf.json from run $RID"
-              break
-            fi
-          done
-          test -f /tmp/llmperf/perf.json \
-            && echo "perf.json fetched" \
-            || echo "no nightly perf artifact with perf.json available; LLM section will be omitted"
-
-      # Pull the append-only time series from the durable `perf-history` branch
-      # (accumulated by nightlyPerfBenchmark.yml) so generate_perf_history.py can
-      # render the perf-history.html chart page. Best-effort: if the branch
-      # doesn't exist yet (before the first nightly), no history is fetched and
-      # the generator emits an empty-state page (so the dashboard link is stable).
-      - name: Fetch perf history
-        continue-on-error: true
-        run: |
-          mkdir -p /tmp/llmperf_history
-          if git fetch --depth 1 origin perf-history 2>/dev/null; then
-            git show FETCH_HEAD:history.ndjson > /tmp/llmperf_history/history.ndjson \
-              && echo "history.ndjson fetched" \
-              || echo "perf-history branch has no history.ndjson; empty-state page will be generated"
-          else
-            echo "no perf-history branch yet; empty-state page will be generated"
-          fi
-
-      # Build the repo test target in release mode to build and test.
-      - name: Build Docs
+      # Generate the tblgen dialect/pass reference pages (AIRDialect.md,
+      # AIRRtDialect.md, AIRConversionPasses.md, AIRTransformPasses.md,
+      # AIRTransformOps.md) via `make docs`, then copy them into the MkDocs
+      # docs tree so the "MLIR Reference" nav entries resolve.
+      - name: Build dialect/pass reference docs
         run: |
           mkdir build_release
           pushd build_release
@@ -152,37 +104,96 @@ jobs:
             -DAIR_BUILD_RUNTIME=OFF
           make docs
           popd
-          cp -r docs/* build_release/docs
-          for file in `find platforms/xilinx* -maxdepth 1 -name 'README.md'`
-          do
-            platform=`echo $file | cut -d'/' -f2`
-            mkdir -p build_release/docs/platforms/$platform
-            cp platforms/$platform/*.md build_release/docs/platforms/$platform
+          cp build_release/docs/*.md docs/ 2>/dev/null || true
+          # These pages are referenced by the "MLIR Reference" nav in mkdocs.yml;
+          # fail loudly here rather than letting mike deploy a site with broken
+          # nav entries that are harder to diagnose later.
+          missing=""
+          for f in AIRDialect AIRRtDialect AIRConversionPasses AIRTransformPasses AIRTransformOps; do
+            test -f "docs/$f.md" || missing="$missing $f.md"
           done
-          mkdir -p build_release/docs/programming_examples
-          python3 programming_examples/generate_readme.py \
-            --output build_release/docs/programming_examples/index.md \
-            --base-url https://github.com/Xilinx/mlir-air/tree/main/programming_examples/ \
-            --llm-perf /tmp/llmperf/perf.json
-          # Perf history chart page (empty-state page if no history was fetched).
-          python3 programming_examples/generate_perf_history.py \
-            --history /tmp/llmperf_history/history.ndjson \
-            --output build_release/docs/programming_examples/perf-history.html
+          if [ -n "$missing" ]; then
+            echo "ERROR: tblgen reference docs not generated:$missing" >&2
+            exit 1
+          fi
 
-      - name: Save LLVM Version
+      # Pull perf.json from the most recent nightly LLM benchmark that produced
+      # an artifact so generate_readme.py can render the LLM benchmark table. We
+      # intentionally do NOT filter on run conclusion: a run where a model failed
+      # verify still uploads a perf.json (if:always), and that partial/failed
+      # state is exactly what we want on the dashboard. Best-effort.
+      - name: Fetch latest nightly LLM perf
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for RID in $(gh run list --repo ${{ github.repository }} \
+              --workflow nightlyPerfBenchmark.yml -L 8 \
+              --json databaseId --jq '.[].databaseId'); do
+            echo "Trying perf artifact from nightly run $RID..."
+            rm -rf /tmp/llmperf
+            gh run download "$RID" --repo ${{ github.repository }} \
+              --name "perf-$RID" --dir /tmp/llmperf 2>/dev/null || true
+            if [ -f /tmp/llmperf/perf.json ]; then
+              echo "Using perf.json from run $RID"
+              break
+            fi
+          done
+          test -f /tmp/llmperf/perf.json \
+            && echo "perf.json fetched" \
+            || echo "no nightly perf artifact with perf.json available"
+
+      # Pull the append-only time series from the durable `perf-history` branch
+      # (accumulated by nightlyPerfBenchmark.yml). Best-effort: if the branch
+      # doesn't exist yet, no history is fetched and the generator emits an
+      # empty-state page.
+      - name: Fetch perf history
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/llmperf_history
+          if git fetch --depth 1 origin perf-history 2>/dev/null; then
+            git show FETCH_HEAD:history.ndjson > /tmp/llmperf_history/history.ndjson \
+              && echo "history.ndjson fetched" \
+              || echo "perf-history branch has no history.ndjson; empty-state page"
+          else
+            echo "no perf-history branch yet; empty-state page"
+          fi
+
+      # Generate the CI-produced MkDocs pages into the docs tree:
+      #   - Operator Dashboard (operators only)
+      #   - LLMs on NPU overview (live nightly benchmark table)
+      #   - LLM Performance History (charts, embedded for Material)
+      - name: Generate dashboard pages
+        run: |
+          BASE=https://github.com/Xilinx/mlir-air/tree/main/programming_examples/
+          mkdir -p docs/programming_examples docs/llms
+          python3 programming_examples/generate_readme.py \
+            --section operators --base-url "$BASE" \
+            --output docs/programming_examples/index.md
+          python3 programming_examples/generate_readme.py \
+            --section llm --base-url "$BASE" \
+            --llm-perf /tmp/llmperf/perf.json \
+            --output docs/llms/index.md
+          python3 programming_examples/generate_perf_history.py \
+            --embed --history /tmp/llmperf_history/history.ndjson \
+            --output docs/llms/perf-history.md
+
+      - name: Save build info
         run: |
           LLVM_VER="${{ steps.build-aie.outputs.LLVM_PROJECT_VERSION }}"
           AIE_VER="${{ steps.build-aie.outputs.MLIR_AIE_COMMIT }}"
-          
-          echo "{" > ./build_release/docs/build_info.json
-          echo "llvm-version: \"${LLVM_VER}\"," >> ./build_release/docs/build_info.json
-          echo "mlir-aie-version: \"${AIE_VER}\"," >> ./build_release/docs/build_info.json
-          echo "}" > ./build_release/docs/build_info.json
+          printf '{\n  "llvm-version": "%s",\n  "mlir-aie-version": "%s"\n}\n' \
+            "$LLVM_VER" "$AIE_VER" > docs/build_info.json
 
-      - name: Publish to github-pages
-        uses: peaceiris/actions-gh-pages@v3.6.1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./build_release/docs
-          enable_jekyll: true
+      - name: Install MkDocs
+        run: pip install -r docs/requirements-mkdocs.txt
 
+      # Deploy the versioned MkDocs site to gh-pages with mike. main-branch
+      # pushes publish the "dev" docs and alias them "latest" so the site root
+      # (which redirects to the default) always resolves.
+      - name: Deploy with mike
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mike deploy --push --update-aliases dev latest
+          mike set-default --push latest
