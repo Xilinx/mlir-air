@@ -4188,20 +4188,36 @@ public:
     // (e.g. a per-row multicast of a broadcast channel), which that helper
     // erases while results #1.. still have uses. Detect that case so the NFL
     // merge is skipped for such channels (leaving them un-multiplexed, which is
-    // correct -- fusion is only an optimization).
-    auto opInMultiResultIfOp = [](air::ChannelOp chan) -> bool {
+    // correct -- fusion is only an optimization). Scan ALL enclosing scf.if
+    // ancestors (not just the nearest), and memoize per channel since this runs
+    // inside the O(N^2) channel-pair loop below.
+    llvm::DenseMap<Operation *, bool> multiResultIfMemo;
+    auto opInMultiResultIfOp =
+        [&multiResultIfMemo](air::ChannelOp chan) -> bool {
+      auto it = multiResultIfMemo.find(chan.getOperation());
+      if (it != multiResultIfMemo.end())
+        return it->second;
       auto inMultiResultIf = [](Operation *op) -> bool {
-        if (auto ifOp = op->getParentOfType<scf::IfOp>())
-          return ifOp->getNumResults() > 1;
+        for (Operation *p = op->getParentOp(); p; p = p->getParentOp())
+          if (auto ifOp = dyn_cast<scf::IfOp>(p))
+            if (ifOp->getNumResults() > 1)
+              return true;
         return false;
       };
+      bool res = false;
       for (auto p : air::getChannelPutOpThroughSymbol(chan))
-        if (inMultiResultIf(p))
-          return true;
-      for (auto g : air::getChannelGetOpThroughSymbol(chan))
-        if (inMultiResultIf(g))
-          return true;
-      return false;
+        if (inMultiResultIf(p)) {
+          res = true;
+          break;
+        }
+      if (!res)
+        for (auto g : air::getChannelGetOpThroughSymbol(chan))
+          if (inMultiResultIf(g)) {
+            res = true;
+            break;
+          }
+      multiResultIfMemo[chan.getOperation()] = res;
+      return res;
     };
 
     // Identify mergeable channel pairs and classify fusion type.
