@@ -4182,6 +4182,28 @@ public:
     std::map<air::ChannelOp, air::ChannelOp> chan_merge_map;
     std::vector<std::pair<air::ChannelOp, air::ChannelOp>> nfl_merge_pairs;
 
+    // wrapRegionsWithForLoops (used by the NFL merge below) can only wrap a
+    // region whose parent op yields a single async token. Broadcast
+    // specialization can place several channel puts in one multi-result scf.if
+    // (e.g. a per-row multicast of a broadcast channel), which that helper
+    // erases while results #1.. still have uses. Detect that case so the NFL
+    // merge is skipped for such channels (leaving them un-multiplexed, which is
+    // correct -- fusion is only an optimization).
+    auto opInMultiResultIfOp = [](air::ChannelOp chan) -> bool {
+      auto inMultiResultIf = [](Operation *op) -> bool {
+        if (auto ifOp = op->getParentOfType<scf::IfOp>())
+          return ifOp->getNumResults() > 1;
+        return false;
+      };
+      for (auto p : air::getChannelPutOpThroughSymbol(chan))
+        if (inMultiResultIf(p))
+          return true;
+      for (auto g : air::getChannelGetOpThroughSymbol(chan))
+        if (inMultiResultIf(g))
+          return true;
+      return false;
+    };
+
     // Identify mergeable channel pairs and classify fusion type.
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
@@ -4201,7 +4223,10 @@ public:
           chan_merge_map[chanB] = chanA;
         } else if (mergeType == "NFL") {
           // Case 2: Fuse channels into a new loop (requires creating an
-          // scf.for).
+          // scf.for). Skip if either channel's ops sit inside a multi-result
+          // scf.if, which wrapRegionsWithForLoops cannot safely wrap.
+          if (opInMultiResultIfOp(chanA) || opInMultiResultIfOp(chanB))
+            continue;
           chan_merge_map[chanB] = chanA;
           nfl_merge_pairs.push_back(std::make_pair(chanA, chanB));
         }
