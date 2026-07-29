@@ -1958,6 +1958,31 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
         return t;
       }
     }
+    // Circuit (non-packet) S2MM: collapse memcpy ops of the SAME logical flow
+    // (same channel declaration + same constant bundle indices) onto ONE
+    // physical S2MM channel, emitted as sequential BD tasks. Without this,
+    // distinct ops of one flow (e.g. an L2 buffer re-filled at one endpoint
+    // across loop iterations) round-robin onto separate physical channels,
+    // wasting the memtile's limited DMA channels. Distinct sources still get
+    // distinct channels (isSamePacketFlowEndpoint requires matching indices),
+    // mirroring the packet-flow S2MM rule above. Never collapse dedicated
+    // channels.
+    if (!isPacketFlowOp && !isMM2S.value() &&
+        !memcpyIsDedicatedChannel(memcpyOp) && t.foundAlloc(tile) &&
+        t.foundSamePacketFlowInTile(tile, memcpyOp)) {
+      bool tDedicated = false;
+      for (auto o : t.memcpyOps) {
+        auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
+        if (existingMc && memcpyIsDedicatedChannel(existingMc)) {
+          tDedicated = true;
+          break;
+        }
+      }
+      if (!tDedicated) {
+        t.memcpyOps.push_back(memcpyOp.getOperation());
+        return t;
+      }
+    }
   }
   // Need to allocate a new one. TileLike.getNumSourceConnections /
   // getNumDestConnections is interface-defined and works for both physical
