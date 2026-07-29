@@ -7292,9 +7292,18 @@ private:
         // double-buffered awaits (backpressure) for these lockstep-coupled
         // shim feeds.
         launch.walk([&](Operation *op) {
-          if (isa<air::ChannelPutOp, air::ChannelGetOp>(op))
-            op->setAttr(air::attrs::PreserveShimDmaOrder,
-                        mlir::UnitAttr::get(op->getContext()));
+          if (!isa<air::ChannelPutOp, air::ChannelGetOp>(op))
+            return;
+          // Per-op opt-out: a feed explicitly marked air.shim_feed_no_pace is
+          // NOT lockstep-coupled to its siblings, so it must stay out of the
+          // preserve marker's bounded double-buffered pacing (it lowers to a
+          // fire-and-free MM2S feed instead). It still benefits from the
+          // launch's no-fold guarantee (the early return below skips
+          // per-channel BD folding for the whole launch region).
+          if (op->hasAttr(air::attrs::ShimFeedNoPace))
+            return;
+          op->setAttr(air::attrs::PreserveShimDmaOrder,
+                      mlir::UnitAttr::get(op->getContext()));
         });
         return;
       }
