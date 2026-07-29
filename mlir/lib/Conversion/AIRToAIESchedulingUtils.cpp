@@ -925,8 +925,8 @@ bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(
 
 // Same-logical-flow test: same channel declaration and same constant bundle
 // indices. A non-constant index cannot be proven equal, so it is distinct.
-static bool isSamePacketFlowEndpoint(air::MemcpyInterface a,
-                                     air::MemcpyInterface b) {
+static bool isSameLogicalFlowEndpoint(air::MemcpyInterface a,
+                                      air::MemcpyInterface b) {
   auto chanA = dyn_cast_if_present<air::ChannelInterface>(a.getOperation());
   auto chanB = dyn_cast_if_present<air::ChannelInterface>(b.getOperation());
   if (!chanA || !chanB)
@@ -947,13 +947,13 @@ static bool isSamePacketFlowEndpoint(air::MemcpyInterface a,
   return true;
 }
 
-bool xilinx::air::allocation_info_t::foundSamePacketFlowInTile(
+bool xilinx::air::allocation_info_t::foundSameLogicalFlowInTile(
     AIE::TileLike tile, air::MemcpyInterface memcpyOp) {
   if (!foundAlloc(tile))
     return false;
   for (auto o : memcpyOps) {
     auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
-    if (existingMc && isSamePacketFlowEndpoint(existingMc, memcpyOp))
+    if (existingMc && isSameLogicalFlowEndpoint(existingMc, memcpyOp))
       return true;
   }
   return false;
@@ -1952,7 +1952,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       }
       bool canCollapse = !memcpyIsDedicatedChannel(memcpyOp) && !tDedicated;
       if (canCollapse && !isMM2S.value())
-        canCollapse = t.foundSamePacketFlowInTile(tile, memcpyOp);
+        canCollapse = t.foundSameLogicalFlowInTile(tile, memcpyOp);
       if (canCollapse) {
         t.memcpyOps.push_back(memcpyOp.getOperation());
         return t;
@@ -1964,12 +1964,12 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     // distinct ops of one flow (e.g. an L2 buffer re-filled at one endpoint
     // across loop iterations) round-robin onto separate physical channels,
     // wasting the memtile's limited DMA channels. Distinct sources still get
-    // distinct channels (isSamePacketFlowEndpoint requires matching indices),
+    // distinct channels (isSameLogicalFlowEndpoint requires matching indices),
     // mirroring the packet-flow S2MM rule above. Never collapse dedicated
     // channels.
     if (!isPacketFlowOp && !isMM2S.value() &&
         !memcpyIsDedicatedChannel(memcpyOp) && t.foundAlloc(tile) &&
-        t.foundSamePacketFlowInTile(tile, memcpyOp)) {
+        t.foundSameLogicalFlowInTile(tile, memcpyOp)) {
       bool tDedicated = false;
       for (auto o : t.memcpyOps) {
         auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
