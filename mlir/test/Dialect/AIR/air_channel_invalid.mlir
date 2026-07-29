@@ -179,6 +179,60 @@ air.channel @refeed_ok [1, 1] {air.refeed_count = 4 : i32}
 
 // -----
 
+// A per-emission air.refeed_count override on a put is an authoritative carrier
+// (getRefeedCount honors it), so it is validated the same as the channel-level
+// count: zero is rejected.
+air.channel @refeed_op_zero [1, 1]
+func.func @channel_put_refeed_zero(%m: memref<64xi32>) {
+  // expected-error @+1 {{'air.channel.put' op "air.refeed_count" (0) must be in [1, INT32_MAX]}}
+  air.channel.put @refeed_op_zero[] (%m[] [] []) {air.refeed_count = 0 : i32} : (memref<64xi32>)
+  return
+}
+
+// -----
+
+// Per-emission override on a put that overflows the 32-bit lock range is
+// rejected (would silently deadlock the DMA self-loop otherwise).
+air.channel @refeed_op_huge [1, 1]
+func.func @channel_put_refeed_huge(%m: memref<64xi32>) {
+  // expected-error @+1 {{'air.channel.put' op "air.refeed_count" (4294967296) must be in [1, INT32_MAX]}}
+  air.channel.put @refeed_op_huge[] (%m[] [] []) {air.refeed_count = 4294967296 : i64} : (memref<64xi32>)
+  return
+}
+
+// -----
+
+// Non-integer per-emission override on a put is rejected (getRefeedCount would
+// otherwise fall through and silently ignore the override).
+air.channel @refeed_op_str [1, 1]
+func.func @channel_put_refeed_str(%m: memref<64xi32>) {
+  // expected-error @+1 {{'air.channel.put' op "air.refeed_count" must be an integer attribute}}
+  air.channel.put @refeed_op_str[] (%m[] [] []) {air.refeed_count = "4"} : (memref<64xi32>)
+  return
+}
+
+// -----
+
+// Per-emission override on a get is validated too: negative is rejected.
+air.channel @refeed_op_get_neg [1, 1]
+func.func @channel_get_refeed_neg(%m: memref<64xi32>) {
+  // expected-error @+1 {{'air.channel.get' op "air.refeed_count" (-2) must be in [1, INT32_MAX]}}
+  air.channel.get @refeed_op_get_neg[] (%m[] [] []) {air.refeed_count = -2 : i32} : (memref<64xi32>)
+  return
+}
+
+// -----
+
+// Valid per-emission override of 1 (disables a channel's re-feed default on
+// this emission - positive test, should pass).
+air.channel @refeed_op_ok [1, 1] {air.refeed_count = 4 : i32}
+func.func @channel_put_refeed_ovr_ok(%m: memref<64xi32>) {
+  air.channel.put @refeed_op_ok[] (%m[] [] []) {air.refeed_count = 1 : i32} : (memref<64xi32>)
+  return
+}
+
+// -----
+
 // Test: packet_ids on a non-packet channel is rejected.
 // expected-error @+1 {{'air.channel' op "packet_ids" is only valid on a "npu_dma_packet" channel}}
 air.channel @pids_wrong_type [] {channel_type = "npu_dma_stream", packet_ids = [1, 2]}

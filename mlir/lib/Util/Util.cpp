@@ -704,9 +704,14 @@ int64_t air::getRefeedCount(air::ChannelInterface op) {
   if (!op)
     return 1;
   // Per-emission override on the put/get takes precedence over the
-  // channel-level declaration.
-  if (int64_t n = getRefeedCount(op.getOperation()); n > 1)
-    return n;
+  // channel-level declaration. An EXPLICIT per-emission integer attribute wins
+  // for ANY value (including 1), so a shared channel's re-feed default can be
+  // locally disabled on a specific emission (e.g. a value-1 re-broadcast that
+  // must not inherit the channel's count). Require an IntegerAttr (not just
+  // hasAttr) so a malformed/wrong-typed attribute falls through to the channel
+  // declaration rather than silently disabling the re-feed.
+  if (op.getOperation()->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
+    return getRefeedCount(op.getOperation());
   return getRefeedCount(getChannelDeclarationThroughSymbol(op).getOperation());
 }
 

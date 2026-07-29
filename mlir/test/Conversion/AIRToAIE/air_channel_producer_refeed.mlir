@@ -203,6 +203,51 @@ func.func @mt_refeed_independent(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
 
 // -----
 
+// Per-emission override: the channel declares air.refeed_count=5 but the
+// producer put sets air.refeed_count=1, which wins for ANY value (not only
+// >1). The override disables the channel's re-feed on this emission, so the
+// producing core release stays 1 and NO lock inits to / acquires / releases 5
+// (the channel default). A regression that only honored per-op overrides >1
+// would fall back to the channel's 5 and re-introduce the 5-credit locks. 5 is
+// unique to this file, so these CHECK-NOTs are unambiguous.
+
+// CHECK-LABEL: aie.device
+// CHECK-NOT: {init = 5 : i32}
+// CHECK-NOT: AcquireGreaterEqual, 5
+// CHECK-NOT: Release, 5
+
+#set_ovr = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
+air.channel @channel_ovr [1, 1] {air.refeed_count = 5 : i32}
+func.func @refeed_override() {
+  %c1 = arith.constant 1 : index
+  %0 = air.launch async (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) {
+    %1 = air.segment async {
+      %c2 = arith.constant 2 : index
+      %c1_0 = arith.constant 1 : index
+      %2 = air.herd @herd_0 async tile (%arg8, %arg9) in (%arg10=%c1_0, %arg11=%c2) {
+        %c0 = arith.constant 0 : index
+        %async_token_6, %results_7 = air.execute -> (memref<32x32xbf16, 2>) {
+          %alloc = memref.alloc() : memref<32x32xbf16, 2>
+          air.execute_terminator %alloc : memref<32x32xbf16, 2>
+        }
+        %3 = affine.if #set_ovr()[%arg8, %arg9] -> !air.async.token {
+          %4 = air.channel.put async [%async_token_6]  @channel_ovr[] (%results_7[] [] []) {air.refeed_count = 1 : i32} : (memref<32x32xbf16, 2>)
+          affine.yield %4 : !air.async.token
+        } else {
+          %4 = air.channel.get async [%async_token_6]  @channel_ovr[] (%results_7[] [] []) : (memref<32x32xbf16, 2>)
+          affine.yield %4 : !air.async.token
+        }
+        %async_token_8 = air.execute [%3] {
+          memref.dealloc %results_7 : memref<32x32xbf16, 2>
+        }
+      }
+    }
+  }
+  return
+}
+
+// -----
+
 // Without air.refeed_count the producing core release stays 1 (no re-feed),
 // the buf-free acquire stays 1, and no lock inits to 4. (This section is last
 // so its CHECK-NOT window is not entered by the positive sections above.)

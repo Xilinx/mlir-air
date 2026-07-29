@@ -3258,9 +3258,33 @@ LogicalResult air::ChannelPutOp::getResultTilePosition(
   return success();
 }
 
+// Validate an air.refeed_count attribute (single-buffer count-free
+// re-broadcast). Legal on the channel declaration and as a per-emission
+// override on a channel put/get; getRefeedCount reads either carrier. The count
+// sizes 32-bit AIE semaphore locks, so it must be a positive integer in
+// [1, INT32_MAX] -- reject a malformed value here rather than silently
+// narrowing it downstream. No-op when the attribute is absent.
+static LogicalResult verifyRefeedCountAttr(Operation *op) {
+  auto rc = op->getAttr(air::attrs::RefeedCount);
+  if (!rc)
+    return success();
+  auto rcInt = dyn_cast<IntegerAttr>(rc);
+  if (!rcInt)
+    return op->emitOpError()
+           << "\"" << air::attrs::RefeedCount << "\" must be an integer "
+           << "attribute";
+  if (rcInt.getInt() < 1 ||
+      rcInt.getInt() > std::numeric_limits<int32_t>::max())
+    return op->emitOpError() << "\"" << air::attrs::RefeedCount << "\" ("
+                             << rcInt.getInt() << ") must be in [1, INT32_MAX]";
+  return success();
+}
+
 LogicalResult air::ChannelPutOp::verify() {
   if (failed(verifySizesStridesRank(getOperation(), getSrcSizes(),
                                     getSrcStrides(), "src")))
+    return failure();
+  if (failed(verifyRefeedCountAttr(getOperation())))
     return failure();
 
   // Channel bundle indices must not be temporal loop induction variables.
@@ -3361,6 +3385,8 @@ LogicalResult air::ChannelGetOp::getResultTilePosition(
 LogicalResult air::ChannelGetOp::verify() {
   if (failed(verifySizesStridesRank(getOperation(), getDstSizes(),
                                     getDstStrides(), "dst")))
+    return failure();
+  if (failed(verifyRefeedCountAttr(getOperation())))
     return failure();
 
   // Channel bundle indices must not be temporal loop induction variables.
@@ -3475,19 +3501,10 @@ LogicalResult air::ChannelOp::verify() {
 
   // air.refeed_count (single-buffer count-free re-broadcast) must be a positive
   // integer count of re-sends. The channel declaration is its authoritative
-  // carrier.
-  if (auto rc = (*this)->getAttr(attrs::RefeedCount)) {
-    auto rcInt = dyn_cast<IntegerAttr>(rc);
-    if (!rcInt)
-      return emitOpError() << "\"" << attrs::RefeedCount
-                           << "\" must be an integer attribute";
-    // The count sizes 32-bit AIE semaphore locks; reject values that would not
-    // fit so a malformed count is caught here rather than silently narrowed.
-    if (rcInt.getInt() < 1 ||
-        rcInt.getInt() > std::numeric_limits<int32_t>::max())
-      return emitOpError() << "\"" << attrs::RefeedCount << "\" ("
-                           << rcInt.getInt() << ") must be in [1, INT32_MAX]";
-  }
+  // carrier; a put/get may also carry a per-emission override (validated the
+  // same way in its own verifier).
+  if (failed(verifyRefeedCountAttr(getOperation())))
+    return failure();
 
   // packet_ids pins explicit switchbox routing ids; only meaningful for
   // packet-switched channels. Each id must be a 5-bit AIE pkt_id and unique.
