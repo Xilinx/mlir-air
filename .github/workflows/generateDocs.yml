@@ -105,6 +105,17 @@ jobs:
           make docs
           popd
           cp build_release/docs/*.md docs/ 2>/dev/null || true
+          # These pages are referenced by the "MLIR Reference" nav in mkdocs.yml;
+          # fail loudly here rather than letting mike deploy a site with broken
+          # nav entries that are harder to diagnose later.
+          missing=""
+          for f in AIRDialect AIRRtDialect AIRConversionPasses AIRTransformPasses AIRTransformOps; do
+            test -f "docs/$f.md" || missing="$missing $f.md"
+          done
+          if [ -n "$missing" ]; then
+            echo "ERROR: tblgen reference docs not generated:$missing" >&2
+            exit 1
+          fi
 
       # Pull perf.json from the most recent nightly LLM benchmark that produced
       # an artifact so generate_readme.py can render the LLM benchmark table. We

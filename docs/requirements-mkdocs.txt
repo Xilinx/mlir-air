@@ -2,4 +2,4 @@
 # Install with: pip install -r docs/requirements-mkdocs.txt
 mkdocs>=1.6.0,<2.0
 mkdocs-material>=9.7.0,<10.0
-mike>=2.1.0
+mike>=2.1.0,<3.0

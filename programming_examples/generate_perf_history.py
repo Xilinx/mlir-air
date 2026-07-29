@@ -296,13 +296,20 @@ def generate_embed_md(rows, window=DEFAULT_WINDOW):
     import re
 
     html = generate_html(rows, window)
-    style = re.search(r"<style>(.*?)</style>", html, re.S).group(1)
-    style = re.sub(r"\s*body\s*\{.*?\}", "", style, flags=re.S)  # drop body rule
-    cdn = re.search(r'<script src="https://cdn[^>]*></script>', html).group(0)
-    body = re.search(r"<body>(.*?)</body>", html, re.S).group(1)
+    cdn_m = re.search(r'<script src="https://cdn[^>]*></script>', html)
+    body_m = re.search(r"<body>(.*?)</body>", html, re.S)
+    if not cdn_m or not body_m:
+        # Template shape changed unexpectedly; fall back to the standalone page
+        # rather than raising, so the docs build never breaks on this page.
+        return "# LLM Performance History\n\n" + html
+    body = body_m.group(1)
     body = re.sub(r'<p><a href="index.html">.*?</a></p>\s*', "", body, flags=re.S)
     body = re.sub(r"<h1>.*?</h1>\s*", "", body, count=1, flags=re.S)
-    return f"# LLM Performance History\n\n{cdn}\n<style>{style}</style>\n{body}\n"
+    # Minimal, scoped CSS: only size the chart containers. The standalone page's
+    # <style> is deliberately NOT reused — its `body`/`h1`/`a` global selectors
+    # would restyle the surrounding Material page chrome.
+    style = "<style>.chart-box { position: relative; height: 380px; margin: 32px 0; }</style>"
+    return f"# LLM Performance History\n\n{cdn_m.group(0)}\n{style}\n{body}\n"
 
 
 def main():
