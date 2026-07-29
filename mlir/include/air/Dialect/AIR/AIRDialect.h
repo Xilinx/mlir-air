@@ -46,6 +46,16 @@ constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 // before starting the next group), reproducing the drain schedule of the
 // un-coalesced feed.
 constexpr StringLiteral CoalescedShimFeed = "air.coalesced_shim_feed";
+// Per-op opt-out (unit attr) on an air.channel.put/get inside a
+// preserve_shim_dma_order launch: this feed is NOT lockstep-coupled to its
+// siblings (no shared broadcast/multicast consumer), so it must NOT inherit the
+// launch's preserve marker and its bounded double-buffered pacing. Keeping it
+// out of the pacing lets it lower to a fire-and-free MM2S feed (start, free BD,
+// no per-task completion await), so a few large independent BDs (e.g. separate
+// K/V readback streams) run concurrently and are backpressured only by their
+// downstream ring locks -- the pacing's await-on-drain would otherwise serialize
+// them and deadlock when a single BD exceeds the ring depth.
+constexpr StringLiteral ShimFeedNoPace = "air.shim_feed_no_pace";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
 constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
 constexpr StringLiteral DedicatedDmaChannel = "air.dedicated_dma_channel";
