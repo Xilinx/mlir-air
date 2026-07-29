@@ -2049,3 +2049,73 @@ module {
     return
   }
 }
+
+// -----
+
+// NFL mode: do NOT wrap channel puts into a new scf.for when they sit inside a
+// multi-result scf.if. wrapRegionsWithForLoops erases the scf.if after
+// replacing only result #0, leaving results #1.. with dangling uses. The guard
+// must leave both channels un-fused (correct -- fusion is only an opt).
+//
+// This is a regression test: before the fix, air-fuse-channels crashed with a
+// use-after-erase failure on modules of this shape.
+
+// Channels must remain separate (not renamed to a single symbol).
+// CHECK: air.channel @channel_mr_0
+// CHECK: air.channel @channel_mr_1
+// CHECK-LABEL: func_nfl_skip_multiresult_scf_if
+// Both puts must still be present inside the scf.if and not wrapped in a new
+// scf.for (which would crash due to the multi-result parent being erased).
+// CHECK: scf.if
+// CHECK: air.channel.put{{.*}}@channel_mr_0
+// CHECK: air.channel.put{{.*}}@channel_mr_1
+// AGGRESSIVE: air.channel @channel_mr_0
+// AGGRESSIVE: air.channel @channel_mr_1
+// AGGRESSIVE-LABEL: func_nfl_skip_multiresult_scf_if
+// AGGL1: air.channel @channel_mr_0
+// AGGL1: air.channel @channel_mr_1
+// AGGL1-LABEL: func_nfl_skip_multiresult_scf_if
+
+module {
+  air.channel @channel_mr_0 [1, 1]
+  air.channel @channel_mr_1 [1, 1]
+  // Two NFL-mergeable channels whose puts are inside a 2-result scf.if.
+  // The scf.if returns both an async token and an index -- making it a
+  // multi-result op that wrapRegionsWithForLoops cannot safely erase.
+  func.func @func_nfl_skip_multiresult_scf_if() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) {
+      %1 = air.segment async {
+        %c1_s = arith.constant 1 : index
+        %alloc = memref.alloc() : memref<4x4xi32, 1>
+        %cond = arith.constant true
+        // A 2-result scf.if: yields (!air.async.token, index).
+        // Broadcast specialization produces exactly this shape when it emits a
+        // per-row multicast of a broadcast channel inside a region that already
+        // returns an extra value. The second result makes this a multi-result op
+        // that wrapRegionsWithForLoops cannot safely erase.
+        %tok, %extra = scf.if %cond -> (!air.async.token, index) {
+          %t0 = air.channel.put async @channel_mr_0[] (%alloc[] [] []) : (memref<4x4xi32, 1>)
+          %c0 = arith.constant 0 : index
+          scf.yield %t0, %c0 : !air.async.token, index
+        } else {
+          %t1 = air.channel.put async @channel_mr_1[] (%alloc[] [] []) : (memref<4x4xi32, 1>)
+          %c0 = arith.constant 0 : index
+          scf.yield %t1, %c0 : !air.async.token, index
+        }
+        %2 = air.herd @herd_mr_0 async tile (%tx, %ty) in (%sx=%c1_s, %sy=%c1_s) {
+          %alloc_l1 = memref.alloc() : memref<4x4xi32, 2>
+          air.channel.get @channel_mr_0[%tx, %ty] (%alloc_l1[] [] []) : (memref<4x4xi32, 2>)
+          memref.dealloc %alloc_l1 : memref<4x4xi32, 2>
+        }
+        %3 = air.herd @herd_mr_1 async tile (%tx, %ty) in (%sx=%c1_s, %sy=%c1_s) {
+          %alloc_l1 = memref.alloc() : memref<4x4xi32, 2>
+          air.channel.get @channel_mr_1[%tx, %ty] (%alloc_l1[] [] []) : (memref<4x4xi32, 2>)
+          memref.dealloc %alloc_l1 : memref<4x4xi32, 2>
+        }
+        memref.dealloc %alloc : memref<4x4xi32, 1>
+      }
+    }
+    return
+  }
+}
