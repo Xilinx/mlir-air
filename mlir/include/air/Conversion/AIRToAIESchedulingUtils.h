@@ -125,13 +125,17 @@ struct allocation_info_t {
   bool foundAlloc(AIE::TileLike tile, air::ChannelOp channel_op);
   bool foundAlloc(AIE::TileLike tile, AIE::DMAChannel channel);
   bool foundPacketFlowAllocInTile(AIE::TileLike tile);
-  // True if a packet-flow memcpy on `tile` belongs to the SAME logical flow as
-  // `memcpyOp` (same channel decl + same constant bundle indices). Used for
-  // S2MM-side collapse discrimination: distinct sources must not share a
-  // physical channel. A non-constant index cannot be proven equal and is
-  // treated as distinct (safe: forces a separate channel).
-  bool foundSamePacketFlowInTile(AIE::TileLike tile,
-                                 air::MemcpyInterface memcpyOp);
+  // True if a memcpy on `tile` belongs to the SAME logical flow as `memcpyOp`
+  // (same channel decl + same constant bundle indices), for either packet or
+  // circuit flows. Used for S2MM-side collapse discrimination: distinct sources
+  // must not share a physical channel. A non-constant index cannot be proven
+  // equal and is treated as distinct (safe: forces a separate channel).
+  bool foundSameLogicalFlowInTile(AIE::TileLike tile,
+                                  air::MemcpyInterface memcpyOp);
+  // True if any memcpy in this allocation is marked air.dedicated_dma_channel.
+  // A dedicated flow must own its physical channel, so an allocation that hosts
+  // one is never a collapse target.
+  bool containsDedicatedChannel();
 
   bool foundAlloc(air::ChannelOp channel_op);
   bool foundAlloc(AIE::DMAChannel channel);
