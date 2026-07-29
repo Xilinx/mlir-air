@@ -5319,6 +5319,13 @@ private:
       // Get the operation that owns this region.
       Operation *parentOp = region->getParentOp();
 
+      // wrapRegionsWithForLoops replaces parentOp with a new scf.for whose
+      // single result carries the async token. A multi-result parent (e.g. a
+      // multi-result scf.if) would leave results #1.. with dangling uses after
+      // the erase. Callers must filter such ops out before reaching here.
+      assert(parentOp->getNumResults() <= 1 &&
+             "wrapRegionsWithForLoops: parent op must have at most one result");
+
       // Insert the new `scf.for` loop *before* the parent operation.
       builder.setInsertionPoint(parentOp);
 
