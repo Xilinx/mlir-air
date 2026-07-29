@@ -35,6 +35,11 @@ except ImportError:  # pragma: no cover - allow running from another cwd
 
 FAIL_COLOR = "#d32f2f"
 
+# Plot only the most recent N unique dates; the full history.ndjson is kept
+# untouched. ~30 nightlies (about a month) keeps date labels legible at the
+# page's 1000px chart width — beyond ~45 the labels collide.
+DEFAULT_WINDOW = 30
+
 # Distinct-enough palette for up to ~12 model lines; cycled if exceeded.
 # Deliberately excludes orange/red/brown hues so no model line is confusable
 # with the red ✕ used to flag failed-verify points (see _series).
@@ -168,7 +173,7 @@ HTML_TEMPLATE = """\
 benchmark runner. Each point is one nightly build, labeled by date; hover to see the commit SHA and
 verify status. A <span style="color:{fail_color}; font-weight:700;">red &#10007; marker</span> flags a nightly
 whose correctness verify failed (the marker shape, not just its color, signals the failure).</p>
-<p class="legend-note">Click a model in a legend to toggle its line.</p>
+<p class="legend-note">Click a model in a legend to toggle its line.{window_note}</p>
 
 <div class="chart-box"><canvas id="ttft"></canvas></div>
 <div class="chart-box"><canvas id="decode"></canvas></div>
@@ -241,22 +246,32 @@ nightly LLM benchmark has published its first datapoints.</p>
 """
 
 
-def generate_html(rows):
+def generate_html(rows, window=DEFAULT_WINDOW):
     """Render the full self-contained HTML page from history rows.
 
     Always returns a valid page: with no rows it renders an empty-state page so
     the dashboard's link to perf-history.html never 404s (the link is emitted
     whenever the benchmark section renders, which can precede the first history
     write).
+
+    Only the most recent `window` unique dates are plotted (all rows stay in
+    history.ndjson); window <= 0 plots the full history.
     """
     if not rows:
         return EMPTY_TEMPLATE.format()
-    labels = sorted({r.get("date") for r in rows if r.get("date")})
+    all_labels = sorted({r.get("date") for r in rows if r.get("date")})
+    labels = all_labels[-window:] if window and window > 0 else all_labels
+    window_note = (
+        f" Showing the most recent {len(labels)} of {len(all_labels)} nightlies."
+        if len(labels) < len(all_labels)
+        else ""
+    )
     models = _model_order(rows)
     ttft = _series(rows, models, labels, "ttft_ms")
     decode = _series(rows, models, labels, "decode_tokens_per_sec")
     return HTML_TEMPLATE.format(
         fail_color=FAIL_COLOR,
+        window_note=window_note,
         labels_json=json.dumps(labels),
         ttft_json=json.dumps(ttft),
         decode_json=json.dumps(decode),
@@ -272,13 +287,20 @@ def main():
         default=SCRIPT_DIR / "perf-history.html",
         help="Output HTML path (default: programming_examples/perf-history.html)",
     )
+    ap.add_argument(
+        "--window",
+        type=int,
+        default=DEFAULT_WINDOW,
+        help="Plot only the most recent N unique dates (<=0 for all). "
+        f"Default: {DEFAULT_WINDOW}.",
+    )
     args = ap.parse_args()
 
     rows = load_history(args.history)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Always write a page (empty-state when there are no rows) so the dashboard
     # link to perf-history.html is stable and never 404s.
-    args.output.write_text(generate_html(rows))
+    args.output.write_text(generate_html(rows, args.window))
     print(f"Generated {args.output} ({len(rows)} rows)")
     return 0
 
