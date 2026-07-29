@@ -446,10 +446,9 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
   // chains down to their non-WaitAll leaf tokens. A visited-set is required:
   // the WaitAll async-dependency graph can be a DAG with shared ancestors
   // (e.g. buffers reused across unrolled loop rounds), and without dedup this
-  // recursion re-descends shared sub-graphs exponentially (and never
-  // terminates on a dependency cycle). Visiting each WaitAll once is
-  // correctness-preserving here: leaves are deduplicated by the caller's
-  // newAsyncDeps SetVector.
+  // recursion re-descends shared sub-graphs exponentially. Visiting each
+  // WaitAll once is correctness-preserving here: leaves are deduplicated by
+  // the caller's newAsyncDeps SetVector.
   llvm::SmallPtrSet<Operation *, 16> visitedWaitAll;
   std::function<void(SmallVector<Value>, SmallVector<Value> &)>
       getDirectDependenciesGreedily;
