@@ -53,8 +53,8 @@ constexpr StringLiteral CoalescedShimFeed = "air.coalesced_shim_feed";
 // out of the pacing lets it lower to a fire-and-free MM2S feed (start, free BD,
 // no per-task completion await), so a few large independent BDs (e.g. separate
 // K/V readback streams) run concurrently and are backpressured only by their
-// downstream ring locks -- the pacing's await-on-drain would otherwise serialize
-// them and deadlock when a single BD exceeds the ring depth.
+// downstream ring locks -- the pacing's await-on-drain would otherwise
+// serialize them and deadlock when a single BD exceeds the ring depth.
 constexpr StringLiteral ShimFeedNoPace = "air.shim_feed_no_pace";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
 constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
