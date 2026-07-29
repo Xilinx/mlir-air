@@ -959,6 +959,15 @@ bool xilinx::air::allocation_info_t::foundSameLogicalFlowInTile(
   return false;
 }
 
+bool xilinx::air::allocation_info_t::containsDedicatedChannel() {
+  for (auto o : memcpyOps) {
+    auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
+    if (existingMc && memcpyIsDedicatedChannel(existingMc))
+      return true;
+  }
+  return false;
+}
+
 // DMAAllocator impl.
 
 // A simple selection sorting implementation.
@@ -1608,20 +1617,19 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
           continue;
         if (t.dma_channel.direction != dir)
           continue;
-        bool tDedicated = false;
         bool tPacket = false;
         for (auto o : t.memcpyOps) {
           auto mc = dyn_cast_if_present<air::MemcpyInterface>(o);
           if (!mc)
             continue;
           auto ct = air::getChannelType(mc);
-          if (succeeded(ct) && ct.value() == "npu_dma_packet")
+          if (succeeded(ct) && ct.value() == "npu_dma_packet") {
             tPacket = true;
-          if (memcpyIsDedicatedChannel(mc))
-            tDedicated = true;
+            break;
+          }
         }
         // Never collapse onto a channel that hosts a dedicated flow.
-        if (tPacket && !tDedicated) {
+        if (tPacket && !t.containsDedicatedChannel()) {
           packetLT = lt;
           packetCh = (int)t.dma_channel.channel;
           return true;
@@ -1934,51 +1942,25 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
-    // Reuse an existing packet-flow channel on this tile via time
-    // multiplexing. Never collapse a channel marked air.dedicated_dma_channel
-    // (either direction). MM2S (source) side collapses promiscuously
-    // (broadcast fan-out / pkt_id multiplexing rely on it); S2MM (receiver)
-    // side collapses only flows proven identical (same channel decl + indices),
-    // since distinct sources fanning into one L2 buffer each need their own
-    // physical S2MM channel.
-    if (isPacketFlowOp && t.foundPacketFlowAllocInTile(tile)) {
-      bool tDedicated = false;
-      for (auto o : t.memcpyOps) {
-        auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
-        if (existingMc && memcpyIsDedicatedChannel(existingMc)) {
-          tDedicated = true;
-          break;
-        }
-      }
-      bool canCollapse = !memcpyIsDedicatedChannel(memcpyOp) && !tDedicated;
-      if (canCollapse && !isMM2S.value())
-        canCollapse = t.foundSameLogicalFlowInTile(tile, memcpyOp);
+    // Reuse an existing DMA channel on this tile instead of allocating a new
+    // one. Never collapse a channel marked air.dedicated_dma_channel, nor
+    // collapse onto an allocation that already hosts one (either direction).
+    //   - MM2S (source) side collapses promiscuously onto a packet-flow
+    //     channel (broadcast fan-out / pkt_id multiplexing rely on it).
+    //   - S2MM (receiver) side collapses only flows proven identical (same
+    //     channel decl + constant bundle indices), for BOTH packet and circuit
+    //     flows: distinct sources fanning into one L2 buffer each need their
+    //     own physical S2MM channel, but repeated invocations of one flow
+    //     (e.g. an L2 buffer re-filled at one endpoint across loop iterations)
+    //     time-multiplex a single channel as sequential BD tasks. Collapsing
+    //     circuit flows too keeps a memtile that also carries a wide broadcast
+    //     from exhausting its S2MM channels on same-flow refills.
+    if (!memcpyIsDedicatedChannel(memcpyOp) && !t.containsDedicatedChannel()) {
+      bool canCollapse =
+          isMM2S.value()
+              ? (isPacketFlowOp && t.foundPacketFlowAllocInTile(tile))
+              : t.foundSameLogicalFlowInTile(tile, memcpyOp);
       if (canCollapse) {
-        t.memcpyOps.push_back(memcpyOp.getOperation());
-        return t;
-      }
-    }
-    // Circuit (non-packet) S2MM: collapse memcpy ops of the SAME logical flow
-    // (same channel declaration + same constant bundle indices) onto ONE
-    // physical S2MM channel, emitted as sequential BD tasks. Without this,
-    // distinct ops of one flow (e.g. an L2 buffer re-filled at one endpoint
-    // across loop iterations) round-robin onto separate physical channels,
-    // wasting the memtile's limited DMA channels. Distinct sources still get
-    // distinct channels (isSameLogicalFlowEndpoint requires matching indices),
-    // mirroring the packet-flow S2MM rule above. Never collapse dedicated
-    // channels.
-    if (!isPacketFlowOp && !isMM2S.value() &&
-        !memcpyIsDedicatedChannel(memcpyOp) && t.foundAlloc(tile) &&
-        t.foundSameLogicalFlowInTile(tile, memcpyOp)) {
-      bool tDedicated = false;
-      for (auto o : t.memcpyOps) {
-        auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
-        if (existingMc && memcpyIsDedicatedChannel(existingMc)) {
-          tDedicated = true;
-          break;
-        }
-      }
-      if (!tDedicated) {
         t.memcpyOps.push_back(memcpyOp.getOperation());
         return t;
       }
