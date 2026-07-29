@@ -1,0 +1,3899 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Compiler infrastructure for mapping AI workloads onto AMD NPUs and Versal AI Engine arrays through MLIR dialects.">
+      
+      
+        <meta name="author" content="AMD Advanced Micro Devices">
+      
+      
+      
+        <link rel="prev" href="../programming_guide/">
+      
+      
+        <link rel="next" href="../AIRAsyncConcurrency/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Compute Model - MLIR-AIR</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/css/air.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#air-compute-model" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="MLIR-AIR" class="md-header__button md-logo" aria-label="MLIR-AIR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            MLIR-AIR
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Compute Model
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Xilinx/mlir-air" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Xilinx/mlir-air
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../getting_started/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../programming_guide/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Programming Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../programming_examples/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Programming Examples
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../llms/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  LLMs on NPU
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../ai_skills/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Official AI Skills
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../mlir_reference/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  MLIR Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../used_in/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Used in / Cited in
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="MLIR-AIR" class="md-nav__button md-logo" aria-label="MLIR-AIR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    MLIR-AIR
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Xilinx/mlir-air" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Xilinx/mlir-air
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting_started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../buildingRyzenLin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ryzen AI (Linux)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../buildingGPU/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU (Linux)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Programming Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Programming Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../programming_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Programming Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute Model
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-abstract-compute-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Abstract Compute Model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Abstract Compute Model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-memory-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 Memory Hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-data-movement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.3 Data Movement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#14-asynchrony" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.4 Asynchrony
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#15-token-taxonomy-and-operation-lifetimes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.5 Token taxonomy and operation lifetimes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1.5 Token taxonomy and operation lifetimes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operation-lifetimes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operation lifetimes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-type" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token type
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-creation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token creation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-consumption-the-three-attribute-lists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token consumption — the three attribute lists
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scope-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-operation-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Operation Semantics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Operation Semantics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-airlaunch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 air.launch
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.1 air.launch">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#syntax" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Syntax
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-to-use-the-launch-iteration-space" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to use the launch iteration space
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#expressing-pipelining-between-output-tiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Expressing pipelining between output tiles
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backend-specific-concurrency-behaviour" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend-specific concurrency behaviour
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#synchrony" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Synchrony
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#allowed-token-lists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Allowed token lists
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-airsegment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 air.segment
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.2 air.segment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#syntax_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Syntax
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#semantics_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#synchrony_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Synchrony
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compile-time-resource-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compile-time resource analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-airherd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 air.herd
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.3 air.herd">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#syntax_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Syntax
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#semantics_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#platform-specific-iteration-space-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Platform-specific iteration space semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#synchrony_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Synchrony
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-airdma_memcpy_nd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 air.dma_memcpy_nd
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.4 air.dma_memcpy_nd">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cross-rank-addressing-multi-gpu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-rank addressing (multi-GPU)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-airchannel-airchannelput-airchannelget" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 air.channel, air.channel.put, air.channel.get
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.5 air.channel, air.channel.put, air.channel.get">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#capacity-and-depth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capacity and depth
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flow-control-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flow control semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#balance-requirement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Balance requirement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deadlock-conditions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deadlock conditions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#26-airexecute-and-airwait_all" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.6 air.execute and air.wait_all
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#27-airsymmetric-memref-attribute-multi-gpu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.7 air.symmetric memref attribute (multi-GPU)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-npu-aie-backend-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. NPU (AIE) Backend Mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. NPU (AIE) Backend Mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#data-movement-on-npu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data movement on NPU
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#placement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Placement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-gpu-rocdlhip-backend-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. GPU (ROCDL/HIP) Backend Mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. GPU (ROCDL/HIP) Backend Mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-hierarchy-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Hierarchy mapping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-device-scale-mapping-via-nested-segments-mi3xx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Device-scale mapping via nested segments (MI3xx)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-memory-space-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Memory space mapping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-data-movement-on-gpu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Data movement on GPU
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-example-4k4k-matrix-multiplication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 Example: 4k×4k matrix multiplication
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-compilation-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 Compilation pipeline
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-summary-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Summary Comparison
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRAsyncConcurrency/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Async Concurrency
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../GEMMCaseStudy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GEMM Case Study
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../programming_examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Programming Examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../llms/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLMs on NPU
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    LLMs on NPU
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../llms/perf-history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance History
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ai_skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Official AI Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MLIR Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    MLIR Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mlir_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MLIR Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRDialect/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AIR Dialect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRRtDialect/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AIRRt Dialect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRConversionPasses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conversion Passes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRTransformPasses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Transform Passes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRTransformOps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Transform Ops
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../used_in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Used in / Cited in
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-abstract-compute-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Abstract Compute Model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Abstract Compute Model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-memory-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 Memory Hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-data-movement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.3 Data Movement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#14-asynchrony" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.4 Asynchrony
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#15-token-taxonomy-and-operation-lifetimes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.5 Token taxonomy and operation lifetimes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1.5 Token taxonomy and operation lifetimes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operation-lifetimes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operation lifetimes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-type" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token type
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-creation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token creation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-consumption-the-three-attribute-lists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token consumption — the three attribute lists
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scope-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-operation-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Operation Semantics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Operation Semantics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-airlaunch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 air.launch
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.1 air.launch">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#syntax" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Syntax
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-to-use-the-launch-iteration-space" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to use the launch iteration space
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#expressing-pipelining-between-output-tiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Expressing pipelining between output tiles
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backend-specific-concurrency-behaviour" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend-specific concurrency behaviour
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#synchrony" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Synchrony
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#allowed-token-lists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Allowed token lists
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-airsegment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 air.segment
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.2 air.segment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#syntax_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Syntax
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#semantics_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#synchrony_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Synchrony
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compile-time-resource-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compile-time resource analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-airherd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 air.herd
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.3 air.herd">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#syntax_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Syntax
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#semantics_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#platform-specific-iteration-space-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Platform-specific iteration space semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#synchrony_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Synchrony
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-airdma_memcpy_nd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 air.dma_memcpy_nd
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.4 air.dma_memcpy_nd">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cross-rank-addressing-multi-gpu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-rank addressing (multi-GPU)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-airchannel-airchannelput-airchannelget" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 air.channel, air.channel.put, air.channel.get
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.5 air.channel, air.channel.put, air.channel.get">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#capacity-and-depth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capacity and depth
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flow-control-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flow control semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#balance-requirement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Balance requirement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deadlock-conditions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deadlock conditions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#26-airexecute-and-airwait_all" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.6 air.execute and air.wait_all
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#27-airsymmetric-memref-attribute-multi-gpu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.7 air.symmetric memref attribute (multi-GPU)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-npu-aie-backend-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. NPU (AIE) Backend Mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. NPU (AIE) Backend Mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#data-movement-on-npu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data movement on NPU
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#placement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Placement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-gpu-rocdlhip-backend-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. GPU (ROCDL/HIP) Backend Mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. GPU (ROCDL/HIP) Backend Mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-hierarchy-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Hierarchy mapping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-device-scale-mapping-via-nested-segments-mi3xx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Device-scale mapping via nested segments (MI3xx)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-memory-space-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Memory space mapping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-data-movement-on-gpu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Data movement on GPU
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-example-4k4k-matrix-multiplication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 Example: 4k×4k matrix multiplication
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-compilation-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 Compilation pipeline
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-summary-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Summary Comparison
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="air-compute-model">AIR Compute Model<a class="headerlink" href="#air-compute-model" title="Permanent link">&para;</a></h1>
+<p>This document describes the compute and memory model of the AIR dialect, defines the
+semantics of its operations, and explains how those operations map onto the two supported
+hardware backends: AMD NPU (AIE) and AMD GPU (ROCDL/HIP).</p>
+<p>The AIR dialect is designed to be architecture-independent at the programming-model
+level. A program expressed in terms of <code>air.launch</code>, <code>air.segment</code>, <code>air.herd</code>, and the
+associated data-movement operations carries a well-defined meaning that can be compiled
+to either backend without changing the source IR.</p>
+<p>A detailed description of the dialect and its use for mapping AI workloads onto AMD NPUs
+can be found in:</p>
+<blockquote>
+<p>E. Wang et al. "<a href="https://arxiv.org/abs/2510.14871">From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs with
+MLIR-AIR</a>". arXiv:2510.14871, October 2025.</p>
+</blockquote>
+<hr />
+<h2 id="1-abstract-compute-model">1. Abstract Compute Model<a class="headerlink" href="#1-abstract-compute-model" title="Permanent link">&para;</a></h2>
+<h3 id="11-hierarchy">1.1 Hierarchy<a class="headerlink" href="#11-hierarchy" title="Permanent link">&para;</a></h3>
+<p>The AIR model defines a three-level execution hierarchy:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>air.launch          — outermost level; groups co-resident work
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  air.segment       — intermediate level; groups cores with shared on-device memory
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    air.herd        — innermost level; an array of processing elements (PEs)
+</code></pre></div>
+<p>Each level defines an <strong>iteration space</strong> (a multi-dimensional index range) and a <strong>body
+region</strong> that executes across that iteration space. The bodies of <code>launch</code> and <code>segment</code>
+execute at the <em>host/controller</em> level, while the body of <code>herd</code> executes in <em>data-
+parallel</em> fashion across each point of its iteration space.</p>
+<p>Execution at each level is <strong>spatially parallel</strong>: points in the iteration space may
+execute concurrently on distinct hardware resources.</p>
+<p>Operands from the enclosing scope are passed explicitly as <strong>kernel operands</strong> into each
+level. Levels are <code>IsolatedFromAbove</code>, meaning they cannot implicitly capture values from
+outer regions.</p>
+<h3 id="12-memory-hierarchy">1.2 Memory Hierarchy<a class="headerlink" href="#12-memory-hierarchy" title="Permanent link">&para;</a></h3>
+<p>The AIR model defines three levels of memory, identified by the <code>air::MemorySpace</code> enum:</p>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Enum value</th>
+<th>Scope</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>L3</code></td>
+<td>0</td>
+<td>System</td>
+<td>Off-chip or host-accessible memory (e.g. DDR, host RAM)</td>
+</tr>
+<tr>
+<td><code>L2</code></td>
+<td>1</td>
+<td>Segment</td>
+<td>On-device memory shared across all PEs in a segment (e.g. on-chip SRAM, memory tiles)</td>
+</tr>
+<tr>
+<td><code>L1</code></td>
+<td>2</td>
+<td>Herd tile</td>
+<td>Per-PE scratchpad memory local to each processing element</td>
+</tr>
+</tbody>
+</table>
+<p>Memory at each level must be accessed through the appropriate data-movement operations.
+Direct reads or writes across levels (e.g., from L1 directly into L3) are not supported;
+all cross-level data movement is explicit.</p>
+<h3 id="13-data-movement">1.3 Data Movement<a class="headerlink" href="#13-data-movement" title="Permanent link">&para;</a></h3>
+<p>Data movement between memory levels is expressed with:</p>
+<ul>
+<li><strong><code>air.dma_memcpy_nd</code></strong> — an N-dimensional DMA-style bulk copy between two memrefs.
+  The source and destination may reside at any combination of memory levels.</li>
+<li><strong><code>air.channel</code> / <code>air.channel.put</code> / <code>air.channel.get</code></strong> — point-to-point or
+  broadcast communication channels that decouple producers from consumers.</li>
+</ul>
+<h3 id="14-asynchrony">1.4 Asynchrony<a class="headerlink" href="#14-asynchrony" title="Permanent link">&para;</a></h3>
+<p>All data-movement and hierarchy operations may execute <strong>asynchronously</strong>. An op that
+produces an <code>!air.token</code> result is dispatched immediately and executes concurrently
+with subsequent operations. Token values are used to express data, control, affinity,
+and concurrency constraints (see §1.5). <code>air.wait_all</code> merges multiple tokens into a
+single synchronization point. <code>air.execute</code> wraps sequential computation in an
+asynchronous region.</p>
+<h3 id="15-token-taxonomy-and-operation-lifetimes">1.5 Token taxonomy and operation lifetimes<a class="headerlink" href="#15-token-taxonomy-and-operation-lifetimes" title="Permanent link">&para;</a></h3>
+<h4 id="operation-lifetimes">Operation lifetimes<a class="headerlink" href="#operation-lifetimes" title="Permanent link">&para;</a></h4>
+<p>Every AIR hierarchy operation has two distinct lifetimes:</p>
+<ul>
+<li><strong>Resource lifespan</strong> — the interval during which the physical resources
+  assigned to the operation (compute tiles, memory banks, DMA channels) are
+  reserved and unavailable to other operations.</li>
+<li><strong>Execution lifespan</strong> — the interval during which the nested operations
+  within the body are actively executing.</li>
+</ul>
+<p>The execution lifespan must be a <strong>subset</strong> of the resource lifespan: resources
+must be allocated before execution begins and must remain allocated until
+execution completes.</p>
+<h4 id="token-type">Token type<a class="headerlink" href="#token-type" title="Permanent link">&para;</a></h4>
+<p>All token kinds share a single MLIR type: <strong><code>!air.token</code></strong>. The kind is
+determined by which attribute list the token appears in at a consumer op, not
+by the token's type. <code>!air.token</code> is the replacement for <code>air.async.token</code>;
+existing uses of <code>air.async.token</code> are dependency tokens.</p>
+<h4 id="token-creation">Token creation<a class="headerlink" href="#token-creation" title="Permanent link">&para;</a></h4>
+<p>A token is created in one of two ways:</p>
+<p><strong>1. Explicit allocation:</strong>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>%t = air.token.alloc : !air.token
+</code></pre></div>
+Used to introduce a token that groups a set of ops under a shared affinity or
+concurrency constraint without one op "owning" the token.</p>
+<p><strong>2. Op result:</strong>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>%t = air.segment @foo { … }
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>%t = air.herd tile (%x,%y) in (%sx=%Nx,%sy=%Ny) [dependency = [%dep]] { … }
+</code></pre></div>
+The token becomes signaled when the op and all of its nested operations
+complete. The result is optional; omitting it gives the synchronous (blocking)
+form of the op.</p>
+<h4 id="token-consumption-the-three-attribute-lists">Token consumption — the three attribute lists<a class="headerlink" href="#token-consumption-the-three-attribute-lists" title="Permanent link">&para;</a></h4>
+<p>Tokens are consumed by including them in named attribute lists on hierarchy and
+data-movement ops. An op may carry any combination of the three lists:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>air.segment @bar [dependency = [%t0, %t1]]
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>                 [affinity   = [%ta]]
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>                 [concurrency = [%tc]]
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>                 { … }
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Attribute list</th>
+<th>Constraint imposed</th>
+<th>Effect on resource lifespan</th>
+<th>Effect on execution lifespan</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dependency</code></td>
+<td>Op does not begin until all listed tokens are signaled (happens-before)</td>
+<td>Compiler/runtime may reuse resources freely across the edge</td>
+<td>Disjoint from the producers of the listed tokens</td>
+</tr>
+<tr>
+<td><code>affinity</code></td>
+<td>Op is placed on the same hardware resources as all other ops that list the same token</td>
+<td>Disjoint — shared resources used sequentially</td>
+<td>Disjoint — operations execute at different times</td>
+</tr>
+<tr>
+<td><code>concurrency</code></td>
+<td>Op must have an overlapping execution lifetime with all other ops that list the same token</td>
+<td>Overlapping — all resource sets must be live simultaneously</td>
+<td>Overlapping</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>
+<p><strong><code>dependency</code> list</strong>: The direct successor of <code>air.async.token</code> dependency
+  chains. The op waits for all listed tokens to be signaled before acquiring
+  resources or beginning execution. The compiler may reuse the releasing op's
+  resources for the waiting op once the token fires.</p>
+</li>
+<li>
+<p><strong><code>affinity</code> list</strong>: All ops that share the same <code>!air.token</code> in their
+  <code>affinity</code> list are bound to the same hardware partition (e.g. the same set
+  of tile columns on NPU, or the same CU on GPU). Because they share resources
+  they must execute sequentially; both their resource and execution lifespans
+  are disjoint in time.</p>
+</li>
+<li>
+<p><strong><code>concurrency</code> list</strong>: All ops sharing the same token in their <code>concurrency</code>
+  list are required to have overlapping execution lifetimes. The compiler must
+  allocate distinct, simultaneously live resource sets for each such op. This
+  is the mechanism that enforces co-residency (e.g. ensuring two segments are
+  stamped out on hardware at the same time).</p>
+</li>
+</ul>
+<h4 id="scope-rule">Scope rule<a class="headerlink" href="#scope-rule" title="Permanent link">&para;</a></h4>
+<p>Tokens are SSA values and follow normal MLIR dominance. When a token must be
+passed into a hierarchy body it is threaded through the <code>args(…)</code> operand list.
+The sole exception to free token passing is <code>air.launch</code>: only tokens used in a
+<code>dependency</code> list may be passed into the body of a launch. Affinity and
+concurrency tokens may not cross the launch boundary, because imposing shared-
+resource or forced-overlap constraints on the may-be-parallel instances of a
+launch would contradict its execution model.</p>
+<hr />
+<h2 id="2-operation-semantics">2. Operation Semantics<a class="headerlink" href="#2-operation-semantics" title="Permanent link">&para;</a></h2>
+<h3 id="21-airlaunch">2.1 <code>air.launch</code><a class="headerlink" href="#21-airlaunch" title="Permanent link">&para;</a></h3>
+<h4 id="syntax">Syntax<a class="headerlink" href="#syntax" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>// Asynchronous form — produces !air.token, non-blocking
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>[%token =] air.launch (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>           args(%a₀=%v₀, …) : &lt;types&gt;
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>           [dependency = [%t₀, …]]
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>           [affinity   = [%t₀, …]]
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>           {
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>  …
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>  air.launch_terminator
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>}
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>// Synchronous form — caller blocks until all launch instances complete
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>air.launch sync (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>           args(%a₀=%v₀, …) : &lt;types&gt;
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>           [dependency = [%t₀, …]]
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>           [affinity   = [%t₀, …]]
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>           {
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>  …
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>  air.launch_terminator
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>}
+</code></pre></div>
+<h4 id="semantics">Semantics<a class="headerlink" href="#semantics" title="Permanent link">&para;</a></h4>
+<p><code>air.launch</code> defines the outermost scope of an AIR program. It:</p>
+<ul>
+<li>Declares an optional <strong>iteration space</strong> of shape <code>N₀ × … × Nₙ</code>. Each point
+  <code>(x₀, …, xₙ)</code> in this space constitutes an independent <em>launch instance</em>.</li>
+<li>Implements <strong>may-be-parallel</strong> semantics: the runtime is permitted to execute
+  instances concurrently, but is not required to. The compiler must not assume a
+  fixed ordering between instances. A <code>concurrency</code> list attribute is therefore
+  <strong>not permitted</strong> on <code>air.launch</code>; expressing an explicit concurrency bound
+  would impose ordering constraints that contradict may-be-parallel semantics.</li>
+<li>Ensures that all <code>air.segment</code> operations declared within the body (and their
+  associated L2 allocations) are <strong>co-resident on the device</strong> when the launch
+  body begins executing, guaranteeing a bounded resource footprint.</li>
+<li>Passes L3 memrefs and scalar values into the body through explicit kernel
+  operands. The body is <code>IsolatedFromAbove</code> and cannot implicitly capture values
+  from the enclosing scope.</li>
+</ul>
+<h4 id="when-to-use-the-launch-iteration-space">When to use the launch iteration space<a class="headerlink" href="#when-to-use-the-launch-iteration-space" title="Permanent link">&para;</a></h4>
+<p>The launch iteration space expresses a pool of <strong>independent work units</strong> that
+the runtime should schedule as hardware becomes available. It does not guarantee
+simultaneous execution of all instances; it expresses that instances are
+independent and may be run in any order or concurrently at the runtime's
+discretion.</p>
+<p>Use the launch iteration space when:
+- Each instance is fully self-contained and produces no result that another
+  instance depends on.
+- The workload naturally decomposes into a variable number of tiles determined
+  at runtime or by a host-side loop.
+- Runtime flexibility in scheduling is acceptable or desirable (e.g. when
+  multiple launch streams share device resources).</p>
+<p><strong>Do not</strong> use the launch iteration space when you need a <strong>guarantee</strong> that all
+instances execute simultaneously — for that, use the <code>air.segment</code> iteration
+space (§2.2), which provides always-concurrent semantics (all instances are
+co-resident and active for the duration of the segment).</p>
+<h4 id="expressing-pipelining-between-output-tiles">Expressing pipelining between output tiles<a class="headerlink" href="#expressing-pipelining-between-output-tiles" title="Permanent link">&para;</a></h4>
+<p>A common goal is to overlap computation on one output tile with data movement
+for the next — "software pipelining" across tiles. This cannot be expressed
+across separate launch instances, because dependency tokens are the only token
+kind that may cross the launch boundary, and they only express ordering, not
+overlap.</p>
+<p>Instead, express inter-tile pipelining <strong>within a single launch body</strong>:</p>
+<ul>
+<li>
+<p><strong>Segment-level pipelining</strong>: place two <code>air.segment</code> ops inside the launch
+  body — a compute segment and a prefetch segment — connected by <code>dependency</code>
+  tokens. Both segments are co-resident (the co-residency guarantee applies to
+  all segments in the same launch body), so their execution genuinely overlaps:
+  the compute segment processes tile N while the prefetch segment loads tile N+1.</p>
+</li>
+<li>
+<p><strong>Loop-based pipelining</strong>: use an <code>scf.for</code> loop inside the launch body (or
+  inside a segment) with <code>iter_args</code>-carried tokens to overlap consecutive tile
+  iterations, as described in the <code>scf.for</code> section of §2.2. This is the
+  standard double-buffering pattern and is typically the most efficient approach.</p>
+</li>
+</ul>
+<h4 id="backend-specific-concurrency-behaviour">Backend-specific concurrency behaviour<a class="headerlink" href="#backend-specific-concurrency-behaviour" title="Permanent link">&para;</a></h4>
+<p>The degree of actual concurrency achieved by a launch iteration space depends
+on the backend:</p>
+<table>
+<thead>
+<tr>
+<th>Backend</th>
+<th>Launch iteration space behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GPU (ROCDL)</strong></td>
+<td>Maps directly to <code>gpu.launch gridDim</code>; all instances execute in parallel as GPU thread blocks. The GPU scheduler guarantees concurrent dispatch of all grid points subject to occupancy.</td>
+</tr>
+<tr>
+<td><strong>NPU (AIE)</strong></td>
+<td>The runtime schedules instances as hardware partitions become available. Instances may run sequentially if only one hardware partition is available for the launch, or concurrently if multiple are available. No concurrency is guaranteed.</td>
+</tr>
+</tbody>
+</table>
+<p>This asymmetry is intentional: GPU hardware is designed for SIMT-style uniform
+parallel dispatch, while NPU execution is more task-queue-like with variable
+partition availability. Programs that require a guaranteed minimum concurrency
+should use <code>air.segment</code> iteration spaces or <code>concurrency</code> tokens on segments
+within a launch body rather than relying on the launch iteration space.</p>
+<h4 id="synchrony">Synchrony<a class="headerlink" href="#synchrony" title="Permanent link">&para;</a></h4>
+<p>The synchrony of <code>air.launch</code> is determined by whether a result value is bound,
+not by a separate <code>async</code> keyword. The <code>sync</code> keyword is an explicit synonym for
+the no-result form and is provided for readability.</p>
+<table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[%token =] air.launch (…) {…}</code></td>
+<td><strong>Asynchronous</strong>: dispatches immediately; returns <code>!air.token</code> that becomes signaled when all instances complete. Caller may overlap subsequent work.</td>
+</tr>
+<tr>
+<td><code>air.launch (…) {…}</code></td>
+<td><strong>Synchronous</strong> (implicit): blocks the calling thread until all launch instances complete. Equivalent to the <code>sync</code> form.</td>
+</tr>
+<tr>
+<td><code>air.launch sync (…) {…}</code></td>
+<td><strong>Synchronous</strong> (explicit): identical to the no-result form; <code>sync</code> keyword makes the blocking intent unambiguous, particularly useful when the op appears alongside async launches.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="allowed-token-lists">Allowed token lists<a class="headerlink" href="#allowed-token-lists" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>List</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dependency</code></td>
+<td><code>!air.token</code> values that must be signaled before any instance begins executing. Establishes a data/control dependency.</td>
+</tr>
+<tr>
+<td><code>affinity</code></td>
+<td><code>!air.token</code> values that bind this launch to the same hardware partition as other ops sharing the same token (e.g. a specific column range on NPU or a specific XCD on GPU).</td>
+</tr>
+</tbody>
+</table>
+<p><code>air.launch</code> <strong>must not</strong> carry a <code>concurrency</code> list. Concurrency constraints
+belong to operations with always-parallel semantics (<code>air.segment</code>, <code>air.herd</code>);
+<code>air.launch</code> instead expresses may-be-parallel work whose degree of parallelism
+is determined by available hardware resources at runtime. Similarly, affinity
+and concurrency tokens from enclosing scopes may not be passed into the launch
+body (see §1.5 scope rule).</p>
+<p><strong>Nesting constraint</strong>: <code>air.segment</code> ops may appear inside <code>air.launch</code>, but not the
+reverse.</p>
+<hr />
+<h3 id="22-airsegment">2.2 <code>air.segment</code><a class="headerlink" href="#22-airsegment" title="Permanent link">&para;</a></h3>
+<h4 id="syntax_1">Syntax<a class="headerlink" href="#syntax_1" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>// Asynchronous form — produces !air.token, non-blocking
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>[%token =] air.segment [@name]
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>           (%x₀, …, %xₙ) in (%sx₀=%N₀, …)
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>           args(%a₀=%v₀, …) : &lt;types&gt;
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>           [x_loc=&lt;col&gt;] [y_loc=&lt;row&gt;] [x_size=&lt;cols&gt;] [y_size=&lt;rows&gt;]
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>           [dependency  = [%t₀, …]]
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>           [affinity    = [%t₀, …]]
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>           [concurrency = [%t₀, …]]
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>           {
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>  …
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>  air.segment_terminator
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>}
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>// Synchronous form — caller blocks until the segment (and all its herds) complete
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>air.segment [@name] sync
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>           (%x₀, …, %xₙ) in (%sx₀=%N₀, …)
+<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>           args(%a₀=%v₀, …) : &lt;types&gt;
+<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>           [x_loc=&lt;col&gt;] [y_loc=&lt;row&gt;] [x_size=&lt;cols&gt;] [y_size=&lt;rows&gt;]
+<a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>           [dependency  = [%t₀, …]]
+<a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>           [affinity    = [%t₀, …]]
+<a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>           [concurrency = [%t₀, …]]
+<a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a>           {
+<a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>  …
+<a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a>  air.segment_terminator
+<a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a>}
+</code></pre></div>
+<h4 id="semantics_1">Semantics<a class="headerlink" href="#semantics_1" title="Permanent link">&para;</a></h4>
+<p><code>air.segment</code> represents a <strong>physically contiguous grouping of processing
+elements</strong> together with their associated L2 (on-device) memory. It:</p>
+<ul>
+<li>Groups all <code>air.herd</code> operations, L2 allocations, and inter-level data
+  movement required to implement a coherent kernel.</li>
+<li>Optionally defines an <strong>iteration space</strong> of shape <code>N₀ × … × Nₙ</code>. When
+  present, every point in the space instantiates an independent copy of the
+  segment body. All instances run with <strong>overlapping lifetimes</strong>: the runtime
+  guarantees that every instance is active simultaneously, so the full set of
+  instances is co-resident on the device for the duration of the segment. This
+  is a "stamp-out" of the segment across independent hardware partitions. Each
+  instance occupies a <strong>contiguous</strong> rectangular block of compute resources
+  (columns × rows of tiles, L2 banks, DMA engines). The placement of distinct
+  instances across the iteration space is <strong>independent</strong>: instances need not be
+  adjacent or form a globally contiguous region; each may be placed anywhere in
+  the device array subject only to non-overlap with other live instances.</li>
+<li>Has access to L2 memory (allocated within its body with <code>memref.alloc</code> at
+  address space 1) and can access L3 memory through DMA or channel operations.</li>
+</ul>
+<p>The body of a segment may contain operations that express both <strong>temporal
+constraints</strong> (sequencing via <code>!air.token</code> dependency lists, <code>air.wait_all</code>,
+<code>scf.for</code> iter_arg-carried ordering, <code>scf.parallel</code> init/reduce token
+merging) and <strong>spatial constraints</strong> (placement of <code>air.herd</code> tiles via
+<code>x_loc</code>/<code>y_loc</code>, channel routing that fixes communication topology).</p>
+<h4 id="synchrony_1">Synchrony<a class="headerlink" href="#synchrony_1" title="Permanent link">&para;</a></h4>
+<p>As with <code>air.launch</code>, synchrony is determined by the presence or absence of a
+result value; <code>sync</code> is an explicit synonym for the no-result form.</p>
+<table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[%token =] air.segment (…) {…}</code></td>
+<td><strong>Asynchronous</strong>: returns <code>!air.token</code> immediately; the enclosing launch body may overlap subsequent work with this segment. Token signals when all herds and data-movement ops within the segment complete.</td>
+</tr>
+<tr>
+<td><code>air.segment (…) {…}</code></td>
+<td><strong>Synchronous</strong> (implicit): blocks until all herds and data-movement operations within the segment complete.</td>
+</tr>
+<tr>
+<td><code>air.segment sync (…) {…}</code></td>
+<td><strong>Synchronous</strong> (explicit): identical to the no-result form.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="compile-time-resource-analysis">Compile-time resource analysis<a class="headerlink" href="#compile-time-resource-analysis" title="Permanent link">&para;</a></h4>
+<p>The compiler <strong>must</strong> determine the total resource requirements of a segment
+statically, at compile time. The analysis is <strong>recursive and bottom-up</strong>:
+inner segments are fully analysed before the segments that contain them, so
+that each level can treat its nested segments as opaque resource blocks.</p>
+<p>The analysis at each level has two stages.</p>
+<p><strong>Stage 1 — per-instance worst-case analysis.</strong></p>
+<p>The analysis covers four structural cases: leaf segments (direct <code>air.herd</code>
+ops), containing segments (nested <code>air.segment</code> ops), <code>scf.for</code> loops (with
+iter_arg-based pipelining), and <code>scf.parallel</code> regions (all instances
+concurrent, tokens reduced).</p>
+<p><em>Leaf segment</em> (body contains <code>air.herd</code> ops, no nested <code>air.segment</code>):</p>
+<ul>
+<li><strong>L2 memory</strong>: the maximum number of bytes in address space 1 that may be
+  live simultaneously, taken over all possible execution paths (maximum across
+  conditional branches; see below for loop-carried allocations).</li>
+<li><strong>Compute tiles</strong>: the maximum number of <code>air.herd</code> tiles simultaneously
+  active, derived from the herd iteration spaces and any <code>x_size</code>/<code>y_size</code>
+  placement constraints.</li>
+<li><strong>DMA channels</strong>: the maximum number of concurrently active
+  <code>air.dma_memcpy_nd</code> or <code>air.channel</code> operations, determined from the async
+  dependency graph.</li>
+</ul>
+<p><em><code>scf.for</code> and <code>scf.parallel</code> loops within a segment body:</em></p>
+<p><strong><code>scf.for</code> — loop-carried token dependencies.</strong></p>
+<p><code>scf.for</code> iterations are logically sequential in program order, but the async
+token model allows controlled overlap between consecutive iterations. The
+mechanism is <strong><code>iter_args</code></strong>: the token yielded by <code>scf.yield</code> at the end of
+iteration N becomes the iter_arg received at the start of iteration N+1.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>%t_final = scf.for %k = %lb to %ub step %s
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    iter_args(%t_prev = %t_init) -&gt; !air.token {
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>  // Ops that depend on %t_prev wait for iteration N-1 to reach a known point.
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>  // Ops that do NOT depend on %t_prev may execute concurrently with N-1.
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>  %t_dma = air.dma_memcpy_nd async [%t_prev] …
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>  %t_compute = air.herd async [%t_dma] …
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>  %t_out = air.wait_all async [%t_compute]
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>  scf.yield %t_out : !air.token
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>}
+</code></pre></div>
+<p>An op in iteration N+1 that lists <code>%t_prev</code> in its <code>dependency</code> list does not
+begin until iteration N has signaled that token. An op that does <strong>not</strong> depend
+on <code>%t_prev</code> may begin before iteration N's <code>scf.yield</code> fires, creating genuine
+concurrency between consecutive iterations.</p>
+<p>The <strong>pipeline depth</strong> D for a given resource type is the number of independent
+token chains maintained as separate <code>iter_args</code> for that resource:</p>
+<ul>
+<li><strong>D = 1</strong> (single <code>iter_arg</code> chaining all activity): strictly sequential — only
+  one iteration's worth of resources is active at a time.</li>
+<li><strong>D = 2</strong> (double-buffering): one DMA and one compute op from different
+  iterations are simultaneously active. The common pattern is to yield the compute
+  token as one iter_arg and a separate prefetch token as another, allowing the
+  next iteration's data fetch to overlap with the current iteration's compute.</li>
+<li><strong>D &gt; 2</strong>: multiple independent in-flight streams tracked via multiple
+  <code>iter_args</code>. Each stream contributes independently to the concurrent resource
+  count.</li>
+</ul>
+<p>Resource bounds inside an <code>scf.for</code>:</p>
+<ul>
+<li><strong>L2 memory</strong>: <code>memref.alloc</code> results that are live across <code>scf.yield</code>
+  (loop-carried allocations) are permanently live for the entire loop and
+  contribute to every iteration's baseline. Allocations freed before <code>scf.yield</code>
+  require only one slot (reused each iteration).</li>
+<li><strong>Compute tiles</strong>: the maximum number of simultaneously active herd instances
+  across D iterations. Multiply the per-iteration herd footprint by the pipeline
+  depth D for the compute resource chain.</li>
+<li><strong>DMA channels</strong>: similarly, multiply the per-iteration DMA count by the
+  pipeline depth D for the DMA resource chain.</li>
+</ul>
+<p><strong><code>scf.parallel</code> — broadcast and tree-reduction of tokens.</strong></p>
+<p><code>scf.parallel</code> expresses a set of independent instances that may execute
+concurrently. The async token model for <code>scf.parallel</code> has two parts:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>%t_out = scf.parallel (%i, %j) = (%lb0, %lb1) to (%ub0, %ub1) step (%s0, %s1)
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    init (%t_in) -&gt; !air.token {
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>  // All instances may start as soon as %t_in is signaled.
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>  %t_instance = air.channel.put async [%t_in] @ch[%i, %j] …
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>  scf.reduce(%t_instance : !air.token) {
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>  ^bb0(%a: !air.token, %b: !air.token):
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>    %t_merge = air.wait_all async [%a, %b]
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>    scf.reduce.return %t_merge : !air.token
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>  }
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>}
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>// %t_out is signaled only when ALL instances have completed.
+</code></pre></div>
+<ul>
+<li><strong><code>init (%t_in)</code></strong>: a single token that all parallel instances must wait for
+  before beginning. It acts as a broadcast dependency — every instance sees the
+  same <code>%t_in</code> as a prerequisite.</li>
+<li><strong><code>scf.reduce</code> block</strong>: performs a pairwise tree-reduction over the tokens
+  produced by each instance. Each call to the reduce block receives two instance
+  tokens (<code>%a</code>, <code>%b</code>) and uses <code>air.wait_all</code> to merge them. The final result
+  <code>%t_out</code> is signaled only when all instances' tokens have been reduced to one.</li>
+</ul>
+<p>Resource bounds inside <code>scf.parallel</code>: all instances execute concurrently, so
+their resource requirements are <strong>summed</strong> (not maxed), exactly as for a segment
+iteration space (Stage 2 above). The aggregate resource demand is the per-instance
+bound multiplied by the total number of parallel instances.</p>
+<p><em>Containing segment</em> (body contains one or more nested <code>air.segment</code> ops):</p>
+<p>Each nested segment is first fully analysed through its own Stage 1 and Stage 2
+to produce a <strong>total resource footprint</strong> — a tuple (tiles, L2 bytes, DMA
+channels) representing the resources that nested segment holds across all of its
+iterations simultaneously. This footprint is then treated as an indivisible unit
+at the outer level. The containing segment's Stage 1 computes:</p>
+<ul>
+<li><strong>Compute tiles</strong>: the maximum number of tile-rows × tile-columns
+  simultaneously reserved, obtained by summing the footprints of all
+  concurrently active nested segments (and any direct <code>air.herd</code> ops) in the
+  outer body. "Concurrently active" is determined from the outer body's async
+  dependency graph: nested segments linked only by <code>dependency</code> tokens are
+  treated as sequential and their resources may be reused; nested segments with
+  no ordering constraint between them, or linked by <code>concurrency</code> tokens, are
+  treated as simultaneous and their resources are summed.</li>
+<li><strong>L2 memory</strong>: maximum simultaneous L2 allocation across all concurrently
+  active nested segments plus any direct allocations in the outer body.</li>
+<li><strong>DMA channels</strong>: maximum concurrent DMA/channel ops, counting each nested
+  segment's DMA footprint as a unit.</li>
+</ul>
+<p><strong>Stage 2 — scaling by the iteration space.</strong>
+Because all instances of a segment's iteration space execute with overlapping
+lifetimes, the per-instance bounds from Stage 1 are <strong>multiplied by the total
+iteration count</strong> (<code>N₀ × … × Nₙ</code>) to obtain that segment's total resource
+footprint. A segment with no iteration space has an implicit count of 1.</p>
+<p>Stage 2 applies <strong>independently at each nesting level</strong>: the inner segment
+scales by its own iteration count first; the resulting total footprint is what
+the outer Stage 1 sees as a unit; the outer segment then scales its own
+per-instance result by its iteration count. Resources are therefore multiplied
+by the product of all iteration counts along the nesting path, reflecting the
+fact that all instances at every level are simultaneously live.</p>
+<p>The total footprint describes the <em>sum</em> of per-instance blocks, not a single
+contiguous region: the compiler allocates a contiguous block per instance and
+may place those blocks anywhere in the device array that fits.</p>
+<p>These statically computed totals are used to:
+1. Verify that the segment hierarchy (across all iterations at all levels) fits
+   within the target hardware partition before lowering begins.
+2. Assign physical resources (tile columns/rows, memory banks, DMA engines) to
+   each iteration at each level without runtime negotiation.
+3. Guarantee that all segment instances — and any other segments declared within
+   the same <code>air.launch</code> — can be <strong>co-resident</strong> without resource conflicts.</p>
+<p>Optional physical placement attributes (<code>x_loc</code>, <code>y_loc</code>, <code>x_size</code>, <code>y_size</code>)
+annotate the column/row offset and extent of <strong>one</strong> instance on devices with
+2D tile arrays. For a segment with an iteration space, the compiler assigns a
+separate <code>(x_loc, y_loc)</code> origin to each iteration point independently; those
+per-instance origins need not be adjacent. When these attributes are present
+they are taken as authoritative for a single instance's contiguous footprint;
+when absent the compiler derives a per-instance contiguous footprint from the
+worst-case analysis above and places each instance freely.</p>
+<p>The optional <code>backend-granularity</code> attribute communicates the hardware
+granularity that this segment instance should map to on the target backend.
+Currently defined values:</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>XCD</code></td>
+<td>The segment maps to one XCD (Accelerator Complex Die) on AMD MI3xx GPUs. Used with a multi-XCD <code>air.launch</code> iteration space to achieve full-device occupancy (see §4.2).</td>
+</tr>
+</tbody>
+</table>
+<p>When <code>backend-granularity</code> is absent the backend applies its default mapping
+(e.g., one workgroup / thread block on GPU).</p>
+<p><strong>Nesting constraints</strong>:
+- <code>air.segment</code> must be nested inside <code>air.launch</code> or inside another
+  <code>air.segment</code> (directly or indirectly — the outermost segment must be inside
+  a launch).
+- <code>air.herd</code> must be nested inside <code>air.segment</code>. It is the innermost hierarchy
+  level and must not contain <code>air.segment</code> or another <code>air.herd</code>.
+- The nesting depth of <code>air.segment</code> is unbounded by the model; backends may
+  impose device-specific limits (e.g. two levels on MI3xx — XCD and CU).</p>
+<hr />
+<h3 id="23-airherd">2.3 <code>air.herd</code><a class="headerlink" href="#23-airherd" title="Permanent link">&para;</a></h3>
+<h4 id="syntax_2">Syntax<a class="headerlink" href="#syntax_2" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>// Synchronous form — acquires resources immediately, blocks until all PEs complete
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>air.herd [@name] tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>         args(%a₀=%v₀, …) : &lt;types&gt;
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>         [x_loc=&lt;col&gt;] [y_loc=&lt;row&gt;]
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>         [link_with=&quot;&lt;object&gt;&quot;]
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>         [dependency  = [%t₀, …]]
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>         [affinity    = [%t₀, …]]
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>         [concurrency = [%t₀, …]]
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>         {
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>  …
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>  air.herd_terminator
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>}
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>// Asynchronous form — produces !air.token; acquires resources when deps met, signals on completion
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>[%token =] air.herd [@name]
+<a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>           tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
+<a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>           args(%a₀=%v₀, …) : &lt;types&gt;
+<a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>           [x_loc=&lt;col&gt;] [y_loc=&lt;row&gt;]
+<a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a>           [link_with=&quot;&lt;object&gt;&quot;]
+<a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a>           [dependency  = [%t₀, …]]
+<a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a>           [affinity    = [%t₀, …]]
+<a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>           [concurrency = [%t₀, …]]
+<a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a>           {
+<a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a>  …
+<a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a>  air.herd_terminator
+<a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a>}
+</code></pre></div>
+<h4 id="semantics_2">Semantics<a class="headerlink" href="#semantics_2" title="Permanent link">&para;</a></h4>
+<p><code>air.herd</code> defines a <strong>1D or 2D array of processing elements</strong> (PEs) that all
+execute the same body code in data-parallel fashion. It is the innermost level
+of the hierarchy and maps directly to physical compute tiles (NPU) or GPU
+threads:</p>
+<ul>
+<li>The iteration space <code>%Nx × %Ny</code> determines how many PE instances execute the
+  body and defines a <strong>contiguous</strong> block of compute resources. All instances
+  run concurrently on distinct hardware resources; this is <strong>always-parallel</strong>
+  (not may-be-parallel).</li>
+<li>Block arguments <code>%x</code> and <code>%y</code> give each instance its own coordinates,
+  enabling each PE to independently address its portion of L1 or L2 memory.</li>
+<li>Within the herd body, <code>L1</code> memory (address space 2) is per-PE local
+  scratchpad.</li>
+<li>Data needed from L2 or L3 must be explicitly fetched via <code>air.dma_memcpy_nd</code>
+  or channel operations before use.</li>
+</ul>
+<p>Operations within the herd body may impose both <strong>temporal constraints</strong>
+(explicit token dependencies ordering DMA fetches before compute) and
+<strong>spatial constraints</strong> (channel indices or tile-coordinate arithmetic that
+binds each PE to a specific region of a shared buffer).</p>
+<h4 id="platform-specific-iteration-space-semantics">Platform-specific iteration space semantics<a class="headerlink" href="#platform-specific-iteration-space-semantics" title="Permanent link">&para;</a></h4>
+<p>The meaning of "contiguous" and the constraints imposed on iteration space
+dimensions depend on the target backend:</p>
+<ul>
+<li>
+<p><strong>AIE (NPU)</strong>: A herd defines a logical rectangular array of compute units.
+  The herd's declared 2D shape (<code>x_size</code>, <code>y_size</code>) is preserved through
+  placement; choose the shape that matches the desired physical footprint
+  (e.g., a single column of 4 tiles is <code>sizes=[1, 4]</code>, not <code>sizes=[4, 1]</code>).
+  Explicit placement attributes (<code>x_loc</code>, <code>y_loc</code>, <code>x_size</code>, <code>y_size</code>) on the
+  enclosing segment further constrain the legal placement region by fixing the
+  tile footprint. The resulting contiguous rectangular region of physical
+  tiles is determined by the herd's declared shape and the segment's anchor.</p>
+</li>
+<li>
+<p><strong>GPU (AMD MI3xx family)</strong>: A herd executes entirely within a single Compute
+  Unit (CU), with PE instances mapped to individual warps. The combined
+  resource requirements (register file, LDS, wavefront slots) of all PE
+  instances must fit within one CU. On MI3xx devices a CU provides fewer than
+  32 wavefront slots, so the total number of PE instances (<code>%Nx × %Ny</code>) is
+  correspondingly limited.</p>
+</li>
+</ul>
+<h4 id="synchrony_2">Synchrony<a class="headerlink" href="#synchrony_2" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No result (synchronous)</td>
+<td>Acquires resources immediately; blocks the enclosing body until all PE instances complete; releases resources at the herd terminator.</td>
+</tr>
+<tr>
+<td><code>[%token =]</code> (asynchronous)</td>
+<td>Acquires resources when all <code>dependency</code> tokens are signaled; returns <code>!air.token</code> immediately; releases resources when the token fires (all PE instances complete).</td>
+</tr>
+</tbody>
+</table>
+<p>Optional attributes <code>x_loc</code>/<code>y_loc</code> specify the base placement on 2D tile
+arrays; each PE at tile <code>(%x, %y)</code> occupies physical column/row
+<code>(x_loc + %x, y_loc + %y)</code>. The <code>link_with</code> attribute names an external kernel
+object to link into the herd at compile time.</p>
+<hr />
+<h3 id="24-airdma_memcpy_nd">2.4 <code>air.dma_memcpy_nd</code><a class="headerlink" href="#24-airdma_memcpy_nd" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>air.dma_memcpy_nd (dst[dst_offsets][dst_sizes][dst_strides],
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>                   src[src_offsets][src_sizes][src_strides]) : (type_dst, type_src)
+</code></pre></div>
+<p>Describes an <strong>asynchronous N-dimensional strided bulk copy</strong> between two memrefs. The
+<code>[offsets][sizes][strides]</code> triples follow the same convention as <code>memref.subview</code>:
+<code>offsets</code> is the starting index in each dimension, <code>sizes</code> is the number of elements to
+transfer in each dimension, and <code>strides</code> is the stride in units of elements.</p>
+<p>The operation is direction-agnostic: either the source or the destination (or both) may
+be at any memory level. The direction (L3→L2, L2→L1, L1→L2, etc.) is inferred from the
+address spaces of the operand memrefs and mapped to the appropriate hardware mechanism.</p>
+<p>An empty <code>[offsets]</code>, <code>[sizes]</code>, or <code>[strides]</code> list for a side means the entire memref
+is addressed with unit strides.</p>
+<h4 id="cross-rank-addressing-multi-gpu">Cross-rank addressing (multi-GPU)<a class="headerlink" href="#cross-rank-addressing-multi-gpu" title="Permanent link">&para;</a></h4>
+<p>Optional <code>src_rank</code> / <code>dst_rank</code> integer attributes name a peer rank in the
+enclosing <code>air.rank</code> scope. When present, the corresponding memref is
+interpreted as living on rank R's symmetric heap rather than on the local
+process. The verifier requires the op to be enclosed by an <code>air.rank</code> and the
+referenced memref to be <code>air.symmetric</code>-tagged (see §2.7). Lowering for the
+GPU backend (planned: <code>air-cross-rank-dma-to-mgpu</code>) will expand these into
+<code>mgpuGetHeapBases()</code>-based peer-VA arithmetic + <code>mgpuMemcpy</code>; the NPU
+backend does not support these attributes.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>// Read 1024 floats from rank 0&#39;s symmetric buffer into local L1.
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>air.dma_memcpy_nd (%local[][][], %sym[][][]) {src_rank = 0 : i64}
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    : (memref&lt;1024xf32, 2&gt;, memref&lt;1024xf32, 0&gt;)
+</code></pre></div>
+<hr />
+<h3 id="25-airchannel-airchannelput-airchannelget">2.5 <code>air.channel</code>, <code>air.channel.put</code>, <code>air.channel.get</code><a class="headerlink" href="#25-airchannel-airchannelput-airchannelget" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>// Channel declaration — at module scope
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>air.channel @name [dim₀, dim₁, …] {channel_type = &quot;npu_dma_stream&quot;, depth = &lt;N&gt;}
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>// Synchronous put/get — block until the transfer completes
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>air.channel.put @name[indices] (src[offsets][sizes][strides]) : (type_src)
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>air.channel.get @name[indices] (dst[offsets][sizes][strides]) : (type_dst)
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>// Asynchronous put/get — return !air.token; transfer completes when token signals
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>[%token =] air.channel.put @name[indices] [dependency = [%t₀, …]]
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>           (src[offsets][sizes][strides]) : (type_src)
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>[%token =] air.channel.get @name[indices] [dependency = [%t₀, …]]
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>           (dst[offsets][sizes][strides]) : (type_dst)
+</code></pre></div>
+<p>Channels are <strong>declared</strong> once (at module scope) and <strong>used</strong> at distinct producer and
+consumer sites. They decouple the put and get sides, allowing the compiler to schedule
+them independently and to introduce double-buffering.</p>
+<p>A channel may be an array (e.g., <code>[4, 4]</code> for a 4×4 array). The <code>indices</code> operand on
+<code>put</code>/<code>get</code> selects the specific channel within the array.</p>
+<p>The <code>channel_type</code> attribute controls the underlying mechanism. Values are
+namespaced by backend: NPU (AIE) channels use the <code>npu_</code> prefix; GPU channels
+use the <code>gpu_</code> prefix.</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Mechanism</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"npu_dma_stream"</code> (default)</td>
+<td>NPU: DMA engines with streaming (circuit-switched) interconnect</td>
+</tr>
+<tr>
+<td><code>"npu_dma_packet"</code></td>
+<td>NPU: DMA engines with packet-switched interconnect</td>
+</tr>
+<tr>
+<td><code>"npu_cascade"</code></td>
+<td>NPU: Core-to-core cascade connections between adjacent tiles</td>
+</tr>
+<tr>
+<td><code>"npu_mmio"</code></td>
+<td>NPU: Host-side MMIO blockwrites delivering a constant payload into a tile-local L1 buffer</td>
+</tr>
+<tr>
+<td><code>"gpu_symmetric_heap"</code></td>
+<td>GPU: Cross-rank messaging through the symmetric heap runtime (XGMI peer-mapped VMem). Requires an enclosing <code>air.rank</code> scope.</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>broadcast_shape</code> attribute enables one-to-many communication following NumPy
+broadcasting rules.</p>
+<h4 id="capacity-and-depth">Capacity and depth<a class="headerlink" href="#capacity-and-depth" title="Permanent link">&para;</a></h4>
+<p>A channel has a finite buffer capacity set by the <code>depth</code> attribute (default <strong>1</strong>).
+The depth specifies how many transfers may be in-flight simultaneously:</p>
+<table>
+<thead>
+<tr>
+<th>Depth</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 (default)</td>
+<td>Rendezvous: each <code>put</code> must be consumed by a <code>get</code> before the next <code>put</code> can proceed.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Double-buffering: producer may issue one transfer ahead of the consumer.</td>
+</tr>
+<tr>
+<td>N</td>
+<td>Producer may have up to N transfers outstanding before it must wait.</td>
+</tr>
+</tbody>
+</table>
+<p>Increasing depth relaxes the coupling between producer and consumer at the cost of
+additional buffer memory (each slot requires storage for one transfer's worth of data).</p>
+<h4 id="flow-control-semantics">Flow control semantics<a class="headerlink" href="#flow-control-semantics" title="Permanent link">&para;</a></h4>
+<p><code>put</code> and <code>get</code> are <strong>blocking</strong> at the channel boundary:</p>
+<ul>
+<li>A <code>put</code> issued when the channel already holds <code>depth</code> unread transfers stalls until
+  the consumer issues a <code>get</code> and frees a slot.</li>
+<li>A <code>get</code> issued when the channel holds no data stalls until the producer issues a <code>put</code>.</li>
+</ul>
+<p>In the asynchronous form the operation is dispatched immediately and the returned
+<code>!air.token</code> does not signal until the blocking condition is resolved and the transfer
+is complete. This allows other work to proceed while the channel handshake is in
+progress, but does not remove the fundamental flow-control constraint.</p>
+<h4 id="balance-requirement">Balance requirement<a class="headerlink" href="#balance-requirement" title="Permanent link">&para;</a></h4>
+<p>For a channel to make progress, every <code>put</code> must be matched by a <code>get</code> on the same
+channel index, and vice versa. The compiler enforces the <strong>static balance condition</strong>:</p>
+<ul>
+<li>Along every possible execution path through the program the number of <code>put</code> operations
+  and the number of <code>get</code> operations at each channel index must be equal.</li>
+<li>For channels inside loop bodies, balance must hold per iteration (equal puts and gets
+  in the loop body).</li>
+<li>For channels connecting herds with different iteration spaces, the total transfer count
+  must balance: <code>(puts per producer instance) × (producer instances)</code> must equal
+  <code>(gets per consumer instance) × (consumer instances)</code>.</li>
+<li>For channels inside conditional branches, balance must hold independently on each
+  branch.</li>
+</ul>
+<p>A violation of the balance condition is a compile-time error.</p>
+<h4 id="deadlock-conditions">Deadlock conditions<a class="headerlink" href="#deadlock-conditions" title="Permanent link">&para;</a></h4>
+<p>A program deadlocks when a <code>put</code> is waiting for a <code>get</code> that can never execute, or a
+<code>get</code> is waiting for a <code>put</code> that can never execute, and no other operation can break
+the wait.</p>
+<p><strong>Minimal deadlock</strong> — <code>put</code> and <code>get</code> in the same sequential scope:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>air.channel @C [] {depth = 1}
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>air.segment @deadlock {
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>  // put blocks: channel is at capacity, waiting for a get to free space
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>  air.channel.put @C[] (%src[][][]) : (memref&lt;…, 1&gt;)
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>  // never reached — sequential control flow cannot reach get while put blocks
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>  air.channel.get @C[] (%dst[][][]) : (memref&lt;…, 1&gt;)
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>  air.segment_terminator
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>}
+</code></pre></div>
+<p>The necessary condition for deadlock freedom is that for every channel there exists a
+<strong>concurrent execution context</strong> in which the matching <code>put</code> and <code>get</code> can both
+make progress simultaneously. In practice:</p>
+<ul>
+<li><code>put</code> and <code>get</code> on the same channel must appear in different herds, different async
+  branches, or different segment instances — any context that allows them to execute
+  concurrently.</li>
+<li>The communication graph (nodes = ops, edges = channel put→get dependencies) must
+  be <strong>acyclic</strong>: a cycle means at least one op in the cycle is waiting on another in
+  the same cycle, which can never be resolved.</li>
+</ul>
+<hr />
+<h3 id="26-airexecute-and-airwait_all">2.6 <code>air.execute</code> and <code>air.wait_all</code><a class="headerlink" href="#26-airexecute-and-airwait_all" title="Permanent link">&para;</a></h3>
+<p><code>air.execute</code> wraps a sequential block of host-visible computation (e.g., <code>memref.alloc</code>,
+arithmetic on scalars) in an asynchronous region. The region produces an
+<code>!air.token</code> (dependency kind) that becomes ready when all operations inside have completed.</p>
+<p><code>air.wait_all</code> takes a variadic list of <code>!air.token</code> values and produces a single
+token that becomes ready only when all of its inputs are ready. It acts as a join node
+in the async dependency graph.</p>
+<hr />
+<h3 id="27-airsymmetric-memref-attribute-multi-gpu">2.7 <code>air.symmetric</code> memref attribute (multi-GPU)<a class="headerlink" href="#27-airsymmetric-memref-attribute-multi-gpu" title="Permanent link">&para;</a></h3>
+<p>A <code>memref.alloc</code> op may carry the unit attribute <code>air.symmetric</code> to indicate
+that the allocation should be backed by the <strong>symmetric heap</strong> runtime. Every
+rank in the enclosing <code>air.rank</code> scope performs the same allocation in lockstep,
+so each rank has a memref of the same size at the same offset within the heap.
+Cross-rank addressing (via <code>air.dma_memcpy_nd</code> <code>src_rank</code>/<code>dst_rank</code> attributes
+or <code>air.channel</code> with <code>channel_type = "gpu_symmetric_heap"</code>) refers to peer
+ranks' symmetric memrefs at the same logical offset.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>%buf = memref.alloc() {air.symmetric} : memref&lt;1024xf32&gt;
+</code></pre></div>
+<p>The GPU lowering (planned: <code>air-symmetric-alloc-to-mgpu</code>) will route such
+allocations through <code>mgpuSymmetricAlloc</code> (<code>runtime_lib/airgpu/gpu_runtime.cpp</code>)
+instead of plain <code>mgpuMemAlloc</code>. Peer ranks' base pointers are obtained at
+runtime via <code>mgpuGetHeapBases()</code>. The NPU backend does not interpret this
+attribute.</p>
+<hr />
+<h2 id="3-npu-aie-backend-mapping">3. NPU (AIE) Backend Mapping<a class="headerlink" href="#3-npu-aie-backend-mapping" title="Permanent link">&para;</a></h2>
+<p>On AMD Versal AI Engine (AIE) and Ryzen AI NPU targets the three-level hierarchy maps
+directly to physical hardware structures:</p>
+<table>
+<thead>
+<tr>
+<th>AIR concept</th>
+<th>AIE hardware</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>air.launch</code></td>
+<td>Device-level kernel dispatch; L3 = DDR via NOC</td>
+</tr>
+<tr>
+<td><code>air.segment</code></td>
+<td>A contiguous rectangle of AIE tiles + associated memory tiles or URAMs (L2)</td>
+</tr>
+<tr>
+<td><code>air.herd tile (x, y)</code></td>
+<td>A single AIE compute tile at physical column/row offset <code>(x_loc+x, y_loc+y)</code></td>
+</tr>
+<tr>
+<td>L1 memory (space 2)</td>
+<td>Per-tile local data memory (32 KB on AIE2)</td>
+</tr>
+<tr>
+<td>L2 memory (space 1)</td>
+<td>Shared memory tiles or URAMs accessible via the tile interconnect</td>
+</tr>
+<tr>
+<td>L3 memory (space 0)</td>
+<td>DDR accessible via AXI4-MM NOC</td>
+</tr>
+</tbody>
+</table>
+<h3 id="data-movement-on-npu">Data movement on NPU<a class="headerlink" href="#data-movement-on-npu" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>AIR operation</th>
+<th>AIE mechanism</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>air.dma_memcpy_nd</code> (L3→L2)</td>
+<td>Shim DMA + AXI-S routing + memory tile DMA</td>
+</tr>
+<tr>
+<td><code>air.dma_memcpy_nd</code> (L2→L1)</td>
+<td>Tile DMA + local AXI-S stream</td>
+</tr>
+<tr>
+<td><code>air.channel</code> (<code>dma_stream</code>)</td>
+<td>DMA + circuit-switched streaming interconnect</td>
+</tr>
+<tr>
+<td><code>air.channel</code> (<code>dma_packet</code>)</td>
+<td>DMA + packet-switched overlay network</td>
+</tr>
+<tr>
+<td><code>air.channel</code> (<code>cascade</code>)</td>
+<td>Core cascade interface (direct register-to-register)</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>air-to-aie</code> pass translates each <code>air.herd</code> into AIE tile operations (<code>aie.core</code>,
+<code>aie.buffer</code>, <code>aie.lock</code>), routes channels through the switch boxes, and generates the
+SHIM DMA configuration for L3 transfers.</p>
+<h3 id="placement">Placement<a class="headerlink" href="#placement" title="Permanent link">&para;</a></h3>
+<p>Placement of a segment on physical tiles is guided by the optional <code>x_loc</code>/<code>y_loc</code>
+(column/row offset) and <code>x_size</code>/<code>y_size</code> (column/row count) attributes on
+<code>air.segment</code>. The herd's tile indices are added to the segment offset to obtain the
+absolute physical tile location.</p>
+<hr />
+<h2 id="4-gpu-rocdlhip-backend-mapping">4. GPU (ROCDL/HIP) Backend Mapping<a class="headerlink" href="#4-gpu-rocdlhip-backend-mapping" title="Permanent link">&para;</a></h2>
+<p>On AMD GPU targets the AIR hierarchy maps onto the GPU execution model. The
+<code>air-to-rocdl</code> and <code>air-gpu-outlining</code> passes perform this translation. The
+basic mapping uses three levels (launch → segment → herd); on MI3xx devices a
+four-level mapping with nested segments is used to achieve full-device occupancy
+(see §4.2).</p>
+<h3 id="41-hierarchy-mapping">4.1 Hierarchy mapping<a class="headerlink" href="#41-hierarchy-mapping" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>AIR concept</th>
+<th>GPU concept</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>air.launch (%bx,%by) in (%gbx,%gby)</code></td>
+<td><code>gpu.launch</code> grid: <code>gridDim = (gbx, gby, 1)</code></td>
+</tr>
+<tr>
+<td><code>air.segment</code></td>
+<td>Workgroup (thread block); the segment body runs within a single <code>gpu.launch</code></td>
+</tr>
+<tr>
+<td><code>air.herd tile (%x,%y) in (%bx,%by)</code></td>
+<td>Thread block dimensions: <code>blockDim = (bx * wave_size, by, 1)</code>, with each PE materialised as one wavefront</td>
+</tr>
+<tr>
+<td>Herd tile index <code>(%x, %y)</code></td>
+<td>warp-id within block: <code>(threadIdx.x / wave_size, threadIdx.y)</code></td>
+</tr>
+<tr>
+<td>Launch index <code>(%bx, %by)</code></td>
+<td><code>(blockIdx.x, blockIdx.y)</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>air.launch</code> iteration space becomes the <strong>grid</strong> (number of thread blocks), and
+the <code>air.herd</code> iteration space becomes the <strong>block</strong> (number of wavefronts per block).
+The <code>air.segment</code> body is the thread-block body: code that runs once per workgroup before
+and after the per-PE <code>air.herd</code> body.</p>
+<p>After translation the hierarchy is flattened: <code>air.segment</code> and <code>air.herd</code> are erased
+and their bodies are moved into the enclosing <code>gpu.launch</code> region. The
+<code>air-gpu-outlining</code> pass then extracts the <code>gpu.launch</code> body into a <code>gpu.func</code> kernel
+and injects the appropriate <code>gpu.BlockIdOp</code>, <code>gpu.ThreadIdOp</code>, <code>gpu.GridDimOp</code>, and
+<code>gpu.BlockDimOp</code> intrinsics.</p>
+<h3 id="42-device-scale-mapping-via-nested-segments-mi3xx">4.2 Device-scale mapping via nested segments (MI3xx)<a class="headerlink" href="#42-device-scale-mapping-via-nested-segments-mi3xx" title="Permanent link">&para;</a></h3>
+<p>On AMD MI3xx devices the full device can be occupied using a four-level
+hierarchy built from a unit-iteration-space launch, two nested segments, and
+an innermost herd:</p>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>AIR construct</th>
+<th>MI3xx granularity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>air.launch</code> (no iteration space — implicit single instance)</td>
+<td>Whole-device dispatch</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Outer <code>air.segment</code> (<code>backend-granularity=XCD</code>, iteration space = 8)</td>
+<td>All 8 XCDs simultaneously — all instances stamp out concurrently</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Inner <code>air.segment</code> (iteration space = CUs per XCD)</td>
+<td>One CU within the XCD — all instances stamp out concurrently</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>air.herd</code> (iteration space ≤ 32)</td>
+<td>Concurrent warps on that CU</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>air.launch</code></strong> carries no iteration space (an implicit single-point space).
+Its sole purpose at this level is to anchor the co-residency guarantee for
+everything nested inside.</p>
+<p><strong>Outer <code>air.segment</code></strong> (<code>backend-granularity=XCD</code>) has an iteration space of
+cardinality 8, one instance per XCD on the MI3xx device. Because segment
+instances always execute with overlapping lifetimes, all 8 XCDs are occupied
+simultaneously.</p>
+<p><strong>Inner <code>air.segment</code></strong> is nested inside the outer and iterates over the CUs
+within its XCD. Again all instances run concurrently, so every CU in the XCD
+is active at the same time.</p>
+<p><strong><code>air.herd</code></strong> is nested inside the inner segment and targets the warps running
+on that single CU. The iteration space must not exceed 32 PE instances (the
+wavefront-slot limit of a MI3xx CU, as described in §2.3). Iterations within
+the herd may communicate through:</p>
+<ul>
+<li><strong>LDS memory</strong> (<code>L2</code> address space) — per-CU local data store, shared among
+  all warps in the herd.</li>
+<li><strong>Global memory</strong> (<code>L3</code> address space) — device HBM, accessible to all
+  levels of the hierarchy.</li>
+</ul>
+<p>The <code>backend-granularity=XCD</code> attribute on the outer segment is the only
+MI3xx-specific annotation required; all other tiling falls out of the standard
+segment and herd iteration space mechanisms.</p>
+<h3 id="43-memory-space-mapping">4.3 Memory space mapping<a class="headerlink" href="#43-memory-space-mapping" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>AIR memory space</th>
+<th>Enum</th>
+<th>GPU address space</th>
+<th>GPU scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L3 (space 0)</td>
+<td><code>MemorySpace::L3</code></td>
+<td>0 (generic/global)</td>
+<td>Device global memory (HBM)</td>
+</tr>
+<tr>
+<td>L2 (space 1)</td>
+<td><code>MemorySpace::L2</code></td>
+<td>3 (local)</td>
+<td>Workgroup (LDS/shared memory)</td>
+</tr>
+<tr>
+<td>L1 (space 2)</td>
+<td><code>MemorySpace::L1</code></td>
+<td>5 (private)</td>
+<td>Per-thread private memory (VGPRs/scratch)</td>
+</tr>
+</tbody>
+</table>
+<p><code>memref.alloc</code> ops in L2 space are hoisted to <code>gpu.launch</code> <strong>workgroup attributions</strong>
+(shared among all threads in the block). <code>memref.alloc</code> ops in L1 space become
+<strong>private attributions</strong> (one copy per thread). Explicit <code>memref.dealloc</code> ops are
+removed because GPU attributions have implicit kernel-scoped lifetimes.</p>
+<h3 id="44-data-movement-on-gpu">4.4 Data movement on GPU<a class="headerlink" href="#44-data-movement-on-gpu" title="Permanent link">&para;</a></h3>
+<p><code>air.dma_memcpy_nd</code> operations are lowered to explicit SCF loops containing
+<code>memref.load</code> / <code>memref.store</code> pairs. The offsets, sizes, and strides from the DMA
+descriptor drive the loop bounds and index arithmetic. Subsequent lowering passes
+(ROCDL, LLVM CodeGen) optimise these into coalesced global loads, LDS stores, or
+register-to-register moves depending on the inferred address spaces.</p>
+<p><code>gpu.barrier</code> instructions (already present in well-formed AIR GPU programs or inserted
+by the compiler) synchronize threads at workgroup boundaries between DMA-equivalent
+loads into shared memory and subsequent compute.</p>
+<h3 id="45-example-4k4k-matrix-multiplication">4.5 Example: 4k×4k matrix multiplication<a class="headerlink" href="#45-example-4k4k-matrix-multiplication" title="Permanent link">&para;</a></h3>
+<p>The GPU test in <code>test/gpu/4k_4k_mul/air_sync.mlir</code> illustrates the model:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>// 32×32 grid of segments, one per 128×128 output tile
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>air.launch (%bx, %by) in (%nbx=%c32, %nby=%c32)
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>    args(%A=%arg0, %B=%arg1, %C=%arg2) : … {
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>  air.segment @forward_0 args(%bx=%bx, %by=%by, %A=%A, %B=%B, %C=%C) : … {
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>    // Segment body: runs once per workgroup
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>    // L2 allocations — shared memory tiles
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>    %As = memref.alloc() : memref&lt;128x8xf32, 1&gt;   // L2 → LDS
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a>    %Bs = memref.alloc() : memref&lt;8x128xf32, 1&gt;   // L2 → LDS
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>    scf.for %k = 0 to 4096 step 8 {
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a>      // Load A and B tiles into shared memory (DMA equivalent: global → LDS)
+<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a>      // Uses gpu.thread_id to distribute loads across threads
+<a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a>      …
+<a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a>      gpu.barrier
+<a id="__codelineno-14-16" name="__codelineno-14-16" href="#__codelineno-14-16"></a>
+<a id="__codelineno-14-17" name="__codelineno-14-17" href="#__codelineno-14-17"></a>      // 4 herd tiles (PEs = wavefronts) compute the outer product;
+<a id="__codelineno-14-18" name="__codelineno-14-18" href="#__codelineno-14-18"></a>      // 4 PEs × 64 lanes/PE = 256 work items on MI3xx.
+<a id="__codelineno-14-19" name="__codelineno-14-19" href="#__codelineno-14-19"></a>      air.herd @herd_0 tile (%tx, %ty) in (%ntx=%c4, %nty=%c1)
+<a id="__codelineno-14-20" name="__codelineno-14-20" href="#__codelineno-14-20"></a>               args(%As=%As, %Bs=%Bs, …) : … {
+<a id="__codelineno-14-21" name="__codelineno-14-21" href="#__codelineno-14-21"></a>        // L1 accumulation registers (VGPRs)
+<a id="__codelineno-14-22" name="__codelineno-14-22" href="#__codelineno-14-22"></a>        %acc = memref.alloc() : memref&lt;64xf32, 2&gt;  // L1 → private/VGPRs
+<a id="__codelineno-14-23" name="__codelineno-14-23" href="#__codelineno-14-23"></a>        …
+<a id="__codelineno-14-24" name="__codelineno-14-24" href="#__codelineno-14-24"></a>        gpu.barrier
+<a id="__codelineno-14-25" name="__codelineno-14-25" href="#__codelineno-14-25"></a>      }
+<a id="__codelineno-14-26" name="__codelineno-14-26" href="#__codelineno-14-26"></a>    }
+<a id="__codelineno-14-27" name="__codelineno-14-27" href="#__codelineno-14-27"></a>    // Write accumulated results back to L3 (global memory)
+<a id="__codelineno-14-28" name="__codelineno-14-28" href="#__codelineno-14-28"></a>  }
+<a id="__codelineno-14-29" name="__codelineno-14-29" href="#__codelineno-14-29"></a>}
+</code></pre></div>
+<p>The mapping:
+- <code>air.launch</code> → <code>gpu.launch</code> with <code>gridDim = (32, 32, 1)</code>
+- <code>air.segment</code> → workgroup body (executed once per thread block)
+- <code>air.herd tile (%tx, .) in (%c4, %c1)</code> → <code>blockDim = (4 * wave_size, 1, 1)</code>; <code>%tx</code> is the warp-id within the block; lane index inside the PE comes from <code>gpu.lane_id</code>
+- L2 memrefs (space 1) → LDS (shared memory)
+- L1 memrefs (space 2) → VGPRs / private scratch</p>
+<h3 id="46-compilation-pipeline">4.6 Compilation pipeline<a class="headerlink" href="#46-compilation-pipeline" title="Permanent link">&para;</a></h3>
+<p>The full GPU lowering pipeline is:</p>
+<ol>
+<li><strong><code>air-to-rocdl</code></strong> — Flattens <code>air.launch</code>/<code>air.segment</code>/<code>air.herd</code> into a
+   <code>gpu.launch</code>, converts L1/L2 allocations to workgroup/private attributions, and
+   lowers <code>air.dma_memcpy_nd</code> to SCF loops.</li>
+<li><strong><code>air-gpu-outlining</code></strong> — Outlines the <code>gpu.launch</code> body into a <code>gpu.func</code> inside
+   a <code>gpu.module</code>, injects <code>gpu.BlockIdOp</code>, <code>gpu.ThreadIdOp</code>, etc., and converts
+   the launch site to <code>gpu.launch_func</code>.</li>
+<li><strong>LLVM lowering</strong> — Lowers affine, SCF, and CF dialects.</li>
+<li><strong>ROCDL binary generation</strong> — Attaches a ROCDL target descriptor (<code>rocdl-attach-
+   target</code>), converts <code>gpu.module</code> to ROCDL IR (<code>convert-gpu-to-rocdl</code>), and
+   serialises the GPU binary with <code>gpu-module-to-binary</code>.</li>
+</ol>
+<p>See <a href="../buildingGPU/">buildingGPU.md</a> for build instructions and the complete
+<code>aircc</code> compilation pipeline.</p>
+<hr />
+<h2 id="5-summary-comparison">5. Summary Comparison<a class="headerlink" href="#5-summary-comparison" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>NPU (AIE)</th>
+<th>GPU (ROCDL)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>air.launch</code> iteration point</td>
+<td>Device-level work unit</td>
+<td>One GPU thread block</td>
+</tr>
+<tr>
+<td><code>air.segment</code></td>
+<td>Rectangle of AIE tiles + memory tiles</td>
+<td>Thread block workgroup body</td>
+</tr>
+<tr>
+<td><code>air.herd</code> tile</td>
+<td>Single AIE compute tile</td>
+<td>Single GPU wavefront</td>
+</tr>
+<tr>
+<td>L1 (space 2)</td>
+<td>32 KB tile-local data memory</td>
+<td>Thread-private VGPRs / scratch</td>
+</tr>
+<tr>
+<td>L2 (space 1)</td>
+<td>Memory tiles / URAMs</td>
+<td>LDS (shared memory, ~64 KB / CU)</td>
+</tr>
+<tr>
+<td>L3 (space 0)</td>
+<td>DDR via NOC</td>
+<td>HBM via global memory</td>
+</tr>
+<tr>
+<td><code>dma_memcpy_nd</code> (intra-rank)</td>
+<td>AIE Shim/Tile DMA engines</td>
+<td>SCF load/store loops</td>
+</tr>
+<tr>
+<td><code>dma_memcpy_nd</code> (cross-rank, <code>src_rank</code>/<code>dst_rank</code>)</td>
+<td>—</td>
+<td>Symmetric heap peer addressing (planned)</td>
+</tr>
+<tr>
+<td><code>channel</code> (<code>npu_dma_stream</code>)</td>
+<td>Streaming AXI-S switch</td>
+<td>n/a</td>
+</tr>
+<tr>
+<td><code>channel</code> (<code>npu_dma_packet</code>)</td>
+<td>Packet-switched AXI-S overlay</td>
+<td>n/a</td>
+</tr>
+<tr>
+<td><code>channel</code> (<code>npu_cascade</code>)</td>
+<td>Core cascade interface</td>
+<td>n/a</td>
+</tr>
+<tr>
+<td><code>channel</code> (<code>npu_mmio</code>)</td>
+<td>Host MMIO blockwrite</td>
+<td>n/a</td>
+</tr>
+<tr>
+<td><code>channel</code> (<code>gpu_symmetric_heap</code>)</td>
+<td>n/a</td>
+<td>Symmetric heap peer addressing (planned)</td>
+</tr>
+<tr>
+<td><code>air.symmetric</code> memref alloc</td>
+<td>n/a</td>
+<td><code>mgpuSymmetricAlloc</code> (planned)</td>
+</tr>
+<tr>
+<td>Synchronization</td>
+<td>AIE locks</td>
+<td><code>gpu.barrier</code> (intra-rank), <code>mgpuBarrier</code> (cross-rank)</td>
+</tr>
+<tr>
+<td><code>!air.token</code> (dependency)</td>
+<td>AIE runtime completion signals</td>
+<td>GPU stream/event dependencies</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../programming_guide/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Programming Guide">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Programming Guide
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../AIRAsyncConcurrency/" class="md-footer__link md-footer__link--next" aria-label="Next: Async Concurrency">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Async Concurrency
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://github.com/Xilinx/mlir-air" target="_blank" rel="noopener" title="mlir-air on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.indexes", "navigation.top", "navigation.footer", "search.suggest", "search.highlight", "content.tabs.link", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

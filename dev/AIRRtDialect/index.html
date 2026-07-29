@@ -1,0 +1,2716 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Compiler infrastructure for mapping AI workloads onto AMD NPUs and Versal AI Engine arrays through MLIR dialects.">
+      
+      
+        <meta name="author" content="AMD Advanced Micro Devices">
+      
+      
+      
+        <link rel="prev" href="../AIRDialect/">
+      
+      
+        <link rel="next" href="../AIRConversionPasses/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>AIRRt Dialect - MLIR-AIR</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/css/air.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#airrt-dialect" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="MLIR-AIR" class="md-header__button md-logo" aria-label="MLIR-AIR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            MLIR-AIR
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              AIRRt Dialect
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Xilinx/mlir-air" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Xilinx/mlir-air
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../getting_started/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../programming_guide/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Programming Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../programming_examples/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Programming Examples
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../llms/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  LLMs on NPU
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../ai_skills/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Official AI Skills
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../mlir_reference/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  MLIR Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../used_in/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Used in / Cited in
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="MLIR-AIR" class="md-nav__button md-logo" aria-label="MLIR-AIR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    MLIR-AIR
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Xilinx/mlir-air" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Xilinx/mlir-air
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting_started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../buildingRyzenLin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ryzen AI (Linux)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../buildingGPU/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU (Linux)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Programming Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Programming Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../programming_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Programming Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRComputeModel/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRAsyncConcurrency/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Async Concurrency
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../GEMMCaseStudy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GEMM Case Study
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../programming_examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Programming Examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../llms/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLMs on NPU
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    LLMs on NPU
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../llms/perf-history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance History
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ai_skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Official AI Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MLIR Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    MLIR Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mlir_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MLIR Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRDialect/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AIR Dialect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AIRRt Dialect
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AIRRt Dialect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Operations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#airrtalloc-xilinxairrtallocop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.alloc (xilinx::airrt::AllocOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.alloc (xilinx::airrt::AllocOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtdealloc-xilinxairrtdeallocop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.dealloc (xilinx::airrt::DeallocOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.dealloc (xilinx::airrt::DeallocOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operands:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtdma_memcpy_nd-xilinxairrtdmamemcpyndop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.dma_memcpy_nd (xilinx::airrt::DmaMemcpyNdOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.dma_memcpy_nd (xilinx::airrt::DmaMemcpyNdOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operands_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operands:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtherd_load-xilinxairrtherdloadop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.herd_load (xilinx::airrt::HerdLoadOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.herd_load (xilinx::airrt::HerdLoadOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#attributes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attributes:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operands_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operands:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtherd_metadata-xilinxairrtherdmetadataop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.herd_metadata (xilinx::airrt::HerdMetadataOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.herd_metadata (xilinx::airrt::HerdMetadataOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#attributes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attributes:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtherd_metadata_terminator-xilinxairrtherdmetadataterminatorop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.herd_metadata_terminator (xilinx::airrt::HerdMetadataTerminatorOp)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtmemcpy_nd-xilinxairrtmemcpyndop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.memcpy_nd (xilinx::airrt::MemcpyNdOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.memcpy_nd (xilinx::airrt::MemcpyNdOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operands_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operands:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtmodule_metadata-xilinxairrtmodulemetadataop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.module_metadata (xilinx::airrt::ModuleMetadataOp)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtmodule_metadata_terminator-xilinxairrtmodulemetadataterminatorop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.module_metadata_terminator (xilinx::airrt::ModuleMetadataTerminatorOp)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtsegment_load-xilinxairrtsegmentloadop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.segment_load (xilinx::airrt::SegmentLoadOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.segment_load (xilinx::airrt::SegmentLoadOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#attributes_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attributes:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtsegment_metadata-xilinxairrtsegmentmetadataop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.segment_metadata (xilinx::airrt::SegmentMetadataOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.segment_metadata (xilinx::airrt::SegmentMetadataOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#attributes_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attributes:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtsegment_metadata_terminator-xilinxairrtsegmentmetadataterminatorop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.segment_metadata_terminator (xilinx::airrt::SegmentMetadataTerminatorOp)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtwait_all-xilinxairrtwaitallop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.wait_all (xilinx::airrt::WaitAllOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.wait_all (xilinx::airrt::WaitAllOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operands_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operands:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#type-constraints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Type constraints
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Type constraints">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#event-type" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        event type
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRConversionPasses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conversion Passes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRTransformPasses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Transform Passes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRTransformOps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Transform Ops
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../used_in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Used in / Cited in
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Operations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#airrtalloc-xilinxairrtallocop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.alloc (xilinx::airrt::AllocOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.alloc (xilinx::airrt::AllocOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtdealloc-xilinxairrtdeallocop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.dealloc (xilinx::airrt::DeallocOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.dealloc (xilinx::airrt::DeallocOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operands:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtdma_memcpy_nd-xilinxairrtdmamemcpyndop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.dma_memcpy_nd (xilinx::airrt::DmaMemcpyNdOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.dma_memcpy_nd (xilinx::airrt::DmaMemcpyNdOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operands_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operands:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtherd_load-xilinxairrtherdloadop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.herd_load (xilinx::airrt::HerdLoadOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.herd_load (xilinx::airrt::HerdLoadOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#attributes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attributes:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operands_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operands:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtherd_metadata-xilinxairrtherdmetadataop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.herd_metadata (xilinx::airrt::HerdMetadataOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.herd_metadata (xilinx::airrt::HerdMetadataOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#attributes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attributes:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtherd_metadata_terminator-xilinxairrtherdmetadataterminatorop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.herd_metadata_terminator (xilinx::airrt::HerdMetadataTerminatorOp)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtmemcpy_nd-xilinxairrtmemcpyndop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.memcpy_nd (xilinx::airrt::MemcpyNdOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.memcpy_nd (xilinx::airrt::MemcpyNdOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operands_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operands:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtmodule_metadata-xilinxairrtmodulemetadataop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.module_metadata (xilinx::airrt::ModuleMetadataOp)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtmodule_metadata_terminator-xilinxairrtmodulemetadataterminatorop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.module_metadata_terminator (xilinx::airrt::ModuleMetadataTerminatorOp)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtsegment_load-xilinxairrtsegmentloadop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.segment_load (xilinx::airrt::SegmentLoadOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.segment_load (xilinx::airrt::SegmentLoadOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#attributes_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attributes:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtsegment_metadata-xilinxairrtsegmentmetadataop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.segment_metadata (xilinx::airrt::SegmentMetadataOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.segment_metadata (xilinx::airrt::SegmentMetadataOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#attributes_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attributes:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtsegment_metadata_terminator-xilinxairrtsegmentmetadataterminatorop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.segment_metadata_terminator (xilinx::airrt::SegmentMetadataTerminatorOp)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#airrtwait_all-xilinxairrtwaitallop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        airrt.wait_all (xilinx::airrt::WaitAllOp)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="airrt.wait_all (xilinx::airrt::WaitAllOp)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operands_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operands:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results:
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#type-constraints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Type constraints
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Type constraints">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#event-type" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        event type
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<!-- Autogenerated by mlir-tblgen; don't manually edit -->
+
+<h1 id="airrt-dialect">'airrt' Dialect<a class="headerlink" href="#airrt-dialect" title="Permanent link">&para;</a></h1>
+<p>The <code>airrt</code> dialect is an IR for interacting with the AIR runtime.
+It enapsulates data structures and functions available in the runtime and
+can be lowered to a combination of standard and LLVM dialects.</p>
+<div class="toc">
+<ul>
+<li><a href="#airrt-dialect">'airrt' Dialect</a><ul>
+<li><a href="#operations">Operations</a><ul>
+<li><a href="#airrtalloc-xilinxairrtallocop">airrt.alloc (xilinx::airrt::AllocOp)</a><ul>
+<li><a href="#results">Results:</a></li>
+</ul>
+</li>
+<li><a href="#airrtdealloc-xilinxairrtdeallocop">airrt.dealloc (xilinx::airrt::DeallocOp)</a><ul>
+<li><a href="#operands">Operands:</a></li>
+</ul>
+</li>
+<li><a href="#airrtdma_memcpy_nd-xilinxairrtdmamemcpyndop">airrt.dma_memcpy_nd (xilinx::airrt::DmaMemcpyNdOp)</a><ul>
+<li><a href="#operands_1">Operands:</a></li>
+<li><a href="#results_1">Results:</a></li>
+</ul>
+</li>
+<li><a href="#airrtherd_load-xilinxairrtherdloadop">airrt.herd_load (xilinx::airrt::HerdLoadOp)</a><ul>
+<li><a href="#attributes">Attributes:</a></li>
+<li><a href="#operands_2">Operands:</a></li>
+<li><a href="#results_2">Results:</a></li>
+</ul>
+</li>
+<li><a href="#airrtherd_metadata-xilinxairrtherdmetadataop">airrt.herd_metadata (xilinx::airrt::HerdMetadataOp)</a><ul>
+<li><a href="#attributes_1">Attributes:</a></li>
+</ul>
+</li>
+<li><a href="#airrtherd_metadata_terminator-xilinxairrtherdmetadataterminatorop">airrt.herd_metadata_terminator (xilinx::airrt::HerdMetadataTerminatorOp)</a></li>
+<li><a href="#airrtmemcpy_nd-xilinxairrtmemcpyndop">airrt.memcpy_nd (xilinx::airrt::MemcpyNdOp)</a><ul>
+<li><a href="#operands_3">Operands:</a></li>
+<li><a href="#results_3">Results:</a></li>
+</ul>
+</li>
+<li><a href="#airrtmodule_metadata-xilinxairrtmodulemetadataop">airrt.module_metadata (xilinx::airrt::ModuleMetadataOp)</a></li>
+<li><a href="#airrtmodule_metadata_terminator-xilinxairrtmodulemetadataterminatorop">airrt.module_metadata_terminator (xilinx::airrt::ModuleMetadataTerminatorOp)</a></li>
+<li><a href="#airrtsegment_load-xilinxairrtsegmentloadop">airrt.segment_load (xilinx::airrt::SegmentLoadOp)</a><ul>
+<li><a href="#attributes_2">Attributes:</a></li>
+<li><a href="#results_4">Results:</a></li>
+</ul>
+</li>
+<li><a href="#airrtsegment_metadata-xilinxairrtsegmentmetadataop">airrt.segment_metadata (xilinx::airrt::SegmentMetadataOp)</a><ul>
+<li><a href="#attributes_3">Attributes:</a></li>
+</ul>
+</li>
+<li><a href="#airrtsegment_metadata_terminator-xilinxairrtsegmentmetadataterminatorop">airrt.segment_metadata_terminator (xilinx::airrt::SegmentMetadataTerminatorOp)</a></li>
+<li><a href="#airrtwait_all-xilinxairrtwaitallop">airrt.wait_all (xilinx::airrt::WaitAllOp)</a><ul>
+<li><a href="#operands_4">Operands:</a></li>
+<li><a href="#results_5">Results:</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a href="#type-constraints">Type constraints</a><ul>
+<li><a href="#event-type">event type</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+<h2 id="operations">Operations<a class="headerlink" href="#operations" title="Permanent link">&para;</a></h2>
+<h3 id="airrtalloc-xilinxairrtallocop"><code>airrt.alloc</code> (xilinx::airrt::AllocOp)<a class="headerlink" href="#airrtalloc-xilinxairrtallocop" title="Permanent link">&para;</a></h3>
+<p><em>AIRRt Allocation Op</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>operation ::= `airrt.alloc` attr-dict `:` type($result)
+</code></pre></div>
+<p>AIRRt Allocation Op</p>
+<h4 id="results">Results:<a class="headerlink" href="#results" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Result</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>result</code></td>
+<td>memref of any type values</td>
+</tr>
+</tbody>
+</table>
+<h3 id="airrtdealloc-xilinxairrtdeallocop"><code>airrt.dealloc</code> (xilinx::airrt::DeallocOp)<a class="headerlink" href="#airrtdealloc-xilinxairrtdeallocop" title="Permanent link">&para;</a></h3>
+<p><em>AIRRt Deallocation Op</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>operation ::= `airrt.dealloc` attr-dict $memref `:` type($memref)
+</code></pre></div>
+<p>AIRRt Deallocation Op</p>
+<h4 id="operands">Operands:<a class="headerlink" href="#operands" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Operand</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>memref</code></td>
+<td>memref of any type values</td>
+</tr>
+</tbody>
+</table>
+<h3 id="airrtdma_memcpy_nd-xilinxairrtdmamemcpyndop"><code>airrt.dma_memcpy_nd</code> (xilinx::airrt::DmaMemcpyNdOp)<a class="headerlink" href="#airrtdma_memcpy_nd-xilinxairrtdmamemcpyndop" title="Permanent link">&para;</a></h3>
+<p><em>Dma operator</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>operation ::= `airrt.dma_memcpy_nd` `(` $id `,`$x `,`$y `,`$memref
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>              `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>              `[` $length3`,`$length2`,`$length1`,`$length0 `]` `,`
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>              `[` $stride3`,`$stride2`,`$stride1`,`$stride0 `]` `)` attr-dict `:`
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>              `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>              `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>              `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>              `[` type($stride3)`,`type($stride2)`,`type($stride1)`,` type($stride0) `]` `)` (`:` type($event)^)?
+</code></pre></div>
+<p>nd half dma operator</p>
+<h4 id="operands_1">Operands:<a class="headerlink" href="#operands_1" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Operand</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>id</code></td>
+<td>32-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>x</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>y</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>memref</code></td>
+<td>ranked or unranked memref of any type values</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>offset3</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>offset2</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>offset1</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>offset0</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>length3</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>length2</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>length1</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>length0</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>stride3</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>stride2</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>stride1</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>stride0</code></td>
+<td>64-bit signless integer</td>
+</tr>
+</tbody>
+</table>
+<h4 id="results_1">Results:<a class="headerlink" href="#results_1" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Result</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>event</code></td>
+<td>event type</td>
+</tr>
+</tbody>
+</table>
+<h3 id="airrtherd_load-xilinxairrtherdloadop"><code>airrt.herd_load</code> (xilinx::airrt::HerdLoadOp)<a class="headerlink" href="#airrtherd_load-xilinxairrtherdloadop" title="Permanent link">&para;</a></h3>
+<p><em>Load a herd</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>operation ::= `airrt.herd_load` $sym_name ` ``(` $rtp `)` attr-dict `:` functional-type($rtp, results)
+</code></pre></div>
+<h4 id="attributes">Attributes:<a class="headerlink" href="#attributes" title="Permanent link">&para;</a></h4>
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
+
+<h4 id="operands_2">Operands:<a class="headerlink" href="#operands_2" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Operand</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>rtp</code></td>
+<td>variadic of any type</td>
+</tr>
+</tbody>
+</table>
+<h4 id="results_2">Results:<a class="headerlink" href="#results_2" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Result</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>h</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>event</code></td>
+<td>event type</td>
+</tr>
+</tbody>
+</table>
+<h3 id="airrtherd_metadata-xilinxairrtherdmetadataop"><code>airrt.herd_metadata</code> (xilinx::airrt::HerdMetadataOp)<a class="headerlink" href="#airrtherd_metadata-xilinxairrtherdmetadataop" title="Permanent link">&para;</a></h3>
+<p><em>Runtime metadata for a single herd</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>operation ::= `airrt.herd_metadata` attr-dict
+</code></pre></div>
+<p>Runtime metadata for a single herd.</p>
+<p>Traits: <code>HasParent&lt;SegmentMetadataOp&gt;</code>, <code>SingleBlockImplicitTerminator&lt;HerdMetadataTerminatorOp&gt;</code>, <code>SingleBlock</code></p>
+<h4 id="attributes_1">Attributes:<a class="headerlink" href="#attributes_1" title="Permanent link">&para;</a></h4>
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
+
+<h3 id="airrtherd_metadata_terminator-xilinxairrtherdmetadataterminatorop"><code>airrt.herd_metadata_terminator</code> (xilinx::airrt::HerdMetadataTerminatorOp)<a class="headerlink" href="#airrtherd_metadata_terminator-xilinxairrtherdmetadataterminatorop" title="Permanent link">&para;</a></h3>
+<p><em>Implicit terminator for HerdMetadataOp's region</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>operation ::= `airrt.herd_metadata_terminator` attr-dict
+</code></pre></div>
+<p>Traits: <code>HasParent&lt;HerdMetadataOp&gt;</code>, <code>Terminator</code></p>
+<h3 id="airrtmemcpy_nd-xilinxairrtmemcpyndop"><code>airrt.memcpy_nd</code> (xilinx::airrt::MemcpyNdOp)<a class="headerlink" href="#airrtmemcpy_nd-xilinxairrtmemcpyndop" title="Permanent link">&para;</a></h3>
+<p><em>Dma operator</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>operation ::= `airrt.memcpy_nd` `(` $dst`,`$src`,`
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>              `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>              `[` $length3`,`$length2`,`$length1`,`$length0 `]` `,`
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>              `[` $stride3`,`$stride2`,`$stride1`,`$stride0 `]` `)` attr-dict `:`
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>              `(` type($dst)`,`type($src)`,`
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>              `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>              `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>              `[` type($stride3)`,`type($stride2)`,`type($stride1)`,` type($stride0) `]` `)`  (`:` type($event)^)?
+</code></pre></div>
+<p>nd memcpy operator</p>
+<h4 id="operands_3">Operands:<a class="headerlink" href="#operands_3" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Operand</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>dst</code></td>
+<td>ranked or unranked memref of any type values</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>src</code></td>
+<td>ranked or unranked memref of any type values</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>offset3</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>offset2</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>offset1</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>offset0</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>length3</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>length2</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>length1</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>length0</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>stride3</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>stride2</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>stride1</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>stride0</code></td>
+<td>64-bit signless integer</td>
+</tr>
+</tbody>
+</table>
+<h4 id="results_3">Results:<a class="headerlink" href="#results_3" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Result</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>event</code></td>
+<td>event type</td>
+</tr>
+</tbody>
+</table>
+<h3 id="airrtmodule_metadata-xilinxairrtmodulemetadataop"><code>airrt.module_metadata</code> (xilinx::airrt::ModuleMetadataOp)<a class="headerlink" href="#airrtmodule_metadata-xilinxairrtmodulemetadataop" title="Permanent link">&para;</a></h3>
+<p><em>Global metadata for the module</em></p>
+<p>This op contains a region containing airrt.segment_metadata ops,
+which give information about the segments in the module.</p>
+<p>There is one of these per module.</p>
+<p>Traits: <code>SingleBlockImplicitTerminator&lt;ModuleMetadataTerminatorOp&gt;</code>, <code>SingleBlock</code></p>
+<h3 id="airrtmodule_metadata_terminator-xilinxairrtmodulemetadataterminatorop"><code>airrt.module_metadata_terminator</code> (xilinx::airrt::ModuleMetadataTerminatorOp)<a class="headerlink" href="#airrtmodule_metadata_terminator-xilinxairrtmodulemetadataterminatorop" title="Permanent link">&para;</a></h3>
+<p><em>Implicit terminator for ModuleMetadataOp's region</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>operation ::= `airrt.module_metadata_terminator` attr-dict
+</code></pre></div>
+<p>Traits: <code>HasParent&lt;ModuleMetadataOp&gt;</code>, <code>Terminator</code></p>
+<h3 id="airrtsegment_load-xilinxairrtsegmentloadop"><code>airrt.segment_load</code> (xilinx::airrt::SegmentLoadOp)<a class="headerlink" href="#airrtsegment_load-xilinxairrtsegmentloadop" title="Permanent link">&para;</a></h3>
+<p><em>Load a segment</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>operation ::= `airrt.segment_load` $sym_name attr-dict `:` type($p) (`,` type($event)^)?
+</code></pre></div>
+<h4 id="attributes_2">Attributes:<a class="headerlink" href="#attributes_2" title="Permanent link">&para;</a></h4>
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
+
+<h4 id="results_4">Results:<a class="headerlink" href="#results_4" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Result</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>p</code></td>
+<td>64-bit signless integer</td>
+</tr>
+<tr>
+<td style="text-align: center;"><code>event</code></td>
+<td>event type</td>
+</tr>
+</tbody>
+</table>
+<h3 id="airrtsegment_metadata-xilinxairrtsegmentmetadataop"><code>airrt.segment_metadata</code> (xilinx::airrt::SegmentMetadataOp)<a class="headerlink" href="#airrtsegment_metadata-xilinxairrtsegmentmetadataop" title="Permanent link">&para;</a></h3>
+<p><em>Runtime metadata for one air region</em></p>
+<p>This op contains a region containing airrt.herd_metadata ops,
+which give information about the herds in the module.</p>
+<p>Traits: <code>HasParent&lt;ModuleMetadataOp&gt;</code>, <code>SingleBlockImplicitTerminator&lt;SegmentMetadataTerminatorOp&gt;</code>, <code>SingleBlock</code></p>
+<h4 id="attributes_3">Attributes:<a class="headerlink" href="#attributes_3" title="Permanent link">&para;</a></h4>
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
+
+<h3 id="airrtsegment_metadata_terminator-xilinxairrtsegmentmetadataterminatorop"><code>airrt.segment_metadata_terminator</code> (xilinx::airrt::SegmentMetadataTerminatorOp)<a class="headerlink" href="#airrtsegment_metadata_terminator-xilinxairrtsegmentmetadataterminatorop" title="Permanent link">&para;</a></h3>
+<p><em>Implicit terminator for SegmentMetadataOp's region</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>operation ::= `airrt.segment_metadata_terminator` attr-dict
+</code></pre></div>
+<p>Traits: <code>HasParent&lt;SegmentMetadataOp&gt;</code>, <code>Terminator</code></p>
+<h3 id="airrtwait_all-xilinxairrtwaitallop"><code>airrt.wait_all</code> (xilinx::airrt::WaitAllOp)<a class="headerlink" href="#airrtwait_all-xilinxairrtwaitallop" title="Permanent link">&para;</a></h3>
+<p><em>Wait for all operator</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>operation ::= `airrt.wait_all` ($events^)? attr-dict (`:` type($event)^)?
+</code></pre></div>
+<p>Block and wait for all events before preceding.
+Optionally return an event.</p>
+<h4 id="operands_4">Operands:<a class="headerlink" href="#operands_4" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Operand</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>events</code></td>
+<td>variadic of event type</td>
+</tr>
+</tbody>
+</table>
+<h4 id="results_5">Results:<a class="headerlink" href="#results_5" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Result</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><code>event</code></td>
+<td>event type</td>
+</tr>
+</tbody>
+</table>
+<h2 id="type-constraints">Type constraints<a class="headerlink" href="#type-constraints" title="Permanent link">&para;</a></h2>
+<h3 id="event-type">event type<a class="headerlink" href="#event-type" title="Permanent link">&para;</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../AIRDialect/" class="md-footer__link md-footer__link--prev" aria-label="Previous: AIR Dialect">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                AIR Dialect
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../AIRConversionPasses/" class="md-footer__link md-footer__link--next" aria-label="Next: Conversion Passes">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Conversion Passes
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://github.com/Xilinx/mlir-air" target="_blank" rel="noopener" title="mlir-air on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.indexes", "navigation.top", "navigation.footer", "search.suggest", "search.highlight", "content.tabs.link", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
