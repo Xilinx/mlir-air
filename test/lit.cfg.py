@@ -266,7 +266,11 @@ tool_dirs = [
 tools = [
     "aie-opt",
     "aie-translate",
-    "aiecc.py",
+    # mlir-aie v1.4.0 replaced the aiecc.py Python wrapper with a native C++
+    # aiecc binary. Register aiecc.py before aiecc so the longer token wins,
+    # and alias it to the binary so existing tests keep working unchanged.
+    ToolSubst("aiecc.py", FindTool("aiecc")),
+    "aiecc",
     "aircc",
     "air-opt",
     "ld.lld",
