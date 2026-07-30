@@ -254,9 +254,9 @@ jobs:
             if [ x"$ENABLE_RTTI" == x"OFF" ]; then
               NO_RTTI="-no-rtti"
               NO_RTTI_UNDERSCORE="_no_rtti"
-              MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2"
+              MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.0/"
             else
-              MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4/"
+              MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.0/"
             fi
 
             VERSION=$(utils/clone-llvm.sh --get-wheel-version)
@@ -331,7 +331,7 @@ jobs:
             ```bash
             pip install 'mlir_air[aie]' \
               -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }} \
-              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-4' || 'latest-wheels-no-rtti-2' }} \
+              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.0/ \
               -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
             ```
 
@@ -434,9 +434,9 @@ jobs:
           NO_RTTI_UNDERSCORE=""
           if [ x"${{ matrix.ENABLE_RTTI }}" == x"OFF" ]; then
             NO_RTTI_UNDERSCORE="_no_rtti"
-            MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2"
+            MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.0/"
           else
-            MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4/"
+            MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.0/"
           fi
 
           MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
@@ -528,7 +528,7 @@ jobs:
             ```bash
             pip install 'mlir_air[aie]' \
               -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti' }} \
-              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/${{ matrix.ENABLE_RTTI == 'ON' && 'latest-wheels-4' || 'latest-wheels-no-rtti-2' }} \
+              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.0/ \
               -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
             ```
 
