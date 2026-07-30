@@ -1289,7 +1289,9 @@ static LogicalResult runAieCompilation() {
 
     // When tracing, also request the address-annotated module so downstream
     // trace parsing (aie.utils.trace.parse) can map events back to source.
-    // The v1.4.0 aiecc writes this to <tmpdir>/input_with_addresses.mlir.
+    // The v1.4.0 aiecc writes --get-* artifacts (including
+    // input_with_addresses.mlir) to the current working directory, not the
+    // --tmpdir workdir.
     if (traceSize > 0)
       aieccCmd.push_back("--get-input-with-addresses");
 
