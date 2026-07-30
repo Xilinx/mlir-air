@@ -733,7 +733,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         rewriter.getIndexType(),          // result type
         metadata,                         // alloc symbol reference
         rewriter.getBoolAttr(issueToken), // issue_token = true for S2MM / paced
-        rewriter.getI32IntegerAttr(repeatCount) // repeat_count from highest dim
+        rewriter.getI32IntegerAttr(
+            repeatCount), // repeat_count from highest dim
+        Value()           // repeat_count_val (dynamic repeat count unused here)
     );
     if (paced)
       configTaskOp->setAttr(air::attrs::PreserveShimDmaOrder,
@@ -1092,7 +1094,9 @@ public:
             rewriter.setInsertionPoint(op);
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
-            AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
+            AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef,
+                                       IntegerAttr(), IntegerAttr(),
+                                       IntegerAttr(), AIEX::ExpandModeAttr());
           } else if (outputElf || multiIter) {
             // No PDI reload needed (no repeat_count DMAs), but still need
             // between-iteration synchronization to prevent the next
@@ -1256,7 +1260,9 @@ public:
           if (outputElf && deviceNeedsLockReset(device)) {
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
-            AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
+            AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef,
+                                       IntegerAttr(), IntegerAttr(),
+                                       IntegerAttr(), AIEX::ExpandModeAttr());
           } else if (outputElf || multiIter) {
             // No PDI reload needed, but emit NpuDmaWaitOp for any shim
             // channels not already waited on to synchronize before the
@@ -1463,7 +1469,8 @@ AIE::DeviceOp createMainDeviceWrapper(
 
     // Create aiex.configure @device_name { ... }
     auto configureOp = AIEX::ConfigureOp::create(
-        builder, loc, FlatSymbolRefAttr::get(builder.getContext(), deviceName));
+        builder, loc, FlatSymbolRefAttr::get(builder.getContext(), deviceName),
+        AIEX::ExpandModeAttr());
     configureOp.getBody().push_back(new Block);
     builder.setInsertionPointToStart(&configureOp.getBody().front());
 
@@ -3576,6 +3583,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               arith::ConstantOp::create(builder, patchLoc, builder.getI32Type(),
                                         builder.getI32IntegerAttr(buff_offset));
           AIEX::NpuAddressPatchOp::create(builder, patchLoc, addr,
+                                          /* addr_val */ Value(),
                                           /* ddr_id */ 2, buffOffsetVal);
         }
 

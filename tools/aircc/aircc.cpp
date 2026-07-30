@@ -1249,26 +1249,29 @@ static LogicalResult runAieCompilation() {
     aieccCmd.push_back(*aiecc);
 
     if (verbose)
-      aieccCmd.push_back("-v");
+      aieccCmd.push_back("--verbose");
 
-    aieccCmd.push_back("--no-aiesim");
     aieccCmd.push_back(xchesscc ? "--xchesscc" : "--no-xchesscc");
     aieccCmd.push_back(xbridge ? "--xbridge" : "--no-xbridge");
-    aieccCmd.push_back("--no-compile-host");
     aieccCmd.push_back("--tmpdir=" + tmpDir.getValue());
 
-    // Output format options
+    // Output format options. The mlir-aie v1.4.0 aiecc is a declarative
+    // driver: each artifact is requested with --get-<name> and named with
+    // --<name>-name=. (Replaces the older --aie-generate-* toggles.)
     if (outputFormat == OF_elf) {
-      aieccCmd.push_back("--generate-full-elf");
+      aieccCmd.push_back("--get-full-elf");
       aieccCmd.push_back("--expand-load-pdis");
       aieccCmd.push_back("--full-elf-name=" + elfName.getValue());
     } else if (outputFormat == OF_xclbin) {
-      aieccCmd.push_back("--aie-generate-xclbin");
+      aieccCmd.push_back("--get-xclbin");
       aieccCmd.push_back("--xclbin-name=" + xclbinFile);
     } else if (outputFormat == OF_txn) {
-      aieccCmd.push_back("--aie-generate-txn");
+      aieccCmd.push_back("--get-txn");
+      aieccCmd.push_back("--txn-name=" + (outputFilename.empty()
+                                              ? std::string("aie.txn.mlir")
+                                              : outputFilename.getValue()));
     } else if (outputFormat == OF_pdi) {
-      aieccCmd.push_back("--aie-generate-pdi");
+      aieccCmd.push_back("--get-pdi");
       aieccCmd.push_back("--pdi-name=" + pdiName.getValue());
     }
     // OF_none = no output generation options
@@ -1280,9 +1283,15 @@ static LogicalResult runAieCompilation() {
     //   shim DMAs at dispatch time.
     // - xclbin/txn: always needed.
     if (outputFormat != OF_elf && outputFormat != OF_none) {
-      aieccCmd.push_back("--aie-generate-npu-insts");
+      aieccCmd.push_back("--get-npu-insts");
       aieccCmd.push_back("--npu-insts-name=" + instsFile);
     }
+
+    // When tracing, also request the address-annotated module so downstream
+    // trace parsing (aie.utils.trace.parse) can map events back to source.
+    // The v1.4.0 aiecc writes this to <tmpdir>/input_with_addresses.mlir.
+    if (traceSize > 0)
+      aieccCmd.push_back("--get-input-with-addresses");
 
     // Xclbin metadata (xclbin mode only)
     if (outputFormat == OF_xclbin) {
