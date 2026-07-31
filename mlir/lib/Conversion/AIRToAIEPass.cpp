@@ -1789,25 +1789,29 @@ LogicalResult createAIEModulesAndOutlineCores(
       llvm::SmallDenseSet<Value> ownerBufferAliases;
       collectBufferAliases(memref, ownerBufferAliases);
       auto coreHasDmaAccess = [&](AIE::CoreOp coreOp) {
-        bool found = false;
-        coreOp.walk([&](Operation *op) {
-          if (!isa<air::ChannelPutOp, air::ChannelGetOp>(op))
-            return;
-          if (!accessReachableInCore(op))
-            return;
-          for (Value operand : op->getOperands())
-            if (ownerBufferAliases.contains(operand))
-              found = true;
-        });
-        return found;
+        return coreOp
+            .walk([&](Operation *op) {
+              if (!isa<air::ChannelPutOp, air::ChannelGetOp>(op) ||
+                  !accessReachableInCore(op))
+                return WalkResult::advance();
+              for (Value operand : op->getOperands())
+                if (ownerBufferAliases.contains(operand))
+                  return WalkResult::interrupt();
+              return WalkResult::advance();
+            })
+            .wasInterrupted();
       };
-      SmallVector<AIE::CoreOp> orderedCandidates;
-      for (auto coreOp : coreOps)
+      // Partition once (each core walked a single time): DMA-accessor tiles
+      // first, then the rest, preserving relative order.
+      SmallVector<AIE::CoreOp> orderedCandidates, nonDmaCandidates;
+      for (auto coreOp : coreOps) {
         if (coreHasDmaAccess(coreOp))
           orderedCandidates.push_back(coreOp);
-      for (auto coreOp : coreOps)
-        if (!coreHasDmaAccess(coreOp))
-          orderedCandidates.push_back(coreOp);
+        else
+          nonDmaCandidates.push_back(coreOp);
+      }
+      orderedCandidates.append(nonDmaCandidates.begin(),
+                               nonDmaCandidates.end());
 
       AIE::TileOp ownerTile = nullptr;
       for (auto coreOp : orderedCandidates) {

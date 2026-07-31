@@ -477,11 +477,11 @@ bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
     llvm::SmallDenseSet<Operation *> opaqueCalls;
     for (Value alias : aliases)
       for (Operation *user : alias.getUsers())
+        // `user` is a user of `alias`, so the buffer is already one of its
+        // operands; no need to re-scan. The set dedups calls seen via aliases.
         if (isa<mlir::CallOpInterface>(user) &&
             !isa<mlir::MemoryEffectOpInterface>(user))
-          for (Value operand : user->getOperands())
-            if (aliases.contains(operand))
-              opaqueCalls.insert(user);
+          opaqueCalls.insert(user);
     for (Operation *call : opaqueCalls) {
       llvm::SmallSet<int64_t, 8> callCores;
       for (int64_t lin = 0; lin < numCores; ++lin) {
