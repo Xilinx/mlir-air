@@ -462,17 +462,20 @@ bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
 
   // Opaque external calls (an external kernel with no visible
   // MemoryEffectOpInterface) hide their buffer read/write behind the call
-  // boundary, so the effect-based classification above cannot see them.
-  // Classify the buffer operand of such a call by the same convention the lock
-  // allocator uses: the LAST memref operand is written (producer); an earlier
-  // memref operand is read (consumer). Only consider iv-GUARDED calls, i.e.
-  // reachable on a strict, non-empty subset of the cores (a genuine role split
-  // where a producer core runs one kernel under one tile-id guard and a
-  // consumer core runs another under a different guard). A call reachable on
-  // EVERY core is replication, not communication (each PE independently touches
-  // its own operand copy); flagging that as a cross-core dependence would
-  // wrongly accept a non-partitioned herd operand, so ubiquitous calls are
-  // ignored here.
+  // boundary, so the effect-based scan above cannot see them. Classify the
+  // buffer operand of such a call by the same convention the lock allocator
+  // uses -- the LAST memref operand is written (producer), an earlier memref
+  // operand is read (consumer) -- into SEPARATE producer/consumer core sets.
+  // Only consider iv-GUARDED calls, i.e. reachable on a strict, non-empty
+  // subset of the cores (a genuine role split where a producer core runs one
+  // kernel under one tile-id guard and a consumer runs another under a
+  // different guard). A call reachable on EVERY core is replication, not
+  // communication (each PE independently touches its own operand copy). These
+  // sets are kept separate from the visible reader/writer sets on purpose: they
+  // only ADD the ability to detect a cross-core hand-off hidden behind a kernel
+  // call, and never alter the visible-access decision, so a buffer with no
+  // opaque call keeps its exact prior sharing behavior.
+  llvm::SmallSet<int64_t, 8> opaqueProducerCores, opaqueConsumerCores;
   {
     llvm::SmallDenseSet<Operation *> opaqueCalls;
     for (Value alias : aliases)
@@ -506,35 +509,35 @@ bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
       }
       if (callCores.empty() || (int64_t)callCores.size() >= numCores)
         continue; // ubiquitous (replication) or dead -- not communication.
-      for (int64_t lin : callCores) {
-        if (bufferIsProducer)
-          writerCores.insert(lin);
-        else
-          readerCores.insert(lin);
-      }
+      for (int64_t lin : callCores)
+        (bufferIsProducer ? opaqueProducerCores : opaqueConsumerCores)
+            .insert(lin);
     }
   }
-  if (writerCores.empty() || readerCores.empty())
-    return false;
-  // A genuine cross-core hand-off requires ASYMMETRY: some core only produces
-  // (a pure writer whose data is consumed on another core) or only consumes (a
-  // pure reader of another core's write). This covers the classic disjoint
-  // producer/consumer AND the cascade "lead" that writes a header + its own row
-  // AND reads the whole assembled buffer out via a channel put while a
-  // "partner" core only writes the remaining row (the partner is a pure
-  // writer).
-  //
-  // If instead EVERY participating core both reads AND writes the buffer, each
-  // core is self-contained -- it computes then streams out its own slot with no
-  // dependence on a neighbor -- so the buffer is per-core private and must NOT
-  // be shared. Keying on set difference (rather than "any reader != any
-  // writer") avoids falsely sharing such independent per-core buffers.
-  for (int64_t r : readerCores)
-    if (!writerCores.contains(r))
-      return true;
-  for (int64_t w : writerCores)
-    if (!readerCores.contains(w))
-      return true;
+
+  // Visible producer/consumer decision (unchanged): a write must exist, and
+  // some reader core consumes a write that lands on a different core.
+  if (!writerCores.empty())
+    for (int64_t r : readerCores)
+      if (!writerCores.contains(r))
+        return true;
+
+  // Opaque hand-off (purely additive): an iv-guarded producer core that writes
+  // the buffer through an external kernel, whose result is consumed on a
+  // DIFFERENT core -- either an opaque consumer, or a visible/channel reader.
+  // This is the external-kernel producer/consumer split the effect scan misses
+  // (e.g. a lead core assembles a packet with one kernel while a partner core
+  // writes its row with another, and the lead streams the whole buffer out via
+  // a channel put). Requires an opaque producer, so buffers touched only by
+  // visible ops / channels are decided entirely by the check above.
+  for (int64_t p : opaqueProducerCores) {
+    for (int64_t c : opaqueConsumerCores)
+      if (c != p)
+        return true;
+    for (int64_t c : readerCores)
+      if (c != p)
+        return true;
+  }
   return false;
 }
 
