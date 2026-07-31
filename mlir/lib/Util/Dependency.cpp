@@ -3362,13 +3362,11 @@ void dependencyTracer::traceTileIndices(
     SmallVector<Value, 1> in_scalars, SmallVector<Value, 1> out_scalars,
     air::AsyncOpInterface sink_air_op) {
   for (auto operand : read_operands) {
-    for (auto v :
-         llvm::concat<Value>(operand.offsets, operand.sizes, operand.strides))
+    for (auto v : operand.getDynamicEntries())
       pushTileIndexAsDep(v, sink_air_op);
   }
   for (auto operand : write_operands) {
-    for (auto v :
-         llvm::concat<Value>(operand.offsets, operand.sizes, operand.strides))
+    for (auto v : operand.getDynamicEntries())
       pushTileIndexAsDep(v, sink_air_op);
   }
   for (auto scalar : in_scalars) {

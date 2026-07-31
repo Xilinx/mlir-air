@@ -360,35 +360,32 @@ private:
 
 struct partialMemref {
   Value memrefValue;
-  SmallVector<Value> offsets, sizes, strides;
+  // Mixed static/dynamic, one entry per dimension. The overlap analyses index
+  // offsets/sizes/strides in lockstep, so entries must stay aligned by
+  // dimension -- a statically-known entry keeps its slot as an attribute
+  // rather than being dropped.
+  SmallVector<OpFoldResult> offsets, sizes, strides;
   partialMemref() = default;
   partialMemref(mlir::Value m) { memrefValue = m; };
-  partialMemref(mlir::Value m, SmallVector<Value> memrefOffsets,
-                SmallVector<Value> memrefSizes,
-                SmallVector<Value> memrefStrides) {
-    memrefValue = m;
-    offsets = memrefOffsets;
-    sizes = memrefSizes;
-    strides = memrefStrides;
-  };
-  // Build from mixed static/dynamic access-pattern lists, as exposed by the
-  // AIR memcpy ops. Only the dynamic entries are retained: these fields exist
-  // solely to seed tile-index dependency tracing, and a compile-time constant
-  // has no producer to depend on.
   partialMemref(mlir::Value m, ArrayRef<mlir::OpFoldResult> memrefOffsets,
                 ArrayRef<mlir::OpFoldResult> memrefSizes,
                 ArrayRef<mlir::OpFoldResult> memrefStrides) {
     memrefValue = m;
-    auto keepDynamic = [](ArrayRef<mlir::OpFoldResult> ofrs,
-                          SmallVector<Value> &out) {
-      for (auto ofr : ofrs)
-        if (auto v = llvm::dyn_cast_if_present<Value>(ofr))
-          out.push_back(v);
-    };
-    keepDynamic(memrefOffsets, offsets);
-    keepDynamic(memrefSizes, sizes);
-    keepDynamic(memrefStrides, strides);
+    offsets.assign(memrefOffsets.begin(), memrefOffsets.end());
+    sizes.assign(memrefSizes.begin(), memrefSizes.end());
+    strides.assign(memrefStrides.begin(), memrefStrides.end());
   };
+  // Every dynamic entry of the access pattern, in dimension order. Used to
+  // seed tile-index dependency tracing; a compile-time constant has no
+  // producer to depend on and is skipped.
+  SmallVector<Value> getDynamicEntries() const {
+    SmallVector<Value> values;
+    for (auto list : {&offsets, &sizes, &strides})
+      for (auto ofr : *list)
+        if (auto v = llvm::dyn_cast_if_present<Value>(ofr))
+          values.push_back(v);
+    return values;
+  }
 };
 
 class dependencyTracer {

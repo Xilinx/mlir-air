@@ -1029,21 +1029,9 @@ private:
       // Check if operand is returned from memref.subview
       if (auto subview =
               operand.memrefValue.getDefiningOp<memref::SubViewOp>()) {
-        OpBuilder svBuilder(subview);
-        auto loc = subview->getLoc();
-        SmallVector<Value> subviewOffsetVals, subviewSizeVals,
-            subviewStrideVals;
-        for (auto fr : subview.getMixedOffsets())
-          subviewOffsetVals.push_back(
-              getValueOrCreateConstantIndexOp(svBuilder, loc, fr));
-        for (auto fr : subview.getMixedSizes())
-          subviewSizeVals.push_back(
-              getValueOrCreateConstantIndexOp(svBuilder, loc, fr));
-        for (auto fr : subview.getMixedStrides())
-          subviewStrideVals.push_back(
-              getValueOrCreateConstantIndexOp(svBuilder, loc, fr));
-        partialMemref subview_tile(subview.getSource(), subviewOffsetVals,
-                                   subviewSizeVals, subviewStrideVals);
+        partialMemref subview_tile(
+            subview.getSource(), subview.getMixedOffsets(),
+            subview.getMixedSizes(), subview.getMixedStrides());
         SmallVector<partialMemref, 1> subview_operands = {subview_tile};
         traceDeps<T>(subview_operands, sink_air_op, dep_type);
       }
@@ -1091,13 +1079,11 @@ private:
                         SmallVector<Value, 1> in_scalars,
                         SmallVector<Value, 1> out_scalars, T sink_air_op) {
     for (auto operand : read_operands) {
-      for (auto v :
-           llvm::concat<Value>(operand.offsets, operand.sizes, operand.strides))
+      for (auto v : operand.getDynamicEntries())
         pushTileIndexAsDep<T>(v, sink_air_op);
     }
     for (auto operand : write_operands) {
-      for (auto v :
-           llvm::concat<Value>(operand.offsets, operand.sizes, operand.strides))
+      for (auto v : operand.getDynamicEntries())
         pushTileIndexAsDep<T>(v, sink_air_op);
     }
     for (auto scalar : in_scalars) {
@@ -2099,7 +2085,8 @@ private:
               continue;
             if (constOffset)
               continue;
-            map[*constStride].insert(tile->offsets[i]);
+            if (auto v = dyn_cast_if_present<Value>(tile->offsets[i]))
+              map[*constStride].insert(v);
           }
         };
     DenseMap<unsigned, llvm::SetVector<Value>> strideToVarOffsetsMap;
