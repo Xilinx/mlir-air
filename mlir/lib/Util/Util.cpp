@@ -1472,6 +1472,20 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
     listsHaveChanged = true;
   }
 
+  // Every constant-folding optimization below (maxSize tiling, size-1 erasure,
+  // adjacent-dim merging, default-pattern collapse) assumes constant wrap and
+  // stride values and dereferences getConstantIntValue unconditionally. If any
+  // dimension is dynamic (e.g. an IV-dependent transfer size like a causal
+  // triangle), those steps are both unsafe (null-optional deref) and pointless
+  // (a variant-shape access can't fold into one descriptor — it is resolved by
+  // loop unrolling instead). Return after the length normalization above rather
+  // than crashing on otherwise-valid IR.
+  {
+    auto isNonConst = [](Value v) { return !getConstantIntValue(v); };
+    if (llvm::any_of(sizes, isNonConst) || llvm::any_of(strides, isNonConst))
+      return listsHaveChanged ? success() : failure();
+  }
+
   // If maxSize is given, check whether any size value goes beyond maxSize.
   for (int i = sizes.size() - 1; i >= 0; i--) {
     if (isDefaultDataAccessPattern(sizes, strides))

@@ -2343,6 +2343,16 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     SmallVector<Value> wraps = channel_op.getSizes();
     SmallVector<Value> strides = channel_op.getStrides();
 
+    // A hardware buffer descriptor has a constant shape per dimension. If the
+    // channel op already carries a non-constant wrap or stride (e.g. an
+    // IV-dependent transfer size like a causal-triangle (lx+1)*N), folding the
+    // loop into it can never produce a legal constant-shape BD. Decline the
+    // fold and leave the loop intact so AIRUnrollScfForIntoBDChain can unroll
+    // it into a chain of constant-shape descriptors instead.
+    auto isNonConst = [](Value v) { return !getConstantIntValue(v); };
+    if (llvm::any_of(wraps, isNonConst) || llvm::any_of(strides, isNonConst))
+      return failure();
+
     OpBuilder b(channel_op);
     auto memrefTy =
         llvm::dyn_cast<BaseMemRefType>(channel_op.getMemref().getType());
@@ -2731,6 +2741,13 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
     SmallVector<Value> wraps = channel_op.getSizes();
     SmallVector<Value> strides = channel_op.getStrides();
 
+    // Non-constant wrap/stride can't fold into a constant-shape BD; decline so
+    // the loop falls through to AIRUnrollAffineForIntoBDChain (see the scf.for
+    // twin above for the rationale).
+    auto isNonConst = [](Value v) { return !getConstantIntValue(v); };
+    if (llvm::any_of(wraps, isNonConst) || llvm::any_of(strides, isNonConst))
+      return failure();
+
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
         air::getTensorVolume(channel_op.getMemref().getType()));
@@ -2863,10 +2880,18 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
     //  (2) The stride list is not empty,
     //  (3) The highest (first) stride is 0, indicating repeat dimension,
     //  (4) The highest (first) size is not 1, indicating non-zero repetition.
-    bool highestDimRepeatActive = enableRepeatAtHighestDim &&
-                                  !strides.empty() &&
-                                  *getConstantIntValue(strides.front()) == 0 &&
-                                  *getConstantIntValue(sizes.front()) != 1;
+    // A non-constant highest stride/size (e.g. an IV-dependent transfer) can be
+    // neither proven to be a repeat dim (stride 0) nor folded; treat it as
+    // "not a repeat" so the op falls through to canonicalizeWrapAndStrideList
+    // (which declines on dynamic dims) rather than dereferencing a null
+    // optional.
+    std::optional<int64_t> frontStride =
+        strides.empty() ? std::nullopt : getConstantIntValue(strides.front());
+    std::optional<int64_t> frontSize =
+        sizes.empty() ? std::nullopt : getConstantIntValue(sizes.front());
+    bool highestDimRepeatActive =
+        enableRepeatAtHighestDim && !strides.empty() && frontStride &&
+        *frontStride == 0 && frontSize && *frontSize != 1;
     // If highest-dimension repeat is active but the op already has the maximum
     // number of dimensions, no rewrite is needed.
     if (highestDimRepeatActive && (int)offsets.size() == maxNumDims) {
