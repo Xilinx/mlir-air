@@ -462,17 +462,17 @@ bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
 
   // Opaque external calls (an external kernel with no visible
   // MemoryEffectOpInterface) hide their buffer read/write behind the call
-  // boundary, so the effect-based classification above cannot see them. Treat a
-  // buffer operand of such a call conservatively as both read and written --
-  // BUT only when the call is iv-GUARDED, i.e. reachable on a strict, non-empty
-  // subset of the cores. That is exactly the cascade role-split pattern (a lead
-  // core runs one kernel under one tile-id guard, a partner core runs another
-  // kernel under a different guard) where neighbor tiles genuinely communicate
-  // through the buffer. A call reachable on EVERY core is replication, not
-  // communication
-  // (each PE independently touches the whole buffer); flagging that as a
-  // cross-core dependence would wrongly accept a non-partitioned herd operand,
-  // so such ubiquitous calls are ignored here.
+  // boundary, so the effect-based classification above cannot see them.
+  // Classify the buffer operand of such a call by the same convention the lock
+  // allocator uses: the LAST memref operand is written (producer); an earlier
+  // memref operand is read (consumer). Only consider iv-GUARDED calls, i.e.
+  // reachable on a strict, non-empty subset of the cores (a genuine role split
+  // where a producer core runs one kernel under one tile-id guard and a
+  // consumer core runs another under a different guard). A call reachable on
+  // EVERY core is replication, not communication (each PE independently touches
+  // its own operand copy); flagging that as a cross-core dependence would
+  // wrongly accept a non-partitioned herd operand, so ubiquitous calls are
+  // ignored here.
   {
     llvm::SmallDenseSet<Operation *> opaqueCalls;
     for (Value alias : aliases)
@@ -483,6 +483,16 @@ bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
             !isa<mlir::MemoryEffectOpInterface>(user))
           opaqueCalls.insert(user);
     for (Operation *call : opaqueCalls) {
+      // The buffer is a producer of this call iff it is the last memref
+      // operand.
+      int lastMemrefIdx = -1;
+      for (int i = (int)call->getNumOperands() - 1; i >= 0; --i)
+        if (isa<MemRefType>(call->getOperand(i).getType())) {
+          lastMemrefIdx = i;
+          break;
+        }
+      bool bufferIsProducer = lastMemrefIdx >= 0 &&
+                              aliases.contains(call->getOperand(lastMemrefIdx));
       llvm::SmallSet<int64_t, 8> callCores;
       for (int64_t lin = 0; lin < numCores; ++lin) {
         int64_t rem = lin;
@@ -497,27 +507,34 @@ bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
       if (callCores.empty() || (int64_t)callCores.size() >= numCores)
         continue; // ubiquitous (replication) or dead -- not communication.
       for (int64_t lin : callCores) {
-        writerCores.insert(lin);
-        readerCores.insert(lin);
+        if (bufferIsProducer)
+          writerCores.insert(lin);
+        else
+          readerCores.insert(lin);
       }
     }
   }
   if (writerCores.empty() || readerCores.empty())
     return false;
-  // Cross-core RAW: a read on one core may consume a write on a different core.
-  // The earlier check only flagged a reader core disjoint from ALL writer
-  // cores, which misses the producer/consumer pattern where the consumer core
-  // also writes its own sub-region of the shared buffer -- e.g. a cascade
-  // "lead" that writes a header + its own row AND reads the whole assembled
-  // buffer out via a channel put, while the "partner" core writes the remaining
-  // row. There the only reader (lead) is also a writer, so no reader-not-writer
-  // core exists, yet the lead's read still depends on the partner's write. Flag
-  // the buffer as shared whenever some read and some write land on different
-  // cores.
+  // A genuine cross-core hand-off requires ASYMMETRY: some core only produces
+  // (a pure writer whose data is consumed on another core) or only consumes (a
+  // pure reader of another core's write). This covers the classic disjoint
+  // producer/consumer AND the cascade "lead" that writes a header + its own row
+  // AND reads the whole assembled buffer out via a channel put while a
+  // "partner" core only writes the remaining row (the partner is a pure
+  // writer).
+  //
+  // If instead EVERY participating core both reads AND writes the buffer, each
+  // core is self-contained -- it computes then streams out its own slot with no
+  // dependence on a neighbor -- so the buffer is per-core private and must NOT
+  // be shared. Keying on set difference (rather than "any reader != any
+  // writer") avoids falsely sharing such independent per-core buffers.
   for (int64_t r : readerCores)
-    for (int64_t w : writerCores)
-      if (r != w)
-        return true;
+    if (!writerCores.contains(r))
+      return true;
+  for (int64_t w : writerCores)
+    if (!readerCores.contains(w))
+      return true;
   return false;
 }
 
