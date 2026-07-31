@@ -27,6 +27,7 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -458,11 +459,65 @@ bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
       }
     }
   }
-  if (writerCores.empty())
+
+  // Opaque external calls (an external kernel with no visible
+  // MemoryEffectOpInterface) hide their buffer read/write behind the call
+  // boundary, so the effect-based classification above cannot see them. Treat a
+  // buffer operand of such a call conservatively as both read and written --
+  // BUT only when the call is iv-GUARDED, i.e. reachable on a strict, non-empty
+  // subset of the cores. That is exactly the cascade role-split pattern (a lead
+  // core runs one kernel under one tile-id guard, a partner core runs another
+  // kernel under a different guard) where neighbor tiles genuinely communicate
+  // through the buffer. A call reachable on EVERY core is replication, not
+  // communication
+  // (each PE independently touches the whole buffer); flagging that as a
+  // cross-core dependence would wrongly accept a non-partitioned herd operand,
+  // so such ubiquitous calls are ignored here.
+  {
+    llvm::SmallDenseSet<Operation *> opaqueCalls;
+    for (Value alias : aliases)
+      for (Operation *user : alias.getUsers())
+        if (isa<mlir::CallOpInterface>(user) &&
+            !isa<mlir::MemoryEffectOpInterface>(user))
+          for (Value operand : user->getOperands())
+            if (aliases.contains(operand))
+              opaqueCalls.insert(user);
+    for (Operation *call : opaqueCalls) {
+      llvm::SmallSet<int64_t, 8> callCores;
+      for (int64_t lin = 0; lin < numCores; ++lin) {
+        int64_t rem = lin;
+        llvm::DenseMap<Value, int64_t> ivVals;
+        for (size_t d = 0; d < sizes.size(); ++d) {
+          ivVals[ids[d]] = rem % sizes[d];
+          rem /= sizes[d];
+        }
+        if (reachableUnderIvs(call, body, ivVals))
+          callCores.insert(lin);
+      }
+      if (callCores.empty() || (int64_t)callCores.size() >= numCores)
+        continue; // ubiquitous (replication) or dead -- not communication.
+      for (int64_t lin : callCores) {
+        writerCores.insert(lin);
+        readerCores.insert(lin);
+      }
+    }
+  }
+  if (writerCores.empty() || readerCores.empty())
     return false;
+  // Cross-core RAW: a read on one core may consume a write on a different core.
+  // The earlier check only flagged a reader core disjoint from ALL writer
+  // cores, which misses the producer/consumer pattern where the consumer core
+  // also writes its own sub-region of the shared buffer -- e.g. a cascade
+  // "lead" that writes a header + its own row AND reads the whole assembled
+  // buffer out via a channel put, while the "partner" core writes the remaining
+  // row. There the only reader (lead) is also a writer, so no reader-not-writer
+  // core exists, yet the lead's read still depends on the partner's write. Flag
+  // the buffer as shared whenever some read and some write land on different
+  // cores.
   for (int64_t r : readerCores)
-    if (!writerCores.contains(r))
-      return true;
+    for (int64_t w : writerCores)
+      if (r != w)
+        return true;
   return false;
 }
 

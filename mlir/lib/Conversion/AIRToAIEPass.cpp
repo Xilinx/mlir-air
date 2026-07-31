@@ -1776,8 +1776,41 @@ LogicalResult createAIEModulesAndOutlineCores(
 
       // Find a tile that has legal memory affinity with all other cores.
       // Use AIE target model's isLegalMemAffinity() to validate placement.
+      //
+      // Owner-tile preference: a core may acquire a lock on a neighbor tile
+      // (UseLockOp inside a CoreOp is unconstrained), but a DMA/BD block
+      // (aie.mem) may ONLY acquire a lock on its OWN tile (UseLockOp under a
+      // MemOp must AccessesLocalLocks -- see AIEDialect UseLockOp::verify).
+      // A shared buffer that is read/written by a channel put/get becomes a DMA
+      // BD on the accessing tile, so that tile's aie.mem will use the buffer's
+      // prod/cons locks -- which are placed on the owner tile. Therefore the
+      // owner tile MUST be a DMA-accessor tile, otherwise the DMA references a
+      // cross-tile lock and verification fails. Try DMA-accessor tiles first.
+      llvm::SmallDenseSet<Value> ownerBufferAliases;
+      collectBufferAliases(memref, ownerBufferAliases);
+      auto coreHasDmaAccess = [&](AIE::CoreOp coreOp) {
+        bool found = false;
+        coreOp.walk([&](Operation *op) {
+          if (!isa<air::ChannelPutOp, air::ChannelGetOp>(op))
+            return;
+          if (!accessReachableInCore(op))
+            return;
+          for (Value operand : op->getOperands())
+            if (ownerBufferAliases.contains(operand))
+              found = true;
+        });
+        return found;
+      };
+      SmallVector<AIE::CoreOp> orderedCandidates;
+      for (auto coreOp : coreOps)
+        if (coreHasDmaAccess(coreOp))
+          orderedCandidates.push_back(coreOp);
+      for (auto coreOp : coreOps)
+        if (!coreHasDmaAccess(coreOp))
+          orderedCandidates.push_back(coreOp);
+
       AIE::TileOp ownerTile = nullptr;
-      for (auto coreOp : coreOps) {
+      for (auto coreOp : orderedCandidates) {
         AIE::TileOp candidateTile = coreOp.getTileOp();
         auto aie_device = candidateTile->getParentOfType<AIE::DeviceOp>();
         const auto &targetModel = aie_device.getTargetModel();
