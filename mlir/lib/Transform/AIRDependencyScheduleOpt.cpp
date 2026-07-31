@@ -2343,6 +2343,16 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     SmallVector<Value> wraps = channel_op.getSizes();
     SmallVector<Value> strides = channel_op.getStrides();
 
+    // A hardware buffer descriptor has a constant shape per dimension. If the
+    // channel op already carries a non-constant wrap or stride (e.g. an
+    // IV-dependent transfer size like a causal-triangle (lx+1)*N), folding the
+    // loop into it can never produce a legal constant-shape BD. Decline the
+    // fold and leave the loop intact so AIRUnrollScfForIntoBDChain can unroll
+    // it into a chain of constant-shape descriptors instead.
+    auto isNonConst = [](Value v) { return !getConstantIntValue(v); };
+    if (llvm::any_of(wraps, isNonConst) || llvm::any_of(strides, isNonConst))
+      return failure();
+
     OpBuilder b(channel_op);
     auto memrefTy =
         llvm::dyn_cast<BaseMemRefType>(channel_op.getMemref().getType());
@@ -2730,6 +2740,13 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
     SmallVector<Value> offsets = channel_op.getOffsets();
     SmallVector<Value> wraps = channel_op.getSizes();
     SmallVector<Value> strides = channel_op.getStrides();
+
+    // Non-constant wrap/stride can't fold into a constant-shape BD; decline so
+    // the loop falls through to AIRUnrollScfForIntoBDChain (see the scf.for
+    // twin above for the rationale).
+    auto isNonConst = [](Value v) { return !getConstantIntValue(v); };
+    if (llvm::any_of(wraps, isNonConst) || llvm::any_of(strides, isNonConst))
+      return failure();
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
