@@ -14,10 +14,12 @@
 // into a chain of constant-shape descriptors.
 
 #tri = affine_map<(d0) -> ((d0 + 1) * 8)>
+#dyn = affine_map<(d0) -> ((d0 + 1) * 512)>
 
 air.channel @K [1]
 air.channel @Rect [1, 1]
 air.channel @Kaff [1]
+air.channel @Ks [1]
 
 // CHECK-LABEL: @triangle
 // CHECK-NOT: scf.for
@@ -72,6 +74,27 @@ func.func @triangle_affine(%arg0: memref<2048x512xbf16>) {
   affine.for %lx = 0 to 4 {
     %sz = affine.apply #tri(%lx)
     air.channel.put @Kaff[%c0] (%arg0[%c0, %c0] [%sz, %c64, %c64] [%c512, %c512, %c1]) : (memref<2048x512xbf16>)
+  }
+  return
+}
+
+// A non-constant STRIDE (not only a non-constant wrap) is handled identically:
+// the guards check strides as well as sizes, so the loop declines the fold and
+// unrolls into constant-shape descriptors.
+
+// CHECK-LABEL: @dynstride
+// CHECK-NOT: scf.for
+// CHECK-COUNT-4: air.channel.put @Ks
+// CHECK-NOT: air.channel.put
+func.func @dynstride(%arg0: memref<2048x512xbf16>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  %c64 = arith.constant 64 : index
+  scf.for %i = %c0 to %c4 step %c1 {
+    %st = affine.apply #dyn(%i)
+    air.channel.put @Ks[%c0] (%arg0[%c0, %c0] [%c8, %c64, %c64] [%st, %c64, %c1]) : (memref<2048x512xbf16>)
   }
   return
 }
