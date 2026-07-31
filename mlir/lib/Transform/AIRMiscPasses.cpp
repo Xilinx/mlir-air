@@ -1970,44 +1970,43 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         op->replaceUsesOfWith(
             air::getAsyncTokenFromOp(allocOp),
             air::getAsyncTokenFromOp(newMemref.getDefiningOp()));
-      int offsetOperandOffset = memrefOperandOffset + offsetDim + 1;
-      auto &offsetOpOper = op->getOpOperand(offsetOperandOffset);
-
-      auto defOp = air::getOffsetsAsValues(op)[offsetDim].getDefiningOp();
-      if (defOp) {
+      auto mixedOffsets = op.getMixedOffsets();
+      auto offsetEntry = mixedOffsets[offsetDim];
+      auto offsetVal = dyn_cast_if_present<Value>(offsetEntry);
+      Operation *defOp = offsetVal ? offsetVal.getDefiningOp() : nullptr;
+      if (getConstantIntValue(offsetEntry)) {
         // Const offset. Reset offset to 0.
-        if (getConstantIntValue(air::getOffsetsAsValues(op)[offsetDim]))
-          offsetOpOper.assign(arith::ConstantIndexOp::create(builder, loc, 0));
+        mixedOffsets[offsetDim] = builder.getIndexAttr(0);
+        op.setMixedOffsets(mixedOffsets);
+      } else if (defOp) {
         // Variadic offset. Reset const operands of apply to 0.
-        else {
-          affine::AffineApplyOp apply =
-              dyn_cast_if_present<affine::AffineApplyOp>(defOp);
-          air::ExecuteOp exec = dyn_cast_if_present<air::ExecuteOp>(defOp);
-          if (exec)
-            for (auto &child_op : exec.getChildOps())
-              if (auto apply_child_op =
-                      dyn_cast_if_present<affine::AffineApplyOp>(child_op))
-                apply = apply_child_op;
-          if (!apply) {
-            defOp->emitOpError("Apply op not found. NYI.");
-            return;
-          }
-          // Any const operands to affine map should have been canonicalized
-          // away.
-          if (llvm::any_of(apply->getOperands(), [](Value oper) {
-                return getConstantIntValue(oper);
-              })) {
-            defOp->emitOpError("found constant operands to affine map, which "
-                               "aren't canonicalized away.");
-            return;
-          }
-          // Set map's expressions to cancel out each key's offset
-          auto applyExpr = apply.getMap().getResult(0);
-          applyExpr = applyExpr - key;
-          apply.setMap(AffineMap::get(apply.getDimOperands().size(),
-                                      apply.getSymbolOperands().size(),
-                                      applyExpr));
+        affine::AffineApplyOp apply =
+            dyn_cast_if_present<affine::AffineApplyOp>(defOp);
+        air::ExecuteOp exec = dyn_cast_if_present<air::ExecuteOp>(defOp);
+        if (exec)
+          for (auto &child_op : exec.getChildOps())
+            if (auto apply_child_op =
+                    dyn_cast_if_present<affine::AffineApplyOp>(child_op))
+              apply = apply_child_op;
+        if (!apply) {
+          defOp->emitOpError("Apply op not found. NYI.");
+          return;
         }
+        // Any const operands to affine map should have been canonicalized
+        // away.
+        if (llvm::any_of(apply->getOperands(), [](Value oper) {
+              return getConstantIntValue(oper);
+            })) {
+          defOp->emitOpError("found constant operands to affine map, which "
+                             "aren't canonicalized away.");
+          return;
+        }
+        // Set map's expressions to cancel out each key's offset
+        auto applyExpr = apply.getMap().getResult(0);
+        applyExpr = applyExpr - key;
+        apply.setMap(AffineMap::get(apply.getDimOperands().size(),
+                                    apply.getSymbolOperands().size(),
+                                    applyExpr));
       }
 
       // Update strides (contiguous, row-major) after memref tiling.
@@ -2019,13 +2018,10 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         newStrides = air::getUpdatedStridesAfterShrinkage(
             air::getTensorShape(memref.getType()), newMemrefShape,
             air::getStridesAsValues(op));
-      int firstStrideOperandOffset =
-          memrefOperandOffset + air::getOffsetsAsValues(op).size() * 2 + 1;
-      for (unsigned i = 0; i < air::getStridesAsValues(op).size(); i++) {
-        auto &strideOpOper = op->getOpOperand(firstStrideOperandOffset + i);
-        strideOpOper.assign(
-            arith::ConstantIndexOp::create(builder, loc, newStrides[i]));
-      }
+      auto mixedStrides = op.getMixedStrides();
+      for (unsigned i = 0; i < mixedStrides.size(); i++)
+        mixedStrides[i] = builder.getIndexAttr(newStrides[i]);
+      op.setMixedStrides(mixedStrides);
 
       // Reconnect async dependency of parent scf.for op, if any.
       if (!isAsyncOp(op))

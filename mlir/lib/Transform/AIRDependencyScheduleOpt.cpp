@@ -5915,34 +5915,24 @@ private:
                                     SmallVector<int64_t> overall_access_bounds,
                                     PatternRewriter &rewriter) const {
     rewriter.setInsertionPoint(chanOp);
-    // Update offsets.
+    // Update offsets. Entries are addressed by dimension: the access pattern
+    // is a mixed list, so a raw operand index would skip the static entries.
     auto new_offsets = getUpdatedOffsetsAfterShrinkage(
         memref_shape, overall_access_bounds, air::getOffsetsAsValues(chanOp));
-    int offsetListIdxOffset =
-        dyn_cast_if_present<air::AsyncOpInterface>(chanOp.getOperation())
-            .getAsyncDependencies()
-            .size() +
-        chanOp.getIndices().size() + 1;
-    for (unsigned i = offsetListIdxOffset;
-         i < offsetListIdxOffset + air::getOffsetsAsValues(chanOp).size();
-         i++) {
-      if (new_offsets[i - offsetListIdxOffset] < 0)
+    auto mixedOffsets = chanOp.getMixedOffsets();
+    for (unsigned i = 0; i < mixedOffsets.size(); i++) {
+      if (new_offsets[i] < 0)
         continue;
-      chanOp->getOpOperand(i).assign(arith::ConstantIndexOp::create(
-          rewriter, chanOp->getLoc(), new_offsets[i - offsetListIdxOffset]));
+      mixedOffsets[i] = rewriter.getIndexAttr(new_offsets[i]);
     }
+    chanOp.setMixedOffsets(mixedOffsets);
     // Update strides.
     auto new_strides = getUpdatedStridesAfterShrinkage(
         memref_shape, overall_access_bounds, air::getStridesAsValues(chanOp));
-    int strideListIdxOffset = offsetListIdxOffset +
-                              air::getOffsetsAsValues(chanOp).size() +
-                              air::getSizesAsValues(chanOp).size();
-    for (unsigned i = strideListIdxOffset;
-         i < strideListIdxOffset + air::getStridesAsValues(chanOp).size();
-         i++) {
-      chanOp->getOpOperand(i).assign(arith::ConstantIndexOp::create(
-          rewriter, chanOp->getLoc(), new_strides[i - strideListIdxOffset]));
-    }
+    auto mixedStrides = chanOp.getMixedStrides();
+    for (unsigned i = 0; i < mixedStrides.size(); i++)
+      mixedStrides[i] = rewriter.getIndexAttr(new_strides[i]);
+    chanOp.setMixedStrides(mixedStrides);
     return success();
   }
 
