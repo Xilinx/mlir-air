@@ -365,17 +365,20 @@ jobs:
       # picks up this run's perf.json. generateDocs.yml downloads the latest
       # nightly artifact (any conclusion) when it regenerates the page. Runs
       # whenever a perf.json was produced (even a partial run), not gated on the
-      # job's overall result. Best-effort: never fails the benchmark job if the
-      # gh CLI is missing on the runner or the dispatch call errors.
+      # job's overall result. Dispatched via the REST API with curl: this
+      # self-hosted runner has no gh CLI, so `gh workflow run` silently no-oped
+      # and the page only ever refreshed on an unrelated push to main. Best-
+      # effort: never fails the benchmark job if the dispatch call errors.
       - name: Refresh docs page
         if: always() && hashFiles('perf.json') != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! command -v gh >/dev/null 2>&1; then
-            echo "gh CLI not available; skipping docs refresh dispatch"
-            exit 0
-          fi
-          gh workflow run generateDocs.yml --repo ${{ github.repository }} --ref main \
-            || echo "generateDocs dispatch failed; page will refresh on next push/nightly"
+          curl -sSf -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/generateDocs.yml/dispatches" \
+            -d '{"ref":"main"}' \
+            && echo "generateDocs dispatch requested" \
+            || echo "generateDocs dispatch failed; page will refresh on next push"

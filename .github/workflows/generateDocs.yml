@@ -188,12 +188,12 @@ jobs:
       - name: Install MkDocs
         run: pip install -r docs/requirements-mkdocs.txt
 
-      # Deploy the versioned MkDocs site to gh-pages with mike. main-branch
-      # pushes publish the "dev" docs and alias them "latest" so the site root
-      # (which redirects to the default) always resolves.
+      # Deploy the versioned MkDocs site to gh-pages with mike. Pre-release there
+      # is a single "dev" version, set as the default so the site root resolves
+      # to it. When AIR cuts a release, add a numbered version aliased "latest".
       - name: Deploy with mike
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          mike deploy --push --update-aliases dev latest
-          mike set-default --push latest
+          mike deploy --push dev
+          mike set-default --push dev
