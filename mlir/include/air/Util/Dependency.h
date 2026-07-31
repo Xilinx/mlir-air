@@ -39,6 +39,8 @@ namespace air {
 //===----------------------------------------------------------------------===//
 
 bool areEqualIndices(mlir::Value index_0, mlir::Value index_1);
+// Mixed static/dynamic overload: a null entry still means "whole memref".
+bool areEqualIndices(mlir::OpFoldResult index_0, mlir::OpFoldResult index_1);
 void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history);
@@ -101,13 +103,17 @@ void populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
 air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
                                          Operation *op,
                                          bool cloneDepList = true);
-FailureOr<SmallVector<
-    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                SmallVector<Value>>>>>
+// A memref operand paired with the (offsets, sizes, strides) access pattern
+// through which the op touches it. The pattern entries are mixed static /
+// dynamic, matching how the AIR memcpy ops store them; an empty offsets list
+// means "the whole memref, default order".
+using MemrefAccessPattern =
+    std::pair<Value,
+              std::tuple<SmallVector<OpFoldResult>, SmallVector<OpFoldResult>,
+                         SmallVector<OpFoldResult>>>;
+FailureOr<SmallVector<MemrefAccessPattern>>
 getAllReadAccessedMemrefOperandsFromOp(Operation *op);
-FailureOr<SmallVector<
-    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                SmallVector<Value>>>>>
+FailureOr<SmallVector<MemrefAccessPattern>>
 getAllWriteAccessedMemrefOperandsFromOp(Operation *op);
 FailureOr<SmallVector<Value>> getAllAccessedIndexOperandsFromOp(Operation *op);
 
@@ -364,6 +370,24 @@ struct partialMemref {
     offsets = memrefOffsets;
     sizes = memrefSizes;
     strides = memrefStrides;
+  };
+  // Build from mixed static/dynamic access-pattern lists, as exposed by the
+  // AIR memcpy ops. Only the dynamic entries are retained: these fields exist
+  // solely to seed tile-index dependency tracing, and a compile-time constant
+  // has no producer to depend on.
+  partialMemref(mlir::Value m, ArrayRef<mlir::OpFoldResult> memrefOffsets,
+                ArrayRef<mlir::OpFoldResult> memrefSizes,
+                ArrayRef<mlir::OpFoldResult> memrefStrides) {
+    memrefValue = m;
+    auto keepDynamic = [](ArrayRef<mlir::OpFoldResult> ofrs,
+                          SmallVector<Value> &out) {
+      for (auto ofr : ofrs)
+        if (auto v = llvm::dyn_cast_if_present<Value>(ofr))
+          out.push_back(v);
+    };
+    keepDynamic(memrefOffsets, offsets);
+    keepDynamic(memrefSizes, sizes);
+    keepDynamic(memrefStrides, strides);
   };
 };
 

@@ -34,7 +34,7 @@ func.func @test1(%arg0: memref<4096xi32>) {
 // CHECK-LABEL: test2
 // CHECK: %[[alloc:.*]] = memref.alloc() : memref<64x256x1xf32, 2>
 // CHECK: %[[alloc_0:.*]] = memref.alloc() : memref<64x16x4x4xf32, 2>
-// CHECK: air.dma_memcpy_nd (%[[alloc_0]][] [] [], %[[alloc]][%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c64{{.*}}, %c16{{.*}}, %c4{{.*}}, %c4{{.*}}] [%c4{{.*}}, %c1024{{.*}}, %c256{{.*}}, %c1{{.*}}]) : (memref<64x16x4x4xf32, 2>, memref<64x256x1xf32, 2>)
+// CHECK: air.dma_memcpy_nd (%[[alloc_0]][] [] [], %[[alloc]][0, 0, 0, 0] [64, 16, 4, 4] [4, 1024, 256, 1]) : (memref<64x16x4x4xf32, 2>, memref<64x256x1xf32, 2>)
 
 func.func @test2() {
   %alloc_11 = memref.alloc() : memref<64x256x1xf32, 2>

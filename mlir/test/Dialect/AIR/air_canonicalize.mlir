@@ -429,7 +429,7 @@ func.func @chan_4(%arg0 : memref<4x1x64x64xbf16>, %arg1 : memref<4x1x64x64xbf16>
 }
 
 // CHECK: func.func @dma_compose_subview
-// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]
+// CHECK: air.dma_memcpy_nd (%{{.*}}[0, 0] [32, 32] [64, 1], %{{.*}}[0, 0] [32, 32] [64, 1]
 func.func @dma_compose_subview() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -445,7 +445,7 @@ func.func @dma_compose_subview() {
 }
 
 // CHECK: func.func @dma_compose_transpose
-// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c64{{.*}}, %c128{{.*}}] [%c1{{.*}}, %c64{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c64{{.*}}, %c128{{.*}}] [%c1{{.*}}, %c64{{.*}}]
+// CHECK: air.dma_memcpy_nd (%{{.*}}[0, 0] [64, 128] [1, 64], %{{.*}}[0, 0] [64, 128] [1, 64]
 func.func @dma_compose_transpose() {
   %0 = memref.alloc() : memref<128x64xbf16, 1>
   %1 = memref.alloc() : memref<128x64xbf16, 2>
@@ -478,8 +478,8 @@ func.func @dma_compose_cast() {
 }
 
 // CHECK: func.func @channel_compose_subview
-// CHECK: air.channel.put @channel[] ({{.*}}[{{.*}}, {{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]
-// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[{{.*}}, {{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]
+// CHECK: air.channel.put @channel[] ({{.*}}[{{.*}}, {{.*}}] [32, 32] [64, 1]
+// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[{{.*}}, {{.*}}] [32, 32] [64, 1]
 air.channel @channel[2,2]
 func.func @channel_compose_subview() {
   %c0 = arith.constant 0 : index
@@ -497,8 +497,8 @@ func.func @channel_compose_subview() {
 }
 
 // CHECK: func.func @channel_compose_transpose
-// CHECK: air.channel.put @channel[] ({{.*}}[{{.*}}, {{.*}}] [%c64{{.*}}, %c128{{.*}}] [%c1{{.*}}, %c64{{.*}}]
-// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[{{.*}}, {{.*}}] [%c64{{.*}}, %c128{{.*}}] [%c1{{.*}}, %c64{{.*}}]
+// CHECK: air.channel.put @channel[] ({{.*}}[{{.*}}, {{.*}}] [64, 128] [1, 64]
+// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[{{.*}}, {{.*}}] [64, 128] [1, 64]
 func.func @channel_compose_transpose() {
   %0 = memref.alloc() : memref<128x64xbf16, 1>
   %1 = memref.alloc() : memref<128x64xbf16, 2>
@@ -538,12 +538,12 @@ func.func @channel_compose_cast() {
 // Memref op chain on air::DmaMemcpyNdOp's src/dst memrefs.
 // CHECK: func.func @func0
 // CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<1x1x8x16xi32, 1>, memref<8x16xi32>)
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}]) : (memref<1x1x16x16xi32, 1>, memref<16x32xi32>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[{{.*}}, {{.*}}] [{{.*}}, {{.*}}] [{{.*}}, {{.*}}]) : (memref<1x1x16x16xi32, 1>, memref<16x32xi32>)
 // CHECK:  air.herd @herd_0
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}]) : (memref<1x1x2x2x4x8xi32, 2>, memref<1x1x8x16xi32, 1>)
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}]) : (memref<1x1x2x2x8x8xi32, 2>, memref<1x1x16x16xi32, 1>)
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}]) : (memref<1x1x8x16xi32, 1>, memref<1x1x2x2x4x8xi32, 2>)
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[%{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}], %{{.*}}[] [] []) : (memref<8x32xi32>, memref<1x1x8x16xi32, 1>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[{{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}] [{{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}] [{{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}]) : (memref<1x1x2x2x4x8xi32, 2>, memref<1x1x8x16xi32, 1>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[{{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}] [{{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}] [{{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}]) : (memref<1x1x2x2x8x8xi32, 2>, memref<1x1x16x16xi32, 1>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[{{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}] [{{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}] [{{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}, {{.*}}]) : (memref<1x1x8x16xi32, 1>, memref<1x1x2x2x4x8xi32, 2>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[{{.*}}, {{.*}}] [{{.*}}, {{.*}}] [{{.*}}, {{.*}}], %{{.*}}[] [] []) : (memref<8x32xi32>, memref<1x1x8x16xi32, 1>)
 
 #map = affine_map<()[s0] -> (s0 * 8)>
 #map1 = affine_map<()[s0] -> (s0 * 16)>
@@ -595,15 +595,7 @@ func.func @func0(%arg0: memref<8x16xi32>, %arg1: memref<16x32xi32>, %arg2: memre
 
 // CHECK: func.func @func1
 // CHECK:  air.herd @herd_0 {{.*}} args(%[[ARG0:.*]]=%{{.*}}, %[[ARG1:.*]]=%{{.*}})
-// CHECK-DAG:    %[[CST4:.*]] = arith.constant 4 : index
-// CHECK-DAG:    %[[CST3:.*]] = arith.constant 3 : index
-// CHECK-DAG:    %[[CST1:.*]] = arith.constant 1 : index
-// CHECK-DAG:    %[[CST8:.*]] = arith.constant 8 : index
-// CHECK-DAG:    %[[CST64:.*]] = arith.constant 64 : index
-// CHECK-DAG:    %[[CST256:.*]] = arith.constant 256 : index
-// CHECK-DAG:    %[[CST768:.*]] = arith.constant 768 : index
-// CHECK-DAG:    %[[CST0:.*]] = arith.constant 0 : index
-// CHECK:    air.dma_memcpy_nd (%[[ARG1]][] [] [], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]]] [%[[CST3]], %[[CST3]], %[[CST4]], %[[CST1]], %[[CST8]], %[[CST8]]] [%[[CST768]], %[[CST256]], %[[CST64]], %[[CST8]], %[[CST8]], %[[CST1]]]) : (memref<3x3x4x1x8x8xi8, 2 : i32>, memref<3x3x32x8xi8, 1 : i32>)
+// CHECK:    air.dma_memcpy_nd (%[[ARG1]][] [] [], %[[ARG0]][0, 0, 0, 0, 0, 0] [3, 3, 4, 1, 8, 8] [768, 256, 64, 8, 8, 1]) : (memref<3x3x4x1x8x8xi8, 2 : i32>, memref<3x3x32x8xi8, 1 : i32>)
 // CHECK:  }
 
 func.func @func1() {
@@ -742,7 +734,7 @@ func.func @func3(%arg0: memref<2048xi8>, %arg1: memref<2048x1024xi8>, %arg2: mem
 // Check that RAW, WAR, and WAW dependencies get preserved, while RAR gets dropped.
 
 // CHECK-LABEL: func.func @func4
-// CHECK:  %[[GET0:.*]] = air.channel.get async [%{{.*}}]  @channel_3[] (%{{.*}}[] [] [])
+// CHECK:  %[[GET0:.*]] = air.channel.get async [{{.*}}]  @channel_3[] (%{{.*}}[] [] [])
 // CHECK:  %[[FOR0:.*]] = scf.for %[[FOR0IV:.*]] = %c0{{.*}} to %c8{{.*}} step %c4{{.*}} iter_args(%[[FOR0IARG:.*]] = %[[GET0]])
 // CHECK:  %[[FOR1:.*]] = scf.for %[[FOR1IV:.*]] = %c0{{.*}} to %c8{{.*}} step %c4{{.*}} iter_args(%[[FOR1IARG:.*]] = %[[FOR0IARG]])
 // CHECK:  %[[PUT0:.*]] = air.channel.put async [%[[FOR1IARG]]]  @channel_0[] (%{{.*}}[%[[FOR0IV]], 
@@ -796,7 +788,7 @@ func.func @func4(%arg0: memref<512x512xbf16>, %arg1: memref<512x4096xbf16>, %arg
 // Therefore, the dependency between them is preserved in canonicalization.
 
 // CHECK-LABEL: func.func @func5
-// CHECK:  %[[GET0:.*]] = air.channel.get async [%{{.*}}]  @channel_0
+// CHECK:  %[[GET0:.*]] = air.channel.get async [{{.*}}]  @channel_0
 // CHECK:  %[[GET1:.*]] = air.channel.get async [{{.*}}%[[GET0]]{{.*}}]  @channel_0
 
 func.func @func5() {
@@ -822,10 +814,10 @@ func.func @func5() {
 // Same as func5, except that the source op is guarded in an if region.
 // CHECK-LABEL: func.func @func6
 // CHECK:  %[[AIF0:.*]] = affine.if
-// CHECK-NEXT:  air.channel.get async [%{{.*}}]  @channel_0
+// CHECK-NEXT:  air.channel.get async [{{.*}}]  @channel_0
 // CHECK-NEXT:  affine.yield
 // CHECK-NEXT:  else
-// CHECK-NEXT:  air.channel.get async [%{{.*}}]  @channel_0
+// CHECK-NEXT:  air.channel.get async [{{.*}}]  @channel_0
 // CHECK-NEXT:  affine.yield
 // CHECK:  %[[GET0:.*]] = air.channel.get async [{{.*}}%[[AIF0]]{{.*}}]  @channel_0
 func.func @func6() {
@@ -863,7 +855,7 @@ func.func @func6() {
 // CHECK: %[[apply0:.*]] = affine.apply {{.*}}(%[[arg2]])
 // CHECK: scf.for %[[arg4:.*]] = %c1{{.*}} to %c32{{.*}} step %c1{{.*}} {
 // CHECK: %[[apply1:.*]] = affine.apply {{.*}}(%[[arg4]])
-// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%c0{{.*}}, %c0{{.*}}, %[[apply0]], %[[apply1]]] [
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[0, 0, %[[apply0]], %[[apply1]]] [
 
 func.func @func7(%arg0: memref<512x1024xi32>){
   %c32 = arith.constant 32 : index
@@ -928,7 +920,7 @@ func.func @dma_default_pattern_3d(%arg0: memref<2x4x4xi32>, %arg1: memref<2x4x4x
 // Test cases that should NOT be canonicalized
 
 // CHECK-LABEL: func.func @dma_partial_access
-// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c4{{.*}}] [%c8{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c4{{.*}}] [%c8{{.*}}, %c1{{.*}}]) : (memref<4x8xi32>, memref<4x8xi32>)
+// CHECK: air.dma_memcpy_nd (%{{.*}}[0, 0] [2, 4] [8, 1], %{{.*}}[0, 0] [2, 4] [8, 1]) : (memref<4x8xi32>, memref<4x8xi32>)
 func.func @dma_partial_access(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -942,7 +934,7 @@ func.func @dma_partial_access(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>) {
 }
 
 // CHECK-LABEL: func.func @dma_non_default_strides
-// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}] [%c16{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}] [%c16{{.*}}, %c1{{.*}}]) : (memref<4x8xi32>, memref<4x8xi32>)
+// CHECK: air.dma_memcpy_nd (%{{.*}}[0, 0] [4, 8] [16, 1], %{{.*}}[0, 0] [4, 8] [16, 1]) : (memref<4x8xi32>, memref<4x8xi32>)
 func.func @dma_non_default_strides(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -956,7 +948,7 @@ func.func @dma_non_default_strides(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32
 }
 
 // CHECK-LABEL: func.func @dma_dynamic_sizes
-// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%{{.*}}, %{{.*}}] [%c8{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%{{.*}}, %{{.*}}] [%c8{{.*}}, %c1{{.*}}]) : (memref<4x8xi32>, memref<4x8xi32>)
+// CHECK: air.dma_memcpy_nd (%{{.*}}[0, 0] [{{.*}}, {{.*}}] [8, 1], %{{.*}}[0, 0] [{{.*}}, {{.*}}] [8, 1]) : (memref<4x8xi32>, memref<4x8xi32>)
 func.func @dma_dynamic_sizes(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>, %size0: index, %size1: index) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -967,7 +959,7 @@ func.func @dma_dynamic_sizes(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>, %si
 }
 
 // CHECK-LABEL: func.func @dma_dynamic_memref
-// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}] [%c8{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}] [%c8{{.*}}, %c1{{.*}}]) : (memref<?x?xi32>, memref<?x?xi32>)
+// CHECK: air.dma_memcpy_nd (%{{.*}}[0, 0] [4, 8] [8, 1], %{{.*}}[0, 0] [4, 8] [8, 1]) : (memref<?x?xi32>, memref<?x?xi32>)
 func.func @dma_dynamic_memref(%arg0: memref<?x?xi32>, %arg1: memref<?x?xi32>) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -989,7 +981,7 @@ func.func @dma_single_element(%arg0: memref<1x1xi32>, %arg1: memref<1x1xi32>) {
 }
 
 // CHECK-LABEL: func.func @dma_default_pattern_async
-// CHECK: %{{.*}} = air.dma_memcpy_nd async [%{{.*}}] (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<4x8xi32>, memref<4x8xi32>)
+// CHECK: %{{.*}} = air.dma_memcpy_nd async [{{.*}}] (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<4x8xi32>, memref<4x8xi32>)
 func.func @dma_default_pattern_async(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>, %token: !air.async.token) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -1005,7 +997,7 @@ func.func @dma_default_pattern_async(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi
 air.channel @channel_reinterpret_put [4, 1]
 
 // CHECK-LABEL: func.func @channel_put_fold_reinterpret_cast
-// CHECK: air.channel.put @channel_reinterpret_put[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%{{.*}}, %c0{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+// CHECK: air.channel.put @channel_reinterpret_put[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[{{.*}}, 0] [256, 64] [1024, 1]) : (memref<*xbf16>)
 func.func @channel_put_fold_reinterpret_cast(%arg0: memref<*xbf16>) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -1021,7 +1013,7 @@ func.func @channel_put_fold_reinterpret_cast(%arg0: memref<*xbf16>) {
 }
 
 // CHECK-LABEL: func.func @channel_put_fold_reinterpret_cast_async
-// CHECK: %{{.*}} = air.channel.put async [%{{.*}}] @channel_reinterpret_put[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%{{.*}}, %c0{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+// CHECK: %{{.*}} = air.channel.put async [{{.*}}] @channel_reinterpret_put[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[{{.*}}, 0] [256, 64] [1024, 1]) : (memref<*xbf16>)
 func.func @channel_put_fold_reinterpret_cast_async(%arg0: memref<*xbf16>, %token: !air.async.token) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -1042,10 +1034,10 @@ air.channel @channel_reinterpret_loop [4, 1]
 
 // CHECK-LABEL: func.func @channel_fold_reinterpret_cast_loop
 // CHECK: scf.for %[[IV:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[ARG:.*]] = %{{.*}}) -> (!air.async.token) {
-// CHECK-DAG: %[[PUT0:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], %c0{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
-// CHECK-DAG: %[[PUT1:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], %c64{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
-// CHECK-DAG: %[[PUT2:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], %c128{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
-// CHECK-DAG: %[[PUT3:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], %c192{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+// CHECK-DAG: %[[PUT0:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], 0] [256, 64] [1024, 1]) : (memref<*xbf16>)
+// CHECK-DAG: %[[PUT1:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], 64] [256, 64] [1024, 1]) : (memref<*xbf16>)
+// CHECK-DAG: %[[PUT2:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], 128] [256, 64] [1024, 1]) : (memref<*xbf16>)
+// CHECK-DAG: %[[PUT3:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], 192] [256, 64] [1024, 1]) : (memref<*xbf16>)
 // CHECK: %[[WAIT:.*]] = air.wait_all async [%[[PUT0]], %[[PUT1]], %[[PUT2]], %[[PUT3]]]
 // CHECK: scf.yield %[[WAIT]] : !air.async.token
 func.func @channel_fold_reinterpret_cast_loop(%arg0: memref<*xbf16>) {
@@ -1081,7 +1073,7 @@ func.func @channel_fold_reinterpret_cast_loop(%arg0: memref<*xbf16>) {
 air.channel @channel_reinterpret_empty [1, 1]
 
 // CHECK-LABEL: func.func @channel_fold_reinterpret_cast_empty_access
-// CHECK: air.channel.put @channel_reinterpret_empty[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c256{{.*}}, %c256{{.*}}] [%c256{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+// CHECK: air.channel.put @channel_reinterpret_empty[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[0, 0] [256, 256] [256, 1]) : (memref<*xbf16>)
 func.func @channel_fold_reinterpret_cast_empty_access(%arg0: memref<*xbf16>) {
   %c0 = arith.constant 0 : index
   %offset = arith.constant 0 : index

@@ -25,6 +25,20 @@ namespace air {
 
 using Graph = dependencyGraph::Graph;
 
+bool areEqualIndices(mlir::OpFoldResult index_0, mlir::OpFoldResult index_1) {
+  if (!index_0 || !index_1)
+    return true;
+  auto const_0 = getConstantIntValue(index_0);
+  auto const_1 = getConstantIntValue(index_1);
+  if (const_0 && const_1)
+    return *const_0 == *const_1;
+  auto val_0 = dyn_cast_if_present<Value>(index_0);
+  auto val_1 = dyn_cast_if_present<Value>(index_1);
+  if (!val_0 || !val_1)
+    return false;
+  return areEqualIndices(val_0, val_1);
+}
+
 bool areEqualIndices(mlir::Value index_0, mlir::Value index_1) {
   if (index_0 == nullptr || index_1 == nullptr) {
     // Note: memref with index is subset to memref without index (i.e. the
@@ -107,19 +121,22 @@ void traceDependentInductionVar(air::MemcpyInterface memcpyif_op,
                                 std::vector<Operation *> &op_history) {
   // Check for immediate dependency to loop induction vars
   SmallVector<Value, 1> candidate_scalar_operands;
+  // Only the dynamic entries of the access pattern can carry an induction-var
+  // dependence; a compile-time constant has no producer.
+  auto collectDynamic = [&](ArrayRef<OpFoldResult> ofrs) {
+    for (auto ofr : ofrs)
+      if (auto v = dyn_cast_if_present<Value>(ofr))
+        candidate_scalar_operands.push_back(v);
+  };
   if (memcpyif_op.getSrcMemref()) {
-    for (unsigned i = 0; i < memcpyif_op.getSrcOffsets().size(); i++) {
-      candidate_scalar_operands.push_back(memcpyif_op.getSrcOffsets()[i]);
-      candidate_scalar_operands.push_back(memcpyif_op.getSrcSizes()[i]);
-      candidate_scalar_operands.push_back(memcpyif_op.getSrcStrides()[i]);
-    }
+    collectDynamic(memcpyif_op.getMixedSrcOffsets());
+    collectDynamic(memcpyif_op.getMixedSrcSizes());
+    collectDynamic(memcpyif_op.getMixedSrcStrides());
   }
   if (memcpyif_op.getDstMemref()) {
-    for (unsigned i = 0; i < memcpyif_op.getDstOffsets().size(); i++) {
-      candidate_scalar_operands.push_back(memcpyif_op.getDstOffsets()[i]);
-      candidate_scalar_operands.push_back(memcpyif_op.getDstSizes()[i]);
-      candidate_scalar_operands.push_back(memcpyif_op.getDstStrides()[i]);
-    }
+    collectDynamic(memcpyif_op.getMixedDstOffsets());
+    collectDynamic(memcpyif_op.getMixedDstSizes());
+    collectDynamic(memcpyif_op.getMixedDstStrides());
   }
 
   // Check for dependency through any parent affine if guards
@@ -221,28 +238,19 @@ traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
   // Tuple fields: value, ancestors and producers to those ancestors.
   std::vector<std::tuple<Value, SmallVector<Value>, SmallVector<Operation *>>>
       loop_dep_history;
-  for (unsigned i = 0; i < dmaNd_op.getSrcOffsets().size(); i++) {
-    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcOffsets()[i],
-                                               SmallVector<Value>{},
-                                               SmallVector<Operation *>{}));
-    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcSizes()[i],
-                                               SmallVector<Value>{},
-                                               SmallVector<Operation *>{}));
-    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcStrides()[i],
-                                               SmallVector<Value>{},
-                                               SmallVector<Operation *>{}));
-  }
-  for (unsigned i = 0; i < dmaNd_op.getDstOffsets().size(); i++) {
-    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstOffsets()[i],
-                                               SmallVector<Value>{},
-                                               SmallVector<Operation *>{}));
-    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstSizes()[i],
-                                               SmallVector<Value>{},
-                                               SmallVector<Operation *>{}));
-    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstStrides()[i],
-                                               SmallVector<Value>{},
-                                               SmallVector<Operation *>{}));
-  }
+  // Only the dynamic entries can be (or depend on) a herd id.
+  auto seedFrom = [&](ArrayRef<OpFoldResult> ofrs) {
+    for (auto ofr : ofrs)
+      if (auto v = dyn_cast_if_present<Value>(ofr))
+        loop_dep_history.push_back(std::make_tuple(v, SmallVector<Value>{},
+                                                   SmallVector<Operation *>{}));
+  };
+  seedFrom(dmaNd_op.getMixedSrcOffsets());
+  seedFrom(dmaNd_op.getMixedSrcSizes());
+  seedFrom(dmaNd_op.getMixedSrcStrides());
+  seedFrom(dmaNd_op.getMixedDstOffsets());
+  seedFrom(dmaNd_op.getMixedDstSizes());
+  seedFrom(dmaNd_op.getMixedDstStrides());
   for (auto &elem : loop_dep_history) {
     // If parent loop op is an air.launch_herd
     if (auto hl_op = air::getHerdArgOwner(std::get<0>(elem))) {
@@ -1581,33 +1589,24 @@ air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
 
 // Get memref operands which are read accessed by op. Each entry has the
 // following format: pair<memref, tuple<offsets, sizes, strides>>.
-FailureOr<SmallVector<
-    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                SmallVector<Value>>>>>
+FailureOr<SmallVector<MemrefAccessPattern>>
 getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
-  SmallVector<
-      std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                  SmallVector<Value>>>>
-      operands;
+  SmallVector<MemrefAccessPattern> operands;
   if (!op)
     return failure();
   auto getMemrefEntry = [](Value memref) {
-    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                SmallVector<Value>>>
-        entry;
+    air::MemrefAccessPattern entry;
     entry.first = memref;
     return entry;
   };
   auto getMemrefAndAccessPatternEntry =
-      [](Value memref, SmallVector<Value> offsets, SmallVector<Value> sizes,
-         SmallVector<Value> strides) {
-        std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                    SmallVector<Value>>>
-            entry;
+      [](Value memref, ArrayRef<OpFoldResult> offsets,
+         ArrayRef<OpFoldResult> sizes, ArrayRef<OpFoldResult> strides) {
+        air::MemrefAccessPattern entry;
         entry.first = memref;
-        std::get<0>(entry.second) = offsets;
-        std::get<1>(entry.second) = sizes;
-        std::get<2>(entry.second) = strides;
+        std::get<0>(entry.second).assign(offsets.begin(), offsets.end());
+        std::get<1>(entry.second).assign(sizes.begin(), sizes.end());
+        std::get<2>(entry.second).assign(strides.begin(), strides.end());
         return entry;
       };
   auto pushMemrefEntryToVector = [](auto entry, auto &vector) {
@@ -1625,10 +1624,11 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
   } else if (auto memcpy =
                  mlir::dyn_cast_if_present<xilinx::air::MemcpyInterface>(op)) {
     if (memcpy.getSrcMemref())
-      pushMemrefEntryToVector(getMemrefAndAccessPatternEntry(
-                                  memcpy.getSrcMemref(), memcpy.getSrcOffsets(),
-                                  memcpy.getSrcSizes(), memcpy.getSrcStrides()),
-                              operands);
+      pushMemrefEntryToVector(
+          getMemrefAndAccessPatternEntry(
+              memcpy.getSrcMemref(), memcpy.getMixedSrcOffsets(),
+              memcpy.getMixedSrcSizes(), memcpy.getMixedSrcStrides()),
+          operands);
   } else if (auto loadOp = dyn_cast_if_present<memref::LoadOp>(op)) {
     // memref.load reads from the memref
     pushMemrefEntryToVector(getMemrefEntry(loadOp.getMemRef()), operands);
@@ -1652,33 +1652,24 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
 
 // Get memref operands which are write accessed by op. Each entry has the
 // following format: pair<memref, tuple<offsets, sizes, strides>>.
-FailureOr<SmallVector<
-    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                SmallVector<Value>>>>>
+FailureOr<SmallVector<MemrefAccessPattern>>
 getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
-  SmallVector<
-      std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                  SmallVector<Value>>>>
-      operands;
+  SmallVector<MemrefAccessPattern> operands;
   if (!op)
     return failure();
   auto getMemrefEntry = [](Value memref) {
-    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                SmallVector<Value>>>
-        entry;
+    air::MemrefAccessPattern entry;
     entry.first = memref;
     return entry;
   };
   auto getMemrefAndAccessPatternEntry =
-      [](Value memref, SmallVector<Value> offsets, SmallVector<Value> sizes,
-         SmallVector<Value> strides) {
-        std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                    SmallVector<Value>>>
-            entry;
+      [](Value memref, ArrayRef<OpFoldResult> offsets,
+         ArrayRef<OpFoldResult> sizes, ArrayRef<OpFoldResult> strides) {
+        air::MemrefAccessPattern entry;
         entry.first = memref;
-        std::get<0>(entry.second) = offsets;
-        std::get<1>(entry.second) = sizes;
-        std::get<2>(entry.second) = strides;
+        std::get<0>(entry.second).assign(offsets.begin(), offsets.end());
+        std::get<1>(entry.second).assign(sizes.begin(), sizes.end());
+        std::get<2>(entry.second).assign(strides.begin(), strides.end());
         return entry;
       };
   auto pushMemrefEntryToVector = [](auto entry, auto &vector) {
@@ -1697,10 +1688,11 @@ getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
   } else if (auto memcpy =
                  mlir::dyn_cast_if_present<xilinx::air::MemcpyInterface>(op)) {
     if (memcpy.getDstMemref())
-      pushMemrefEntryToVector(getMemrefAndAccessPatternEntry(
-                                  memcpy.getDstMemref(), memcpy.getDstOffsets(),
-                                  memcpy.getDstSizes(), memcpy.getDstStrides()),
-                              operands);
+      pushMemrefEntryToVector(
+          getMemrefAndAccessPatternEntry(
+              memcpy.getDstMemref(), memcpy.getMixedDstOffsets(),
+              memcpy.getMixedDstSizes(), memcpy.getMixedDstStrides()),
+          operands);
   } else if (auto storeOp = dyn_cast_if_present<memref::StoreOp>(op)) {
     // memref.store writes to the memref destination only
     pushMemrefEntryToVector(getMemrefEntry(storeOp.getMemRef()), operands);
@@ -2981,14 +2973,14 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
             dyn_cast_if_present<xilinx::air::MemcpyInterface>(u.getOwner())) {
       partialMemref memcpy_src, memcpy_dst;
       if (memcpy.getSrcMemref()) {
-        memcpy_src =
-            partialMemref(memcpy.getSrcMemref(), memcpy.getSrcOffsets(),
-                          memcpy.getSrcSizes(), memcpy.getSrcStrides());
+        memcpy_src = partialMemref(
+            memcpy.getSrcMemref(), memcpy.getMixedSrcOffsets(),
+            memcpy.getMixedSrcSizes(), memcpy.getMixedSrcStrides());
       }
       if (memcpy.getDstMemref()) {
-        memcpy_dst =
-            partialMemref(memcpy.getDstMemref(), memcpy.getDstOffsets(),
-                          memcpy.getDstSizes(), memcpy.getDstStrides());
+        memcpy_dst = partialMemref(
+            memcpy.getDstMemref(), memcpy.getMixedDstOffsets(),
+            memcpy.getMixedDstSizes(), memcpy.getMixedDstStrides());
       }
 
       if (rw == 'r') {
@@ -3090,9 +3082,7 @@ void dependencyTracer::getPartialMemrefFromOp(
     return;
   }
   auto getPartialMemrefsFromMemrefAccessPatterns =
-      [](SmallVector<
-             std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                         SmallVector<Value>>>> &accessPattern,
+      [](SmallVector<air::MemrefAccessPattern> &accessPattern,
          SmallVector<partialMemref, 1> &partialMemrefs) {
         for (auto &entry : accessPattern) {
           if (std::get<0>(entry.second).empty()) {

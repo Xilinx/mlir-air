@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -1474,7 +1475,8 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
 
   // If maxSize is given, check whether any size value goes beyond maxSize.
   for (int i = sizes.size() - 1; i >= 0; i--) {
-    if (isDefaultDataAccessPattern(sizes, strides))
+    if (isDefaultDataAccessPattern(getAsOpFoldResult(sizes),
+                                   getAsOpFoldResult(strides)))
       // Default access pattern, despite being multi-dimensional, can get
       // collapsed into a one-dimensional data stream and not subject to maxSize
       // limitation.
@@ -1568,7 +1570,8 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
       // default access pattern, meaning that the data access pattern is a
       // single stream without multi-dimensional wrapping and striding.
       if (maxSize > 0 && *const_size_prev * (*const_size) > maxSize)
-        if (!isDefaultDataAccessPattern(sizes, strides))
+        if (!isDefaultDataAccessPattern(getAsOpFoldResult(sizes),
+                                        getAsOpFoldResult(strides)))
           continue;
       auto const_stride_prev = getConstantIntValue(strides[i - 1]);
       if (*const_stride_prev == *const_size * *const_stride)
@@ -1781,8 +1784,21 @@ void air::copyPaddingAttributes(Operation *src, Operation *dst) {
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
-bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
-                                     SmallVector<Value> memcpy_strides) {
+SmallVector<Value> air::getOffsetsAsValues(air::ChannelInterface op) {
+  OpBuilder b(op);
+  return getValueOrCreateConstantIndexOp(b, op.getLoc(), op.getMixedOffsets());
+}
+SmallVector<Value> air::getSizesAsValues(air::ChannelInterface op) {
+  OpBuilder b(op);
+  return getValueOrCreateConstantIndexOp(b, op.getLoc(), op.getMixedSizes());
+}
+SmallVector<Value> air::getStridesAsValues(air::ChannelInterface op) {
+  OpBuilder b(op);
+  return getValueOrCreateConstantIndexOp(b, op.getLoc(), op.getMixedStrides());
+}
+
+bool air::isDefaultDataAccessPattern(ArrayRef<OpFoldResult> memcpy_sizes,
+                                     ArrayRef<OpFoldResult> memcpy_strides) {
   if (memcpy_sizes.size() != memcpy_strides.size())
     return false;
   // If the sizes and strides were already accessing the memref in default
@@ -1814,8 +1830,8 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
 // row-major body, optionally preceded by outer size==1 dummies or outer
 // stride==0 dims (the latter fold into the BD repeat_count). Inner stride==0
 // with size>1 is rejected -- it cannot fold into one linear BD.
-bool air::isContiguousRowMajorOrRepeated(SmallVector<Value> sizes,
-                                         SmallVector<Value> strides) {
+bool air::isContiguousRowMajorOrRepeated(ArrayRef<OpFoldResult> sizes,
+                                         ArrayRef<OpFoldResult> strides) {
   if (sizes.size() != strides.size())
     return false;
   if (sizes.empty())
@@ -1987,12 +2003,16 @@ std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 air::writeAccessPattern(air::ChannelInterface chanOp) {
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  for (auto offset : chanOp.getOffsets())
-    std::get<0>(pattern).push_back(offset);
-  for (auto size : chanOp.getSizes())
-    std::get<1>(pattern).push_back(size);
-  for (auto stride : chanOp.getStrides())
-    std::get<2>(pattern).push_back(stride);
+  // The access pattern is stored as mixed static/dynamic entries; materialize
+  // the static ones, matching what the memref.subview overload below does.
+  OpBuilder builder(chanOp);
+  auto loc = chanOp.getLoc();
+  std::get<0>(pattern) =
+      getValueOrCreateConstantIndexOp(builder, loc, chanOp.getMixedOffsets());
+  std::get<1>(pattern) =
+      getValueOrCreateConstantIndexOp(builder, loc, chanOp.getMixedSizes());
+  std::get<2>(pattern) =
+      getValueOrCreateConstantIndexOp(builder, loc, chanOp.getMixedStrides());
   return pattern;
 }
 

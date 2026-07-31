@@ -130,7 +130,7 @@ module {
 // CHECK-DAG: @channel_A_l2l1_0_n_boundary[] (%alloc{{[^)]*}}[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}, %c0{{[_0-9]*}}] [%c8{{[_0-9]*}}, %c64{{[_0-9]*}}, %c8
 
 // L3→L2 B shim 0 reads reduced [64, 44] in N-boundary
-// CHECK-DAG: channel.put {{.*}} @channel_B_l3_n_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c64{{[_0-9]*}}, %c44
+// CHECK-DAG: channel.put {{.*}} @channel_B_l3_n_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c64{{[_0-9]*}}, 44
 
 // L3→L2 A shim sizes are NOT reduced in N-boundary (M is not padded)
 // CHECK-DAG: channel.put {{.*}} @channel_A_l3_n_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c64{{[_0-9]*}}, %c64

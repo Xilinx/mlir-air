@@ -547,10 +547,11 @@ private:
     auto dma_op = mlir::dyn_cast_if_present<air::DmaMemcpyNdOp>(op);
     air::DmaMemcpyNdOp new_dmaNd_op = air::DmaMemcpyNdOp::create(
         rewriter, loc, air::AsyncTokenType::get(dma_op->getContext()), deps,
-        dma_op.getDstMemref(), dma_op.getDstOffsets(), dma_op.getDstSizes(),
-        dma_op.getDstStrides(), dma_op.getSrcMemref(), dma_op.getSrcOffsets(),
-        dma_op.getSrcSizes(), dma_op.getSrcStrides(), dma_op.getPadBeforeAttr(),
-        dma_op.getPadAfterAttr());
+        dma_op.getDstMemref(), dma_op.getMixedDstOffsets(),
+        dma_op.getMixedDstSizes(), dma_op.getMixedDstStrides(),
+        dma_op.getSrcMemref(), dma_op.getMixedSrcOffsets(),
+        dma_op.getMixedSrcSizes(), dma_op.getMixedSrcStrides(),
+        dma_op.getPadBeforeAttr(), dma_op.getPadAfterAttr());
     assignOpId(new_dmaNd_op);
 
     // Update op-to-graph map
@@ -572,8 +573,9 @@ private:
       air::ChannelPutOp new_channel_put_op = air::ChannelPutOp::create(
           rewriter, loc, air::AsyncTokenType::get(channel_put_op->getContext()),
           deps, channel_put_op.getChanName(), channel_put_op.getIndices(),
-          channel_put_op.getSrc(), channel_put_op.getSrcOffsets(),
-          channel_put_op.getSrcSizes(), channel_put_op.getSrcStrides(),
+          channel_put_op.getSrc(), channel_put_op.getMixedSrcOffsets(),
+          channel_put_op.getMixedSrcSizes(),
+          channel_put_op.getMixedSrcStrides(),
           /*pad_before=*/nullptr, /*pad_after=*/nullptr);
       air::copyPaddingAttributes(channel_put_op, new_channel_put_op);
       assignOpId(new_channel_put_op);
@@ -585,8 +587,9 @@ private:
       air::ChannelGetOp new_channel_get_op = air::ChannelGetOp::create(
           rewriter, loc, air::AsyncTokenType::get(channel_get_op->getContext()),
           deps, channel_get_op.getChanName(), channel_get_op.getIndices(),
-          channel_get_op.getDst(), channel_get_op.getDstOffsets(),
-          channel_get_op.getDstSizes(), channel_get_op.getDstStrides(),
+          channel_get_op.getDst(), channel_get_op.getMixedDstOffsets(),
+          channel_get_op.getMixedDstSizes(),
+          channel_get_op.getMixedDstStrides(),
           /*pad_before=*/nullptr, /*pad_after=*/nullptr);
       air::copyPaddingAttributes(channel_get_op, new_channel_get_op);
       assignOpId(new_channel_get_op);
@@ -858,20 +861,16 @@ private:
       }
       foundWriteAccess =
           foundWriteAccess ||
-          llvm::any_of(
-              *writeAccesses,
-              [&u](std::pair<Value,
-                             std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                        SmallVector<Value>>>
-                       entry) { return entry.first == u.get(); });
+          llvm::any_of(*writeAccesses,
+                       [&u](const air::MemrefAccessPattern &entry) {
+                         return entry.first == u.get();
+                       });
       foundReadAccess =
           foundReadAccess ||
-          llvm::any_of(
-              *readAccesses,
-              [&u](std::pair<Value,
-                             std::tuple<SmallVector<Value>, SmallVector<Value>,
-                                        SmallVector<Value>>>
-                       entry) { return entry.first == u.get(); });
+          llvm::any_of(*readAccesses,
+                       [&u](const air::MemrefAccessPattern &entry) {
+                         return entry.first == u.get();
+                       });
     }
     if (foundWriteAccess)
       return 'w';
@@ -897,14 +896,14 @@ private:
               dyn_cast_if_present<air::MemcpyInterface>(u.getOwner())) {
         partialMemref memcpy_src, memcpy_dst;
         if (memcpy.getSrcMemref()) {
-          memcpy_src =
-              partialMemref(memcpy.getSrcMemref(), memcpy.getSrcOffsets(),
-                            memcpy.getSrcSizes(), memcpy.getSrcStrides());
+          memcpy_src = partialMemref(
+              memcpy.getSrcMemref(), memcpy.getMixedSrcOffsets(),
+              memcpy.getMixedSrcSizes(), memcpy.getMixedSrcStrides());
         }
         if (memcpy.getDstMemref()) {
-          memcpy_dst =
-              partialMemref(memcpy.getDstMemref(), memcpy.getDstOffsets(),
-                            memcpy.getDstSizes(), memcpy.getDstStrides());
+          memcpy_dst = partialMemref(
+              memcpy.getDstMemref(), memcpy.getMixedDstOffsets(),
+              memcpy.getMixedDstSizes(), memcpy.getMixedDstStrides());
         }
 
         if (rw == 'r') {

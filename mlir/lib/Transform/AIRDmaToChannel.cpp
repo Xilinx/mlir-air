@@ -514,12 +514,12 @@ static void replaceAIRDmaWithAIRChannelPairs(
 
   auto src_type = llvm::dyn_cast_if_present<BaseMemRefType>(src.getType());
   auto dst_type = llvm::dyn_cast_if_present<BaseMemRefType>(dst.getType());
-  SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
-  SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
-  SmallVector<Value, 4> src_sizes = op.getSrcSizes();
-  SmallVector<Value, 4> dst_sizes = op.getDstSizes();
-  SmallVector<Value, 4> src_strides = op.getSrcStrides();
-  SmallVector<Value, 4> dst_strides = op.getDstStrides();
+  SmallVector<OpFoldResult> src_offsets = op.getMixedSrcOffsets();
+  SmallVector<OpFoldResult> dst_offsets = op.getMixedDstOffsets();
+  SmallVector<OpFoldResult> src_sizes = op.getMixedSrcSizes();
+  SmallVector<OpFoldResult> dst_sizes = op.getMixedDstSizes();
+  SmallVector<OpFoldResult> src_strides = op.getMixedSrcStrides();
+  SmallVector<OpFoldResult> dst_strides = op.getMixedDstStrides();
 
   // The internal channel op shall inherit the dma op's dep list
   SmallVector<Value, 4> internalDeps = op.getAsyncDependencies();
@@ -1270,13 +1270,6 @@ class AIRDemoteDmaToAIRHierarchyConversion
     else if (air::isMoreLocal(memcpyInnerMemorySpace, innerMemorySpace))
       return failure(); // This pass is currently not able to promote in memory
                         // tier
-
-    SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
-    SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
-    SmallVector<Value, 4> src_sizes = op.getSrcSizes();
-    SmallVector<Value, 4> dst_sizes = op.getDstSizes();
-    SmallVector<Value, 4> src_strides = op.getSrcStrides();
-    SmallVector<Value, 4> dst_strides = op.getDstStrides();
 
     std::set<Operation *> erased;
 

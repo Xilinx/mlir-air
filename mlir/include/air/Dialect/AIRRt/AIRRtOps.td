@@ -113,40 +113,82 @@ def AIRRt_SegmentLoadOp : AIRRt_Op<"segment_load", []> {
     let hasCanonicalizer = 1;
 }
 
-def AIRRt_DmaMemcpyNdOp: AIRRt_Op<"dma_memcpy_nd", []> {
+def AIRRt_DmaMemcpyNdOp: AIRRt_Op<"dma_memcpy_nd", [AttrSizedOperandSegments]> {
   let summary = "dma operator";
   let arguments = (
     ins I32:$id,
         I64:$x,
         I64:$y,
         AnyRankedOrUnrankedMemRef:$memref,
-        I64:$offset3,
-        I64:$offset2,
-        I64:$offset1,
-        I64:$offset0,
-        I64:$length3,
-        I64:$length2,
-        I64:$length1,
-        I64:$length0,
-        I64:$stride3,
-        I64:$stride2,
-        I64:$stride1,
-        I64:$stride0
+        Variadic<I64>:$offsets,
+        Variadic<I64>:$lengths,
+        Variadic<I64>:$strides,
+        ConfinedAttr<DenseI64ArrayAttr, [DenseArrayCount<4>]>:$static_offsets,
+        ConfinedAttr<DenseI64ArrayAttr, [DenseArrayCount<4>]>:$static_lengths,
+        ConfinedAttr<DenseI64ArrayAttr, [DenseArrayCount<4>]>:$static_strides
   );
   let results = (outs Optional<AIRRt_Event>:$event);
   let assemblyFormat = [{
-    `(` $id `,`$x `,`$y `,`$memref
-    `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
-    `[` $length3`,`$length2`,`$length1`,`$length0 `]` `,`
-    `[` $stride3`,`$stride2`,`$stride1`,`$stride0 `]` `)` attr-dict `:`
-    `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
-    `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
-    `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
-    `[` type($stride3)`,`type($stride2)`,`type($stride1)`,` type($stride0) `]` `)` (`:` type($event)^)?
+    `(` $id `,`$x `,`$y `,`$memref ``
+    custom<DynamicIndexList>($offsets, $static_offsets) `,`
+    custom<DynamicIndexList>($lengths, $static_lengths) `,`
+    custom<DynamicIndexList>($strides, $static_strides) `)` attr-dict `:`
+    `(` type($id)`,`type($x)`,`type($y)`,`type($memref) `)` (`:` type($event)^)?
   }];
   let description = [{
-    nd half dma operator
+    nd half dma operator.
+
+    The access pattern is a 4-entry offset / length / stride triple, each
+    entry being either a compile-time constant (stored in the corresponding
+    `static_*` array) or an SSA `i64` value (stored in the matching variadic
+    operand list, with `ShapedType::kDynamic` marking its slot in the static
+    array). Use `getMixedOffsets()` / `getMixedLengths()` / `getMixedStrides()`
+    to read an entry without caring which form it takes.
   }];
+  let builders = [
+    // Mixed static/dynamic builder; the preferred way to construct this op.
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::Value":$id,
+                   "::mlir::Value":$x,
+                   "::mlir::Value":$y,
+                   "::mlir::Value":$memref,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$offsets,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$lengths,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$strides)>,
+    // All-dynamic builder, for callers that already hold i64 Values.
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::Value":$id,
+                   "::mlir::Value":$x,
+                   "::mlir::Value":$y,
+                   "::mlir::Value":$memref,
+                   "::mlir::ValueRange":$offsets,
+                   "::mlir::ValueRange":$lengths,
+                   "::mlir::ValueRange":$strides)>
+  ];
+  let extraClassDeclaration = [{
+    /// Number of entries in each of the offset/length/stride lists.
+    static constexpr unsigned kNumDims = 4;
+
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedOffsets() {
+      return ::mlir::getMixedValues(getStaticOffsets(), getOffsets(),
+                                    getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedLengths() {
+      return ::mlir::getMixedValues(getStaticLengths(), getLengths(),
+                                    getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedStrides() {
+      return ::mlir::getMixedValues(getStaticStrides(), getStrides(),
+                                    getContext());
+    }
+
+    /// Replace the offset/length/stride lists wholesale. Each list must have
+    /// exactly `kNumDims` entries.
+    void setMixedOffsets(::llvm::ArrayRef<::mlir::OpFoldResult> offsets);
+    void setMixedLengths(::llvm::ArrayRef<::mlir::OpFoldResult> lengths);
+    void setMixedStrides(::llvm::ArrayRef<::mlir::OpFoldResult> strides);
+  }];
+  let hasVerifier = 1;
 }
 
 def AIRRt_MemcpyNdOp: AIRRt_Op<"memcpy_nd", []> {

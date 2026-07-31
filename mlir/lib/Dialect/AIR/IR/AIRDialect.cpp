@@ -2761,10 +2761,15 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(air::DmaMemcpyNdOp op,
   if (!memref)
     return failure();
   Value input_memref = memref;
-  SmallVector<Value> offsets, sizes, strides;
-  offsets = op.getSrcOffsets();
-  sizes = op.getSrcSizes();
-  strides = op.getSrcStrides();
+  // ComposeMemrefOp works on index Values; materialize the static entries and
+  // fold them back into the static arrays when rebuilding the op below.
+  auto loc = op.getLoc();
+  SmallVector<Value> offsets =
+      getValueOrCreateConstantIndexOp(rewriter, loc, op.getMixedSrcOffsets());
+  SmallVector<Value> sizes =
+      getValueOrCreateConstantIndexOp(rewriter, loc, op.getMixedSrcSizes());
+  SmallVector<Value> strides =
+      getValueOrCreateConstantIndexOp(rewriter, loc, op.getMixedSrcStrides());
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
@@ -2777,8 +2782,9 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(air::DmaMemcpyNdOp op,
 
   rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getDstMemref(),
-      op.getDstOffsets(), op.getDstSizes(), op.getDstStrides(), input_memref,
-      offsets, sizes, strides, op.getPadBeforeAttr(), op.getPadAfterAttr());
+      op.getMixedDstOffsets(), op.getMixedDstSizes(), op.getMixedDstStrides(),
+      input_memref, getAsOpFoldResult(offsets), getAsOpFoldResult(sizes),
+      getAsOpFoldResult(strides), op.getPadBeforeAttr(), op.getPadAfterAttr());
 
   return success();
 }
@@ -2791,10 +2797,13 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
   if (!memref)
     return failure();
   Value input_memref = memref;
-  SmallVector<Value> offsets, sizes, strides;
-  offsets = op.getDstOffsets();
-  sizes = op.getDstSizes();
-  strides = op.getDstStrides();
+  auto loc = op.getLoc();
+  SmallVector<Value> offsets =
+      getValueOrCreateConstantIndexOp(rewriter, loc, op.getMixedDstOffsets());
+  SmallVector<Value> sizes =
+      getValueOrCreateConstantIndexOp(rewriter, loc, op.getMixedDstSizes());
+  SmallVector<Value> strides =
+      getValueOrCreateConstantIndexOp(rewriter, loc, op.getMixedDstStrides());
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
@@ -2806,8 +2815,9 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
     return failure();
   rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
       op, op->getResultTypes(), op.getAsyncDependencies(), input_memref,
-      offsets, sizes, strides, op.getSrcMemref(), op.getSrcOffsets(),
-      op.getSrcSizes(), op.getSrcStrides(), op.getPadBeforeAttr(),
+      getAsOpFoldResult(offsets), getAsOpFoldResult(sizes),
+      getAsOpFoldResult(strides), op.getSrcMemref(), op.getMixedSrcOffsets(),
+      op.getMixedSrcSizes(), op.getMixedSrcStrides(), op.getPadBeforeAttr(),
       op.getPadAfterAttr());
 
   return success();
@@ -2820,9 +2830,9 @@ static LogicalResult EraseSelfCopyDma(air::DmaMemcpyNdOp op,
                                       PatternRewriter &rewriter) {
   if (op.getSrcMemref() != op.getDstMemref())
     return failure();
-  if (op.getSrcOffsets() != op.getDstOffsets() ||
-      op.getSrcSizes() != op.getDstSizes() ||
-      op.getSrcStrides() != op.getDstStrides())
+  if (op.getMixedSrcOffsets() != op.getMixedDstOffsets() ||
+      op.getMixedSrcSizes() != op.getMixedDstSizes() ||
+      op.getMixedSrcStrides() != op.getMixedDstStrides())
     return failure();
 
   if (auto token = op.getAsyncToken()) {
@@ -2835,11 +2845,197 @@ static LogicalResult EraseSelfCopyDma(air::DmaMemcpyNdOp op,
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// Mixed static/dynamic access-pattern builders
+//===----------------------------------------------------------------------===//
+
+// Split a mixed list into its (dynamic operands, static array attr) pair.
+static DenseI64ArrayAttr splitMixed(OpBuilder &b, ArrayRef<OpFoldResult> mixed,
+                                    SmallVectorImpl<Value> &dynamicValues) {
+  SmallVector<int64_t> staticValues;
+  dispatchIndexOpFoldResults(mixed, dynamicValues, staticValues);
+  return b.getDenseI64ArrayAttr(staticValues);
+}
+
+// Build an all-dynamic static array (every entry marked kDynamic).
+static DenseI64ArrayAttr allDynamic(OpBuilder &b, size_t n) {
+  return b.getDenseI64ArrayAttr(SmallVector<int64_t>(n, ShapedType::kDynamic));
+}
+
+void air::DmaMemcpyNdOp::build(
+    OpBuilder &b, OperationState &result, TypeRange resultTypes,
+    ValueRange async_dependencies, Value dst,
+    ArrayRef<OpFoldResult> dst_offsets, ArrayRef<OpFoldResult> dst_sizes,
+    ArrayRef<OpFoldResult> dst_strides, Value src,
+    ArrayRef<OpFoldResult> src_offsets, ArrayRef<OpFoldResult> src_sizes,
+    ArrayRef<OpFoldResult> src_strides, DenseI32ArrayAttr pad_before,
+    DenseI32ArrayAttr pad_after) {
+  SmallVector<Value> dynDstOffsets, dynDstSizes, dynDstStrides;
+  SmallVector<Value> dynSrcOffsets, dynSrcSizes, dynSrcStrides;
+  auto staticDstOffsets = splitMixed(b, dst_offsets, dynDstOffsets);
+  auto staticDstSizes = splitMixed(b, dst_sizes, dynDstSizes);
+  auto staticDstStrides = splitMixed(b, dst_strides, dynDstStrides);
+  auto staticSrcOffsets = splitMixed(b, src_offsets, dynSrcOffsets);
+  auto staticSrcSizes = splitMixed(b, src_sizes, dynSrcSizes);
+  auto staticSrcStrides = splitMixed(b, src_strides, dynSrcStrides);
+  build(b, result, resultTypes, async_dependencies, dst, dynDstOffsets,
+        dynDstSizes, dynDstStrides, src, dynSrcOffsets, dynSrcSizes,
+        dynSrcStrides, staticDstOffsets, staticDstSizes, staticDstStrides,
+        staticSrcOffsets, staticSrcSizes, staticSrcStrides, pad_before,
+        pad_after, /*src_rank=*/IntegerAttr(), /*dst_rank=*/IntegerAttr());
+}
+
+void air::DmaMemcpyNdOp::build(
+    OpBuilder &b, OperationState &result, TypeRange resultTypes,
+    ValueRange async_dependencies, Value dst, ValueRange dst_offsets,
+    ValueRange dst_sizes, ValueRange dst_strides, Value src,
+    ValueRange src_offsets, ValueRange src_sizes, ValueRange src_strides,
+    DenseI32ArrayAttr pad_before, DenseI32ArrayAttr pad_after) {
+  build(b, result, resultTypes, async_dependencies, dst, dst_offsets, dst_sizes,
+        dst_strides, src, src_offsets, src_sizes, src_strides,
+        allDynamic(b, dst_offsets.size()), allDynamic(b, dst_sizes.size()),
+        allDynamic(b, dst_strides.size()), allDynamic(b, src_offsets.size()),
+        allDynamic(b, src_sizes.size()), allDynamic(b, src_strides.size()),
+        pad_before, pad_after, /*src_rank=*/IntegerAttr(),
+        /*dst_rank=*/IntegerAttr());
+}
+
+void air::ChannelPutOp::build(
+    OpBuilder &b, OperationState &result, TypeRange resultTypes,
+    ValueRange async_dependencies, FlatSymbolRefAttr chan_name,
+    ValueRange indices, Value src, ArrayRef<OpFoldResult> src_offsets,
+    ArrayRef<OpFoldResult> src_sizes, ArrayRef<OpFoldResult> src_strides,
+    DenseI32ArrayAttr pad_before, DenseI32ArrayAttr pad_after) {
+  SmallVector<Value> dynOffsets, dynSizes, dynStrides;
+  auto staticOffsets = splitMixed(b, src_offsets, dynOffsets);
+  auto staticSizes = splitMixed(b, src_sizes, dynSizes);
+  auto staticStrides = splitMixed(b, src_strides, dynStrides);
+  build(b, result, resultTypes, async_dependencies, chan_name, indices, src,
+        dynOffsets, dynSizes, dynStrides, staticOffsets, staticSizes,
+        staticStrides, pad_before, pad_after);
+}
+
+void air::ChannelPutOp::build(OpBuilder &b, OperationState &result,
+                              TypeRange resultTypes,
+                              ValueRange async_dependencies,
+                              FlatSymbolRefAttr chan_name, ValueRange indices,
+                              Value src, ValueRange src_offsets,
+                              ValueRange src_sizes, ValueRange src_strides,
+                              DenseI32ArrayAttr pad_before,
+                              DenseI32ArrayAttr pad_after) {
+  build(b, result, resultTypes, async_dependencies, chan_name, indices, src,
+        src_offsets, src_sizes, src_strides, allDynamic(b, src_offsets.size()),
+        allDynamic(b, src_sizes.size()), allDynamic(b, src_strides.size()),
+        pad_before, pad_after);
+}
+
+void air::ChannelGetOp::build(
+    OpBuilder &b, OperationState &result, TypeRange resultTypes,
+    ValueRange async_dependencies, FlatSymbolRefAttr chan_name,
+    ValueRange indices, Value dst, ArrayRef<OpFoldResult> dst_offsets,
+    ArrayRef<OpFoldResult> dst_sizes, ArrayRef<OpFoldResult> dst_strides,
+    DenseI32ArrayAttr pad_before, DenseI32ArrayAttr pad_after) {
+  SmallVector<Value> dynOffsets, dynSizes, dynStrides;
+  auto staticOffsets = splitMixed(b, dst_offsets, dynOffsets);
+  auto staticSizes = splitMixed(b, dst_sizes, dynSizes);
+  auto staticStrides = splitMixed(b, dst_strides, dynStrides);
+  build(b, result, resultTypes, async_dependencies, chan_name, indices, dst,
+        dynOffsets, dynSizes, dynStrides, staticOffsets, staticSizes,
+        staticStrides, pad_before, pad_after);
+}
+
+void air::ChannelGetOp::build(OpBuilder &b, OperationState &result,
+                              TypeRange resultTypes,
+                              ValueRange async_dependencies,
+                              FlatSymbolRefAttr chan_name, ValueRange indices,
+                              Value dst, ValueRange dst_offsets,
+                              ValueRange dst_sizes, ValueRange dst_strides,
+                              DenseI32ArrayAttr pad_before,
+                              DenseI32ArrayAttr pad_after) {
+  build(b, result, resultTypes, async_dependencies, chan_name, indices, dst,
+        dst_offsets, dst_sizes, dst_strides, allDynamic(b, dst_offsets.size()),
+        allDynamic(b, dst_sizes.size()), allDynamic(b, dst_strides.size()),
+        pad_before, pad_after);
+}
+
+// Replace one mixed list in place. The static array and its variadic operand
+// group must be updated together to stay consistent.
+static void setMixedList(Operation *op, ArrayRef<OpFoldResult> values,
+                         StringRef staticAttrName,
+                         MutableOperandRange dynamicOperands) {
+  SmallVector<int64_t> staticValues;
+  SmallVector<Value> dynamicValues;
+  dispatchIndexOpFoldResults(values, dynamicValues, staticValues);
+  dynamicOperands.assign(dynamicValues);
+  op->setAttr(staticAttrName, OpBuilder(op).getDenseI64ArrayAttr(staticValues));
+}
+
+void air::DmaMemcpyNdOp::setMixedSrcOffsets(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticSrcOffsetsAttrName(),
+               getDynamicSrcOffsetsMutable());
+}
+
+void air::DmaMemcpyNdOp::setMixedSrcSizes(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticSrcSizesAttrName(),
+               getDynamicSrcSizesMutable());
+}
+
+void air::DmaMemcpyNdOp::setMixedSrcStrides(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticSrcStridesAttrName(),
+               getDynamicSrcStridesMutable());
+}
+
+void air::DmaMemcpyNdOp::setMixedDstOffsets(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticDstOffsetsAttrName(),
+               getDynamicDstOffsetsMutable());
+}
+
+void air::DmaMemcpyNdOp::setMixedDstSizes(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticDstSizesAttrName(),
+               getDynamicDstSizesMutable());
+}
+
+void air::DmaMemcpyNdOp::setMixedDstStrides(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticDstStridesAttrName(),
+               getDynamicDstStridesMutable());
+}
+
+void air::ChannelPutOp::setMixedSrcOffsets(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticSrcOffsetsAttrName(),
+               getDynamicSrcOffsetsMutable());
+}
+
+void air::ChannelPutOp::setMixedSrcSizes(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticSrcSizesAttrName(),
+               getDynamicSrcSizesMutable());
+}
+
+void air::ChannelPutOp::setMixedSrcStrides(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticSrcStridesAttrName(),
+               getDynamicSrcStridesMutable());
+}
+
+void air::ChannelGetOp::setMixedDstOffsets(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticDstOffsetsAttrName(),
+               getDynamicDstOffsetsMutable());
+}
+
+void air::ChannelGetOp::setMixedDstSizes(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticDstSizesAttrName(),
+               getDynamicDstSizesMutable());
+}
+
+void air::ChannelGetOp::setMixedDstStrides(ArrayRef<OpFoldResult> values) {
+  setMixedList(*this, values, getStaticDstStridesAttrName(),
+               getDynamicDstStridesMutable());
+}
+
 /// Verify that sizes and strides operand lists have the same number of
 /// elements. Offsets may have fewer dimensions (implying leading zeros).
 /// All three being empty is valid.
-static LogicalResult verifySizesStridesRank(Operation *op, OperandRange sizes,
-                                            OperandRange strides,
+static LogicalResult verifySizesStridesRank(Operation *op,
+                                            ArrayRef<OpFoldResult> sizes,
+                                            ArrayRef<OpFoldResult> strides,
                                             StringRef label) {
   if (sizes.size() != strides.size())
     return op->emitOpError()
@@ -2851,11 +3047,11 @@ static LogicalResult verifySizesStridesRank(Operation *op, OperandRange sizes,
 }
 
 LogicalResult air::DmaMemcpyNdOp::verify() {
-  if (failed(verifySizesStridesRank(getOperation(), getSrcSizes(),
-                                    getSrcStrides(), "src")))
+  if (failed(verifySizesStridesRank(getOperation(), getMixedSrcSizes(),
+                                    getMixedSrcStrides(), "src")))
     return failure();
-  if (failed(verifySizesStridesRank(getOperation(), getDstSizes(),
-                                    getDstStrides(), "dst")))
+  if (failed(verifySizesStridesRank(getOperation(), getMixedDstSizes(),
+                                    getMixedDstStrides(), "dst")))
     return failure();
 
   auto padBefore = getPadBefore();
@@ -2922,8 +3118,48 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
   return success();
 }
 
+// Fold access-pattern operands that are `arith.constant` into the op's static
+// offset / size / stride arrays, so a compile-time-known entry is stored as a
+// plain number instead of costing an SSA operand (and a constant op that must
+// dominate every position the memcpy is later moved to).
+template <typename OpT>
+static LogicalResult FoldConstantAccessPattern(OpT op,
+                                               PatternRewriter &rewriter) {
+  bool changed = false;
+  auto fold = [&](SmallVector<OpFoldResult> mixed,
+                  llvm::function_ref<void(ArrayRef<OpFoldResult>)> setter) {
+    if (succeeded(foldDynamicIndexList(mixed))) {
+      setter(mixed);
+      changed = true;
+    }
+  };
+  if constexpr (std::is_same_v<OpT, air::DmaMemcpyNdOp>) {
+    fold(op.getMixedSrcOffsets(),
+         [&](ArrayRef<OpFoldResult> v) { op.setMixedSrcOffsets(v); });
+    fold(op.getMixedSrcSizes(),
+         [&](ArrayRef<OpFoldResult> v) { op.setMixedSrcSizes(v); });
+    fold(op.getMixedSrcStrides(),
+         [&](ArrayRef<OpFoldResult> v) { op.setMixedSrcStrides(v); });
+    fold(op.getMixedDstOffsets(),
+         [&](ArrayRef<OpFoldResult> v) { op.setMixedDstOffsets(v); });
+    fold(op.getMixedDstSizes(),
+         [&](ArrayRef<OpFoldResult> v) { op.setMixedDstSizes(v); });
+    fold(op.getMixedDstStrides(),
+         [&](ArrayRef<OpFoldResult> v) { op.setMixedDstStrides(v); });
+  } else {
+    fold(op.getMixedOffsets(),
+         [&](ArrayRef<OpFoldResult> v) { op.setMixedOffsets(v); });
+    fold(op.getMixedSizes(),
+         [&](ArrayRef<OpFoldResult> v) { op.setMixedSizes(v); });
+    fold(op.getMixedStrides(),
+         [&](ArrayRef<OpFoldResult> v) { op.setMixedStrides(v); });
+  }
+  return success(changed);
+}
+
 void air::DmaMemcpyNdOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *context) {
+  patterns.add(FoldConstantAccessPattern<air::DmaMemcpyNdOp>);
   patterns.add(EraseSelfCopyDma);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdSrc);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdDst);
@@ -3001,7 +3237,8 @@ SmallVector<Range> getIterationDomainFromChanIf(OpBuilder &builder,
   Location loc = op.getLoc();
   Value source = op.getMemref();
 
-  if (op.getSizes().empty()) {
+  auto opSizes = op.getMixedSizes();
+  if (opSizes.empty()) {
     // Case 1: Sizes are not explicitly provided: use full shape of the memref.
     int64_t operandRank =
         dyn_cast_if_present<MemRefType>(op.getMemref().getType()).getRank();
@@ -3017,12 +3254,14 @@ SmallVector<Range> getIterationDomainFromChanIf(OpBuilder &builder,
   } else {
     // Case 2: Sizes are explicitly provided: construct the domain directly from
     // op attributes.
-    int64_t operandRank = op.getSizes().size();
+    auto opOffsets = op.getMixedOffsets();
+    auto opStrides = op.getMixedStrides();
+    int64_t operandRank = opSizes.size();
     SmallVector<Range> loopBounds(operandRank);
     for (auto dim : llvm::seq<int64_t>(0, operandRank)) {
-      loopBounds[dim].offset = op.getOffsets()[dim];
-      loopBounds[dim].size = op.getSizes()[dim];
-      loopBounds[dim].stride = op.getStrides()[dim];
+      loopBounds[dim].offset = opOffsets[dim];
+      loopBounds[dim].size = opSizes[dim];
+      loopBounds[dim].stride = opStrides[dim];
     }
     return loopBounds;
   }
@@ -3038,11 +3277,12 @@ getLoopIteratorTypesFromChanIf(air::ChannelInterface op) {
   int64_t operandRank = 0;
 
   // If sizes are not provided, infer rank from the memref type.
-  if (op.getSizes().empty())
+  auto opSizes = op.getMixedSizes();
+  if (opSizes.empty())
     operandRank =
         dyn_cast_if_present<MemRefType>(op.getMemref().getType()).getRank();
   else
-    operandRank = op.getSizes().size();
+    operandRank = opSizes.size();
 
   // All dimensions are marked as parallel iterators.
   SmallVector<utils::IteratorType> iteratorTypes(operandRank,
@@ -3068,16 +3308,18 @@ FailureOr<TilingResult> getTiledImplementationFromChanIf(
   auto oneAttr = builder.getI64IntegerAttr(1);
 
   // Determine the rank from memref or explicit sizes.
-  if (op.getSizes().empty())
+  auto opSizes = op.getMixedSizes();
+  auto opStrides = op.getMixedStrides();
+  if (opSizes.empty())
     rank = dyn_cast_if_present<MemRefType>(op.getMemref().getType()).getRank();
   else
-    rank = op.getSizes().size();
+    rank = opSizes.size();
 
   // Compute strides for slicing — use op's strides if available.
   SmallVector<OpFoldResult> strides(rank, oneAttr);
-  if (!op.getSizes().empty()) {
+  if (!opSizes.empty()) {
     for (auto dim : llvm::seq<int64_t>(0, rank)) {
-      strides[dim] = op.getStrides()[dim];
+      strides[dim] = opStrides[dim];
     }
   }
 
@@ -3086,16 +3328,6 @@ FailureOr<TilingResult> getTiledImplementationFromChanIf(
       getSlice(builder, op.getLoc(), op.getMemref(), offsets, sizes, strides);
   if (!inputSlice) {
     return op.emitOpError("failed to compute input slice");
-  }
-
-  // Convert strides to Values.
-  SmallVector<Value> stridesAsValues(rank);
-  for (auto dim : llvm::seq<int64_t>(0, rank)) {
-    if (op.getStrides().empty())
-      stridesAsValues[dim] =
-          arith::ConstantIndexOp::create(builder, op.getLoc(), 1);
-    else
-      stridesAsValues[dim] = op.getStrides()[dim];
   }
 
   // Clone a new tiled op with the sliced subview and same async/channel
@@ -3107,10 +3339,7 @@ FailureOr<TilingResult> getTiledImplementationFromChanIf(
   PutGetTy tiledOp = PutGetTy::create(
       builder, op.getLoc(), op->getResultTypes(),
       asyncIf.getAsyncDependencies(), op.getChanName(), op.getIndices(),
-      inputSlice->getResult(0),
-      materializeOpFoldResultAsValues(offsets, op.getLoc(), builder),
-      materializeOpFoldResultAsValues(sizes, op.getLoc(), builder),
-      materializeOpFoldResultAsValues(strides, op.getLoc(), builder),
+      inputSlice->getResult(0), offsets, sizes, ArrayRef<OpFoldResult>(strides),
       /*pad_before=*/padBefore, /*pad_after=*/padAfter);
 
   // Return the tiling result, including the new op and the sliced input.
@@ -3138,8 +3367,8 @@ static LogicalResult FoldMemrefCastOnChannelOp(OpT op,
 
   // Only proceed if offsets, sizes, and strides are empty (no explicit access
   // pattern)
-  if (!op.getOffsets().empty() || !op.getSizes().empty() ||
-      !op.getStrides().empty())
+  if (!op.getMixedOffsets().empty() || !op.getMixedSizes().empty() ||
+      !op.getMixedStrides().empty())
     return failure();
 
   // Extract padding attributes before replacing (old op will be erased).
@@ -3148,8 +3377,8 @@ static LogicalResult FoldMemrefCastOnChannelOp(OpT op,
   // Replace the channel op with a new one using the cast's source
   rewriter.replaceOpWithNewOp<OpT>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
-      op.getIndices(), castOp.getSource(), op.getOffsets(), op.getSizes(),
-      op.getStrides(),
+      op.getIndices(), castOp.getSource(), op.getMixedOffsets(),
+      op.getMixedSizes(), op.getMixedStrides(),
       /*pad_before=*/padBefore, /*pad_after=*/padAfter);
 
   return success();
@@ -3190,10 +3419,15 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
 
   // Init. memref type and offsets from memref's defining op's input type
   Value input_memref = memref;
-  SmallVector<Value> offsets, sizes, strides;
-  offsets = op.getOffsets();
-  sizes = op.getSizes();
-  strides = op.getStrides();
+  // ComposeMemrefOp works on index Values; materialize the static entries and
+  // fold them back into the static arrays when rebuilding the op below.
+  auto loc = op.getLoc();
+  SmallVector<Value> offsets =
+      getValueOrCreateConstantIndexOp(rewriter, loc, op.getMixedOffsets());
+  SmallVector<Value> sizes =
+      getValueOrCreateConstantIndexOp(rewriter, loc, op.getMixedSizes());
+  SmallVector<Value> strides =
+      getValueOrCreateConstantIndexOp(rewriter, loc, op.getMixedStrides());
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
@@ -3216,10 +3450,12 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
   // (they are discardable attrs, otherwise lost on rebuild and the AIRToAIE /
   // AIRRtToNpu consumers never fire), then replace -- so `op` is not read after
   // it is erased.
-  auto newOp = rewriter.create<OpT>(
-      op.getLoc(), op->getResultTypes(), op.getAsyncDependencies(),
-      op.getChanName(), op.getIndices(), input_memref, offsets, sizes, strides,
-      /*pad_before=*/padBefore, /*pad_after=*/padAfter);
+  auto newOp =
+      OpT::create(rewriter, op.getLoc(), op->getResultTypes(),
+                  op.getAsyncDependencies(), op.getChanName(), op.getIndices(),
+                  input_memref, getAsOpFoldResult(offsets),
+                  getAsOpFoldResult(sizes), getAsOpFoldResult(strides),
+                  /*pad_before=*/padBefore, /*pad_after=*/padAfter);
   copyChannelSteeringAttrs(op, newOp);
   rewriter.replaceOp(op, newOp->getResults());
 
@@ -3281,8 +3517,8 @@ static LogicalResult verifyRefeedCountAttr(Operation *op) {
 }
 
 LogicalResult air::ChannelPutOp::verify() {
-  if (failed(verifySizesStridesRank(getOperation(), getSrcSizes(),
-                                    getSrcStrides(), "src")))
+  if (failed(verifySizesStridesRank(getOperation(), getMixedSrcSizes(),
+                                    getMixedSrcStrides(), "src")))
     return failure();
   if (failed(verifyRefeedCountAttr(getOperation())))
     return failure();
@@ -3342,6 +3578,7 @@ LogicalResult air::ChannelPutOp::verify() {
 
 void air::ChannelPutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                     MLIRContext *context) {
+  patterns.add(FoldConstantAccessPattern<air::ChannelPutOp>);
   patterns.add(ComposeMemrefOpOnChannelOp<air::ChannelPutOp>);
   patterns.add(CanonicalizeAsyncOpDeps<air::ChannelPutOp>);
 }
@@ -3383,8 +3620,8 @@ LogicalResult air::ChannelGetOp::getResultTilePosition(
 }
 
 LogicalResult air::ChannelGetOp::verify() {
-  if (failed(verifySizesStridesRank(getOperation(), getDstSizes(),
-                                    getDstStrides(), "dst")))
+  if (failed(verifySizesStridesRank(getOperation(), getMixedDstSizes(),
+                                    getMixedDstStrides(), "dst")))
     return failure();
   if (failed(verifyRefeedCountAttr(getOperation())))
     return failure();
@@ -3445,6 +3682,7 @@ LogicalResult air::ChannelGetOp::verify() {
 
 void air::ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                     MLIRContext *context) {
+  patterns.add(FoldConstantAccessPattern<air::ChannelGetOp>);
   patterns.add(ComposeMemrefOpOnChannelOp<air::ChannelGetOp>);
   patterns.add(CanonicalizeAsyncOpDeps<air::ChannelGetOp>);
 }

@@ -9,7 +9,7 @@
 
 // Dynamic-sized subview source, static L1 destination.
 // CHECK-LABEL: func.func @dynamic_size_subview_src
-// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %c0{{.*}}] [%c16{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1{{.*}}])
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, 0] [16, 64] [64, 1])
 func.func @dynamic_size_subview_src(%arg0: memref<?x64xf32>, %arg1: index) {
   %alloc = memref.alloc() : memref<16x64xf32, 2>
   %sv = memref.subview %arg0[%arg1, 0] [16, 64] [1, 1]
@@ -22,7 +22,7 @@ func.func @dynamic_size_subview_src(%arg0: memref<?x64xf32>, %arg1: index) {
 
 // Dynamic-sized reinterpret_cast with dynamic size.
 // CHECK-LABEL: func.func @dynamic_size_reinterpret_cast
-// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}] [%{{.*}}] [%c1{{.*}}])
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}] [%{{.*}}] [1])
 func.func @dynamic_size_reinterpret_cast(%arg0: memref<*xf32>, %off: index, %n: index) {
   %alloc = memref.alloc() : memref<32xf32, 2>
   %rc = memref.reinterpret_cast %arg0 to

@@ -14,4 +14,6 @@ add_mlir_dialect_library(
   MLIRAIRRtOpsIncGen
 
   LINK_LIBS PUBLIC
-  MLIRIR)
+  MLIRIR
+  MLIRDialectUtils
+  MLIRViewLikeInterface)

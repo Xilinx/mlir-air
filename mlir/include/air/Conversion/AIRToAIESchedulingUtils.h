@@ -47,8 +47,8 @@ std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec);
 
 bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 
-int64_t get1DOffset(SmallVector<Value> memcpy_offsets,
-                    SmallVector<Value> memcpy_strides);
+int64_t get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
+                    ArrayRef<OpFoldResult> memcpy_strides);
 
 // Given a vector of memcpy operations, return a map of their repeat counts,
 // relative to a common ancestor region.
@@ -56,8 +56,8 @@ llvm::MapVector<int, llvm::SetVector<Operation *>>
 getRepeatCounts(std::vector<Operation *> memcpy_ops);
 
 std::vector<AIE::BDDimLayoutAttr>
-getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
-                   SmallVector<Value> memcpy_strides, MLIRContext *ctx);
+getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,
+                   ArrayRef<OpFoldResult> memcpy_strides, MLIRContext *ctx);
 
 std::pair<int64_t, int64_t>
 getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref);

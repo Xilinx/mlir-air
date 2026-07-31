@@ -21,9 +21,8 @@ module {
     %0 = air.launch async (%arg1, %arg2) in (%arg3=%c8, %arg4=%c8) args(%arg5=%arg0) : memref<512x512xbf16> attributes {id = 3 : i32} {
 // CHECK: %[[EVENT0:.*]] = air.segment async
       %1 = air.segment async  args(%arg6=%arg1, %arg7=%arg2, %arg8=%arg3, %arg9=%arg4, %arg10=%arg5) : index, index, index, index, memref<512x512xbf16> attributes {id = 2 : i32} {
-// CHECK: %[[CONST1:.*]] = arith.constant 1 : index
-// CHECK: %[[CONST2:.*]] = arith.constant 2 : index   
-// CHECK: %[[CONST0:.*]] = arith.constant 0 : index   
+// CHECK: %[[CONST2:.*]] = arith.constant 2 : index
+// CHECK: %[[CONST0:.*]] = arith.constant 0 : index
         %c2 = arith.constant 2 : index
         %c0 = arith.constant 0 : index
         %c512 = arith.constant 512 : index

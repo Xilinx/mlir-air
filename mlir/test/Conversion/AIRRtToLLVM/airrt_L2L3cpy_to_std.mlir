@@ -57,10 +57,10 @@ module attributes {torch.debug_module_name = "mmult"}  {
           %12 = arith.index_cast %arg3 : index to i64
           %13 = arith.index_cast %6 : index to i64
           %14 = arith.index_cast %arg5 : index to i64
-          airrt.dma_memcpy_nd(%c4_i32, %11, %12, %2[%c0_i64, %c0_i64, %13, %14], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+          airrt.dma_memcpy_nd(%c4_i32, %11, %12, %2[%c0_i64, %c0_i64, %13, %14], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>)
           %15 = arith.index_cast %7 : index to i64
-          airrt.dma_memcpy_nd(%c5_i32, %11, %12, %3[%c0_i64, %c0_i64, %14, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
-          airrt.dma_memcpy_nd(%c6_i32, %11, %12, %4[%c0_i64, %c0_i64, %13, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+          airrt.dma_memcpy_nd(%c5_i32, %11, %12, %3[%c0_i64, %c0_i64, %14, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>)
+          airrt.dma_memcpy_nd(%c6_i32, %11, %12, %4[%c0_i64, %c0_i64, %13, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>)
           affine.for %arg6 = 0 to 32 {
             affine.for %arg7 = 0 to 32 {
               affine.for %arg8 = 0 to 32 {
@@ -73,7 +73,7 @@ module attributes {torch.debug_module_name = "mmult"}  {
               }
             }
           }
-          airrt.dma_memcpy_nd(%c7_i32, %11, %12, %4[%c0_i64, %c0_i64, %13, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+          airrt.dma_memcpy_nd(%c7_i32, %11, %12, %4[%c0_i64, %c0_i64, %13, %15], [%c1_i64, %c1_i64, %c32_i64, %c32_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) : (i32, i64, i64, memref<64x64xi32, 1>)
           memref.dealloc %8 : memref<32x32xi32, 2>
           memref.dealloc %9 : memref<32x32xi32, 2>
           memref.dealloc %10 : memref<32x32xi32, 2>

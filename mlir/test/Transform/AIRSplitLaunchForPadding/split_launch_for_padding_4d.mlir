@@ -158,13 +158,13 @@ module {
 
 // M-boundary: herd 3 (shimIdx=3) has 52 actual M-rows (244 - 3*64 = 52), pad 12
 // L3→L2 A channel.put sizes reduced from [1,1,64,16] to [1,1,52,16]
-// CHECK-DAG: @channel_A_l3_m_boundary[%c3{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c1{{[_0-9]*}}, %c1{{[_0-9]*}}, %c52{{[_0-9]*}}, %c16
+// CHECK-DAG: @channel_A_l3_m_boundary[%c3{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c1{{[_0-9]*}}, %c1{{[_0-9]*}}, 52, %c16
 // L2→L1 A channel.put for herd 3: dim1 padded from 64 to 52, pad_after 12
 // CHECK-DAG: @channel_A_l2l1_3_m_boundary[] {{.*}} pad_after = array<i32: 0, 12, 0>
 
 // N-boundary: herd 3 (shimIdx=3) has 20 actual N-cols (116 - 3*32 = 20)
 // L3→L2 B channel.put sizes reduced from [1,1,16,32] to [1,1,16,20]
-// CHECK-DAG: @channel_B_l3_n_boundary[%c3{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c1{{[_0-9]*}}, %c1{{[_0-9]*}}, %c16{{[_0-9]*}}, %c20
+// CHECK-DAG: @channel_B_l3_n_boundary[%c3{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c1{{[_0-9]*}}, %c1{{[_0-9]*}}, %c16{{[_0-9]*}}, 20
 // L2→L1 B channel.put for herd 3: dim0 padded (N-blocks: 4→3, with innerBlock=8, pad=1)
 // CHECK-DAG: @channel_B_l2l1_3_n_boundary[] {{.*}} pad_after = array<i32: 1, 0, 0>
 

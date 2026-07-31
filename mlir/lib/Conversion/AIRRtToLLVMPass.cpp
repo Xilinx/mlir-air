@@ -14,6 +14,7 @@
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -568,8 +569,8 @@ public:
   }
 };
 
-LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
-                               std::string fnName) {
+LogicalResult lowerDmaNdMemcpy(xilinx::airrt::DmaMemcpyNdOp op,
+                               PatternRewriter &rewriter, std::string fnName) {
   auto ctx = op->getContext();
   auto loc = op->getLoc();
 
@@ -591,10 +592,27 @@ LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
     operands.push_back(nullV);
   }
 
-  for (auto o : op->getOperands()) {
-    tys.push_back(o.getType());
-    operands.push_back(o);
-  }
+  auto addOperand = [&](Value v) {
+    tys.push_back(v.getType());
+    operands.push_back(v);
+  };
+  addOperand(op.getId());
+  addOperand(op.getX());
+  addOperand(op.getY());
+  addOperand(op.getMemref());
+  // The runtime entry point takes the access pattern as a flat list of 12 i64
+  // arguments, so materialize any statically-known entries back into SSA
+  // values.
+  auto i64Ty = rewriter.getI64Type();
+  for (auto list :
+       {op.getMixedOffsets(), op.getMixedLengths(), op.getMixedStrides()})
+    for (auto ofr : list) {
+      if (auto attr = dyn_cast<Attribute>(ofr))
+        addOperand(arith::ConstantOp::create(rewriter, loc, i64Ty,
+                                             cast<IntegerAttr>(attr)));
+      else
+        addOperand(cast<Value>(ofr));
+    }
 
   MemRefType memrefTy = llvm::cast<MemRefType>(tys[4]);
   tys[4] = MemRefType::get(
