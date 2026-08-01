@@ -3496,8 +3496,11 @@ Without <code>packet_ids</code> a packet channel gets a single auto-assigned id.
 <p>Syntax:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>operation ::= `air.channel.get` custom&lt;AsyncDependencies&gt;(type($async_token), $async_dependencies)
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>              $chan_name `[` ($indices^)? `]`
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>              `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>              `(` type($dst) `)`
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>              `(` $dst ``
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>              custom&lt;DynamicIndexList&gt;($dynamic_dst_offsets, $static_dst_offsets)
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>              custom&lt;DynamicIndexList&gt;($dynamic_dst_sizes, $static_dst_sizes)
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>              custom&lt;DynamicIndexList&gt;($dynamic_dst_strides, $static_dst_strides) `)`
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>              attr-dict `:` `(` type($dst) `)`
 </code></pre></div>
 <p>The <code>air.channel.get</code> operation represents a <strong>pull</strong> (receive) operation that copies data from a
 specified channel into a destination memref.</p>
@@ -3537,6 +3540,9 @@ asynchronous communication where data previously sent by a corresponding
 <table>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>chan_name</code></td><td>::mlir::FlatSymbolRefAttr</td><td>flat symbol reference attribute</td></tr>
+<tr><td><code>static_dst_offsets</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+<tr><td><code>static_dst_sizes</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+<tr><td><code>static_dst_strides</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
 <tr><td><code>pad_before</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
 <tr><td><code>pad_after</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
 </table>
@@ -3563,15 +3569,15 @@ asynchronous communication where data previously sent by a corresponding
 <td>ranked or unranked memref of any type values</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>dst_offsets</code></td>
+<td style="text-align: center;"><code>dynamic_dst_offsets</code></td>
 <td>variadic of index</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>dst_sizes</code></td>
+<td style="text-align: center;"><code>dynamic_dst_sizes</code></td>
 <td>variadic of index</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>dst_strides</code></td>
+<td style="text-align: center;"><code>dynamic_dst_strides</code></td>
 <td>variadic of index</td>
 </tr>
 </tbody>
@@ -3596,8 +3602,11 @@ asynchronous communication where data previously sent by a corresponding
 <p>Syntax:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>operation ::= `air.channel.put` custom&lt;AsyncDependencies&gt;(type($async_token), $async_dependencies)
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>              $chan_name `[` ($indices^)? `]`
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>              `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)` attr-dict `:`
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>              `(` type($src) `)`
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>              `(` $src ``
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>              custom&lt;DynamicIndexList&gt;($dynamic_src_offsets, $static_src_offsets)
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>              custom&lt;DynamicIndexList&gt;($dynamic_src_sizes, $static_src_sizes)
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>              custom&lt;DynamicIndexList&gt;($dynamic_src_strides, $static_src_strides) `)`
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>              attr-dict `:` `(` type($src) `)`
 </code></pre></div>
 <p>The <code>air.channel.put</code> operation represents a <strong>push</strong> (send) operation that copies data from a
 source memref into a specified channel.</p>
@@ -3641,6 +3650,9 @@ communication between producer and consumer operations. It is typically paired w
 <table>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>chan_name</code></td><td>::mlir::FlatSymbolRefAttr</td><td>flat symbol reference attribute</td></tr>
+<tr><td><code>static_src_offsets</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+<tr><td><code>static_src_sizes</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+<tr><td><code>static_src_strides</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
 <tr><td><code>pad_before</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
 <tr><td><code>pad_after</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
 </table>
@@ -3667,15 +3679,15 @@ communication between producer and consumer operations. It is typically paired w
 <td>ranked or unranked memref of any type values</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>src_offsets</code></td>
+<td style="text-align: center;"><code>dynamic_src_offsets</code></td>
 <td>variadic of index</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>src_sizes</code></td>
+<td style="text-align: center;"><code>dynamic_src_sizes</code></td>
 <td>variadic of index</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>src_strides</code></td>
+<td style="text-align: center;"><code>dynamic_src_strides</code></td>
 <td>variadic of index</td>
 </tr>
 </tbody>
@@ -3746,9 +3758,15 @@ performance with this op in place.</p>
 <p><em>Dma operator</em></p>
 <p>Syntax:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>operation ::= `air.dma_memcpy_nd` custom&lt;AsyncDependencies&gt;(type($async_token), $async_dependencies)
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>              `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `,`
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>              $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>              `(` type($dst) `,` type($src) `)`
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>              `(` $dst ``
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>              custom&lt;DynamicIndexList&gt;($dynamic_dst_offsets, $static_dst_offsets)
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>              custom&lt;DynamicIndexList&gt;($dynamic_dst_sizes, $static_dst_sizes)
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>              custom&lt;DynamicIndexList&gt;($dynamic_dst_strides, $static_dst_strides) `,`
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>              $src ``
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>              custom&lt;DynamicIndexList&gt;($dynamic_src_offsets, $static_src_offsets)
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>              custom&lt;DynamicIndexList&gt;($dynamic_src_sizes, $static_src_sizes)
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>              custom&lt;DynamicIndexList&gt;($dynamic_src_strides, $static_src_strides) `)`
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>              attr-dict `:` `(` type($dst) `,` type($src) `)`
 </code></pre></div>
 <p>N-dimensional strided bulk copy between two memrefs.</p>
 <p>Optional <code>src_rank</code> / <code>dst_rank</code> integer attributes name a peer rank in the
@@ -3763,6 +3781,12 @@ dma-to-mgpu</code>); this PR introduces only the IR surface and verifier rules.<
 <h4 id="attributes_4">Attributes:<a class="headerlink" href="#attributes_4" title="Permanent link">&para;</a></h4>
 <table>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>static_dst_offsets</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+<tr><td><code>static_dst_sizes</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+<tr><td><code>static_dst_strides</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+<tr><td><code>static_src_offsets</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+<tr><td><code>static_src_sizes</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+<tr><td><code>static_src_strides</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
 <tr><td><code>pad_before</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
 <tr><td><code>pad_after</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
 <tr><td><code>src_rank</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute</td></tr>
@@ -3787,15 +3811,15 @@ dma-to-mgpu</code>); this PR introduces only the IR surface and verifier rules.<
 <td>ranked or unranked memref of any type values</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>dst_offsets</code></td>
+<td style="text-align: center;"><code>dynamic_dst_offsets</code></td>
 <td>variadic of index</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>dst_sizes</code></td>
+<td style="text-align: center;"><code>dynamic_dst_sizes</code></td>
 <td>variadic of index</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>dst_strides</code></td>
+<td style="text-align: center;"><code>dynamic_dst_strides</code></td>
 <td>variadic of index</td>
 </tr>
 <tr>
@@ -3803,15 +3827,15 @@ dma-to-mgpu</code>); this PR introduces only the IR surface and verifier rules.<
 <td>ranked or unranked memref of any type values</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>src_offsets</code></td>
+<td style="text-align: center;"><code>dynamic_src_offsets</code></td>
 <td>variadic of index</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>src_sizes</code></td>
+<td style="text-align: center;"><code>dynamic_src_sizes</code></td>
 <td>variadic of index</td>
 </tr>
 <tr>
-<td style="text-align: center;"><code>src_strides</code></td>
+<td style="text-align: center;"><code>dynamic_src_strides</code></td>
 <td>variadic of index</td>
 </tr>
 </tbody>
