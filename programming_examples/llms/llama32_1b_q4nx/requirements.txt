@@ -1,0 +1,19 @@
+# Additional Python packages for the LLAMA-3.2-1B Q4NX prefill.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, filelock, pyxrt, etc.). Install with:
+#     pip install -r requirements.txt
+#
+# NOTE: unlike the HF-reference examples, this one does NOT download weights from
+# HuggingFace. It consumes Q4NX weights + a golden bundle supplied out of band
+# via the PARIS_WEIGHTS / PARIS_GOLDEN env vars (see README.md). The golden
+# bundle is generated once with gen_paris_golden.py, which is what needs
+# `transformers` / `torch` below.
+
+# Q4NX weights load
+safetensors
+huggingface_hub
+
+# Only needed to (re)generate the golden bundle via gen_paris_golden.py
+transformers
+torch

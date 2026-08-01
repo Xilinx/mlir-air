@@ -230,6 +230,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "LLM Kernels",
+        "name": "Fused Superkernel Decode",
+        "path": "fused_decode",
+        "datatypes": "Q4NX weights / bf16 activations",
+    },
+    {
         "category": "Attention",
         "name": "Flash Attention (Dataflow)",
         "path": "flash_attention/dataflow_based",

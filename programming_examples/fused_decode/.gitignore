@@ -1,0 +1,18 @@
+# Compiled kernels + decode templates (reproduced by `make compile-decode`; never committed).
+*.o
+*.ll
+decode.xclbin
+decode.insts.bin
+decode_L*.xclbin
+decode_L*.insts.bin
+
+# Build / cache artifacts
+__pycache__/
+*.pyc
+air_project/
+build_peano/
+build_chess/
+air.mlir
+air.elf
+air.xclbin
+air.insts.bin

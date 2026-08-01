@@ -222,6 +222,34 @@ void copy_tile(bfloat16 *src, bfloat16 *dst) {
     }
 }
 
+// Copy the lc-th tile_size_q×dk tile out of a 2-tile src buffer into dst.
+// Mirrors the per-column q offset (q + col*lq*dh): a 2-way Q broadcast
+// delivers a column-pair's 2 q-tiles to both columns; each column extracts its
+// half (lc = column-in-pair) for its own independent q-rows.
+// The 2-way broadcast delivers the pair in the M-tiled (transposed) layout the
+// matmul expects: dims [dk/M, 2*(lqp/M), M, M] — the two tiles are INTERLEAVED
+// along dim1, so tile lc occupies dim1 [lc*(lqp/M) : (lc+1)*(lqp/M)]. Extract
+// it per-d0 block (src stride 2*CHUNK, dst stride CHUNK) rather than a flat
+// offset.
+void copy_half_tile(bfloat16 *src, bfloat16 *dst, int lc) {
+  SET_ROUNDING();
+  constexpr int VecLen = 32;
+  constexpr int M = 8;
+  constexpr int D0 = dk / M;     // dk/M outer blocks
+  constexpr int CHUNK = lqp * M; // per-d0 per-tile elems = (lqp/M)*M*M
+  for (int d0 = 0; d0 < D0; d0++) {
+    bfloat16 *__restrict ps = src + d0 * (2 * CHUNK) + lc * CHUNK;
+    bfloat16 *__restrict pd = dst + d0 * CHUNK;
+    for (int j = 0; j < CHUNK / VecLen; j++)
+      chess_prepare_for_pipelining chess_loop_range(8, ) {
+        aie::vector<bfloat16, VecLen> v = aie::load_v<VecLen>(ps);
+        aie::store_v(pd, v);
+        ps += VecLen;
+        pd += VecLen;
+      }
+  }
+}
+
 void matmul_a_b_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *out) {
   SET_ROUNDING();
   // Buffer shapes:

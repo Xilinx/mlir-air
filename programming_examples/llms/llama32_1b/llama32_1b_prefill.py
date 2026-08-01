@@ -143,6 +143,12 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
         tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
     )
 
+    # Fused-cast GEMM requires seq_len % (tile_m * herd_m) == 0 with tile_m<=64.
+    # Small contexts (seq_len < 512) can't use herd_m=8 (64*8=512 > seq_len), so
+    # pick the largest herd_m in {8,4,2,1} that divides. seq_len>=512 -> 8 (default,
+    # unchanged behavior).
+    gemm_herd_m = next(h for h in (8, 4, 2, 1) if seq_len % (64 * h) == 0)
+
     # 1. RMSNorm + QKV GEMMs + RoPE Q+K: one ELF (registry-driven per-GEMM method).
     from shared.builders.rms_gemms_rope_multi import (
         build_rms_gemms_rope_module,
@@ -151,7 +157,13 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     cache.compile_and_cache(
         "rms_gemms_rope",
         build_rms_gemms_rope_module(
-            seq_len, emb_dim, kv_dim, n_heads, n_kv_heads, head_dim
+            seq_len,
+            emb_dim,
+            kv_dim,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            herd_m=gemm_herd_m,
         ),
         {"verbose": cache.verbose, **_rms_gemms_rope_run_backend()},
     )
@@ -166,25 +178,59 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
         "instance_name": "o_ffn",
         "runtime_loop_tiling_sizes": [2, 2],
     }
-    _o_ffn_mod = build_o_ffn_module(seq_len, emb_dim, hidden_dim)
+    _o_ffn_mod = build_o_ffn_module(seq_len, emb_dim, hidden_dim, herd_m=gemm_herd_m)
     cache.compile_and_cache("o_ffn", _o_ffn_mod, o_ffn_backend)
 
     # 8. Flash Attention GQA (skip if using CPU attention fallback)
     if not cpu_attn:
-        from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
-            build_module as build_attn,
-        )
-
         lkp = head_dim  # 64
-        lqp = 256
         enable_shared_buffers = lkp == head_dim
-        cache.compile_and_cache(
-            "flash_attn",
-            build_attn(
+        # TEMPORAL_CAUSAL_SKIP=1 (opt-in, gated): use the reference-faithful
+        # single-dispatch-per-kv-head temporal FlashAttention (column-block
+        # mapping, no spatial cascade) with lever-A causal DMA-triangle skip,
+        # instead of the shipped seqfirst cascade. Requires lqp=512 /
+        # num_q_tiles=8 (8 physical columns), so seq_len must be a multiple of
+        # 512; otherwise fall back to seqfirst.
+        import os as _os
+
+        _temporal_skip = (
+            _os.environ.get("TEMPORAL_CAUSAL_SKIP") == "1" and seq_len % 512 == 0
+        )
+        if _temporal_skip:
+            # Lever A: causal DMA-triangle skip (round lx streams only its
+            # (lx+1)*NQ K-block prefix), reference-faithful in-core temporal reduction
+            # with double-buffered output.
+            from flash_attention.kernel_fusion_based.attn_npu2_temporal_causal import (
+                build_module as build_attn,
+            )
+
+            print(
+                "  flash_attn: reference-faithful TEMPORAL + CAUSAL-SKIP (TEMPORAL_CAUSAL_SKIP=1)"
+            )
+            _attn_mod = build_attn(
                 lk=seq_len,
                 lkp=lkp,
                 lq=seq_len,
-                lqp=lqp,
+                lqp=512,
+                dk=head_dim,
+                dv=head_dim,
+                num_q_tiles=8,
+                num_heads=n_heads,
+                num_kv_heads=n_kv_heads,
+                causal=True,
+                num_heads_per_unroll=1,
+                causal_skip=False,
+            )
+        else:
+            from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
+                build_module as build_attn,
+            )
+
+            _attn_mod = build_attn(
+                lk=seq_len,
+                lkp=lkp,
+                lq=seq_len,
+                lqp=256,
                 dk=head_dim,
                 dv=head_dim,
                 num_q_tiles=4,
@@ -192,7 +238,10 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
                 num_heads=n_heads,
                 num_kv_heads=n_kv_heads,
                 causal=True,
-            ),
+            )
+        cache.compile_and_cache(
+            "flash_attn",
+            _attn_mod,
             {
                 "verbose": cache.verbose,
                 "omit_while_true_loop": not enable_shared_buffers,
