@@ -276,14 +276,22 @@ bool isDeviceToHostShimDMA(Operation *op);
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
-bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
-                                SmallVector<Value> memcpy_strides);
+bool isDefaultDataAccessPattern(ArrayRef<OpFoldResult> memcpy_sizes,
+                                ArrayRef<OpFoldResult> memcpy_strides);
+// Materialize an AIR channel op's access pattern as index-typed SSA values,
+// creating constants for the statically-known entries immediately before the
+// op. Use these when the consumer needs a Value (e.g. to trace the producing
+// affine.apply or scf.for); prefer the op's getMixed*() accessors when only
+// the constant value matters.
+SmallVector<Value> getOffsetsAsValues(air::ChannelInterface op);
+SmallVector<Value> getSizesAsValues(air::ChannelInterface op);
+SmallVector<Value> getStridesAsValues(air::ChannelInterface op);
 // True when the wraps/strides lower to a single linear shim BD: contiguous
 // row-major body, optionally preceded by outer size==1 dummies or outer
 // stride==0 (BD repeat) dims. Such a transfer is exempt from the per-dim
 // 10-bit wrap-size limit.
-bool isContiguousRowMajorOrRepeated(SmallVector<Value> sizes,
-                                    SmallVector<Value> strides);
+bool isContiguousRowMajorOrRepeated(ArrayRef<OpFoldResult> sizes,
+                                    ArrayRef<OpFoldResult> strides);
 // Check if the volume of sizes equals the volume of the memref.
 // Return true if equal, and return false if any size value is not constant,
 // or memref shape isn't static.

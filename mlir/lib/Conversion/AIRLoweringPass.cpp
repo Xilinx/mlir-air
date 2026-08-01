@@ -467,6 +467,35 @@ public:
   }
 };
 
+// Convert an index-typed access-pattern operand into the i64 domain used by
+// the airrt dma ops. Compile-time constants become i64 attributes so that they
+// land in the op's static_offsets/lengths/strides arrays instead of costing an
+// index_cast plus a constant op.
+static OpFoldResult indexToI64OpFoldResult(OpBuilder &builder, Location loc,
+                                           OpFoldResult v) {
+  if (auto constVal = getConstantIntValue(v))
+    return builder.getI64IntegerAttr(*constVal);
+  return OpFoldResult(arith::IndexCastOp::create(
+                          builder, loc, builder.getI64Type(), cast<Value>(v))
+                          .getResult());
+}
+
+// Materialize a mixed static/dynamic list as plain i64 SSA values, for ops that
+// have no static-attribute form.
+static SmallVector<Value> materializeI64Values(OpBuilder &builder, Location loc,
+                                               ArrayRef<OpFoldResult> ofrs) {
+  SmallVector<Value> values;
+  values.reserve(ofrs.size());
+  for (auto ofr : ofrs) {
+    if (auto attr = dyn_cast<Attribute>(ofr))
+      values.push_back(arith::ConstantOp::create(
+          builder, loc, builder.getI64Type(), cast<IntegerAttr>(attr)));
+    else
+      values.push_back(cast<Value>(ofr));
+  }
+  return values;
+}
+
 class AIRDmaMemcpyNdToAIRRtConversion
     : public OpConversionPattern<air::DmaMemcpyNdOp> {
 public:
@@ -556,49 +585,46 @@ public:
       opers.push_back(op.getDstMemref());
       opers.push_back(op.getSrcMemref());
     }
-    auto i64Ty = rewriter.getI64Type();
-    auto zero = arith::ConstantOp::create(rewriter, loc, i64Ty,
-                                          IntegerAttr::get(i64Ty, 0));
-    auto one = arith::ConstantOp::create(rewriter, loc, i64Ty,
-                                         IntegerAttr::get(i64Ty, 1));
-
-    SmallVector<Value, 4> offsets(4, zero);
-    SmallVector<Value, 4> lengths(4, one);
-    SmallVector<Value, 4> strides(4, zero);
+    SmallVector<OpFoldResult, 4> offsets(4, rewriter.getI64IntegerAttr(0));
+    SmallVector<OpFoldResult, 4> lengths(4, rewriter.getI64IntegerAttr(1));
+    SmallVector<OpFoldResult, 4> strides(4, rewriter.getI64IntegerAttr(0));
 
     int idx = 4 - src.getRank();
-    for (auto o : isFromTile ? op.getDstOffsets() : op.getSrcOffsets())
-      offsets[idx++] = arith::IndexCastOp::create(rewriter, op->getLoc(),
-                                                  IntegerType::get(ctx, 64), o);
-    auto op_strides = isFromTile ? op.getDstStrides() : op.getSrcStrides();
+    for (auto o :
+         isFromTile ? op.getMixedDstOffsets() : op.getMixedSrcOffsets())
+      offsets[idx++] = indexToI64OpFoldResult(rewriter, op->getLoc(), o);
+    auto op_strides =
+        isFromTile ? op.getMixedDstStrides() : op.getMixedSrcStrides();
     if (op_strides.size()) {
       // Take last min(4, N) strides, drop leading strides if N > 4.
       // The innermost stride (last element) is now preserved.
-      auto strides_to_use = op_strides;
+      ArrayRef<OpFoldResult> strides_to_use = op_strides;
       if (strides_to_use.size() > 4)
         strides_to_use = strides_to_use.drop_front(strides_to_use.size() - 4);
       idx = 4 - strides_to_use.size();
       for (auto o : strides_to_use)
-        strides[idx++] = arith::IndexCastOp::create(
-            rewriter, op->getLoc(), IntegerType::get(ctx, 64), o);
+        strides[idx++] = indexToI64OpFoldResult(rewriter, op->getLoc(), o);
     }
     idx = 4 - src.getRank();
-    for (auto o : isFromTile ? op.getDstSizes() : op.getSrcSizes())
-      lengths[idx++] = arith::IndexCastOp::create(rewriter, op->getLoc(),
-                                                  IntegerType::get(ctx, 64), o);
-
-    opers.append(offsets);
-    opers.append(lengths);
-    opers.append(strides);
+    for (auto o : isFromTile ? op.getMixedDstSizes() : op.getMixedSrcSizes())
+      lengths[idx++] = indexToI64OpFoldResult(rewriter, op->getLoc(), o);
 
     Operation *airrtOp = nullptr;
     SmallVector<Type, 1> tys;
     if (op->getNumResults())
       tys.push_back(airrt::EventType::get(ctx));
     if (isFullMemcpy) {
+      // airrt.memcpy_nd has no static-attribute form; materialize the access
+      // pattern as i64 SSA values. opers is [dst, src] at this point.
+      opers.append(materializeI64Values(rewriter, loc, offsets));
+      opers.append(materializeI64Values(rewriter, loc, lengths));
+      opers.append(materializeI64Values(rewriter, loc, strides));
       airrtOp = airrt::MemcpyNdOp::create(rewriter, loc, tys, opers);
     } else {
-      airrtOp = airrt::DmaMemcpyNdOp::create(rewriter, loc, tys, opers);
+      // opers is [id, x, y, memref] at this point.
+      airrtOp = airrt::DmaMemcpyNdOp::create(rewriter, loc, tys, opers[0],
+                                             opers[1], opers[2], opers[3],
+                                             offsets, lengths, strides);
     }
     // Copy over discardable attrs assigned in -air-to-aie pass.
     op->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id has
@@ -629,8 +655,8 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   auto i64Ty = builder.getI64Type();
   auto zero = arith::ConstantOp::create(builder, loc, i64Ty,
                                         IntegerAttr::get(i64Ty, 0));
-  auto zero_idx = arith::ConstantIndexOp::create(builder, loc, 0);
-  auto one_idx = arith::ConstantIndexOp::create(builder, loc, 1);
+  OpFoldResult zero_idx = builder.getIndexAttr(0);
+  OpFoldResult one_idx = builder.getIndexAttr(1);
 
   auto idTy = IntegerType::get(ctx, 32);
   // Get op id of the internal put/get op
@@ -676,9 +702,9 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
 
   opers.push_back(thisOp.getMemref());
 
-  SmallVector<Value> offsets = thisOp.getOffsets();
-  SmallVector<Value> wraps = thisOp.getSizes();
-  SmallVector<Value> strides = thisOp.getStrides();
+  SmallVector<OpFoldResult> offsets = thisOp.getMixedOffsets();
+  SmallVector<OpFoldResult> wraps = thisOp.getMixedSizes();
+  SmallVector<OpFoldResult> strides = thisOp.getMixedStrides();
 
   auto memrefType = thisOp.getMemref().getType();
 
@@ -687,8 +713,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   if (offsets.empty() && wraps.empty() && strides.empty()) {
     offsets.push_back(zero_idx);
     auto memref_volume = air::getTensorVolume(memrefType);
-    wraps.push_back(
-        arith::ConstantIndexOp::create(builder, loc, memref_volume));
+    wraps.push_back(builder.getIndexAttr(memref_volume));
     strides.push_back(one_idx);
   }
   // Stride field implicit last element one
@@ -718,27 +743,22 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     strides.insert(strides.begin(), zero_idx);
   }
 
-  for (unsigned i = 0; i < offsets.size(); i++)
-    offsets[i] = arith::IndexCastOp::create(
-        builder, loc, IntegerType::get(ctx, 64), offsets[i]);
-
-  for (unsigned i = 0; i < strides.size(); i++)
-    strides[i] = arith::IndexCastOp::create(
-        builder, loc, IntegerType::get(ctx, 64), strides[i]);
-
-  for (unsigned i = 0; i < wraps.size(); i++)
-    wraps[i] = arith::IndexCastOp::create(builder, loc,
-                                          IntegerType::get(ctx, 64), wraps[i]);
-
-  opers.append(offsets);
-  opers.append(wraps);
-  opers.append(strides);
+  SmallVector<OpFoldResult, 4> offsetsOFR, wrapsOFR, stridesOFR;
+  for (auto o : offsets)
+    offsetsOFR.push_back(indexToI64OpFoldResult(builder, loc, o));
+  for (auto w : wraps)
+    wrapsOFR.push_back(indexToI64OpFoldResult(builder, loc, w));
+  for (auto s : strides)
+    stridesOFR.push_back(indexToI64OpFoldResult(builder, loc, s));
 
   SmallVector<Type, 1> tys;
   if (thisOp->getNumResults())
     tys.push_back(airrt::EventType::get(ctx));
 
-  airrtOp = airrt::DmaMemcpyNdOp::create(builder, loc, tys, opers);
+  // opers is [id, x, y, memref] at this point.
+  airrtOp = airrt::DmaMemcpyNdOp::create(builder, loc, tys, opers[0], opers[1],
+                                         opers[2], opers[3], offsetsOFR,
+                                         wrapsOFR, stridesOFR);
   // Copy over discardable attrs assigned in -air-to-aie pass.
   thisOp->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id
                             // has been assigned.

@@ -468,14 +468,20 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     ins Variadic<air_AsyncToken>:$async_dependencies,
         Arg<AnyRankedOrUnrankedMemRef, "destination memref",
             [MemWriteAt<0, FullEffect>]>:$dst,
-        Variadic<Index>:$dst_offsets,
-        Variadic<Index>:$dst_sizes,
-        Variadic<Index>:$dst_strides,
+        Variadic<Index>:$dynamic_dst_offsets,
+        Variadic<Index>:$dynamic_dst_sizes,
+        Variadic<Index>:$dynamic_dst_strides,
         Arg<AnyRankedOrUnrankedMemRef, "source memref",
             [MemReadAt<0, FullEffect>]>:$src,
-        Variadic<Index>:$src_offsets,
-        Variadic<Index>:$src_sizes,
-        Variadic<Index>:$src_strides,
+        Variadic<Index>:$dynamic_src_offsets,
+        Variadic<Index>:$dynamic_src_sizes,
+        Variadic<Index>:$dynamic_src_strides,
+        DenseI64ArrayAttr:$static_dst_offsets,
+        DenseI64ArrayAttr:$static_dst_sizes,
+        DenseI64ArrayAttr:$static_dst_strides,
+        DenseI64ArrayAttr:$static_src_offsets,
+        DenseI64ArrayAttr:$static_src_sizes,
+        DenseI64ArrayAttr:$static_src_strides,
         OptionalAttr<DenseI32ArrayAttr>:$pad_before,
         OptionalAttr<DenseI32ArrayAttr>:$pad_after,
         OptionalAttr<I64Attr>:$src_rank,
@@ -484,9 +490,15 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
   let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($async_token), $async_dependencies)
-    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `,`
-        $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
-    `(` type($dst) `,` type($src) `)`
+    `(` $dst ``
+        custom<DynamicIndexList>($dynamic_dst_offsets, $static_dst_offsets)
+        custom<DynamicIndexList>($dynamic_dst_sizes, $static_dst_sizes)
+        custom<DynamicIndexList>($dynamic_dst_strides, $static_dst_strides) `,`
+        $src ``
+        custom<DynamicIndexList>($dynamic_src_offsets, $static_src_offsets)
+        custom<DynamicIndexList>($dynamic_src_sizes, $static_src_sizes)
+        custom<DynamicIndexList>($dynamic_src_strides, $static_src_strides) `)`
+    attr-dict `:` `(` type($dst) `,` type($src) `)`
   }];
   let description = [{
     N-dimensional strided bulk copy between two memrefs.
@@ -502,6 +514,38 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
   let extraClassDeclaration = [{
     Value getSrcMemref() { return getSrc(); }
     Value getDstMemref() { return getDst(); }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSrcOffsets() {
+      return ::mlir::getMixedValues(getStaticSrcOffsets(),
+                                    getDynamicSrcOffsets(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSrcSizes() {
+      return ::mlir::getMixedValues(getStaticSrcSizes(),
+                                    getDynamicSrcSizes(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSrcStrides() {
+      return ::mlir::getMixedValues(getStaticSrcStrides(),
+                                    getDynamicSrcStrides(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedDstOffsets() {
+      return ::mlir::getMixedValues(getStaticDstOffsets(),
+                                    getDynamicDstOffsets(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedDstSizes() {
+      return ::mlir::getMixedValues(getStaticDstSizes(),
+                                    getDynamicDstSizes(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedDstStrides() {
+      return ::mlir::getMixedValues(getStaticDstStrides(),
+                                    getDynamicDstStrides(), getContext());
+    }
+    /// Replace one of the access-pattern lists wholesale, updating both the
+    /// static array and the matching variadic operand group.
+    void setMixedSrcOffsets(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedSrcSizes(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedSrcStrides(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedDstOffsets(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedDstSizes(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedDstStrides(::llvm::ArrayRef<::mlir::OpFoldResult> values);
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();
@@ -516,7 +560,20 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     }
   }];
   let builders = [
-    // Backward-compatible builder: defaults src_rank/dst_rank to absent.
+    // Mixed static/dynamic builder; the preferred way to construct this op.
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::mlir::Value":$dst,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_offsets,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_sizes,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_strides,
+                   "::mlir::Value":$src,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_offsets,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_sizes,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>,
+    // All-dynamic builder, for callers that already hold index Values.
     OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
                    "::mlir::ValueRange":$async_dependencies,
                    "::mlir::Value":$dst,
@@ -527,14 +584,8 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
                    "::mlir::ValueRange":$src_offsets,
                    "::mlir::ValueRange":$src_sizes,
                    "::mlir::ValueRange":$src_strides,
-                   "::mlir::DenseI32ArrayAttr":$pad_before,
-                   "::mlir::DenseI32ArrayAttr":$pad_after), [{
-      build($_builder, $_state, resultTypes, async_dependencies, dst,
-            dst_offsets, dst_sizes, dst_strides, src,
-            src_offsets, src_sizes, src_strides, pad_before, pad_after,
-            /*src_rank=*/IntegerAttr(),
-            /*dst_rank=*/IntegerAttr());
-    }]>
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>
   ];
   let hasCanonicalizer = 1;
   let hasVerifier = 1;
@@ -715,9 +766,12 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
         FlatSymbolRefAttr:$chan_name,
         Variadic<Index>:$indices,
         AnyRankedOrUnrankedMemRef:$src,
-        Variadic<Index>:$src_offsets,
-        Variadic<Index>:$src_sizes,
-        Variadic<Index>:$src_strides,
+        Variadic<Index>:$dynamic_src_offsets,
+        Variadic<Index>:$dynamic_src_sizes,
+        Variadic<Index>:$dynamic_src_strides,
+        DenseI64ArrayAttr:$static_src_offsets,
+        DenseI64ArrayAttr:$static_src_sizes,
+        DenseI64ArrayAttr:$static_src_strides,
         OptionalAttr<DenseI32ArrayAttr>:$pad_before,
         OptionalAttr<DenseI32ArrayAttr>:$pad_after)>,
     Results<(outs Optional<air_AsyncToken>:$async_token)> {
@@ -765,19 +819,60 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($async_token), $async_dependencies)
     $chan_name `[` ($indices^)? `]`
-    `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)` attr-dict `:`
-    `(` type($src) `)`
+    `(` $src ``
+        custom<DynamicIndexList>($dynamic_src_offsets, $static_src_offsets)
+        custom<DynamicIndexList>($dynamic_src_sizes, $static_src_sizes)
+        custom<DynamicIndexList>($dynamic_src_strides, $static_src_strides) `)`
+    attr-dict `:` `(` type($src) `)`
   }];
   let extraClassDeclaration = [{
     Value getMemref() { return getSrc(); }
     Value getSrcMemref() { return getSrc(); }
     Value getDstMemref() { return nullptr; }
-    OperandRange getOffsets() { return getSrcOffsets(); }
-    OperandRange getDstOffsets() { emitOpError("does not have DstOffset"); llvm_unreachable("unreachable"); }
-    OperandRange getSizes() { return getSrcSizes(); }
-    OperandRange getDstSizes() { emitOpError("does not have DstSizes"); llvm_unreachable("unreachable"); }
-    OperandRange getStrides() { return getSrcStrides(); }
-    OperandRange getDstStrides() { emitOpError("does not have DstStrides"); llvm_unreachable("unreachable"); }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSrcOffsets() {
+      return ::mlir::getMixedValues(getStaticSrcOffsets(),
+                                    getDynamicSrcOffsets(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSrcSizes() {
+      return ::mlir::getMixedValues(getStaticSrcSizes(),
+                                    getDynamicSrcSizes(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSrcStrides() {
+      return ::mlir::getMixedValues(getStaticSrcStrides(),
+                                    getDynamicSrcStrides(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedOffsets() {
+      return getMixedSrcOffsets();
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSizes() {
+      return getMixedSrcSizes();
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedStrides() {
+      return getMixedSrcStrides();
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedDstOffsets() {
+      emitOpError("does not have DstOffsets"); llvm_unreachable("unreachable");
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedDstSizes() {
+      emitOpError("does not have DstSizes"); llvm_unreachable("unreachable");
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedDstStrides() {
+      emitOpError("does not have DstStrides"); llvm_unreachable("unreachable");
+    }
+    /// Replace one of the access-pattern lists wholesale, updating both the
+    /// static array and the matching variadic operand group.
+    void setMixedSrcOffsets(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedSrcSizes(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedSrcStrides(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedOffsets(::llvm::ArrayRef<::mlir::OpFoldResult> v) {
+      setMixedSrcOffsets(v);
+    }
+    void setMixedSizes(::llvm::ArrayRef<::mlir::OpFoldResult> v) {
+      setMixedSrcSizes(v);
+    }
+    void setMixedStrides(::llvm::ArrayRef<::mlir::OpFoldResult> v) {
+      setMixedSrcStrides(v);
+    }
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();
@@ -788,6 +883,59 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
       return getPadBefore().has_value() || getPadAfter().has_value();
     }
   }];
+  let builders = [
+    // Mixed static/dynamic builders; the preferred way to build.
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::mlir::FlatSymbolRefAttr":$chan_name,
+                   "::mlir::ValueRange":$indices,
+                   "::mlir::Value":$src,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_offsets,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_sizes,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>,
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::llvm::StringRef":$chan_name,
+                   "::mlir::ValueRange":$indices,
+                   "::mlir::Value":$src,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_offsets,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_sizes,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after), [{
+      build($_builder, $_state, resultTypes, async_dependencies,
+            ::mlir::SymbolRefAttr::get($_builder.getContext(), chan_name),
+            indices, src, src_offsets, src_sizes, src_strides,
+            pad_before, pad_after);
+    }]>,
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::mlir::FlatSymbolRefAttr":$chan_name,
+                   "::mlir::ValueRange":$indices,
+                   "::mlir::Value":$src,
+                   "::mlir::ValueRange":$src_offsets,
+                   "::mlir::ValueRange":$src_sizes,
+                   "::mlir::ValueRange":$src_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>,
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::llvm::StringRef":$chan_name,
+                   "::mlir::ValueRange":$indices,
+                   "::mlir::Value":$src,
+                   "::mlir::ValueRange":$src_offsets,
+                   "::mlir::ValueRange":$src_sizes,
+                   "::mlir::ValueRange":$src_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after), [{
+      build($_builder, $_state, resultTypes, async_dependencies,
+            ::mlir::SymbolRefAttr::get($_builder.getContext(), chan_name),
+            indices, src, src_offsets, src_sizes, src_strides,
+            pad_before, pad_after);
+    }]>
+  ];
   let hasCanonicalizer = 1;
   let hasVerifier = 1;
 }
@@ -806,9 +954,12 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
         FlatSymbolRefAttr:$chan_name,
         Variadic<Index>:$indices,
         AnyRankedOrUnrankedMemRef:$dst,
-        Variadic<Index>:$dst_offsets,
-        Variadic<Index>:$dst_sizes,
-        Variadic<Index>:$dst_strides,
+        Variadic<Index>:$dynamic_dst_offsets,
+        Variadic<Index>:$dynamic_dst_sizes,
+        Variadic<Index>:$dynamic_dst_strides,
+        DenseI64ArrayAttr:$static_dst_offsets,
+        DenseI64ArrayAttr:$static_dst_sizes,
+        DenseI64ArrayAttr:$static_dst_strides,
         OptionalAttr<DenseI32ArrayAttr>:$pad_before,
         OptionalAttr<DenseI32ArrayAttr>:$pad_after)>,
     Results<(outs Optional<air_AsyncToken>:$async_token)> {
@@ -852,19 +1003,60 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($async_token), $async_dependencies)
     $chan_name `[` ($indices^)? `]`
-    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
-    `(` type($dst) `)`
+    `(` $dst ``
+        custom<DynamicIndexList>($dynamic_dst_offsets, $static_dst_offsets)
+        custom<DynamicIndexList>($dynamic_dst_sizes, $static_dst_sizes)
+        custom<DynamicIndexList>($dynamic_dst_strides, $static_dst_strides) `)`
+    attr-dict `:` `(` type($dst) `)`
   }];
   let extraClassDeclaration = [{
     Value getMemref() { return getDst(); }
     Value getDstMemref() { return getDst(); }
     Value getSrcMemref() { return nullptr; }
-    OperandRange getOffsets() { return getDstOffsets(); }
-    OperandRange getSrcOffsets() { emitOpError("does not have SrcOffsets"); llvm_unreachable("unreachable"); }
-    OperandRange getSizes() { return getDstSizes(); }
-    OperandRange getSrcSizes() { emitOpError("does not have SrcSizes"); llvm_unreachable("unreachable"); }
-    OperandRange getStrides() { return getDstStrides(); }
-    OperandRange getSrcStrides() { emitOpError("does not have SrcStrides"); llvm_unreachable("unreachable"); }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedDstOffsets() {
+      return ::mlir::getMixedValues(getStaticDstOffsets(),
+                                    getDynamicDstOffsets(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedDstSizes() {
+      return ::mlir::getMixedValues(getStaticDstSizes(),
+                                    getDynamicDstSizes(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedDstStrides() {
+      return ::mlir::getMixedValues(getStaticDstStrides(),
+                                    getDynamicDstStrides(), getContext());
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedOffsets() {
+      return getMixedDstOffsets();
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSizes() {
+      return getMixedDstSizes();
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedStrides() {
+      return getMixedDstStrides();
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSrcOffsets() {
+      emitOpError("does not have SrcOffsets"); llvm_unreachable("unreachable");
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSrcSizes() {
+      emitOpError("does not have SrcSizes"); llvm_unreachable("unreachable");
+    }
+    ::llvm::SmallVector<::mlir::OpFoldResult> getMixedSrcStrides() {
+      emitOpError("does not have SrcStrides"); llvm_unreachable("unreachable");
+    }
+    /// Replace one of the access-pattern lists wholesale, updating both the
+    /// static array and the matching variadic operand group.
+    void setMixedDstOffsets(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedDstSizes(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedDstStrides(::llvm::ArrayRef<::mlir::OpFoldResult> values);
+    void setMixedOffsets(::llvm::ArrayRef<::mlir::OpFoldResult> v) {
+      setMixedDstOffsets(v);
+    }
+    void setMixedSizes(::llvm::ArrayRef<::mlir::OpFoldResult> v) {
+      setMixedDstSizes(v);
+    }
+    void setMixedStrides(::llvm::ArrayRef<::mlir::OpFoldResult> v) {
+      setMixedDstStrides(v);
+    }
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();
@@ -875,6 +1067,59 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
       return getPadBefore().has_value() || getPadAfter().has_value();
     }
   }];
+  let builders = [
+    // Mixed static/dynamic builders; the preferred way to build.
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::mlir::FlatSymbolRefAttr":$chan_name,
+                   "::mlir::ValueRange":$indices,
+                   "::mlir::Value":$dst,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_offsets,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_sizes,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>,
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::llvm::StringRef":$chan_name,
+                   "::mlir::ValueRange":$indices,
+                   "::mlir::Value":$dst,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_offsets,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_sizes,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after), [{
+      build($_builder, $_state, resultTypes, async_dependencies,
+            ::mlir::SymbolRefAttr::get($_builder.getContext(), chan_name),
+            indices, dst, dst_offsets, dst_sizes, dst_strides,
+            pad_before, pad_after);
+    }]>,
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::mlir::FlatSymbolRefAttr":$chan_name,
+                   "::mlir::ValueRange":$indices,
+                   "::mlir::Value":$dst,
+                   "::mlir::ValueRange":$dst_offsets,
+                   "::mlir::ValueRange":$dst_sizes,
+                   "::mlir::ValueRange":$dst_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>,
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::llvm::StringRef":$chan_name,
+                   "::mlir::ValueRange":$indices,
+                   "::mlir::Value":$dst,
+                   "::mlir::ValueRange":$dst_offsets,
+                   "::mlir::ValueRange":$dst_sizes,
+                   "::mlir::ValueRange":$dst_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after), [{
+      build($_builder, $_state, resultTypes, async_dependencies,
+            ::mlir::SymbolRefAttr::get($_builder.getContext(), chan_name),
+            indices, dst, dst_offsets, dst_sizes, dst_strides,
+            pad_before, pad_after);
+    }]>
+  ];
   let hasCanonicalizer = 1;
   let hasVerifier = 1;
 }

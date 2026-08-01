@@ -324,27 +324,37 @@ private:
         dyn_cast_if_present<air::DmaMemcpyNdOp>(op_1.getOperation());
     auto op_2_dmaNd =
         dyn_cast_if_present<air::DmaMemcpyNdOp>(op_2.getOperation());
-    unsigned op_1_dst_num_entries = op_1_dmaNd.getDstOffsets().size();
-    unsigned op_1_src_num_entries = op_1_dmaNd.getSrcOffsets().size();
-    unsigned op_2_dst_num_entries = op_2_dmaNd.getDstOffsets().size();
-    unsigned op_2_src_num_entries = op_2_dmaNd.getSrcOffsets().size();
+    auto op_1_dst_offsets = op_1_dmaNd.getMixedDstOffsets();
+    auto op_1_src_offsets = op_1_dmaNd.getMixedSrcOffsets();
+    auto op_2_dst_offsets = op_2_dmaNd.getMixedDstOffsets();
+    auto op_2_src_offsets = op_2_dmaNd.getMixedSrcOffsets();
+    auto op_1_dst_sizes = op_1_dmaNd.getMixedDstSizes();
+    auto op_1_src_sizes = op_1_dmaNd.getMixedSrcSizes();
+    auto op_2_dst_sizes = op_2_dmaNd.getMixedDstSizes();
+    auto op_2_src_sizes = op_2_dmaNd.getMixedSrcSizes();
+    auto op_1_dst_strides = op_1_dmaNd.getMixedDstStrides();
+    auto op_1_src_strides = op_1_dmaNd.getMixedSrcStrides();
+    auto op_2_dst_strides = op_2_dmaNd.getMixedDstStrides();
+    auto op_2_src_strides = op_2_dmaNd.getMixedSrcStrides();
+    unsigned op_1_dst_num_entries = op_1_dst_offsets.size();
+    unsigned op_1_src_num_entries = op_1_src_offsets.size();
+    unsigned op_2_dst_num_entries = op_2_dst_offsets.size();
+    unsigned op_2_src_num_entries = op_2_src_offsets.size();
     if (areSymmetric && (op_1_dst_num_entries == op_2_src_num_entries) &&
         (op_1_src_num_entries == op_2_dst_num_entries)) {
       for (unsigned i = 0; i < op_1_dst_num_entries; i++) {
-        areSymmetric &= areEqualIndices(op_1_dmaNd.getDstOffsets()[i],
-                                        op_2_dmaNd.getSrcOffsets()[i]);
-        areSymmetric &= areEqualIndices(op_1_dmaNd.getDstSizes()[i],
-                                        op_2_dmaNd.getSrcSizes()[i]);
-        areSymmetric &= areEqualIndices(op_1_dmaNd.getDstStrides()[i],
-                                        op_2_dmaNd.getSrcStrides()[i]);
+        areSymmetric &=
+            areEqualIndices(op_1_dst_offsets[i], op_2_src_offsets[i]);
+        areSymmetric &= areEqualIndices(op_1_dst_sizes[i], op_2_src_sizes[i]);
+        areSymmetric &=
+            areEqualIndices(op_1_dst_strides[i], op_2_src_strides[i]);
       }
       for (unsigned i = 0; i < op_1_src_num_entries; i++) {
-        areSymmetric &= areEqualIndices(op_1_dmaNd.getSrcOffsets()[i],
-                                        op_2_dmaNd.getDstOffsets()[i]);
-        areSymmetric &= areEqualIndices(op_1_dmaNd.getSrcSizes()[i],
-                                        op_2_dmaNd.getDstSizes()[i]);
-        areSymmetric &= areEqualIndices(op_1_dmaNd.getSrcStrides()[i],
-                                        op_2_dmaNd.getDstStrides()[i]);
+        areSymmetric &=
+            areEqualIndices(op_1_src_offsets[i], op_2_dst_offsets[i]);
+        areSymmetric &= areEqualIndices(op_1_src_sizes[i], op_2_dst_sizes[i]);
+        areSymmetric &=
+            areEqualIndices(op_1_src_strides[i], op_2_dst_strides[i]);
       }
     } else {
       areSymmetric = false;
@@ -2339,9 +2349,9 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         *(for_op.getBody()->getOps<air::ChannelInterface>().begin());
 
     // Fold for loops into channel op's wrap and stride fields
-    SmallVector<Value> offsets = channel_op.getOffsets();
-    SmallVector<Value> wraps = channel_op.getSizes();
-    SmallVector<Value> strides = channel_op.getStrides();
+    SmallVector<Value> offsets = air::getOffsetsAsValues(channel_op);
+    SmallVector<Value> wraps = air::getSizesAsValues(channel_op);
+    SmallVector<Value> strides = air::getStridesAsValues(channel_op);
 
     // A hardware buffer descriptor has a constant shape per dimension. If the
     // channel op already carries a non-constant wrap or stride (e.g. an
@@ -2380,8 +2390,8 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     // erased by canonicalize). Memtile pass only (skipZeroStride=true).
     bool admitBoundary = false;
     if (skipZeroStride && maxNumDims >= 0 && numActualWrapDims == maxNumDims) {
-      SmallVector<Value> origOffsets = channel_op.getOffsets();
-      SmallVector<Value> origWraps = channel_op.getSizes();
+      SmallVector<Value> origOffsets = air::getOffsetsAsValues(channel_op);
+      SmallVector<Value> origWraps = air::getSizesAsValues(channel_op);
       SmallVector<scf::ForOp> parentForOps;
       Operation *parent = channel_op->getParentOp();
       while (parent) {
@@ -2662,7 +2672,7 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
     };
     bool someIVInOffsets = false;
     for_op.getBody()->walk([&](air::ChannelInterface chan) {
-      for (Value off : chan.getOffsets())
+      for (Value off : air::getOffsetsAsValues(chan))
         if (ivReachesValue(off)) {
           someIVInOffsets = true;
           return WalkResult::interrupt();
@@ -2737,9 +2747,9 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
         *(for_op.getBody()->getOps<air::ChannelInterface>().begin());
 
     // // Fold for loops int channel op's wrap and stride fields
-    SmallVector<Value> offsets = channel_op.getOffsets();
-    SmallVector<Value> wraps = channel_op.getSizes();
-    SmallVector<Value> strides = channel_op.getStrides();
+    SmallVector<Value> offsets = air::getOffsetsAsValues(channel_op);
+    SmallVector<Value> wraps = air::getSizesAsValues(channel_op);
+    SmallVector<Value> strides = air::getStridesAsValues(channel_op);
 
     // Non-constant wrap/stride can't fold into a constant-shape BD; decline so
     // the loop falls through to AIRUnrollAffineForIntoBDChain (see the scf.for
@@ -2870,9 +2880,9 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
     }
 
     // Extract offsets, sizes, and strides from the op.
-    SmallVector<Value> offsets = op.getOffsets();
-    SmallVector<Value> sizes = op.getSizes();
-    SmallVector<Value> strides = op.getStrides();
+    SmallVector<Value> offsets = air::getOffsetsAsValues(op);
+    SmallVector<Value> sizes = air::getSizesAsValues(op);
+    SmallVector<Value> strides = air::getStridesAsValues(op);
 
     // Detect if highest-dimension repeat logic should be applied.
     // This is true when:
@@ -3061,7 +3071,7 @@ private:
       op->emitOpError(
           "unrolling a sub-channel in a channel bundle currently unsupported");
     // Update memref size (divide by factor)
-    SmallVector<Value, 1> new_sizes = op.getSizes();
+    SmallVector<Value, 1> new_sizes = air::getSizesAsValues(op);
     if (new_sizes.empty()) {
       auto memTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
       for (auto d : getTensorShape(memTy)) {
@@ -3081,7 +3091,7 @@ private:
           arith::ConstantIndexOp::create(builder, par->getLoc(), factor));
     }
     // Update offset (+ induction var. x size)
-    SmallVector<Value, 1> new_offsets = op.getOffsets();
+    SmallVector<Value, 1> new_offsets = air::getOffsetsAsValues(op);
     if (new_offsets.empty()) {
       auto const_0 = arith::ConstantIndexOp::create(builder, par->getLoc(), 0);
       new_offsets = {const_0, const_0};
@@ -3091,7 +3101,7 @@ private:
     new_offsets[dim] =
         arith::AddIOp::create(builder, par->getLoc(), new_offsets[dim], prod);
     // Update strides
-    SmallVector<Value, 1> new_strides = op.getStrides();
+    SmallVector<Value, 1> new_strides = air::getStridesAsValues(op);
     if (new_strides.empty()) {
       auto const_1 = arith::ConstantIndexOp::create(builder, par->getLoc(), 1);
       new_strides = {const_1, const_1};
@@ -4427,20 +4437,24 @@ private:
   bool areConsistentMemoryAccessPattern(std::vector<T> a_vec,
                                         std::vector<T> b_vec) {
     Value memref = a_vec[0].getMemref();
-    SmallVector<Value> offsets = a_vec[0].getOffsets();
-    SmallVector<Value> sizes = a_vec[0].getSizes();
-    SmallVector<Value> strides = a_vec[0].getStrides();
+    SmallVector<Value> offsets = air::getOffsetsAsValues(a_vec[0]);
+    SmallVector<Value> sizes = air::getSizesAsValues(a_vec[0]);
+    SmallVector<Value> strides = air::getStridesAsValues(a_vec[0]);
     for (unsigned i = 1; i < a_vec.size(); i++)
       if ((!memrefsAreAffinitiveToSameChannel(memref, a_vec[i].getMemref())) ||
-          (!areTheSameSSAValueLists(offsets, a_vec[i].getOffsets())) ||
-          (!areTheSameSSAValueLists(sizes, a_vec[i].getSizes())) ||
-          (!areTheSameSSAValueLists(strides, a_vec[i].getStrides())))
+          (!areTheSameSSAValueLists(offsets,
+                                    air::getOffsetsAsValues(a_vec[i]))) ||
+          (!areTheSameSSAValueLists(sizes, air::getSizesAsValues(a_vec[i]))) ||
+          (!areTheSameSSAValueLists(strides,
+                                    air::getStridesAsValues(a_vec[i]))))
         return false; // Inconsistent memory use for all puts
     for (unsigned i = 0; i < b_vec.size(); i++)
       if ((!memrefsAreAffinitiveToSameChannel(memref, b_vec[i].getMemref())) ||
-          (!areTheSameSSAValueLists(offsets, b_vec[i].getOffsets())) ||
-          (!areTheSameSSAValueLists(sizes, b_vec[i].getSizes())) ||
-          (!areTheSameSSAValueLists(strides, b_vec[i].getStrides())))
+          (!areTheSameSSAValueLists(offsets,
+                                    air::getOffsetsAsValues(b_vec[i]))) ||
+          (!areTheSameSSAValueLists(sizes, air::getSizesAsValues(b_vec[i]))) ||
+          (!areTheSameSSAValueLists(strides,
+                                    air::getStridesAsValues(b_vec[i]))))
         return false; // Inconsistent memory use between a puts and b puts
     return true;
   }
@@ -4864,50 +4878,62 @@ private:
       return notMergeable;
     // Check for identical src and dst memrefs, offset, size and stride lists
     Value aMemref = a_puts[0].getMemref();
-    SmallVector<Value> aOffsets = a_puts[0].getOffsets();
-    SmallVector<Value> aSizes = a_puts[0].getSizes();
-    SmallVector<Value> aStrides = a_puts[0].getStrides();
+    SmallVector<Value> aOffsets = air::getOffsetsAsValues(a_puts[0]);
+    SmallVector<Value> aSizes = air::getSizesAsValues(a_puts[0]);
+    SmallVector<Value> aStrides = air::getStridesAsValues(a_puts[0]);
     for (unsigned i = 1; i < a_puts.size(); i++)
       if ((!memrefsAreAffinitiveToSameChannel(aMemref,
                                               a_puts[i].getMemref())) ||
-          (!areTheSameSSAValueLists(aOffsets, a_puts[i].getOffsets())) ||
-          (!areTheSameSSAValueLists(aSizes, a_puts[i].getSizes())) ||
-          (!areTheSameSSAValueLists(aStrides, a_puts[i].getStrides())))
+          (!areTheSameSSAValueLists(aOffsets,
+                                    air::getOffsetsAsValues(a_puts[i]))) ||
+          (!areTheSameSSAValueLists(aSizes,
+                                    air::getSizesAsValues(a_puts[i]))) ||
+          (!areTheSameSSAValueLists(aStrides,
+                                    air::getStridesAsValues(a_puts[i]))))
         return notMergeable; // Inconsistent memory use for all puts
     Value bMemref = b_puts[0].getMemref();
-    SmallVector<Value> bOffsets = b_puts[0].getOffsets();
-    SmallVector<Value> bSizes = b_puts[0].getSizes();
-    SmallVector<Value> bStrides = b_puts[0].getStrides();
+    SmallVector<Value> bOffsets = air::getOffsetsAsValues(b_puts[0]);
+    SmallVector<Value> bSizes = air::getSizesAsValues(b_puts[0]);
+    SmallVector<Value> bStrides = air::getStridesAsValues(b_puts[0]);
     for (unsigned i = 1; i < b_puts.size(); i++)
       if ((!memrefsAreAffinitiveToSameChannel(bMemref,
                                               b_puts[i].getMemref())) ||
-          (!areTheSameSSAValueLists(bOffsets, b_puts[i].getOffsets())) ||
-          (!areTheSameSSAValueLists(bSizes, b_puts[i].getSizes())) ||
-          (!areTheSameSSAValueLists(bStrides, b_puts[i].getStrides())))
+          (!areTheSameSSAValueLists(bOffsets,
+                                    air::getOffsetsAsValues(b_puts[i]))) ||
+          (!areTheSameSSAValueLists(bSizes,
+                                    air::getSizesAsValues(b_puts[i]))) ||
+          (!areTheSameSSAValueLists(bStrides,
+                                    air::getStridesAsValues(b_puts[i]))))
         return notMergeable; // Inconsistent memory use for all puts
     if ((!memrefsAreAffinitiveToSameChannel(aMemref, bMemref)))
       return notMergeable;
     aMemref = a_gets[0].getMemref();
-    aOffsets = a_gets[0].getOffsets();
-    aSizes = a_gets[0].getSizes();
-    aStrides = a_gets[0].getStrides();
+    aOffsets = air::getOffsetsAsValues(a_gets[0]);
+    aSizes = air::getSizesAsValues(a_gets[0]);
+    aStrides = air::getStridesAsValues(a_gets[0]);
     for (unsigned i = 1; i < a_gets.size(); i++)
       if ((!memrefsAreAffinitiveToSameChannel(aMemref,
                                               a_gets[i].getMemref())) ||
-          (!areTheSameSSAValueLists(aOffsets, a_gets[i].getOffsets())) ||
-          (!areTheSameSSAValueLists(aSizes, a_gets[i].getSizes())) ||
-          (!areTheSameSSAValueLists(aStrides, a_gets[i].getStrides())))
+          (!areTheSameSSAValueLists(aOffsets,
+                                    air::getOffsetsAsValues(a_gets[i]))) ||
+          (!areTheSameSSAValueLists(aSizes,
+                                    air::getSizesAsValues(a_gets[i]))) ||
+          (!areTheSameSSAValueLists(aStrides,
+                                    air::getStridesAsValues(a_gets[i]))))
         return notMergeable; // Inconsistent memory use for all gets
     bMemref = b_gets[0].getMemref();
-    bOffsets = b_gets[0].getOffsets();
-    bSizes = b_gets[0].getSizes();
-    bStrides = b_gets[0].getStrides();
+    bOffsets = air::getOffsetsAsValues(b_gets[0]);
+    bSizes = air::getSizesAsValues(b_gets[0]);
+    bStrides = air::getStridesAsValues(b_gets[0]);
     for (unsigned i = 1; i < b_gets.size(); i++)
       if ((!memrefsAreAffinitiveToSameChannel(bMemref,
                                               b_gets[i].getMemref())) ||
-          (!areTheSameSSAValueLists(bOffsets, b_gets[i].getOffsets())) ||
-          (!areTheSameSSAValueLists(bSizes, b_gets[i].getSizes())) ||
-          (!areTheSameSSAValueLists(bStrides, b_gets[i].getStrides())))
+          (!areTheSameSSAValueLists(bOffsets,
+                                    air::getOffsetsAsValues(b_gets[i]))) ||
+          (!areTheSameSSAValueLists(bSizes,
+                                    air::getSizesAsValues(b_gets[i]))) ||
+          (!areTheSameSSAValueLists(bStrides,
+                                    air::getStridesAsValues(b_gets[i]))))
         return notMergeable; // Inconsistent memory use for all gets
     if ((!memrefsAreAffinitiveToSameChannel(aMemref, bMemref)) ||
         (!areTheSameSSAValueLists(aOffsets, bOffsets)) ||
@@ -5914,31 +5940,24 @@ private:
                                     SmallVector<int64_t> overall_access_bounds,
                                     PatternRewriter &rewriter) const {
     rewriter.setInsertionPoint(chanOp);
-    // Update offsets.
+    // Update offsets. Entries are addressed by dimension: the access pattern
+    // is a mixed list, so a raw operand index would skip the static entries.
     auto new_offsets = getUpdatedOffsetsAfterShrinkage(
-        memref_shape, overall_access_bounds, chanOp.getOffsets());
-    int offsetListIdxOffset =
-        dyn_cast_if_present<air::AsyncOpInterface>(chanOp.getOperation())
-            .getAsyncDependencies()
-            .size() +
-        chanOp.getIndices().size() + 1;
-    for (unsigned i = offsetListIdxOffset;
-         i < offsetListIdxOffset + chanOp.getOffsets().size(); i++) {
-      if (new_offsets[i - offsetListIdxOffset] < 0)
+        memref_shape, overall_access_bounds, air::getOffsetsAsValues(chanOp));
+    auto mixedOffsets = chanOp.getMixedOffsets();
+    for (unsigned i = 0; i < mixedOffsets.size(); i++) {
+      if (new_offsets[i] < 0)
         continue;
-      chanOp->getOpOperand(i).assign(arith::ConstantIndexOp::create(
-          rewriter, chanOp->getLoc(), new_offsets[i - offsetListIdxOffset]));
+      mixedOffsets[i] = rewriter.getIndexAttr(new_offsets[i]);
     }
+    chanOp.setMixedOffsets(mixedOffsets);
     // Update strides.
     auto new_strides = getUpdatedStridesAfterShrinkage(
-        memref_shape, overall_access_bounds, chanOp.getStrides());
-    int strideListIdxOffset = offsetListIdxOffset + chanOp.getOffsets().size() +
-                              chanOp.getSizes().size();
-    for (unsigned i = strideListIdxOffset;
-         i < strideListIdxOffset + chanOp.getStrides().size(); i++) {
-      chanOp->getOpOperand(i).assign(arith::ConstantIndexOp::create(
-          rewriter, chanOp->getLoc(), new_strides[i - strideListIdxOffset]));
-    }
+        memref_shape, overall_access_bounds, air::getStridesAsValues(chanOp));
+    auto mixedStrides = chanOp.getMixedStrides();
+    for (unsigned i = 0; i < mixedStrides.size(); i++)
+      mixedStrides[i] = rewriter.getIndexAttr(new_strides[i]);
+    chanOp.setMixedStrides(mixedStrides);
     return success();
   }
 
@@ -6205,9 +6224,9 @@ scf::ForOp simpleScfForLoopTiling(scf::ForOp forOp, int original_step,
   forOp.walk([&](air::ChannelInterface op) { channel_ops.push_back(op); });
   if (channel_ops.size() != 1)
     return scf::ForOp(); // Expected to only have one channel op in loop body.
-  auto offsets = channel_ops[0].getOffsets();
-  auto sizes = channel_ops[0].getSizes();
-  auto strides = channel_ops[0].getStrides();
+  auto offsets = air::getOffsetsAsValues(channel_ops[0]);
+  auto sizes = air::getSizesAsValues(channel_ops[0]);
+  auto strides = air::getStridesAsValues(channel_ops[0]);
   int induction_var_dim = -1;
   // Find memref type dimension which the for loop iterates on.
   auto memref_shape = getTensorShape(channel_ops[0].getMemref().getType());

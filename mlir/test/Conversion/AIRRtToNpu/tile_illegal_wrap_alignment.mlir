@@ -42,7 +42,7 @@ module {
     %c131137_i64 = arith.constant 131137 : i64
     %c4_i32 = arith.constant 4 : i32
     %p = airrt.segment_load "forward_0" : i64
-    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c131136_i64], [%c131137_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<262273xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c131136_i64], [%c131137_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<262273xbf16>) : !airrt.event
     return
   }
 }
@@ -75,7 +75,7 @@ module {
     %c131137_i64 = arith.constant 131137 : i64
     %c4_i32 = arith.constant 4 : i32
     %p = airrt.segment_load "forward_0" : i64
-    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c131136_i64], [%c131137_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<262273xf32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c131136_i64], [%c131137_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<262273xf32>) : !airrt.event
     return
   }
 }
@@ -107,7 +107,7 @@ module {
     %c4_i32 = arith.constant 4 : i32
     %p = airrt.segment_load "forward_0" : i64
     // expected-error @+1 {{cannot tile dim 3 of size 2049 into shim-legal chunks}}
-    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c2049_i64], [%c2050_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<4099xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c2049_i64], [%c2050_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<4099xbf16>) : !airrt.event
     return
   }
 }
@@ -141,7 +141,7 @@ module {
     %c1029_i64 = arith.constant 1029 : i64
     %c4_i32 = arith.constant 4 : i32
     %p = airrt.segment_load "forward_0" : i64
-    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c1028_i64], [%c1029_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<2057xi8>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c1028_i64], [%c1029_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<2057xi8>) : !airrt.event
     return
   }
 }
@@ -173,7 +173,7 @@ module {
     %c131137_i64 = arith.constant 131137 : i64
     %c4_i32 = arith.constant 4 : i32
     %p = airrt.segment_load "forward_0" : i64
-    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c131136_i64], [%c131137_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<262273xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c131136_i64], [%c131137_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<262273xbf16>) : !airrt.event
     return
   }
 }

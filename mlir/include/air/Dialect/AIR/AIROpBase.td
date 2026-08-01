@@ -240,14 +240,23 @@ def air_ChannelInterface : OpInterface<"ChannelInterface"> {
     InterfaceMethod<"",
     "OperandRange", "getIndices"
     >,
-    InterfaceMethod<"",
-    "OperandRange", "getOffsets"
+    InterfaceMethod<"Access pattern offsets, as mixed static/dynamic entries",
+    "::llvm::SmallVector<::mlir::OpFoldResult>", "getMixedOffsets"
     >,
-    InterfaceMethod<"",
-    "OperandRange", "getSizes"
+    InterfaceMethod<"Access pattern sizes, as mixed static/dynamic entries",
+    "::llvm::SmallVector<::mlir::OpFoldResult>", "getMixedSizes"
     >,
-    InterfaceMethod<"",
-    "OperandRange", "getStrides"
+    InterfaceMethod<"Access pattern strides, as mixed static/dynamic entries",
+    "::llvm::SmallVector<::mlir::OpFoldResult>", "getMixedStrides"
+    >,
+    InterfaceMethod<"Replace the access pattern offsets",
+    "void", "setMixedOffsets", (ins "::llvm::ArrayRef<::mlir::OpFoldResult>":$values)
+    >,
+    InterfaceMethod<"Replace the access pattern sizes",
+    "void", "setMixedSizes", (ins "::llvm::ArrayRef<::mlir::OpFoldResult>":$values)
+    >,
+    InterfaceMethod<"Replace the access pattern strides",
+    "void", "setMixedStrides", (ins "::llvm::ArrayRef<::mlir::OpFoldResult>":$values)
     >,
     InterfaceMethod<"",
     "Value", "getMemref"
@@ -283,23 +292,23 @@ def air_MemcpyInterface : OpInterface<"MemcpyInterface"> {
     InterfaceMethod<"description",
     "Value", "getDstMemref"
     >,
-    InterfaceMethod<"",
-    "OperandRange", "getSrcOffsets"
+    InterfaceMethod<"Source-side offsets, as mixed static/dynamic entries",
+    "::llvm::SmallVector<::mlir::OpFoldResult>", "getMixedSrcOffsets"
     >,
-    InterfaceMethod<"",
-    "OperandRange", "getDstOffsets"
+    InterfaceMethod<"Destination-side offsets, as mixed static/dynamic entries",
+    "::llvm::SmallVector<::mlir::OpFoldResult>", "getMixedDstOffsets"
     >,
-    InterfaceMethod<"",
-    "OperandRange", "getSrcSizes"
+    InterfaceMethod<"Source-side sizes, as mixed static/dynamic entries",
+    "::llvm::SmallVector<::mlir::OpFoldResult>", "getMixedSrcSizes"
     >,
-    InterfaceMethod<"",
-    "OperandRange", "getDstSizes"
+    InterfaceMethod<"Destination-side sizes, as mixed static/dynamic entries",
+    "::llvm::SmallVector<::mlir::OpFoldResult>", "getMixedDstSizes"
     >,
-    InterfaceMethod<"",
-    "OperandRange", "getSrcStrides"
+    InterfaceMethod<"Source-side strides, as mixed static/dynamic entries",
+    "::llvm::SmallVector<::mlir::OpFoldResult>", "getMixedSrcStrides"
     >,
-    InterfaceMethod<"",
-    "OperandRange", "getDstStrides"
+    InterfaceMethod<"Destination-side strides, as mixed static/dynamic entries",
+    "::llvm::SmallVector<::mlir::OpFoldResult>", "getMixedDstStrides"
     >,
     InterfaceMethod<"description",
     "int32_t", "getId"

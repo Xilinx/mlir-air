@@ -648,19 +648,19 @@ private:
 
   uint64_t getTransferVolumn(air::ChannelInterface op) {
     MemRefType memTy = llvm::cast<MemRefType>(op.getMemref().getType());
-    if (op.getSizes().empty())
+    auto sizes = op.getMixedSizes();
+    if (sizes.empty())
       return getTensorVolume(memTy);
     else
-      return getVolumnFromSizes(op.getSizes());
+      return getVolumnFromSizes(op, sizes);
   }
 
-  uint64_t getVolumnFromSizes(SmallVector<Value> sizes) {
+  uint64_t getVolumnFromSizes(Operation *op, ArrayRef<OpFoldResult> sizes) {
     uint64_t output = 1;
     for (auto s : sizes) {
-      auto op = s.getDefiningOp();
-      if (auto cIOp = dyn_cast_if_present<arith::ConstantIndexOp>(op)) {
-        output *= cIOp.value();
-      } else if (op)
+      if (auto constSize = getConstantIntValue(s))
+        output *= *constSize;
+      else
         op->emitOpError("non-static shape for data movement");
     }
     return output;

@@ -10,7 +10,7 @@
 
 // CHECK: func.func @test(%[[ARG0:.*]]
 // CHECK: scf.for %[[ARG1:.*]] = %c0 to %c128 step %c32 {
-// CHECK: air.dma_memcpy_nd (%alloc[%[[ARG1:.*]], %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c8{{.*}}, %c8{{.*}}, %c16] [%c1024, %c128{{.*}}, %c16{{.*}}, %c1], %[[ARG0:.*]][%[[ARG1:.*]], %c0{{.*}}, %c0{{.*}}, %0] [%c32{{.*}}, %c8{{.*}}, %c8{{.*}}, %c16{{.*}}] [%c4096, %c64, %c512, %c1{{.*}}]) 
+// CHECK: air.dma_memcpy_nd (%alloc[%[[ARG1:.*]], 0, 0, 0] [32, 8, 8, 16] [1024, 128, 16, 1], %{{.*}}[%[[ARG1]], 0, 0, %0] [32, 8, 8, 16] [4096, 64, 512, 1]) 
 #map = affine_map<(d0) -> (d0 * 16)>
 module {
   func.func @test(%arg1: memref<128x8x8x64xbf16>) -> memref<128x8x8x64xbf16> {

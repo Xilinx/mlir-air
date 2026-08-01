@@ -596,72 +596,42 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         return failure();
     }
 
-    // Get static offsets. Non-constant offsets indicate an unresolved loop
-    // induction variable (e.g., from an unhandled scf.forall). Warn so that
-    // such bugs are caught early instead of silently producing wrong results.
-    SmallVector<int64_t> staticOffsets;
-    if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
-      staticOffsets.push_back(*const_int);
-    else {
-      op->emitWarning("non-constant DMA offset (dim 3) defaulting to 0");
-      staticOffsets.push_back(0);
-    }
-    if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
-      staticOffsets.push_back(*const_int);
-    else {
-      op->emitWarning("non-constant DMA offset (dim 2) defaulting to 0");
-      staticOffsets.push_back(0);
-    }
-    if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
-      staticOffsets.push_back(*const_int);
-    else {
-      op->emitWarning("non-constant DMA offset (dim 1) defaulting to 0");
-      staticOffsets.push_back(0);
-    }
-    if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
-      staticOffsets.push_back(*const_int);
-    else {
-      op->emitWarning("non-constant DMA offset (dim 0) defaulting to 0");
-      staticOffsets.push_back(0);
-    }
+    // Reduce the mixed static/dynamic access pattern to plain constants. A
+    // still-dynamic entry indicates an unresolved loop induction variable
+    // (e.g. from an unhandled scf.forall); fall back to a neutral value, and
+    // for offsets warn so that such bugs are caught early instead of silently
+    // producing wrong results.
+    auto constify = [](ArrayRef<OpFoldResult> mixed, int64_t defaultValue,
+                       llvm::function_ref<void(int)> onDynamic) {
+      SmallVector<int64_t> values;
+      for (auto [dim, ofr] : llvm::enumerate(mixed)) {
+        if (auto constInt = getConstantIntValue(ofr)) {
+          values.push_back(*constInt);
+          continue;
+        }
+        if (onDynamic)
+          onDynamic(dim);
+        values.push_back(defaultValue);
+      }
+      return values;
+    };
+    auto *ctx = rewriter.getContext();
 
-    // Get static sizes
-    SmallVector<int64_t> staticSizes;
-    if (auto const_int = getConstantIntValue(adaptor.getLength3()))
-      staticSizes.push_back(*const_int);
-    else
-      staticSizes.push_back(1);
-    if (auto const_int = getConstantIntValue(adaptor.getLength2()))
-      staticSizes.push_back(*const_int);
-    else
-      staticSizes.push_back(1);
-    if (auto const_int = getConstantIntValue(adaptor.getLength1()))
-      staticSizes.push_back(*const_int);
-    else
-      staticSizes.push_back(1);
-    if (auto const_int = getConstantIntValue(adaptor.getLength0()))
-      staticSizes.push_back(std::max((int64_t)1, *const_int));
-    else
-      staticSizes.push_back(1);
-
-    // Get static strides
-    SmallVector<int64_t> staticStrides;
-    if (auto const_int = getConstantIntValue(adaptor.getStride3()))
-      staticStrides.push_back(*const_int);
-    else
-      staticStrides.push_back(0);
-    if (auto const_int = getConstantIntValue(adaptor.getStride2()))
-      staticStrides.push_back(*const_int);
-    else
-      staticStrides.push_back(0);
-    if (auto const_int = getConstantIntValue(adaptor.getStride1()))
-      staticStrides.push_back(*const_int);
-    else
-      staticStrides.push_back(0);
-    if (auto const_int = getConstantIntValue(adaptor.getStride0()))
-      staticStrides.push_back(*const_int);
-    else
-      staticStrides.push_back(0);
+    // Entry i of each list is dimension 3-i, outermost first.
+    SmallVector<int64_t> staticOffsets = constify(
+        getMixedValues(adaptor.getStaticOffsets(), adaptor.getOffsets(), ctx),
+        /*defaultValue=*/0, [&](int dim) {
+          op->emitWarning("non-constant DMA offset (dim ")
+              << (3 - dim) << ") defaulting to 0";
+        });
+    SmallVector<int64_t> staticSizes = constify(
+        getMixedValues(adaptor.getStaticLengths(), adaptor.getLengths(), ctx),
+        /*defaultValue=*/1, nullptr);
+    // The innermost transfer length is at least one element.
+    staticSizes[3] = std::max((int64_t)1, staticSizes[3]);
+    SmallVector<int64_t> staticStrides = constify(
+        getMixedValues(adaptor.getStaticStrides(), adaptor.getStrides(), ctx),
+        /*defaultValue=*/0, nullptr);
 
     // Calculate total offset in elements
     // For npu.dma_memcpy_nd, the offset is computed as:
@@ -686,7 +656,6 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
 
     // Build BDDimLayoutArrayAttr for the data layout transformation
     SmallVector<AIE::BDDimLayoutAttr> dimLayouts;
-    auto ctx = rewriter.getContext();
 
     // Determine starting index for dims based on whether we use 4th dim
     int startDim = use4thDimInBd ? 0 : 1;
@@ -1503,10 +1472,8 @@ const int AIE2_DIM_COUNT = 4;
 bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   // Linear shim BDs (contiguous row-major + optional outer dummies/repeat)
   // use the wide buffer_length register and bypass the per-dim 10-bit limit.
-  SmallVector<Value> wrap_list{dma.getLength3(), dma.getLength2(),
-                               dma.getLength1(), dma.getLength0()};
-  SmallVector<Value> stride_list{dma.getStride3(), dma.getStride2(),
-                                 dma.getStride1(), dma.getStride0()};
+  SmallVector<OpFoldResult> wrap_list = dma.getMixedLengths();
+  SmallVector<OpFoldResult> stride_list = dma.getMixedStrides();
   if (air::isContiguousRowMajorOrRepeated(wrap_list, stride_list))
     return false;
   for (unsigned i = 0; i < wrap_list.size(); i++) {
@@ -1522,10 +1489,9 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
 LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto loc = memcpy_op->getLoc();
   auto ctx = memcpy_op->getContext();
-  auto oper_begin = memcpy_op.getOperands().begin();
-  SmallVector<Value> offsets(oper_begin + 4, oper_begin + 8);
-  SmallVector<Value> wraps(oper_begin + 8, oper_begin + 12);
-  SmallVector<Value> strides(oper_begin + 12, oper_begin + 16);
+  SmallVector<OpFoldResult> offsets = memcpy_op.getMixedOffsets();
+  SmallVector<OpFoldResult> wraps = memcpy_op.getMixedLengths();
+  SmallVector<OpFoldResult> strides = memcpy_op.getMixedStrides();
   OpBuilder builder(memcpy_op);
 
   auto memrefTy =
@@ -1565,31 +1531,20 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       int outer_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
                            ? (a_wrap)
                            : (b_wrap);
-      wraps[i] = arith::ConstantOp::create(
-          builder, loc, builder.getI64Type(),
-          IntegerAttr::get(builder.getI64Type(), inner_wrap));
-      wraps.insert(wraps.begin() + i,
-                   arith::ConstantOp::create(
-                       builder, loc, builder.getI64Type(),
-                       IntegerAttr::get(builder.getI64Type(), outer_wrap)));
+      wraps[i] = builder.getI64IntegerAttr(inner_wrap);
+      wraps.insert(wraps.begin() + i, builder.getI64IntegerAttr(outer_wrap));
       auto new_const_stride = const_stride * inner_wrap;
       if (volume != 1)
         new_const_stride %=
             volume; // Avoids striding out of memory size, if memref is ranked
-      strides.insert(
-          strides.begin() + i,
-          arith::ConstantOp::create(
-              builder, loc, builder.getI64Type(),
-              IntegerAttr::get(builder.getI64Type(), new_const_stride)));
-      offsets.insert(
-          offsets.begin() + i,
-          arith::ConstantOp::create(builder, loc, builder.getI64Type(),
-                                    IntegerAttr::get(builder.getI64Type(), 0)));
+      strides.insert(strides.begin() + i,
+                     builder.getI64IntegerAttr(new_const_stride));
+      offsets.insert(offsets.begin() + i, builder.getI64IntegerAttr(0));
       // Attempt to find one dummy dimension in the wrap-and-stride list and
       // erase.
       auto offsetWrapZip = llvm::zip_equal(offsets, wraps);
-      auto it =
-          llvm::find_if(offsetWrapZip, [](std::tuple<Value, Value> entry) {
+      auto it = llvm::find_if(
+          offsetWrapZip, [](std::tuple<OpFoldResult, OpFoldResult> entry) {
             auto off = getConstantIntValue(std::get<0>(entry));
             auto siz = getConstantIntValue(std::get<1>(entry));
             return off && siz && *off == 0 && *siz == 1;
@@ -1656,24 +1611,20 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   // Keep all strides including the innermost (stride0).
 
   // Create new airrt.dma_memcpy_nd op.
-  SmallVector<Value> new_opers;
-  SmallVector<Type> tys;
-  auto old_opers = memcpy_op.getOperands();
-  // Insert
-  new_opers.insert(new_opers.end(), old_opers.begin(), old_opers.begin() + 4);
   if (inner_affine_for_iv) {
     // Innermost tiled affine.for loop induction variable as lowest offset, if
     // original rank exceeds hw limit.
-    new_opers.insert(new_opers.end(), offsets.begin(), offsets.end() - 1);
-    auto new_inner_offset = arith::IndexCastOp::create(
-        builder, loc, IntegerType::get(ctx, 64), inner_affine_for_iv);
-    new_opers.push_back(new_inner_offset);
-  } else
-    new_opers.insert(new_opers.end(), offsets.begin(), offsets.end());
-  new_opers.insert(new_opers.end(), wraps.begin(), wraps.end());
-  new_opers.insert(new_opers.end(), strides.begin(), strides.end());
-  airrt::DmaMemcpyNdOp::create(builder, loc, tys, new_opers,
-                               memcpy_op->getAttrs());
+    offsets.back() =
+        arith::IndexCastOp::create(builder, loc, IntegerType::get(ctx, 64),
+                                   inner_affine_for_iv)
+            .getResult();
+  }
+  auto newOp = airrt::DmaMemcpyNdOp::create(
+      builder, loc, SmallVector<Type>{}, memcpy_op.getId(), memcpy_op.getX(),
+      memcpy_op.getY(), memcpy_op.getMemref(), offsets, wraps, strides);
+  // Only discardable attrs carry over; the static_* arrays are inherent and
+  // already set by the builder above.
+  newOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
 
   // Unroll the affine loop nest.
   for (auto forOp : llvm::reverse(for_loop_nest)) {
@@ -1720,28 +1671,20 @@ static void coalesceShimDmaOrder(ModuleOp module) {
     // safe to coalesce.
     if (d->hasAttr("packet"))
       return std::nullopt;
-    auto o3 = getConstantIntValue(d.getOffset3());
-    auto o2 = getConstantIntValue(d.getOffset2());
-    auto o1 = getConstantIntValue(d.getOffset1());
-    auto o0 = getConstantIntValue(d.getOffset0());
-    auto l3 = getConstantIntValue(d.getLength3());
-    auto l2 = getConstantIntValue(d.getLength2());
-    auto l1 = getConstantIntValue(d.getLength1());
-    auto l0 = getConstantIntValue(d.getLength0());
-    auto s3 = getConstantIntValue(d.getStride3());
-    auto s2 = getConstantIntValue(d.getStride2());
-    auto s1 = getConstantIntValue(d.getStride1());
-    auto s0 = getConstantIntValue(d.getStride0());
-    if (!o3 || !o2 || !o1 || !o0 || !l3 || !l2 || !l1 || !l0 || !s3 || !s2 ||
-        !s1 || !s0)
+    auto offsets = getConstantIntValues(d.getMixedOffsets());
+    auto lengths = getConstantIntValues(d.getMixedLengths());
+    auto strides = getConstantIntValues(d.getMixedStrides());
+    if (!offsets || !lengths || !strides)
       return std::nullopt;
     // Pure contiguous 1D: only the innermost dim carries data, unit inner
     // stride (the higher dims are size-1 dummies).
-    if (*l3 != 1 || *l2 != 1 || *l1 != 1 || *s0 != 1)
+    if ((*lengths)[0] != 1 || (*lengths)[1] != 1 || (*lengths)[2] != 1 ||
+        (*strides)[3] != 1)
       return std::nullopt;
-    int64_t totalOffset =
-        (*o3) * (*s3) + (*o2) * (*s2) + (*o1) * (*s1) + (*o0) * (*s0);
-    return std::make_pair(totalOffset, *l0);
+    int64_t totalOffset = 0;
+    for (auto [off, str] : llvm::zip_equal(*offsets, *strides))
+      totalOffset += off * str;
+    return std::make_pair(totalOffset, (*lengths)[3]);
   };
 
   for (auto f : funcOps) {
@@ -1813,9 +1756,9 @@ static void coalesceShimDmaOrder(ModuleOp module) {
           if (tokensOk) {
             int64_t total = end - entries[i].offset;
             OpBuilder b(first);
-            auto newLen = arith::ConstantOp::create(
-                b, first.getLoc(), b.getI64Type(), b.getI64IntegerAttr(total));
-            first.getLength0Mutable().assign(newLen);
+            auto lengths = first.getMixedLengths();
+            lengths.back() = b.getI64IntegerAttr(total);
+            first.setMixedLengths(lengths);
             // Mark the merged feed so the double-buffered await synthesis paces
             // it with the cross-channel phase barrier (no cross-run overlap).
             first->setAttr(air::attrs::CoalescedShimFeed, b.getUnitAttr());
@@ -3123,8 +3066,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (dma->getNumResults()) {
         OpBuilder builder(dma);
         SmallVector<Type, 1> tys;
-        auto newOp = airrt::DmaMemcpyNdOp::create(builder, dma->getLoc(), tys,
-                                                  dma->getOperands());
+        auto newOp = airrt::DmaMemcpyNdOp::create(
+            builder, dma->getLoc(), tys, dma.getId(), dma.getX(), dma.getY(),
+            dma.getMemref(), dma.getMixedOffsets(), dma.getMixedLengths(),
+            dma.getMixedStrides());
         newOp->setAttrs(dma->getDiscardableAttrDictionary());
         dma->erase();
       }

@@ -681,21 +681,17 @@ struct EliminateIntermediateMemrefPattern
 
     // Check that both operations have default access patterns using existing
     // utility
-    SmallVector<Value> firstDstOffsets(firstMemcpy.getDstOffsets());
-    SmallVector<Value> firstDstSizes(firstMemcpy.getDstSizes());
-    SmallVector<Value> firstDstStrides(firstMemcpy.getDstStrides());
-
-    SmallVector<Value> secondSrcOffsets(secondMemcpy.getSrcOffsets());
-    SmallVector<Value> secondSrcSizes(secondMemcpy.getSrcSizes());
-    SmallVector<Value> secondSrcStrides(secondMemcpy.getSrcStrides());
-
-    auto isDefaultAccess = [](SmallVector<Value> offsets,
-                              SmallVector<Value> sizes,
-                              SmallVector<Value> strides) {
+    auto isDefaultAccess = [](ArrayRef<OpFoldResult> offsets,
+                              ArrayRef<OpFoldResult> sizes,
+                              ArrayRef<OpFoldResult> strides) {
       return offsets.empty() && sizes.empty() && strides.empty();
     };
-    if (!isDefaultAccess(firstDstOffsets, firstDstSizes, firstDstStrides) ||
-        !isDefaultAccess(secondSrcOffsets, secondSrcSizes, secondSrcStrides))
+    if (!isDefaultAccess(firstMemcpy.getMixedDstOffsets(),
+                         firstMemcpy.getMixedDstSizes(),
+                         firstMemcpy.getMixedDstStrides()) ||
+        !isDefaultAccess(secondMemcpy.getMixedSrcOffsets(),
+                         secondMemcpy.getMixedSrcSizes(),
+                         secondMemcpy.getMixedSrcStrides()))
       return failure();
     if (firstMemcpy.getDstMemref() != secondMemcpy.getSrcMemref())
       return failure();

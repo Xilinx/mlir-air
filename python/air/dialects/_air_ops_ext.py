@@ -24,6 +24,23 @@ def pyint_to_index(i):
     return arith.ConstantOp.create_index(i) if isinstance(i, int) else i
 
 
+def split_static_dynamic(entries):
+    """
+    Split an access-pattern list into the (dynamic operands, static array) pair
+    that the AIR memcpy ops store. A python int becomes a plain number in the
+    static array; anything else stays an SSA operand, marked in the static array
+    with ShapedType::kDynamic.
+    """
+    dynamic, static = [], []
+    for e in entries:
+        if isinstance(e, int):
+            static.append(e)
+        else:
+            static.append(ShapedType.get_dynamic_size())
+            dynamic.append(e)
+    return dynamic, static
+
+
 def get_region_operand_types(operands):
     """
     Utility function to get the type of arguments given to region ops.
@@ -233,18 +250,21 @@ class ChannelGet(ChannelGetOp):
                 "pad_before and pad_after must both be specified or both omitted"
             )
         indices_typed = list(map(pyint_to_index, indices))
-        dst_offsets_typed = list(map(pyint_to_index, offsets))
-        dst_sizes_typed = list(map(pyint_to_index, sizes))
-        dst_strides_typed = list(map(pyint_to_index, strides))
+        dyn_offsets, static_offsets = split_static_dynamic(offsets)
+        dyn_sizes, static_sizes = split_static_dynamic(sizes)
+        dyn_strides, static_strides = split_static_dynamic(strides)
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
             chan_name=chan_name,
             indices=indices_typed,
             dst=dst,
-            dst_offsets=dst_offsets_typed,
-            dst_sizes=dst_sizes_typed,
-            dst_strides=dst_strides_typed,
+            dynamic_dst_offsets=dyn_offsets,
+            dynamic_dst_sizes=dyn_sizes,
+            dynamic_dst_strides=dyn_strides,
+            static_dst_offsets=static_offsets,
+            static_dst_sizes=static_sizes,
+            static_dst_strides=static_strides,
             loc=loc,
             ip=ip,
         )
@@ -277,18 +297,21 @@ class ChannelPut(ChannelPutOp):
                 "pad_before and pad_after must both be specified or both omitted"
             )
         indices_typed = list(map(pyint_to_index, indices))
-        offsets_typed = list(map(pyint_to_index, offsets))
-        sizes_typed = list(map(pyint_to_index, sizes))
-        strides_typed = list(map(pyint_to_index, strides))
+        dyn_offsets, static_offsets = split_static_dynamic(offsets)
+        dyn_sizes, static_sizes = split_static_dynamic(sizes)
+        dyn_strides, static_strides = split_static_dynamic(strides)
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
             chan_name=chan_name,
             indices=indices_typed,
             src=src,
-            src_offsets=offsets_typed,
-            src_sizes=sizes_typed,
-            src_strides=strides_typed,
+            dynamic_src_offsets=dyn_offsets,
+            dynamic_src_sizes=dyn_sizes,
+            dynamic_src_strides=dyn_strides,
+            static_src_offsets=static_offsets,
+            static_src_sizes=static_sizes,
+            static_src_strides=static_strides,
             loc=loc,
             ip=ip,
         )
@@ -322,25 +345,31 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             raise ValueError(
                 "pad_before and pad_after must both be specified or both omitted"
             )
-        dst_offsets_typed = list(map(pyint_to_index, dst_offsets))
-        dst_sizes_typed = list(map(pyint_to_index, dst_sizes))
-        dst_strides_typed = list(map(pyint_to_index, dst_strides))
+        dyn_dst_offsets, static_dst_offsets = split_static_dynamic(dst_offsets)
+        dyn_dst_sizes, static_dst_sizes = split_static_dynamic(dst_sizes)
+        dyn_dst_strides, static_dst_strides = split_static_dynamic(dst_strides)
 
-        src_offsets_typed = list(map(pyint_to_index, src_offsets))
-        src_sizes_typed = list(map(pyint_to_index, src_sizes))
-        src_strides_typed = list(map(pyint_to_index, src_strides))
+        dyn_src_offsets, static_src_offsets = split_static_dynamic(src_offsets)
+        dyn_src_sizes, static_src_sizes = split_static_dynamic(src_sizes)
+        dyn_src_strides, static_src_strides = split_static_dynamic(src_strides)
 
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
             dst=dst,
-            dst_offsets=dst_offsets_typed,
-            dst_sizes=dst_sizes_typed,
-            dst_strides=dst_strides_typed,
+            dynamic_dst_offsets=dyn_dst_offsets,
+            dynamic_dst_sizes=dyn_dst_sizes,
+            dynamic_dst_strides=dyn_dst_strides,
             src=src,
-            src_offsets=src_offsets_typed,
-            src_sizes=src_sizes_typed,
-            src_strides=src_strides_typed,
+            dynamic_src_offsets=dyn_src_offsets,
+            dynamic_src_sizes=dyn_src_sizes,
+            dynamic_src_strides=dyn_src_strides,
+            static_dst_offsets=static_dst_offsets,
+            static_dst_sizes=static_dst_sizes,
+            static_dst_strides=static_dst_strides,
+            static_src_offsets=static_src_offsets,
+            static_src_sizes=static_src_sizes,
+            static_src_strides=static_src_strides,
         )
         # Set optional pad_before/pad_after attributes after construction,
         # since the generated __init__ doesn't accept them as kwargs.

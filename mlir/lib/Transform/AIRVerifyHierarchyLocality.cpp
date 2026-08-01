@@ -556,6 +556,24 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
     sizesVal.push_back(nullptr);
     sizesStatic.push_back(s);
   };
+  // Ingest a mixed static/dynamic access pattern, as exposed by the AIR
+  // memcpy ops and by memref.subview.
+  auto pushMixedPattern = [&](ArrayRef<OpFoldResult> offs,
+                              ArrayRef<OpFoldResult> szs) {
+    for (auto ofr : offs) {
+      if (auto v = dyn_cast<Value>(ofr))
+        offsets.push_back(v);
+      else
+        offsets.push_back(nullptr); // static offset — no IV dependence
+    }
+    for (auto ofr : szs) {
+      if (auto v = dyn_cast<Value>(ofr))
+        pushSize(v);
+      else
+        pushStaticSize(cast<IntegerAttr>(cast<Attribute>(ofr)).getInt());
+    }
+    hasPattern = true;
+  };
 
   // Read-only accesses don't need disjointness across iterations: multiple
   // readers of the same memory range is not a race. Only writes require
@@ -606,45 +624,16 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
   }
 
   if (auto chan = dyn_cast<xilinx::air::ChannelInterface>(op)) {
-    if (chan.getMemref() == t.consumed) {
-      for (Value v : chan.getOffsets())
-        offsets.push_back(v);
-      for (Value v : chan.getSizes())
-        pushSize(v);
-      hasPattern = true;
-    }
+    if (chan.getMemref() == t.consumed)
+      pushMixedPattern(chan.getMixedOffsets(), chan.getMixedSizes());
   } else if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
-    if (dma.getDst() == t.consumed) {
-      for (Value v : dma.getDstOffsets())
-        offsets.push_back(v);
-      for (Value v : dma.getDstSizes())
-        pushSize(v);
-      hasPattern = true;
-    } else if (dma.getSrc() == t.consumed) {
-      for (Value v : dma.getSrcOffsets())
-        offsets.push_back(v);
-      for (Value v : dma.getSrcSizes())
-        pushSize(v);
-      hasPattern = true;
-    }
+    if (dma.getDst() == t.consumed)
+      pushMixedPattern(dma.getMixedDstOffsets(), dma.getMixedDstSizes());
+    else if (dma.getSrc() == t.consumed)
+      pushMixedPattern(dma.getMixedSrcOffsets(), dma.getMixedSrcSizes());
   } else if (auto sv = dyn_cast<memref::SubViewOp>(op)) {
-    if (sv.getSource() == t.consumed) {
-      for (auto ofr : sv.getMixedOffsets()) {
-        if (auto v = dyn_cast<Value>(ofr))
-          offsets.push_back(v);
-        else
-          offsets.push_back(nullptr); // static offset — no IV dependence
-      }
-      for (auto ofr : sv.getMixedSizes()) {
-        if (auto v = dyn_cast<Value>(ofr)) {
-          pushSize(v);
-        } else {
-          auto attr = cast<IntegerAttr>(cast<Attribute>(ofr));
-          pushStaticSize(attr.getInt());
-        }
-      }
-      hasPattern = true;
-    }
+    if (sv.getSource() == t.consumed)
+      pushMixedPattern(sv.getMixedOffsets(), sv.getMixedSizes());
   } else if (auto store = dyn_cast<memref::StoreOp>(op)) {
     if (store.getMemRef() == t.consumed) {
       for (Value idx : store.getIndices()) {

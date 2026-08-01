@@ -154,9 +154,9 @@ module {
 
 // L3→L2 shim DMA sizes reduced for boundary blocks:
 // M-boundary: A shim 0 reads 64 K-rows x 44 M-cols (M reduced from 64 to 44)
-// CHECK-DAG: channel.put {{.*}} @channel_A_l3_m_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c64{{[_0-9]*}}, %c44
+// CHECK-DAG: channel.put {{.*}} @channel_A_l3_m_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c64{{[_0-9]*}}, 44
 // N-boundary: B shim 0 reads 64 K-rows x 44 N-cols (N reduced from 64 to 44)
-// CHECK-DAG: channel.put {{.*}} @channel_B_l3_n_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c64{{[_0-9]*}}, %c44
+// CHECK-DAG: channel.put {{.*}} @channel_B_l3_n_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c64{{[_0-9]*}}, 44
 
 // Non-boundary shims retain original sizes (no reduction):
 // M-boundary: A shim 1 keeps full [64, 64] sizes

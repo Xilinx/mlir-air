@@ -97,19 +97,19 @@ enum class PipelineStage {
 };
 
 // get memcpy operation volumn (elements) as int
-int getMemcpySizesAsInt(Value memref, SmallVector<Value> sizes) {
+int getMemcpySizesAsInt(Value memref, ArrayRef<OpFoldResult> sizes) {
   BaseMemRefType memTy = llvm::cast<BaseMemRefType>(memref.getType());
   if (sizes.empty())
     return air::getTensorVolume(memTy);
   else {
     int output = 1;
     for (auto s : sizes) {
-      auto c = dyn_cast_if_present<arith::ConstantIndexOp>(s.getDefiningOp());
+      auto c = getConstantIntValue(s);
       if (!c) {
         output = -1;
         break;
       }
-      output *= c.value();
+      output *= *c;
     }
     return output;
   }
@@ -3258,10 +3258,11 @@ struct SpecializeChannelBundlePattern
                   air::convertVecOfConstIndexToVecOfUInt(get.getIndices()),
                   position))
             continue;
-          writesOffsetZero = llvm::all_of(get.getOffsets(), [](Value o) {
-            auto c = getConstantIntValue(o);
-            return c && *c == 0;
-          });
+          writesOffsetZero =
+              llvm::all_of(get.getMixedOffsets(), [](OpFoldResult o) {
+                auto c = getConstantIntValue(o);
+                return c && *c == 0;
+              });
           break;
         }
         if (!writesOffsetZero)
@@ -3381,9 +3382,12 @@ private:
     }
     SmallVector<Value, 4> indices = {};
     // Canonicalize wrap and stride lists after specialization
-    SmallVector<Value> offsets = ci.getOffsets();
-    SmallVector<Value> wraps = ci.getSizes();
-    SmallVector<Value> strides = ci.getStrides();
+    SmallVector<Value> offsets = getValueOrCreateConstantIndexOp(
+        builder, ci->getLoc(), ci.getMixedOffsets());
+    SmallVector<Value> wraps = getValueOrCreateConstantIndexOp(
+        builder, ci->getLoc(), ci.getMixedSizes());
+    SmallVector<Value> strides = getValueOrCreateConstantIndexOp(
+        builder, ci->getLoc(), ci.getMixedStrides());
     auto memrefTy = llvm::dyn_cast<BaseMemRefType>(ci.getMemref().getType());
     int innerAlignment =
         memrefTy ? air::getDmaInnerElementAlignment(memrefTy, ci) : 1;
@@ -3395,12 +3399,14 @@ private:
     if (isa<air::ChannelPutOp>(ci))
       new_ci = air::ChannelPutOp::create(
           builder, ci->getLoc(), tys, deps, chan.getSymName(), indices,
-          ci.getMemref(), offsets, wraps, strides,
+          ci.getMemref(), getAsOpFoldResult(offsets), getAsOpFoldResult(wraps),
+          getAsOpFoldResult(strides),
           /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     else if (isa<air::ChannelGetOp>(ci))
       new_ci = air::ChannelGetOp::create(
           builder, ci->getLoc(), tys, deps, chan.getSymName(), indices,
-          ci.getMemref(), offsets, wraps, strides,
+          ci.getMemref(), getAsOpFoldResult(offsets), getAsOpFoldResult(wraps),
+          getAsOpFoldResult(strides),
           /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     new_ci->setAttrs(ci->getDiscardableAttrDictionary());
     air::copyPaddingAttributes(ci, new_ci);
@@ -4645,9 +4651,12 @@ public:
     // zero for convenience. TODO: generalize this
     aie_device.walk([](air::ChannelInterface chanI) {
       OpBuilder b(chanI);
-      for (auto oper : llvm::concat<Value>(chanI.getOffsets(), chanI.getSizes(),
-                                           chanI.getStrides())) {
-        if (!getConstantIntValue(oper)) {
+      auto offsets = chanI.getMixedOffsets();
+      auto sizes = chanI.getMixedSizes();
+      auto strides = chanI.getMixedStrides();
+      for (auto ofr : llvm::concat<OpFoldResult>(offsets, sizes, strides)) {
+        auto oper = dyn_cast_if_present<Value>(ofr);
+        if (oper && !getConstantIntValue(oper)) {
           chanI->replaceUsesOfWith(
               oper, arith::ConstantIndexOp::create(b, b.getUnknownLoc(), 0));
         }
@@ -4667,13 +4676,15 @@ public:
       auto memref = op.getMemref();
       auto memrefShape = air::getTensorShape(memref.getType());
       // The default data access pattern is contiguous and row major.
-      if (air::isDefaultDataAccessPattern(op.getSizes(), op.getStrides()))
+      auto opSizes = op.getMixedSizes();
+      auto opStrides = op.getMixedStrides();
+      if (air::isDefaultDataAccessPattern(opSizes, opStrides))
         continue;
-      if (op.getStrides().size() != memrefShape.size())
+      if (opStrides.size() != memrefShape.size())
         return false;
       int current_stride = 1;
-      for (int i = op.getStrides().size() - 1; i >= 0; i--) {
-        if (*getConstantIntValue(op.getStrides()[i]) != current_stride)
+      for (int i = opStrides.size() - 1; i >= 0; i--) {
+        if (*getConstantIntValue(opStrides[i]) != current_stride)
           return false;
         current_stride *= memrefShape[i];
       }
@@ -4691,21 +4702,23 @@ public:
       for (unsigned j = i + 1; j < ops.size(); j++) {
         air::ChannelInterface op1 = ops[i];
         air::ChannelInterface op2 = ops[j];
-        if (op1.getOffsets().size() != op2.getOffsets().size())
+        auto op1Offsets = op1.getMixedOffsets();
+        auto op2Offsets = op2.getMixedOffsets();
+        auto op1Sizes = op1.getMixedSizes();
+        auto op2Sizes = op2.getMixedSizes();
+        if (op1Offsets.size() != op2Offsets.size())
           return false;
-        if (op1.getSizes().size() != op2.getSizes().size())
+        if (op1Sizes.size() != op2Sizes.size())
           return false;
         bool isOverlappingPair =
             true; // True if every dimension is overlapping.
-        for (unsigned k = 0; k < op1.getOffsets().size(); k++) {
-          int op1Offset = *getConstantIntValue(op1.getOffsets()[k]);
-          int op2Offset = *getConstantIntValue(op2.getOffsets()[k]);
+        for (unsigned k = 0; k < op1Offsets.size(); k++) {
+          int op1Offset = *getConstantIntValue(op1Offsets[k]);
+          int op2Offset = *getConstantIntValue(op2Offsets[k]);
           int op1LowerRange = op1Offset;
-          int op1UpperRange =
-              op1Offset + *getConstantIntValue(op1.getSizes()[k]);
+          int op1UpperRange = op1Offset + *getConstantIntValue(op1Sizes[k]);
           int op2LowerRange = op2Offset;
-          int op2UpperRange =
-              op2Offset + *getConstantIntValue(op2.getSizes()[k]);
+          int op2UpperRange = op2Offset + *getConstantIntValue(op2Sizes[k]);
           bool isOverlappingDim = false;
           if (op1Offset >= op2LowerRange && op1Offset < op2UpperRange)
             isOverlappingDim = true;
@@ -4747,9 +4760,10 @@ public:
     std::map<int, SmallVector<air::ChannelInterface>> chanOpPartitions;
     std::vector<int> keys;
     for (auto op : puts) {
-      if (op.getOffsets().empty())
+      auto opOffsets = op.getMixedOffsets();
+      if (opOffsets.empty())
         return; // Default access pattern (full memref), cannot partition.
-      int firstOffset = *getConstantIntValue(op.getOffsets().front());
+      int firstOffset = *getConstantIntValue(opOffsets.front());
       push_back_if_unique<int>(keys, firstOffset);
       if (!chanOpPartitions.count(firstOffset))
         chanOpPartitions[firstOffset] = SmallVector<air::ChannelInterface>{op};
@@ -4757,9 +4771,10 @@ public:
         chanOpPartitions[firstOffset].push_back(op);
     }
     for (auto op : gets) {
-      if (op.getOffsets().empty())
+      auto opOffsets = op.getMixedOffsets();
+      if (opOffsets.empty())
         return; // Default access pattern (full memref), cannot partition.
-      int firstOffset = *getConstantIntValue(op.getOffsets().front());
+      int firstOffset = *getConstantIntValue(opOffsets.front());
       push_back_if_unique<int>(keys, firstOffset);
       if (!chanOpPartitions.count(firstOffset))
         chanOpPartitions[firstOffset] = SmallVector<air::ChannelInterface>{op};
@@ -4775,8 +4790,9 @@ public:
         newMemrefShape.push_back(air::getTensorShape(ty)[i]);
       }
       for (auto op : chanOpPartitions[key])
-        if (op.getSizes().size() == newMemrefShape.size()) {
-          newMemrefShape.front() = *getConstantIntValue(op.getSizes().front());
+        if (op.getMixedSizes().size() == newMemrefShape.size()) {
+          newMemrefShape.front() =
+              *getConstantIntValue(op.getMixedSizes().front());
           break;
         }
 
@@ -4793,26 +4809,23 @@ public:
                 .size();
         auto &memrefOpOper = op->getOpOperand(memrefOperandOffset);
         memrefOpOper.assign(newMemref);
-        int firstOffsetOperandOffset = memrefOperandOffset + 1;
-        auto &firstOffsetOpOper = op->getOpOperand(firstOffsetOperandOffset);
-        firstOffsetOpOper.assign(
-            arith::ConstantIndexOp::create(builder, loc, 0));
+        // The partitioned memref starts at 0 in its outermost dimension.
+        SmallVector<OpFoldResult> newOffsets = op.getMixedOffsets();
+        newOffsets.front() = builder.getIndexAttr(0);
+        op.setMixedOffsets(newOffsets);
         // Update strides (contiguous, row-major) after memref tiling.
         SmallVector<Value> offsets;
         SmallVector<Value> wraps;
         SmallVector<Value> strides;
         // One dimensional default stride value.
-        if (op.getSizes().size() == 1)
+        if (op.getMixedSizes().size() == 1)
           strides.push_back(arith::ConstantIndexOp::create(builder, loc, 1));
         else
           air::populateDefaultWrapsAndStrides(builder, newMemref, offsets,
                                               wraps, strides);
-        int firstStrideOperandOffset =
-            memrefOperandOffset + op.getOffsets().size() * 2 + 1;
-        for (unsigned i = 0; i < op.getStrides().size(); i++) {
-          auto &strideOpOper = op->getOpOperand(firstStrideOperandOffset + i);
-          strideOpOper.assign(strides[i]);
-        }
+        SmallVector<OpFoldResult> newStrides = getAsOpFoldResult(strides);
+        newStrides.resize(op.getMixedStrides().size());
+        op.setMixedStrides(newStrides);
       }
     }
   }
@@ -6216,10 +6229,10 @@ public:
     if (lockRaceConditionFix) {
       // Sort MapVector dma_memcpys by moving all entries containing dummy BDs
       // to the end.
-      auto isVectorOfZeros = [](SmallVector<Value> vector) {
+      auto isVectorOfZeros = [](ArrayRef<OpFoldResult> vector) {
         if (vector.empty())
           return false; // Return false if the vector is empty.
-        return llvm::all_of(vector, [](Value v) {
+        return llvm::all_of(vector, [](OpFoldResult v) {
           auto constV = getConstantIntValue(v);
           if (!constV)
             return false;
@@ -6230,7 +6243,7 @@ public:
       auto containsDummyBDs = [isVectorOfZeros](std::vector<Operation *> ops) {
         return llvm::any_of(ops, [&](Operation *op) {
           auto chanIf = dyn_cast_if_present<air::ChannelInterface>(op);
-          return chanIf && isVectorOfZeros(chanIf.getSizes());
+          return chanIf && isVectorOfZeros(chanIf.getMixedSizes());
         });
       };
       // Sort MapVector.
@@ -6492,18 +6505,13 @@ public:
     Value memref = isTileInbound(ndcpy, air::MemorySpace::L1).value()
                        ? ndcpy.getDstMemref()
                        : ndcpy.getSrcMemref();
-    SmallVector<Value> sizes =
-        isTileInbound(ndcpy, air::MemorySpace::L1).value()
-            ? ndcpy.getDstSizes()
-            : ndcpy.getSrcSizes();
-    SmallVector<Value> offsets =
-        isTileInbound(ndcpy, air::MemorySpace::L1).value()
-            ? ndcpy.getDstOffsets()
-            : ndcpy.getSrcOffsets();
-    SmallVector<Value> strides =
-        isTileInbound(ndcpy, air::MemorySpace::L1).value()
-            ? ndcpy.getDstStrides()
-            : ndcpy.getSrcStrides();
+    bool inbound = isTileInbound(ndcpy, air::MemorySpace::L1).value();
+    SmallVector<OpFoldResult> sizes =
+        inbound ? ndcpy.getMixedDstSizes() : ndcpy.getMixedSrcSizes();
+    SmallVector<OpFoldResult> offsets =
+        inbound ? ndcpy.getMixedDstOffsets() : ndcpy.getMixedSrcOffsets();
+    SmallVector<OpFoldResult> strides =
+        inbound ? ndcpy.getMixedDstStrides() : ndcpy.getMixedSrcStrides();
 
     // Skip over repeat pattern at highest dimension; repeat pattern handled at
     // AIE::DMAStartOp.

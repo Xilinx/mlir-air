@@ -59,7 +59,7 @@ module {
   // CHECK: air.herd
   // CHECK: %[[TOK1:.*]], %[[RES1:.*]] = air.execute -> (memref<1x64xbf16, 2 : i32>)
   // After shrinking, the channel.put offset should be reset to 0 (from affine.apply result)
-  // CHECK: air.channel.put {{.*}} (%[[RES1]][%c0{{.*}}, %c0{{.*}}]
+  // CHECK: air.channel.put {{.*}} (%[[RES1]][0, %c0{{.*}}]
   air.channel @channel_1 [4]
   func.func @func1() {
     %c1 = arith.constant 1 : index

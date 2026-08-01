@@ -225,8 +225,8 @@ public:
       if (!chanToArgIdx.count(putOp.getChanName()))
         return;
       unsigned argIdx = chanToArgIdx.lookup(putOp.getChanName());
-      auto offsets = putOp.getOffsets();
-      auto sizes = putOp.getSizes();
+      auto offsets = putOp.getMixedOffsets();
+      auto sizes = putOp.getMixedSizes();
       if (offsets.empty() || sizes.empty())
         return;
 
@@ -275,8 +275,8 @@ public:
       unsigned argIdx = traceFuncArgIdx(dmaOp.getSrcMemref());
       if (argIdx > 1)
         return;
-      auto offsets = dmaOp.getSrcOffsets();
-      auto sizes = dmaOp.getSrcSizes();
+      auto offsets = dmaOp.getMixedSrcOffsets();
+      auto sizes = dmaOp.getMixedSrcSizes();
       if (offsets.empty() || sizes.empty())
         return;
       for (unsigned i = 0; i < offsets.size() && i < sizes.size(); ++i) {
@@ -297,7 +297,7 @@ public:
                                                 int64_t nActualLast,
                                                 int64_t padDimIdxA,
                                                 int64_t padDimIdxB) {
-    auto sizes = chOp.getSizes();
+    auto sizes = chOp.getMixedSizes();
     if (sizes.empty())
       return std::nullopt;
 
@@ -335,7 +335,7 @@ public:
   computeShimPadInfoForDma(air::DmaMemcpyNdOp dmaOp, bool isA,
                            int64_t mActualLast, int64_t nActualLast,
                            int64_t padDimIdxA, int64_t padDimIdxB) {
-    auto sizes = dmaOp.getSrcSizes();
+    auto sizes = dmaOp.getMixedSrcSizes();
     if (sizes.empty())
       return std::nullopt;
 
@@ -386,8 +386,9 @@ public:
   }
 
   // Find the padded dimension in L2->L1 channel sizes/strides.
-  static int64_t findPadDimInChannelSizes(OperandRange sizes,
-                                          OperandRange strides, int64_t shimIdx,
+  static int64_t findPadDimInChannelSizes(ArrayRef<OpFoldResult> sizes,
+                                          ArrayRef<OpFoldResult> strides,
+                                          int64_t shimIdx,
                                           int64_t dimActualLast,
                                           int64_t defaultDim = 1) {
     auto checkDim = [&](int64_t d) -> bool {
@@ -422,22 +423,19 @@ public:
   // Modify sizes on a channel op for a boundary partition.
   void reduceChannelSizes(air::ChannelInterface chOp, ShimPadInfo &info) {
     OpBuilder builder(chOp);
-    Location loc = chOp.getLoc();
-    auto actualVal =
-        arith::ConstantIndexOp::create(builder, loc, info.actualForShim);
-
-    auto sizes = chOp.getSizes();
+    auto sizes = chOp.getMixedSizes();
     if (sizes.empty() || info.padDimIdx >= (int64_t)sizes.size())
       return;
 
-    unsigned sizeBegin = sizes.getBeginOperandIndex();
-    chOp->setOperand(sizeBegin + info.padDimIdx, actualVal);
+    SmallVector<OpFoldResult> newSizes(sizes);
+    newSizes[info.padDimIdx] = builder.getIndexAttr(info.actualForShim);
+    chOp.setMixedSizes(newSizes);
   }
 
   // Add pad_after on an L2->L1 channel.put (segment level, memtile MM2S).
   void addMemtilePadding(air::ChannelPutOp putOp, int64_t padDimIdx,
                          int64_t padAmount) {
-    auto sizes = putOp.getSizes();
+    auto sizes = putOp.getMixedSizes();
     int numDims = sizes.size();
     SmallVector<int32_t> padBefore(numDims, 0);
     SmallVector<int32_t> padAfter(numDims, 0);
@@ -844,7 +842,7 @@ public:
             int64_t tileSize = isA ? tileM : tileN;
             int64_t actualLast = isA ? mActualLast : nActualLast;
 
-            auto srcSizes = dmaOp.getSrcSizes();
+            auto srcSizes = dmaOp.getMixedSrcSizes();
             if (srcSizes.empty())
               continue;
 
@@ -861,12 +859,16 @@ public:
               continue;
 
             OpBuilder dmaBuilder(dmaOp);
-            Value actualVal =
-                arith::ConstantIndexOp::create(dmaBuilder, loc, actualLast);
-            dmaOp.getSrcSizesMutable().slice(padDimIdx, 1).assign(actualVal);
-            auto dstSizes = dmaOp.getDstSizes();
-            if (padDimIdx < (int64_t)dstSizes.size())
-              dmaOp.getDstSizesMutable().slice(padDimIdx, 1).assign(actualVal);
+            auto actualAttr = dmaBuilder.getIndexAttr(actualLast);
+            SmallVector<OpFoldResult> newSrcSizes(srcSizes);
+            newSrcSizes[padDimIdx] = actualAttr;
+            dmaOp.setMixedSrcSizes(newSrcSizes);
+            auto dstSizes = dmaOp.getMixedDstSizes();
+            if (padDimIdx < (int64_t)dstSizes.size()) {
+              SmallVector<OpFoldResult> newDstSizes(dstSizes);
+              newDstSizes[padDimIdx] = actualAttr;
+              dmaOp.setMixedDstSizes(newDstSizes);
+            }
 
             int64_t numDims = srcSizes.size();
             SmallVector<int32_t> padBefore(numDims, 0);
@@ -974,7 +976,7 @@ public:
       int64_t tileSize = isA ? tileM : tileN;
       int64_t actualLast = isA ? mActualLast : nActualLast;
 
-      auto srcSizes = dmaOp.getSrcSizes();
+      auto srcSizes = dmaOp.getMixedSrcSizes();
       if (srcSizes.empty())
         return;
 
@@ -994,11 +996,9 @@ public:
         return;
 
       OpBuilder builder(dmaOp);
-      Location loc = dmaOp.getLoc();
-      Value actualVal =
-          arith::ConstantIndexOp::create(builder, loc, actualLast);
-      auto srcSizeMutable = dmaOp.getSrcSizesMutable();
-      srcSizeMutable.slice(padDimIdx, 1).assign(actualVal);
+      SmallVector<OpFoldResult> newSrcSizes(srcSizes);
+      newSrcSizes[padDimIdx] = builder.getIndexAttr(actualLast);
+      dmaOp.setMixedSrcSizes(newSrcSizes);
 
       int64_t numDims = srcSizes.size();
       SmallVector<int32_t> padBefore(numDims, 0);
@@ -1025,7 +1025,7 @@ public:
       int64_t tileSize = isA ? tileM : tileN;
       int64_t actualLast = isA ? mActualLast : nActualLast;
 
-      auto sizes = putOp.getSizes();
+      auto sizes = putOp.getMixedSizes();
       if (sizes.empty())
         return;
 
@@ -1045,11 +1045,9 @@ public:
         return;
 
       OpBuilder builder(putOp);
-      Location loc = putOp.getLoc();
-      Value actualVal =
-          arith::ConstantIndexOp::create(builder, loc, actualLast);
-      unsigned sizeBegin = sizes.getBeginOperandIndex();
-      putOp->setOperand(sizeBegin + padDimIdx, actualVal);
+      SmallVector<OpFoldResult> newSizes(sizes);
+      newSizes[padDimIdx] = builder.getIndexAttr(actualLast);
+      putOp.setMixedSizes(newSizes);
 
       int64_t numDims = sizes.size();
       SmallVector<int32_t> padBefore(numDims, 0);
@@ -1118,8 +1116,8 @@ public:
         return;
       int64_t shimIdx = shimIt->second;
 
-      auto sizes = putOp.getSizes();
-      auto strides = putOp.getStrides();
+      auto sizes = putOp.getMixedSizes();
+      auto strides = putOp.getMixedStrides();
       if (sizes.empty() || strides.empty())
         return;
 
@@ -1197,7 +1195,7 @@ public:
         return;
       if (!chanToArgIdx.count(getOp.getChanName()))
         return;
-      if (!getOp.getSizes().empty())
+      if (!getOp.getMixedSizes().empty())
         return;
       unsigned argIdx = chanToArgIdx.lookup(getOp.getChanName());
       if (skipInput(argIdx, padM, padN))
@@ -1258,10 +1256,10 @@ public:
           getOp.getMemref(), offsets, sizes, strides,
           /*pad_before=*/DenseI32ArrayAttr(),
           /*pad_after=*/DenseI32ArrayAttr());
-      for (auto attr : getOp->getAttrs()) {
-        if (attr.getName() != "operandSegmentSizes")
-          newGet->setAttr(attr.getName(), attr.getValue());
-      }
+      // Only discardable attrs carry over: the inherent ones (the static
+      // offset/size/stride arrays and operandSegmentSizes) describe the access
+      // pattern just built above and must not be overwritten by the old op's.
+      newGet->setAttrs(getOp->getDiscardableAttrDictionary());
       if (getOp.getAsyncToken())
         getOp.getAsyncToken().replaceAllUsesWith(newGet.getAsyncToken());
       getOp.erase();
@@ -1321,8 +1319,8 @@ public:
 
       int64_t dimActualLast = isA ? mActualLast : nActualLast;
 
-      auto sizes = dmaOp.getSrcSizes();
-      auto strides = dmaOp.getSrcStrides();
+      auto sizes = dmaOp.getMixedSrcSizes();
+      auto strides = dmaOp.getMixedSrcStrides();
       if (sizes.empty() || strides.empty())
         return;
 
@@ -1352,10 +1350,9 @@ public:
       }
 
       OpBuilder builder(dmaOp);
-      Location loc = dmaOp.getLoc();
-      Value actualVal =
-          arith::ConstantIndexOp::create(builder, loc, actualBlocks);
-      dmaOp.getSrcSizesMutable().slice(l2l1PadDimIdx, 1).assign(actualVal);
+      SmallVector<OpFoldResult> newSizes(sizes);
+      newSizes[l2l1PadDimIdx] = builder.getIndexAttr(actualBlocks);
+      dmaOp.setMixedSrcSizes(newSizes);
 
       int64_t numDims = sizes.size();
       SmallVector<int32_t> padBefore(numDims, 0);
@@ -1386,10 +1383,9 @@ public:
         return;
 
       OpBuilder builder(dmaOp);
-      Location loc = dmaOp.getLoc();
-      Value actualVal =
-          arith::ConstantIndexOp::create(builder, loc, info->actualForShim);
-      dmaOp.getSrcSizesMutable().slice(info->padDimIdx, 1).assign(actualVal);
+      SmallVector<OpFoldResult> newSizes = dmaOp.getMixedSrcSizes();
+      newSizes[info->padDimIdx] = builder.getIndexAttr(info->actualForShim);
+      dmaOp.setMixedSrcSizes(newSizes);
     });
 
     // Step 5: Add explicit dst sizes/strides to segment-level L3->L2 DMAs.
@@ -1410,7 +1406,7 @@ public:
       if (getMemorySpace(dstType) != air::MemorySpace::L2 ||
           getMemorySpace(srcType) != air::MemorySpace::L3)
         return;
-      if (!dmaOp.getDstSizes().empty())
+      if (!dmaOp.getMixedDstSizes().empty())
         return;
 
       Value dstBuf = dmaOp.getDstMemref();
@@ -1456,30 +1452,30 @@ public:
       OpBuilder builder(dmaOp);
       Location loc = dmaOp.getLoc();
 
-      SmallVector<Value> offsets, sizes, strides;
+      SmallVector<OpFoldResult> offsets, sizes, strides;
       for (int64_t d = 0; d < rank; ++d) {
-        offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
+        offsets.push_back(builder.getIndexAttr(0));
         int64_t dimSize =
             (d == info.padDimInMemref) ? info.actualForShim : shape[d];
-        sizes.push_back(arith::ConstantIndexOp::create(builder, loc, dimSize));
+        sizes.push_back(builder.getIndexAttr(dimSize));
         int64_t stride = 1;
         for (int64_t j = d + 1; j < rank; ++j)
           stride *= shape[j];
-        strides.push_back(arith::ConstantIndexOp::create(builder, loc, stride));
+        strides.push_back(builder.getIndexAttr(stride));
       }
 
       auto newDma = air::DmaMemcpyNdOp::create(
           builder, loc,
           dmaOp.getAsyncToken() ? dmaOp.getAsyncToken().getType() : Type(),
           dmaOp.getAsyncDependencies(), dmaOp.getDstMemref(), offsets, sizes,
-          strides, dmaOp.getSrcMemref(), dmaOp.getSrcOffsets(),
-          dmaOp.getSrcSizes(), dmaOp.getSrcStrides(),
+          strides, dmaOp.getSrcMemref(), dmaOp.getMixedSrcOffsets(),
+          dmaOp.getMixedSrcSizes(), dmaOp.getMixedSrcStrides(),
           /*pad_before=*/DenseI32ArrayAttr(),
           /*pad_after=*/DenseI32ArrayAttr());
-      for (auto attr : dmaOp->getAttrs()) {
-        if (attr.getName() != "operandSegmentSizes")
-          newDma->setAttr(attr.getName(), attr.getValue());
-      }
+      // Only discardable attrs carry over: the inherent ones (the static
+      // offset/size/stride arrays and operandSegmentSizes) describe the access
+      // pattern just built above and must not be overwritten by the old op's.
+      newDma->setAttrs(dmaOp->getDiscardableAttrDictionary());
       if (dmaOp.getAsyncToken())
         dmaOp.getAsyncToken().replaceAllUsesWith(newDma.getAsyncToken());
       dmaOp.erase();

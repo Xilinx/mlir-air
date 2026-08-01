@@ -15,8 +15,8 @@
 // should be added to dim0 (stride=1), not dim1 (stride=512).
 // CHECK: air.dma_memcpy_nd
 // CHECK-SAME: %arg0[%arg1, %arg2]
-// CHECK-SAME: [%c256, %c16]
-// CHECK-SAME: [%c1, %c512]
+// CHECK-SAME: [256, 16]
+// CHECK-SAME: [1, 512]
 func.func @transposed_a(%arg0: memref<*xf32>, %arg1: index, %arg2: index) {
   %alloc = memref.alloc() : memref<256x784xf32, 1>
   %rc = memref.reinterpret_cast %arg0 to
@@ -39,8 +39,8 @@ func.func @transposed_a(%arg0: memref<*xf32>, %arg1: index, %arg2: index) {
 // should be added to dim1 (stride=1).
 // CHECK: air.dma_memcpy_nd
 // CHECK-SAME: %arg0[%arg2, %arg1]
-// CHECK-SAME: [%c16, %c256]
-// CHECK-SAME: [%c1024, %c1]
+// CHECK-SAME: [16, 256]
+// CHECK-SAME: [1024, 1]
 func.func @normal_layout(%arg0: memref<*xf32>, %arg1: index, %arg2: index) {
   %alloc = memref.alloc() : memref<512x256xf32, 1>
   %rc = memref.reinterpret_cast %arg0 to
@@ -67,9 +67,9 @@ func.func @normal_layout(%arg0: memref<*xf32>, %arg1: index, %arg2: index) {
 // Transposed layout strides [1, 504]. The single flat offset %arg1 must go
 // in dim0 (stride=1), producing offsets [%arg1, 0].
 // CHECK: air.dma_memcpy_nd
-// CHECK-SAME: %arg0[%arg1, %c0]
-// CHECK-SAME: [%c256, %c16]
-// CHECK-SAME: [%c1, %c504]
+// CHECK-SAME: %arg0[%arg1, 0]
+// CHECK-SAME: [256, 16]
+// CHECK-SAME: [1, 504]
 func.func @standalone_transposed(%arg0: memref<*xf32>, %arg1: index) {
   %alloc = memref.alloc() : memref<256x16xf32, 1>
   %rc = memref.reinterpret_cast %arg0 to
@@ -85,9 +85,9 @@ func.func @standalone_transposed(%arg0: memref<*xf32>, %arg1: index) {
 // Normal layout strides [504, 1]. The single flat offset %arg1 must go
 // in dim1 (stride=1), producing offsets [0, %arg1].
 // CHECK: air.dma_memcpy_nd
-// CHECK-SAME: %arg0[%c0, %arg1]
-// CHECK-SAME: [%c16, %c256]
-// CHECK-SAME: [%c504, %c1]
+// CHECK-SAME: %arg0[0, %arg1]
+// CHECK-SAME: [16, 256]
+// CHECK-SAME: [504, 1]
 func.func @standalone_normal(%arg0: memref<*xf32>, %arg1: index) {
   %alloc = memref.alloc() : memref<16x256xf32, 1>
   %rc = memref.reinterpret_cast %arg0 to
@@ -102,9 +102,9 @@ func.func @standalone_normal(%arg0: memref<*xf32>, %arg1: index) {
 // CHECK-LABEL: func.func @standalone_transposed_const_offset
 // Transposed layout with constant offset 256. Should produce offsets [c256, 0].
 // CHECK: air.dma_memcpy_nd
-// CHECK-SAME: %arg0[%c256, %c0]
-// CHECK-SAME: [%c64, %c16]
-// CHECK-SAME: [%c1, %c504]
+// CHECK-SAME: %arg0[256, 0]
+// CHECK-SAME: [64, 16]
+// CHECK-SAME: [1, 504]
 func.func @standalone_transposed_const_offset(%arg0: memref<*xf32>) {
   %alloc = memref.alloc() : memref<64x16xf32, 1>
   %rc = memref.reinterpret_cast %arg0 to

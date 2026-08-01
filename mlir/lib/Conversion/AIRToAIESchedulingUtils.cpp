@@ -196,8 +196,8 @@ bool air::areIdenticalVectors(std::vector<unsigned> &a,
   return a == b;
 }
 
-int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
-                         SmallVector<Value> memcpy_strides) {
+int64_t air::get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
+                         ArrayRef<OpFoldResult> memcpy_strides) {
   if (memcpy_offsets.empty())
     return 0;
 
@@ -231,17 +231,17 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
                                        air::ChannelInterface chanB) {
     if (chanA.getMemref() != chanB.getMemref())
       return false;
-    if (chanA.getOffsets().size() != chanB.getOffsets().size() ||
-        chanA.getSizes().size() != chanB.getSizes().size() ||
-        chanA.getStrides().size() != chanB.getStrides().size())
+    auto offsetsA = chanA.getMixedOffsets(), offsetsB = chanB.getMixedOffsets();
+    auto sizesA = chanA.getMixedSizes(), sizesB = chanB.getMixedSizes();
+    auto stridesA = chanA.getMixedStrides(), stridesB = chanB.getMixedStrides();
+    if (offsetsA.size() != offsetsB.size() || sizesA.size() != sizesB.size() ||
+        stridesA.size() != stridesB.size())
       return false;
-    auto zipped_operands = llvm::zip_equal(
-        llvm::concat<Value>(chanA.getOffsets(), chanA.getSizes(),
-                            chanA.getStrides()),
-        llvm::concat<Value>(chanB.getOffsets(), chanB.getSizes(),
-                            chanB.getStrides()));
-    bool wrapsAndStridesAllEquivalent =
-        llvm::all_of(zipped_operands, [](std::tuple<Value, Value> pair) {
+    auto zipped_operands =
+        llvm::zip_equal(llvm::concat<OpFoldResult>(offsetsA, sizesA, stridesA),
+                        llvm::concat<OpFoldResult>(offsetsB, sizesB, stridesB));
+    bool wrapsAndStridesAllEquivalent = llvm::all_of(
+        zipped_operands, [](std::tuple<OpFoldResult, OpFoldResult> pair) {
           return isEqualConstantIntOrValue(std::get<0>(pair),
                                            std::get<1>(pair));
         });
@@ -270,16 +270,18 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
       return false;
 
     // Sizes and strides must match (ignoring offsets which vary per buffer)
-    if (chanA.getSizes().size() != chanB.getSizes().size() ||
-        chanA.getStrides().size() != chanB.getStrides().size())
+    auto sizesA = chanA.getMixedSizes(), sizesB = chanB.getMixedSizes();
+    auto stridesA = chanA.getMixedStrides(), stridesB = chanB.getMixedStrides();
+    if (sizesA.size() != sizesB.size() || stridesA.size() != stridesB.size())
       return false;
 
-    auto zipped = llvm::zip_equal(
-        llvm::concat<Value>(chanA.getSizes(), chanA.getStrides()),
-        llvm::concat<Value>(chanB.getSizes(), chanB.getStrides()));
-    return llvm::all_of(zipped, [](std::tuple<Value, Value> pair) {
-      return isEqualConstantIntOrValue(std::get<0>(pair), std::get<1>(pair));
-    });
+    auto zipped = llvm::zip_equal(llvm::concat<OpFoldResult>(sizesA, stridesA),
+                                  llvm::concat<OpFoldResult>(sizesB, stridesB));
+    return llvm::all_of(zipped,
+                        [](std::tuple<OpFoldResult, OpFoldResult> pair) {
+                          return isEqualConstantIntOrValue(std::get<0>(pair),
+                                                           std::get<1>(pair));
+                        });
   };
 
   auto dmasMappedToEquivalentBDs = [](air::DmaMemcpyNdOp dmaA,
@@ -449,8 +451,9 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
 }
 
 std::vector<AIE::BDDimLayoutAttr>
-air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
-                        SmallVector<Value> memcpy_strides, MLIRContext *ctx) {
+air::getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,
+                        ArrayRef<OpFoldResult> memcpy_strides,
+                        MLIRContext *ctx) {
   if (memcpy_sizes.empty() || memcpy_strides.empty())
     return std::vector<AIE::BDDimLayoutAttr>();
   std::vector<AIE::BDDimLayoutAttr> output;

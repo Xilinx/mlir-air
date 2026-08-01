@@ -1662,9 +1662,9 @@ struct ParallelToHerdPass
         return;
       // L2-side dma data access pattern needs to be the default. Otherwise,
       // NYI.
-      if (SrcIsL1 && (!op.getDstOffsets().empty()))
+      if (SrcIsL1 && (!op.getMixedDstOffsets().empty()))
         return;
-      if ((!SrcIsL1) && (!op.getSrcOffsets().empty()))
+      if ((!SrcIsL1) && (!op.getMixedSrcOffsets().empty()))
         return;
       // Check if the memcpy op has at least two parent scf.parallel loops.
       int parentParOpCount = 0;
