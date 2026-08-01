@@ -22,4 +22,4 @@ constexpr int Q4NX_COL_BLOCK_SIZE = 256;
 constexpr int Q4NX_GROUP_SIZE = 32;
 #endif
 
-#endif // __QWEN3_4B_H__
+#endif // __QWEN3_8B_H__

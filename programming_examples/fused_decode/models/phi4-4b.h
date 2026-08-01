@@ -21,4 +21,4 @@ constexpr int Q4NX_COL_BLOCK_SIZE = 256;
 constexpr int Q4NX_GROUP_SIZE = 32;
 #endif
 
-#endif // __LLAMA3_2_3B_H__
+#endif // __PHI4_4B_H__

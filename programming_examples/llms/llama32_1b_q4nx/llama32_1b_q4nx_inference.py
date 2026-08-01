@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.13
+#!/usr/bin/env python3
 """llama32_1b_q4nx full inference — the reference-faithful two-path generation.
 
 Reproduces the reference's Llama-3.2-1B architecture: a batched-parallel prefill (M=P GEMM,
@@ -19,8 +19,8 @@ resident contexts — faithful to the reference's separate prefill/decode xclbin
 
 Run:
   source /tmp/q4nx_env.sh
-  python3.13 llama32_1b_q4nx_inference.py                 # Paris gate (default prompt)
-  python3.13 llama32_1b_q4nx_inference.py --n-tokens 9 --prompt "The capital of France is"
+  python3 llama32_1b_q4nx_inference.py                 # Paris gate (default prompt)
+  python3 llama32_1b_q4nx_inference.py --n-tokens 9 --prompt "The capital of France is"
 Env: PARIS_WEIGHTS (the reference Q4NX weights), PARIS_GOLDEN (HF embed/lm_head/final-norm/rope),
      PARIS_REQUANT_CACHE (decode q4k-cascade weights .npz).
 """

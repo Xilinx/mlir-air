@@ -12,7 +12,7 @@
 # with per-layer resident BOs (weights written once).
 #
 # Gate: first prompt token argmax 12366 (" Paris") for "The capital of France is".
-# Warm TTFT @ L=2048 ~= 0.93 s (Q4NX_TEMPORAL_FA_SKIP=1, Q4NX_BENCH_L=2048).
+# Warm TTFT @ L=2048 ~= 0.93 s (TEMPORAL_CAUSAL_SKIP=1, Q4NX_BENCH_L=2048).
 #
 # Registry GEMM shapes exist only at M=2048, so the whole prefill runs at
 # seq_len=2048 (pad the prompt, read the last real token's row for the logit).

@@ -29,6 +29,7 @@ def pack_q4k_block(q, scale, mn):
     """
     assert q.shape == (ROW_BLOCK, COL_BLOCK)
     assert scale.shape == (ROW_BLOCK, N_GROUPS)
+    assert mn.shape == (ROW_BLOCK, N_GROUPS)
     buf = bytearray(ROW_BLOCK * COL_BLOCK // 2 + 4 * N_GROUPS * ROW_BLOCK)
     # scales[group][row], mins[group][row] as bf16
     sc = np.zeros((N_GROUPS, ROW_BLOCK), dtype=bfloat16)

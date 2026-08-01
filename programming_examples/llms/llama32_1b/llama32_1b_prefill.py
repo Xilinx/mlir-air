@@ -147,6 +147,11 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     # Small contexts (seq_len < 512) can't use herd_m=8 (64*8=512 > seq_len), so
     # pick the largest herd_m in {8,4,2,1} that divides. seq_len>=512 -> 8 (default,
     # unchanged behavior).
+    if seq_len % 64 != 0:
+        raise ValueError(
+            f"seq_len={seq_len} must be a multiple of 64 for the fused-cast GEMM "
+            f"(tile_m<=64); got remainder {seq_len % 64}"
+        )
     gemm_herd_m = next(h for h in (8, 4, 2, 1) if seq_len % (64 * h) == 0)
 
     # 1. RMSNorm + QKV GEMMs + RoPE Q+K: one ELF (registry-driven per-GEMM method).
