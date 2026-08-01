@@ -2308,8 +2308,8 @@ static void extractStridesFromOp(OpType op, OpBuilder &builder,
 
 // Check if the access pattern represents the default (contiguous, row-major)
 // data access pattern.
-static bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
-                                       SmallVector<Value> memcpy_strides) {
+static bool isDefaultDataAccessPattern(ArrayRef<OpFoldResult> memcpy_sizes,
+                                       ArrayRef<OpFoldResult> memcpy_strides) {
   if (memcpy_sizes.size() != memcpy_strides.size())
     return false;
   // If the sizes and strides were already accessing the memref in default
@@ -2341,7 +2341,7 @@ static bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
 // Check if the volume of sizes equals the volume of the memref.
 // Return true if equal, and return false if any size value is not constant,
 // or memref shape isn't static.
-static bool isVolumeEqualToMemrefVolume(SmallVector<Value> memcpy_sizes,
+static bool isVolumeEqualToMemrefVolume(ArrayRef<OpFoldResult> memcpy_sizes,
                                         BaseMemRefType memref) {
   // Return false if memref doesn't have static shape
   if (!memref.hasStaticShape())
@@ -2373,8 +2373,9 @@ static LogicalResult canonicalizeEmptyLists(SmallVector<Value> &offsets,
   // data access pattern. If so, clear all lists to their canonical empty form.
   if (offsets.empty() && sizes.empty() && strides.empty())
     return failure();
-  if (isDefaultDataAccessPattern(sizes, strides) &&
-      isVolumeEqualToMemrefVolume(sizes, memref)) {
+  if (isDefaultDataAccessPattern(getAsOpFoldResult(sizes),
+                                 getAsOpFoldResult(strides)) &&
+      isVolumeEqualToMemrefVolume(getAsOpFoldResult(sizes), memref)) {
     offsets.clear();
     sizes.clear();
     strides.clear();
@@ -2561,6 +2562,59 @@ static void combineSubviewOffsetsInPlace(mlir::PatternRewriter &rewriter,
                              strides, /*applyStrideWhenFoldingOffsets*/ true);
 }
 
+// Collect the chain of memref ops that produce `memref`, outermost first.
+// Returns an empty vector if `memref` is not produced by a composable chain.
+// Shared by ComposeMemrefOp and by the cheap pre-check the canonicalization
+// patterns run before materializing any index Values.
+static std::vector<Operation *> getComposableMemrefChain(Value memref) {
+  std::vector<Operation *> memrefOpVec;
+  Operation *defop = memref.getDefiningOp();
+  bool exit = false;
+  while (defop && !exit) {
+    if (auto transposeOp = dyn_cast_if_present<memref::TransposeOp>(defop)) {
+      memrefOpVec.push_back(defop);
+      defop = transposeOp.getIn().getDefiningOp();
+    } else if (auto castOp = dyn_cast_if_present<memref::CastOp>(defop)) {
+      memrefOpVec.push_back(defop);
+      defop = castOp.getSource().getDefiningOp();
+    } else if (auto viewLikeOp =
+                   dyn_cast_if_present<ViewLikeOpInterface>(defop)) {
+      memrefOpVec.push_back(defop);
+      defop = viewLikeOp.getViewSource().getDefiningOp();
+    } else
+      exit = true;
+  }
+  // Built with push_back, so reverse to get outermost-first order.
+  std::reverse(memrefOpVec.begin(), memrefOpVec.end());
+  return memrefOpVec;
+}
+
+// Cheap check for whether the Compose/canonicalize-empty-lists rewrite below
+// would change anything, evaluated on the mixed lists.
+//
+// This must be run *before* materializing the access pattern into index
+// Values. getValueOrCreateConstantIndexOp inserts an arith.constant for every
+// statically-known entry, so materializing first and only then discovering
+// there is nothing to do leaves dead constants behind on every attempt. The
+// greedy rewrite driver then sees the IR change on each sweep and never
+// reaches a fixpoint -- an outright hang, not just wasted work.
+static bool memcpyAccessPatternNeedsRewrite(Value memref,
+                                            ArrayRef<OpFoldResult> offsets,
+                                            ArrayRef<OpFoldResult> sizes,
+                                            ArrayRef<OpFoldResult> strides) {
+  // Mirrors ComposeMemrefOp's early exits.
+  if (!getComposableMemrefChain(memref).empty())
+    return true;
+  // Mirrors canonicalizeEmptyLists.
+  if (offsets.empty() && sizes.empty() && strides.empty())
+    return false;
+  auto memrefTy = llvm::dyn_cast_if_present<BaseMemRefType>(memref.getType());
+  if (!memrefTy)
+    return false;
+  return isDefaultDataAccessPattern(sizes, strides) &&
+         isVolumeEqualToMemrefVolume(sizes, memrefTy);
+}
+
 static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
                                      Value &input_memref,
                                      SmallVector<Value> &offsets,
@@ -2579,27 +2633,9 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
 
   // Get a chain of memref ops that produce the memref consumed by the memcpy
   // op.
-  std::vector<Operation *> memrefOpVec;
-  bool exit = false;
-  while (defop && !exit) {
-    if (auto transposeOp = dyn_cast_if_present<memref::TransposeOp>(defop)) {
-      memrefOpVec.push_back(defop);
-      defop = transposeOp.getIn().getDefiningOp();
-    } else if (auto castOp = dyn_cast_if_present<memref::CastOp>(defop)) {
-      memrefOpVec.push_back(defop);
-      defop = castOp.getSource().getDefiningOp();
-    } else if (auto viewLikeOp =
-                   dyn_cast_if_present<ViewLikeOpInterface>(defop)) {
-      memrefOpVec.push_back(defop);
-      defop = viewLikeOp.getViewSource().getDefiningOp();
-    } else
-      exit = true;
-  }
+  std::vector<Operation *> memrefOpVec = getComposableMemrefChain(memref);
   if (memrefOpVec.empty())
     return failure();
-
-  // Revert the vector of memref ops, as it was built with push_back.
-  std::reverse(memrefOpVec.begin(), memrefOpVec.end());
 
   // Init. source memref and offsets at the front of the vector of memref ops.
   auto constZero =
@@ -2761,6 +2797,11 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(air::DmaMemcpyNdOp op,
   if (!memref)
     return failure();
   Value input_memref = memref;
+  // Bail out before materializing anything if there is nothing to rewrite.
+  if (!memcpyAccessPatternNeedsRewrite(memref, op.getMixedSrcOffsets(),
+                                       op.getMixedSrcSizes(),
+                                       op.getMixedSrcStrides()))
+    return failure();
   // ComposeMemrefOp works on index Values; materialize the static entries and
   // fold them back into the static arrays when rebuilding the op below.
   auto loc = op.getLoc();
@@ -2797,6 +2838,11 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
   if (!memref)
     return failure();
   Value input_memref = memref;
+  // Bail out before materializing anything if there is nothing to rewrite.
+  if (!memcpyAccessPatternNeedsRewrite(memref, op.getMixedDstOffsets(),
+                                       op.getMixedDstSizes(),
+                                       op.getMixedDstStrides()))
+    return failure();
   auto loc = op.getLoc();
   SmallVector<Value> offsets =
       getValueOrCreateConstantIndexOp(rewriter, loc, op.getMixedDstOffsets());
@@ -3419,6 +3465,17 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
 
   // Init. memref type and offsets from memref's defining op's input type
   Value input_memref = memref;
+  // Bail out before materializing anything if there is nothing to rewrite.
+  // When padding is present the empty-list canonicalization below is skipped,
+  // so only a composable memref chain can make this pattern apply.
+  bool hasPadding =
+      op->template getAttrOfType<DenseI32ArrayAttr>("pad_before") ||
+      op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
+  if (hasPadding ? getComposableMemrefChain(memref).empty()
+                 : !memcpyAccessPatternNeedsRewrite(
+                       memref, op.getMixedOffsets(), op.getMixedSizes(),
+                       op.getMixedStrides()))
+    return failure();
   // ComposeMemrefOp works on index Values; materialize the static entries and
   // fold them back into the static arrays when rebuilding the op below.
   auto loc = op.getLoc();
