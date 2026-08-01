@@ -27,6 +27,7 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -458,11 +459,85 @@ bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
       }
     }
   }
-  if (writerCores.empty())
-    return false;
-  for (int64_t r : readerCores)
-    if (!writerCores.contains(r))
-      return true;
+
+  // Opaque external calls (an external kernel with no visible
+  // MemoryEffectOpInterface) hide their buffer read/write behind the call
+  // boundary, so the effect-based scan above cannot see them. Classify the
+  // buffer operand of such a call by the same convention the lock allocator
+  // uses -- the LAST memref operand is written (producer), an earlier memref
+  // operand is read (consumer) -- into SEPARATE producer/consumer core sets.
+  // Only consider iv-GUARDED calls, i.e. reachable on a strict, non-empty
+  // subset of the cores (a genuine role split where a producer core runs one
+  // kernel under one tile-id guard and a consumer runs another under a
+  // different guard). A call reachable on EVERY core is replication, not
+  // communication (each PE independently touches its own operand copy). These
+  // sets are kept separate from the visible reader/writer sets on purpose: they
+  // only ADD the ability to detect a cross-core hand-off hidden behind a kernel
+  // call, and never alter the visible-access decision, so a buffer with no
+  // opaque call keeps its exact prior sharing behavior.
+  llvm::SmallSet<int64_t, 8> opaqueProducerCores, opaqueConsumerCores;
+  {
+    llvm::SmallDenseSet<Operation *> opaqueCalls;
+    for (Value alias : aliases)
+      for (Operation *user : alias.getUsers())
+        // `user` is a user of `alias`, so the buffer is already one of its
+        // operands; no need to re-scan. The set dedups calls seen via aliases.
+        if (isa<mlir::CallOpInterface>(user) &&
+            !isa<mlir::MemoryEffectOpInterface>(user))
+          opaqueCalls.insert(user);
+    for (Operation *call : opaqueCalls) {
+      // The buffer is a producer of this call iff it is the last memref
+      // operand.
+      int lastMemrefIdx = -1;
+      for (int i = (int)call->getNumOperands() - 1; i >= 0; --i)
+        if (isa<MemRefType>(call->getOperand(i).getType())) {
+          lastMemrefIdx = i;
+          break;
+        }
+      bool bufferIsProducer = lastMemrefIdx >= 0 &&
+                              aliases.contains(call->getOperand(lastMemrefIdx));
+      llvm::SmallSet<int64_t, 8> callCores;
+      for (int64_t lin = 0; lin < numCores; ++lin) {
+        int64_t rem = lin;
+        llvm::DenseMap<Value, int64_t> ivVals;
+        for (size_t d = 0; d < sizes.size(); ++d) {
+          ivVals[ids[d]] = rem % sizes[d];
+          rem /= sizes[d];
+        }
+        if (reachableUnderIvs(call, body, ivVals))
+          callCores.insert(lin);
+      }
+      if (callCores.empty() || (int64_t)callCores.size() >= numCores)
+        continue; // ubiquitous (replication) or dead -- not communication.
+      for (int64_t lin : callCores)
+        (bufferIsProducer ? opaqueProducerCores : opaqueConsumerCores)
+            .insert(lin);
+    }
+  }
+
+  // Visible producer/consumer decision (unchanged): a write must exist, and
+  // some reader core consumes a write that lands on a different core.
+  if (!writerCores.empty())
+    for (int64_t r : readerCores)
+      if (!writerCores.contains(r))
+        return true;
+
+  // Opaque hand-off (purely additive): an iv-guarded producer core that writes
+  // the buffer through an external kernel, whose result is consumed on a
+  // DIFFERENT core -- either an opaque consumer, or a visible/channel reader.
+  // This is the external-kernel producer/consumer split the effect scan misses
+  // (e.g. a lead core assembles a packet with one kernel while a partner core
+  // writes its row with another, and the lead streams the whole buffer out via
+  // a channel put). Requires an opaque producer, so buffers touched only by
+  // visible ops / channels are decided entirely by the check above.
+  for (int64_t p : opaqueProducerCores) {
+    for (int64_t c : opaqueConsumerCores)
+      if (c != p)
+        return true;
+    for (int64_t c : readerCores)
+      if (c != p)
+        return true;
+  }
   return false;
 }
 
