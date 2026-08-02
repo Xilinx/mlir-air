@@ -96,25 +96,22 @@ every ELF, xclbin, and instruction stream from source (see `.gitignore`).
 
 ## Data
 
-**Prefill (default): one HuggingFace download.** The prefill weights come from the
-self-contained `model.q4nx` bundle on the Hub:
+**One weight source — one HuggingFace download.** Both prefill and decode come from
+the single `model.q4nx` bundle on the Hub:
 
 - `MODEL` / `Q4NX_MODEL` — the Q4NX model source (default
-  `FastFlowLM/Llama-3.2-1B-NPU2`). The prefill downloads `model.q4nx` (a safetensors
-  file: per-layer Q4NX projections + bf16 norms/embed + Q4NX lm_head) via
-  `huggingface_hub` and dequantizes it on load. May also be a local dir/file. This
-  is all the prefill (`make run` / `verify` / `profile`) needs.
+  `FastFlowLM/Llama-3.2-1B-NPU2`). `model.q4nx` is a safetensors file with per-layer
+  Q4NX projections + bf16 norms/embed + a (tied) lm_head. The **prefill** downloads
+  and dequantizes it directly. The **decode/chatbot** derives its q4k-cascade requant
+  cache + embed/norm golden from the *same* bundle on first use (one-time pack,
+  cached under `~/.cache/q4nx/`). May also be a local dir/file.
 
-**Decode / chatbot (legacy external weights).** The fused-decode chatbot still reads
-a pre-built requant cache + golden bundle out of band (a `model.q4nx`-sourced decode
-path is a follow-up):
+`tie_word_embeddings=true`, so the LM head is the full-precision `embed_tokens` (the
+bundle's separate Q4NX lm_head is ignored).
 
-- `PARIS_GOLDEN` — golden bundle `weights/{embed_tokens,final_norm,lm_head}.f32.bin`
-  (default `/tmp/paris_golden`). Generate once: `python3 gen_paris_golden.py`.
-- `PARIS_REQUANT_CACHE` — decode q4k-cascade weights `.npz` (default
-  `/tmp/paris_native_w.npz`).
-- `PARIS_WEIGHTS` — legacy per-layer Q4NX dumps `L{k}_proj_w.bin` (only used as a
-  prefill fallback when `model.q4nx` is unavailable).
+Optional overrides (skip the derivation if you pre-supply them): `PARIS_REQUANT_CACHE`
+(decode q4k-cascade `.npz`), `PARIS_GOLDEN` (embed/final_norm f32 dir), `PARIS_WEIGHTS`
+(legacy per-layer `L{k}_proj_w.bin` dumps; prefill fallback only).
 
 ## Build
 

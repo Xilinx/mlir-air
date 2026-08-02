@@ -321,12 +321,12 @@ class Q4nxModel:
         )
 
     def embed_norm_lmhead(self):
-        """(embed_tokens [VOCAB,D], final_norm [D], lm_head [VOCAB,D]) float32."""
+        """(embed_tokens [VOCAB,D], final_norm [D], lm_head [VOCAB,D]) float32.
+
+        Llama-3.2-1B ties the LM head to the embedding (config
+        tie_word_embeddings=true), so the LM head IS the full-precision embed
+        matrix. The bundle also carries a separate Q4NX-quantized lm_head tensor;
+        the tied fp embed is used instead (lossless, matches HF)."""
         embed = self.bf16("model.embed_tokens.weight")
         norm = self.bf16("model.norm.weight")
-        lm = (
-            self.dequant("lm_head.weight")
-            if self._hdr["lm_head.weight"]["dtype"] == "Q4NX"
-            else self.bf16("lm_head.weight")
-        )
-        return embed, norm, lm
+        return embed, norm, embed

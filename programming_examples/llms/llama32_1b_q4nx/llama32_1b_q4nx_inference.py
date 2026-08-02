@@ -17,12 +17,15 @@ Prefill and decode use the NPU sequentially (prefill runs in a worker subprocess
 releases the device before decode sets up) to avoid AIE column contention between the two
 resident contexts — faithful to the reference's separate prefill/decode xclbins.
 
+Single weight source: the model.q4nx bundle (Q4NX_MODEL, default
+FastFlowLM/Llama-3.2-1B-NPU2). The prefill loads it directly; the decode's
+q4k-cascade requant cache + embed/norm golden are derived from the same bundle on
+first use (cached under ~/.cache/q4nx). PARIS_REQUANT_CACHE / PARIS_GOLDEN /
+PARIS_WEIGHTS may override those if pre-supplied.
+
 Run:
-  source /tmp/q4nx_env.sh
   python3 llama32_1b_q4nx_inference.py                 # Paris gate (default prompt)
   python3 llama32_1b_q4nx_inference.py --n-tokens 9 --prompt "The capital of France is"
-Env: PARIS_WEIGHTS (the reference Q4NX weights), PARIS_GOLDEN (HF embed/lm_head/final-norm/rope),
-     PARIS_REQUANT_CACHE (decode q4k-cascade weights .npz).
 """
 
 import os
@@ -74,9 +77,54 @@ def _llama3_rope(
 
 
 def _set_data_env():
+    # Legacy prefill fallback only; the prefill defaults to Q4NX_MODEL/model.q4nx.
     os.environ.setdefault("PARIS_WEIGHTS", os.path.expanduser("~/q4nx_data/weights"))
-    os.environ.setdefault("PARIS_GOLDEN", "/tmp/paris_golden")
-    os.environ.setdefault("PARIS_REQUANT_CACHE", "/tmp/paris_native_w.npz")
+
+
+_Q4NX_CACHE = os.path.expanduser("~/.cache/q4nx")
+
+
+def _ensure_paris_golden():
+    """Return a golden dir with embed_tokens/final_norm f32. Honors PARIS_GOLDEN if
+    it already has them; otherwise generates them from the single model.q4nx source
+    (embed/norm bf16 -> f32; lm_head is tied to embed)."""
+    import numpy as np
+
+    gd = os.environ.get("PARIS_GOLDEN")
+    if gd and os.path.exists(os.path.join(gd, "weights", "embed_tokens.f32.bin")):
+        return gd
+    from llama32_1b_q4nx_prefill import MODEL_DEFAULT
+    from llama32_1b_q4nx_weights import Q4nxModel
+
+    out = os.path.join(_Q4NX_CACHE, "golden")
+    os.makedirs(os.path.join(out, "weights"), exist_ok=True)
+    if not os.path.exists(os.path.join(out, "weights", "embed_tokens.f32.bin")):
+        qm = Q4nxModel(os.environ.get("Q4NX_MODEL", MODEL_DEFAULT))
+        embed = qm.bf16("model.embed_tokens.weight").astype(np.float32)
+        embed.tofile(os.path.join(out, "weights", "embed_tokens.f32.bin"))
+        qm.bf16("model.norm.weight").astype(np.float32).tofile(
+            os.path.join(out, "weights", "final_norm.f32.bin")
+        )
+    os.environ["PARIS_GOLDEN"] = out
+    return out
+
+
+def _ensure_requant_cache(fd):
+    """Return the decode q4k-cascade cache path. Honors PARIS_REQUANT_CACHE if it
+    exists; otherwise builds it from the single model.q4nx source (one-time ~pack)."""
+    rc = os.environ.get("PARIS_REQUANT_CACHE")
+    if rc and os.path.exists(rc):
+        return rc
+    from llama32_1b_q4nx_prefill import MODEL_DEFAULT
+    import q4nx_requant
+
+    rc = rc or os.path.join(_Q4NX_CACHE, "requant.npz")
+    if not os.path.exists(rc):
+        q4nx_requant.build_requant_cache(
+            os.environ.get("Q4NX_MODEL", MODEL_DEFAULT), fd, rc
+        )
+    os.environ["PARIS_REQUANT_CACHE"] = rc
+    return rc
 
 
 # ------------------------------------------------------------------ prefill worker
@@ -145,7 +193,9 @@ class FusedDecoder:
 
     def __init__(self, max_L=None):
         _set_data_env()
-        HF = os.environ["PARIS_GOLDEN"]
+        HF = (
+            _ensure_paris_golden()
+        )  # embed/norm from model.q4nx (single source) if not provided
         import importlib.util
         import numpy as np
         from ml_dtypes import bfloat16
@@ -173,7 +223,7 @@ class FusedDecoder:
             VOCAB_CHUNK_I2="14",
             LM_HEAD="0",
             NLAYERS="1",
-            DECODE_GOLDEN=os.environ["PARIS_WEIGHTS"],
+            DECODE_GOLDEN=os.environ.get("PARIS_WEIGHTS", ""),
             DECODE_GOLDEN_L=str(self.ATTN_MAXL),
         )
         spec = importlib.util.spec_from_file_location(
@@ -181,6 +231,9 @@ class FusedDecoder:
         )
         fd = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fd)
+        _ensure_requant_cache(
+            fd
+        )  # build decode weights from model.q4nx if not provided
         self.UNI_LM = fd.UNI_LM
         self.K = fd.K
         RMS_LAYER = fd.RMS_LAYER
