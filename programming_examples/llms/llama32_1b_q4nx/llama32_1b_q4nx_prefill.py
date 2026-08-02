@@ -56,6 +56,10 @@ from llama32_1b_q4nx_weights import (  # noqa: E402
     INTER,
 )
 
+# Default weight source: the self-contained model.q4nx bundle on the Hub. May be
+# overridden with --model / Q4NX_MODEL (an HF repo id, or a local dir/file).
+MODEL_DEFAULT = os.environ.get("Q4NX_MODEL", "FastFlowLM/Llama-3.2-1B-NPU2")
+# Legacy local-dump fallback (used only when model.q4nx is unavailable).
 GD = os.environ.get("PARIS_WEIGHTS", os.path.expanduser("~/q4nx_data/weights"))
 HF = os.environ.get("PARIS_GOLDEN", "/tmp/paris_golden")
 
@@ -140,12 +144,41 @@ class LlamaQ4nxPrefill:
         return r
 
     # ---- causal_lm interface ----
-    def load_weights(self, gd=None, hf=None, device_dequant=False):
-        """Load Q4NX weights + golden embed/lm_head/final-norm.
-        device_dequant=True: dequant Q4NX -> bf16 ON-DEVICE (dequant_q4nx.py) then
-        host-transpose to [K,N] (the AIR fused-cast GEMM wants [K,N]; on-device
-        transpose-DMA does not lower). False (default): host dequant, cached to .wcache.
+    def load_weights(self, model=None, gd=None, hf=None, device_dequant=False):
+        """Load Q4NX transformer weights + embed/lm_head/final-norm.
+
+        Preferred source (default): the self-contained `model.q4nx` safetensors
+        bundle (HF repo FastFlowLM/Llama-3.2-1B-NPU2, or a local dir/file) — it
+        carries the per-layer Q4NX projections + bf16 norms + bf16 embed + Q4NX
+        lm_head, so nothing else is needed. Legacy fallback: per-layer local dumps
+        (PARIS_WEIGHTS L{k}_proj_w.bin) + a golden bundle (PARIS_GOLDEN f32).
+
+        device_dequant=True forces the legacy path with on-device Q4NX->bf16
+        dequant (dequant_q4nx.py). False (default): host dequant.
         """
+        model = model or os.environ.get("Q4NX_MODEL", MODEL_DEFAULT)
+        qm = None
+        if not device_dequant:
+            try:
+                from llama32_1b_q4nx_weights import Q4nxModel
+
+                qm = Q4nxModel(model)
+            except Exception as e:  # noqa: BLE001
+                print(
+                    f"[q4nx_prefill] model.q4nx unavailable ({e}); "
+                    f"falling back to local PARIS_WEIGHTS dumps",
+                    flush=True,
+                )
+        if qm is not None:
+            print(
+                f"[q4nx_prefill] loading weights from model.q4nx ({model})", flush=True
+            )
+            self._w = [qm.layer_weights(k) for k in range(self.n_layers)]
+            self._rms = [qm.layer_rms(k) for k in range(self.n_layers)]
+            self._embed, self._final_norm, self._lm_head = qm.embed_norm_lmhead()
+            self._build_fused_weights_and_preload()
+            return
+        # ---- legacy per-layer local-dump path ----
         gd = gd or GD
         hf = hf or HF
         self._w, self._rms = [], []
@@ -358,6 +391,12 @@ def _main():
         default=int(os.environ.get("Q4NX_BENCH_L", "0")),
         help="warm TTFT benchmark at this context length",
     )
+    ap.add_argument(
+        "--model",
+        default=MODEL_DEFAULT,
+        help="weight source: HF repo id (model.q4nx) or a local dir/file "
+        f"(default: {MODEL_DEFAULT})",
+    )
     args = ap.parse_args()
 
     print(
@@ -376,7 +415,7 @@ def _main():
         f"[q4nx_prefill] loading Q4NX weights (device_dequant={args.device_dequant})...",
         flush=True,
     )
-    model.load_weights(device_dequant=args.device_dequant)
+    model.load_weights(model=args.model, device_dequant=args.device_dequant)
     print(f"[q4nx_prefill] prefill prompt N={len(PROMPT)} ...", flush=True)
     logits = model.prefill(PROMPT)
     top = int(np.asarray(logits).argmax())
@@ -414,10 +453,17 @@ def _main():
         wall = time.time() - t0
         npu = model._dev_t
         print(
-            f"\n[bench] L={args.bench_l}: WALL={wall*1000:.0f}ms ({args.bench_l/wall:.0f} tok/s)  |  "
-            f"NPU-dispatch={npu*1000:.0f}ms ({args.bench_l/npu:.0f} tok/s)  |  host={(wall-npu)*1000:.0f}ms",
+            f"\n[bench] L={args.bench_l}: WALL={wall*1000:.0f}ms {args.bench_l/wall:.0f} tok/s prefill  |  "
+            f"NPU-dispatch={npu*1000:.0f}ms {args.bench_l/npu:.0f} tok/s  |  host={(wall-npu)*1000:.0f}ms",
             flush=True,
         )
+        # Machine-readable perf line for bench/extract_perf.py (TTFT = prefill wall;
+        # decode tok/s is reported separately by the chatbot/inference path).
+        print(
+            f"[q4nx_prefill] Inference: prompt_len={args.bench_l}, n_tokens=0",
+            flush=True,
+        )
+        print(f"Time to first token (TTFT): {wall:.3f}s", flush=True)
         print(
             "[bench] per-op NPU: "
             + "  ".join(

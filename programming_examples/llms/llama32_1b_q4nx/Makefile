@@ -28,9 +28,16 @@ endif
 # Configurable parameters
 CTX           ?= 2048
 DEVICE_DEQUANT ?= 0
+# Weight source: HF repo id (model.q4nx bundle) or a local dir/file. Default is the
+# self-contained model.q4nx on the Hub; the prefill downloads + dequantizes it.
+MODEL         ?= FastFlowLM/Llama-3.2-1B-NPU2
+export Q4NX_MODEL         := $(MODEL)
 export Q4NX_SEQ_LEN       := $(CTX)
 export Q4NX_DEVICE_DEQUANT := $(DEVICE_DEQUANT)
 export Q4NX_CACHE_DIR     := $(srcdir)/$(BUILD_DIR)/q4nx_kernel_cache_$(CTX)
+# Use the tuned temporal+causal-skip prefill FlashAttention (auto-falls back to
+# seqfirst when CTX % 512 != 0). This is the headline ~0.93s TTFT path.
+export TEMPORAL_CAUSAL_SKIP := 1
 
 DRIVER := $(srcdir)/llama32_1b_q4nx_prefill.py
 
