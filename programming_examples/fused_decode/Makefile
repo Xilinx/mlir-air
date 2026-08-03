@@ -32,7 +32,7 @@ PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
   -DNDEBUG -DMODEL_TYPE=LLAMA_3_2_1B -D__AIE_API_AIE_ADF_HPP__ \
   -I $(AIEOPT_DIR)/include -I $(srcdir)/kernels -I $(srcdir)/models \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
-DECODE_ENV     := UNIFIED=1 UNI_DEC=16 UNI_LM=9 VOCAB_CHUNK_I2=14 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=$(PARIS_WEIGHTS)
+DECODE_ENV     := UNI_DEC=16 UNI_LM=9 VOCAB_CHUNK_I2=14 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=$(PARIS_WEIGHTS)
 
 .PHONY: help compile-decode clean
 
@@ -77,10 +77,10 @@ compile-decode:
 	@# patch any context length in [1, 2048] into one template at runtime (recompile-free decode).
 	@# The block loop is always single-buffered (air.disable_ping_pong, unconditional in
 	@# fused_decode.py); without it the KV ring misaligns -> garbage continuation. Turbo for ~50 tok/s.
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=2048 DECODE_KV_SPLIT=1 DECODE_KV_REGION=1 DECODE_ATTN_LL=1 python3 $(DECODE_DRIVER) >/tmp/decode_L2048.log 2>&1; \
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=2048 python3 $(DECODE_DRIVER) >/tmp/decode_L2048.log 2>&1; \
 	  if [ -f decode.xclbin ]; then mv -f decode.xclbin decode_L2048.xclbin; mv -f decode.insts.bin decode_L2048.insts.bin; \
 	  else echo "decode_L2048 FAILED (see /tmp/decode_L2048.log)"; exit 1; fi
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=2047 DECODE_KV_SPLIT=1 DECODE_KV_REGION=1 DECODE_ATTN_LL=1 python3 $(DECODE_DRIVER) >/tmp/decode_L2047.log 2>&1; \
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=2047 python3 $(DECODE_DRIVER) >/tmp/decode_L2047.log 2>&1; \
 	  if [ -f decode.insts.bin ]; then mv -f decode.insts.bin decode_L2047.insts.bin; mv -f decode.xclbin decode_L2047.xclbin; \
 	  else echo "decode_L2047 FAILED (see /tmp/decode_L2047.log)"; exit 1; fi
 	@echo "Decode build complete: decode_L2048 + decode_L2047 templates."
