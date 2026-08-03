@@ -4,7 +4,7 @@
 # numpy, ml_dtypes, filelock, pyxrt, etc.). Install with:
 #     pip install -r requirements.txt
 
-# Download the model.q4nx weight bundle from the Hub (Q4NX_MODEL).
+# Download the model.q4nx weight bundle from the Hub (Q4NX_MODEL_SOURCE).
 huggingface_hub
 
 # Tokenizer for the interactive chatbot (make chat / ask / gen).

@@ -19,11 +19,11 @@ Prefill and decode use the NPU sequentially (prefill runs in a worker subprocess
 releases the device before decode sets up) to avoid AIE column contention between the two
 resident contexts — faithful to the reference's separate prefill/decode xclbins.
 
-Single weight source: the model.q4nx bundle (Q4NX_MODEL, default
+Single weight source: the model.q4nx bundle (Q4NX_MODEL_SOURCE, default
 FastFlowLM/Llama-3.2-1B-NPU2). The prefill loads it directly; the decode's
 q4k-cascade requant cache + embed/norm golden are derived from the same bundle on
-first use (cached under ~/.cache/q4nx). PARIS_REQUANT_CACHE / PARIS_GOLDEN /
-PARIS_WEIGHTS may override those if pre-supplied.
+first use (cached under ~/.cache/q4nx). Q4NX_DECODE_WEIGHTS_NPZ / Q4NX_GOLDEN_DIR
+may override those if pre-supplied.
 
 Run:
   python3 llama32_1b_q4nx_inference.py                 # Paris gate (default prompt)
@@ -40,7 +40,7 @@ _HERE = Path(__file__).resolve().parent
 _PE = _HERE.parent.parent  # programming_examples
 _DEC = _PE / "fused_decode"  # standalone fused superkernel decode example
 _TOKENIZER = os.environ.get(
-    "Q4NX_TOKENIZER", os.path.expanduser("~/q4nx_data/tokenizer/Llama-3.2-1B")
+    "Q4NX_TOKENIZER_DIR", os.path.expanduser("~/q4nx_data/tokenizer/Llama-3.2-1B")
 )
 PARIS_PROMPT = [128000, 791, 6864, 315, 9822, 374]  # BOS + "The capital of France is"
 
@@ -78,21 +78,16 @@ def _llama3_rope(
     return np.cos(emb).astype(np.float32), np.sin(emb).astype(np.float32)
 
 
-def _set_data_env():
-    # Legacy prefill fallback only; the prefill defaults to Q4NX_MODEL/model.q4nx.
-    os.environ.setdefault("PARIS_WEIGHTS", os.path.expanduser("~/q4nx_data/weights"))
-
-
 _Q4NX_CACHE = os.path.expanduser("~/.cache/q4nx")
 
 
 def _ensure_paris_golden():
-    """Return a golden dir with embed_tokens/final_norm f32. Honors PARIS_GOLDEN if
+    """Return a golden dir with embed_tokens/final_norm f32. Honors Q4NX_GOLDEN_DIR if
     it already has them; otherwise generates them from the single model.q4nx source
     (embed/norm bf16 -> f32; lm_head is tied to embed)."""
     import numpy as np
 
-    gd = os.environ.get("PARIS_GOLDEN")
+    gd = os.environ.get("Q4NX_GOLDEN_DIR")
     if gd and os.path.exists(os.path.join(gd, "weights", "embed_tokens.f32.bin")):
         return gd
     from llama32_1b_q4nx_prefill import MODEL_DEFAULT
@@ -101,20 +96,20 @@ def _ensure_paris_golden():
     out = os.path.join(_Q4NX_CACHE, "golden")
     os.makedirs(os.path.join(out, "weights"), exist_ok=True)
     if not os.path.exists(os.path.join(out, "weights", "embed_tokens.f32.bin")):
-        qm = Q4nxModel(os.environ.get("Q4NX_MODEL", MODEL_DEFAULT))
+        qm = Q4nxModel(os.environ.get("Q4NX_MODEL_SOURCE", MODEL_DEFAULT))
         embed = qm.bf16("model.embed_tokens.weight").astype(np.float32)
         embed.tofile(os.path.join(out, "weights", "embed_tokens.f32.bin"))
         qm.bf16("model.norm.weight").astype(np.float32).tofile(
             os.path.join(out, "weights", "final_norm.f32.bin")
         )
-    os.environ["PARIS_GOLDEN"] = out
+    os.environ["Q4NX_GOLDEN_DIR"] = out
     return out
 
 
 def _ensure_requant_cache(fd):
-    """Return the decode q4k-cascade cache path. Honors PARIS_REQUANT_CACHE if it
+    """Return the decode q4k-cascade cache path. Honors Q4NX_DECODE_WEIGHTS_NPZ if it
     exists; otherwise builds it from the single model.q4nx source (one-time ~pack)."""
-    rc = os.environ.get("PARIS_REQUANT_CACHE")
+    rc = os.environ.get("Q4NX_DECODE_WEIGHTS_NPZ")
     if rc and os.path.exists(rc):
         return rc
     from llama32_1b_q4nx_prefill import MODEL_DEFAULT
@@ -123,16 +118,15 @@ def _ensure_requant_cache(fd):
     rc = rc or os.path.join(_Q4NX_CACHE, "requant.npz")
     if not os.path.exists(rc):
         q4nx_requant.build_requant_cache(
-            os.environ.get("Q4NX_MODEL", MODEL_DEFAULT), fd, rc
+            os.environ.get("Q4NX_MODEL_SOURCE", MODEL_DEFAULT), fd, rc
         )
-    os.environ["PARIS_REQUANT_CACHE"] = rc
+    os.environ["Q4NX_DECODE_WEIGHTS_NPZ"] = rc
     return rc
 
 
 # ------------------------------------------------------------------ prefill worker
 def _prefill_worker(prompt, out_path, seq_len):
     """Runs in a subprocess: batched prefill -> per-layer roped-K/raw-V + first token."""
-    _set_data_env()
     sys.path.insert(0, str(_HERE))
     import numpy as np
     from llama32_1b_q4nx_prefill import LlamaQ4nxPrefill
@@ -194,7 +188,6 @@ class FusedDecoder:
     token's K/V in place."""
 
     def __init__(self, max_L=None):
-        _set_data_env()
         HF = (
             _ensure_paris_golden()
         )  # embed/norm from model.q4nx (single source) if not provided
@@ -224,7 +217,7 @@ class FusedDecoder:
             VOCAB_CHUNK_I2="14",
             LM_HEAD="0",
             NLAYERS="1",
-            DECODE_GOLDEN=os.environ.get("PARIS_WEIGHTS", ""),
+            DECODE_GOLDEN="1",  # boolean flag: enable post-attn-RMS decode path
             DECODE_GOLDEN_L=str(self.ATTN_MAXL),
         )
         spec = importlib.util.spec_from_file_location(
@@ -260,7 +253,7 @@ class FusedDecoder:
         )
 
         # decode weights (q4k-cascade) + rope (all positions) + host embed
-        _z = np.load(os.environ["PARIS_REQUANT_CACHE"])
+        _z = np.load(os.environ["Q4NX_DECODE_WEIGHTS_NPZ"])
         W = _z["W"].view(bfloat16)
         self.Wv16 = W.view(np.int16) if W.dtype != np.int16 else W
         RMS_in = list(_z["RMS_in"].view(bfloat16))
@@ -641,7 +634,6 @@ class Session:
     load happens once at startup, not on every turn."""
 
     def __init__(self, seq_len=2048):
-        _set_data_env()
         import numpy as np, time
 
         sys.path.insert(0, str(_HERE))

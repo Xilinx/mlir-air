@@ -50,8 +50,8 @@ xclbin, and instruction stream from source (see `.gitignore`).
 ## Build
 
 ```bash
-# Q4NX weights supply the GEMM shapes (see llama32_1b_q4nx README for the data).
-make compile-decode PARIS_WEIGHTS=/path/to/q4nx/weights
+# Weight-free build (weights are runtime BOs); reproduces both templates from source.
+make compile-decode
 ```
 
 Produces `decode_L2048.{xclbin,insts.bin}` + `decode_L2047.{xclbin,insts.bin}`.

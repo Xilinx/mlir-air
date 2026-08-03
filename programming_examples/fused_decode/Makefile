@@ -16,7 +16,6 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-PARIS_WEIGHTS  ?= $(HOME)/q4nx_data/weights
 DECODE_DRIVER  := $(srcdir)/fused_decode.py
 AIEOPT_DIR     := $(shell realpath $(dir $(shell which aie-opt))/..)
 
@@ -32,7 +31,9 @@ PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
   -DNDEBUG -DMODEL_TYPE=LLAMA_3_2_1B -D__AIE_API_AIE_ADF_HPP__ \
   -I $(AIEOPT_DIR)/include -I $(srcdir)/kernels -I $(srcdir)/models \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
-DECODE_ENV     := VOCAB_CHUNK_I2=14 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=$(PARIS_WEIGHTS)
+# DECODE_GOLDEN=1 enables the post-attention-RMS decode path (a boolean flag; no
+# weight files are read at build time -- the compile is weight-free).
+DECODE_ENV     := VOCAB_CHUNK_I2=14 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1
 
 .PHONY: help compile-decode clean
 
@@ -45,11 +46,11 @@ help:
 	@echo "  make clean            Remove kernels + templates"
 	@echo ""
 	@echo "Consumed by the llama32_1b_q4nx LLM e2e (make chat / make gen there)."
-	@echo "Needs PARIS_WEIGHTS (Q4NX weights) for the GEMM shapes and a pre-change"
-	@echo "llvm-link (< LLVM 23) on PATH -- see README.md Reproducibility."
+	@echo "Weight-free build; needs a pre-change llvm-link (< LLVM 23) on PATH"
+	@echo "-- see README.md Reproducibility."
 
 ## Build the fused decode: Peano kernels + two templates (decode_L2048 + decode_L2047
-## slope ref). ~15 min. Needs PARIS_WEIGHTS for the GEMM shapes.
+## slope ref). ~15 min. Weight-free (runtime BOs), like the prefill compile.
 ##
 ## REPRODUCIBILITY (toolchain): the inline-attn merge path shells out to an EXTERNAL
 ## `llvm-link` (resolved from PATH). It MUST be a pre-lifetime-change LLVM (e.g. the system

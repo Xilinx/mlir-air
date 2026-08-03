@@ -17,9 +17,8 @@
 # Registry GEMM shapes exist only at M=2048, so the whole prefill runs at
 # seq_len=2048 (pad the prompt, read the last real token's row for the logit).
 #
-# Data (env-overridable):
-#   PARIS_WEIGHTS : per-layer Q4NX weights L{k}_proj_w.bin / L{k}_rms_w.bin
-#   PARIS_GOLDEN  : golden embed_tokens/final_norm/lm_head.f32.bin
+# Weight source (env-overridable):
+#   Q4NX_MODEL_SOURCE : the model.q4nx bundle -- HF repo id or a local dir/file.
 import argparse
 import os
 import sys
@@ -39,11 +38,9 @@ for _p in (_PROG, _LLMS, _LLAMA1B, str(_HERE)):
 from shared.infra.cache import KernelCache  # noqa: E402
 
 # Q4NX unpack/dequant + model dims + numerics.
-import llama32_1b_q4nx_weights as gr  # noqa: E402
 from llama32_1b_q4nx_weights import (  # noqa: E402
     dequant,
     _bf,
-    load_layer_weights_cached,
     D,
     DK,
     DV,
@@ -53,11 +50,8 @@ from llama32_1b_q4nx_weights import (  # noqa: E402
 )
 
 # Default weight source: the self-contained model.q4nx bundle on the Hub. May be
-# overridden with --model / Q4NX_MODEL (an HF repo id, or a local dir/file).
-MODEL_DEFAULT = os.environ.get("Q4NX_MODEL", "FastFlowLM/Llama-3.2-1B-NPU2")
-# Legacy local-dump fallback (used only when model.q4nx is unavailable).
-GD = os.environ.get("PARIS_WEIGHTS", os.path.expanduser("~/q4nx_data/weights"))
-HF = os.environ.get("PARIS_GOLDEN", "/tmp/paris_golden")
+# overridden with --model / Q4NX_MODEL_SOURCE (an HF repo id, or a local dir/file).
+MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Llama-3.2-1B-NPU2")
 
 VOCAB = 128256
 PROMPT = [128000, 791, 6864, 315, 9822, 374]  # "The capital of France is"
@@ -140,54 +134,19 @@ class LlamaQ4nxPrefill:
         return r
 
     # ---- causal_lm interface ----
-    def load_weights(self, model=None, gd=None, hf=None):
-        """Load Q4NX transformer weights + embed/lm_head/final-norm.
+    def load_weights(self, model=None):
+        """Load Q4NX transformer weights + embed/lm_head/final-norm from the
+        self-contained `model.q4nx` bundle (HF repo `Q4NX_MODEL_SOURCE`, or a
+        local dir/file): per-layer Q4NX projections + bf16 norms + bf16 embed +
+        (tied) Q4NX lm_head, dequant Q4NX->bf16 on the host at load."""
+        model = model or os.environ.get("Q4NX_MODEL_SOURCE", MODEL_DEFAULT)
+        from llama32_1b_q4nx_weights import Q4nxModel
 
-        Preferred source (default): the self-contained `model.q4nx` safetensors
-        bundle (HF repo FastFlowLM/Llama-3.2-1B-NPU2, or a local dir/file) — it
-        carries the per-layer Q4NX projections + bf16 norms + bf16 embed + Q4NX
-        lm_head, so nothing else is needed. Legacy fallback: per-layer local dumps
-        (PARIS_WEIGHTS L{k}_proj_w.bin) + a golden bundle (PARIS_GOLDEN f32).
-        Both dequant Q4NX->bf16 on the host at load.
-        """
-        model = model or os.environ.get("Q4NX_MODEL", MODEL_DEFAULT)
-        qm = None
-        try:
-            from llama32_1b_q4nx_weights import Q4nxModel
-
-            qm = Q4nxModel(model)
-        except Exception as e:  # noqa: BLE001
-            print(
-                f"[q4nx_prefill] model.q4nx unavailable ({e}); "
-                f"falling back to local PARIS_WEIGHTS dumps",
-                flush=True,
-            )
-        if qm is not None:
-            print(
-                f"[q4nx_prefill] loading weights from model.q4nx ({model})", flush=True
-            )
-            self._w = [qm.layer_weights(k) for k in range(self.n_layers)]
-            self._rms = [qm.layer_rms(k) for k in range(self.n_layers)]
-            self._embed, self._final_norm, self._lm_head = qm.embed_norm_lmhead()
-            self._build_fused_weights_and_preload()
-            return
-        # ---- legacy per-layer local-dump path (host dequant) ----
-        gd = gd or GD
-        hf = hf or HF
-        self._w, self._rms = [], []
-        for k in range(self.n_layers):
-            self._w.append(
-                load_layer_weights_cached(gd, k, self.wcache_dir)
-            )  # cached host dequant [K,N]
-            rms = gr.load_bf16(f"{gd}/L{k}_rms_w.bin")
-            self._rms.append((rms[0:D], rms[D : 2 * D]))
-        self._embed = np.memmap(
-            f"{hf}/weights/embed_tokens.f32.bin", np.float32, "r"
-        ).reshape(VOCAB, D)
-        self._final_norm = np.fromfile(f"{hf}/weights/final_norm.f32.bin", np.float32)
-        self._lm_head = np.memmap(
-            f"{hf}/weights/lm_head.f32.bin", np.float32, "r"
-        ).reshape(VOCAB, D)
+        qm = Q4nxModel(model)
+        print(f"[q4nx_prefill] loading weights from model.q4nx ({model})", flush=True)
+        self._w = [qm.layer_weights(k) for k in range(self.n_layers)]
+        self._rms = [qm.layer_rms(k) for k in range(self.n_layers)]
+        self._embed, self._final_norm, self._lm_head = qm.embed_norm_lmhead()
         self._build_fused_weights_and_preload()
 
     def _build_fused_weights_and_preload(self):

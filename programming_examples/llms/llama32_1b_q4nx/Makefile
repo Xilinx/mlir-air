@@ -13,7 +13,7 @@
 #
 # Unlike the HF-reference examples, this one gates on the greedy first token
 # (" Paris", 12366), not `make verify` vs HF bf16. All weights come from the single
-# model.q4nx bundle on the Hub (MODEL/Q4NX_MODEL, default FastFlowLM/Llama-3.2-1B-NPU2);
+# model.q4nx bundle on the Hub (MODEL_SOURCE/Q4NX_MODEL_SOURCE, default FastFlowLM/Llama-3.2-1B-NPU2);
 # see README.md.
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
@@ -28,8 +28,8 @@ endif
 CTX           ?= 2048
 # Weight source: HF repo id (model.q4nx bundle) or a local dir/file. Default is the
 # self-contained model.q4nx on the Hub; the prefill downloads + dequantizes it.
-MODEL         ?= FastFlowLM/Llama-3.2-1B-NPU2
-export Q4NX_MODEL         := $(MODEL)
+MODEL_SOURCE  ?= FastFlowLM/Llama-3.2-1B-NPU2
+export Q4NX_MODEL_SOURCE  := $(MODEL_SOURCE)
 export Q4NX_SEQ_LEN       := $(CTX)
 export Q4NX_CACHE_DIR     := $(srcdir)/$(BUILD_DIR)/q4nx_kernel_cache_$(CTX)
 # Use the tuned temporal+causal-skip prefill FlashAttention (auto-falls back to
@@ -44,7 +44,6 @@ DRIVER := $(srcdir)/llama32_1b_q4nx_prefill.py
 # loads its templates + decode_insts_gen at run time.
 INFER          := $(srcdir)/llama32_1b_q4nx_inference.py
 FUSED_DECODE   := $(srcdir)/../../fused_decode
-PARIS_WEIGHTS  ?= $(HOME)/q4nx_data/weights
 
 .PHONY: help compile run verify profile clean compile-decode chat ask gen
 
@@ -64,13 +63,13 @@ help:
 	@echo "  make chat             Interactive multi-turn chatbot (streams tokens)"
 	@echo "  make ask PROMPT=...   Single Q&A turn"
 	@echo "  make gen              Full prefill+decode Paris gate -> *** PARIS ***"
-	@echo "  (needs PARIS_REQUANT_CACHE ~28min once + PARIS_GOLDEN; see README.md Build)"
+	@echo "  (needs Q4NX_DECODE_WEIGHTS_NPZ ~28min once + Q4NX_GOLDEN_DIR; see README.md Build)"
 	@echo ""
 	@echo "Options (override with make VAR=value):"
 	@echo "  CTX=2048              Prefill context length: 256 | 512 | 1024 | 2048"
 	@echo ""
-	@echo "Data (external; see README.md):"
-	@echo "  PARIS_WEIGHTS, PARIS_GOLDEN env vars point at the Q4NX weights + HF golden."
+	@echo "Data (external overrides; see README.md):"
+	@echo "  Q4NX_GOLDEN_DIR / Q4NX_DECODE_WEIGHTS_NPZ pre-supply the derived decode caches."
 	@echo ""
 	@echo "Examples:"
 	@echo "  make run CTX=1024"
@@ -100,10 +99,10 @@ profile:
 
 ## Build the fused decode (delegates to the standalone programming_examples/fused_decode
 ## example): the Peano kernels + two templates (decode_L2048 + decode_L2047). ~15 min.
-## Needs PARIS_WEIGHTS for the GEMM shapes and a pre-change llvm-link (see that example's
-## README Reproducibility). The chatbot driver loads its templates at run time.
+## Weight-free build; needs a pre-change llvm-link (see that example's README
+## Reproducibility). The chatbot driver loads its templates at run time.
 compile-decode:
-	$(MAKE) -C $(FUSED_DECODE) compile-decode PARIS_WEIGHTS=$(PARIS_WEIGHTS)
+	$(MAKE) -C $(FUSED_DECODE) compile-decode
 
 ## Interactive multi-turn chatbot (streams the reply token-by-token; /clear resets, /exit quits).
 chat:

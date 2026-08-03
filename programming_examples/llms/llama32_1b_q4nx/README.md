@@ -53,7 +53,7 @@ every context length.
    `source utils/env_setup.sh ...`.
 2. **Extra Python packages**: `pip install -r requirements.txt`.
 3. **HF tokenizer** for Llama-3.2-1B (chat template + detokenize). Point
-   `Q4NX_TOKENIZER` at any local Llama-3.2-1B tokenizer directory (default
+   `Q4NX_TOKENIZER_DIR` at any local Llama-3.2-1B tokenizer directory (default
    `~/q4nx_data/tokenizer/Llama-3.2-1B`).
 
 ## Reproducibility (decode toolchain)
@@ -81,7 +81,7 @@ every ELF, xclbin, and instruction stream from source (see `.gitignore`).
 **One weight source — one HuggingFace download.** Both prefill and decode come from
 the single `model.q4nx` bundle on the Hub:
 
-- `MODEL` / `Q4NX_MODEL` — the Q4NX model source (default
+- `MODEL_SOURCE` / `Q4NX_MODEL_SOURCE` — the Q4NX model source (default
   `FastFlowLM/Llama-3.2-1B-NPU2`). `model.q4nx` is a safetensors file with per-layer
   Q4NX projections + bf16 norms/embed + a (tied) lm_head. The **prefill** downloads
   and dequantizes it directly. The **decode/chatbot** derives its q4k-cascade requant
@@ -91,9 +91,8 @@ the single `model.q4nx` bundle on the Hub:
 `tie_word_embeddings=true`, so the LM head is the full-precision `embed_tokens` (the
 bundle's separate Q4NX lm_head is ignored).
 
-Optional overrides (skip the derivation if you pre-supply them): `PARIS_REQUANT_CACHE`
-(decode q4k-cascade `.npz`), `PARIS_GOLDEN` (embed/final_norm f32 dir), `PARIS_WEIGHTS`
-(legacy per-layer `L{k}_proj_w.bin` dumps; prefill fallback only).
+Optional overrides (skip the derivation if you pre-supply them): `Q4NX_DECODE_WEIGHTS_NPZ`
+(decode q4k-cascade `.npz`) and `Q4NX_GOLDEN_DIR` (embed/final_norm f32 dir).
 
 ## Quick Start
 
@@ -102,8 +101,7 @@ Optional overrides (skip the derivation if you pre-supply them): `PARIS_REQUANT_
 make compile CTX=2048
 
 # Build 2 — Decode kernels + two templates (decode_L2048 + decode_L2047 slope ref).
-#   ~15 min; needs PARIS_WEIGHTS for the GEMM shapes and a pre-change llvm-link
-#   (see Reproducibility).
+#   ~15 min; weight-free build, but needs a pre-change llvm-link (see Reproducibility).
 make compile-decode
 
 # Interactive multi-turn chatbot (streams tokens)
