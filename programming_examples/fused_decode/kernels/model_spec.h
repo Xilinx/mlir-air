@@ -56,7 +56,6 @@ constexpr int Q_HEADS_PADDED_PER_CU =
 constexpr int VOCAB_SIZE_PADDED =
     (VOCAB_SIZE + MODEL_DIM - 1) / MODEL_DIM * MODEL_DIM;
 
-#ifndef Q4_0
 ///@brief Q4K block
 ///@param scales: scales and mins, bf16
 ///@param mins: scales and mins, bf16
@@ -68,19 +67,5 @@ typedef struct {
             Q4NX_GROUP_SIZE]; // scales and mins, quantized with 6 bits
   uint4 qs[Q4NX_ROW_BLOCK_SIZE * Q4NX_COL_BLOCK_SIZE]; // 4--bit quants
 } q4k_block_t;
-#else
-
-///@brief Q4K block
-///@param scales: scales and mins, bf16
-///@param mins: scales and mins, bf16
-///@param qs: 4--bit quants
-typedef struct {
-  bf16 scales[Q4NX_ROW_BLOCK_SIZE * Q4NX_COL_BLOCK_SIZE /
-              Q4NX_GROUP_SIZE]; // scales and mins, quantized with 6 bits
-  bf16 mins[Q4NX_ROW_BLOCK_SIZE * Q4NX_COL_BLOCK_SIZE /
-            Q4NX_GROUP_SIZE]; // scales and mins, quantized with 6 bits
-  int4 qs[Q4NX_ROW_BLOCK_SIZE * Q4NX_COL_BLOCK_SIZE]; // 4--bit quants
-} q4k_block_t;
-#endif
 
 #endif
