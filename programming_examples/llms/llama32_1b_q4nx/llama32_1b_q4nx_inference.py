@@ -218,10 +218,9 @@ class FusedDecoder:
         # match the xclbin the DecodeInstsGen base was compiled at. The decode is always
         # REGION-MAJOR (the reference quadrants K03|K47|V03|V47 + fire-and-free readback, ~50 tok/s @2K);
         # seed_kv lays the seeded prefill K/V out region-major to match the decode module.
+        # UNI_DEC/UNI_LM are fixed constants in fused_decode.py (Llama-3.2-1B: 16/9).
         os.environ.update(
             UNIFIED="1",
-            UNI_DEC="16",
-            UNI_LM="9",
             VOCAB_CHUNK_I2="14",
             LM_HEAD="0",
             NLAYERS="1",

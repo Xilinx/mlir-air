@@ -376,8 +376,8 @@ LM_HEAD = int(_os.environ.get("LM_HEAD", "0"))
 # index_switch selecting decode vs vocab host feeds. Concatenated args for the
 # first folding test (separate ELF args come after folding is proven).
 UNIFIED = 1  # fixed config: single-launch unified decode + lm_head
-UNI_DEC = int(_os.environ.get("UNI_DEC", "2"))
-UNI_LM = int(_os.environ.get("UNI_LM", "1"))
+UNI_DEC = 16  # fixed for Llama-3.2-1B: decode waves in the unified sequence
+UNI_LM = 9  # fixed for Llama-3.2-1B: lm-head waves in the unified sequence
 UNI_WAVES = UNI_DEC + UNI_LM
 # Wave-range override (keeps ABI/CDO fixed at UNI_DEC/UNI_LM; only restricts which
 # waves the fused launch loop drives). Used to split the fused sequence into a
