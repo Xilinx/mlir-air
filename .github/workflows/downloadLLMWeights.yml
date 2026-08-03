@@ -109,8 +109,9 @@ jobs:
           import random, sys, time, traceback
           from huggingface_hub import snapshot_download
 
-          # Weight/config/tokenizer files only.
-          ALLOW = ["*.safetensors", "*.json", "*.txt", "*.model", "*.tiktoken"]
+          # Weight/config/tokenizer files only. (*.q4nx = the FastFlowLM Q4NX
+          # bundle used by llama32_1b_q4nx.)
+          ALLOW = ["*.safetensors", "*.json", "*.txt", "*.model", "*.tiktoken", "*.q4nx"]
           # Skip files transformers/our loader never use but that otherwise make
           # snapshot_download report the snapshot "incomplete" if they fail to
           # fetch on the flaky link: the Llama `original/` dir (sentencepiece +
