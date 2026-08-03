@@ -48,14 +48,14 @@ every context length.
 | `llama32_1b_q4nx_weights.py` | Q4NX unpack / dequant / dims; per-layer weight loaders (host dequant cache) |
 | `llama32_1b_q4nx_prefill.py` | `LlamaQ4nxPrefill` — batched prefill; per-layer KV `kv_view()` handoff; Paris gate |
 | `llama32_1b_q4nx_inference.py` | Orchestrator: `Session`, `FusedDecoder`, `Sampler`, chat template, EOS, streaming, `--interactive` REPL |
-| `proj_qmm_pack.py` | numpy Q4NX block packer + dequant reference |
 
 The decode path (fused superkernel, host instruction patcher, decode kernels) lives in
 the standalone [`fused_decode`](../../fused_decode) example, which this e2e references.
 
 Cross-directory imports (matching `llama32_1b_int4`): the shared `llms/` infra
 (kernel cache, GEMM/stitcher builders, `lm_head_gemv_multi`), the sibling `llama32_1b`
-prefill driver, and the `fused_decode` example (decode templates + `decode_insts_gen`).
+prefill driver, and the `fused_decode` example (decode templates + `decode_insts_gen` +
+the `proj_qmm_pack` Q4NX block packer / dequant reference).
 
 ## Performance (NPU2, AMD Strix, 16 layers, warm)
 

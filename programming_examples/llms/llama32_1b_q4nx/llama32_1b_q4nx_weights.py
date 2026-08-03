@@ -15,9 +15,18 @@
 #                    | down(2048x8192) ], each Q4NX-reordered (pairs of row-
 #                    blocks interleaved column-by-column).
 #   rms_w  = [ input_layernorm(2048) | post_attention_layernorm(2048) | 0-pad ]
+import sys
+from pathlib import Path
+
 import numpy as np
 from ml_dtypes import bfloat16
-from proj_qmm_pack import (
+
+# The Q4NX block packer/dequant reference lives in the standalone fused_decode
+# example (this dir already depends on it for the decode path).
+_FUSED_DECODE = str(Path(__file__).resolve().parents[2] / "fused_decode")
+if _FUSED_DECODE not in sys.path:
+    sys.path.insert(0, _FUSED_DECODE)
+from proj_qmm_pack import (  # noqa: E402
     ROW_BLOCK,
     COL_BLOCK,
     GROUP,
