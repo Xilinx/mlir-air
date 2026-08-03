@@ -39,7 +39,6 @@ from shared.infra.cache import KernelCache  # noqa: E402
 
 # Q4NX unpack/dequant + model dims + numerics.
 from llama32_1b_q4nx_weights import (  # noqa: E402
-    dequant,
     _bf,
     D,
     DK,

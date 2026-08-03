@@ -143,7 +143,6 @@ from proj_qmm_pack import (
     GROUP,  # 32
     BLOCK_BF16,  # 2560 (one packed q4k block)
     pack_q4k_cascade,
-    ref_gemv_matrix,
 )
 
 # ============================ faithful config ===============================

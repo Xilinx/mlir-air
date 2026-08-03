@@ -57,46 +57,6 @@ def pack_q4k_block(q, scale, mn):
     return arr
 
 
-def dequant_block(q, scale, mn):
-    """w[r,c] = q[r,c]*scale[r,c//32] + mn[r,c//32]  (kernel convention)."""
-    w = np.zeros((ROW_BLOCK, COL_BLOCK), dtype=np.float32)
-    for r in range(ROW_BLOCK):
-        for c in range(COL_BLOCK):
-            g = c // GROUP
-            w[r, c] = float(q[r, c]) * float(scale[r, g]) + float(mn[r, g])
-    return w
-
-
-def ref_gemv_block(q, scale, mn, x):
-    """y[r] = sum_c (q*scale+min)[r,c] * x[c], bf16-rounded inputs."""
-    w = dequant_block(q, scale, mn)
-    xf = x.astype(np.float32)
-    return (w @ xf).astype(np.float32)
-
-
-def pack_q4k_matrix(q, scale, mn):
-    """Pack an [M, K] q4 weight matrix into (M/32) x (K/256) q4k blocks,
-    concatenated in (row-block i, col-block j) order. Returns int16 [n_blocks*2560].
-    q: uint8 [M, K]; scale/mn: float [M, K/32].
-    """
-    M, K = q.shape
-    assert M % ROW_BLOCK == 0 and K % COL_BLOCK == 0
-    nbi, nbj = M // ROW_BLOCK, K // COL_BLOCK
-    blocks = []
-    for i in range(nbi):
-        for j in range(nbj):
-            rs, cs = i * ROW_BLOCK, j * COL_BLOCK
-            gs = j * (COL_BLOCK // GROUP)
-            blocks.append(
-                pack_q4k_block(
-                    q[rs : rs + ROW_BLOCK, cs : cs + COL_BLOCK],
-                    scale[rs : rs + ROW_BLOCK, gs : gs + N_GROUPS],
-                    mn[rs : rs + ROW_BLOCK, gs : gs + N_GROUPS],
-                )
-            )
-    return np.concatenate(blocks)
-
-
 def pack_q4k_cascade(q, scale, mn, NCX, NCY, core_major=False, iter_major=False):
     """Pack an [M, K] q4 weight matrix in the memtile-cascade STREAM order
     [cx][i][j][cy], where each element is one 32x256 q4k block (BLOCK_BF16).
@@ -150,19 +110,3 @@ def pack_q4k_cascade(q, scale, mn, NCX, NCY, core_major=False, iter_major=False)
                         )
                     )
     return np.concatenate(blocks)
-
-
-def dequant_matrix(q, scale, mn):
-    """w[r,c] = q[r,c]*scale[r,c//32] + mn[r,c//32] for full [M,K]."""
-    M, K = q.shape
-    w = np.zeros((M, K), dtype=np.float32)
-    for r in range(M):
-        for c in range(K):
-            g = c // GROUP
-            w[r, c] = float(q[r, c]) * float(scale[r, g]) + float(mn[r, g])
-    return w
-
-
-def ref_gemv_matrix(q, scale, mn, x):
-    """y[r] = sum_c (q*scale+min)[r,c] * x[c] for full [M,K] @ [K]."""
-    return (dequant_matrix(q, scale, mn) @ x.astype(np.float32)).astype(np.float32)
