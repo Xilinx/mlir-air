@@ -50,7 +50,6 @@ every context length.
 | `llama32_1b_q4nx_inference.py` | Orchestrator: `Session`, `FusedDecoder`, `Sampler`, chat template, EOS, streaming, `--interactive` REPL |
 | `proj_qmm_pack.py` | numpy Q4NX block packer + dequant reference |
 | `dequant_q4nx.{cc,py}` | optional on-device Q4NX uint4→bf16 dequant kernel + builder |
-| `gen_paris_golden.py` | one-time generator for the HF golden bundle (embed / final_norm / lm_head) |
 
 The decode path (fused superkernel, host instruction patcher, decode kernels) lives in
 the standalone [`fused_decode`](../../fused_decode) example, which this e2e references.

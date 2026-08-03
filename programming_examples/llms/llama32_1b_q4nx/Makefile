@@ -12,10 +12,9 @@
 #   ctx 256 -> 243 ms | 512 -> 305 ms | 1024 -> 560 ms | 2048 -> ~933 ms
 #
 # Unlike the HF-reference examples, this one gates on the greedy first token
-# (" Paris", 12366), not `make verify` vs HF bf16. It needs external weight data
-# (see README.md):
-#   PARIS_WEIGHTS : per-layer Q4NX bins  (L{k}_proj_w.bin / L{k}_rms_w.bin)
-#   PARIS_GOLDEN  : golden embed/final_norm/lm_head (gen_paris_golden.py)
+# (" Paris", 12366), not `make verify` vs HF bf16. All weights come from the single
+# model.q4nx bundle on the Hub (MODEL/Q4NX_MODEL, default FastFlowLM/Llama-3.2-1B-NPU2);
+# see README.md.
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
