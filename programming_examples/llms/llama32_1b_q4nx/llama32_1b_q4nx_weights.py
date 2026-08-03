@@ -165,33 +165,6 @@ def load_layer_weights_cached(gd, k, cache_dir):
     return out
 
 
-def load_layer_q4nx_raw(gd, k):
-    """Raw Q4NX (q,sc,mn) per projection for layer k, from L{k}_proj_w.bin."""
-    W = np.fromfile(f"{gd}/L{k}_proj_w.bin", dtype=bfloat16).view(np.int16)
-    s = 0
-    out = {}
-
-    def take(name, M_, K_):
-        nonlocal s
-        q, sc, mn, s = unpack_tensor(W, s, M_, K_)
-        out[name] = (q, sc, mn)
-
-    take("q", DQ, D)
-    take("k", DK, D)
-    take("v", DV, D)
-    take("o", DQ, D)
-    up, gate = [], []
-    for _ in range(INTER // 512):
-        q, sc, mn, s = unpack_tensor(W, s, 512, D)
-        up.append((q, sc, mn))
-        q, sc, mn, s = unpack_tensor(W, s, 512, D)
-        gate.append((q, sc, mn))
-    cat = lambda P: tuple(np.concatenate([p[i] for p in P], 0) for i in range(3))
-    out["up"], out["gate"] = cat(up), cat(gate)
-    take("down", D, INTER)
-    return out
-
-
 # ---------------------------------------------------------------------------
 # model.q4nx loader (HF-hosted, self-contained)
 #

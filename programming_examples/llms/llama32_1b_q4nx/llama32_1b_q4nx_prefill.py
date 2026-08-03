@@ -3,8 +3,8 @@
 #
 # Llama-3.2-1B Q4NX prefill in mlir-air.
 #
-# Runs the prefill MECHANISM on the AMD NPU2: Q4NX weights, dequant Q4NX->bf16
-# (host at load, or ON-DEVICE via dequant_q4nx), then op-by-op bf16 GEMM /
+# Runs the prefill MECHANISM on the AMD NPU2: Q4NX weights, host dequant
+# Q4NX->bf16 at load, then op-by-op bf16 GEMM /
 # RMSNorm / RoPE / SwiGLU / causal-GQA-flash-attention all ON THE NPU with
 # RESIDENT weight BOs, and the final LM head as an on-device GEMV. The whole
 # transformer block runs through the two llama32_1b multi-launch stitchers
@@ -41,19 +41,15 @@ from shared.infra.cache import KernelCache  # noqa: E402
 # Q4NX unpack/dequant + model dims + numerics.
 import llama32_1b_q4nx_weights as gr  # noqa: E402
 from llama32_1b_q4nx_weights import (  # noqa: E402
-    unpack_tensor,
     dequant,
     _bf,
     load_layer_weights_cached,
-    load_layer_q4nx_raw,
     D,
-    DQ,
     DK,
     DV,
     DH,
     N_Q_HEADS,
     N_KV_HEADS,
-    INTER,
 )
 
 # Default weight source: the self-contained model.q4nx bundle on the Hub. May be
@@ -144,7 +140,7 @@ class LlamaQ4nxPrefill:
         return r
 
     # ---- causal_lm interface ----
-    def load_weights(self, model=None, gd=None, hf=None, device_dequant=False):
+    def load_weights(self, model=None, gd=None, hf=None):
         """Load Q4NX transformer weights + embed/lm_head/final-norm.
 
         Preferred source (default): the self-contained `model.q4nx` safetensors
@@ -152,23 +148,20 @@ class LlamaQ4nxPrefill:
         carries the per-layer Q4NX projections + bf16 norms + bf16 embed + Q4NX
         lm_head, so nothing else is needed. Legacy fallback: per-layer local dumps
         (PARIS_WEIGHTS L{k}_proj_w.bin) + a golden bundle (PARIS_GOLDEN f32).
-
-        device_dequant=True forces the legacy path with on-device Q4NX->bf16
-        dequant (dequant_q4nx.py). False (default): host dequant.
+        Both dequant Q4NX->bf16 on the host at load.
         """
         model = model or os.environ.get("Q4NX_MODEL", MODEL_DEFAULT)
         qm = None
-        if not device_dequant:
-            try:
-                from llama32_1b_q4nx_weights import Q4nxModel
+        try:
+            from llama32_1b_q4nx_weights import Q4nxModel
 
-                qm = Q4nxModel(model)
-            except Exception as e:  # noqa: BLE001
-                print(
-                    f"[q4nx_prefill] model.q4nx unavailable ({e}); "
-                    f"falling back to local PARIS_WEIGHTS dumps",
-                    flush=True,
-                )
+            qm = Q4nxModel(model)
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"[q4nx_prefill] model.q4nx unavailable ({e}); "
+                f"falling back to local PARIS_WEIGHTS dumps",
+                flush=True,
+            )
         if qm is not None:
             print(
                 f"[q4nx_prefill] loading weights from model.q4nx ({model})", flush=True
@@ -178,53 +171,16 @@ class LlamaQ4nxPrefill:
             self._embed, self._final_norm, self._lm_head = qm.embed_norm_lmhead()
             self._build_fused_weights_and_preload()
             return
-        # ---- legacy per-layer local-dump path ----
+        # ---- legacy per-layer local-dump path (host dequant) ----
         gd = gd or GD
         hf = hf or HF
         self._w, self._rms = [], []
-        deq = None
-        if device_dequant:
-            from dequant_q4nx import DequantEngine, pack_weight
-
-            print(
-                "[q4nx_prefill] building on-device Q4NX dequant engines...", flush=True
-            )
-            deq = {
-                "qo": DequantEngine(DQ, D),
-                "kv": DequantEngine(DK, D),
-                "gu": DequantEngine(INTER, D),
-                "down": DequantEngine(D, INTER),
-            }
-            eng = {
-                "q": "qo",
-                "k": "kv",
-                "v": "kv",
-                "o": "qo",
-                "up": "gu",
-                "gate": "gu",
-                "down": "down",
-            }
         for k in range(self.n_layers):
-            if device_dequant:
-                raw = load_layer_q4nx_raw(gd, k)
-                wl = {}
-                for name, (q, sc, mn) in raw.items():
-                    dqbf = deq[eng[name]].run(
-                        pack_weight(q, sc, mn)
-                    )  # [N_out,K] on device
-                    wl[name] = np.ascontiguousarray(
-                        dqbf.T, bfloat16
-                    )  # [K,N] GEMM input-B
-                self._w.append(wl)
-            else:
-                self._w.append(
-                    load_layer_weights_cached(gd, k, self.wcache_dir)
-                )  # cached host dequant [K,N]
+            self._w.append(
+                load_layer_weights_cached(gd, k, self.wcache_dir)
+            )  # cached host dequant [K,N]
             rms = gr.load_bf16(f"{gd}/L{k}_rms_w.bin")
             self._rms.append((rms[0:D], rms[D : 2 * D]))
-        if deq:
-            for e in deq.values():
-                e.close()
         self._embed = np.memmap(
             f"{hf}/weights/embed_tokens.f32.bin", np.float32, "r"
         ).reshape(VOCAB, D)
@@ -380,12 +336,6 @@ def _main():
     )
     ap.add_argument("--cache-dir", default=os.environ.get("Q4NX_CACHE_DIR") or None)
     ap.add_argument(
-        "--device-dequant",
-        action="store_true",
-        default=os.environ.get("Q4NX_DEVICE_DEQUANT", "0") == "1",
-        help="dequant Q4NX->bf16 on-device (default: host dequant)",
-    )
-    ap.add_argument(
         "--bench-l",
         type=int,
         default=int(os.environ.get("Q4NX_BENCH_L", "0")),
@@ -411,11 +361,8 @@ def _main():
     if args.compile_only:
         print("Compilation passed.", flush=True)
         return 0
-    print(
-        f"[q4nx_prefill] loading Q4NX weights (device_dequant={args.device_dequant})...",
-        flush=True,
-    )
-    model.load_weights(model=args.model, device_dequant=args.device_dequant)
+    print("[q4nx_prefill] loading Q4NX weights (host dequant)...", flush=True)
+    model.load_weights(model=args.model)
     print(f"[q4nx_prefill] prefill prompt N={len(PROMPT)} ...", flush=True)
     logits = model.prefill(PROMPT)
     top = int(np.asarray(logits).argmax())

@@ -26,13 +26,11 @@ endif
 
 # Configurable parameters
 CTX           ?= 2048
-DEVICE_DEQUANT ?= 0
 # Weight source: HF repo id (model.q4nx bundle) or a local dir/file. Default is the
 # self-contained model.q4nx on the Hub; the prefill downloads + dequantizes it.
 MODEL         ?= FastFlowLM/Llama-3.2-1B-NPU2
 export Q4NX_MODEL         := $(MODEL)
 export Q4NX_SEQ_LEN       := $(CTX)
-export Q4NX_DEVICE_DEQUANT := $(DEVICE_DEQUANT)
 export Q4NX_CACHE_DIR     := $(srcdir)/$(BUILD_DIR)/q4nx_kernel_cache_$(CTX)
 # Use the tuned temporal+causal-skip prefill FlashAttention (auto-falls back to
 # seqfirst when CTX % 512 != 0). This is the headline ~0.93s TTFT path.
@@ -70,7 +68,6 @@ help:
 	@echo ""
 	@echo "Options (override with make VAR=value):"
 	@echo "  CTX=2048              Prefill context length: 256 | 512 | 1024 | 2048"
-	@echo "  DEVICE_DEQUANT=1      Dequant Q4NX->bf16 ON-DEVICE (default 0 = host dequant)"
 	@echo ""
 	@echo "Data (external; see README.md):"
 	@echo "  PARIS_WEIGHTS, PARIS_GOLDEN env vars point at the Q4NX weights + HF golden."
@@ -78,7 +75,6 @@ help:
 	@echo "Examples:"
 	@echo "  make run CTX=1024"
 	@echo "  make profile CTX=2048"
-	@echo "  make run DEVICE_DEQUANT=1"
 
 ## Build/cache the 4 prefill ELFs (rms_gemms_rope + flash_attn + o_ffn + lm_head_gemv).
 ## No weight data or NPU dispatch required.
