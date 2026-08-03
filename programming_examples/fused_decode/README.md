@@ -68,6 +68,7 @@ make gen         # prefill+decode Paris gate -> *** PARIS ***
 
 Per-kernel `-O` is load-bearing (encoded in the Makefile): `proj_qmm` / `rms_residual` /
 `glu` / `rope` at `-O2`; `attn_qk` / `attn_kv` at `-O1` (a `-O2` do-while deadlock; and
-`rope` at `-O1` miscompiles). `DECODE_BLOCK_SINGLEBUF=1` is required for correctness
-(keeps the rolled 128-block KV ring aligned). Enable turbo for ~50 tok/s:
+`rope` at `-O1` miscompiles). The rolled 128-block decode loop is always single-buffered
+(`air.disable_ping_pong`, unconditional in `fused_decode.py`) to keep the KV ring aligned.
+Enable turbo for ~50 tok/s:
 `xrt-smi configure -d <BDF> --pmode turbo`.

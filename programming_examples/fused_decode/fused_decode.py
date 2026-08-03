@@ -235,16 +235,10 @@ def _set_attn_link(op, base):
 
 
 # The attention block loop is a compile-time ATTN_ROUNDS (=ceil(ATTN_MAXL/16)) loop; the kernel
-# masks/skips blocks beyond the runtime RTP-L so one ATTN_MAXL build serves every L.
-# DECODE_BLOCK_SINGLEBUF=1: single-buffer the attention block loop (air.disable_ping_pong) even in
-# the compile-time-ATTN_ROUNDS path. Needed for the one-MAX_L build where the kernel skips
-# masked far blocks (rem<=0): the rolled 128-block loop is otherwise ping-pong-unrolled into a
-# misaligned 3-buffer toK/toV ring (garbage once >=2 real blocks). ONE decode_L<MAX> serves all L.
-BLOCK_SINGLEBUF = (
-    True  # fixed config: REQUIRED for correctness -- air.disable_ping_pong on the
-)
-# rolled 128-block decode loop. Without it the loop ping-pong-unrolls into a misaligned 3-buffer
-# KV ring -> decode reads wrong K/V -> coherent first token then garbage chat. Do NOT change.
+# masks/skips blocks beyond the runtime RTP-L so one ATTN_MAXL build serves every L. That loop is
+# ALWAYS single-buffered (air.disable_ping_pong, set unconditionally below): ping-pong would
+# unroll-by-2 + 1-remainder over a 3-buffer toK/toV ring whose remainder reads the wrong buffer vs
+# the DMA rotation -> misaligned KV -> coherent first token then garbage chat.
 # DECODE_RB_ROUNDS overrides the shim KV-readback nd-DMA outer block count (default ATTN_ROUNDS).
 # Used to (a) locate the readback-count word in insts.bin by diffing two builds, and (b) let the
 # host patch it to ceil(L/16) per token so the shim pushes exactly what the runtime core consumes.
@@ -1977,10 +1971,10 @@ def build_module():
                                     ATTN_ROUNDS
                                 )  # compile-time 128-block loop
                                 for _blk in for_(idx(0), _nblk_qk, idx(1)):
-                                    # REQUIRED single-buffer (BLOCK_SINGLEBUF): ping-pong would
-                                    # unroll-by-2 + 1-remainder over a 3-buffer toK ring whose
-                                    # remainder reads the wrong buffer vs the DMA rotation ->
-                                    # misaligned KV -> garbage chat. Single-buffer is aligned.
+                                    # REQUIRED single-buffer: ping-pong would unroll-by-2 +
+                                    # 1-remainder over a 3-buffer toK ring whose remainder reads
+                                    # the wrong buffer vs the DMA rotation -> misaligned KV ->
+                                    # garbage chat. Single-buffer is aligned.
                                     _blk.owner.owner.attributes[
                                         "air.disable_ping_pong"
                                     ] = UnitAttr.get()

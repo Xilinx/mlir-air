@@ -75,12 +75,12 @@ compile-decode:
 	@echo ">>> template decode_L2048 (+ L2047 slope ref) [region-major KV + fire-and-free readback + inline attn]"
 	@# The two same-ATTN_MAXL builds (L2048 + L2047) calibrate the L-slope so DecodeInstsGen can
 	@# patch any context length in [1, 2048] into one template at runtime (recompile-free decode).
-	@# DECODE_BLOCK_SINGLEBUF=1 IS REQUIRED FOR CORRECTNESS (sets air.disable_ping_pong on the rolled
-	@# 128-block loop; without it the KV ring misaligns -> garbage continuation). Turbo for ~50 tok/s.
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=2048 DECODE_BLOCK_SINGLEBUF=1 DECODE_KV_SPLIT=1 DECODE_KV_REGION=1 DECODE_ATTN_LL=1 python3 $(DECODE_DRIVER) >/tmp/decode_L2048.log 2>&1; \
+	@# The block loop is always single-buffered (air.disable_ping_pong, unconditional in
+	@# fused_decode.py); without it the KV ring misaligns -> garbage continuation. Turbo for ~50 tok/s.
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=2048 DECODE_KV_SPLIT=1 DECODE_KV_REGION=1 DECODE_ATTN_LL=1 python3 $(DECODE_DRIVER) >/tmp/decode_L2048.log 2>&1; \
 	  if [ -f decode.xclbin ]; then mv -f decode.xclbin decode_L2048.xclbin; mv -f decode.insts.bin decode_L2048.insts.bin; \
 	  else echo "decode_L2048 FAILED (see /tmp/decode_L2048.log)"; exit 1; fi
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=2047 DECODE_BLOCK_SINGLEBUF=1 DECODE_KV_SPLIT=1 DECODE_KV_REGION=1 DECODE_ATTN_LL=1 python3 $(DECODE_DRIVER) >/tmp/decode_L2047.log 2>&1; \
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=2047 DECODE_KV_SPLIT=1 DECODE_KV_REGION=1 DECODE_ATTN_LL=1 python3 $(DECODE_DRIVER) >/tmp/decode_L2047.log 2>&1; \
 	  if [ -f decode.insts.bin ]; then mv -f decode.insts.bin decode_L2047.insts.bin; mv -f decode.xclbin decode_L2047.xclbin; \
 	  else echo "decode_L2047 FAILED (see /tmp/decode_L2047.log)"; exit 1; fi
 	@echo "Decode build complete: decode_L2048 + decode_L2047 templates."
