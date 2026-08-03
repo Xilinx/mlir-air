@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 //
 
-
 #include "aie_array_layout.h"
 #include "aie_kernel_utils.h"
 #include "lut_based_ops.h"
