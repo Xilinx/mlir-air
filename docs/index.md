@@ -231,10 +231,12 @@ to inspect the same program in either representation.
     }
     ```
 
-The full runnable example, including the XRT test harness, lives in
-[`programming_examples/eltwise_add_with_l2/`](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/eltwise_add_with_l2).
-The IR above is the `--print-module-only` output of that example at `n=4096`,
-`tile_n=512`.
+The Python tab is a condensed excerpt — renamed and reflowed for readability —
+of the CI-covered
+[`programming_examples/eltwise_add_with_l2/`](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/eltwise_add_with_l2)
+example; see that directory for the exact, runnable source and its XRT test
+harness. The IR tab is the verbatim `--print-module-only` output of that example
+at `n=4096`, `tile_n=512`.
 
 For more details on the AIR compute and memory model — launches, segments,
 herds, and how data movement maps onto hardware — read the
