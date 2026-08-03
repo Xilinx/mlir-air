@@ -1,0 +1,30 @@
+# Build / kernel cache artifacts
+build_peano/
+build_chess/
+__pycache__/
+*.pyc
+_q4nx_*/
+.wcache/
+kernel_cache/
+air_project/
+build_peano_decode/
+multi_launch_builder/
+
+# Compiled kernels + decode templates (reproduced by `make compile-decode`; never committed).
+*.o
+*.ll
+decode.xclbin
+decode.insts.bin
+decode_L*.xclbin
+decode_L*.insts.bin
+
+# Stray artifacts from running the driver outside build_*/ (xrt.py +
+# external_kernels.py write these to CWD by design).
+air.mlir
+air.elf
+air.xclbin
+air.insts.bin
+
+# Golden / weight caches produced at runtime (external data; see README.md).
+*.npz
+diag_cache/

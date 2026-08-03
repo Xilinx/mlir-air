@@ -1,0 +1,11 @@
+# Additional Python packages for the LLAMA-3.2-1B Q4NX example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, filelock, pyxrt, etc.). Install with:
+#     pip install -r requirements.txt
+
+# Download the model.q4nx weight bundle from the Hub (Q4NX_MODEL_SOURCE).
+huggingface_hub
+
+# Tokenizer for the interactive chatbot (make chat / ask / gen).
+transformers

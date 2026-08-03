@@ -230,6 +230,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "LLM Kernels",
+        "name": "Fused Superkernel Decode",
+        "path": "fused_decode",
+        "datatypes": "Q4NX weights / bf16 activations",
+    },
+    {
         "category": "Attention",
         "name": "Flash Attention (Dataflow)",
         "path": "flash_attention/dataflow_based",
@@ -508,6 +514,7 @@ _VERIFY_EMOJI = {"pass": "\U0001f7e2", "fail": "\U0001f534", "skip": "⚪"}
 LLM_HF_MODELS = {
     "llama32_1b": "meta-llama/Llama-3.2-1B",
     "llama32_1b_int4": "amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead",
+    "llama32_1b_q4nx": "FastFlowLM/Llama-3.2-1B-NPU2",
     "llama32_3b": "meta-llama/Llama-3.2-3B",
     "qwen25_0_5b": "Qwen/Qwen2.5-0.5B",
     "qwen25_1_5b": "Qwen/Qwen2.5-1.5B",

@@ -182,6 +182,7 @@ def build_o_ffn_module(
     emb_dim=2048,
     hidden_dim=8192,
     print_kernels=False,
+    herd_m=8,
 ):
     """Build the fused O-proj + Residual + FFN ELF (12 launches, 19 args).
 
@@ -190,11 +191,18 @@ def build_o_ffn_module(
     (M*K*N>=4e9) so the registry resolves them to fused-cast (tile_m=64, f32 C scratch
     + on-chip cast launch); 4 extra f32-scratch func args (15..18) carry the scratch.
     Same 9.3e-3 GPU-standard precision as drain, but faster.
+
+    herd_m: M-dimension herd size for the O/Gate/Up/Down GEMMs (default 8). Must
+    satisfy seq_len % (tile_m * herd_m) == 0; small contexts (seq_len < 512) need
+    herd_m=4 since fused-cast tile_m=64 makes 64*8=512 > seq_len.
     """
     return _build_o_ffn(
         seq_len=seq_len,
         emb_dim=emb_dim,
         hidden_dim=hidden_dim,
+        o_herd_m=herd_m,
+        gate_herd_m=herd_m,
+        down_herd_m=herd_m,
         print_kernels=print_kernels,
     )
 
