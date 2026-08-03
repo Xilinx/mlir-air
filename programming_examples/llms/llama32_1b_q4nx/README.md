@@ -41,22 +41,6 @@ any `L` in `[1, 2048]` — byte-identical to a native per-L build. The attention
 kernel skips fully-masked blocks, so the single MAX_L=2048 template is correct for
 every context length.
 
-## Files
-
-| File | Purpose |
-|---|---|
-| `llama32_1b_q4nx_weights.py` | Q4NX unpack / dequant / dims; per-layer weight loaders (host dequant cache) |
-| `llama32_1b_q4nx_prefill.py` | `LlamaQ4nxPrefill` — batched prefill; per-layer KV `kv_view()` handoff; Paris gate |
-| `llama32_1b_q4nx_inference.py` | Orchestrator: `Session`, `FusedDecoder`, `Sampler`, chat template, EOS, streaming, `--interactive` REPL |
-
-The decode path (fused superkernel, host instruction patcher, decode kernels) lives in
-the standalone [`fused_decode`](../../fused_decode) example, which this e2e references.
-
-Cross-directory imports (matching `llama32_1b_int4`): the shared `llms/` infra
-(kernel cache, GEMM/stitcher builders, `lm_head_gemv_multi`), the sibling `llama32_1b`
-prefill driver, and the `fused_decode` example (decode templates + `decode_insts_gen` +
-the `proj_qmm_pack` Q4NX block packer / dequant reference).
-
 ## Performance (NPU2, AMD Strix, 16 layers, warm)
 
 - **Prefill TTFT** @ 2048 ≈ **0.93 s** (`TEMPORAL_CAUSAL_SKIP=1`); ~constant in
@@ -111,26 +95,31 @@ Optional overrides (skip the derivation if you pre-supply them): `PARIS_REQUANT_
 (decode q4k-cascade `.npz`), `PARIS_GOLDEN` (embed/final_norm f32 dir), `PARIS_WEIGHTS`
 (legacy per-layer `L{k}_proj_w.bin` dumps; prefill fallback only).
 
-## Build
+## Quick Start
 
 ```bash
-# 1. Prefill ELFs (per seq_len; no weights/NPU needed) — ~3 min
+# Build 1 — Prefill ELFs (per seq_len; no weights/NPU needed) — ~3 min
 make compile CTX=2048
 
-# 2. Decode kernels + two templates (decode_L2048 + decode_L2047 slope ref)
-#    ~15 min; needs PARIS_WEIGHTS for the GEMM shapes and a pre-change llvm-link
-#    (see Reproducibility).
+# Build 2 — Decode kernels + two templates (decode_L2048 + decode_L2047 slope ref).
+#   ~15 min; needs PARIS_WEIGHTS for the GEMM shapes and a pre-change llvm-link
+#   (see Reproducibility).
 make compile-decode
-```
 
-## Run
+# Interactive multi-turn chatbot (streams tokens)
+make chat
 
-```bash
-make chat                         # interactive multi-turn chatbot (streams tokens)
-make ask PROMPT="What is the capital of France?"   # single Q&A turn
-make gen                          # Paris gate: prefill+decode, first token 12366 -> *** PARIS ***
-make run                          # prefill-only Paris gate
-make verify                       # same prefill Paris gate (name CI expects)
+# Single Q&A turn
+make ask PROMPT="What is the capital of France?"
+
+# Paris gate: prefill+decode, first token 12366 -> *** PARIS ***
+make gen
+
+# Prefill-only Paris gate
+make run
+
+# Same prefill Paris gate (name CI expects)
+make verify
 ```
 
 Direct invocation (equivalent to `make chat`):
@@ -171,3 +160,19 @@ single-buffered (`DECODE_BLOCK_SINGLEBUF=1`) to keep the KV ring aligned.
 offset) so one xclbin serves every `L`. The host performs embedding, sampling
 (`Sampler`: repetition/frequency penalties + temperature + top-k/top-p), chat
 templating, and EOS between tokens.
+
+## Key Files
+
+| Path | Purpose |
+|---|---|
+| `llama32_1b_q4nx_weights.py` | Q4NX unpack / dequant / dims; per-layer weight loaders (host dequant cache) |
+| `llama32_1b_q4nx_prefill.py` | `LlamaQ4nxPrefill` — batched prefill; per-layer KV `kv_view()` handoff; Paris gate |
+| `llama32_1b_q4nx_inference.py` | Orchestrator: `Session`, `FusedDecoder`, `Sampler`, chat template, EOS, streaming, `--interactive` REPL |
+
+The decode path (fused superkernel, host instruction patcher, decode kernels) lives in
+the standalone [`fused_decode`](../../fused_decode) example, which this e2e references.
+
+Cross-directory imports (matching `llama32_1b_int4`): the shared `llms/` infra
+(kernel cache, GEMM/stitcher builders, `lm_head_gemv_multi`), the sibling `llama32_1b`
+prefill driver, and the `fused_decode` example (decode templates + `decode_insts_gen` +
+the `proj_qmm_pack` Q4NX block packer / dequant reference).
