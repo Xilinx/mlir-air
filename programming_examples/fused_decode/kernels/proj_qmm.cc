@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // AIR-lock-stripped variant of the reference proj_main's GEMV inner loop
-// (q4_npu_eXpress / proj_main.cc::linear_proj_iD), split into separate zero /
+// (q4_npu_eXpress / the reference GEMV), split into separate zero /
 // accumulate / flush entry points so the float accumulator y_acc is used by ops
 // OUTSIDE the col-block (j) loop -- this keeps AIR from sinking the accumulator
 // alloc into the j-loop (which would re-allocate it per col-block and destroy
@@ -97,7 +97,7 @@ void proj_qmm_flush(float *__restrict y_acc, bf16 *__restrict y_out) {
 
 // the reference proj_main keep_pkt_header flush: write the packet routing id as
 // a uint32 at element 14 (the packet HEADER word the stream switch routes by)
-// and the payload at element 16, exactly like proj_main.cc
+// and the payload at element 16, exactly like the reference proj_main
 // (`*(uint32*)(y+14)=pkt_id; copy_float_to_bf16<m>(y+16, y_acc)`). The matching
 // air.channel.put streams from offset 14 (2 header + ROW_BLOCK payload) on a
 // {keep_pkt_header} channel so the kernel-written id (NOT a compiler-stamped

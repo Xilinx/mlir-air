@@ -344,7 +344,7 @@ PAYLOAD = N_PAIRS * PAIR_PAY  # 512 payload elems per round (16 rows)
 # decode layer; ==0 -> a single vocab projection phase. The vocab GEMV is
 # structurally the QKV phase (same proj_qmm_acc256, K=MODEL_DIM) with I2 scaled to
 # cover VOCAB_SIZE_PADDED rows, emitting on the RMS_DEST id (=id4, pkt_id_to_rms_norm)
-# -- the exact route the reference's proj_main.cc:149 uses -- so NO new proj-side flow. The
+# -- the exact route the reference proj kernel uses -- so NO new proj-side flow. The
 # rms core (mode 0) does final rmsnorm(x)->feed proj X, then forwards the vocab
 # chunks it gets back (id4) out to shim as logits (see rms_residual.cc:211).
 VOCAB_SIZE = 128256  # llama-3.2-1b (models/llama3.2-1b.h)
