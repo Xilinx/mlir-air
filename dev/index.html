@@ -452,6 +452,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="." class="md-nav__link md-nav__link--active">
         
   
@@ -468,6 +486,36 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#a-simple-air-program" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A simple AIR program
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -1243,6 +1291,25 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#a-simple-air-program" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A simple AIR program
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -1261,12 +1328,29 @@
   
 
 
+<div class="air-hero">
+<p class="air-eyebrow">Open-source MLIR compiler infrastructure</p>
 <h1 id="mlir-air">MLIR-AIR<a class="headerlink" href="#mlir-air" title="Permanent link">&para;</a></h1>
-<p>MLIR-AIR is a compiler infrastructure for mapping AI workloads onto AMD NPUs
-(Neural Processing Units) and Versal AI Engine arrays. It lifts loop-nest and
-tensor programs into asynchronous, spatial dataflow through MLIR dialects —
-placing compute on tiles, scheduling data movement, and generating optimized
-binaries for AI accelerators.</p>
+<p class="air-tagline">Map structured loop and tensor programs onto AMD NPUs and Versal AI Engine arrays.</p>
+<p><a class="md-button md-button--primary" href="getting_started/">Get started</a>
+<a class="md-button" href="#a-simple-air-program">A simple AIR program</a></p>
+</div>
+<div class="air-intro">
+<p>On AMD AI Engine–based NPUs, compute cores, DMA engines, and communication
+resources execute concurrently and are coordinated through explicit data
+movement and synchronization. Achieving high performance therefore requires
+constructing dataflow organizations that are sufficiently pipelined to overlap
+communication with computation, balanced across processing stages, compatible
+with finite on-chip memory and routing resources, and free from cyclic
+dependencies that can lead to deadlock.</p>
+<p>MLIR-AIR provides compiler abstractions and transformation infrastructure for
+exploring this design space. It preserves a common representation while a design
+is progressively transformed across discrete choices in tiling, placement,
+buffering, communication, and synchronization. Through its Python APIs,
+developers can derive and evaluate related implementations without reconstructing
+each candidate directly in MLIR-AIE, making systematic design-space exploration
+substantially more accessible.</p>
+</div>
 <div class="air-cards">
 <p><a class="air-card" href="getting_started/">
 <span class="air-card-icon">🚀</span>
@@ -1289,6 +1373,185 @@ binaries for AI accelerators.</p>
 <span class="air-card-desc">From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs with MLIR-AIR.</span>
 </a></p>
 </div>
+<h2 id="a-simple-air-program">A simple AIR program<a class="headerlink" href="#a-simple-air-program" title="Permanent link">&para;</a></h2>
+<p>The Python API constructs this elementwise-add design as MLIR-AIR IR. Two herd
+cores each process a slice of a 4096-element vector, staging data L3 → L2 → L1,
+computing <code>C = A + B</code> in local memory, and writing the result back. Switch tabs
+to inspect the same program in either representation.</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Python API</label><label for="__tabbed_1_2">MLIR-AIR IR</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">air.ir</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">air.dialects.affine</span><span class="w"> </span><span class="kn">import</span> <span class="n">apply</span> <span class="k">as</span> <span class="n">affine_apply</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">air.dialects.air</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">air.dialects.memref</span><span class="w"> </span><span class="kn">import</span> <span class="n">AllocOp</span><span class="p">,</span> <span class="n">DeallocOp</span><span class="p">,</span> <span class="n">load</span><span class="p">,</span> <span class="n">store</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="kn">from</span><span class="w"> </span><span class="nn">air.dialects.func</span><span class="w"> </span><span class="kn">import</span> <span class="n">FuncOp</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="kn">from</span><span class="w"> </span><span class="nn">air.dialects.scf</span><span class="w"> </span><span class="kn">import</span> <span class="n">for_</span><span class="p">,</span> <span class="n">yield_</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="kn">from</span><span class="w"> </span><span class="nn">air.backend.xrt_runner</span><span class="w"> </span><span class="kn">import</span> <span class="n">type_mapper</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">range_</span> <span class="o">=</span> <span class="n">for_</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="nd">@module_builder</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="k">def</span><span class="w"> </span><span class="nf">build_module</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">tile_n</span><span class="p">,</span> <span class="n">np_dtype_in</span><span class="p">):</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="n">a_size</span> <span class="o">=</span> <span class="p">[</span><span class="n">n</span><span class="p">]</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    <span class="n">xrt_dtype_in</span> <span class="o">=</span> <span class="n">type_mapper</span><span class="p">(</span><span class="n">np_dtype_in</span><span class="p">)</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="n">num_tiles</span> <span class="o">=</span> <span class="mi">2</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="k">assert</span> <span class="n">n</span> <span class="o">%</span> <span class="p">(</span><span class="n">tile_n</span> <span class="o">*</span> <span class="n">num_tiles</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    <span class="c1"># Function arguments reside in L3 (system memory).</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    <span class="n">l3memrefTy</span> <span class="o">=</span> <span class="n">MemRefType</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">a_size</span><span class="p">,</span> <span class="n">xrt_dtype_in</span><span class="p">)</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>    <span class="c1"># A segment owns L2 storage shared by its herd.</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>    <span class="n">l2MemrefTy</span> <span class="o">=</span> <span class="n">MemRefType</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        <span class="n">shape</span><span class="o">=</span><span class="n">a_size</span><span class="p">,</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>        <span class="n">element_type</span><span class="o">=</span><span class="n">xrt_dtype_in</span><span class="p">,</span>
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>        <span class="n">memory_space</span><span class="o">=</span><span class="n">IntegerAttr</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">T</span><span class="o">.</span><span class="n">i32</span><span class="p">(),</span> <span class="n">MemorySpace</span><span class="o">.</span><span class="n">L2</span><span class="p">),</span>
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>    <span class="p">)</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>    <span class="c1"># Each herd core has its own tile-sized L1 buffer.</span>
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>    <span class="n">l1MemrefTy</span> <span class="o">=</span> <span class="n">MemRefType</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>        <span class="n">shape</span><span class="o">=</span><span class="p">[</span><span class="n">tile_n</span><span class="p">],</span>
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>        <span class="n">element_type</span><span class="o">=</span><span class="n">xrt_dtype_in</span><span class="p">,</span>
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>        <span class="n">memory_space</span><span class="o">=</span><span class="n">IntegerAttr</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">T</span><span class="o">.</span><span class="n">i32</span><span class="p">(),</span> <span class="n">MemorySpace</span><span class="o">.</span><span class="n">L1</span><span class="p">),</span>
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>    <span class="p">)</span>
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>
+<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>    <span class="nd">@FuncOp</span><span class="o">.</span><span class="n">from_py_func</span><span class="p">(</span><span class="n">l3memrefTy</span><span class="p">,</span> <span class="n">l3memrefTy</span><span class="p">,</span> <span class="n">l3memrefTy</span><span class="p">)</span>
+<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">eltwise_add</span><span class="p">(</span><span class="n">arg0</span><span class="p">,</span> <span class="n">arg1</span><span class="p">,</span> <span class="n">arg2</span><span class="p">):</span>
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>        <span class="nd">@launch</span><span class="p">(</span><span class="n">operands</span><span class="o">=</span><span class="p">[</span><span class="n">arg0</span><span class="p">,</span> <span class="n">arg1</span><span class="p">,</span> <span class="n">arg2</span><span class="p">],</span> <span class="n">sizes</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">])</span>
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>        <span class="k">def</span><span class="w"> </span><span class="nf">launch_body</span><span class="p">(</span><span class="n">_ivx</span><span class="p">,</span> <span class="n">_ivy</span><span class="p">,</span> <span class="n">_sx</span><span class="p">,</span> <span class="n">_sy</span><span class="p">,</span> <span class="n">arg0_l</span><span class="p">,</span> <span class="n">arg1_l</span><span class="p">,</span> <span class="n">arg2_l</span><span class="p">):</span>
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>            <span class="nd">@segment</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;segment_0&quot;</span><span class="p">,</span> <span class="n">operands</span><span class="o">=</span><span class="p">[</span><span class="n">arg0_l</span><span class="p">,</span> <span class="n">arg1_l</span><span class="p">,</span> <span class="n">arg2_l</span><span class="p">])</span>
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>            <span class="k">def</span><span class="w"> </span><span class="nf">segment_body</span><span class="p">(</span><span class="n">arg0_s</span><span class="p">,</span> <span class="n">arg1_s</span><span class="p">,</span> <span class="n">arg2_s</span><span class="p">):</span>
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>                <span class="n">l2_a</span> <span class="o">=</span> <span class="n">AllocOp</span><span class="p">(</span><span class="n">l2MemrefTy</span><span class="p">,</span> <span class="p">[],</span> <span class="p">[])</span>
+<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>                <span class="n">l2_b</span> <span class="o">=</span> <span class="n">AllocOp</span><span class="p">(</span><span class="n">l2MemrefTy</span><span class="p">,</span> <span class="p">[],</span> <span class="p">[])</span>
+<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>                <span class="n">l2_out</span> <span class="o">=</span> <span class="n">AllocOp</span><span class="p">(</span><span class="n">l2MemrefTy</span><span class="p">,</span> <span class="p">[],</span> <span class="p">[])</span>
+<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>
+<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>                <span class="c1"># L3 -&gt; L2: stage both input vectors in the MemTile level.</span>
+<a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a>                <span class="n">dma_memcpy_nd</span><span class="p">(</span><span class="n">l2_a</span><span class="p">,</span> <span class="n">arg0_s</span><span class="p">)</span>
+<a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a>                <span class="n">dma_memcpy_nd</span><span class="p">(</span><span class="n">l2_b</span><span class="p">,</span> <span class="n">arg1_s</span><span class="p">)</span>
+<a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a>
+<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>                <span class="nd">@herd</span><span class="p">(</span>
+<a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a>                    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;herd_0&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a>                    <span class="n">sizes</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="n">num_tiles</span><span class="p">],</span>
+<a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>                    <span class="n">operands</span><span class="o">=</span><span class="p">[</span><span class="n">l2_a</span><span class="p">,</span> <span class="n">l2_b</span><span class="p">,</span> <span class="n">l2_out</span><span class="p">],</span>
+<a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a>                <span class="p">)</span>
+<a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a>                <span class="k">def</span><span class="w"> </span><span class="nf">herd_body</span><span class="p">(</span><span class="n">_tx</span><span class="p">,</span> <span class="n">_ty</span><span class="p">,</span> <span class="n">_sx</span><span class="p">,</span> <span class="n">_sy</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">,</span> <span class="n">c</span><span class="p">):</span>
+<a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a>                    <span class="n">l1_a</span> <span class="o">=</span> <span class="n">AllocOp</span><span class="p">(</span><span class="n">l1MemrefTy</span><span class="p">,</span> <span class="p">[],</span> <span class="p">[])</span>
+<a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a>                    <span class="n">l1_b</span> <span class="o">=</span> <span class="n">AllocOp</span><span class="p">(</span><span class="n">l1MemrefTy</span><span class="p">,</span> <span class="p">[],</span> <span class="p">[])</span>
+<a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a>                    <span class="n">l1_out</span> <span class="o">=</span> <span class="n">AllocOp</span><span class="p">(</span><span class="n">l1MemrefTy</span><span class="p">,</span> <span class="p">[],</span> <span class="p">[])</span>
+<a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>
+<a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>                    <span class="k">for</span> <span class="n">_iv</span> <span class="ow">in</span> <span class="n">range_</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">tile_n</span> <span class="o">*</span> <span class="n">num_tiles</span><span class="p">):</span>
+<a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>                        <span class="n">offset_map</span> <span class="o">=</span> <span class="n">AffineMap</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+<a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a>                            <span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a>                            <span class="mi">2</span><span class="p">,</span>
+<a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a>                            <span class="p">[</span>
+<a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>                                <span class="n">AffineExpr</span><span class="o">.</span><span class="n">get_add</span><span class="p">(</span>
+<a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a>                                    <span class="n">AffineSymbolExpr</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span>
+<a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a>                                    <span class="n">AffineExpr</span><span class="o">.</span><span class="n">get_mul</span><span class="p">(</span>
+<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a>                                        <span class="n">AffineSymbolExpr</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="mi">1</span><span class="p">),</span>
+<a id="__codelineno-0-69" name="__codelineno-0-69" href="#__codelineno-0-69"></a>                                        <span class="n">AffineConstantExpr</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">tile_n</span><span class="p">),</span>
+<a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a>                                    <span class="p">),</span>
+<a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a>                                <span class="p">)</span>
+<a id="__codelineno-0-72" name="__codelineno-0-72" href="#__codelineno-0-72"></a>                            <span class="p">],</span>
+<a id="__codelineno-0-73" name="__codelineno-0-73" href="#__codelineno-0-73"></a>                        <span class="p">)</span>
+<a id="__codelineno-0-74" name="__codelineno-0-74" href="#__codelineno-0-74"></a>                        <span class="n">offset</span> <span class="o">=</span> <span class="n">affine_apply</span><span class="p">(</span><span class="n">offset_map</span><span class="p">,</span> <span class="p">[</span><span class="n">_iv</span><span class="p">,</span> <span class="n">_ty</span><span class="p">])</span>
+<a id="__codelineno-0-75" name="__codelineno-0-75" href="#__codelineno-0-75"></a>
+<a id="__codelineno-0-76" name="__codelineno-0-76" href="#__codelineno-0-76"></a>                        <span class="c1"># L2 -&gt; L1: bring this core&#39;s tiles into local memory.</span>
+<a id="__codelineno-0-77" name="__codelineno-0-77" href="#__codelineno-0-77"></a>                        <span class="n">dma_memcpy_nd</span><span class="p">(</span>
+<a id="__codelineno-0-78" name="__codelineno-0-78" href="#__codelineno-0-78"></a>                            <span class="n">l1_a</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">src_offsets</span><span class="o">=</span><span class="p">[</span><span class="n">offset</span><span class="p">],</span>
+<a id="__codelineno-0-79" name="__codelineno-0-79" href="#__codelineno-0-79"></a>                            <span class="n">src_sizes</span><span class="o">=</span><span class="p">[</span><span class="n">tile_n</span><span class="p">],</span> <span class="n">src_strides</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span>
+<a id="__codelineno-0-80" name="__codelineno-0-80" href="#__codelineno-0-80"></a>                        <span class="p">)</span>
+<a id="__codelineno-0-81" name="__codelineno-0-81" href="#__codelineno-0-81"></a>                        <span class="n">dma_memcpy_nd</span><span class="p">(</span>
+<a id="__codelineno-0-82" name="__codelineno-0-82" href="#__codelineno-0-82"></a>                            <span class="n">l1_b</span><span class="p">,</span> <span class="n">b</span><span class="p">,</span> <span class="n">src_offsets</span><span class="o">=</span><span class="p">[</span><span class="n">offset</span><span class="p">],</span>
+<a id="__codelineno-0-83" name="__codelineno-0-83" href="#__codelineno-0-83"></a>                            <span class="n">src_sizes</span><span class="o">=</span><span class="p">[</span><span class="n">tile_n</span><span class="p">],</span> <span class="n">src_strides</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span>
+<a id="__codelineno-0-84" name="__codelineno-0-84" href="#__codelineno-0-84"></a>                        <span class="p">)</span>
+<a id="__codelineno-0-85" name="__codelineno-0-85" href="#__codelineno-0-85"></a>
+<a id="__codelineno-0-86" name="__codelineno-0-86" href="#__codelineno-0-86"></a>                        <span class="c1"># Compute C = A + B in each core&#39;s local memory.</span>
+<a id="__codelineno-0-87" name="__codelineno-0-87" href="#__codelineno-0-87"></a>                        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">range_</span><span class="p">(</span><span class="n">tile_n</span><span class="p">):</span>
+<a id="__codelineno-0-88" name="__codelineno-0-88" href="#__codelineno-0-88"></a>                            <span class="n">val</span> <span class="o">=</span> <span class="n">arith</span><span class="o">.</span><span class="n">addf</span><span class="p">(</span><span class="n">load</span><span class="p">(</span><span class="n">l1_a</span><span class="p">,</span> <span class="p">[</span><span class="n">i</span><span class="p">]),</span> <span class="n">load</span><span class="p">(</span><span class="n">l1_b</span><span class="p">,</span> <span class="p">[</span><span class="n">i</span><span class="p">]))</span>
+<a id="__codelineno-0-89" name="__codelineno-0-89" href="#__codelineno-0-89"></a>                            <span class="n">store</span><span class="p">(</span><span class="n">val</span><span class="p">,</span> <span class="n">l1_out</span><span class="p">,</span> <span class="p">[</span><span class="n">i</span><span class="p">])</span>
+<a id="__codelineno-0-90" name="__codelineno-0-90" href="#__codelineno-0-90"></a>                            <span class="n">yield_</span><span class="p">([])</span>
+<a id="__codelineno-0-91" name="__codelineno-0-91" href="#__codelineno-0-91"></a>
+<a id="__codelineno-0-92" name="__codelineno-0-92" href="#__codelineno-0-92"></a>                        <span class="c1"># L1 -&gt; L2: return the completed tile to the segment.</span>
+<a id="__codelineno-0-93" name="__codelineno-0-93" href="#__codelineno-0-93"></a>                        <span class="n">dma_memcpy_nd</span><span class="p">(</span>
+<a id="__codelineno-0-94" name="__codelineno-0-94" href="#__codelineno-0-94"></a>                            <span class="n">c</span><span class="p">,</span> <span class="n">l1_out</span><span class="p">,</span> <span class="n">dst_offsets</span><span class="o">=</span><span class="p">[</span><span class="n">offset</span><span class="p">],</span>
+<a id="__codelineno-0-95" name="__codelineno-0-95" href="#__codelineno-0-95"></a>                            <span class="n">dst_sizes</span><span class="o">=</span><span class="p">[</span><span class="n">tile_n</span><span class="p">],</span> <span class="n">dst_strides</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span>
+<a id="__codelineno-0-96" name="__codelineno-0-96" href="#__codelineno-0-96"></a>                        <span class="p">)</span>
+<a id="__codelineno-0-97" name="__codelineno-0-97" href="#__codelineno-0-97"></a>                        <span class="n">DeallocOp</span><span class="p">(</span><span class="n">l1_a</span><span class="p">)</span>
+<a id="__codelineno-0-98" name="__codelineno-0-98" href="#__codelineno-0-98"></a>                        <span class="n">DeallocOp</span><span class="p">(</span><span class="n">l1_b</span><span class="p">)</span>
+<a id="__codelineno-0-99" name="__codelineno-0-99" href="#__codelineno-0-99"></a>                        <span class="n">DeallocOp</span><span class="p">(</span><span class="n">l1_out</span><span class="p">)</span>
+<a id="__codelineno-0-100" name="__codelineno-0-100" href="#__codelineno-0-100"></a>                        <span class="n">yield_</span><span class="p">([])</span>
+<a id="__codelineno-0-101" name="__codelineno-0-101" href="#__codelineno-0-101"></a>
+<a id="__codelineno-0-102" name="__codelineno-0-102" href="#__codelineno-0-102"></a>                <span class="c1"># L2 -&gt; L3: write the full output vector to the result.</span>
+<a id="__codelineno-0-103" name="__codelineno-0-103" href="#__codelineno-0-103"></a>                <span class="n">dma_memcpy_nd</span><span class="p">(</span><span class="n">arg2_s</span><span class="p">,</span> <span class="n">l2_out</span><span class="p">)</span>
+<a id="__codelineno-0-104" name="__codelineno-0-104" href="#__codelineno-0-104"></a>                <span class="n">DeallocOp</span><span class="p">(</span><span class="n">l2_a</span><span class="p">)</span>
+<a id="__codelineno-0-105" name="__codelineno-0-105" href="#__codelineno-0-105"></a>                <span class="n">DeallocOp</span><span class="p">(</span><span class="n">l2_b</span><span class="p">)</span>
+<a id="__codelineno-0-106" name="__codelineno-0-106" href="#__codelineno-0-106"></a>                <span class="n">DeallocOp</span><span class="p">(</span><span class="n">l2_out</span><span class="p">)</span>
+</code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>#map = affine_map&lt;()[s0, s1] -&gt; (s0 + s1 * 512)&gt;
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>module {
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  func.func @eltwise_add(%arg0: memref&lt;4096xf32&gt;, %arg1: memref&lt;4096xf32&gt;, %arg2: memref&lt;4096xf32&gt;) {
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    %c1 = arith.constant 1 : index
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    %c1_0 = arith.constant 1 : index
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    air.launch (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1_0) args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg2) : memref&lt;4096xf32&gt;, memref&lt;4096xf32&gt;, memref&lt;4096xf32&gt; {
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>      air.segment @segment_0  args(%arg10=%arg7, %arg11=%arg8, %arg12=%arg9) : memref&lt;4096xf32&gt;, memref&lt;4096xf32&gt;, memref&lt;4096xf32&gt; {
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>        %alloc = memref.alloc() : memref&lt;4096xf32, 1 : i32&gt;
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>        %alloc_1 = memref.alloc() : memref&lt;4096xf32, 1 : i32&gt;
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>        %alloc_2 = memref.alloc() : memref&lt;4096xf32, 1 : i32&gt;
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>        air.dma_memcpy_nd (%alloc[] [] [], %arg10[] [] []) : (memref&lt;4096xf32, 1 : i32&gt;, memref&lt;4096xf32&gt;)
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>        air.dma_memcpy_nd (%alloc_1[] [] [], %arg11[] [] []) : (memref&lt;4096xf32, 1 : i32&gt;, memref&lt;4096xf32&gt;)
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>        %c1_3 = arith.constant 1 : index
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>        %c2 = arith.constant 2 : index
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>        air.herd @herd_0  tile (%arg13, %arg14) in (%arg15=%c1_3, %arg16=%c2) args(%arg17=%alloc, %arg18=%alloc_1, %arg19=%alloc_2) : memref&lt;4096xf32, 1 : i32&gt;, memref&lt;4096xf32, 1 : i32&gt;, memref&lt;4096xf32, 1 : i32&gt; {
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>          %alloc_4 = memref.alloc() : memref&lt;512xf32, 2 : i32&gt;
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>          %alloc_5 = memref.alloc() : memref&lt;512xf32, 2 : i32&gt;
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>          %alloc_6 = memref.alloc() : memref&lt;512xf32, 2 : i32&gt;
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>          %c0 = arith.constant 0 : index
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>          %c4096 = arith.constant 4096 : index
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>          %c1024 = arith.constant 1024 : index
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>          scf.for %arg20 = %c0 to %c4096 step %c1024 {
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>            %0 = affine.apply #map()[%arg20, %arg14]
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>            air.dma_memcpy_nd (%alloc_4[] [] [], %arg17[%0] [512] [1]) : (memref&lt;512xf32, 2 : i32&gt;, memref&lt;4096xf32, 1 : i32&gt;)
+<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>            air.dma_memcpy_nd (%alloc_5[] [] [], %arg18[%0] [512] [1]) : (memref&lt;512xf32, 2 : i32&gt;, memref&lt;4096xf32, 1 : i32&gt;)
+<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>            %c0_7 = arith.constant 0 : index
+<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>            %c512 = arith.constant 512 : index
+<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a>            %c1_8 = arith.constant 1 : index
+<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a>            scf.for %arg21 = %c0_7 to %c512 step %c1_8 {
+<a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a>              %1 = memref.load %alloc_4[%arg21] : memref&lt;512xf32, 2 : i32&gt;
+<a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a>              %2 = memref.load %alloc_5[%arg21] : memref&lt;512xf32, 2 : i32&gt;
+<a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a>              %3 = arith.addf %1, %2 : f32
+<a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a>              memref.store %3, %alloc_6[%arg21] : memref&lt;512xf32, 2 : i32&gt;
+<a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a>            }
+<a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>            air.dma_memcpy_nd (%arg19[%0] [512] [1], %alloc_6[] [] []) : (memref&lt;4096xf32, 1 : i32&gt;, memref&lt;512xf32, 2 : i32&gt;)
+<a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a>            memref.dealloc %alloc_4 : memref&lt;512xf32, 2 : i32&gt;
+<a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a>            memref.dealloc %alloc_5 : memref&lt;512xf32, 2 : i32&gt;
+<a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>            memref.dealloc %alloc_6 : memref&lt;512xf32, 2 : i32&gt;
+<a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>          }
+<a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>        }
+<a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a>        air.dma_memcpy_nd (%arg12[] [] [], %alloc_2[] [] []) : (memref&lt;4096xf32&gt;, memref&lt;4096xf32, 1 : i32&gt;)
+<a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a>        memref.dealloc %alloc : memref&lt;4096xf32, 1 : i32&gt;
+<a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a>        memref.dealloc %alloc_1 : memref&lt;4096xf32, 1 : i32&gt;
+<a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a>        memref.dealloc %alloc_2 : memref&lt;4096xf32, 1 : i32&gt;
+<a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a>      }
+<a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a>    }
+<a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a>    return
+<a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a>  }
+<a id="__codelineno-1-49" name="__codelineno-1-49" href="#__codelineno-1-49"></a>}
+</code></pre></div>
+</div>
+</div>
+</div>
+<p>The Python tab is a condensed excerpt — renamed and reflowed for readability —
+of the CI-covered
+<a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/eltwise_add_with_l2"><code>programming_examples/eltwise_add_with_l2/</code></a>
+example; see that directory for the exact, runnable source and its XRT test
+harness. The IR tab is the verbatim <code>--print-module-only</code> output of that example
+at <code>n=4096</code>, <code>tile_n=512</code>.</p>
+<p>For more details on the AIR compute and memory model — launches, segments,
+herds, and how data movement maps onto hardware — read the
+<a href="AIRComputeModel/">AIR Compute Model</a>.</p>
 
 
 
