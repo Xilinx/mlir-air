@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
 """AIR analog of the reference's gen_layer_seq: emit the fused-decode instruction stream for a
 given KV context length L by writing only the L-dependent fields (attention RTP-L words +
 KV-append byte offset) into ONE decode template.

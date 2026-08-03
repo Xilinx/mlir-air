@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 #include "aie_array_layout.h"
 #include "aie_kernel_utils.h"
 #include "typedef.hpp"

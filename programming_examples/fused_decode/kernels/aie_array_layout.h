@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 #ifndef __AIE_ARRAY_LAYOUT_H__
 #define __AIE_ARRAY_LAYOUT_H__
 

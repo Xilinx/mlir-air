@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 #ifndef __Q4_K_H__
 #define __Q4_K_H__
 #include "aie_kernel_utils.h"

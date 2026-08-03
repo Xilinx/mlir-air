@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 ///@file qwen2.5-7b.h
 ///@brief Define the model parameters for the qwen2-7b model
 #ifndef __QWEN2_5_7B_H__

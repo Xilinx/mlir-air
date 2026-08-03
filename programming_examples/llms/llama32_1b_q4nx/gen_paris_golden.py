@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
 # Regenerate the HF golden that run_paris_gen.py consumes at /tmp/paris_golden:
 #   weights/lm_head.f32.bin      [VOCAB_SIZE, K]  f32
 #   weights/final_norm.f32.bin   [K]              f32

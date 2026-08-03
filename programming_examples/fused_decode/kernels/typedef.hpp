@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 ///@file typedef.hpp
 ///@brief Define the typedefs for the kernels
 #ifndef __TYPEDEF_HPP__

@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 // AIR-lock-stripped variant of the reference proj_main's GEMV inner loop
 // (q4_npu_eXpress / proj_main.cc::linear_proj_iD), split into separate zero /
 // accumulate / flush entry points so the float accumulator y_acc is used by ops

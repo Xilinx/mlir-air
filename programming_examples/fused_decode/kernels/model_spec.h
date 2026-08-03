@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 #ifndef __MODEL_SPEC__
 #define __MODEL_SPEC__
 

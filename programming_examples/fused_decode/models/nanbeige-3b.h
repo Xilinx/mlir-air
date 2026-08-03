@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 ///@file nanbeige-3b.h
 ///@brief Define the model parameters for the nanbeige-3b model
 #ifndef __NANBEIGE_3B_H__

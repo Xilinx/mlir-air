@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 ///@file llama3.2-1b.h
 ///@brief Define the model parameters for the llama3.2-1b model
 #ifndef __LLAMA3_2_1B_H__

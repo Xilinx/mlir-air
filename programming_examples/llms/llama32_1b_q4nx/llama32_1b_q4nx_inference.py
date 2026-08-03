@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
 """llama32_1b_q4nx full inference — the reference-faithful two-path generation.
 
 Reproduces the reference's Llama-3.2-1B architecture: a batched-parallel prefill (M=P GEMM,

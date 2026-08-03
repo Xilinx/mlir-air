@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 ///@file phi4-4b.h
 ///@brief Define the model parameters for the phi4-4b model
 #ifndef __PHI4_4B_H__
