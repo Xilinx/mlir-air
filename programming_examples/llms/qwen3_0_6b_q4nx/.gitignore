@@ -1,0 +1,19 @@
+# Build / kernel cache artifacts
+build_peano/
+build_chess/
+__pycache__/
+*.pyc
+prefill_kernel_cache/
+decode_kernel_cache/
+air_project/
+
+# Compiled kernels (reproduced by `make compile`; never committed).
+*.o
+*.ll
+
+# Stray artifacts from running the driver outside build_*/ (xrt.py +
+# external_kernels.py write these to CWD by design).
+air.mlir
+air.elf
+air.xclbin
+air.insts.bin

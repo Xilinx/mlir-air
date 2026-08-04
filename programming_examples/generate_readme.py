@@ -521,6 +521,7 @@ LLM_HF_MODELS = {
     "qwen25_1_5b": "Qwen/Qwen2.5-1.5B",
     "qwen25_3b": "Qwen/Qwen2.5-3B",
     "qwen3_0_6b": "Qwen/Qwen3-0.6B",
+    "qwen3_0_6b_q4nx": "FastFlowLM/Qwen3-0.6B-NPU2",
     "qwen3_1_7b": "Qwen/Qwen3-1.7B",
     "qwen3_4b": "Qwen/Qwen3-4B",
     "smollm2_1_7b": "HuggingFaceTB/SmolLM2-1.7B",
