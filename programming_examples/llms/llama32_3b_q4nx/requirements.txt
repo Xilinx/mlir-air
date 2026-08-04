@@ -1,0 +1,23 @@
+# Additional Python packages for the LLAMA-3.2-3B Q4NX example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, filelock, pyxrt, etc.).
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# NPU weights come from FastFlowLM's model.q4nx bundle (default HF repo
+# FastFlowLM/Llama-3.2-3B-NPU2, override with MODEL_SOURCE / Q4NX_MODEL_SOURCE).
+# The tokenizer + the `make verify` bf16 reference come from the meta-llama
+# checkpoint, which requires a one-time HuggingFace login:
+#   1. Accept Meta's license at https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct
+#   2. Create a read token at https://huggingface.co/settings/tokens
+#   3. `huggingface-cli login`  (or export HF_TOKEN=<token>)
+
+# Weight loading (Q4NX bundle + bf16 reference)
+safetensors
+huggingface_hub
+
+# Tokenizer (chat template) and HuggingFace bf16 reference model (used by `make verify`)
+transformers
+torch
