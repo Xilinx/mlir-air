@@ -28,7 +28,6 @@ from llama32_3b_weights import (  # noqa: E402
     LlamaConfig,
     LayerWeights,
     LlamaWeights,
-    generate_rope_lut,
 )
 
 
