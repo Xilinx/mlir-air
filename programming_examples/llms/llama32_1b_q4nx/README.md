@@ -89,7 +89,10 @@ the single `model.q4nx` bundle on the Hub:
   Q4NX projections + bf16 norms/embed + a (tied) lm_head. The **prefill** downloads
   and dequantizes it directly. The **decode/chatbot** derives its q4k-cascade requant
   cache + embed/norm golden from the *same* bundle on first use (one-time pack,
-  cached under `~/.cache/q4nx/`). May also be a local dir/file.
+  cached under `~/.cache/q4nx/`). May also be a local dir/file. For the default Hub
+  repo the download **pins a revision** compatible with this loader's Q4NX codec
+  (`_PINNED_Q4NX_REVISION` in `llama32_1b_q4nx_weights.py`) — the Hub bundle is
+  periodically re-packed to a newer block layout that would otherwise fail to load.
 
 `tie_word_embeddings=true`, so the LM head is the full-precision `embed_tokens` (the
 bundle's separate Q4NX lm_head is ignored).
