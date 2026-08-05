@@ -4968,6 +4968,11 @@ public:
     // ping-pong deadlock.
     tile_dma_alloc.sortMemcpyOps(dma_memcpy_ops);
 
+    // Step 3b: with the per-channel op order final, move any compute-tile S2MM
+    // chain that cannot fold into a circular BD ring onto a spare channel, so
+    // its ring period matches per-dispatch packet arrival.
+    tile_dma_alloc.rebalanceAperiodicPacketChains(memcpy_flows);
+
     // Step 4: Connect flows.
     //
     // Packet flows are assigned pkt_ids in two passes so that within one

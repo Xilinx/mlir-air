@@ -214,6 +214,110 @@ int64_t air::get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
   return one_d_offset;
 }
 
+// Fast path: if all memcpy_ops map to an equivalent BD (same memref and
+// matching offsets/sizes/strides), collapse them into a single BD task
+// (one repeat-count entry).
+static bool chansMappedToEquivalentBDs(air::ChannelInterface chanA,
+                                       air::ChannelInterface chanB) {
+  if (chanA.getMemref() != chanB.getMemref())
+    return false;
+  auto offsetsA = chanA.getMixedOffsets(), offsetsB = chanB.getMixedOffsets();
+  auto sizesA = chanA.getMixedSizes(), sizesB = chanB.getMixedSizes();
+  auto stridesA = chanA.getMixedStrides(), stridesB = chanB.getMixedStrides();
+  if (offsetsA.size() != offsetsB.size() || sizesA.size() != sizesB.size() ||
+      stridesA.size() != stridesB.size())
+    return false;
+  auto zipped_operands =
+      llvm::zip_equal(llvm::concat<OpFoldResult>(offsetsA, sizesA, stridesA),
+                      llvm::concat<OpFoldResult>(offsetsB, sizesB, stridesB));
+  bool wrapsAndStridesAllEquivalent = llvm::all_of(
+      zipped_operands, [](std::tuple<OpFoldResult, OpFoldResult> pair) {
+        return isEqualConstantIntOrValue(std::get<0>(pair), std::get<1>(pair));
+      });
+  return wrapsAndStridesAllEquivalent;
+}
+
+// Check if two channel operations are part of an N-buffer rotation pattern.
+// They are part of the same rotation if:
+// 1. They belong to the same air.channel declaration
+// 2. Their memrefs have the same type (shape, element type, memory space)
+// 3. Their sizes and strides are equivalent (access pattern match)
+// Note: Unlike chansMappedToEquivalentBDs, this allows different buffer
+// values as long as they have the same type and access pattern.
+static bool chansPartOfSameRotation(air::ChannelInterface chanA,
+                                    air::ChannelInterface chanB) {
+  // Must use same channel declaration
+  auto chanDeclA = air::getChannelDeclarationThroughSymbol(chanA);
+  auto chanDeclB = air::getChannelDeclarationThroughSymbol(chanB);
+  if (chanDeclA != chanDeclB)
+    return false;
+
+  // Memrefs must have same type (but can be different buffer values)
+  auto memrefTypeA = llvm::cast<MemRefType>(chanA.getMemref().getType());
+  auto memrefTypeB = llvm::cast<MemRefType>(chanB.getMemref().getType());
+  if (memrefTypeA != memrefTypeB)
+    return false;
+
+  // Sizes and strides must match (ignoring offsets which vary per buffer)
+  auto sizesA = chanA.getMixedSizes(), sizesB = chanB.getMixedSizes();
+  auto stridesA = chanA.getMixedStrides(), stridesB = chanB.getMixedStrides();
+  if (sizesA.size() != sizesB.size() || stridesA.size() != stridesB.size())
+    return false;
+
+  auto zipped = llvm::zip_equal(llvm::concat<OpFoldResult>(sizesA, stridesA),
+                                llvm::concat<OpFoldResult>(sizesB, stridesB));
+  return llvm::all_of(zipped, [](std::tuple<OpFoldResult, OpFoldResult> pair) {
+    return isEqualConstantIntOrValue(std::get<0>(pair), std::get<1>(pair));
+  });
+}
+
+static bool dmasMappedToEquivalentBDs(air::DmaMemcpyNdOp dmaA,
+                                      air::DmaMemcpyNdOp dmaB) {
+  return OperationEquivalence::isEquivalentTo(
+      dmaA, dmaB, OperationEquivalence::IgnoreLocations);
+}
+
+static bool memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB) {
+  if (auto chanA = dyn_cast_if_present<air::ChannelInterface>(opA))
+    if (auto chanB = dyn_cast_if_present<air::ChannelInterface>(opB))
+      return chansMappedToEquivalentBDs(chanA, chanB);
+  if (auto dmaA = dyn_cast_if_present<air::DmaMemcpyNdOp>(opA))
+    if (auto dmaB = dyn_cast_if_present<air::DmaMemcpyNdOp>(opB))
+      return dmasMappedToEquivalentBDs(dmaA, dmaB);
+  return false; // Unknown or different air::MemcpyInterface op types.
+}
+
+// Canonicalize a chain of memcpy ops as candidates to map to dma bds, by
+// removing repetitive patterns. Returns the unique repeating unit, or an empty
+// vector when the chain does not repeat.
+static llvm::SetVector<Operation *>
+getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
+  // Get a vector of unique BDs.
+  llvm::SetVector<Operation *> uniqueBDPattern;
+  auto opIt = memcpyIOps.begin();
+  while (opIt != memcpyIOps.end() &&
+         llvm::none_of(uniqueBDPattern, [opIt](Operation *op1) {
+           return memcpyIMappedToEquivalentBDs(*opIt, op1);
+         })) {
+    uniqueBDPattern.insert(*opIt);
+    opIt++;
+  }
+
+  unsigned idx = 0;
+  while (opIt != memcpyIOps.end()) {
+    // BD repetition found. Check if repeating pattern.
+    if (!memcpyIMappedToEquivalentBDs(*opIt, uniqueBDPattern[idx]))
+      return llvm::SetVector<Operation *>(); // Chain isn't repeating. Return
+                                             // an empty vector.
+    opIt++;
+    idx++;
+    idx %= uniqueBDPattern.size();
+  }
+
+  // Repeating BD chain successfully detected.
+  return uniqueBDPattern;
+}
+
 // Given a vector of memcpy operations, return a map of their repeat counts,
 // relative to a common ancestor region.
 llvm::MapVector<int, llvm::SetVector<Operation *>>
@@ -223,114 +327,6 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   for (auto o : memcpy_ops) {
     memcpyIOps.insert(o);
   }
-
-  // Fast path: if all memcpy_ops map to an equivalent BD (same memref and
-  // matching offsets/sizes/strides), collapse them into a single BD task
-  // (one repeat-count entry).
-  auto chansMappedToEquivalentBDs = [](air::ChannelInterface chanA,
-                                       air::ChannelInterface chanB) {
-    if (chanA.getMemref() != chanB.getMemref())
-      return false;
-    auto offsetsA = chanA.getMixedOffsets(), offsetsB = chanB.getMixedOffsets();
-    auto sizesA = chanA.getMixedSizes(), sizesB = chanB.getMixedSizes();
-    auto stridesA = chanA.getMixedStrides(), stridesB = chanB.getMixedStrides();
-    if (offsetsA.size() != offsetsB.size() || sizesA.size() != sizesB.size() ||
-        stridesA.size() != stridesB.size())
-      return false;
-    auto zipped_operands =
-        llvm::zip_equal(llvm::concat<OpFoldResult>(offsetsA, sizesA, stridesA),
-                        llvm::concat<OpFoldResult>(offsetsB, sizesB, stridesB));
-    bool wrapsAndStridesAllEquivalent = llvm::all_of(
-        zipped_operands, [](std::tuple<OpFoldResult, OpFoldResult> pair) {
-          return isEqualConstantIntOrValue(std::get<0>(pair),
-                                           std::get<1>(pair));
-        });
-    return wrapsAndStridesAllEquivalent;
-  };
-
-  // Check if two channel operations are part of an N-buffer rotation pattern.
-  // They are part of the same rotation if:
-  // 1. They belong to the same air.channel declaration
-  // 2. Their memrefs have the same type (shape, element type, memory space)
-  // 3. Their sizes and strides are equivalent (access pattern match)
-  // Note: Unlike chansMappedToEquivalentBDs, this allows different buffer
-  // values as long as they have the same type and access pattern.
-  auto chansPartOfSameRotation = [](air::ChannelInterface chanA,
-                                    air::ChannelInterface chanB) -> bool {
-    // Must use same channel declaration
-    auto chanDeclA = air::getChannelDeclarationThroughSymbol(chanA);
-    auto chanDeclB = air::getChannelDeclarationThroughSymbol(chanB);
-    if (chanDeclA != chanDeclB)
-      return false;
-
-    // Memrefs must have same type (but can be different buffer values)
-    auto memrefTypeA = llvm::cast<MemRefType>(chanA.getMemref().getType());
-    auto memrefTypeB = llvm::cast<MemRefType>(chanB.getMemref().getType());
-    if (memrefTypeA != memrefTypeB)
-      return false;
-
-    // Sizes and strides must match (ignoring offsets which vary per buffer)
-    auto sizesA = chanA.getMixedSizes(), sizesB = chanB.getMixedSizes();
-    auto stridesA = chanA.getMixedStrides(), stridesB = chanB.getMixedStrides();
-    if (sizesA.size() != sizesB.size() || stridesA.size() != stridesB.size())
-      return false;
-
-    auto zipped = llvm::zip_equal(llvm::concat<OpFoldResult>(sizesA, stridesA),
-                                  llvm::concat<OpFoldResult>(sizesB, stridesB));
-    return llvm::all_of(zipped,
-                        [](std::tuple<OpFoldResult, OpFoldResult> pair) {
-                          return isEqualConstantIntOrValue(std::get<0>(pair),
-                                                           std::get<1>(pair));
-                        });
-  };
-
-  auto dmasMappedToEquivalentBDs = [](air::DmaMemcpyNdOp dmaA,
-                                      air::DmaMemcpyNdOp dmaB) {
-    return OperationEquivalence::isEquivalentTo(
-        dmaA, dmaB, OperationEquivalence::IgnoreLocations);
-  };
-  auto memcpyIMappedToEquivalentBDs =
-      [chansMappedToEquivalentBDs, dmasMappedToEquivalentBDs](Operation *opA,
-                                                              Operation *opB) {
-        if (auto chanA = dyn_cast_if_present<air::ChannelInterface>(opA))
-          if (auto chanB = dyn_cast_if_present<air::ChannelInterface>(opB))
-            return chansMappedToEquivalentBDs(chanA, chanB);
-        if (auto dmaA = dyn_cast_if_present<air::DmaMemcpyNdOp>(opA))
-          if (auto dmaB = dyn_cast_if_present<air::DmaMemcpyNdOp>(opB))
-            return dmasMappedToEquivalentBDs(dmaA, dmaB);
-        return false; // Unknown or different air::MemcpyInterface op types.
-      };
-
-  // Canonicalize a chain of memcpy ops as candidates to map to dma bds, by
-  // removing repetitive patterns.
-  auto getUniqueBDPattern = [memcpyIMappedToEquivalentBDs](
-                                llvm::SetVector<Operation *> memcpyIOps) {
-    // Get a vector of unique BDs.
-    llvm::SetVector<Operation *> uniqueBDPattern;
-    auto opIt = memcpyIOps.begin();
-    while (opIt != memcpyIOps.end() &&
-           llvm::none_of(uniqueBDPattern,
-                         [opIt, memcpyIMappedToEquivalentBDs](Operation *op1) {
-                           return memcpyIMappedToEquivalentBDs(*opIt, op1);
-                         })) {
-      uniqueBDPattern.insert(*opIt);
-      opIt++;
-    }
-
-    unsigned idx = 0;
-    while (opIt != memcpyIOps.end()) {
-      // BD repetition found. Check if repeating pattern.
-      if (!memcpyIMappedToEquivalentBDs(*opIt, uniqueBDPattern[idx]))
-        return llvm::SetVector<Operation *>(); // Chain isn't repeating. Return
-                                               // an empty vector.
-      opIt++;
-      idx++;
-      idx %= uniqueBDPattern.size();
-    }
-
-    // Repeating BD chain successfully detected.
-    return uniqueBDPattern;
-  };
 
   auto uniqueMemcpyIPattern = getUniqueBDPattern(memcpyIOps);
   if (!uniqueMemcpyIPattern.empty())
@@ -366,8 +362,7 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   // For N-buffer rotation (e.g., 4-buffer sliding window), we need to generate
   // a single circular BD chain even if operations have different loop contexts.
   auto detectNBufferRotation =
-      [&chansPartOfSameRotation](
-          const llvm::SetVector<Operation *> &ops) -> bool {
+      [](const llvm::SetVector<Operation *> &ops) -> bool {
     if (ops.size() < 2)
       return false;
 
@@ -1400,6 +1395,160 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   if (chan == -1)
     chan = num_allocs % tile_dma_channels;
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
+}
+
+void air::TileDMAAllocator::rebalanceAperiodicPacketChains(
+    std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
+  // A compute-tile S2MM BD chain is walked STRICTLY IN ORDER: a packet header
+  // routes a transfer to the tile, it does not select which BD receives it. So
+  // the BD ring is only correct if its period matches the per-dispatch arrival
+  // sequence. Packet-collapsing several flows onto one channel preserves that
+  // as long as every flow is consumed the same number of times per dispatch --
+  // the chain then folds into a circular ring (getRepeatCounts finds the
+  // repeating pattern). Mixing flows of DIFFERENT per-dispatch multiplicity
+  // makes the sequence aperiodic: no pattern is found, one BD is emitted per
+  // transfer, and the resulting ring length is coprime with the arrival period,
+  // so the BD pointer drifts a little further every dispatch until a transfer
+  // meets a BD expecting another flow and the receiver deadlocks.
+  //
+  // Repair it where the hardware allows: if the tile still has a spare S2MM
+  // channel, peel one flow off the shared chain so both halves fold back into
+  // circular rings. Only aperiodic chains are touched, so any design that
+  // already folds (the common case) is left bit-identical.
+  auto declOf = [](Operation *o) -> Operation * {
+    auto chan = dyn_cast_if_present<air::ChannelInterface>(o);
+    if (!chan)
+      return nullptr;
+    auto decl = air::getChannelDeclarationThroughSymbol(chan);
+    return decl ? decl.getOperation() : nullptr;
+  };
+
+  // A shared chain stays in step with its arrivals only if every flow on it
+  // contributes the SAME number of BDs: the ring then advances exactly one full
+  // cycle per round of arrivals. If one flow appears more often than another
+  // (e.g. a sublayer buffer consumed twice per dispatch beside
+  // once-per-dispatch norm weights), the ring length is no longer a whole
+  // number of rounds, so the BD pointer slips a little further every dispatch
+  // until a transfer meets a BD belonging to another flow and the receiver
+  // deadlocks. A single-flow chain is trivially in step at any length.
+  auto chainIsSafe = [&declOf](const std::vector<Operation *> &ops) {
+    if (ops.size() <= 1)
+      return true;
+    llvm::MapVector<Operation *, unsigned> perFlow;
+    for (auto *o : ops) {
+      auto *d = declOf(o);
+      if (!d)
+        return true; // Unkeyed transfer: not attributable to a flow, leave it.
+      perFlow[d]++;
+    }
+    unsigned n = perFlow.front().second;
+    return llvm::all_of(perFlow, [n](auto &kv) { return kv.second == n; });
+  };
+
+  // One BD chain is built per (tile, channel) from the concatenation of every
+  // allocation mapped to it, so foldability must be judged on that same
+  // grouping -- allocations that each fold in isolation can still concatenate
+  // into an aperiodic chain.
+  llvm::MapVector<std::pair<Operation *, int>, SmallVector<size_t>> chains;
+  llvm::DenseMap<Operation *, llvm::SmallDenseSet<int>> usedChansPerTile;
+  for (auto [i, alloc] : llvm::enumerate(s2mm_allocs)) {
+    if (!alloc.dma_tile)
+      continue;
+    Operation *t = alloc.dma_tile.getOperation();
+    chains[{t, alloc.dma_channel.channel}].push_back(i);
+    usedChansPerTile[t].insert(alloc.dma_channel.channel);
+  }
+
+  for (auto &[key, allocIdxs] : chains) {
+    auto tile = s2mm_allocs[allocIdxs.front()].dma_tile;
+    std::vector<Operation *> ops;
+    for (size_t i : allocIdxs)
+      llvm::append_range(ops, s2mm_allocs[i].memcpyOps);
+    if (chainIsSafe(ops))
+      continue;
+
+    // Only a chain hosting more than one logical flow can be split apart.
+    llvm::SetVector<Operation *> decls;
+    bool allKeyed = true;
+    for (auto *o : ops) {
+      auto *d = declOf(o);
+      if (!d) {
+        allKeyed = false;
+        break;
+      }
+      decls.insert(d);
+    }
+    if (!allKeyed || decls.size() < 2)
+      continue;
+
+    auto &used = usedChansPerTile[key.first];
+    int numChans = tile.getNumDestConnections(AIE::WireBundle::DMA);
+    int freeChan = -1;
+    for (int c = 0; c < numChans; c++)
+      if (!used.count(c)) {
+        freeChan = c;
+        break;
+      }
+    if (freeChan < 0)
+      continue; // Nowhere to move it; leave the chain as-is.
+
+    // Peel the one flow whose removal leaves BOTH chains foldable.
+    for (auto *d : decls) {
+      std::vector<Operation *> moved, rest;
+      for (auto *o : ops)
+        (declOf(o) == d ? moved : rest).push_back(o);
+      if (moved.empty() || rest.empty())
+        continue;
+      if (!chainIsSafe(moved) || !chainIsSafe(rest))
+        continue;
+
+      // Retarget an allocation whose transfers all move; split the rest.
+      SmallVector<allocation_info_t> splits;
+      for (size_t i : allocIdxs) {
+        std::vector<Operation *> keepOps, moveOps;
+        for (auto *o : s2mm_allocs[i].memcpyOps)
+          (declOf(o) == d ? moveOps : keepOps).push_back(o);
+        if (moveOps.empty())
+          continue;
+        s2mm_allocs[i].packet_flow_id = -1; // reassigned on flow connection
+        if (keepOps.empty()) {
+          s2mm_allocs[i].dma_channel = {AIE::DMAChannelDir::S2MM, freeChan};
+          s2mm_allocs[i].tile_channel = freeChan;
+          continue;
+        }
+        allocation_info_t split = s2mm_allocs[i];
+        split.dma_channel = {AIE::DMAChannelDir::S2MM, freeChan};
+        split.tile_channel = freeChan;
+        split.memcpyOps = moveOps;
+        s2mm_allocs[i].memcpyOps = keepOps;
+        splits.push_back(split);
+      }
+      llvm::append_range(s2mm_allocs, splits);
+      used.insert(freeChan);
+
+      // Retarget the flow bundle for this channel declaration too: the flows
+      // are connected from the bundle's own copy of the allocation, so leaving
+      // it behind would route the packet to the channel the BDs just left.
+      for (auto &f : memcpy_flows) {
+        if (f.air_flow_op != d)
+          continue;
+        for (auto &fa : f.S2MM_alloc) {
+          if (!fa.dma_tile || fa.dma_tile.getOperation() != key.first)
+            continue;
+          if (fa.dma_channel.direction != AIE::DMAChannelDir::S2MM ||
+              fa.dma_channel.channel != key.second)
+            continue;
+          fa.dma_channel.channel = freeChan;
+          fa.tile_channel = freeChan;
+        }
+      }
+      LLVM_DEBUG(llvm::dbgs()
+                 << "rebalanced aperiodic S2MM chain on tile "
+                 << tile.getOperation() << ": moved " << moved.size() << " of "
+                 << ops.size() << " transfers to channel " << freeChan << "\n");
+      break;
+    }
+  }
 }
 
 FailureOr<AIE::BufferOp>

@@ -292,6 +292,16 @@ public:
 
   FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
+
+  // Split any S2MM chain that interleaves distinct flows at mismatched
+  // multiplicity (so its BD ring is not a whole number of per-dispatch arrival
+  // patterns and the BD pointer drifts) onto a spare channel of the same tile.
+  // No-op for homogeneous or equal-multiplicity chains, and for tiles with no
+  // spare channel. `memcpy_flows` is updated in lockstep so the flows that get
+  // connected afterwards target the same channel the BDs were moved to. Run
+  // after sortMemcpyOps, before flows are connected.
+  void
+  rebalanceAperiodicPacketChains(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 };
 
 class ShimDMAAllocator : public DMAAllocator {
