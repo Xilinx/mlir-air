@@ -123,47 +123,70 @@ jobs:
           DEST="$PWD/llvm-link-bin"
           mkdir -p "$DEST"
           python3 - "$URL" mlir/bin/llvm-link "$DEST/llvm-link" <<'PY'
-          import struct, sys, urllib.request, zlib
+          import io, shutil, sys, urllib.request, zipfile
 
           url, member, out = sys.argv[1:4]
 
-          def rng(a, b):
-              r = urllib.request.Request(url, headers={"Range": f"bytes={a}-{b}"})
-              return urllib.request.urlopen(r, timeout=300).read()
 
-          size = int(urllib.request.urlopen(
-              urllib.request.Request(url, method="HEAD"),
-              timeout=60).headers["Content-Length"])
+          class RangeReader(io.RawIOBase):
+              """Seekable read-only file over an HTTP resource, backed by Range
+              requests. Handing this to zipfile keeps the ZIP details (zip64,
+              end-of-central-directory scan, CRC check) in the stdlib."""
 
-          # Locate the central directory from the (zip64) end-of-central-directory.
-          tail = rng(max(0, size - (1 << 20)), size - 1)
-          i = tail.rfind(b"PK\x06\x06")
-          if i >= 0:
-              cd_size, cd_off = struct.unpack("<QQ", tail[i + 40:i + 56])
-          else:
-              j = tail.rfind(b"PK\x05\x06")
-              cd_size, cd_off = struct.unpack("<II", tail[j + 12:j + 20])
+              def __init__(self, url):
+                  self.url, self.pos = url, 0
+                  with urllib.request.urlopen(
+                          urllib.request.Request(url, method="HEAD"),
+                          timeout=60) as r:
+                      length = r.headers.get("Content-Length")
+                  if not length:
+                      sys.exit(f"no Content-Length for {url}; cannot range-read it")
+                  self.size = int(length)
 
-          cd, p, ent = rng(cd_off, cd_off + cd_size - 1), 0, None
-          while p < len(cd) - 4 and cd[p:p + 4] == b"PK\x01\x02":
-              method, = struct.unpack("<H", cd[p + 10:p + 12])
-              csize,  = struct.unpack("<I", cd[p + 20:p + 24])
-              nlen, elen, clen = struct.unpack("<HHH", cd[p + 28:p + 34])
-              lho,    = struct.unpack("<I", cd[p + 42:p + 46])
-              if cd[p + 46:p + 46 + nlen].decode() == member:
-                  ent = (method, csize, lho)
-                  break
-              p += 46 + nlen + elen + clen
-          if ent is None:
-              sys.exit(f"{member} not found in {url}")
+              def readable(self):
+                  return True
 
-          # The local file header's name/extra lengths may differ from the central
-          # directory's, so re-read them to find where the member's bytes start.
-          method, csize, lho = ent
-          n2, e2 = struct.unpack("<HH", rng(lho, lho + 29)[26:30])
-          base = lho + 30 + n2 + e2
-          blob = rng(base, base + csize - 1)
-          open(out, "wb").write(zlib.decompress(blob, -15) if method == 8 else blob)
+              def seekable(self):
+                  return True
+
+              def tell(self):
+                  return self.pos
+
+              def seek(self, off, whence=io.SEEK_SET):
+                  base = {io.SEEK_SET: 0,
+                          io.SEEK_CUR: self.pos,
+                          io.SEEK_END: self.size}[whence]
+                  self.pos = max(0, min(self.size, base + off))
+                  return self.pos
+
+              def readinto(self, buf):
+                  n = min(len(buf), self.size - self.pos)
+                  if n <= 0:
+                      return 0
+                  req = urllib.request.Request(
+                      self.url,
+                      headers={"Range": f"bytes={self.pos}-{self.pos + n - 1}"})
+                  with urllib.request.urlopen(req, timeout=300) as r:
+                      data = r.read()
+                  # A server that ignores Range answers 200 with the whole 1GB body;
+                  # refuse rather than silently downloading it.
+                  if len(data) != n:
+                      sys.exit(f"short read: got {len(data)} of {n} bytes at "
+                               f"offset {self.pos} (Range ignored?)")
+                  buf[:n] = data
+                  self.pos += n
+                  return n
+
+
+          # Buffer so zipfile's small reads don't become one request each.
+          fp = io.BufferedReader(RangeReader(url), buffer_size=1 << 20)
+          with zipfile.ZipFile(fp) as z:
+              try:
+                  info = z.getinfo(member)
+              except KeyError:
+                  sys.exit(f"{member} not found in {url}")
+              with z.open(info) as src, open(out, "wb") as dst:
+                  shutil.copyfileobj(src, dst)
           PY
           chmod +x "$DEST/llvm-link"
           VER=$("$DEST/llvm-link" --version | sed -n 's/.*LLVM version \([0-9]*\).*/\1/p')
