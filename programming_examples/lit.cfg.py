@@ -238,7 +238,9 @@ try:
         _ll_m = re.search(r"version (\d+)", _ll_out)
         if _ll_m and int(_ll_m.group(1)) < 23:
             config.available_features.add("llvm_link_pre23")
-            print(f"llvm-link {_ll_m.group(1)} (<23) found: fused-decode merge enabled.")
+            print(
+                f"llvm-link {_ll_m.group(1)} (<23) found: fused-decode merge enabled."
+            )
         else:
             print(
                 "llvm-link on PATH is not <23 "
