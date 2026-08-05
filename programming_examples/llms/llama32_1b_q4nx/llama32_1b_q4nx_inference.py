@@ -39,8 +39,16 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _PE = _HERE.parent.parent  # programming_examples
 _DEC = _PE / "fused_decode"  # standalone fused superkernel decode example
-_TOKENIZER = os.environ.get(
+# Tokenizer: a local Llama-3.2-1B tokenizer dir if present, else fall back to the
+# HF checkpoint (base/instruct share one tokenizer) so `make run`/`profile` work
+# without a hand-set Q4NX_TOKENIZER_DIR — same source the other llms/ examples use.
+_LOCAL_TOKENIZER = os.environ.get(
     "Q4NX_TOKENIZER_DIR", os.path.expanduser("~/q4nx_data/tokenizer/Llama-3.2-1B")
+)
+_TOKENIZER = (
+    _LOCAL_TOKENIZER
+    if os.path.isdir(_LOCAL_TOKENIZER)
+    else "meta-llama/Llama-3.2-1B-Instruct"
 )
 PARIS_PROMPT = [128000, 791, 6864, 315, 9822, 374]  # BOS + "The capital of France is"
 
@@ -148,8 +156,11 @@ def _prefill_worker(prompt, out_path, seq_len):
 
 def run_prefill(prompt, seq_len, kv_path):
     """Spawn the prefill worker (clean NPU release before decode)."""
+    # Note: avoid the token "prompt_len=" here so it doesn't shadow the canonical
+    # "Inference: prompt_len=<seq_len>" line that bench/extract_perf.py parses (it
+    # takes the first match).
     print(
-        f"[inference] prefill (seq_len={seq_len}, prompt_len={len(prompt)})...",
+        f"[inference] prefill (seq_len={seq_len}, prompt={len(prompt)} tok)...",
         flush=True,
     )
     cmd = [
@@ -164,6 +175,23 @@ def run_prefill(prompt, seq_len, kv_path):
         ",".join(map(str, prompt)),
     ]
     subprocess.run(cmd, check=True)
+
+
+def _compile_only(seq_len=2048):
+    """Build/cache the prefill ELFs and exit (no weights, no NPU dispatch).
+
+    This is the weight-free CI smoke signal (`make compile`). Constructing
+    LlamaQ4nxPrefill compiles the prefill engines; the fused decode templates
+    are a separate ~15 min build (`make compile-decode`)."""
+    sys.path.insert(0, str(_HERE))
+    from llama32_1b_q4nx_prefill import LlamaQ4nxPrefill
+
+    print(
+        f"[inference] compile-only: building prefill ELFs (seq_len={seq_len})...",
+        flush=True,
+    )
+    LlamaQ4nxPrefill(seq_len=seq_len, n_layers=16)  # constructs -> compiles engines
+    print("Compilation passed.", flush=True)
 
 
 # ------------------------------------------------------------------ fused decoder
@@ -518,6 +546,7 @@ def generate(
     stop_on_eos=True,
     seed=0,
     greedy=False,
+    profile=False,
 ):
     import numpy as np, time
 
@@ -530,11 +559,9 @@ def generate(
     P = fk.shape[1]
     ttft = time.perf_counter() - t_ttft0
     print(f"[inference] prefill first token = {first} (Paris=12366)", flush=True)
-    print(
-        f"[inference] TTFT: {ttft:.2f}s (prefill worker incl. weight load + LM head). "
-        f"First token: {first}",
-        flush=True,
-    )
+    # Canonical driver line consumed by bench/extract_perf.py (shared with the
+    # other llms/ examples). The prefill worker includes weight load + LM head.
+    print(f"Time to first token (TTFT): {ttft:.2f}s", flush=True)
 
     # ONE decode xclbin serves L in [1, ATTN_MAXL]; the decoder picks the template that covers
     # the requested reach (rt<M> for short, compile-time L<M> up to 2048). Cap at its ATTN_MAXL.
@@ -584,11 +611,25 @@ def generate(
     t_decode = time.perf_counter() - t_decode0
     n_gen = len(gen_ids) - 1  # exclude the prefill-provided first token
     if n_gen > 0:
+        tps = n_gen / t_decode
+        # Canonical driver lines consumed by bench/extract_perf.py: the
+        # parenthesized "(Y.YY tok/s)" is the throughput the perf harness parses.
+        # "prompt_len" reports the NOMINAL prefill/decode context window (seq_len,
+        # == the decoder's ATTN_MAXL), matching the sibling drivers which print the
+        # padded seq_len (2048) — so the nightly's context_len column stays
+        # consistent. (Both here and the siblings decode from the real prompt
+        # position onward, so per-token tok/s is measured at the same real depth.)
         print(
-            f"[inference] decode: {n_gen} tokens in {t_decode:.2f}s  "
-            f"{n_gen / t_decode:.2f} tok/s  ({t_decode / n_gen * 1000:.1f} ms/token)",
+            f"Generated {n_gen} tokens in {t_decode:.2f}s ({tps:.2f} tok/s)",
             flush=True,
         )
+        print(f"Inference: prompt_len={seq_len}, n_tokens={n_gen}", flush=True)
+        if profile:
+            print(
+                f"[profile] decode {t_decode / n_gen * 1000:.1f} ms/token, "
+                f"prefill TTFT {ttft:.2f}s, P={P}",
+                flush=True,
+            )
     return gen_ids
 
 
@@ -636,6 +677,7 @@ class Session:
     def __init__(self, seq_len=2048):
         import numpy as np, time
 
+        self.seq_len = seq_len  # nominal prefill/decode context window (reported)
         sys.path.insert(0, str(_HERE))
         sys.path.insert(0, str(_DEC))
         from llama32_1b_q4nx_prefill import LlamaQ4nxPrefill
@@ -698,11 +740,7 @@ class Session:
         P = K.shape[1]
         ttft = time.perf_counter() - t_ttft0
         print(f"[inference] prefill first token = {first}", flush=True)
-        print(
-            f"[inference] TTFT: {ttft:.2f}s (prefill compute; weights preloaded). "
-            f"First token: {first}",
-            flush=True,
-        )
+        print(f"Time to first token (TTFT): {ttft:.2f}s", flush=True)
         n_eff = min(n_tokens or self.attn_maxl, self.attn_maxl - P)
         if n_eff <= 0:
             print(
@@ -748,10 +786,11 @@ class Session:
         n_gen = len(gen_ids) - 1
         if n_gen > 0:
             print(
-                f"[inference] decode: {n_gen} tokens in {t_decode:.2f}s  "
-                f"{n_gen / t_decode:.2f} tok/s  ({t_decode / n_gen * 1000:.1f} ms/token)",
+                f"Generated {n_gen} tokens in {t_decode:.2f}s "
+                f"({n_gen / t_decode:.2f} tok/s)",
                 flush=True,
             )
+            print(f"Inference: prompt_len={self.seq_len}, n_tokens={n_gen}", flush=True)
         return gen_ids
 
 
@@ -880,6 +919,33 @@ def main():
     ap.add_argument(
         "--n-tokens", type=int, default=9, help="tokens to generate (<= ATTN_MAXL-P)"
     )
+    # Canonical driver contract (shared with the other llms/ examples): the
+    # Makefile run/profile/chat targets pass these through.
+    ap.add_argument(
+        "--model",
+        type=str,
+        default="instruct",
+        help="model variant: 'instruct' (chat template) or 'base' (raw encode). "
+        "Also selects the HF bf16 reference in verify_adapter.py.",
+    )
+    ap.add_argument(
+        "--run-only",
+        action="store_true",
+        help="run inference (kernels are compiled on demand / from cache). "
+        "Accepted for parity with the other examples; running is the default.",
+    )
+    ap.add_argument(
+        "--compile-only",
+        action="store_true",
+        help="build/cache the prefill ELFs and exit (no weights, no NPU dispatch). "
+        "The fused decode templates are a separate build: `make compile-decode`.",
+    )
+    ap.add_argument(
+        "--profile",
+        action="store_true",
+        help="print the decode-throughput / TTFT profiling summary (machine-readable "
+        "lines consumed by bench/extract_perf.py).",
+    )
     ap.add_argument(
         "--temperature", type=float, default=0.7, help="the reference default 0.7"
     )
@@ -927,6 +993,10 @@ def main():
         _prefill_worker(prompt, args._kv_path, args.seq_len)
         return
 
+    if args.compile_only:
+        _compile_only(args.seq_len)
+        return
+
     if args.interactive:
         interactive_chat(
             system=args.system,
@@ -940,10 +1010,12 @@ def main():
         )
         return
 
+    # 'base' variant (or --raw) encodes without the chat template.
+    raw_encode = args.raw or args.model == "base"
     if args.prompt_ids:
         prompt = [int(x) for x in args.prompt_ids.split(",")]
     elif args.prompt:
-        if args.raw:
+        if raw_encode:
             from transformers import AutoTokenizer
 
             prompt = AutoTokenizer.from_pretrained(_TOKENIZER).encode(args.prompt)
@@ -967,6 +1039,7 @@ def main():
         stop_on_eos=not args.no_eos_stop,
         seed=args.seed,
         greedy=args.greedy,
+        profile=args.profile,
     )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")

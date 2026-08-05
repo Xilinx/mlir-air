@@ -11,6 +11,7 @@ multi-launch ELFs and gates correctness against a Hugging Face bf16 reference.
 |---|---|---|---|---|---|---|
 | **Llama-3.2-1B** | `meta-llama/Llama-3.2-1B` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | reference exemplar | prefill + decode |
 | **Llama-3.2-1B int4-AWQ** | `amd/Llama-3.2-1B-Instruct-awq-...` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | int4-AWQ (prefill) | prefill; decode follow-up |
+| **Llama-3.2-1B Q4NX** | `FastFlowLM/Llama-3.2-1B-NPU2` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | q4nx 4-bit weights, fused decode | prefill + decode |
 | **SmolLM2-1.7B** | `HuggingFaceTB/SmolLM2-1.7B` | 24 | 2048 / 64 / 8192 | MHA 32Q/32KV | pure MHA | prefill + decode |
 | **Qwen2.5-0.5B** | `Qwen/Qwen2.5-0.5B` | 24 | 896 / 64 / 4864 | GQA 14Q/2KV | QKV bias | prefill + decode |
 | **Qwen2.5-1.5B** | `Qwen/Qwen2.5-1.5B` | 28 | 1536 / 128 / 8960 | GQA 12Q/2KV | QKV bias, hd=128 | prefill + decode |
@@ -19,6 +20,7 @@ multi-launch ELFs and gates correctness against a Hugging Face bf16 reference.
 | **Qwen3-1.7B** | `Qwen/Qwen3-1.7B` | 28 | 2048 / 128 / 6144 | GQA 16Q/8KV | QK-norm, hd=128 | prefill + decode |
 | **Qwen3-4B** | `Qwen/Qwen3-4B` | 36 | 2560 / 128 / 9728 | GQA 32Q/8KV | QK-norm, decoupled q_dim=4096 | prefill + decode |
 | **Llama-3.2-3B** | `meta-llama/Llama-3.2-3B` | 28 | 3072 / 128 / 8192 | GQA 24Q/8KV | pure Llama, hd=128 | prefill + decode |
+| **Llama-3.2-3B Q4NX** | `FastFlowLM/Llama-3.2-3B-NPU2` | 28 | 3072 / 128 / 8192 | GQA 24Q/8KV | q4nx 4-bit weights | prefill + decode |
 
 All are decoder-only with RMSNorm + SwiGLU FFN + RoPE. The architecture axes that
 shape each deployment's dataflow:
@@ -83,7 +85,9 @@ model directory.
 llms/
 ├── llama32_1b/         # bf16 Llama-3.2-1B (the reference exemplar)
 ├── llama32_1b_int4/    # int4-AWQ variant (own quantized builders)
+├── llama32_1b_q4nx/    # Q4NX 4-bit Llama-3.2-1B (fused decode superkernel)
 ├── llama32_3b/         # bf16 Llama-3.2-3B (pure Llama, head_dim=128)
+├── llama32_3b_q4nx/    # Q4NX 4-bit Llama-3.2-3B (reuses the bf16 3B runner)
 ├── smollm2_1_7b/       # bf16 SmolLM2-1.7B (MHA)
 ├── qwen25_0_5b/        # Qwen2.5-0.5B  (QKV bias, head_dim=64)
 ├── qwen25_1_5b/        # Qwen2.5-1.5B  (QKV bias, head_dim=128)

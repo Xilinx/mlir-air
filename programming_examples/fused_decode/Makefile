@@ -35,7 +35,7 @@ PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
 # weight files are read at build time -- the compile is weight-free).
 DECODE_ENV     := VOCAB_CHUNK_I2=14 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1
 
-.PHONY: help compile-decode clean
+.PHONY: help compile-decode _compile_decode_build clean
 
 help:
 	@echo "============================================================"
@@ -52,12 +52,24 @@ help:
 ## Build the fused decode: Peano kernels + two templates (decode_L2048 + decode_L2047
 ## slope ref). ~15 min. Weight-free (runtime BOs), like the prefill compile.
 ##
+## Idempotent: if both templates are already present, skip (the ~15 min build only
+## runs once). `make clean` forces a rebuild. Consumers that call this repeatedly
+## (e.g. the llama32_1b_q4nx verify + profile lits) thus pay the cost at most once.
+##
 ## REPRODUCIBILITY (toolchain): the inline-attn merge path shells out to an EXTERNAL
 ## `llvm-link` (resolved from PATH). It MUST be a pre-lifetime-change LLVM (e.g. the system
 ## /usr/bin/llvm-link, LLVM 20). A newer LLVM (>=23) llvm-link upgrades the llvm.lifetime
 ## intrinsic to the no-size form and Peano opt (LLVM 21) then rejects the merged IR
 ## ("Broken module found"). Keep any such LLVM's bin OFF PATH. The preflight aborts early.
 compile-decode:
+	@if [ -f $(srcdir)/decode_L2048.xclbin ] && [ -f $(srcdir)/decode_L2048.insts.bin ] \
+	    && [ -f $(srcdir)/decode_L2047.xclbin ] && [ -f $(srcdir)/decode_L2047.insts.bin ]; then \
+	  echo "Decode templates already built (decode_L2048 + decode_L2047); skipping. Run 'make clean' to force a rebuild."; \
+	else \
+	  $(MAKE) -f $(srcdir)/Makefile _compile_decode_build; \
+	fi
+
+_compile_decode_build:
 	@echo ">>> preflight: llvm-link must be a pre-change LLVM (<23) for the inline-attn merge"
 	@LLVM_LINK=$$(command -v llvm-link || true); \
 	  if [ -z "$$LLVM_LINK" ]; then echo "ERROR: no llvm-link on PATH (need system LLVM ~20)"; exit 1; fi; \

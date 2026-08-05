@@ -17,10 +17,13 @@ interactive chatbot on NPU2 (AIE2P):
   RMSNorm, argmax / stochastic sampler, chat template, EOS, and streaming output
   run on the host between tokens.
 
-Like the sibling `llama32_1b` / `llama32_1b_int4`, but it consumes external Q4NX
-weights and gates on the greedy first token (" Paris", id 12366) rather than a
-`make verify` top-k comparison vs HF transformers bf16 (there is no HF checkpoint
-for these weights). See [Correctness](#correctness) and [Data](#data).
+Like the sibling `llama32_1b` / `llama32_1b_int4`, it plugs into the shared driver
+contract (`make run`/`profile`/`chat`/`verify`) and the `verify/` subsystem. It
+consumes external Q4NX weights, so `make verify` compares the NPU q4nx run against
+the HF **bf16** sibling checkpoint (`meta-llama/Llama-3.2-1B-Instruct`) — the same
+NPU-vs-bf16 proxy the `llama32_3b_q4nx` example uses. A fast weight-integrity smoke
+(greedy first token " Paris", id 12366) is kept as `make verify-paris`. See
+[Correctness](#correctness) and [Data](#data).
 
 ## Architecture
 
@@ -86,7 +89,10 @@ the single `model.q4nx` bundle on the Hub:
   Q4NX projections + bf16 norms/embed + a (tied) lm_head. The **prefill** downloads
   and dequantizes it directly. The **decode/chatbot** derives its q4k-cascade requant
   cache + embed/norm golden from the *same* bundle on first use (one-time pack,
-  cached under `~/.cache/q4nx/`). May also be a local dir/file.
+  cached under `~/.cache/q4nx/`). May also be a local dir/file. For the default Hub
+  repo the download **pins a revision** compatible with this loader's Q4NX codec
+  (`_PINNED_Q4NX_REVISION` in `llama32_1b_q4nx_weights.py`) — the Hub bundle is
+  periodically re-packed to a newer block layout that would otherwise fail to load.
 
 `tie_word_embeddings=true`, so the LM head is the full-precision `embed_tokens` (the
 bundle's separate Q4NX lm_head is ignored).
@@ -104,20 +110,23 @@ make compile CTX=2048
 #   ~15 min; weight-free build, but needs a pre-change llvm-link (see Reproducibility).
 make compile-decode
 
+# Run inference (NPU prefill + fused NPU decode)
+make run
+
+# With the decode-throughput / TTFT profiling summary
+make profile
+
 # Interactive multi-turn chatbot (streams tokens)
 make chat
 
 # Single Q&A turn
 make ask PROMPT="What is the capital of France?"
 
-# Paris gate: prefill+decode, first token 12366 -> *** PARIS ***
-make gen
-
-# Prefill-only Paris gate
-make run
-
-# Same prefill Paris gate (name CI expects)
+# Correctness gate: top-k token-set inclusion, NPU q4nx vs HF bf16
 make verify
+
+# Fast weight-integrity smoke: prefill first token 12366 -> *** PARIS ***
+make verify-paris
 ```
 
 Direct invocation (equivalent to `make chat`):
@@ -135,11 +144,17 @@ Options: `--temperature 0.7 --top-k 5 --top-p 0.9`, `--rep-penalty`, `--seed`,
 
 ## Correctness
 
-The Paris gate is greedy first-token parity: for "The capital of France is", prefill
-predicts argmax **12366 (" Paris")** and the fused decode continues coherently
-(`make gen` / `make run` print `*** PARIS ***`). This replaces the HF-reference
-`make verify` used by the other examples (no HF checkpoint exists for these Q4NX
-weights).
+`make verify` runs the shared `verify/` top-k token-set inclusion gate (k=5,
+first-divergence over 32 greedy tokens across 2 prompts) comparing the NPU q4nx
+prefill + fused decode against the HF **bf16** sibling checkpoint
+(`meta-llama/Llama-3.2-1B-Instruct`) — driven by `verify_adapter.py`. `make
+verify-full` runs the full prompt set; `make diagnosis` is the informational
+per-layer lens. Since there is no bf16 checkpoint for the q4nx weights themselves,
+the reference is the bf16 sibling (identical to the `llama32_3b_q4nx` approach).
+
+`make verify-paris` is a fast weight-integrity smoke: for "The capital of France
+is", prefill predicts argmax **12366 (" Paris")** and prints `*** PARIS ***` —
+no decode build or HF reference required.
 
 ## How it works
 
