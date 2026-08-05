@@ -100,6 +100,80 @@ jobs:
           source air-venv/bin/activate
           python3 -m pip install --upgrade --force-reinstall llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
+      # The fused-decode inline-attn merge (programming_examples/fused_decode, used
+      # by llama32_1b_q4nx) shells out to an `llvm-link` resolved from PATH, and it
+      # MUST be a pre-lifetime-change LLVM (<23): a >=23 llvm-link rewrites
+      # llvm.lifetime.{start,end} to the no-size form and Peano opt (LLVM 21) then
+      # rejects the merged module ("immarg operand has non-immediate parameter").
+      # Neither toolchain on this runner provides one -- the llvm-aie wheel ships
+      # clang/opt/llc but no llvm-link, and the pinned mlir distro is LLVM 23 -- so
+      # the q4nx verify+profile lits reported UNSUPPORTED and the model silently
+      # vanished from perf.json.
+      #
+      # Pull the single statically-linked llvm-link (8MB, no libLLVM.so) out of the
+      # LLVM 21 mlir-distro wheel, matching Peano's own LLVM version exactly. A wheel
+      # is a ZIP, so HTTP range requests fetch just that member (~4MB, not the 1GB
+      # wheel). Only llvm-link goes in this dir, so prepending it to PATH cannot
+      # shadow clang/opt/llc for any other build.
+      - name: Get pre-23 llvm-link (fused-decode merge)
+        run: |
+          set -euo pipefail
+          WHEEL="mlir-21.0.0.2025073017%2B77914c96-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+          URL="https://github.com/Xilinx/mlir-aie/releases/download/mlir-distro/${WHEEL}"
+          DEST="$PWD/llvm-link-bin"
+          mkdir -p "$DEST"
+          python3 - "$URL" mlir/bin/llvm-link "$DEST/llvm-link" <<'PY'
+          import struct, sys, urllib.request, zlib
+
+          url, member, out = sys.argv[1:4]
+
+          def rng(a, b):
+              r = urllib.request.Request(url, headers={"Range": f"bytes={a}-{b}"})
+              return urllib.request.urlopen(r, timeout=300).read()
+
+          size = int(urllib.request.urlopen(
+              urllib.request.Request(url, method="HEAD"),
+              timeout=60).headers["Content-Length"])
+
+          # Locate the central directory from the (zip64) end-of-central-directory.
+          tail = rng(max(0, size - (1 << 20)), size - 1)
+          i = tail.rfind(b"PK\x06\x06")
+          if i >= 0:
+              cd_size, cd_off = struct.unpack("<QQ", tail[i + 40:i + 56])
+          else:
+              j = tail.rfind(b"PK\x05\x06")
+              cd_size, cd_off = struct.unpack("<II", tail[j + 12:j + 20])
+
+          cd, p, ent = rng(cd_off, cd_off + cd_size - 1), 0, None
+          while p < len(cd) - 4 and cd[p:p + 4] == b"PK\x01\x02":
+              method, = struct.unpack("<H", cd[p + 10:p + 12])
+              csize,  = struct.unpack("<I", cd[p + 20:p + 24])
+              nlen, elen, clen = struct.unpack("<HHH", cd[p + 28:p + 34])
+              lho,    = struct.unpack("<I", cd[p + 42:p + 46])
+              if cd[p + 46:p + 46 + nlen].decode() == member:
+                  ent = (method, csize, lho)
+                  break
+              p += 46 + nlen + elen + clen
+          if ent is None:
+              sys.exit(f"{member} not found in {url}")
+
+          # The local file header's name/extra lengths may differ from the central
+          # directory's, so re-read them to find where the member's bytes start.
+          method, csize, lho = ent
+          n2, e2 = struct.unpack("<HH", rng(lho, lho + 29)[26:30])
+          base = lho + 30 + n2 + e2
+          blob = rng(base, base + csize - 1)
+          open(out, "wb").write(zlib.decompress(blob, -15) if method == 8 else blob)
+          PY
+          chmod +x "$DEST/llvm-link"
+          VER=$("$DEST/llvm-link" --version | sed -n 's/.*LLVM version \([0-9]*\).*/\1/p')
+          if [ -z "$VER" ] || [ "$VER" -ge 23 ]; then
+            echo "ERROR: extracted llvm-link is LLVM '$VER'; need <23" >&2
+            exit 1
+          fi
+          echo "llvm-link = $DEST/llvm-link (LLVM $VER)"
+          echo "$DEST" >> "$GITHUB_PATH"
+
       - name: Build mlir-air
         run: |
           source air-venv/bin/activate
