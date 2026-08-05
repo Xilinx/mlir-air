@@ -223,6 +223,33 @@ try:
 except Exception:
     print("Peano check failed.")
 
+# The fused-decode inline-attn merge (programming_examples/fused_decode) shells out
+# to an external `llvm-link` that MUST be a pre-lifetime-change LLVM (< 23); a newer
+# llvm-link rewrites the llvm.lifetime intrinsic and Peano opt then rejects the
+# merged IR. Expose a feature so decode-e2e tests (e.g. llama32_1b_q4nx
+# verify/profile) report UNSUPPORTED rather than hard-fail on a runner where no
+# compatible llvm-link is on PATH.
+try:
+    _llvm_link = shutil.which("llvm-link")
+    if _llvm_link:
+        _ll_out = subprocess.run(
+            [_llvm_link, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        ).stdout.decode("utf-8")
+        _ll_m = re.search(r"version (\d+)", _ll_out)
+        if _ll_m and int(_ll_m.group(1)) < 23:
+            config.available_features.add("llvm_link_pre23")
+            print(f"llvm-link {_ll_m.group(1)} (<23) found: fused-decode merge enabled.")
+        else:
+            print(
+                "llvm-link on PATH is not <23 "
+                f"({_ll_out.strip().splitlines()[0] if _ll_out.strip() else '?'}); "
+                "fused-decode decode tests will be UNSUPPORTED."
+            )
+    else:
+        print("llvm-link not on PATH; fused-decode decode tests will be UNSUPPORTED.")
+except Exception as e:
+    print(f"llvm-link check failed: {e}")
+
 # Test if Chess is available
 if not config.enable_chess_tests:
     print("Chess tests disabled.")

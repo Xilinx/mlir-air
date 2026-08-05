@@ -156,8 +156,11 @@ def _prefill_worker(prompt, out_path, seq_len):
 
 def run_prefill(prompt, seq_len, kv_path):
     """Spawn the prefill worker (clean NPU release before decode)."""
+    # Note: avoid the token "prompt_len=" here so it doesn't shadow the canonical
+    # "Inference: prompt_len=<seq_len>" line that bench/extract_perf.py parses (it
+    # takes the first match).
     print(
-        f"[inference] prefill (seq_len={seq_len}, prompt_len={len(prompt)})...",
+        f"[inference] prefill (seq_len={seq_len}, prompt={len(prompt)} tok)...",
         flush=True,
     )
     cmd = [
@@ -610,13 +613,17 @@ def generate(
     if n_gen > 0:
         tps = n_gen / t_decode
         # Canonical driver lines consumed by bench/extract_perf.py: the
-        # parenthesized "(Y.YY tok/s)" is the throughput the perf harness parses,
-        # and "prompt_len=P" is the KV-cache depth the decode ran against.
+        # parenthesized "(Y.YY tok/s)" is the throughput the perf harness parses.
+        # "prompt_len" reports the NOMINAL prefill/decode context window (seq_len,
+        # == the decoder's ATTN_MAXL), matching the sibling drivers which print the
+        # padded seq_len (2048) — so the nightly's context_len column stays
+        # consistent. (Both here and the siblings decode from the real prompt
+        # position onward, so per-token tok/s is measured at the same real depth.)
         print(
             f"Generated {n_gen} tokens in {t_decode:.2f}s ({tps:.2f} tok/s)",
             flush=True,
         )
-        print(f"Inference: prompt_len={P}, n_tokens={n_gen}", flush=True)
+        print(f"Inference: prompt_len={seq_len}, n_tokens={n_gen}", flush=True)
         if profile:
             print(
                 f"[profile] decode {t_decode / n_gen * 1000:.1f} ms/token, "
@@ -670,6 +677,7 @@ class Session:
     def __init__(self, seq_len=2048):
         import numpy as np, time
 
+        self.seq_len = seq_len  # nominal prefill/decode context window (reported)
         sys.path.insert(0, str(_HERE))
         sys.path.insert(0, str(_DEC))
         from llama32_1b_q4nx_prefill import LlamaQ4nxPrefill
@@ -782,7 +790,7 @@ class Session:
                 f"({n_gen / t_decode:.2f} tok/s)",
                 flush=True,
             )
-            print(f"Inference: prompt_len={P}, n_tokens={n_gen}", flush=True)
+            print(f"Inference: prompt_len={self.seq_len}, n_tokens={n_gen}", flush=True)
         return gen_ids
 
 
