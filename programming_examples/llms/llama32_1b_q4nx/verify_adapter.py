@@ -126,11 +126,14 @@ class NpuRunner:
         self.dec.KV[:] = 0
         self.dec.seed_kv(K, V, self._P)
 
-        # Q4NX prefill doesn't expose per-layer ffn_out; the diagnosis lens is
-        # left empty (the shared runner skips empty intermediates gracefully).
+        # Q4NX prefill doesn't expose per-layer ffn_out, so the diagnosis lens has
+        # no data. Return one empty dict per layer (len == n_layers) rather than an
+        # empty list: the diagnosis path indexes layer_intermediates[li] per layer,
+        # and `.get("ffn_out")` on an empty dict yields None, which the shared
+        # runner skips gracefully (an empty list would IndexError).
         empty = np.empty((0,), dtype=np.float32)
         return PrefillRecord(
-            layer_intermediates=[],
+            layer_intermediates=[{} for _ in range(_N_LAYERS)],
             final_hidden_normed=empty,
             logits_at_pred=logits,
             top1_token=first,
