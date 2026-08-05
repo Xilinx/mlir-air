@@ -77,6 +77,7 @@ _ODD = _EVEN + 1
 # paths are always used as-is (unpinned).
 _PINNED_Q4NX_REVISION = {
     "FastFlowLM/Llama-3.2-1B-NPU2": "d0c7f84ac9c5cf796db0fc8255afac42592d9db3",
+    "FastFlowLM/Llama-3.2-3B-NPU2": "790271a87c7bb8158e52e9684a586a496d1fb1c9",
 }
 
 

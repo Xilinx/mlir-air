@@ -247,6 +247,39 @@ class FusedDecode3B:
         self.kvc.write(KV.view(np.int16), 0)
         self.kvc.sync(self.TO)
 
+    def seed_kv(self, k_layers, v_layers):
+        """Seed the device KV cache from a prefill (the warm-start handoff).
+
+        `k_layers[L]` / `v_layers[L]` are [ctx, n_kv_heads*DH] roped-K / raw-V as
+        produced by llama32_3b_q4nx_prefill (head-major rows). The device cache is
+        REGION-major: per layer, NGRP K regions then NGRP V regions, each
+        ATTN_MAXL*REGION_W, with position p at p*REGION_W. Within a region the
+        heads served by that column group sit contiguously, so a head-major row
+        splits into NGRP contiguous REGION_W slices -- region gi takes columns
+        [gi*REGION_W, (gi+1)*REGION_W). Returns the seeded context length.
+        """
+        fd = self.fd
+        ctx = int(np.asarray(k_layers[0]).shape[0])
+        if ctx > self.ATTN_MAXL:
+            raise RuntimeError(
+                f"prefill ctx {ctx} exceeds decode ATTN_MAXL {self.ATTN_MAXL}"
+            )
+        region_stride = self.ATTN_MAXL * fd.REGION_W
+        buf = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
+        for L in range(self.N_LAYERS):
+            kL = np.asarray(k_layers[L], bfloat16).reshape(ctx, -1)
+            vL = np.asarray(v_layers[L], bfloat16).reshape(ctx, -1)
+            base = L * self.LREG
+            for gi in range(fd.NGRP):
+                cols = slice(gi * fd.REGION_W, (gi + 1) * fd.REGION_W)
+                kreg = base + gi * region_stride
+                vreg = base + (fd.NGRP + gi) * region_stride
+                buf[kreg : kreg + ctx * fd.REGION_W] = kL[:, cols].reshape(-1)
+                buf[vreg : vreg + ctx * fd.REGION_W] = vL[:, cols].reshape(-1)
+        self.kvc.write(buf.view(np.int16), 0)
+        self.kvc.sync(self.TO)
+        return ctx
+
     def dispatch(self, tok, p):
         """One decode step at context length L=p+1: patch insts for L, feed embed[tok] +
         the position-p rope LUT, run the fused decode, return the vocab logits."""

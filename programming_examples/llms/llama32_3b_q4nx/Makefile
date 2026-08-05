@@ -9,11 +9,13 @@
 # Weights come from FastFlowLM's 4-bit model.q4nx bundle, re-quantized once into
 # the decode's q4k-cascade layout and cached under .decode_wcache/.
 #
-# There is no separate prefill kernel: the prompt is consumed token-by-token
-# through the same on-device decode, so each prompt token costs one decode step.
+# The prompt runs as one batched NPU prefill whose per-layer roped-K / raw-V seed
+# the decode's device KV cache (warm start); generation then costs one fused
+# dispatch per token.
 #
 # Quick start:
-#   make compile        — Build the fused-decode templates (~15 min; no weights needed)
+#   make compile        — Compile the prefill ELFs (~4 min; no weights needed)
+#   make compile-decode — Build the fused decode templates (~15 min; no weights)
 #   make run            — Run inference: 28 layers + LM head on-device, per token
 #   make verify         — Top-k token-set inclusion gate: NPU q4nx vs HF bf16
 #
@@ -68,7 +70,14 @@ DECODE_ENV := DECODE_MODEL=llama-3.2-3b VOCAB_CHUNK_I2=9 UNIFIED=1 LM_HEAD=0 \
 LBUILD ?= 2048
 LREF   := $(shell echo $$(($(LBUILD) - 1)))
 
-.PHONY: help compile compile-decode _compile_decode_build run profile chat verify verify-full ask gen clean
+
+# Prefill engine (weight-integrity Paris gate + the CTX prefill latency sweep).
+PREFILL := $(srcdir)/llama32_3b_q4nx_prefill.py
+# Padded prefill length for profile-prefill.
+CTX ?= 2048
+
+.PHONY: help compile compile-decode _compile_decode_build run profile chat verify \
+        verify-full ask gen verify-paris profile-prefill clean
 
 help:
 	@echo "============================================================"
@@ -76,8 +85,8 @@ help:
 	@echo "============================================================"
 	@echo ""
 	@echo "Quick start:"
-	@echo "  make compile          Build fused-decode templates (~15 min, one-time; no weights)"
-	@echo "  make compile-decode   Same build (templates land in this directory)"
+	@echo "  make compile          Compile prefill ELFs (~4 min, one-time; no weights)"
+	@echo "  make compile-decode   Decode templates, built into this dir (~15 min, no weights)"
 	@echo "  make run              Run inference ($(N_TOKENS) tokens)"
 	@echo "  make chat             Interactive chat REPL (streaming output)"
 	@echo "  make profile          Run with profiling breakdown"
@@ -86,6 +95,8 @@ help:
 	@echo "  make verify           Top-k token-set inclusion gate: NPU q4nx vs HF bf16 (2 prompts x 32 tokens, k=5)"
 	@echo "  make verify-full      Same gate over the full 8-prompt set"
 	@echo "  make gen              Paris gate: greedy decode of \"The capital of France is\""
+	@echo "  make verify-paris     Prefill-only weight-integrity smoke (first token == Paris)"
+	@echo "  make profile-prefill  Warm prefill TTFT benchmark at CTX=$(CTX)"
 	@echo "  make ask PROMPT=...   Single Q&A turn"
 	@echo "  (no 'diagnosis': the fused decode runs all 28 layers in one dispatch,"
 	@echo "   so per-layer intermediates are not observable from the host)"
@@ -97,10 +108,11 @@ help:
 	@echo "  MODEL_SOURCE=...      Q4NX weight source (default: $(MODEL_SOURCE))"
 	@echo "  LBUILD=2048           ATTN_MAXL the decode templates are built for"
 
-## Build the fused-decode kernels + ATTN_MAXL=2048 templates (~15 min; no weights).
-## This example has no separate prefill engine, so `compile` == `compile-decode`.
-compile: compile-decode
-	@echo "Compilation passed."
+## Compile the prefill ELFs (~4 min, cached; no weights needed). The fused decode
+## templates are a separate ~15 min build -- see `make compile-decode`.
+compile:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(DRIVER) --compile-only
 
 ## Build the fused decode at the 3B geometry: Peano kernels (LLAMA_3_2_3B) + two
 ## same-ATTN_MAXL templates (decode_L$(LBUILD) + decode_L$(LREF)) into THIS dir.
@@ -171,6 +183,17 @@ verify-full:
 # No `diagnosis` target: the fused decode runs all 28 layers + the LM head inside a
 # single dispatch, so the per-layer intermediates that lens needs are not observable
 # from the host. `make verify` (token-set vs HF bf16) is the PASS/FAIL gate.
+
+## Fast weight-integrity smoke: prefill "The capital of France is"; PASS iff the
+## first-token argmax == 12366 (" Paris"). Cheap (prefill only, no decode build).
+verify-paris:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(PREFILL) --model $(MODEL_SOURCE)
+
+## Warm prefill TTFT benchmark at CTX (per-ELF BO-write / NPU-run / BO-read breakdown).
+profile-prefill:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) python3 $(PREFILL)
 
 ## Single Q&A turn:  make ask PROMPT="What is the capital of France?"
 ask:

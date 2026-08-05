@@ -5,6 +5,8 @@ __pycache__/
 *.pyc
 prefill_kernel_cache/
 decode_kernel_cache/
+# Prefill ELF cache, keyed by padded seq_len (rebuilt by `make compile`).
+_q4nx_cache_seq*/
 air_project/
 
 # Requant weight cache (the ~2 GB q4nx->bf16 cascade repack; built ONCE per

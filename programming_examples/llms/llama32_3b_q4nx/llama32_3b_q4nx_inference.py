@@ -11,19 +11,19 @@ attention and no host-side KV cache.
 Weights come from FastFlowLM's 4-bit `model.q4nx` bundle, re-quantized once into
 the decode's q4k-cascade layout and cached (see q4nx_decode_3b).
 
-The prompt is consumed token-by-token through the same on-device decode (which
-warms the device KV cache), then generation continues; there is no separate
-prefill kernel, so each prompt token costs a full decode step.
+The prompt runs as ONE batched NPU prefill (llama32_3b_q4nx_prefill) whose per-layer
+roped-K / raw-V seed the decode's device KV cache, then generation continues one
+fused dispatch per token. `--no-prefill` replays the prompt through the decode
+instead (slower TTFT, useful for isolating the decode path).
 
 Usage:
-    python3 llama32_3b_q4nx_inference.py --compile-only     # build decode templates
+    python3 llama32_3b_q4nx_inference.py --compile-only     # build prefill ELFs
     python3 llama32_3b_q4nx_inference.py --run-only --n-tokens 32 --prompt "..."
     python3 llama32_3b_q4nx_inference.py --run-only --interactive
 """
 
 import argparse
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -56,16 +56,12 @@ TOKENIZER_DEFAULT = os.environ.get("Q4NX_TOKENIZER", "meta-llama/Llama-3.2-3B-In
 TEMPLATES_DEFAULT = os.environ.get("DECODE_TEMPLATES", str(_THIS_DIR))
 
 
-def compile_templates() -> None:
-    """Build the 3B fused-decode kernels + the two ATTN_MAXL=2048 templates into
-    this example's directory (weight-free, ~15 min; skipped if already built)."""
-    print(
-        f"Building {MODEL_TYPE} fused-decode templates in {_THIS_DIR} ...", flush=True
-    )
-    subprocess.run(
-        ["make", "-C", str(_THIS_DIR), "compile-decode"],
-        check=True,
-    )
+def compile_prefill(seq_len: int) -> None:
+    """Build/cache the prefill ELFs (weight-free, CI-runnable). The fused decode
+    templates are built separately by `make compile-decode` (~15 min)."""
+    from llama32_3b_q4nx_prefill import LlamaQ4nxPrefill
+
+    LlamaQ4nxPrefill(seq_len=seq_len, n_layers=28)  # constructing compiles + caches
 
 
 def _flat_ids(encoded) -> list:
@@ -93,19 +89,40 @@ def format_prompt(tokenizer, prompt: str, model_variant: str) -> list:
     return _flat_ids(tokenizer(prompt)["input_ids"])
 
 
-def generate_stream(dec, tokenizer, prompt_ids, n_tokens, stream=True):
-    """Consume the prompt through the on-device decode, then generate greedily.
+def generate_stream(
+    dec,
+    tokenizer,
+    prompt_ids,
+    n_tokens,
+    stream=True,
+    prefiller=None,
+    min_prefill=None,
+):
+    """Consume the prompt, then generate greedily.
+
+    A prompt of at least `min_prefill` tokens runs as ONE batched NPU prefill whose
+    per-layer roped-K / raw-V seed the decode's device KV cache (the warm-start
+    handoff); shorter prompts are replayed token-by-token through the decode, which
+    is faster than a full padded prefill. Both paths produce identical tokens.
     Returns (generated_ids, prompt_seconds, decode_seconds)."""
-    dec.reset_kv()
+    min_prefill = PREFILL_MIN_TOKENS if min_prefill is None else min_prefill
     P = len(prompt_ids)
     if P >= dec.ATTN_MAXL:
         raise RuntimeError(
             f"prompt length {P} >= decode ATTN_MAXL {dec.ATTN_MAXL}; build a larger template"
         )
+    use_prefill = prefiller is not None and P >= min_prefill
     t0 = time.perf_counter()
-    logits = None
-    for p, t in enumerate(prompt_ids):
-        logits = dec.dispatch(t, p)
+    if use_prefill:
+        prefiller.clear_context()
+        logits = np.asarray(prefiller.prefill(list(prompt_ids)), np.float32)
+        kvs = [prefiller.kv_view(L) for L in range(dec.N_LAYERS)]
+        dec.seed_kv([k for k, _ in kvs], [v for _, v in kvs])
+    else:
+        dec.reset_kv()
+        logits = None
+        for p, t in enumerate(prompt_ids):
+            logits = dec.dispatch(t, p)
     t_prompt = time.perf_counter() - t0
 
     gen = []
@@ -127,6 +144,35 @@ def generate_stream(dec, tokenizer, prompt_ids, n_tokens, stream=True):
     return gen, t_prompt, t_gen
 
 
+# The prefill engine always runs at the padded seq_len (the registry GEMM shapes are
+# built for it), so its cost is ~flat in the real prompt length: ~5 s at seq_len=2048
+# on NPU2. Replaying the prompt through the decode instead costs ~60 ms/token. Short
+# prompts are therefore FASTER token-by-token; only past the crossover does the
+# batched prefill win (and then by a lot: a 512-token prompt is ~5 s vs ~31 s).
+PREFILL_MIN_TOKENS = int(os.environ.get("Q4NX_PREFILL_MIN", "96"))
+
+
+def build_prefiller(args, prompt_len=None):
+    """The NPU prefill engine (None if disabled or not worth it for this prompt).
+    Compiles/caches its ELFs on first use and pre-loads the dequantized weights
+    into resident BOs."""
+    if args.no_prefill:
+        return None
+    if prompt_len is not None and prompt_len < args.prefill_min:
+        print(
+            f"\nPrompt is {prompt_len} tokens (< --prefill-min {args.prefill_min}); "
+            f"replaying it through the decode is faster than a padded "
+            f"seq_len={args.seq_len} prefill. Skipping the prefill engine."
+        )
+        return None
+    from llama32_3b_q4nx_prefill import LlamaQ4nxPrefill
+
+    print(f"\nBuilding NPU prefill engine (seq_len={args.seq_len}) ...")
+    pf = LlamaQ4nxPrefill(seq_len=args.seq_len, n_layers=28)
+    pf.load_weights(model=args.model_source)
+    return pf
+
+
 def build_decoder(args) -> FusedDecode3B:
     if not os.path.isdir(args.templates) or not any(
         f.startswith("decode_L") for f in os.listdir(args.templates)
@@ -139,7 +185,7 @@ def build_decoder(args) -> FusedDecode3B:
     return FusedDecode3B(args.model_source, args.templates, model_type=MODEL_TYPE)
 
 
-def repl(dec, tokenizer, args):
+def repl(dec, tokenizer, args, prefiller=None):
     print("\nInteractive chat (Ctrl-D or 'exit' to quit).")
     while True:
         try:
@@ -150,7 +196,8 @@ def repl(dec, tokenizer, args):
         if not line or line in ("exit", "quit"):
             break
         ids = format_prompt(tokenizer, line, args.model)
-        _, tp, tg = generate_stream(dec, tokenizer, ids, args.n_tokens)
+        pf = prefiller if len(ids) >= args.prefill_min else None
+        _, tp, tg = generate_stream(dec, tokenizer, ids, args.n_tokens, prefiller=pf)
         print(f"\n[{len(ids)} prompt tok in {tp:.2f}s | decode {tg:.2f}s]", flush=True)
 
 
@@ -186,6 +233,26 @@ if __name__ == "__main__":
         default=TEMPLATES_DEFAULT,
         help="directory holding decode_L<N>.{xclbin,insts.bin} builds",
     )
+    parser.add_argument(
+        "--no-prefill",
+        action="store_true",
+        help="replay the prompt token-by-token through the decode instead of the "
+        "batched NPU prefill (slower TTFT; useful for isolating the decode path)",
+    )
+    parser.add_argument(
+        "--seq-len",
+        type=int,
+        default=int(os.environ.get("Q4NX_SEQ_LEN", "2048")),
+        help="padded prefill length (prefill ELFs are compiled for this)",
+    )
+    parser.add_argument(
+        "--prefill-min",
+        dest="prefill_min",
+        type=int,
+        default=PREFILL_MIN_TOKENS,
+        help="use the batched NPU prefill only for prompts at least this long "
+        f"(default {PREFILL_MIN_TOKENS}; shorter prompts decode faster token-by-token)",
+    )
     parser.add_argument("--interactive", action="store_true")
     args = parser.parse_args()
 
@@ -193,7 +260,7 @@ if __name__ == "__main__":
         parser.error("--interactive cannot be combined with --compile-only")
 
     if not args.run_only:
-        compile_templates()
+        compile_prefill(args.seq_len)
         if args.compile_only:
             print("\nCompilation passed.")
             sys.exit(0)
@@ -204,12 +271,18 @@ if __name__ == "__main__":
     dec = build_decoder(args)
 
     if args.interactive:
-        repl(dec, tokenizer, args)
+        # Prompt lengths vary per turn, so build the prefill engine up front and let
+        # generate_stream fall back per turn for short prompts.
+        prefiller = build_prefiller(args)
+        repl(dec, tokenizer, args, prefiller)
         sys.exit(0)
 
     ids = format_prompt(tokenizer, args.prompt, args.model)
+    prefiller = build_prefiller(args, prompt_len=len(ids))
     print(f"\nPrompt: {args.prompt}\n")
-    gen, t_prompt, t_gen = generate_stream(dec, tokenizer, ids, args.n_tokens)
+    gen, t_prompt, t_gen = generate_stream(
+        dec, tokenizer, ids, args.n_tokens, prefiller=prefiller
+    )
     if args.profile:
         npt, ngt = max(len(ids), 1), max(len(gen), 1)
         print(
