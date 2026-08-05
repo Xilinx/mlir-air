@@ -270,8 +270,16 @@ try:
                     os.remove(_link)
                 os.symlink(_cand, _link)
                 llvm_config.with_environment("PATH", _shim, append_path=True)
+                # _ll_ver is None when --version did not parse, which is a
+                # separate reason for rejecting it than being >=23; do not
+                # report an unknown version as though it were a known one.
+                _why = (
+                    f"is LLVM {_ll_ver}"
+                    if _ll_ver is not None
+                    else "has an unparseable version"
+                )
                 print(
-                    f"llvm-link {_ll_ver} on the test PATH is >=23; shimming "
+                    f"llvm-link on the test PATH ({_llvm_link}) {_why}; shimming "
                     f"{_cand} (LLVM {_cand_ver}) ahead of it."
                 )
                 _llvm_link, _ll_ver, _ll_out = _cand, _cand_ver, _cand_out
