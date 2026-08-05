@@ -39,10 +39,9 @@ _PE = _HERE.parent.parent  # programming_examples
 _DEC = _PE / "fused_decode"  # shared fused superkernel decode engine
 sys.path.insert(0, str(_HERE))
 
-MODEL_DEFAULT = os.environ.get(
-    "Q4NX_GEMMA_MODEL",
-    "/home/strixminipc/rocm_fastflowlm/FastFlowLM/models/Gemma3-4B-NPU2",
-)
+# HF repo id of the self-contained model.q4nx bundle, or a local dir/file
+# (gemma3_4b_q4nx_weights resolves all three).
+MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma3-4B-NPU2")
 # <bos> + "The capital of France is"  (Gemma3 tokenizer); numpy ref -> 9079 " Paris".
 PARIS_PROMPT = [2, 818, 5279, 529, 7001, 563]
 PARIS_FIRST = 9079
@@ -321,6 +320,8 @@ def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True):
     if n_gen > 0:
         print(f"[inference] decode: {n_gen} tokens in {t_dec:.2f}s "
               f"{n_gen/t_dec:.2f} tok/s ({t_dec/n_gen*1000:.1f} ms/token)", flush=True)
+        # Machine-readable line for bench/extract_perf.py (nightly LLM dashboard).
+        print(f"Tokens/second: {n_gen/t_dec:.2f}", flush=True)
     return gen_ids
 
 
