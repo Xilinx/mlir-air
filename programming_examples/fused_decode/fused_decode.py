@@ -145,12 +145,106 @@ from proj_qmm_pack import (
     pack_q4k_cascade,
 )
 
+# ============================ model config ==================================
+# Incremental model parametrization: the base per-model DIMENSIONS live in this
+# table; every constant below DERIVES from these names, so a model is defined by
+# its entry alone. DECODE_MODEL selects it (default llama-3.2-1b). The llama entry
+# reproduces the original hardcoded values BYTE-IDENTICALLY (no-op).
+import os as _os
+
+_MODELS = {
+    "llama-3.2-1b": dict(
+        K=2048,  # model dim
+        M=3072,  # QKV proj output rows (DQ+DK+DV = 2048+512+512)
+        DH_A=64,  # head dim
+        KV_PER_CU=2,  # kv heads per attention CU (8 kv / 4 CU)
+        N_ATTN_CU=4,  # attention compute units (4 CU = 32 q heads)
+        NPH=4,  # proj phases (QKV, o, gate-up, down)
+        I2P=[3, 2, 16, 2],  # per-phase row-pair iters/core
+        J2P=[4, 4, 4, 16],  # per-phase col-block pairs (2*J2 = NBJ = K/COL_BLOCK)
+        KIDP=[1, 4, 8, 4],  # per-phase packet ids
+        GQA_SEG=4,  # GQA q-heads-per-group padding segment (ATTN_IMPL 2x4x1)
+        PAIR_ROWS=2,  # proj egress: 2 = lead/partner shared-L1 pairing (FLM llama)
+        N_NORMS=2,  # pre-norms only (input, post_attention) -- standard pre-norm
+        HAS_QK_NORM=False,  # rope_w = cos/sin(DH) only
+        VOCAB_SIZE=128256,
+        UNI_DEC=16,  # decode waves (layers) in the unified sequence
+        UNI_LM=9,  # lm-head waves (vocab chunks) in the unified sequence
+    ),
+    # Gemma3-4B (text): mirrors the ONE built FLM reference (gemma_npu_bin).
+    # PAIR_ROWS=1 -> FLM-gemma NON-PAIRED proj egress (each CT emits 1 block ->
+    # memtile 4-way gather), which natively handles D=2560 (odd 5 blocks/tile).
+    # Per-phase block/col counts (PAIR_ROWS=1): I2P = NBI_PH/(NCX*NCY) blocks/tile
+    #   NBI_PH = [M, D, 2*INTER, D]/ROW_BLOCK = [128,80,640,80] -> /16 = [8,5,40,5]
+    #   J2P = NBJ/2, NBJ = [K,DQ,K,INTER]/COL_BLOCK = [10,8,10,40] -> [5,4,5,20]
+    "gemma3-4b": dict(
+        K=2560,
+        M=4096,  # DQ+DK+DV = 2048+1024+1024
+        DH_A=256,
+        KV_PER_CU=1,  # 4 kv / 4 CU
+        N_ATTN_CU=4,
+        NPH=4,
+        I2P=[8, 5, 40, 5],  # blocks/tile per phase (non-paired)
+        J2P=[5, 4, 5, 20],  # col-block pairs per phase (2*J2 = NBJ = Kphase/COL_BLOCK)
+        KIDP=[1, 4, 8, 4],
+        GQA_SEG=4,  # ATTN_IMPL_1x4x1
+        PAIR_ROWS=1,  # NON-PAIRED egress (FLM gemma)
+        # Gemma3 sandwich norm: 4 norms/layer (input, post_attention, pre_feedforward,
+        # post_feedforward). The 2 "post" norms are applied to the SUBLAYER OUTPUT
+        # (o-proj / down) BEFORE the residual add: x = x + post_norm(sublayer(pre_norm(x))).
+        N_NORMS=4,
+        HAS_QK_NORM=True,  # rope_w = [cos/sin(DH), q_norm(DH), k_norm(DH)] = 3*DH
+        VOCAB_SIZE=262208,
+        UNI_DEC=34,  # 34 decoder layers
+        # LM-head vocab chunking: VOCAB_SIZE_PADDED_FULL = ceil(262208/2560)*2560 =
+        # 263680 -> 8240 rowblocks = 16*515, 515=5*103. VOCAB_ROWBLKS = 16*VOCAB_I2
+        # (PAIR_ROWS=1) must divide 8240 -> VOCAB_I2 in {5,103}. VOCAB_I2=5 keeps the
+        # per-dispatch op-count/BDs small (RNDS=5, 80 rowblocks/chunk) -> 103 chunks.
+        # The driver MUST set VOCAB_CHUNK_I2=5 (env) to match this UNI_LM.
+        UNI_LM=103,  # vocab chunks per LM head (VOCAB_CHUNK_I2=5)
+    ),
+}
+MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
+MODEL = _MODELS[MODEL_NAME]
+
+# Derived model geometry (attention head layout). All values are byte-identical to
+# the original hardcoded Llama literals; used to migrate the raw 64/512 attention
+# dims off Llama-specific constants. (llama / gemma3-4b):
+DH = MODEL["DH_A"]  # head dim (64 / 256)
+# rope weight buffer: cos/sin(DH) for llama; qk-norm models (gemma) prepend q/k
+# per-head RMSNorm weights -> rope_w = [cos/sin, q_norm, k_norm] = 3*DH. The rope
+# kernel reads segments 2,3 behind #ifdef HAS_QK_NORM (already present).
+HAS_QK_NORM = MODEL.get("HAS_QK_NORM", False)
+ROPE_W_LEN = (3 * DH) if HAS_QK_NORM else DH  # 64 / 768
+NUM_KV_HEADS = MODEL["N_ATTN_CU"] * MODEL["KV_PER_CU"]  # 8 / 4
+NUM_Q_HEADS = (MODEL["M"] - 2 * NUM_KV_HEADS * DH) // DH  # 32 / 8
+Q_HEADS_PER_CU = NUM_Q_HEADS // MODEL["N_ATTN_CU"]  # 8 / 2
+DQ = NUM_Q_HEADS * DH  # q width 2048 / 2048
+DK = NUM_KV_HEADS * DH  # k width 512 / 1024
+DV = DK  # v width
+DQ_PER_CU = Q_HEADS_PER_CU * DH  # per-CU q (=o) width 512 / 512
+DK_PER_CU = MODEL["KV_PER_CU"] * DH  # per-CU k (=v) width 128 / 256
+# GQA padding (mirrors kernels/model_spec.h): q-heads-per-group padded up to the
+# attn-impl segment; the per-CU q/o/y buffers + score buffer are sized on the
+# PADDED head count. (llama: no padding -> 512/192 ; gemma: 2->4 pad -> 1024/128)
+Q_HEADS_PER_GROUP = NUM_Q_HEADS // NUM_KV_HEADS  # 4 / 2
+_GSEG = MODEL["GQA_SEG"]
+Q_HEADS_PER_GROUP_PADDED = ((Q_HEADS_PER_GROUP + _GSEG - 1) // _GSEG) * _GSEG  # 4 / 4
+Q_HEADS_PADDED_PER_CU = MODEL["KV_PER_CU"] * Q_HEADS_PER_GROUP_PADDED  # 8 / 4
+DQ_PADDED_PER_CU = Q_HEADS_PADDED_PER_CU * DH  # per-CU q/o/y buffer 512 / 1024
+# Padded total Q the rope kernel emits: per kv-head it writes Q_HEADS_PER_GROUP real
+# heads + ATTN_GROUPS_PADDING zero heads (GQA-segment alignment). llama pad=0 ->
+# DQ_PADDED==DQ; gemma pad=2 -> 2x DQ. The rope Q buffer + broadcast memtile must be
+# this size or the rope overflows them.
+DQ_PADDED = MODEL["N_ATTN_CU"] * DQ_PADDED_PER_CU  # 2048 / 4096
+SSZ_BLK = ((Q_HEADS_PADDED_PER_CU * 16 + 16 + 63) // 64) * 64  # score buffer 192 / 128
+
 # ============================ faithful config ===============================
 # Reproducer: Llama-3.2-1B decode layer, single token. QKV proj = q(2048)+k(512)+
 # v(512) = 3072 rows out of K=2048 model dim. 16 proj cores at the reference columns
 # 0,1,6,7, rows 2..5.
-M = 3072  # QKV proj output rows
-K = 2048  # model dim (proj contraction)
+M = MODEL["M"]  # QKV proj output rows
+K = MODEL["K"]  # model dim (proj contraction)
 NCX = 4  # proj columns
 NCY = 4  # proj rows (2..5)
 PCOL = [0, 1, 6, 7]  # physical proj columns
@@ -160,12 +254,27 @@ NBJ = K // COL_BLOCK  # 8 col-blocks (256-wide each)
 # Cascade pairs: per col cx, two pairs pp; lead cy=2*pp (rows 2/4), partner
 # cy=2*pp+1 (rows 3/5). 2 GROUPS of 4 leads (group g = cols {2g,2g+1}); group
 # memtiles at phys cols 0 and 6; main memtile at phys col 1.
-PAIRS_PC = NCY // 2  # 2 cascade pairs per column
-N_PAIRS = NCX * PAIRS_PC  # 8 emitter pairs
-N_GRP = 2  # group memtiles
-LEADS_PER_GRP = N_PAIRS // N_GRP  # 4
-GRP_PCOL = [0, 6]  # phys cols of the 2 group memtiles
-MAIN_PCOL = 1  # phys col of the main memtile (mem_tile_1_1)
+# Emitters per column: paired (PAIR_ROWS=2, FLM llama) = NCY//2 lead/partner pairs;
+# non-paired (PAIR_ROWS=1, FLM gemma) = NCY independent tiles. Each emitter ships
+# PAIR_PAY = PAIR_ROWS*ROW_BLOCK payload (2 blocks lead+partner / 1 block per tile).
+PAIRS_PC = NCY // MODEL["PAIR_ROWS"]  # emitters per column (2 paired / 4 non-paired)
+N_PAIRS = NCX * PAIRS_PC  # emitters total (8 paired / 16 non-paired)
+# Group memtiles. Llama (paired): 2 groups of 2 columns each. Gemma (non-paired):
+# PER-COLUMN gather (N_GRP=NCX) so each proj-col memtile gathers only ITS OWN cores
+# packet-merged onto one S2MM -- matches FLM gemma's mem_C_1 4-gather and keeps the
+# packet-switch arbiter (AMSel, <=4 master-selects) within capacity (8 cross-column
+# leads on one S2MM overflow the arbiter -> aiecc pathfinder crash).
+N_GRP = NCX if MODEL["PAIR_ROWS"] == 1 else 2  # group memtiles
+LEADS_PER_GRP = N_PAIRS // N_GRP  # emitters per group (4 paired / 8 non-paired)
+GRP_PCOL = (
+    list(PCOL) if MODEL["PAIR_ROWS"] == 1 else [0, 6]
+)  # phys cols of group memtiles
+# Main/assemble memtile column. Llama: col 1 (a proj col; paired egress leaves room).
+# Gemma (per-column egress): the proj col memtiles each need 6 S2MM (inW on 4/5 +
+# 4 separate per-lead egress on 0-3, mirroring FLM mem_C_1 -- NO packet-merge), so the
+# hub must NOT sit on a proj col. Put it on col 2, the X-broadcast memtile (5 free S2MM)
+# -- exactly FLM, whose hub mem_1_1 IS its X-broadcast memtile.
+MAIN_PCOL = 2 if MODEL["PAIR_ROWS"] == 1 else 1  # phys col of the main memtile
 # Faithful X-feed (reproducer core_2_2 + air.refeed_count): the rms producer core
 # (tile_2_2, col2) normalizes raw X once and re-feeds it via an output-lock release
 # of N (= REFEED) into a 512 x_buffer (col2 memtile) that broadcasts 256-blocks to
@@ -186,7 +295,7 @@ import os as _os
 # q4nx_decode_repro/full_decode_faithful.mlir.
 # the reference's fixed attention geometry: 4 CUs, each = 8 q heads + 2 kv heads (= 32 q heads,
 # 8 kv heads). CU placement (col, qk_row, kv_row) below uses cols 3,4.
-N_ATTN_CU = 4  # fixed the reference dimension (4 CUs = 32 q heads)
+N_ATTN_CU = MODEL["N_ATTN_CU"]  # fixed the reference dimension (4 CUs = 32 q heads)
 # Loop-close (faithful): the gathered attention o feeds o-proj's X (ph1), closing the
 # proj->attn->o-proj loop. The X feed carries 4 phase sources in order: ph0
 # rmsnorm(input), ph1 attn-o, ph2 rmsnorm(x+o-proj), ph3 GLU.
@@ -209,6 +318,11 @@ if DECODE_GOLDEN:
 # Feed the reference's separate post_attention_layernorm weight to the on-chip 2nd rmsnorm
 # (the reference uses a distinct post_attention_layernorm; required for real the reference parity).
 POST_RMS = bool(DECODE_GOLDEN)
+# Norms per layer: 2 = pre-norm (llama input+post_attention); 4 = Gemma sandwich
+# (input, post_attention, pre_feedforward, post_feedforward). The 2 extra Gemma
+# norms are applied to the sublayer OUTPUT before the residual add. Falls back to
+# 1 when POST_RMS is off (debug configs), keeping RMS_LAYER byte-identical.
+N_NORMS = MODEL["N_NORMS"] if POST_RMS else 1
 ATTN_ROUNDS = (ATTN_L + 15) // 16
 MULTIBLK = True  # fixed config: decode is always multi-block; the L=1 single-token path
 # (attn_qk_p1/attn_kv_p1) was removed. ATTN_L (=DECODE_GOLDEN_L) stays a real parameter
@@ -253,8 +367,8 @@ KV_SPLIT = True  # fixed config: decoupled K/V memtile rings
 # DDR KV-cache shapes (the reference full-faithful append+readback) for MULTIBLK. Per CU = 2 kv
 # heads x DH=64 = 128 (one K or V region). All-CU region width DK_TOT_A; per-token
 # K++V = KVSZ_TOK; cache padded to ATTN_MAXL = ATTN_ROUNDS*16 positions.
-KV_PER_CU = 2
-DH_A = 64
+KV_PER_CU = MODEL["KV_PER_CU"]
+DH_A = MODEL["DH_A"]
 KVPC_DH = KV_PER_CU * DH_A  # 128
 DK_TOT_A = N_ATTN_CU * KVPC_DH  # all-CU K (or V) width
 KVSZ_TOK = 2 * DK_TOT_A  # per-token K ++ V (all heads)
@@ -311,10 +425,10 @@ def _vreg_off(gi):
     return (NGRP + gi) * REGION_STRIDE  # base of group gi's V region
 
 
-NPH = 4
-I2P = [3, 2, 16, 2]  # row-pair iters per phase
-J2P = [4, 4, 4, 16]  # col-block pairs (2*J2 = NBJ = K/COL_BLOCK)
-KIDP = [1, 4, 8, 4]  # one-hot mask-safe packet ids (down reuses o-proj id4)
+NPH = MODEL["NPH"]
+I2P = MODEL["I2P"]  # row-pair iters per phase
+J2P = MODEL["J2P"]  # col-block pairs (2*J2 = NBJ = K/COL_BLOCK)
+KIDP = MODEL["KIDP"]  # one-hot mask-safe packet ids (down reuses o-proj id4)
 DISTINCT_IDS = list(dict.fromkeys(KIDP))  # ordered-unique
 NDEST = len(DISTINCT_IDS)
 DEST = [DISTINCT_IDS.index(k) for k in KIDP]
@@ -324,7 +438,7 @@ KPH = [NBJ_PH[p] * COL_BLOCK for p in range(NPH)]  # per-phase K: [2048,2048,204
 
 # Output wire layout (reproducer y_0_2_0 memref<80>, group 258, main 514).
 HDR = 2  # wire header words (kernel writes id@elem14)
-PAIR_ROWS = 2  # rows per emitted packet (lead + partner)
+PAIR_ROWS = MODEL["PAIR_ROWS"]  # 2 = lead/partner shared-L1 pairing (FLM llama)
 PAIR_PAY = PAIR_ROWS * ROW_BLOCK  # 64
 GRP_ROWS = HDR + LEADS_PER_GRP * PAIR_PAY  # 258
 MAIN_ROWS = GRP_ROWS + (N_GRP - 1) * LEADS_PER_GRP * PAIR_PAY  # 514
@@ -340,7 +454,7 @@ PAYLOAD = N_PAIRS * PAIR_PAY  # 512 payload elems per round (16 rows)
 # -- the exact route the reference proj kernel uses -- so NO new proj-side flow. The
 # rms core (mode 0) does final rmsnorm(x)->feed proj X, then forwards the vocab
 # chunks it gets back (id4) out to shim as logits (see rms_residual.cc:211).
-VOCAB_SIZE = 128256  # llama-3.2-1b (models/llama3.2-1b.h)
+VOCAB_SIZE = MODEL["VOCAB_SIZE"]  # llama-3.2-1b (models/llama3.2-1b.h)
 MODEL_DIM = K  # 2048
 # FULL vocab (host side): the whole LM-head output.
 VOCAB_SIZE_PADDED_FULL = (
@@ -375,8 +489,8 @@ LM_HEAD = int(_os.environ.get("LM_HEAD", "0"))
 # index_switch selecting decode vs vocab host feeds. Concatenated args for the
 # first folding test (separate ELF args come after folding is proven).
 UNIFIED = 1  # fixed config: single-launch unified decode + lm_head
-UNI_DEC = 16  # fixed for Llama-3.2-1B: decode waves in the unified sequence
-UNI_LM = 9  # fixed for Llama-3.2-1B: lm-head waves in the unified sequence
+UNI_DEC = MODEL["UNI_DEC"]  # decode waves in the unified sequence
+UNI_LM = MODEL["UNI_LM"]  # lm-head waves in the unified sequence
 UNI_WAVES = UNI_DEC + UNI_LM
 # Wave-range override (keeps ABI/CDO fixed at UNI_DEC/UNI_LM; only restricts which
 # waves the fused launch loop drives). Used to split the fused sequence into a
@@ -468,7 +582,7 @@ NLAYERS = int(_os.environ.get("NLAYERS", "1"))
 # Per-layer DDR slab sizes (elements). LUT is per-position (shared across layers),
 # placed after all NLAYERS rms slabs.
 W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights / layer
-RMS_LAYER = K + (K if POST_RMS else 0)  # rms weights / layer
+RMS_LAYER = N_NORMS * K  # rms weights / layer (2 llama pre-norm / 4 Gemma sandwich)
 KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
 Y_LAYER = sum(ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p != 0)  # Y / layer
 
@@ -497,14 +611,15 @@ def build_module():
         w_l3 = MemRefType.get(
             [_w_blocks * BLOCK_BF16], bf16
         )  # packed q4k weights (all phases concatenated), NLAYERS slabs
-        # rms weight (K). MULTIBLK appends a 64-elem identity rope LUT (cos=1,sin=0)
-        # AFTER all NLAYERS rms slabs so the score-path test gets a KNOWN q (q_roped =
-        # proj_q) WITHOUT corrupting rms_w[0:K] (which proj_q depends on). The LUT is
-        # per-position (shared across layers). L=1 ABI unchanged (size K [+K][+64]).
+        # rms weight (K). MULTIBLK appends the rope region AFTER all UNI_DEC rms slabs so
+        # the score-path test gets a KNOWN q (q_roped = proj_q) WITHOUT corrupting
+        # rms_w[0:K] (which proj_q depends on). Llama: ONE shared per-position LUT
+        # (ROPE_W_LEN=64). Gemma (HAS_QK_NORM): UNI_DEC per-layer rope_w slabs
+        # (dual-theta + per-layer q/k-norm). L=1 ABI unchanged.
         rms_l3 = MemRefType.get(
             [
-                UNI_DEC * (K + (K if POST_RMS else 0))
-                + (64 if MULTIBLK else 0)
+                UNI_DEC * RMS_LAYER
+                + ((UNI_DEC if HAS_QK_NORM else 1) * ROPE_W_LEN if MULTIBLK else 0)
                 + K  # dedicated final-norm slot for real lm_head (vocab)
             ],
             bf16,
@@ -529,36 +644,48 @@ def build_module():
             [16 + PAIR_ROWS * ROW_BLOCK], bf16, memory_space=l1  # 80 shared
         )
         rms_l1 = MemRefType.get([K], bf16, memory_space=l1)  # rms in/out/weight (2048)
+        # Gemma 4-norm: two norm weights packed per channel (2K) so the rms tile
+        # keeps <=4 packet ids per S2MM port (1 arbiter x 4 msels). lo/hi kernels
+        # slice it. Only used when N_NORMS>=4.
+        rms_w2k_l1 = MemRefType.get([2 * K], bf16, memory_space=l1)
         glu_x_l1 = MemRefType.get([GLU_SLICE], bf16, memory_space=l1)  # 1024 [up|gate]
         glu_hid_l1 = MemRefType.get([GLU_HID], bf16, memory_space=l1)  # 512 silu*up
         # ATTN S1 rope (reference rope_compute): qkv(3072 QKV out)+lut(64) -> q(2048),
         # k(512), v(512) roped. tile_2_3.
-        qkv_l1 = MemRefType.get([3072], bf16, memory_space=l1)
-        ropeq_l1 = MemRefType.get([2048], bf16, memory_space=l1)
-        ropekv_l1 = MemRefType.get([512], bf16, memory_space=l1)
-        ropelut_l1 = MemRefType.get([64], bf16, memory_space=l1)
+        qkv_l1 = MemRefType.get([M], bf16, memory_space=l1)
+        ropeq_l1 = MemRefType.get(
+            [DQ_PADDED], bf16, memory_space=l1
+        )  # rope emits padded Q
+        ropekv_l1 = MemRefType.get([DK], bf16, memory_space=l1)
+        ropelut_l1 = MemRefType.get([ROPE_W_LEN], bf16, memory_space=l1)
         # ATTN S3a flash-attn (1 CU; attn_iso proven shapes). DH=64, 8 Q heads,
         # 2 KV heads per CU -> DQ=OSZ=512, DK=128, k/v block 16x128, scores 192.
-        aq_l1 = MemRefType.get([512], bf16, memory_space=l1)  # q per CU
-        ak_l1 = MemRefType.get([2048], bf16, memory_space=l1)  # k block 16x128 flat
-        av_l1 = MemRefType.get([2048], bf16, memory_space=l1)  # v block 16x128 flat
-        as_l1 = MemRefType.get([192], bf16, memory_space=l1)  # shared scores
-        ao_l1 = MemRefType.get([512], bf16, memory_space=l1)  # o per CU
+        aq_l1 = MemRefType.get([DQ_PADDED_PER_CU], bf16, memory_space=l1)  # q per CU
+        ak_l1 = MemRefType.get(
+            [16 * KVPC_DH], bf16, memory_space=l1
+        )  # k block 16xKVPC_DH
+        av_l1 = MemRefType.get(
+            [16 * KVPC_DH], bf16, memory_space=l1
+        )  # v block 16xKVPC_DH
+        as_l1 = MemRefType.get([SSZ_BLK], bf16, memory_space=l1)  # shared scores
+        ao_l1 = MemRefType.get([DQ_PADDED_PER_CU], bf16, memory_space=l1)  # o per CU
         # KV block cache (attn_stream proven): SEPARATE K and V natural block
         # buffers [key16, kvh2, dh64] = 2048 each; memtile reorder -> pack_k/pack_v.
-        ak_l2 = MemRefType.get([2048], bf16, memory_space=l2)
-        av_l2 = MemRefType.get([2048], bf16, memory_space=l2)
+        ak_l2 = MemRefType.get([16 * KVPC_DH], bf16, memory_space=l2)
+        av_l2 = MemRefType.get([16 * KVPC_DH], bf16, memory_space=l2)
         # QKV staging memtile (reference mem_1_1 role): assemble the 6 demux rounds
         # into a contiguous 3072, then ONE transfer to rope. Feeding rope's compute-
         # tile S2MM directly from the 6 packet rounds mis-aligned by 1 head (+64).
-        qkvmt_l2 = MemRefType.get([3072], bf16, memory_space=l2)
+        qkvmt_l2 = MemRefType.get([M], bf16, memory_space=l2)
         # q broadcast memtile (reference mem_5_1 q_buffer): rope sends q ONCE (2048),
         # the memtile fans out per-CU 512 (reordered). Direct rope->CU q puts cost 1
         # rope MM2S per CU -> only 2 MM2S available, so N>=2 starved k/v (deadlock).
-        qmt_l2 = MemRefType.get([2048], bf16, memory_space=l2)
+        qmt_l2 = MemRefType.get(
+            [DQ_PADDED], bf16, memory_space=l2
+        )  # padded Q broadcast
         # o gather memtile (reference mem_5_1 o_buffer): 4 CUs' o (512 each) gathered
         # into 2048, then ONE egress (-> host now; -> mem_1_1 o-proj X in the loop close).
-        omt_l2 = MemRefType.get([2048], bf16, memory_space=l2)
+        omt_l2 = MemRefType.get([DQ], bf16, memory_space=l2)
         # MULTIBLK per-block KV staging memtile (attn_iso ring, PASS L=16..128): one
         # block [K block 2048 | V block 2048] = 4096; a fresh alloc per block gives a
         # count-free ping-pong ring (1 fill : 1 read), unlike a whole-cache buffer
@@ -603,6 +730,20 @@ def build_module():
             "rms_norm_aie", ([rms_l1, rms_l1, rms_l1, i32], []), visibility="private"
         )
         rms_norm_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
+        if N_NORMS >= 4:
+            # Gemma: two norms per 2K weight channel. lo -> w[0:K], hi -> w[K:2K].
+            rms_norm_lo_aie = FuncOp(
+                "rms_norm_lo_aie",
+                ([rms_l1, rms_l1, rms_w2k_l1, i32], []),
+                visibility="private",
+            )
+            rms_norm_lo_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
+            rms_norm_hi_aie = FuncOp(
+                "rms_norm_hi_aie",
+                ([rms_l1, rms_l1, rms_w2k_l1, i32], []),
+                visibility="private",
+            )
+            rms_norm_hi_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
         # #4 faithful residual stream (reproducer rms_residual.o): residual_add_aie
         # (y = x_buf + x) for residual1 (input + o-proj-out) and residual2 (h + down-out).
         residual_add_aie = FuncOp(
@@ -630,7 +771,7 @@ def build_module():
         #   kv: y_state(512 f32 accumulator) + l_state(16 f32 denominator)
         m_l1 = MemRefType.get([16], bf16, memory_space=l1)
         c_l1 = MemRefType.get([8], f32, memory_space=l1)
-        y_l1 = MemRefType.get([512], f32, memory_space=l1)
+        y_l1 = MemRefType.get([DQ_PADDED_PER_CU], f32, memory_space=l1)
         lden_l1 = MemRefType.get([16], f32, memory_space=l1)
         attn_qk_blk = FuncOp(
             "attn_qk_blk",
@@ -677,6 +818,10 @@ def build_module():
             # to keep the vocab-active rmsX packet group hole-free, vocab feeds AND
             # consumes a dummy rmsW2 (see _uni_voc / _rms_lm_head).
             _rw2 = channel_decl("rmsW2", size=[1])
+            # Gemma sandwich (N_NORMS>=4): the 4 norm weights are packed 2-per-channel
+            # (rmsW = [input | post_attn], rmsW2 = [pre_ffn | post_ffn], each 2K) so the
+            # rms tile's S2MM0 carries only {rmsX, rmsW, rmsW2, o-proj/down} = 4 packet
+            # ids (a compute-tile S2MM port demuxes at most 4). No rmsW3/rmsW4 channels.
         _rw.operation.attributes["air.shim_col"] = IntegerAttr.get(T.i32(), RMS_PCOL)
         _rw.operation.attributes["air.dedicated_dma_channel"] = UnitAttr.get()
         # FAITHFUL convergent X feed (reproducer x_buffer DMA:3): ONE channel
@@ -831,11 +976,14 @@ def build_module():
             return arith.ConstantOp.create_index(v)
 
         def grp_leads(g):
-            # the 4 lead (cx,pp) of group g, header-bearer first (k==0).
+            # the leads (cx,pp) of group g, header-bearer first (k==0). Group g owns
+            # NCX//N_GRP consecutive logical columns: llama 2 cols/group (g*2+lc),
+            # gemma per-column 1 col/group (g*1 = g).
+            _cpg = NCX // N_GRP  # columns per group
             out = []
-            for lc in range(NCX // N_GRP):  # 2 cols / group
-                for pp in range(PAIRS_PC):  # 2 pairs / col
-                    out.append((2 * g + lc, pp))
+            for lc in range(_cpg):
+                for pp in range(PAIRS_PC):
+                    out.append((g * _cpg + lc, pp))
             return out
 
         # MULTIBLK adds a 5th DDR arg (kv_cache) so the reference's append+readback (and the reference's
@@ -931,22 +1079,53 @@ def build_module():
                             # after the [in|post]*UNI_DEC rms slabs + 64-wide rope LUT, so the
                             # vocab rmsnorm uses the true final norm -- NOT layer-0's in_LN
                             # (mirrors decoding_layer's separate final_rms_weight).
-                            ChannelPut(
-                                "rmsW",
-                                RMS,
-                                offsets=[UNI_DEC * RMS_LAYER + 64],
-                                sizes=[K],
-                                strides=[1],
+                            # final norm sits AFTER the rope region: llama has ONE shared
+                            # rope LUT (ROPE_W_LEN), gemma has UNI_DEC per-layer rope_w slabs.
+                            _final_norm_off = (
+                                UNI_DEC * RMS_LAYER
+                                + (UNI_DEC if HAS_QK_NORM else 1) * ROPE_W_LEN
                             )
-                            if POST_RMS:
-                                # DUMMY post-LN weight: rmsW2 is decode-only but packet-
-                                # muxes onto the same shim MM2S as the vocab-active rmsX
-                                # (rms tile has only 2 S2MM). Feeding + consuming a dummy
-                                # in vocab keeps that packet group hole-free so the vocab
-                                # tail doesn't stall (consumed by _rms_lm_head dummy get).
+                            if N_NORMS >= 4:
+                                # Gemma: rmsW/rmsW2 are 2K (two norms packed). Put final_norm
+                                # in rmsW's HI half (lm_head reads it via rms_norm_hi_aie); the
+                                # LO half is the last rope-region K -- a harmless in-bounds
+                                # dummy ([_final_norm_off-K .. +2K] is the BO's last 2K). rmsW2
+                                # is a 2K dummy. Keeps the shared packet group hole-free.
                                 ChannelPut(
-                                    "rmsW2", RMS, offsets=[0], sizes=[K], strides=[1]
+                                    "rmsW",
+                                    RMS,
+                                    offsets=[_final_norm_off - K],
+                                    sizes=[2 * K],
+                                    strides=[1],
                                 )
+                                ChannelPut(
+                                    "rmsW2",
+                                    RMS,
+                                    offsets=[0],
+                                    sizes=[2 * K],
+                                    strides=[1],
+                                )
+                            else:
+                                ChannelPut(
+                                    "rmsW",
+                                    RMS,
+                                    offsets=[_final_norm_off],
+                                    sizes=[K],
+                                    strides=[1],
+                                )
+                                if POST_RMS:
+                                    # DUMMY post-LN weight: rmsW2 is decode-only but packet-
+                                    # muxes onto the same shim MM2S as the vocab-active rmsX
+                                    # (rms tile has only 2 S2MM). Feeding + consuming a dummy
+                                    # in vocab keeps that packet group hole-free so the vocab
+                                    # tail doesn't stall (consumed by _rms_lm_head dummy get).
+                                    ChannelPut(
+                                        "rmsW2",
+                                        RMS,
+                                        offsets=[0],
+                                        sizes=[K],
+                                        strides=[1],
+                                    )
                             # vocab weight feed: round-major, NCY-fanned. Python-unrolled
                             # (NOT an AIR for_ -- a launch-scope for_ DEADLOCKS the shim
                             # sequence). inW puts are issue_token=false so the shim reuses BD
@@ -1007,28 +1186,60 @@ def build_module():
                             # on-chip rms normalizes + re-feeds X via air.refeed_count. X is
                             # in-place (offset 0 every layer -- the chained hidden state).
                             ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
-                            ChannelPut(
-                                "rmsW", RMS, offsets=[_rbase], sizes=[K], strides=[1]
-                            )
-                            if POST_RMS:
-                                # post_attention_layernorm weight on its own channel.
+                            if N_NORMS >= 4:
+                                # Gemma: pack two norms per 2K channel -- rmsW =
+                                # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
+                                # post_ffn] (slab 2K..4K). Keeps the rms tile at <=4 packet
+                                # ids per S2MM port; the lo/hi kernels slice each half.
+                                ChannelPut(
+                                    "rmsW",
+                                    RMS,
+                                    offsets=[_rbase],
+                                    sizes=[2 * K],
+                                    strides=[1],
+                                )
                                 ChannelPut(
                                     "rmsW2",
                                     RMS,
-                                    offsets=[_lo(_rbase, K)],
+                                    offsets=[_lo(_rbase, 2 * K)],
+                                    sizes=[2 * K],
+                                    strides=[1],
+                                )
+                            else:
+                                ChannelPut(
+                                    "rmsW",
+                                    RMS,
+                                    offsets=[_rbase],
                                     sizes=[K],
                                     strides=[1],
                                 )
-                            # rope LUT: per-position, SHARED across layers; sits after all
-                            # rms slabs in arg2 (layer-independent offset). UNIFIED sizes
-                            # arg2 for UNI_DEC decode waves, so the LUT sits after UNI_DEC
-                            # slabs (module-gen forces NLAYERS=1, which would misplace it).
+                                if POST_RMS:
+                                    # post_attention_layernorm weight on its own channel.
+                                    ChannelPut(
+                                        "rmsW2",
+                                        RMS,
+                                        offsets=[_lo(_rbase, K)],
+                                        sizes=[K],
+                                        strides=[1],
+                                    )
+                            # rope LUT: sits after all UNI_DEC rms slabs in arg2. Llama:
+                            # ONE per-position LUT SHARED across layers (single theta) at a
+                            # layer-independent offset. Gemma (HAS_QK_NORM): the rope_w
+                            # (dual-theta cos/sin + per-layer q/k-norm) DIFFERS PER LAYER, so
+                            # index a per-wave slab (UNI_DEC contiguous rope_w slabs, offset
+                            # _lut_off + a_iv*ROPE_W_LEN). UNIFIED sizes arg2 for UNI_DEC decode
+                            # waves (module-gen forces NLAYERS=1, which would misplace it).
                             _lut_off = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
+                            _rope_off = (
+                                _lo(_lb(ROPE_W_LEN), _lut_off)
+                                if (HAS_QK_NORM and MULTIBLK)
+                                else _lut_off
+                            )
                             ChannelPut(
                                 "ropeLUT",
                                 RMS,
-                                offsets=[_lut_off],
-                                sizes=[64],
+                                offsets=[_rope_off],
+                                sizes=[ROPE_W_LEN],
                                 strides=[1],
                             )
 
@@ -1585,7 +1796,7 @@ def build_module():
                                 a_q,
                                 indices=[idx(0)],
                                 offsets=[idx(0)],
-                                sizes=[idx(2048)],
+                                sizes=[idx(DQ_PADDED)],
                                 strides=[idx(1)],
                             )
                             if MULTIBLK:
@@ -1618,8 +1829,8 @@ def build_module():
                                             "toAttnKV",
                                             a_k,
                                             indices=[idx(gi)],
-                                            offsets=[idx(c * 128)],
-                                            sizes=[idx(128)],
+                                            offsets=[idx(c * KVPC_DH)],
+                                            sizes=[idx(KVPC_DH)],
                                             strides=[idx(1)],
                                         )
                                     for c in cus:
@@ -1627,8 +1838,8 @@ def build_module():
                                             "toAttnKV",
                                             a_v,
                                             indices=[idx(gi)],
-                                            offsets=[idx(c * 128)],
-                                            sizes=[idx(128)],
+                                            offsets=[idx(c * KVPC_DH)],
+                                            sizes=[idx(KVPC_DH)],
                                             strides=[idx(1)],
                                         )
                             DeallocOp(a_qkv)
@@ -1677,17 +1888,27 @@ def build_module():
                             ChannelPut(
                                 "toAttnQ",
                                 qmtb,
-                                # CU c reads q heads 8c..8c+7 = element base c*512.
-                                # The linear base is sum(offset[i]*stride[i]); put the
-                                # CU shift on the head dim (stride DH=64) as c*8 so the
-                                # base = c*8*64 = c*512. (offset[0]=c*512 was WRONG:
-                                # c*512*stride0(8) = c*4096, OOB for the 2048 buffer ->
-                                # CU1-3 read garbage Q dh-order -> uniform attention on
-                                # real per-dh K; invisible to constant-over-dh oracles.)
+                                # pack_q (reference mem_5_1): natural [qh, dh] -> the
+                                # kernel's [dc, qh, de] mmul layout, dh = dc*8 + de.
+                                # CU c reads its Q_HEADS_PER_CU heads starting at head
+                                # c*Q_HEADS_PER_CU (stride DH) -> linear base
+                                # c*Q_HEADS_PER_CU*DH = c*DQ_PER_CU. dc stride 8, de 1.
                                 indices=[idx(c)],
-                                offsets=[idx(0), idx(c * 8), idx(0)],
-                                sizes=[idx(8), idx(8), idx(8)],
-                                strides=[idx(8), idx(64), idx(1)],
+                                # rope emits PADDED Q (each CU's block is
+                                # Q_HEADS_PADDED_PER_CU heads incl ATTN_GROUPS_PADDING
+                                # zeros); CU c's block starts at c*Q_HEADS_PADDED_PER_CU.
+                                # llama pad=0 -> ==Q_HEADS_PER_CU (byte-identical).
+                                offsets=[
+                                    idx(0),
+                                    idx(c * Q_HEADS_PADDED_PER_CU),
+                                    idx(0),
+                                ],
+                                sizes=[
+                                    idx(DH // 8),
+                                    idx(Q_HEADS_PADDED_PER_CU),
+                                    idx(8),
+                                ],
+                                strides=[idx(8), idx(DH), idx(1)],
                             )
                         DeallocOp(qmtb)
 
@@ -1747,7 +1968,7 @@ def build_module():
                                     akbs[c],
                                     indices=[idx(gi)],
                                     offsets=[idx(0)],
-                                    sizes=[idx(128)],
+                                    sizes=[idx(KVPC_DH)],
                                     strides=[idx(1)],
                                 )
                             for c in cus:
@@ -1756,7 +1977,7 @@ def build_module():
                                     avbs[c],
                                     indices=[idx(gi)],
                                     offsets=[idx(0)],
-                                    sizes=[idx(128)],
+                                    sizes=[idx(KVPC_DH)],
                                     strides=[idx(1)],
                                 )
                         for c in range(N_ATTN_CU):
@@ -1765,16 +1986,21 @@ def build_module():
                                 akbs[c],
                                 indices=[idx(c)],
                                 offsets=[idx(0), idx(0), idx(0)],
-                                sizes=[idx(16), idx(16), idx(8)],
-                                strides=[idx(8), idx(128), idx(1)],
+                                sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
+                                strides=[idx(8), idx(KVPC_DH), idx(1)],
                             )
                             _pv = ChannelPut(
                                 "toV",
                                 avbs[c],
                                 indices=[idx(c)],
                                 offsets=[idx(0), idx(0), idx(0), idx(0)],
-                                sizes=[idx(2), idx(16), idx(8), idx(8)],
-                                strides=[idx(1024), idx(8), idx(128), idx(1)],
+                                sizes=[idx(2), idx(KVPC_DH // 8), idx(8), idx(8)],
+                                strides=[
+                                    idx(8 * KVPC_DH),
+                                    idx(8),
+                                    idx(KVPC_DH),
+                                    idx(1),
+                                ],
                             )
                             # col-3 KV: reserve memtile MM2S 0 (the q-broadcast
                             # transits this memtile's switchbox; KV on MM2S 0
@@ -1857,7 +2083,11 @@ def build_module():
                                                     idx(0),
                                                     idx(_lc * KVPC_DH),
                                                 ],
-                                                sizes=[idx(16), idx(16), idx(8)],
+                                                sizes=[
+                                                    idx(KVPC_DH // 8),
+                                                    idx(16),
+                                                    idx(8),
+                                                ],
                                                 strides=[idx(8), idx(_gw), idx(1)],
                                             )
                                             _pv = ChannelPut(
@@ -1870,7 +2100,12 @@ def build_module():
                                                     idx(0),
                                                     idx(_lc * KVPC_DH),
                                                 ],
-                                                sizes=[idx(2), idx(16), idx(8), idx(8)],
+                                                sizes=[
+                                                    idx(2),
+                                                    idx(KVPC_DH // 8),
+                                                    idx(8),
+                                                    idx(8),
+                                                ],
                                                 strides=[
                                                     idx(_gw * 8),
                                                     idx(8),
@@ -1908,16 +2143,26 @@ def build_module():
                                         kvb,
                                         indices=[idx(c)],
                                         offsets=[idx(0), idx(0), idx(0)],
-                                        sizes=[idx(16), idx(16), idx(8)],
-                                        strides=[idx(8), idx(128), idx(1)],
+                                        sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
+                                        strides=[idx(8), idx(KVPC_DH), idx(1)],
                                     )
                                     _pv = ChannelPut(
                                         "toV",
                                         kvb,
                                         indices=[idx(c)],
                                         offsets=[idx(2), idx(0), idx(0), idx(0)],
-                                        sizes=[idx(2), idx(16), idx(8), idx(8)],
-                                        strides=[idx(1024), idx(8), idx(128), idx(1)],
+                                        sizes=[
+                                            idx(2),
+                                            idx(KVPC_DH // 8),
+                                            idx(8),
+                                            idx(8),
+                                        ],
+                                        strides=[
+                                            idx(8 * KVPC_DH),
+                                            idx(8),
+                                            idx(KVPC_DH),
+                                            idx(1),
+                                        ],
                                     )
                                     # MULTIBLK KV re-block: same col-3 switchbox collision
                                     # as the on-chip path (KV on memtile MM2S 0 deadlocks
@@ -2020,9 +2265,15 @@ def build_module():
                                     "attnO",
                                     a_o,
                                     indices=[idx(_c)],
+                                    # o un-interleave: kernel [q_head, dc, de] -> natural
+                                    # (q_head, dh). sizes=[Q_HEADS_PER_CU, DH//8, 8].
                                     offsets=[idx(0), idx(0), idx(0)],
-                                    sizes=[idx(8), idx(8), idx(8)],
-                                    strides=[idx(8), idx(64), idx(1)],
+                                    sizes=[
+                                        idx(Q_HEADS_PER_CU),
+                                        idx(DH // 8),
+                                        idx(8),
+                                    ],
+                                    strides=[idx(8), idx(Q_HEADS_PER_CU * 8), idx(1)],
                                 )
                                 DeallocOp(a_o)
                                 DeallocOp(a_y)
@@ -2158,8 +2409,8 @@ def build_module():
                                 "attnO",
                                 omtb,
                                 indices=[idx(c)],
-                                offsets=[idx(c * 512)],
-                                sizes=[idx(512)],
+                                offsets=[idx(c * DQ_PER_CU)],
+                                sizes=[idx(DQ_PER_CU)],
                                 strides=[idx(1)],
                             )
                         ChannelPut(
@@ -2167,7 +2418,7 @@ def build_module():
                             omtb,
                             indices=[idx(0)],
                             offsets=[idx(0)],
-                            sizes=[idx(N_ATTN_CU * 512)],
+                            sizes=[idx(N_ATTN_CU * DQ_PER_CU)],
                             strides=[idx(1)],
                         )
                         DeallocOp(omtb)
@@ -2321,7 +2572,93 @@ def build_module():
                             default_body_builder=lambda op: yield_([vals[-1]]),
                         )
 
+                    def _core_blk_np(base_cx):
+                        # FLM-gemma NON-PAIRED proj egress (PAIR_ROWS==1): the same
+                        # [2,4] block herd, but each of the 8 tiles emits its OWN
+                        # single 32-row block via its own outA put -- no lead/partner
+                        # neighbor-L1 share. The y buffer is tile-local (alloc inside
+                        # the body); outA index = [logical col (base_cx+tx), row ty].
+                        # Mirrors gemma_npu_bin's independent-CT + memtile-4-gather;
+                        # D=2560's 5 blocks/CT is native here (odd blocks OK, no pair).
+                        def body(tx, ty, _sx, _sy, _arm):
+                            gcx = arith.addi(idx(base_cx), tx)
+                            gcy = ty
+                            i2c = [idx(v) for v in I2P]
+                            j2c = [idx(v) for v in J2P]
+                            pktc = [
+                                arith.ConstantOp(IntegerAttr.get(i32, k), None).result
+                                for k in KIDP
+                            ]
+                            c2 = idx(2)
+
+                            def _gemv(J2v):
+                                J2x2 = arith.muli(J2v, c2)
+                                a_acc = AllocOp(yacc_l1, [], [])
+                                CallOp(zero, [a_acc, _arm])
+                                for _j in for_(idx(0), J2x2, idx(1)):
+                                    a_x = AllocOp(xblk_l1, [], [])
+                                    ChannelGet("inX", a_x, indices=[gcx, gcy])
+                                    a_w = AllocOp(wblk_l1, [], [])
+                                    ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
+                                    CallOp(acc256, [a_x, a_w, a_acc])
+                                    DeallocOp(a_x)
+                                    DeallocOp(a_w)
+                                    yield_([])
+                                return a_acc
+
+                            def _emit(a_acc, pktv):
+                                yb = AllocOp(ypair_l1, [], [])
+                                CallOp(flush_hdr, [a_acc, yb, pktv])
+                                ChannelPut(
+                                    "outA",
+                                    yb,
+                                    indices=[gcx, ty],
+                                    offsets=[idx(14)],
+                                    sizes=[idx(HDR + PAIR_PAY)],
+                                    strides=[idx(1)],
+                                )
+                                DeallocOp(yb)
+                                DeallocOp(a_acc)
+
+                            _arm_i = arith.index_cast(idx_t, _arm)
+                            _id4 = arith.ConstantOp(
+                                IntegerAttr.get(i32, KIDP[OPROJ_PHASE]), None
+                            ).result
+
+                            def _sel(voc_val, dec_thunk, ty_):
+                                return index_switch(
+                                    [ty_],
+                                    _arm_i,
+                                    [0],
+                                    case_body_builder=lambda op, i, cv: yield_(
+                                        [voc_val]
+                                    ),
+                                    default_body_builder=lambda op: yield_(
+                                        [dec_thunk()]
+                                    ),
+                                )
+
+                            nph_v = _sel(idx(1), lambda: idx(NPH), idx_t)
+                            for ph in for_(idx(0), nph_v, idx(1)):
+                                I2v = _sel(
+                                    idx(VOCAB_I2), lambda: _psw(ph, i2c, idx_t), idx_t
+                                )
+                                J2v = _sel(
+                                    idx(VOCAB_J2), lambda: _psw(ph, j2c, idx_t), idx_t
+                                )
+                                pktv = _sel(_id4, lambda: _psw(ph, pktc, i32), i32)
+                                for _v1 in for_(idx(0), I2v, idx(1)):
+                                    for _e in range(PAIR_ROWS):  # 1 (non-paired)
+                                        _emit(_gemv(J2v), pktv)
+                                    yield_([])  # v1
+                                yield_([])  # ph
+
+                        return body
+
                     def _core_blk(base_cx):
+                        if PAIR_ROWS == 1:
+                            return _core_blk_np(base_cx)
+
                         def body(
                             tx,
                             ty,
@@ -2464,9 +2801,12 @@ def build_module():
                                 )
                                 pktv = _sel(_id4, lambda: _psw(ph, pktc, i32), i32)
                                 for _v1 in for_(idx(0), I2v, idx(1)):
-                                    # two unrolled GEMV loops -> y_0 then y_1
-                                    _emit(_gemv(J2v), 0, pktv)
-                                    _emit(_gemv(J2v), 1, pktv)
+                                    # PAIR_ROWS GEMV emits per v1 into the PAIR_ROWS y
+                                    # buffers: paired (llama) -> y_0 then y_1 (2 blocks/
+                                    # round, lead+partner); non-paired (gemma) -> y_0 only
+                                    # (1 block/round per tile, handles odd blocks/tile).
+                                    for _e in range(PAIR_ROWS):
+                                        _emit(_gemv(J2v), _e, pktv)
                                     yield_([])  # v1
                                 yield_([])  # ph
 
@@ -2484,11 +2824,16 @@ def build_module():
                     # all fold per-tile from the tile IVs at clone.
                     for blk in range(NCX // 2):
                         base_cx = blk * 2  # logical col of tx=0
-                        bufs = [AllocOp(ypair_l1, [], []) for _ in range(8)]
+                        if PAIR_ROWS == 1:
+                            # non-paired: each tile allocs its own y buffer locally.
+                            _ops = [_arm_proj]
+                        else:
+                            bufs = [AllocOp(ypair_l1, [], []) for _ in range(8)]
+                            _ops = [b.result for b in bufs] + [_arm_proj]
                         blk_h = herd(
                             name=f"proj_blk{blk}",
                             sizes=[2, 4],
-                            operands=[b.result for b in bufs] + [_arm_proj],
+                            operands=_ops,
                         )(_core_blk(base_cx))
                         blk_h.attributes["link_with"] = StringAttr.get("proj_qmm.o")
                         blk_h.attributes["x_loc"] = IntegerAttr.get(
@@ -2523,14 +2868,21 @@ def build_module():
                             # (refeed VOCAB_RNDS via xnorm), then forward the vocab
                             # projection (id4/RMS_DEST) to shim as logits (1 channel =
                             # layerOut) via a 2-deep ring (mirrors rms_residual.cc:211).
+                            # Gemma (N_NORMS>=4): rmsW/rmsW2 are 2K (two norms packed);
+                            # vocab feeds final_norm in rmsW's HI half (_uni_voc) -> use
+                            # rms_norm_hi_aie below. rmsW2 is a 2K dummy. No rmsW3/rmsW4.
+                            _rms_w_ty = rms_w2k_l1 if N_NORMS >= 4 else rms_l1
+                            _rms_final = (
+                                rms_norm_hi_aie if N_NORMS >= 4 else rms_norm_aie
+                            )
                             a_xl = AllocOp(rms_l1, [], [])
                             ChannelGet("rmsX", a_xl, indices=[idx(0)])
-                            a_wl = AllocOp(rms_l1, [], [])
+                            a_wl = AllocOp(_rms_w_ty, [], [])
                             ChannelGet("rmsW", a_wl, indices=[idx(0)])
                             if POST_RMS:
                                 # consume the vocab dummy rmsW2 (see _uni_voc) so the
                                 # shared rmsX/rmsW2 packet group has no vocab-mode hole.
-                                a_w2l = AllocOp(rms_l1, [], [])
+                                a_w2l = AllocOp(_rms_w_ty, [], [])
                                 ChannelGet("rmsW2", a_w2l, indices=[idx(0)])
                                 DeallocOp(a_w2l)
                             a_xnl = AllocOp(rms_l1, [], [])
@@ -2565,7 +2917,7 @@ def build_module():
                                     _xr.owner.owner.attributes[
                                         "air.disable_ping_pong"
                                     ] = UnitAttr.get()
-                                    CallOp(rms_norm_aie, [a_xnl, a_xl, a_wl, _arm])
+                                    CallOp(_rms_final, [a_xnl, a_xl, a_wl, _arm])
                                     _pl = ChannelPut(
                                         "xnorm",
                                         a_xnl,
@@ -2633,6 +2985,86 @@ def build_module():
                         )
 
                     def _rms_decode_body(_arm):
+                        if N_NORMS >= 4:
+                            # ===== Gemma sandwich (4 norms) =====================
+                            # input / post_attn / pre_ffn / post_ffn. The two "post"
+                            # norms are applied to the SUBLAYER OUTPUT (o-proj, down)
+                            # BEFORE the residual add (HF Gemma3; validated numpy ref):
+                            #   h    = x + post_attn_norm(o_proj)
+                            #   res2 = h + post_ffn_norm(down)
+                            # The 4 norm weights are packed 2-per-channel to keep the rms
+                            # tile's S2MM0 at <=4 packet ids (1 arbiter x 4 msels -> a port
+                            # demuxes at most 4; 6 silently deadlocks). g_wa=rmsW=[input|
+                            # post_attn], g_wb=rmsW2=[pre_ffn|post_ffn] (each 2K), sliced by
+                            # the lo/hi kernels. o-proj & down share g_sub, their norm-out
+                            # g_subn; residual2 reuses g_x (dead after residual1).
+                            g_x = AllocOp(rms_l1, [], [])
+                            ChannelGet("rmsX", g_x, indices=[idx(0)])
+                            g_wa = AllocOp(rms_w2k_l1, [], [])
+                            ChannelGet("rmsW", g_wa, indices=[idx(0)])
+                            g_wb = AllocOp(rms_w2k_l1, [], [])
+                            ChannelGet("rmsW2", g_wb, indices=[idx(0)])
+                            g_xn = AllocOp(rms_l1, [], [])
+                            g_sub = AllocOp(rms_l1, [], [])  # o-proj, then down
+                            g_subn = AllocOp(
+                                rms_l1, [], []
+                            )  # post-norm out (attn, then ffn)
+                            g_h = AllocOp(rms_l1, [], [])
+                            # step1: input_layernorm (g_wa lo) -> QKV X feed (ph0).
+                            # Single normalize + baked channel-level XN_REFEED, mirroring
+                            # llama (a per-round value-1 reput loop instead re-reads the
+                            # input buffer every iteration and doubles the S2MM0 BD ring).
+                            CallOp(rms_norm_lo_aie, [g_xn, g_x, g_wa, _arm])
+                            ChannelPut(
+                                "xnorm", g_xn, offsets=[0], sizes=[K], strides=[1]
+                            )
+                            # step2 (residual1): h = x + post_attention_norm(o_proj) [g_wa hi]
+                            ChannelGet(
+                                "outY",
+                                g_sub,
+                                indices=[idx(0), idx(RMS_DEST)],
+                                offsets=[idx(0)],
+                                sizes=[idx(OPROJ_RNDS * PAYLOAD)],
+                                strides=[idx(1)],
+                            )
+                            CallOp(rms_norm_hi_aie, [g_subn, g_sub, g_wa, _arm])
+                            CallOp(residual_add_aie, [g_h, g_x, g_subn])
+                            DeallocOp(g_wa)
+                            # step3: pre_feedforward_norm(h) [g_wb lo] -> GLU X feed (ph2).
+                            # baked per-put refeed = GLU proj rounds that re-read X.
+                            CallOp(rms_norm_lo_aie, [g_xn, g_h, g_wb, _arm])
+                            _p2 = ChannelPut(
+                                "xnorm", g_xn, offsets=[0], sizes=[K], strides=[1]
+                            )
+                            _p2.operation.attributes["air.refeed_count"] = (
+                                IntegerAttr.get(T.i32(), REFEED[GATEUP_PHASE])
+                            )
+                            DeallocOp(g_xn)
+                            # step4 (residual2): res2 = h + post_feedforward_norm(down) [g_wb hi].
+                            # reuse g_sub/g_subn, and g_x (dead) for result.
+                            ChannelGet(
+                                "outY",
+                                g_sub,
+                                indices=[idx(0), idx(RMS_DEST)],
+                                offsets=[idx(0)],
+                                sizes=[idx(DOWN_RNDS * PAYLOAD)],
+                                strides=[idx(1)],
+                            )
+                            CallOp(rms_norm_hi_aie, [g_subn, g_sub, g_wb, _arm])
+                            CallOp(residual_add_aie, [g_x, g_h, g_subn])
+                            DeallocOp(g_h)
+                            DeallocOp(g_sub)
+                            DeallocOp(g_subn)
+                            DeallocOp(g_wb)
+                            ChannelPut(
+                                "layerOut",
+                                g_x,
+                                offsets=[idx(0)],
+                                sizes=[idx(DOWN_RNDS * PAYLOAD)],
+                                strides=[idx(1)],
+                            )
+                            DeallocOp(g_x)
+                            return
                         a_x = AllocOp(rms_l1, [], [])
                         ChannelGet("rmsX", a_x, indices=[idx(0)])
                         a_w = AllocOp(rms_l1, [], [])
@@ -2750,6 +3182,13 @@ def run():
     import pyxrt as xrt
 
     module = build_module()
+
+    # Emit-only hook: dump the built AIR MLIR and stop before the (expensive) NPU
+    # compile. Used to byte-diff the IR across no-op refactors (e.g. the incremental
+    # model-config parametrization) without an aircc/NPU build. Inert unless set.
+    if _os.environ.get("FUSED_DECODE_EMIT_ONLY"):
+        print(str(module))
+        return 0
 
     # use_lock_race_condition_fix_v2: emit the reference-style daisy-chained locks for the
     # shared-L2 fan-in (group/main asymmetric gather) -- matches the reproducer's

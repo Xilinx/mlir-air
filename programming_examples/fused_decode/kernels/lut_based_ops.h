@@ -490,7 +490,7 @@ __attribute__((always_inline)) v16accfloat getExpBf16(v16bfloat16 x) {
 __attribute__((always_inline)) v16bfloat16
 getActivationBf16(v16bfloat16 vInput) {
   aie::vector<bfloat16, 16> input = vInput;
-#ifdef A_FUNC == A_SILU
+#if A_FUNC == A_SILU
   int step_bits = -2;
 #elif A_FUNC == A_GELU
   int step_bits = -3;
