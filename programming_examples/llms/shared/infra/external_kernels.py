@@ -199,7 +199,9 @@ def compile_rope():
     _compile_kernel(src, "rope.o")
 
 
-def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False, bfp16=True):
+def compile_attn_npu2(
+    head_dim=64, lkp=None, lqp_tile=None, dv_tile=None, force=False, bfp16=True
+):
     """Compile attn_npu2.o (FlashAttention kernel) from source.
 
     The attn_npu2.cc defines are PER-TILE, not per-launch (see the canonical
@@ -221,6 +223,9 @@ def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False, bfp16=T
         lkp: K/V chunk size per tile (= dk/dv tile). Defaults to head_dim
             (legacy hd==lkp behavior).
         lqp_tile: Q tile size (tile_size_q). Defaults to lkp.
+        dv_tile: V/output column tile (-> dv). Defaults to lkp. Must match the
+            builder's dv_tile, which may be widened past lkp to drop the
+            dv_chunks launch axis (and with it the K re-streaming it costs).
         force: recompile even if attn_npu2.o exists (needed when the same CWD
             previously built a different-shaped .o, e.g. hd=64 then hd=128).
     """
@@ -228,6 +233,8 @@ def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False, bfp16=T
         lkp = head_dim
     if lqp_tile is None:
         lqp_tile = lkp
+    if dv_tile is None:
+        dv_tile = lkp
     src = _PROJ_ROOT / "flash_attention" / "kernel_fusion_based" / "attn_npu2.cc"
     _flags = [
         "-DBIT_WIDTH=8",
@@ -235,7 +242,7 @@ def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False, bfp16=T
         f"-Dlkp={lkp}",
         f"-Ddk={lkp}",
         f"-Ddk_full={head_dim}",
-        f"-Ddv={lkp}",
+        f"-Ddv={dv_tile}",
         f"-Ddv_full={head_dim}",
         "-DROUND_CONV_EVEN",
     ]

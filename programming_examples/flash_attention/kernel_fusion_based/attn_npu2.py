@@ -67,6 +67,7 @@ def build_module(
     causal=False,
     num_heads_per_unroll=2,
     window=None,
+    dv_tile=None,
 ):
     """Build flash attention module with selective Q capture pattern.
 
@@ -91,6 +92,12 @@ def build_module(
             When set (requires causal=True), a query at position p attends only
             to keys in (p - window, p]. Must be a multiple of the Q/K block size
             tile_size_q (== lkp under causal masking).
+        dv_tile: V/output column tile (default: lkp). dv // dv_tile = dv_chunks
+            becomes a LAUNCH axis, and every dv chunk re-streams the whole of K
+            and Q from L3 — so K traffic scales with dv_chunks. Widening dv_tile
+            trades L1 (the v and gp buffers grow with it) for L3 bandwidth; at
+            dv_tile == dv the launch loses the axis entirely and V/out keep
+            their natural [heads, seq, dv] layout.
     """
     # Validate
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
@@ -105,8 +112,10 @@ def build_module(
     dk_tile = lkp
     assert dk % dk_tile == 0, f"dk ({dk}) must be divisible by dk_tile/lkp ({dk_tile})"
     dk_chunks = dk // dk_tile
-    dv_tile = lkp
-    assert dv % dv_tile == 0, f"dv ({dv}) must be divisible by dv_tile/lkp ({dv_tile})"
+    if dv_tile is None:
+        dv_tile = lkp
+    assert dv % dv_tile == 0, f"dv ({dv}) must be divisible by dv_tile ({dv_tile})"
+    assert dv_tile % 8 == 0, f"dv_tile ({dv_tile}) must be a multiple of the mmul 8"
     dv_chunks = dv // dv_tile
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
@@ -1301,6 +1310,15 @@ if __name__ == "__main__":
         "attends only to keys in (p - window, p]. Must be a multiple of lkp.",
     )
     parser.add_argument(
+        "--dv-tile",
+        type=int,
+        default=None,
+        dest="dv_tile",
+        help="V/output column tile (default: lkp). dv/dv_tile becomes a launch "
+        "axis that re-streams all of K and Q per chunk, so widening this trades "
+        "L1 for L3 bandwidth; --dv-tile=<dv> removes the axis.",
+    )
+    parser.add_argument(
         "--perf-iters",
         type=int,
         default=0,
@@ -1345,6 +1363,7 @@ if __name__ == "__main__":
         causal=causal,
         num_heads_per_unroll=num_heads_per_unroll,
         window=args.window,
+        dv_tile=args.dv_tile,
     )
 
     if args.print_module_only:
@@ -1364,11 +1383,12 @@ if __name__ == "__main__":
     input_k = rng.standard_normal((num_kv_heads, lk, dk)).astype(INPUT_DATATYPE)
     input_v_orig = rng.standard_normal((num_kv_heads, lk, dv)).astype(INPUT_DATATYPE)
     # Transpose V to [num_kv_heads * dv_chunks, lk, dv_tile] for contiguous access
-    dv_chunks_host = dv // lkp
+    dv_tile_host = args.dv_tile or lkp
+    dv_chunks_host = dv // dv_tile_host
     input_v = (
-        input_v_orig.reshape(num_kv_heads, lk, dv_chunks_host, lkp)
+        input_v_orig.reshape(num_kv_heads, lk, dv_chunks_host, dv_tile_host)
         .transpose(0, 2, 1, 3)
-        .reshape(num_kv_heads * dv_chunks_host, lk, lkp)
+        .reshape(num_kv_heads * dv_chunks_host, lk, dv_tile_host)
         .copy()
     )
 
@@ -1393,9 +1413,9 @@ if __name__ == "__main__":
 
     # Transpose expected output to match transposed L3 layout
     sdpa_output_transposed = (
-        sdpa_output.reshape(num_heads, lq, dv_chunks_host, lkp)
+        sdpa_output.reshape(num_heads, lq, dv_chunks_host, dv_tile_host)
         .transpose(0, 2, 1, 3)
-        .reshape(num_heads * dv_chunks_host, lq, lkp)
+        .reshape(num_heads * dv_chunks_host, lq, dv_tile_host)
         .copy()
     )
 

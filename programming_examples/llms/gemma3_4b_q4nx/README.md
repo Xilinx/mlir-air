@@ -39,29 +39,34 @@ Divergences from Llama are parametric, host-side, or compile flags — see
 
 | | |
 |---|---|
-| prefill (TTFT) | **6.9 s** at CTX=2048 (295 tok/s); 6.91 s on-device, 29 ms host |
+| prefill (TTFT) | **5.1 s** at CTX=2048 (403 tok/s); 5.05 s on-device, 30 ms host |
 | decode | **12.5 tok/s** (80 ms/token), ATTN_MAXL=2048, 64 tokens |
 
 Prefill runs at a fixed padded context (`CTX`), so its cost is roughly constant
 in prompt length rather than proportional to it. Measure it with
 `make profile-prefill`. Per-op on-device split at CTX=2048:
 
-| attn | rms_qkv | gate | up | down | gelu | o_norm | lm_head |
+| attn | down | up | gate | rms_qkv | gelu | o_norm | lm_head |
 |---|---|---|---|---|---|---|---|
-| 3052 ms | 778 | 724 | 724 | 721 | 513 | 356 | 45 |
+| 1221 ms | 767 | 743 | 741 | 600 | 538 | 394 | 45 |
 
 For reference, FastFlowLM's own Gemma3-4B prefill measures **3.21 s** (637
 tok/s) at the same context on this machine, producing the same first token —
-i.e. this example is currently **2.2x slower** than the implementation it
+i.e. this example is currently **1.6x slower** than the implementation it
 reproduces. (Contrast the Llama-3.2-1B sibling, where the AIR prefill is at
-parity.) The gap is not localized to one stage: attention alone (3.05 s) is
-about the size of FLM's entire prefill, and so is everything else put together
-(3.89 s), so making attention free would still not close it.
+parity.) What remains is spread across the GEMMs rather than concentrated in
+one stage: gate and up run at ~5.3 TFLOP/s against ~7 TFLOP/s for the same K on
+a narrower N, because `tile_k_l2` is capped at 64 by the DMA stride limit at
+N=10240.
 
-Attention is nonetheless the largest single lever: at head_dim=256 the
-flash-attention kernel tiles at 32x32, and the sliding-window layers still
-stream every K block and mask the out-of-window ones rather than skipping them
-in DMA (the `attn_npu2_temporal_causal.py` causal-skip lever would apply).
+There is also a host round-trip tax down the FFN chain: `gate` and `up` write
+their 42 MB outputs back to the host only for `gelu_mul` to write them to the
+device again (196 ms/prefill), and the same for `gelu_mul` into `down`.
+
+Attention still masks out-of-window K blocks rather than skipping them; the
+`attn_npu2_temporal_causal.py` causal-skip lever would apply and, now that the
+kernel is compute-bound rather than bandwidth-bound, should be worth about
+another 2x on it.
 
 Separately, loading the model — Q4NX host dequant of ~6 GB of weights plus the
 one-time write into resident BOs — takes ~67 s per process. That is a startup
@@ -149,8 +154,19 @@ Two structural notes:
 
 At head_dim=256 the head-first flash attention tiles at `lkp=32` rather than the
 head_dim=128 path's 64: the resident Q tile is `head_dim * lkp * 2B`, so `lkp=64`
-needs 72 KB of L1 and aiecc rejects it. See `_FA_TILING` in
-`llms/shared/infra/fa_headfirst.py`.
+needs 72 KB of L1 and aiecc rejects it.
+
+What actually sets the runtime is L3 traffic, not L1 or FLOPs. The kernel
+re-streams all of K once per launch iteration, so
+
+    K bytes = (seq / lqp) * n_heads * (head_dim / dv_tile) * seq * head_dim * 2
+
+and the two free knobs both belong in the numerator's denominators: `lqp` is
+maximised by spending the 32-core budget on Q tiles rather than on unrolled
+heads (`num_heads_per_unroll=1`, `num_q_tiles=8`), and `dv_tile` is widened past
+`lkp` so the `dv_chunks` launch axis — which re-streams the whole of K and Q per
+chunk — shrinks to 2. Together that is 5.9x less traffic and 2.8x less
+attention time. See `_FA_TILING` in `llms/shared/infra/fa_headfirst.py`.
 
 ### Decode
 
