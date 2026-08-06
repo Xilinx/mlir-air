@@ -39,34 +39,39 @@ Divergences from Llama are parametric, host-side, or compile flags — see
 
 | | |
 |---|---|
-| prefill (TTFT) | **5.1 s** at CTX=2048 (403 tok/s); 5.05 s on-device, 30 ms host |
+| prefill (TTFT) | **4.6 s** at CTX=2048 (444 tok/s); 4.58 s on-device, 29 ms host |
 | decode | **12.5 tok/s** (80 ms/token), ATTN_MAXL=2048, 64 tokens |
 
 Prefill runs at a fixed padded context (`CTX`), so its cost is roughly constant
 in prompt length rather than proportional to it. Measure it with
 `make profile-prefill`. Per-op on-device split at CTX=2048:
 
-| attn | down | up | gate | rms_qkv | gelu | o_norm | lm_head |
+| attn | gate | up | down | rms_qkv | o_norm | gelu | lm_head |
 |---|---|---|---|---|---|---|---|
-| 1221 ms | 767 | 743 | 741 | 600 | 538 | 394 | 45 |
+| 1151 ms | 712 | 710 | 635 | 599 | 394 | 335 | 45 |
+
+Of the 4.58 s on device, 3.90 s is kernel time, 132 ms host->device and 70 ms
+back; the rest is host-side marshalling (the flash-attention layout transposes
+are ~4 ms/layer of it).
 
 For reference, FastFlowLM's own Gemma3-4B prefill measures **3.21 s** (637
 tok/s) at the same context on this machine, producing the same first token —
-i.e. this example is currently **1.6x slower** than the implementation it
+i.e. this example is currently **1.4x slower** than the implementation it
 reproduces. (Contrast the Llama-3.2-1B sibling, where the AIR prefill is at
-parity.) What remains is spread across the GEMMs rather than concentrated in
-one stage: gate and up run at ~5.3 TFLOP/s against ~7 TFLOP/s for the same K on
-a narrower N, because `tile_k_l2` is capped at 64 by the DMA stride limit at
-N=10240.
+parity.)
 
-There is also a host round-trip tax down the FFN chain: `gate` and `up` write
-their 42 MB outputs back to the host only for `gelu_mul` to write them to the
-device again (196 ms/prefill), and the same for `gelu_mul` into `down`.
+What remains is spread across the FFN GEMMs rather than concentrated in one
+stage. `gate` and `up` run at ~5.3 TFLOP/s where the same K against a narrower
+N reaches ~7: their `tile_k_l2` is capped at 64 because the DMA stride limit is
+`tile_k_l2 * N <= 1048576` and N is 10240. Lifting it means either splitting
+the projection into N bands — which changes the layout of everything
+downstream of it in the FFN chain — or feeding the weights K-major so the BD
+stride is 2560 rather than 10240.
 
-Attention still masks out-of-window K blocks rather than skipping them; the
-`attn_npu2_temporal_causal.py` causal-skip lever would apply and, now that the
-kernel is compute-bound rather than bandwidth-bound, should be worth about
-another 2x on it.
+Attention still *streams* every out-of-window K block and masks it; only the
+arithmetic is skipped. Skipping the streaming as well needs the per-round
+variable-size puts of `attn_npu2_temporal_causal.py`, which is a different
+dataflow from the head-first kernel's.
 
 Separately, loading the model — Q4NX host dequant of ~6 GB of weights plus the
 one-time write into resident BOs — takes ~67 s per process. That is a startup
