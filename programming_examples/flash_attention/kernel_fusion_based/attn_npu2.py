@@ -68,6 +68,7 @@ def build_module(
     num_heads_per_unroll=2,
     window=None,
     dv_tile=None,
+    causal_skip=False,
 ):
     """Build flash attention module with selective Q capture pattern.
 
@@ -92,6 +93,13 @@ def build_module(
             When set (requires causal=True), a query at position p attends only
             to keys in (p - window, p]. Must be a multiple of the Q/K block size
             tile_size_q (== lkp under causal masking).
+        causal_skip: Skip the QK matmul, mask, softmax and PV for (q_block,
+            kv_block) pairs the mask kills outright, instead of computing them
+            and throwing the result away. Exact -- an all -inf block leaves the
+            online softmax's running max, rescale and accumulator untouched.
+            The channel gets stay unconditional, so this trades no DMA; it is a
+            pure compute saving (~2x under causal, ~2.6x under a half-length
+            window). Default off so existing callers keep byte-identical IR.
         dv_tile: V/output column tile (default: lkp). dv // dv_tile = dv_chunks
             becomes a LAUNCH axis, and every dv chunk re-streams the whole of K
             and Q from L3 — so K traffic scales with dv_chunks. Widening dv_tile
@@ -125,6 +133,7 @@ def build_module(
         )
     # Sliding window, expressed in Q/K blocks. Block-aligned windows keep the
     # ragged edge to exactly one block per row-block (see apply_window_mask).
+    assert not (causal_skip and not causal), "causal_skip requires causal=True"
     window_blocks = None
     if window is not None:
         assert causal, "window requires causal=True"
@@ -722,11 +731,50 @@ def build_module(
                     # === K CHUNK LOOP ===
                     c_chunks_h = ConstantOp(index_type, chunks_per_stage)
                     for chunk_iter in scf_range(0, c_chunks_h, 1):
+                        # This tile's (q_block, kv_block), and whether the block
+                        # survives the mask at all. A fully masked block feeds
+                        # all -inf into the online softmax: the running max is
+                        # unchanged, the rescale is 1 and the contribution is 0,
+                        # so skipping it is exact, not an approximation.
+                        def block_indices():
+                            c_cps_i32 = ConstantOp(i32, chunks_per_stage)
+                            ty_i32 = arith.IndexCastOp(i32, ty).result
+                            chunk_i32 = arith.IndexCastOp(i32, chunk_iter).result
+                            kv_base = arith.MulIOp(ty_i32, c_cps_i32)
+                            kv = arith.AddIOp(kv_base.result, chunk_i32).result
+                            q_base = load(counter_buf, [c0_ctr])
+                            tx_i32 = arith.IndexCastOp(i32, tx).result
+                            return arith.AddIOp(q_base, tx_i32).result, kv
+
+                        q_block = kv_block = skip_cond = None
+                        if causal_skip:
+                            q_block, kv_block = block_indices()
+                            # kv_block <= q_block, and inside the window if one
+                            # is set. The bound is >= q_block - window_blocks,
+                            # NOT >: that block is the ragged edge that
+                            # apply_window_mask half-keeps, not a dead block.
+                            skip_cond = arith.CmpIOp(
+                                arith.CmpIPredicate.sle, kv_block, q_block
+                            ).result
+                            if window_blocks is not None:
+                                oldest = arith.SubIOp(
+                                    q_block, ConstantOp(i32, window_blocks)
+                                ).result
+                                skip_cond = arith.AndIOp(
+                                    skip_cond,
+                                    arith.CmpIOp(
+                                        arith.CmpIPredicate.sge, kv_block, oldest
+                                    ).result,
+                                ).result
+
                         # 1. Zero fill G (FIRST — once per K seq chunk)
                         g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
                         CallOp([], "zero_fill_g_bf16", [g1d])
 
-                        # 2. dk_chunks loop: K get + matmul (accumulate G)
+                        # 2. dk_chunks loop: K get + matmul (accumulate G).
+                        #    The gets stay unconditional even when the block is
+                        #    skipped -- the channels must stay balanced or the
+                        #    herd deadlocks; only the arithmetic is elided.
                         for dk_c in range(dk_chunks):
                             for s in range(NS):
                                 if_qk_k = affine.AffineIfOp(
@@ -741,7 +789,17 @@ def build_module(
                                     )
                                     affine.AffineYieldOp([])
                             # Matmul Q_dk_slice @ K_dk_slice^T → G (accumulate)
-                            CallOp([], "matmul_a_b_bf16", [q_bufs[dk_c], qk, g1d])
+                            if causal_skip:
+                                if_mm = scf.IfOp(skip_cond)
+                                with InsertionPoint(if_mm.then_block):
+                                    CallOp(
+                                        [],
+                                        "matmul_a_b_bf16",
+                                        [q_bufs[dk_c], qk, g1d],
+                                    )
+                                    scf.YieldOp([])
+                            else:
+                                CallOp([], "matmul_a_b_bf16", [q_bufs[dk_c], qk, g1d])
 
                         # 3. V get via affine.if per stage (AFTER dk_chunks)
                         #    — 3D index with head dim
@@ -758,64 +816,59 @@ def build_module(
                                 )
                                 affine.AffineYieldOp([])
 
-                        # 4b. Apply causal mask (after matmul, before softmax)
-                        if causal:
-                            c_cps_i32 = ConstantOp(i32, chunks_per_stage)
-                            ty_i32 = arith.IndexCastOp(i32, ty).result
-                            chunk_i32 = arith.IndexCastOp(
-                                i32,
-                                chunk_iter,
-                            ).result
-                            kv_base = arith.MulIOp(ty_i32, c_cps_i32)
-                            kv_block = arith.AddIOp(
-                                kv_base.result,
-                                chunk_i32,
-                            )
-                            q_base = load(counter_buf, [c0_ctr])
-                            tx_i32 = arith.IndexCastOp(i32, tx).result
-                            q_block = arith.AddIOp(q_base, tx_i32)
-                            if window_blocks is not None:
-                                c_win_i32 = ConstantOp(i32, window_blocks)
-                                CallOp(
-                                    [],
-                                    "apply_window_mask",
-                                    [
-                                        g,
-                                        q_block.result,
-                                        kv_block.result,
-                                        c_win_i32.result,
-                                    ],
+                        def emit_softmax_accumulate():
+                            # 4b. Apply causal mask (after matmul, before softmax)
+                            if causal:
+                                nonlocal_q, nonlocal_kv = (
+                                    (q_block, kv_block)
+                                    if q_block is not None
+                                    else block_indices()
                                 )
-                            else:
-                                CallOp(
-                                    [],
-                                    "apply_causal_mask",
-                                    [g, q_block.result, kv_block.result],
-                                )
+                                if window_blocks is not None:
+                                    c_win_i32 = ConstantOp(i32, window_blocks)
+                                    CallOp(
+                                        [],
+                                        "apply_window_mask",
+                                        [g, nonlocal_q, nonlocal_kv, c_win_i32.result],
+                                    )
+                                else:
+                                    CallOp(
+                                        [],
+                                        "apply_causal_mask",
+                                        [g, nonlocal_q, nonlocal_kv],
+                                    )
 
-                        # 5. Softmax + accumulate
-                        s_tmp = AllocOp(up_l1_t, [], [])
-                        r_tmp = AllocOp(up_l1_t, [], [])
-                        CallOp(
-                            [],
-                            "fused_softmax",
-                            [g1d, up_buf, s_tmp.result, r_tmp.result],
-                        )
-                        CallOp([], "mul_r_gp", [r_tmp.result, gp])
-                        CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
-                        c0_i32 = ConstantOp(i32, 0)
-                        CallOp(
-                            [],
-                            "accum_sp_r_s",
-                            [sp_buf, r_tmp.result, s_tmp.result],
-                        )
-                        CallOp(
-                            [],
-                            "vector_copy_32elems",
-                            [c0_i32, s_tmp.result, sp_buf],
-                        )
-                        DeallocOp(s_tmp)
-                        DeallocOp(r_tmp)
+                            # 5. Softmax + accumulate
+                            s_tmp = AllocOp(up_l1_t, [], [])
+                            r_tmp = AllocOp(up_l1_t, [], [])
+                            CallOp(
+                                [],
+                                "fused_softmax",
+                                [g1d, up_buf, s_tmp.result, r_tmp.result],
+                            )
+                            CallOp([], "mul_r_gp", [r_tmp.result, gp])
+                            CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+                            c0_i32 = ConstantOp(i32, 0)
+                            CallOp(
+                                [],
+                                "accum_sp_r_s",
+                                [sp_buf, r_tmp.result, s_tmp.result],
+                            )
+                            CallOp(
+                                [],
+                                "vector_copy_32elems",
+                                [c0_i32, s_tmp.result, sp_buf],
+                            )
+                            DeallocOp(s_tmp)
+                            DeallocOp(r_tmp)
+
+                        if causal_skip:
+                            if_acc = scf.IfOp(skip_cond)
+                            with InsertionPoint(if_acc.then_block):
+                                emit_softmax_accumulate()
+                                scf.YieldOp([])
+                        else:
+                            emit_softmax_accumulate()
                         yield_([])
 
                     # === CASCADE MERGE (last/middle/first) ===
@@ -1310,6 +1363,13 @@ if __name__ == "__main__":
         "attends only to keys in (p - window, p]. Must be a multiple of lkp.",
     )
     parser.add_argument(
+        "--causal-skip",
+        action="store_true",
+        dest="causal_skip",
+        help="Skip fully-masked (q_block, kv_block) tiles instead of computing "
+        "and discarding them. Requires --causal; numerically identical.",
+    )
+    parser.add_argument(
         "--dv-tile",
         type=int,
         default=None,
@@ -1364,6 +1424,7 @@ if __name__ == "__main__":
         num_heads_per_unroll=num_heads_per_unroll,
         window=args.window,
         dv_tile=args.dv_tile,
+        causal_skip=args.causal_skip,
     )
 
     if args.print_module_only:

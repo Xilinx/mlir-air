@@ -486,7 +486,14 @@ def compile_all_kernels(cache, seq_len, verbose=False):
 
     print(f"\n--- {_FA_GLOBAL} (head-first FA, head_dim={DH}, causal) ---")
     compile_headfirst_fa(
-        cache, seq_len, N_Q_HEADS, N_KV_HEADS, DH, verbose, name=_FA_GLOBAL
+        cache,
+        seq_len,
+        N_Q_HEADS,
+        N_KV_HEADS,
+        DH,
+        verbose,
+        name=_FA_GLOBAL,
+        causal_skip=True,
     )
     print(
         f"\n--- {_FA_LOCAL} (head-first FA, head_dim={DH}, window={SLIDING_WINDOW}) ---"
@@ -500,6 +507,7 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         verbose,
         window=SLIDING_WINDOW,
         name=_FA_LOCAL,
+        causal_skip=True,
     )
 
     print(f"\n--- lm_head_gemv ({_LM_N_PARTITIONS} x {_LM_N_PART}, K={D}) ---")

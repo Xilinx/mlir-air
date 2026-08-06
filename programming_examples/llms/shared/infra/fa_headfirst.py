@@ -94,6 +94,7 @@ def compile_headfirst_fa(
     verbose=False,
     window=None,
     name="flash_attn",
+    causal_skip=False,
 ):
     """Compile the head-first FlashAttention ELF into `cache` under `name`.
 
@@ -105,6 +106,10 @@ def compile_headfirst_fa(
     query at position p attends only to keys in (p - window, p]. Callers that
     need both variants must pass distinct `name`s so the ELFs don't collide in
     the cache.
+
+    `causal_skip` elides the arithmetic for (q_block, kv_block) pairs the mask
+    kills outright. It is numerically exact and strictly faster, but it changes
+    the emitted ELF, so it stays opt-in until each model has re-run its gate.
     """
     from shared.infra.external_kernels import compile_attn_npu2
 
@@ -138,6 +143,7 @@ def compile_headfirst_fa(
         num_heads_per_unroll=num_heads_per_unroll,
         window=window,
         dv_tile=dv_tile,
+        causal_skip=causal_skip,
     )
     cache.compile_and_cache(name, mod, _fa_backend_kwargs(verbose, head_dim // dv_tile))
 
