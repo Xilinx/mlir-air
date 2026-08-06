@@ -14,6 +14,16 @@ on:
   schedule:
     - cron: '17 4 * * *'  # Daily at 04:17 (off-:00 to avoid CI fleet pile-up)
   workflow_dispatch:
+    inputs:
+      only_model:
+        description: 'Benchmark only this llms/<dir> (empty = all models)'
+        required: false
+        default: ''
+      skip_verify:
+        description: 'Skip the verify gate and only capture perf'
+        type: boolean
+        required: false
+        default: false
 
 defaults:
   run:
@@ -257,6 +267,10 @@ jobs:
           # via the manual "Download LLM Weights" workflow (downloadLLMWeights.yml)
           # before running this. Forwarded into lit tests by lit.cfg.py.
           HF_HUB_OFFLINE: "1"
+          # Via env, not ${{ }} interpolated into the script, so a dispatch input
+          # cannot inject shell.
+          ONLY_MODEL: ${{ inputs.only_model }}
+          SKIP_VERIFY: ${{ inputs.skip_verify }}
         run: |
           source air-venv/bin/activate
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
@@ -292,11 +306,35 @@ jobs:
           # the AIE tool env from the CMake build). lit runs every model even if
           # one fails, so a run reports each model's status; ninja returns
           # non-zero if any failed. Per-model wall time is bounded via LIT_OPTS.
+          # These numbers are only comparable run-to-run if the box is otherwise
+          # idle: the decode streams ~700MB of weights per token, so unrelated
+          # CPU/filesystem load steals the DRAM bandwidth it is bound by (a stray
+          # process once cost 20% decode throughput with no other symptom -- the
+          # per-dispatch variance stayed tight, so only the absolute number moved).
+          echo "load average / top consumers at benchmark start:"
+          uptime
+          ps -eo pcpu,etime,comm --sort=-pcpu | head -5
+          # Device + stack identity, so a perf delta against another machine can
+          # be attributed (XRT/firmware/column count) instead of guessed at.
+          xrt-smi examine | grep -iE 'Processor|Memory|^XRT|Version|Firmware|Name' | head -8
+
+          # A dispatch can restrict the sweep to one model (much faster triage
+          # than the ~2.5h full run). The ninja targets already pass --filter, so
+          # narrow further with LIT_FILTER_OUT, which lit ANDs with it.
+          if [ -n "$ONLY_MODEL" ]; then
+            export LIT_FILTER_OUT="llms/(?!$ONLY_MODEL/)"
+            echo "restricted to llms/$ONLY_MODEL (LIT_FILTER_OUT=$LIT_FILTER_OUT)"
+          fi
+
           rc=0
           pushd build_assert
           # Correctness gate (strict): red if any model's verify fails.
+          if [ "$SKIP_VERIFY" = "true" ]; then
+            echo "skip_verify requested: perf capture only, no correctness gate"
+          else
           LIT_OPTS="--timeout 1800 --xunit-xml-output $OLDPWD/verify.xml" \
             ninja check-programming-examples-llms-verify || rc=1
+          fi
           # Perf capture: writes <model>.perf.json under test/llms/<model>/.
           LIT_OPTS="--timeout 1800" \
             ninja check-programming-examples-llms-profile || rc=1
