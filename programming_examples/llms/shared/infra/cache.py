@@ -436,6 +436,7 @@ class KernelCache:
         intermediate_indices=None,
         bo_key=None,
         shared_nonstatic=False,
+        shared_alias=None,
     ):
         """Load cached kernel and execute with BO reuse.
 
@@ -470,6 +471,18 @@ class KernelCache:
                 so one shared buffer per arg suffices across all layers. Used by
                 prefill to avoid holding N_layers copies of the seq_len-sized
                 activation scratch.
+            shared_alias: Optional {arg_index: pool_name}. Those args draw
+                their BO from the process-wide pool under `pool_name` instead of
+                the default per-(kernel, arg) key, so a producer's output buffer
+                and its consumer's input buffer can be the SAME device buffer.
+                Combined with listing the consumer's index in
+                intermediate_indices, the value never round-trips through the
+                host: the prefill's FFN chain (o_norm -> gate/up -> gelu ->
+                down) passes 84 MB per layer this way. Only safe when the
+                producer's dispatch is guaranteed to have completed and to have
+                written the whole buffer, which sequential load_and_run calls
+                are. Aliased pool entries are still keyed by size, so distinct
+                names never collide.
                 CONTRACT/FOOTGUN: returned outputs for shared (non-static) indices
                 are zero-copy views into the shared BO and are OVERWRITTEN by the
                 next load_and_run call that reuses that arg's shared buffer. Safe
@@ -521,6 +534,12 @@ class KernelCache:
         shared_idx = (
             set(range(len(inputs))) - static_indices if shared_nonstatic else set()
         )
+        shared_alias = shared_alias or {}
+        shared_idx |= set(shared_alias)
+
+        def _pool_key(i, size):
+            alias = shared_alias.get(i)
+            return ("__alias__", alias, size) if alias is not None else (name, i, size)
 
         def _alloc_bo(i, s):
             if is_elf:
@@ -534,7 +553,7 @@ class KernelCache:
             bos = []
             for i, s in enumerate(sizes_in_bytes):
                 if i in shared_idx:
-                    sk = (name, i, s)
+                    sk = _pool_key(i, s)
                     bo = self._shared_bos.get(sk)
                     if bo is None:
                         bo = _alloc_bo(i, s)

@@ -525,6 +525,18 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     return scratch
 
 
+# Device-resident handoffs down the FFN chain. Each name is one buffer that a
+# producing ELF writes and the next consuming ELF reads in place, so the value
+# never round-trips through the host -- 84 MB/layer for the two INTER-wide
+# operands of gelu_mul alone. The consumer's index must also be listed as an
+# intermediate so its host->device write is skipped.
+_A_NORMED2 = "ffn_normed2"  # o_norm -> gate, up
+_A_RES1 = "ffn_res1"  # o_norm -> down
+_A_GATE = "ffn_gate"  # gate -> gelu_mul
+_A_UP = "ffn_up"  # up -> gelu_mul
+_A_ACT = "ffn_act"  # gelu_mul -> down
+
+
 def resolve_scratch(seq_len):
     """Recompute the scratch-arg index map without building any IR (run-only)."""
 
@@ -720,20 +732,21 @@ class GemmaQ4nxPrefill:
             _ONORM_BACKEND,
             *args,
             output_indices=[6, 8],
+            shared_alias={6: _A_RES1, 8: _A_NORMED2},
             static_input_indices={1, 3, 7},
             intermediate_indices=inter,
             bo_key=f"o_norm_L{k}",
             shared_nonstatic=True,
         )
 
-    def _call_ffn_gemm(self, name, backend, k, wkey, normed2):
+    def _call_ffn_gemm(self, name, backend, k, wkey, normed2, out_alias):
         seq = self.seq
         args = [
             np.asarray(normed2, bfloat16).reshape(seq, D),
             np.asarray(self._w[k][wkey], bfloat16).reshape(D, INTER),
             np.zeros((seq, INTER), bfloat16),
         ]
-        inter = {2}
+        inter = {0, 2}
         for sc in self.scratch[name]:
             if sc is not None:
                 args.append(np.zeros((seq, INTER), np.float32))
@@ -747,6 +760,7 @@ class GemmaQ4nxPrefill:
             intermediate_indices=inter,
             bo_key=f"{name}_L{k}",
             shared_nonstatic=True,
+            shared_alias={0: _A_NORMED2, 2: out_alias},
         )
 
     def _call_gelu_mul(self, k, gate, up):
@@ -758,9 +772,10 @@ class GemmaQ4nxPrefill:
             np.asarray(up, bfloat16).reshape(seq, INTER),
             np.zeros((seq, INTER), bfloat16),
             output_indices=[2],
-            intermediate_indices={2},
+            intermediate_indices={0, 1, 2},
             bo_key=f"gelu_mul_L{k}",
             shared_nonstatic=True,
+            shared_alias={0: _A_GATE, 1: _A_UP, 2: _A_ACT},
         )
 
     def _call_down_norm_add(self, k, act, res1):
@@ -775,7 +790,7 @@ class GemmaQ4nxPrefill:
             np.asarray(res1, bfloat16).reshape(seq, D),  # 5 res1
             np.zeros(seq * D, bfloat16),  # 6 output (out)
         ]
-        inter = {2, 4, 6}
+        inter = {0, 2, 4, 5, 6}
         for sc in self.scratch["down"]:
             if sc is not None:
                 args.append(np.zeros((seq, D), np.float32))
@@ -789,6 +804,7 @@ class GemmaQ4nxPrefill:
             intermediate_indices=inter,
             bo_key=f"down_norm_add_L{k}",
             shared_nonstatic=True,
+            shared_alias={0: _A_ACT, 5: _A_RES1},
         )
 
     def _preload(self):
@@ -807,8 +823,8 @@ class GemmaQ4nxPrefill:
         for k in range(self.n_layers):
             self._call_rms_qkv(k, z_d)
             self._call_o_norm(k, z_q, z_d)
-            self._call_ffn_gemm("gate", _GATE_BACKEND, k, "gate", z_d)
-            self._call_ffn_gemm("up", _UP_BACKEND, k, "up", z_d)
+            self._call_ffn_gemm("gate", _GATE_BACKEND, k, "gate", z_d, _A_GATE)
+            self._call_ffn_gemm("up", _UP_BACKEND, k, "up", z_d, _A_UP)
             self._call_gelu_mul(k, z_i, z_i)
             self._call_down_norm_add(k, z_i, z_d)
         self.cache.profiler.enabled = prof
@@ -891,10 +907,24 @@ class GemmaQ4nxPrefill:
         normed2 = ores[8].reshape(seq, D)
 
         gate = self._dev(
-            self._call_ffn_gemm, "gate", _GATE_BACKEND, k, "gate", normed2, tag="gate"
+            self._call_ffn_gemm,
+            "gate",
+            _GATE_BACKEND,
+            k,
+            "gate",
+            normed2,
+            _A_GATE,
+            tag="gate",
         )[2].reshape(seq, INTER)
         up = self._dev(
-            self._call_ffn_gemm, "up", _UP_BACKEND, k, "up", normed2, tag="up"
+            self._call_ffn_gemm,
+            "up",
+            _UP_BACKEND,
+            k,
+            "up",
+            normed2,
+            _A_UP,
+            tag="up",
         )[2].reshape(seq, INTER)
         act = self._dev(self._call_gelu_mul, k, gate, up, tag="gelu")[2].reshape(
             seq, INTER
