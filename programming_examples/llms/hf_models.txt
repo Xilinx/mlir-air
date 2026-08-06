@@ -28,3 +28,7 @@ amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead
 # per-layer Q4NX projections + bf16 norms/embed + Q4NX lm_head). Used by
 # llms/llama32_1b_q4nx (prefill loads weights from this repo).
 FastFlowLM/Llama-3.2-1B-NPU2
+
+# FastFlowLM Q4NX NPU2 packaging of Llama-3.2-3B (same model.q4nx format). Used by
+# llms/llama32_3b_q4nx (NPU weights; the make-verify bf16 reference is meta-llama).
+FastFlowLM/Llama-3.2-3B-NPU2

@@ -50,6 +50,41 @@
    matching what developers expect from GitHub/VSCode. The blue-link and
    orange-interactive accents are theme chrome and defined separately above. */
 
+/* ── Landing page: hero ─────────────────────────────────────────────────── */
+.air-hero { margin: 0.5rem 0 2rem; }
+.air-hero .air-eyebrow {
+  margin: 0 0 0.4rem;
+  color: var(--md-accent-fg-color);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.air-hero h1 {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.02;
+  font-size: clamp(2.4rem, 6vw, 3.6rem);
+}
+.air-hero .air-tagline {
+  margin: 0.75rem 0 0;
+  max-width: 40rem;
+  font-size: 1.15rem;
+  line-height: 1.45;
+  color: var(--md-default-fg-color--light);
+}
+.air-hero .md-button { margin: 1.1rem 0.5rem 0 0; }
+
+/* ── Landing page: intro prose ──────────────────────────────────────────── */
+.air-intro {
+  margin: 2rem 0;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+  max-width: 48rem;
+}
+.air-intro p { font-size: 0.9rem; line-height: 1.7; }
+
 /* ── Landing page: quick-nav cards ──────────────────────────────────────── */
 .air-cards {
   display: grid;

@@ -69,9 +69,23 @@ _EVEN = np.array(
 _ODD = _EVEN + 1
 
 
+# Pinned model.q4nx revisions for the known FastFlowLM repos. The Hub bundles are
+# periodically re-packed to newer Q4NX block layouts (e.g. a 4096-i16/block form)
+# that this loader's codec (2560 i16/block; see proj_qmm_pack) does not parse, so
+# a bare `hf_hub_download` of the latest revision breaks with a reshape error.
+# Pin the last revision that matches the codec above. Custom repo ids / local
+# paths are always used as-is (unpinned).
+_PINNED_Q4NX_REVISION = {
+    "FastFlowLM/Llama-3.2-1B-NPU2": "d0c7f84ac9c5cf796db0fc8255afac42592d9db3",
+}
+
+
 def resolve_q4nx_model(model):
     """Resolve `model` to a local model.q4nx path. `model` may be an HF repo id
-    (contains '/'), a directory containing model.q4nx, or a direct file path."""
+    (contains '/'), a directory containing model.q4nx, or a direct file path.
+
+    For a known FastFlowLM repo id, a compatible revision is pinned (see
+    `_PINNED_Q4NX_REVISION`); other repo ids download their latest revision."""
     import os
 
     if os.path.isfile(model):
@@ -83,7 +97,9 @@ def resolve_q4nx_model(model):
     # treat as an HF repo id
     from huggingface_hub import hf_hub_download
 
-    return hf_hub_download(model, "model.q4nx")
+    return hf_hub_download(
+        model, "model.q4nx", revision=_PINNED_Q4NX_REVISION.get(model)
+    )
 
 
 class Q4nxModel:
