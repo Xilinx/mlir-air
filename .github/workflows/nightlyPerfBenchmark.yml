@@ -267,6 +267,18 @@ jobs:
           # detection and NPU dispatch. Each GHA step is a fresh shell.
           sudo prlimit -lunlimited --pid $$
 
+          # Publish numbers at the power mode the examples document their perf
+          # at (both q4nx READMEs call out `--pmode turbo` for the headline
+          # decode throughput). Best-effort: a runner whose driver rejects the
+          # mode still benchmarks, just at whatever mode it is already in.
+          BDF=$(xrt-smi examine | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | head -1)
+          if [ -n "$BDF" ]; then
+            sudo xrt-smi configure -d "$BDF" --pmode turbo || \
+              echo "WARNING: could not set turbo pmode; perf is at the runner default"
+          else
+            echo "WARNING: no NPU BDF found; perf is at the runner default"
+          fi
+
           # Install every model's Python deps (transformers/safetensors/torch/
           # huggingface_hub) — the lit-run inference imports them.
           for req in programming_examples/llms/*/requirements.txt; do

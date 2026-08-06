@@ -133,7 +133,7 @@ def _ensure_requant_cache(fd):
 
 
 # ------------------------------------------------------------------ prefill worker
-def _prefill_worker(prompt, out_path, seq_len):
+def _prefill_worker(prompt, out_path, seq_len, warm_ttft=False):
     """Runs in a subprocess: batched prefill -> per-layer roped-K/raw-V + first token."""
     sys.path.insert(0, str(_HERE))
     import numpy as np
@@ -152,9 +152,22 @@ def _prefill_worker(prompt, out_path, seq_len):
         f"[prefill] ctx={m.current_context_length} first_token={first} K{K.shape}",
         flush=True,
     )
+    if warm_ttft:
+        # Steady-state TTFT: repeat the prefill with weights already resident in
+        # their BOs, so the number reflects prefill latency rather than the
+        # one-time host weight load (~90% of the cold figure). Same methodology
+        # as `make profile-prefill`; done after the KV is saved so it cannot
+        # perturb the decode seed. Handed back via a sidecar so the parent can
+        # subtract it from its own wall clock and keep the cold number honest.
+        import time
+
+        m.clear_context()
+        t0 = time.perf_counter()
+        m.prefill(prompt)
+        Path(str(out_path) + ".warm").write_text(f"{time.perf_counter() - t0:.6f}")
 
 
-def run_prefill(prompt, seq_len, kv_path):
+def run_prefill(prompt, seq_len, kv_path, warm_ttft=False):
     """Spawn the prefill worker (clean NPU release before decode)."""
     # Note: avoid the token "prompt_len=" here so it doesn't shadow the canonical
     # "Inference: prompt_len=<seq_len>" line that bench/extract_perf.py parses (it
@@ -174,6 +187,8 @@ def run_prefill(prompt, seq_len, kv_path):
         "--prompt-ids",
         ",".join(map(str, prompt)),
     ]
+    if warm_ttft:
+        cmd.append("--_warm-ttft")
     subprocess.run(cmd, check=True)
 
 
@@ -552,17 +567,25 @@ def generate(
     import numpy as np, time
 
     t_ttft0 = time.perf_counter()
-    run_prefill(prompt, seq_len, kv_path)
+    warm_path = Path(str(kv_path) + ".warm")
+    warm_path.unlink(missing_ok=True)  # never report a stale run's number
+    run_prefill(prompt, seq_len, kv_path, warm_ttft=profile)
+    warm_ttft = float(warm_path.read_text()) if warm_path.exists() else None
     pf = np.load(kv_path)
     fk = pf["k"].astype(np.float32)
     fv = pf["v"].astype(np.float32)
     first = int(pf["first"])
     P = fk.shape[1]
-    ttft = time.perf_counter() - t_ttft0
+    ttft = time.perf_counter() - t_ttft0 - (warm_ttft or 0.0)
     print(f"[inference] prefill first token = {first} (Paris=12366)", flush=True)
-    # Canonical driver line consumed by bench/extract_perf.py (shared with the
-    # other llms/ examples). The prefill worker includes weight load + LM head.
+    # Canonical driver lines consumed by bench/extract_perf.py (shared with the
+    # other llms/ examples). The cold number is the whole first-query pipeline
+    # (worker spawn + host weight load + prefill + KV handoff), which the
+    # one-time 1.8GB weight load dominates; the warm number is the steady-state
+    # prefill latency the perf dashboard tracks.
     print(f"Time to first token (TTFT): {ttft:.2f}s", flush=True)
+    if warm_ttft is not None:
+        print(f"Warm time to first token (TTFT): {warm_ttft:.3f}s", flush=True)
 
     # ONE decode xclbin serves L in [1, ATTN_MAXL]; the decoder picks the template that covers
     # the requested reach (rt<M> for short, compile-time L<M> up to 2048). Cap at its ATTN_MAXL.
@@ -984,6 +1007,7 @@ def main():
         help="multi-turn chat REPL (the reference-faithful)",
     )
     ap.add_argument("--_prefill-worker", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--_warm-ttft", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument(
         "--_kv-path", type=str, default="/tmp/e2e_prefill.npz", help=argparse.SUPPRESS
     )
@@ -991,7 +1015,7 @@ def main():
 
     if args._prefill_worker:
         prompt = [int(x) for x in args.prompt_ids.split(",")]
-        _prefill_worker(prompt, args._kv_path, args.seq_len)
+        _prefill_worker(prompt, args._kv_path, args.seq_len, warm_ttft=args._warm_ttft)
         return
 
     if args.compile_only:

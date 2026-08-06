@@ -107,11 +107,15 @@ run:
 	cd $(BUILD_DIR) && python3 $(DRIVER) \
 		--run-only --n-tokens $(N_TOKENS) --prompt "$(PROMPT)" --model $(MODEL)
 
-## Run with the decode-throughput / TTFT profiling summary.
+## Run with the decode-throughput / TTFT profiling summary. --no-eos-stop so
+## throughput is averaged over the full N_TOKENS budget: the default prompt
+## answers in ~6 tokens, and a 6-sample average is dominated by the first
+## (cold) dispatch and understates steady-state tok/s by ~20%.
 profile:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(DRIVER) \
-		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" --model $(MODEL)
+		--run-only --n-tokens $(N_TOKENS) --profile --no-eos-stop \
+		--prompt "$(PROMPT)" --model $(MODEL)
 
 ## Interactive chat REPL (streams the reply token-by-token; /clear resets, /exit quits).
 chat:
