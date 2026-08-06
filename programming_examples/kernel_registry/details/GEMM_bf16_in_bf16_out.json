@@ -1745,13 +1745,14 @@
         "fused-cast": {
           "tile": {
             "tile_m": 64,
-            "tile_k_l2": 64,
+            "tile_k_l2": 128,
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5528,
-          "mean_rel_L1": 0.01,
-          "tier": "high"
+          "gflops": 4849,
+          "mean_rel_L1": 0.00998,
+          "tier": "high",
+          "_note": "tile_k_l2=128 swept on NPU2 through the prefill build path (registry -> _build_gemm_module -> stitch_elf): 4849 GF/s vs 4516 at 64 and 4143 at 32, identical mean_rel_L1. 256 fails to compile, so 128 is the ceiling at N=10240 -- the old tile_k_l2*N <= 1048576 rule was one step too conservative. The sibling 2560x9728 entry still carries the inherited 64 and has not been re-swept."
         }
       },
       "best": {

@@ -39,7 +39,7 @@ Divergences from Llama are parametric, host-side, or compile flags — see
 
 | | |
 |---|---|
-| prefill (TTFT) | **4.6 s** at CTX=2048 (444 tok/s); 4.58 s on-device, 29 ms host |
+| prefill (TTFT) | **4.5 s** at CTX=2048 (452 tok/s); 4.50 s on-device, 29 ms host |
 | decode | **12.5 tok/s** (80 ms/token), ATTN_MAXL=2048, 64 tokens |
 
 Prefill runs at a fixed padded context (`CTX`), so its cost is roughly constant
@@ -48,9 +48,9 @@ in prompt length rather than proportional to it. Measure it with
 
 | attn | gate | up | down | rms_qkv | o_norm | gelu | lm_head |
 |---|---|---|---|---|---|---|---|
-| 1151 ms | 712 | 710 | 635 | 599 | 394 | 335 | 45 |
+| 1154 ms | 659 | 656 | 645 | 609 | 397 | 332 | 45 |
 
-Of the 4.58 s on device, 3.90 s is kernel time, 132 ms host->device and 70 ms
+Of the 4.50 s on device, 3.80 s is kernel time, 142 ms host->device and 69 ms
 back; the rest is host-side marshalling (the flash-attention layout transposes
 are ~4 ms/layer of it).
 
@@ -60,13 +60,16 @@ i.e. this example is currently **1.4x slower** than the implementation it
 reproduces. (Contrast the Llama-3.2-1B sibling, where the AIR prefill is at
 parity.)
 
-What remains is spread across the FFN GEMMs rather than concentrated in one
-stage. `gate` and `up` run at ~5.3 TFLOP/s where the same K against a narrower
-N reaches ~7: their `tile_k_l2` is capped at 64 because the DMA stride limit is
-`tile_k_l2 * N <= 1048576` and N is 10240. Lifting it means either splitting
-the projection into N bands — which changes the layout of everything
-downstream of it in the FFN chain — or feeding the weights K-major so the BD
-stride is 2560 rather than 10240.
+What remains is spread across the FFN GEMMs, and it is a **compute** limit
+rather than a data-movement one. `gate` (2048x2560x10240) and `down`
+(2048x10240x2560) have identical FLOPs but 1.9x different DDR traffic, yet run
+within 5% of each other — so the fused-cast method's f32 scratch round trip,
+which costs `gate` an extra 84 MB out and 84 MB back per layer, is hidden
+behind the multiply. All four Gemma GEMM shapes have now been swept over
+method, `tile_k_l2`, `tile_k_l1` and `tile_n` and sit at their best available
+tiling (`gate`/`up` moved from `tile_k_l2=64` to 128 for ~7%; the other three
+were already optimal). At ~5 TFLOP/s the remaining headroom is in the
+`mm_aie2p.cc` microkernel, not in this model's plumbing.
 
 Attention still *streams* every out-of-window K block and masks it; only the
 arithmetic is skipped. Skipping the streaming as well needs the per-round
