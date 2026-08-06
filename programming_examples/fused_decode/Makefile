@@ -46,7 +46,7 @@ help:
 	@echo "  make clean            Remove kernels + templates"
 	@echo ""
 	@echo "Consumed by the llama32_1b_q4nx LLM e2e (make chat / make gen there)."
-	@echo "Weight-free build; needs a pre-change llvm-link (< LLVM 23) on PATH"
+	@echo "Weight-free build; needs an llvm-link on PATH matching Peano's LLVM major"
 	@echo "-- see README.md Reproducibility."
 
 ## Build the fused decode: Peano kernels + two templates (decode_L2048 + decode_L2047
@@ -57,10 +57,10 @@ help:
 ## (e.g. the llama32_1b_q4nx verify + profile lits) thus pay the cost at most once.
 ##
 ## REPRODUCIBILITY (toolchain): the inline-attn merge path shells out to an EXTERNAL
-## `llvm-link` (resolved from PATH). It MUST be a pre-lifetime-change LLVM (e.g. the system
-## /usr/bin/llvm-link, LLVM 20). A newer LLVM (>=23) llvm-link upgrades the llvm.lifetime
-## intrinsic to the no-size form and Peano opt (LLVM 21) then rejects the merged IR
-## ("Broken module found"). Keep any such LLVM's bin OFF PATH. The preflight aborts early.
+## `llvm-link` (resolved from PATH). Its LLVM major MUST EQUAL Peano's. A newer (>=23)
+## llvm-link upgrades the llvm.lifetime intrinsic to the no-size form and Peano opt then
+## rejects the merged IR ("Broken module found"); an OLDER one links quietly and silently
+## miscompiles the attn kernels into fluent garbage. The preflight aborts early on either.
 compile-decode:
 	@if [ -f $(srcdir)/decode_L2048.xclbin ] && [ -f $(srcdir)/decode_L2048.insts.bin ] \
 	    && [ -f $(srcdir)/decode_L2047.xclbin ] && [ -f $(srcdir)/decode_L2047.insts.bin ]; then \
@@ -70,12 +70,23 @@ compile-decode:
 	fi
 
 _compile_decode_build:
-	@echo ">>> preflight: llvm-link must be a pre-change LLVM (<23) for the inline-attn merge"
+	@echo ">>> preflight: llvm-link must match Peano's LLVM major for the inline-attn merge"
+	@# Must EQUAL Peano's major, not merely be <23: a >=23 llvm-link rewrites
+	@# llvm.lifetime.* to the no-size form and Peano opt rejects the module (loud),
+	@# but an OLDER one (e.g. LLVM 20) links without complaint and silently
+	@# miscompiles the attn kernels -- the decode then runs at full speed and emits
+	@# fluent garbage, which no build-time check catches.
 	@LLVM_LINK=$$(command -v llvm-link || true); \
-	  if [ -z "$$LLVM_LINK" ]; then echo "ERROR: no llvm-link on PATH (need system LLVM ~20)"; exit 1; fi; \
+	  PEANO_CLANG="$(PEANO_INSTALL_DIR)/bin/clang"; \
+	  if [ -z "$(PEANO_INSTALL_DIR)" ] || [ ! -x "$$PEANO_CLANG" ]; then \
+	    echo "ERROR: PEANO_INSTALL_DIR does not point at a Peano install (no $$PEANO_CLANG)"; exit 1; fi; \
+	  PEANO_VER=$$($$PEANO_CLANG --version | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1); \
+	  if [ -z "$$LLVM_LINK" ]; then echo "ERROR: no llvm-link on PATH (need LLVM $$PEANO_VER, matching Peano)"; exit 1; fi; \
 	  VER=$$($$LLVM_LINK --version | grep -oE 'version [0-9]+' | grep -oE '[0-9]+' | head -1); \
-	  echo "    llvm-link = $$LLVM_LINK (LLVM $$VER)"; \
-	  if [ "$$VER" -ge 23 ]; then echo "ERROR: llvm-link is LLVM $$VER (>=23); keep it OFF PATH (see README Reproducibility)"; exit 1; fi
+	  echo "    llvm-link = $$LLVM_LINK (LLVM $$VER); Peano = LLVM $$PEANO_VER"; \
+	  if [ "$$VER" != "$$PEANO_VER" ]; then \
+	    echo "ERROR: llvm-link is LLVM $$VER but Peano is LLVM $$PEANO_VER; they must match"; \
+	    echo "       (see README Reproducibility for how to fetch a matching llvm-link)"; exit 1; fi
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
