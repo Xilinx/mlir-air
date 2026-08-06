@@ -436,3 +436,152 @@ module {{
                     f.write(combined)
                 print(f"  PARSE ERROR: dumped to {debug_dump_path}")
             raise
+
+
+# ---------------------------------------------------------------------------
+# Reusable eltwise-add slices
+#
+# Residual adds show up in every transformer block's stitched ELFs. These two
+# builders emit the AIR IR for the two shapes the LLM stitchers need. They are
+# vectorized 1D adds over an 8x1 herd, identical in structure to the private
+# copies qwen3_4b_prefill.py grew first; new models should use these.
+# ---------------------------------------------------------------------------
+
+
+def _build_eltwise_add_ir(seq_len, emb_dim, flat_out):
+    """Eltwise add of two (seq_len, emb_dim) bf16 memrefs over an 8x1 herd.
+
+    flat_out=False -> out is (seq_len, emb_dim); flat_out=True -> out is
+    (seq_len*emb_dim,) 1D (what a stitched ELF's final output arg usually is).
+    Returns the module as MLIR text.
+    """
+    from ml_dtypes import bfloat16
+
+    from air.ir import MemRefType, IntegerAttr, AffineMap, AffineExpr
+    from air.ir import AffineSymbolExpr, AffineConstantExpr, AffineMapAttr, VectorType
+    from air.dialects.air import module_builder, launch, segment, herd, dma_memcpy_nd
+    from air.dialects.air import MemorySpace, T
+    from air.dialects.affine import apply as affine_apply
+    from air.dialects import arith
+    from air.dialects.memref import AllocOp, DeallocOp, subview
+    from air.dialects.memref import collapse_shape as memref_collapse_shape
+    from air.dialects.vector import transfer_read, transfer_write
+    from air.dialects.func import FuncOp
+    from air.dialects.scf import for_ as range_, yield_
+    from air.backend.xrt_runner import type_mapper
+
+    n_total = seq_len * emb_dim
+    herd_x = 8
+    rows_per_pe = seq_len // herd_x
+    assert seq_len % herd_x == 0, (seq_len, herd_x)
+
+    @module_builder
+    def _build():
+        xrt_dtype = type_mapper(bfloat16)
+        twod_ty = MemRefType.get([seq_len, emb_dim], xrt_dtype)
+        flat_ty = MemRefType.get([n_total], xrt_dtype)
+        out_ty = flat_ty if flat_out else twod_ty
+        l1_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+        l1_ty = MemRefType.get([emb_dim], xrt_dtype, memory_space=l1_space)
+        vec_ty = VectorType.get([16], xrt_dtype)
+        identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+
+        @FuncOp.from_py_func(twod_ty, twod_ty, out_ty)
+        def eltwise_add(a_2d, b_2d, out):
+            @launch(operands=[a_2d, b_2d, out])
+            def add_launch(l_a, l_b, l_out):
+                a_flat = memref_collapse_shape(flat_ty, l_a, [[0, 1]])
+                b_flat = memref_collapse_shape(flat_ty, l_b, [[0, 1]])
+                out_flat = (
+                    l_out
+                    if flat_out
+                    else memref_collapse_shape(flat_ty, l_out, [[0, 1]])
+                )
+
+                @segment(name="eadd_seg", operands=[a_flat, b_flat, out_flat])
+                def add_seg(s_a, s_b, s_out):
+                    # row = (tx * rows_per_pe) + iv
+                    row_map = AffineMap.get(
+                        0,
+                        2,
+                        [
+                            AffineExpr.get_add(
+                                AffineExpr.get_mul(
+                                    AffineSymbolExpr.get(0),
+                                    AffineConstantExpr.get(rows_per_pe),
+                                ),
+                                AffineSymbolExpr.get(1),
+                            )
+                        ],
+                    )
+
+                    @herd(
+                        name="eadd_herd",
+                        sizes=[herd_x, 1],
+                        operands=[s_a, s_b, s_out],
+                    )
+                    def add_body(_tx, _ty, _sx, _sy, h_a, h_b, h_out):
+                        l1_a = AllocOp(l1_ty, [], [])
+                        l1_b = AllocOp(l1_ty, [], [])
+                        l1_o = AllocOp(l1_ty, [], [])
+                        c0 = arith.ConstantOp.create_index(0)
+                        cst0 = arith.ConstantOp(xrt_dtype, 0.0)
+                        for iv in range_(0, rows_per_pe, 1):
+                            r = affine_apply(row_map, [_tx, iv])
+                            off = arith.muli(r, arith.ConstantOp.create_index(emb_dim))
+                            dma_memcpy_nd(
+                                l1_a,
+                                h_a,
+                                src_offsets=[off],
+                                src_sizes=[emb_dim],
+                                src_strides=[1],
+                            )
+                            dma_memcpy_nd(
+                                l1_b,
+                                h_b,
+                                src_offsets=[off],
+                                src_sizes=[emb_dim],
+                                src_strides=[1],
+                            )
+                            for j in range_(0, emb_dim, 16):
+                                sa = subview(l1_a.result, [j], [16], [1])
+                                sb = subview(l1_b.result, [j], [16], [1])
+                                so = subview(l1_o.result, [j], [16], [1])
+                                va = transfer_read(
+                                    vec_ty, sa, [c0], identity_map, cst0, [True]
+                                )
+                                vb = transfer_read(
+                                    vec_ty, sb, [c0], identity_map, cst0, [True]
+                                )
+                                transfer_write(
+                                    None,
+                                    arith.addf(va, vb),
+                                    so,
+                                    [c0],
+                                    identity_map,
+                                    [True],
+                                )
+                                yield_([])
+                            dma_memcpy_nd(
+                                h_out,
+                                l1_o,
+                                dst_offsets=[off],
+                                dst_sizes=[emb_dim],
+                                dst_strides=[1],
+                            )
+                            yield_([])
+                        DeallocOp(l1_a)
+                        DeallocOp(l1_b)
+                        DeallocOp(l1_o)
+
+    return str(_build())
+
+
+def build_residual_add_2d_ir(seq_len, emb_dim):
+    """a(seq,emb) + b(seq,emb) -> out(seq,emb)."""
+    return _build_eltwise_add_ir(seq_len, emb_dim, flat_out=False)
+
+
+def build_add_2d_to_1d_ir(seq_len, emb_dim):
+    """a(seq,emb) + b(seq,emb) -> out(seq*emb,) 1D."""
+    return _build_eltwise_add_ir(seq_len, emb_dim, flat_out=True)

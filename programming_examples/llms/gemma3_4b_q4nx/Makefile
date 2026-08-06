@@ -18,7 +18,20 @@
 srcdir     := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 DEC        := $(srcdir)/../../fused_decode
 DECODE_DRIVER := $(DEC)/fused_decode.py
+PREFILL_DRIVER := $(srcdir)/gemma3_4b_q4nx_prefill.py
 AIEOPT_DIR := $(shell realpath $(dir $(shell which aie-opt))/..)
+
+ifdef PEANO_INSTALL_DIR
+  BUILD_DIR := build_peano
+else
+  BUILD_DIR := build_chess
+endif
+
+# Prefill context length (padded). The GEMM registry carries the Gemma shapes at
+# M=2048; other lengths need matching registry entries.
+CTX ?= 2048
+export Q4NX_SEQ_LEN   := $(CTX)
+export Q4NX_CACHE_DIR := $(srcdir)/$(BUILD_DIR)/q4nx_kernel_cache_$(CTX)
 
 # Per-kernel -O is LOAD-BEARING (see fused_decode/Makefile): proj_qmm/rms_residual/glu/rope
 # -O2; attn_qk/attn_kv inline .ll -O1. Gemma differs only by -DMODEL_TYPE=GEMMA3_4B (the
@@ -46,7 +59,7 @@ NTOK ?= 64
 MODEL_SOURCE ?= FastFlowLM/Gemma3-4B-NPU2
 export Q4NX_MODEL_SOURCE := $(MODEL_SOURCE)
 
-.PHONY: help compile compile-decode run verify profile gen clean
+.PHONY: help compile compile-prefill compile-decode prefill run verify profile gen clean
 
 help:
 	@echo "============================================================"
@@ -90,9 +103,21 @@ compile-decode:
 	  else echo "decode_L$(LREF) FAILED (see /tmp/gemma_decode_L$(LREF).log)"; tail -30 /tmp/gemma_decode_L$(LREF).log; exit 1; fi
 	@echo "Gemma decode build complete: decode_L$(LBUILD) + decode_L$(LREF) templates."
 
-## Build the decode templates. Alias kept so the target name matches the other
-## llms/ examples; `compile-decode` is the descriptive name.
-compile: compile-decode
+## Build/cache the 8 prefill ELFs (rms_qkv_qknorm_rope + 2 flash-attention
+## variants + o_norm_res_norm + gate + up + gelu_mul + down_norm_add +
+## lm_head_gemv). Weight-free build, no NPU dispatch.
+compile-prefill:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(PREFILL_DRIVER) --compile-only
+
+## Prefill-only Paris gate: PASS iff the first token argmax is 9079 (" Paris").
+prefill:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(PREFILL_DRIVER)
+
+## Build everything the end-to-end chatbot needs: the prefill ELFs and the
+## decode templates.
+compile: compile-prefill compile-decode
 
 ## Decode the canonical prompt; PASS iff the first token is 9079 (" Paris").
 run:
@@ -104,8 +129,15 @@ run:
 ## is the name CI expects.
 verify: run
 
-## Decode throughput over NTOK tokens (prints the Tokens/second line the nightly
-## LLM benchmark extracts). Needs production templates: make compile.
+## Warm prefill TTFT at CTX (warmup pass, then a timed one). Isolates the
+## prefill dispatch from the one-time weight load the e2e path also pays.
+profile-prefill:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) python3 $(PREFILL_DRIVER)
+
+## End-to-end: TTFT + decode throughput over NTOK tokens (prints the TTFT and
+## Tokens/second lines the nightly LLM benchmark extracts). Needs production
+## templates: make compile.
 profile:
 	@cd $(srcdir) && python3 gemma3_4b_q4nx_inference.py --n-tokens $(NTOK)
 

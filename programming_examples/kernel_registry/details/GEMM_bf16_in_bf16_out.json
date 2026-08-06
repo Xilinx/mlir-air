@@ -1688,6 +1688,98 @@
         "high": "fused-cast",
         "low": "direct"
       }
+    },
+    {
+      "M": 2048,
+      "K": 2560,
+      "N": 2048,
+      "used_by": "Gemma3-4B Q proj (emb=2560, n_heads*head_dim=8*256=2048)",
+      "_note": "N=2048=512*4 -> stock TILE_N=128 HERD_N=4. K=2560=256*10 -> tile_k_l2=256, DMA stride 256*2048=524288 < 1048576. Tiles inherited from the same-K Qwen3-4B 2560x4096 entry; mean_rel_L1 measured on NPU2, gflops carried over from that entry (not independently swept).",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7034,
+          "mean_rel_L1": 0.01,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2048,
+      "N": 2560,
+      "used_by": "Gemma3-4B O proj (n_heads*head_dim=2048 -> emb=2560)",
+      "_note": "N=2560=512*5 -> stock TILE_N=128. K=2048=256*8 -> tile_k_l2=256; 512 would put the DMA stride at 512*2560=1310720 > 1048576. Tiles inherited from the same-N Qwen3-4B 4096x2560 entry; mean_rel_L1 measured on NPU2, gflops carried over from that entry (not independently swept).",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7560,
+          "mean_rel_L1": 0.01,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2560,
+      "N": 10240,
+      "used_by": "Gemma3-4B Gate/Up proj (emb=2560, ffn=10240)",
+      "_note": "N=10240=512*20 -> stock TILE_N=128 HERD_N=4. As with the Qwen3-4B 2560x9728 sibling, tile_k_l2>=128 FAILS aiecc (f32-out B-tile DMA stride 128*10240=1310720 > 1048576); tile_k_l2=64 keeps it at 655360. Tiles inherited from that entry; mean_rel_L1 measured on NPU2, gflops carried over (not independently swept).",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5528,
+          "mean_rel_L1": 0.01,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 10240,
+      "N": 2560,
+      "used_by": "Gemma3-4B Down proj (ffn=10240 -> emb=2560)",
+      "_note": "N=2560=512*5 -> stock TILE_N=128. K=10240=256*40 reduction tile_k_l2=256 (stride 256*2560=655360). Tiles inherited from the same-N Qwen3-4B 9728x2560 entry; mean_rel_L1 measured on NPU2, gflops carried over from that entry (not independently swept).",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8633,
+          "mean_rel_L1": 0.01,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
     }
   ]
 }

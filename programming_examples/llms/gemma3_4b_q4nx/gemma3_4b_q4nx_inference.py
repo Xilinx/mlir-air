@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""gemma3_4b_q4nx full inference -- FLM-faithful Gemma3-4B decode superkernel.
+"""gemma3_4b_q4nx full inference -- FLM-faithful Gemma3-4B prefill + decode.
 
-Reproduces FastFlowLM's Gemma3-4B decode mechanism on the shared fused_decode engine
-(DECODE_MODEL=gemma3-4b): Q4NX weights, on-device fused per-token superkernel (34 decoder
-layers + tied lm-head in ONE dispatch), the 4-norm Gemma sandwich, dual-theta RoPE with
-per-head qk-norm, and GELU-tanh GLU.
+Reproduces FastFlowLM's Gemma3-4B mechanism end to end on the NPU:
 
-Unlike the Llama example (which seeds its KV from an AIR batched prefill), Gemma has no AIR
-prefill yet, so the prompt is run through a numpy reference forward (gemma3_4b_q4nx_weights.
-forward_prompt) that produces (a) the per-layer roped-K / raw-V KV seed and (b) the greedy
-first token (the HF-cross-checked golden). The fused per-token decode then generates
-autoregressively, appending each new token's K/V in place -- exactly the Llama decode loop.
+  prefill: the batched AIR prefill (gemma3_4b_q4nx_prefill.GemmaQ4nxPrefill) -- 8 ELFs
+    per layer-pass with resident weight BOs, alternating sliding-window / global
+    flash attention, GELU-tanh GLU, on-device tied LM head. Produces the per-layer
+    roped-K / raw-V KV seed and the greedy first token.
+  decode: the shared fused_decode engine (DECODE_MODEL=gemma3-4b) -- 34 decoder
+    layers + tied lm-head in ONE dispatch, the 4-norm Gemma sandwich, dual-theta
+    RoPE with per-head qk-norm, appending each new token's K/V in place.
+
+`--numpy-prefill` swaps the NPU prefill for the numpy reference forward
+(gemma3_4b_q4nx_weights.forward_prompt) -- the oracle the prefill is checked against,
+kept as a fallback and for debugging (it takes tens of seconds).
 
 The decode is ONE xclbin built at ATTN_MAXL (=16*ceil(L/16)); DecodeInstsGen patches the
 L-dependent insts words (attention RTP-L + KV-append offset) per token. The RMS BO holds
@@ -27,6 +30,7 @@ qk-norm ARE wired (they affect every position).
 Run:
   python3 gemma3_4b_q4nx_inference.py                 # Paris gate (greedy, first token 9079)
   python3 gemma3_4b_q4nx_inference.py --prompt "The capital of France is" --n-tokens 12
+  python3 gemma3_4b_q4nx_inference.py --numpy-prefill # numpy-oracle prefill instead
 """
 
 import os
@@ -80,7 +84,8 @@ def _pick_decode_gen(dec_dir, max_L=None):
 class FusedDecoder:
     """One-xclbin Gemma3-4B fused decode. A SINGLE decode xclbin built at ATTN_MAXL serves
     every L in [1, ATTN_MAXL] via a per-token RTP-L + KV-append insts patch (DecodeInstsGen).
-    The weight + KV BOs are uploaded once; the kernel appends each new token's K/V in place."""
+    The weight + KV BOs are uploaded once; the kernel appends each new token's K/V in place.
+    """
 
     def __init__(self, model=MODEL_DEFAULT, max_L=None):
         import importlib.util
@@ -142,21 +147,35 @@ class FusedDecoder:
         embed, final_norm, _lm = self.qm.embed_norm_lmhead()
         self.embed = np.asarray(embed, bfloat16).reshape(-1, self.K)
         self.final_norm = np.asarray(final_norm, bfloat16)
-        self.qk = [self.qm.layer_qk_norm(L) for L in range(self.UNI_DEC)]  # (qn,kn) [DH]
+        self.qk = [
+            self.qm.layer_qk_norm(L) for L in range(self.UNI_DEC)
+        ]  # (qn,kn) [DH]
 
         # decode weights (q4k-cascade) + 4 RMS norm stacks from the requant cache.
         _z = np.load(os.environ["Q4NX_GEMMA_DECODE_NPZ"])
         W = _z["W"].view(bfloat16)
         self.Wv16 = W.view(np.int16) if W.dtype != np.int16 else W
-        _rms = {n: list(_z[n].view(bfloat16)) for n in
-                ("RMS_in", "RMS_post_attn", "RMS_pre_ffn", "RMS_post_ffn")}
-        self.rms_slabs = np.concatenate([
-            np.concatenate([_rms["RMS_in"][k], _rms["RMS_post_attn"][k],
-                            _rms["RMS_pre_ffn"][k], _rms["RMS_post_ffn"][k]])
-            for k in range(self.UNI_DEC)
-        ])
+        _rms = {
+            n: list(_z[n].view(bfloat16))
+            for n in ("RMS_in", "RMS_post_attn", "RMS_pre_ffn", "RMS_post_ffn")
+        }
+        self.rms_slabs = np.concatenate(
+            [
+                np.concatenate(
+                    [
+                        _rms["RMS_in"][k],
+                        _rms["RMS_post_attn"][k],
+                        _rms["RMS_pre_ffn"][k],
+                        _rms["RMS_post_ffn"][k],
+                    ]
+                )
+                for k in range(self.UNI_DEC)
+            ]
+        )
         assert self.rms_slabs.size == self._rope_base, (
-            self.rms_slabs.size, self._rope_base)
+            self.rms_slabs.size,
+            self._rope_base,
+        )
 
         print(
             f"[decode] gemma3-4b ONE xclbin: ATTN_MAXL={self.ATTN_MAXL}, serves "
@@ -210,10 +229,12 @@ class FusedDecoder:
         """Build the UNI_DEC per-layer rope_w slabs for position p (dual-theta cos/sin +
         per-layer q/k-norm), concatenated: [layer0 (ROPE_W_LEN) | layer1 | ...]."""
         np = self.np
-        return np.concatenate([
-            self.gw.rope_w_layer(p, L, self.qk[L][0], self.qk[L][1])
-            for L in range(self.UNI_DEC)
-        ]).astype(self.bf16)
+        return np.concatenate(
+            [
+                self.gw.rope_w_layer(p, L, self.qk[L][0], self.qk[L][1])
+                for L in range(self.UNI_DEC)
+            ]
+        ).astype(self.bf16)
 
     def dispatch(self, tok, p):
         """One decode step at L=p+1: patch insts for L, write x0/rope, dispatch (34 layers +
@@ -250,15 +271,19 @@ class FusedDecoder:
             self.kvc.write(packed.view(np.int16), 0)
             self.kvc.sync(TO)
             self._kv_dirty = False
-        x0 = np.asarray(self.embed[tok], self.bf16)  # NO embed re-scale (bundle pre-scaled)
+        x0 = np.asarray(
+            self.embed[tok], self.bf16
+        )  # NO embed re-scale (bundle pre-scaled)
         # RMS BO: norm slabs + final_norm constant; write once, then patch the per-layer
         # rope region each token (positions change cos/sin).
         if not hasattr(self, "_rms_init"):
-            _rmsbuf = np.concatenate([
-                self.rms_slabs,
-                np.zeros(self.UNI_DEC * self.ROPE_W_LEN, self.bf16),
-                self.final_norm,
-            ])
+            _rmsbuf = np.concatenate(
+                [
+                    self.rms_slabs,
+                    np.zeros(self.UNI_DEC * self.ROPE_W_LEN, self.bf16),
+                    self.final_norm,
+                ]
+            )
             assert _rmsbuf.size == self._RMS_SIZE, (_rmsbuf.size, self._RMS_SIZE)
             self.r_bo.write(_rmsbuf.view(np.int16), 0)
             self.r_bo.sync(TO)
@@ -283,19 +308,62 @@ class FusedDecoder:
         return yv[: self.VOCAB_SIZE]
 
 
-def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True):
+def _prefill_npu(prompt, model, seq_len=None):
+    """Batched AIR prefill on the NPU -> (Kc, Vc, first_token, ttft_s).
+
+    Kc/Vc are [NUM_LAYERS, P, DK] roped-K / raw-V, the layout FusedDecoder.seed_kv
+    consumes. The prefill runs at a fixed padded seq_len (the GEMM registry carries
+    the Gemma shapes at M=2048), so its cost is ~constant in prompt length.
+
+    ttft_s times the prefill dispatch only. Building the engine (ELF cache) and
+    load_weights (Q4NX host dequant of ~6 GB + the one-time write of every weight
+    into its resident BO) are model-load costs paid once per process, and are
+    reported separately."""
+    import os
+    import time
+
+    from gemma3_4b_q4nx_prefill import GemmaQ4nxPrefill
+
+    seq_len = seq_len or int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
+    t_load = time.perf_counter()
+    pf = GemmaQ4nxPrefill(
+        seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
+    )
+    pf.load_weights(model=model)
+    print(
+        f"[inference] model load (dequant + resident BOs): "
+        f"{time.perf_counter() - t_load:.1f}s",
+        flush=True,
+    )
+    t0 = time.perf_counter()
+    logits = pf.prefill(prompt)
+    ttft = time.perf_counter() - t0
+    Kc, Vc = pf.kv_stack()
+    return Kc, Vc, int(logits.argmax()), ttft
+
+
+def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True, numpy_prefill=False):
     import numpy as np, time
     import gemma3_4b_q4nx_weights as gw
 
-    print(f"[inference] numpy prefill (KV seed + golden), prompt_len={len(prompt)}...",
-          flush=True)
-    t0 = time.perf_counter()
-    qm = gw.Q4nxModel(model)
-    Kc, Vc, logits = gw.forward_prompt(qm, prompt)
-    first = int(logits[-1].argmax())
+    src = "numpy reference" if numpy_prefill else "AIR NPU"
+    print(
+        f"[inference] {src} prefill (KV seed + first token), "
+        f"prompt_len={len(prompt)}...",
+        flush=True,
+    )
+    if numpy_prefill:
+        t0 = time.perf_counter()
+        qm = gw.Q4nxModel(model)
+        Kc, Vc, logits = gw.forward_prompt(qm, prompt)
+        first = int(logits[-1].argmax())
+        ttft = time.perf_counter() - t0  # the numpy path fuses load and compute
+    else:
+        Kc, Vc, first, ttft = _prefill_npu(prompt, model)
     P = Kc.shape[1]
-    print(f"[inference] prefill first token = {first} (Paris=9079), "
-          f"TTFT(numpy)={time.perf_counter()-t0:.1f}s", flush=True)
+    print(f"[inference] prefill first token = {first} (Paris=9079)", flush=True)
+    # Machine-readable line for bench/extract_perf.py (nightly LLM dashboard).
+    print(f"Time to first token (TTFT): {ttft:.3f}s", flush=True)
 
     dec = FusedDecoder(model=model, max_L=P + n_tokens)
     n_eff = min(n_tokens, dec.ATTN_MAXL - P)
@@ -318,9 +386,16 @@ def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True):
     t_dec = time.perf_counter() - t_dec0
     n_gen = len(gen_ids) - 1
     if n_gen > 0:
-        print(f"[inference] decode: {n_gen} tokens in {t_dec:.2f}s "
-              f"{n_gen/t_dec:.2f} tok/s ({t_dec/n_gen*1000:.1f} ms/token)", flush=True)
-        # Machine-readable line for bench/extract_perf.py (nightly LLM dashboard).
+        print(
+            f"[inference] decode: {n_gen} tokens in {t_dec:.2f}s "
+            f"{n_gen/t_dec:.2f} tok/s ({t_dec/n_gen*1000:.1f} ms/token)",
+            flush=True,
+        )
+        # Machine-readable lines for bench/extract_perf.py (nightly LLM dashboard).
+        print(
+            f"[inference] Inference: prompt_len={len(prompt)}, n_tokens={n_gen}",
+            flush=True,
+        )
         print(f"Tokens/second: {n_gen/t_dec:.2f}", flush=True)
     return gen_ids
 
@@ -339,7 +414,15 @@ def main():
     ap.add_argument("--prompt", type=str, default=None, help="prompt text")
     ap.add_argument("--prompt-ids", type=str, default=None, help="comma-separated ids")
     ap.add_argument("--n-tokens", type=int, default=9, help="tokens to generate")
-    ap.add_argument("--model", type=str, default=MODEL_DEFAULT, help="model.q4nx dir/path")
+    ap.add_argument(
+        "--model", type=str, default=MODEL_DEFAULT, help="model.q4nx dir/path"
+    )
+    ap.add_argument(
+        "--numpy-prefill",
+        action="store_true",
+        help="seed the KV cache with the numpy reference forward instead of the "
+        "AIR NPU prefill (the oracle it is checked against; tens of seconds)",
+    )
     args = ap.parse_args()
 
     if args.prompt_ids:
@@ -352,12 +435,16 @@ def main():
         prompt = PARIS_PROMPT
     print(f"[inference] prompt = {len(prompt)} tokens: {prompt}", flush=True)
 
-    gen_ids = generate(prompt, args.n_tokens, model=args.model)
+    gen_ids = generate(
+        prompt, args.n_tokens, model=args.model, numpy_prefill=args.numpy_prefill
+    )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")
     print(f"[inference] TEXT: {_detok(gen_ids, args.model)!r}")
     if prompt == PARIS_PROMPT:
-        print("*** PARIS ***" if gen_ids and gen_ids[0] == PARIS_FIRST else "*** MISS ***")
+        print(
+            "*** PARIS ***" if gen_ids and gen_ids[0] == PARIS_FIRST else "*** MISS ***"
+        )
 
 
 if __name__ == "__main__":

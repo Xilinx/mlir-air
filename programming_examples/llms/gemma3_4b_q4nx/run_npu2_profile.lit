@@ -1,15 +1,12 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// GEMMA3-4B Q4NX decode profiling: build the production templates
-// (ATTN_MAXL=2048), then generate NTOK tokens and capture decode throughput
-// into gemma3_4b_q4nx.perf.json via bench/extract_perf.py (collected by the
-// nightly LLM benchmark). Weights come from the model.q4nx bundle pre-seeded
-// into the runner's HF cache. Perf is best-effort; this test gates only that
-// profiling ran end to end.
-//
-// Note: this example has no NPU prefill -- the KV cache is seeded by a numpy
-// reference forward -- so no TTFT is reported, only decode throughput.
+// GEMMA3-4B Q4NX profiling: build the prefill ELFs and the production decode
+// templates (ATTN_MAXL=2048), then run the AIR prefill + generate NTOK tokens
+// and capture TTFT and decode throughput into gemma3_4b_q4nx.perf.json via
+// bench/extract_perf.py (collected by the nightly LLM benchmark). Weights come
+// from the model.q4nx bundle pre-seeded into the runner's HF cache. Perf is
+// best-effort; this test gates only that profiling ran end to end.
 //
 // REQUIRES: ryzen_ai_npu2, peano, hf_token, hfweights_fastflowlm_gemma3_4b_npu2
 //

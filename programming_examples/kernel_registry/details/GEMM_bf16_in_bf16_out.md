@@ -144,6 +144,20 @@ Shapes cover LLM weight-projection shapes (the four 2048-row entries) and a squa
 | 2048×2560×9728 | 64/**64**/32/128 | 5528 | 9.8e-3 | ✅ Qwen3-4B Gate/Up (N=9728: tile_k_l2≥128 DMA-stride fails; tile_k_l2=64 keeps high-prec, beats low) |
 | 2048×4096×2560 | 64/256/32/128 | 7560 | 9.9e-3 | ✅ Qwen3-4B O proj alt (4096→2560) |
 | 2048×9728×2560 | 64/256/32/128 | 8633 | 9.8e-3 | ✅ Qwen3-4B Down proj (9728→2560) |
+| 2048×2560×2048 | 64/256/32/128 | 7034† | 1.0e-2 | ✅ Gemma3-4B Q proj (emb=2560→8·256=2048) |
+| 2048×2048×2560 | 64/256/32/128 | 7560† | 1.0e-2 | ✅ Gemma3-4B O proj (2048→2560) |
+| 2048×2560×10240 | 64/**64**/32/128 | 5528† | 1.0e-2 | ✅ Gemma3-4B Gate/Up (N=10240: same DMA-stride limit as the 9728 sibling) |
+| 2048×10240×2560 | 64/256/32/128 | 8633† | 1.0e-2 | ✅ Gemma3-4B Down proj (10240→2560) |
+
+> † **Gemma3-4B rows — tiles inherited, precision measured.** The four Gemma3-4B
+> shapes reuse the tiling of their nearest same-K / same-N Qwen3-4B neighbour
+> (2560×4096, 4096×2560, 2560×9728, 9728×2560) rather than being independently
+> swept; the DMA-stride rule `tile_k_l2·N ≤ 1048576` picks out the same
+> `tile_k_l2` in each case, and Gate/Up at N=10240 needs `tile_k_l2=64` for the
+> same reason the N=9728 sibling does (128·10240 = 1310720 > limit). The
+> `mean_rel_L1` column is **measured on NPU2** (all four land at 1.0e-2, matching
+> their donors); the GFLOPS column is carried over from the donor row and is not
+> an independent measurement.
 
 ### high-precision, `--method drain` (tile_m=32) — fastest at small / thin shapes
 

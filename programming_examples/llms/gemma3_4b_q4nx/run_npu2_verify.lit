@@ -1,10 +1,11 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// GEMMA3-4B Q4NX decode correctness gate: greedy first-token argmax.
-// Runs the fused on-device decode (34 layers + tied LM head in one dispatch)
-// for "The capital of France is" and PASSes iff the first greedy token is 9079
-// (" Paris") -- matching FastFlowLM's Gemma3 NPU output.
+// GEMMA3-4B Q4NX end-to-end correctness gate: greedy first-token argmax.
+// Runs the batched AIR prefill (which produces the first token and the KV seed)
+// followed by the fused on-device decode (34 layers + tied LM head in one
+// dispatch) for "The capital of France is", and PASSes iff the first greedy
+// token is 9079 (" Paris") -- matching FastFlowLM's Gemma3 NPU output.
 //
 // This is the Q4NX analogue of the other examples' `make verify` vs HF bf16
 // (which does not apply here: greedy-token parity against the reference

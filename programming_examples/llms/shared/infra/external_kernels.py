@@ -130,6 +130,20 @@ def compile_silu_and_mul():
     _compile_kernel(src, "silu_and_mul.o", extra_flags=extra)
 
 
+def compile_gelu_and_mul():
+    """Compile gelu_and_mul.o from programming_examples/gelu_and_mul/gelu_and_mul.cc.
+
+    The GELU-tanh twin of silu_and_mul.o, for models whose GLU uses
+    gelu_pytorch_tanh (Gemma3) rather than SiLU."""
+    src = _PROJ_ROOT / "gelu_and_mul" / "gelu_and_mul.cc"
+    include_dir = _get_aie_include_dir()
+    utils_header = Path(include_dir) / "aie_kernels" / "aie_kernel_utils.h"
+    extra = []
+    if utils_header.exists():
+        extra = [f"-include", str(utils_header)]
+    _compile_kernel(src, "gelu_and_mul.o", extra_flags=extra)
+
+
 def compile_gemm_mm(
     tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="", out_name="mm.o", bfp16=True
 ):

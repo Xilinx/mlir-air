@@ -66,6 +66,7 @@ def build_module(
     num_kv_heads=None,
     causal=False,
     num_heads_per_unroll=2,
+    window=None,
 ):
     """Build flash attention module with selective Q capture pattern.
 
@@ -86,6 +87,10 @@ def build_module(
             Acts as the physical-column multiplier — physical columns =
             num_heads_per_unroll * num_q_tiles (must be <= 8 on NPU2). Requires
             num_heads % num_heads_per_unroll == 0.
+        window: Sliding-window size. None (default) = plain causal attention.
+            When set (requires causal=True), a query at position p attends only
+            to keys in (p - window, p]. Must be a multiple of the Q/K block size
+            tile_size_q (== lkp under causal masking).
     """
     # Validate
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
@@ -109,6 +114,15 @@ def build_module(
             f"Causal masking requires tile_size_q == lkp, got "
             f"tile_size_q={lqp // num_q_tiles}, lkp={lkp}"
         )
+    # Sliding window, expressed in Q/K blocks. Block-aligned windows keep the
+    # ragged edge to exactly one block per row-block (see apply_window_mask).
+    window_blocks = None
+    if window is not None:
+        assert causal, "window requires causal=True"
+        assert (
+            window % lkp == 0
+        ), f"window ({window}) must be a multiple of the block size lkp ({lkp})"
+        window_blocks = window // lkp
 
     # Multi-head / GQA parameters
     if num_kv_heads is None:
@@ -217,7 +231,14 @@ def build_module(
     external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn_npu2.o")
     external_func("add_gp_g", [gp_l1_t, gp_l1_t], link_with="attn_npu2.o")
     if causal:
-        external_func("apply_causal_mask", [g_l1_2d, i32, i32], link_with="attn_npu2.o")
+        if window_blocks is not None:
+            external_func(
+                "apply_window_mask", [g_l1_2d, i32, i32, i32], link_with="attn_npu2.o"
+            )
+        else:
+            external_func(
+                "apply_causal_mask", [g_l1_2d, i32, i32], link_with="attn_npu2.o"
+            )
 
     # ----------------------------------------------------------------
     # Channel declarations (3D with head dimension for multi-head)
@@ -744,11 +765,24 @@ def build_module(
                             q_base = load(counter_buf, [c0_ctr])
                             tx_i32 = arith.IndexCastOp(i32, tx).result
                             q_block = arith.AddIOp(q_base, tx_i32)
-                            CallOp(
-                                [],
-                                "apply_causal_mask",
-                                [g, q_block.result, kv_block.result],
-                            )
+                            if window_blocks is not None:
+                                c_win_i32 = ConstantOp(i32, window_blocks)
+                                CallOp(
+                                    [],
+                                    "apply_window_mask",
+                                    [
+                                        g,
+                                        q_block.result,
+                                        kv_block.result,
+                                        c_win_i32.result,
+                                    ],
+                                )
+                            else:
+                                CallOp(
+                                    [],
+                                    "apply_causal_mask",
+                                    [g, q_block.result, kv_block.result],
+                                )
 
                         # 5. Softmax + accumulate
                         s_tmp = AllocOp(up_l1_t, [], [])
@@ -1260,6 +1294,13 @@ if __name__ == "__main__":
         help="Enable causal masking (autoregressive attention)",
     )
     parser.add_argument(
+        "--window",
+        type=int,
+        default=None,
+        help="Sliding-window size (requires --causal): a query at position p "
+        "attends only to keys in (p - window, p]. Must be a multiple of lkp.",
+    )
+    parser.add_argument(
         "--perf-iters",
         type=int,
         default=0,
@@ -1303,6 +1344,7 @@ if __name__ == "__main__":
         num_kv_heads=num_kv_heads,
         causal=causal,
         num_heads_per_unroll=num_heads_per_unroll,
+        window=args.window,
     )
 
     if args.print_module_only:
@@ -1340,6 +1382,9 @@ if __name__ == "__main__":
         scores = Qf @ Kf.T * inv_sqrt_dk
         if causal:
             mask = np.triu(np.ones(scores.shape, dtype=bool), k=1)
+            if args.window is not None:
+                # Also drop keys older than the window: k <= p - window.
+                mask |= np.tril(np.ones(scores.shape, dtype=bool), k=-args.window)
             scores = np.where(mask, -1e9, scores)
         mx = np.max(scores, axis=-1, keepdims=True)
         P = np.exp(scores - mx)

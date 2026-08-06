@@ -1,9 +1,17 @@
-# GEMMA3-4B Q4NX decode on AMD NPU2
+# GEMMA3-4B Q4NX prefill + decode on AMD NPU2
 
-Fused per-token decode for Gemma3-4B (text) in MLIR-AIR, reproducing
-FastFlowLM's decode mechanism: **one NPU dispatch = 34 decoder layers + the
-tied LM head**, reading and appending a shared per-layer KV cache. Weights are
-Q4NX, dequantized on device.
+Gemma3-4B (text) in MLIR-AIR, reproducing FastFlowLM's mechanism end to end on
+the NPU:
+
+- **prefill** — a batched pass over the padded context: RMSNorm, Q/K/V GEMMs,
+  per-head QK-norm, dual-theta RoPE, GQA flash attention (alternating
+  sliding-window / global), GELU-tanh GLU and the tied LM head, all on device
+  with resident weight BOs.
+- **decode** — **one NPU dispatch = 34 decoder layers + the tied LM head**,
+  reading and appending a shared per-layer KV cache seeded by the prefill.
+
+Weights are Q4NX throughout (dequantized on device for decode, on the host at
+load for prefill).
 
 This is the Gemma sibling of [`llama32_1b_q4nx`](../llama32_1b_q4nx/); both
 drive the same superkernel engine in
@@ -31,16 +39,29 @@ Divergences from Llama are parametric, host-side, or compile flags — see
 
 | | |
 |---|---|
+| prefill (TTFT) | **6.9 s** at CTX=2048 (295 tok/s); 6.91 s on-device, 29 ms host |
 | decode | **12.5 tok/s** (80 ms/token), ATTN_MAXL=2048, 64 tokens |
+
+Prefill runs at a fixed padded context (`CTX`), so its cost is roughly constant
+in prompt length rather than proportional to it. Measure it with
+`make profile-prefill`. Per-op on-device split at CTX=2048:
+
+| attn | rms_qkv | gate | up | down | gelu | o_norm | lm_head |
+|---|---|---|---|---|---|---|---|
+| 3052 ms | 778 | 724 | 724 | 721 | 513 | 356 | 45 |
+
+Attention is 44% of prefill and is the obvious next lever: at head_dim=256 the
+flash-attention kernel tiles at 32x32, and the sliding-window layers still
+stream every K block and mask the out-of-window ones rather than skipping them
+in DMA (the `attn_npu2_temporal_causal.py` causal-skip lever would apply).
+
+Separately, loading the model — Q4NX host dequant of ~6 GB of weights plus the
+one-time write into resident BOs — takes ~67 s per process. That is a startup
+cost, not part of TTFT; the driver reports the two separately.
 
 Decode is data-movement bound: at Q4 the 4B weights are ~3.2x the bytes/token
 of the 1B Llama example, which runs 40 tok/s on the same engine — i.e. both sit
 at the same effective shim bandwidth.
-
-**There is no NPU prefill.** The KV cache and the first token come from a numpy
-reference forward (`gemma3_4b_q4nx_weights.forward_prompt`), which takes tens of
-seconds and dominates wall clock. Only the decode loop runs on the NPU. (The
-Llama example, by contrast, has a batched NPU prefill.)
 
 ## Prerequisites
 
@@ -53,20 +74,26 @@ Llama example, by contrast, has a batched NPU prefill.)
 ## Quick Start
 
 ```bash
-# Build the decode templates (weight-free). Production ATTN_MAXL=2048, ~15 min.
+# Build everything, weight-free: the 8 prefill ELFs + the decode templates.
+# Production decode templates are ATTN_MAXL=2048 (~15 min).
 make compile
 
-# ...or the small templates the Paris gate needs (much faster).
-make compile LBUILD=16
+# ...or just one half:
+make compile-prefill            # the 8 prefill ELFs (CTX=2048)
+make compile-decode LBUILD=16   # small decode templates (much faster)
 
 # Paris gate: first generated token must be 9079 (" Paris").
 make run          # or: make verify   (same gate, the name CI uses)
 
+# Prefill only (no decode loop) -- same 9079 gate, useful when bringing up the
+# prefill on its own.
+make prefill
+
 # Decode throughput over NTOK tokens (needs the production templates).
 make profile NTOK=64
 
-# Point at a local bundle instead of the Hub.
-make run MODEL_SOURCE=/path/to/Gemma3-4B-NPU2
+# Shorter prefill context, and a local bundle instead of the Hub.
+make run CTX=2048 MODEL_SOURCE=/path/to/Gemma3-4B-NPU2
 ```
 
 ## Correctness
@@ -82,6 +109,42 @@ and generation continues coherently:
 cleanly when the Q4NX weights are absent from the runner's HF cache.
 
 ## How it works
+
+### Prefill
+
+Eight ELFs, each driven through `KernelCache.load_and_run` with per-layer
+resident weight BOs (weights written once, skipped on every later call):
+
+| ELF | contents |
+|---|---|
+| `rms_qkv_qknorm_rope` | input norm + Q/K/V GEMMs + per-head QK-norm + RoPE (8 launches) |
+| `flash_attn_global` | GQA flash attention, plain causal — the global layers |
+| `flash_attn_local` | same kernel with the 1024 sliding-window mask — the local layers |
+| `o_norm_res_norm` | O proj + post-attention norm + residual + pre-FFN norm |
+| `gate`, `up` | the two FFN projections (2560 -> 10240) |
+| `gelu_mul` | GELU-tanh GLU: `gelu(gate) * up` |
+| `down_norm_add` | Down proj + post-FFN norm + residual |
+| `lm_head_gemv` | tied LM head, 17 partitions of 16384 (vocab 262208) |
+
+Two structural notes:
+
+- **Gemma norms the sublayer *output*, before the residual add** (`O -> norm ->
+  +residual`, `down -> norm -> +residual`), unlike the Llama/Qwen shape. That is
+  why the O and Down tails carry an extra `weighted_rms_norm` slice. All Gemma
+  norms use eps 1e-6.
+- **Attention alternates.** Five of every six layers use a 1024-token sliding
+  window; the sixth is global. Both come from the same flash-attention kernel —
+  the window is a compile-time mask (`apply_window_mask` in `attn_npu2.cc`,
+  selected by `build_module(window=...)`), so the two ELFs differ only in that
+  mask. RoPE theta switches with them (local 1e4 / global 1e6 with linear x8),
+  which is purely a choice of host LUT.
+
+At head_dim=256 the head-first flash attention tiles at `lkp=32` rather than the
+head_dim=128 path's 64: the resident Q tile is `head_dim * lkp * 2B`, so `lkp=64`
+needs 72 KB of L1 and aiecc rejects it. See `_FA_TILING` in
+`llms/shared/infra/fa_headfirst.py`.
+
+### Decode
 
 The decode engine is shared with the Llama example; Gemma differs in five
 places, none of which required a new dataflow:
@@ -108,7 +171,8 @@ and such unequal-multiplicity flows must not share one S2MM BD chain.
 
 | file | role |
 |---|---|
-| `gemma3_4b_q4nx_inference.py` | driver: numpy prefill (KV seed) + fused NPU decode loop |
+| `gemma3_4b_q4nx_inference.py` | driver: AIR prefill (KV seed + first token) + fused NPU decode loop |
+| `gemma3_4b_q4nx_prefill.py` | the 8-ELF batched prefill and its `causal_lm` interface |
 | `gemma3_4b_q4nx_weights.py` | `model.q4nx` loader, Q4NX dequant, RoPE LUTs, numpy reference |
 | `gemma3_4b_q4nx_requant.py` | Q4NX re-quantization helper |
 | `Makefile` | build / run / verify / profile |
