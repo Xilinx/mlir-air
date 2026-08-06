@@ -267,22 +267,20 @@ jobs:
           # detection and NPU dispatch. Each GHA step is a fresh shell.
           sudo prlimit -lunlimited --pid $$
 
-          # Publish numbers at the power mode the examples document their perf
-          # at (both q4nx READMEs call out `--pmode turbo` for the headline
-          # decode throughput). Setting it needs root -- the DRM SET_STATE ioctl
-          # returns EACCES for a normal user -- and this runner's passwordless
-          # sudo does not currently cover xrt-smi, so this is best-effort. Either
-          # way, echo the mode the run actually used: a number taken at the
-          # default mode is ~1.3x off the documented one and the dashboard has no
-          # other way to tell.
+          # Both q4nx READMEs quote their headline decode throughput at
+          # `--pmode turbo`, so record the mode each run was measured at. This
+          # runner already boots in Turbo; the set attempt below is only a guard
+          # in case that ever changes, and it is expected to fail (setting the
+          # mode needs root -- the DRM SET_STATE ioctl is EACCES for a normal
+          # user -- and the runner's passwordless sudo does not cover xrt-smi).
+          # So warn on the condition that actually matters: the resulting mode.
           BDF=$(xrt-smi examine | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | head -1)
-          if [ -n "$BDF" ]; then
-            sudo -n xrt-smi configure -d "$BDF" --pmode turbo 2>/dev/null || \
-              echo "WARNING: could not set turbo pmode (needs passwordless sudo for xrt-smi)"
-          else
-            echo "WARNING: no NPU BDF found; cannot set the power mode"
+          [ -n "$BDF" ] && sudo -n xrt-smi configure -d "$BDF" --pmode turbo 2>/dev/null || true
+          PMODE=$(xrt-smi examine -r platform | sed -n 's/.*Power Mode *: *\([A-Za-z]*\).*/\1/p' | head -1)
+          echo "benchmarking at power mode: ${PMODE:-unknown}"
+          if [ "$PMODE" != "Turbo" ]; then
+            echo "WARNING: not in Turbo (got '${PMODE:-unknown}'); perf will be below the documented numbers"
           fi
-          echo "benchmarking at $(xrt-smi examine -r platform | grep -i 'Power Mode' | tr -s ' ')"
 
           # Install every model's Python deps (transformers/safetensors/torch/
           # huggingface_hub) — the lit-run inference imports them.
