@@ -50,7 +50,15 @@ in prompt length rather than proportional to it. Measure it with
 |---|---|---|---|---|---|---|---|
 | 3052 ms | 778 | 724 | 724 | 721 | 513 | 356 | 45 |
 
-Attention is 44% of prefill and is the obvious next lever: at head_dim=256 the
+For reference, FastFlowLM's own Gemma3-4B prefill measures **3.21 s** (637
+tok/s) at the same context on this machine, producing the same first token —
+i.e. this example is currently **2.2x slower** than the implementation it
+reproduces. (Contrast the Llama-3.2-1B sibling, where the AIR prefill is at
+parity.) The gap is not localized to one stage: attention alone (3.05 s) is
+about the size of FLM's entire prefill, and so is everything else put together
+(3.89 s), so making attention free would still not close it.
+
+Attention is nonetheless the largest single lever: at head_dim=256 the
 flash-attention kernel tiles at 32x32, and the sliding-window layers still
 stream every K block and mask the out-of-window ones rather than skipping them
 in DMA (the `attn_npu2_temporal_causal.py` causal-skip lever would apply).
