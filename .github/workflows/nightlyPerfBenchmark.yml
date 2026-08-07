@@ -331,6 +331,17 @@ jobs:
                "boost=$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null)" \
                "max=$(cat $C/scaling_max_freq 2>/dev/null)"
           echo "cpu MHz now: $(grep -m4 'cpu MHz' /proc/cpuinfo | awk '{printf "%.0f ", $4}')"
+          # Memory/fabric DPM states off the iGPU (readable without root, unlike
+          # DMI). Top mclk state x2 is the DDR data rate, so this identifies the
+          # DRAM the NPU is streaming weights through -- the resource a decode is
+          # bound by -- and shows whether the package budget is capping fclk.
+          for f in pp_dpm_mclk pp_dpm_fclk; do
+            p=$(ls /sys/class/drm/card*/device/$f 2>/dev/null | head -1)
+            [ -n "$p" ] && echo "$f top: $(tr -d '*' < "$p" | tail -1 | tr -s ' ')"
+          done
+          MC=$(cat /sys/class/drm/card*/device/pp_dpm_mclk 2>/dev/null \
+               | awk '{gsub(/Mhz/,"",$2); if($2+0>m) m=$2+0} END{print m}')
+          [ -n "$MC" ] && [ "$MC" != "0" ] && echo "=> DRAM data rate ~${MC}x2 = $((MC*2)) MT/s"
 
           # A dispatch can restrict the sweep to one model (much faster triage
           # than the ~2.5h full run). The ninja targets already pass --filter, so
