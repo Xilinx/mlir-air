@@ -32,6 +32,37 @@ NPU_MODELS = {
 }
 
 
+def _find_peano_install_dir():
+    """Return the installed llvm-aie (Peano) directory, or "" if there is none.
+
+    The llvm-aie wheel unpacks to a top-level `llvm-aie` data directory. That is
+    not a legal module name, so it cannot be imported -- ask the distribution
+    where it landed instead, and fall back to scanning the site dirs for
+    installs whose metadata is missing or non-standard.
+    """
+    try:
+        import importlib.metadata
+
+        candidate = importlib.metadata.distribution("llvm-aie").locate_file("llvm-aie")
+        if os.path.isdir(candidate):
+            return os.path.abspath(candidate)
+    except Exception:
+        pass
+
+    import site, glob
+
+    site_dirs = list(site.getsitepackages())
+    try:
+        site_dirs.append(site.getusersitepackages())
+    except Exception:
+        pass
+    for site_dir in site_dirs:
+        for match in glob.glob(os.path.join(site_dir, "llvm-aie")):
+            if os.path.isdir(match):
+                return os.path.abspath(match)
+    return ""
+
+
 class XRTCompileArtifact:
     """A class encompassing information on the artifacts produced by compilation for the NPU/XRT"""
 
@@ -267,16 +298,30 @@ class XRTBackend(AirBackend):
                     f"Confining design to {self.num_device_cols} column(s) of {base_device} device: {target_device}"
                 )
 
-        import os, site, glob
-
-        # Try to get peano package dir from environment variable, fallback to site-packages
+        # Resolve the Peano (llvm-aie) install: an explicit PEANO_INSTALL_DIR wins,
+        # otherwise use the llvm-aie package, which the AIE backend installs as a
+        # dependency. Chess is only reached when neither is available.
         peano_package_dir = os.environ.get("PEANO_INSTALL_DIR", "")
 
-        if peano_package_dir and os.path.isdir(peano_package_dir):
+        if peano_package_dir and not os.path.isdir(peano_package_dir):
+            print(
+                "XRTBackend: PEANO_INSTALL_DIR is not a directory, ignoring it:",
+                peano_package_dir,
+            )
+            peano_package_dir = ""
+
+        if peano_package_dir:
             print(
                 "XRTBackend: llvm-aie package detected via PEANO_INSTALL_DIR:",
                 peano_package_dir,
             )
+        else:
+            peano_package_dir = _find_peano_install_dir()
+            if peano_package_dir:
+                print(
+                    "XRTBackend: llvm-aie package detected in site-packages:",
+                    peano_package_dir,
+                )
 
         # Determine output file extension based on output_format
         if self.output_format == "elf":
@@ -378,6 +423,11 @@ class XRTBackend(AirBackend):
                 aircc_options += ["--no-xchesscc"]
                 aircc_options += ["--no-xbridge"]
             else:
+                print(
+                    "XRTBackend: no llvm-aie (Peano) install found; falling back to "
+                    "the Chess toolchain, which needs Vitis AIE Essentials. Set "
+                    "PEANO_INSTALL_DIR or `pip install llvm-aie` to use Peano."
+                )
                 aircc_options += ["--xchesscc"]
                 aircc_options += ["--xbridge"]
 
