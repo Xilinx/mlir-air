@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" -verify-diagnostics -split-input-file
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 emit-herd-lock=true" -verify-diagnostics -split-input-file
 
 // TileDMAAllocator::verifyS2MMChains.
 //
@@ -30,17 +30,18 @@
 
 air.channel @sA [1] {channel_type = "npu_dma_packet"}
 air.channel @sB [1] {channel_type = "npu_dma_packet"}
-func.func @symmetric_arms(%ext: memref<8xbf16>) {
+func.func @symmetric_arms(%ext: memref<8xbf16>, %mode: i32) {
   %c1 = arith.constant 1 : index
-  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
+  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext, %m=%mode) : memref<8xbf16>, i32 {
     air.channel.put @sA[] (%e[] [] []) {id = 1 : i32} : (memref<8xbf16>)
     air.channel.put @sB[] (%e[] [] []) {id = 2 : i32} : (memref<8xbf16>)
-    air.segment @seg {
+    air.segment @seg args(%sm=%m) : i32 {
       %c1_0 = arith.constant 1 : index
-      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%hm=%sm) : i32 attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
         %a = memref.alloc() : memref<8xbf16, 2>
         %b = memref.alloc() : memref<8xbf16, 2>
-        scf.index_switch %tx
+        %i = arith.index_cast %hm : i32 to index
+        scf.index_switch %i
         case 0 {
           air.channel.get @sA[] (%a[] [] []) {id = 1 : i32} : (memref<8xbf16, 2>)
           air.channel.get @sB[] (%b[] [] []) {id = 2 : i32} : (memref<8xbf16, 2>)
@@ -66,19 +67,22 @@ func.func @symmetric_arms(%ext: memref<8xbf16>) {
 // 4-norm (Gemma-style) decode shape, and it is what deadlocks on the second
 // dispatch.
 
+// expected-note@+1 {{flow on this chain}}
 air.channel @aX [1] {channel_type = "npu_dma_packet"}
+// expected-note@+1 {{flow on this chain}}
 air.channel @aSub [1] {channel_type = "npu_dma_packet"}
-func.func @asymmetric_arms(%ext: memref<8xbf16>) {
+func.func @asymmetric_arms(%ext: memref<8xbf16>, %mode: i32) {
   %c1 = arith.constant 1 : index
-  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
+  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext, %m=%mode) : memref<8xbf16>, i32 {
     air.channel.put @aX[] (%e[] [] []) {id = 1 : i32} : (memref<8xbf16>)
     air.channel.put @aSub[] (%e[] [] []) {id = 2 : i32} : (memref<8xbf16>)
-    air.segment @seg {
+    air.segment @seg args(%sm=%m) : i32 {
       %c1_0 = arith.constant 1 : index
-      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%hm=%sm) : i32 attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
         %x = memref.alloc() : memref<8xbf16, 2>
         %sub = memref.alloc() : memref<8xbf16, 2>
-        scf.index_switch %tx
+        %i = arith.index_cast %hm : i32 to index
+        scf.index_switch %i
         case 0 {
           air.channel.get @aX[] (%x[] [] []) {id = 1 : i32} : (memref<8xbf16, 2>)
           air.channel.get @aSub[] (%sub[] [] []) {id = 2 : i32} : (memref<8xbf16, 2>)
@@ -86,6 +90,7 @@ func.func @asymmetric_arms(%ext: memref<8xbf16>) {
           scf.yield
         }
         default {
+          // expected-warning@+1 {{multiplexes 2 flows over 5 transfers, but control-flow paths deliver different BD sequences}}
           air.channel.get @aX[] (%x[] [] []) {id = 4 : i32} : (memref<8xbf16, 2>)
           air.channel.get @aSub[] (%sub[] [] []) {id = 5 : i32} : (memref<8xbf16, 2>)
           scf.yield
@@ -104,25 +109,29 @@ func.func @asymmetric_arms(%ext: memref<8xbf16>) {
 // short, which is precisely what the hand-written dummy get in the llama q4nx
 // fused decode (`_uni_voc` feeding a dummy @rmsW2) exists to prevent.
 
+// expected-note@+1 {{flow on this chain}}
 air.channel @hX [1] {channel_type = "npu_dma_packet"}
+// expected-note@+1 {{flow on this chain}}
 air.channel @hW [1] {channel_type = "npu_dma_packet"}
-func.func @arm_hole(%ext: memref<8xbf16>) {
+func.func @arm_hole(%ext: memref<8xbf16>, %mode: i32) {
   %c1 = arith.constant 1 : index
-  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
+  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext, %m=%mode) : memref<8xbf16>, i32 {
     air.channel.put @hX[] (%e[] [] []) {id = 1 : i32} : (memref<8xbf16>)
     air.channel.put @hW[] (%e[] [] []) {id = 2 : i32} : (memref<8xbf16>)
-    air.segment @seg {
+    air.segment @seg args(%sm=%m) : i32 {
       %c1_0 = arith.constant 1 : index
-      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%hm=%sm) : i32 attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
         %x = memref.alloc() : memref<8xbf16, 2>
         %w = memref.alloc() : memref<8xbf16, 2>
-        scf.index_switch %tx
+        %i = arith.index_cast %hm : i32 to index
+        scf.index_switch %i
         case 0 {
           air.channel.get @hX[] (%x[] [] []) {id = 1 : i32} : (memref<8xbf16, 2>)
           air.channel.get @hW[] (%w[] [] []) {id = 2 : i32} : (memref<8xbf16, 2>)
           scf.yield
         }
         default {
+          // expected-warning@+1 {{multiplexes 2 flows over 3 transfers, but control-flow paths deliver different BD sequences}}
           air.channel.get @hX[] (%x[] [] []) {id = 3 : i32} : (memref<8xbf16, 2>)
           scf.yield
         }
@@ -141,15 +150,16 @@ func.func @arm_hole(%ext: memref<8xbf16>) {
 // the shipped llama q4nx decode has exactly this shape on its @outY chain.
 
 air.channel @oY [1] {channel_type = "npu_dma_packet"}
-func.func @single_flow_asymmetric(%ext: memref<8xbf16>) {
+func.func @single_flow_asymmetric(%ext: memref<8xbf16>, %mode: i32) {
   %c1 = arith.constant 1 : index
-  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
+  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext, %m=%mode) : memref<8xbf16>, i32 {
     air.channel.put @oY[] (%e[] [] []) {id = 1 : i32} : (memref<8xbf16>)
-    air.segment @seg {
+    air.segment @seg args(%sm=%m) : i32 {
       %c1_0 = arith.constant 1 : index
-      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%hm=%sm) : i32 attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
         %y = memref.alloc() : memref<8xbf16, 2>
-        scf.index_switch %tx
+        %i = arith.index_cast %hm : i32 to index
+        scf.index_switch %i
         case 0 {
           air.channel.get @oY[] (%y[0] [4] [1]) {id = 1 : i32} : (memref<8xbf16, 2>)
           air.channel.get @oY[] (%y[4] [4] [1]) {id = 2 : i32} : (memref<8xbf16, 2>)
@@ -175,15 +185,15 @@ func.func @single_flow_asymmetric(%ext: memref<8xbf16>) {
 
 air.channel @eA [1] {channel_type = "npu_dma_packet"}
 air.channel @eB [1] {channel_type = "npu_dma_packet"}
-func.func @unequal_multiplicity_straight_line(%ext: memref<8xbf16>) {
+func.func @unequal_multiplicity_straight_line(%ext: memref<8xbf16>, %mode: i32) {
   %c1 = arith.constant 1 : index
-  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
+  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext, %m=%mode) : memref<8xbf16>, i32 {
     air.channel.put @eA[] (%e[] [] []) {id = 1 : i32} : (memref<8xbf16>)
     air.channel.put @eB[] (%e[] [] []) {id = 2 : i32} : (memref<8xbf16>)
     air.channel.put @eB[] (%e[] [] []) {id = 3 : i32} : (memref<8xbf16>)
-    air.segment @seg {
+    air.segment @seg args(%sm=%m) : i32 {
       %c1_0 = arith.constant 1 : index
-      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%hm=%sm) : i32 attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
         %a = memref.alloc() : memref<8xbf16, 2>
         %b = memref.alloc() : memref<8xbf16, 2>
         air.channel.get @eA[] (%a[] [] []) {id = 1 : i32} : (memref<8xbf16, 2>)
