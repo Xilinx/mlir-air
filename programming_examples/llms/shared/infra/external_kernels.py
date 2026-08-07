@@ -232,7 +232,7 @@ def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False, bfp16=T
     # LayerNorm centering and accumulates coherently across the 12 layers'
     # residual-cancellation blocks (post_ln cosine 0.945). bfp16=False selects the
     # native aie2p bf16 8x8x8 mmul (accauto=accfloat accumulate) — still fully on
-    # NPU, higher precision. See docs/TODO.md "NPU-execution exceptions".
+    # NPU, higher precision.
     if bfp16:
         _flags.append("-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16")
     _compile_kernel(src, "attn_npu2.o", extra_flags=_flags, force=force)

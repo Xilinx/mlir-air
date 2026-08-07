@@ -96,7 +96,7 @@ LayerNorm is **memory-bound** (it streams the whole `M×N` matrix in and out for
 
 `herd_x = 8` is the right choice for any reasonably tall input; `vector_size = 16` is the natural bf16 lane count and does not need tuning. There is no `tile_m`-style knob — each column simply loops over its row chunk.
 
-> **`Makefile` default**: `make run AIE_TARGET=aie2p` defaults to `HERD_X=8` (multi-tile) and `M=1024 N=768`; `make run_single_tile` forces `herd_x=1` for the baseline. The builder default is `herd_x=1`. **Always pass `AIE_TARGET=aie2p`** — the default `aie2` (NPU1) silently produces zeros on this NPU2 machine.
+> **`Makefile` default**: `make run` gives `HERD_X=8` (multi-tile) at `M=1024 N=768`; `make run_single_tile` forces `herd_x=1` for the baseline. The builder default is `herd_x=1`. `AIE_TARGET` (default `aie2p`) only selects that `HERD_X` default — `AIE_TARGET=aie2` yields `HERD_X=1` — because the example gets its compilation target from XRT auto-detection rather than a flag. All three configurations PASS on NPU2.
 
 ---
 

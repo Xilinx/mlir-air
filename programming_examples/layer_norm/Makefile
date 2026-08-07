@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-# AIE target: aie2 (NPU1) or aie2p (NPU2, default)
+# Which NPU generation the herd default is sized for: aie2 (NPU1) or aie2p
+# (NPU2, default). This picks the HERD_X default below and nothing else -- the
+# example takes its compilation target from XRT device auto-detection, not from
+# a flag, so setting this does not retarget the build.
 AIE_TARGET ?= aie2p
 
 # Default herd_x for the multi-tile `run` target. NPU2 (aie2p) fans out to 8

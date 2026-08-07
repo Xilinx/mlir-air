@@ -369,7 +369,6 @@ def compile_all_kernels(
         attention bias but the FA kernel's L1 tiling is sized for the BFP16 mmul
         and the native mmul overflows/mismatches → runtime hang
         (ERT_CMD_STATE_TIMEOUT). Kept as a flag purely to document the experiment.
-        See docs/TODO.md "NPU-execution exceptions" for the full precision story.
 
     Order matters for the GEMM ELFs: `compile_gemm_mm` writes the DIM-baked
     `mm.o` into CWD, then `compile_and_cache` → `prepare_air_project` wipes
