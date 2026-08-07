@@ -229,26 +229,76 @@ except Exception:
 # merged IR. Expose a feature so decode-e2e tests (e.g. llama32_1b_q4nx
 # verify/profile) report UNSUPPORTED rather than hard-fail on a runner where no
 # compatible llvm-link is on PATH.
+#
+# Resolve it against the PATH the TESTS get (config.environment), not this
+# process's os.environ: the block above prepends config.llvm_tools_dir -- the
+# mlir distro, currently LLVM 23 -- ahead of the ambient PATH, so a usable
+# llvm-link further down the ambient PATH is shadowed inside the tests. Checking
+# os.environ instead reported "enabled" while the tests ran the distro's LLVM 23
+# and died in the fused_decode preflight.
+#
+# When the usable binary is NOT the one the tests would pick, expose it through a
+# shim dir holding only a symlink to it, prepended to the test PATH. Prepending
+# its real directory instead would be unsafe -- for a dev with /usr/bin/llvm-link
+# that would put /usr/bin ahead of the AIE toolchain and shadow clang/opt/llc.
 try:
-    _llvm_link = shutil.which("llvm-link")
-    if _llvm_link:
-        _ll_out = subprocess.run(
-            [_llvm_link, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    _test_path = config.environment.get("PATH", "")
+    _llvm_link = shutil.which("llvm-link", path=_test_path)
+
+    def _llvm_link_major(exe):
+        out = subprocess.run(
+            [exe, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
         ).stdout.decode("utf-8")
-        _ll_m = re.search(r"version (\d+)", _ll_out)
-        if _ll_m and int(_ll_m.group(1)) < 23:
-            config.available_features.add("llvm_link_pre23")
-            print(
-                f"llvm-link {_ll_m.group(1)} (<23) found: fused-decode merge enabled."
-            )
-        else:
-            print(
-                "llvm-link on PATH is not <23 "
-                f"({_ll_out.strip().splitlines()[0] if _ll_out.strip() else '?'}); "
-                "fused-decode decode tests will be UNSUPPORTED."
-            )
+        m = re.search(r"version (\d+)", out)
+        return (int(m.group(1)) if m else None), out
+
+    _ll_ver, _ll_out = _llvm_link_major(_llvm_link) if _llvm_link else (None, "")
+
+    # Shadowed-but-present case: the winner is unusable, so look for a usable one
+    # further along the same PATH and shim it to the front.
+    if _llvm_link and (_ll_ver is None or _ll_ver >= 23):
+        for _d in _test_path.split(os.pathsep):
+            _cand = os.path.join(_d, "llvm-link")
+            if not os.access(_cand, os.X_OK) or os.path.isdir(_cand):
+                continue
+            _cand_ver, _cand_out = _llvm_link_major(_cand)
+            if _cand_ver is not None and _cand_ver < 23:
+                _shim = os.path.join(config.air_obj_root, "llvm-link-shim")
+                os.makedirs(_shim, exist_ok=True)
+                _link = os.path.join(_shim, "llvm-link")
+                if os.path.lexists(_link):
+                    os.remove(_link)
+                os.symlink(_cand, _link)
+                llvm_config.with_environment("PATH", _shim, append_path=True)
+                # _ll_ver is None when --version did not parse, which is a
+                # separate reason for rejecting it than being >=23; do not
+                # report an unknown version as though it were a known one.
+                _why = (
+                    f"is LLVM {_ll_ver}"
+                    if _ll_ver is not None
+                    else "has an unparseable version"
+                )
+                print(
+                    f"llvm-link on the test PATH ({_llvm_link}) {_why}; shimming "
+                    f"{_cand} (LLVM {_cand_ver}) ahead of it."
+                )
+                _llvm_link, _ll_ver, _ll_out = _cand, _cand_ver, _cand_out
+                break
+
+    if _llvm_link and _ll_ver is not None and _ll_ver < 23:
+        config.available_features.add("llvm_link_pre23")
+        print(f"llvm-link {_ll_ver} (<23) found: fused-decode merge enabled.")
+    elif _llvm_link:
+        print(
+            "llvm-link on the test PATH is not <23 "
+            f"({_ll_out.strip().splitlines()[0] if _ll_out.strip() else '?'}); "
+            "fused-decode decode tests will be UNSUPPORTED."
+        )
     else:
-        print("llvm-link not on PATH; fused-decode decode tests will be UNSUPPORTED.")
+        print(
+            "llvm-link not on the test PATH; "
+            "fused-decode decode tests will be UNSUPPORTED."
+        )
 except Exception as e:
     print(f"llvm-link check failed: {e}")
 

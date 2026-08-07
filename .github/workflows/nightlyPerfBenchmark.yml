@@ -7,6 +7,15 @@
 # captures perf (profile), collecting TTFT + decode tok/s into perf.json and
 # uploading it as an artifact. Kept out of the per-PR matrix so perf numbers are
 # contention-free. The job goes red if any model's compile/verify fails.
+#
+# Numbers here are this runner's, and are not the figures the examples' READMEs
+# quote. llama32_1b_q4nx measures ~39-40 tok/s / ~1130ms TTFT on it, against
+# ~50 tok/s / ~910ms on a Ryzen AI 9 HX 370. That gap is a property of the
+# runner, not a regression: the identical build (same air SHA, mlir-aie wheel,
+# Peano and llvm-link, byte-identical decode insts.bin) hits ~50 on the HX 370,
+# and both machines report 51.0 TOPS from `xrt-smi validate --run gemm`, Turbo
+# power mode and DDR5-5600. The unexplained difference is the runner's ACPI
+# platform profile (`balanced`), which is why it is logged below.
 
 name: Nightly LLM Perf Benchmark
 
@@ -267,6 +276,21 @@ jobs:
           # detection and NPU dispatch. Each GHA step is a fresh shell.
           sudo prlimit -lunlimited --pid $$
 
+          # Both q4nx READMEs quote their headline decode throughput at
+          # `--pmode turbo`, so record the mode each run was measured at. This
+          # runner already boots in Turbo; the set attempt below is only a guard
+          # in case that ever changes, and it is expected to fail (setting the
+          # mode needs root -- the DRM SET_STATE ioctl is EACCES for a normal
+          # user -- and the runner's passwordless sudo does not cover xrt-smi).
+          # So warn on the condition that actually matters: the resulting mode.
+          BDF=$(xrt-smi examine | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | head -1)
+          [ -n "$BDF" ] && sudo -n xrt-smi configure -d "$BDF" --pmode turbo 2>/dev/null || true
+          PMODE=$(xrt-smi examine -r platform | sed -n 's/.*Power Mode *: *\([A-Za-z]*\).*/\1/p' | head -1)
+          echo "benchmarking at power mode: ${PMODE:-unknown}"
+          if [ "$PMODE" != "Turbo" ]; then
+            echo "WARNING: not in Turbo (got '${PMODE:-unknown}'); perf will be below the documented numbers"
+          fi
+
           # Install every model's Python deps (transformers/safetensors/torch/
           # huggingface_hub) — the lit-run inference imports them.
           for req in programming_examples/llms/*/requirements.txt; do
@@ -277,6 +301,12 @@ jobs:
           # the AIE tool env from the CMake build). lit runs every model even if
           # one fails, so a run reports each model's status; ninja returns
           # non-zero if any failed. Per-model wall time is bounded via LIT_OPTS.
+          # A perf number is only interpretable next to the machine state it was
+          # taken at: this decode streams ~700MB of weights per token, so it
+          # tracks the package power budget (ACPI platform profile) and any
+          # unrelated load competing for DRAM bandwidth.
+          echo "platform profile: $(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo n/a) |$(uptime | sed 's/.*load average/ load average/')"
+
           rc=0
           pushd build_assert
           # Correctness gate (strict): red if any model's verify fails.

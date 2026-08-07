@@ -16,7 +16,11 @@ import sys
 
 # TTFT: qwen/llama3b/int4/smollm print "Time to first token (TTFT): X.XXs";
 # llama32_1b prints "End-to-end (prefill, per query)  N ms".
-TTFT_S_RE = re.compile(r"Time to first token \(TTFT\):\s*([\d.]+)\s*s")
+# A driver may additionally print a warm (weights already resident) TTFT; that
+# is the steady-state prefill latency and is preferred when present, since the
+# cold number is dominated by the one-time host weight load.
+WARM_TTFT_S_RE = re.compile(r"Warm time to first token \(TTFT\):\s*([\d.]+)\s*s")
+TTFT_S_RE = re.compile(r"^\s*Time to first token \(TTFT\):\s*([\d.]+)\s*s", re.M)
 PREFILL_MS_RE = re.compile(r"End-to-end \(prefill, per query\)\s+([\d.]+)\s*ms")
 
 # Decode throughput: qwen family + llama3b print "(X.XX tok/s)";
@@ -33,6 +37,9 @@ CTX_RE = re.compile(r"prompt_len[=:]\s*(\d+)")
 
 
 def _ttft_ms(text):
+    m = WARM_TTFT_S_RE.search(text)
+    if m:
+        return round(float(m.group(1)) * 1000.0, 2)
     m = TTFT_S_RE.search(text)
     if m:
         return round(float(m.group(1)) * 1000.0, 2)
