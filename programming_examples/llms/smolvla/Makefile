@@ -39,8 +39,9 @@ BUILD_DIR      ?= build
 REPS           ?= 5
 
 # Input selection, shared by run / verify.
-#   INPUT=synthetic  all-zero images; deterministic, nothing to download. The
-#                    default, and what the gate and the lit tests run.
+#   INPUT=synthetic  seeded-random images; deterministic, nothing to
+#                    download. The default, and what the gate and the lit
+#                    tests run.
 #   INPUT=real       frames from a LeRobot dataset; downloads on first use.
 # CAMERAS is how many feeds to supply. The model accepts any non-empty subset
 # and the NPU needs no recompile -- the count is only how many times the host

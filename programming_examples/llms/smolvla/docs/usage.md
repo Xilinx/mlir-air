@@ -94,9 +94,9 @@ SmolVLA verify: end-to-end action-chunk regression gate
   NPU stages     : vision
   execution model: single-process (air/pyxrt in the lerobot venv)
 ==================================================================
-  cosine   = 0.998915
+  cosine   = 0.998427
   cos_min  = 0.99
-  nmse     = 0.003764
+  nmse     = 0.007423
   nmse_max = 0.04
   passed   = True
 ==================================================================
@@ -194,7 +194,7 @@ since pixel values do not change how much the NPU computes.
 
 | Variable | Default | Applies to | Notes |
 |---|---|---|---|
-| `INPUT` | `synthetic` | run, verify | `synthetic` = all-zero images, nothing to download. `real` = frames from a LeRobot dataset |
+| `INPUT` | `synthetic` | run, verify | `synthetic` = seeded-random images, nothing to download. `real` = frames from a LeRobot dataset |
 | `CAMERAS` | 3 | run, verify, profile | 1, 2 or 3. The model takes any non-empty subset and the NPU needs no recompile |
 | `DATASET` | `lerobot/droid_100` | `INPUT=real` | any LeRobot dataset; camera keys are read from its metadata |
 | `FRAMES` | 100 | `verify INPUT=real` | one per episode, from the middle of each |

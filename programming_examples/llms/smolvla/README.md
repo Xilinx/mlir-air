@@ -42,8 +42,8 @@ configurations interleaved.
 | **NPU vision + connector** | **851 ms** | **1.07×** |
 
 Reproduce with `make profile` (one process, both arms warmed, interleaved,
-median of 10): 925.9 ms CPU against 856.5 ms, **1.081×**, with the vision stage
-itself at 550.7 → 462.5 ms (**1.19×**) — the same numbers the table reports,
+median of 10): 918.2 ms CPU against 857.1 ms, **1.071×**, with the vision stage
+itself at 560.2 → 457.5 ms (**1.22×**) — the same numbers the table reports,
 measured a second time through a different harness. See
 [`docs/usage.md`](docs/usage.md) for the full output and what to read off it.
 
@@ -65,8 +65,8 @@ tensor the robot would execute — against the **unmodified lerobot CPU model**,
 with the flow-matching noise pinned to zero so the comparison is deterministic.
 
 ```
-cosine 0.998915   (gate >= 0.99)
-nMSE   0.003764   (gate <= 0.04)
+cosine 0.998427   (gate >= 0.99)
+nMSE   0.007423   (gate <= 0.04)
 PASS
 ```
 
@@ -80,10 +80,10 @@ need evaluation against recorded robot trajectories.
 
 ### On real frames
 
-The gate runs on all-zero images, which is what makes it deterministic and
-fast, and also means it is one reading from an input the model will never see.
-`make verify INPUT=real` runs the same CPU-vs-NPU comparison on real recorded
-observations, frame by frame, against the same thresholds.
+The gate's images are synthetic — seeded random, so it stays deterministic and
+needs nothing downloaded — which means it is one reading from an input the model
+will never see. `make verify INPUT=real` runs the same CPU-vs-NPU comparison on
+real recorded observations, frame by frame, against the same thresholds.
 
 100 frames of `lerobot/droid_100`, one from each of its 100 episodes:
 
@@ -93,14 +93,22 @@ observations, frame by frame, against the same thresholds.
 | 2 | 98/100 | 0.999435 | 0.997137 | **0.987832** | 0.036063 |
 | **3 (shipping)** | **100/100** | 0.999679 | 0.998782 | **0.997360** | 0.008050 |
 
-**The shipping configuration passes every frame.** Agreement on real images is
-in fact slightly better than on zeros, so the gate is not flattered by its
-degenerate input.
+**The shipping configuration passes every frame**, and agreement on real images
+is better than on the synthetic gate input, so the gate is not flattered by it.
 
 The tail is worth knowing about. At 1 and 2 cameras a few frames fall below
 cosine 0.99 (the run names them). And cosine is scale-blind on a physical
 actuator command: the largest absolute per-dimension error was 1.05 on action
 dim 5 at 1 camera, 0.36 at 3 — not something a cosine of 0.9974 conveys.
+
+Those frames are not the NPU being less accurate on those images. Measured per
+frame, the vision stage's own error barely moves (cosine 0.9959 ± 0.004 across
+100 frames) and correlates with the final chunk error at r = +0.06; what varies,
+by 22×, is how much the CPU-side backbone and the 10 flow-matching steps amplify
+it. Replacing the NPU with a random perturbation of equal magnitude reproduces
+the same spread — frame 20540 lands at 0.987 either way, while the best frames
+stay above 0.9997 no matter what is injected. The sensitivity belongs to those
+frames, not to the port.
 
 Fewer cameras is consistently worse, and it is a supported configuration rather
 than a hypothetical: `smolvla_base` accepts any non-empty subset and the NPU

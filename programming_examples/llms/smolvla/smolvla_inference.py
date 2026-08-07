@@ -77,9 +77,57 @@ def build_config(npu_vision: bool = True) -> dict:
     }
 
 
+SYNTHETIC_SEED = 0
+SYNTHETIC_GRAIN = 0.05
+
+
+def _synthetic_image(shape, gen):
+    """One random value per SigLIP patch, upsampled, plus a little pixel grain.
+
+    Two properties, one from each term.
+
+    Low frequency, drawn at the patch grid, keeps the model in a normal output
+    regime. Pure per-pixel noise does not: the model answers it with a near-zero
+    action chunk (rms 0.13 against 0.5-1.6 on real frames), and cosine on a
+    near-zero reference is hypersensitive enough to fail the gate on arithmetic
+    that is correct -- measured at 0.9869, below the 0.99 threshold.
+
+    The grain restores rank. With a flat image every one of the 1024 patches is
+    identical, so the patch-embedding GEMM is probed by a rank-1 operand and only
+    its per-channel weight sums matter: shuffling weights within a channel leaves
+    the action chunk bit-identical. Upsampled coarse noise alone reaches rank 27
+    of 768, 5% grain reaches 297, and the shuffle then moves the chunk by 0.40.
+
+    The grid comes from the encoder, not from `shape`: batch images are 256x256
+    and lerobot resizes them to the encoder's 512x512, so a grid derived from
+    the batch resolution would put 2x2 patches in each cell.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    from smolvla_vision_weights import SigLIPVisionConfig
+
+    grid = int(SigLIPVisionConfig().num_patches ** 0.5)
+    coarse = torch.rand((1, shape[1], grid, grid), generator=gen, dtype=torch.float32)
+    img = F.interpolate(coarse, size=shape[2:], mode="bilinear", align_corners=False)
+    grain = torch.rand(shape, generator=gen, dtype=torch.float32) - 0.5
+    return (img + SYNTHETIC_GRAIN * grain).clamp_(0.0, 1.0)
+
+
 def build_oracle_batch(policy, prompt: str = DEFAULT_PROMPT, n_cameras=None):
-    """The same synthetic batch the oracle dumper uses: zero images and state,
-    tokenized prompt. Deterministic, so the gate is reproducible.
+    """Synthetic batch: seeded-random images, zero state, tokenized prompt.
+    Deterministic, so the gate is reproducible.
+
+    The images are random rather than zero for coverage: a flat image makes all
+    1024 patches identical, and a rank-1 operand probes the patch-embedding GEMM
+    along a single direction (see `_synthetic_image`). That they are noise rather
+    than a photograph is fine -- this gate asks whether the NPU computes the same
+    function as the CPU, not whether the model is any good, and `INPUT=real`
+    covers the in-distribution case. [0, 1) is the range LeRobot decodes real
+    frames into, so the downstream normalizer sees what it expects.
+
+    Only the images are randomized. State feeds the CPU-only `state_proj`, so
+    randomizing it would add a variable without covering any NPU kernel.
 
     n_cameras : keep only the first N camera feeds. None (default) keeps all
         three, which is what the gate runs -- do not change that. Fewer cameras
@@ -101,9 +149,17 @@ def build_oracle_batch(policy, prompt: str = DEFAULT_PROMPT, n_cameras=None):
         for k in cams[n_cameras:]:
             del feats[k]
 
+    # One generator for the whole batch, so the images differ between cameras
+    # the way real feeds do, and CAMERAS=1/2 sees the same frames as CAMERAS=3.
+    gen = torch.Generator().manual_seed(SYNTHETIC_SEED)
     b = {}
     for k, f in feats.items():
-        b[k] = torch.zeros((1, *tuple(f.shape)), dtype=torch.float32)
+        shape = (1, *tuple(f.shape))
+        b[k] = (
+            _synthetic_image(shape, gen)
+            if "images" in k
+            else torch.zeros(shape, dtype=torch.float32)
+        )
     tok = policy.model.vlm_with_expert.processor.tokenizer(
         [prompt],
         padding="max_length",
@@ -426,7 +482,7 @@ def main() -> int:
         "--input",
         choices=("synthetic", "real"),
         default="synthetic",
-        help="synthetic = all-zero images (no download); real = a LeRobot dataset",
+        help="synthetic = seeded-random images (no download); real = a LeRobot dataset",
     )
     ap.add_argument("--cameras", type=int, default=3, help="camera feeds to supply")
     ap.add_argument("--dataset", default="lerobot/droid_100", help="for --input real")
@@ -456,7 +512,7 @@ def main() -> int:
         print(f"[smolvla] input        : {args.dataset} frame {idx}")
     else:
         batch = build_oracle_batch(policy, args.prompt, n_cameras=n_cam)
-        print("[smolvla] input        : synthetic (all-zero)")
+        print("[smolvla] input        : synthetic (seeded random)")
     print(f"[smolvla] cameras      : {args.cameras}")
     if npu_vision:
         warmup_npu()
