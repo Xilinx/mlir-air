@@ -32,7 +32,8 @@ optional arguments:
   --host-target host_target
                         Target architecture of the host program
   --shared              Generate a shared library (.so) instead of the default of a static library (.a)
-  -xbridge              pass --xbridge to aiecc, otherwise pass --no-xbridge
+  -xbridge              pass --xbridge to aiecc; otherwise nothing is passed and
+                        aiecc uses its default Peano backend
 ```
 
 ```

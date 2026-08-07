@@ -925,7 +925,7 @@ void air::LaunchOp::getSuccessorRegions(
   if (point.isParent())
     regions.push_back(RegionSuccessor(&getBody()));
   else
-    regions.push_back(RegionSuccessor::parent());
+    regions.push_back(RegionSuccessor(getOperation()));
 }
 void air::LaunchOp::getRegionInvocationBounds(
     ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
@@ -1327,7 +1327,7 @@ void air::RankOp::getSuccessorRegions(
   if (point.isParent())
     regions.push_back(RegionSuccessor(&getBody()));
   else
-    regions.push_back(RegionSuccessor::parent());
+    regions.push_back(RegionSuccessor(getOperation()));
 }
 void air::RankOp::getRegionInvocationBounds(
     ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
@@ -1628,7 +1628,7 @@ void air::SegmentOp::getSuccessorRegions(
   if (point.isParent())
     regions.push_back(RegionSuccessor(&getBody()));
   else
-    regions.push_back(RegionSuccessor::parent());
+    regions.push_back(RegionSuccessor(getOperation()));
 }
 void air::SegmentOp::getRegionInvocationBounds(
     ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
@@ -2038,7 +2038,7 @@ void air::HerdOp::getSuccessorRegions(
   if (point.isParent())
     regions.push_back(RegionSuccessor(&getBody()));
   else
-    regions.push_back(RegionSuccessor::parent());
+    regions.push_back(RegionSuccessor(getOperation()));
 }
 void air::HerdOp::getRegionInvocationBounds(
     ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) {
@@ -3542,6 +3542,17 @@ air::ChannelPutOp::getTiledImplementation(OpBuilder &builder,
                                                              sizes, put);
 }
 
+// LLVM 24 added a second overload carrying per-dimension InnerTileAlignment
+// hints. The hints only mean something to pack/unpack ops, which relate a tile
+// size to an inner tile; a channel put has no such inner tile, so ignore them.
+// TableGen declares both overloads whenever the name is listed in
+// DeclareOpInterfaceMethods, so this has to be defined rather than inherited.
+FailureOr<TilingResult> air::ChannelPutOp::getTiledImplementation(
+    OpBuilder &builder, ArrayRef<OpFoldResult> offsets,
+    ArrayRef<OpFoldResult> sizes, ArrayRef<InnerTileAlignment>) {
+  return getTiledImplementation(builder, offsets, sizes);
+}
+
 LogicalResult air::ChannelPutOp::getResultTilePosition(
     OpBuilder &builder, unsigned resultNumber, ArrayRef<OpFoldResult> offsets,
     ArrayRef<OpFoldResult> sizes, SmallVector<OpFoldResult> &resultOffsets,
@@ -3665,6 +3676,14 @@ air::ChannelGetOp::getTiledImplementation(OpBuilder &builder,
       dyn_cast_if_present<air::ChannelInterface>(getOperation());
   return getTiledImplementationFromChanIf<air::ChannelGetOp>(builder, offsets,
                                                              sizes, get);
+}
+
+// See the ChannelPutOp overload above: the InnerTileAlignment hints are a
+// pack/unpack concept and carry no meaning for a channel get.
+FailureOr<TilingResult> air::ChannelGetOp::getTiledImplementation(
+    OpBuilder &builder, ArrayRef<OpFoldResult> offsets,
+    ArrayRef<OpFoldResult> sizes, ArrayRef<InnerTileAlignment>) {
+  return getTiledImplementation(builder, offsets, sizes);
 }
 
 LogicalResult air::ChannelGetOp::getResultTilePosition(
