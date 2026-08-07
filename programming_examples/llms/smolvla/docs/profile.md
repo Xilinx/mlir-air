@@ -18,9 +18,8 @@ glue inside the dispatch loop is down to **10.4 ms (2.2%)**. Consequently:
 - **The real gap is somewhere neither hypothesis looked.** The identical GEMM
   module lowered to a multi-launch **ELF** (what the deployment must use) runs
   **1.35–1.94× slower** than lowered to **xclbin** (what every kernel-registry
-  `drain` throughput number was measured on). That is worth **~65 ms/inference**
-  and is compiler/runtime work, not kernel tuning.
-- One **measured, one-line, 32.6 ms win** is available today (§8, opportunity 1).
+  `drain` throughput number was measured on). That is compiler/runtime work, not
+  kernel tuning, and §8 ranks it accordingly.
 
 Every number below was measured on real NPU2 hardware in one session
 (2026-07-27/28). Nothing is carried over from a previous run or from the kernel
@@ -76,6 +75,13 @@ Per 3-image encode: **BO write 23.9 ms (5%) · NPU run 408.1 ms (93%) · BO read
 
 Three ELFs carry 98.9% of the device time; the post-`layer_norm` and the
 connector are rounding errors.
+
+`make profile` reports the same `device/image` column and can be re-run at any
+time. On the current toolchain (LLVM 23.0.0.2026071405, mlir-aie db06374d) it
+reads 65.40 / 36.15 / 36.77 / 1.12 / 0.73, total **140.18 ms** against the
+136.02 above — the shape of the breakdown is unchanged, but individual ELFs
+moved by up to 10% across the rebuild, and `flash_attn` and `vit_ln_qkv` swapped
+places. Treat the absolute figures in §2–§7 as of their measurement date.
 
 ---
 
@@ -397,37 +403,33 @@ this study remains the **8.3 ms of Python** in §4.
 
 ---
 
-## 8. Ranked optimisation opportunities
+## 8. Where the remaining time could come from
 
-Base: **465.7 ms** (the A/B arm of `scripts/vision_first_image_ab.py`, 7
-interleaved rounds — the cleanest base measurement in this study).
+Directions, not budgets. Each one was sized during this study, but those figures
+came from harnesses run on the previous toolchain (LLVM 23.0.0.2026060107,
+mlir-aie 92e9475c) and the absolute numbers no longer hold — a rebuild moved the
+per-ELF device times by up to 10% on its own, enough to reorder the smaller
+items. Re-measure before committing to any of them. Ordered by confidence and
+tractability rather than by size.
 
-Ranked by **(confidence × value ÷ effort)**, not by raw value. By raw value alone
-the order would be 2 (−64.6) > 3 (−52.2) > 1 (−32.6) > 4 (−24.7) > 5 (−21.1) >
-6 (−3.8); #1 and #6 lead here because they are the only two **measured** rather
-than estimated, and both are a few lines of code. Every "estimate" below is
-derived from this session's own measurements and is marked as such.
+| # | opportunity | why it should pay | effort |
+|---|---|---|---|
+| **1** | **Fold the bias-adds and residual adds into the GEMM drain epilogue.** Five bias-adds and two residual adds per layer are pure launch plus DDR traffic, and the drain GEMM already carries an epilogue cast. | the largest block of device time that does no arithmetic worth a launch | medium — builder work; the primitives exist |
+| **2** | **Close the ELF-vs-xclbin GEMM gap** (§5). The same module at the same tiles runs 1.35–1.94× slower purely from the output-format lowering. | the single biggest gap between what the kernels can do and what the deployment gets | compiler/runtime (AIRRt→NPU ELF path); unscoped |
+| **3** | **Merge `flash_attn` into the fused ELFs** → one ELF per layer instead of three. H1 (§2.3) found fusion is ~free for vision, and the isolated-vs-deployed delta is hw-context interleaving. | removes an interleave boundary per layer | medium; H1 supports it |
+| **4** | **Speed up the affine LayerNorm** — 8.1 GB/s against 34.7 GB/s for a same-sized bias-add (§5), and it runs twice per layer. | a bandwidth gap that large is usually a kernel problem, not a shape problem | kernel tuning, bounded |
+| **5** | **Re-tile fc1 and fc2** (§6). Accuracy is unchanged by it. | small: H2 found `tile_n` barely matters inside a fused ELF | trivial — two constants |
+| — | ~~Re-tile the q/k/v/o GEMM~~ | flat within 0.5% across `tile_n` 48/64/96/192 | — |
+| — | ~~Cut host glue / dispatch overhead~~ | host is already ~7% of the vision stage and most of it is irreducible; the fusion work in §3 spent this lever | — |
+| (6) | **FlashAttention** is the largest single consumer after the GEMMs and already runs at its standalone speed, so no *pipeline* gain exists — only a faster kernel at this shape would help. | the biggest remaining target, and the only one needing a kernel rewrite | large |
 
-| # | opportunity | worth | basis | effort |
-|---|---|---:|---|---|
-| **1** ~~*(superseded — see note under the table)*~~ | **Clamp the BLAS pool around `im2col` too** (or quiesce it before the dispatch loop). Image 1 of every `encode` costs **+37.9 ms** more than images 2–3 because `im2col` runs multithreaded immediately before the loop and the OpenBLAS workers busy-spin into it. Clamping costs +5.2 ms/image of `im2col` and removes the whole penalty. | **−32.6 ms (MEASURED)** | interleaved A/B: 465.7 → **433.1 ms**, per-image [175.2, 138.8, 135.9] → [137.9, 133.9, 133.1]; img-1 penalty +37.9 → +4.4 ms | **one line** in `VisionRuntime.encode` |
-| **2** | **Close the ELF-vs-xclbin GEMM gap** (§5). Same module, same tiles, 1.35–1.94× slower purely from the output-format lowering. | **−64.6 ms (estimate)** | 4×(578.5−297.5) + (1461.2−1085.1) + (1142.6−848.3) = 1794.4 µs/layer × 36 | compiler/runtime (AIRRt→NPU ELF path); unscoped |
-| **3** | **Fold the bias-adds and residual adds into the GEMM drain epilogue.** 5 bias + 2 residual = 1449.6 µs/layer of pure launch + DDR traffic; the drain GEMM already has an epilogue cast. | **−52.2 ms (estimate)** | (5×147.3 + 363.3 + 2×174.9) µs/layer × 36, assuming full absorption (an upper bound) | medium — builder work, the primitives exist |
-| **4** | **Merge `flash_attn` into the fused ELFs** → 1 ELF/layer instead of 3. H1 says fusion is ~free for vision, and the isolated-vs-deployed delta (§2.3) is hw-context interleaving. | **−24.7 ms (estimate)** | 686 µs/layer × 36 | medium; H1 now supports it |
-| **5** | **Speed up the affine LayerNorm** — 8.1 GB/s vs 34.7 GB/s for a same-sized bias-add (§5). Runs 2×/layer. | **−21.1 ms (estimate)** | 2 × (387.6 − 95) µs/layer × 36, if it reached bias-add bandwidth | kernel tuning, bounded |
-| **6** | **Re-tile fc1 `tile_n` 128→64 or 256, fc2 96→192** (§6). Accuracy unchanged. | **−3.8 ms (MEASURED per-kernel)** | (1461.2−1383.2) + (1142.6−1114.7) = 105.9 µs/layer × 36 | trivial — two constants |
-| — | ~~Re-tile the q/k/v/o GEMM~~ | **0 ms** | flat within 0.5% across tile_n 48/64/96/192 | — |
-| — | ~~Cut host glue / dispatch overhead~~ | ≤ **−18 ms**, already only 3.9% | BO write 23.9 + lock/run 8.0 + Python 8.3 + numpy 2.2 = 42.4 ms total, most of it irreducible | the A3-6b fusion already spent this lever |
-| (7) | FlashAttention is **100.7 ms / 21.4%** of the wall at 1151 GFLOP/s, but already at its standalone speed — no *pipeline* gain exists. A faster FA kernel at this shape is the largest remaining single target, and the only one that needs a kernel rewrite. | — | §5 | large |
+Opportunities 1 and 2 partially overlap: 1 removes launches that 2 would also
+speed up. 3, 4 and 5 are independent.
 
-**Opportunity 1 is superseded.** It was measured against a code path that had a
-BLAS clamp to extend; that clamp was later removed after ten runs showed it made
-no difference (442.5 vs 441.1 ms), so the −32.6 ms is not available as written.
-Re-measure before acting on it.
-
-Opportunities 2 and 3 partially overlap (3 removes launches that 2 would also
-speed up); 4, 5 and 6 are independent. Opportunity 6 alone — measured, two
-constants — is **≈3.8 ms**.
+The one direction this study ranked highly and that has since been **retired**:
+clamping the host BLAS pool around `im2col`. It measured well at the time
+(−32.6 ms) but against a code path that had a clamp to extend; that clamp was
+later removed after ten runs found no difference either way (442.5 vs 441.1 ms).
 
 ---
 
