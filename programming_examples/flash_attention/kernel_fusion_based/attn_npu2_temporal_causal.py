@@ -388,6 +388,20 @@ def build_module(
     # Splitting each block's halves by row instead gives twelve 2-tile gathers,
     # which do fit the five remaining columns; see _out_col for the assignment.
     _row_split_out = q_tiles_per_core == 1 and (lq // lqp) > 4
+    # _out_col's table below is a hand-checked column budget for NB == 3 (the
+    # GQA 3:1 shape, e.g. Llama-3.2-3B). At NB == 4 (GQA 4:1 at head_dim 128,
+    # e.g. Llama-3-8B) the herd spans all 8 columns, so the twelve gathers
+    # become sixteen over seven non-K/V columns and the assignment does not
+    # carry over. Fail here with the reason rather than letting _out_col raise
+    # KeyError halfway through building the module.
+    if _row_split_out and NB != 3:
+        raise NotImplementedError(
+            f"the row-split output placement past 4 rounds is only mapped for "
+            f"NB == 3 (num_heads / num_kv_heads == 3); got NB={NB} from "
+            f"num_heads={num_heads}, num_kv_heads={num_kv_heads}. Either keep "
+            f"lq <= 4 * lqp (= {4 * lqp}) so the four-tile gathers are used, "
+            f"or extend _out_col with a verified column budget for this NB."
+        )
     if _row_split_out:
         # (name, j, first tile-row, tile-row count) -- one row of the 2xNR block
         # each, ordered so slice i still drains L3 rows [i*lqp/_n_out, ...).

@@ -40,10 +40,17 @@ def _fa_backend_kwargs(verbose=False):
 
 def supports(seq_len, n_heads, n_kv_heads, head_dim):
     """Can this shape run on the temporal-causal kernel?"""
-    if head_dim != 128 or seq_len % LQP:
+    if head_dim != 128 or seq_len <= 0 or seq_len % LQP:
+        return False
+    if not n_kv_heads or n_heads % n_kv_heads:
         return False
     # The herd is NB column-blocks x 4 rows over 8 physical columns.
-    return n_heads % n_kv_heads == 0 and 2 * (n_heads // n_kv_heads) <= 8
+    nb = n_heads // n_kv_heads
+    if 2 * nb > 8:
+        return False
+    # Past 4 rounds the builder switches to the row-split output placement,
+    # whose column budget is only mapped for NB == 3.
+    return nb == 3 or seq_len // LQP <= 4
 
 
 def compile_temporal_fa(cache, seq_len, n_heads, n_kv_heads, head_dim, verbose=False):

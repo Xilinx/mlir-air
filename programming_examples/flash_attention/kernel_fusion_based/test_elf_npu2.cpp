@@ -220,6 +220,13 @@ int main(int argc, const char *argv[]) {
                                 "trace.txt");
   }
 
+  if (npu_times.empty()) {
+    std::cout << std::endl
+              << "No measured iterations; skipping the latency summary."
+              << std::endl;
+    return 0;
+  }
+
   std::cout << std::endl
             << "Avg NPU attention time: " << npu_time_total / n_iterations
             << "us." << std::endl;
