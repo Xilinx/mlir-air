@@ -94,9 +94,9 @@ SmolVLA verify: end-to-end action-chunk regression gate
   NPU stages     : vision
   execution model: single-process (air/pyxrt in the lerobot venv)
 ==================================================================
-  cosine   = 0.998996
+  cosine   = 0.998915
   cos_min  = 0.99
-  nmse     = 0.003023
+  nmse     = 0.003764
   nmse_max = 0.04
   passed   = True
 ==================================================================

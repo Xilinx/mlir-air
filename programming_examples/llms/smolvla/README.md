@@ -65,8 +65,8 @@ tensor the robot would execute — against the **unmodified lerobot CPU model**,
 with the flow-matching noise pinned to zero so the comparison is deterministic.
 
 ```
-cosine 0.998996   (gate >= 0.99)
-nMSE   0.003023   (gate <= 0.04)
+cosine 0.998915   (gate >= 0.99)
+nMSE   0.003764   (gate <= 0.04)
 PASS
 ```
 

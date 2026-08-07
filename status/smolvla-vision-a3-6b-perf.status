@@ -1,3 +1,0 @@
-PASS
-/home/jiajli/apps/mlir-air/.claude/worktrees/smolvla/reports/smolvla-vision-a3-6b-perf-runner.md
-A3-6b vision fused: 368ms->141.6ms (<281ms gate); 121->37 dispatches; all ops NPU (0 CPU); post_ln 0.945->0.990 (test_full_vit PASS)

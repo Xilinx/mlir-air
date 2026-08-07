@@ -1,3 +1,0 @@
-PASS
-/home/jiajli/apps/mlir-air/.claude/worktrees/smolvla/reports/gelu-runner.md
-GELU 3145728 (1024x3072, SmolVLA vision MLP): 24.1 GB/s @ herd_x=8/herd_y=2/tile_n=4096, mean_rel_L1=8.4e-3, abs_err max=1.56e-2 (NPU2, this run); key finding: single-input 2-DMA/tile unlocks 16 tiles (herd_y=2), 2x the 3-DMA elementwise ceiling
