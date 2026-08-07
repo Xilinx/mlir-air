@@ -184,3 +184,50 @@ Two things worth reading off it:
 The backbone and expert columns carry the same number across both arms on
 purpose: they are the same unmodified CPU code either way, and showing them
 makes it visible that one stage moved and two did not.
+
+---
+
+## Choosing the input — `INPUT` and `CAMERAS`
+
+`run` and `verify` take the same two knobs; `profile` takes `CAMERAS` only,
+since pixel values do not change how much the NPU computes.
+
+| Variable | Default | Applies to | Notes |
+|---|---|---|---|
+| `INPUT` | `synthetic` | run, verify | `synthetic` = all-zero images, nothing to download. `real` = frames from a LeRobot dataset |
+| `CAMERAS` | 3 | run, verify, profile | 1, 2 or 3. The model takes any non-empty subset and the NPU needs no recompile |
+| `DATASET` | `lerobot/droid_100` | `INPUT=real` | any LeRobot dataset; camera keys are read from its metadata |
+| `FRAMES` | 100 | `verify INPUT=real` | one per episode, from the middle of each |
+
+```bash
+make verify                          # the gate: synthetic, 3 cameras, PASS/FAIL
+make verify CAMERAS=1                # synthetic, 1 camera
+make verify INPUT=real               # 100 real frames, reports a distribution
+make verify INPUT=real FRAMES=20 CAMERAS=2
+make run INPUT=real                  # one forward on one real frame
+make profile CAMERAS=1               # timing, always synthetic
+```
+
+**Only the default is a gate.** `make verify` with no arguments is
+deterministic, exits non-zero on failure, and is what CI and the lit test run.
+`INPUT=real` answers a different question -- how much headroom the precision
+has on inputs the model will actually see -- and always exits 0. A few frames
+below threshold at 1 or 2 cameras is a finding, not a broken build.
+
+### Notes on `INPUT=real`
+
+First use downloads the dataset. **There is no way to fetch a few frames**: one
+MP4 per camera per chunk, so it is the whole file — 464 MB for `droid_100`,
+1.3 GB for `aloha_mobile_wipe_wine`, 3.0 GB for `abc_130k_v3_smoke`.
+
+`smolvla_dataset.load()` passes `video_backend="pyav"`, and that is not a
+preference. LeRobot defaults to `torchcodec`, which fails to load here — it
+cannot find a compatible FFmpeg/libtorchcodec for torch 2.10.0+cpu. `pyav`
+comes with `lerobot[dataset]`. Every multi-camera LeRobot dataset is
+video-backed, so this applies to all of them.
+
+Dimensions need not match the checkpoint. `droid_100` is 180x320 with a 7-wide
+state against the checkpoint's 256x256 and 6; `resize_with_pad` and
+`pad_vector` absorb both, and the NPU sees seq 1024 either way. The state is
+then semantically meaningless, which is fine for a CPU-vs-NPU numerical
+comparison and would not be for a task-quality claim.

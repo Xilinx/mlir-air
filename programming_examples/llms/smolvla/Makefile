@@ -38,6 +38,18 @@ NPU_PYTHON     ?= python3
 BUILD_DIR      ?= build
 REPS           ?= 5
 
+# Input selection, shared by run / verify.
+#   INPUT=synthetic  all-zero images; deterministic, nothing to download. The
+#                    default, and what the gate and the lit tests run.
+#   INPUT=real       frames from a LeRobot dataset; downloads on first use.
+# CAMERAS is how many feeds to supply. The model accepts any non-empty subset
+# and the NPU needs no recompile -- the count is only how many times the host
+# vision loop runs. 3 is the shipping configuration.
+INPUT          ?= synthetic
+CAMERAS        ?= 3
+DATASET        ?= lerobot/droid_100
+FRAMES         ?= 100
+
 .PHONY: help compile cpu-baseline run verify profile clean
 
 help:
@@ -50,6 +62,11 @@ help:
 	@echo "  make verify    THE GATE: action chunk vs the pure-CPU model (PASS/FAIL)"
 	@echo "  make profile   CPU vs NPU, interleaved + warmed, with the ELF breakdown"
 	@echo "  make clean     Remove the kernel cache and build artifacts"
+	@echo ""
+	@echo "  run / verify take INPUT=synthetic|real and CAMERAS=1|2|3"
+	@echo "  profile takes CAMERAS only (pixel values do not change NPU work)"
+	@echo "    make verify INPUT=real            survey 100 real frames, always exits 0"
+	@echo "    make verify CAMERAS=1             synthetic, 1 camera"
 	@echo ""
 	@echo "  LEROBOT_PYTHON=$(LEROBOT_PYTHON)"
 	@echo "  (needs torch + lerobot; with the mlir-air env sourced it also has"
@@ -70,23 +87,32 @@ cpu-baseline:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_cpu_baseline.py
 
-## One end-to-end forward in the shipping configuration.
+## One end-to-end forward. INPUT/CAMERAS select the input; the defaults are
+## the shipping configuration.
 run:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py
+	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py \
+		--input $(INPUT) --cameras $(CAMERAS) --dataset $(DATASET)
 
-## THE GATE. Action chunk vs the unmodified CPU model: cosine >= 0.99 and
-## normalized MSE <= 0.04. Exits non-zero on FAIL.
+## THE GATE at its defaults (INPUT=synthetic, CAMERAS=3): action chunk vs the
+## unmodified CPU model, cosine >= 0.99 and normalized MSE <= 0.04, exits
+## non-zero on FAIL. This is what CI and the lit test run.
+##
+## INPUT=real surveys FRAMES frames of DATASET instead and reports the
+## distribution. It always exits 0 -- it answers how much headroom the
+## precision has, not whether the build is broken.
 verify:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/verify_adapter.py
+	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/verify_adapter.py \
+		--input $(INPUT) --cameras $(CAMERAS) \
+		--dataset $(DATASET) --frames $(FRAMES)
 
 ## Pure CPU against NPU vision: one process, both arms warmed, interleaved,
 ## median of REPS, plus the per-ELF device breakdown.
 profile:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py \
-		--profile --reps $(REPS)
+		--profile --reps $(REPS) --cameras $(CAMERAS)
 
 clean:
 	rm -rf $(srcdir)/$(BUILD_DIR) $(srcdir)/__pycache__

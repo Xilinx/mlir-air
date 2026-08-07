@@ -77,9 +77,17 @@ def build_config(npu_vision: bool = True) -> dict:
     }
 
 
-def build_oracle_batch(policy, prompt: str = DEFAULT_PROMPT):
+def build_oracle_batch(policy, prompt: str = DEFAULT_PROMPT, n_cameras=None):
     """The same synthetic batch the oracle dumper uses: zero images and state,
-    tokenized prompt. Deterministic, so the gate is reproducible."""
+    tokenized prompt. Deterministic, so the gate is reproducible.
+
+    n_cameras : keep only the first N camera feeds. None (default) keeps all
+        three, which is what the gate runs -- do not change that. Fewer cameras
+        is legal for the model (lerobot only rejects a batch with *every*
+        camera missing) and needs no recompile: the camera count is how many
+        times VisionRuntime.encode loops, and every ELF is built for one
+        512x512 image regardless. Used by the camera-count controls.
+    """
     import torch
     from lerobot.utils.constants import (
         OBS_LANGUAGE_ATTENTION_MASK,
@@ -87,8 +95,14 @@ def build_oracle_batch(policy, prompt: str = DEFAULT_PROMPT):
     )
 
     cfg = policy.config
+    feats = dict(cfg.input_features)
+    if n_cameras is not None:
+        cams = [k for k in feats if "images" in k]
+        for k in cams[n_cameras:]:
+            del feats[k]
+
     b = {}
-    for k, f in cfg.input_features.items():
+    for k, f in feats.items():
         b[k] = torch.zeros((1, *tuple(f.shape)), dtype=torch.float32)
     tok = policy.model.vlm_with_expert.processor.tokenizer(
         [prompt],
@@ -246,7 +260,7 @@ def compile_only(cache_dir: str = VISION_CACHE_DIR) -> int:
     return 0
 
 
-def run_profile(prompt: str = DEFAULT_PROMPT, reps: int = 5) -> int:
+def run_profile(prompt: str = DEFAULT_PROMPT, reps: int = 5, n_cameras: int = 3) -> int:
     """Pure CPU vs NPU vision, measured so the comparison is worth reporting.
 
     Four things the naive "run one, then run the other" does wrong, and what
@@ -267,7 +281,9 @@ def run_profile(prompt: str = DEFAULT_PROMPT, reps: int = 5) -> int:
     from smolvla_runtime import get_vision_runtime
 
     policy = SmolVLAPolicy.from_pretrained(DEFAULT_MODEL).eval()
-    batch = build_oracle_batch(policy, prompt)
+    batch = build_oracle_batch(
+        policy, prompt, n_cameras=None if n_cameras == 3 else n_cameras
+    )
     noise = fixed_noise(policy)
     rt = get_vision_runtime(profile=True)
     rt.warmup()
@@ -406,18 +422,42 @@ def main() -> int:
         help="CPU vs NPU, interleaved and warmed, with the per-ELF breakdown",
     )
     ap.add_argument("--reps", type=int, default=5, help="reps per arm for --profile")
+    ap.add_argument(
+        "--input",
+        choices=("synthetic", "real"),
+        default="synthetic",
+        help="synthetic = all-zero images (no download); real = a LeRobot dataset",
+    )
+    ap.add_argument("--cameras", type=int, default=3, help="camera feeds to supply")
+    ap.add_argument("--dataset", default="lerobot/droid_100", help="for --input real")
     args = ap.parse_args()
     npu_vision = not args.cpu
 
     if args.compile_only:
         return compile_only()
     if args.profile:
-        return run_profile(args.prompt, args.reps)
+        # Timing only. Pixel values do not change how much the NPU computes, so
+        # --input has no meaning here; camera count does, since it is the host
+        # loop count.
+        return run_profile(args.prompt, args.reps, args.cameras)
 
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
     policy = SmolVLAPolicy.from_pretrained(DEFAULT_MODEL).eval()
-    batch = build_oracle_batch(policy, args.prompt)
+    n_cam = None if args.cameras == 3 else args.cameras
+    if args.input == "real":
+        import smolvla_dataset
+
+        idx, batch = next(
+            smolvla_dataset.batches(
+                policy, args.prompt, args.cameras, args.dataset, n_frames=1
+            )
+        )
+        print(f"[smolvla] input        : {args.dataset} frame {idx}")
+    else:
+        batch = build_oracle_batch(policy, args.prompt, n_cameras=n_cam)
+        print("[smolvla] input        : synthetic (all-zero)")
+    print(f"[smolvla] cameras      : {args.cameras}")
     if npu_vision:
         warmup_npu()
 

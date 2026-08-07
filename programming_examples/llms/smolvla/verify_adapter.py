@@ -34,6 +34,7 @@ Entry points (structural parity with the sibling adapters):
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -77,16 +78,21 @@ def run_gate(
     cos_min: float = COS_MIN,
     nmse_max: float = NMSE_MAX,
     npu_vision: bool = True,
+    n_cameras=None,
 ) -> dict:
-    """Run the pipeline once and return the gate dict.
+    """Run the pipeline once on synthetic input and return the gate dict.
 
     Gates on cosine (primary) AND magnitude-invariant normalized MSE; the raw
     MSE is kept in the dict for the report.
+
+    n_cameras : None (default) feeds all three, which is what the gate and the
+        lit test run. 1 or 2 is a legal model configuration and needs no
+        recompile, but is not the shipping one.
     """
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
     policy = SmolVLAPolicy.from_pretrained(DEFAULT_MODEL).eval()
-    batch = build_oracle_batch(policy)
+    batch = build_oracle_batch(policy, n_cameras=n_cameras)
     noise = fixed_noise(policy)
 
     # The reference is computed HERE, in this process, from the same policy
@@ -117,20 +123,110 @@ def run_gate(
     return g
 
 
+def survey_real(n_cameras, dataset, n_frames, prompt, npu_vision=True) -> int:
+    """NPU vs CPU over real recorded frames. Reports, does not gate.
+
+    Deliberately not pass/fail. The synthetic gate is a regression detector and
+    its exit code means something; this answers a different question -- how much
+    headroom the precision has on inputs the model will actually see -- and a
+    handful of frames below threshold at 1 or 2 cameras is a finding, not a
+    build failure. Always returns 0.
+    """
+    from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+
+    import smolvla_dataset
+
+    policy = SmolVLAPolicy.from_pretrained(DEFAULT_MODEL).eval()
+    noise = fixed_noise(policy)
+    if npu_vision:
+        warmup_npu()
+
+    cs, ns, per_dim, failed = [], [], None, []
+    for i, (idx, batch) in enumerate(
+        smolvla_dataset.batches(policy, prompt, n_cameras, dataset, n_frames)
+    ):
+        ref = run_hybrid_forward(batch, policy=policy, noise=noise, npu_vision=False)
+        chunk = run_hybrid_forward(
+            batch, policy=policy, noise=noise, npu_vision=npu_vision
+        )
+        g = regression_gate(chunk, ref, cos_min=COS_MIN, mse_max=float("inf"))
+        c, m = g["cosine"], normalized_mse(chunk, ref)
+        cs.append(c)
+        ns.append(m)
+        if c < COS_MIN or m > NMSE_MAX:
+            failed.append((idx, c, m))
+        d = np.abs(chunk - ref).max(axis=(0, 1))
+        per_dim = d if per_dim is None else np.maximum(per_dim, d)
+        if (i + 1) % 25 == 0:
+            print(f"  {i + 1}/{n_frames}", flush=True)
+
+    cs, ns = np.array(cs), np.array(ns)
+    worst_dim = int(np.argmax(per_dim))
+    print("=" * 60)
+    print(f"SmolVLA verify: real frames — {dataset}")
+    print(f"  {len(cs)} frames, {n_cameras} camera(s), noise pinned to zero")
+    print("=" * 60)
+    print(
+        f"  within threshold  {len(cs) - len(failed)}/{len(cs)}"
+        f"   (cosine >= {COS_MIN}, nMSE <= {NMSE_MAX})"
+    )
+    print(
+        f"  cosine   median {np.median(cs):.6f}  P10 {np.percentile(cs, 10):.6f}"
+        f"  worst {cs.min():.6f}"
+    )
+    print(
+        f"  nmse     median {np.median(ns):.6f}  P90 {np.percentile(ns, 90):.6f}"
+        f"  worst {ns.max():.6f}"
+    )
+    print(
+        f"  worst action dim {worst_dim}, max abs {per_dim[worst_dim]:.5f}"
+        f"   all dims {np.array2string(per_dim, precision=4)}"
+    )
+    for idx, c, m in failed[:5]:
+        print(f"    below threshold: frame {idx}  cosine {c:.6f}  nmse {m:.6f}")
+    if len(failed) > 5:
+        print(f"    ... and {len(failed) - 5} more")
+    print("=" * 60)
+    print("  A survey, not a gate — the synthetic run is the pass/fail check.")
+    return 0
+
+
 def main() -> int:
     """The gate: NPU vision + connector, CPU backbone and expert, one process.
+
+    Synthetic input (the default) is the gate: deterministic, one frame,
+    pass/fail, and what CI and the lit test run. --input real surveys real
+    recorded frames instead and always exits 0; see survey_real.
 
     --cpu-vision runs the unmodified model against itself, which should score
     exactly 1.0 -- a sanity check that the harness is deterministic and that
     the two forwards differ in nothing but the vision backend.
     """
-    npu_vision = "--cpu-vision" not in sys.argv
-    g = run_gate(npu_vision=npu_vision)
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--input", choices=("synthetic", "real"), default="synthetic")
+    ap.add_argument("--cameras", type=int, default=3)
+    ap.add_argument("--dataset", default="lerobot/droid_100")
+    ap.add_argument("--frames", type=int, default=100)
+    ap.add_argument("--prompt", default="pick up the object")
+    ap.add_argument("--cpu-vision", action="store_true")
+    args = ap.parse_args()
+    npu_vision = not args.cpu_vision
+
+    if args.input == "real":
+        return survey_real(
+            args.cameras, args.dataset, args.frames, args.prompt, npu_vision
+        )
+
+    # n_cameras=None at the default 3 keeps the gate path byte-identical.
+    n_cam = None if args.cameras == 3 else args.cameras
+    g = run_gate(npu_vision=npu_vision, n_cameras=n_cam)
     cfg = build_config(npu_vision)
     print("=" * 60)
     print("SmolVLA verify: end-to-end action-chunk regression gate")
     print(f"  NPU stages     : {cfg['npu_stages']}")
     print(f"  execution model: {cfg['execution_model']}")
+    if n_cam is not None:
+        print(f"  cameras        : {n_cam} (not the shipping 3)")
     print("=" * 60)
     for k in ("cosine", "cos_min", "mse", "nmse", "nmse_max", "max_abs", "passed"):
         print(f"  {k:8s} = {g[k]}")

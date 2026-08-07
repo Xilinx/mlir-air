@@ -78,6 +78,45 @@ Note what this does and does not say: it says the port did not change the
 model's behaviour. It does not say the model is good at the task — that would
 need evaluation against recorded robot trajectories.
 
+### On real frames
+
+The gate runs on all-zero images, which is what makes it deterministic and
+fast, and also means it is one reading from an input the model will never see.
+`make verify INPUT=real` runs the same CPU-vs-NPU comparison on real recorded
+observations, frame by frame, against the same thresholds.
+
+100 frames of `lerobot/droid_100`, one from each of its 100 episodes:
+
+| Cameras | **pass** | cosine median | P10 | **cosine worst** | nMSE worst |
+|---|---|---|---|---|---|
+| 1 | 97/100 | 0.998840 | 0.995269 | **0.957068** | 0.086860 |
+| 2 | 98/100 | 0.999435 | 0.997137 | **0.987832** | 0.036063 |
+| **3 (shipping)** | **100/100** | 0.999679 | 0.998782 | **0.997360** | 0.008050 |
+
+**The shipping configuration passes every frame.** Agreement on real images is
+in fact slightly better than on zeros, so the gate is not flattered by its
+degenerate input.
+
+The tail is worth knowing about. At 1 and 2 cameras a few frames fall below
+cosine 0.99 (the run names them). And cosine is scale-blind on a physical
+actuator command: the largest absolute per-dimension error was 1.05 on action
+dim 5 at 1 camera, 0.36 at 3 — not something a cosine of 0.9974 conveys.
+
+Fewer cameras is consistently worse, and it is a supported configuration rather
+than a hypothetical: `smolvla_base` accepts any non-empty subset and the NPU
+needs no recompile for it (`build_oracle_batch(n_cameras=...)`, since the count
+is only how many times the host loop runs). A shorter prefix leaves the CPU
+backbone and expert less to average the same vision error against.
+
+```bash
+make verify INPUT=real                  # 100 frames, 3 cameras
+make verify INPUT=real CAMERAS=1        # same, one camera
+```
+
+`INPUT=real` always exits 0 — it reports headroom, it is not the gate. Plain
+`make verify` (synthetic, 3 cameras) stays the pass/fail check, and is what CI
+and the lit tests run so they need no dataset.
+
 ## Model config
 
 **Vision (on NPU):** SigLIP ViT, 12 layers, seq 1024 (512×512 image, patch 16),
@@ -111,6 +150,10 @@ make profile       # CPU vs NPU, interleaved and warmed, with the per-ELF breakd
 make cpu-baseline  # run the unmodified CPU model on its own, for inspection
 ```
 
+`run` and `verify` take `INPUT=synthetic|real` and `CAMERAS=1|2|3`; `profile`
+takes `CAMERAS` only. Defaults are the shipping configuration. See
+[`docs/usage.md`](docs/usage.md).
+
 On a machine where several sessions share one NPU, wrap the device-touching
 targets the way the siblings are wrapped:
 
@@ -129,6 +172,7 @@ are on the NPU.
 | `smolvla_vision_weights.py` | SigLIP config + weight loading from the checkpoint |
 | `smolvla_vision_builders.py` | the two fused multi-launch ELF builders (`vit_ln_qkv`, `vit_o_ffn`) |
 | `smolvla_vision_encoder.py` | the NPU driver: compiles the kernels, runs the 12 layers |
+| `smolvla_dataset.py` | real observations from a LeRobot dataset, for `INPUT=real` |
 | `smolvla_cpu_helpers.py` | fp32 numpy reference for every vision operation |
 | `smolvla_runtime.py` | process-wide `VisionRuntime` singleton; scoped BLAS-thread clamp |
 | `smolvla_inference.py` | splices the NPU vision result into lerobot's own `embed_prefix`; the single CLI entry point, including `--compile-only` |
