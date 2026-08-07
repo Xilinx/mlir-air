@@ -6,7 +6,7 @@
 SmolVLA is three stages: a SigLIP vision encoder, a SmolLM2-360M language
 backbone, and a flow-matching action expert. All three were ported to NPU2 and
 verified; **only the vision encoder ships on the NPU**, because it is the only
-one measurably faster there (1.19x per image, 1.07x end to end). The other two
+one measurably faster there (1.20x per image, 1.11x end to end). The other two
 run lerobot's own unmodified CPU path. See README.md for the measurements.
 
 How the splice works
@@ -227,9 +227,10 @@ def run_hybrid_forward(
         # Two swaps, not one, and the outer one is load-bearing for SPEED, not
         # for correctness: all N images are encoded in ONE runtime call.
         # Encoding them one at a time from embed_image alone is simpler -- one
-        # swap, no counter, no ordering assumption -- and holds the gate at
-        # cosine 0.99900. It also costs the entire win: 818/834/838 ms batched
-        # vs 882/914/963 ms lazy, against a 913 ms pure-CPU baseline.
+        # swap, no counter, no ordering assumption -- and passes the gate too.
+        # It also costs the entire win: 818/834/838 ms batched vs 882/914/963 ms
+        # lazy, against a 913 ms pure-CPU baseline (measured before the gate
+        # input changed; the comparison stands, the absolute numbers drift).
         #
         # WHY it costs that is NOT established. The obvious suspect at the
         # time -- a host BLAS thread clamp being entered per image instead of

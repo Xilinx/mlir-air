@@ -6,7 +6,7 @@
 # Pipeline: NPU vision tower + connector -> CPU prefix assembly -> CPU language
 # backbone -> CPU action expert, all in ONE process. The backbone and the action
 # expert stay on the CPU because they measure SLOWER on the NPU at their shapes
-# (seq 256 and seq 50); see README.md.
+# (seq 241 and seq 50); see README.md.
 #
 # Correctness is a continuous-output REGRESSION gate on the (1,50,6) action
 # chunk against the unmodified CPU model — not the token-set gate the
@@ -59,7 +59,7 @@ help:
 	@echo "=================================================================="
 	@echo "  make compile   Build every vision ELF (no NPU dispatch, no download)"
 	@echo "  make cpu-baseline  Run the unmodified CPU model; dumps it for inspection"
-	@echo "  make run       One end-to-end forward; prints the action chunk"
+	@echo "  make run       One end-to-end forward; prints the chunk shape and magnitude"
 	@echo "  make verify    THE GATE: action chunk vs the pure-CPU model (PASS/FAIL)"
 	@echo "  make profile   CPU vs NPU, interleaved + warmed, with the ELF breakdown"
 	@echo "  make clean     Remove the kernel cache and build artifacts"

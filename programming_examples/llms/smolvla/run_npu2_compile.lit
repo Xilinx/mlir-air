@@ -5,8 +5,9 @@
 // AIR -> AIE -> aiecc -> Peano pipeline. No NPU dispatch, no HuggingFace
 // download, no lerobot import — so it runs anywhere the toolchain is installed.
 //
-// Covers the three fused multi-launch ELFs (vit_ln_qkv, flash_attn,
-// vit_o_ffn), the post-LayerNorm and the connector projection.
+// Covers the two fused multi-launch ELFs (vit_ln_qkv, vit_o_ffn), the
+// single-launch registry flash_attn, the post-LayerNorm and the connector
+// projection.
 //
 // CI collects this through `check-programming-examples-llms-compile`, whose
 // filter is the path `llms/.*/run_npu2_compile` — no filename suffix needed.

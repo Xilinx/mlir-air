@@ -10,7 +10,7 @@ glue inside the dispatch loop is down to **10.4 ms (2.2%)**. Consequently:
 - **H1 (fused ELFs cost extra device time) is REFUTED for vision.** The two
   fused ViT ELFs cost **1.01–1.03×** the sum of their launches measured
   individually *in the same regime* — not the **1.39–1.79×** the backbone's
-  fused ELFs show (`expert_npu_feasibility.md` §5). Vision fusion is ~free.
+  fused ELFs show (`expert_npu_feasibility.md` §5, on the `smolvla` branch — see the callout below). Vision fusion is ~free.
 - **H2 (compromise tiles inside the fused ELFs) is largely REFUTED.** In the ELF
   regime the deployment actually runs in, `tile_n` barely matters: **0%** on
   q/k/v/o, **2.5%** on fc2, **5.6%** on fc1 — ~4 ms total, nothing like the
@@ -51,9 +51,9 @@ Verified before measuring, and unchanged throughout:
 | CPU | AMD Ryzen AI 9 HX 370, 12C/24T |
 | NPU | NPU2 / Strix (AIE2P), device `0000:c6:00.1` |
 
-Configuration profiled: the shipping one — `smolvla_npu_runtime.VisionRuntime`,
+Configuration profiled: the shipping one — `smolvla_runtime.VisionRuntime`,
 single process, NPU vision + CPU backbone
-(`run_hybrid_forward(npu_vision=True, npu_backbone=False, bridge=False)`),
+(`run_hybrid_forward(npu_vision=True)`),
 3 camera images per inference, 12-layer SigLIP ViT at seq=1024 + connector.
 
 **Measurement noise.** Process-to-process spread on this machine is **±10–15%**
@@ -207,10 +207,11 @@ path uses, median of 30 (15 for im2col), machine idle.
 | connector B `ascontiguousarray` (12288,960) | <0.001 ms | 3 | <0.01 ms |
 | **TOTAL itemised host** | | | **14.84 ms** |
 
-For reference: `im2col_patch_embed` at **1 thread** costs 9.455 ms instead of
-4.220 ms — that 5.2 ms/image difference is why it deliberately runs *outside*
-the BLAS clamp. §8 opportunity 1 shows that trade is currently the wrong way
-round.
+For reference: `im2col_patch_embed` at **1 thread** cost 9.455 ms instead of
+4.220 ms — that 5.2 ms/image difference is why it ran *outside* the BLAS clamp
+this session measured. **That clamp no longer exists**: a later A/B over ten
+runs found it made no difference (442.5 vs 441.1 ms) and it was deleted. See
+`explain.md` §6.
 
 Note: the connector weight (12288×960 bf16, 23.6 MB) is **not** copied per call
 — it is already contiguous bf16, so `ascontiguousarray` is a no-op. Same for
@@ -415,7 +416,7 @@ derived from this session's own measurements and is marked as such.
 
 | # | opportunity | worth | basis | effort |
 |---|---|---:|---|---|
-| **1** | **Clamp the BLAS pool around `im2col` too** (or quiesce it before the dispatch loop). Image 1 of every `encode` costs **+37.9 ms** more than images 2–3 because `im2col` runs multithreaded immediately before the loop and the OpenBLAS workers busy-spin into it. Clamping costs +5.2 ms/image of `im2col` and removes the whole penalty. | **−32.6 ms (MEASURED)** | interleaved A/B: 465.7 → **433.1 ms**, per-image [175.2, 138.8, 135.9] → [137.9, 133.9, 133.1]; img-1 penalty +37.9 → +4.4 ms | **one line** in `VisionRuntime.encode` |
+| **1** ~~*(superseded — see note under the table)*~~ | **Clamp the BLAS pool around `im2col` too** (or quiesce it before the dispatch loop). Image 1 of every `encode` costs **+37.9 ms** more than images 2–3 because `im2col` runs multithreaded immediately before the loop and the OpenBLAS workers busy-spin into it. Clamping costs +5.2 ms/image of `im2col` and removes the whole penalty. | **−32.6 ms (MEASURED)** | interleaved A/B: 465.7 → **433.1 ms**, per-image [175.2, 138.8, 135.9] → [137.9, 133.9, 133.1]; img-1 penalty +37.9 → +4.4 ms | **one line** in `VisionRuntime.encode` |
 | **2** | **Close the ELF-vs-xclbin GEMM gap** (§5). Same module, same tiles, 1.35–1.94× slower purely from the output-format lowering. | **−64.6 ms (estimate)** | 4×(578.5−297.5) + (1461.2−1085.1) + (1142.6−848.3) = 1794.4 µs/layer × 36 | compiler/runtime (AIRRt→NPU ELF path); unscoped |
 | **3** | **Fold the bias-adds and residual adds into the GEMM drain epilogue.** 5 bias + 2 residual = 1449.6 µs/layer of pure launch + DDR traffic; the drain GEMM already has an epilogue cast. | **−52.2 ms (estimate)** | (5×147.3 + 363.3 + 2×174.9) µs/layer × 36, assuming full absorption (an upper bound) | medium — builder work, the primitives exist |
 | **4** | **Merge `flash_attn` into the fused ELFs** → 1 ELF/layer instead of 3. H1 says fusion is ~free for vision, and the isolated-vs-deployed delta (§2.3) is hw-context interleaving. | **−24.7 ms (estimate)** | 686 µs/layer × 36 | medium; H1 now supports it |
@@ -425,9 +426,14 @@ derived from this session's own measurements and is marked as such.
 | — | ~~Cut host glue / dispatch overhead~~ | ≤ **−18 ms**, already only 3.9% | BO write 23.9 + lock/run 8.0 + Python 8.3 + numpy 2.2 = 42.4 ms total, most of it irreducible | the A3-6b fusion already spent this lever |
 | (7) | FlashAttention is **100.7 ms / 21.4%** of the wall at 1151 GFLOP/s, but already at its standalone speed — no *pipeline* gain exists. A faster FA kernel at this shape is the largest remaining single target, and the only one that needs a kernel rewrite. | — | §5 | large |
 
+**Opportunity 1 is superseded.** It was measured against a code path that had a
+BLAS clamp to extend; that clamp was later removed after ten runs showed it made
+no difference (442.5 vs 441.1 ms), so the −32.6 ms is not available as written.
+Re-measure before acting on it.
+
 Opportunities 2 and 3 partially overlap (3 removes launches that 2 would also
-speed up); 1, 4, 5 and 6 are independent. Taking 1 + 6 alone — both measured,
-both trivial — is **≈36.4 ms (7.8%)** for a few lines of code.
+speed up); 4, 5 and 6 are independent. Opportunity 6 alone — measured, two
+constants — is **≈3.8 ms**.
 
 ---
 
@@ -438,15 +444,16 @@ both trivial — is **≈36.4 ms (7.8%)** for a few lines of code.
 ```bash
 cd programming_examples/llms/smolvla
 
-make profile   # CPU and NPU configurations back to back under one lock
+make profile   # CPU and NPU arms interleaved in one process (no lock: wrap it yourself)
 make run       # one forward; prints t_im2col / t_encode / per-image timings
 make verify    # the correctness gate (cosine >= 0.99, nMSE <= 0.04)
 ```
 
-`make profile` covers the headline end-to-end comparison. Note its limits: it
-times **one** inference per configuration, and only the NPU arm is warmed
-(`warmup_npu()` runs under `if npu_vision`), so a single reading can land
-anywhere in the ~±10% process-to-process spread quoted above.
+`make profile` covers the headline end-to-end comparison. It warms **both**
+arms with a discarded forward, then runs `REPS` (default 5) interleaved CPU/NPU
+pairs and reports the median, so drift hits both arms equally; `make profile
+REPS=10` tightens the estimate. The per-run spread quoted above still applies to
+any single reading.
 
 ### What needs the `smolvla` branch
 

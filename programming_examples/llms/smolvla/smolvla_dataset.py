@@ -3,9 +3,9 @@
 
 """Real recorded observations from a LeRobot dataset, as batches the model takes.
 
-The synthetic path (`build_oracle_batch` in smolvla_inference) feeds zeros: it
-is deterministic and needs nothing downloaded, which is what the gate and CI
-want. This is the other input source, selected by `INPUT=real` on `make run`
+The synthetic path (`build_oracle_batch` in smolvla_inference) feeds
+seeded-random images and a zero state: deterministic and needing nothing
+downloaded, which is what the gate and CI want. This is the other input source, selected by `INPUT=real` on `make run`
 and `make verify`.
 
 Not a CLI -- the entry points are `make run` and `make verify`.

@@ -59,10 +59,10 @@ from smolvla_inference import (  # noqa: E402
 from verify.comparators import regression_gate  # noqa: E402
 
 # Thresholds locked from the measured clean run: median per-position
-# action-chunk cosine 0.9990 against the pure-CPU baseline, normalized MSE
-# 0.0030. Cosine is the primary gate. The MSE criterion is NORMALIZED so the
+# action-chunk cosine 0.9984 against the pure-CPU baseline, normalized MSE
+# 0.0074. Cosine is the primary gate. The MSE criterion is NORMALIZED so the
 # gate is magnitude-invariant -- a raw absolute MSE bound would silently drift
-# PASS/FAIL as action magnitude changes with the prompt. NMSE_MAX is ~13x the
+# PASS/FAIL as action magnitude changes with the prompt. NMSE_MAX is ~5x the
 # observed value: a round number with real margin.
 COS_MIN = 0.99
 NMSE_MAX = 0.04

@@ -4,7 +4,7 @@ Companion to [README.md](README.md) (overview, quick start, results). This doc
 covers how the per-layer kernel chain and the runtime are organized.
 
 **Scope.** SmolVLA is three stages; only the SigLIP vision encoder and the
-connector run on the NPU here. The SmolLM2-360M backbone (seq 256) and the
+connector run on the NPU here. The SmolLM2-360M backbone (seq 241) and the
 action expert (seq 50, ×10 denoise steps) were both ported and verified, and
 both measured slower than the CPU at their shapes, so they run as unmodified
 lerobot CPU code. See [docs/profile.md](docs/profile.md) for the numbers, and
@@ -77,7 +77,7 @@ encode(images)                   per inference
     12 × [vit_ln_qkv → flash_attn → vit_o_ffn]
     post_layernorm
     pixel_shuffle (host) → connector GEMM
-  → (N, 64, 960) RAW connector output         ~166 ms/image steady state
+  → (N, 64, 960) RAW connector output         ~166 ms/image (earlier session; see docs/profile.md)
 ```
 
 `encode` returns what `vlm_with_expert.embed_image` returns: the raw connector
@@ -115,7 +115,7 @@ object from `tile_n` alone. At seq=1024 the vision GEMMs resolve to two distinct
 `tile_n` (96 for q/k/v/o and fc2, 128 for fc1) under one "drain" method, so
 `_force_tile_n_suffix` forces the tile_n-keyed name. Without it a GEMM links a
 stale generic `mm_m32.o` with the wrong baked `DIM_N` — the first attempt scored
-cosine 0.07. `DIM_K` is still unkeyed; see README's known issues.
+cosine 0.07. `DIM_K` is still unkeyed; see `docs/explain.md` §4.
 
 **Two host steps, deliberately.** The im2col patch embed is a one-time reshape
 before the layer loop, not hot-loop work. The connector's pixel-shuffle is pure

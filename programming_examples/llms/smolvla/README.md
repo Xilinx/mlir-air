@@ -15,9 +15,9 @@ The decision was made stage by stage, by measurement.
 
 | Stage | Shape · how often | CPU | NPU | Ships on |
 |---|---|---|---|---|
-| **① SigLIP vision + connector** | seq **1024**, hidden 768 · **×3 cameras** | 546 ms | **465 ms** | **NPU — 1.19×/image** |
-| ② Language backbone (SmolLM2-360M) | seq 256, hidden 960 · ×1 | **77 ms** | 229 ms | CPU — NPU ~3× slower |
-| ③ Action expert (flow matching) | seq 50, hidden 720 · **×10 denoise steps** | **285 ms** | ~4× the CPU | CPU — NPU ~4× slower |
+| **① SigLIP vision + connector** | seq **1024**, hidden 768 · **×3 cameras** | 544.8 ms | **453.6 ms** | **NPU — 1.20×** |
+| ② Language backbone (SmolLM2-360M) | seq 241, hidden 960 · ×1 | **78.6 ms** | 229 ms | CPU — NPU ~3× slower |
+| ③ Action expert (flow matching) | seq 50, hidden 720 · **×10 denoise steps** | **281.9 ms** | ~4× the CPU | CPU — NPU ~4× slower |
 
 The NPU wins when shapes are large enough to fill its 8×4 compute array and
 loses when they are not. Vision has 1024 tokens and 768/3072-wide matmuls; the
@@ -41,16 +41,16 @@ configurations interleaved.
 | Pure CPU (unmodified lerobot) | 913 ms | 1.00× |
 | **NPU vision + connector** | **851 ms** | **1.07×** |
 
-Reproduce with `make profile` (one process, both arms warmed, interleaved,
-median of 10): 918.2 ms CPU against 857.1 ms, **1.071×**, with the vision stage
-itself at 560.2 → 457.5 ms (**1.22×**) — the same numbers the table reports,
+Reproduce with `make profile REPS=10` (one process, both arms warmed,
+interleaved, median): 919.9 ms CPU against 831.6 ms, **1.106×**, with the vision
+stage itself at 544.8 → 453.6 ms (**1.20×**) — consistent with the table above,
 measured a second time through a different harness. See
 [`docs/usage.md`](docs/usage.md) for the full output and what to read off it.
 
-Vision alone is 1.19× per image (155 ms vs 184 ms). The end-to-end figure is
-smaller because vision is 60% of the chunk: the ~87 ms saved is partly offset by
-~6 ms of thread-pool re-entry on the CPU work that follows the NPU stage and
-~19 ms of host-side tensor marshalling.
+Vision alone is 1.20× per image (151 ms vs 182 ms, the same run divided by
+three). The end-to-end figure is smaller because vision is 55% of the NPU run:
+the ~91 ms saved is partly offset by host-side tensor marshalling around the
+stage boundary.
 
 Getting there took fusion, not just kernels: the first working version issued
 121 dispatches per image at 368 ms. Stitching each layer's operations into
@@ -153,7 +153,7 @@ tokens, 10 denoise steps.
 ```bash
 make compile       # build every vision ELF — no NPU dispatch, no download
 make verify        # THE GATE — action chunk vs the pure-CPU model
-make run           # one end-to-end forward, prints the action chunk
+make run           # one end-to-end forward, prints the chunk shape and magnitude
 make profile       # CPU vs NPU, interleaved and warmed, with the per-ELF breakdown
 make cpu-baseline  # run the unmodified CPU model on its own, for inspection
 ```
@@ -182,7 +182,7 @@ are on the NPU.
 | `smolvla_vision_encoder.py` | the NPU driver: compiles the kernels, runs the 12 layers |
 | `smolvla_dataset.py` | real observations from a LeRobot dataset, for `INPUT=real` |
 | `smolvla_cpu_helpers.py` | fp32 numpy reference for every vision operation |
-| `smolvla_runtime.py` | process-wide `VisionRuntime` singleton; scoped BLAS-thread clamp |
+| `smolvla_runtime.py` | process-wide `VisionRuntime` singleton |
 | `smolvla_inference.py` | splices the NPU vision result into lerobot's own `embed_prefix`; the single CLI entry point, including `--compile-only` |
 | `smolvla_cpu_baseline.py` | runs the unmodified CPU model on its own and dumps the action chunk, for inspection (`make cpu-baseline`). `make verify` does not read it — it computes its reference live |
 | `verify_adapter.py` | the regression gate |

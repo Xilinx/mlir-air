@@ -89,22 +89,29 @@ make verify         # no fixture needed — the gate computes its CPU reference 
 Expected:
 
 ```
-==================================================================
+============================================================
 SmolVLA verify: end-to-end action-chunk regression gate
   NPU stages     : vision
   execution model: single-process (air/pyxrt in the lerobot venv)
-==================================================================
-  cosine   = 0.998427
+============================================================
+  cosine   = 0.9984266757965088
   cos_min  = 0.99
-  nmse     = 0.007423
+  mse      = 0.00026965420693159103
+  nmse     = 0.007422617636620998
   nmse_max = 0.04
+  max_abs  = 0.05484716594219208
   passed   = True
-==================================================================
+============================================================
 [verify] PASS
 ```
 
-`make verify --cpu-vision` runs the unmodified model against its own baseline
-and should score exactly 1.0 — a sanity check of the harness itself.
+Running the adapter directly with `--cpu-vision` compares the unmodified model
+against its own baseline and should score exactly 1.0 — a sanity check of the
+harness itself. The Makefile has no pass-through for it:
+
+```bash
+$(LEROBOT_PYTHON) verify_adapter.py --cpu-vision
+```
 
 ---
 
@@ -150,35 +157,37 @@ for a tighter estimate:
 
 ```
   end to end                              median       min       max
-  pure CPU (unmodified lerobot)            925.9     908.5    1015.3
-  NPU vision + CPU backbone/expert         856.5     820.2     918.1
+  ------------------------------------ --------- --------- ---------
+  pure CPU (unmodified lerobot)            919.9     902.1     980.4
+  NPU vision + CPU backbone/expert         831.6     808.9     866.0
 
-  speedup (median)  1.081x
+  speedup (median)  1.106x
 
   per stage                                  CPU   NPU run   speedup
-  vision: SigLIP + connector (x3)          550.7     462.5     1.19x
-  backbone: SmolLM2-360M (x1)               80.3      80.3  CPU both
-  action expert (x10 denoise steps)        283.6     283.6  CPU both
+  ------------------------------------ --------- --------- ---------
+  vision: SigLIP + connector (x3)          544.8     453.6     1.20x
+  backbone: SmolLM2-360M (x1)               78.6      78.6  CPU both
+  action expert (x10 denoise steps)        281.9     281.9  CPU both
 
   NPU device time, per image (of 3)        calls  ms/image
-  vit_o_ffn                                   12     65.52
-  flash_attn                                  12     37.01
-  vit_ln_qkv                                  12     36.34
-  gemm_connector                               1      1.14
+  ------------------------------------ --------- ---------
+  vit_o_ffn                                   12     65.40
+  flash_attn                                  12     36.77
+  vit_ln_qkv                                  12     36.15
+  gemm_connector                               1      1.12
   layer_norm                                   1      0.73
-  TOTAL device / image                              140.74
+  TOTAL device / image                              140.18
 
-  x3 images = 422.2 ms device, of the 462.5 ms vision stage
-  (91% device, 40.3 ms host)
+  x3 images = 420.5 ms device, of the 453.6 ms vision stage (93% device, 33.0 ms host)
 ```
 
 Two things worth reading off it:
 
-- **Vision is 54% of the NPU run** (462.5 / 856.5). Even an infinitely fast
-  vision stage would only reach 1.85x end to end; the CPU backbone and expert
-  are the ceiling. That is why a 1.19x stage win shows up as 1.08x overall.
-- **Vision is 91% device time** (422.2 / 462.5). Fusion has squeezed host glue
-  down to 40 ms, so further gains have to come from the kernels — and
+- **Vision is 55% of the NPU run** (453.6 / 831.6). Even an infinitely fast
+  vision stage would only reach 1.84x end to end; the CPU backbone and expert
+  are the ceiling. That is why a 1.20x stage win shows up as 1.11x overall.
+- **Vision is 93% device time** (420.5 / 453.6). Fusion has squeezed host glue
+  down to 33 ms, so further gains have to come from the kernels — and
   `vit_o_ffn` alone is 47% of device time.
 
 The backbone and expert columns carry the same number across both arms on
