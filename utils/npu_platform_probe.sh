@@ -45,6 +45,12 @@ echo "boost   : $(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || echo 
 hr "A4 memory: DIMM count + SPD  <-- settles the bandwidth hypothesis"
 python3 - <<'PY'
 import glob, struct
+# JEP-106 (bank = continuation+1, id). Extend as needed; unknowns print raw.
+JEP = {(0,0x2C):"Micron",(0,0xAD):"SK hynix",(0,0xCE):"Samsung",(0,0x98):"Kingston",
+       (1,0x98):"Kingston",(1,0x4F):"Transcend",(2,0x9E):"Corsair",(3,0xCD):"G.Skill",
+       (1,0xCB):"A-DATA",(4,0xCB):"A-DATA",(0,0x8A):"Nanya",(6,0x04):"TeamGroup",
+       (5,0x51):"Patriot",(0,0xFE):"Elpida",(2,0xFE):"Elpida",(1,0x94):"Smart Modular",
+       (6,0x9B):"Crucial/Micron",(3,0x0B):"Wilk Elektronik",(1,0x06):"SpecTek"}
 e = sorted(glob.glob("/sys/bus/i2c/drivers/spd5118/*/eeprom"))
 print(f"populated DDR5 DIMM slots (spd5118 hubs): {len(e)}")
 if not e:
@@ -57,6 +63,18 @@ for p in e:
     dens = {0:0,1:4,2:8,3:12,4:16,5:24,6:32,7:48,8:64}.get(b[4] & 0x1f)
     rk   = ((b[234] >> 3) & 0x07) + 1
     print(f"  {p.split('/')[-2]}: DDR5 {mt} ~DDR5-{rate} tCK={tck}ps die={dens}Gb ranks={rk}")
+    # Manufacturing block (JESD400-5 bytes 512-554): who made it and what to buy
+    # a second one of, if the slot next to it is empty.
+    if len(b) >= 555:
+        mfr = JEP.get((b[512] & 0x7F, b[513] & 0x7F),
+                      f"unknown (bank {(b[512] & 0x7F)+1}, id 0x{b[513] & 0x7F:02X})")
+        dram = JEP.get((b[552] & 0x7F, b[553] & 0x7F),
+                       f"unknown (bank {(b[552] & 0x7F)+1}, id 0x{b[553] & 0x7F:02X})")
+        pn = b[521:551].decode("ascii", "replace").strip().strip("\x00").strip()
+        print(f"      mfr={mfr}  part={pn!r}  dram={dram}  "
+              f"made=20{b[515]:02x}-W{b[516]:02x}  sn={b[517:521].hex()}")
+    else:
+        print(f"      (SPD image only {len(b)} B; manufacturing block not exposed)")
 PY
 echo "MemTotal: $(awk '/MemTotal/{printf "%.1f GiB", $2/1048576}' /proc/meminfo)"
 

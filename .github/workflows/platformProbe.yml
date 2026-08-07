@@ -46,7 +46,10 @@ jobs:
         # amdryzenai5pro340 = Krackan Point, the nightly perf runner (38.8 tok/s).
         # amdhx370          = Strix Point, candidate replacement for publishing
         #                     perf numbers.
-        runner: [amdryzenai5pro340, amdhx370]
+        # amdhx370 already probed: soldered LPDDR5X, 44.0 GB/s, no DIMM slots to
+        # read. Narrowed to the Krackan runner to read its SPD manufacturing
+        # block (mfr + part number) for sourcing a matching second SODIMM.
+        runner: [amdryzenai5pro340]
     timeout-minutes: 20
 
     steps:
