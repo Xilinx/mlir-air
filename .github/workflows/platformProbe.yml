@@ -38,8 +38,15 @@ defaults:
 
 jobs:
   probe:
-    name: Probe benchmark runner platform
-    runs-on: amdryzenai5pro340
+    name: Probe ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # amdryzenai5pro340 = Krackan Point, the nightly perf runner (38.8 tok/s).
+        # amdhx370          = Strix Point, candidate replacement for publishing
+        #                     perf numbers.
+        runner: [amdryzenai5pro340, amdhx370]
     timeout-minutes: 20
 
     steps:
@@ -47,6 +54,7 @@ jobs:
 
       - name: Probe
         run: |
+          echo "runner label: ${{ matrix.runner }}"
           # numpy only, for the DRAM-bandwidth / sgemm host controls in part C.
           python3.12 -m venv probe-venv
           source probe-venv/bin/activate

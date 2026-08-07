@@ -66,7 +66,12 @@ for k in pp_dpm_mclk pp_dpm_fclk pp_dpm_socclk; do
 done
 
 hr "A6 NPU / XRT"
-xrt-smi examine 2>/dev/null | grep -iE "NPU Firmware|amdxdna Version|Processor"
+if ! command -v xrt-smi >/dev/null 2>&1; then
+  echo "xrt-smi NOT ON PATH -- section B will be empty."
+  echo "  XILINX_XRT=${XILINX_XRT:-unset}; /opt/xilinx/xrt/bin/xrt-smi $([ -x /opt/xilinx/xrt/bin/xrt-smi ] && echo exists || echo missing)"
+  [ -x /opt/xilinx/xrt/bin/xrt-smi ] && { export PATH=/opt/xilinx/xrt/bin:$PATH; echo "  -> falling back to the absolute path"; }
+fi
+xrt-smi examine 2>&1 | grep -iE "NPU Firmware|amdxdna Version|Processor|Name .*NPU" || echo "  (xrt-smi examine produced no match)"
 xrt-smi examine -r platform 2>/dev/null | sed -n 's/.*\(Power Mode.*\)/\1/p'
 
 hr "B sustained-vs-burst NPU: ${ITERS}x gemm validate  <-- THE decisive test"
