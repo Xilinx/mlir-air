@@ -7,6 +7,15 @@
 # captures perf (profile), collecting TTFT + decode tok/s into perf.json and
 # uploading it as an artifact. Kept out of the per-PR matrix so perf numbers are
 # contention-free. The job goes red if any model's compile/verify fails.
+#
+# Numbers here are this runner's, and are not the figures the examples' READMEs
+# quote. llama32_1b_q4nx measures ~39-40 tok/s / ~1130ms TTFT on it, against
+# ~50 tok/s / ~910ms on a Ryzen AI 9 HX 370. That gap is a property of the
+# runner, not a regression: the identical build (same air SHA, mlir-aie wheel,
+# Peano and llvm-link, byte-identical decode insts.bin) hits ~50 on the HX 370,
+# and both machines report 51.0 TOPS from `xrt-smi validate --run gemm`, Turbo
+# power mode and DDR5-5600. The unexplained difference is the runner's ACPI
+# platform profile (`balanced`), which is why it is logged below.
 
 name: Nightly LLM Perf Benchmark
 
@@ -14,21 +23,6 @@ on:
   schedule:
     - cron: '17 4 * * *'  # Daily at 04:17 (off-:00 to avoid CI fleet pile-up)
   workflow_dispatch:
-    inputs:
-      only_model:
-        description: 'Benchmark only this llms/<dir> (empty = all models)'
-        required: false
-        default: ''
-      skip_verify:
-        description: 'Skip the verify gate and only capture perf'
-        type: boolean
-        required: false
-        default: false
-      probe_only:
-        description: 'Only record machine state (power/clocks/NPU TOPS), run no models'
-        type: boolean
-        required: false
-        default: false
 
 defaults:
   run:
@@ -272,11 +266,6 @@ jobs:
           # via the manual "Download LLM Weights" workflow (downloadLLMWeights.yml)
           # before running this. Forwarded into lit tests by lit.cfg.py.
           HF_HUB_OFFLINE: "1"
-          # Via env, not ${{ }} interpolated into the script, so a dispatch input
-          # cannot inject shell.
-          ONLY_MODEL: ${{ inputs.only_model }}
-          SKIP_VERIFY: ${{ inputs.skip_verify }}
-          PROBE_ONLY: ${{ inputs.probe_only }}
         run: |
           source air-venv/bin/activate
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
@@ -312,76 +301,17 @@ jobs:
           # the AIE tool env from the CMake build). lit runs every model even if
           # one fails, so a run reports each model's status; ninja returns
           # non-zero if any failed. Per-model wall time is bounded via LIT_OPTS.
-          # These numbers are only comparable run-to-run if the box is otherwise
-          # idle: the decode streams ~700MB of weights per token, so unrelated
-          # CPU/filesystem load steals the DRAM bandwidth it is bound by (a stray
-          # process once cost 20% decode throughput with no other symptom -- the
-          # per-dispatch variance stayed tight, so only the absolute number moved).
-          echo "load average / top consumers at benchmark start:"
-          uptime
-          ps -eo pcpu,etime,comm --sort=-pcpu | head -5
-          # Device + stack identity, so a perf delta against another machine can
-          # be attributed (XRT/firmware/column count) instead of guessed at.
-          xrt-smi examine | grep -iE 'Processor|Memory|^XRT|Version|Firmware|Name' | head -8
-          # Host power/clock state. The NPU pmode is not the only lever: the ACPI
-          # platform profile sets the whole-package budget (so fabric and memory
-          # controller clocks, not just CPU), and cpufreq governor/EPP set how
-          # eagerly the host clocks up -- which this decode feels because every
-          # token is a host-driven dispatch + wait.
-          echo "platform_profile: $(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo n/a)" \
-               "(choices: $(cat /sys/firmware/acpi/platform_profile_choices 2>/dev/null || echo n/a))"
-          C=/sys/devices/system/cpu/cpu0/cpufreq
-          echo "cpufreq: driver=$(cat $C/scaling_driver 2>/dev/null)" \
-               "governor=$(cat $C/scaling_governor 2>/dev/null)" \
-               "epp=$(cat $C/energy_performance_preference 2>/dev/null)" \
-               "boost=$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null)" \
-               "max=$(cat $C/scaling_max_freq 2>/dev/null)"
-          echo "cpu MHz now: $(grep -m4 'cpu MHz' /proc/cpuinfo | awk '{printf "%.0f ", $4}')"
-          # Memory/fabric DPM states off the iGPU (readable without root, unlike
-          # DMI). Top mclk state x2 is the DDR data rate, so this identifies the
-          # DRAM the NPU is streaming weights through -- the resource a decode is
-          # bound by -- and shows whether the package budget is capping fclk.
-          for f in pp_dpm_mclk pp_dpm_fclk; do
-            p=$(ls /sys/class/drm/card*/device/$f 2>/dev/null | head -1)
-            [ -n "$p" ] && echo "$f top: $(tr -d '*' < "$p" | tail -1 | tr -s ' ')"
-          done
-          MC=$(cat /sys/class/drm/card*/device/pp_dpm_mclk 2>/dev/null \
-               | awk '{gsub(/Mhz/,"",$2); if($2+0>m) m=$2+0} END{print m}')
-          [ -n "$MC" ] && [ "$MC" != "0" ] && echo "=> DRAM data rate ~${MC}x2 = $((MC*2)) MT/s"
-          # Raw NPU peak, before any of our code: separates an NPU clock/DVFS/
-          # firmware/power-policy problem (low TOPS) from a memory-bandwidth or
-          # host-overhead one (nominal TOPS but slow decode). Runs here, while
-          # the NPU is still idle, and never fails the job.
-          if [ -n "$BDF" ]; then
-            rm -f /tmp/gemm.json
-            for n in 1 2 3; do
-              rm -f /tmp/gemm.json
-              xrt-smi validate -d "$BDF" --run gemm -f JSON -o /tmp/gemm.json >/dev/null 2>&1 || true
-              echo "NPU gemm validate run $n: $(grep -oE 'TOPS: [0-9.]+' /tmp/gemm.json 2>/dev/null | head -1 || echo unavailable)"
-            done
-          fi
-          if [ "$PROBE_ONLY" = "true" ]; then
-            echo "probe_only requested: machine state recorded, running no models"
-            exit 0
-          fi
-
-          # A dispatch can restrict the sweep to one model (much faster triage
-          # than the ~2.5h full run). The ninja targets already pass --filter, so
-          # narrow further with LIT_FILTER_OUT, which lit ANDs with it.
-          if [ -n "$ONLY_MODEL" ]; then
-            export LIT_FILTER_OUT="llms/(?!$ONLY_MODEL/)"
-            echo "restricted to llms/$ONLY_MODEL (LIT_FILTER_OUT=$LIT_FILTER_OUT)"
-          fi
+          # A perf number is only interpretable next to the machine state it was
+          # taken at: this decode streams ~700MB of weights per token, so it
+          # tracks the package power budget (ACPI platform profile) and any
+          # unrelated load competing for DRAM bandwidth.
+          echo "platform profile: $(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo n/a) |$(uptime | sed 's/.*load average/ load average/')"
 
           rc=0
           pushd build_assert
           # Correctness gate (strict): red if any model's verify fails.
-          if [ "$SKIP_VERIFY" = "true" ]; then
-            echo "skip_verify requested: perf capture only, no correctness gate"
-          else
           LIT_OPTS="--timeout 1800 --xunit-xml-output $OLDPWD/verify.xml" \
             ninja check-programming-examples-llms-verify || rc=1
-          fi
           # Perf capture: writes <model>.perf.json under test/llms/<model>/.
           LIT_OPTS="--timeout 1800" \
             ninja check-programming-examples-llms-profile || rc=1
@@ -493,7 +423,7 @@ jobs:
       # Best-effort: never reds the benchmark job. The nightly concurrency group
       # serializes runs, so there is no push race on the branch.
       - name: Append perf history
-        if: always() && hashFiles('perf.json') != '' && inputs.only_model == '' && !inputs.probe_only
+        if: always() && hashFiles('perf.json') != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -567,7 +497,7 @@ jobs:
       # and the page only ever refreshed on an unrelated push to main. Best-
       # effort: never fails the benchmark job if the dispatch call errors.
       - name: Refresh docs page
-        if: always() && hashFiles('perf.json') != '' && inputs.only_model == '' && !inputs.probe_only
+        if: always() && hashFiles('perf.json') != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
