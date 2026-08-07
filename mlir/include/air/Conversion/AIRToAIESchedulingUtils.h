@@ -55,6 +55,22 @@ int64_t get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
 llvm::MapVector<int, llvm::SetVector<Operation *>>
 getRepeatCounts(std::vector<Operation *> memcpy_ops);
 
+// True if the two ops lower to interchangeable BDs (same memref and matching
+// offsets/sizes/strides for channel ops; structural equivalence for dma ops).
+bool memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB);
+
+// True if the two channel ops are slots of one N-buffer rotation: same channel
+// declaration, same memref type and access pattern, but possibly different
+// buffer values.
+bool chansPartOfSameRotation(air::ChannelInterface chanA,
+                             air::ChannelInterface chanB);
+
+// The unique repeating unit of a chain of memcpy ops, or an empty vector when
+// the chain does not repeat. This is the oracle the BD emitter itself uses to
+// decide whether a chain folds into a circular ring.
+llvm::SetVector<Operation *>
+getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps);
+
 std::vector<AIE::BDDimLayoutAttr>
 getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,
                    ArrayRef<OpFoldResult> memcpy_strides, MLIRContext *ctx);
@@ -292,6 +308,16 @@ public:
 
   FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
+
+  // Move one flow off any compute-tile S2MM chain whose BD ring cannot stay
+  // in step with its per-dispatch packet arrivals, onto a spare channel of the
+  // same tile, so both halves fold back into rings that match arrival. Chains
+  // already in step are untouched, and a chain that cannot be repaired within
+  // the tile's channel budget is reported rather than silently emitted.
+  // `memcpy_flows` is updated in lockstep so the flows connected afterwards
+  // target the channel the BDs moved to. Run after sortMemcpyOps, before flows
+  // are connected.
+  void repairS2MMChains(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 };
 
 class ShimDMAAllocator : public DMAAllocator {

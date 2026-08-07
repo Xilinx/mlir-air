@@ -4968,6 +4968,11 @@ public:
     // ping-pong deadlock.
     tile_dma_alloc.sortMemcpyOps(dma_memcpy_ops);
 
+    // Step 3b: with the per-channel op order final, move any compute-tile
+    // S2MM chain that cannot stay in step with its per-dispatch packet
+    // arrivals onto a spare channel of the same tile.
+    tile_dma_alloc.repairS2MMChains(memcpy_flows);
+
     // Step 4: Connect flows.
     //
     // Packet flows are assigned pkt_ids in two passes so that within one
