@@ -7,6 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "cxxopts.hpp"
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -131,6 +133,7 @@ int main(int argc, const char *argv[]) {
   float npu_time_total = 0;
   float npu_time_min = std::numeric_limits<float>::max();
   float npu_time_max = 0;
+  std::vector<float> npu_times;
 
   // FLOPs for attention: Q@K^T (lq*lk*dk*2) + softmax(~5*lq*lk) + S@V
   // (lq*dv*lk*2) per head, multiplied by num_heads
@@ -207,6 +210,7 @@ int main(int argc, const char *argv[]) {
     npu_time_total += npu_time;
     npu_time_min = (npu_time < npu_time_min) ? npu_time : npu_time_min;
     npu_time_max = (npu_time > npu_time_max) ? npu_time : npu_time_max;
+    npu_times.push_back(npu_time);
   }
   if (verbosity >= 1)
     std::cout << "Done Running Kernel.\n";
@@ -229,6 +233,31 @@ int main(int argc, const char *argv[]) {
   std::cout << std::endl
             << "Max NPU attention time: " << npu_time_max << "us." << std::endl;
   std::cout << "Min NPU gflops: " << macs / (1000 * npu_time_max) << std::endl;
+
+  // Median / stddev over the measured (non-warmup) iterations.
+  float npu_time_median = 0, npu_time_std = 0, npu_time_mean = 0;
+  if (!npu_times.empty()) {
+    npu_time_mean = npu_time_total / npu_times.size();
+    std::vector<float> sorted = npu_times;
+    std::sort(sorted.begin(), sorted.end());
+    size_t m = sorted.size();
+    npu_time_median = (m % 2 == 0) ? 0.5f * (sorted[m / 2 - 1] + sorted[m / 2])
+                                   : sorted[m / 2];
+    float acc = 0;
+    for (float t : npu_times)
+      acc += (t - npu_time_mean) * (t - npu_time_mean);
+    npu_time_std = std::sqrt(acc / npu_times.size());
+  }
+  std::cout << std::endl
+            << "Median NPU attention time: " << npu_time_median << "us."
+            << std::endl;
+  std::cout << "Stddev NPU attention time: " << npu_time_std << "us."
+            << std::endl;
+  // Machine-parseable raw per-iteration latencies (us), comma-separated.
+  std::cout << "Raw latencies (us): ";
+  for (size_t i = 0; i < npu_times.size(); i++)
+    std::cout << npu_times[i] << (i + 1 < npu_times.size() ? "," : "");
+  std::cout << std::endl;
 
   return 0;
 }
