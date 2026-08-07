@@ -4,10 +4,8 @@ How the SigLIP vision encoder is mapped onto NPU2, how its kernels are compiled
 and stitched, and how the result is spliced back into the unmodified LeRobot
 pipeline.
 
-For the measured numbers see [`profile.md`](profile.md). For the full
-investigation — including the two stages that did *not* end up on the NPU —
-see the `smolvla` branch, which carries the illustrated write-up and the
-backbone and action-expert ports.
+For the measured numbers see [`profile.md`](profile.md); for what is verified
+and how, [`correctness.md`](correctness.md).
 
 ---
 
@@ -115,17 +113,3 @@ always restored in a `finally`.
 ELFs, the XRT context and the device buffer objects are created once and reused
 by every inference. An earlier two-process design paid ~585 ms per inference in
 process spawn, weight reload and ELF load — none of it NPU cost.
-
-This example used to clamp the host BLAS thread pools to 1 for the duration of
-the dispatch loop, on the theory that OpenBLAS workers busy-spinning after a
-host matmul preempt the host-bound driver loop. **That was removed**, because
-it never showed up in a measurement here. The comment it shipped under cited
-135 -> 178 ms per image; ten runs across two harnesses found no difference
-either way (442.5 vs 441.1 ms encode; 450.9/458.0 vs 453.7/453.9 ms vision
-stage). It also single-threaded the host work inside the loop -- the bf16
-casts, the connector's pixel-shuffle -- for no measured return.
-
-If you port a stage to a machine where that contention is real, the mechanism
-is a scoped ctypes call to `openblas_set_num_threads` on the already-loaded
-shared object; environment variables are too late once numpy is imported. The
-version this example carried is on the `smolvla` branch.

@@ -7,6 +7,14 @@ LeRobot pipeline. The first non-LLM model in `programming_examples/llms/`, built
 on the same shared infrastructure (`../shared/`, `../verify/`) and the same
 kernel registry as the Llama/Qwen siblings.
 
+| Doc | |
+|---|---|
+| [`docs/usage.md`](docs/usage.md) | every command and what it does |
+| [`docs/explain.md`](docs/explain.md) | how the implementation works |
+| [`docs/correctness.md`](docs/correctness.md) | the gate, the thresholds, the measurements behind them |
+| [`docs/profile.md`](docs/profile.md) | where the time goes, kernel by kernel |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | design notes and traps |
+
 ## What runs where, and why
 
 SmolVLA is three stages. **All three were ported to the NPU and verified; only
@@ -32,98 +40,50 @@ kept out to keep the contribution reviewable; they can land separately.
 
 ## Performance
 
-End to end, one action chunk. AMD Ryzen AI 9 HX 370 / NPU2 (Strix, AIE2P), CPU
-governor `performance` + EPP `performance`, NPU `pmode=Turbo`, machine idle,
-configurations interleaved.
+One action chunk, end to end. AMD Ryzen AI 9 HX 370 / NPU2 (Strix, AIE2P), CPU
+governor and EPP `performance`, NPU `pmode=Turbo`, machine idle. Reproduce with
+`make profile REPS=10` — one process, both arms warmed, CPU/NPU pairs
+interleaved, median reported.
 
-| Configuration | Action chunk | Speedup |
-|---|---|---|
-| Pure CPU (unmodified lerobot) | 913 ms | 1.00× |
-| **NPU vision + connector** | **851 ms** | **1.07×** |
+| Configuration | Action chunk | Vision stage | Speedup |
+|---|---|---|---|
+| Pure CPU (unmodified LeRobot) | 919.9 ms | 544.8 ms | 1.00× |
+| **NPU vision + connector** | **831.6 ms** | **453.6 ms** | **1.106×** |
 
-Reproduce with `make profile REPS=10` (one process, both arms warmed,
-interleaved, median): 919.9 ms CPU against 831.6 ms, **1.106×**, with the vision
-stage itself at 544.8 → 453.6 ms (**1.20×**) — consistent with the table above,
-measured a second time through a different harness. See
-[`docs/usage.md`](docs/usage.md) for the full output and what to read off it.
-
-Vision alone is 1.20× per image (151 ms vs 182 ms, the same run divided by
-three). The end-to-end figure is smaller because vision is 55% of the NPU run:
-the ~91 ms saved is partly offset by host-side tensor marshalling around the
-stage boundary.
-
-Getting there took fusion, not just kernels: the first working version issued
-121 dispatches per image at 368 ms. Stitching each layer's operations into
-**3 multi-launch ELFs** and moving the per-Linear bias-adds and both residual
-adds on-device cut that to **38 dispatches and 141.6 ms** — 2.6× on identical
-kernels, because it eliminated a bf16→f32→bf16 host round-trip per operation.
+Vision itself is 1.20× (151 vs 182 ms per image) but only 55% of the run, so the
+CPU backbone and expert cap the end-to-end gain at 1.84×. Fusion did most of the
+work: 121 dispatches per image at 368 ms became **38 at 141.6 ms**, mostly by
+moving bias-adds and residuals on-device and eliminating a bf16→f32→bf16 host
+round-trip per operation. Full breakdown in
+[`docs/profile.md`](docs/profile.md).
 
 ## Correctness
 
-`make verify` is the gate. It compares the final **action chunk** — the (1,50,6)
-tensor the robot would execute — against the **unmodified lerobot CPU model**,
-with the flow-matching noise pinned to zero so the comparison is deterministic.
+`make verify` is the gate: it compares the final **action chunk** — the (1,50,6)
+tensor the robot would execute — against the unmodified LeRobot CPU model, with
+the flow-matching noise pinned so the comparison is deterministic. Thresholds
+are cosine ≥ 0.99 and nMSE ≤ 0.04.
 
-```
-cosine 0.998427   (gate >= 0.99)
-nMSE   0.007423   (gate <= 0.04)
-PASS
-```
-
-SmolVLA emits a continuous action chunk rather than tokens, so this uses the
-`regression_gate` in `../verify/comparators.py` rather than the top-k token-set
-gate the autoregressive siblings use.
-
-Note what this does and does not say: it says the port did not change the
-model's behaviour. It does not say the model is good at the task — that would
-need evaluation against recorded robot trajectories.
-
-### On real frames
-
-The gate's images are synthetic — seeded random, so it stays deterministic and
-needs nothing downloaded — which means it is one reading from an input the model
-will never see. `make verify INPUT=real` runs the same CPU-vs-NPU comparison on
-real recorded observations, frame by frame, against the same thresholds.
-
-100 frames of `lerobot/droid_100`, one from each of its 100 episodes:
-
-| Cameras | **pass** | cosine median | P10 | **cosine worst** | nMSE worst |
-|---|---|---|---|---|---|
-| 1 | 97/100 | 0.998840 | 0.995269 | **0.957068** | 0.086860 |
-| 2 | 98/100 | 0.999435 | 0.997137 | **0.987832** | 0.036063 |
-| **3 (shipping)** | **100/100** | 0.999679 | 0.998782 | **0.997360** | 0.008050 |
-
-**The shipping configuration passes every frame**, and agreement on real images
-is better than on the synthetic gate input, so the gate is not flattered by it.
-
-The tail is worth knowing about. At 1 and 2 cameras a few frames fall below
-cosine 0.99 (the run names them). And cosine is scale-blind on a physical
-actuator command: the largest absolute per-dimension error was 1.05 on action
-dim 5 at 1 camera, 0.36 at 3 — not something a cosine of 0.9974 conveys.
-
-Those frames are not the NPU being less accurate on those images. Measured per
-frame, the vision stage's own error barely moves (cosine 0.9959 ± 0.004 across
-100 frames) and correlates with the final chunk error at r = +0.06; what varies,
-by 22×, is how much the CPU-side backbone and the 10 flow-matching steps amplify
-it. Replacing the NPU with a random perturbation of equal magnitude reproduces
-the same spread — frame 20540 lands at 0.987 either way, while the best frames
-stay above 0.9997 no matter what is injected. The sensitivity belongs to those
-frames, not to the port.
-
-Fewer cameras is consistently worse, and it is a supported configuration rather
-than a hypothetical: `smolvla_base` accepts any non-empty subset and the NPU
-needs no recompile for it (`build_oracle_batch(n_cameras=...)`, since the count
-is only how many times the host loop runs). A shorter prefix leaves the CPU
-backbone and expert less to average the same vision error against.
+| Input | Cameras | Within threshold | cosine median | cosine worst |
+|---|---|---|---|---|
+| synthetic — **the gate** | 3 | **PASS** | 0.998427 | — |
+| `droid_100`, 100 frames | **3 (shipping)** | **100/100** | 0.999679 | 0.997360 |
+| `droid_100`, 100 frames | 2 | 98/100 | 0.999435 | 0.987832 |
+| `droid_100`, 100 frames | 1 | 97/100 | 0.998840 | 0.957068 |
 
 ```bash
-make verify INPUT=real                  # 100 frames, 3 cameras
-make verify INPUT=real CAMERAS=1        # same, one camera
+make verify                    # the gate — synthetic, deterministic, PASS/FAIL
+make verify INPUT=real         # 100 recorded frames; reports, always exits 0
 ```
 
-`INPUT=real` always exits 0 — it reports headroom, it is not the gate. Plain
-`make verify` (synthetic, 3 cameras) stays the pass/fail check, and is what CI
-and the lit tests run so they need no dataset.
+The shipping configuration agrees with the CPU model on every real frame. The
+few frames below threshold at 1–2 cameras are downstream flow-matching
+sensitivity rather than NPU error; [`docs/correctness.md`](docs/correctness.md)
+has the evidence, along with the gate's design and where the thresholds come
+from.
+
+This says the port did not change the model's behaviour. It does not say the
+model is good at the task.
 
 ## Model config
 
@@ -136,38 +96,24 @@ hidden 768, MLP 3072, 12 heads × 64, **MHA, no mask**, affine LayerNorm
 seq 241, hidden 960, GQA 15/5; action expert, 16 layers, hidden 720, 50 action
 tokens, 10 denoise steps.
 
-## Prerequisites
+## Running it
 
-1. **MLIR-AIR base environment** — AMD NPU2 hardware, Peano, the project's
-   standard env (`source utils/env_setup.sh ...`).
-2. **A Python environment with both `torch`+`lerobot` and `air`+`pyxrt`.**
-   This is what makes the single-process path work. Point `LEROBOT_PYTHON` at
-   it; with the mlir-air environment sourced, a lerobot venv qualifies.
-   ```
-   pip install -r requirements.txt
-   ```
-3. `HF_TOKEN` for the `lerobot/smolvla_base` checkpoint download.
-
-## Usage
+Needs AMD NPU2 hardware, the MLIR-AIR environment, `HF_TOKEN`, and one
+interpreter carrying both `torch`+`lerobot` and `air`+`pyxrt`
+(`pip install -r requirements.txt`).
 
 ```bash
 make compile       # build every vision ELF — no NPU dispatch, no download
 make verify        # THE GATE — action chunk vs the pure-CPU model
-make run           # one end-to-end forward, prints the chunk shape and magnitude
-make profile       # CPU vs NPU, interleaved and warmed, with the per-ELF breakdown
-make cpu-baseline  # run the unmodified CPU model on its own, for inspection
+make run           # one end-to-end forward
+make profile       # CPU vs NPU, interleaved and warmed
+make cpu-baseline  # the unmodified CPU model on its own, for inspection
 ```
 
 `run` and `verify` take `INPUT=synthetic|real` and `CAMERAS=1|2|3`; `profile`
-takes `CAMERAS` only. Defaults are the shipping configuration. See
+takes `CAMERAS` only. Defaults are the shipping configuration. Setup, every
+variable, and the NPU lock convention are in
 [`docs/usage.md`](docs/usage.md).
-
-On a machine where several sessions share one NPU, wrap the device-touching
-targets the way the siblings are wrapped:
-
-```bash
-flock -x -w 1800 /tmp/mlir-air-npu.lock make verify
-```
 
 ## Files
 
@@ -187,7 +133,7 @@ are on the NPU.
 | `smolvla_cpu_baseline.py` | runs the unmodified CPU model on its own and dumps the action chunk, for inspection (`make cpu-baseline`). `make verify` does not read it — it computes its reference live |
 | `verify_adapter.py` | the regression gate |
 | `ARCHITECTURE.md` | design notes: kernel sequence, fused ELFs, runtime flow, the traps |
-| `docs/` | `explain.md`, `profile.md`, `usage.md` — implementation, measurements, commands |
+| `docs/` | `usage.md`, `explain.md`, `correctness.md`, `profile.md` — see the table at the top |
 
 ## Kernels
 

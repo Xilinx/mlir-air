@@ -10,7 +10,7 @@ glue inside the dispatch loop is down to **10.4 ms (2.2%)**. Consequently:
 - **H1 (fused ELFs cost extra device time) is REFUTED for vision.** The two
   fused ViT ELFs cost **1.01–1.03×** the sum of their launches measured
   individually *in the same regime* — not the **1.39–1.79×** the backbone's
-  fused ELFs show (`expert_npu_feasibility.md` §5, on the `smolvla` branch — see the callout below). Vision fusion is ~free.
+  fused ELFs show. Vision fusion is ~free.
 - **H2 (compromise tiles inside the fused ELFs) is largely REFUTED.** In the ELF
   regime the deployment actually runs in, `tile_n` barely matters: **0%** on
   q/k/v/o, **2.5%** on fc2, **5.6%** on fc1 — ~4 ms total, nothing like the
@@ -26,16 +26,10 @@ Every number below was measured on real NPU2 hardware in one session
 (2026-07-27/28). Nothing is carried over from a previous run or from the kernel
 registry, except where a registry row is explicitly quoted for contrast.
 
-> **Where the measurement code lives.** This study used a set of one-off
-> harnesses under `scripts/`, cited by name throughout. Those are development
-> tools, not part of the shipping example, and were dropped when this directory
-> was trimmed to the sibling models' shape — **they are on the `smolvla`
-> branch**, together with the backbone and action-expert ports.
->
-> What ships here reproduces the *end-to-end* numbers: `make profile` runs the
-> CPU and NPU configurations back to back, and `make run` prints the per-image
-> vision timings. The per-ELF and per-kernel decompositions below need the
-> `smolvla` branch. See §9.
+> **Where these numbers come from.** `make profile` and `make run` reproduce the
+> end-to-end and per-image figures. The per-ELF and per-kernel decompositions in
+> §1–§8 were produced by one-off harnesses cited by name throughout; those are
+> development tools and are not part of the shipping example.
 
 ---
 
@@ -315,8 +309,8 @@ deployment is already at (slightly below) the kernel's standalone speed and
 **there is no pipeline penalty to recover**. Any gain here needs kernel work.
 *(Caveat: that standalone FA run's correctness gate failed — the harness builds
 its own `attn_npu2.o` and its reference did not match; the number is quoted only
-as an instruction-stream timing. The deployed FA is validated by
-the full-encoder check on the `smolvla` branch.)*
+as an instruction-stream timing. The deployed FA is validated end to end by
+`make verify`.)*
 
 ---
 
@@ -439,34 +433,20 @@ constants — is **≈3.8 ms**.
 
 ## 9. Reproduce
 
-### What this branch reproduces
-
 ```bash
 cd programming_examples/llms/smolvla
 
-make profile   # CPU and NPU arms interleaved in one process (no lock: wrap it yourself)
+make profile   # CPU and NPU arms interleaved in one process (wrap in the NPU lock)
 make run       # one forward; prints t_im2col / t_encode / per-image timings
 make verify    # the correctness gate (cosine >= 0.99, nMSE <= 0.04)
 ```
 
-`make profile` covers the headline end-to-end comparison. It warms **both**
-arms with a discarded forward, then runs `REPS` (default 5) interleaved CPU/NPU
-pairs and reports the median, so drift hits both arms equally; `make profile
-REPS=10` tightens the estimate. The per-run spread quoted above still applies to
-any single reading.
+`make profile` warms both arms with a discarded forward, then runs `REPS`
+(default 5) interleaved CPU/NPU pairs and reports the median; `REPS=10` tightens
+the estimate. The per-run spread quoted above applies to any single reading.
 
-### What needs the `smolvla` branch
-
-Everything in §1–§8 — the per-ELF device breakdown, the in-situ per-launch
-costs, the ELF-vs-xclbin comparison, the `tile_n` A/B, the first-image penalty,
-and the single-launch corruption reproducer — was produced by harnesses under
-`scripts/` that are not part of this example. They live on the `smolvla`
-research branch, whose `docs/profile.md` carries the same commands with the
-scripts present:
-
-```bash
-git checkout smolvla -- programming_examples/llms/smolvla/scripts
-```
+The §1–§8 decompositions are not reproducible from this directory — see the note
+at the top.
 
 ## Appendix — traps found while measuring
 

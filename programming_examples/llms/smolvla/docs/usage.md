@@ -1,39 +1,28 @@
 # SmolVLA on NPU2 — usage guide
 
+Every command this example provides, and what each one does.
+
 ## Prerequisites
 
-### Hardware and toolchain
-- AMD NPU2 hardware (Strix, AIE2P)
-- MLIR-AIR installed with the Peano compiler (`PEANO_INSTALL_DIR` set)
-- The project's standard environment: `source utils/env_setup.sh ...`
+**Hardware and toolchain**
 
-### Python environment
-This example needs **one** interpreter that has both sides:
+- AMD NPU2 (Strix, AIE2P)
+- MLIR-AIR with the Peano compiler (`PEANO_INSTALL_DIR` set)
+- The project environment: `source utils/env_setup.sh ...`
 
-- `torch` + `lerobot` — to run the real SmolVLA policy
-- `air` + `pyxrt` — to drive the NPU
-
-That combination is what makes the single-process path work. `lerobot` is in
-`requirements.txt` — it IS the CPU baseline this example verifies against, so
-nothing needs to be fetched by hand.
-
-Install into the environment that already has `air` + `pyxrt`:
+**Python.** One interpreter needs both sides: `torch` + `lerobot` to run the
+policy, `air` + `pyxrt` to drive the NPU. LeRobot *is* the CPU baseline this
+example verifies against, so it is a dependency, not an optional extra.
 
 ```bash
-pip install -r requirements.txt
-make verify                      # default LEROBOT_PYTHON=python3
+pip install -r requirements.txt      # into the env that has air + pyxrt
 ```
 
-**One caveat.** lerobot requires `numpy>=2.0,<2.3`, and `utils/requirements.txt`
-leaves numpy unpinned, so an older mlir-air environment may still be on 1.x —
-installing will upgrade it across a major version in the interpreter every
-other example shares. That upgrade was tested here (1.26.4 → 2.2.6, with
-`qwen25_0_5b` and `qwen3_1_7b` `make verify` PASSing identically before and
-after), but check your own models rather than taking that on faith.
-
-To leave the shared environment untouched, use a separate venv instead.
-Sourcing the mlir-air environment puts `air` and `pyxrt` on `PYTHONPATH` /
-`LD_LIBRARY_PATH`, so they import from any venv:
+LeRobot requires `numpy>=2.0,<2.3`. An older MLIR-AIR environment may still be
+on 1.x, and installing will upgrade it for every example sharing that
+interpreter. To keep the shared environment untouched, use a venv — sourcing the
+MLIR-AIR environment puts `air` and `pyxrt` on `PYTHONPATH` / `LD_LIBRARY_PATH`,
+so they import from anywhere:
 
 ```bash
 python3 -m venv ~/smolvla-venv
@@ -41,52 +30,57 @@ python3 -m venv ~/smolvla-venv
 make verify LEROBOT_PYTHON=~/smolvla-venv/bin/python
 ```
 
-### Model access
-`HF_TOKEN` must be set; the example downloads `lerobot/smolvla_base` (450M
-parameters) on first use.
+**Model access.** `HF_TOKEN` must be set; `lerobot/smolvla_base` (450M
+parameters) downloads on first use.
 
 ---
 
 ## Targets
 
+| Target | What it does | Touches the NPU |
+|---|---|---|
+| `make help` | list the targets | no |
+| `make compile` | build every vision ELF — no dispatch, no download | no |
+| `make cpu-baseline` | run the unmodified CPU model alone, for inspection | no |
+| `make run` | one end-to-end forward; prints the chunk shape and magnitude | yes |
+| `make verify` | **the gate** — action chunk vs the pure-CPU model, PASS/FAIL | yes |
+| `make profile` | CPU vs NPU interleaved, with the per-ELF breakdown | yes |
+| `make clean` | remove the kernel cache and build artifacts | no |
+
+## Variables
+
+| Variable | Default | Applies to | Meaning |
+|---|---|---|---|
+| `INPUT` | `synthetic` | run, verify | `synthetic` = seeded-random images, nothing downloaded. `real` = frames from a LeRobot dataset |
+| `CAMERAS` | `3` | run, verify, profile | 1, 2 or 3 feeds. No recompile needed — the count is only how many times the host encode loop runs |
+| `DATASET` | `lerobot/droid_100` | `INPUT=real` | any LeRobot dataset; camera keys are read from its metadata |
+| `FRAMES` | `100` | `verify INPUT=real` | one frame per episode, from the middle of each |
+| `REPS` | `5` | profile | interleaved CPU/NPU pairs; the median is reported |
+| `LEROBOT_PYTHON` | `python3` | all | interpreter with torch + lerobot + air + pyxrt |
+| `SMOLVLA_FORCE_COMPILE` | unset | all | `=1` rebuilds every ELF instead of reusing the cache |
+
 ```bash
-make help      # this list
-make compile   # build every vision ELF — no NPU dispatch, no download
-make cpu-baseline  # run the unmodified CPU model on its own, for inspection (no NPU)
-make run       # one end-to-end forward; prints the action chunk
-make verify    # THE GATE — action chunk vs the pure-CPU model (PASS/FAIL)
-make profile   # CPU vs NPU, interleaved and warmed, with the per-ELF breakdown
-make clean     # remove the kernel cache and build artifacts
+make verify                                  # the gate: synthetic, 3 cameras
+make verify CAMERAS=1                        # synthetic, one camera
+make verify INPUT=real                       # 100 real frames, reports a distribution
+make verify INPUT=real FRAMES=20 CAMERAS=2
+make run INPUT=real                          # one forward on one real frame
+make profile CAMERAS=1 REPS=10               # timing; always synthetic
 ```
 
-### The NPU lock
-On a machine where several sessions share one NPU, take the project's lock
-around anything that touches the device — the same convention the sibling
-examples use:
-
-```bash
-flock -x -w 1800 /tmp/mlir-air-npu.lock make verify
-flock -x -w 1800 /tmp/mlir-air-npu.lock make profile
-```
-
-The recipes deliberately do **not** take that lock themselves; if they did,
-the command above would deadlock against itself.
-
-Correctness does not depend on it: `shared/infra/cache.py` holds
-`/tmp/npu.lock` around every dispatch, so concurrent runs interleave safely.
-The outer lock matters for *timing* — it stops someone else's dispatches from
-landing in the middle of your 38.
+**Only plain `make verify` is a gate.** It is deterministic, exits non-zero on
+failure, and is what CI and the lit test run. `INPUT=real` reports a
+distribution and always exits 0 — see
+[`correctness.md`](correctness.md).
 
 ---
 
 ## First run
 
 ```bash
-make compile        # a few minutes; produces vision_kernel_cache/
-make verify         # no fixture needed — the gate computes its CPU reference live
+make compile        # a few minutes; produces build/vision_kernel_cache/
+make verify         # no fixture needed — the CPU reference is computed live
 ```
-
-Expected:
 
 ```
 ============================================================
@@ -105,9 +99,9 @@ SmolVLA verify: end-to-end action-chunk regression gate
 [verify] PASS
 ```
 
-Running the adapter directly with `--cpu-vision` compares the unmodified model
-against its own baseline and should score exactly 1.0 — a sanity check of the
-harness itself. The Makefile has no pass-through for it:
+To sanity-check the harness itself, run the adapter directly with
+`--cpu-vision`: it compares the unmodified model against its own baseline and
+should score exactly 1.0. The Makefile has no pass-through for that flag.
 
 ```bash
 $(LEROBOT_PYTHON) verify_adapter.py --cpu-vision
@@ -115,45 +109,10 @@ $(LEROBOT_PYTHON) verify_adapter.py --cpu-vision
 
 ---
 
-## Rebuilding kernels after an edit
+## `make profile`
 
-The ELF cache is reused whenever its manifest resolves and contains every
-expected kernel. The manifest does **not** track source hashes, so after editing
-any kernel builder you must force a rebuild:
-
-```bash
-SMOLVLA_FORCE_COMPILE=1 make verify
-```
-
----
-
-## Environment variables
-
-| Variable | Effect |
-|---|---|
-| `LEROBOT_PYTHON` | interpreter with torch + lerobot + air + pyxrt |
-| `HF_TOKEN` | required for the checkpoint download |
-| `SMOLVLA_FORCE_COMPILE=1` | rebuild every ELF instead of reusing the cache |
-
----
-
-## Measuring honestly
-
-Two things will corrupt a timing run on a shared machine:
-
-1. **Other processes on the NPU.** `flock` is advisory — it only protects
-   against processes that also take the same lock. Check with
-   `fuser /dev/accel/accel0`.
-2. **CPU/NPU power state.** Every number in this example was measured with the
-   CPU governor and EPP at `performance` and the NPU at `pmode=Turbo`. A
-   `balanced` machine reads very differently, and the CPU baseline moves more
-   than the NPU stage does — which changes the *ratio*, not just the absolutes.
-
-### What `make profile` reports
-
-One process, both arms warmed with a discarded forward, then `REPS`
-CPU/NPU pairs interleaved so drift hits both equally. `make profile REPS=10`
-for a tighter estimate:
+Both arms are warmed with a discarded forward, then `REPS` CPU/NPU pairs run
+interleaved so drift hits both equally, and the median is reported.
 
 ```
   end to end                              median       min       max
@@ -181,62 +140,54 @@ for a tighter estimate:
   x3 images = 420.5 ms device, of the 453.6 ms vision stage (93% device, 33.0 ms host)
 ```
 
-Two things worth reading off it:
+The backbone and expert rows carry the same number in both arms on purpose:
+they are the same unmodified CPU code either way. For what the breakdown means
+and where the remaining time could go, see [`profile.md`](profile.md).
 
-- **Vision is 55% of the NPU run** (453.6 / 831.6). Even an infinitely fast
-  vision stage would only reach 1.84x end to end; the CPU backbone and expert
-  are the ceiling. That is why a 1.20x stage win shows up as 1.11x overall.
-- **Vision is 93% device time** (420.5 / 453.6). Fusion has squeezed host glue
-  down to 33 ms, so further gains have to come from the kernels — and
-  `vit_o_ffn` alone is 47% of device time.
+Two conditions change the numbers materially:
 
-The backbone and expert columns carry the same number across both arms on
-purpose: they are the same unmodified CPU code either way, and showing them
-makes it visible that one stage moved and two did not.
+- **Power state.** Everything here was measured with the CPU governor and EPP at
+  `performance` and the NPU at `pmode=Turbo`. A `balanced` machine moves the CPU
+  baseline more than the NPU stage, so the *ratio* changes, not just the
+  absolutes.
+- **Other NPU users.** Check with `fuser /dev/accel/accel0`.
 
 ---
 
-## Choosing the input — `INPUT` and `CAMERAS`
+## The NPU lock
 
-`run` and `verify` take the same two knobs; `profile` takes `CAMERAS` only,
-since pixel values do not change how much the NPU computes.
-
-| Variable | Default | Applies to | Notes |
-|---|---|---|---|
-| `INPUT` | `synthetic` | run, verify | `synthetic` = seeded-random images, nothing to download. `real` = frames from a LeRobot dataset |
-| `CAMERAS` | 3 | run, verify, profile | 1, 2 or 3. The model takes any non-empty subset and the NPU needs no recompile |
-| `DATASET` | `lerobot/droid_100` | `INPUT=real` | any LeRobot dataset; camera keys are read from its metadata |
-| `FRAMES` | 100 | `verify INPUT=real` | one per episode, from the middle of each |
+On a machine where several sessions share one NPU, take the project lock around
+anything that touches the device:
 
 ```bash
-make verify                          # the gate: synthetic, 3 cameras, PASS/FAIL
-make verify CAMERAS=1                # synthetic, 1 camera
-make verify INPUT=real               # 100 real frames, reports a distribution
-make verify INPUT=real FRAMES=20 CAMERAS=2
-make run INPUT=real                  # one forward on one real frame
-make profile CAMERAS=1               # timing, always synthetic
+flock -x -w 1800 /tmp/mlir-air-npu.lock make verify
 ```
 
-**Only the default is a gate.** `make verify` with no arguments is
-deterministic, exits non-zero on failure, and is what CI and the lit test run.
-`INPUT=real` answers a different question -- how much headroom the precision
-has on inputs the model will actually see -- and always exits 0. A few frames
-below threshold at 1 or 2 cameras is a finding, not a broken build.
+The recipes do not take it themselves — if they did, the command above would
+deadlock against itself. Correctness does not depend on it either:
+`shared/infra/cache.py` holds `/tmp/npu.lock` around every dispatch, so
+concurrent runs interleave safely. The outer lock is for timing.
 
-### Notes on `INPUT=real`
+---
 
-First use downloads the dataset. **There is no way to fetch a few frames**: one
-MP4 per camera per chunk, so it is the whole file — 464 MB for `droid_100`,
-1.3 GB for `aloha_mobile_wipe_wine`, 3.0 GB for `abc_130k_v3_smoke`.
+## Rebuilding kernels after an edit
 
-`smolvla_dataset.load()` passes `video_backend="pyav"`, and that is not a
-preference. LeRobot defaults to `torchcodec`, which fails to load here — it
-cannot find a compatible FFmpeg/libtorchcodec for torch 2.10.0+cpu. `pyav`
-comes with `lerobot[dataset]`. Every multi-camera LeRobot dataset is
-video-backed, so this applies to all of them.
+The ELF cache is reused whenever its manifest resolves and contains every
+expected kernel. The manifest does not track source hashes, so after editing a
+kernel builder, force a rebuild:
 
-Dimensions need not match the checkpoint. `droid_100` is 180x320 with a 7-wide
-state against the checkpoint's 256x256 and 6; `resize_with_pad` and
-`pad_vector` absorb both, and the NPU sees seq 1024 either way. The state is
-then semantically meaningless, which is fine for a CPU-vs-NPU numerical
-comparison and would not be for a task-quality claim.
+```bash
+SMOLVLA_FORCE_COMPILE=1 make verify
+```
+
+---
+
+## `INPUT=real`
+
+First use downloads the whole dataset — video-backed LeRobot datasets store one
+MP4 per camera per chunk, so a frame subset is not possible. `droid_100` is
+464 MB; other datasets range into the GBs.
+
+Datasets need not match the checkpoint's dimensions. `droid_100` is 180×320 with
+a 7-wide state against the checkpoint's 256×256 and 6; `resize_with_pad` and
+`pad_vector` absorb both, and the NPU sees seq 1024 either way.

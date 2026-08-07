@@ -7,8 +7,8 @@ covers how the per-layer kernel chain and the runtime are organized.
 connector run on the NPU here. The SmolLM2-360M backbone (seq 241) and the
 action expert (seq 50, ×10 denoise steps) were both ported and verified, and
 both measured slower than the CPU at their shapes, so they run as unmodified
-lerobot CPU code. See [docs/profile.md](docs/profile.md) for the numbers, and
-the `smolvla` branch for those ports.
+lerobot CPU code; see [docs/profile.md](docs/profile.md) for the numbers. Those
+two ports are not part of this example.
 
 ## Vision Config
 
@@ -101,8 +101,10 @@ makes the comparison against the pure-CPU baseline meaningful.
 **All images encoded in one call.** The wrapper encodes every camera up front
 and hands the results out through the swapped `embed_image`. Encoding lazily,
 one image per call, is simpler — one swap, no counter — and passes the gate,
-but measured 818 → 920 ms end to end against a 913 ms CPU baseline. The cause
-is not established; the ruled-out suspects are recorded in `run_hybrid_forward`.
+but measured 818 → 920 ms end to end against a 913 ms CPU baseline in the same
+session (absolute numbers predate the current gate input; the comparison holds).
+The cause is not established; the ruled-out suspects are recorded in
+`run_hybrid_forward`.
 
 **Static weight BOs.** Per-layer weights pass `static_input_indices`, so they
 upload once per `bo_key` and are reused across all 12 layers and every later
