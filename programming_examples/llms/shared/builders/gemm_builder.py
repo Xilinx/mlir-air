@@ -101,6 +101,55 @@ def gemm_method_spec(method):
     raise ValueError(f"unknown gemm method: {method!r}")
 
 
+def disambiguate_by_tile_n(specs):
+    """Fix up a list of gemm_registry_config() specs that will be co-linked into
+    ONE fused ELF, so GEMMs sharing a method but resolving to DIFFERENT tile_n
+    don't collide.
+
+    Why this is needed: `compile_gemm_mm` bakes DIM_N=tile_n as a compile-time
+    C macro into the external mm.o object, and gemm_method_spec()'s sym_suffix
+    (_m32 / _m64) is keyed ONLY on method, not on tile_n. Every existing
+    fused-ELF caller (llama32_1b, rms_gemms_rope for all current models, etc.)
+    happens to have uniform tile_n per method across its GEMMs, so this never
+    mattered before. SmolVLA's o_ffn ELF is the first case where two "drain"
+    GEMMs in the SAME ELF resolve to different tile_n (e.g. O/Down -> 80,
+    Gate/Up -> 128): sharing "_m32"/mm_m32.o for both means the second one's
+    call sites disagree with the first's compiled object -> MLIR verifier
+    rejects the stitched module (operand shape mismatch on the shared cast
+    symbol, since its tile shape is derived from tile_m*tile_n).
+
+    For each method, if all given specs using it share one tile_n, they are
+    left untouched (identical suffix/obj as gemm_method_spec, so no existing
+    caller's compiled artifacts need to change name). Only when a method has
+    >1 distinct tile_n among the given specs are those specs' sym_suffix/obj/
+    build_kwargs rewritten to also key off tile_n, so each distinct (method,
+    tile_n) pair gets its own non-colliding symbol suffix + mm.o name.
+
+    Returns a NEW list of spec dicts (same order/length as `specs`); inputs
+    are not mutated. Callers must compile_gemm_mm(...) using the RETURNED
+    specs' tile_m/tile_n/tile_k_l1/sym_suffix/obj (not the pre-disambiguation
+    ones) so the compiled objects match what the stitched IR expects.
+    """
+    tile_n_by_method = {}
+    for s in specs:
+        tile_n_by_method.setdefault(s["method"], set()).add(s["tile_n"])
+
+    out = []
+    for s in specs:
+        if len(tile_n_by_method[s["method"]]) > 1:
+            s = dict(s)
+            tag = "m32" if s["method"] == "drain" else "m64"
+            suffix = f"_{tag}_n{s['tile_n']}"
+            obj = f"mm_{tag}_n{s['tile_n']}.o"
+            s["sym_suffix"] = suffix
+            s["obj"] = obj
+            s["build_kwargs"] = dict(s["build_kwargs"])
+            s["build_kwargs"]["sym_suffix"] = suffix
+            s["build_kwargs"]["link_with_name"] = obj
+        out.append(s)
+    return out
+
+
 def _build_gemm_module(
     m,
     k,

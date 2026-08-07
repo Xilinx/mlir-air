@@ -108,6 +108,9 @@ Shapes verified on NPU2 (bf16). **Best config is `herd_x=8, herd_y=1, tile_n=409
 | 18350080 | 2048×8960 | 8/1/4096 | 4933 µs | 22.3 GB/s | 1.0e-2 | 0.188 | ✅ Qwen2.5-1.5B SwiGLU (seq·hidden, hidden=8960) |
 | 19922944 | 2048×9728 | 8/1/4096 | 5077 µs | 23.5 GB/s | 1.0e-2 | 0.125 | ✅ Qwen3-4B SwiGLU (seq·hidden, hidden=9728) |
 | 22544384 | 2048×11008 | 8/1/4096 | 5694 µs | 23.8 GB/s | 1.0e-2 | 0.188 | ✅ Qwen2.5-3B SwiGLU (seq·hidden, hidden=11008) |
+| 655360 | 256×2560 | 8/1/4096 | 247 µs | 15.9 GB/s | 1.0e-2 | 0.125 | ✅ SmolVLA SwiGLU (seq 241→256·hidden=2560) |
+
+> The 655360 row is SmolVLA's prefill SwiGLU scale (seq 241→256 · hidden=2560); `655360/(4096·8)=20` clean, so the stock best config places. Latency-bound at this small N (15.9 GB/s), accuracy bit-identical 1.0e-2.
 
 > The 16777216 row is llama-3.2-1B prefill's SwiGLU scale (the fused `o_ffn` variant does the same math via `build_module_2d` on a 2-D `[2048,8192]` layout — verified bit-identical, see Builder). All shapes use the same best config. Bandwidth is roughly flat (~22–25 GB/s) — unlike a pure add, the per-element hardware `tanh` dominates over fixed launch overhead, so larger N does not climb much.
 

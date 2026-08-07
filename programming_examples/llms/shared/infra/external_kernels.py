@@ -131,7 +131,7 @@ def compile_silu_and_mul():
 
 
 def compile_gemm_mm(
-    tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="", out_name="mm.o"
+    tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="", out_name="mm.o", bfp16=True
 ):
     """Compile mm.o from matrix_multiplication/bf16_in_fp32_out/mm_aie2p.cc.
 
@@ -157,8 +157,17 @@ def compile_gemm_mm(
         f"-DDIM_M_DIV_4={tile_m // 4}",
         f"-DDIM_N_DIV_8={tile_n // 8}",
         f"-DDIM_M_DIV_8={tile_m // 8}",
-        "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
     ]
+    # BFP16 block-float emulation (shared 8-elem exponent) trades matmul accuracy
+    # for throughput. It is the validated aie2p GEMM path for every model here.
+    # bfp16=False was tried for the SigLIP vision encoder (to raise precision) but
+    # the native aie2p bf16 8x8x8 mmul in mm_aie2p.cc uses a DIFFERENT C_block
+    # accumulator layout than the BFP16 branch, so it produces WRONG results at
+    # these tiles (block-vs-oracle 0.28-0.90) — NOT a usable precision knob without
+    # rewriting the microkernel. Left as a flag (default True = unchanged) purely
+    # to document the experiment. Keep bfp16=True.
+    if bfp16:
+        extra.append("-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16")
     if sym_suffix:
         extra.append(f"-DSYM_SUFFIX={sym_suffix}")
     _compile_kernel(src, out_name, extra_flags=extra, force=True)
@@ -176,7 +185,7 @@ def compile_rope():
     _compile_kernel(src, "rope.o")
 
 
-def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False):
+def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False, bfp16=True):
     """Compile attn_npu2.o (FlashAttention kernel) from source.
 
     The attn_npu2.cc defines are PER-TILE, not per-launch (see the canonical
@@ -206,22 +215,27 @@ def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False):
     if lqp_tile is None:
         lqp_tile = lkp
     src = _PROJ_ROOT / "flash_attention" / "kernel_fusion_based" / "attn_npu2.cc"
-    _compile_kernel(
-        src,
-        "attn_npu2.o",
-        extra_flags=[
-            "-DBIT_WIDTH=8",
-            f"-Dlqp={lqp_tile}",
-            f"-Dlkp={lkp}",
-            f"-Ddk={lkp}",
-            f"-Ddk_full={head_dim}",
-            f"-Ddv={lkp}",
-            f"-Ddv_full={head_dim}",
-            "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
-            "-DROUND_CONV_EVEN",
-        ],
-        force=force,
-    )
+    _flags = [
+        "-DBIT_WIDTH=8",
+        f"-Dlqp={lqp_tile}",
+        f"-Dlkp={lkp}",
+        f"-Ddk={lkp}",
+        f"-Ddk_full={head_dim}",
+        f"-Ddv={lkp}",
+        f"-Ddv_full={head_dim}",
+        "-DROUND_CONV_EVEN",
+    ]
+    # BFP16 block-float emulation of the Q@Kᵀ / P@V matmuls trades accuracy for
+    # throughput. It is fine for the llama/qwen backbones, but on the SigLIP
+    # vision encoder it injects a SYSTEMATIC per-channel bias into the attention
+    # output (~81% of the FA error is the shared column-mean), which survives
+    # LayerNorm centering and accumulates coherently across the 12 layers'
+    # residual-cancellation blocks (post_ln cosine 0.945). bfp16=False selects the
+    # native aie2p bf16 8x8x8 mmul (accauto=accfloat accumulate) — still fully on
+    # NPU, higher precision. See docs/TODO.md "NPU-execution exceptions".
+    if bfp16:
+        _flags.append("-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16")
+    _compile_kernel(src, "attn_npu2.o", extra_flags=_flags, force=force)
     # Also create attn.o copy (some link_with attributes use "attn.o").
     # Refresh whenever attn_npu2.o exists so a force-rebuild (different tile
     # shape) doesn't leave a stale attn.o behind.

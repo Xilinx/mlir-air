@@ -1,0 +1,3 @@
+FAIL
+/home/jiajli/apps/mlir-air/.claude/worktrees/smolvla/reports/smolvla-vision-encoder-runner.md
+12-layer ViT built, all 4 heavy ops on NPU (0 CPU fallback, 10 dispatch/layer); gate NOT met: post_ln cosine 0.945<0.99, root-caused to BFP16 systematic attention bias amplified by residual cancellation (leaf kernels + numpy mirror both clean); all NPU precision levers exhausted (fix = FA L1-retile, A3-6).

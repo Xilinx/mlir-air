@@ -1,0 +1,3 @@
+PASS
+/home/jiajli/apps/mlir-air/.claude/worktrees/smolvla/reports/smolvla-vision-fa-runner.md
+FA 1024x1024 12/12 MHA non-causal hd64: 1235-1366 GFLOP/s @ full 8x4 array (num_heads_per_unroll=2, even-12 vs odd-15 backbone half-array = ~1.58x), mean_rel_L1=4.8e-2 PASS (NPU2, this run)

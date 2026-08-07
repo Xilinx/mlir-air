@@ -179,6 +179,20 @@ try:
 except ImportError:
     print("huggingface_hub not importable; hfweights_* features disabled.")
 
+# The SmolVLA example verifies against the upstream `lerobot` policy running on
+# CPU, which is a heavier dependency than the other LLM examples need (torch +
+# lerobot[dataset] + num2words; see llms/smolvla/requirements.txt). CI installs
+# only llama32_1b's requirements, so mark `lerobot` available when it actually
+# imports and let REQUIRES: lerobot tests skip cleanly instead of failing on an
+# ImportError. Its compile test needs none of this and carries no such REQUIRES.
+try:
+    import lerobot  # noqa: F401
+
+    config.available_features.add("lerobot")
+    print("lerobot importable; lerobot feature enabled.")
+except ImportError:
+    print("lerobot not installed; lerobot feature disabled.")
+
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
 llvm_config.use_default_substitutions()

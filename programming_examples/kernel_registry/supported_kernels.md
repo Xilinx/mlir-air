@@ -13,7 +13,7 @@ This is **documentation, not executable code** — it records results produced b
 
 **Status legend**: ✅ verified on real NPU2, accuracy in line with the bf16 standard · ⚠️ verified on real NPU2 but with a documented precision/coverage caveat · ❌ broken/missing
 
-> **Scope**: currently **GEMM**, **GEMV**, **RMSNorm**, **FlashAttention**, **Element-wise Add**, **SiLU-and-Mul**, and **RoPE** — the registry is built up one verified kernel at a time. The core LLM leaf kernels are now covered; see [`README.md`](README.md) for the roadmap.
+> **Scope**: currently **GEMM**, **GEMV**, **RMSNorm**, **LayerNorm**, **FlashAttention**, **Element-wise Add**, **SiLU-and-Mul**, **RoPE**, and **GELU** — the registry is built up one verified kernel at a time. The core LLM leaf kernels are now covered; see [`README.md`](README.md) for the roadmap.
 
 ---
 
@@ -25,10 +25,12 @@ This is **documentation, not executable code** — it records results produced b
 | GEMM (BF16 in, BF16 out) | [`details/GEMM_bf16_in_bf16_out.md`](details/GEMM_bf16_in_bf16_out.md) | **8898 GFLOP/s** (fused-cast incl. cast, 2048×8192×2048, full-chip 8×4) | ✅ |
 | GEMV (BF16) | [`details/GEMV_bf16.md`](details/GEMV_bf16.md) | **32.7 GFLOP/s** (memory-bound, 16384×3072, herd 8/8/8) | ✅ |
 | RMSNorm (BF16) | [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md) | **24.9 GB/s** (memory-bound, 2048×3072, herd 8) | ✅ |
+| LayerNorm (BF16, affine) | [`details/LayerNorm_bf16.md`](details/LayerNorm_bf16.md) | **9.7 GB/s** (memory-bound, 1024×768, herd 8) | ✅ |
 | FlashAttention (BF16, GQA) | [`details/FlashAttention_bf16.md`](details/FlashAttention_bf16.md) | **1065–1131 GFLOP/s** (2048×2048, dk=64, 32q/8kv causal, full-chip 32 tiles) | ✅ |
 | Element-wise Add (BF16) | [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md) | **57.7 GB/s** (memory-bound, N=4194304, herd 8×1) | ✅ |
 | SiLU-and-Mul (BF16) | [`details/SiLU_Mul_bf16.md`](details/SiLU_Mul_bf16.md) | **25.1 GB/s** (memory-bound, N=16777216, herd 8×1) | ✅ |
 | RoPE (BF16, half-split) | [`details/RoPE_bf16.md`](details/RoPE_bf16.md) | **56.6 GB/s** (memory-bound, 49152×128, herd 8×1) | ✅ |
+| GELU (BF16, tanh approx) | [`details/GELU_bf16.md`](details/GELU_bf16.md) | **27.0 GB/s** (memory-bound, N=8388608, herd 8×2) | ✅ |
 
 ---
 
@@ -89,6 +91,18 @@ This is **documentation, not executable code** — it records results produced b
 | 2048×3072×3072 | **7513** | — | — | 9.9e-3 / — | Llama-3.2-3B Q/O proj (square) | ✅ |
 | 2048×3072×8192 | **7601** | — | — | 9.9e-3 / — | Llama-3.2-3B Gate/Up proj | ✅ |
 | 2048×8192×3072 | **9092** | — | — | 9.7e-3 / — | Llama-3.2-3B Down proj | ✅ |
+| 256×960×960 | — | **1896** (n80/k320) | — | 9.5e-3 / — | SmolVLA Q/O proj (M=256 pad; emb=960) | ✅ |
+| 256×960×320 | — | **1228** (n80/k320) | — | 9.4e-3 / — | SmolVLA K/V proj | ✅ |
+| 256×960×2560 | — | **2838** (n128/k320) | — | 9.4e-3 / — | SmolVLA Gate/Up proj | ✅ |
+| 256×2560×960 | — | **3425** (n80/k320) | — | 9.4e-3 / — | SmolVLA Down proj | ✅ |
+| 1024×768×768 | — | **3798** (n96/k384) | — | 9.5e-3 / — | SmolVLA vision q/k/v/o proj + patch-embed (SigLIP hidden=768) | ✅ |
+| 1024×768×3072 | — | **4195** (n128/k256) | 3650 | 9.4e-3 / 1.1e-2 | SmolVLA vision mlp fc1 (deploy drain: faster + more accurate than direct) | ✅ |
+| 1024×3072×768 | — | **5790** (n96/k384) | — | 9.4e-3 / — | SmolVLA vision mlp fc2 | ✅ |
+| 64×12288×960 | — | **2246** (m16/**n240**/k384, herd 4×4) | — | 9.5e-3 / — | SmolVLA connector proj (vision→LLM) | ✅ |
+
+> **SmolVLA rows — SmolLM2-360M backbone, emb=960, kv_dim=320, hidden=2560, seq padded 241→256.** All four projections are **small** (M·K·N < 4e9) so `auto`→**drain** (tile_m=32; M=256=32·8 fills exactly one 8-column herd row). emb=960 is not 512-aligned, so N=960/320 use **TILE_N=80** (4·80=320 | 960 and | 320) and N=2560 uses stock TILE_N=128 (4·128·5=2560); K=960/2560 use **tile_k_l2=320** (960/320=3, 2560/320=8). ⚠️ **K=960 with tile_k_l2=160 silently corrupts** (mean_rel_L1≈0.77, not a compile error) — tile_k_l2 ∈ {64,192,320,960} are clean; use 320. All four PASS drain high-precision at 9.4–9.5e-3 (`atol=1.5e-3` near-zero elements are the same harness edge as the Qwen Gate/Up rows, not a datapath failure). bf16-out chosen because the backbone projections feed further matmuls (mirrors every llama/qwen sibling's q/k/v/gate/up/down). GFLOPS are lower than the 2048-row shapes because M=256 is latency-bound, not a datapath difference.
+
+> **SmolVLA vision rows — SigLIP vision encoder + connector, seq=1024, hidden=768.** Five GEMM shapes, all `auto`→**drain** (M·K·N < 4e9). **q/k/v/out_proj (1024×768×768)** and **patch-embedding-as-GEMM** (im2col, identical shape) share one row: hidden=768 not 512-aligned → **TILE_N=96** (4·96=384 | 768), K=768 → tile_k_l2=384. M=1024 with drain tile_m=32 runs **4 M-launch iterations** — the standalone drain harness handles multi-iteration M correctly (PASS 9.465e-3); the mm.o multi-iteration garbage bug is a fused-ELF external-CallOp concern, not this single-launch path. **mlp fc2 (1024×3072×768)** is the fast down-proj-class shape (5790 GFLOPS, clean 9.423e-3). **mlp fc1 (1024×768×3072)**: wide-N up-proj. **Deploy high-prec drain (4195 GFLOPS, 9.4e-3) — both faster AND more accurate than low-prec direct (3650, 1.1e-2)**; it is what `gemm_config()`'s default returns. The standalone harness reports FAIL only on one near-zero-reference element (abs_err 1.953e-3 > high-prec atol=1.5e-3), a tolerance artifact identical to every Qwen Gate/Up, not a datapath error. The direct row is recorded only because it clears the strict atol; do not select it for deployment. **connector proj (64×12288×960)**: M=64 forces tile_m=16 + **herd_m=4** (tile_m·herd_m=64=M), K=12288→tile_k_l2=384. **K=12288 is NOT a placement blocker** — it places and PASSES cleanly at 9.450e-3, **no CPU fallback**. ⚠️ **Use TILE_N=240, not 80**: the tile_n sweep is strongly non-flat (16:3352 µs, 48:1347, 80:890, **240:667–713**) — 240 is **1.33× faster at bit-identical accuracy**, and the old 80 came from the generic "N not 512-aligned → shrink TILE_N" habit, which is wrong for tiny-M/huge-K. **16 tiles (4×4) is the hard ceiling and also the right choice**: the full tile/herd grid admits no 32-tile config, and padding M 64→128 to fill 8×4 was measured **slower** in wall-clock (734 vs 667–713 µs). Root cause is that this GEMM is **weight-DMA-bound** — B is 23.6 MB (93% of traffic, independent of M) moved at ~28 GB/s — so extra tiles buy nothing; halving K halves latency (892→518 µs) and the herd sweep saturates at 16 tiles. See [`details/GEMM_bf16_in_bf16_out.md`](details/GEMM_bf16_in_bf16_out.md). bf16-out because these feed further matmuls.
 
 > **Qwen3-4B rows — emb=2560 (512-aligned, NOT 1024-aligned), q_dim=4096 decoupled (≠emb), kv_dim=1024, hidden=9728=512·19.** All proj N divisible by 4·TILE_N=512, so stock TILE_N=128 HERD_N=4 places. Q/K/V/O/Down PASS high-precision fused-cast directly (max_abs ≤ 1.22e-3, well within high-prec tolerance), K=2560/4096/9728 all use tile_k_l2=256. O proj is **decoupled** (K=q_dim=4096, N=emb=2560), the largest non-square O in the registry. **2048×2560×9728 (Gate/Up) ⚠️**: high-precision fused-cast FAILS at compile (`aie.dma_bd op Stride exceeds [1:1048576] range` on the f32-out B-tile DMA at N=9728 — same large-N class as Qwen2.5-3B's N=11008); the low-precision `direct` path (tile_k_l2=128, TILE_N=64) PASSES at max_abs 2.93e-3 — same Gate/Up low-prec tier-down as every Qwen sibling. Large-K Down (K=9728) does NOT trigger the bug (only large-N does). Qwen3-4B uses the qwen25_3b 5-ELF un-merge (o_res_norm / gate / up / HOST SwiGLU / down_add).
 
@@ -179,10 +193,23 @@ This is **documentation, not executable code** — it records results produced b
 | 2048×1536 | 8 | 570 µs | 22.1 GB/s | 4.3e-3 | Qwen2.5-1.5B prefill RMSNorm | ✅ |
 | 2048×2560 | 8 | 867 µs | 24.2 GB/s | 4.2e-3 | Qwen3-4B prefill RMSNorm | ✅ |
 | 2048×3072 | 8 | 1012 µs | **24.9 GB/s** | 4.2e-3 | Llama-3.2-3B prefill RMSNorm | ✅ |
+| 256×960 | 8 | 147 µs | 6.7 GB/s | 4.2e-3 | SmolVLA prefill RMSNorm (emb=960) | ✅ |
 
 > **Qwen3-0.6B QK-norm (2048×128)** is per-head RMSNorm over `head_dim=128` (Qwen3-specific q_norm/k_norm) — the same weighted-RMSNorm kernel with a small `N=128` reduction axis; verified PASS at 4.6e-3, confirming the kernel handles a 128-wide reduction. (Harness `eps = 1e-5`; Qwen3 `eps = 1e-6` — the difference is negligible vs the bf16 datapath error.)
 
 > Follows the **GPU / HuggingFace standard**: the `sum(x²)` reduction is accumulated in **FP32** (matching PyTorch `rms_norm_composite` / HF `LlamaRMSNorm`), giving `mean_rel_L1 = 4.2e-3` — in line with the GEMM tier and passing the canonical bf16 `rtol = 1.6e-2`. (`atol = 5e-2` covers a few large-magnitude bf16 *output*-rounding ULPs, not a reduction relaxation.) The FP32 reduction costs essentially nothing on this memory-bound kernel. See [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md).
+
+---
+
+## LayerNorm — tested shapes
+
+`y = (x − mean) / sqrt(var + eps) · weight + bias`, per row; shapes written `M×N` (M = rows / patches, N = hidden = reduction axis). Unlike RMSNorm, LayerNorm **subtracts the mean** and has an **affine bias** (γ *and* β). The vision-encoder (SigLIP) norms of SmolVLA. **Memory-bound** (streams the whole matrix for an elementwise op), so throughput is reported as bandwidth; the fastest config is `herd_x=8` (all columns, near-linear scaling). Full data, the precision note, and reproduce commands are in [`details/LayerNorm_bf16.md`](details/LayerNorm_bf16.md).
+
+| (M×N) | herd_x | latency | bandwidth | mean_rel_L1 | abs_err max | Used by | Status |
+|---|---|---|---|---|---|---|---|
+| 1024×768 | 8 | 324 µs | 9.7 GB/s | 4.4e-3 | 1.9e-1 | SmolVLA vision (SigLIP) layer_norm1/2 + post_layernorm (hidden=768) | ✅ |
+
+> Follows the **GPU / HuggingFace standard** (PyTorch / HF `nn.LayerNorm`): **both** reductions — `sum(x)` for the mean *and* `sum((x−mean)²)` for the variance — are accumulated in **FP32**, giving `mean_rel_L1 = 4.4e-3`, in the same bf16 tier as RMSNorm (4.2e-3) and GEMM (~9e-3), and passing the canonical bf16 `rtol = 1.6e-2`. The `atol = 6e-2` (vs RMSNorm's 5e-2) covers LayerNorm's one extra bf16 *output*-rounding step — the bias add in `(x−mean)·rstd·weight + bias` — not a reduction relaxation. eps = 1e-5 (SigLIP uses 1e-6; the difference is negligible vs the bf16 datapath error). See [`details/LayerNorm_bf16.md`](details/LayerNorm_bf16.md).
 
 ---
 
@@ -197,6 +224,7 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 | 512×512 | 64/64 | 2/2 | ✗ | 1 | 0.73 ms | 184 | 4.4e-2 | ✅ |
 | 512×512 | 64/64 | 12/6 | ✗ | 1 | 1.22 ms | 661 | 4.6e-2 | ✅ |
 | 512×512 | 64/64 | 64/8 | ✗ | 1 | 3.79 ms | 1135 | 4.6e-2 | ✅ |
+| 1024×1024 | 64/64 | 12/12 | ✗ | 1 | 2.36–2.61 ms | 1235–1366 | 4.8e-2 | ✅ SmolVLA vision self-attn (SigLIP) |
 | 512×512 | 128/128 | 32/8 | ✗ | 2 | 4.38 ms | 980 | 4.4e-2 | ✅ |
 | 512×512 | 128/128 | 28/4 | ✗ | 2 | 4.05 ms | 928 | 4.4e-2 | ✅ |
 | 16384×16384 | 64/64 | 2/2 | ✓ | 1 | 39.6 ms | 1734 | 4.5e-2 | ✅ |
@@ -212,6 +240,8 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 > **Qwen2.5-1.5B prefill attention** (`head_dim = 128`, 12q/2kv GQA, causal, lq=lk=2048): verified PASS at mean_rel_L1 = 3.83e-2 (full-output check, rtol 1.6e-2 / atol 1e-1) with the default full-chip config (`lqp=256, num_q_tiles=4, num_heads_per_unroll=2, num_cascade_stages=4`, `dv_chunks=2` for head_dim=128). head_dim=128 FA has been flaky (hang/NaN) on some NPU2 setups; this run completed cleanly, and prefill can fall back to CPU attention (`cpu_attn`) if a deployment hits the hang.
 
 > **Qwen2.5-0.5B prefill attention** (`head_dim = 64`, 14q/2kv GQA, causal, lq=lk=2048): verified PASS at mean_rel_L1 = 3.83e-2 with the default full-chip config (`lqp=256, lkp=64, num_q_tiles=4, num_heads_per_unroll=2, num_cascade_stages=4`, `dv_chunks=1` for head_dim=64). head_dim=64 has no hang risk. Prefill can also fall back to CPU attention (`cpu_attn`).
+
+> **SmolVLA vision encoder (SigLIP) self-attention** (`head_dim = 64`, 12q/12kv **MHA**, **non-causal / bidirectional**, lq=lk=1024): verified PASS at mean_rel_L1 = 4.8e-2 (full-output check, rtol 1.6e-2 / atol 1e-1) with the default full-chip config (`lqp=256, lkp=64, num_q_tiles=4, num_heads_per_unroll=2, num_cascade_stages=4`, `dv_chunks=1`). Being **12 heads (even)** lets `num_heads_per_unroll=2` fill the full 8×4 array; forcing `num_heads_per_unroll=1` (as the odd-15-head decoder backbone must) runs the identical numerics on the half array at **864 GFLOP/s vs 1235–1366** — a measured ~1.58× throughput from filling the chip. No mask (bidirectional), head_dim=64 → no hang risk.
 
 > All rows measured on NPU2 with the heads-first harness at the default tiling (`lqp=256, num_q_tiles=4, num_heads_per_unroll=2, num_cascade_stages=4` = 32 tiles, full 8×4 array). Accuracy `mean_rel_L1 ≈ 3.9e-2` is ~4× the GEMM tier: FA chains **two BFP16-emulated MMAs** plus a **bf16 online-softmax**, so it is looser than a single matmul (looser than GPU FA's `5e-2` only by the `atol`, not the standard `rtol = 1.6e-2`); accuracy is set by the datapath, not the shape. The **2048, 32q/8kv causal** row is llama-3.2-1B prefill's config (seq-first harness, bit-identical to heads-first — verified `max abs diff = 0`); its GFLOP/s range is run-to-run timing variation. `head_dim=128` rows use `dv_chunks=2`. A separate tunable sweep found only 2 of 8 candidate 32-tile configs place (constraints: columns `num_heads_per_unroll × num_q_tiles ≤ 8`, rows `num_cascade_stages ≤ 4`, `num_heads_per_unroll ≤ 2`). See [`details/FlashAttention_bf16.md`](details/FlashAttention_bf16.md).
 
@@ -231,6 +261,7 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 | 3145728 (2048×1536) | 8/1/2048 | 364 µs | 51.9 GB/s | 1.9e-3 | ✅ (Qwen2.5-1.5B residual, seq·emb) |
 | 5242880 (2048×2560) | 8/1/2048 | 516 µs | 61.0 GB/s | 1.9e-3 | ✅ (Qwen3-4B residual, seq·emb) |
 | 6291456 (2048×3072) | 8/1/2048 | 614 µs | 61.4 GB/s | 1.9e-3 | ✅ (Llama-3.2-3B residual, seq·emb) |
+| 245760 (256×960) | 8/1/1920 | 112 µs | 13.2 GB/s | 1.9e-3 | ✅ (SmolVLA residual, seq·emb; tile_n=2048 corrupts → use 1920) |
 
 > `mean_rel_L1 = 1.9e-3` is the lowest in the registry — `c=a+b` rounds each output once (matching `torch.add` bf16: f32 sum, single round, no accumulation), bit-identical across all configs and `N`. Best config `herd_x=8, herd_y=1` for every shape: the 3-DMA-per-tile shim-channel limit caps the herd at one 8-column row (**cannot fill 32 tiles** — `herd_y>1` fails to place), but within that `herd_x` scales near-linearly (9→57.7 GB/s as herd_x 1→8). Highest bandwidth in the registry (pure streaming). See [`details/EltwiseAdd_bf16.md`](details/EltwiseAdd_bf16.md).
 
@@ -252,6 +283,7 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 | 12582912 | 2048×6144 (seq·hidden) | 8/1/4096 | 3041 µs | 24.8 GB/s | 1.0e-2 | 0.125 | ✅ (Qwen3-1.7B SwiGLU) |
 | 19922944 | 2048×9728 (seq·hidden) | 8/1/4096 | 5077 µs | 23.5 GB/s | 1.0e-2 | 0.125 | ✅ (Qwen3-4B SwiGLU) |
 | 22544384 | 2048×11008 (seq·hidden) | 8/1/4096 | 5694 µs | 23.8 GB/s | 1.0e-2 | 0.188 | ✅ (Qwen2.5-3B SwiGLU) |
+| 655360 | 256×2560 (seq·hidden) | 8/1/4096 | 247 µs | 15.9 GB/s | 1.0e-2 | 0.125 | ✅ (SmolVLA SwiGLU) |
 
 > **Qwen2.5-1.5B SwiGLU**: `N = 18350080 = seq·hidden = 2048·8960` (intermediate size 8960), verified PASS at 1.0e-2 with the default best config.
 
@@ -281,7 +313,26 @@ Rotary Position Embedding applied to Q/K, **half-split** convention (HuggingFace
 | 49152×128 | 8/1 | 667 µs | **56.6 GB/s** | 2.8e-3 | Llama-3.2-3B prefill RoPE-Q (rows=n_heads·seq=24·2048) | ✅ |
 | 24576×128 | 8/1 | 380 µs | 49.7 GB/s | 2.8e-3 | Qwen2.5-1.5B prefill RoPE-Q (rows=n_heads·seq=12·2048) | ✅ |
 | 4096×128 | 8/1 | 149 µs | 21.1 GB/s | 2.8e-3 | Qwen2.5-1.5B + Qwen2.5-3B prefill RoPE-K (rows=n_kv_heads·seq=2·2048) | ✅ |
+| 256×64 | 8/1 | 80 µs | 1.2 GB/s | 2.8e-3 | SmolVLA RoPE-Q/K datapath (head_dim=64, seq 241→256; θ via host LUT) | ✅ |
 
 > **Qwen3-0.6B uses `head_dim = 128`** (vs llama's 64) — the two rows above are the first registry coverage of `head_dim = 128`; same half-split `rope_halfsplit.cc` kernel, verified PASS at 2.8e-3 (accuracy unchanged, set by the datapath not the head dim).
 
 > `mean_rel_L1 = 2.8e-3` is the second-cleanest in the registry (above Element-wise Add 1.9e-3, below RMSNorm 4.2e-3): a rotation is a few bf16 multiplies and one add/sub per element with **no accumulation** — nothing to amplify error, and `|out| ≈ |x|` so no near-zero blowup. Verified element-wise over the full output (no cosine) at `rtol = 1.6e-2, atol = 5e-2`; bit-identical across all herd configs and shapes (decode rows 8/32 read slightly lower from smaller rotation angles). Best config `herd_x=8, herd_y=1` for every shape: each tile uses 3 shim DMAs (input/LUT in, output out), so `herd_x·herd_y>8` exhausts the shim channels (the herd **cannot fill 32 tiles**, same limit as Element-wise Add / SiLU); within 8 tiles `herd_x` scales 7.4× (1→8). Small shapes are latency-bound by a ~80 µs launch floor. See [`details/RoPE_bf16.md`](details/RoPE_bf16.md).
+
+---
+
+## GELU-and-tanh — tested shapes
+
+`out = GELU(x)` in the **tanh approximation** (`out = 0.5·x·(1 + tanh(√(2/π)·(x + 0.044715·x³)))`), per-element, BF16. The SmolVLA SigLIP vision encoder MLP activation (applied to the `fc1` output, between `fc1` and `fc2`). **Memory-bound** (O(N) streaming, ~1.5 op/byte), so throughput is bandwidth. tanh is the hardware `__builtin_aie2p_tanh` (direct-codegen, no external `.o`); the precision is the "bf16 + one transcendental" tier. **Unlike SiLU-and-Mul / Element-wise Add, GELU is single-input (2 DMAs/tile), so `herd_y>1` places — the best config is `herd_x=8, herd_y=2` (16 tiles), twice the 8-tile ceiling of the 3-DMA elementwise kernels.** Full datapath, sweep, and reproduce commands in [`details/GELU_bf16.md`](details/GELU_bf16.md).
+
+| N | (as 2-D) | best config (hx/hy/tile_n) | latency | bandwidth | mean_rel_L1 | abs_err max | Used by | Status |
+|---|---|---|---|---|---|---|---|---|
+| 1048576 | — | 8/2/4096 | 235 µs | 17.8 GB/s | 8.4e-3 | 1.56e-2 | coverage | ✅ |
+| 2097152 | — | 8/2/4096 | 379 µs | 22.1 GB/s | 8.4e-3 | 1.56e-2 | coverage | ✅ |
+| 3145728 | 1024×3072 | 8/2/4096 | 522 µs | 24.1 GB/s | 8.4e-3 | 1.56e-2 | SmolVLA vision MLP GELU (seq 1024 · intermediate 3072) | ✅ |
+| 4194304 | 2048×2048 | 8/2/4096 | 672 µs | 25.0 GB/s | 8.4e-3 | 1.56e-2 | coverage | ✅ |
+| 8388608 | — | 8/2/4096 | 1244 µs | **27.0 GB/s** | 8.4e-3 | 1.56e-2 | coverage | ✅ |
+
+> The 3145728 row is SmolVLA's SigLIP vision MLP activation scale (seq 1024 · intermediate 3072); the `fc1` GEMM that produces its input is the `1024×768×3072` GEMM row. The reference is the **tanh** approximation (GELUTanh), matching SmolVLA / HF SigLIP — not the exact erf-GELU (which would add a ~1e-3 systematic bias). All shapes use the same best config.
+
+> `mean_rel_L1 = 8.4e-3` is the "bf16 + one transcendental" tier — below SiLU-and-Mul (1.0e-2), above RMSNorm (4.2e-3): the hardware `tanh` LUT approximation plus a chain of bf16 roundings. Slightly cleaner than SiLU because the tanh argument is scaled down and there is no `0.5·g·u` amplification (GELU's `abs_err max = 0.0156` vs SiLU's 0.125). Verified element-wise over the full output (no cosine) at `rtol = 1.6e-2, atol = 5e-2` (tighter than SiLU's 8e-2). **Best config `herd_x=8, herd_y=2, tile_n=4096` (16 tiles) for every shape**: GELU's single input (2 DMAs/tile) lets the herd use a second row where the 3-DMA elementwise kernels (Element-wise Add, SiLU) cannot; `herd_x·herd_y=32` (8×4) still does not place. `herd_x` scales 7.6× (1→8), plus ~1.8× for the second row. See [`details/GELU_bf16.md`](details/GELU_bf16.md).

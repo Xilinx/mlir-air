@@ -101,6 +101,25 @@ def compare_pair(
     )
 
 
+def regression_gate(npu, ref, cos_min=0.99, mse_max=1e-3):
+    """PASS/FAIL gate for continuous-output models (SmolVLA action chunks,
+    backbone hidden). Reuses per_position_cosine + MSE. Returns a dict with
+    passed/cosine/mse for reporting."""
+    npu = np.asarray(npu, np.float32)
+    ref = np.asarray(ref, np.float32)
+    a = npu.reshape(-1, npu.shape[-1])
+    b = ref.reshape(-1, ref.shape[-1])
+    cos = float(np.nanmedian(per_position_cosine(a, b)))
+    mse = float(np.mean((a - b) ** 2))
+    return {
+        "passed": bool(cos >= cos_min and mse <= mse_max),
+        "cosine": cos,
+        "mse": mse,
+        "cos_min": cos_min,
+        "mse_max": mse_max,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Token-level top-k set inclusion check (the model-level correctness gate)
 # ---------------------------------------------------------------------------

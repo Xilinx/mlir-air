@@ -1,0 +1,54 @@
+# Additional Python packages for the SmolVLA example.
+#
+# Install into the same environment that has air + pyxrt (the mlir-air one):
+#
+#     pip install -r requirements.txt
+#
+# `make verify` then runs with the default LEROBOT_PYTHON=python3, the same way
+# the sibling examples do. Verified end to end on a stock mlir-air environment.
+#
+# One caveat worth knowing before you install: lerobot requires numpy >= 2.0
+# (`numpy<2.3.0,>=2.0.0`), and utils/requirements.txt leaves numpy unpinned, so
+# an older mlir-air environment can still be on 1.x. Installing this file will
+# then upgrade numpy across a major version in the interpreter every other
+# example shares. That upgrade was tested here -- numpy 1.26.4 -> 2.2.6, with
+# qwen25_0_5b and qwen3_1_7b `make verify` PASSing identically before and
+# after, and air/pyxrt unaffected -- but it is a shared environment, so check
+# your own models rather than taking that on faith. To keep the shared
+# environment untouched, install into a separate venv instead and point the
+# Makefile at it; sourcing utils/env_setup.sh puts air and pyxrt on PYTHONPATH
+# so they import from any venv:
+#
+#     make verify LEROBOT_PYTHON=/path/to/venv/bin/python
+#
+# After installing, one-time HuggingFace setup:
+#   1. Create a read token at https://huggingface.co/settings/tokens
+#   2. `huggingface-cli login`  (or export HF_TOKEN=<token>)
+# The example downloads lerobot/smolvla_base (450M params) on first use.
+
+# Weight loading
+safetensors
+huggingface_hub
+
+# The SmolVLA policy itself. This IS the CPU baseline that `make verify`
+# compares against: the example splices the NPU vision encoder into this
+# unmodified model, so the reference is upstream lerobot rather than a
+# reimplementation living in this repo.
+#
+# The [dataset] extra is NOT optional despite the name: `import
+# lerobot.policies` pulls in the GR00T policy, which imports
+# lerobot.datasets, which hard-requires `av`. A bare `pip install lerobot`
+# fails at import with "'av' is required but not installed".
+lerobot[dataset]
+torch
+
+# Tokenizer + the SigLIP/SmolVLM config the vision weights are read from.
+# num2words is a hard requirement of the SmolVLM processor in transformers
+# (raises ImportError in processing_smolvlm.py without it) but is not pulled in
+# by transformers itself.
+transformers>=5.3.0
+num2words
+
+# Host-side reference math and bf16 handling
+numpy
+ml_dtypes
