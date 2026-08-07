@@ -342,6 +342,15 @@ jobs:
           MC=$(cat /sys/class/drm/card*/device/pp_dpm_mclk 2>/dev/null \
                | awk '{gsub(/Mhz/,"",$2); if($2+0>m) m=$2+0} END{print m}')
           [ -n "$MC" ] && [ "$MC" != "0" ] && echo "=> DRAM data rate ~${MC}x2 = $((MC*2)) MT/s"
+          # Raw NPU peak, before any of our code: separates an NPU clock/DVFS/
+          # firmware/power-policy problem (low TOPS) from a memory-bandwidth or
+          # host-overhead one (nominal TOPS but slow decode). Runs here, while
+          # the NPU is still idle, and never fails the job.
+          if [ -n "$BDF" ]; then
+            rm -f /tmp/gemm.json
+            xrt-smi validate -d "$BDF" --run gemm -f JSON -o /tmp/gemm.json >/dev/null 2>&1 || true
+            echo "NPU gemm validate: $(grep -oE 'TOPS: [0-9.]+' /tmp/gemm.json 2>/dev/null | head -1 || echo unavailable)"
+          fi
 
           # A dispatch can restrict the sweep to one model (much faster triage
           # than the ~2.5h full run). The ninja targets already pass --filter, so
