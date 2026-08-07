@@ -220,7 +220,15 @@ class Qwen25Q4Prefill:
         assert self._weights is not None, "call load_weights() first"
         N = len(ids)
         assert N <= self.seq, (N, self.seq)
+        # Single-shot prefill only: the embedding write and every layer's KV
+        # write below are indexed from row 0, so a second call would silently
+        # overwrite the cache from the start while current_context_length kept
+        # accumulating. Fail loudly instead of corrupting.
         base = self.current_context_length
+        assert base == 0, (
+            f"incremental prefill is not supported (already prefilled {base} "
+            f"tokens); construct a new instance or reset_context() first"
+        )
         x = np.zeros((self.seq, D), bfloat16)
         x[:N] = np.asarray(self._weights.embed_table[list(ids)], bfloat16)
         for k in range(self.n_layers):

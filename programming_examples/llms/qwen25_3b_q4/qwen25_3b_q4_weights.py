@@ -76,8 +76,13 @@ def _bf(a):
 
 
 def dequant_q4_0(q_u8, scale, group=GROUP):
-    """Inverse of requant_q4_0: (uint8 two's-complement nibbles, [M,K/g] scale)
-    -> float32 [M, K].  w = int8(q) * scale, symmetric, per `group` columns."""
+    """Inverse of requant_q4_0: ([M,K] uint8 holding ONE two's-complement
+    signed-int4 value per element, [M,K/g] scale) -> float32 [M, K].
+    w = int8(q) * scale, symmetric, per `group` columns.
+
+    Note the input is one byte per weight, NOT packed nibbles: requant_q4_0
+    returns unpacked codes in [-8, 7] and the two-per-byte packing happens
+    later, in the cascade packer."""
     return q_u8.view(np.int8).astype(np.float32) * np.repeat(scale, group, axis=1)
 
 

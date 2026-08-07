@@ -16,7 +16,11 @@ relationship `llama32_1b_q4nx` has to `llama32_1b`); this example supplies the
 |---|---|
 | First token, `"The capital of France is"`, 36 layers on NPU2 | **argmax 12095 = `" Paris"`** — PASS |
 | Warm TTFT @ seq_len=2048 | **4.17 s** (491 tok/s prefill), NPU-dispatch 4.17 s, host 5 ms |
-| End-to-end NPU prefill -> NPU fused decode, 36 layers, no host reference | coherent text, **9.54 tok/s** device-only decode |
+| End-to-end NPU prefill -> NPU fused decode, 36 layers, no reference model | coherent text, **9.54 tok/s** device-only decode |
+
+The 36 transformer layers run on the NPU for both prefill and decode. The final
+RMSNorm + LM-head projection and the argmax still run on the host each decode
+token; moving them on-device is a performance item, not a correctness one.
 
 Measured 2026-08-06 on a quiet NPU2 box (load < 0.1). Verify the box is idle
 before trusting any timing here — a busy host makes this DDR-bandwidth-bound

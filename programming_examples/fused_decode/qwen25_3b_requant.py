@@ -86,7 +86,8 @@ class HFModel:
             )
         idx = d / "model.safetensors.index.json"
         if idx.is_file():
-            files = sorted(set(json.load(open(idx))["weight_map"].values()))
+            with open(idx) as fh:
+                files = sorted(set(json.load(fh)["weight_map"].values()))
             return [str(d / f) for f in files]
         return [str(p) for p in sorted(d.glob("*.safetensors"))]
 

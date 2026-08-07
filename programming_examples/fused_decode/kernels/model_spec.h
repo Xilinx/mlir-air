@@ -13,7 +13,7 @@ constexpr int DQ = NUM_ATTN_HEADS * DH;
 constexpr int DK = NUM_KV_HEADS * DH;
 constexpr int DV = DK;
 
-// Analize the GQA patterns. 2x4x1 packs 2 kv heads per CU; 1x8x1 / 1x4x1 use 1
+// Analyze the GQA patterns. 2x4x1 packs 2 kv heads per CU; 1x8x1 / 1x4x1 use 1
 // kv head per CU (so the CU count equals the kv-head count).
 #if ATTN_IMPL == ATTN_IMPL_2x4x1
 constexpr int NUM_MHA_CU = NUM_KV_HEADS / 2;

@@ -2,7 +2,13 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# End-to-end Qwen2.5-3B on NPU2 with NO host reference anywhere in the loop:
+# End-to-end Qwen2.5-3B on NPU2 with NO REFERENCE MODEL anywhere in the loop --
+# every token comes from the NPU prefill and the NPU fused decode, never from a
+# host copy of the model. What DOES still run on the host each token is the
+# final RMSNorm + LM-head projection (`lg = ... @ emb.T` below) and the argmax:
+# the 36 transformer layers are on device, the last projection is not. Moving it
+# on-device is a performance item, not a correctness one -- the decode's own
+# hidden state is what feeds it.
 #
 #   llms/qwen25_3b_q4  --dump-kv  ->  this script  ->  fused_decode_qwen
 #   (NPU prefill, 36 layers)          (KV hand-off)    (NPU decode, 36 layers,
