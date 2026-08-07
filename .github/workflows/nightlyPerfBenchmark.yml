@@ -24,6 +24,11 @@ on:
         type: boolean
         required: false
         default: false
+      probe_only:
+        description: 'Only record machine state (power/clocks/NPU TOPS), run no models'
+        type: boolean
+        required: false
+        default: false
 
 defaults:
   run:
@@ -271,6 +276,7 @@ jobs:
           # cannot inject shell.
           ONLY_MODEL: ${{ inputs.only_model }}
           SKIP_VERIFY: ${{ inputs.skip_verify }}
+          PROBE_ONLY: ${{ inputs.probe_only }}
         run: |
           source air-venv/bin/activate
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
@@ -348,8 +354,15 @@ jobs:
           # the NPU is still idle, and never fails the job.
           if [ -n "$BDF" ]; then
             rm -f /tmp/gemm.json
-            xrt-smi validate -d "$BDF" --run gemm -f JSON -o /tmp/gemm.json >/dev/null 2>&1 || true
-            echo "NPU gemm validate: $(grep -oE 'TOPS: [0-9.]+' /tmp/gemm.json 2>/dev/null | head -1 || echo unavailable)"
+            for n in 1 2 3; do
+              rm -f /tmp/gemm.json
+              xrt-smi validate -d "$BDF" --run gemm -f JSON -o /tmp/gemm.json >/dev/null 2>&1 || true
+              echo "NPU gemm validate run $n: $(grep -oE 'TOPS: [0-9.]+' /tmp/gemm.json 2>/dev/null | head -1 || echo unavailable)"
+            done
+          fi
+          if [ "$PROBE_ONLY" = "true" ]; then
+            echo "probe_only requested: machine state recorded, running no models"
+            exit 0
           fi
 
           # A dispatch can restrict the sweep to one model (much faster triage
@@ -480,7 +493,7 @@ jobs:
       # Best-effort: never reds the benchmark job. The nightly concurrency group
       # serializes runs, so there is no push race on the branch.
       - name: Append perf history
-        if: always() && hashFiles('perf.json') != ''
+        if: always() && hashFiles('perf.json') != '' && inputs.only_model == '' && !inputs.probe_only
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -554,7 +567,7 @@ jobs:
       # and the page only ever refreshed on an unrelated push to main. Best-
       # effort: never fails the benchmark job if the dispatch call errors.
       - name: Refresh docs page
-        if: always() && hashFiles('perf.json') != ''
+        if: always() && hashFiles('perf.json') != '' && inputs.only_model == '' && !inputs.probe_only
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
