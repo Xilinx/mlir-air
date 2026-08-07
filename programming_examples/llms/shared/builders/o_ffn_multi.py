@@ -235,6 +235,7 @@ def _build_o_ffn(
     from shared.builders.gemm_builder import (
         _build_gemm_module,
         gemm_registry_config,
+        disambiguate_by_tile_n,
     )
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
 
@@ -245,6 +246,16 @@ def _build_o_ffn(
     o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
     g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
     d_spec = gemm_registry_config(seq_len, hidden_dim, emb_dim, "bf16", "high")
+
+    # Guard against a genuine ELF-merge hazard: two GEMMs sharing a method
+    # (drain or fused-cast) but resolving to DIFFERENT tile_n cannot safely
+    # share the same sym_suffix/mm.o (DIM_N is baked at compile time into the
+    # external object). This is a no-op (identical specs returned) whenever
+    # all GEMMs of a given method already share one tile_n -- true for every
+    # existing caller of this builder (e.g. llama's uniform tile_n=128) -- and
+    # only rewrites sym_suffix/obj when a real collision exists (e.g. SmolVLA's
+    # O/Down at tile_n=80 vs Gate/Up at tile_n=128, all "drain").
+    o_spec, g_spec, d_spec = disambiguate_by_tile_n([o_spec, g_spec, d_spec])
 
     def _tiles(spec):
         return (
@@ -474,16 +485,29 @@ def _build_o_ffn(
             print(ir)
 
     # ---- Stitch (declarative via stitch_elf) ----
-    # o_ffn is unconditionally all-fused-cast: all 4 GEMMs (O/Gate/Up/Down) share
-    # one method (_m64), each a 2-launch @gemm_cast_bf16 (A, W, C-f32-scratch,
-    # D-bf16-out). The 4 f32 scratches are fixed func args 15..18; non-GEMM kernels
-    # keep bf16 arg_maps. The mm.o symbols (suffix from o_spec) must not be renamed.
-    _gemm_sym = o_spec["sym_suffix"]
-    _gemm_externs = {
-        "@op_has_no_registered_library_name" + _gemm_sym,
-        "@zero_f32_mn" + _gemm_sym,
-        "@f32_to_bf16_mn" + _gemm_sym,
-    }
+    # Each of the 4 GEMMs (O/Gate/Up/Down) independently resolves to drain or
+    # fused-cast per its OWN shape (gemm_registry_config) -- at llama's seq_len
+    # (2048) all 4 happen to be large enough to land on fused-cast, but at
+    # smaller seq_len (e.g. SmolVLA's 256) they resolve to drain instead, which
+    # has a different launch arg count (3: A,B,out) than fused-cast (4: A,B,
+    # C-f32-scratch,D-bf16-out). Mirrors rms_gemms_rope_multi.py's per-GEMM
+    # gemm_registry_config + alloc_gemm_scratch pattern so this builder adapts
+    # to any shape instead of hardcoding "always fused-cast".
+    from shared.infra.stitching import alloc_gemm_scratch
+
+    def _gemm_extern_syms(spec):
+        sfx = spec["sym_suffix"]
+        return {
+            "@matmul_bf16",
+            "@op_has_no_registered_library_name" + sfx,
+            "@zero_f32_mn" + sfx,
+            "@f32_to_bf16_mn" + sfx,
+        }
+
+    def _gemm_arg_map(in_idx, w_idx, out_idx, sc):
+        if sc is not None:  # fused-cast: {0:in, 1:w, 2:Cf32-scratch, 3:bf16-out}
+            return {0: in_idx, 1: w_idx, 2: sc, 3: out_idx}
+        return {0: in_idx, 1: w_idx, 2: out_idx}  # drain: {0:in, 1:w, 2:bf16-out}
 
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),
@@ -502,32 +526,47 @@ def _build_o_ffn(
         FuncArg("%arg13", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg14", f"memref<{n_total}xbf16>"),
     ]
-    # 4 f32-scratch args (proj/gate/up/down C-scratch), fixed indices 15..18.
-    scratch_args = [
-        FuncArg("%arg15", f"memref<{seq_len}x{emb_dim}xf32>"),
-        FuncArg("%arg16", f"memref<{seq_len}x{hidden_dim}xf32>"),
-        FuncArg("%arg17", f"memref<{seq_len}x{hidden_dim}xf32>"),
-        FuncArg("%arg18", f"memref<{seq_len}x{emb_dim}xf32>"),
-    ]
+    # Registry-driven f32 C-scratch args, in builder order (O, Gate, Up, Down).
+    # One per fused-cast GEMM (indices continue from 15); drain GEMMs get none.
+    scratch_args, scratch_for = alloc_gemm_scratch(
+        [
+            (o_spec, seq_len, emb_dim),
+            (g_spec, seq_len, hidden_dim),  # gate
+            (g_spec, seq_len, hidden_dim),  # up (same shape/spec as gate)
+            (d_spec, seq_len, emb_dim),  # down
+        ],
+        base_arg_count=15,
+    )
 
-    # Privates only from the GEMM (o_ir covers all 4 mm.o symbols) and SwiGLU
-    # (@silu_and_mul_bf16); the other slices carry no private decls of their own.
+    # Privates come from every GEMM slice (og/gg/ug/dg), not just the first:
+    # when disambiguate_by_tile_n() (above) gives two GEMMs distinct sym_suffix
+    # values (e.g. SmolVLA's O/Down at "_m32_n80" vs Gate/Up at "_m32_n128"),
+    # each distinct suffix's private decls must come from a slice that actually
+    # uses it -- collecting only from `og` (as when every GEMM shared one
+    # suffix) would silently drop the second suffix's declarations. `all_privates`
+    # in stitch_elf is a set, so slices sharing an identical suffix (og/dg both
+    # "_m32_n80" here) safely dedupe instead of double-declaring. SwiGLU still
+    # contributes its own (@silu_and_mul_bf16).
     slices = [
-        KernelSlice(o_ir, "og", {0: 0, 1: 1, 2: 15, 3: 2}, extern_syms=_gemm_externs),
+        KernelSlice(
+            o_ir,
+            "og",
+            _gemm_arg_map(0, 1, 2, scratch_for[0]),
+            extern_syms=_gemm_extern_syms(o_spec),
+        ),
         KernelSlice(res_add_ir, "ra", {0: 2, 1: 3, 2: 4}, private_from=False),
         KernelSlice(rms_ir, "rm", {0: 4, 1: 5, 2: 6}, private_from=False),
         KernelSlice(
             gate_ir,
             "gg",
-            {0: 6, 1: 7, 2: 16, 3: 8},
-            extern_syms=_gemm_externs,
-            private_from=False,
+            _gemm_arg_map(6, 7, 8, scratch_for[1]),
+            extern_syms=_gemm_extern_syms(g_spec),
         ),
         KernelSlice(
             up_ir,
             "ug",
-            {0: 6, 1: 9, 2: 17, 3: 10},
-            extern_syms=_gemm_externs,
+            _gemm_arg_map(6, 9, 10, scratch_for[2]),
+            extern_syms=_gemm_extern_syms(g_spec),
             private_from=False,
         ),
         KernelSlice(
@@ -536,9 +575,8 @@ def _build_o_ffn(
         KernelSlice(
             down_ir,
             "dg",
-            {0: 11, 1: 12, 2: 18, 3: 13},
-            extern_syms=_gemm_externs,
-            private_from=False,
+            _gemm_arg_map(11, 12, 13, scratch_for[3]),
+            extern_syms=_gemm_extern_syms(d_spec),
         ),
         KernelSlice(ffn_add_ir, "fa", {0: 13, 1: 4, 2: 14}, private_from=False),
     ]

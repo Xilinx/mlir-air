@@ -22,6 +22,10 @@ import sys
 WARM_TTFT_S_RE = re.compile(r"Warm time to first token \(TTFT\):\s*([\d.]+)\s*s")
 TTFT_S_RE = re.compile(r"^\s*Time to first token \(TTFT\):\s*([\d.]+)\s*s", re.M)
 PREFILL_MS_RE = re.compile(r"End-to-end \(prefill, per query\)\s+([\d.]+)\s*ms")
+# smolvla is not autoregressive -- it emits one action chunk and there is no
+# first token -- so it reports the latency of that chunk, which is the same
+# thing this field means: time to the model's first usable output.
+ACTION_CHUNK_MS_RE = re.compile(r"Action chunk \([^)]*\):\s*([\d.]+)\s*ms")
 
 # Decode throughput: qwen family + llama3b print "(X.XX tok/s)";
 # llama32_1b prints "End-to-end (per token)  N ms" (throughput = 1000/ms);
@@ -44,6 +48,9 @@ def _ttft_ms(text):
     if m:
         return round(float(m.group(1)) * 1000.0, 2)
     m = PREFILL_MS_RE.search(text)
+    if m:
+        return round(float(m.group(1)), 2)
+    m = ACTION_CHUNK_MS_RE.search(text)
     if m:
         return round(float(m.group(1)), 2)
     return None

@@ -10,183 +10,662 @@
   ],
   "shapes": [
     {
-      "M": 2048,
-      "K": 2048,
+      "M": 64,
+      "K": 32,
+      "N": 720,
+      "used_by": "SmolVLA action_in_proj (K=32, almost pure launch floor)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 32,
+            "tile_k_l1": 32,
+            "tile_n": 80
+          },
+          "gflops": 25,
+          "mean_rel_L1": 0.00926,
+          "tier": "high",
+          "herd": [
+            4,
+            3
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "25 GFLOP/s: 115.9 us for 3.3 MFLOP is ~100% per-launch floor. Sweep status was NUMFAIL on a handful of near-zero-reference elements (atol artifact, same class as the Qwen Gate/Up rows); mean_rel_L1 is in-tier and the datapath is correct."
+    },
+    {
+      "M": 64,
+      "K": 720,
+      "N": 32,
+      "used_by": "SmolVLA action_out_proj (N=32 -> tile_n=32, herd_n=1)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 144,
+            "tile_k_l1": 48,
+            "tile_n": 32
+          },
+          "gflops": 37,
+          "mean_rel_L1": 0.00901,
+          "tier": "high",
+          "herd": [
+            4,
+            1
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 64,
+      "K": 720,
+      "N": 320,
+      "used_by": "SmolVLA action expert k_proj/v_proj on EVEN (self-attn) layers",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 144,
+            "tile_k_l1": 48,
+            "tile_n": 80
+          },
+          "gflops": 310,
+          "mean_rel_L1": 0.00943,
+          "tier": "high",
+          "herd": [
+            4,
+            4
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 64,
+      "K": 720,
+      "N": 720,
+      "used_by": "SmolVLA action_time_mlp_out",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 144,
+            "tile_k_l1": 48,
+            "tile_n": 80
+          },
+          "gflops": 447,
+          "mean_rel_L1": 0.00945,
+          "tier": "high",
+          "herd": [
+            4,
+            3
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 64,
+      "K": 720,
+      "N": 960,
+      "used_by": "SmolVLA action expert q_proj (hidden 720 -> q_dim 960, seq 50 padded to 64)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 144,
+            "tile_k_l1": 48,
+            "tile_n": 80
+          },
+          "gflops": 559,
+          "mean_rel_L1": 0.00939,
+          "tier": "high",
+          "herd": [
+            4,
+            4
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "M=64 forces tile_m=16 + herd_m=4 (tile_m*herd_m == M). K=720 = 2^4*45 admits NO tile_k_l1=32; use 144/48 or 240/80. 240/48, 360/40, 720/48 and 720/80 all compile, run, and return garbage silently (mean_rel_L1 0.78-1.02)."
+    },
+    {
+      "M": 64,
+      "K": 720,
+      "N": 1600,
+      "used_by": "SmolVLA action expert q||k||v with concatenated weights (960+320+320)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 144,
+            "tile_k_l1": 48,
+            "tile_n": 80
+          },
+          "gflops": 713,
+          "mean_rel_L1": 0.00944,
+          "tier": "high",
+          "herd": [
+            4,
+            4
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "One GEMM instead of three: 206.8 us vs 158.2+95.2+95.2 = 348.6 us."
+    },
+    {
+      "M": 64,
+      "K": 720,
       "N": 2048,
-      "used_by": "llama-3.2-1B Q/O proj + Qwen3-1.7B Q/O proj (square) + Qwen2.5-3B Q/O proj (square)",
+      "used_by": "SmolVLA action expert gate_proj / up_proj",
       "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 512,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 6215,
-          "mean_rel_L1": 0.0097,
-          "tier": "high"
-        },
         "drain": {
           "tile": {
-            "tile_m": 32,
-            "tile_k_l2": 512,
-            "tile_k_l1": 32,
+            "tile_m": 16,
+            "tile_k_l2": 144,
+            "tile_k_l1": 48,
             "tile_n": 128
           },
-          "gflops": 6025,
-          "mean_rel_L1": 0.0093,
-          "tier": "high"
-        },
-        "direct": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 512,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 5230,
-          "mean_rel_L1": 0.013,
-          "tier": "low"
+          "gflops": 1020,
+          "mean_rel_L1": 0.00943,
+          "tier": "high",
+          "herd": [
+            4,
+            4
+          ]
         }
       },
       "best": {
-        "high": "fused-cast",
-        "low": "direct"
+        "high": "drain"
+      },
+      "_note": "Sweep status was NUMFAIL on a handful of near-zero-reference elements (atol artifact, same class as the Qwen Gate/Up rows); mean_rel_L1 is in-tier and the datapath is correct."
+    },
+    {
+      "M": 64,
+      "K": 720,
+      "N": 4096,
+      "used_by": "SmolVLA action expert gate||up with concatenated weights (2048+2048)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 144,
+            "tile_k_l1": 48,
+            "tile_n": 128
+          },
+          "gflops": 1163,
+          "mean_rel_L1": 0.00944,
+          "tier": "high",
+          "herd": [
+            4,
+            4
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "One GEMM instead of two: 324.6 us vs 2x185.0 = 370.0 us."
+    },
+    {
+      "M": 64,
+      "K": 960,
+      "N": 720,
+      "used_by": "SmolVLA action expert o_proj, native N=720",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 320,
+            "tile_k_l1": 32,
+            "tile_n": 80
+          },
+          "gflops": 533,
+          "mean_rel_L1": 0.00947,
+          "tier": "high",
+          "herd": [
+            4,
+            3
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "N=720 cannot use herd_n=4: no tile_n with tile_n%16==0 satisfies 720%(4*tile_n)==0. herd_n=3 leaves a quarter of the array idle."
+    },
+    {
+      "M": 64,
+      "K": 960,
+      "N": 768,
+      "used_by": "SmolVLA action expert o_proj with N padded 720 -> 768",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 320,
+            "tile_k_l1": 32,
+            "tile_n": 96
+          },
+          "gflops": 685,
+          "mean_rel_L1": 0.00946,
+          "tier": "high",
+          "herd": [
+            4,
+            4
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "Padding N 720->768 is FASTER than the native N=720 row despite +6.7% FLOPs (135.6 us vs 165.9 us), because 768 admits herd_n=4 and 720 does not."
+    },
+    {
+      "M": 64,
+      "K": 1440,
+      "N": 720,
+      "used_by": "SmolVLA action_time_mlp_in, native N=720",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 144,
+            "tile_k_l1": 48,
+            "tile_n": 80
+          },
+          "gflops": 749,
+          "mean_rel_L1": 0.00929,
+          "tier": "high",
+          "herd": [
+            4,
+            3
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "K=1440 = 2^5*45 admits no tile_k_l1=32. 288/32 and 480/32 are silent-corruption traps (0.80 / 0.90); 144/48 and 240/80 are correct."
+    },
+    {
+      "M": 64,
+      "K": 1440,
+      "N": 768,
+      "used_by": "SmolVLA action_time_mlp_in with N padded 720 -> 768",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 144,
+            "tile_k_l1": 48,
+            "tile_n": 96
+          },
+          "gflops": 931,
+          "mean_rel_L1": 0.00934,
+          "tier": "high",
+          "herd": [
+            4,
+            4
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
       }
     },
     {
-      "M": 2048,
+      "M": 64,
       "K": 2048,
-      "N": 512,
-      "used_by": "llama-3.2-1B K/V proj",
+      "N": 720,
+      "used_by": "SmolVLA action expert down_proj, native N=720",
       "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 4083,
-          "mean_rel_L1": 0.0097,
-          "tier": "high"
-        },
         "drain": {
           "tile": {
-            "tile_m": 32,
+            "tile_m": 16,
             "tile_k_l2": 256,
             "tile_k_l1": 32,
-            "tile_n": 128
+            "tile_n": 80
           },
-          "gflops": 5626,
-          "mean_rel_L1": 0.0093,
-          "tier": "high"
-        },
-        "direct": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 4765,
-          "mean_rel_L1": 0.013,
-          "tier": "low"
+          "gflops": 889,
+          "mean_rel_L1": 0.00936,
+          "tier": "high",
+          "herd": [
+            4,
+            3
+          ]
         }
       },
       "best": {
-        "high": "drain",
-        "low": "direct"
+        "high": "drain"
       }
     },
     {
-      "M": 2048,
+      "M": 64,
       "K": 2048,
-      "N": 8192,
-      "used_by": "llama-3.2-1B Gate/Up proj",
+      "N": 768,
+      "used_by": "SmolVLA action expert down_proj with N padded 720 -> 768",
       "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 6893,
-          "mean_rel_L1": 0.0097,
-          "tier": "high"
-        },
         "drain": {
           "tile": {
-            "tile_m": 32,
+            "tile_m": 16,
             "tile_k_l2": 256,
             "tile_k_l1": 32,
-            "tile_n": 128
+            "tile_n": 96
           },
-          "gflops": 5784,
-          "mean_rel_L1": 0.0093,
-          "tier": "high"
-        },
-        "direct": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 5287,
-          "mean_rel_L1": 0.013,
-          "tier": "low"
+          "gflops": 1122,
+          "mean_rel_L1": 0.00928,
+          "tier": "high",
+          "herd": [
+            4,
+            4
+          ]
         }
       },
       "best": {
-        "high": "fused-cast",
-        "low": "direct"
+        "high": "drain"
+      },
+      "_note": "Same padding win as o_proj: 179.5 us padded vs 212.3 us native."
+    },
+    {
+      "M": 64,
+      "K": 12288,
+      "N": 960,
+      "used_by": "SmolVLA connector proj (vision->LLM, K=12288 very large, M=64 very small)",
+      "_note": "Connector projection between the vision encoder and the LLM. M=64 is tiny and K=12288 is very large. M=64 forces tile_m=16 (mm.o static_assert m%(2*8)==0 rejects tile_m=8) and herd_m=4 (tile_m*herd_m=64=M; tile_m=16/herd_m=8=128 > M fails the m%(tile_m*herd_m)==0 assert). MKN=7.5e8 < 4e9 -> drain. K=12288 is NOT a placement blocker -- just 48 reduction tiles at tile_k_l2=256; PLACES and PASSES cleanly at 9.450e-3, abs_err max 3.662e-4. NO CPU fallback needed. TILE_N=240: N=960=4*240 and 240 satisfies the mmul t=8 constraint (n%(2*t)==0). WHY 240 AND NOT 80: the measured tile_n sweep at herd 4x4 (2026-07-27) is strongly non-flat -- 16:3352us, 48:1347us, 80:890us, 240:667-713us. tile_n=240 is 1.33x FASTER than the tile_n=80 this row originally carried, at BIT-IDENTICAL accuracy (both 9.450e-3, abs_err max 3.662e-4). The old 80 came from the generic 'N not 512-aligned -> shrink TILE_N' habit (4*80=320 | 960), which is the wrong instinct for this tiny-M/huge-K shape: fewer, larger N-tiles amortize the weight DMA far better. tile_k_l2 is nearly inert across {128,256,384} (686/689/672us; 384 marginally best); tile_k_l2 >= 512 FAILS TO COMPILE (L1 over-allocation) -- an earlier revision of this note claimed 512/768 were flat-but-working, which was wrong. 16 TILES IS THE HARD CEILING, and it is NOT costing performance. The full (tile_m,herd_m,tile_n,herd_n) grid was enumerated under tile_m%16==0, tile_n%16==0, M%(tile_m*herd_m)==0, N%(tile_n*herd_n)==0, herd_m<=8, herd_n<=4: 4x4 is the maximum reachable (tile_n=120 would allow herd_n=8 but violates n%16, verified by compile failure). Padding M 64->128 to fill the full 8x4 herd was MEASURED and is SLOWER in wall-clock (975us vs 892us at tile_n=80; 734us vs 667-713us at tile_n=240) -- the doubled GFLOPS is pure padding waste. ROOT CAUSE: this GEMM is WEIGHT-DMA-BOUND, not tile-bound. B is 12288*960*2 = 23.6 MB vs A 1.57 MB + C 0.12 MB, i.e. 93% of traffic and independent of M; 25.3 MB in ~890us ~= 28 GB/s, at the DMA ceiling. Confirmed two ways: halving K halves latency (892->518us), and the herd_m sweep at 4/8/16 tiles (7358/1668/888us) is near-linear then saturates. Extra tiles have no extra bandwidth to consume.",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 16,
+            "tile_k_l2": 384,
+            "tile_k_l1": 32,
+            "tile_n": 240
+          },
+          "gflops": 2246,
+          "mean_rel_L1": 0.0095,
+          "herd": [
+            4,
+            4
+          ],
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
       }
     },
     {
-      "M": 2048,
-      "K": 8192,
-      "N": 2048,
-      "used_by": "llama-3.2-1B Down proj",
+      "M": 192,
+      "K": 64,
+      "N": 256,
+      "used_by": "SmolVLA action expert QK^T on ODD (cross-attn) layers: group-batched S = Q_group @ K_h^T against the frozen 241-token prefix, padded to 256",
       "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 8898,
-          "mean_rel_L1": 0.0097,
-          "tier": "high"
-        },
         "drain": {
           "tile": {
             "tile_m": 32,
-            "tile_k_l2": 256,
+            "tile_k_l2": 64,
             "tile_k_l1": 32,
-            "tile_n": 128
+            "tile_n": 64
           },
-          "gflops": 7234,
-          "mean_rel_L1": 0.0093,
-          "tier": "high"
-        },
-        "direct": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 5592,
-          "mean_rel_L1": 0.019,
-          "tier": "low"
+          "gflops": 82,
+          "mean_rel_L1": 0.00939,
+          "tier": "high",
+          "herd": [
+            6,
+            4
+          ]
         }
       },
       "best": {
-        "high": "fused-cast",
-        "low": "direct"
+        "high": "drain"
+      },
+      "_note": "M=192 (GQA group 3 x 64 padded action tokens) admits only three (tile_m, herd_m) pairs under mm.o's tile_m%16==0, run.py's M%(tile_m*herd_m)==0, and the single-M-launch-iteration rule M//tile_m//herd_m==1: 32x6, 48x4, 64x3. Measured: 32x6 and 48x4 are within noise of each other, 64x3 is consistently slowest (only 12 of 32 tiles). Sweep status was NUMFAIL on the near-zero-reference elements (atol artifact, same class as the projection rows); mean_rel_L1 is in-tier and the datapath is correct."
+    },
+    {
+      "M": 192,
+      "K": 64,
+      "N": 320,
+      "used_by": "SmolVLA action expert QK^T on EVEN (self-attn) layers: group-batched S = Q_group @ K_h^T, K/V len 291 (241 prefix + 50 action) padded to 320",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 48,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 80
+          },
+          "gflops": 95,
+          "mean_rel_L1": 0.00942,
+          "tier": "high",
+          "herd": [
+            4,
+            4
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "M=192 (GQA group 3 x 64 padded action tokens) admits only three (tile_m, herd_m) pairs under mm.o's tile_m%16==0, run.py's M%(tile_m*herd_m)==0, and the single-M-launch-iteration rule M//tile_m//herd_m==1: 32x6, 48x4, 64x3. Measured: 32x6 and 48x4 are within noise of each other, 64x3 is consistently slowest (only 12 of 32 tiles). tile_n=80 (=320/4) is required for herd_n=4 and is worth 1.6x over tile_n=16 (82.9 us vs 129.2 us). Padding N to 384 instead of 320 is slower (86.7 us) -- the extra FLOPs are not amortized at this size. Sweep status was NUMFAIL on the near-zero-reference elements (atol artifact, same class as the projection rows); mean_rel_L1 is in-tier and the datapath is correct."
+    },
+    {
+      "M": 192,
+      "K": 256,
+      "N": 64,
+      "used_by": "SmolVLA action expert P@V on ODD (cross-attn) layers: group-batched O = P_group @ V_h over the 241-token prefix, K padded to 256",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 64,
+            "tile_k_l1": 64,
+            "tile_n": 16
+          },
+          "gflops": 89,
+          "mean_rel_L1": 0.00945,
+          "tier": "high",
+          "herd": [
+            6,
+            4
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "M=192 (GQA group 3 x 64 padded action tokens) admits only three (tile_m, herd_m) pairs under mm.o's tile_m%16==0, run.py's M%(tile_m*herd_m)==0, and the single-M-launch-iteration rule M//tile_m//herd_m==1: 32x6, 48x4, 64x3. Measured: 32x6 and 48x4 are within noise of each other, 64x3 is consistently slowest (only 12 of 32 tiles). Unlike the K=320 sibling, every K-tiling tried at K=256 was numerically correct (9.452e-3 across tile_k_l2 in {64,128,256} and tile_k_l1 in {32,64}) -- the corruption tracks non-power-of-two K. Sweep status was NUMFAIL on the near-zero-reference elements (atol artifact, same class as the projection rows); mean_rel_L1 is in-tier and the datapath is correct."
+    },
+    {
+      "M": 192,
+      "K": 320,
+      "N": 64,
+      "used_by": "SmolVLA action expert P@V on EVEN (self-attn) layers: group-batched O = P_group @ V_h, K = 291 padded to 320",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 320,
+            "tile_k_l1": 32,
+            "tile_n": 16
+          },
+          "gflops": 109,
+          "mean_rel_L1": 0.00927,
+          "tier": "high",
+          "herd": [
+            6,
+            4
+          ]
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "M=192 (GQA group 3 x 64 padded action tokens) admits only three (tile_m, herd_m) pairs under mm.o's tile_m%16==0, run.py's M%(tile_m*herd_m)==0, and the single-M-launch-iteration rule M//tile_m//herd_m==1: 32x6, 48x4, 64x3. Measured: 32x6 and 48x4 are within noise of each other, 64x3 is consistently slowest (only 12 of 32 tiles). K=320 IS A SILENT-CORRUPTION TRAP: tile_k_l2=160 (0.91), tile_k_l2=64/tile_k_l1=64 (0.71) and tile_k_l2=320/tile_k_l1=64 (0.80) all compile, run, report plausible latency and return garbage. Only tile_k_l1 in {16, 32} with tile_k_l2=320 (single reduction tile) was measured correct. Sweep status was NUMFAIL on the near-zero-reference elements (atol artifact, same class as the projection rows); mean_rel_L1 is in-tier and the datapath is correct."
+    },
+    {
+      "M": 256,
+      "K": 64,
+      "N": 256,
+      "used_by": "SmolVLA attention S=Q@K^T (per q-head; head_dim=64)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 64,
+            "tile_k_l1": 64,
+            "tile_n": 64
+          },
+          "gflops": null,
+          "mean_rel_L1": 0.0095708,
+          "correlation": 0.999952,
+          "tier": "high"
+        }
+      }
+    },
+    {
+      "M": 256,
+      "K": 256,
+      "N": 64,
+      "used_by": "SmolVLA attention O=P@V (per q-head; head_dim=64)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 64,
+            "tile_k_l1": 64,
+            "tile_n": 16
+          },
+          "gflops": null,
+          "mean_rel_L1": 0.0096173,
+          "correlation": 0.999953,
+          "tier": "high"
+        }
+      }
+    },
+    {
+      "M": 256,
+      "K": 320,
+      "N": 320,
+      "used_by": "SmolVLA action expert k_proj/v_proj on ODD (cross-attn) layers -- these run over the 241-token backbone prefix (padded to 256), NOT the 50 action tokens",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 320,
+            "tile_k_l1": 32,
+            "tile_n": 80
+          },
+          "gflops": 466,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "tile_k_l2=160 is a silent-corruption trap here (mean_rel_L1 0.793); 320 is correct. Sweep status was NUMFAIL on a handful of near-zero-reference elements (atol artifact, same class as the Qwen Gate/Up rows); mean_rel_L1 is in-tier and the datapath is correct."
+    },
+    {
+      "M": 256,
+      "K": 960,
+      "N": 320,
+      "used_by": "SmolVLA K/V proj (kv_dim=320=4\u00b780; K=960 tile_k_l2=320)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 320,
+            "tile_k_l1": 32,
+            "tile_n": 80
+          },
+          "gflops": 1228,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 256,
+      "K": 960,
+      "N": 960,
+      "used_by": "SmolVLA Q/O proj (emb=960; drain tile_m=32, TILE_N=80, HERD_N=4; K=960 tile_k_l2=320)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 320,
+            "tile_k_l1": 32,
+            "tile_n": 80
+          },
+          "gflops": 1896,
+          "mean_rel_L1": 0.0095,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 256,
+      "K": 960,
+      "N": 2560,
+      "used_by": "SmolVLA Gate/Up proj (N=2560=4\u00b7128\u00b75; K=960 tile_k_l2=320)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 320,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 2838,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 256,
+      "K": 2560,
+      "N": 960,
+      "used_by": "SmolVLA Down proj (K=2560 tile_k_l2=320; N=960\u2192TILE_N=80)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 320,
+            "tile_k_l1": 32,
+            "tile_n": 80
+          },
+          "gflops": 3425,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
       }
     },
     {
@@ -226,6 +705,64 @@
           },
           "gflops": 1750,
           "mean_rel_L1": 0.01,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "drain",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 768,
+      "N": 768,
+      "used_by": "SmolVLA vision q/k/v/out_proj (SigLIP, seq=1024, hidden=768) + patch-embedding-as-GEMM (im2col, same shape)",
+      "_note": "SigLIP vision encoder. seq=1024, hidden=768. M=1024 -> drain tile_m=32 runs 1024/(32*8)=4 M-launch iterations; the standalone drain harness handles multi-iteration M correctly (verified PASS at 9.465e-3), the mm.o multi-iteration garbage bug does NOT apply to this single-launch drain path. N=768 not 512-aligned -> TILE_N=96 (4*96=384 | 768). K=768 tile_k_l2=384 (768/384=2). MKN=6e8 < 4e9 -> drain. abs_err max 1.709e-3 is covered by rtol*|ref| (not a near-zero element) -> PASSES high-precision.",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 384,
+            "tile_k_l1": 64,
+            "tile_n": 96
+          },
+          "gflops": 3798,
+          "mean_rel_L1": 0.0095,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 768,
+      "N": 3072,
+      "used_by": "SmolVLA vision mlp fc1 (SigLIP, hidden 768 -> 3072)",
+      "_note": "Vision MLP up-projection (fc1). N=3072=4*128*6 -> stock TILE_N=128. K=768 tile_k_l2=256 (768/256=3). Same wide-N Gate/Up near-zero atol edge as every Qwen sibling: high-precision drain computes the in-tier result (mean_rel_L1=9.428e-3, 4195 GFLOPS @ tile_m=32/tk2=256/tn128) but the harness element-wise gate trips on a near-zero-reference element (abs_err 1.953e-3 > high-prec atol=1.5e-3, rtol*|ref|~0). The low-precision direct path PASSES (atol=4e-3, 1.089e-2). best.high points at the numerically-correct drain datapath; best.low at the harness-passing direct path.",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4195,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3650,
+          "mean_rel_L1": 0.0109,
           "tier": "low"
         }
       },
@@ -280,70 +817,95 @@
       }
     },
     {
-      "M": 4096,
-      "K": 4096,
-      "N": 4096,
-      "used_by": "K-sweep",
+      "M": 1024,
+      "K": 3072,
+      "N": 768,
+      "used_by": "SmolVLA vision mlp fc2 (SigLIP, 3072 -> 768)",
+      "_note": "Vision MLP down-projection (fc2). N=768 not 512-aligned -> TILE_N=96 (4*96=384 | 768). K=3072 tile_k_l2=384 (3072/384=8). MKN=2.4e9 < 4e9 -> drain. Down-proj-class (large K, small N) is the fast one, clean high-precision at 9.423e-3, abs_err max 8.5e-4 (no near-zero edge).",
       "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 512,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 8423,
-          "mean_rel_L1": 0.0099,
-          "tier": "high"
-        },
         "drain": {
           "tile": {
             "tile_m": 32,
-            "tile_k_l2": 512,
-            "tile_k_l1": 32,
-            "tile_n": 128
+            "tile_k_l2": 384,
+            "tile_k_l1": 64,
+            "tile_n": 96
           },
-          "gflops": 7002,
+          "gflops": 5790,
           "mean_rel_L1": 0.0094,
           "tier": "high"
-        },
-        "direct": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 512,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 5509,
-          "mean_rel_L1": 0.015,
-          "tier": "low"
         }
       },
       "best": {
-        "high": "fused-cast",
-        "low": "direct"
+        "high": "drain"
       }
     },
     {
       "M": 2048,
-      "K": 1024,
-      "N": 2048,
-      "used_by": "Qwen3-0.6B Q proj",
+      "K": 896,
+      "N": 128,
+      "used_by": "Qwen2.5-0.5B K/V proj",
+      "_note": "Thin N=128=4*32. drain TILE_M=32 TILE_N=32 HERD_N=4 (full 8x4 herd required).",
       "methods": {
-        "fused-cast": {
+        "drain": {
           "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
+            "tile_m": 32,
+            "tile_k_l2": 128,
             "tile_k_l1": 32,
-            "tile_n": 128
+            "tile_n": 32
           },
-          "gflops": 4425,
-          "mean_rel_L1": 0.0099,
+          "gflops": 1890,
+          "mean_rel_L1": 0.0094,
           "tier": "high"
         }
       },
       "best": {
-        "high": "fused-cast"
+        "high": "drain"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 896,
+      "N": 896,
+      "used_by": "Qwen2.5-0.5B Q/O proj",
+      "_note": "Non-512-aligned N=896=128*7. HERD_N=1 (TILE_N=128) fails at runtime (qds_device::wait unexpected command state) \u2014 fused-cast/drain paths assume the 8x4 array. Working config keeps HERD_N=4 with TILE_N=32 (4*32=128 | 896); drain (tile_m=32) places, fused-cast tile_m=64 over-allocates L1.",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 32
+          },
+          "gflops": 2516,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 896,
+      "N": 4864,
+      "used_by": "Qwen2.5-0.5B Gate/Up proj",
+      "_note": "N=4864=256*19; TILE_N=64 HERD_N=4 (4*64=256 | 4864). High-precision fused-cast computes the in-tier result (9.4e-3) but the harness gate trips on 2 near-zero-reference elements (abs_err ~1.6-1.9e-3 > high-prec atol=1.5e-3). The low-precision direct path PASSES (atol=4e-3, 1.11e-2). Same artifact as Qwen3-0.6B Gate/Up. best.low = harness-passing direct path.",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4320,
+          "mean_rel_L1": 0.0111,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "low": "direct"
       }
     },
     {
@@ -371,9 +933,9 @@
     },
     {
       "M": 2048,
-      "K": 2048,
-      "N": 1024,
-      "used_by": "Qwen3-0.6B O proj",
+      "K": 1024,
+      "N": 2048,
+      "used_by": "Qwen3-0.6B Q proj",
       "methods": {
         "fused-cast": {
           "tile": {
@@ -382,8 +944,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5392,
-          "mean_rel_L1": 0.0097,
+          "gflops": 4425,
+          "mean_rel_L1": 0.0099,
           "tier": "high"
         }
       },
@@ -428,116 +990,25 @@
     },
     {
       "M": 2048,
-      "K": 3072,
-      "N": 1024,
-      "used_by": "Qwen3-0.6B Down proj",
+      "K": 1536,
+      "N": 256,
+      "used_by": "Qwen2.5-1.5B K/V proj",
+      "_note": "thin N=256=4*64 -> TILE_N=64 HERD_N=4. MKN=8e8 < 4e9 -> drain (TILE_M=32); fused-cast over-allocates L1 at this thin N.",
       "methods": {
-        "fused-cast": {
+        "drain": {
           "tile": {
-            "tile_m": 64,
+            "tile_m": 32,
             "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 6461,
-          "mean_rel_L1": 0.0099,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "fused-cast"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 896,
-      "N": 896,
-      "used_by": "Qwen2.5-0.5B Q/O proj",
-      "_note": "Non-512-aligned N=896=128*7. HERD_N=1 (TILE_N=128) fails at runtime (qds_device::wait unexpected command state) \u2014 fused-cast/drain paths assume the 8x4 array. Working config keeps HERD_N=4 with TILE_N=32 (4*32=128 | 896); drain (tile_m=32) places, fused-cast tile_m=64 over-allocates L1.",
-      "methods": {
-        "drain": {
-          "tile": {
-            "tile_m": 32,
-            "tile_k_l2": 128,
-            "tile_k_l1": 32,
-            "tile_n": 32
-          },
-          "gflops": 2516,
-          "mean_rel_L1": 0.0094,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "drain"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 896,
-      "N": 128,
-      "used_by": "Qwen2.5-0.5B K/V proj",
-      "_note": "Thin N=128=4*32. drain TILE_M=32 TILE_N=32 HERD_N=4 (full 8x4 herd required).",
-      "methods": {
-        "drain": {
-          "tile": {
-            "tile_m": 32,
-            "tile_k_l2": 128,
-            "tile_k_l1": 32,
-            "tile_n": 32
-          },
-          "gflops": 1890,
-          "mean_rel_L1": 0.0094,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "drain"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 896,
-      "N": 4864,
-      "used_by": "Qwen2.5-0.5B Gate/Up proj",
-      "_note": "N=4864=256*19; TILE_N=64 HERD_N=4 (4*64=256 | 4864). High-precision fused-cast computes the in-tier result (9.4e-3) but the harness gate trips on 2 near-zero-reference elements (abs_err ~1.6-1.9e-3 > high-prec atol=1.5e-3). The low-precision direct path PASSES (atol=4e-3, 1.11e-2). Same artifact as Qwen3-0.6B Gate/Up. best.low = harness-passing direct path.",
-      "methods": {
-        "direct": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 128,
             "tile_k_l1": 32,
             "tile_n": 64
           },
-          "gflops": 4320,
-          "mean_rel_L1": 0.0111,
-          "tier": "low"
-        }
-      },
-      "best": {
-        "low": "direct"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 4864,
-      "N": 896,
-      "used_by": "Qwen2.5-0.5B Down proj",
-      "_note": "N=896=4*32*7 -> TILE_N=32 HERD_N=4. K=4864 reduction tile_k_l2=256 (4864/256=19). M*K*N=8.9e9 >= 4e9 -> fused-cast.",
-      "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 32
-          },
-          "gflops": 3640,
-          "mean_rel_L1": 0.0098,
+          "gflops": 3770,
+          "mean_rel_L1": 0.0093,
           "tier": "high"
         }
       },
       "best": {
-        "high": "fused-cast"
+        "high": "drain"
       }
     },
     {
@@ -566,29 +1037,6 @@
     {
       "M": 2048,
       "K": 1536,
-      "N": 256,
-      "used_by": "Qwen2.5-1.5B K/V proj",
-      "_note": "thin N=256=4*64 -> TILE_N=64 HERD_N=4. MKN=8e8 < 4e9 -> drain (TILE_M=32); fused-cast over-allocates L1 at this thin N.",
-      "methods": {
-        "drain": {
-          "tile": {
-            "tile_m": 32,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 64
-          },
-          "gflops": 3770,
-          "mean_rel_L1": 0.0093,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "drain"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 1536,
       "N": 8960,
       "used_by": "Qwen2.5-1.5B Gate/Up proj",
       "_note": "N=8960=256*35 -> TILE_N=64 HERD_N=4. High-precision fused-cast (TILE_M=64 TILE_N=64) over-allocates L1 -> compile fail; low-precision direct PASSES but only with TILE_K_L2=128 (1536/128=12; tile_k_l2=256 also compile-fails). Same Gate/Up tier-down as Qwen3-0.6B / Qwen2.5-0.5B. best.low = harness-passing direct path.",
@@ -607,75 +1055,6 @@
       },
       "best": {
         "low": "direct"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 8960,
-      "N": 1536,
-      "used_by": "Qwen2.5-1.5B Down proj",
-      "_note": "N=1536 -> stock TILE_N=128. K=8960 reduction tile_k_l2=256 (8960/256=35). MKN=2.8e10 -> fused-cast.",
-      "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 8804,
-          "mean_rel_L1": 0.0097,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "fused-cast"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 2048,
-      "N": 6144,
-      "used_by": "Qwen3-1.7B Gate/Up proj",
-      "_note": "N=6144=512*12 divisible by default 4*TILE_N=512 -> stock TILE_N=128 HERD_N=4 (1024-aligned, no shrink). K=2048 tile_k_l2=256 (2048/256=8); tile_k_l2=512 BD-exhausts at this N (aie.dma_bd unassigned IDs). MKN=2.6e10 >= 4e9 -> fused-cast. No near-zero atol artifact on this run (mean_rel_L1=9.7e-3, abs_err max=1.2e-3 < high-prec atol=1.5e-3) -> PASSES high-precision directly.",
-      "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 6729,
-          "mean_rel_L1": 0.0097,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "fused-cast"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 6144,
-      "N": 2048,
-      "used_by": "Qwen3-1.7B Down proj",
-      "_note": "N=2048 -> stock TILE_N=128 HERD_N=4. K=6144 reduction tile_k_l2=256 (6144/256=24). MKN=2.6e10 -> fused-cast. PASSES high-precision (mean_rel_L1=9.7e-3, abs_err max=7.3e-4).",
-      "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 8536,
-          "mean_rel_L1": 0.0097,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "fused-cast"
       }
     },
     {
@@ -704,6 +1083,186 @@
     {
       "M": 2048,
       "K": 2048,
+      "N": 512,
+      "used_by": "llama-3.2-1B K/V proj",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4083,
+          "mean_rel_L1": 0.0097,
+          "tier": "high"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5626,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4765,
+          "mean_rel_L1": 0.013,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "drain",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2048,
+      "N": 1024,
+      "used_by": "Qwen3-0.6B O proj",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5392,
+          "mean_rel_L1": 0.0097,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2048,
+      "N": 2048,
+      "used_by": "llama-3.2-1B Q/O proj + Qwen3-1.7B Q/O proj (square) + Qwen2.5-3B Q/O proj (square)",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6215,
+          "mean_rel_L1": 0.0097,
+          "tier": "high"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6025,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5230,
+          "mean_rel_L1": 0.013,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2048,
+      "N": 6144,
+      "used_by": "Qwen3-1.7B Gate/Up proj",
+      "_note": "N=6144=512*12 divisible by default 4*TILE_N=512 -> stock TILE_N=128 HERD_N=4 (1024-aligned, no shrink). K=2048 tile_k_l2=256 (2048/256=8); tile_k_l2=512 BD-exhausts at this N (aie.dma_bd unassigned IDs). MKN=2.6e10 >= 4e9 -> fused-cast. No near-zero atol artifact on this run (mean_rel_L1=9.7e-3, abs_err max=1.2e-3 < high-prec atol=1.5e-3) -> PASSES high-precision directly.",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6729,
+          "mean_rel_L1": 0.0097,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2048,
+      "N": 8192,
+      "used_by": "llama-3.2-1B Gate/Up proj",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6893,
+          "mean_rel_L1": 0.0097,
+          "tier": "high"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5784,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5287,
+          "mean_rel_L1": 0.013,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 2048,
       "N": 11008,
       "used_by": "Qwen2.5-3B Gate/Up proj",
       "_note": "N=11008=256*43 -> TILE_N=64 HERD_N=4 (4*64=256 | 11008). High-precision fused-cast AND low-prec direct at tile_k_l2=256 BOTH fail aiecc: DMA stride 2818048 (=tile_k_l2*N) exceeds the [1:1048576] aie.dma_bd range. low-prec direct with TILE_K_L2=128 PASSES at atol=4e-3. Same Gate/Up tier-down family as all Qwen siblings; root cause here is the DMA stride range, not L1.",
@@ -722,95 +1281,6 @@
       },
       "best": {
         "low": "direct"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 11008,
-      "N": 2048,
-      "used_by": "Qwen2.5-3B Down proj",
-      "_note": "N=2048=512*4 -> stock TILE_N=128 HERD_N=4. K=11008=256*43 reduction tile_k_l2=256. MKN=4.6e10 >= 4e9 -> fused-cast, PASSES high-precision directly at 9.8e-3.",
-      "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 9447,
-          "mean_rel_L1": 0.0098,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "fused-cast"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 3072,
-      "N": 3072,
-      "used_by": "Llama-3.2-3B Q/O proj (square)",
-      "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 7513,
-          "mean_rel_L1": 0.0099,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "fused-cast"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 3072,
-      "N": 8192,
-      "used_by": "Llama-3.2-3B Gate/Up proj",
-      "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 7601,
-          "mean_rel_L1": 0.0099,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "fused-cast"
-      }
-    },
-    {
-      "M": 2048,
-      "K": 8192,
-      "N": 3072,
-      "used_by": "Llama-3.2-3B Down proj",
-      "methods": {
-        "fused-cast": {
-          "tile": {
-            "tile_m": 64,
-            "tile_k_l2": 256,
-            "tile_k_l1": 32,
-            "tile_n": 128
-          },
-          "gflops": 9092,
-          "mean_rel_L1": 0.0097,
-          "tier": "high"
-        }
-      },
-      "best": {
-        "high": "fused-cast"
       }
     },
     {
@@ -905,6 +1375,72 @@
     },
     {
       "M": 2048,
+      "K": 3072,
+      "N": 1024,
+      "used_by": "Qwen3-0.6B Down proj",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6461,
+          "mean_rel_L1": 0.0099,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 3072,
+      "N": 3072,
+      "used_by": "Llama-3.2-3B Q/O proj (square)",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7513,
+          "mean_rel_L1": 0.0099,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 3072,
+      "N": 8192,
+      "used_by": "Llama-3.2-3B Gate/Up proj",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7601,
+          "mean_rel_L1": 0.0099,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
       "K": 4096,
       "N": 2560,
       "used_by": "Qwen3-4B O proj alt / 4096->2560 (n_heads*head_dim=4096 -> emb=2560)",
@@ -919,6 +1455,142 @@
           },
           "gflops": 7560,
           "mean_rel_L1": 0.0099,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 4864,
+      "N": 896,
+      "used_by": "Qwen2.5-0.5B Down proj",
+      "_note": "N=896=4*32*7 -> TILE_N=32 HERD_N=4. K=4864 reduction tile_k_l2=256 (4864/256=19). M*K*N=8.9e9 >= 4e9 -> fused-cast.",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 32
+          },
+          "gflops": 3640,
+          "mean_rel_L1": 0.0098,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 6144,
+      "N": 2048,
+      "used_by": "Qwen3-1.7B Down proj",
+      "_note": "N=2048 -> stock TILE_N=128 HERD_N=4. K=6144 reduction tile_k_l2=256 (6144/256=24). MKN=2.6e10 -> fused-cast. PASSES high-precision (mean_rel_L1=9.7e-3, abs_err max=7.3e-4).",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8536,
+          "mean_rel_L1": 0.0097,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 8192,
+      "N": 2048,
+      "used_by": "llama-3.2-1B Down proj",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8898,
+          "mean_rel_L1": 0.0097,
+          "tier": "high"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7234,
+          "mean_rel_L1": 0.0093,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5592,
+          "mean_rel_L1": 0.019,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 8192,
+      "N": 3072,
+      "used_by": "Llama-3.2-3B Down proj",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 9092,
+          "mean_rel_L1": 0.0097,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 8960,
+      "N": 1536,
+      "used_by": "Qwen2.5-1.5B Down proj",
+      "_note": "N=1536 -> stock TILE_N=128. K=8960 reduction tile_k_l2=256 (8960/256=35). MKN=2.8e10 -> fused-cast.",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8804,
+          "mean_rel_L1": 0.0097,
           "tier": "high"
         }
       },
@@ -947,6 +1619,74 @@
       },
       "best": {
         "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 11008,
+      "N": 2048,
+      "used_by": "Qwen2.5-3B Down proj",
+      "_note": "N=2048=512*4 -> stock TILE_N=128 HERD_N=4. K=11008=256*43 reduction tile_k_l2=256. MKN=4.6e10 >= 4e9 -> fused-cast, PASSES high-precision directly at 9.8e-3.",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 9447,
+          "mean_rel_L1": 0.0098,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 4096,
+      "K": 4096,
+      "N": 4096,
+      "used_by": "K-sweep",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8423,
+          "mean_rel_L1": 0.0099,
+          "tier": "high"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7002,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5509,
+          "mean_rel_L1": 0.015,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
       }
     }
   ]

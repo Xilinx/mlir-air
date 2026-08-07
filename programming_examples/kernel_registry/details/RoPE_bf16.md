@@ -184,6 +184,9 @@ is the llama-3.2-1B prefill RoPE-Q scale (32 query heads × 2048 seq); `16384 =
 | 28672 | 64 | 8/1 | 303 µs | 36.4 GB/s | 2.8e-3 | 3.1e-2 | Qwen2.5-0.5B prefill RoPE-Q (14 heads·2048, head_dim=64) | ✅ |
 | 24576 | 128 | 8/1 | 380 µs | 49.7 GB/s | 2.8e-3 | 3.1e-2 | Qwen2.5-1.5B prefill RoPE-Q (12 heads·2048, head_dim=128) | ✅ |
 | 4096 | 128 | 8/1 | 149 µs | 21.1 GB/s | 2.8e-3 | 3.1e-2 | Qwen2.5-1.5B + Qwen2.5-3B prefill RoPE-K (2 KV heads·2048, head_dim=128) | ✅ |
+| 256 | 64 | 8/1 | 80 µs | 1.2 GB/s | 2.8e-3 | 3.1e-2 | SmolVLA RoPE-Q/K datapath (head_dim=64, seq 241→256; harness θ=500000, deployment θ=10000 via host LUT) | ✅ |
+
+> **SmolVLA (256×64)** validates the half-split RoPE **datapath** at the padded prefix length (seq 241→256, `head_dim = 64` = SmolLM2-360M backbone). This tiny shape is latency-bound (80 µs launch floor), so bandwidth is not meaningful. **θ note:** SmolVLA's runtime uses `max_wavelength = 10000`, but this harness hardcodes `θ = 500000` (llama rope_base) when generating its verification LUT — the θ only sets the cos/sin table values, which in the real deployment come from a **host-provided LUT** (`generate_rope_lut(..., theta=10000)`), not from the kernel. The kernel just applies the rotation, so the θ mismatch does not affect what is validated here (the row-wise half-split rotation math), verified PASS at 2.8e-3.
 
 > **Qwen2.5-1.5B** uses `head_dim = 128` (12 q-heads / 2 kv-heads): `rows = 12·2048 = 24576` (Q, new) and `2·2048 = 4096` (K, new at head_dim=128). Same half-split kernel, verified PASS at 2.8e-3.
 

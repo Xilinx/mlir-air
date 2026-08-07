@@ -72,12 +72,19 @@ def gemm_config(M, K, N, output_dtype="bf16", precision="high"):
                 )
             method = best[precision]
             m = s["methods"][method]
-            return {
+            out = {
                 "method": method,
                 "tile": dict(m["tile"]),
                 "gflops": m["gflops"],
                 "mean_rel_L1": m["mean_rel_L1"],
             }
+            # Most shapes run the full 8x4 herd (the JSON top-level "herd"); a few
+            # tiny-M shapes (e.g. SmolVLA connector 64x12288x960) must shrink herd_m
+            # so tile_m*herd_m == M. Surface a per-method herd override only when
+            # present, so every existing shape's return dict is unchanged.
+            if "herd" in m:
+                out["herd"] = list(m["herd"])
+            return out
     raise KeyError(
         f"gemm_config: shape {M}x{K}x{N} (out={output_dtype}) not in registry "
         f"{_GEMM_JSON[output_dtype]}. Measured shapes: "

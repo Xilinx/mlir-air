@@ -1,0 +1,9 @@
+# Everything this example produces lands in build/ (kernel cache, compiled
+# ELFs, aircc intermediates, the cpu-baseline dump), so `make clean` is
+# `rm -rf build/`.
+build/
+__pycache__/
+
+# Working notes and presentation material: the investigation record, the
+# reading guide, and the slides. Useful locally, not part of the example.
+docs/detail/

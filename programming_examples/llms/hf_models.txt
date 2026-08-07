@@ -32,3 +32,9 @@ FastFlowLM/Llama-3.2-1B-NPU2
 # FastFlowLM Q4NX NPU2 packaging of Llama-3.2-3B (same model.q4nx format). Used by
 # llms/llama32_3b_q4nx (NPU weights; the make-verify bf16 reference is meta-llama).
 FastFlowLM/Llama-3.2-3B-NPU2
+
+# SmolVLA (llms/smolvla). TWO repos: the policy checkpoint, plus the VLM backbone
+# it loads by name from its own config -- SmolVLAPolicy.from_pretrained reaches
+# both, so an offline cache missing either one cannot load the policy.
+lerobot/smolvla_base
+HuggingFaceTB/SmolVLM2-500M-Video-Instruct

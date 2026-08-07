@@ -106,6 +106,7 @@ The RMSNorm shape used by llama-3.2-1B **prefill** (`M = seq_len = 2048`, `N = e
 | 2048×1536 | 8 | 570 µs | 22.1 GB/s | 4.3e-3 | 2.3e-2 | 1.25e-1 | Qwen2.5-1.5B prefill RMSNorm | ✅ |
 | 2048×2560 | 8 | 867 µs | 24.2 GB/s | 4.2e-3 | 2.3e-2 | 1.25e-1 | Qwen3-4B prefill RMSNorm (emb=2560) | ✅ |
 | 2048×3072 | 8 | 1012 µs | 24.9 GB/s | 4.2e-3 | 2.3e-2 | 1.25e-1 | Llama-3.2-3B prefill RMSNorm (emb=3072) | ✅ |
+| 256×960 | 8 | 147 µs | 6.7 GB/s | 4.2e-3 | 2.2e-2 | 9.4e-2 | SmolVLA prefill RMSNorm (emb=960, seq 241→256) | ✅ |
 
 > **Qwen2.5-0.5B (2048×896)** is the per-layer RMSNorm at emb=896. Qwen2.5 has no QK-norm (unlike Qwen3). Verified PASS at 4.2e-3.
 

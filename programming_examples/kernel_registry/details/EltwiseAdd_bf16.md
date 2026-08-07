@@ -103,8 +103,11 @@ Shapes verified on NPU2 (bf16). **Best config is `herd_x=8, herd_y=1, tile_n=204
 | 3145728 | 2048×1536 | 8/1/2048 | 364 µs | 51.9 GB/s | 1.9e-3 | 3.1e-2 | ✅ Qwen2.5-1.5B residual (seq·emb) |
 | 5242880 | 2048×2560 | 8/1/2048 | 516 µs | 61.0 GB/s | 1.9e-3 | 3.1e-2 | ✅ Qwen3-4B residual (seq·emb=2560) |
 | 6291456 | 2048×3072 | 8/1/2048 | 614 µs | **61.4 GB/s** | 1.9e-3 | 3.1e-2 | ✅ Llama-3.2-3B residual (seq·emb=3072) |
+| 245760 | 256×960 | 8/1/**1920** | 112 µs | 13.2 GB/s | 1.9e-3 | 3.1e-2 | ✅ SmolVLA residual (seq 241→256·emb=960) |
 
 > The 1835008 row is Qwen2.5-0.5B's prefill residual-add scale (seq·emb = 2048·896); the 3145728 row is Qwen2.5-1.5B's (seq·emb = 2048·1536). Same best config, bit-identical 1.9e-3.
+
+> The 245760 row is SmolVLA's prefill residual-add scale (seq 241→256 · emb=960). ⚠️ The stock `tile_n=2048` **passes** the `n % (tile_n·total_tiles) == 0` assert (245760/(2048·8)=15, integer) but **silently produces zeros past the first ~2 tiles** on device (mean_rel_L1≈0.46) — the 15 (odd, non-power-of-2) inner DMA iterations per core mis-transfer at this N. Empirically, **`tile_n=1920`** (chunk_size 30720/1920=16 iterations, 1920 % vector_size 16 = 0) PASSES cleanly; 1024 and 3840 also work. Latency-bound at this small N (13.2 GB/s vs 57.7 at the 2048² scale), accuracy bit-identical 1.9e-3. Choose a `tile_n` that both divides `N/(herd_x·herd_y)` and is a multiple of `vector_size`.
 
 > The 4194304 row is the llama-3.2-1B prefill residual-add scale (the fused `o_ffn` variant does the same math on a 2-D `[2048,2048]` layout — see Builder). All shapes use the same best config; bandwidth rises with N as fixed launch overhead amortizes (36 → 63 GB/s). Accuracy is bit-identical across all shapes and herd configs.
 
