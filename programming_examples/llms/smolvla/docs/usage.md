@@ -30,8 +30,10 @@ python3 -m venv ~/smolvla-venv
 make verify LEROBOT_PYTHON=~/smolvla-venv/bin/python
 ```
 
-**Model access.** `HF_TOKEN` must be set; `lerobot/smolvla_base` (450M
-parameters) downloads on first use.
+**Model access.** `lerobot/smolvla_base` (450M parameters) and the
+`HuggingFaceTB/SmolVLM2-500M-Video-Instruct` backbone it loads download on first
+use. Both are public — no `HF_TOKEN` needed, though setting one raises the Hub
+rate limit.
 
 ---
 

@@ -98,9 +98,9 @@ tokens, 10 denoise steps.
 
 ## Running it
 
-Needs AMD NPU2 hardware, the MLIR-AIR environment, `HF_TOKEN`, and one
-interpreter carrying both `torch`+`lerobot` and `air`+`pyxrt`
-(`pip install -r requirements.txt`).
+Needs AMD NPU2 hardware, the MLIR-AIR environment, and one interpreter carrying
+both `torch`+`lerobot` and `air`+`pyxrt` (`pip install -r requirements.txt`).
+The checkpoint is public, so no `HF_TOKEN` is required.
 
 ```bash
 make compile       # build every vision ELF — no NPU dispatch, no download
