@@ -2216,7 +2216,12 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     // one. Never collapse a channel marked air.dedicated_dma_channel, nor
     // collapse onto an allocation that already hosts one (either direction).
     //   - MM2S (source) side collapses promiscuously onto a packet-flow
-    //     channel (broadcast fan-out / pkt_id multiplexing rely on it).
+    //     channel (broadcast fan-out / pkt_id multiplexing rely on it), and
+    //     otherwise onto a proven-identical endpoint, same as S2MM: repeated
+    //     drains of one L2 buffer must time-multiplex ONE channel. Without
+    //     this they round-robin, so a memtile holding two output endpoints
+    //     interleaves their BDs on a shared channel and the switchbox
+    //     multicasts each endpoint's data to both destinations.
     //   - S2MM (receiver) side collapses only flows proven identical (same
     //     channel decl + constant bundle indices), for BOTH packet and circuit
     //     flows: distinct sources fanning into one L2 buffer each need their
@@ -2228,7 +2233,8 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     if (!memcpyIsDedicatedChannel(memcpyOp) && !t.containsDedicatedChannel()) {
       bool canCollapse =
           isMM2S.value()
-              ? (isPacketFlowOp && t.foundPacketFlowAllocInTile(tile))
+              ? ((isPacketFlowOp && t.foundPacketFlowAllocInTile(tile)) ||
+                 t.foundSameLogicalFlowInTile(tile, memcpyOp))
               : t.foundSameLogicalFlowInTile(tile, memcpyOp);
       if (canCollapse) {
         t.memcpyOps.push_back(memcpyOp.getOperation());

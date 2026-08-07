@@ -5881,6 +5881,55 @@ public:
                   }
                 }
               }
+            } else {
+              // No segment unroll: the entries above were appended in
+              // ALLOCATION order, which follows tile placement, but they are
+              // consumed positionally by the linearized channel bundle index
+              // (air::getIndexToMetadataArrayFromChannelIndices). The two
+              // agree only when the bundle's endpoints happen to be placed in
+              // bundle order; pin them to columns in any other order and every
+              // endpoint drives the wrong physical stream (silently -- the
+              // design compiles and runs, it just permutes its data). Permute
+              // into bundle order whenever every allocation resolves to a
+              // distinct in-range index.
+              auto &tileAllocs = shimChanSymbolToAlloc[dma_name];
+              std::vector<unsigned> channelDims;
+              for (auto a : chanDecl.getSize())
+                if (auto ia = dyn_cast_if_present<IntegerAttr>(a))
+                  channelDims.push_back(static_cast<unsigned>(ia.getInt()));
+              unsigned total = 1;
+              for (unsigned d : channelDims)
+                total *= d;
+              if (total == metadataArray.size() &&
+                  tileAllocs.size() == metadataArray.size()) {
+                SmallVector<Attribute, 8> sorted(total, nullptr);
+                bool ok = true;
+                unsigned k = 0;
+                for (air::allocation_info_t &t : tileAllocs) {
+                  auto linkedTileSideDmaIds =
+                      getOriginalTileSideDmaIds(t, chanRenumberReverseMap);
+                  std::optional<int> lin;
+                  for (auto tileSideChannelOp :
+                       air::getTheOtherChannelOpThroughSymbol(ci)) {
+                    if (!llvm::is_contained(linkedTileSideDmaIds,
+                                            tileSideChannelOp.getId()))
+                      continue;
+                    lin = air::getIndexToMetadataArrayFromChannelIndices(
+                        tileSideChannelOp);
+                    if (lin)
+                      break;
+                  }
+                  if (!lin || *lin < 0 || (unsigned)*lin >= total ||
+                      sorted[*lin]) {
+                    ok = false;
+                    break;
+                  }
+                  sorted[*lin] = metadataArray[k++];
+                }
+                if (ok && k == total)
+                  memcpyIfOp->setAttr("metadataArray",
+                                      builder.getArrayAttr(sorted));
+              }
             }
           }
         }
