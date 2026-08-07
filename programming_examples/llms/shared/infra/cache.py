@@ -482,7 +482,8 @@ class KernelCache:
                 producer's dispatch is guaranteed to have completed and to have
                 written the whole buffer, which sequential load_and_run calls
                 are. Aliased pool entries are still keyed by size, so distinct
-                names never collide.
+                names never collide. Raises ValueError on an alias that targets
+                a static index, an out-of-range index, or an empty pool name.
                 CONTRACT/FOOTGUN: returned outputs for shared (non-static) indices
                 are zero-copy views into the shared BO and are OVERWRITTEN by the
                 next load_and_run call that reuses that arg's shared buffer. Safe
@@ -505,6 +506,34 @@ class KernelCache:
                 f"Kernel '{name}' not found in cache. "
                 f"Available: {list(self.artifacts.keys())}"
             )
+
+        # Validate shared_alias before touching XRT: these are programming errors,
+        # and the static-index case in particular corrupts silently. A static BO is
+        # per-bo_key so each layer keeps its own weights, while an alias pools ONE
+        # buffer across every bo_key -- aliasing a static index would make every
+        # layer read the first layer's weights, with no write to give it away
+        # (static writes are skipped after the first call).
+        if shared_alias:
+            _static = set(static_input_indices or [])
+            clash = sorted(set(shared_alias) & _static)
+            if clash:
+                raise ValueError(
+                    f"shared_alias must not target static_input_indices {clash}: "
+                    f"static BOs are per-bo_key, aliases are process-wide"
+                )
+            oob = sorted(i for i in shared_alias if not 0 <= i < len(inputs))
+            if oob:
+                raise ValueError(
+                    f"shared_alias indices {oob} out of range for {len(inputs)} args"
+                )
+            unnamed = sorted(
+                i for i, n in shared_alias.items() if not isinstance(n, str) or not n
+            )
+            if unnamed:
+                raise ValueError(
+                    f"shared_alias pool names must be non-empty strings; "
+                    f"bad at arg indices {unnamed}"
+                )
 
         # Level 1: Load backend on first call (XRT context reuse)
         # Lock path note: this is intentionally distinct from the
