@@ -1506,19 +1506,32 @@ static std::string diagnoseS2MMChain(ArrayRef<Operation *> ops,
   return "";
 }
 
-void air::TileDMAAllocator::verifyS2MMChains() {
+void air::TileDMAAllocator::repairS2MMChains(
+    std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
   // One BD chain is built per (tile, channel) from the concatenation of every
   // allocation mapped to it, in s2mm_allocs order -- mirror that grouping
   // exactly (see the tile_dma_memcpys construction in AIRToAIEPass.cpp), since
   // allocations that each fold in isolation can still concatenate into a chain
   // that does not.
   llvm::MapVector<std::pair<Operation *, int>, SmallVector<size_t>> chains;
+  llvm::DenseMap<Operation *, llvm::SmallDenseSet<int>> usedChansPerTile;
   for (auto [i, alloc] : llvm::enumerate(s2mm_allocs))
-    if (alloc.dma_tile)
-      chains[{alloc.dma_tile.getOperation(), alloc.dma_channel.channel}]
-          .push_back(i);
+    if (alloc.dma_tile) {
+      Operation *t = alloc.dma_tile.getOperation();
+      chains[{t, alloc.dma_channel.channel}].push_back(i);
+      usedChansPerTile[t].insert(alloc.dma_channel.channel);
+    }
+
+  auto declOf = [](Operation *o) -> Operation * {
+    auto chan = dyn_cast_if_present<air::ChannelInterface>(o);
+    if (!chan)
+      return nullptr;
+    auto decl = air::getChannelDeclarationThroughSymbol(chan);
+    return decl ? decl.getOperation() : nullptr;
+  };
 
   for (auto &[key, allocIdxs] : chains) {
+    auto tile = s2mm_allocs[allocIdxs.front()].dma_tile;
     std::vector<Operation *> ops;
     for (size_t i : allocIdxs)
       llvm::append_range(ops, s2mm_allocs[i].memcpyOps);
@@ -1526,59 +1539,133 @@ void air::TileDMAAllocator::verifyS2MMChains() {
       continue;
 
     // Only a chain hosting more than one logical flow can mis-deliver ACROSS
-    // flows, which is the deadlock this diagnoses. A single-flow chain that
-    // slips writes its own slices out of order -- a different (and, where it
-    // happens today, deliberate) matter.
-    llvm::SetVector<Operation *> flows;
-    for (auto *o : ops)
-      if (auto ci = dyn_cast_if_present<air::ChannelInterface>(o))
-        if (auto decl = air::getChannelDeclarationThroughSymbol(ci))
-          flows.insert(decl.getOperation());
-    if (flows.size() < 2)
+    // flows, which is the deadlock at issue. A single-flow chain that slips
+    // writes its own slices out of order -- a different matter, and where it
+    // happens today, deliberate.
+    llvm::SetVector<Operation *> decls;
+    for (auto *o : ops) {
+      auto *d = declOf(o);
+      if (!d) {
+        decls.clear(); // Unkeyed transfer: not attributable to a flow.
+        break;
+      }
+      decls.insert(d);
+    }
+    if (decls.size() < 2)
       continue;
 
     // Bound the control-flow walk at the core body: transfers in different
     // herds are different consumers and share no BD ring.
     Operation *stopAt = ops.front()->getParentOfType<air::HerdOp>();
-
     std::string why = diagnoseS2MMChain(ops, stopAt);
     if (why.empty())
       continue;
 
-    // Name a flow whose removal leaves both halves in step, so the report is
-    // actionable rather than merely alarming.
-    air::ChannelOp pinCandidate = nullptr;
-    for (auto *f : flows) {
-      std::vector<Operation *> peeled, rest;
-      for (auto *o : ops) {
-        auto ci = dyn_cast_if_present<air::ChannelInterface>(o);
-        auto decl = ci ? air::getChannelDeclarationThroughSymbol(ci) : nullptr;
-        (decl && decl.getOperation() == f ? peeled : rest).push_back(o);
-      }
-      if (peeled.empty() || rest.empty())
+    // Peel the one flow whose removal leaves BOTH halves in step. A flow that
+    // was pinned or marked dedicated already states where it belongs, so it is
+    // not ours to move.
+    Operation *peelDecl = nullptr;
+    std::vector<Operation *> moved, rest;
+    for (auto *d : decls) {
+      if (d->hasAttr(air::attrs::TileDmaChannel) ||
+          d->hasAttr(air::attrs::DedicatedDmaChannel))
         continue;
-      if (diagnoseS2MMChain(peeled, stopAt).empty() &&
-          diagnoseS2MMChain(rest, stopAt).empty()) {
-        pinCandidate = dyn_cast<air::ChannelOp>(f);
-        break;
-      }
+      std::vector<Operation *> m, r;
+      for (auto *o : ops)
+        (declOf(o) == d ? m : r).push_back(o);
+      if (m.empty() || r.empty())
+        continue;
+      // A half carrying one flow is out of scope for the same reason the whole
+      // chain would be: it has no other flow's BD to land on.
+      auto halfInStep = [&](ArrayRef<Operation *> half) {
+        llvm::SetVector<Operation *> hd;
+        for (auto *o : half)
+          hd.insert(declOf(o));
+        return hd.size() < 2 || diagnoseS2MMChain(half, stopAt).empty();
+      };
+      if (!halfInStep(m) || !halfInStep(r))
+        continue;
+      peelDecl = d;
+      moved = m;
+      rest = r;
+      break;
     }
 
-    auto diag = ops.front()->emitWarning()
-                << "compute-tile S2MM channel " << key.second << " multiplexes "
-                << flows.size() << " flows over " << ops.size()
-                << " transfers, but " << why
-                << ". The receiver is expected to deadlock after the first "
-                   "dispatch";
-    if (pinCandidate)
-      diag << ". Moving @" << pinCandidate.getSymName()
-           << " onto its own channel (air.tile_dma_channel on its declaration) "
-              "leaves both chains in step";
-    else
-      diag << ". No single flow can be peeled off to fix it; equalize the "
-              "paths so each delivers the same transfers";
-    for (auto *f : flows)
-      diag.attachNote(f->getLoc()) << "flow on this chain";
+    auto &used = usedChansPerTile[key.first];
+    int numChans = tile.getNumDestConnections(AIE::WireBundle::DMA);
+    int freeChan = -1;
+    for (int c = 0; c < numChans; c++)
+      if (!used.count(c)) {
+        freeChan = c;
+        break;
+      }
+
+    if (!peelDecl || freeChan < 0) {
+      // Nothing to move, or nowhere to move it. Emitting a design that is
+      // expected to hang is worth saying out loud.
+      auto diag = ops.front()->emitWarning()
+                  << "compute-tile S2MM channel " << key.second
+                  << " multiplexes " << decls.size() << " flows over "
+                  << ops.size() << " transfers, but " << why
+                  << ". The receiver is expected to deadlock after the first "
+                     "dispatch";
+      if (!peelDecl)
+        diag << ", and no single flow can be peeled off to fix it. Equalize "
+                "the paths so each delivers the same transfers";
+      else
+        diag << ", and the tile has no spare S2MM channel to move @"
+             << cast<air::ChannelOp>(peelDecl).getSymName()
+             << " onto. Equalize the paths so each delivers the same "
+                "transfers";
+      for (auto *d : decls)
+        diag.attachNote(d->getLoc()) << "flow on this chain";
+      continue;
+    }
+
+    // Retarget an allocation whose transfers all move; split the rest.
+    SmallVector<allocation_info_t> splits;
+    for (size_t i : allocIdxs) {
+      std::vector<Operation *> keepOps, moveOps;
+      for (auto *o : s2mm_allocs[i].memcpyOps)
+        (declOf(o) == peelDecl ? moveOps : keepOps).push_back(o);
+      if (moveOps.empty())
+        continue;
+      s2mm_allocs[i].packet_flow_id = -1; // reassigned on flow connection
+      if (keepOps.empty()) {
+        s2mm_allocs[i].dma_channel = {AIE::DMAChannelDir::S2MM, freeChan};
+        s2mm_allocs[i].tile_channel = freeChan;
+        continue;
+      }
+      allocation_info_t split = s2mm_allocs[i];
+      split.dma_channel = {AIE::DMAChannelDir::S2MM, freeChan};
+      split.tile_channel = freeChan;
+      split.memcpyOps = moveOps;
+      s2mm_allocs[i].memcpyOps = keepOps;
+      splits.push_back(split);
+    }
+    llvm::append_range(s2mm_allocs, splits);
+    used.insert(freeChan);
+
+    // The flows are connected from the bundle's own copy of the allocation, so
+    // leaving it behind would route the packet to the channel the BDs just
+    // left.
+    for (auto &f : memcpy_flows) {
+      if (f.air_flow_op != peelDecl)
+        continue;
+      for (auto &fa : f.S2MM_alloc) {
+        if (!fa.dma_tile || fa.dma_tile.getOperation() != key.first)
+          continue;
+        if (fa.dma_channel.direction != AIE::DMAChannelDir::S2MM ||
+            fa.dma_channel.channel != key.second)
+          continue;
+        fa.dma_channel.channel = freeChan;
+        fa.tile_channel = freeChan;
+      }
+    }
+    LLVM_DEBUG(llvm::dbgs()
+               << "repaired S2MM chain on tile " << tile.getOperation()
+               << ": moved " << moved.size() << " of " << ops.size()
+               << " transfers to channel " << freeChan << "\n");
   }
 }
 

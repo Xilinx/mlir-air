@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 emit-herd-lock=true" -verify-diagnostics -split-input-file
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 emit-herd-lock=true" -split-input-file | FileCheck %s
 
 // TileDMAAllocator::verifyS2MMChains.
 //
@@ -17,9 +17,11 @@
 // built for, the BD pointer slips further every dispatch until a transfer
 // meets a BD belonging to another flow and the receiver deadlocks.
 //
-// The pass does not move anything -- it reports the chains that cannot stay in
-// step. Only chains hosting two or more distinct flows can mis-deliver ACROSS
-// flows, so single-flow chains are out of scope.
+// Such a chain is repaired by moving one flow onto a spare S2MM channel of the
+// same tile. Chains already in step are left alone, and a chain that cannot be
+// repaired within the tile's channel budget is reported instead of silently
+// emitted. Only chains hosting two or more distinct flows can mis-deliver
+// ACROSS flows, so single-flow chains are out of scope.
 
 // -----
 
@@ -27,6 +29,11 @@
 // two arms fold onto one 2-BD ring that matches either path. This is the shape
 // the shipped llama-3.2-1B q4nx decode rms tile produces (@rmsX/@rmsW/@rmsW2
 // under an scf.index_switch) and it must stay silent.
+
+// CHECK-LABEL: aie.device
+// CHECK: aie.mem
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK-NOT: aie.dma_start(S2MM, 1
 
 air.channel @sA [1] {channel_type = "npu_dma_packet"}
 air.channel @sB [1] {channel_type = "npu_dma_packet"}
@@ -67,9 +74,12 @@ func.func @symmetric_arms(%ext: memref<8xbf16>, %mode: i32) {
 // 4-norm (Gemma-style) decode shape, and it is what deadlocks on the second
 // dispatch.
 
-// expected-note@+1 {{flow on this chain}}
+// CHECK-LABEL: aie.device
+// CHECK: aie.mem
+// CHECK-DAG: aie.dma_start(S2MM, 0
+// CHECK-DAG: aie.dma_start(S2MM, 1
+
 air.channel @aX [1] {channel_type = "npu_dma_packet"}
-// expected-note@+1 {{flow on this chain}}
 air.channel @aSub [1] {channel_type = "npu_dma_packet"}
 func.func @asymmetric_arms(%ext: memref<8xbf16>, %mode: i32) {
   %c1 = arith.constant 1 : index
@@ -90,7 +100,6 @@ func.func @asymmetric_arms(%ext: memref<8xbf16>, %mode: i32) {
           scf.yield
         }
         default {
-          // expected-warning@+1 {{multiplexes 2 flows over 5 transfers, but control-flow paths deliver different BD sequences: the ring was built for one path's transfers and will slip on the others. The receiver is expected to deadlock after the first dispatch. Moving @aX onto its own channel}}
           air.channel.get @aX[] (%x[] [] []) {id = 4 : i32} : (memref<8xbf16, 2>)
           air.channel.get @aSub[] (%sub[] [] []) {id = 5 : i32} : (memref<8xbf16, 2>)
           scf.yield
@@ -109,9 +118,12 @@ func.func @asymmetric_arms(%ext: memref<8xbf16>, %mode: i32) {
 // short, which is precisely what the hand-written dummy get in the llama q4nx
 // fused decode (`_uni_voc` feeding a dummy @rmsW2) exists to prevent.
 
-// expected-note@+1 {{flow on this chain}}
+// CHECK-LABEL: aie.device
+// CHECK: aie.mem
+// CHECK-DAG: aie.dma_start(S2MM, 0
+// CHECK-DAG: aie.dma_start(S2MM, 1
+
 air.channel @hX [1] {channel_type = "npu_dma_packet"}
-// expected-note@+1 {{flow on this chain}}
 air.channel @hW [1] {channel_type = "npu_dma_packet"}
 func.func @arm_hole(%ext: memref<8xbf16>, %mode: i32) {
   %c1 = arith.constant 1 : index
@@ -131,7 +143,6 @@ func.func @arm_hole(%ext: memref<8xbf16>, %mode: i32) {
           scf.yield
         }
         default {
-          // expected-warning@+1 {{multiplexes 2 flows over 3 transfers, but control-flow paths deliver different BD sequences: the ring was built for one path's transfers and will slip on the others. The receiver is expected to deadlock after the first dispatch. Moving @hX onto its own channel}}
           air.channel.get @hX[] (%x[] [] []) {id = 3 : i32} : (memref<8xbf16, 2>)
           scf.yield
         }
@@ -148,6 +159,11 @@ func.func @arm_hole(%ext: memref<8xbf16>, %mode: i32) {
 // A single-flow chain cannot mis-deliver across flows, so an asymmetric single
 // -flow chain is out of scope and must stay silent. Left un-warned on purpose:
 // the shipped llama q4nx decode has exactly this shape on its @outY chain.
+
+// CHECK-LABEL: aie.device
+// CHECK: aie.mem
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK-NOT: aie.dma_start(S2MM, 1
 
 air.channel @oY [1] {channel_type = "npu_dma_packet"}
 func.func @single_flow_asymmetric(%ext: memref<8xbf16>, %mode: i32) {
@@ -183,6 +199,11 @@ func.func @single_flow_asymmetric(%ext: memref<8xbf16>, %mode: i32) {
 // delivers the same word and the chain is in step. #1771's multiplicity
 // heuristic split this; it must not be reported.
 
+// CHECK-LABEL: aie.device
+// CHECK: aie.mem
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK-NOT: aie.dma_start(S2MM, 1
+
 air.channel @eA [1] {channel_type = "npu_dma_packet"}
 air.channel @eB [1] {channel_type = "npu_dma_packet"}
 func.func @unequal_multiplicity_straight_line(%ext: memref<8xbf16>, %mode: i32) {
@@ -214,9 +235,12 @@ func.func @unequal_multiplicity_straight_line(%ext: memref<8xbf16>, %mode: i32) 
 // index_switch hole above, and it is the one an "every flow appears the same
 // number of times" heuristic cannot see at all -- the counts are 1 and 1.
 
-// expected-note@+1 {{flow on this chain}}
+// CHECK-LABEL: aie.device
+// CHECK: aie.mem
+// CHECK-DAG: aie.dma_start(S2MM, 0
+// CHECK-DAG: aie.dma_start(S2MM, 1
+
 air.channel @fX [1] {channel_type = "npu_dma_packet"}
-// expected-note@+1 {{flow on this chain}}
 air.channel @fW [1] {channel_type = "npu_dma_packet"}
 func.func @if_without_else_hole(%ext: memref<8xbf16>, %mode: i32) {
   %c1 = arith.constant 1 : index
@@ -230,7 +254,6 @@ func.func @if_without_else_hole(%ext: memref<8xbf16>, %mode: i32) {
         %w = memref.alloc() : memref<8xbf16, 2>
         %c0_i32 = arith.constant 0 : i32
         %p = arith.cmpi eq, %hm, %c0_i32 : i32
-        // expected-warning@+1 {{multiplexes 2 flows over 2 transfers, but control-flow paths deliver different BD sequences: the ring was built for one path's transfers and will slip on the others. The receiver is expected to deadlock after the first dispatch. Moving @fX onto its own channel}}
         air.channel.get @fX[] (%x[] [] []) {id = 1 : i32} : (memref<8xbf16, 2>)
         scf.if %p {
           air.channel.get @fW[] (%w[] [] []) {id = 2 : i32} : (memref<8xbf16, 2>)

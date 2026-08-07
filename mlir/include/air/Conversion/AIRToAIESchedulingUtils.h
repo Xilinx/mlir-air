@@ -309,10 +309,15 @@ public:
   FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
 
-  // Warn about any compute-tile S2MM chain whose BD ring cannot stay in step
-  // with its per-dispatch packet arrivals. Diagnostic only -- nothing is
-  // moved. Run after sortMemcpyOps, once the per-channel op order is final.
-  void verifyS2MMChains();
+  // Move one flow off any compute-tile S2MM chain whose BD ring cannot stay
+  // in step with its per-dispatch packet arrivals, onto a spare channel of the
+  // same tile, so both halves fold back into rings that match arrival. Chains
+  // already in step are untouched, and a chain that cannot be repaired within
+  // the tile's channel budget is reported rather than silently emitted.
+  // `memcpy_flows` is updated in lockstep so the flows connected afterwards
+  // target the channel the BDs moved to. Run after sortMemcpyOps, before flows
+  // are connected.
+  void repairS2MMChains(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 };
 
 class ShimDMAAllocator : public DMAAllocator {
