@@ -244,8 +244,8 @@ static bool chansMappedToEquivalentBDs(air::ChannelInterface chanA,
 // 3. Their sizes and strides are equivalent (access pattern match)
 // Note: Unlike chansMappedToEquivalentBDs, this allows different buffer
 // values as long as they have the same type and access pattern.
-static bool chansPartOfSameRotation(air::ChannelInterface chanA,
-                                    air::ChannelInterface chanB) {
+bool air::chansPartOfSameRotation(air::ChannelInterface chanA,
+                                  air::ChannelInterface chanB) {
   // Must use same channel declaration
   auto chanDeclA = air::getChannelDeclarationThroughSymbol(chanA);
   auto chanDeclB = air::getChannelDeclarationThroughSymbol(chanB);
@@ -277,7 +277,7 @@ static bool dmasMappedToEquivalentBDs(air::DmaMemcpyNdOp dmaA,
       dmaA, dmaB, OperationEquivalence::IgnoreLocations);
 }
 
-static bool memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB) {
+bool air::memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB) {
   if (auto chanA = dyn_cast_if_present<air::ChannelInterface>(opA))
     if (auto chanB = dyn_cast_if_present<air::ChannelInterface>(opB))
       return chansMappedToEquivalentBDs(chanA, chanB);
@@ -290,8 +290,8 @@ static bool memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB) {
 // Canonicalize a chain of memcpy ops as candidates to map to dma bds, by
 // removing repetitive patterns. Returns the unique repeating unit, or an empty
 // vector when the chain does not repeat.
-static llvm::SetVector<Operation *>
-getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
+llvm::SetVector<Operation *>
+air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
   // Get a vector of unique BDs.
   llvm::SetVector<Operation *> uniqueBDPattern;
   auto opIt = memcpyIOps.begin();
@@ -1397,157 +1397,161 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
 
-void air::TileDMAAllocator::rebalanceAperiodicPacketChains(
-    std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
-  // A compute-tile S2MM BD chain is walked STRICTLY IN ORDER: a packet header
-  // routes a transfer to the tile, it does not select which BD receives it. So
-  // the BD ring is only correct if its period matches the per-dispatch arrival
-  // sequence. Packet-collapsing several flows onto one channel preserves that
-  // as long as every flow is consumed the same number of times per dispatch --
-  // the chain then folds into a circular ring (getRepeatCounts finds the
-  // repeating pattern). Mixing flows of DIFFERENT per-dispatch multiplicity
-  // makes the sequence aperiodic: no pattern is found, one BD is emitted per
-  // transfer, and the resulting ring length is coprime with the arrival period,
-  // so the BD pointer drifts a little further every dispatch until a transfer
-  // meets a BD expecting another flow and the receiver deadlocks.
-  //
-  // Repair it where the hardware allows: if the tile still has a spare S2MM
-  // channel, peel one flow off the shared chain so both halves fold back into
-  // circular rings. Only aperiodic chains are touched, so any design that
-  // already folds (the common case) is left bit-identical.
-  auto declOf = [](Operation *o) -> Operation * {
-    auto chan = dyn_cast_if_present<air::ChannelInterface>(o);
-    if (!chan)
-      return nullptr;
-    auto decl = air::getChannelDeclarationThroughSymbol(chan);
-    return decl ? decl.getOperation() : nullptr;
-  };
+// Two transfers occupy the same slot of the emitted ring if the emitter would
+// fold them onto one BD. That is either strict BD equivalence, or -- because
+// getRepeatCounts also folds N-buffer rotations -- two slots of one rotation.
+static bool sameBDSlot(Operation *a, Operation *b) {
+  if (air::memcpyIMappedToEquivalentBDs(a, b))
+    return true;
+  auto ca = dyn_cast_if_present<air::ChannelInterface>(a);
+  auto cb = dyn_cast_if_present<air::ChannelInterface>(b);
+  return ca && cb && air::chansPartOfSameRotation(ca, cb);
+}
 
-  // A shared chain stays in step with its arrivals only if every flow on it
-  // contributes the SAME number of BDs: the ring then advances exactly one full
-  // cycle per round of arrivals. If one flow appears more often than another
-  // (e.g. a sublayer buffer consumed twice per dispatch beside
-  // once-per-dispatch norm weights), the ring length is no longer a whole
-  // number of rounds, so the BD pointer slips a little further every dispatch
-  // until a transfer meets a BD belonging to another flow and the receiver
-  // deadlocks. A single-flow chain is trivially in step at any length.
-  auto chainIsSafe = [&declOf](const std::vector<Operation *> &ops) {
-    if (ops.size() <= 1)
-      return true;
-    llvm::MapVector<Operation *, unsigned> perFlow;
-    for (auto *o : ops) {
-      auto *d = declOf(o);
-      if (!d)
-        return true; // Unkeyed transfer: not attributable to a flow, leave it.
-      perFlow[d]++;
-    }
-    unsigned n = perFlow.front().second;
-    return llvm::all_of(perFlow, [n](auto &kv) { return kv.second == n; });
-  };
+// The conditional-arm path a chain op sits on, as the list of enclosing
+// branching ops paired with the region index taken to reach the op. Two ops
+// are on mutually exclusive paths iff their keys agree on some branching op
+// but disagree on its region index.
+static SmallVector<std::pair<Operation *, unsigned>>
+getCondPathKey(Operation *op, Operation *stopAt) {
+  SmallVector<std::pair<Operation *, unsigned>> key;
+  Region *r = op->getParentRegion();
+  while (r && r->getParentOp() && r->getParentOp() != stopAt) {
+    Operation *parent = r->getParentOp();
+    if (isa<scf::IfOp, scf::IndexSwitchOp>(parent))
+      key.push_back({parent, r->getRegionNumber()});
+    r = parent->getParentRegion();
+  }
+  std::reverse(key.begin(), key.end());
+  return key;
+}
 
-  // One BD chain is built per (tile, channel) from the concatenation of every
-  // allocation mapped to it, so foldability must be judged on that same
-  // grouping -- allocations that each fold in isolation can still concatenate
-  // into an aperiodic chain.
-  llvm::MapVector<std::pair<Operation *, int>, SmallVector<size_t>> chains;
-  llvm::DenseMap<Operation *, llvm::SmallDenseSet<int>> usedChansPerTile;
-  for (auto [i, alloc] : llvm::enumerate(s2mm_allocs)) {
-    if (!alloc.dma_tile)
-      continue;
-    Operation *t = alloc.dma_tile.getOperation();
-    chains[{t, alloc.dma_channel.channel}].push_back(i);
-    usedChansPerTile[t].insert(alloc.dma_channel.channel);
+// A BD ring is walked strictly in order; a packet header routes a transfer to
+// the tile but does not select which BD receives it. So every feasible control
+// path through the consumer must present the SAME sequence of BDs -- otherwise
+// one path delivers a different number (or a different order) of transfers
+// than the ring was built for, the BD pointer slips, and a transfer eventually
+// meets a BD belonging to another flow.
+//
+// Checked per branching op: for each region of that op, project the chain onto
+// the transfers reachable through it. Regions contributing no transfer give an
+// empty word, which is the "hole" case (one arm forgets to consume a flow the
+// other arm does).
+static bool allPathWordsEquivalent(ArrayRef<Operation *> ops,
+                                   Operation *stopAt) {
+  llvm::SetVector<Operation *> branchOps;
+  llvm::DenseMap<Operation *, SmallVector<std::pair<Operation *, unsigned>>>
+      keys;
+  for (auto *o : ops) {
+    keys[o] = getCondPathKey(o, stopAt);
+    for (auto &[brOp, regionIdx] : keys[o])
+      branchOps.insert(brOp);
   }
 
+  for (auto *brOp : branchOps) {
+    // Word per region of this branching op, in chain order.
+    SmallVector<SmallVector<Operation *>> words(brOp->getNumRegions());
+    for (auto *o : ops)
+      for (auto &[k, regionIdx] : keys[o])
+        if (k == brOp)
+          words[regionIdx].push_back(o);
+
+    // Regions that cannot be entered contribute nothing and are not a hole.
+    // Everything else -- including an empty region -- must match.
+    SmallVector<Operation *> *ref = nullptr;
+    for (auto [i, w] : llvm::enumerate(words)) {
+      if (brOp->getRegion(i).empty())
+        continue;
+      if (!ref) {
+        ref = &words[i];
+        continue;
+      }
+      if (w.size() != ref->size())
+        return false;
+      for (auto [a, b] : llvm::zip_equal(w, *ref))
+        if (!sameBDSlot(a, b))
+          return false;
+    }
+  }
+  return true;
+}
+
+// Why a chain's BD ring cannot stay in step with its arrivals, or an empty
+// string when it can.
+static std::string diagnoseS2MMChain(ArrayRef<Operation *> ops,
+                                     Operation *stopAt) {
+  if (ops.size() <= 1)
+    return "";
+
+  llvm::SetVector<Operation *> opSet;
+  for (auto *o : ops)
+    opSet.insert(o);
+
+  // Homogeneous ring: every BD is interchangeable, so no arrival can land on a
+  // BD meant for something else no matter where the pointer is.
+  if (air::getUniqueBDPattern(opSet).size() == 1)
+    return "";
+
+  // Note the emitter's BD-task count is deliberately NOT a criterion: several
+  // repeat-count buckets lower to a sequence of finite tasks that is re-armed
+  // per dispatch, so the chain still covers exactly one round of arrivals.
+  // Drift comes only from paths that deliver different rounds.
+  if (!allPathWordsEquivalent(ops, stopAt))
+    return "control-flow paths deliver different BD sequences: the ring was "
+           "built for one path's transfers and will slip on the others";
+
+  return "";
+}
+
+void air::TileDMAAllocator::verifyS2MMChains() {
+  // One BD chain is built per (tile, channel) from the concatenation of every
+  // allocation mapped to it, in s2mm_allocs order -- mirror that grouping
+  // exactly (see the tile_dma_memcpys construction in AIRToAIEPass.cpp), since
+  // allocations that each fold in isolation can still concatenate into a chain
+  // that does not.
+  llvm::MapVector<std::pair<Operation *, int>, SmallVector<size_t>> chains;
+  for (auto [i, alloc] : llvm::enumerate(s2mm_allocs))
+    if (alloc.dma_tile)
+      chains[{alloc.dma_tile.getOperation(), alloc.dma_channel.channel}]
+          .push_back(i);
+
   for (auto &[key, allocIdxs] : chains) {
-    auto tile = s2mm_allocs[allocIdxs.front()].dma_tile;
     std::vector<Operation *> ops;
     for (size_t i : allocIdxs)
       llvm::append_range(ops, s2mm_allocs[i].memcpyOps);
-    if (chainIsSafe(ops))
+    if (ops.size() <= 1)
       continue;
 
-    // Only a chain hosting more than one logical flow can be split apart.
-    llvm::SetVector<Operation *> decls;
-    bool allKeyed = true;
-    for (auto *o : ops) {
-      auto *d = declOf(o);
-      if (!d) {
-        allKeyed = false;
-        break;
-      }
-      decls.insert(d);
-    }
-    if (!allKeyed || decls.size() < 2)
+    // Only a chain hosting more than one logical flow can mis-deliver ACROSS
+    // flows, which is the deadlock this diagnoses. A single-flow chain that
+    // slips writes its own slices out of order -- a different (and, where it
+    // happens today, deliberate) matter.
+    llvm::SetVector<Operation *> flows;
+    for (auto *o : ops)
+      if (auto ci = dyn_cast_if_present<air::ChannelInterface>(o))
+        if (auto decl = air::getChannelDeclarationThroughSymbol(ci))
+          flows.insert(decl.getOperation());
+    if (flows.size() < 2)
       continue;
 
-    auto &used = usedChansPerTile[key.first];
-    int numChans = tile.getNumDestConnections(AIE::WireBundle::DMA);
-    int freeChan = -1;
-    for (int c = 0; c < numChans; c++)
-      if (!used.count(c)) {
-        freeChan = c;
-        break;
-      }
-    if (freeChan < 0)
-      continue; // Nowhere to move it; leave the chain as-is.
+    // Bound the control-flow walk at the core body: transfers in different
+    // herds are different consumers and share no BD ring.
+    Operation *stopAt = ops.front()->getParentOfType<air::HerdOp>();
 
-    // Peel the one flow whose removal leaves BOTH chains foldable.
-    for (auto *d : decls) {
-      std::vector<Operation *> moved, rest;
-      for (auto *o : ops)
-        (declOf(o) == d ? moved : rest).push_back(o);
-      if (moved.empty() || rest.empty())
-        continue;
-      if (!chainIsSafe(moved) || !chainIsSafe(rest))
-        continue;
+    std::string why = diagnoseS2MMChain(ops, stopAt);
+    if (why.empty())
+      continue;
 
-      // Retarget an allocation whose transfers all move; split the rest.
-      SmallVector<allocation_info_t> splits;
-      for (size_t i : allocIdxs) {
-        std::vector<Operation *> keepOps, moveOps;
-        for (auto *o : s2mm_allocs[i].memcpyOps)
-          (declOf(o) == d ? moveOps : keepOps).push_back(o);
-        if (moveOps.empty())
-          continue;
-        s2mm_allocs[i].packet_flow_id = -1; // reassigned on flow connection
-        if (keepOps.empty()) {
-          s2mm_allocs[i].dma_channel = {AIE::DMAChannelDir::S2MM, freeChan};
-          s2mm_allocs[i].tile_channel = freeChan;
-          continue;
-        }
-        allocation_info_t split = s2mm_allocs[i];
-        split.dma_channel = {AIE::DMAChannelDir::S2MM, freeChan};
-        split.tile_channel = freeChan;
-        split.memcpyOps = moveOps;
-        s2mm_allocs[i].memcpyOps = keepOps;
-        splits.push_back(split);
-      }
-      llvm::append_range(s2mm_allocs, splits);
-      used.insert(freeChan);
-
-      // Retarget the flow bundle for this channel declaration too: the flows
-      // are connected from the bundle's own copy of the allocation, so leaving
-      // it behind would route the packet to the channel the BDs just left.
-      for (auto &f : memcpy_flows) {
-        if (f.air_flow_op != d)
-          continue;
-        for (auto &fa : f.S2MM_alloc) {
-          if (!fa.dma_tile || fa.dma_tile.getOperation() != key.first)
-            continue;
-          if (fa.dma_channel.direction != AIE::DMAChannelDir::S2MM ||
-              fa.dma_channel.channel != key.second)
-            continue;
-          fa.dma_channel.channel = freeChan;
-          fa.tile_channel = freeChan;
-        }
-      }
-      LLVM_DEBUG(llvm::dbgs()
-                 << "rebalanced aperiodic S2MM chain on tile "
-                 << tile.getOperation() << ": moved " << moved.size() << " of "
-                 << ops.size() << " transfers to channel " << freeChan << "\n");
-      break;
-    }
+    auto diag = ops.front()->emitWarning()
+                << "compute-tile S2MM channel " << key.second << " multiplexes "
+                << flows.size() << " flows over " << ops.size()
+                << " transfers, but " << why
+                << ". The receiver is expected to deadlock after the first "
+                   "dispatch. Give one flow its own channel with "
+                   "air.tile_dma_channel, or equalize the paths so each "
+                   "delivers the same transfers";
+    for (auto *f : flows)
+      diag.attachNote(f->getLoc()) << "flow on this chain";
   }
 }
 

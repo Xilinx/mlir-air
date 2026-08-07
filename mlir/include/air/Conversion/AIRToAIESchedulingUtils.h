@@ -55,6 +55,22 @@ int64_t get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
 llvm::MapVector<int, llvm::SetVector<Operation *>>
 getRepeatCounts(std::vector<Operation *> memcpy_ops);
 
+// True if the two ops lower to interchangeable BDs (same memref and matching
+// offsets/sizes/strides for channel ops; structural equivalence for dma ops).
+bool memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB);
+
+// True if the two channel ops are slots of one N-buffer rotation: same channel
+// declaration, same memref type and access pattern, but possibly different
+// buffer values.
+bool chansPartOfSameRotation(air::ChannelInterface chanA,
+                             air::ChannelInterface chanB);
+
+// The unique repeating unit of a chain of memcpy ops, or an empty vector when
+// the chain does not repeat. This is the oracle the BD emitter itself uses to
+// decide whether a chain folds into a circular ring.
+llvm::SetVector<Operation *>
+getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps);
+
 std::vector<AIE::BDDimLayoutAttr>
 getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,
                    ArrayRef<OpFoldResult> memcpy_strides, MLIRContext *ctx);
@@ -293,15 +309,10 @@ public:
   FailureOr<AIE::BufferOp> getBuffer(uint64_t, AIE::TileOp tile,
                                      air::MemcpyInterface &memcpyOp);
 
-  // Split any S2MM chain that interleaves distinct flows at mismatched
-  // multiplicity (so its BD ring is not a whole number of per-dispatch arrival
-  // patterns and the BD pointer drifts) onto a spare channel of the same tile.
-  // No-op for homogeneous or equal-multiplicity chains, and for tiles with no
-  // spare channel. `memcpy_flows` is updated in lockstep so the flows that get
-  // connected afterwards target the same channel the BDs were moved to. Run
-  // after sortMemcpyOps, before flows are connected.
-  void
-  rebalanceAperiodicPacketChains(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
+  // Warn about any compute-tile S2MM chain whose BD ring cannot stay in step
+  // with its per-dispatch packet arrivals. Diagnostic only -- nothing is
+  // moved. Run after sortMemcpyOps, once the per-channel op order is final.
+  void verifyS2MMChains();
 };
 
 class ShimDMAAllocator : public DMAAllocator {
