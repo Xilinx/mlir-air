@@ -1,0 +1,51 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# TEMPORARY diagnostic. Dumps the perf-relevant platform state of the nightly
+# benchmark runner so its ~39 tok/s on llama32_1b_q4nx can be compared against
+# a machine that measures ~51 tok/s on the identical build.
+#
+# Deliberately does NOT build mlir-air: everything here is rootless sysfs reads
+# plus a CPU-only control benchmark, so a run costs ~5 minutes instead of the
+# nightly's ~300.
+#
+# Three lines decide the diagnosis:
+#   A2  platform_profile        -- reference machine: file absent (OS-uncapped)
+#   A4  spd5118 hub count       -- reference machine: 2 (dual-channel DDR5-5600)
+#   D   all-core sustained W    -- reference machine: 41 W sustained, 49 W burst
+#
+# Reference machine for every number: ASRock 4X4 BOX-AI350, Ryzen AI 7 350
+# (Krackan Point, same NPU, 50 TOPS), 51.6 tok/s / 0.900 s TTFT on q4nx.
+#
+# Delete this workflow once the runner's deficit is explained.
+
+name: Platform Probe (diagnostic)
+
+on:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  probe:
+    name: Probe benchmark runner platform
+    runs-on: amdryzenai5pro340
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Probe
+        run: |
+          # numpy only, for the DRAM-bandwidth / sgemm host controls in part C.
+          python3.12 -m venv probe-venv
+          source probe-venv/bin/activate
+          pip install -q --upgrade pip
+          pip install -q numpy
+
+          source /opt/xilinx/xrt/setup.sh
+
+          chmod +x utils/npu_platform_probe.sh
+          ./utils/npu_platform_probe.sh 5
