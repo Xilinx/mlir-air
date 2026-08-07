@@ -89,37 +89,28 @@ places. Treat the absolute figures in §2–§7 as of their measurement date.
 
 ### 2.1 Why the obvious method does not work
 
-Rebuilding each sub-kernel as its own **single-launch ELF** and timing it —
-the natural "standalone at the same shape" reference — produces numbers that
-are both slow and *wrong*:
+Rebuilding each sub-kernel as its own **single-launch ELF** — the natural
+"standalone at the same shape" reference — gives numbers that are both slow and
+*wrong*. A single-launch, multi-M-iteration drain GEMM returns correct output on
+the first invocation and garbage in the first half of its output rows on every
+one after:
 
 ```
-M=1024 (4 M-launch iterations), 1024x768x768 drain, single-launch ELF,
-each call re-uploads every buffer:
+M=1024 (4 M-launch iterations), 1024x768x768 drain, single-launch ELF:
   call 0: mean_rel_L1=9.601e-03   bad 32-row blocks  0/32
   call 1: mean_rel_L1=2.087e-01   bad 32-row blocks 16/32   [0,1,2,3,4,5...]
-  call 2: mean_rel_L1=2.087e-01   bad 32-row blocks 16/32
-  ...
 M=256  (1 M-launch iteration): correct on every call.
 ```
 
-**A single-launch, multi-M-iteration drain GEMM lowered to ELF returns correct
-output on the first invocation and garbage in the first half of its output rows
-on every invocation after that.** Reproducer:
-`scripts/repro_single_launch_elf_corruption.py`. It is *not* a buffer-reuse
-artifact (reproduced with every buffer re-uploaded and with the `xrt.run` object
-reused), and it is *not* `stack_size`.
+Not a buffer-reuse artifact (reproduced with every buffer re-uploaded and with
+the `xrt.run` object reused) and not `stack_size`. Worth filing against the
+AIRRt→NPU multi-iteration launch lowering.
 
-**The shipping deployment is NOT affected** — the full-encoder check re-run this
-session PASSes, per-layer cosine 0.9954–0.9995, **final gate 0.990635 > 0.99**.
-The shipping ELFs are *multi-launch* (7 and 10 launches) and correct; the
-replicated multi-launch ELFs used below verify at `mean_rel_L1 = 9.56e-3`. Only
-the single-launch form corrupts. Worth filing against the AIRRt→NPU multi-
-iteration launch lowering.
-
-Truncated prefixes of the real fused ELF were tried as an alternative and hang
-(`ERT_CMD_STATE_TIMEOUT`) at some prefix lengths — also an artifact of
-truncation, not of the shipping ELF.
+**The shipping ELFs are unaffected**: they are multi-launch (7 and 10 launches),
+and `make verify` passes. Only the single-launch form corrupts — which is why
+§2.2 measures with replicated multi-launch ELFs instead. Truncated prefixes of
+the real fused ELF were the other candidate and hang (`ERT_CMD_STATE_TIMEOUT`)
+at some prefix lengths.
 
 ### 2.2 The method that does work: replicated-launch ELFs
 
@@ -208,10 +199,9 @@ path uses, median of 30 (15 for im2col), machine idle.
 | **TOTAL itemised host** | | | **14.84 ms** |
 
 For reference: `im2col_patch_embed` at **1 thread** cost 9.455 ms instead of
-4.220 ms — that 5.2 ms/image difference is why it ran *outside* the BLAS clamp
-this session measured. **That clamp no longer exists**: a later A/B over ten
-runs found it made no difference (442.5 vs 441.1 ms) and it was deleted. See
-`explain.md` §6.
+4.220 ms, which is why it ran outside the host BLAS clamp this session measured.
+That clamp has since been removed — ten later runs found it made no difference
+either way (442.5 vs 441.1 ms).
 
 Note: the connector weight (12288×960 bf16, 23.6 MB) is **not** copied per call
 — it is already contiguous bf16, so `ascontiguousarray` is a no-op. Same for
