@@ -21,8 +21,16 @@
 
 name: Platform Probe (diagnostic)
 
+# workflow_dispatch alone would not show up in the Actions UI: GitHub only lists
+# a dispatchable workflow once its file is on the default branch, and this one
+# is intentionally branch-local. So it also self-triggers on push to its own
+# branch -- pushing here is the way to run it. No other workflow fires on a
+# branch push (the build workflows filter to main; buildAIRWheels to v*.*.* tags).
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - erwei/ci-platform-probe
 
 defaults:
   run:
