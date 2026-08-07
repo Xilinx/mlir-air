@@ -91,6 +91,8 @@ at the same effective shim bandwidth.
 - Weights: `FastFlowLM/Gemma3-4B-NPU2` from the Hub (single `model.q4nx`
   safetensors bundle, ~3.7 GB). Override the source with
   `MODEL_SOURCE=<repo id | local dir | model.q4nx path>`.
+- Python deps on top of the base environment: `pip install -r requirements.txt`
+  (`huggingface_hub` for the bundle, `transformers` for the tokenizer).
 
 ## Quick Start
 
@@ -108,10 +110,13 @@ make run          # or: make verify   (same gate, the name CI uses)
 
 # Prefill only (no decode loop) -- same 9079 gate, useful when bringing up the
 # prefill on its own.
-make prefill
+make prefill      # or: make verify-paris
 
-# Decode throughput over NTOK tokens (needs the production templates).
-make profile NTOK=64
+# A single Q&A turn on your own prompt.
+make ask PROMPT="What is the capital of France?" N_TOKENS=32
+
+# Decode throughput over N_TOKENS tokens (needs the production templates).
+make profile N_TOKENS=64
 
 # Shorter prefill context, and a local bundle instead of the Hub.
 make run CTX=2048 MODEL_SOURCE=/path/to/Gemma3-4B-NPU2
@@ -128,6 +133,15 @@ and generation continues coherently:
 
 `make verify` is that gate. CI runs it via `run_npu2_verify.lit`, skipping
 cleanly when the Q4NX weights are absent from the runner's HF cache.
+
+This is the one place the example departs from the shared `llms/` contract: it
+ships no `verify_adapter.py` and does not drive `llms/verify/` (top-k token-set
+inclusion vs an HF bf16 reference). That subsystem needs an HF bf16 checkpoint of
+the same weights, and for Gemma3-4B that is `google/gemma-3-4b-pt` — a gated,
+multimodal checkpoint that the shared `HfRunner` (`AutoModelForCausalLM`) does not
+load as a text-only model. Greedy-token parity against the reference
+implementation is the substitute. Adding the adapter is the natural follow-up if
+the text-only reference path is ever wired up.
 
 ## How it works
 
