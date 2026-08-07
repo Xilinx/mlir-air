@@ -90,7 +90,7 @@ func.func @asymmetric_arms(%ext: memref<8xbf16>, %mode: i32) {
           scf.yield
         }
         default {
-          // expected-warning@+1 {{multiplexes 2 flows over 5 transfers, but control-flow paths deliver different BD sequences}}
+          // expected-warning@+1 {{multiplexes 2 flows over 5 transfers, but control-flow paths deliver different BD sequences: the ring was built for one path's transfers and will slip on the others. The receiver is expected to deadlock after the first dispatch. Moving @aX onto its own channel}}
           air.channel.get @aX[] (%x[] [] []) {id = 4 : i32} : (memref<8xbf16, 2>)
           air.channel.get @aSub[] (%sub[] [] []) {id = 5 : i32} : (memref<8xbf16, 2>)
           scf.yield
@@ -131,7 +131,7 @@ func.func @arm_hole(%ext: memref<8xbf16>, %mode: i32) {
           scf.yield
         }
         default {
-          // expected-warning@+1 {{multiplexes 2 flows over 3 transfers, but control-flow paths deliver different BD sequences}}
+          // expected-warning@+1 {{multiplexes 2 flows over 3 transfers, but control-flow paths deliver different BD sequences: the ring was built for one path's transfers and will slip on the others. The receiver is expected to deadlock after the first dispatch. Moving @hX onto its own channel}}
           air.channel.get @hX[] (%x[] [] []) {id = 3 : i32} : (memref<8xbf16, 2>)
           scf.yield
         }
@@ -201,6 +201,42 @@ func.func @unequal_multiplicity_straight_line(%ext: memref<8xbf16>, %mode: i32) 
         air.channel.get @eB[] (%b[] [] []) {id = 3 : i32} : (memref<8xbf16, 2>)
         memref.dealloc %a : memref<8xbf16, 2>
         memref.dealloc %b : memref<8xbf16, 2>
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// An scf.if with no else is a hole too: the false path consumes nothing, so it
+// delivers a shorter word than the true path. This is the same defect as the
+// index_switch hole above, and it is the one an "every flow appears the same
+// number of times" heuristic cannot see at all -- the counts are 1 and 1.
+
+// expected-note@+1 {{flow on this chain}}
+air.channel @fX [1] {channel_type = "npu_dma_packet"}
+// expected-note@+1 {{flow on this chain}}
+air.channel @fW [1] {channel_type = "npu_dma_packet"}
+func.func @if_without_else_hole(%ext: memref<8xbf16>, %mode: i32) {
+  %c1 = arith.constant 1 : index
+  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext, %m=%mode) : memref<8xbf16>, i32 {
+    air.channel.put @fX[] (%e[] [] []) {id = 1 : i32} : (memref<8xbf16>)
+    air.channel.put @fW[] (%e[] [] []) {id = 2 : i32} : (memref<8xbf16>)
+    air.segment @seg args(%sm=%m) : i32 {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%hm=%sm) : i32 attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
+        %x = memref.alloc() : memref<8xbf16, 2>
+        %w = memref.alloc() : memref<8xbf16, 2>
+        %c0_i32 = arith.constant 0 : i32
+        %p = arith.cmpi eq, %hm, %c0_i32 : i32
+        // expected-warning@+1 {{multiplexes 2 flows over 2 transfers, but control-flow paths deliver different BD sequences: the ring was built for one path's transfers and will slip on the others. The receiver is expected to deadlock after the first dispatch. Moving @fX onto its own channel}}
+        air.channel.get @fX[] (%x[] [] []) {id = 1 : i32} : (memref<8xbf16, 2>)
+        scf.if %p {
+          air.channel.get @fW[] (%w[] [] []) {id = 2 : i32} : (memref<8xbf16, 2>)
+        }
+        memref.dealloc %x : memref<8xbf16, 2>
+        memref.dealloc %w : memref<8xbf16, 2>
       }
     }
   }

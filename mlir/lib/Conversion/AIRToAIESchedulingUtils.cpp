@@ -1456,12 +1456,11 @@ static bool allPathWordsEquivalent(ArrayRef<Operation *> ops,
         if (k == brOp)
           words[regionIdx].push_back(o);
 
-    // Regions that cannot be entered contribute nothing and are not a hole.
-    // Everything else -- including an empty region -- must match.
+    // Every region of an scf.if / scf.index_switch is reachable, so all of
+    // them must match -- including an absent else, whose empty word is the
+    // hole case (one path forgets to consume a flow the other one does).
     SmallVector<Operation *> *ref = nullptr;
     for (auto [i, w] : llvm::enumerate(words)) {
-      if (brOp->getRegion(i).empty())
-        continue;
       if (!ref) {
         ref = &words[i];
         continue;
@@ -1500,6 +1499,10 @@ static std::string diagnoseS2MMChain(ArrayRef<Operation *> ops,
     return "control-flow paths deliver different BD sequences: the ring was "
            "built for one path's transfers and will slip on the others";
 
+  // Not checked: that independent producers cannot reorder the arrivals
+  // relative to the consumer's program order. That needs cross-herd ordering
+  // the pass does not have, so convergent flows are trusted to be time-
+  // disjoint.
   return "";
 }
 
@@ -1542,14 +1545,38 @@ void air::TileDMAAllocator::verifyS2MMChains() {
     if (why.empty())
       continue;
 
+    // Name a flow whose removal leaves both halves in step, so the report is
+    // actionable rather than merely alarming.
+    air::ChannelOp pinCandidate = nullptr;
+    for (auto *f : flows) {
+      std::vector<Operation *> peeled, rest;
+      for (auto *o : ops) {
+        auto ci = dyn_cast_if_present<air::ChannelInterface>(o);
+        auto decl = ci ? air::getChannelDeclarationThroughSymbol(ci) : nullptr;
+        (decl && decl.getOperation() == f ? peeled : rest).push_back(o);
+      }
+      if (peeled.empty() || rest.empty())
+        continue;
+      if (diagnoseS2MMChain(peeled, stopAt).empty() &&
+          diagnoseS2MMChain(rest, stopAt).empty()) {
+        pinCandidate = dyn_cast<air::ChannelOp>(f);
+        break;
+      }
+    }
+
     auto diag = ops.front()->emitWarning()
                 << "compute-tile S2MM channel " << key.second << " multiplexes "
                 << flows.size() << " flows over " << ops.size()
                 << " transfers, but " << why
                 << ". The receiver is expected to deadlock after the first "
-                   "dispatch. Give one flow its own channel with "
-                   "air.tile_dma_channel, or equalize the paths so each "
-                   "delivers the same transfers";
+                   "dispatch";
+    if (pinCandidate)
+      diag << ". Moving @" << pinCandidate.getSymName()
+           << " onto its own channel (air.tile_dma_channel on its declaration) "
+              "leaves both chains in step";
+    else
+      diag << ". No single flow can be peeled off to fix it; equalize the "
+              "paths so each delivers the same transfers";
     for (auto *f : flows)
       diag.attachNote(f->getLoc()) << "flow on this chain";
   }
