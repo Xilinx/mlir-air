@@ -1,0 +1,7 @@
+_q4_cache_seq*/
+__pycache__/
+build_*/
+*.elf
+*.o
+*.xclbin
+*.log

@@ -101,6 +101,26 @@ void apply_rope(bf16 *restrict y, bf16 *restrict x, bf16 *restrict cos_val,
   }
 }
 
+#ifdef HAS_QKV_BIAS
+///@brief add the per-projection bias (Qwen2.5 q/k/v_proj.bias) to qkv IN-PLACE,
+/// BEFORE RoPE. Bias slab is laid out [q(DQ)|k(DK)|v(DV)] and lives at
+/// rope_w+DH (appended after the DH cos/sin LUT in the rope weight buffer).
+void add_q_k_v_bias(const bf16 *q_k_v_bias_in, bf16 *qkv) {
+  constexpr uint32_t vec_len = 16;
+  static_assert((DQ + DK + DV) % vec_len == 0);
+  const bf16 *bias_ptr = q_k_v_bias_in;
+  AIE_PREPARE_FOR_PIPELINING
+  AIE_LOOP_RANGE((DQ + DK + DV) / vec_len, (DQ + DK + DV) / vec_len)
+  for (int i = 0; i < DQ + DK + DV; i += vec_len) {
+    aie::vector<bf16, vec_len> bias_vec = aie::load_v<vec_len>(bias_ptr);
+    aie::vector<bf16, vec_len> val_vec = aie::load_v<vec_len>(qkv);
+    aie::store_v(qkv, aie::add(bias_vec, val_vec));
+    bias_ptr += vec_len;
+    qkv += vec_len;
+  }
+}
+#endif
+
 ///@brief pseduo RoPE: q = q, k = k + 1, v = v - 1
 ///@param y: output
 ///@param x: input
@@ -177,6 +197,9 @@ void rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
   _lock_acquire(q_prod_lock);
   _lock_acquire(k_prod_lock, 2);
   _lock_acquire(v_prod_lock, 2);
+#ifdef HAS_QKV_BIAS
+  add_q_k_v_bias(rope_w + DH, qkv); // Qwen2.5 q/k/v bias, before RoPE
+#endif
   pseduo_rope(q, k, v, qkv, rope_w);
   _lock_release(rope_prod_lock);
   _lock_release(qkv_prod_lock);
@@ -192,6 +215,9 @@ void rope_compute(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
                   bf16 *restrict qkv, bf16 *restrict rope_w, int _arm) {
   (void)_arm; // per-token RTP arm-gate operand (kept alive so AIR emits the arm
               // lock)
+#ifdef HAS_QKV_BIAS
+  add_q_k_v_bias(rope_w + DH, qkv); // Qwen2.5 q/k/v bias, before RoPE
+#endif
   pseduo_rope(q, k, v, qkv, rope_w);
 }
 }
