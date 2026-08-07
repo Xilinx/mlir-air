@@ -474,6 +474,9 @@ def _build_eltwise_add_ir(seq_len, emb_dim, flat_out):
     herd_x = 8
     rows_per_pe = seq_len // herd_x
     assert seq_len % herd_x == 0, (seq_len, herd_x)
+    # The row loop vectorizes 16-wide with fixed-size subviews, so a ragged tail
+    # would read past the L1 row buffer rather than be masked off.
+    assert emb_dim % 16 == 0, f"emb_dim ({emb_dim}) must be a multiple of 16"
 
     @module_builder
     def _build():

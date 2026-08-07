@@ -1740,7 +1740,7 @@
       "K": 2560,
       "N": 10240,
       "used_by": "Gemma3-4B Gate/Up proj (emb=2560, ffn=10240)",
-      "_note": "N=10240=512*20 -> stock TILE_N=128 HERD_N=4. As with the Qwen3-4B 2560x9728 sibling, tile_k_l2>=128 FAILS aiecc (f32-out B-tile DMA stride 128*10240=1310720 > 1048576); tile_k_l2=64 keeps it at 655360. Tiles inherited from that entry; mean_rel_L1 measured on NPU2, gflops carried over (not independently swept).",
+      "_note": "N=10240=512*20 -> stock TILE_N=128 HERD_N=4. tile_k_l2=128 SWEPT on NPU2 (4849 GF/s vs 4516 at 64, 4143 at 32, same mean_rel_L1); 256 fails to compile, so 128 is the ceiling here. This shape does NOT obey the tile_k_l2*N <= 1048576 guideline the sibling entries were tuned under -- 128*10240 = 1310720 compiles fine, so that rule is one step conservative at this N. mean_rel_L1 measured on NPU2; see the method _note for the sweep. The Qwen3-4B 2560x9728 sibling still carries the inherited tile_k_l2=64 and has not been re-swept.",
       "methods": {
         "fused-cast": {
           "tile": {
