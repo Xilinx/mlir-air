@@ -60,6 +60,21 @@ from llama32_1b_prefill import (  # noqa: E402,F401
 from llama32_1b_cpu_helpers import attention_reference  # noqa: E402
 
 
+def _use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
+    """TEMPORAL_CAUSAL_SKIP=1 (opt-in): use the seq-first temporal-causal FA.
+
+    It maps one q-seq-tile per core over NB column-blocks and skips the
+    non-causal part of the K/V stream, and being seq-first it also drops the
+    host transposes the head-first path needs. Requires seq_len % 256 == 0.
+    Off by default: the shipped path stays head-first FA.
+    """
+    if os.environ.get("TEMPORAL_CAUSAL_SKIP") != "1":
+        return False
+    from shared.infra.fa_temporal import supports
+
+    return supports(seq_len, n_heads, n_kv_heads, head_dim)
+
+
 def compile_all_kernels(cache, config, seq_len, cpu_attn=False):
     """Pre-compile all unique kernel configs to cache.
 
@@ -111,14 +126,22 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False):
         "o_ffn", build_o_ffn_module(seq_len, emb_dim, hidden_dim), o_ffn_backend
     )
 
-    # 3. Flash Attention (head-first, head_dim=128). Skip if using CPU fallback.
+    # 3. Flash Attention (head_dim=128). Skip if using CPU fallback.
     if not cpu_attn:
-        print("\n--- flash_attn (head-first FA, head_dim=128) ---")
-        from shared.infra.fa_headfirst import compile_headfirst_fa
+        if _use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
+            print("\n--- flash_attn (seq-first TEMPORAL-CAUSAL FA, head_dim=128) ---")
+            from shared.infra.fa_temporal import compile_temporal_fa
 
-        compile_headfirst_fa(
-            cache, seq_len, n_heads, n_kv_heads, head_dim, cache.verbose
-        )
+            compile_temporal_fa(
+                cache, seq_len, n_heads, n_kv_heads, head_dim, cache.verbose
+            )
+        else:
+            print("\n--- flash_attn (head-first FA, head_dim=128) ---")
+            from shared.infra.fa_headfirst import compile_headfirst_fa
+
+            compile_headfirst_fa(
+                cache, seq_len, n_heads, n_kv_heads, head_dim, cache.verbose
+            )
     else:
         print("  Skipping flash_attn compilation (using CPU attention fallback)")
 
@@ -213,12 +236,15 @@ def run_transformer_block(
                 n_kv_heads,
             ).astype(bfloat16)
     else:
-        # NPU head-first FlashAttention (head_dim=128). q_roped/k_roped are
-        # post-RoPE seq-first (pure Llama: no QK-norm, no bias); v is the raw
-        # V projection seq-first. Real (un-padded) dims.
-        from shared.infra.fa_headfirst import npu_fa_headfirst
+        # NPU FlashAttention (head_dim=128). q_roped/k_roped are post-RoPE
+        # seq-first (pure Llama: no QK-norm, no bias); v is the raw V
+        # projection seq-first. Real (un-padded) dims.
+        if _use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
+            from shared.infra.fa_temporal import npu_fa_temporal as _npu_fa
+        else:
+            from shared.infra.fa_headfirst import npu_fa_headfirst as _npu_fa
 
-        attn_out = npu_fa_headfirst(
+        attn_out = _npu_fa(
             cache,
             np.ascontiguousarray(q_roped),
             np.ascontiguousarray(k_roped),
