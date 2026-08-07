@@ -458,6 +458,18 @@ def run_profile(prompt: str = DEFAULT_PROMPT, reps: int = 5, n_cameras: int = 3)
             f"({total * n_cam / med(vis) * 100:.0f}% device, "
             f"{med(vis) - total * n_cam:.1f} ms host)"
         )
+
+    # Machine-readable line for llms/bench/extract_perf.py, which the nightly
+    # profile lit pipes this output through. Kept to one line, in the shape the
+    # other models' summaries use, so the shared extractor needs one regex and
+    # no model-specific branch. prompt_len is the prefix the backbone attends
+    # over (3 x 64 image + 48 language + 1 state), the analogue of the siblings'
+    # prefill length.
+    print()
+    print(
+        f"  Action chunk (NPU vision): {med(npu):.1f} ms, "
+        f"prompt_len={64 * n_cam + 49}"
+    )
     print("=" * 74)
     return 0
 
