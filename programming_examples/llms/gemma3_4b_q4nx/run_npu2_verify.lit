@@ -1,0 +1,23 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// GEMMA3-4B Q4NX end-to-end correctness gate: greedy first-token argmax.
+// Runs the batched AIR prefill (which produces the first token and the KV seed)
+// followed by the fused on-device decode (34 layers + tied LM head in one
+// dispatch) for "The capital of France is", and PASSes iff the first greedy
+// token is 9079 (" Paris") -- matching FastFlowLM's Gemma3 NPU output.
+//
+// This is the Q4NX analogue of the other examples' `make verify` vs HF bf16
+// (which does not apply here: greedy-token parity against the reference
+// implementation, not top-k). The weights come from the model.q4nx bundle on
+// the Hub, pre-seeded into the perf runner's HF cache, so it is gated on that
+// repo being present (skips cleanly where absent).
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_fastflowlm_gemma3_4b_npu2
+//
+// RUN: mkdir -p test_npu2_verify
+// RUN: cd test_npu2_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile LBUILD=16 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: *** PARIS ***

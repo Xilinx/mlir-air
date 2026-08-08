@@ -21,6 +21,7 @@ multi-launch ELFs and gates correctness against a Hugging Face bf16 reference.
 | **Qwen3-4B** | `Qwen/Qwen3-4B` | 36 | 2560 / 128 / 9728 | GQA 32Q/8KV | QK-norm, decoupled q_dim=4096 | prefill + decode |
 | **Llama-3.2-3B** | `meta-llama/Llama-3.2-3B` | 28 | 3072 / 128 / 8192 | GQA 24Q/8KV | pure Llama, hd=128 | prefill + decode |
 | **Llama-3.2-3B Q4NX** | `FastFlowLM/Llama-3.2-3B-NPU2` | 28 | 3072 / 128 / 8192 | GQA 24Q/8KV | q4nx 4-bit weights | prefill + decode |
+| **Gemma3-4B** | `FastFlowLM/Gemma3-4B-NPU2` | 34 | 2560 / 256 / 10240 | GQA 8Q/4KV | q4nx, QK-norm, GELU-tanh, 4 norms/layer, 1024 sliding window, dual-theta RoPE, hd=256 | prefill + decode |
 
 All are decoder-only with RMSNorm + SwiGLU FFN + RoPE. The architecture axes that
 shape each deployment's dataflow:
@@ -88,6 +89,7 @@ llms/
 ├── llama32_1b_q4nx/    # Q4NX 4-bit Llama-3.2-1B (fused decode superkernel)
 ├── llama32_3b/         # bf16 Llama-3.2-3B (pure Llama, head_dim=128)
 ├── llama32_3b_q4nx/    # Q4NX 4-bit Llama-3.2-3B (reuses the bf16 3B runner)
+├── gemma3_4b_q4nx/     # Q4NX 4-bit Gemma3-4B (fused decode + batched prefill)
 ├── smollm2_1_7b/       # bf16 SmolLM2-1.7B (MHA)
 ├── qwen25_0_5b/        # Qwen2.5-0.5B  (QKV bias, head_dim=64)
 ├── qwen25_1_5b/        # Qwen2.5-1.5B  (QKV bias, head_dim=128)

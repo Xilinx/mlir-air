@@ -144,6 +144,33 @@ Shapes cover LLM weight-projection shapes (the four 2048-row entries) and a squa
 | 2048×2560×9728 | 64/**64**/32/128 | 5528 | 9.8e-3 | ✅ Qwen3-4B Gate/Up (N=9728: tile_k_l2≥128 DMA-stride fails; tile_k_l2=64 keeps high-prec, beats low) |
 | 2048×4096×2560 | 64/256/32/128 | 7560 | 9.9e-3 | ✅ Qwen3-4B O proj alt (4096→2560) |
 | 2048×9728×2560 | 64/256/32/128 | 8633 | 9.8e-3 | ✅ Qwen3-4B Down proj (9728→2560) |
+| 2048×2560×2048 | 64/256/32/128 | 7034† | 1.0e-2 | ✅ Gemma3-4B Q proj (emb=2560→8·256=2048) |
+| 2048×2048×2560 | 64/256/32/128 | 7560† | 1.0e-2 | ✅ Gemma3-4B O proj (2048→2560) |
+| 2048×2560×10240 | 64/**128**/32/128 | 4849 | 1.0e-2 | ✅ Gemma3-4B Gate/Up (N=10240; `tile_k_l2` swept, 128 is the ceiling) |
+| 2048×10240×2560 | 64/256/32/128 | 8633† | 1.0e-2 | ✅ Gemma3-4B Down proj (10240→2560) |
+
+> † **Gemma3-4B rows — tiles inherited, precision measured.** The Gemma3-4B
+> shapes reuse the tiling of their nearest same-K / same-N Qwen3-4B neighbour
+> (2560×4096, 4096×2560, 9728×2560) rather than being independently swept; the
+> `mean_rel_L1` column is **measured on NPU2** (all land at 1.0e-2, matching
+> their donors) but the GFLOPS column is carried over from the donor row.
+>
+> **2048×2560×10240 is the exception — it was swept**, and the inherited value
+> was wrong: 4849 GF/s at `tile_k_l2=128` against 4516 at 64 and 4143 at 32, all
+> at the same `mean_rel_L1`. So the guideline `tile_k_l2·N ≤ 1048576` is one
+> step too conservative; 128·10240 = 1310720 compiles and is the ceiling (256
+> does not compile). 2048×2560×2048, 2048×2048×2560 and 2048×10240×2560 were
+> swept at the same time and are already at their optimum — 512 either fails to
+> compile or is slightly slower. **The Qwen3-4B 2560×9728 row still carries the
+> unswept `tile_k_l2=64` and is likely leaving the same ~7% on the table.**
+>
+> Two further findings from that sweep, both worth knowing before tuning these
+> shapes: the `drain` method is broken through the stitched-ELF build path
+> (wrong results at every shape tried, including 2048×2048×512 which this table
+> lists as drain-best), and the fused-cast f32 scratch round-trip is NOT the
+> bottleneck at large N — 2048×2560×10240 and 2048×10240×2560 have identical
+> FLOPs and 1.9x different DDR traffic yet run within 5% of each other, i.e.
+> these GEMMs are compute-bound at ~5 TFLOP/s.
 
 ### high-precision, `--method drain` (tile_m=32) — fastest at small / thin shapes
 

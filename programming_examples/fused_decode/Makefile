@@ -35,7 +35,7 @@ PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
 # weight files are read at build time -- the compile is weight-free).
 DECODE_ENV     := VOCAB_CHUNK_I2=14 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1
 
-.PHONY: help compile-decode _compile_decode_build clean
+.PHONY: help compile-decode _compile_decode_build preflight-llvm-link clean
 
 help:
 	@echo "============================================================"
@@ -69,7 +69,10 @@ compile-decode:
 	  $(MAKE) -f $(srcdir)/Makefile _compile_decode_build; \
 	fi
 
-_compile_decode_build:
+## Shared preflight for every inline-attn decode build. Any model driving this
+## engine (llms/*_q4nx) must run it rather than copy it: the rule below has been
+## tightened once already, and a stale copy silently reintroduces the miscompile.
+preflight-llvm-link:
 	@echo ">>> preflight: llvm-link must match Peano's LLVM major for the inline-attn merge"
 	@# Must EQUAL Peano's major, not merely be <23: a >=23 llvm-link rewrites
 	@# llvm.lifetime.* to the no-size form and Peano opt rejects the module (loud),
@@ -87,6 +90,8 @@ _compile_decode_build:
 	  if [ "$$VER" != "$$PEANO_VER" ]; then \
 	    echo "ERROR: llvm-link is LLVM $$VER but Peano is LLVM $$PEANO_VER; they must match"; \
 	    echo "       (see README Reproducibility for how to fetch a matching llvm-link)"; exit 1; fi
+
+_compile_decode_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done

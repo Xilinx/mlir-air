@@ -79,9 +79,15 @@ void apply_rope(bf16 *restrict y, bf16 *restrict x, bf16 *restrict cos_val,
     aie::vector<bf16, vector_size> x2_vec = aie::load_v<vector_size>(it_x_p2);
     aie::vector<bf16, vector_size> cos_vec = aie::load_v<vector_size>(it_cos);
     aie::vector<bf16, vector_size> sin_vec = aie::load_v<vector_size>(it_sin);
-    aie::vector<bf16, vector_size> neg_sin_vec = aie::neg(sin_vec);
     aie::accum<accfloat, vector_size> C = aie::mul(x1_vec, cos_vec);
+#if !defined(__chess__)
+    // Peano can't legalize vector FNEG on bf16 (aie::neg) -> emits code that
+    // stalls the core; use multiply-subtract (C - x2*sin) instead.
+    C = aie::msc(C, x2_vec, sin_vec);
+#else
+    aie::vector<bf16, vector_size> neg_sin_vec = aie::neg(sin_vec);
     C = aie::mac(C, x2_vec, neg_sin_vec);
+#endif
     aie::accum<accfloat, vector_size> D = aie::mul(x1_vec, sin_vec);
     D = aie::mac(D, x2_vec, cos_vec);
     aie::store_v(it_y_p1, C.template to_vector<bf16>());

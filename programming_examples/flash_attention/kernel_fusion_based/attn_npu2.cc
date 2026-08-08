@@ -728,6 +728,81 @@ void apply_causal_mask(bfloat16 *g, int32_t q_block_idx, int32_t kv_block_idx) {
   }
 }
 
+// Apply a sliding-window causal mask to QK scores in-place: keep only
+// global_q_row - window < global_kv_col <= global_q_row. `window_blocks` is the
+// window measured in lqp-sized blocks (window = window_blocks * lqp), which is
+// exact because the window sizes we tile for are multiples of lqp. Same
+// column-major 8x8 tiled G layout as apply_causal_mask.
+//
+// With lqp == lkp there are exactly two ragged blocks per row-block: the
+// diagonal (masks col > row, as in the causal case) and the oldest in-window
+// block (masks col <= row, its exact complement).
+void apply_window_mask(bfloat16 *g, int32_t q_block_idx, int32_t kv_block_idx,
+                       int32_t window_blocks) {
+  SET_ROUNDING();
+  uint16_t neg_inf_u16 = (uint16_t)0xff80;
+  bfloat16 neg_inf_val = *(bfloat16 *)&neg_inf_u16;
+
+  const int32_t old_block_idx = q_block_idx - window_blocks;
+
+  // 1. Wholly outside the window (in the future, or older than the window).
+  if (kv_block_idx > q_block_idx || kv_block_idx < old_block_idx) {
+    constexpr int VecLen = 32;
+    aie::vector<bfloat16, VecLen> neg_inf_vec =
+        aie::broadcast<bfloat16, VecLen>(neg_inf_val);
+    bfloat16 *p = g;
+    for (int i = 0; i < lqp * lkp; i += VecLen) {
+      aie::store_v(p, neg_inf_vec);
+      p += VecLen;
+    }
+    return;
+  }
+
+  // 2. Strictly interior to the window: nothing to mask.
+  if (kv_block_idx < q_block_idx && kv_block_idx > old_block_idx) {
+    return;
+  }
+
+  // 3. Ragged edge. Read-modify-write EVERY 8-element row slice (the same
+  // invariant apply_causal_mask relies on), selecting per element.
+  const bool diag = (kv_block_idx == q_block_idx);
+  constexpr int BlkDim = 8;
+  aie::vector<bfloat16, BlkDim> mask_vec =
+      aie::broadcast<bfloat16, BlkDim>(neg_inf_val);
+
+  for (int row = 0; row < lqp; row++) {
+    int bound = row + 1;
+    int row_blk = row / BlkDim;
+    int row_in = row % BlkDim;
+
+    for (int col_blk = 0; col_blk < lkp / BlkDim; col_blk++) {
+      int col_start = col_blk * BlkDim;
+      int off = col_blk * (lqp * BlkDim) + row_blk * (BlkDim * BlkDim) +
+                row_in * BlkDim;
+
+      aie::vector<bfloat16, BlkDim> orig = aie::load_v<BlkDim>(g + off);
+
+      uint32_t sel_bits = 0;
+      for (int c = 0; c < BlkDim; c++) {
+        int col = col_start + c;
+        bool masked = diag ? (col >= bound) : (col < bound);
+        if (masked) {
+          sel_bits |= (1u << c);
+        }
+      }
+
+      if (sel_bits == 0) {
+        aie::store_v(g + off, orig);
+      } else if (sel_bits == ((1u << BlkDim) - 1)) {
+        aie::store_v(g + off, mask_vec);
+      } else {
+        aie::mask<BlkDim> sel(sel_bits);
+        aie::store_v(g + off, aie::select(orig, mask_vec, sel));
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // dv-chunked output accumulators (head_dim > lkp).
 //

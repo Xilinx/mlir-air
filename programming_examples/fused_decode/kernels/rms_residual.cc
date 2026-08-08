@@ -110,6 +110,20 @@ void rms_norm_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
   rms_norm(y, x, w);
 }
 
+// 2K-weight variants: w holds TWO MODEL_DIM norm weights back-to-back; _lo uses
+// the first, _hi the second (w + MODEL_DIM). Lets one packet channel carry two
+// norms so the Gemma 4-norm rms tile keeps <=4 packet ids per S2MM port.
+void rms_norm_lo_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
+                     int _arm) {
+  (void)_arm;
+  rms_norm(y, x, w);
+}
+void rms_norm_hi_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
+                     int _arm) {
+  (void)_arm;
+  rms_norm(y, x, w + MODEL_DIM);
+}
+
 // Header-bearing variant for the PACKET x-feed (STAGE_MLP>=2 convergence):
 // write the AIE packet header (pkt_id) at y+14 and the rmsnorm payload at y+16,
 // matching the reference rms_residual + proj_qmm.cc's header convention. The
@@ -160,9 +174,11 @@ void rms_residual(bf16 *restrict y, bf16 *restrict x_ping,
   uint32_t *pkt_id_ptr = reinterpret_cast<uint32_t *>(y + 14);
   bf16 *x;
 
-  static bool is_x_ping = false;
-  static bool is_lm_head_ping = false;
-  static bool is_w_ping = false;
+  // .data (not .bss): Peano's loader does not zero .bss, so keep these
+  // ping/pong selectors in a section that is initialized at load.
+  __attribute__((section(".data"))) static bool is_x_ping = false;
+  __attribute__((section(".data"))) static bool is_lm_head_ping = false;
+  __attribute__((section(".data"))) static bool is_w_ping = false;
 
   _lock_acquire(rtp_available_lock);
   if (IS_ATTN[0] == 1) {

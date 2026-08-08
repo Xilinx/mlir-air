@@ -36,8 +36,10 @@ extern "C" {
 void attn_kv(bf16 *__restrict s_ping, bf16 *__restrict s_pong,
              bf16 *__restrict v_ping, bf16 *__restrict v_pong,
              bf16 *__restrict o_ping, bf16 *__restrict o_pong, int *L) {
-  alignas(aie::vector_decl_align) static y_acc_dtype y[8 * DH] = {};
-  alignas(aie::vector_decl_align) static bf16 y_bf16[8 * DH] = {};
+  alignas(aie::vector_decl_align) static y_acc_dtype
+      y[Q_HEADS_PADDED_PER_CU * DH] = {};
+  alignas(aie::vector_decl_align) static bf16
+      y_bf16[Q_HEADS_PADDED_PER_CU * DH] = {};
   alignas(aie::vector_decl_align) static float l[16] = {};
   const aie::vector<float, 16> zero = aie::broadcast<float, 16>(0);
 
@@ -49,7 +51,7 @@ void attn_kv(bf16 *__restrict s_ping, bf16 *__restrict s_pong,
   // entry/exit.
   bool svc = is_svc_ping;
   bool lo = is_lo_ping;
-  zero_vectorized<y_acc_dtype, 8 * DH>(y);
+  zero_vectorized<y_acc_dtype, Q_HEADS_PADDED_PER_CU * DH>(y);
   aie::store_v(l, zero);
   _down_lock_acquire(l_cons_lock);
   AIE_LOCK_LOOP_CTR i = L[0];
@@ -66,13 +68,13 @@ void attn_kv(bf16 *__restrict s_ping, bf16 *__restrict s_pong,
     _lock_release(v_prod_lock);
     i -= 16;
   } while (i > 0);
-  passThrough_aie<y_acc_dtype, bf16, 8 * DH>(y, y_bf16);
+  passThrough_aie<y_acc_dtype, bf16, Q_HEADS_PADDED_PER_CU * DH>(y, y_bf16);
   lo = !lo;
   bf16 *o = lo ? o_ping : o_pong;
   is_svc_ping = svc;
   is_lo_ping = lo;
   _lock_acquire(o_prod_lock);
-  scale_div_aie<8 * DH>(y_bf16, o, l);
+  scale_div_aie<Q_HEADS_PADDED_PER_CU * DH>(y_bf16, o, l);
   _lock_release(o_cons_lock);
 }
 }
@@ -678,7 +680,7 @@ void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
                  float *__restrict y_state, float *__restrict l_state, int blk,
                  int L) {
   if (blk == 0) {
-    zero_vectorized<y_acc_dtype, 8 * DH>(y_state);
+    zero_vectorized<y_acc_dtype, Q_HEADS_PADDED_PER_CU * DH>(y_state);
     const aie::vector<float, 16> zero = aie::broadcast<float, 16>(0);
     aie::store_v(l_state, zero);
   }
@@ -694,8 +696,9 @@ void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
 
 void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
                  bf16 *__restrict o) {
-  alignas(aie::vector_decl_align) bf16 y_bf16[8 * DH];
-  passThrough_aie<y_acc_dtype, bf16, 8 * DH>(y_state, y_bf16);
-  scale_div_aie<8 * DH>(y_bf16, o, l_state);
+  alignas(aie::vector_decl_align) bf16 y_bf16[Q_HEADS_PADDED_PER_CU * DH];
+  passThrough_aie<y_acc_dtype, bf16, Q_HEADS_PADDED_PER_CU * DH>(y_state,
+                                                                 y_bf16);
+  scale_div_aie<Q_HEADS_PADDED_PER_CU * DH>(y_bf16, o, l_state);
 }
 }

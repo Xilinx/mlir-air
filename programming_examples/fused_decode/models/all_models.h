@@ -20,11 +20,13 @@
 #define A_GELU 1
 
 #define LLAMA_3_2_1B 0
+#define GEMMA3_4B 1
 
 #ifndef MODEL_TYPE
 #define MODEL_TYPE LLAMA_3_2_1B
 #endif
 
+#include "../models/gemma3-4b.h"
 #include "../models/llama3.2-1b.h"
 
 #endif // __ALL_MODELS_H__
