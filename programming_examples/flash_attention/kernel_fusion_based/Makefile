@@ -19,11 +19,16 @@ NUM_KV_HEADS ?= $(NUM_HEADS)
 # Derived: kernel tile size = LQP / num_q_tiles (4)
 NUM_Q_TILES ?= 4
 LQP_TILE := $(shell echo $$(($(LQP) / $(NUM_Q_TILES))))
-# Per-tile head-dim extents baked into the kernel. Default to LKP (the designs
-# that tile d across the DMA); attn_npu2_temporal_causal.py keeps d whole and
-# passes DK_TILE=$(DK) DV_TILE=$(DV).
-DK_TILE ?= $(LKP)
-DV_TILE ?= $(LKP)
+# Per-tile head-dim extents baked into the kernel, as -Ddk/-Ddv. These MUST
+# agree with the dk_tile/dv_tile the Python builder uses, and the two builders
+# disagree by construction: attn_npu2_temporal_causal.py keeps d whole
+# (dk_tile = dk), while attn_npu2.py / attn_npu2_seqfirst.py / attn_npu1.py all
+# hardcode dk_tile = lkp. Derive the default from SCRIPT so neither direction
+# can silently desync -- a mismatch here does not fail the build, it produces
+# wrong results.
+IS_TEMPORAL := $(filter attn_npu2_temporal_causal.py,$(SCRIPT))
+DK_TILE ?= $(if $(IS_TEMPORAL),$(DK),$(LKP))
+DV_TILE ?= $(if $(IS_TEMPORAL),$(DV),$(LKP))
 
 
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
@@ -170,14 +175,14 @@ compile-kernel-npu1:
 		echo "Detected PEANO_INSTALL_DIR from environment: $(PEANO_INSTALL_DIR)"; \
 		if [ -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
 			echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) for AIE2 (NPU1)"; \
-			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/attn_npu1.cc -o $(BUILD_DIR)/attn_npu1.o -I${srcdir}/../dataflow_based -Dlqp=$(LQP_TILE) -Dlkp=$(LKP) -Ddk=$(DK_TILE) -Ddk_full=$(DK) -Ddv=$(DV_TILE) -Ddv_full=$(DV) $(EXTRA_KERNEL_FLAGS); \
+			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/attn_npu1.cc -o $(BUILD_DIR)/attn_npu1.o -I${srcdir}/../dataflow_based -Dlqp=$(LQP_TILE) -Dlkp=$(LKP) -Ddk=$(LKP) -Ddk_full=$(DK) -Ddv=$(LKP) -Ddv_full=$(DV) $(EXTRA_KERNEL_FLAGS); \
 		else \
 			echo "Error: invalid PEANO_INSTALL_DIR, clang++ not found."; \
 			exit 1; \
 		fi; \
 	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
 		echo "Using xchesscc_wrapper from PATH for AIE2 (NPU1)"; \
-		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/attn_npu1.cc -o attn_npu1.o -I${srcdir}/../dataflow_based -Dlqp=$(LQP_TILE) -Dlkp=$(LKP) -Ddk=$(DK_TILE) -Ddk_full=$(DK) -Ddv=$(DV_TILE) -Ddv_full=$(DV); \
+		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/attn_npu1.cc -o attn_npu1.o -I${srcdir}/../dataflow_based -Dlqp=$(LQP_TILE) -Dlkp=$(LKP) -Ddk=$(LKP) -Ddk_full=$(DK) -Ddv=$(LKP) -Ddv_full=$(DV); \
 	else \
 		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
 		exit 1; \
