@@ -185,7 +185,15 @@ def compile_rope():
     _compile_kernel(src, "rope.o")
 
 
-def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False, bfp16=True):
+def compile_attn_npu2(
+    head_dim=64,
+    lkp=None,
+    lqp_tile=None,
+    force=False,
+    bfp16=True,
+    dk_tile=None,
+    dv_tile=None,
+):
     """Compile attn_npu2.o (FlashAttention kernel) from source.
 
     The attn_npu2.cc defines are PER-TILE, not per-launch (see the canonical
@@ -207,6 +215,9 @@ def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False, bfp16=T
         lkp: K/V chunk size per tile (= dk/dv tile). Defaults to head_dim
             (legacy hd==lkp behavior).
         lqp_tile: Q tile size (tile_size_q). Defaults to lkp.
+        dk_tile / dv_tile: the K/V dimension TILE. Default to lkp (the kernel
+            slices d into lkp-wide chunks). The temporal-causal kernel keeps d
+            WHOLE instead, so it passes dk_tile = dv_tile = head_dim.
         force: recompile even if attn_npu2.o exists (needed when the same CWD
             previously built a different-shaped .o, e.g. hd=64 then hd=128).
     """
@@ -214,14 +225,18 @@ def compile_attn_npu2(head_dim=64, lkp=None, lqp_tile=None, force=False, bfp16=T
         lkp = head_dim
     if lqp_tile is None:
         lqp_tile = lkp
+    if dk_tile is None:
+        dk_tile = lkp
+    if dv_tile is None:
+        dv_tile = lkp
     src = _PROJ_ROOT / "flash_attention" / "kernel_fusion_based" / "attn_npu2.cc"
     _flags = [
         "-DBIT_WIDTH=8",
         f"-Dlqp={lqp_tile}",
         f"-Dlkp={lkp}",
-        f"-Ddk={lkp}",
+        f"-Ddk={dk_tile}",
         f"-Ddk_full={head_dim}",
-        f"-Ddv={lkp}",
+        f"-Ddv={dv_tile}",
         f"-Ddv_full={head_dim}",
         "-DROUND_CONV_EVEN",
     ]

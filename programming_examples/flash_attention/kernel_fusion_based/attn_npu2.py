@@ -1386,6 +1386,13 @@ if __name__ == "__main__":
             )
         )
     elif args.compile_mode == "compile-only":
-        backend = XRTBackend(**backend_opts)
+        # report_precision / perf_flops are XRTRunner-only kwargs; XRTBackend
+        # rejects them.
+        backend_only_opts = {
+            k: v
+            for k, v in backend_opts.items()
+            if k not in ("report_precision", "perf_flops")
+        }
+        backend = XRTBackend(**backend_only_opts)
         module_function = backend.compile(mlir_module)
         print("Compilation complete.")
