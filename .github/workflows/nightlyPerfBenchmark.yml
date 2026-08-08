@@ -102,7 +102,7 @@ jobs:
           source air-venv/bin/activate
           MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
           pip install mlir_aie==$MLIR_AIE_VERSION \
-            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.0/
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4/
 
       - name: Get llvm-aie
         run: |
@@ -115,7 +115,7 @@ jobs:
       # llvm.lifetime.{start,end} to the no-size form and Peano opt (LLVM 21) then
       # rejects the merged module ("immarg operand has non-immediate parameter").
       # Neither toolchain on this runner provides one -- the llvm-aie wheel ships
-      # clang/opt/llc but no llvm-link, and the pinned mlir distro is LLVM 23 -- so
+      # clang/opt/llc but no llvm-link, and the pinned mlir distro is LLVM 24 -- so
       # the q4nx verify+profile lits reported UNSUPPORTED and the model silently
       # vanished from perf.json.
       #

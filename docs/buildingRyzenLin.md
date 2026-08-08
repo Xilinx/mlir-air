@@ -71,7 +71,7 @@ For the no-RTTI variant, point both find-links at the no-RTTI pages so pip resol
 ```bash
 pip install 'mlir_air[aie]' \
   -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels-no-rtti \
-  -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti \
+  -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2 \
   -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 ```
 

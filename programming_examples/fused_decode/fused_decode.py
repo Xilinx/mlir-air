@@ -32,8 +32,8 @@
 #   generic_decoding_layer/bringup/bringup_gen.cpp):
 #     1) dump inputs from this script: DECODE_BRINGUP_DUMP=/tmp/mb_dump python3.13 q4nx_decode.py
 #     2) aiecc air_project/input_with_addresses.mlir -> /tmp/T.{xclbin,insts.bin}
-#        (aiecc.py --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host
-#         --xclbin-kernel-name=MLIR_AIE --peano=$PEANO --no-xchesscc --no-xbridge)
+#        (aiecc.py --get-xclbin --get-npu-insts
+#         --xclbin-kernel-name=MLIR_AIE --peano=$PEANO)
 #     3) build harness: bringup/build_gen.sh ; run (LD_LIBRARY_PATH=xrt/lib:../host_common):
 #        INPLACE=1 BAKED_INSTS=/tmp/T.insts.bin ./bringup_gen.exe /tmp/mb_dump /tmp/T.xclbin
 #        env: INPLACE=1 (output in arg0), ZERO_SLOT=1 + DUMP_KVC=1 (clean KV-append verify vs

@@ -1251,8 +1251,14 @@ static LogicalResult runAieCompilation() {
     if (verbose)
       aieccCmd.push_back("--verbose");
 
-    aieccCmd.push_back(xchesscc ? "--xchesscc" : "--no-xchesscc");
-    aieccCmd.push_back(xbridge ? "--xbridge" : "--no-xbridge");
+    // Core backend. mlir-aie #3501 dropped aiecc's --no-xchesscc/--no-xbridge
+    // and made Peano the default, so the Peano case is now expressed by saying
+    // nothing. The two Chess flags imply each other unless both are stated, so
+    // an asymmetric request has to spell out the negative half explicitly.
+    if (xchesscc || xbridge) {
+      aieccCmd.push_back(xchesscc ? "--xchesscc" : "--xchesscc=false");
+      aieccCmd.push_back(xbridge ? "--xbridge" : "--xbridge=false");
+    }
     aieccCmd.push_back("--tmpdir=" + tmpDir.getValue());
 
     // Output format options. The mlir-aie v1.4.0 aiecc is a declarative
@@ -1556,8 +1562,10 @@ static LogicalResult runAieCompilation() {
       segAieccCmd.push_back(aieccDir.str().str());
       segAieccCmd.push_back("--no-aiesim");
       segAieccCmd.push_back("--compile-host");
-      segAieccCmd.push_back(xchesscc ? "--xchesscc" : "--no-xchesscc");
-      segAieccCmd.push_back(xbridge ? "--xbridge" : "--no-xbridge");
+      if (xchesscc || xbridge) {
+        segAieccCmd.push_back(xchesscc ? "--xchesscc" : "--xchesscc=false");
+        segAieccCmd.push_back(xbridge ? "--xbridge" : "--xbridge=false");
+      }
       segAieccCmd.push_back(aieccFile.str().str());
 
       if (failed(runCommand(segAieccCmd)))
