@@ -59,14 +59,35 @@ single `model.q4nx` bundle:
 `tie_word_embeddings=true`, so the LM head is the full-precision `embed_tokens`
 (the bundle's separate Q4NX lm_head is ignored).
 
-Nothing compiled is committed — `make compile` reproduces every ELF from source
-(see `.gitignore`).
+Nothing compiled is committed — `make compile` / `make compile-decode` reproduce
+every ELF, xclbin, and instruction stream from source (see `.gitignore`).
+
+## Reproducibility (decode toolchain)
+
+`make compile-decode` merges an inline attention kernel into the core via an
+**external `llvm-link`** (resolved from `PATH`) whose **LLVM major must equal
+Peano's** (21 today). A newer (≥ 23) one rewrites `llvm.lifetime` to the no-size
+form and Peano `opt` rejects the merged module (`Broken module found`); an older
+one links quietly and *silently miscompiles* the attention kernels, so the decode
+runs at full speed and emits fluent garbage. The preflight aborts on either:
+
+```bash
+which llvm-link && llvm-link --version   # must match $PEANO_INSTALL_DIR/bin/clang --version
+```
+
+Every model's templates use the same `decode_L<N>.*` filenames, so this example
+builds its own into THIS directory rather than the shared `fused_decode` one
+(same as `gemma3_4b_q4nx`). A 1B build can therefore never satisfy a 3B run.
 
 ## Quick Start
 
 ```bash
 # One-time: compile all prefill + decode kernels (~4 min; no weights needed)
 make compile
+
+# One-time: build the fused decode templates for the 3B geometry (~15 min).
+# They land in this directory as decode_L2048.* / decode_L2047.*.
+make compile-decode
 
 # Run inference (instruct model by default; streams up to 1000 tokens)
 make run

@@ -7,6 +7,12 @@ prefill_kernel_cache/
 decode_kernel_cache/
 air_project/
 
+# Requant weight cache (the ~2 GB q4nx->bf16 cascade repack; built ONCE per
+# (N_LAYERS, VOCAB_I2) and reused -- never committed).
+.decode_wcache
+.decode_wcache/
+*.npz
+
 # Compiled kernels (reproduced by `make compile`; never committed).
 *.o
 *.ll
@@ -17,3 +23,9 @@ air.mlir
 air.elf
 air.xclbin
 air.insts.bin
+
+# Built decode templates (xclbin/insts; reproduced by `make compile-decode`).
+decode_L*.xclbin
+decode_L*.insts.bin
+decode.xclbin
+decode.insts.bin
