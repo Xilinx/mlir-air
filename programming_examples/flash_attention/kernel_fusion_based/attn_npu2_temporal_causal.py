@@ -76,6 +76,7 @@ def build_module(
     causal=False,
     num_heads_per_unroll=2,
     causal_skip=True,
+    q_tiles_per_core=1,
 ):
     """Build flash attention module with selective Q capture pattern.
 
@@ -87,6 +88,9 @@ def build_module(
         dk: Key dimension (default: 64)
         dv: Value dimension (default: 64)
         num_q_tiles: Number of tiles to partition Q chunk into (default: 4)
+        q_tiles_per_core: q-seq-tiles each core handles per round (default: 1).
+            2 halves the round count for a given lq, which is what keeps the
+            shim's active-BD count in budget at long sequences.
         num_cascade_stages: Number of cascade pipeline stages (default: 4)
         num_heads: Number of attention heads (default: 2)
         num_kv_heads: Number of key/value heads for grouped-query attention
@@ -128,20 +132,102 @@ def build_module(
         f"lk ({lk}) must be divisible by lkp * num_cascade_stages "
         f"({lkp * num_cascade_stages})"
     )
-    dk_tile = lkp
-    assert dk % dk_tile == 0, f"dk ({dk}) must be divisible by dk_tile/lkp ({dk_tile})"
-    dk_chunks = dk // dk_tile
-    dv_tile = lkp
-    assert dv % dv_tile == 0, f"dv ({dv}) must be divisible by dv_tile/lkp ({dv_tile})"
-    dv_chunks = dv // dv_tile
-    # The seq-first L3 layout interleaves all kv-heads at column-stride dv,
-    # so a single chunk's per-head DMA descriptor is straightforward; with
-    # dv_chunks > 1 the per-chunk strides need additional validation that is
-    # not yet covered by a test. Restrict to dv == lkp until that exists.
-    assert dv_chunks == 1, (
-        f"attn_npu2_seqfirst.py currently supports only dv == lkp "
-        f"(dv_chunks == 1); got dv={dv}, lkp={lkp}. "
-        f"Use attn_npu2.py for the dv_chunks > 1 / heads-first layout."
+    # head_dim is NOT a tiling axis. Every buffer carries the whole d and the
+    # mmul walks it as k-blocks of 8 inside the kernel -- the reference does the
+    # same (its per-core q is memref<32x128>, K/V memref<16x128>, d never split).
+    # Tiling d instead put dk_chunks puts on one channel per loop iteration and
+    # dk_chunks fills on one staging buffer, which defeated BD folding and
+    # inflated the outbound lock counts. Capacity comes from a smaller lkp
+    # (= tile_size_q), not from splitting d.
+    dk_tile = dk
+    dk_chunks = 1
+    dv_tile = dv
+    dv_chunks = 1
+    # dv_chunks > 1 (head_dim 128 at lkp 64) keeps ONE score matrix and splits
+    # only the PV accumulation, so QK^T / mask / softmax run once per K block --
+    # unlike attn_npu2.py, which makes dv_chunks a launch axis and recomputes
+    # them per chunk. The cost is dv_chunks live output accumulators in L1.
+    #
+    # The chunks share ONE [tile_size_q, dv] slab: the accumulator's mmul layout
+    # is column-block-major ([dv/M][tile_size_q][M]), so chunk c is exactly the
+    # flat range [c*tile_size_q*dv_tile, ...) and the kernel reaches it with a
+    # pointer offset. That keeps the tile's output ONE full-dv transfer instead
+    # of dv_chunks of them -- the gather is 4 BDs per memtile either way, and 8
+    # would exceed the 24 BD IDs a memtile DMA channel can allocate.
+    _tsq = lqp // num_q_tiles
+    # FULL-d DMA. When head_dim > lkp, chunking dk/dv at the CHANNEL level puts
+    # dk_chunks/dv_chunks distinct puts (from distinct memrefs) on one channel
+    # inside a single scf.for iteration, which air-opt-memtile-dma-bds cannot
+    # fold -- it falls back to unrolling the whole causal-prefix loop into the
+    # memtile BD chain (measured: 175 BDs vs the 48 cap; the dh=64 path folds the
+    # same 4 rounds into 4). The reference never chunks in the DMA either: its
+    # K/V memtile buffer is the full memref<256x128>. So send the whole d in one
+    # transfer and do the chunking on pointers in the core.
+    full_d_dma = dk_chunks > 1 or dv_chunks > 1
+    if full_d_dma:
+        assert dk == dv, (
+            f"full-d DMA shares one L1 staging buffer for K and V; needs dk == dv "
+            f"(got dk={dk}, dv={dv})"
+        )
+    # The 2-way Q pair broadcast is MANDATORY: replacing it with 2*NR per-tile
+    # unicast puts deadlocks the herd on hardware. Verified by a single-variable
+    # A/B at dh=64 / L=512 / GQA 1:3 (broadcast PASS, unicast ERT timeout), so
+    # it is a property of the unicast channel-bundle scatter, not of head_dim.
+    q_pair_bcast = True
+    # The staging and the accumulators are never live at the same time
+    # (copy_half_tile drains the staging during the Q phase, the accumulators
+    # are zero-filled after), so one slab CAN serve as both -- but only while
+    # the staging is filled ONCE per round. air-to-aie derives the outbound BD's
+    # lock counts from the buffer's fill count, so a slab filled dk_chunks times
+    # (one Q broadcast per chunk) but drained once makes the output MM2S acquire
+    # dk_chunks tokens while the core releases 1 -> the drain never fires.
+    # Confirmed in the lowered IR: at dk_chunks=2 the output BD is
+    # AcquireGreaterEqual(lock, 2) against a core Release(lock, 1).
+    alias_qpair_gp = dv_chunks > 1 and dk_chunks == 1 and dv == 2 * dk_tile
+    # Q staging <-> K/V staging alias. The staging is dead before the first K
+    # block arrives, so the two never overlap, and BOTH are inbound-only: no
+    # outbound BD sits on the shared buffer, so the fill-count/lock hazard above
+    # cannot apply. This is what frees the 16 KB that lets head_dim 128 keep the
+    # validated lkp 64 tiling (Q 16K + shared 16K + accumulators 16K + G 8K).
+    alias_qpair_kv = full_d_dma and 2 * _tsq * dk_tile == lkp * dk
+
+    # Output accumulator double-buffering (the reference's o_ping/o_pong) keeps
+    # round lx's Gp2L2 drain from racing round lx+1's zero_fill. A full-dv slab
+    # is single-buffered (there is no L1 room for a second one).
+    # The q-round axis is unrolled in-core so cps_lx is a build-time constant.
+    # That makes .text scale with the round count against a 16 KB AIE2P program
+    # memory: measured 11760 B at 4 rounds, 19328 B at 8. Past 4 rounds fold the
+    # axis into an scf.for with an affine causal bound instead -- the reference
+    # goes further and keeps its whole core loop L-independent (RTP-driven), so
+    # folding is the conservative version of the same idea. Folding costs the
+    # accumulator ping-pong (a dynamic slot cannot index a buffer list).
+    # The unrolled core emits (rounds x q_tiles_per_core) attention bodies, so
+    # that product -- not the round count alone -- is what has to stay small
+    # enough for AIE2P program memory. Folding also forces n_ob to 1, which is
+    # what keeps q_tiles_per_core accumulators inside L1.
+    fold_core_rounds = (lq // lqp) * q_tiles_per_core > 4
+    n_ob = (
+        1
+        if fold_core_rounds or q_tiles_per_core > 1
+        else (2 if (lq // lqp) > 1 and dv_chunks == 1 else 1)
+    )
+    l1_bytes = (
+        q_tiles_per_core * _tsq * dk * 2  # Q, one tile set per q-seq-tile
+        + (0 if alias_qpair_kv else 2 * _tsq * dk_tile * 2)  # qpair staging
+        + (
+            0 if alias_qpair_gp else n_ob * q_tiles_per_core * _tsq * dv * 2
+        )  # accumulator slabs
+        + lkp * dk * 2  # K / V staging (whole d)
+        + q_tiles_per_core * _tsq * lkp * 2  # G scores, one per q-seq-tile
+        + 4 * _tsq * 2  # up / sp / s_tmp / r_tmp
+    )
+    assert l1_bytes <= 64 * 1024, (
+        f"per-core L1 working set {l1_bytes} B exceeds the 64 KB AIE2P data "
+        f"memory (dk_chunks={dk_chunks}, dv_chunks={dv_chunks}, "
+        f"tile_size_q={_tsq}, n_ob={n_ob}). At head_dim > lkp the Q staging "
+        f"cannot double as the accumulator slab unless dk_chunks == 1, so run "
+        f"a smaller lkp (tile_size_q must stay == lkp): head_dim 128 fits at "
+        f"lkp 32 / lqp 256 in ~31 KB."
     )
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
@@ -160,20 +246,52 @@ def build_module(
     )
     gqa_group_size = num_heads // num_kv_heads
 
-    # PHASE 1 TEMPORAL: the herd ROWS map to the gqa_group_size q-heads that
-    # share one kv-head. K/V are broadcast across rows (same kv-head), Q differs
-    # per row (different q-head). So num_heads_per_unroll now counts KV-HEADS per
-    # dispatch (= segment instances), and the launch head axis iterates kv-head
-    # groups. This fills all 32 tiles (was 8) and cuts the launch count 4x.
-    R = gqa_group_size
-    assert R <= 4, f"gqa_group_size ({R}) must be <= 4 (physical herd rows)"
+    # PHASE 1 TEMPORAL: the array is NB column-BLOCKS (2 physical columns each)
+    # x NR physical rows. A block is one q-head of the GQA group; its 2*NR tiles
+    # cover 2*NR distinct q-seq-tiles (s = ty*2 + tx%2). K/V are broadcast to the
+    # whole array (one kv-head is live per dispatch), Q is partitioned per block.
+    # num_heads_per_unroll counts KV-HEADS per dispatch (= segment instances) and
+    # the launch head axis iterates kv-head groups.
+    #
+    # NB (blocks) and NR (rows) are INDEPENDENT: NB follows the GQA group size,
+    # NR is the physical row count. They coincide at gqa_group_size == 4 (the
+    # Llama-3.2-1B case this was first built for); tying them together would make
+    # the q-tiles-per-round (2*NR) shrink with the GQA ratio and stop lqp from
+    # dividing the sequence length (gqa 1:3 -> lqp 384 { 2048).
+    NB = gqa_group_size
+    assert NB * 2 <= 8, (
+        f"physical columns = 2 * gqa_group_size ({NB}) must be <= 8; "
+        f"got num_heads={num_heads}, num_kv_heads={num_kv_heads}"
+    )
+    # q_tiles_per_core > 1 gives each core several q-seq-tiles per round, which
+    # divides the round count for a given lq. Rounds are what scale the shim's
+    # simultaneously-active BD count (the runtime sequence is flat, so a rolled
+    # round loop is unrolled into npu insts): at 8 rounds a shim tile carrying 3
+    # round-scaled channels needs 24 active BDs against a cap of 16. Two q-tiles
+    # per core halves the rounds and takes every channel's peak with it. The
+    # tiles a core owns are s, s + 2*NR, ... so tile-set j is exactly output half
+    # j -- the lo/hi split becomes the j axis instead of a row split.
+    assert num_q_tiles % (2 * q_tiles_per_core) == 0, (
+        f"num_q_tiles ({num_q_tiles}) must be divisible by 2 * "
+        f"q_tiles_per_core ({q_tiles_per_core})"
+    )
+    NR = num_q_tiles // (2 * q_tiles_per_core)
+    assert NR == 4, (
+        f"herd rows = num_q_tiles / (2*q_tiles_per_core) = {NR}, must be 4; "
+        f"got num_q_tiles={num_q_tiles}, q_tiles_per_core={q_tiles_per_core}"
+    )
+    assert q_tiles_per_core in (1, 2), (
+        f"q_tiles_per_core must be 1 or 2 (got {q_tiles_per_core}); the output "
+        f"gather maps tile-set j onto output half j."
+    )
+    NC = 2 * NB  # physical columns
     assert num_kv_heads % num_heads_per_unroll == 0, (
         f"num_kv_heads ({num_kv_heads}) must be divisible by "
         f"num_heads_per_unroll ({num_heads_per_unroll})"
     )
-    assert num_heads_per_unroll * num_q_tiles <= 8, (
+    assert num_heads_per_unroll * NC <= 8, (
         f"physical columns = num_heads_per_unroll ({num_heads_per_unroll}) * "
-        f"num_q_tiles ({num_q_tiles}) must be <= 8"
+        f"2 * gqa_group_size ({NC}) must be <= 8"
     )
     num_head_groups = num_kv_heads // num_heads_per_unroll
 
@@ -185,11 +303,32 @@ def build_module(
 
     # Derived parameters
     num_lq_iters = lq // lqp
+    # Issue each round's output drain inside the K/V loop instead of in a
+    # separate pass over the rounds: the shim frees an MM2S BD at its matching
+    # wait, so draining afterwards keeps every round's K/V BD active until the
+    # launch-iteration boundary. Round-major issue frees round r before r+1 is
+    # configured, which is what the reference does (seq_gen.hpp rotates BD ids
+    # on round parity and waits only on the output S2MM). Only needed once the
+    # round count passes 4, where 8+8+1 would exceed the shim's 16 active BDs.
+    _merge_out_into_kv = num_lq_iters > 4
+    # The causal triangle gives every round its own DIFFERENT-sized K/V shim
+    # transfer, so the round count IS the number of simultaneously in-flight
+    # tasks on that MM2S channel. Measured on NPU2: up to 6 rounds run, 7 and
+    # 8 deadlock. Past the limit, stream the FULL prefix every round instead --
+    # the per-round BDs become identical, AIR folds them into ONE repeated
+    # task, and the in-core causal mask (q_block = lx*NQ + s) still discards
+    # the extra K blocks, so the result is unchanged. The price is the causal
+    # DMA/compute saving (2x the K/V work at large round counts), which is
+    # what buys the design the ability to run at all past 6 rounds.
+    _MAX_ROUNDS_IN_FLIGHT = 6
+    _uniform_cps = num_lq_iters > _MAX_ROUNDS_IN_FLIGHT
+    _cps_blocks = lambda lx: (num_lq_iters if _uniform_cps else lx + 1) * NQ
     tile_size_q = lqp // num_q_tiles
     num_chunks = lk // lkp
     chunks_per_stage = num_chunks // num_cascade_stages
     lk_per_stage = lkp * chunks_per_stage
 
+    # NQ = q-seq-tiles per round (= 2*NR); distinct from NC, the column count.
     NQ = num_q_tiles
     NS = num_cascade_stages
 
@@ -198,7 +337,9 @@ def build_module(
     l2_space = IntegerAttr.get(i32, 1)
 
     # L1 MemRefTypes (Q and K use dk_tile, not full dk)
-    q_l1_t = MemRefType.get([tile_size_q, dk_tile], bf16, memory_space=l1_space)
+    _dk_dma = dk if full_d_dma else dk_tile
+    _dv_dma = dv if full_d_dma else dv_tile
+    q_l1_t = MemRefType.get([tile_size_q, _dk_dma], bf16, memory_space=l1_space)
     # 2-tile Q buffer: a 2-way Q broadcast delivers a col-pair's 2 q-tiles to
     # both cols; each col subviews its half (tile lc) for the matmul.
     qpair_l1_t = MemRefType.get([2 * tile_size_q, dk_tile], bf16, memory_space=l1_space)
@@ -213,24 +354,71 @@ def build_module(
         ),
         memory_space=l1_space,
     )
-    k_l1_t = MemRefType.get([lkp, dk_tile], bf16, memory_space=l1_space)
+    k_l1_t = MemRefType.get([lkp, _dk_dma], bf16, memory_space=l1_space)
     v_l1_t = MemRefType.get([lkp, dv_tile], bf16, memory_space=l1_space)
     g_l1_2d = MemRefType.get([tile_size_q, lkp], bf16, memory_space=l1_space)
     g_l1_1d = MemRefType.get([tile_size_q * lkp], bf16, memory_space=l1_space)
     gp_l1_t = MemRefType.get([tile_size_q, dv_tile], bf16, memory_space=l1_space)
+    # One slab holding all dv chunks back to back (== gp_l1_t at dv_chunks == 1).
+    gp_slab_l1_t = MemRefType.get([tile_size_q, dv], bf16, memory_space=l1_space)
     up_l1_t = MemRefType.get([tile_size_q, 1], bf16, memory_space=l1_space)
 
     # L2 MemRefTypes (QK relay uses dk_tile)
-    qk_l2_t = MemRefType.get([lkp, dk_tile], bf16, memory_space=l2_space)
+    qk_l2_t = MemRefType.get([lkp, _dk_dma], bf16, memory_space=l2_space)
     # Q relay buffer holds a whole row's NQ q-tiles ([lqp, dk_tile]); one QIn get
     # fills it, then NQ disjoint-offset Q2L1 puts scatter per-tile (partition).
-    q_relay_l2_t = MemRefType.get([lqp, dk_tile], bf16, memory_space=l2_space)
-    v_l2_t = MemRefType.get([lkp, dv_tile], bf16, memory_space=l2_space)
+    q_relay_l2_t = MemRefType.get([lqp, _dk_dma], bf16, memory_space=l2_space)
+    v_l2_t = MemRefType.get([lkp, _dv_dma], bf16, memory_space=l2_space)
     gp_l2_t = MemRefType.get([lqp, dv_tile], bf16, memory_space=l2_space)
     # Half-height output buffer: the reference splits a q-head's output gather across TWO
     # memtiles (first/second half of the sequence), 4 tiles each, to keep each
     # memtile's gather light enough to route alongside the K/V broadcast transit.
-    gp_half_l2_t = MemRefType.get([lqp // 2, dv_tile], bf16, memory_space=l2_space)
+    # Full dv wide: the dv_chunks per-tile outputs land in disjoint column slices
+    # of the same half-buffer, so one GpOut put still drains a contiguous
+    # [lqp/2, dv] block straight into the seq-first L3 output.
+    # Output slices. At one q-tile per core these are the two row halves. At
+    # two, each half splits again by q-tile set, giving 4 quarter-gathers of
+    # 2*NR/2 = 4 sources instead of 2 half-gathers of 8 -- 8 BDs on one memtile
+    # channel is what tips the K/V column over its 24 BD-ID budget. Slice
+    # (name, j, tyhi) covers output rows [i*rows, (i+1)*rows).
+    # Past 4 rounds the K/V column's shim tile is full on K and V alone
+    # (one task each per round, 8+8 against its 16 active BDs), so it can carry
+    # no output gather at all. Six 4-tile gathers cannot avoid it -- a memtile
+    # has six S2MM ports, so two of them (8 flows) never fit on one column.
+    # Splitting each block's halves by row instead gives twelve 2-tile gathers,
+    # which do fit the five remaining columns; see _out_col for the assignment.
+    _row_split_out = q_tiles_per_core == 1 and (lq // lqp) > 4
+    # _out_col's table below is a hand-checked column budget for NB == 3 (the
+    # GQA 3:1 shape, e.g. Llama-3.2-3B). At NB == 4 (GQA 4:1 at head_dim 128,
+    # e.g. Llama-3-8B) the herd spans all 8 columns, so the twelve gathers
+    # become sixteen over seven non-K/V columns and the assignment does not
+    # carry over. Fail here with the reason rather than letting _out_col raise
+    # KeyError halfway through building the module.
+    if _row_split_out and NB != 3:
+        raise NotImplementedError(
+            f"the row-split output placement past 4 rounds is only mapped for "
+            f"NB == 3 (num_heads / num_kv_heads == 3); got NB={NB} from "
+            f"num_heads={num_heads}, num_kv_heads={num_kv_heads}. Either keep "
+            f"lq <= 4 * lqp (= {4 * lqp}) so the four-tile gathers are used, "
+            f"or extend _out_col with a verified column budget for this NB."
+        )
+    if _row_split_out:
+        # (name, j, first tile-row, tile-row count) -- one row of the 2xNR block
+        # each, ordered so slice i still drains L3 rows [i*lqp/_n_out, ...).
+        _out_slices = [
+            ("lo", 0, 0, 1),
+            ("lo1", 0, 1, 1),
+            ("hi", 0, 2, 1),
+            ("hi1", 0, 3, 1),
+        ]
+    else:
+        _out_slices = [
+            (nm if j == 0 else f"{nm}{j}", j, 2 if hi else 0, 2)
+            for j in range(q_tiles_per_core)
+            for nm, hi in (("lo", False), ("hi", True))
+        ]
+    _n_out = len(_out_slices)
+    gp_half_l2_t = MemRefType.get([lqp // _n_out, dv], bf16, memory_space=l2_space)
 
     # L3 MemRefTypes — SEQ-FIRST layout (no head dimension in shape)
     # Q: [lq, num_heads * dk] — all heads interleaved per position
@@ -290,8 +478,41 @@ def build_module(
     external_func("copy_tile", [k_l1_t, q_l1_t], link_with="attn_npu2.o")
     # copy_half_tile(qpair[2*tile_size_q, dk], q_buf[tile_size_q, dk], lc): extract
     # the lc-th tile from a 2-way Q broadcast (the reference's per-column q offset).
-    external_func("copy_half_tile", [qpair_l1_t, q_l1_t, i32], link_with="attn_npu2.o")
+    external_func(
+        "copy_half_tile",
+        [k_l1_t if alias_qpair_kv else qpair_l1_t, q_l1_t, i32],
+        link_with="attn_npu2.o",
+    )
     external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn_npu2.o")
+    if full_d_dma:
+        external_func(
+            "matmul_a_b_bf16_chunk",
+            [q_l1_t, k_l1_t, g_l1_1d, i32],
+            link_with="attn_npu2.o",
+        )
+        # The Q pair arrives one dk chunk per broadcast; land each in its own
+        # chunk slice of the full-d Q buffer.
+        external_func(
+            "copy_half_tile_at",
+            [k_l1_t if alias_qpair_kv else qpair_l1_t, q_l1_t, i32, i32],
+            link_with="attn_npu2.o",
+        )
+    _gp_t = qpair_l1_t if alias_qpair_gp else gp_slab_l1_t
+    if dv_chunks > 1:
+        # Chunk-indexed variants addressing one dv slice of the accumulator slab
+        # (AIE bare-ptr ABI drops subview offsets; pass the index instead).
+        external_func("zero_fill_gp_bf16_at", [_gp_t, i32], link_with="attn_npu2.o")
+        external_func("mul_r_gp_at", [up_l1_t, _gp_t, i32], link_with="attn_npu2.o")
+        external_func(
+            "matmul_g_b_bf16_chunk",
+            [g_l1_1d, k_l1_t, _gp_t, i32],
+            link_with="attn_npu2.o",
+        )
+        external_func("div_gp_sp_at", [up_l1_t, _gp_t, i32], link_with="attn_npu2.o")
+        # Whole-slab forms: one call instead of dv_chunks call sites,
+        # which is what keeps the unrolled core inside program memory.
+        external_func("zero_fill_gp_bf16_all", [_gp_t], link_with="attn_npu2.o")
+        external_func("div_gp_sp_all", [up_l1_t, _gp_t], link_with="attn_npu2.o")
     external_func("add_gp_g", [gp_l1_t, gp_l1_t], link_with="attn_npu2.o")
     if causal:
         external_func("apply_causal_mask", [g_l1_2d, i32, i32], link_with="attn_npu2.o")
@@ -307,20 +528,25 @@ def build_module(
     # that block's local 2 columns, so place-tiles distributes the 4 Q memtiles
     # across the array (like the reference's even-col Q memtiles) — ~8 BDs each (< 24) —
     # instead of all 32 Q BDs piling on one central memtile's MM2S 0.
-    # size=[R, NQ] indexed raw [ty, tx] (mirrors the original per-stage QK2L1_s);
+    # size=[NR, NC] indexed raw [ty, tx] (mirrors the original per-stage QK2L1_s);
     # only block b's tiles (2b<=tx<=2b+1) consume it (affine-gated in the herd).
     # reference-faithful fanout: per block, per row, ONE 2-way broadcast flow to the
-    # row's 2-col pair (bcast_shape [R,2]) — matches the reference's mem_tile DMA:i -> 2
+    # row's 2-col pair (bcast_shape [NR,2]) — matches the reference's mem_tile DMA:i -> 2
     # cols. 4 flows/block (one per row) instead of 8 single-tile flows.
-    for b in range(R):
-        Channel(f"Q2L1_{b}", size=[R, 1], broadcast_shape=[R, 2])
+    for b in range(NB):
+        if q_pair_bcast:
+            Channel(f"Q2L1_{b}", size=[NR, 1], broadcast_shape=[NR, 2])
+        else:
+            # No pair staging buffer at dv_chunks > 1: address each column
+            # directly so the tile receives exactly its own q-seq-tile.
+            Channel(f"Q2L1_{b}", size=[NR, 2])
     # QIn is PER-BLOCK (one endpoint per col-block) so each block's Q gets its own
     # shim->memtile flow to its own Q memtile (cols 0,2,4,6). A single-endpoint QIn
     # only creates ONE shim->memtile flow, so only one block's Q memtile is fed and
     # the others deadlock (their tiles never receive Q). One endpoint per block.
-    Channel("QIn", size=[R])
+    Channel("QIn", size=[NB])
 
-    # K+V share ONE consolidated broadcast channel (KV2L1) to ALL R*NQ tiles
+    # K+V share ONE consolidated broadcast channel (KV2L1) to ALL NR*NC tiles
     # (rows AND cols) — mirrors the reference's single MT[3] 32-way K/V multicast. Only one
     # kv-head is live per dispatch (kv-head is the launch outer loop), so the
     # whole array shares this K/V. Packing K+V onto ONE S2MM leaves the tile's
@@ -336,7 +562,7 @@ def build_module(
     Channel(
         "KV2L1",
         size=[num_heads_per_unroll, 1, 1],
-        broadcast_shape=[num_heads_per_unroll, R, NQ],
+        broadcast_shape=[num_heads_per_unroll, NR, NC],
     )
     Channel("KIn", size=[num_heads_per_unroll])
     Channel("VIn", size=[num_heads_per_unroll])
@@ -344,14 +570,14 @@ def build_module(
     # Output split per col-block into lo (rows 0,1 = seq-tiles 0..3, col 2b) and
     # hi (rows 2,3 = seq-tiles 4..7, col 2b+1) — the reference's 4-way split gather. Each
     # gathers 4 tiles into its own column-pinned memtile, then one GpOut half.
-    for b in range(R):
-        Channel(f"Gp2L2_{b}_lo", size=[R, NQ])
-        Channel(f"Gp2L2_{b}_hi", size=[R, NQ])
+    for b in range(NB):
+        for _nm, _j, _rlo, _nrows in _out_slices:
+            Channel(f"Gp2L2_{b}_{_nm}", size=[NR, NC])
     # GpOut per (block, half) endpoints so the 8 output streams SPREAD across
     # shim tiles (like the reference's per-memtile DMA:5 output) instead of funneling all 8
     # concurrent memtile sources into ONE shim channel (an 8-to-1 circuit merge
     # that deadlocks).
-    Channel("GpOut", size=[R, 2])
+    Channel("GpOut", size=[NB, _n_out])
 
     # ----------------------------------------------------------------
     # Main attention function
@@ -369,6 +595,21 @@ def build_module(
         # each round its own static BD (the triangle) with no runtime-varying fire
         # count -> no dynamic-BD deadlock. Launch iterates KV-HEAD GROUPS only, so
         # dispatches drop from num_lq_iters*num_head_groups to num_head_groups.
+        # This caps the design at 4 rounds, i.e. lq <= 4*lqp. K, V and the output
+        # gather each issue one shim task per round, so at 8 rounds their shared
+        # shim tile wants 24 of its 16 simultaneously-active BDs. There is no
+        # placement escape: at 8 rounds a shim tile affords only two
+        # round-scaled channels, so each column can host at most one gather
+        # buffer, the K/V column can host none (K+V alone is 16), and block 1 --
+        # whose tiles sit in columns {2,3} -- is then left with a single usable
+        # memtile for the 8 flows it must drain. Bounding the in-flight BDs
+        # instead (air.preserve_shim_dma_order, or the same awaits with K/V
+        # opted out via air.shim_feed_no_pace) compiles but deadlocks: one K BD
+        # carries up to 64 tiles into a 1-tile memtile ring, and the pacing's
+        # await-on-drain cannot make progress on a BD that exceeds the ring
+        # depth. Lifting this needs the reference's structure -- a runtime-fired
+        # ping-pong BD pair driven by RTP loop bounds, whose task count does not
+        # scale with the sequence length -- not another placement tweak.
         @launch(
             operands=[q_in, k_in, v_in, gp_out],
             sizes=[c_num_head_groups],
@@ -410,14 +651,84 @@ def build_module(
                 0,
                 1,
                 [
-                    AffineExpr.get_mul(
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0), AffineConstantExpr.get(1)
-                        ),
-                        AffineConstantExpr.get(NQ),
+                    (
+                        AffineConstantExpr.get(num_lq_iters * NQ)
+                        if _uniform_cps
+                        else AffineExpr.get_mul(
+                            AffineExpr.get_add(
+                                AffineSymbolExpr.get(0), AffineConstantExpr.get(1)
+                            ),
+                            AffineConstantExpr.get(NQ),
+                        )
                     )
                 ],
             )
+
+            # Output gets PER ROUND (lx): per block (q-head), TWO halves (lo then
+            # hi) matching the segment's per-lx GpOut put order. lo = round lx's
+            # first lqp/2 seq rows (at row lx*lqp), hi = second half.
+            emb_dim_out = num_heads * dv
+            half_rows_l = lqp // _n_out
+            # RECTANGULAR in lx (row offset lx*lqp, constant size + channel index),
+            # so the round axis is one scf.for that wrap-and-stride folds to a
+            # single strided BD per (block, half) endpoint -- collapsing the
+            # per-round GpOut drain unroll (num_lq_iters*NB*2 gets -> NB*2 folded).
+            _row_lo_map = AffineMap.get(
+                0,
+                1,
+                [
+                    AffineExpr.get_mul(
+                        AffineSymbolExpr.get(0), AffineConstantExpr.get(lqp)
+                    )
+                ],
+            )
+
+            def _row_slice_map(_i):
+                return AffineMap.get(
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_add(
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0),
+                                AffineConstantExpr.get(lqp),
+                            ),
+                            AffineConstantExpr.get(_i * half_rows_l),
+                        )
+                    ],
+                )
+
+            def _emit_out_gets(lx_iv):
+                # Slice i is the contiguous row band [i*half_rows_l, ...).
+                _out_rows = [
+                    (
+                        affine_apply(_row_lo_map, [lx_iv])
+                        if _i == 0
+                        else affine_apply(_row_slice_map(_i), [lx_iv])
+                    )
+                    for _i in range(_n_out)
+                ]
+                for kv_local in range(num_heads_per_unroll):
+                    for row_slot in range(NB):
+                        # q_head = (ly * nhpu + kv_local) * gqa + row_slot.
+                        out_col_off = affine_apply(
+                            _linmap(
+                                num_heads_per_unroll * gqa_group_size * dv,
+                                (kv_local * gqa_group_size + row_slot) * dv,
+                            ),
+                            [ly],
+                        )
+                        b_idx = ConstantOp(index_type, row_slot)
+                        for _i in range(_n_out):
+                            ChannelGet(
+                                "GpOut",
+                                gp,
+                                indices=[b_idx, ConstantOp(index_type, _i)],
+                                offsets=[_out_rows[_i], out_col_off],
+                                sizes=[half_rows_l, dv],
+                                strides=[emb_dim_out, 1],
+                            )
+
             for lx_iv in scf_range(0, _c_nlq_kv, 1):
                 cps_lx = affine_apply(_cps_map, [lx_iv])
                 for kv_local in range(num_heads_per_unroll):
@@ -431,23 +742,39 @@ def build_module(
                     )
 
                     # K put: causal prefix (cps_lx blocks from pos 0); bcast to rows.
-                    ChannelPut(
-                        "KIn",
-                        k,
-                        indices=[kv_offset_idx],
-                        offsets=[0, head_k_off],
-                        sizes=[cps_lx, dk_chunks, lkp, dk_tile],
-                        strides=[lkp * emb_dim_k, dk_tile, emb_dim_k, 1],
-                    )
-                    # V put: causal prefix (cps_lx blocks); bcast to rows.
+                    if full_d_dma:
+                        ChannelPut(
+                            "KIn",
+                            k,
+                            indices=[kv_offset_idx],
+                            offsets=[0, head_k_off],
+                            sizes=[cps_lx, lkp, dk],
+                            strides=[lkp * emb_dim_k, emb_dim_k, 1],
+                        )
+                    else:
+                        ChannelPut(
+                            "KIn",
+                            k,
+                            indices=[kv_offset_idx],
+                            offsets=[0, head_k_off],
+                            sizes=[cps_lx, dk_chunks, lkp, dk_tile],
+                            strides=[lkp * emb_dim_k, dk_tile, emb_dim_k, 1],
+                        )
+                    # V put: causal prefix (cps_lx blocks); bcast to rows. The
+                    # dv_chunks axis sits INSIDE the block axis so the stream is
+                    # block0/chunk0, block0/chunk1, block1/chunk0, ... matching
+                    # the core's per-block "one score matrix, dv_chunks PV" order
+                    # (same shape as the K put's dk_chunks axis).
                     ChannelPut(
                         "VIn",
                         v,
                         indices=[kv_offset_idx],
                         offsets=[0, head_v_off],
-                        sizes=[cps_lx, lkp, dv_tile],
+                        sizes=[cps_lx, lkp, _dv_dma],
                         strides=[lkp * emb_dim_v, emb_dim_v, 1],
                     )
+                if _merge_out_into_kv:
+                    _emit_out_gets(lx_iv)
                 yield_([])
 
             # Q puts: RECTANGULAR in lx (row offset lx*lqp, constant [lqp, dk_tile]
@@ -470,22 +797,31 @@ def build_module(
                 for kv_local in range(num_heads_per_unroll):
                     # Q puts: one per col-block (q-head), a SINGLE 2D [lqp, dk_tile]
                     # block at row lx*lqp. q_head = (ly*nhpu + kv_local)*gqa + slot.
-                    for row_slot in range(R):
-                        q_col_off = affine_apply(
-                            _linmap(
-                                num_heads_per_unroll * gqa_group_size * dk,
-                                (kv_local * gqa_group_size + row_slot) * dk,
-                            ),
-                            [ly],
-                        )
-                        ChannelPut(
-                            "QIn",
-                            q,
-                            indices=[ConstantOp(index_type, row_slot)],
-                            offsets=[row0, q_col_off],
-                            sizes=[lqp, dk_tile],
-                            strides=[emb_dim_q, 1],
-                        )
+                    for row_slot in range(NB):
+                        # One QIn put PER dk chunk. At full d each put carries
+                        # the WHOLE head (the relay is dk wide) and the chunking
+                        # happens in the memtile->L1 broadcast, but the relay is
+                        # still refilled once per chunk: one fill per drain is
+                        # what the memtile's lock accounting expects, and a
+                        # single fill feeding dk_chunks broadcasts deadlocks.
+                        for _fill in range(dk_chunks * q_tiles_per_core):
+                            dk_c = _fill % dk_chunks
+                            q_col_off = affine_apply(
+                                _linmap(
+                                    num_heads_per_unroll * gqa_group_size * dk,
+                                    (kv_local * gqa_group_size + row_slot) * dk
+                                    + (0 if full_d_dma else dk_c * dk_tile),
+                                ),
+                                [ly],
+                            )
+                            ChannelPut(
+                                "QIn",
+                                q,
+                                indices=[ConstantOp(index_type, row_slot)],
+                                offsets=[row0, q_col_off],
+                                sizes=[lqp, _dk_dma],
+                                strides=[emb_dim_q, 1],
+                            )
                 yield_([])
 
             # ----------------------------------------------------------
@@ -504,18 +840,30 @@ def build_module(
                 # relay buffers feed the ONE consolidated 32-way broadcast; pin
                 # them to a central ODD column (3, like the reference's MT[3]) so they sit
                 # off the even Q/output memtiles and broadcast centrally.
+                # ONE relay buffer per dk / dv chunk. Reusing a single buffer for
+                # all chunks makes the per-chunk get/put sequence alias the same
+                # memref, which defeats the cyclic-BD folding in air-to-aie and
+                # unrolls the K/V loop into the memtile BD chain (175 BDs vs the
+                # 48 cap at dk_chunks=dv_chunks=2). The reference alternates
+                # distinct buffers (in_0/in_1) for exactly this reason.
+                # K/V broadcast memtile. It feeds every compute tile, so it must
+                # stay INSIDE the column span -- parking it past NC makes the
+                # multicast cross the whole switchbox fabric and the router gives
+                # up ("Unable to find a legal routing"). Keep col 3 and move the
+                # OUTPUT gathers off it instead (see _out_col below).
+                _kv_col = 3
                 qk_l2_bufs = []
-                for _ in range(NS):
+                for _ in range(NS if full_d_dma else max(NS, dk_chunks)):
                     _kb = AllocOp(qk_l2_t, [], [])
                     _kb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
-                        i32, 3
+                        i32, _kv_col
                     )
                     qk_l2_bufs.append(_kb)
                 v_l2_bufs = []
-                for _ in range(NS):
+                for _ in range(NS if full_d_dma else max(NS, dv_chunks)):
                     _vb = AllocOp(v_l2_t, [], [])
                     _vb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
-                        i32, 3
+                        i32, _kv_col
                     )
                     v_l2_bufs.append(_vb)
                 # One Q relay buffer PER col-block (q-head), each PINNED to its
@@ -524,7 +872,7 @@ def build_module(
                 # clustering all 4 on one central memtile (which piled 32 Q BDs on
                 # one MM2S channel). Each memtile then holds ~8 Q BDs (< 24).
                 q_relay_l2_bufs = []
-                for b in range(R):
+                for b in range(NB):
                     _qb = AllocOp(q_relay_l2_t, [], [])
                     _qb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                         i32, 2 * b
@@ -549,45 +897,103 @@ def build_module(
                 # Output relay buffers DOUBLE-BUFFERED across rounds (n_ob), same
                 # reason as gp_l1_pp: round lx's GpOut drain must not race round
                 # lx+1's Gp2L2 gather into the same L2 buffer. gp_*_bufs[b][lx%n_ob].
-                n_ob_l2 = 2 if num_lq_iters > 1 else 1
-                gp_lo_bufs = []
-                gp_hi_bufs = []
-                for b in range(R):
-                    _glos = []
-                    _ghis = []
+                n_ob_l2 = (
+                    1
+                    if fold_core_rounds
+                    else (2 if (num_lq_iters > 1 and dv_chunks == 1) else 1)
+                )
+
+                # Output-gather memtiles sit next to their source tiles: lo on
+                # col 2b (co-located with that block's Q relay) and hi on 2b+1.
+                # Scattering them further to relieve BD pressure is unnecessary
+                # once the DMA sends the whole d (full_d_dma) -- and it makes the
+                # gather cross columns, which the router rejects.
+                # An output gather that lands on the K/V memtile column also
+                # shares its SHIM tile, and K/V are by far the heaviest shim
+                # channels (one task per kv-head-group per round each): measured
+                # 32 + 32 + 8 = 72 tasks on shim (2,0) against 16 on every other
+                # shim tile. That is affordable at 4 rounds (both head_dim 64 and
+                # 128 pass) but exhausts the tile's 16 active BDs once the rounds
+                # double, so at high round counts move just the colliding half to
+                # its block's even column -- still inside the block's own column
+                # pair {2b, 2b+1}, so the gather routes unchanged.
+                # Do NOT consolidate both halves onto one column to keep the K/V
+                # column private: three relays on one memtile saturates its
+                # switchbox ('aie.connect ... targets same dst'). The shim
+                # pressure that sharing causes is relieved by raising
+                # num_heads_per_unroll instead, which cuts the kv-head-group
+                # launches that scale KIn/VIn.
+                # Slice i of block b sits on the block's own column pair. The
+                # extra slices q_tiles_per_core adds are steered to whichever of
+                # the pair is NOT the K/V column, since that memtile's S2MM
+                # channel is the one with no BD-ID headroom.
+                def _out_col(b, i):
+                    if _row_split_out:
+                        # Twelve 2-flow gathers over the five non-K/V columns.
+                        # Every column stays inside both its six S2MM ports and
+                        # its six MM2S channels (cols 0/2/4 spend four of those
+                        # on the Q broadcast), and each block's spill lands on a
+                        # column adjacent to its own pair so the gather still
+                        # routes: block 1 reaches col 1 and col 4, both one hop
+                        # from its tiles in cols 2 and 3.
+                        return {
+                            0: [0, 0, 1, 1],
+                            1: [2, 2, 1, 4],
+                            2: [4, 5, 5, 5],
+                        }[
+                            b
+                        ][i]
+                    return 2 * b + (i % 2)
+
+                gp_slice_bufs = []  # [b][slice][n_ob_l2]
+                for b in range(NB):
+                    # Buffer-major, slice-minor: the double-buffered slots of a
+                    # block interleave exactly as they did before the slice axis
+                    # existed.
+                    _per_slice = [[] for _ in range(_n_out)]
                     for _ in range(n_ob_l2):
-                        _glo = AllocOp(gp_half_l2_t, [], [])
-                        _glo.operation.attributes["air.memtile_col"] = IntegerAttr.get(
-                            i32, 2 * b
-                        )
-                        _glo.operation.attributes["air.no_split"] = UnitAttr.get()
-                        _glos.append(_glo)
-                        _ghi = AllocOp(gp_half_l2_t, [], [])
-                        _ghi.operation.attributes["air.memtile_col"] = IntegerAttr.get(
-                            i32, 2 * b + 1
-                        )
-                        _ghi.operation.attributes["air.no_split"] = UnitAttr.get()
-                        _ghis.append(_ghi)
-                    gp_lo_bufs.append(_glos)
-                    gp_hi_bufs.append(_ghis)
+                        for i in range(_n_out):
+                            _g = AllocOp(gp_half_l2_t, [], [])
+                            _g.operation.attributes["air.memtile_col"] = (
+                                IntegerAttr.get(i32, _out_col(b, i))
+                            )
+                            _g.operation.attributes["air.no_split"] = UnitAttr.get()
+                            _per_slice[i].append(_g)
+                    gp_slice_bufs.append(_per_slice)
 
                 # L1 allocations passed to herd
-                q_saved_bufs = [AllocOp(q_l1_t, [], []) for _ in range(dk_chunks)]
-                qpair_bufs = [AllocOp(qpair_l1_t, [], []) for _ in range(dk_chunks)]
+                _nqj = 1 if full_d_dma else dk_chunks
+                q_saved_bufs = [
+                    AllocOp(q_l1_t, [], []) for _ in range(_nqj * q_tiles_per_core)
+                ]
+                # ONE staging slab reused across dk chunks (copy_half_tile
+                # consumes it immediately), doubling as the dv accumulator slab
+                # once the Q phase is done (alias_qpair_gp).
+                qpair_bufs = [] if alias_qpair_kv else [AllocOp(qpair_l1_t, [], [])]
                 qk_buf = AllocOp(k_l1_t, [], [])
-                v_l1 = AllocOp(v_l1_t, [], [])
-                g_l1 = AllocOp(g_l1_2d, [], [])
+                # One score matrix per q-tile the core owns: at q_tiles_per_core
+                # > 1 both are live between the shared K get and the shared V get.
+                g_l1s = [AllocOp(g_l1_2d, [], []) for _ in range(q_tiles_per_core)]
                 # Output accumulator is DOUBLE-BUFFERED across rounds (the reference's
                 # o_ping/o_pong): round lx uses gp_l1_pp[lx%n_ob] so round lx+1's
                 # zero_fill can't race round lx's Gp2L2 drain (single-buffer +
                 # omit_pingpong gave a non-deterministic race that zeroed output).
-                n_ob = 2 if num_lq_iters > 1 else 1
-                gp_l1_pp = [AllocOp(gp_l1_t, [], []) for _ in range(n_ob)]
-                up_l1 = AllocOp(up_l1_t, [], [])
-                sp_l1 = AllocOp(up_l1_t, [], [])
+                # n_ob is forced to 1 at dv_chunks > 1 (no L1 room, see l1_bytes);
+                # the round-boundary WAR is serialized in-core instead. When the
+                # accumulators alias the Q staging slab there is no buffer here.
+                gp_l1_pp = (
+                    []
+                    if alias_qpair_gp
+                    else [
+                        AllocOp(gp_slab_l1_t, [], [])
+                        for _ in range(n_ob * q_tiles_per_core)
+                    ]
+                )
+                up_l1s = [AllocOp(up_l1_t, [], []) for _ in range(q_tiles_per_core)]
+                sp_l1s = [AllocOp(up_l1_t, [], []) for _ in range(q_tiles_per_core)]
 
-                c_nq = ConstantOp(index_type, NQ)
-                c_r = ConstantOp(index_type, R)
+                c_nq = ConstantOp(index_type, NC)
+                c_r = ConstantOp(index_type, NR)
                 c0_seg = ConstantOp(index_type, 0)
 
                 # Per-round (lx) relay, Python-unrolled. Each round's K/V loop
@@ -595,14 +1001,29 @@ def build_module(
                 # bound scf.for folds to ONE cyclic ping-pong BD per round on the
                 # memtile — the causal triangle is the per-round STATIC trip count.
                 for lx in range(num_lq_iters):
-                    c_cps_lx = ConstantOp(index_type, (lx + 1) * NQ)
-                    qk_l2 = qk_l2_bufs[0]
-                    v_l2 = v_l2_bufs[0]
+                    c_cps_lx = ConstantOp(index_type, _cps_blocks(lx))
+
                     # Q relay for round lx: one QIn get of the q-head's whole
-                    # lqp-row block into q_relay_l2, then R 2-way broadcasts (per
+                    # lqp-row block into q_relay_l2, then NR 2-way broadcasts (per
                     # row) to the col-pair; each col extracts its half in-kernel
                     # (copy_half_tile), mirroring the reference's q+col*lq*dh.
                     # offset[1](ty_i) = (2*ty_i)*(lkp//M)
+                    def _q2l1_off_map_for(_j):
+                        # row = (_j*2*NR + 2*ty) * tile_size_q, in units of M rows
+                        return AffineMap.get(
+                            0,
+                            1,
+                            [
+                                AffineExpr.get_add(
+                                    AffineExpr.get_mul(
+                                        AffineSymbolExpr.get(0),
+                                        AffineConstantExpr.get(2 * (lkp // M)),
+                                    ),
+                                    AffineConstantExpr.get(_j * 2 * NR * (lkp // M)),
+                                )
+                            ],
+                        )
+
                     _q2l1_off_map = AffineMap.get(
                         0,
                         1,
@@ -613,78 +1034,88 @@ def build_module(
                             )
                         ],
                     )
-                    for b in range(R):
+                    for b in range(NB):
                         q_relay_l2 = q_relay_l2_bufs[b]
-                        ChannelGet(
-                            "QIn",
-                            q_relay_l2.result,
-                            indices=[ConstantOp(index_type, b)],
-                        )
-                        # R per-row 2-way broadcasts as a spatial scf.forall: the
-                        # Q2L1_b bundle ROW index is the forall IV (a legal bundle
-                        # index, unlike scf.for), col-pair via broadcast_shape.
-                        # Makes the R-way row scatter explicit; AIR unrolls it to
-                        # the same BDs (consistent with the Gp2L2 gather).
-                        par_q = scf.ForallOp(
-                            lower_bounds=[0], upper_bounds=[R], steps=[1]
-                        )
-                        with InsertionPoint(par_q.body):
-                            ty_i = par_q.induction_variables[0]
-                            ChannelPut(
-                                f"Q2L1_{b}",
+                        # One relay fill per (dk chunk, q-tile): a single fill
+                        # feeding several memtile broadcasts is the same
+                        # fill-count/lock hazard as a shared staging buffer.
+                        for _fill in range(dk_chunks * q_tiles_per_core):
+                            dk_c = _fill % dk_chunks
+                            _j = _fill // dk_chunks
+                            ChannelGet(
+                                "QIn",
                                 q_relay_l2.result,
-                                indices=[ty_i, c0_seg],
-                                offsets=[
-                                    0,
-                                    affine_apply(_q2l1_off_map, [ty_i]),
-                                    0,
-                                    0,
-                                ],
-                                sizes=[dk_tile // M, 2 * (lkp // M), M, M],
-                                strides=[M, dk_tile * M, dk_tile, 1],
+                                indices=[ConstantOp(index_type, b)],
                             )
-                            scf.InParallelOp()
+                            for _ in range(1):
+                                # NR per-row 2-way broadcasts as a spatial
+                                # scf.forall: the Q2L1_b bundle ROW index is the
+                                # forall IV (a legal bundle index, unlike scf.for),
+                                # col-pair via broadcast_shape. Makes the NR-way row
+                                # scatter explicit; AIR unrolls it to the same BDs
+                                # (consistent with the Gp2L2 gather).
+                                par_q = scf.ForallOp(
+                                    lower_bounds=[0], upper_bounds=[NR], steps=[1]
+                                )
+                                with InsertionPoint(par_q.body):
+                                    ty_i = par_q.induction_variables[0]
+                                    ChannelPut(
+                                        f"Q2L1_{b}",
+                                        q_relay_l2.result,
+                                        indices=[ty_i, c0_seg],
+                                        offsets=[
+                                            dk_c * (dk_tile // M) if full_d_dma else 0,
+                                            affine_apply(_q2l1_off_map_for(_j), [ty_i]),
+                                            0,
+                                            0,
+                                        ],
+                                        sizes=[dk_tile // M, 2 * (lkp // M), M, M],
+                                        strides=[M, _dk_dma * M, _dk_dma, 1],
+                                    )
+                                    scf.InParallelOp()
                     # K+V relay for round lx: cps_lx blocks on ONE broadcast
                     # channel, K then V interleaved (herd's K-then-V gets stay in
                     # FIFO order). Packs both onto the tiles' one shared S2MM.
+                    # Per block: dk_chunks K slices then dv_chunks V slices, the
+                    # same order the launch-side 4D descriptors emit them in.
                     for chunk_iter in scf_range(0, c_cps_lx, 1):
-                        ChannelGet("KIn", qk_l2.result, indices=[seg_x])
-                        ChannelPut(
-                            "KV2L1",
-                            qk_l2.result,
-                            indices=[seg_x, c0_seg, c0_seg],
-                            offsets=[0, 0, 0, 0],
-                            sizes=[dk_tile // M, lkp // M, M, M],
-                            strides=[M, dk_tile * M, dk_tile, 1],
-                        )
-                        ChannelGet("VIn", v_l2.result, indices=[seg_x])
-                        ChannelPut(
-                            "KV2L1",
-                            v_l2.result,
-                            indices=[seg_x, c0_seg, c0_seg],
-                            offsets=[0, 0, 0, 0],
-                            sizes=[dv_tile // M, lkp // M, M, M],
-                            strides=[M, dv_tile * M, dv_tile, 1],
-                        )
+                        for _dk_c in range(1 if full_d_dma else dk_chunks):
+                            qk_l2 = qk_l2_bufs[0 if full_d_dma else _dk_c]
+                            ChannelGet("KIn", qk_l2.result, indices=[seg_x])
+                            ChannelPut(
+                                "KV2L1",
+                                qk_l2.result,
+                                indices=[seg_x, c0_seg, c0_seg],
+                                offsets=[0, 0, 0, 0],
+                                sizes=[_dk_dma // M, lkp // M, M, M],
+                                strides=[M, _dk_dma * M, _dk_dma, 1],
+                            )
+                        for _dv_c in range(1 if full_d_dma else dv_chunks):
+                            v_l2 = v_l2_bufs[0 if full_d_dma else _dv_c]
+                            ChannelGet("VIn", v_l2.result, indices=[seg_x])
+                            ChannelPut(
+                                "KV2L1",
+                                v_l2.result,
+                                indices=[seg_x, c0_seg, c0_seg],
+                                offsets=[0, 0, 0, 0],
+                                sizes=[_dv_dma // M, lkp // M, M, M],
+                                strides=[M, _dv_dma * M, _dv_dma, 1],
+                            )
                         yield_([])
 
                 # ----------------------------------------------------------
-                # Herd: [NQ, R] — rows = R q-heads sharing this kv-head
+                # Herd: [NC, NR] — NB col-blocks (2 cols each) = the NB q-heads
+                # sharing this kv-head; NR rows x 2 local cols = 2*NR q-seq-tiles.
                 # ----------------------------------------------------------
                 herd_operands = (
                     q_saved_bufs
                     + qpair_bufs
-                    + [
-                        qk_buf,
-                        v_l1,
-                        g_l1,
-                    ]
+                    + [qk_buf]
+                    + g_l1s
                     + gp_l1_pp
-                    + [
-                        up_l1,
-                        sp_l1,
-                        seg_x,
-                    ]
+                    + up_l1s
+                    + sp_l1s
+                    + [seg_x]
                 )
 
                 @herd(
@@ -694,18 +1125,35 @@ def build_module(
                     link_with="attn_npu2.o",
                 )
                 def herd_body(tx, ty, hsx, hsy, *all_args):
-                    # Unpack: dk_chunks Q bufs, dk_chunks qpair bufs, then qk, v,
-                    # g, n_ob gp buffers (double-buffered output), up, sp, seg_x
-                    q_bufs = list(all_args[:dk_chunks])
-                    qpair_l = list(all_args[dk_chunks : 2 * dk_chunks])
-                    base = 2 * dk_chunks
+                    # Unpack: Q bufs, the qpair staging slab, then qk, g, the gp
+                    # accumulator slabs (none when they alias the staging), up,
+                    # sp, seg_x.
+                    _nqj = 1 if full_d_dma else dk_chunks
+                    _n_q = _nqj * q_tiles_per_core
+                    # q_bufs_j[j] is the Q tile set for the core's j-th q-seq-tile.
+                    q_bufs_j = [
+                        list(all_args[j * _nqj : (j + 1) * _nqj])
+                        for j in range(q_tiles_per_core)
+                    ]
+                    if alias_qpair_kv:
+                        base = _n_q
+                    else:
+                        qpair_slab = all_args[_n_q]
+                        base = _n_q + 1
                     qk = all_args[base]
-                    v = all_args[base + 1]
-                    g = all_args[base + 2]
-                    gp_pp = list(all_args[base + 3 : base + 3 + n_ob])
-                    up_buf = all_args[base + 3 + n_ob]
-                    sp_buf = all_args[base + 4 + n_ob]
-                    h_seg_x = all_args[base + 5 + n_ob]
+                    if alias_qpair_kv:
+                        qpair_slab = qk
+                    _p = base + 1
+                    g_bufs = list(all_args[_p : _p + q_tiles_per_core])
+                    _p += q_tiles_per_core
+                    n_gp = 0 if alias_qpair_gp else n_ob * q_tiles_per_core
+                    gp_pp = list(all_args[_p : _p + n_gp])
+                    _p += n_gp
+                    up_bufs = list(all_args[_p : _p + q_tiles_per_core])
+                    _p += q_tiles_per_core
+                    sp_bufs = list(all_args[_p : _p + q_tiles_per_core])
+                    _p += q_tiles_per_core
+                    h_seg_x = all_args[_p]
 
                     # CAUSAL DMA-TRIANGLE SKIP: loop the q-chunks (lx) IN-CORE,
                     # build-time unrolled. Round lx processes q-seq-tiles
@@ -714,160 +1162,376 @@ def build_module(
                     # stream). q_base = lx*NQ is a build-time constant (no counter).
                     # Online-softmax state (gp/sp/up) re-inits per round (each
                     # q-chunk is an independent attention).
-                    for lx in range(num_lq_iters):
-                        cps_lx = (lx + 1) * NQ
-                        gp = gp_pp[
-                            lx % n_ob
-                        ]  # double-buffered output (the reference o_ping/o_pong)
+                    _cps_h_map = AffineMap.get(
+                        0,
+                        1,
+                        [
+                            (
+                                AffineConstantExpr.get(num_lq_iters * NQ)
+                                if _uniform_cps
+                                else AffineExpr.get_mul(
+                                    AffineSymbolExpr.get(0) + AffineConstantExpr.get(1),
+                                    AffineConstantExpr.get(NQ),
+                                )
+                            )
+                        ],
+                    )
+                    _qbase_map = AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0), AffineConstantExpr.get(NQ)
+                            )
+                        ],
+                    )
+                    _core_rounds = (
+                        scf_range(0, ConstantOp(index_type, num_lq_iters), 1)
+                        if fold_core_rounds
+                        else range(num_lq_iters)
+                    )
+                    for lx in _core_rounds:
+                        # cps and the q-tile base are build-time constants when
+                        # the axis is unrolled and come from the loop IV when it is
+                        # folded. Both are materialised at their point of use so the
+                        # unrolled path emits exactly the ops it always did.
+                        if fold_core_rounds:
+                            _cps_bound = lambda: affine_apply(_cps_h_map, [lx])
+                            _q_base = lambda: arith.IndexCastOp(
+                                i32, affine_apply(_qbase_map, [lx])
+                            ).result
+                            slot = 0
+                        else:
+                            _cps_bound = lambda: ConstantOp(index_type, _cps_blocks(lx))
+                            _q_base = lambda: ConstantOp(i32, lx * NQ).result
+                            slot = lx % n_ob
+                        # One accumulator slab holding all dv chunks; the ping-pong
+                        # slot rotates per round (the reference's o_ping/o_pong)
+                        # when n_ob > 1.
+                        # One accumulator per q-tile the core owns.
+                        gps_j = [
+                            (
+                                qpair_slab
+                                if alias_qpair_gp
+                                else gp_pp[slot * q_tiles_per_core + j]
+                            )
+                            for j in range(q_tiles_per_core)
+                        ]
+                        gp = gps_j[0]
+
+                        def _gp_call(name, pre_args, c, _gp=None):
+                            """Call a gp kernel on dv chunk c of an accumulator."""
+                            _gp = gps_j[0] if _gp is None else _gp
+                            if dv_chunks == 1:
+                                CallOp([], name, pre_args + [_gp])
+                            else:
+                                CallOp(
+                                    [],
+                                    name + "_at",
+                                    pre_args + [_gp, ConstantOp(i32, c)],
+                                )
 
                         # === INIT (per round) ===
-                        CallOp([], "zero_fill_gp_bf16", [gp])
-                        CallOp([], "zero_fill_sp_bf16", [sp_buf])
-                        CallOp([], "neg_inf_fill_up_bf16", [up_buf])
+                        # NOTE: zero-filling the accumulators must come AFTER the Q
+                        # phase when they alias the staging slab -- see below.
 
                         # === Q PARTITIONED GET (column-block) for round lx ===
                         # tile is in col-block b = tx//2 (q-head), seq-tile
                         # s = ty*2 + tx%2. Gated on tx==2b+lc so only that col reads
                         # the block's row-ty 2-way broadcast (index lc); then
                         # copy_half_tile extracts this col's half into q_bufs.
-                        for dk_c in range(dk_chunks):
-                            for b in range(R):
-                                for lc in range(2):
-                                    col_set = IntegerSet.get(
-                                        0,
-                                        1,
-                                        [
-                                            AffineSymbolExpr.get(0)
-                                            - AffineConstantExpr.get(2 * b + lc)
-                                        ],
-                                        [True],
-                                    )
-                                    if_q = affine.AffineIfOp(
-                                        col_set, cond_operands=[tx]
-                                    )
-                                    with InsertionPoint(if_q.then_block):
-                                        ChannelGet(
-                                            f"Q2L1_{b}",
-                                            qpair_l[dk_c],
-                                            indices=[ty, ConstantOp(index_type, lc)],
-                                        )
+                        # The dk-chunk loop sits INSIDE the affine.if so a tile
+                        # emits ONE guarded region per (b, lc) instead of one per
+                        # (b, lc, chunk). Same per-bundle FIFO order (the segment
+                        # also streams a block's chunks back to back), a quarter
+                        # of the guard scaffolding at dk_chunks=4 -- which is what
+                        # keeps the unrolled core inside AIE2P program memory.
+                        for b in range(NB):
+                            for lc in range(2):
+                                col_set = IntegerSet.get(
+                                    0,
+                                    1,
+                                    [
+                                        AffineSymbolExpr.get(0)
+                                        - AffineConstantExpr.get(2 * b + lc)
+                                    ],
+                                    [True],
+                                )
+                                if_q = affine.AffineIfOp(col_set, cond_operands=[tx])
+                                with InsertionPoint(if_q.then_block):
+                                    for _j in range(q_tiles_per_core):
+                                        q_bufs = q_bufs_j[_j]
+                                        for dk_c in range(dk_chunks):
+                                            ChannelGet(
+                                                f"Q2L1_{b}",
+                                                qpair_slab,
+                                                indices=[
+                                                    ty,
+                                                    ConstantOp(index_type, lc),
+                                                ],
+                                            )
+                                            if full_d_dma:
+                                                CallOp(
+                                                    [],
+                                                    "copy_half_tile_at",
+                                                    [
+                                                        qpair_slab,
+                                                        q_bufs[0],
+                                                        ConstantOp(i32, lc),
+                                                        ConstantOp(i32, dk_c),
+                                                    ],
+                                                )
+                                            else:
+                                                CallOp(
+                                                    [],
+                                                    "copy_half_tile",
+                                                    [
+                                                        qpair_slab,
+                                                        q_bufs[dk_c],
+                                                        ConstantOp(i32, lc),
+                                                    ],
+                                                )
+                                    affine.AffineYieldOp([])
+
+                        # === ACCUMULATOR INIT (per q-tile) ===
+                        for _j in range(q_tiles_per_core):
+                            if dv_chunks == 1:
+                                _gp_call("zero_fill_gp_bf16", [], 0, gps_j[_j])
+                            else:
+                                CallOp([], "zero_fill_gp_bf16_all", [gps_j[_j]])
+                            CallOp([], "zero_fill_sp_bf16", [sp_bufs[_j]])
+                            CallOp([], "neg_inf_fill_up_bf16", [up_bufs[_j]])
+
+                        # === K CHUNK LOOP (bound = the round's causal prefix) ===
+                        for chunk_iter in scf_range(0, _cps_bound(), 1):
+                            # 1. Zero fill each q-tile's G. Done BEFORE the K get
+                            # so the single-q-tile case emits its ops in the order
+                            # it always did.
+                            g1ds = [
+                                CollapseShapeOp(g_l1_1d, g_bufs[_j], [[0, 1]])
+                                for _j in range(q_tiles_per_core)
+                            ]
+                            for _j in range(q_tiles_per_core):
+                                CallOp([], "zero_fill_g_bf16", [g1ds[_j]])
+
+                            # 2. ONE K get shared by every q-tile this core owns
+                            # (a get per q-tile would re-send K and re-inflate the
+                            # shim traffic this split exists to reduce), then a
+                            # QK^T per q-tile.
+                            if full_d_dma:
+                                ChannelGet("KV2L1", qk, indices=[h_seg_x, ty, tx])
+                                for _j in range(q_tiles_per_core):
+                                    for dk_c in range(dk_chunks):
                                         CallOp(
                                             [],
-                                            "copy_half_tile",
+                                            "matmul_a_b_bf16_chunk",
                                             [
-                                                qpair_l[dk_c],
-                                                q_bufs[dk_c],
-                                                ConstantOp(i32, lc),
+                                                q_bufs_j[_j][0],
+                                                qk,
+                                                g1ds[_j],
+                                                ConstantOp(i32, dk_c),
                                             ],
                                         )
-                                        affine.AffineYieldOp([])
+                            else:
+                                for dk_c in range(dk_chunks):
+                                    ChannelGet("KV2L1", qk, indices=[h_seg_x, ty, tx])
+                                    for _j in range(q_tiles_per_core):
+                                        CallOp(
+                                            [],
+                                            "matmul_a_b_bf16",
+                                            [q_bufs_j[_j][dk_c], qk, g1ds[_j]],
+                                        )
 
-                        # === K CHUNK LOOP (static bound cps_lx = causal prefix) ===
-                        c_cps_h = ConstantOp(index_type, cps_lx)
-                        for chunk_iter in scf_range(0, c_cps_h, 1):
-                            # 1. Zero fill G (once per K seq chunk)
-                            g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
-                            CallOp([], "zero_fill_g_bf16", [g1d])
-
-                            # 2. K get (broadcast to all rows+cols) + matmul.
-                            for dk_c in range(dk_chunks):
-                                ChannelGet("KV2L1", qk, indices=[h_seg_x, ty, tx])
-                                CallOp([], "matmul_a_b_bf16", [q_bufs[dk_c], qk, g1d])
-
-                            # 3. V get into the SAME local buffer (K consumed above).
-                            ChannelGet("KV2L1", qk, indices=[h_seg_x, ty, tx])
+                            # 3. V is fetched AFTER the mask/softmax below (it lands
+                            # in the same local buffer the K blocks just vacated,
+                            # one get per dv chunk).
 
                             # 4. Causal mask: q_block = lx*NQ + s (s = ty*2 + tx%2),
                             # kv_block = chunk_iter. The per-lx DMA skip is coarse
                             # (whole prefix); the fine diagonal within the prefix is
                             # masked here (the reference masks the diagonal round too).
-                            if causal:
-                                kv_blk_r = arith.IndexCastOp(i32, chunk_iter).result
-                                ty_i32 = arith.IndexCastOp(i32, ty).result
-                                tx_i32 = arith.IndexCastOp(i32, tx).result
-                                c2_i32 = ConstantOp(i32, 2)
-                                s_val = arith.AddIOp(
-                                    arith.MulIOp(ty_i32, c2_i32.result).result,
-                                    arith.RemUIOp(tx_i32, c2_i32.result).result,
+                            # 4/5. Mask + softmax + accumulator rescale, per
+                            # q-tile. The core's j-th tile is seq-tile
+                            # s + j*(2*NR), so only q_block changes with j.
+                            _stmps, _rtmps = [], []
+                            for _j in range(q_tiles_per_core):
+                                if causal:
+                                    kv_blk_r = arith.IndexCastOp(i32, chunk_iter).result
+                                    ty_i32 = arith.IndexCastOp(i32, ty).result
+                                    tx_i32 = arith.IndexCastOp(i32, tx).result
+                                    c2_i32 = ConstantOp(i32, 2)
+                                    s_val = arith.AddIOp(
+                                        arith.MulIOp(ty_i32, c2_i32.result).result,
+                                        arith.RemUIOp(tx_i32, c2_i32.result).result,
+                                    )
+                                    if _j:
+                                        s_val = arith.AddIOp(
+                                            s_val.result,
+                                            ConstantOp(i32, _j * 2 * NR).result,
+                                        )
+                                    q_block = arith.AddIOp(_q_base(), s_val.result)
+                                    CallOp(
+                                        [],
+                                        "apply_causal_mask",
+                                        [g_bufs[_j], q_block.result, kv_blk_r],
+                                    )
+                                s_tmp = AllocOp(up_l1_t, [], [])
+                                r_tmp = AllocOp(up_l1_t, [], [])
+                                _stmps.append(s_tmp)
+                                _rtmps.append(r_tmp)
+                                CallOp(
+                                    [],
+                                    "fused_softmax",
+                                    [
+                                        g1ds[_j],
+                                        up_bufs[_j],
+                                        s_tmp.result,
+                                        r_tmp.result,
+                                    ],
                                 )
-                                q_block = arith.AddIOp(
-                                    ConstantOp(i32, lx * NQ).result, s_val.result
+                                for c in range(dv_chunks):
+                                    _gp_call("mul_r_gp", [r_tmp.result], c, gps_j[_j])
+
+                            # 6. ONE V get shared by every q-tile, then a PV per
+                            # q-tile. r/s stay live across the get, hence the lists.
+                            if full_d_dma:
+                                ChannelGet("KV2L1", qk, indices=[h_seg_x, ty, tx])
+                                for _j in range(q_tiles_per_core):
+                                    for c in range(dv_chunks):
+                                        if dv_chunks == 1:
+                                            CallOp(
+                                                [],
+                                                "matmul_g_b_bf16",
+                                                [g1ds[_j], qk, gps_j[_j]],
+                                            )
+                                        else:
+                                            CallOp(
+                                                [],
+                                                "matmul_g_b_bf16_chunk",
+                                                [
+                                                    g1ds[_j],
+                                                    qk,
+                                                    gps_j[_j],
+                                                    ConstantOp(i32, c),
+                                                ],
+                                            )
+                            else:
+                                for c in range(dv_chunks):
+                                    ChannelGet("KV2L1", qk, indices=[h_seg_x, ty, tx])
+                                    for _j in range(q_tiles_per_core):
+                                        _gp_call(
+                                            "matmul_g_b_bf16",
+                                            [g1ds[_j], qk],
+                                            c,
+                                            gps_j[_j],
+                                        )
+                            for _j in range(q_tiles_per_core):
+                                CallOp(
+                                    [],
+                                    "accum_sp_r_s",
+                                    [
+                                        sp_bufs[_j],
+                                        _rtmps[_j].result,
+                                        _stmps[_j].result,
+                                    ],
                                 )
                                 CallOp(
                                     [],
-                                    "apply_causal_mask",
-                                    [g, q_block.result, kv_blk_r],
+                                    "vector_copy_32elems",
+                                    [
+                                        ConstantOp(i32, 0),
+                                        _stmps[_j].result,
+                                        sp_bufs[_j],
+                                    ],
                                 )
-
-                            # 5. softmax + PV + accumulate (online).
-                            s_tmp = AllocOp(up_l1_t, [], [])
-                            r_tmp = AllocOp(up_l1_t, [], [])
-                            CallOp(
-                                [],
-                                "fused_softmax",
-                                [g1d, up_buf, s_tmp.result, r_tmp.result],
-                            )
-                            CallOp([], "mul_r_gp", [r_tmp.result, gp])
-                            CallOp([], "matmul_g_b_bf16", [g1d, qk, gp])
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [sp_buf, r_tmp.result, s_tmp.result],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [ConstantOp(i32, 0), s_tmp.result, sp_buf],
-                            )
-                            DeallocOp(s_tmp)
-                            DeallocOp(r_tmp)
+                            for _j in range(q_tiles_per_core):
+                                DeallocOp(_stmps[_j])
+                                DeallocOp(_rtmps[_j])
                             yield_([])
 
                         # === OUTPUT for round lx (normalize + split lo/hi puts) ===
                         # NS=1: this tile looped its causal K prefix in-core, so its
                         # (gp, sp) is the final numerator + denominator. Normalize
                         # and emit directly (no cascade merge).
-                        CallOp([], "div_gp_sp", [sp_buf, gp])
+                        for _j in range(q_tiles_per_core):
+                            if dv_chunks == 1:
+                                _gp_call("div_gp_sp", [sp_bufs[_j]], 0, gps_j[_j])
+                            else:
+                                CallOp([], "div_gp_sp_all", [sp_bufs[_j], gps_j[_j]])
                         s0o = AffineSymbolExpr.get(0)  # tx
                         s1o = AffineSymbolExpr.get(1)  # ty
-                        for b in range(R):
-                            lo_set = IntegerSet.get(
-                                0,
-                                2,
-                                [
-                                    s0o - AffineConstantExpr.get(2 * b),
-                                    AffineConstantExpr.get(2 * b + 1) - s0o,
-                                    AffineConstantExpr.get(1) - s1o,
-                                ],
-                                [False, False, False],
-                            )
-                            hi_set = IntegerSet.get(
-                                0,
-                                2,
-                                [
-                                    s0o - AffineConstantExpr.get(2 * b),
-                                    AffineConstantExpr.get(2 * b + 1) - s0o,
-                                    s1o - AffineConstantExpr.get(2),
-                                ],
-                                [False, False, False],
-                            )
-                            for half_name, half_set in (
-                                ("lo", lo_set),
-                                ("hi", hi_set),
-                            ):
+                        for b in range(NB):
+                            # At one q-tile per core the halves are a ROW split
+                            # (rows 0,1 -> lo, rows 2,3 -> hi). At two, a core's
+                            # tile-set j IS half j (j=0 covers seq-tiles 0..2*NR-1,
+                            # j=1 the rest), so every row emits both halves and the
+                            # guard is just "is tx in block b".
+                            _blk = [
+                                s0o - AffineConstantExpr.get(2 * b),
+                                AffineConstantExpr.get(2 * b + 1) - s0o,
+                            ]
+
+                            def _row_constraints(_rlo, _nrows):
+                                # A full half keeps its single-sided guard so the
+                                # two-slice IR is unchanged; a single row needs
+                                # both sides.
+                                if _nrows == 2:
+                                    return [
+                                        (
+                                            (s1o - AffineConstantExpr.get(2))
+                                            if _rlo == 2
+                                            else (AffineConstantExpr.get(1) - s1o)
+                                        )
+                                    ]
+                                # A single row is an EQUALITY, not a pair of
+                                # inequalities: air reads this set to work out
+                                # which herd tiles actually reach the conditional
+                                # put, and only the equality form pins ty to one
+                                # row. With two inequalities it keeps flows from
+                                # tiles that never put, and the gather then waits
+                                # on data nobody sends.
+                                return [s1o - AffineConstantExpr.get(_rlo)]
+
+                            _halves = [
+                                (
+                                    _nm,
+                                    IntegerSet.get(
+                                        0,
+                                        2,
+                                        _blk + _row_constraints(_rlo, _nrows),
+                                        [False, False] + [_nrows == 1],
+                                    ),
+                                    _j,
+                                )
+                                for _nm, _j, _rlo, _nrows in _out_slices
+                            ]
+                            for half_name, half_set, _j in _halves:
                                 if_o = affine.AffineIfOp(
                                     half_set, cond_operands=[tx, ty]
                                 )
                                 with InsertionPoint(if_o.then_block):
+                                    # ONE put for the whole d. The slab's mmul
+                                    # layout is column-block-major over all dv
+                                    # chunks ([dv/M][tile_size_q][M]), so the same
+                                    # 4D de-tiling descriptor that emits row-major
+                                    # [tile_size_q, dv_tile] for one chunk emits
+                                    # row-major [tile_size_q, dv] for the slab.
                                     ChannelPut(
                                         f"Gp2L2_{b}_{half_name}",
-                                        gp,
+                                        gps_j[_j],
                                         indices=[ty, tx],
                                         offsets=[0, 0, 0, 0],
-                                        sizes=[tile_size_q // M, M, dv_tile // M, M],
+                                        sizes=[
+                                            tile_size_q // M,
+                                            M,
+                                            dv // M,
+                                            M,
+                                        ],
                                         strides=[M * M, M, tile_size_q * M, 1],
                                     )
                                     affine.AffineYieldOp([])
+                        if fold_core_rounds:
+                            yield_([])
 
                 # Output gather split lo/hi. lo = rows 0,1 (seq-tiles 0..3) into
                 # gp_lo (col 2b); hi = rows 2,3 (seq-tiles 4..7) into gp_hi
@@ -898,36 +1562,92 @@ def build_module(
                         )
                     ],
                 )
-                _gp_tyhi_map = AffineMap.get(
+
+                _gp_lc_map = AffineMap.get(
                     0,
                     1,
                     [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0), AffineConstantExpr.get(2)
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0),
+                            AffineConstantExpr.get(tile_size_q),
                         )
                     ],
                 )
 
-                def _gp_gather(chan, buf, col_map, tyhi):
+                def _gp_row_map(_rlo):
+                    return AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_add(
+                                AffineSymbolExpr.get(0),
+                                AffineConstantExpr.get(_rlo),
+                            )
+                        ],
+                    )
+
+                # The gather target is [lqp/2, dv] wide and each source tile now
+                # sends its whole d in one transfer, so a tile is one full-width
+                # row block -- 4 BDs per memtile, the same as at head_dim 64.
+                def _gp_gather(chan, buf, col_map, rlo, nrows, b_blk=0):
+                    # At one q-tile per core a half comes from 2 of the 4 rows
+                    # (tyhi shifts to rows 2,3). At two, half j comes from tile-set
+                    # j on EVERY row, so the forall spans all NR rows and the row
+                    # shift disappears.
+                    if nrows == 1:
+                        # One tile row: just two gets with constant bundle
+                        # indices. A forall here buys nothing (the row index is
+                        # not an IV) and a degenerate [1, 2] one leaves that
+                        # index an affine_apply on an always-zero IV, which does
+                        # not resolve to a constant channel-bundle index.
+                        for _lc in range(2):
+                            ChannelGet(
+                                chan,
+                                buf,
+                                indices=[
+                                    ConstantOp(index_type, rlo),
+                                    ConstantOp(index_type, 2 * b_blk + _lc),
+                                ],
+                                offsets=[_lc * tile_size_q, 0],
+                                sizes=[tile_size_q, dv],
+                                strides=[dv, 1],
+                            )
+                        return
                     par = scf.ForallOp(
-                        lower_bounds=[0, 0], upper_bounds=[2, 2], steps=[1, 1]
+                        lower_bounds=[0, 0], upper_bounds=[nrows, 2], steps=[1, 1]
                     )
                     with InsertionPoint(par.body):
                         j = par.induction_variables[0]
                         lc = par.induction_variables[1]
-                        ty_idx = affine_apply(_gp_tyhi_map, [j]) if tyhi else j
+                        ty_idx = j if rlo == 0 else affine_apply(_gp_row_map(rlo), [j])
                         ChannelGet(
                             chan,
                             buf,
                             indices=[ty_idx, affine_apply(col_map, [lc])],
                             offsets=[affine_apply(_gp_off_map, [j, lc]), 0],
-                            sizes=[tile_size_q, dv_tile],
-                            strides=[dv_tile, 1],
+                            sizes=[tile_size_q, dv],
+                            strides=[dv, 1],
                         )
                         scf.InParallelOp()
 
-                for lx in range(num_lq_iters):
-                    for b in range(R):
+                # At dv_chunks == 1 the rounds alternate L2 buffers, so they stay
+                # Python-unrolled. At dv_chunks > 1 there is a single buffer and
+                # every round's descriptors are identical, so one scf.for folds
+                # the round axis into a cyclic BD chain instead of num_lq_iters
+                # copies -- the 48-block memtile_dma cap cannot hold the unrolled
+                # form once the dv chunks double the gather.
+                # Fold the gather's round axis whenever the L2 relay is single
+                # buffered (n_ob_l2 == 1), i.e. at dv_chunks > 1 or once the core
+                # rounds are folded. Unrolled, a gather costs 4 BDs per round, so
+                # two gathers on one memtile blow the 48-block cap at 8 rounds.
+                _fold_rounds = dv_chunks > 1 or fold_core_rounds
+                _round_iter = (
+                    scf_range(0, ConstantOp(index_type, num_lq_iters), 1)
+                    if _fold_rounds
+                    else range(num_lq_iters)
+                )
+                for lx in _round_iter:
+                    for b in range(NB):
                         # col(lc) = 2b + lc
                         _gp_col_map = AffineMap.get(
                             0,
@@ -939,23 +1659,28 @@ def build_module(
                                 )
                             ],
                         )
-                        gp_lo = gp_lo_bufs[b][lx % n_ob_l2]
-                        _gp_gather(f"Gp2L2_{b}_lo", gp_lo.result, _gp_col_map, False)
-                        ChannelPut(
-                            "GpOut",
-                            gp_lo.result,
-                            indices=[ConstantOp(index_type, b), c0_seg],
-                        )
-                        gp_hi = gp_hi_bufs[b][lx % n_ob_l2]
-                        _gp_gather(f"Gp2L2_{b}_hi", gp_hi.result, _gp_col_map, True)
-                        ChannelPut(
-                            "GpOut",
-                            gp_hi.result,
-                            indices=[
-                                ConstantOp(index_type, b),
-                                ConstantOp(index_type, 1),
-                            ],
-                        )
+                        for _i, (_nm, _j, _rlo, _nrows) in enumerate(_out_slices):
+                            _gb = gp_slice_bufs[b][_i][
+                                0 if _fold_rounds else lx % n_ob_l2
+                            ]
+                            _gp_gather(
+                                f"Gp2L2_{b}_{_nm}",
+                                _gb.result,
+                                _gp_col_map,
+                                _rlo,
+                                _nrows,
+                                b,
+                            )
+                            ChannelPut(
+                                "GpOut",
+                                _gb.result,
+                                indices=[
+                                    ConstantOp(index_type, b),
+                                    c0_seg if _i == 0 else ConstantOp(index_type, _i),
+                                ],
+                            )
+                    if _fold_rounds:
+                        yield_([])
 
                 # Deallocs for segment-level buffers
                 for q_buf in q_saved_bufs:
@@ -963,87 +1688,30 @@ def build_module(
                 for qp in qpair_bufs:
                     DeallocOp(qp)
                 DeallocOp(qk_buf)
-                DeallocOp(v_l1)
-                DeallocOp(g_l1)
+                for _gb in g_l1s:
+                    DeallocOp(_gb)
                 for _gpb in gp_l1_pp:
                     DeallocOp(_gpb)
-                DeallocOp(up_l1)
-                DeallocOp(sp_l1)
-                for stage in range(NS):
-                    DeallocOp(v_l2_bufs[stage])
-                for stage in range(NS):
-                    DeallocOp(qk_l2_bufs[stage])
+                for _ub in up_l1s:
+                    DeallocOp(_ub)
+                for _sb in sp_l1s:
+                    DeallocOp(_sb)
+                for _b in v_l2_bufs:
+                    DeallocOp(_b)
+                for _b in qk_l2_bufs:
+                    DeallocOp(_b)
                 for q_rbuf in q_relay_l2_bufs:
                     DeallocOp(q_rbuf)
-                for _blk in gp_lo_bufs:
-                    for g_rbuf in _blk:
-                        DeallocOp(g_rbuf)
-                for _blk in gp_hi_bufs:
-                    for g_rbuf in _blk:
-                        DeallocOp(g_rbuf)
+                for _i in range(_n_out):
+                    for _blk in gp_slice_bufs:
+                        for _gb in _blk[_i]:
+                            DeallocOp(_gb)
 
-            # Output gets PER ROUND (lx): per block (q-head), TWO halves (lo then
-            # hi) matching the segment's per-lx GpOut put order. lo = round lx's
-            # first lqp/2 seq rows (at row lx*lqp), hi = second half.
-            emb_dim_out = num_heads * dv
-            half_rows_l = lqp // 2
-            # RECTANGULAR in lx (row offset lx*lqp, constant size + channel index),
-            # so the round axis is one scf.for that wrap-and-stride folds to a
-            # single strided BD per (block, half) endpoint -- collapsing the
-            # per-round GpOut drain unroll (num_lq_iters*R*2 gets -> R*2 folded).
-            _c_nlq_out = ConstantOp(index_type, num_lq_iters)
-            _row_lo_map = AffineMap.get(
-                0,
-                1,
-                [
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0), AffineConstantExpr.get(lqp)
-                    )
-                ],
-            )
-            _row_hi_map = AffineMap.get(
-                0,
-                1,
-                [
-                    AffineExpr.get_add(
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0), AffineConstantExpr.get(lqp)
-                        ),
-                        AffineConstantExpr.get(half_rows_l),
-                    )
-                ],
-            )
-            for lx_iv in scf_range(0, _c_nlq_out, 1):
-                out_launch_row = affine_apply(_row_lo_map, [lx_iv])
-                out_row_hi = affine_apply(_row_hi_map, [lx_iv])
-                for kv_local in range(num_heads_per_unroll):
-                    for row_slot in range(R):
-                        # q_head = (ly * nhpu + kv_local) * gqa + row_slot.
-                        out_col_off = affine_apply(
-                            _linmap(
-                                num_heads_per_unroll * gqa_group_size * dv,
-                                (kv_local * gqa_group_size + row_slot) * dv,
-                            ),
-                            [ly],
-                        )
-                        b_idx = ConstantOp(index_type, row_slot)
-                        ChannelGet(
-                            "GpOut",
-                            gp,
-                            indices=[b_idx, ConstantOp(index_type, 0)],
-                            offsets=[out_launch_row, out_col_off],
-                            sizes=[half_rows_l, dv_tile],
-                            strides=[emb_dim_out, 1],
-                        )
-                        ChannelGet(
-                            "GpOut",
-                            gp,
-                            indices=[b_idx, ConstantOp(index_type, 1)],
-                            offsets=[out_row_hi, out_col_off],
-                            sizes=[half_rows_l, dv_tile],
-                            strides=[emb_dim_out, 1],
-                        )
-                yield_([])
+            if not _merge_out_into_kv:
+                _c_nlq_out = ConstantOp(index_type, num_lq_iters)
+                for lx_iv in scf_range(0, _c_nlq_out, 1):
+                    _emit_out_gets(lx_iv)
+                    yield_([])
 
 
 if __name__ == "__main__":
@@ -1113,6 +1781,14 @@ if __name__ == "__main__":
         dest="num_q_tiles",
         help="Number of tiles to partition the Q chunk into (default: 4). "
         "Under causal masking, lqp / num_q_tiles must equal lkp.",
+    )
+    parser.add_argument(
+        "--q-tiles-per-core",
+        type=int,
+        default=1,
+        help="q-seq-tiles each core handles per round (1 or 2). 2 halves "
+        "the round count, keeping the shim active-BD count in budget at "
+        "long sequences.",
     )
     parser.add_argument(
         "--num-heads-per-unroll",
@@ -1207,6 +1883,7 @@ if __name__ == "__main__":
         causal=causal,
         num_heads_per_unroll=num_heads_per_unroll,
         causal_skip=args.causal_skip,
+        q_tiles_per_core=args.q_tiles_per_core,
     )
 
     if args.print_module_only:

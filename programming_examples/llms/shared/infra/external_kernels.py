@@ -200,7 +200,13 @@ def compile_rope():
 
 
 def compile_attn_npu2(
-    head_dim=64, lkp=None, lqp_tile=None, dv_tile=None, force=False, bfp16=True
+    head_dim=64,
+    lkp=None,
+    lqp_tile=None,
+    force=False,
+    bfp16=True,
+    dk_tile=None,
+    dv_tile=None,
 ):
     """Compile attn_npu2.o (FlashAttention kernel) from source.
 
@@ -223,9 +229,12 @@ def compile_attn_npu2(
         lkp: K/V chunk size per tile (= dk/dv tile). Defaults to head_dim
             (legacy hd==lkp behavior).
         lqp_tile: Q tile size (tile_size_q). Defaults to lkp.
-        dv_tile: V/output column tile (-> dv). Defaults to lkp. Must match the
-            builder's dv_tile, which may be widened past lkp to drop the
-            dv_chunks launch axis (and with it the K re-streaming it costs).
+        dk_tile / dv_tile: the K/V dimension TILE. Default to lkp (the kernel
+            slices d into lkp-wide chunks). The temporal-causal kernel keeps d
+            WHOLE instead, so it passes dk_tile = dv_tile = head_dim. The
+            head-first path widens dv_tile alone, past lkp but short of
+            head_dim, to shrink the dv_chunks launch axis (and with it the K
+            re-streaming that axis costs). Both must match the builder.
         force: recompile even if attn_npu2.o exists (needed when the same CWD
             previously built a different-shaped .o, e.g. hd=64 then hd=128).
     """
@@ -233,6 +242,8 @@ def compile_attn_npu2(
         lkp = head_dim
     if lqp_tile is None:
         lqp_tile = lkp
+    if dk_tile is None:
+        dk_tile = lkp
     if dv_tile is None:
         dv_tile = lkp
     src = _PROJ_ROOT / "flash_attention" / "kernel_fusion_based" / "attn_npu2.cc"
@@ -240,7 +251,7 @@ def compile_attn_npu2(
         "-DBIT_WIDTH=8",
         f"-Dlqp={lqp_tile}",
         f"-Dlkp={lkp}",
-        f"-Ddk={lkp}",
+        f"-Ddk={dk_tile}",
         f"-Ddk_full={head_dim}",
         f"-Ddv={dv_tile}",
         f"-Ddv_full={head_dim}",

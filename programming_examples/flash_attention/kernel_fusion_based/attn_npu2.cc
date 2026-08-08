@@ -803,4 +803,63 @@ void apply_window_mask(bfloat16 *g, int32_t q_block_idx, int32_t kv_block_idx,
   }
 }
 
+// ---------------------------------------------------------------------------
+// dv-chunked output accumulators (head_dim > lkp).
+//
+// At dv_chunks > 1 a tile keeps one [lqp, dv] accumulator PER dv chunk, stacked
+// in a single [lqp, dv_full] slab. The mmul layout is column-block-major, so
+// chunk c is the flat range starting at c*lqp*dv and the whole slab drains as
+// ONE row-major [lqp, dv_full] transfer. AIE lowers memrefs to bare pointers,
+// so a static subview offset would be dropped -- pass the chunk index instead,
+// exactly like copy_half_tile does for the Q pair.
+// ---------------------------------------------------------------------------
+static constexpr int GP_TILE_ELEMS = lqp * dv;
+
+// Full-d DMA (head_dim > lkp): K/V/Q cross the channels as ONE transfer of the
+// whole d, exactly like the reference's memref<256x128> memtile buffer, so each
+// channel keeps a single put per loop iteration and air-to-aie can fold the
+// chunk loop into a cyclic BD chain. The dk/dv chunking then happens here, on
+// pointers, instead of at the channel level.
+void matmul_a_b_bf16_chunk(bfloat16 *a_base, bfloat16 *b_base, bfloat16 *out,
+                           int c) {
+  matmul_a_b_bf16(a_base + c * (lqp * dk), b_base + c * (lkp * dk), out);
+}
+
+// The Q pair broadcast carries one dk chunk at a time; land it in chunk c of
+// the full-d Q buffer.
+void copy_half_tile_at(bfloat16 *src, bfloat16 *dst, int lc, int c) {
+  copy_half_tile(src, dst + c * (lqp * dk), lc);
+}
+
+// dv chunk c of the V tile accumulates into dv chunk c of the output slab.
+void matmul_g_b_bf16_chunk(bfloat16 *g_in, bfloat16 *v_base, bfloat16 *out_base,
+                           int c) {
+  matmul_g_b_bf16(g_in, v_base + c * (lkp * dv), out_base + c * GP_TILE_ELEMS);
+}
+
+void zero_fill_gp_bf16_at(bfloat16 *base, int c) {
+  zero_fill_gp_bf16(base + c * GP_TILE_ELEMS);
+}
+
+void mul_r_gp_at(bfloat16 *r, bfloat16 *base, int c) {
+  mul_r_gp(r, base + c * GP_TILE_ELEMS);
+}
+
+void div_gp_sp_at(bfloat16 *sp, bfloat16 *base, int c) {
+  div_gp_sp(sp, base + c * GP_TILE_ELEMS);
+}
+
+// Whole-slab variants: the dv chunks are contiguous, so one call with the loop
+// on THIS side replaces dv_chunks call sites in the core -- the unrolled core
+// is tight against AIE2P program memory at dv_chunks 4.
+void zero_fill_gp_bf16_all(bfloat16 *base) {
+  for (int c = 0; c < dv_full / dv; c++)
+    zero_fill_gp_bf16(base + c * GP_TILE_ELEMS);
+}
+
+void div_gp_sp_all(bfloat16 *sp, bfloat16 *base) {
+  for (int c = 0; c < dv_full / dv; c++)
+    div_gp_sp(sp, base + c * GP_TILE_ELEMS);
+}
+
 } // extern "C"

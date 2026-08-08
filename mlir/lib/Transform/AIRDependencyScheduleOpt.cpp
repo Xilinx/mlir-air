@@ -2619,7 +2619,7 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
 
     // Reject unroll of a deeply-nested redundant-repeat cascade: if no
     // enclosing IV reaches any channel offset and the compound trip
-    // count exceeds the per-channel lock capacity, unrolling would emit
+    // count reaches the per-channel lock capacity, unrolling would emit
     // K chained identical ops and downstream air-to-aie would set the
     // lock init count to K, breaking per-iter pairing. Leaving the loop
     // intact keeps init=1 with an implicit per-iter BD repeat.
@@ -2679,7 +2679,7 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
         }
       return WalkResult::advance();
     });
-    if (!someIVInOffsets && compoundTrip > kRedundantUnrollLockLimit)
+    if (!someIVInOffsets && compoundTrip >= kRedundantUnrollLockLimit)
       return failure();
 
     // Unroll loop; preserve async tokens after unroll.
