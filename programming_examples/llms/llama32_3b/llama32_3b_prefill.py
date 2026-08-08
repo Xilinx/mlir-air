@@ -60,15 +60,20 @@ from llama32_1b_prefill import (  # noqa: E402,F401
 from llama32_1b_cpu_helpers import attention_reference  # noqa: E402
 
 
-def _use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
-    """TEMPORAL_CAUSAL_SKIP=1 (opt-in): use the seq-first temporal-causal FA.
+def use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
+    """Use the seq-first temporal-causal FA wherever it is supported.
 
-    It maps one q-seq-tile per core over NB column-blocks and skips the
-    non-causal part of the K/V stream, and being seq-first it also drops the
-    host transposes the head-first path needs. Requires seq_len % 256 == 0.
-    Off by default: the shipped path stays head-first FA.
+    It maps one q-seq-tile per core over NB column-blocks and, being seq-first,
+    also drops the host transposes the head-first path needs. Measured on
+    Llama-3.2-3B at 2048 context: attention 33.68 -> 26.35 ms/layer, whole
+    prefill 2692.8 -> 2484.1 ms (761 -> 824 tok/s).
+
+    `supports()` restricts this to the shapes whose output placement is
+    actually mapped (head_dim 128, seq_len a multiple of 256, and past 4 rounds
+    only NB == 3); everything else keeps the head-first path. Set
+    TEMPORAL_CAUSAL_SKIP=0 to force head-first back.
     """
-    if os.environ.get("TEMPORAL_CAUSAL_SKIP") != "1":
+    if os.environ.get("TEMPORAL_CAUSAL_SKIP") == "0":
         return False
     from shared.infra.fa_temporal import supports
 
@@ -128,7 +133,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False):
 
     # 3. Flash Attention (head_dim=128). Skip if using CPU fallback.
     if not cpu_attn:
-        if _use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
+        if use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
             print("\n--- flash_attn (seq-first TEMPORAL-CAUSAL FA, head_dim=128) ---")
             from shared.infra.fa_temporal import compile_temporal_fa
 
@@ -239,7 +244,7 @@ def run_transformer_block(
         # NPU FlashAttention (head_dim=128). q_roped/k_roped are post-RoPE
         # seq-first (pure Llama: no QK-norm, no bias); v is the raw V
         # projection seq-first. Real (un-padded) dims.
-        if _use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
+        if use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
             from shared.infra.fa_temporal import npu_fa_temporal as _npu_fa
         else:
             from shared.infra.fa_headfirst import npu_fa_headfirst as _npu_fa

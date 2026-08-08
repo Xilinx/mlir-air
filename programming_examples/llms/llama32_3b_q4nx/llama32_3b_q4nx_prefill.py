@@ -8,7 +8,8 @@
 # causal-GQA-flash-attention all ON THE NPU with RESIDENT weight BOs, and the
 # final LM head as an on-device GEMV. The whole transformer block runs through
 # the two llama32_3b multi-launch stitchers (rms_gemms_rope + o_ffn) plus the
-# head-first flash attention (head_dim=128), driven by KernelCache.load_and_run
+# seq-first temporal-causal flash attention (head_dim=128), driven by
+# KernelCache.load_and_run
 # with per-layer resident BOs (weights written once).
 #
 # This is the 3B analog of llama32_1b_q4nx_prefill.py: same structure, 3B config.
@@ -64,18 +65,30 @@ class LlamaQ4nxPrefill:
         self.n_layers = n_layers
         self.MAX_L = seq_len
         self.current_context_length = 0
+        from llama32_3b_weights import LlamaConfig, generate_rope_lut
+        from llama32_3b_prefill import compile_all_kernels, use_temporal_fa
+        from shared.infra.backend_presets import LM_GEMV_BACKEND
+
+        self.config = LlamaConfig(n_layers=n_layers)
         # seq_len-specific cache: the stitcher/flash-attn ELFs are compiled for this padded
         # context length, but the KernelCache is keyed by kernel NAME only. A shared dir would
         # let a shorter-context build (e.g. 256) be silently reused for a 2048 request -> the
         # prefill then returns all-zero logits for N beyond the built length. Isolate by seq_len.
-        cache_dir = cache_dir or str(_HERE / f"_q4nx_cache_seq{seq_len}")
+        # The FA variant goes in the name for the same reason: the two wrappers disagree on
+        # operand layout, so reusing one's `flash_attn` ELF under the other permutes the data.
+        _fa = (
+            "tfa"
+            if use_temporal_fa(
+                seq_len,
+                self.config.n_heads,
+                self.config.n_kv_heads,
+                self.config.head_dim,
+            )
+            else "hfa"
+        )
+        cache_dir = cache_dir or str(_HERE / f"_q4nx_cache_seq{seq_len}_{_fa}")
         self.cache = KernelCache(cache_dir=cache_dir, verbose=verbose)
 
-        from llama32_3b_weights import LlamaConfig, generate_rope_lut
-        from llama32_3b_prefill import compile_all_kernels
-        from shared.infra.backend_presets import LM_GEMV_BACKEND
-
-        self.config = LlamaConfig(n_layers=n_layers)
         self.D = self.config.emb_dim
         self.KV_DIM = self.config.n_kv_heads * self.config.head_dim
         self._rope_lut = _bf(
@@ -83,14 +96,14 @@ class LlamaQ4nxPrefill:
         )  # half-split, theta=5e5
         self._lm_backend = dict(LM_GEMV_BACKEND)
 
-        # Compile (or reuse cached) the ELFs: rms_gemms_rope + flash_attn + o_ffn
-        # (the two llama32_3b stitchers + head-first FA) and the 8-partition lm_head GEMV.
+        # Compile (or reuse cached) the ELFs: the two llama32_3b stitchers
+        # (rms_gemms_rope + o_ffn) plus flash_attn, and the 8-partition lm_head GEMV.
         # Q4NX_FORCE_COMPILE=1 forces recompile; otherwise a valid manifest is reused.
         force = os.environ.get("Q4NX_FORCE_COMPILE") == "1"
         if not force:
             self.cache.load_manifest()
         cached = set() if force else set(self.cache.artifacts)
-        if not {"rms_gemms_rope", "o_ffn"}.issubset(cached):
+        if not {"rms_gemms_rope", "o_ffn", "flash_attn"}.issubset(cached):
             compile_all_kernels(self.cache, self.config, seq_len, cpu_attn=False)
         else:
             print(
