@@ -292,3 +292,16 @@ if __name__ == "__main__":
             f"({1000 * t_gen / ngt:.1f} ms/tok, {ngt / max(t_gen, 1e-9):.1f} tok/s) | "
             f"28 layers + LM head on-device, one dispatch/token"
         )
+        # The three lines bench/extract_perf.py parses into the nightly perf.json
+        # (and thus the published benchmark page). Keep the wording exact -- the
+        # ms/tok summary above matches none of its regexes, so dropping these
+        # publishes a blank row. prompt_len is the KV depth the tok/s was measured
+        # at: the padded prefill window when the prefill engine ran, else the prompt.
+        ctx = args.seq_len if prefiller is not None else len(ids)
+        print(f"Time to first token (TTFT): {t_prompt:.2f}s", flush=True)
+        print(f"Inference: prompt_len={ctx}, n_tokens={len(gen)}", flush=True)
+        print(
+            f"Generated {len(gen)} tokens in {t_gen:.2f}s "
+            f"({ngt / max(t_gen, 1e-9):.2f} tok/s)",
+            flush=True,
+        )
