@@ -5578,6 +5578,9 @@ public:
     // channel op isn't).
     std::map<std::string, std::vector<air::allocation_info_t>>
         shimChanSymbolToAlloc;
+    // Bundle index each allocation serves, parallel to the buckets above. Empty
+    // for air.dma_memcpy_nd, which has no channel bundle.
+    std::map<std::string, std::vector<std::optional<int>>> shimAllocBundleIdx;
     for (air::allocation_info_t &t : allocs) {
       // Currently, air::allocation_info_t only links the shim allocations to
       // the "internal" (tile-side) data movement op ids.
@@ -5604,26 +5607,85 @@ public:
       if (memcpyIfOpIt != shimSideMemcpyIfOps.end()) {
         std::string dma_name = getDmaNameFromMemcpyIfOp(*memcpyIfOpIt);
         shimChanSymbolToAlloc[dma_name].push_back(t);
+        // Resolve the bundle index from the allocation's tile-side channel op.
+        // This is the index metadataArray is consumed by downstream, so it is
+        // the bucket's sort key.
+        std::optional<int> bundleIdx;
+        if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
+                memcpyIfOpIt->getOperation())) {
+          auto linkedTileSideDmaIds =
+              getOriginalTileSideDmaIds(t, chanRenumberReverseMap);
+          for (auto tileSideChannelOp :
+               air::getTheOtherChannelOpThroughSymbol(ci)) {
+            if (!llvm::is_contained(linkedTileSideDmaIds,
+                                    tileSideChannelOp.getId()))
+              continue;
+            bundleIdx = air::getIndexToMetadataArrayFromChannelIndices(
+                tileSideChannelOp);
+            if (bundleIdx)
+              break;
+          }
+        }
+        shimAllocBundleIdx[dma_name].push_back(bundleIdx);
       }
     }
 
-    // Sort each bucket lexicographically by its far-end tile's (col, row).
-    // The bucket order determines per-device shim allocation naming
-    // (outD_0, outD_1, ...) at line ~4711, which is what
-    // getIndexToMetadataArrayFromChannelIndices indexes into via the
-    // row-major formula (`idx[0]*dims[1] + idx[1]`). Without this sort the
-    // bucket arrives in whatever order shimSideMemcpyIfOps was traversed,
-    // which is col-fast/row-slow in physical tile order — opposite of the
-    // formula's row-fast convention. The two coincide only when any dim
-    // == 1, so 1D-style herds work but 2D channels with both dims > 1
-    // misroute off-diagonal channel instances.
-    // Sorting by (col, row) lex gives col-slow/row-fast iteration, which
-    // matches `idx[0]=cx` (slow) and `idx[1]=cy` (fast) when channel index
-    // [i,j] corresponds to herd tile (i,j) at (x_loc+i, y_loc+j).
+    // Order each bucket by the bundle index its allocation serves. The bucket
+    // order fixes both the per-device shim allocation naming (outD_0, outD_1,
+    // ...) below and the append order of `metadataArray`, and metadataArray is
+    // consumed POSITIONALLY by the linearized bundle index
+    // (air::getIndexToMetadataArrayFromChannelIndices, in AIRLoweringPass).
+    // Sorting on that same index is exact whatever the placement, so pinning
+    // endpoints to memtile columns in any order still leaves each driving its
+    // own physical stream.
+    //
+    // Two cases fall back to the far-end tile's (col, row): allocations with no
+    // bundle index (air.dma_memcpy_nd), and segment unroll, where the indices
+    // repeat across DeviceOps and so are not a total order -- the reorder
+    // further below handles that. (col, row) lex is col-slow/row-fast, which
+    // matches the row-major formula `idx[0]*dims[1] + idx[1]` only when channel
+    // index [i,j] happens to correspond to herd tile (i,j) at (x_loc+i,
+    // y_loc+j).
     for (auto &kv : shimChanSymbolToAlloc) {
       auto &allocVec = kv.second;
       if (allocVec.size() <= 1)
         continue;
+
+      // Sort by bundle index when every allocation in this single-device bucket
+      // resolves to a distinct slot, i.e. the indices are a permutation.
+      auto &bundleIdxVec = shimAllocBundleIdx[kv.first];
+      bool byBundleIdx = bundleIdxVec.size() == allocVec.size();
+      Operation *device0 = nullptr;
+      for (air::allocation_info_t &t : allocVec) {
+        Operation *d = t.getDmaTile()->getParentOfType<AIE::DeviceOp>();
+        if (!device0)
+          device0 = d;
+        else if (d != device0) {
+          byBundleIdx = false;
+          break;
+        }
+      }
+      if (byBundleIdx) {
+        llvm::SmallSet<int, 8> seen;
+        for (auto &b : bundleIdxVec)
+          if (!b || *b < 0 || (size_t)*b >= allocVec.size() ||
+              !seen.insert(*b).second) {
+            byBundleIdx = false;
+            break;
+          }
+      }
+      if (byBundleIdx) {
+        SmallVector<unsigned> slotToPos(allocVec.size());
+        for (unsigned i = 0, e = allocVec.size(); i < e; i++)
+          slotToPos[*bundleIdxVec[i]] = i;
+        std::vector<air::allocation_info_t> reordered;
+        reordered.reserve(allocVec.size());
+        for (unsigned pos : slotToPos)
+          reordered.push_back(allocVec[pos]);
+        allocVec = reordered;
+        continue;
+      }
+
       auto getFarEndCoords = [](air::allocation_info_t &t) {
         std::pair<int64_t, int64_t> coords{-1, -1};
         if (!t.otherSideLTO)
@@ -5880,55 +5942,6 @@ public:
                                         builder.getArrayAttr(sorted));
                   }
                 }
-              }
-            } else {
-              // No segment unroll: the entries above were appended in
-              // ALLOCATION order, which follows tile placement, but they are
-              // consumed positionally by the linearized channel bundle index
-              // (air::getIndexToMetadataArrayFromChannelIndices). The two
-              // agree only when the bundle's endpoints happen to be placed in
-              // bundle order; pin them to columns in any other order and every
-              // endpoint drives the wrong physical stream (silently -- the
-              // design compiles and runs, it just permutes its data). Permute
-              // into bundle order whenever every allocation resolves to a
-              // distinct in-range index.
-              auto &tileAllocs = shimChanSymbolToAlloc[dma_name];
-              std::vector<unsigned> channelDims;
-              for (auto a : chanDecl.getSize())
-                if (auto ia = dyn_cast_if_present<IntegerAttr>(a))
-                  channelDims.push_back(static_cast<unsigned>(ia.getInt()));
-              unsigned total = 1;
-              for (unsigned d : channelDims)
-                total *= d;
-              if (total == metadataArray.size() &&
-                  tileAllocs.size() == metadataArray.size()) {
-                SmallVector<Attribute, 8> sorted(total, nullptr);
-                bool ok = true;
-                unsigned k = 0;
-                for (air::allocation_info_t &t : tileAllocs) {
-                  auto linkedTileSideDmaIds =
-                      getOriginalTileSideDmaIds(t, chanRenumberReverseMap);
-                  std::optional<int> lin;
-                  for (auto tileSideChannelOp :
-                       air::getTheOtherChannelOpThroughSymbol(ci)) {
-                    if (!llvm::is_contained(linkedTileSideDmaIds,
-                                            tileSideChannelOp.getId()))
-                      continue;
-                    lin = air::getIndexToMetadataArrayFromChannelIndices(
-                        tileSideChannelOp);
-                    if (lin)
-                      break;
-                  }
-                  if (!lin || *lin < 0 || (unsigned)*lin >= total ||
-                      sorted[*lin]) {
-                    ok = false;
-                    break;
-                  }
-                  sorted[*lin] = metadataArray[k++];
-                }
-                if (ok && k == total)
-                  memcpyIfOp->setAttr("metadataArray",
-                                      builder.getArrayAttr(sorted));
               }
             }
           }

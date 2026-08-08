@@ -6,33 +6,40 @@
 //===----------------------------------------------------------------------===//
 
 // `metadataArray` is consumed POSITIONALLY, by the linearized channel bundle
-// index (air::getIndexToMetadataArrayFromChannelIndices). Its entries, though,
-// are appended in shim ALLOCATION order, and that bucket is sorted by the
-// far-end tile's (col, row). The two orders coincide only when the bundle's
-// endpoints happen to be placed in bundle order; pin them to columns in any
-// other order and every endpoint drives the wrong physical stream -- silently,
-// because the design still lowers, routes and runs, it just permutes its data.
+// index (air::getIndexToMetadataArrayFromChannelIndices). Its entries are
+// appended in shim ALLOCATION order, so the shim allocation bucket must itself
+// be ordered by the bundle index each allocation serves. Order it by anything
+// that merely correlates with placement -- e.g. the far-end tile's (col, row)
+// -- and pinning endpoints to columns out of bundle order makes every endpoint
+// drive the wrong physical stream, silently: the design still lowers, routes
+// and runs, it just permutes its data.
 //
-// Here endpoint [0, 0] is pinned to memtile column 5 and endpoint [0, 1] to
-// column 1, so allocation order (col 1 first) is the REVERSE of bundle order.
-// The entries must therefore come back permuted: position 0 must hold the
-// allocation serving bundle index 0 (the column-5 endpoint, named _1 because
-// it was allocated second), and position 1 the column-1 endpoint (_0).
-//
-// The `index` field records the allocation position, so a NON-ascending index
-// sequence is exactly the evidence that the reorder ran. Without it the array
-// is [_0(index 0), _1(index 1)] and bundle index 0 drives the column-1 stream.
+// Endpoint [0, 0] is pinned to memtile column 5 and endpoint [0, 1] to column
+// 1, so tile-placement order (col 1 first) is the REVERSE of bundle order.
+// `air_qin_0` must therefore name the COLUMN-5 stream, which the flows below
+// tie back to the memtile the [0, 0] endpoint was pinned to.
 
 // RUN: air-opt %s -air-to-aie='row-offset=2 col-offset=0 device=npu2 use-objectfifo=false' | FileCheck %s
 
-// CHECK-DAG: aie.logical_tile<MemTile>(5, ?)
-// CHECK-DAG: aie.logical_tile<MemTile>(1, ?)
+// CHECK: %[[SHIM_A:.*]] = aie.logical_tile<ShimNOCTile>
+// CHECK: %[[SHIM_B:.*]] = aie.logical_tile<ShimNOCTile>
+// CHECK: %[[MEM5:.*]] = aie.logical_tile<MemTile>(5, ?)
+// CHECK: %[[MEM1:.*]] = aie.logical_tile<MemTile>(1, ?)
 
-// Host-side feed: bundle index 0 must select the column-5 allocation (_1).
-// CHECK: air.channel.put{{.*}}@qin{{.*}}metadataArray = [{base = "air_qin_1", index = 1 : i32}, {base = "air_qin_0", index = 0 : i32}]
+// SHIM_A serves memtile column 5 (bundle index 0), SHIM_B column 1 (index 1).
+// CHECK: aie.flow(%[[SHIM_A]], DMA : 0, %[[MEM5]], DMA : 0)
+// CHECK: aie.flow(%[[SHIM_B]], DMA : 0, %[[MEM1]], DMA : 0)
 
-// Host-side drain: same permutation on the S2MM side.
-// CHECK: air.channel.get{{.*}}@outc{{.*}}metadataArray = [{base = "air_outc_1", index = 1 : i32}, {base = "air_outc_0", index = 0 : i32}]
+// So slot 0 of each bundle must be named _0, on the column-5 stream. Reverse
+// these two and bundle index 0 drives the column-1 stream instead.
+// CHECK: aie.shim_dma_allocation @air_outc_0(%[[SHIM_A]], S2MM, 0)
+// CHECK: aie.shim_dma_allocation @air_outc_1(%[[SHIM_B]], S2MM, 0)
+// CHECK: aie.shim_dma_allocation @air_qin_0(%[[SHIM_A]], MM2S, 0)
+// CHECK: aie.shim_dma_allocation @air_qin_1(%[[SHIM_B]], MM2S, 0)
+
+// Host-side feed and drain then index that naming directly.
+// CHECK: air.channel.put{{.*}}@qin{{.*}}metadataArray = [{base = "air_qin_0", index = 0 : i32}, {base = "air_qin_1", index = 1 : i32}]
+// CHECK: air.channel.get{{.*}}@outc{{.*}}metadataArray = [{base = "air_outc_0", index = 0 : i32}, {base = "air_outc_1", index = 1 : i32}]
 
 module {
   air.channel @qin [1, 2]

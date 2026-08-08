@@ -7,6 +7,28 @@
 
 // RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="row-offset=2 col-offset=0 device=npu1" -canonicalize -cse %s | FileCheck %s
 
+// Second line, MM2S channel collapse on a memtile with several output
+// endpoints. Channel fusion above merges each endpoint's ping-pong drains
+// before allocation, so that line cannot see the collapse; skipping fusion
+// leaves every L2 endpoint drained twice, one put per ping-pong buffer.
+// MemTileDMAAllocator::simpleDmaChannelAlloc used to collapse the MM2S side
+// only onto a PACKET-flow allocation, so these circuit-flow drains took a
+// fresh allocation each and round-robined over the memtile's channels. Both
+// drains of one endpoint must instead time-multiplex ONE channel: otherwise
+// the round-robin wraps, a second endpoint's buffer joins the same BD chain,
+// and the switchbox multicasts each endpoint's data to both destinations.
+// RUN: air-opt -air-to-aie="row-offset=2 col-offset=0 device=npu2" %s | FileCheck --check-prefix=NPU2 %s
+
+// MM2S 0 carries the two ping-pong BDs of ONE endpoint (both at offset 4096)
+// and nothing else; the endpoint at offset 0 gets a channel of its own.
+// NPU2:      aie.dma_start(MM2S, 0{{.*}}repeat_count = 7)
+// NPU2:      aie.dma_bd
+// NPU2-SAME: offset = 4096
+// NPU2:      aie.dma_bd
+// NPU2-SAME: offset = 4096
+// NPU2-NOT:  aie.dma_bd
+// NPU2:      aie.dma_start(MM2S, 1
+
 // CHECK-LABEL:   aie.device(npu1) @segment_0 {
 // One shim LTO per memtile LTO (Path B buckets shim allocations by the
 // far-side LTO Operation* identity, so each memtile gets a dedicated shim).

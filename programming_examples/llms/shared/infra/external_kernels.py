@@ -198,8 +198,9 @@ def compile_attn_npu2(
 
     The attn_npu2.cc defines are PER-TILE, not per-launch (see the canonical
     Makefile): ``lqp`` = tile_size_q (= lqp_launch / num_q_tiles), ``lkp`` =
-    K/V chunk size per tile, ``dk``/``dv`` = the K/V dimension TILE (= lkp),
-    and ``dk_full``/``dv_full`` = the full head_dim. The matmul microkernels
+    K/V chunk size per tile, ``dk``/``dv`` = the K/V dimension TILE (defaults to
+    lkp, overridable via dk_tile/dv_tile for a kernel that keeps d whole), and
+    ``dk_full``/``dv_full`` = the full head_dim. The matmul microkernels
     are instantiated with these tile shapes, so they MUST match the L1 buffer
     shapes the Python builder emits or the kernel hangs (ERT_CMD_STATE_TIMEOUT).
 
@@ -212,8 +213,8 @@ def compile_attn_npu2(
 
     Args:
         head_dim: full head dimension (-> dk_full / dv_full).
-        lkp: K/V chunk size per tile (= dk/dv tile). Defaults to head_dim
-            (legacy hd==lkp behavior).
+        lkp: K/V chunk size per tile (the dk/dv tile default). Defaults to
+            head_dim (legacy hd==lkp behavior).
         lqp_tile: Q tile size (tile_size_q). Defaults to lkp.
         dk_tile / dv_tile: the K/V dimension TILE. Default to lkp (the kernel
             slices d into lkp-wide chunks). The temporal-causal kernel keeps d
