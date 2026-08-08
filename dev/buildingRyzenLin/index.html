@@ -1905,7 +1905,7 @@
 <p>For the no-RTTI variant, point both find-links at the no-RTTI pages so pip resolves the matching <code>mlir_aie</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s1">&#39;mlir_air[aie]&#39;</span><span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>-f<span class="w"> </span>https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels-no-rtti<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>-f<span class="w"> </span>https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>-f<span class="w"> </span>https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>-f<span class="w"> </span>https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 </code></pre></div>
 <p>When mixing wheels into a downstream build, all three (<code>mlir</code>, <code>mlir_aie</code>, <code>mlir_air</code>) must agree on RTTI.</p>

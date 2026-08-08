@@ -3566,7 +3566,7 @@ asynchronous communication where data previously sent by a corresponding
 </tr>
 <tr>
 <td style="text-align: center;"><code>dst</code></td>
-<td>ranked or unranked memref of any type values</td>
+<td>ranked or unranked memref of any non-token type values</td>
 </tr>
 <tr>
 <td style="text-align: center;"><code>dynamic_dst_offsets</code></td>
@@ -3676,7 +3676,7 @@ communication between producer and consumer operations. It is typically paired w
 </tr>
 <tr>
 <td style="text-align: center;"><code>src</code></td>
-<td>ranked or unranked memref of any type values</td>
+<td>ranked or unranked memref of any non-token type values</td>
 </tr>
 <tr>
 <td style="text-align: center;"><code>dynamic_src_offsets</code></td>
@@ -3735,7 +3735,7 @@ performance with this op in place.</p>
 </tr>
 <tr>
 <td style="text-align: center;"><code>custom_operands</code></td>
-<td>variadic of any type</td>
+<td>variadic of any non-token type</td>
 </tr>
 </tbody>
 </table>
@@ -3808,7 +3808,7 @@ dma-to-mgpu</code>); this PR introduces only the IR surface and verifier rules.<
 </tr>
 <tr>
 <td style="text-align: center;"><code>dst</code></td>
-<td>ranked or unranked memref of any type values</td>
+<td>ranked or unranked memref of any non-token type values</td>
 </tr>
 <tr>
 <td style="text-align: center;"><code>dynamic_dst_offsets</code></td>
@@ -3824,7 +3824,7 @@ dma-to-mgpu</code>); this PR introduces only the IR surface and verifier rules.<
 </tr>
 <tr>
 <td style="text-align: center;"><code>src</code></td>
-<td>ranked or unranked memref of any type values</td>
+<td>ranked or unranked memref of any non-token type values</td>
 </tr>
 <tr>
 <td style="text-align: center;"><code>dynamic_src_offsets</code></td>
@@ -3895,7 +3895,7 @@ the region must be executed sequentially.</p>
 </tr>
 <tr>
 <td style="text-align: center;"><code>results</code></td>
-<td>variadic of any type</td>
+<td>variadic of any non-token type</td>
 </tr>
 </tbody>
 </table>
@@ -3922,7 +3922,7 @@ match the signature of the <code>air.execute</code> that contains the operation.
 <tbody>
 <tr>
 <td style="text-align: center;"><code>results</code></td>
-<td>variadic of any type</td>
+<td>variadic of any non-token type</td>
 </tr>
 </tbody>
 </table>
@@ -3957,7 +3957,7 @@ match the signature of the <code>air.execute</code> that contains the operation.
 </tr>
 <tr>
 <td style="text-align: center;"><code>herd_operands</code></td>
-<td>variadic of any type</td>
+<td>variadic of any non-token type</td>
 </tr>
 </tbody>
 </table>
@@ -4017,7 +4017,7 @@ terminator takes no operands.</p>
 </tr>
 <tr>
 <td style="text-align: center;"><code>launch_operands</code></td>
-<td>variadic of any type</td>
+<td>variadic of any non-token type</td>
 </tr>
 </tbody>
 </table>
@@ -4088,7 +4088,7 @@ physical pool from which rank instances are scheduled.</p>
 </tr>
 <tr>
 <td style="text-align: center;"><code>rank_operands</code></td>
-<td>variadic of any type</td>
+<td>variadic of any non-token type</td>
 </tr>
 </tbody>
 </table>
@@ -4148,7 +4148,7 @@ terminator takes no operands.</p>
 </tr>
 <tr>
 <td style="text-align: center;"><code>segment_operands</code></td>
-<td>variadic of any type</td>
+<td>variadic of any non-token type</td>
 </tr>
 </tbody>
 </table>
@@ -4216,7 +4216,7 @@ is undefined.</p>
 <tbody>
 <tr>
 <td style="text-align: center;"><code>source</code></td>
-<td>memref of any type values</td>
+<td>memref of any non-token type values</td>
 </tr>
 <tr>
 <td style="text-align: center;"><code>from_rank</code></td>
@@ -4243,7 +4243,7 @@ is undefined.</p>
 <tbody>
 <tr>
 <td style="text-align: center;"><code>result</code></td>
-<td>memref of any type values</td>
+<td>memref of any non-token type values</td>
 </tr>
 </tbody>
 </table>
