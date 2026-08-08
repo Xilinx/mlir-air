@@ -6,9 +6,8 @@
 // no weight download (the kernels are weight-free; Q4NX only changes the host
 // weight source).
 //
-// NOT CI-triggered by design: the filename OMITS "peano", so the CI peano suite
-// (`lit --filter "peano"`) does not collect it. Run on demand:
-//   lit -v programming_examples/llms/llama32_3b_q4nx/run_npu2_compile.lit
+// Collected by `check-programming-examples-llms-compile`, which filters on the path
+// `llms/.*/run_npu2_compile` (not on a "peano" filename), like every other model.
 //
 // REQUIRES: ryzen_ai_npu2, peano
 //

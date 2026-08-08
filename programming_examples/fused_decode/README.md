@@ -34,14 +34,16 @@ the instruction stream for any `L`, byte-identical to a native per-L build.
 ## Reproducibility (toolchain)
 
 `make compile-decode` merges an inline attention kernel into the core via an **external
-`llvm-link`** (resolved from `PATH`). That `llvm-link` **must be a pre-`llvm.lifetime`-
-change LLVM** (e.g. the system `/usr/bin/llvm-link`, LLVM 20). A newer LLVM (≥ 23)
-`llvm-link` rewrites the `llvm.lifetime` intrinsic to the no-size form, which Peano `opt`
-(LLVM 21) then rejects (`Broken module found`). Keep any ≥23 LLVM's `bin` off `PATH` for
-this build; the Makefile runs a preflight that aborts early otherwise. Verify:
+`llvm-link`** (resolved from `PATH`) whose **LLVM major must equal Peano's** (21 today).
+A newer (≥ 23) one rewrites the `llvm.lifetime` intrinsic to the no-size form, which
+Peano `opt` then rejects (`Broken module found`); an older one (e.g. the system LLVM 20)
+links without complaint and *silently miscompiles* the attention kernels — the decode
+runs at full speed and emits fluent garbage. Keep any mismatched LLVM's `bin` off `PATH`
+for this build; the Makefile preflight aborts early on either. Verify:
 
 ```bash
-which llvm-link && llvm-link --version   # expect LLVM 20.x (or any <23)
+which llvm-link && llvm-link --version
+$PEANO_INSTALL_DIR/bin/clang --version   # majors must match
 ```
 
 Nothing compiled is committed — `make compile-decode` reproduces every kernel object,

@@ -1,18 +1,27 @@
-// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
 // llama32_3b_q4nx profiling: compile then profile on NPU2, capturing TTFT +
 // decode throughput into llama32_3b_q4nx.perf.json via bench/extract_perf.py.
-// Perf is best-effort; this test gates only that profiling ran end to end.
+// The value is what lands on the published benchmark page, so the CHECKs require
+// a parsed number: a driver whose print format drifts out of extract_perf.py's
+// regexes emits nulls, which would otherwise be a green run with a blank row.
 // Correctness is gated separately by run_npu2_verify.lit.
 //
-// REQUIRES: ryzen_ai_npu2, peano, hf_token, hfweights_meta_llama_llama_3_2_3b_instruct, hfweights_fastflowlm_llama_3_2_3b_npu2
+// `make compile-decode` (shared fused_decode templates, keyed by MODEL_TYPE) is
+// required for the same reason as in run_npu2_verify.lit -- hence llvm_link_pre23.
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_meta_llama_llama_3_2_3b_instruct, hfweights_fastflowlm_llama_3_2_3b_npu2
 //
 // RUN: mkdir -p test_peano_profile
 // RUN: cd test_peano_profile
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile compile-decode PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: make -f %S/Makefile profile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR N_TOKENS=128 PROMPT="What is the capital of France?" | tee profile.txt
 // RUN: %PYTHON %S/../bench/extract_perf.py profile.txt --model llama32_3b_q4nx > llama32_3b_q4nx.perf.json
 // RUN: FileCheck %s < llama32_3b_q4nx.perf.json
 // CHECK: "model": "llama32_3b_q4nx"
+// CHECK: "ttft_ms": {{[0-9]}}
+// CHECK: "decode_tokens_per_sec": {{[0-9]}}
+// CHECK: "context_len": {{[0-9]}}

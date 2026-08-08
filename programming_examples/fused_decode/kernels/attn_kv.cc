@@ -266,18 +266,26 @@ __attribute__((noinline)) void scale_div_aie(bf16 *a, bf16 *o, float *l) {
   // though the input a and l are bit-identical. This replicates the EXACT same
   // computation scalarly: within each 64-lane block, group (g,h) occupies lanes
   // [(g*4+h)*8 .. +8) and is scaled by inv-l of head (g*4+h).
+  //
+  // y/a is PADDED (Q_HEADS_PADDED_PER_CU=8 head slots per dim-tile, GQA pad at
+  // the last slot of each group), but o is PACKED (Q_HEADS_PER_CU real heads),
+  // matching the reference and the attnO gather (dim-tile stride Q_HEADS_PER_CU
+  // *8). Read at the padded slot, write at the packed one. GQA pad=0 (1B) makes
+  // packed == padded, so this is a no-op there.
+  constexpr int o_tile = Q_HEADS_PER_CU * 8; // packed dim-tile stride in o
   bf16 invl[8];
   for (int h = 0; h < 8; h++)
     invl[h] = (bf16)getInvBf16(l[h]);
   for (int d = 0; d < F; d++) {
     bf16 *pa = a + d * vec_factor;
-    bf16 *po = o + d * vec_factor;
+    bf16 *po = o + d * o_tile;
     for (int g = 0; g < KV_HEADS_PER_CU; g++) {
       for (int h = 0; h < Q_HEADS_PER_GROUP; h++) {
-        int grp = g * 4 + h;
+        int grp = g * Q_HEADS_PER_GROUP_PADDED + h; // padded slot in y
+        int op = g * Q_HEADS_PER_GROUP + h;         // packed slot in o
         bf16 iv = invl[grp];
         for (int k = 0; k < 8; k++)
-          po[grp * 8 + k] = (bf16)((float)pa[grp * 8 + k] * (float)iv);
+          po[op * 8 + k] = (bf16)((float)pa[grp * 8 + k] * (float)iv);
       }
     }
   }

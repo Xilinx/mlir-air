@@ -110,8 +110,9 @@ class NpuRunner:
         self.weights = weights
         self.config = config
         self.max_seq = max_seq
-        # Llama-3.2-3B has head_dim=128; prefill attention uses the shared
-        # HEAD-FIRST FlashAttention wrapper (proven on qwen3_0_6b and siblings).
+        # Llama-3.2-3B has head_dim=128; `use_temporal_fa` picks the seq-first
+        # temporal-causal FA at max_seq=2048 and falls back to the shared
+        # head-first wrapper on shapes it does not map.
         self.npu_attn = npu_attn
         self.cpu_attn = not npu_attn
         self.lite_mode = lite_mode

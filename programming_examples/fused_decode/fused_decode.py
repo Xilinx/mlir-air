@@ -203,6 +203,38 @@ _MODELS = {
         # The driver MUST set VOCAB_CHUNK_I2=5 (env) to match this UNI_LM.
         UNI_LM=103,  # vocab chunks per LM head (VOCAB_CHUNK_I2=5)
     ),
+    # Llama-3.2-3B: same topology as the 1B entry, only dimensions differ
+    # (FLM's 1B and 3B layer.mlir are byte-structurally identical). head_dim
+    # doubles to 128 and GQA goes 4 q/kv-group -> 3, which the GQA_SEG=4
+    # padding absorbs (Q_HEADS_PADDED_PER_CU stays 8, so SSZ_BLK stays 192).
+    #   I2P = [M, D, 2*INTER, D]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS) = [5,3,16,3]
+    #   J2P = [K, K, K, INTER]/(2*COL_BLOCK)                   = [6,6,6,16]
+    "llama-3.2-3b": dict(
+        K=3072,
+        M=5120,  # DQ+DK+DV = 3072+1024+1024
+        DH_A=128,
+        KV_PER_CU=2,  # 8 kv / 4 CU
+        N_ATTN_CU=4,
+        NPH=4,
+        I2P=[5, 3, 16, 3],
+        J2P=[6, 6, 6, 16],
+        KIDP=[1, 4, 8, 4],
+        GQA_SEG=4,  # ATTN_IMPL_2x4x1
+        PAIR_ROWS=2,
+        N_NORMS=2,
+        HAS_QK_NORM=False,
+        VOCAB_SIZE=128256,
+        UNI_DEC=28,
+        # LM-head vocab chunking: the vocab rms relays logits in whole-K blocks
+        # (VOCAB_RNDS*PAYLOAD // K rounds), so (K/PAYLOAD) must DIVIDE
+        # VOCAB_RNDS = VOCAB_I2*PAIR_ROWS or the round count floor-truncates ->
+        # too few xnorm broadcasts + a short logit drain -> the vocab wave
+        # DEADLOCKS. K/PAYLOAD = 6 here, so the 1B default 14 fails; VOCAB_I2=9
+        # gives RNDS=18 (6 | 18) and 288 rowblocks/chunk, dividing the 4032
+        # full-vocab rowblocks into 14 chunks. The driver MUST set
+        # VOCAB_CHUNK_I2=9 (env) to match this UNI_LM.
+        UNI_LM=14,  # vocab chunks per LM head (VOCAB_CHUNK_I2=9)
+    ),
 }
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = _MODELS[MODEL_NAME]
@@ -2909,6 +2941,14 @@ def build_module():
                             a_v = AllocOp(rms_l1, [], [])
                             _voc_blks_2k = VOCAB_RNDS * PAYLOAD // K
                             _xn_per_blk = K // PAYLOAD  # = VOCAB_RNDS // _voc_blks_2k
+                            # A floor-truncated round count emits too few xnorm
+                            # broadcasts and drains short -> the vocab wave
+                            # deadlocks on device. Catch it at build time.
+                            assert _voc_blks_2k * _xn_per_blk == VOCAB_RNDS, (
+                                f"VOCAB_CHUNK_I2={VOCAB_I2} gives VOCAB_RNDS="
+                                f"{VOCAB_RNDS}, not a multiple of K/PAYLOAD="
+                                f"{_xn_per_blk}"
+                            )
                             for _rv in for_(idx(0), idx(_voc_blks_2k), idx(1)):
                                 _rv.owner.owner.attributes["air.disable_ping_pong"] = (
                                     UnitAttr.get()
