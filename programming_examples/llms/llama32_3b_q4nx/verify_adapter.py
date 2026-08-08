@@ -99,7 +99,7 @@ class FusedDecodeRunner:
             from llama32_3b_q4nx_prefill import LlamaQ4nxPrefill
 
             self._pf = LlamaQ4nxPrefill(
-                seq_len=int(os.environ.get("Q4NX_SEQ_LEN", "2048")),
+                seq_len=PREFILL_SEQ_LEN,
                 n_layers=self._dec.N_LAYERS,
             )
             self._pf.load_weights(model=self._model_source)

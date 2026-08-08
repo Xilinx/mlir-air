@@ -312,9 +312,10 @@ class FusedDecode3B:
             raise RuntimeError(f"decode dispatch pos{p} state={st}")
         voc_n = self.fd.UNI_LM * self.VP
         self.y_bo.sync(self.FROM, voc_n * 2, self.decode_y * 2)
-        yv = (
-            self.y_bo.read(voc_n * 2, self.decode_y * 2)
-            .view(bfloat16)
-            .astype(np.float32)
-        )
+        # Zero-copy view into the BO (the shared infra's readback idiom, same
+        # as the 1B sibling): bo.read() returns a buffer whose stride metadata
+        # is pyxrt-build dependent, and .view() on it raises on some runners.
+        yv = np.frombuffer(
+            self.y_bo.map(), dtype=bfloat16, count=voc_n, offset=self.decode_y * 2
+        ).astype(np.float32)
         return yv[: self.VOCAB_SIZE]

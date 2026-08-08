@@ -226,8 +226,10 @@ def compile_attn_npu2(
 
     Args:
         head_dim: full head dimension (-> dk_full / dv_full).
-        lkp: K/V chunk size per tile (= dk/dv tile). Defaults to head_dim
-            (legacy hd==lkp behavior).
+        lkp: K/V chunk size per tile -- how much of the K/V sequence a tile
+            holds at once. Defaults to head_dim (legacy hd==lkp behavior).
+            It also supplies the DEFAULT d tile, but the two are independent:
+            pass dk_tile/dv_tile to set the d tile separately.
         lqp_tile: Q tile size (tile_size_q). Defaults to lkp.
         dk_tile / dv_tile: the K/V dimension TILE. Default to lkp (the kernel
             slices d into lkp-wide chunks). The temporal-causal kernel keeps d
