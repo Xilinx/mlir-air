@@ -52,6 +52,7 @@ void proj_qmm_acc(bf16 *__restrict x_full, int j, bf16 *__restrict w,
   constexpr int m = Q4NX_ROW_BLOCK_SIZE; // 32
   constexpr int k = Q4NX_COL_BLOCK_SIZE; // 256
   bf16 *x = x_full + j * k;
+#ifndef Q4_0
   alignas(aie::vector_decl_align) bfloat16 b_col_reduce_add[k / 32]; // 8
 
   // per-group (32 cols) reduction of x, used for the +min term.
@@ -63,6 +64,10 @@ void proj_qmm_acc(bf16 *__restrict x_full, int j, bf16 *__restrict w,
     }
 
   _qmm_q4k_bf16<m, k>((q4k_block_t *)w, x, y_acc, b_col_reduce_add);
+#else
+  // Q4_0: scale-only (no +min term) -> no b_col_reduce, 3-arg form.
+  _qmm_q4k_bf16<m, k>((q4k_block_t *)w, x, y_acc);
+#endif
 }
 
 // the reference-streaming variant of proj_qmm_acc: x is ONE 256-element
@@ -75,8 +80,9 @@ void proj_qmm_acc(bf16 *__restrict x_full, int j, bf16 *__restrict w,
 //   y_acc : caller-provided float accumulator (32), read-modify-written
 void proj_qmm_acc256(bf16 *__restrict x_blk, bf16 *__restrict w,
                      float *__restrict y_acc) {
-  constexpr int m = Q4NX_ROW_BLOCK_SIZE;                             // 32
-  constexpr int k = Q4NX_COL_BLOCK_SIZE;                             // 256
+  constexpr int m = Q4NX_ROW_BLOCK_SIZE; // 32
+  constexpr int k = Q4NX_COL_BLOCK_SIZE; // 256
+#ifndef Q4_0
   alignas(aie::vector_decl_align) bfloat16 b_col_reduce_add[k / 32]; // 8
 
   AIE_PREPARE_FOR_PIPELINING
@@ -88,6 +94,10 @@ void proj_qmm_acc256(bf16 *__restrict x_blk, bf16 *__restrict w,
     }
 
   _qmm_q4k_bf16<m, k>((q4k_block_t *)w, x_blk, y_acc, b_col_reduce_add);
+#else
+  // Q4_0: scale-only (no +min term) -> no b_col_reduce, 3-arg form.
+  _qmm_q4k_bf16<m, k>((q4k_block_t *)w, x_blk, y_acc);
+#endif
 }
 
 // Flush the accumulator to bf16 output (call once after the col-block loop).

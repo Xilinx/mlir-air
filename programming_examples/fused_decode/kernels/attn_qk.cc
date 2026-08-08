@@ -10,7 +10,16 @@
 // so the .ll kernel is llvm-merged into AIR's per-block scf.for loop (no
 // per-block call ABI). Peano only, always built with -DDECODE_INLINE_ATTN (see
 // the chatbot Makefile).
+// Peano (llvm-aie) spills the online-softmax attention's many live BFP16 matrix
+// accumulators, and a residual cross-regfile spill/reload defect corrupts /
+// deadlocks the inlined attn (the reference implementation). Keep the hot attn
+// helpers (attn_fv/calculate_l/_attn_qk/update) NOINLINE on Peano so each stays
+// a bounded-register function; chess schedules the inlined form correctly.
+#if defined(__chess__)
 #define ATTN_HOT inline __attribute__((always_inline))
+#else
+#define ATTN_HOT __attribute__((noinline))
+#endif
 #define ATTN_ENTRY __attribute__((always_inline))
 
 ATTN_HOT aie::vector<bf16, 16> update(bf16 *m, float *c,
@@ -322,9 +331,10 @@ void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK, bfloat16 *__restrict pY,
 #elif ATTN_IMPL == ATTN_IMPL_1x8x1
 
 template <unsigned colQ, unsigned r, unsigned s, unsigned t>
-void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK, bfloat16 *__restrict pY,
-              bf16 *__restrict m, float *__restrict c, aie::mask<16> &mask,
-              bool &is_first) {
+ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
+                       bfloat16 *__restrict pY, bf16 *__restrict m,
+                       float *__restrict c, aie::mask<16> &mask,
+                       bool &is_first) {
 
   using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
 

@@ -94,6 +94,7 @@ llms/
 ├── qwen25_0_5b/        # Qwen2.5-0.5B  (QKV bias, head_dim=64)
 ├── qwen25_1_5b/        # Qwen2.5-1.5B  (QKV bias, head_dim=128)
 ├── qwen25_3b/          # Qwen2.5-3B    (QKV bias, head_dim=128)
+├── qwen25_3b_q4/       # Q4_0 4-bit Qwen2.5-3B (prefill + fused NPU decode)
 ├── qwen3_0_6b/         # Qwen3-0.6B    (QK-norm, head_dim=128)
 ├── qwen3_1_7b/         # Qwen3-1.7B    (QK-norm, head_dim=128)
 ├── qwen3_4b/           # Qwen3-4B      (QK-norm, decoupled q_dim=4096)
