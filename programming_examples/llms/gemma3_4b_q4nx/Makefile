@@ -113,10 +113,8 @@ compile-decode:
 	fi
 
 _compile_decode_build:
-	@# Delegate the llvm-link/Peano version preflight to the engine that owns it
-	@# rather than keeping a copy here: an llvm-link older than Peano links quietly
-	@# and miscompiles the attn kernels into fluent garbage, and that rule has
-	@# already been tightened once (fused_decode/Makefile: preflight-llvm-link).
+	@# Delegate the llvm-link version preflight to the engine that owns it rather
+	@# than keeping a copy here (fused_decode/Makefile: preflight-llvm-link).
 	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
 	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
 	@echo ">>> gemma non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"

@@ -57,10 +57,9 @@ help:
 ## (e.g. the llama32_1b_q4nx verify + profile lits) thus pay the cost at most once.
 ##
 ## REPRODUCIBILITY (toolchain): the inline-attn merge path shells out to an EXTERNAL
-## `llvm-link` (resolved from PATH). Its LLVM major MUST EQUAL Peano's. A newer (>=23)
-## llvm-link upgrades the llvm.lifetime intrinsic to the no-size form and Peano opt then
-## rejects the merged IR ("Broken module found"); an OLDER one links quietly and silently
-## miscompiles the attn kernels into fluent garbage. The preflight aborts early on either.
+## `llvm-link` (resolved from PATH), which must be OLDER than LLVM 23. A >=23 llvm-link
+## upgrades the llvm.lifetime intrinsic to the no-size form and Peano opt then rejects
+## the merged IR ("Broken module found"). The preflight aborts early on that.
 compile-decode:
 	@if [ -f $(srcdir)/decode_L2048.xclbin ] && [ -f $(srcdir)/decode_L2048.insts.bin ] \
 	    && [ -f $(srcdir)/decode_L2047.xclbin ] && [ -f $(srcdir)/decode_L2047.insts.bin ]; then \
@@ -70,26 +69,28 @@ compile-decode:
 	fi
 
 ## Shared preflight for every inline-attn decode build. Any model driving this
-## engine (llms/*_q4nx) must run it rather than copy it: the rule below has been
-## tightened once already, and a stale copy silently reintroduces the miscompile.
+## engine (llms/*_q4nx) must run it rather than copy it, so the rule stays in
+## one place.
+##
+## The bound is `< 23`, not `== Peano`. #1770 briefly required equality on the
+## grounds that an older llvm-link "links quietly and silently miscompiles the
+## attn kernels into fluent garbage", but that claim was never reproduced or
+## recorded anywhere, and it contradicted README.md, which recommends the
+## system LLVM 20 binary. Measured 2026-08-10 with llvm-link 20 against Peano
+## 21: gemma3-4b builds both template sets clean and decodes correctly at
+## ATTN_MAXL=16 and ATTN_MAXL=2048 (64 tokens, coherent). If a genuine
+## older-llvm-link miscompile does turn up, tighten this again -- but record
+## the repro next to the rule.
 preflight-llvm-link:
-	@echo ">>> preflight: llvm-link must match Peano's LLVM major for the inline-attn merge"
-	@# Must EQUAL Peano's major, not merely be <23: a >=23 llvm-link rewrites
-	@# llvm.lifetime.* to the no-size form and Peano opt rejects the module (loud),
-	@# but an OLDER one (e.g. LLVM 20) links without complaint and silently
-	@# miscompiles the attn kernels -- the decode then runs at full speed and emits
-	@# fluent garbage, which no build-time check catches.
+	@echo ">>> preflight: llvm-link must be pre-LLVM-23 for the inline-attn merge"
 	@LLVM_LINK=$$(command -v llvm-link || true); \
-	  PEANO_CLANG="$(PEANO_INSTALL_DIR)/bin/clang"; \
-	  if [ -z "$(PEANO_INSTALL_DIR)" ] || [ ! -x "$$PEANO_CLANG" ]; then \
-	    echo "ERROR: PEANO_INSTALL_DIR does not point at a Peano install (no $$PEANO_CLANG)"; exit 1; fi; \
-	  PEANO_VER=$$($$PEANO_CLANG --version | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1); \
-	  if [ -z "$$LLVM_LINK" ]; then echo "ERROR: no llvm-link on PATH (need LLVM $$PEANO_VER, matching Peano)"; exit 1; fi; \
+	  if [ -z "$$LLVM_LINK" ]; then echo "ERROR: no llvm-link on PATH (need LLVM <23)"; exit 1; fi; \
 	  VER=$$($$LLVM_LINK --version | grep -oE 'version [0-9]+' | grep -oE '[0-9]+' | head -1); \
-	  echo "    llvm-link = $$LLVM_LINK (LLVM $$VER); Peano = LLVM $$PEANO_VER"; \
-	  if [ "$$VER" != "$$PEANO_VER" ]; then \
-	    echo "ERROR: llvm-link is LLVM $$VER but Peano is LLVM $$PEANO_VER; they must match"; \
-	    echo "       (see README Reproducibility for how to fetch a matching llvm-link)"; exit 1; fi
+	  echo "    llvm-link = $$LLVM_LINK (LLVM $$VER)"; \
+	  if [ -z "$$VER" ]; then echo "ERROR: cannot parse the version of $$LLVM_LINK"; exit 1; fi; \
+	  if [ "$$VER" -ge 23 ]; then \
+	    echo "ERROR: llvm-link is LLVM $$VER (>=23); Peano opt will reject the merged IR."; \
+	    echo "       Keep any >=23 LLVM's bin off PATH (see README Reproducibility)."; exit 1; fi
 
 _compile_decode_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
