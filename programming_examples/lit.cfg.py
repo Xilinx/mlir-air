@@ -246,7 +246,7 @@ except Exception:
 #
 # Resolve it against the PATH the TESTS get (config.environment), not this
 # process's os.environ: the block above prepends config.llvm_tools_dir -- the
-# mlir distro, currently LLVM 23 -- ahead of the ambient PATH, so a usable
+# mlir distro, currently LLVM 24 -- ahead of the ambient PATH, so a usable
 # llvm-link further down the ambient PATH is shadowed inside the tests. Checking
 # os.environ instead reported "enabled" while the tests ran the distro's LLVM 23
 # and died in the fused_decode preflight.

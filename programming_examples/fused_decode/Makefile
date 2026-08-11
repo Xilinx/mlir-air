@@ -46,7 +46,7 @@ help:
 	@echo "  make clean            Remove kernels + templates"
 	@echo ""
 	@echo "Consumed by the llama32_1b_q4nx LLM e2e (make chat / make gen there)."
-	@echo "Weight-free build; needs an llvm-link on PATH matching Peano's LLVM major"
+	@echo "Weight-free build; needs an llvm-link on PATH from LLVM <23"
 	@echo "-- see README.md Reproducibility."
 
 ## Build the fused decode: Peano kernels + two templates (decode_L2048 + decode_L2047
@@ -57,10 +57,11 @@ help:
 ## (e.g. the llama32_1b_q4nx verify + profile lits) thus pay the cost at most once.
 ##
 ## REPRODUCIBILITY (toolchain): the inline-attn merge path shells out to an EXTERNAL
-## `llvm-link` (resolved from PATH). Its LLVM major MUST EQUAL Peano's. A newer (>=23)
-## llvm-link upgrades the llvm.lifetime intrinsic to the no-size form and Peano opt then
-## rejects the merged IR ("Broken module found"); an OLDER one links quietly and silently
-## miscompiles the attn kernels into fluent garbage. The preflight aborts early on either.
+## `llvm-link` (resolved from PATH), which must be PRE-LIFETIME-CHANGE, i.e. LLVM < 23.
+## A >=23 llvm-link upgrades the llvm.lifetime intrinsic to the no-size form and Peano
+## opt then rejects the merged IR ("Broken module found"). The preflight aborts on it.
+## This is the same rule the lit harness gates on (lit.cfg.py, feature llvm_link_pre23);
+## the two MUST agree -- see the preflight comment below.
 compile-decode:
 	@if [ -f $(srcdir)/decode_L2048.xclbin ] && [ -f $(srcdir)/decode_L2048.insts.bin ] \
 	    && [ -f $(srcdir)/decode_L2047.xclbin ] && [ -f $(srcdir)/decode_L2047.insts.bin ]; then \
@@ -70,26 +71,34 @@ compile-decode:
 	fi
 
 ## Shared preflight for every inline-attn decode build. Any model driving this
-## engine (llms/*_q4nx) must run it rather than copy it: the rule below has been
-## tightened once already, and a stale copy silently reintroduces the miscompile.
+## engine (llms/*_q4nx) must run it rather than copy it, so the rule lives in
+## exactly one place.
+##
+## The rule is LLVM < 23, and it must stay identical to the `llvm_link_pre23`
+## feature in programming_examples/lit.cfg.py. Every decode e2e lit test
+## (llama32_1b_q4nx, llama32_3b_q4nx, gemma3_4b_q4nx) is REQUIRES-gated on that
+## feature, and lit will shim ANY <23 llvm-link it finds on PATH to the front --
+## with no regard for Peano's major. If this preflight is stricter than lit, lit
+## marks such a test supported, runs it, and the test hard-fails right here,
+## which is the exact outcome the feature exists to avoid.
 preflight-llvm-link:
-	@echo ">>> preflight: llvm-link must match Peano's LLVM major for the inline-attn merge"
-	@# Must EQUAL Peano's major, not merely be <23: a >=23 llvm-link rewrites
-	@# llvm.lifetime.* to the no-size form and Peano opt rejects the module (loud),
-	@# but an OLDER one (e.g. LLVM 20) links without complaint and silently
-	@# miscompiles the attn kernels -- the decode then runs at full speed and emits
-	@# fluent garbage, which no build-time check catches.
+	@echo ">>> preflight: llvm-link must be LLVM <23 (pre-lifetime-change) for the inline-attn merge"
+	@# A >=23 llvm-link rewrites llvm.lifetime.* to the no-size form, which Peano
+	@# opt then rejects outright ("Broken module found") -- loud, at build time.
+	@# Peano's own major is reported below for context only; it is NOT the gate.
 	@LLVM_LINK=$$(command -v llvm-link || true); \
 	  PEANO_CLANG="$(PEANO_INSTALL_DIR)/bin/clang"; \
 	  if [ -z "$(PEANO_INSTALL_DIR)" ] || [ ! -x "$$PEANO_CLANG" ]; then \
 	    echo "ERROR: PEANO_INSTALL_DIR does not point at a Peano install (no $$PEANO_CLANG)"; exit 1; fi; \
 	  PEANO_VER=$$($$PEANO_CLANG --version | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1); \
-	  if [ -z "$$LLVM_LINK" ]; then echo "ERROR: no llvm-link on PATH (need LLVM $$PEANO_VER, matching Peano)"; exit 1; fi; \
+	  if [ -z "$$LLVM_LINK" ]; then echo "ERROR: no llvm-link on PATH (need LLVM <23)"; exit 1; fi; \
 	  VER=$$($$LLVM_LINK --version | grep -oE 'version [0-9]+' | grep -oE '[0-9]+' | head -1); \
+	  if [ -z "$$VER" ]; then \
+	    echo "ERROR: could not parse an LLVM major from '$$LLVM_LINK --version' (need LLVM <23)"; exit 1; fi; \
 	  echo "    llvm-link = $$LLVM_LINK (LLVM $$VER); Peano = LLVM $$PEANO_VER"; \
-	  if [ "$$VER" != "$$PEANO_VER" ]; then \
-	    echo "ERROR: llvm-link is LLVM $$VER but Peano is LLVM $$PEANO_VER; they must match"; \
-	    echo "       (see README Reproducibility for how to fetch a matching llvm-link)"; exit 1; fi
+	  if [ "$$VER" -ge 23 ]; then \
+	    echo "ERROR: llvm-link is LLVM $$VER; the inline-attn merge needs LLVM <23"; \
+	    echo "       (see README Reproducibility for how to fetch one)"; exit 1; fi
 
 _compile_decode_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
