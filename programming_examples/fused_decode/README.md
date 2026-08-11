@@ -60,17 +60,38 @@ bundle re-quantized into the symmetric device form would quantize twice.
 ## Reproducibility (toolchain)
 
 `make compile-decode` merges an inline attention kernel into the core via an **external
-`llvm-link`** (resolved from `PATH`) whose **LLVM major must equal Peano's** (21 today).
-A newer (≥ 23) one rewrites the `llvm.lifetime` intrinsic to the no-size form, which
-Peano `opt` then rejects (`Broken module found`); an older one (e.g. the system LLVM 20)
-links without complaint and *silently miscompiles* the attention kernels — the decode
-runs at full speed and emits fluent garbage. Keep any mismatched LLVM's `bin` off `PATH`
-for this build; the Makefile preflight aborts early on either. Verify:
+`llvm-link`** (resolved from `PATH`), which must come from **LLVM < 23** — the last
+release series before the `llvm.lifetime` change. A ≥ 23 one rewrites that intrinsic to
+the no-size form, which Peano `opt` then rejects (`Broken module found`). Keep any such
+LLVM's `bin` off `PATH` for this build; the Makefile preflight aborts on it.
+
+This is the same rule the lit harness gates on (`llvm_link_pre23` in
+`programming_examples/lit.cfg.py`), and the two must stay in sync: every decode e2e test
+is `REQUIRES`-gated on that feature, so a preflight stricter than lit turns an
+UNSUPPORTED into a hard test failure. Verify:
 
 ```bash
-which llvm-link && llvm-link --version
-$PEANO_INSTALL_DIR/bin/clang --version   # majors must match
+which llvm-link && llvm-link --version   # major must be < 23
 ```
+
+The Peano wheel (`llvm-aie`) does **not** ship `llvm-link`, and the MLIR distro wheel's
+is too new (LLVM 24 today), so on a machine with neither you need to fetch one. Any
+`llvm-link` from an LLVM < 23 release works; without root, extracting the Debian
+packages is enough:
+
+```bash
+LLVM_V=21   # any < 23
+BASE=https://apt.llvm.org/$(lsb_release -cs)/pool/main/l/llvm-toolchain-$LLVM_V
+# grab the llvm-$LLVM_V and libllvm$LLVM_V .deb names from that index, then:
+dpkg-deb -x llvm-$LLVM_V*.deb   unpack/
+dpkg-deb -x libllvm$LLVM_V*.deb unpack/
+export LD_LIBRARY_PATH=$PWD/unpack/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+export PATH=$PWD/unpack/usr/lib/llvm-$LLVM_V/bin:$PATH
+```
+
+Prepend only a directory holding `llvm-link` itself — putting a full system
+`bin` ahead of the AIE toolchain shadows Peano's `clang`/`opt`/`llc`. (`lit.cfg.py`
+does exactly this, via a shim dir containing a single symlink.)
 
 Nothing compiled is committed — `make compile-decode` reproduces every kernel object,
 xclbin, and instruction stream from source (see `.gitignore`).

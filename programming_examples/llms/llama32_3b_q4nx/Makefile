@@ -116,8 +116,8 @@ compile:
 
 ## Build the fused decode at the 3B geometry: Peano kernels (LLAMA_3_2_3B) + two
 ## same-ATTN_MAXL templates (decode_L$(LBUILD) + decode_L$(LREF)) into THIS dir.
-## ~15 min, skipped when both are already present. Weight-free; the llvm-link major
-## must equal Peano's (the fused_decode preflight enforces it). The driver loads
+## ~15 min, skipped when both are already present. Weight-free; needs an llvm-link
+## from LLVM <23 (the fused_decode preflight enforces it). The driver loads
 ## the templates from here at run time.
 compile-decode:
 	@if [ -f $(srcdir)/decode_L$(LBUILD).xclbin ] && [ -f $(srcdir)/decode_L$(LBUILD).insts.bin ] \
@@ -128,9 +128,8 @@ compile-decode:
 	fi
 
 _compile_decode_build:
-	@# Delegate the llvm-link/Peano version preflight to the engine that owns it:
-	@# an llvm-link older than Peano links quietly and miscompiles the attn kernels
-	@# into fluent garbage.
+	@# Delegate the llvm-link version preflight to the engine that owns it:
+	@# a >=23 llvm-link rewrites llvm.lifetime.* and Peano opt rejects the merge.
 	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
 	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
 	@echo ">>> 3B non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"

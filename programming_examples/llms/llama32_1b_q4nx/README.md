@@ -62,20 +62,22 @@ every context length.
 ## Reproducibility (decode toolchain)
 
 `make compile-decode` merges an inline attention kernel into the core via an
-**external `llvm-link`** (resolved from `PATH`) whose **LLVM major must equal
-Peano's** (21 today). A newer (≥ 23) one rewrites the `llvm.lifetime` intrinsic to
-the no-size form, which Peano `opt` then rejects (`Broken module found`); an older
-one (e.g. the system LLVM 20) links without complaint and *silently miscompiles*
-the attention kernels — the decode runs at full speed and emits fluent garbage.
+**external `llvm-link`** (resolved from `PATH`), which must come from **LLVM < 23**.
+A ≥ 23 one rewrites the `llvm.lifetime` intrinsic to the no-size form, which Peano
+`opt` then rejects (`Broken module found`).
 
-So keep any mismatched LLVM's `bin` off `PATH` for the decode build. The
-`make compile-decode` preflight prints the resolved `llvm-link` and Peano's version
-and aborts early on any mismatch. Verify with:
+So keep any such LLVM's `bin` off `PATH` for the decode build. The
+`make compile-decode` preflight prints the resolved `llvm-link` and aborts on a
+≥ 23 one. Verify with:
 
 ```bash
-which llvm-link && llvm-link --version
-$PEANO_INSTALL_DIR/bin/clang --version   # majors must match
+which llvm-link && llvm-link --version   # major must be < 23
 ```
+
+Neither the Peano wheel nor the MLIR distro wheel provides a usable one (the former
+ships no `llvm-link`, the latter's is LLVM 24) — see
+[`fused_decode`](../../fused_decode) Reproducibility for how to fetch one without
+root.
 
 Nothing compiled is committed — `make compile` / `make compile-decode` reproduce
 every ELF, xclbin, and instruction stream from source (see `.gitignore`).
