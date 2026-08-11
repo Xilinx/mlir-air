@@ -97,6 +97,7 @@ def generate_stream(
     stream=True,
     prefiller=None,
     min_prefill=None,
+    stop_on_eos=True,
 ):
     """Consume the prompt, then generate greedily.
 
@@ -129,7 +130,7 @@ def generate_stream(
     t1 = time.perf_counter()
     for step in range(n_tokens):
         nxt = int(np.argmax(logits))
-        if nxt in EOS_IDS:
+        if stop_on_eos and nxt in EOS_IDS:
             break
         gen.append(nxt)
         if stream:
@@ -253,6 +254,12 @@ if __name__ == "__main__":
         help="use the batched NPU prefill only for prompts at least this long "
         f"(default {PREFILL_MIN_TOKENS}; shorter prompts decode faster token-by-token)",
     )
+    parser.add_argument(
+        "--no-eos-stop",
+        action="store_true",
+        help="keep generating past EOS (use with --profile so the decode rate is "
+        "measured over the full --n-tokens)",
+    )
     parser.add_argument("--interactive", action="store_true")
     args = parser.parse_args()
 
@@ -281,7 +288,12 @@ if __name__ == "__main__":
     prefiller = build_prefiller(args, prompt_len=len(ids))
     print(f"\nPrompt: {args.prompt}\n")
     gen, t_prompt, t_gen = generate_stream(
-        dec, tokenizer, ids, args.n_tokens, prefiller=prefiller
+        dec,
+        tokenizer,
+        ids,
+        args.n_tokens,
+        prefiller=prefiller,
+        stop_on_eos=not args.no_eos_stop,
     )
     if args.profile:
         npt, ngt = max(len(ids), 1), max(len(gen), 1)

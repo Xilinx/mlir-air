@@ -123,11 +123,15 @@ def _ensure_requant_cache(fd):
     from llama32_1b_q4nx_prefill import MODEL_DEFAULT
     import q4nx_requant
 
-    rc = rc or os.path.join(_Q4NX_CACHE, "requant.npz")
+    src = os.environ.get("Q4NX_MODEL_SOURCE", MODEL_DEFAULT)
+    if not rc:
+        # Key on the bundle so a warm cache cannot outlive a Hub re-export
+        # (FastFlowLM re-encoded every NPU2 bundle on 2026-08-04).
+        from llama32_1b_q4nx_weights import Q4nxModel
+
+        rc = os.path.join(_Q4NX_CACHE, f"requant_{Q4nxModel(src).fingerprint()}.npz")
     if not os.path.exists(rc):
-        q4nx_requant.build_requant_cache(
-            os.environ.get("Q4NX_MODEL_SOURCE", MODEL_DEFAULT), fd, rc
-        )
+        q4nx_requant.build_requant_cache(src, fd, rc)
     os.environ["Q4NX_DECODE_WEIGHTS_NPZ"] = rc
     return rc
 

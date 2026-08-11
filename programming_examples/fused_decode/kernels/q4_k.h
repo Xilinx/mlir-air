@@ -6,10 +6,21 @@
 #include "aie_kernel_utils.h"
 #include "model_spec.h"
 
-// Two quant layouts: Q4NX (unsigned int4 + per-group min, the default / Llama
-// path) selected when Q4_0 is NOT defined; Q4_0 (signed int4, scale-only, no
-// min -- the Qwen2.5 path) selected when Q4_0 IS defined. The Q4_0 form takes 3
-// args (no b_col_reduce_buffer, since there is no +min term).
+// Two quant layouts, both produced on the host by _requant_q4k and unrelated to
+// how the weight bundle on disk was encoded:
+//
+//   default (Llama path)     unsigned int4 + per-group min: w = scale*q + min,
+//                            so c += (q*b)*scale then c += min*sum(b).
+//   Q4_0 (Qwen2.5 path)      signed int4, scale-only, no min. Selected by
+//                            defining Q4_0; takes 3 args, since with no +min
+//                            term there is no b_col_reduce_buffer.
+//
+// The first layout used to be called "Q4NX" here. That name is taken: it is the
+// safetensors dtype of the OLDER FastFlowLM bundle encoding, whose dequant is
+// SUBTRACTIVE (w = scale*(q - zero)) -- the opposite of the additive form
+// above. The additive form matches the newer "I8" bundle dtype instead. Naming
+// the layout after either bundle codec invites reading the algebra backwards,
+// so it is named after what it is.
 #ifndef Q4_0
 template <int M, int N>
 void _qmm_q4k_bf16(const q4k_block_t *A, const bf16 *B, float *c,

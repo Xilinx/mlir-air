@@ -101,8 +101,12 @@ _ODD = _EVEN + 1
 class Q4nxModel:
     """mmap + parse a model.q4nx safetensors file; vectorized Q4NX dequant.
 
-    Identical codec/loader to the llama example; Gemma-specific accessors add the
-    4-norm (1+w) fold, qk-norm weights, dual-theta rope LUT, and embed scale."""
+    This bundle has only ever been I8-packed, so `shape` is
+    [n_blocks, bytes_per_block] and `dequant` takes the logical (M, K) from the
+    caller. llama32_1b_q4nx_weights.Q4nxModel now handles that header too, plus
+    the older Q4NX one; the codec half of this class duplicates it and could
+    fold in. Kept separate here because the accessors below are Gemma-specific:
+    the 4-norm (1+w) fold, qk-norm weights, dual-theta rope LUT, embed scale."""
 
     def __init__(self, model):
         import json
@@ -131,7 +135,7 @@ class Q4nxModel:
         return v.astype(np.float32).reshape(self._hdr[name]["shape"])
 
     def dequant(self, name, M, K):
-        """A Q4NX tensor dequantized to float32 [M, K] (w = scale*(q - min)).
+        """A Q4NX tensor dequantized to float32 [M, K] (w = scale*q + min).
 
         The Gemma bundle stores each Q4NX tensor block-major as [nb, block_bytes]
         (nb = (M/32)*(K/256), block = 256 scales + 256 mins + 32*256 nibbles =

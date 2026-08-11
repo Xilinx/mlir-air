@@ -68,10 +68,25 @@ def build_requant_cache(model, fd, cache_path, n_layers=16, verbose=True):
         fd.UNI_LM,
     )
 
+    # Logical (out, K) per projection. An I8-packed bundle header carries only
+    # the block count, so the caller has to supply this (Q4nxModel docstring).
+    # Take it from `fd`, not from Q4nxModel's 1B default table: this function
+    # requantizes whichever model `fd` was configured for, and a mismatched
+    # table would reshape a 3B tensor as a 1B one.
+    dims = {
+        "q": (fd.DQ, fd.K),
+        "k": (fd.DK, fd.K),
+        "v": (fd.DV, fd.K),
+        "o": (fd.K, fd.DQ),
+        "up": (fd.GLU_OUT, fd.K),
+        "gate": (fd.GLU_OUT, fd.K),
+        "down": (fd.K, fd.GLU_OUT),
+    }
+
     W_all, RMS_in, RMS_post = [], [], []
     for k in range(n_layers):
         R = {
-            nm: qm_model.dequant(f"model.layers.{k}.{t}.weight")
+            nm: qm_model.dequant(f"model.layers.{k}.{t}.weight", *dims[nm])
             for nm, t in _PROJ.items()
         }
         qm = [None] * NPH
