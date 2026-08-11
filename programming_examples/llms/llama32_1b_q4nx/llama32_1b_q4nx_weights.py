@@ -15,6 +15,7 @@
 #                    | down(2048x8192) ], each Q4NX-reordered (pairs of row-
 #                    blocks interleaved column-by-column).
 #   rms_w  = [ input_layernorm(2048) | post_attention_layernorm(2048) | 0-pad ]
+import os
 import sys
 from pathlib import Path
 
@@ -58,10 +59,11 @@ def _bf(a):
 # The Q4NX model ships as a single safetensors file `model.q4nx` on the Hub
 # (repo FastFlowLM/Llama-3.2-1B-NPU2) with standard HF tensor names: per-layer
 # {q,k,v,o,gate,up,down}_proj (Q4NX), input/post_attention_layernorm + norm +
-# embed_tokens (bf16), and lm_head (Q4NX). The Q4NX storage codec is a per-block
-# affine quant `w = scale * (q - min)` (scale/min bf16 per 32-col group), 32x256
-# blocks in plain (row-block, col-block) order. This loader mmaps the file,
-# parses the safetensors header, and vectorized-dequantizes each tensor.
+# embed_tokens (bf16), and lm_head. The quantized tensors are per-block 4-bit
+# affine, 32x256 blocks with a bf16 scale/offset per 32-col group, in plain
+# (row-block, col-block) order, under one of two headers/dequants -- see
+# Q4nxModel. This loader mmaps the file, parses the safetensors header, and
+# vectorized-dequantizes each tensor.
 _G = ROW_BLOCK // PARALLEL  # row groups per block (2)
 _EVEN = np.array(
     [g * PARALLEL + 2 * k for g in range(_G) for k in range(PARALLEL // 2)]
@@ -89,8 +91,6 @@ def resolve_q4nx_model(model):
 
     Repo ids download their current revision; `_PINNED_Q4NX_REVISION` can pin
     one for a bisect (empty by default, see above)."""
-    import os
-
     if os.path.isfile(model):
         return model
     if os.path.isdir(model):
@@ -100,9 +100,38 @@ def resolve_q4nx_model(model):
     # treat as an HF repo id
     from huggingface_hub import hf_hub_download
 
-    return hf_hub_download(
-        model, "model.q4nx", revision=_PINNED_Q4NX_REVISION.get(model)
+    rev = _PINNED_Q4NX_REVISION.get(model)
+    try:
+        return hf_hub_download(model, "model.q4nx", revision=rev)
+    except Exception:
+        # Offline with a cache that predates the current revision: an offline
+        # runner pinned to a snapshot keeps working rather than failing to
+        # resolve. Both encodings decode correctly (the older one just
+        # reconstructs less faithfully), so an older snapshot is usable.
+        if rev is not None:
+            raise
+        cached = _any_cached_snapshot(model)
+        if cached is None:
+            raise
+        return cached
+
+
+def _any_cached_snapshot(model):
+    """Path to the most recently fetched cached model.q4nx for `model`."""
+    import glob
+
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    hits = glob.glob(
+        os.path.join(
+            HF_HUB_CACHE,
+            "models--" + model.replace("/", "--"),
+            "snapshots",
+            "*",
+            "model.q4nx",
+        )
     )
+    return max(hits, key=os.path.getmtime) if hits else None
 
 
 class Q4nxModel:
