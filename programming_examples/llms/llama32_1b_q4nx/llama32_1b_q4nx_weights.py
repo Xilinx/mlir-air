@@ -119,12 +119,12 @@ class Q4nxModel:
                     the header -- n_blocks is a single product of the two --
                     so the caller must supply it.
 
-    Both describe the same bytes; the bundles were simply re-exported. As of
-    2026-08 the 1B bundle is Q4NX and the 3B / Gemma3-4B bundles are I8, and a
-    repo can switch between snapshots (FastFlowLM/Llama-3.2-3B-NPU2 did, on
-    2026-08-05). Reading an I8 header as logical yields a wrong block count and
-    a reshape error, so `dequant` dispatches on `dtype` and callers that may
-    meet an I8 bundle must pass `M`/`K`.
+    The two are not interchangeable encodings of the same bytes: the dequant
+    differs as well (see `dequant`), and the I8 re-export is the more faithful
+    of the two. Every FastFlowLM NPU2 repo currently serves I8; the Q4NX form
+    survives only in pre-2026-08-04 snapshots. Reading an I8 header as logical
+    yields a wrong block count and a reshape error, so `dequant` dispatches on
+    `dtype` and callers that may meet an I8 bundle must pass `M`/`K`.
     """
 
     def __init__(self, model):
@@ -170,10 +170,11 @@ class Q4nxModel:
         return tuple(e["shape"]) if e.get("dtype") == "Q4NX" else None
 
     def dequant(self, name, M=None, K=None):
-        """A Q4NX tensor [M, K] dequantized to float32 (w = scale*(q - min)).
+        """A quantized tensor dequantized to float32 [M, K].
 
         `M`/`K` are required for an I8-header bundle and cross-checked against
-        the header for a Q4NX one (see the class docstring).
+        the header for a Q4NX one (see the class docstring), which also selects
+        the dequant: Q4NX subtracts, I8 adds.
         """
         hdr_dims = self.dims(name)
         if hdr_dims is None:
@@ -188,11 +189,13 @@ class Q4nxModel:
             M, K = hdr_dims
         nbi, nbj = M // ROW_BLOCK, K // COL_BLOCK
         nb = nbi * nbj
-        got = self._hdr[name]["shape"][0] if hdr_dims is None else nb
-        if got != nb:
+        if hdr_dims is None and self._hdr[name]["shape"][0] != nb:
+            # The only cross-check available for an I8 header: caller dims that
+            # disagree with the block count would otherwise reshape-fail deep
+            # inside the unpack, or silently succeed on a transposed pair.
             raise ValueError(
-                f"{name}: header holds {got} blocks but (M/{ROW_BLOCK})*(K/{COL_BLOCK})"
-                f" = {nb} for [M, K] = {[M, K]}"
+                f"{name}: header holds {self._hdr[name]['shape'][0]} blocks but "
+                f"(M/{ROW_BLOCK})*(K/{COL_BLOCK}) = {nb} for [M, K] = {[M, K]}"
             )
         i16 = self._raw_i16(name).reshape(nb, BLOCK_BF16)
         sc = (
@@ -267,7 +270,7 @@ class Q4nxModel:
         dims = dims or self._PROJ_DIMS
         out = {}
         for nm, t in self._PROJ.items():
-            M, K = (dims or {}).get(nm, (None, None))
+            M, K = dims.get(nm, (None, None))
             wt = self.dequant(f"model.layers.{k}.{t}.weight", M, K)  # [out, K]
             out[nm] = np.ascontiguousarray(wt.T, dtype=bfloat16)  # [K, out]
         return out
