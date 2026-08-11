@@ -151,13 +151,19 @@ _compile_decode_build:
 
 ## Run unified inference
 run:
+	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(DRIVER) \
 		--run-only --n-tokens $(N_TOKENS) --prompt "$(PROMPT)" --model $(MODEL)
 
-## Run with detailed profiling breakdown
+## Run with detailed profiling breakdown. --no-eos-stop so throughput is averaged
+## over the full N_TOKENS budget: the default prompt answers in ~7 tokens, and a
+## 7-sample average is dominated by the first (cold) dispatch. Mirrors
+## llama32_1b_q4nx, whose profile target has carried this since it was written.
 profile:
+	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(DRIVER) \
-		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" --model $(MODEL)
+		--run-only --n-tokens $(N_TOKENS) --profile --no-eos-stop \
+		--prompt "$(PROMPT)" --model $(MODEL)
 
 ## Interactive chat REPL
 chat:
