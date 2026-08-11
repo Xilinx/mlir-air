@@ -39,7 +39,6 @@ std::unique_ptr<Pass> createAIROverrideMemRefMemorySpacePass();
 std::unique_ptr<mlir::Pass> createAIROverrideMemRefMemorySpacePass(
     AIROverrideMemRefMemorySpaceOptions options);
 std::unique_ptr<mlir::Pass> createAIRMergeUnrolledDevicesPass();
-std::unique_ptr<mlir::Pass> createAIRAnnotateRefeedPass();
 
 } // namespace air
 } // namespace xilinx

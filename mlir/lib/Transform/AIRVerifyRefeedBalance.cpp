@@ -71,10 +71,14 @@ public:
         InFlightDiagnostic diag =
             fatal ? anchor->emitError() : anchor->emitWarning();
         diag << "air.channel @" << imb.channel << "[" << imb.bundleIndex
-             << "] is unbalanced in " << rates.phaseToString(imb.phase) << ": "
-             << imb.rate.supply << " tokens supplied, " << imb.rate.demand
-             << " consumed (" << (delta < 0 ? "deficit " : "surplus ")
-             << std::abs(delta) << ")";
+             << "] is unbalanced in "
+             << (imb.wholeDispatch
+                     ? std::string("the whole dispatch (its two sides are "
+                                   "gated by different arms)")
+                     : rates.phaseToString(imb.phase))
+             << ": " << imb.rate.supply << " tokens supplied, "
+             << imb.rate.demand << " consumed ("
+             << (delta < 0 ? "deficit " : "surplus ") << std::abs(delta) << ")";
         if (imb.rate.rawSupply > 0) {
           if (imb.rate.demand % imb.rate.rawSupply == 0)
             diag.attachNote(anchor->getLoc())
