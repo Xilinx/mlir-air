@@ -70,8 +70,12 @@ def build_requant_cache(model, fd, cache_path, n_layers=16, verbose=True):
 
     W_all, RMS_in, RMS_post = [], [], []
     for k in range(n_layers):
+        # Dims come from the loader's table: an I8-packed bundle header carries
+        # the block count, not the logical [out, K] (Q4nxModel docstring).
         R = {
-            nm: qm_model.dequant(f"model.layers.{k}.{t}.weight")
+            nm: qm_model.dequant(
+                f"model.layers.{k}.{t}.weight", *Q4nxModel._PROJ_DIMS[nm]
+            )
             for nm, t in _PROJ.items()
         }
         qm = [None] * NPH
