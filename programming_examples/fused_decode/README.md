@@ -30,6 +30,30 @@ the instruction stream for any `L`, byte-identical to a native per-L build.
 | `proj_qmm_pack.py` | numpy Q4NX block packer + dequant reference |
 | `kernels/` | Peano decode kernel sources (`proj_qmm`, `rms_residual`, `glu`, `rope`, `attn_qk`, `attn_kv`, headers) |
 | `models/` | model spec headers |
+| `fused_decode_qwen.py` | The Qwen2.5-3B variant of the builder (see below) |
+| `qwen25_3b_requant.py` | Q4_0 quantizer + weight cache for the Qwen decode |
+| `qwen_prefill_to_decode.py` | Hands `llms/qwen25_3b_q4`'s prefill KV to the Qwen decode |
+
+### Why Qwen has its own builder
+
+`fused_decode.py` covers Llama-3.2-1B/3B and Gemma3-4B, selected by
+`DECODE_MODEL`. Qwen2.5-3B is a separate file because its **on-device weight
+format differs**, not because its weights are packaged differently:
+
+| | Llama / Gemma | Qwen2.5 |
+|---|---|---|
+| device format | unsigned int4 **+ per-group min** | signed int4, **scale only** |
+| dequant | `w = scale*q + min` | `w = q*scale` |
+| kernel build | (default) | `-DQ4_0` |
+
+Both come from `kernels/q4_k.h`, which carries the two forms under `#ifndef
+Q4_0`. This mirrors FastFlowLM, whose own Qwen design sets `#define Q4_0` in
+`models/qwen2_3b.h` while its Llama and Gemma designs leave it undefined.
+
+The weight *bundles* are uniform: every FastFlowLM `model.q4nx` is the same
+per-block affine encoding regardless of model. That is why `llms/qwen25_3b_q4`
+quantizes the fp checkpoint directly rather than reading a bundle -- an affine
+bundle re-quantized into the symmetric device form would quantize twice.
 
 ## Reproducibility (toolchain)
 

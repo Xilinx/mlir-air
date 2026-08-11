@@ -28,13 +28,21 @@ workload ~30% slower.
 
 ## Quant codec: Q4_0, not Q4NX
 
-The Llama example reads an already-4-bit `model.q4nx` bundle whose codec is
-per-block **affine** quant (`w = scale*(q - min)`, unsigned nibbles). Qwen2.5-3B
-has no such bundle, and its NPU kernels are built with `-DQ4_0` — a
-**symmetric signed-int4** codec (`w = q*scale`, `q ∈ [-8,7]`, `scale = amax/8`,
-per 32-element group along the reduction dim). So this example quantizes the
-full-precision HF checkpoint directly, which is also strictly more accurate
-than re-quantizing someone else's 4-bit weights.
+What differs for Qwen is the **on-device** format, not the weight bundle.
+FastFlowLM ships Qwen2.5-3B as a `model.q4nx` bundle in the same per-block
+affine encoding as Llama and Gemma (`w = scale*q + min`, unsigned nibbles,
+32x256 blocks). But their Qwen decode design sets `#define Q4_0`
+(`models/qwen2_3b.h`), which switches the kernel to a **symmetric signed-int4**
+form (`w = q*scale`, `q ∈ [-8,7]`, `scale = amax/8`, per 32-element group along
+the reduction dim). The AIR port mirrors that, so its kernels are built
+`-DQ4_0` too.
+
+That mismatch is why this example ignores the bundle and quantizes the
+full-precision HF checkpoint directly. For Llama and Gemma the bundle and the
+device agree — affine to affine, same groups, same 4 bits — so the host
+dequant/requant round-trip lands back on the same grid. Symmetric cannot
+represent an offset range, so feeding it affine 4-bit weights would quantize
+twice and lose more than starting from fp does.
 
 The quantizer is `fused_decode/qwen25_3b_requant.requant_q4_0` — the same
 function that builds the fused-decode Qwen weight cache — so **the prefill and
