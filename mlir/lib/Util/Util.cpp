@@ -1785,8 +1785,29 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     // Skip loops that don't affect the channel offset (stride=0).
     // LLVM 23's canonicalize no longer hoists loop-invariant channel ops,
     // so we skip them here when requested to avoid stride=0 DMA dimensions.
-    if (skipZeroStride && ind_var_factor == 0)
+    if (skipZeroStride && ind_var_factor == 0) {
+      // Dropping the dimension drops the repeat with it: an N-trip loop whose
+      // channel op does not use the induction variable performs N transfers,
+      // and the folded op performs one. That is a silent semantic change, so
+      // say so. A producer re-sending one resident buffer N times should reach
+      // here already collapsed by air-annotate-refeed, which records N as
+      // air.refeed_count instead of losing it.
+      int64_t droppedTrips = -1;
+      if (auto afo = dyn_cast_if_present<affine::AffineForOp>(o)) {
+        if (auto tc = getStaticAffineForTripCountAsInt(afo))
+          droppedTrips = *tc;
+      } else if (auto sfo = dyn_cast_if_present<scf::ForOp>(o)) {
+        if (auto tc = getStaticScfForTripCountAsInt(sfo))
+          droppedTrips = *tc;
+      }
+      if (droppedTrips > 1)
+        o->emitWarning("folding this loop into the DMA drops a repeat of ")
+            << droppedTrips
+            << ": the enclosed transfer does not use the induction variable, "
+               "so the fold keeps one transfer where the loop performed "
+            << droppedTrips;
       continue;
+    }
     int trip_count = -1;
     if (auto afo = dyn_cast_if_present<affine::AffineForOp>(o))
       trip_count = *getStaticAffineForTripCountAsInt(afo);

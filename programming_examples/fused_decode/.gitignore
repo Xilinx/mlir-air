@@ -13,3 +13,4 @@ build_peano/
 build_chess/
 air.mlir
 air.elf
+.decode_build_model

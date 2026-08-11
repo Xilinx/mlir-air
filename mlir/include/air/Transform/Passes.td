@@ -1041,20 +1041,47 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
 }
 
 def AIRAnnotateRefeedPass: Pass<"air-annotate-refeed", "ModuleOp"> {
-  let summary = "Lower opt-in re-feed loops to air.refeed_count on the channel";
+  let summary = "Derive air.refeed_count from a re-feed loop's trip count";
   let constructor = "xilinx::air::createAIRAnnotateRefeedPass()";
   let description = [{
-    Opt-in producer for the single-buffer count-free re-broadcast primitive.
-    An scf.for / affine.for tagged with the 'air.refeed_loop' unit attribute,
-    whose body is a single loop-invariant air.channel.put, expresses "re-send
-    one resident buffer once per iteration". This pass reads the loop's static
-    trip count N into 'air.refeed_count' on the put's channel declaration and
-    collapses the loop to the single put. Loops that do not match the safe shape
-    (non-constant trip count, body other than one invariant put, or loop-carried
-    values) are left unchanged. Not part of the default pipeline: the marker
-    asserts the re-feed semantics the front-end intends.
+    Producer for the single-buffer count-free re-broadcast primitive. A
+    producer that re-sends ONE resident buffer N times per production is
+    written as an N-trip scf.for / affine.for around a single air.channel.put:
+
+    ```mlir
+    scf.for %i = %c0 to %c6 step %c1 {
+      air.channel.put @xnorm[] (%buf[] [] [])
+    }
+    ```
+
+    The body does nothing but the put, so nothing rewrites the source between
+    sends, and no data operand depends on the induction variable, so every send
+    reads the same bytes. That is a re-broadcast, not N productions, and the two
+    lower differently: N productions get a ping-pong twin buffer whose pong slot
+    is never filled (the fill sits outside the loop), and a one-deep credit
+    handshake that lets the producer overwrite the source while the last send is
+    still in flight.
+
+    This pass recognizes the shape, erases the loop, and records the trip count
+    as air.refeed_count on the carrier air-to-aie reads for that producer: the
+    source memref.alloc for a memtile (L2) producer, whose count primes the
+    fill/drain rendezvous on the buffer, and the put itself for a core (L1) one,
+    whose count scales the core-side release. Counts landing on one carrier add,
+    since the count is drains-enabled-per-fill.
+
+    Loops that do not match -- dynamic trip count, more than one put, a body op
+    with side effects, an induction-variable-dependent operand, or an async put
+    with a dependency other than the carried token -- are left unchanged, which
+    is their pre-existing N-productions meaning. An L2 source whose alloc is not
+    recoverable is an error rather than a silent miscompile: the count would
+    have no carrier the memtile lock allocator reads.
+
+    Runs at the head of the pipeline, before any other AIR pass. That placement
+    is load-bearing: air-opt-memtile-dma-bds folds such a loop into its single
+    BD and drops the trip count, which silently loses the re-sends.
   }];
 }
+
 
 def AIREnforceChannelFifoOrder: Pass<"air-enforce-channel-fifo-order", "ModuleOp"> {
   let summary = "Serialize same-channel async ops to preserve FIFO order";
@@ -1768,5 +1795,6 @@ def AIRMergeUnrolledDevices : Pass<"air-merge-unrolled-devices", "ModuleOp"> {
     ```
   }];
 }
+
 
 #endif // AIR_CONVERSION_PASSES

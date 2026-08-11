@@ -1036,7 +1036,16 @@ static LogicalResult runAieCompilation() {
   {
     raw_string_ostream os(placementPipeline);
     os << "builtin.module(";
-    os << "air-rank-to-launch";
+    // FIRST, before any other AIR pass sees the IR. A producer that re-sends
+    // one resident buffer N times is written as an N-trip loop around a single
+    // put; this collapses it and records N on the carrier air-to-aie reads.
+    // It has to run here rather than next to air-to-aie:
+    // air-opt-memtile-dma-bds erases such a loop (its body is one BD, so it
+    // looks like a redundant wrapper), which would silently drop the re-sends.
+    // Folding up front means every pass downstream sees exactly the IR it saw
+    // when the count was written by hand.
+    os << "air-annotate-refeed";
+    os << ",air-rank-to-launch";
     os << ",air-insert-launch-around-herd{insert-segment=true}";
     os << ",func.func(air-lower-herd-parallel)";
     os << ",scf-forall-to-parallel";

@@ -66,6 +66,24 @@ from air.dialects import arith
 from air.dialects.scf import for_, yield_, index_switch, IfOp
 from air.backend.xrt import XRTBackend
 
+
+def refeed(n, emit):
+    """Re-send ONE resident buffer n times: an n-trip scf.for around a single
+    air.channel.put. The body holds nothing but the put and no operand depends
+    on the induction variable, so this is a re-broadcast, not n productions --
+    air-fold-refeed-loops recognizes the shape, collapses the loop, and derives
+    the count for the lock init. n <= 1 emits the bare put."""
+    if n <= 1:
+        emit()
+        return
+    c0 = arith.ConstantOp(IndexType.get(), 0).result
+    cn = arith.ConstantOp(IndexType.get(), n).result
+    c1 = arith.ConstantOp(IndexType.get(), 1).result
+    for _rf in for_(c0, cn, c1):
+        emit()
+        yield_([])
+
+
 # ============================ Qwen2.5-3B config =============================
 MODEL_DIM = 2048
 K = MODEL_DIM
@@ -95,7 +113,7 @@ OREF_COL = int(_os.environ.get("QWEN_OREF_COL", "6"))
 OREF_NOPUT = int(_os.environ.get("QWEN_OREF_NOPUT", "0"))
 # QWEN_OREF_VIA_RMS=1: the attn-o gather memtile does NOT feed @xnorm directly. It hands
 # the gathered o to the rms core over @orms, and the rms core re-emits it as ph1's X on
-# @xnorm (per-put air.refeed_count = OPROJ_REFEED). That makes the rms tile the ONLY
+# @xnorm (re-broadcast OPROJ_REFEED times). That makes the rms tile the ONLY
 # physical producer into the hub X ring -- exactly the shape that PASSES at NPH=2 when the
 # oref put is removed (QWEN_OREF_NOPUT=1) -- while keeping the real attn data. Isolates
 # "a second physical X producer starves ph0" from "the attn data itself starves ph0".
@@ -297,8 +315,8 @@ KV_APPEND = True  # rope writes this token's roped-K/raw-V into the DDR cache
 # All four converge (in phase-time order) on ONE npu_dma_packet channel @xnorm, read
 # by ONE count-free feed loop that broadcasts 256-blocks to the 16 proj cores (inX).
 # Each phase source re-broadcasts REFEED[p] = RB[p] times (rounds/phase): the rms core
-# via channel/per-put air.refeed_count, the attn-o + glu-down via memtile-alloc
-# air.refeed_count (mechanism 2). Mirrors fused_decode.py exactly, re-parameterized.
+# from the rms core, the attn-o + glu-down from their gather memtiles. Every
+# re-feed is an n-trip loop around the put. Mirrors fused_decode.py, re-parameterized.
 # QWEN_ATTN=0 = device-deadlock bisection: drop the whole attn subsystem (KV
 # staging + attn herd + o-gather), rope drains q to host, forces LOOPCLOSE off.
 # Isolates whether a device hang is in attn vs the base proj/surround.
@@ -535,7 +553,7 @@ def build_module():
         kvcomb_l2 = MemRefType.get([16 * REGION_W], bf16, memory_space=l2)  # 4096
         # X-loopclose refeed memtiles (reference mem_tile_6_1 role): attn-o (ph1 oproj X =
         # MODEL_DIM) and glu-down (ph3 down X = INTERMEDIATE) gathered then re-broadcast
-        # into the convergent @xnorm via air.refeed_count (mechanism 2).
+        # into the convergent @xnorm.
         oref_l2 = MemRefType.get([K], bf16, memory_space=l2)  # 2048 attn-o
         downref_l2 = MemRefType.get([INTERMEDIATE], bf16, memory_space=l2)  # 11264
 
@@ -720,12 +738,11 @@ def build_module():
             channel_decl("hostQ", size=[1])
         # ---- X-loopclose channels (Step 2c; reuse Llama convergent-xnorm) ----
         # ONE convergent packet channel carries all 4 phase X sources (rms ph0/ph2,
-        # attn-o ph1, glu-down ph3) into the X memtile, read by ONE feed loop. rms
-        # channel-level refeed = XN_REFEED (ph0); ph2/ph1/ph3 use per-put / memtile
-        # air.refeed_count. Pin the rms core's xnorm output to tile MM2S1 (layerOut
-        # keeps MM2S0) so the placer does not flip layerOut circuit->packet.
+        # attn-o ph1, glu-down ph3) into the X memtile, read by ONE feed loop. Every
+        # re-feed on it is written as an n-trip loop around the put (see refeed()).
+        # Pin the rms core's xnorm output to tile MM2S1 (layerOut keeps MM2S0) so the
+        # placer does not flip layerOut circuit->packet.
         _xn = channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
-        _xn.operation.attributes["air.refeed_count"] = IntegerAttr.get(i32, XN_REFEED)
         if OREF_2HOP:
             channel_decl("oref2", size=[1], channel_type="npu_dma_packet")
         if OREF_HOSTSRC:
@@ -750,10 +767,7 @@ def build_module():
             _orms = channel_decl("orms", size=[1], channel_type="npu_dma_packet")
             _orms.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 0)
         if PH1_XCHAN:
-            _xn2 = channel_decl("xnorm2", size=[1], channel_type="npu_dma_packet")
-            _xn2.operation.attributes["air.refeed_count"] = IntegerAttr.get(
-                i32, OPROJ_REFEED
-            )
+            channel_decl("xnorm2", size=[1], channel_type="npu_dma_packet")
         _xn.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 1)
         _rmsw = channel_decl("rmsW", size=[1])  # host rms weight -> rms core
         _rmsw.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 1)
@@ -1361,28 +1375,27 @@ def build_module():
                                 # (x XN_REFEED) -> 5 packets vs 20 BDs (1:4 mismatch). The
                                 # working host-toX feed is 1:1 (20 puts of 512). Emit the same
                                 # 1:1 shape here, in ROUND-MAJOR order (r, then chunk) so the
-                                # X memtile sees c0,c1,c2,c3 per round; per-put refeed_count=1
-                                # overrides the channel-level count (getRefeedCount: an
-                                # explicit per-emission attr wins for ANY value, incl. 1).
+                                # X memtile sees c0,c1,c2,c3 per round. These are XN_REFEED
+                                # x (K/XCH) distinct puts, not a re-broadcast loop.
                                 for _xr in range(XN_REFEED):
                                     for _xc in range(K // XCH):
-                                        _pp = ChannelPut(
+                                        ChannelPut(
                                             "xnorm",
                                             a_xn,
                                             offsets=[idx(_xc * XCH)],
                                             sizes=[idx(XCH)],
                                             strides=[idx(1)],
                                         )
-                                        _pp.operation.attributes["air.refeed_count"] = (
-                                            IntegerAttr.get(i32, 1)
-                                        )
                             else:
-                                ChannelPut(
-                                    "xnorm",
-                                    a_xn,
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
+                                refeed(
+                                    XN_REFEED,
+                                    lambda: ChannelPut(
+                                        "xnorm",
+                                        a_xn,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    ),
                                 )
                             if OREF_NOPUT and OPROJ_PHASE < NPH:
                                 # bisect stand-in for the muted oref as ph1's X source.
@@ -1393,15 +1406,15 @@ def build_module():
                                 # the core lock trace acquired the outY data lock before the
                                 # ph1 prod-acquire). Also makes the stand-in work at NPH>=3,
                                 # where the gate-up branch below is taken instead.
-                                _pa = ChannelPut(
-                                    "xnorm",
-                                    a_xn,
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
-                                _pa.operation.attributes["air.refeed_count"] = (
-                                    IntegerAttr.get(i32, OPROJ_REFEED)
+                                refeed(
+                                    OPROJ_REFEED,
+                                    lambda: ChannelPut(
+                                        "xnorm",
+                                        a_xn,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    ),
                                 )
                             if OREF_VIA_RMS and OPROJ_PHASE < NPH:
                                 # ph1 X = the attn-o handed over by the oref memtile. Placed
@@ -1443,15 +1456,15 @@ def build_module():
                                 )
                                 if not SURROUND_NOCOMPUTE:
                                     CallOp(rms_copy_aie, [a_xn, a_o])
-                                _po = ChannelPut(
-                                    "xnorm",
-                                    a_xn,
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
-                                _po.operation.attributes["air.refeed_count"] = (
-                                    IntegerAttr.get(i32, OPROJ_REFEED)
+                                refeed(
+                                    OPROJ_REFEED,
+                                    lambda: ChannelPut(
+                                        "xnorm",
+                                        a_xn,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    ),
                                 )
                                 DeallocOp(a_o)
                         a_op = None
@@ -1481,15 +1494,15 @@ def build_module():
                             # after its rms_norm (Llama's working cadence), not batched at the
                             # loop top.
                             CallOp(rms_norm_aie, [a_xn, a_h, a_w2, _one])
-                            _p2 = ChannelPut(
-                                "xnorm",
-                                a_xn,
-                                offsets=[idx(0)],
-                                sizes=[idx(K)],
-                                strides=[idx(1)],
-                            )
-                            _p2.operation.attributes["air.refeed_count"] = (
-                                IntegerAttr.get(i32, GATEUP_REFEED)
+                            refeed(
+                                GATEUP_REFEED,
+                                lambda: ChannelPut(
+                                    "xnorm",
+                                    a_xn,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K)],
+                                    strides=[idx(1)],
+                                ),
                             )
                             DeallocOp(a_xn)
                             DeallocOp(a_w)
@@ -1913,7 +1926,7 @@ def build_module():
                     # ===== X-loopclose refeed memtiles (reference mem_tile_6_1 role) =====
                     # attn-o (ph1 oproj X) + glu-down (ph3 down X) gathered into col-6
                     # memtiles and re-broadcast into the convergent @xnorm via
-                    # air.refeed_count on the alloc (mechanism 2). Convergence order:
+                    # an OPROJ_REFEED-trip loop around the put. Convergence order:
                     # rms ph0 -> o ph1 -> rms ph2 -> glu ph3.
                     # Phase-isolation: each refeed memtile serves ONE phase's X, so emit it
                     # only when that phase is built (else it gathers a producer output that
@@ -1937,10 +1950,6 @@ def build_module():
                         if OREF_NOCHAIN:
                             omtb.operation.attributes["air.no_chain_lock"] = (
                                 UnitAttr.get()
-                            )
-                        if not OREF_NOPUT and _oref_refeed_here:
-                            omtb.operation.attributes["air.refeed_count"] = (
-                                IntegerAttr.get(i32, OPROJ_REFEED)
                             )
                         if OREF_HOSTSRC:
                             ChannelGet(
@@ -1969,20 +1978,23 @@ def build_module():
                                 strides=[idx(1)],
                             )
                         elif not OREF_NOPUT:
-                            ChannelPut(
-                                (
-                                    "oref2"
-                                    if OREF_2HOP
-                                    else (
-                                        "orms"
-                                        if OREF_VIA_RMS
-                                        else ("xnorm2" if PH1_XCHAN else "xnorm")
-                                    )
+                            refeed(
+                                OPROJ_REFEED if _oref_refeed_here else 1,
+                                lambda: ChannelPut(
+                                    (
+                                        "oref2"
+                                        if OREF_2HOP
+                                        else (
+                                            "orms"
+                                            if OREF_VIA_RMS
+                                            else ("xnorm2" if PH1_XCHAN else "xnorm")
+                                        )
+                                    ),
+                                    omtb,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K)],
+                                    strides=[idx(1)],
                                 ),
-                                omtb,
-                                offsets=[idx(0)],
-                                sizes=[idx(K)],
-                                strides=[idx(1)],
                             )
                         DeallocOp(omtb)
                         if OREF_2HOP and not OREF_NOPUT:
@@ -1993,10 +2005,6 @@ def build_module():
                                 IntegerAttr.get(T.i32(), OREF2_COL)
                             )
                             omt2.operation.attributes["air.no_split"] = UnitAttr.get()
-                            if not OREF_VIA_RMS:
-                                omt2.operation.attributes["air.refeed_count"] = (
-                                    IntegerAttr.get(i32, OPROJ_REFEED)
-                                )
                             ChannelGet(
                                 "oref2",
                                 omt2,
@@ -2004,16 +2012,19 @@ def build_module():
                                 sizes=[idx(K)],
                                 strides=[idx(1)],
                             )
-                            ChannelPut(
-                                (
-                                    "orms"
-                                    if OREF_VIA_RMS
-                                    else ("xnorm2" if PH1_XCHAN else "xnorm")
+                            refeed(
+                                1 if OREF_VIA_RMS else OPROJ_REFEED,
+                                lambda: ChannelPut(
+                                    (
+                                        "orms"
+                                        if OREF_VIA_RMS
+                                        else ("xnorm2" if PH1_XCHAN else "xnorm")
+                                    ),
+                                    omt2,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K)],
+                                    strides=[idx(1)],
                                 ),
-                                omt2,
-                                offsets=[idx(0)],
-                                sizes=[idx(K)],
-                                strides=[idx(1)],
                             )
                             DeallocOp(omt2)
                     if LOOPCLOSE and DOWN_PHASE < NPH:
@@ -2033,9 +2044,6 @@ def build_module():
                             T.i32(), 0
                         )
                         db.operation.attributes["air.no_split"] = UnitAttr.get()
-                        db.operation.attributes["air.refeed_count"] = IntegerAttr.get(
-                            i32, DOWN_REFEED
-                        )
                         # UNROLLED gather (constant offsets), not a rolled scf.for with
                         # an IV-derived offset. Rolled, the NGLU=22 gets lower to a BD ring
                         # whose wrap does not divide 22, so chunks are duplicated and
@@ -2086,12 +2094,15 @@ def build_module():
                                     strides=[idx(1)],
                                 )
                         else:
-                            ChannelPut(
-                                "xnorm",
-                                db,
-                                offsets=[idx(0)],
-                                sizes=[idx(INTERMEDIATE)],
-                                strides=[idx(1)],
+                            refeed(
+                                DOWN_REFEED,
+                                lambda: ChannelPut(
+                                    "xnorm",
+                                    db,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(INTERMEDIATE)],
+                                    strides=[idx(1)],
+                                ),
                             )
                         DeallocOp(db)
 

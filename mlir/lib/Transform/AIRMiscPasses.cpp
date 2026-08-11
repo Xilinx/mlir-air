@@ -3260,7 +3260,139 @@ std::unique_ptr<Pass> createAIROverrideMemRefMemorySpacePass(
   return std::make_unique<AIROverrideMemRefMemorySpacePass>(options);
 }
 
-// Opt-in producer for air.refeed_count. See the pass description in Passes.td.
+// Producer for air.refeed_count. See the pass description in Passes.td.
+namespace {
+
+// The memref.alloc backing `v`, looking through the air.execute a bufferized
+// alloc is wrapped in after air-dependency.
+static memref::AllocOp getBackingAlloc(Value v) {
+  if (auto a = v.getDefiningOp<memref::AllocOp>())
+    return a;
+  auto exec = dyn_cast_if_present<air::ExecuteOp>(v.getDefiningOp());
+  if (!exec)
+    return nullptr;
+  // air.execute yields region results through air.execute_terminator; result 0
+  // is the async token, so memref result i is terminator operand i-1.
+  auto idx = cast<OpResult>(v).getResultNumber();
+  if (idx == 0)
+    return nullptr;
+  auto *term = exec.getRegion().front().getTerminator();
+  if (idx - 1 >= term->getNumOperands())
+    return nullptr;
+  return term->getOperand(idx - 1).getDefiningOp<memref::AllocOp>();
+}
+
+// A refeed loop re-sends ONE resident buffer N times. Its body does nothing but
+// the put, so nothing rewrites the source between sends, and no data operand
+// depends on the induction variable, so every send reads the same bytes.
+// Returns the put, or null if `loopOp` is not that shape.
+static air::ChannelPutOp matchRefeedLoop(Operation *loopOp, Block *body,
+                                         Value iv) {
+  // Pure ops are tolerated and hoisted with the put: a front end materializes
+  // the put's index constants at its own insertion point, i.e. inside the loop,
+  // and no canonicalizer need have run before this pass.
+  air::ChannelPutOp put = nullptr;
+  for (auto &op : body->without_terminator()) {
+    if (auto p = dyn_cast<air::ChannelPutOp>(&op)) {
+      if (put)
+        return nullptr; // more than one put: not a single re-broadcast
+      put = p;
+      continue;
+    }
+    if (!isMemoryEffectFree(&op))
+      return nullptr;
+    for (auto operand : op.getOperands())
+      if (operand.getParentBlock() == body)
+        return nullptr;
+  }
+  if (!put)
+    return nullptr;
+  // The async dependency is exempt from the invariance check: it is the carried
+  // token, a block argument by construction, re-spliced when the loop is
+  // erased.
+  llvm::SmallPtrSet<Value, 2> deps(llvm::from_range,
+                                   put.getAsyncDependencies());
+  for (auto operand : put->getOperands()) {
+    if (deps.contains(operand))
+      continue;
+    if (operand == iv)
+      return nullptr;
+    // A block argument of the body varies per trip (the induction variable or
+    // an iter arg). A value DEFINED in the body is one of the pure ops cleared
+    // above, which is hoisted along with the put, so it is fine.
+    if (operand.getParentBlock() == body && isa<BlockArgument>(operand))
+      return nullptr;
+  }
+  auto forOp = dyn_cast<scf::ForOp>(loopOp);
+  if (put.getAsyncToken()) {
+    // Async form: the loop must carry exactly the put's token and yield it,
+    // and the put must depend on nothing else, or hoisting drops an edge.
+    if (!forOp || forOp.getNumRegionIterArgs() != 1)
+      return nullptr;
+    auto yield = dyn_cast<scf::YieldOp>(body->getTerminator());
+    if (!yield || yield->getNumOperands() != 1 ||
+        yield->getOperand(0) != put.getResult(0))
+      return nullptr;
+    if (put.getAsyncDependencies().size() != 1 ||
+        put.getAsyncDependencies()[0] != forOp.getRegionIterArg(0))
+      return nullptr;
+  } else if (loopOp->getNumResults())
+    return nullptr; // loop-carried values with a non-async put
+  return put;
+}
+
+// The carrier air-to-aie reads for this producer, or failure if there is none.
+// The two lock mechanisms take it from different ops and must NOT be unified:
+// a memtile (L2) producer's count primes the fill/drain rendezvous on the
+// buffer, which AllocL2BuffersPattern propagates from the alloc, while a core
+// (L1) producer's count scales the core-side release, which
+// allocateCoreLocksPerMemcpyOp reads off the put.
+static FailureOr<Operation *> getRefeedCarrier(air::ChannelPutOp put) {
+  auto memrefTy = dyn_cast<MemRefType>(put.getSrcMemref().getType());
+  if (!memrefTy || !air::isL2(memrefTy))
+    return put.getOperation();
+  auto alloc = getBackingAlloc(put.getSrcMemref());
+  if (!alloc)
+    // Writing the count on the put would be silently ineffective here: the
+    // memtile mechanism only reads the buffer, so the fill lock would keep its
+    // default init and the array would deadlock on device. Refuse.
+    return put->emitOpError(
+        "re-feed loop over an L2 source whose memref.alloc is not "
+        "recoverable; air.refeed_count has no carrier the memtile lock "
+        "allocator reads");
+  return alloc.getOperation();
+}
+
+// Add this producer's re-send count to `carrier`, given what this run has
+// already attributed to `put`.
+//
+// Sibling loops over one resident buffer ADD: air-to-aie makes the fill release
+// the count once per fill, so draining it N1 then N2 times needs N1 + N2 drains
+// enabled. NESTED loops MULTIPLY: the walk is post-order, so folding the inner
+// loop hoists the put into the outer body, where it matches again -- the same
+// put re-folded means the two trip counts compose, M x N sends, not M + N.
+// Which case this is cannot be read off the carrier, only off whether this run
+// has folded a loop around THIS put before.
+static void accumulateRefeed(Operation *carrier, air::ChannelPutOp put,
+                             int64_t n,
+                             llvm::DenseMap<Operation *, int64_t> &perPut) {
+  auto it = perPut.find(put.getOperation());
+  int64_t prev = (it == perPut.end()) ? 0 : it->second;
+  int64_t updated = prev ? prev * n : n;
+  perPut[put.getOperation()] = updated;
+
+  int64_t onCarrier = 0;
+  if (auto a = carrier->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
+    onCarrier = a.getInt();
+  // Replace this put's earlier contribution rather than adding to it.
+  int64_t total = std::max<int64_t>(onCarrier - prev, 0) + updated;
+  carrier->setAttr(
+      air::attrs::RefeedCount,
+      IntegerAttr::get(IntegerType::get(carrier->getContext(), 32), total));
+}
+
+} // namespace
+
 class AIRAnnotateRefeedPass
     : public air::impl::AIRAnnotateRefeedPassBase<AIRAnnotateRefeedPass> {
 public:
@@ -3271,14 +3403,16 @@ public:
 
 void AIRAnnotateRefeedPass::runOnOperation() {
   ModuleOp module = getOperation();
-  SmallVector<Operation *> markedLoops;
+  // Counts this run has attributed to each put, so a re-fold of the same put
+  // (a nest) composes rather than adds. See accumulateRefeed.
+  llvm::DenseMap<Operation *, int64_t> perPut;
+  SmallVector<Operation *> loops;
   module.walk([&](Operation *op) {
-    if (isa<scf::ForOp, affine::AffineForOp>(op) &&
-        op->hasAttr(air::attrs::RefeedLoop))
-      markedLoops.push_back(op);
+    if (isa<scf::ForOp, affine::AffineForOp>(op))
+      loops.push_back(op);
   });
 
-  for (Operation *loopOp : markedLoops) {
+  for (Operation *loopOp : loops) {
     Block *body = nullptr;
     Value iv;
     std::optional<int64_t> tripCount;
@@ -3292,58 +3426,39 @@ void AIRAnnotateRefeedPass::runOnOperation() {
       iv = afo.getInductionVar();
       tripCount = air::getStaticAffineForTripCountAsInt(afo);
     }
-
-    // Safe shape only: no loop-carried values, a static trip count >= 2, and a
-    // body of exactly one loop-invariant air.channel.put.
-    if (loopOp->getNumResults()) {
-      loopOp->emitWarning("air.refeed_loop: loop-carried values unsupported; "
-                          "left unchanged");
+    // A dynamic trip count cannot become a lock init; leave the loop alone.
+    if (!tripCount || *tripCount < 1)
       continue;
-    }
-    if (!tripCount || *tripCount < 2) {
-      loopOp->emitWarning("air.refeed_loop: non-constant or trivial trip "
-                          "count; left unchanged");
+    auto put = matchRefeedLoop(loopOp, body, iv);
+    if (!put)
       continue;
-    }
-    if (body->getOperations().size() != 2) {
-      loopOp->emitWarning("air.refeed_loop: body is not a single channel.put; "
-                          "left unchanged");
-      continue;
-    }
-    auto put = dyn_cast<air::ChannelPutOp>(&body->front());
-    if (!put) {
-      loopOp->emitWarning("air.refeed_loop: body is not a single channel.put; "
-                          "left unchanged");
-      continue;
-    }
-    Region &region = loopOp->getRegion(0);
-    bool invariant = llvm::all_of(put->getOperands(), [&](Value v) {
-      if (v == iv)
-        return false;
-      if (Operation *def = v.getDefiningOp())
-        return !region.isAncestor(def->getParentRegion());
-      return true;
-    });
-    if (!invariant) {
-      loopOp->emitWarning(
-          "air.refeed_loop: channel.put is not loop-invariant; left unchanged");
-      continue;
-    }
-    auto chan = air::getChannelDeclarationThroughSymbol(put);
-    if (!chan) {
-      loopOp->emitWarning(
-          "air.refeed_loop: channel declaration not found; left unchanged");
-      continue;
+    // Resolve the carrier BEFORE touching the IR, so a producer with no usable
+    // carrier fails with the loop still intact rather than half-transformed.
+    Operation *carrier = nullptr;
+    if (*tripCount > 1) {
+      auto resolved = getRefeedCarrier(put);
+      if (failed(resolved))
+        return signalPassFailure();
+      carrier = *resolved;
     }
 
-    // Record N = trip count on the channel declaration (authoritative carrier),
-    // then collapse the loop to its single put.
-    int64_t n =
-        std::max<int64_t>(air::getRefeedCount(chan.getOperation()), *tripCount);
-    OpBuilder builder(loopOp);
-    chan->setAttr(air::attrs::RefeedCount, builder.getI32IntegerAttr(n));
-    put->moveBefore(loopOp);
+    // Hoist the body out and splice the loop's incoming token into the put, so
+    // the one remaining put keeps the loop's place in the dependency graph. The
+    // pure ops move with it -- they are its operands.
+    SmallVector<Operation *> bodyOps;
+    for (auto &op : body->without_terminator())
+      bodyOps.push_back(&op);
+    for (auto *op : bodyOps)
+      op->moveBefore(loopOp);
+    if (put.getAsyncToken()) {
+      auto forOp = cast<scf::ForOp>(loopOp);
+      put.getAsyncDependenciesMutable().assign(forOp.getInitArgs()[0]);
+      forOp.getResult(0).replaceAllUsesWith(put.getResult(0));
+    }
     loopOp->erase();
+
+    if (carrier)
+      accumulateRefeed(carrier, put, *tripCount, perPut);
   }
 }
 
