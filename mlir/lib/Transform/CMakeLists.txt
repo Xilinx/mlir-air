@@ -44,6 +44,7 @@ list(APPEND TRANSFORM_SOURCES
   AIRTilingUtils.cpp
   AIRTransformInterpreter.cpp
   AIRVerifyHierarchyLocality.cpp
+  AIRVerifyRefeedBalance.cpp
   AffineLoopOptPass.cpp
   Passes.cpp
   ReturnEliminationPass.cpp

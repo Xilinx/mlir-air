@@ -23,6 +23,7 @@ add_mlir_library(AIRUtil
   Dependency.cpp
   DependencyDot.cpp
   DirectedAdjacencyMap.cpp
+  RefeedRateAnalysis.cpp
 
   DEPENDS
   AIRDialect

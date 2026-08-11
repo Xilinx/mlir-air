@@ -1769,4 +1769,69 @@ def AIRMergeUnrolledDevices : Pass<"air-merge-unrolled-devices", "ModuleOp"> {
   }];
 }
 
+def AIRVerifyRefeedBalance :
+    Pass<"air-verify-refeed-balance", "ModuleOp"> {
+  let summary = "Check that every air.channel's token rates balance per "
+                "cyclo-static phase.";
+  let constructor =
+      "xilinx::air::createAIRVerifyRefeedBalancePass()";
+  let description = [{
+    An air.channel is balanced when the tokens its producers put equal the
+    tokens its consumers get:
+
+      sum_puts(reps * size * refeed) == sum_gets(reps * size)
+
+    where `refeed` is the count-free re-broadcast multiplier
+    (air.refeed_count): one resident buffer re-sent N times per production.
+    Solving that equation for `refeed` is what lets the count be derived
+    rather than hand-written, and checking it catches a hand-written count
+    that has drifted from the dataflow it describes.
+
+    The check is per cyclo-static phase, not per dispatch. A superkernel
+    picks an scf.index_switch arm from a runtime value and each arm has its
+    own rate vector; summing over the arms lets a deficit in one hide behind
+    a surplus in another (see test/.../phases.mlir, where the two cancel
+    exactly). A phase is one iteration of the dispatch loop -- the single
+    top-level scf.for enclosing all of the function's dataflow -- because
+    every mode switch in these programs recomputes its selector from the
+    dispatch index, so binding that index resolves all of them at once.
+    Inner loop bounds that are an scf.index_switch on an outer induction
+    variable, i.e. a constant table indexed by the phase, are enumerated
+    rather than treated as dynamic.
+
+    Rates are per bundle edge: an air.channel @c [4, 4] is sixteen
+    independent equations. air.herd tiles are enumerated so that a subscript
+    computed from the tile ids resolves to the edge that tile drives, and
+    scf.if on those ids folds to the taken branch. Spatial fan-out is not a
+    rate deficit: one put on a channel carrying broadcast_shape reaches every
+    destination, and the per-tile gets are scaled back down by the fan-out.
+
+    Severity follows consequence. A deficit starves the consumers and
+    deadlocks the array, so it is an error. A surplus only wastes bandwidth
+    -- an unconditional relay feeding an arm that does not read it produces
+    one -- so it is a warning unless `strict`.
+
+    Known limits, all of which report as warnings rather than errors:
+
+    * When one side of a channel is gated by the arm switch and the other is
+      arm-independent common code, the per-phase equation is not well posed.
+      Those edges are summed over the whole dispatch instead, which is a
+      weaker check, and never escalate to an error.
+    * Packet headers count as payload, so header-carrying channels
+      (keep_pkt_header) show a small surplus proportional to the header
+      words.
+    * Channels whose rates are not statically resolvable are skipped, and
+      named under `verbose`.
+
+    The pass is read-only; it never mutates IR. It is not part of the
+    aircc pipeline -- run it explicitly.
+  }];
+  let options = [
+    Option<"strict", "strict", "bool", /*default=*/"false",
+           "Also fail on an over-supplied channel, not just a deficit.">,
+    Option<"verbose", "verbose", "bool", /*default=*/"false",
+           "Dump the per-edge rate table and name each skipped channel.">
+  ];
+}
+
 #endif // AIR_CONVERSION_PASSES
