@@ -99,15 +99,19 @@ def resolve_q4nx_model(model):
             return p
     # treat as an HF repo id
     from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
 
     rev = _PINNED_Q4NX_REVISION.get(model)
     try:
         return hf_hub_download(model, "model.q4nx", revision=rev)
-    except Exception:
-        # Offline with a cache that predates the current revision: an offline
-        # runner pinned to a snapshot keeps working rather than failing to
-        # resolve. Both encodings decode correctly (the older one just
-        # reconstructs less faithfully), so an older snapshot is usable.
+    except LocalEntryNotFoundError:
+        # The Hub is unreachable (offline, or no network) AND the revision it
+        # would resolve to is not cached. That is the one case where an older
+        # cached snapshot is the right answer: a runner whose cache predates
+        # the re-export keeps working instead of failing to resolve, and both
+        # encodings decode correctly -- the older one just reconstructs less
+        # faithfully. A 404, a gated repo or an auth failure raises a different
+        # error and is left to propagate rather than silently served stale.
         if rev is not None:
             raise
         cached = _any_cached_snapshot(model)
