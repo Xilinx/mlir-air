@@ -9,8 +9,9 @@
 #   1. CODEC. What differs is the ON-DEVICE format, not the bundle. FastFlowLM
 #      ships Qwen2.5-3B as a `model.q4nx` bundle in the same per-block AFFINE
 #      encoding as Llama and Gemma (w = scale*q + min, unsigned nibbles), but
-#      their Qwen decode design sets `#define Q4_0` (models/qwen2_3b.h), which
-#      switches the kernel to a SYMMETRIC signed-int4 form (w = q*scale, q in
+#      their Qwen decode design sets `#define Q4_0` (FastFlowLM's
+#      Qwen2_5/decoding_3b/models/qwen2_3b.h), which switches the kernel to a
+#      SYMMETRIC signed-int4 form (w = q*scale, q in
 #      [-8,7], scale = amax/8, per 32-element group along the reduction dim).
 #      The AIR port mirrors that and builds its kernels -DQ4_0.
 #

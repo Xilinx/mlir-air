@@ -47,8 +47,10 @@ format differs**, not because its weights are packaged differently:
 | kernel build | (default) | `-DQ4_0` |
 
 Both come from `kernels/q4_k.h`, which carries the two forms under `#ifndef
-Q4_0`. This mirrors FastFlowLM, whose own Qwen design sets `#define Q4_0` in
-`models/qwen2_3b.h` while its Llama and Gemma designs leave it undefined.
+Q4_0`; in-tree the switch is set by [`models/qwen2.5-3b.h`](models/qwen2.5-3b.h).
+This mirrors FastFlowLM, whose own Qwen design sets `#define Q4_0` in its
+`Qwen2_5/decoding_3b/models/qwen2_3b.h` while its Llama and Gemma designs leave
+it undefined.
 
 The weight *bundles* are uniform: every FastFlowLM `model.q4nx` is the same
 per-block affine encoding regardless of model. That is why `llms/qwen25_3b_q4`

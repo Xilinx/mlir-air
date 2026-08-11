@@ -31,8 +31,9 @@ workload ~30% slower.
 What differs for Qwen is the **on-device** format, not the weight bundle.
 FastFlowLM ships Qwen2.5-3B as a `model.q4nx` bundle in the same per-block
 affine encoding as Llama and Gemma (`w = scale*q + min`, unsigned nibbles,
-32x256 blocks). But their Qwen decode design sets `#define Q4_0`
-(`models/qwen2_3b.h`), which switches the kernel to a **symmetric signed-int4**
+32x256 blocks). But their Qwen decode design sets `#define Q4_0` (their
+`Qwen2_5/decoding_3b/models/qwen2_3b.h`), which switches the kernel to a
+**symmetric signed-int4**
 form (`w = q*scale`, `q ∈ [-8,7]`, `scale = amax/8`, per 32-element group along
 the reduction dim). The AIR port mirrors that, so its kernels are built
 `-DQ4_0` too.
