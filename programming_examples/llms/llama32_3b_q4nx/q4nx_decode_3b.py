@@ -83,19 +83,24 @@ def load_fd(model_type="LLAMA_3_2_3B"):
 
 def ensure_requant_cache(model_source, fd, n_layers, wcache_dir=None, verbose=True):
     """Return the q4k-cascade requant cache path, building it ONCE if missing. Keyed by
-    (n_layers, VOCAB_I2) -- the lm_head pack depends on VOCAB_I2, so a stale chunk size must
-    not be silently reused. A pre-versioning legacy file (VOCAB_I2-agnostic) is adopted once
-    under the versioned name."""
+    (n_layers, VOCAB_I2, bundle fingerprint): the lm_head pack depends on VOCAB_I2, so a
+    stale chunk size must not be silently reused, and the fingerprint ties the cache to the
+    exact model.q4nx it was requantized from. Without it a warm cache survives a Hub
+    re-export -- the machine keeps the old weights while a fresh one builds from the new
+    bundle, same code, different numbers.
+
+    Legacy unfingerprinted files are NOT adopted: they cannot be attributed to a bundle, and
+    the pre-2026-08-04 Q4NX-encoded weights they were built from reconstruct measurably worse
+    than the current ones. They are left in place, and the new cache is built alongside.
+    """
     from q4nx_requant import build_requant_cache
+    from llama32_1b_q4nx_weights import Q4nxModel
 
     wc = Path(wcache_dir) if wcache_dir else (_HERE / ".decode_wcache")
     wc.mkdir(parents=True, exist_ok=True)
-    cache = wc / f"q4nx_3b_decode_L{n_layers}_v{fd.VOCAB_I2}.npz"
-    legacy = wc / f"q4nx_3b_decode_L{n_layers}.npz"
+    fp = Q4nxModel(model_source).fingerprint()
+    cache = wc / f"q4nx_3b_decode_L{n_layers}_v{fd.VOCAB_I2}_{fp}.npz"
     if cache.exists():
-        return str(cache)
-    if legacy.exists():
-        os.replace(str(legacy), str(cache))  # one-time migration; never re-requant
         return str(cache)
     if verbose:
         print(

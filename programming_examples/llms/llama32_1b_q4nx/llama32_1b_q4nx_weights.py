@@ -69,24 +69,26 @@ _EVEN = np.array(
 _ODD = _EVEN + 1
 
 
-# Pinned model.q4nx revisions for the known FastFlowLM repos. The Hub bundles are
-# periodically re-packed to newer Q4NX block layouts (e.g. a 4096-i16/block form)
-# that this loader's codec (2560 i16/block; see proj_qmm_pack) does not parse, so
-# a bare `hf_hub_download` of the latest revision breaks with a reshape error.
-# Pin the last revision that matches the codec above. Custom repo ids / local
-# paths are always used as-is (unpinned).
-_PINNED_Q4NX_REVISION = {
-    "FastFlowLM/Llama-3.2-1B-NPU2": "d0c7f84ac9c5cf796db0fc8255afac42592d9db3",
-    "FastFlowLM/Llama-3.2-3B-NPU2": "790271a87c7bb8158e52e9684a586a496d1fb1c9",
-}
+# FastFlowLM re-exported every NPU2 bundle to the I8 packed encoding on
+# 2026-08-04 (all four repos within 20 minutes of each other). Those revisions
+# are the ones to use: decoded with the additive dequant below they reproduce
+# the reference bf16 weights to cosine ~0.997 with matching standard deviation,
+# whereas the older Q4NX-encoded revisions reconstruct to only 0.87 - 0.99 with
+# a standard deviation off by up to 13x. So nothing is pinned: take whatever the
+# repo currently serves, and let the codec be detected from the header.
+#
+# Old revisions remain reachable, so pinning one is still possible for a
+# bisect -- Llama-3.2-1B-NPU2 was d0c7f84a and Llama-3.2-3B-NPU2 was 790271a8
+# before the re-export -- but they are the worse weights, not a safe harbour.
+_PINNED_Q4NX_REVISION = {}
 
 
 def resolve_q4nx_model(model):
     """Resolve `model` to a local model.q4nx path. `model` may be an HF repo id
     (contains '/'), a directory containing model.q4nx, or a direct file path.
 
-    For a known FastFlowLM repo id, a compatible revision is pinned (see
-    `_PINNED_Q4NX_REVISION`); other repo ids download their latest revision."""
+    Repo ids download their current revision; `_PINNED_Q4NX_REVISION` can pin
+    one for a bisect (empty by default, see above)."""
     import os
 
     if os.path.isfile(model):
@@ -104,7 +106,26 @@ def resolve_q4nx_model(model):
 
 
 class Q4nxModel:
-    """mmap + parse a model.q4nx safetensors file; vectorized Q4NX dequant."""
+    """mmap + parse a model.q4nx safetensors file; vectorized Q4NX dequant.
+
+    HEADER CONVENTIONS. FastFlowLM ships quantized projections under two
+    different safetensors headers, and they are not distinguishable by shape
+    alone -- only by `dtype`:
+
+      dtype "Q4NX": shape is the LOGICAL [M, K] (e.g. [3072, 3072]). The block
+                    count is derived as (M/ROW_BLOCK)*(K/COL_BLOCK).
+      dtype "I8":   shape is the PACKED [n_blocks, bytes_per_block] (e.g.
+                    [1152, 5120]). The logical [M, K] is NOT recoverable from
+                    the header -- n_blocks is a single product of the two --
+                    so the caller must supply it.
+
+    Both describe the same bytes; the bundles were simply re-exported. As of
+    2026-08 the 1B bundle is Q4NX and the 3B / Gemma3-4B bundles are I8, and a
+    repo can switch between snapshots (FastFlowLM/Llama-3.2-3B-NPU2 did, on
+    2026-08-05). Reading an I8 header as logical yields a wrong block count and
+    a reshape error, so `dequant` dispatches on `dtype` and callers that may
+    meet an I8 bundle must pass `M`/`K`.
+    """
 
     def __init__(self, model):
         import json
@@ -112,8 +133,19 @@ class Q4nxModel:
         path = resolve_q4nx_model(model)
         self._mm = np.memmap(path, dtype=np.uint8, mode="r")
         hlen = int(np.frombuffer(self._mm[:8].tobytes(), dtype="<u8")[0])
-        self._hdr = json.loads(self._mm[8 : 8 + hlen].tobytes())
+        self._hdr_bytes = self._mm[8 : 8 + hlen].tobytes()
+        self._hdr = json.loads(self._hdr_bytes)
         self._base = 8 + hlen
+
+    def fingerprint(self):
+        """Short digest of the safetensors header. It changes whenever the Hub
+        re-exports the bundle -- encoding, block layout, or tensor set -- so a
+        derived cache keyed on it cannot silently outlive the weights it was
+        built from (the 2026-08-04 Q4NX -> I8 re-export is exactly that case).
+        Hashes the header only, never the multi-GB payload."""
+        import hashlib
+
+        return hashlib.sha256(self._hdr_bytes).hexdigest()[:8]
 
     def _raw_i16(self, name):
         o0, o1 = self._hdr[name]["data_offsets"]
@@ -132,11 +164,36 @@ class Q4nxModel:
         )
         return v.astype(np.float32).reshape(self._hdr[name]["shape"])
 
-    def dequant(self, name):
-        """A Q4NX tensor [M, K] dequantized to float32 (w = scale*(q - min))."""
-        M, K = self._hdr[name]["shape"]
+    def dims(self, name):
+        """Logical (M, K) of a quantized tensor, or None for an I8 header."""
+        e = self._hdr[name]
+        return tuple(e["shape"]) if e.get("dtype") == "Q4NX" else None
+
+    def dequant(self, name, M=None, K=None):
+        """A Q4NX tensor [M, K] dequantized to float32 (w = scale*(q - min)).
+
+        `M`/`K` are required for an I8-header bundle and cross-checked against
+        the header for a Q4NX one (see the class docstring).
+        """
+        hdr_dims = self.dims(name)
+        if hdr_dims is None:
+            if M is None or K is None:
+                raise ValueError(
+                    f"{name}: I8-packed header {self._hdr[name]['shape']} does not "
+                    "carry the logical shape; pass M/K from the model config"
+                )
+        else:
+            if M is not None and (M, K) != hdr_dims:
+                raise ValueError(f"{name}: caller says {(M, K)}, header {hdr_dims}")
+            M, K = hdr_dims
         nbi, nbj = M // ROW_BLOCK, K // COL_BLOCK
         nb = nbi * nbj
+        got = self._hdr[name]["shape"][0] if hdr_dims is None else nb
+        if got != nb:
+            raise ValueError(
+                f"{name}: header holds {got} blocks but (M/{ROW_BLOCK})*(K/{COL_BLOCK})"
+                f" = {nb} for [M, K] = {[M, K]}"
+            )
         i16 = self._raw_i16(name).reshape(nb, BLOCK_BF16)
         sc = (
             i16[:, 0:256]
@@ -163,9 +220,14 @@ class Q4nxModel:
         q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.float32)
         q[:, _EVEN, :] = lo
         q[:, _ODD, :] = hi
-        w = np.repeat(sc.transpose(0, 2, 1), GROUP, axis=2) * (
-            q - np.repeat(mn.transpose(0, 2, 1), GROUP, axis=2)
-        )
+        scale = np.repeat(sc.transpose(0, 2, 1), GROUP, axis=2)
+        offset = np.repeat(mn.transpose(0, 2, 1), GROUP, axis=2)
+        # The two codecs also differ in the dequant itself, not just the header:
+        # Q4NX subtracts an unscaled zero point, I8 (GGUF Q4_1) adds an already
+        # scaled offset (offset/scale ~ -7.4), matching the AIR kernel q4_k.h
+        # (c += (q*b)*scale; c += min*sum(b)). Using the wrong one yields weights
+        # of plausible magnitude that decode to garbage, so it must follow dtype.
+        w = scale * (q - offset) if hdr_dims is not None else scale * q + offset
         return (
             w.reshape(nbi, nbj, ROW_BLOCK, COL_BLOCK)
             .transpose(0, 2, 1, 3)
@@ -182,11 +244,31 @@ class Q4nxModel:
         "down": "mlp.down_proj",
     }
 
-    def layer_weights(self, k):
-        """Dequantized bf16 GEMM input-B [K, out] per projection for layer k."""
+    # Logical (out, K) per projection, needed for an I8-packed header whose
+    # shape is [n_blocks, bytes_per_block]. These are the Llama-3.2-1B dims; a
+    # caller with different ones passes its own to layer_weights().
+    _PROJ_DIMS = {
+        "q": (DQ, D),
+        "k": (DK, D),
+        "v": (DV, D),
+        "o": (D, DQ),
+        "up": (INTER, D),
+        "gate": (INTER, D),
+        "down": (D, INTER),
+    }
+
+    def layer_weights(self, k, dims=None):
+        """Dequantized bf16 GEMM input-B [K, out] per projection for layer k.
+
+        `dims` maps a projection key to its logical (out, K), and is required
+        for an I8-header bundle whose dims differ from Llama-3.2-1B's (see the
+        class docstring); it defaults to _PROJ_DIMS.
+        """
+        dims = dims or self._PROJ_DIMS
         out = {}
         for nm, t in self._PROJ.items():
-            wt = self.dequant(f"model.layers.{k}.{t}.weight")  # [out, K]
+            M, K = (dims or {}).get(nm, (None, None))
+            wt = self.dequant(f"model.layers.{k}.{t}.weight", M, K)  # [out, K]
             out[nm] = np.ascontiguousarray(wt.T, dtype=bfloat16)  # [K, out]
         return out
 

@@ -23,12 +23,29 @@ for _p in (str(_LLMS), str(_LLAMA1B_Q4NX), str(_LLAMA3B), str(_HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from llama32_1b_q4nx_weights import Q4nxModel  # noqa: E402  (shape-agnostic)
+# Dimension-agnostic, but NOT header-agnostic: the loader needs the logical
+# [out, K] for an I8-packed bundle, which is what this model ships.
+from llama32_1b_q4nx_weights import Q4nxModel  # noqa: E402
 from llama32_3b_weights import (  # noqa: E402
     LlamaConfig,
     LayerWeights,
     LlamaWeights,
 )
+
+
+def _proj_dims(c):
+    """Logical (out, K) per projection, for I8-packed Q4NX headers."""
+    dq = c.n_heads * c.head_dim
+    dkv = c.n_kv_heads * c.head_dim
+    return {
+        "q": (dq, c.emb_dim),
+        "k": (dkv, c.emb_dim),
+        "v": (dkv, c.emb_dim),
+        "o": (c.emb_dim, dq),
+        "gate": (c.hidden_dim, c.emb_dim),
+        "up": (c.hidden_dim, c.emb_dim),
+        "down": (c.emb_dim, c.hidden_dim),
+    }
 
 
 def load_q4nx_weights(model_source, config=None):
@@ -41,6 +58,8 @@ def load_q4nx_weights(model_source, config=None):
     if config is None:
         config = LlamaConfig()
 
+    # The 3B bundle carries I8-packed headers, which do not encode the logical
+    # [out, K] -- supply it (Q4nxModel docstring).
     qm = Q4nxModel(model_source)
     embed, norm, lm_head = qm.embed_norm_lmhead()  # (tied: lm_head is embed)
     embed = np.asarray(embed, bfloat16)
@@ -49,7 +68,7 @@ def load_q4nx_weights(model_source, config=None):
 
     layers = []
     for k in range(config.n_layers):
-        w = qm.layer_weights(k)  # {q,k,v,o,up,gate,down}, each [K, out] bf16
+        w = qm.layer_weights(k, _proj_dims(config))  # each [K, out] bf16
         rms_in, rms_post = qm.layer_rms(k)
         layers.append(
             LayerWeights(

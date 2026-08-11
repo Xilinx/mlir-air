@@ -101,8 +101,14 @@ _ODD = _EVEN + 1
 class Q4nxModel:
     """mmap + parse a model.q4nx safetensors file; vectorized Q4NX dequant.
 
-    Identical codec/loader to the llama example; Gemma-specific accessors add the
-    4-norm (1+w) fold, qk-norm weights, dual-theta rope LUT, and embed scale."""
+    Same codec as the llama example, but NOT the same header: this bundle is
+    I8-packed, so `shape` is [n_blocks, bytes_per_block] and `dequant` takes the
+    logical (M, K) from the caller instead of reading it off the header. See
+    llama32_1b_q4nx_weights.Q4nxModel for both conventions -- that loader now
+    handles either, and this fork should fold into it.
+
+    Gemma-specific accessors add the 4-norm (1+w) fold, qk-norm weights,
+    dual-theta rope LUT, and embed scale."""
 
     def __init__(self, model):
         import json
