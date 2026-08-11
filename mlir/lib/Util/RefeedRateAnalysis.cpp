@@ -196,6 +196,14 @@ std::optional<int64_t> RefeedRateBuilder::eval(Value v, const Env &env) {
       return std::nullopt;
     return fn(*a, *b);
   };
+  // Same, for an operation that can itself fail to evaluate (division).
+  auto binaryChecked = [&](auto fn) -> std::optional<int64_t> {
+    auto a = eval(def->getOperand(0), env);
+    auto b = eval(def->getOperand(1), env);
+    if (!a || !b)
+      return std::nullopt;
+    return fn(*a, *b);
+  };
   return llvm::TypeSwitch<Operation *, std::optional<int64_t>>(def)
       .Case<arith::IndexCastOp, arith::IndexCastUIOp>(
           [&](auto op) { return eval(op.getIn(), env); })
@@ -239,11 +247,18 @@ std::optional<int64_t> RefeedRateBuilder::eval(Value v, const Env &env) {
       .Case<arith::SubIOp>([&](auto) { return binary(std::minus<int64_t>()); })
       .Case<arith::MulIOp>(
           [&](auto) { return binary(std::multiplies<int64_t>()); })
+      // A zero divisor is not evaluable. Folding it to 0 would turn an
+      // unresolvable expression into a concrete trip count or size and skew
+      // the rates; the channel must be reported unanalyzable instead.
       .Case<arith::DivSIOp, arith::DivUIOp>([&](auto) {
-        return binary([](int64_t a, int64_t b) { return b ? a / b : 0; });
+        return binaryChecked([](int64_t a, int64_t b) {
+          return b ? std::optional<int64_t>(a / b) : std::nullopt;
+        });
       })
       .Case<arith::RemSIOp, arith::RemUIOp>([&](auto) {
-        return binary([](int64_t a, int64_t b) { return b ? a % b : 0; });
+        return binaryChecked([](int64_t a, int64_t b) {
+          return b ? std::optional<int64_t>(a % b) : std::nullopt;
+        });
       })
       .Case<arith::MinSIOp>([&](auto) {
         return binary([](int64_t a, int64_t b) { return std::min(a, b); });
@@ -624,7 +639,11 @@ void RefeedRateBuilder::run() {
     return ops;
   };
 
-  llvm::DenseSet<std::tuple<const void *, int64_t, int64_t>> seen;
+  // Collapses the identical report a mode repeated over many dispatch
+  // iterations would produce -- one bug, not a hundred. Keyed on the edge as
+  // well as the numbers: two edges of one bundle can be unbalanced by the same
+  // amount and are still two separate findings.
+  llvm::DenseSet<std::tuple<const void *, unsigned, int64_t, int64_t>> seen;
   for (auto &[edge, phaseList] : byEdge) {
     if (poisoned.contains(edge.first))
       continue;
@@ -672,7 +691,9 @@ void RefeedRateBuilder::run() {
       const EdgeRate &rate = result.rates[{edge.first, edge.second, ph}];
       if (rate.puts.empty() || rate.gets.empty() || rate.supply == rate.demand)
         continue;
-      if (!seen.insert({edge.first.data(), rate.supply, rate.demand}).second)
+      if (!seen.insert(
+                   {edge.first.data(), edge.second, rate.supply, rate.demand})
+               .second)
         continue;
       result.imbalances.push_back(
           {false, edge.first, edge.second, result.phases[ph], rate});

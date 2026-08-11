@@ -54,10 +54,11 @@ namespace air {
 // and a broadcast put is likewise not multiplied by the fan-out.
 class RefeedRateAnalysis {
 public:
-  // Identifies one mutually exclusive mode: the arms chosen at every
-  // scf.index_switch whose selector is not statically known. Entries are
-  // (selector root value, case value), ordered by selector discovery so the
-  // key is comparable across hierarchy levels.
+  // Identifies one phase as a binding of the dispatch loop's induction
+  // variable: a single (iv, iteration value) entry, empty for a function with
+  // no dispatch loop. The modes themselves are not keyed directly -- every
+  // mode switch in these programs recomputes its selector from the dispatch
+  // index, so binding that index selects an arm everywhere at once.
   using PhaseKey = llvm::SmallVector<std::pair<mlir::Value, int64_t>, 2>;
 
   struct EdgeRate {

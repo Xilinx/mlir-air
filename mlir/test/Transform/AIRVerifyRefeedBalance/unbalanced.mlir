@@ -72,3 +72,33 @@ func.func @not_an_integer_ratio() {
   }
   return
 }
+
+// -----
+
+// Two edges of one bundle, unbalanced by the same amount. Reports are collapsed
+// when a mode repeats across dispatch iterations, but distinct edges are
+// distinct findings: keying that de-duplication on the numbers alone would
+// silently drop the second one.
+air.channel @twin [2] {air.refeed_count = 4 : i32}
+func.func @identical_imbalance_on_two_edges() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %src = memref.alloc() : memref<64xbf16, 1 : i32>
+  %dst = memref.alloc() : memref<64xbf16, 2 : i32>
+  // expected-warning @+3 {{air.channel @twin[0] is unbalanced}}
+  // expected-note @+2 {{the balance closes at air.refeed_count = 2}}
+  // expected-note @+1 {{producer: 64 tokens x refeed 4}}
+  air.channel.put @twin[%c0] (%src[] [] []) : (memref<64xbf16, 1 : i32>)
+  // expected-warning @+3 {{air.channel @twin[1] is unbalanced}}
+  // expected-note @+2 {{the balance closes at air.refeed_count = 2}}
+  // expected-note @+1 {{producer: 64 tokens x refeed 4}}
+  air.channel.put @twin[%c1] (%src[] [] []) : (memref<64xbf16, 1 : i32>)
+  scf.for %i = %c0 to %c2 step %c1 {
+    // expected-note @+1 {{consumer: 128 tokens}}
+    air.channel.get @twin[%c0] (%dst[] [] []) : (memref<64xbf16, 2 : i32>)
+    // expected-note @+1 {{consumer: 128 tokens}}
+    air.channel.get @twin[%c1] (%dst[] [] []) : (memref<64xbf16, 2 : i32>)
+  }
+  return
+}
