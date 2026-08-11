@@ -120,6 +120,23 @@ from air.dialects.scf import for_, yield_, index_switch, ParallelOp, ReduceOp, I
 from air.backend.xrt import XRTBackend
 
 
+def refeed(n, emit):
+    """Re-send ONE resident buffer n times: an n-trip scf.for around a single
+    air.channel.put. The body holds nothing but the put and no operand depends
+    on the induction variable, so this is a re-broadcast, not n productions --
+    air-fold-refeed-loops recognizes the shape, collapses the loop, and derives
+    the count for the lock init. n <= 1 emits the bare put."""
+    if n <= 1:
+        emit()
+        return
+    c0 = arith.ConstantOp(IndexType.get(), 0).result
+    cn = arith.ConstantOp(IndexType.get(), n).result
+    c1 = arith.ConstantOp(IndexType.get(), 1).result
+    for _rf in for_(c0, cn, c1):
+        emit()
+        yield_([])
+
+
 def parallel_(n):
     """Spatial scf.parallel over [0, n) — the canonical form for a channel fan
     over a BUNDLE INDEX (@chan[iv]). air-to-aie spatially unrolls it to one
@@ -307,7 +324,7 @@ GRP_PCOL = (
 # hub must NOT sit on a proj col. Put it on col 2, the X-broadcast memtile (5 free S2MM)
 # -- exactly FLM, whose hub mem_1_1 IS its X-broadcast memtile.
 MAIN_PCOL = 2 if MODEL["PAIR_ROWS"] == 1 else 1  # phys col of the main memtile
-# Faithful X-feed (reproducer core_2_2 + air.refeed_count): the rms producer core
+# Faithful X-feed (reproducer core_2_2): the rms producer core
 # (tile_2_2, col2) normalizes raw X once and re-feeds it via an output-lock release
 # of N (= REFEED) into a 512 x_buffer (col2 memtile) that broadcasts 256-blocks to
 # the 16 proj cores. (the reference puts x_buffer on col1/mem_1_1, but col1 congestion makes
@@ -824,7 +841,7 @@ def build_module():
 
         # ---- channels ----
         # Faithful X-feed: host raw X (@xy) + rms weight (@rmsin) -> rms core ->
-        # xnorm (re-fed N times on-chip via air.refeed_count) -> X memtile (512) ->
+        # xnorm (re-fed N times on-chip, see refeed()) -> X memtile (512) ->
         # 256-block broadcast to all 16 cores. (reproducer core_2_2 + mem_1_1 x_buffer)
         # #4 (FULL4): rmsX is PACKET so it converges with the id4 demux (o-proj+down)
         # on the rms core's S2MM0 -- the reference's tile_2_2 DMA0 receives @xy(id0)+id4
@@ -875,18 +892,10 @@ def build_module():
             _xn.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
                 T.i32(), 1
             )
-        # rms-X producer-side re-feed (mechanism 1): the rms core releases its
-        # output lock RMS_REFEED times. (The down_buffer producer re-broadcasts via
-        # its own counting-lock from air.refeed_count on its alloc -- mechanism 2 --
-        # and must NOT be multiplied by this channel count; air-to-aie skips the
-        # channel re-feed for memtile producers.)
-        _xn.operation.attributes["air.refeed_count"] = IntegerAttr.get(
-            T.i32(), XN_REFEED  # LOOPCLOSE: rms emits ONLY ph0 (6); ph1/ph2/ph3 memtile
-        )
-        # (FAITHFUL ph2): no toBufP2 / buf_ph2 channel -- the rms core now emits ph2 X
-        # = rmsnorm(x+oproj) directly on @xnorm with a PER-PUT air.refeed_count (32),
-        # the per-step single-channel re-feed (reproducer core_2_2 step2; AIRToAIE
-        # per-emission refeed override). ph0 uses the channel-level count (6).
+        # (FAITHFUL ph2): no toBufP2 / buf_ph2 channel -- the rms core emits ph2 X
+        # = rmsnorm(x+oproj) directly on @xnorm. Every re-feed on this channel is
+        # written as an n-trip loop around the put (see refeed()); the counts are
+        # XN_REFEED for ph0 and REFEED[GATEUP_PHASE] for ph2.
         # air.shared_resident_ring: the two per-v1 GEMV emit passes each re-read
         # this same broadcast X/W stream; mark so air-ping-pong-transform merges
         # the two sibling get-loops onto ONE 2-deep resident ring (reproducer's
@@ -1000,8 +1009,8 @@ def build_module():
         # GLU -> gluOut -> down memtile accumulate (8192). FAITHFUL: that 8192 is
         # fed back on-chip as the DOWN phase X by the down_buffer re-broadcasting it
         # DOWN_REFEED times into the convergent @xnorm channel (counting-lock-N on
-        # the down_buffer fill -- mechanism 2, set via air.refeed_count on the
-        # down_buffer alloc below), NOT drained to host.
+        # the down_buffer fill, derived from the DOWN_REFEED loop around the put
+        # below), NOT drained to host.
         channel_decl("gluOut", size=[1])
 
         def idx(v):
@@ -1215,7 +1224,7 @@ def build_module():
 
                         def _uni_dec():
                             # raw X (@xy) + rms weight (@rmsin) to the rms producer core; the
-                            # on-chip rms normalizes + re-feeds X via air.refeed_count. X is
+                            # on-chip rms normalizes + re-feeds X (see refeed()). X is
                             # in-place (offset 0 every layer -- the chained hidden state).
                             ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
                             if N_NORMS >= 4:
@@ -1546,7 +1555,7 @@ def build_module():
                     # fed back on-chip. The SAME inX broadcast carries both, in order.
                     #
                     # (1) rms-X: get the normed X (from the rms core, re-fed RMS_REFEED
-                    # times via @xnorm air.refeed_count) in 512 chunks -> broadcast
+                    # times over @xnorm) in 512 chunks -> broadcast
                     # 256-blocks. RMS_REFEED*(2048/512) gets. (reproducer core_2_2 +
                     # mem_1_1 x_buffer 512.)
                     def _feed_inX(src, total_chunks):
@@ -2429,13 +2438,9 @@ def build_module():
                             T.i32(), 5
                         )
                         omtb.operation.attributes["air.no_split"] = UnitAttr.get()
-                        # loop close: gathered o (2048) is ph1 o-proj X. As a MEMTILE
-                        # producer it re-broadcasts OPROJ_REFEED times (mechanism-2)
-                        # into the convergent @xnorm, AFTER ph0 (rms) and BEFORE ph2
-                        # (buf_ph2). Reference mem_5_1 o_buffer -> mem_1_1 x_buffer.
-                        omtb.operation.attributes["air.refeed_count"] = IntegerAttr.get(
-                            T.i32(), OPROJ_REFEED
-                        )
+                        # loop close: gathered o (2048) is ph1 o-proj X, re-broadcast
+                        # OPROJ_REFEED times into the convergent @xnorm, AFTER ph0 (rms)
+                        # and BEFORE ph2. Reference mem_5_1 o_buffer -> mem_1_1 x_buffer.
                         for c in range(N_ATTN_CU):
                             ChannelGet(
                                 "attnO",
@@ -2445,13 +2450,16 @@ def build_module():
                                 sizes=[idx(DQ_PER_CU)],
                                 strides=[idx(1)],
                             )
-                        ChannelPut(
-                            "xnorm",
-                            omtb,
-                            indices=[idx(0)],
-                            offsets=[idx(0)],
-                            sizes=[idx(N_ATTN_CU * DQ_PER_CU)],
-                            strides=[idx(1)],
+                        refeed(
+                            OPROJ_REFEED,
+                            lambda: ChannelPut(
+                                "xnorm",
+                                omtb,
+                                indices=[idx(0)],
+                                offsets=[idx(0)],
+                                sizes=[idx(N_ATTN_CU * DQ_PER_CU)],
+                                strides=[idx(1)],
+                            ),
                         )
                         DeallocOp(omtb)
 
@@ -2545,8 +2553,8 @@ def build_module():
 
                         # GLU output -> down memtile accumulate (8192). FAITHFUL: feed
                         # it back on-chip as the DOWN phase X, re-broadcast DOWN_REFEED
-                        # times into the convergent @xnorm. air.refeed_count on the
-                        # down_buffer ALLOC (mechanism 2) makes air-to-aie emit a
+                        # times into the convergent @xnorm. The DOWN_REFEED loop
+                        # around the put (see refeed()) makes air-to-aie emit a
                         # counting-lock-N on the fill (S2MM) side so the count-free MM2S
                         # re-reads the resident 8192 N times (reproducer down_buffer
                         # lock_5_1 init=4: one GLU fill -> 4 re-sends = the 4 down output
@@ -2560,9 +2568,6 @@ def build_module():
                             4,
                         )
                         db.operation.attributes["air.no_split"] = UnitAttr.get()
-                        db.operation.attributes["air.refeed_count"] = IntegerAttr.get(
-                            T.i32(), DOWN_REFEED
-                        )
                         for _s in for_(idx(0), idx(NGLU), idx(1)):
                             soff = arith.muli(_s, idx(GLU_HID))
                             ChannelGet(
@@ -2573,14 +2578,16 @@ def build_module():
                                 strides=[idx(1)],
                             )
                             yield_([])
-                        # re-broadcast the resident 8192 into the convergent X feed
-                        # (counting-lock-N from the alloc refeed_count above).
-                        ChannelPut(
-                            "xnorm",
-                            db,
-                            offsets=[0],
-                            sizes=[GLU_OUT],
-                            strides=[1],
+                        # re-broadcast the resident 8192 into the convergent X feed.
+                        refeed(
+                            DOWN_REFEED,
+                            lambda: ChannelPut(
+                                "xnorm",
+                                db,
+                                offsets=[0],
+                                sizes=[GLU_OUT],
+                                strides=[1],
+                            ),
                         )
                         DeallocOp(db)
 
@@ -2875,7 +2882,7 @@ def build_module():
 
                     # ===== rms producer core (reproducer core_2_2, tile_2_2) =====
                     # input-layernorm: raw X + rms weight -> normed X -> xnorm (re-fed
-                    # on-chip REFEED times via air.refeed_count -> the X memtile).
+                    # on-chip REFEED times, see refeed() -> the X memtile).
 
                     OPROJ_RNDS = PAIR_ROWS * I2P[1]  # 4 o-proj egress rounds
                     DOWN_RNDS = PAIR_ROWS * I2P[DOWN_PHASE]  # 4 down egress rounds
@@ -2918,17 +2925,17 @@ def build_module():
                                 ChannelGet("rmsW2", a_w2l, indices=[idx(0)])
                                 DeallocOp(a_w2l)
                             a_xnl = AllocOp(rms_l1, [], [])
-                            # the reference-FAITHFUL x re-broadcast (was air.refeed_count=VOCAB_RNDS).
+                            # the reference-FAITHFUL x re-broadcast (was one put x VOCAB_RNDS).
                             # the reference re-supplies x every vocab round through value-1 ping-pong
                             # rings and re-runs rms each persistent-loop iteration; the count
                             # lives in the loop + runtime, NEVER in a lock (all the reference lock
-                            # values are 1/2/4). Our old air.refeed_count baked N=VOCAB_RNDS
+                            # values are 1/2/4). Baking N=VOCAB_RNDS as a re-broadcast puts it
                             # into ONE producer-side credit lock; the AIE-ML lock is 7-bit
                             # (max +63, xaie_locks_aieml.c 0x7F), so N>63 (I2>=32) made
                             # AcquireGreaterEqual(N) unsatisfiable -> DEADLOCK, forcing the
                             # 9-wave split (2*I2<=63). Here we mirror the reference: re-normalize + put
-                            # xnorm PER ROUND (value-1; a_xnl is rewritten each round so AIR
-                            # does not canonicalize the puts back into refeed_count). The
+                            # xnorm PER ROUND (a_xnl is rewritten each round, so this is n
+                            # productions and air-fold-refeed-loops leaves it alone). The
                             # sends are INTERLEAVED with the outY->layerOut relay (this ONE
                             # rms core both produces x and relays logits, unlike the reference's split
                             # tiles) so the producer never serializes ahead of the drain and
@@ -2958,24 +2965,19 @@ def build_module():
                                         "air.disable_ping_pong"
                                     ] = UnitAttr.get()
                                     CallOp(_rms_final, [a_xnl, a_xl, a_wl, _arm])
-                                    _pl = ChannelPut(
+                                    # Each vocab round emits x ONCE: VOCAB_RNDS
+                                    # distinct puts give VOCAB_RNDS broadcasts,
+                                    # matching the X memtile's VOCAB_RNDS*(K/(2*
+                                    # COL_BLOCK)) gets. This loop re-runs rms into
+                                    # a_xnl every trip, so it is n productions, not
+                                    # a re-broadcast, and air-fold-refeed-loops
+                                    # leaves it alone.
+                                    ChannelPut(
                                         "xnorm",
                                         a_xnl,
                                         offsets=[0],
                                         sizes=[K],
                                         strides=[1],
-                                    )
-                                    # PER-PUT override of the channel-level
-                                    # air.refeed_count (XN_REFEED=6, meant for the
-                                    # decode ph0 path): each vocab round emits x
-                                    # ONCE (value-1, n=1 hits the n>1 guard in
-                                    # AIRToAIE -> no credit multiply). VOCAB_RNDS
-                                    # distinct puts give VOCAB_RNDS broadcasts,
-                                    # matching the X memtile's VOCAB_RNDS*(K/(2*
-                                    # COL_BLOCK)) gets. Without this the puts inherit
-                                    # refeed_count=6 -> over-broadcast.
-                                    _pl.operation.attributes["air.refeed_count"] = (
-                                        IntegerAttr.get(T.i32(), 1)
                                     )
                                     yield_([])
                                 ChannelGet(
@@ -3051,12 +3053,14 @@ def build_module():
                             )  # post-norm out (attn, then ffn)
                             g_h = AllocOp(rms_l1, [], [])
                             # step1: input_layernorm (g_wa lo) -> QKV X feed (ph0).
-                            # Single normalize + baked channel-level XN_REFEED, mirroring
-                            # llama (a per-round value-1 reput loop instead re-reads the
-                            # input buffer every iteration and doubles the S2MM0 BD ring).
+                            # Normalize once, then re-broadcast the resident result
+                            # XN_REFEED times.
                             CallOp(rms_norm_lo_aie, [g_xn, g_x, g_wa, _arm])
-                            ChannelPut(
-                                "xnorm", g_xn, offsets=[0], sizes=[K], strides=[1]
+                            refeed(
+                                XN_REFEED,
+                                lambda: ChannelPut(
+                                    "xnorm", g_xn, offsets=[0], sizes=[K], strides=[1]
+                                ),
                             )
                             # step2 (residual1): h = x + post_attention_norm(o_proj) [g_wa hi]
                             ChannelGet(
@@ -3073,11 +3077,11 @@ def build_module():
                             # step3: pre_feedforward_norm(h) [g_wb lo] -> GLU X feed (ph2).
                             # baked per-put refeed = GLU proj rounds that re-read X.
                             CallOp(rms_norm_lo_aie, [g_xn, g_h, g_wb, _arm])
-                            _p2 = ChannelPut(
-                                "xnorm", g_xn, offsets=[0], sizes=[K], strides=[1]
-                            )
-                            _p2.operation.attributes["air.refeed_count"] = (
-                                IntegerAttr.get(T.i32(), REFEED[GATEUP_PHASE])
+                            refeed(
+                                REFEED[GATEUP_PHASE],
+                                lambda: ChannelPut(
+                                    "xnorm", g_xn, offsets=[0], sizes=[K], strides=[1]
+                                ),
                             )
                             DeallocOp(g_xn)
                             # step4 (residual2): res2 = h + post_feedforward_norm(down) [g_wb hi].
@@ -3117,7 +3121,12 @@ def build_module():
                         # step1: input layernorm -> X feed (re-fed RMS_REFEED via xnorm)
                         a_xn = AllocOp(rms_l1, [], [])
                         CallOp(rms_norm_aie, [a_xn, a_x, a_w, _arm])
-                        ChannelPut("xnorm", a_xn, offsets=[0], sizes=[K], strides=[1])
+                        refeed(
+                            XN_REFEED,
+                            lambda: ChannelPut(
+                                "xnorm", a_xn, offsets=[0], sizes=[K], strides=[1]
+                            ),
+                        )
                         # a_w and a_xn are kept for the ph2 (gate-up) emission (step2).
                         if RMS_DEST < 0:
                             # debug configs: original single-step rms (no residual).
@@ -3147,23 +3156,22 @@ def build_module():
                             # = rmsnorm(residual1) = rmsnorm(x + o-proj), emitted
                             # AFTER o-proj (gates phase order) on the SAME @xnorm
                             # channel as ph0, REUSING a_xn (single y buffer), with
-                            # PER-PUT air.refeed_count = REFEED[ph2] (32). This is
-                            # the per-step single-channel re-feed (ph0 x6 via the
-                            # channel count, ph2 x32 via this per-put count) --
-                            # replaces the invented buf_ph2 memtile stand-in.
+                            # a REFEED[ph2]-trip (32) re-broadcast loop. This is
+                            # the per-step single-channel re-feed (ph0 x6, ph2 x32)
+                            # -- replaces the invented buf_ph2 memtile stand-in.
                             CallOp(
                                 rms_norm_aie,
                                 [a_xn, a_h, a_w2 if POST_RMS else a_w, _arm],
                             )
-                            _p2 = ChannelPut(
-                                "xnorm",
-                                a_xn,
-                                offsets=[0],
-                                sizes=[K],
-                                strides=[1],
-                            )
-                            _p2.operation.attributes["air.refeed_count"] = (
-                                IntegerAttr.get(T.i32(), REFEED[GATEUP_PHASE])
+                            refeed(
+                                REFEED[GATEUP_PHASE],
+                                lambda: ChannelPut(
+                                    "xnorm",
+                                    a_xn,
+                                    offsets=[0],
+                                    sizes=[K],
+                                    strides=[1],
+                                ),
                             )
                             DeallocOp(a_xn)
                             DeallocOp(a_w)

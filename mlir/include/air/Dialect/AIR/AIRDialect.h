@@ -62,14 +62,11 @@ constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
 constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
 constexpr StringLiteral DedicatedDmaChannel = "air.dedicated_dma_channel";
 // Single-buffer count-free re-broadcast: N (>= 1) re-sends of one resident
-// buffer per production. Authoritative carrier is the air.channel declaration;
-// read via air::getRefeedCount. Verified on air.channel.
+// buffer per production. Carried on the air.channel declaration, on a channel
+// put/get, or on the source memref.alloc of a memtile producer; read via
+// air::getRefeedCount. Written by air-annotate-refeed from a re-feed loop's
+// trip count, not by the front end. Verified on air.channel and on put/get.
 constexpr StringLiteral RefeedCount = "air.refeed_count";
-// Opt-in front-end marker (unit attr) on an scf.for / affine.for whose body is
-// a single loop-invariant air.channel.put: the loop re-sends one resident
-// buffer once per iteration. The air-annotate-refeed pass reads its trip count
-// into attrs::RefeedCount on the channel and collapses the loop.
-constexpr StringLiteral RefeedLoop = "air.refeed_loop";
 // User-pinned packet routing ids on an air.channel (channel_type
 // "npu_dma_packet"). One packet_flow per id: N ids to a single dest converge on
 // one buffer for a downstream demux hop; N ids to N dests route dest i with

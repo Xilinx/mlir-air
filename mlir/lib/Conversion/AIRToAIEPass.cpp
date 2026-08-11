@@ -6163,9 +6163,10 @@ public:
     // row-block iteration) is expressed by air.refeed_count=N. The producing
     // core writes the buffer once and the DMA's count-free self-loop BD
     // re-reads it; the single core-side release must free N read-tokens so the
-    // BD fires N times. (The N>1 loop the front-end emits is canonicalized away
-    // before air-to-aie, so the count is carried on the channel/put, not
-    // inferred from a loop.)
+    // BD fires N times. The count reaches the put via air-fold-refeed-loops,
+    // which runs at the head of the pipeline and collapses the N-trip loop the
+    // front end writes; by the time air-to-aie sees the put the loop is gone
+    // and N is on the op.
     if (UsesSemaphoreLocks && !tileInbound.value()) {
       int64_t n = 1;
       if (auto chanIf =
