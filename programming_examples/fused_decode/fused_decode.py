@@ -331,6 +331,17 @@ MAIN_PCOL = 2 if MODEL["PAIR_ROWS"] == 1 else 1  # phys col of the main memtile
 # AIR's weight-fan MM2S a repeat_count BD; the golden uses col2, kept here.)
 RMS_PCOL = 2  # rms producer core + X memtile column
 XMT_PCOL = RMS_PCOL
+# Column of the glu-down memtile, the third producer converging on @xnorm (the
+# other two are the o-proj memtile on col 5 and the rms core itself). Distinct
+# from col 5 either way, so the convergence never merges o+down onto one MM2S
+# ring. Gemma needs it ADJACENT to the X memtile: its per-column egress puts a
+# group memtile on every proj column AND lands the hub on the X column (
+# MAIN_PCOL == XMT_PCOL == 2), so a down->X route from col 4 crosses switches
+# that are already carrying the hub traffic and the pathfinder cannot complete
+# all three sources of the merge -- mlir-aie reports it as an incomplete
+# packet-flow routing (it used to drop the source silently). Llama's hub is on
+# col 1, clear of the X column, and routes fine from col 4.
+DOWN_PCOL = 3 if MODEL["PAIR_ROWS"] == 1 else 4
 
 # Phases (reproducer I2=[3,2,16,2], J2=[4,4,4,16], pkt=[1,4,8,4]). Phase 0 = QKV
 # (id1), phase 1 = o-proj (id4), phase 2 = gate-up MLP (id8), phase 3 = DOWN (id4).
@@ -2562,10 +2573,7 @@ def build_module():
                         # 8192 into 16x512 -> inX for ph3.
                         db = AllocOp(down_l2, [], [])
                         db.operation.attributes["air.memtile_col"] = IntegerAttr.get(
-                            # LOOPCLOSE: down on col4 (distinct from o on col5) so the
-                            # @xnorm convergence doesn't merge o+down onto one MM2S ring.
-                            T.i32(),
-                            4,
+                            T.i32(), DOWN_PCOL
                         )
                         db.operation.attributes["air.no_split"] = UnitAttr.get()
                         for _s in for_(idx(0), idx(NGLU), idx(1)):
