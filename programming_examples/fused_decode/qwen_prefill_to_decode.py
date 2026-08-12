@@ -325,8 +325,14 @@ def main():
     # CTX_RE). The human line above does not parse: its TOKS_RE alternative needs
     # "tok/s" immediately before the closing paren, and ours is followed by
     # "device-only".
+    #
+    # The dashboard's "Context" column sits next to the decode throughput, so
+    # report the depth that throughput was actually measured at: this decode
+    # attends over a FIXED window of ATTN_MAXL slots every token, no matter how
+    # long the prompt was. Printing ctx would overstate it for any prompt longer
+    # than the window (the prefill saw those tokens; the decode never does).
     print(f"Tokens/second: {1000/(dec.dev_ms/n):.2f}")
-    print(f"prompt_len: {ctx}")
+    print(f"prompt_len: {dec.ATTN_MAXL}")
     return 0
 
 

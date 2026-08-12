@@ -172,8 +172,12 @@ dump-kv:
 		--prompt "$(GEN_PROMPT)" --dump-kv $(KV_NPZ)
 
 ## End-to-end: NPU prefill -> KV hand-off -> N_GEN tokens on the fused NPU decode.
-## No reference model in the loop; the decode's first token must equal the
-## prefill's own argmax, which is the cross-check that the hand-off is correct.
+## No reference model in the loop. When the prompt fits the decode window
+## (len <= ATTN_L, which the default GEN_PROMPT is sized for) the decode's first
+## token equals the prefill's own argmax, and that is the cross-check that the
+## hand-off is exact. For a longer prompt the two legitimately differ: the
+## prefill attended over all of it, the decode only over the last ATTN_L
+## positions.
 gen: dump-kv
 	cd $(DEC) && $(DECODE_ENV) python3 $(HANDOFF) --kv $(KV_NPZ) --n-gen $(N_GEN)
 
