@@ -436,9 +436,9 @@ APPEND_OFF = (ATTN_L - 1) * KVSZ_TOK  # this token's slot in the cache
 # the reference-faithful on-device KV append: the rope core writes this token's roped-K/raw-V
 # into the DDR cache (appendK/appendV S2MM -> KVC at slot L-1 = the reference _receive_kv_cache),
 # then the whole cache is read back for the block-loop attention (the reference _move_kv_cache).
-# The append->readback RAW on the shared cache is ordered in the runtime sequence via
-# air.await_appends (= the reference's dma_wait; AIRRtToNpu moves the append awaits before the
-# tagged readback). Only for MULTIBLK (L>1); L=1 uses the trivial on-chip-KV path.
+# The append->readback RAW on the shared cache is ordered in the runtime sequence by
+# air-annotate-append-barrier, which derives it from the shared L3 memref (= the
+# reference's dma_wait). Only for MULTIBLK (L>1); L=1 uses the trivial on-chip-KV path.
 KV_APPEND = MULTIBLK
 # the reference layer-chaining ABI: the layer output (res2 = new hidden states) is written
 # IN-PLACE into arg0 (the hidden_states BO), so layer N's output == layer N+1's input
@@ -997,11 +997,11 @@ def build_module():
         # keep_pkt_header keeps each dest's header so the host can strip it.
         _outY = Channel("outY", size=[1, 1], broadcast_shape=[1, NDEST])
         _outY.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
-        # strip_pkt_header (faithful demux): route by the kernel header, then STRIP
-        # it at every dest -> pure payload (PAYLOAD=512) delivered. Compiler sets
-        # src_writes (no stamp) + keep=false on all split flows. The main MT PUT
-        # stays MAIN_ROWS=514 (with header for routing); gets are PAYLOAD.
-        _outY.operation.attributes["air.strip_pkt_header"] = UnitAttr.get()
+        # Faithful demux: route by the kernel header, then STRIP it at every dest
+        # -> pure payload (PAYLOAD=512) delivered. len(packet_ids) > 1 already
+        # tells air-to-aie the source writes its own header (no static stamp),
+        # and keep is false because keep_pkt_header is not set here. The main MT
+        # PUT stays MAIN_ROWS=514 (with header for routing); gets are PAYLOAD.
         _outY.operation.attributes["packet_ids"] = _pin
         # per-dest host drain: dest p drains its phases' rounds.
         channel_decl("toShim", size=[NDEST])
@@ -1310,10 +1310,9 @@ def build_module():
                             def _emit_append(_kbase=_kbase):
                                 # K -> shim col3 S2MM, V -> shim col4 S2MM (attention CU cols;
                                 # cols pinned on the appendK/appendV channel DECLS via
-                                # air.shim_col). Tag each append S2MM with air.append_barrier so
-                                # AIRRtToNpu moves its completion await before the
-                                # air.await_appends readback below (append->readback RAW on the
-                                # shared DDR cache).
+                                # air.shim_col). air-annotate-append-barrier derives the
+                                # append->readback ordering from the RAW on the shared DDR
+                                # cache: these gets write it, the readback below reads it.
                                 if KV_REGION:
                                     # Region-major append (= the reference _receive_kv_cache):
                                     # scatter this token's K (resp V) into the NGRP group
@@ -1329,9 +1328,6 @@ def build_module():
                                         sizes=[idx(NGRP), idx(REGION_W)],
                                         strides=[idx(REGION_STRIDE), idx(1)],
                                     )
-                                    _apkG.operation.attributes["air.append_barrier"] = (
-                                        UnitAttr.get()
-                                    )
                                     _apvG = ChannelGet(
                                         "appendV",
                                         KVC,
@@ -1345,12 +1341,9 @@ def build_module():
                                         sizes=[idx(NGRP), idx(REGION_W)],
                                         strides=[idx(REGION_STRIDE), idx(1)],
                                     )
-                                    _apvG.operation.attributes["air.append_barrier"] = (
-                                        UnitAttr.get()
-                                    )
                                     return
 
-                            def _emit_readback(barrier=False, _kbase=_kbase):
+                            def _emit_readback(_kbase=_kbase):
                                 # KV readback as ONE 4D strided nd-DMA per CU (was ATTN_ROUNDS
                                 # separate per-block puts). The whole per-CU cache
                                 # [ATTN_ROUNDS][2(K|V)][16 pos][KVPC_DH] is read in a single shim
@@ -1391,7 +1384,6 @@ def build_module():
                                     _NRB = int(_os.environ.get("DECODE_KV_RB_NRB", "1"))
                                     _nb = RB_ROUNDS
                                     _cbk = (_nb + _NRB - 1) // _NRB  # blocks per chunk
-                                    _first = True
                                     _ci = 0
                                     while _ci < _nb:
                                         _cb = min(_cbk, _nb - _ci)
@@ -1439,11 +1431,6 @@ def build_module():
                                             _pv.operation.attributes[
                                                 "air.shim_feed_no_pace"
                                             ] = UnitAttr.get()
-                                            if barrier and _first:
-                                                _pk.operation.attributes[
-                                                    "air.await_appends"
-                                                ] = UnitAttr.get()
-                                                _first = False
                                         _ci += _cb
                                     return
 
@@ -1488,7 +1475,7 @@ def build_module():
                                 woff += NCX * per_col * blk
                                 if MULTIBLK and p == 0:
                                     _emit_append()
-                                    _emit_readback(barrier=True)
+                                    _emit_readback()
                             # per-dest host drain: dest p drains ROUNDS_PER_DEST[p] rounds into
                             # this layer's Y region (diagnostic per-layer QKV observation).
                             roff = 0

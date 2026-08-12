@@ -15,10 +15,11 @@
 // Verify per-pass IR files are created
 // RUN: ls %t/debug_ir/pass_000_initial_input.mlir
 // RUN: ls %t/debug_ir/pass_001_after_air-annotate-refeed.mlir
-// RUN: ls %t/debug_ir/pass_002_after_air-rank-to-launch.mlir
-// RUN: ls %t/debug_ir/pass_003_after_air-insert-launch-around-herd.mlir
-// RUN: ls %t/debug_ir/pass_006_after_air-dependency.mlir
-// RUN: ls %t/debug_ir/pass_010_after_air-dma-to-channel.mlir
+// RUN: ls %t/debug_ir/pass_002_after_air-annotate-append-barrier.mlir
+// RUN: ls %t/debug_ir/pass_003_after_air-rank-to-launch.mlir
+// RUN: ls %t/debug_ir/pass_004_after_air-insert-launch-around-herd.mlir
+// RUN: ls %t/debug_ir/pass_007_after_air-dependency.mlir
+// RUN: ls %t/debug_ir/pass_011_after_air-dma-to-channel.mlir
 
 // Verify pass.log exists and has correct structure
 // RUN: FileCheck %s --input-file=%t/debug_ir/pass.log --check-prefix=LOG
@@ -27,10 +28,11 @@
 // CHECK: [DEBUG] Splitting pipeline into
 // CHECK: [PASS 000] Saved initial IR
 // CHECK: [PASS 001] air-annotate-refeed
-// CHECK: [PASS 002] air-rank-to-launch
-// CHECK: [PASS 003] air-insert-launch-around-herd
-// CHECK: [PASS 006] air-dependency
-// CHECK: [PASS 010] air-dma-to-channel
+// CHECK: [PASS 002] air-annotate-append-barrier
+// CHECK: [PASS 003] air-rank-to-launch
+// CHECK: [PASS 004] air-insert-launch-around-herd
+// CHECK: [PASS 007] air-dependency
+// CHECK: [PASS 011] air-dma-to-channel
 
 // Pass log should have checkpoints
 // LOG: MLIR-AIR Compilation Pass Log

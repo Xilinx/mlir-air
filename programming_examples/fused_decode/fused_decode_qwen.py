@@ -161,10 +161,6 @@ OREF2_COL = int(_os.environ.get("QWEN_OREF2_COL", "0"))
 # up in Y, the ph0 egress is healthy with oref present and the blocker is the loop dynamics;
 # if Y stays zero, an armed-but-unfilled oref alone starves the ph0 egress.
 ROPE_ECHO = int(_os.environ.get("QWEN_ROPE_ECHO", "0"))
-# QWEN_NO_AWAIT_APPENDS=1 (experiment): drop the append->readback RAW barrier so the KV
-# readback is issued immediately. Combined with QWEN_ROPE_ECHO this fully decouples attn
-# (host q + host KV) from ph0, leaving oref structurally present but dependency-free.
-NO_AWAIT_APPENDS = int(_os.environ.get("QWEN_NO_AWAIT_APPENDS", "0"))
 # QWEN_XN_SPLIT=1: emit the ph0 X at the consumer granularity (1 put per get) instead
 # of one whole-K put re-fed XN_REFEED times. See the rms body for the rationale.
 XN_SPLIT = int(_os.environ.get("QWEN_XN_SPLIT", "0"))
@@ -637,7 +633,6 @@ def build_module():
         # id 1->dest0(rope), 4->dest1(rms), 8->dest2(glu); strip header -> pure 512 payload.
         _outY = Channel("outY", size=[1, 1], broadcast_shape=[1, NDEST])
         _outY.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
-        _outY.operation.attributes["air.strip_pkt_header"] = UnitAttr.get()
         _outY.operation.attributes["packet_ids"] = _pin
         # Keep the hub demux on S2MM0 at every consumer tile; the shim-sourced feeds
         # (ropeLUT/rmsIn/rmsW) are pinned to S2MM1 below. Without an explicit pin,
@@ -1039,11 +1034,12 @@ def build_module():
                 # [K region (ATTN_MAXL*REGION_W) | V region (ATTN_MAXL*REGION_W)]. ---
                 # (1) APPEND this token's roped-K / raw-V into the cache at this token's
                 #     slot ((ATTN_L-1)*REGION_W within each region); the ChannelGet
-                #     receives rope's appendK/appendV packet flow into DDR. air.append_barrier
-                #     -> AIRRtToNpu orders the append completion before the readback (RAW).
+                #     receives rope's appendK/appendV packet flow into DDR.
                 # (2) READ BACK the whole cache region-major on inKV_K/inKV_V (one 3D nd-DMA
-                #     per region: [ATTN_ROUNDS blocks][16 keys][REGION_W]); air.await_appends
-                #     on the first readback; air.shim_feed_no_pace = fire-and-free feed.
+                #     per region: [ATTN_ROUNDS blocks][16 keys][REGION_W]);
+                #     air.shim_feed_no_pace = fire-and-free feed.
+                # air-annotate-append-barrier derives the append->readback RAW ordering
+                # from the shared L3 cache memref.
                 if ATTN:
                     _rw = (ATTN_L - 1) * REGION_W  # this token's slot within a region
                     _apk = ChannelGet(
@@ -1054,7 +1050,6 @@ def build_module():
                         sizes=[idx(NGRP), idx(REGION_W)],
                         strides=[idx(REGION_STRIDE), idx(1)],
                     )
-                    _apk.operation.attributes["air.append_barrier"] = UnitAttr.get()
                     _apv = ChannelGet(
                         "appendV",
                         KV,
@@ -1063,8 +1058,6 @@ def build_module():
                         sizes=[idx(NGRP), idx(REGION_W)],
                         strides=[idx(REGION_STRIDE), idx(1)],
                     )
-                    _apv.operation.attributes["air.append_barrier"] = UnitAttr.get()
-                    _first = True
                     for gi in range(NGRP):
                         _pk = ChannelPut(
                             "inKV_K",
@@ -1088,11 +1081,6 @@ def build_module():
                         _pv.operation.attributes["air.shim_feed_no_pace"] = (
                             UnitAttr.get()
                         )
-                        if _first and not NO_AWAIT_APPENDS:
-                            _pk.operation.attributes["air.await_appends"] = (
-                                UnitAttr.get()
-                            )
-                            _first = False
                 if ATTN and ROPE_ECHO:
                     ChannelPut(
                         "hostQ", X, offsets=[idx(0)], sizes=[idx(DQ)], strides=[idx(1)]
