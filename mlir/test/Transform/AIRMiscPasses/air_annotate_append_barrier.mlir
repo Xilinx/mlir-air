@@ -144,6 +144,7 @@ func.func @mutually_exclusive_branches(%kv: memref<1024xbf16>, %sel: index) {
   }
   default {
     air.channel.get @apSw[] (%kv[] [] []) : (memref<1024xbf16>)
+    scf.yield
   }
   return
 }
