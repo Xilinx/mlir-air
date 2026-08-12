@@ -3463,8 +3463,65 @@ void AIRAnnotateRefeedPass::runOnOperation() {
   }
 }
 
+class AIRAnnotateAppendBarrierPass
+    : public air::impl::AIRAnnotateAppendBarrierPassBase<
+          AIRAnnotateAppendBarrierPass> {
+public:
+  AIRAnnotateAppendBarrierPass() = default;
+  AIRAnnotateAppendBarrierPass(const AIRAnnotateAppendBarrierPass &pass) {}
+  void runOnOperation() override;
+};
+
+void AIRAnnotateAppendBarrierPass::runOnOperation() {
+  // A channel.get lands data IN the memref it names, so on an L3 buffer it is
+  // the shim write; a channel.put sends the memref out, so it is the read.
+  auto l3Memref = [](Value v) -> Value {
+    if (!v)
+      return nullptr;
+    auto ty = dyn_cast<BaseMemRefType>(v.getType());
+    return (ty && air::isL3(ty)) ? v : nullptr;
+  };
+
+  // Pair only within one block. That gives program order for free, and it
+  // keeps the two sides mutually reachable: ops in sibling regions of an
+  // scf.if / scf.index_switch are alternatives that never both run, so there
+  // is no dependency to order. (A walk over the whole function would pair
+  // them, and not even in source order -- scf.index_switch holds its default
+  // region first but prints it last.)
+  getOperation().walk([&](Block *blk) {
+    // Writes to each buffer that no reader has consumed yet.
+    llvm::MapVector<Value, SmallVector<Operation *>> pendingWrites;
+    for (Operation &op : *blk) {
+      if (auto get = dyn_cast<air::ChannelGetOp>(&op)) {
+        if (Value m = l3Memref(get.getMemref()))
+          pendingWrites[m].push_back(&op);
+        continue;
+      }
+      auto put = dyn_cast<air::ChannelPutOp>(&op);
+      if (!put)
+        continue;
+      Value m = l3Memref(put.getMemref());
+      if (!m)
+        continue;
+      auto it = pendingWrites.find(m);
+      if (it == pendingWrites.end() || it->second.empty())
+        continue;
+      for (Operation *writer : it->second)
+        writer->setAttr(air::attrs::AppendBarrier,
+                        UnitAttr::get(writer->getContext()));
+      put->setAttr(air::attrs::AwaitAppends, UnitAttr::get(put->getContext()));
+      // Consumed: a later round pairs with its own appends, not these.
+      it->second.clear();
+    }
+  });
+}
+
 std::unique_ptr<Pass> createAIRAnnotateRefeedPass() {
   return std::make_unique<AIRAnnotateRefeedPass>();
+}
+
+std::unique_ptr<Pass> createAIRAnnotateAppendBarrierPass() {
+  return std::make_unique<AIRAnnotateAppendBarrierPass>();
 }
 
 } // namespace air

@@ -1045,6 +1045,10 @@ static LogicalResult runAieCompilation() {
     // Folding up front means every pass downstream sees exactly the IR it saw
     // when the count was written by hand.
     os << "air-annotate-refeed";
+    // Same reasoning: derive from the shape the front end wrote, before any
+    // pass rewrites the channel ops. A shim readback that reads an L3 buffer a
+    // shim append wrote is a RAW pair the runtime does not order on its own.
+    os << ",air-annotate-append-barrier";
     os << ",air-rank-to-launch";
     os << ",air-insert-launch-around-herd{insert-segment=true}";
     os << ",func.func(air-lower-herd-parallel)";

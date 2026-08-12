@@ -1040,6 +1040,34 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   ];
 }
 
+def AIRAnnotateAppendBarrierPass: Pass<"air-annotate-append-barrier", "ModuleOp"> {
+  let summary = "Order a shim readback after the shim append it depends on";
+  let constructor = "xilinx::air::createAIRAnnotateAppendBarrierPass()";
+  let description = [{
+    A shim DMA that writes an L3 buffer and a later shim DMA that reads the
+    same buffer are a read-after-write pair, but nothing in the runtime
+    sequence orders them: the readback can be issued before the write has
+    landed, and the reader sees stale bytes. The classic instance is a KV
+    cache -- append this token's K/V into the DDR cache, then read the whole
+    cache back for the attention block loop.
+
+    ```mlir
+    air.channel.get @appendK[%c0] (%kv[%off] [...] [...]) : (memref<262144xbf16>)
+    air.channel.put @inKV_K[%c0] (%kv[%off] [...] [...]) : (memref<262144xbf16>)
+    ```
+
+    This marks the writer with air.append_barrier and the first subsequent
+    reader with air.await_appends. AIRRtToNpu then moves each writer's
+    completion await ahead of the first tagged reader that follows it, so the
+    readback blocks until the append has landed.
+
+    Only L3 buffers are considered: L1 and L2 traffic is ordered by the lock
+    protocol already. A reader clears the pending writes it consumed, so a
+    sequence of append/readback rounds gets one barrier per round rather than
+    one collapsed barrier at the end.
+  }];
+}
+
 def AIRAnnotateRefeedPass: Pass<"air-annotate-refeed", "ModuleOp"> {
   let summary = "Derive air.refeed_count from a re-feed loop's trip count";
   let constructor = "xilinx::air::createAIRAnnotateRefeedPass()";
