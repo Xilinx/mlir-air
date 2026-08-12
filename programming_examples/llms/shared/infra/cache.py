@@ -4,6 +4,7 @@
 """Kernel compilation cache, profiling, and air_project utilities."""
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -339,19 +340,63 @@ class KernelCache:
         if self.verbose:
             print(f"  [KernelCache] {msg}")
 
+    def _toolchain_id(self):
+        """Identity of the toolchain that produced the cached ELFs.
+
+        Entries are keyed on kernel name alone, so without this a cache built by
+        a different mlir-air or Peano is served silently -- the failure mode is a
+        run that "passes" on binaries nobody rebuilt.
+        """
+        ids = {}
+        for dist in ("llvm-aie", "mlir_aie"):
+            try:
+                from importlib.metadata import version
+
+                ids[dist] = version(dist)
+            except Exception:
+                ids[dist] = "?"
+        # Peano and mlir-air are routinely used from a path rather than a wheel
+        # (local builds, extracted nightlies), where the dist version says
+        # nothing. Stamp the binaries themselves. An unset root is "unset", not a
+        # relative "bin/clang" -- that would stat whatever sits under the caller's
+        # cwd and make the fingerprint depend on where the run started.
+        for key, root_var, rel in (
+            ("peano_clang", "PEANO_INSTALL_DIR", "bin/clang"),
+            ("aie_opt", "MLIR_AIE_INSTALL_DIR", "bin/aie-opt"),
+        ):
+            root = os.environ.get(root_var, "")
+            if not root:
+                ids[key] = "unset"
+                continue
+            try:
+                st = (Path(root) / rel).stat()
+                ids[key] = f"{st.st_size}:{int(st.st_mtime)}"
+            except OSError:
+                ids[key] = "missing"
+        try:
+            import air
+
+            libs = sorted((Path(air.__file__).parent / "_mlir_libs").glob("_air*.so"))
+            st = libs[0].stat()
+            ids["air_lib"] = f"{st.st_size}:{int(st.st_mtime)}"
+        except Exception:
+            ids["air_lib"] = "?"
+        return ids
+
     def _save_manifest(self):
         """Save artifact metadata so --run-only can reconstruct artifacts."""
-        manifest = {}
+        entries = {}
         for name, art in self.artifacts.items():
-            manifest[name] = {
+            entries[name] = {
                 "output_binary": str(art.output_binary),
                 "kernel": art.kernel,
                 "insts": str(art.insts) if art.insts else None,
             }
+        manifest = {"_toolchain": self._toolchain_id(), "entries": entries}
         manifest_path = self.cache_dir / self.MANIFEST_FILE
         with open(manifest_path, "w") as f:
             json.dump(manifest, f, indent=2)
-        self._log(f"Saved manifest with {len(manifest)} entries")
+        self._log(f"Saved manifest with {len(entries)} entries")
 
     def load_manifest(self):
         """Load artifact metadata from a previous compilation.
@@ -367,7 +412,16 @@ class KernelCache:
         with open(manifest_path) as f:
             manifest = json.load(f)
 
-        for name, info in manifest.items():
+        # A pre-_toolchain manifest cannot be shown to match, so treat it as cold
+        # rather than trusting it.
+        if manifest.get("_toolchain") != self._toolchain_id():
+            print(
+                "  [KernelCache] toolchain changed since this cache was built; "
+                "recompiling (delete the cache dir to silence this)"
+            )
+            return False
+
+        for name, info in manifest["entries"].items():
             binary_path = info["output_binary"]
             if not Path(binary_path).exists():
                 print(f"  WARNING: cached binary not found: {binary_path}")

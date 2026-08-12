@@ -172,9 +172,13 @@ gen:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(DRIVER) --run-only --greedy --n-tokens 12
 
-## Remove all build artifacts, kernel/weight caches, and verify reports. (Decode
-## templates live in the fused_decode example; run `make -C ../../fused_decode clean`.)
+## Remove all build artifacts, kernel/weight caches, and verify reports. Also cleans
+## the fused_decode example, because this one's decode templates live THERE: leaving
+## them makes the next `compile-decode` a no-op (it skips when both are present), so
+## `clean && compile-decode` would verify whatever binaries ran last -- including
+## another model's, or ones built by a different compiler.
 clean:
 	rm -rf $(BUILD_DIR) $(srcdir)/_q4nx_* $(srcdir)/.wcache 2>/dev/null || true
 	rm -rf $(srcdir)/../verify/reports 2>/dev/null || true
-	@echo "Build dirs, caches and verify/reports/ removed. Rebuild with 'make compile'."
+	@$(MAKE) --no-print-directory -C $(FUSED_DECODE) clean
+	@echo "Build dirs, caches, verify/reports/ and decode templates removed. Rebuild with 'make compile'."
