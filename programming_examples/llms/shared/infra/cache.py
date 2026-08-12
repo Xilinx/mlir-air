@@ -373,14 +373,21 @@ class KernelCache:
                 ids[key] = f"{st.st_size}:{int(st.st_mtime)}"
             except OSError:
                 ids[key] = "missing"
+        # `air` is a namespace package, so __file__ is None -- go through
+        # __path__. The compiled extension is what the passes live in, and it is
+        # the piece that moves on an mlir-air rebuild.
         try:
             import air
 
-            libs = sorted((Path(air.__file__).parent / "_mlir_libs").glob("_air*.so"))
-            st = libs[0].stat()
-            ids["air_lib"] = f"{st.st_size}:{int(st.st_mtime)}"
-        except Exception:
-            ids["air_lib"] = "?"
+            roots = [Path(p) / "_mlir_libs" for p in air.__path__]
+            libs = sorted(l for r in roots for l in r.glob("_air*.so"))
+            if not libs:
+                raise FileNotFoundError("no _air*.so under air/_mlir_libs")
+            ids["air_lib"] = ";".join(
+                f"{l.name}:{l.stat().st_size}:{int(l.stat().st_mtime)}" for l in libs
+            )
+        except Exception as e:
+            ids["air_lib"] = f"?({type(e).__name__})"
         return ids
 
     def _save_manifest(self):
