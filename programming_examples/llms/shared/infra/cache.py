@@ -357,19 +357,19 @@ class KernelCache:
                 ids[dist] = "?"
         # Peano and mlir-air are routinely used from a path rather than a wheel
         # (local builds, extracted nightlies), where the dist version says
-        # nothing. Stamp the binaries themselves.
-        for key, path in (
-            (
-                "peano_clang",
-                Path(os.environ.get("PEANO_INSTALL_DIR", "")) / "bin/clang",
-            ),
-            (
-                "aie_opt",
-                Path(os.environ.get("MLIR_AIE_INSTALL_DIR", "")) / "bin/aie-opt",
-            ),
+        # nothing. Stamp the binaries themselves. An unset root is "unset", not a
+        # relative "bin/clang" -- that would stat whatever sits under the caller's
+        # cwd and make the fingerprint depend on where the run started.
+        for key, root_var, rel in (
+            ("peano_clang", "PEANO_INSTALL_DIR", "bin/clang"),
+            ("aie_opt", "MLIR_AIE_INSTALL_DIR", "bin/aie-opt"),
         ):
+            root = os.environ.get(root_var, "")
+            if not root:
+                ids[key] = "unset"
+                continue
             try:
-                st = path.stat()
+                st = (Path(root) / rel).stat()
                 ids[key] = f"{st.st_size}:{int(st.st_mtime)}"
             except OSError:
                 ids[key] = "missing"
