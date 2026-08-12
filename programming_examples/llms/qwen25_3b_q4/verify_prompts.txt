@@ -1,0 +1,35 @@
+# Prompts for `make verify` on llms/qwen25_3b_q4 (passed to the shared
+# verify_runner via --prompts-file).
+#
+# WHY THIS FILE EXISTS instead of verify/prompts/instruct.txt, and why every
+# line is sized to 32-34 tokens:
+#
+# The fused Qwen decode is a sliding window of exactly ATTN_L positions (32 by
+# default). The host seeds it with the LAST ATTN_L positions of the prefill, so
+# the prompt length has to sit in a narrow band:
+#
+#   < 32 tokens  the window cannot be seeded at all -- verify_adapter refuses
+#                with a clear message. (The shared prompt file's lines are 5-10
+#                tokens, so it is unusable here.)
+#   > 32 tokens  the head of the prompt falls outside the window, so the NPU
+#                answers from a truncated context while the HF bf16 reference
+#                sees the whole prompt. That measures context truncation, not
+#                NPU drift, and it is a real effect: at 37 tokens the gate fails
+#                because "A graphics *processing* unit" has already slid out and
+#                the NPU cannot rank " processing" where HF does.
+#
+# 32-34 keeps the comparison apples-to-apples (at most two leading tokens
+# truncated) while leaving a small margin above the hard 32-token floor, so a
+# tokenizer change does not turn the gate into a crash. If you raise ATTN_L,
+# resize these to match it.
+#
+# All are open-ended continuations (base-style), not questions: the runner calls
+# tokenizer.encode() directly and applies no chat template, so a bare question
+# would be scored as raw continuation anyway.
+#
+# One prompt per line. Lines starting with '#' or empty are ignored.
+The capital city of France is called Paris, and the most famous landmark in the entire world is probably the very tall iron tower that stands right in the middle of
+A graphics processing unit is a specialized electronic circuit that was originally designed to speed up the drawing of images on a screen, and today it is also widely used to
+When water is heated to one hundred degrees Celsius at normal atmospheric pressure it starts to boil and turns into steam, and this change of state is known to scientists as a
+The human heart is a muscular organ that pumps blood all around the body, and over the course of an average day it beats roughly one hundred thousand separate times, which
+The Earth travels around the Sun once every three hundred and sixty five days, and while it does that it also spins on its own axis once every twenty four hours, which

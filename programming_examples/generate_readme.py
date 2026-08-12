@@ -521,6 +521,12 @@ LLM_HF_MODELS = {
     "qwen25_0_5b": "Qwen/Qwen2.5-0.5B",
     "qwen25_1_5b": "Qwen/Qwen2.5-1.5B",
     "qwen25_3b": "Qwen/Qwen2.5-3B",
+    # Q4_0-quantized on the host straight from an upstream bf16 checkpoint (no
+    # pre-quantized Qwen bundle exists), so this points at a Qwen repo rather
+    # than at a FastFlowLM NPU2 bundle like the Llama/Gemma Q4NX rows. It is the
+    # Instruct variant -- the example's own default (MODEL_DEFAULT in
+    # qwen25_3b_q4_prefill.py) -- not the base repo the qwen25_3b row above uses.
+    "qwen25_3b_q4": "Qwen/Qwen2.5-3B-Instruct",
     "qwen3_0_6b": "Qwen/Qwen3-0.6B",
     "qwen3_1_7b": "Qwen/Qwen3-1.7B",
     "qwen3_4b": "Qwen/Qwen3-4B",

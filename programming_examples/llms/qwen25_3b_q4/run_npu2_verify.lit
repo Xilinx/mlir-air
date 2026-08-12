@@ -1,0 +1,43 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Qwen2.5-3B Q4_0 end-to-end correctness gate on NPU2. Covers BOTH halves of
+// the design on device:
+//
+//   prefill  36 NPU layers on "The capital of France is" -> first-token argmax
+//            must be 12095 (" Paris"). A wrong weight layout, a dropped layer
+//            or a bad Q4_0 codec all move this token.
+//   decode   36 NPU layers, 16 one-dispatch tokens fed by the prefill's KV
+//            hand-off, greedy -> must reach the Eiffel Tower continuation.
+//            This is also the guard against an under-primed fill lock, i.e. a
+//            decode deadlock: that is the failure mode the refeed mechanism
+//            exists to prevent, and until this file existed the Qwen design was
+//            the one Q4NX design with no gate against it.
+//
+// NOT the shared top-k-vs-HF-bf16 gate the Llama Q4NX examples use. That path
+// is wired up here too (verify_adapter.py + `make verify-topk`) but 2/5 prompts
+// pass today: the decode is sound, yet greedy runs of a Q4_0 36-layer model and
+// a bf16 reference diverge early on open-ended continuations and the near-ties
+// there fall outside top-5. Gating CI on it would be red, and tuning k or
+// cherry-picking prompts until it passed would make the gate meaningless.
+// gemma3_4b_q4nx made the same call. See the Makefile's "correctness gates" note.
+//
+// Both checks are greedy with fixed weights and a fixed prompt, so they are
+// deterministic.
+//
+// Skips cleanly when HF_TOKEN is unset (weight + tokenizer downloads need it).
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_qwen_qwen2_5_3b_instruct
+//
+// RUN: mkdir -p test_peano_verify
+// RUN: cd test_peano_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-decode PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+//
+// Prefill half.
+// CHECK: first-token argmax=12095
+// CHECK: *** PARIS ***
+// Decode half: the greedy continuation, then a completed 16-token run.
+// CHECK: generated : ' the city. Paris. The tower is called the Eiffel Tower, after'
+// CHECK: 16 tokens | device
