@@ -62,8 +62,8 @@ def build_requant_cache(model, fd, cache_path, n_layers=16, verbose=True):
     OP, GP, DP = fd.OPROJ_PHASE, fd.GLU_PHASE, fd.DOWN_PHASE
     GLU_CHUNK, W_LAYER = fd.GLU_CHUNK, fd.W_LAYER
     # Dual-MM2S weight feed: the decode splits each column's slab across the
-    # column's two shim channels, which needs the cascade laid out as
-    # [even fan steps | odd fan steps]. Keyed off the SAME flag the decode was
+    # column's two shim channels by cascade pair, which needs the cascade laid out
+    # as [low-row half | high-row half]. Keyed off the SAME flag the decode was
     # built with (fd.W_DUAL_CHAN) so the pack can never disagree with the xclbin.
     DUAL = bool(getattr(fd, "W_DUAL_CHAN", 0))
     VP, VPF, VOCAB, UNI_LM = (

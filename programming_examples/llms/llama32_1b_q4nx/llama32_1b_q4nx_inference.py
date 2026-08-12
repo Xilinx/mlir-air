@@ -129,9 +129,10 @@ def _ensure_requant_cache(fd):
         # (FastFlowLM re-encoded every NPU2 bundle on 2026-08-04).
         from llama32_1b_q4nx_weights import Q4nxModel
 
-        # The dual-MM2S weight feed reorders the cascade (even/odd fan steps), so
-        # it needs its own cache entry -- a warm single-channel cache would feed
-        # the wrong blocks. Key on the flag too so both layouts can coexist.
+        # The dual-MM2S weight feed reorders the cascade (split by cascade pair
+        # into [low-row half | high-row half]), so it needs its own cache entry --
+        # a warm single-channel cache would feed the wrong blocks. Key on the flag
+        # too so both layouts can coexist.
         _w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
         rc = os.path.join(
             _Q4NX_CACHE, f"requant_{Q4nxModel(src).fingerprint()}{_w2}.npz"

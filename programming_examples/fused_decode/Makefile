@@ -34,8 +34,9 @@ PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
 # DECODE_GOLDEN=1 enables the post-attention-RMS decode path (a boolean flag; no
 # weight files are read at build time -- the compile is weight-free).
 # W_DUAL_CHAN=1 feeds each proj column's weights on BOTH of its shim MM2S channels
-# (@inW even fan steps / @inW2 odd) instead of ch0 only. It also changes the DDR
-# cascade order, so any consumer must pack its weights with the SAME flag -- the
+# (@inW0c{cx} takes the low half of the column's cascade rows, @inW1c{cx} the high
+# half) instead of ch0 only. It also changes the DDR cascade order, so any
+# consumer must pack its weights with the SAME flag -- the
 # llms/*_q4nx drivers read it from the environment and key their requant cache on
 # it. Inherited from the environment so a consumer can set it once for both the
 # build and the run.

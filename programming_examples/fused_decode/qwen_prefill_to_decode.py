@@ -124,15 +124,26 @@ def main():
 
     # The xclbin's weight layout is set by W_DUAL_CHAN at BUILD time; pack_layer
     # below uses the CURRENT module value. A mismatch is silent garbage, so refuse.
+    # The stamp sits next to the xclbin it describes. An UNREADABLE stamp is just
+    # as unsafe as a mismatched one (an xclbin built before the stamp existed has
+    # an unknown layout), so that is refused too rather than assumed compatible.
     _want = int(getattr(m, "W_DUAL_CHAN", 0))
+    _stamp = os.path.splitext(args.xclbin)[0] + ".flags"
     try:
-        with open("decode_qwen.flags") as _f:
+        with open(_stamp) as _f:
             _got = int(_f.read().strip().split("=")[1])
     except (OSError, IndexError, ValueError):
         _got = None
-    if _got is not None and _got != _want:
+    if _got is None:
         raise SystemExit(
-            f"decode_qwen.xclbin was built with W_DUAL_CHAN={_got} but this run "
+            f"cannot read the W_DUAL_CHAN build stamp {_stamp}, so the weight "
+            f"layout of {args.xclbin} is unknown and packing for "
+            f"W_DUAL_CHAN={_want} may silently produce garbage. Rebuild with "
+            f"QWEN_NLAYERS=.. W_DUAL_CHAN={_want} python3 fused_decode_qwen.py"
+        )
+    if _got != _want:
+        raise SystemExit(
+            f"{args.xclbin} was built with W_DUAL_CHAN={_got} but this run "
             f"packs weights for W_DUAL_CHAN={_want}. Rebuild the xclbin with the "
             f"same setting (QWEN_NLAYERS=.. W_DUAL_CHAN={_want} python3 "
             f"fused_decode_qwen.py) or re-run with W_DUAL_CHAN={_got}."

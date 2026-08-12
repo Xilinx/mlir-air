@@ -61,9 +61,10 @@ def _ensure_requant_cache(fd, model):
         return rc
     import gemma3_4b_q4nx_requant as rq
 
-    # W_DUAL_CHAN reorders the cascade (even/odd fan steps for the two-MM2S
-    # weight feed), so it gets its own cache entry -- a warm single-channel
-    # cache would feed the dual-channel xclbin the wrong blocks.
+    # W_DUAL_CHAN reorders the cascade (the two-MM2S weight feed splits it by
+    # cascade pair into [low-row half | high-row half]), so it gets its own cache
+    # entry -- a warm single-channel cache would feed the dual-channel xclbin the
+    # wrong blocks.
     _w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
     rc = rc or os.path.join(_Q4NX_CACHE, f"requant{_w2}.npz")
     if not os.path.exists(rc):

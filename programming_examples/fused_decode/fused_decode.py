@@ -324,21 +324,28 @@ GRP_PCOL = (
 # hub must NOT sit on a proj col. Put it on col 2, the X-broadcast memtile (5 free S2MM)
 # -- exactly FLM, whose hub mem_1_1 IS its X-broadcast memtile.
 # W_DUAL_CHAN=1: drive each proj column's weight stream on BOTH of its shim MM2S
-# channels (@inW = even fan steps, @inW2 = odd fan steps) instead of ch0 only.
-# Decode at batch 1 is ~92% weight streaming, and the reference feeds 2 MM2S per
-# weight column while we feed 1; the per-column bandwidth gap (10.2 vs 14.4 GB/s
-# on the SAME physical columns) says the column is not saturated by one channel.
+# channels (@inW0c{cx} and @inW1c{cx}) instead of ch0 only. Decode at batch 1 is
+# ~92% weight streaming, and the reference feeds 2 MM2S per weight column while we
+# feed 1; the per-column bandwidth gap (10.2 vs 14.4 GB/s on the SAME physical
+# columns) says the column is not saturated by one channel.
 #
-# The even/odd split is what makes both channels carry weights CONCURRENTLY: the
-# memtile drains the fan in a strict order, so a first-half/second-half split
-# would just run one channel then the other. It requires the host weight array to
-# be packed with pack_q4k_cascade(dual_chan=True), which lays each column's slab
-# out as [even steps | odd steps] so both channels feed contiguous 1D runs (a
-# strided even/odd feed cannot be one shim task -- the 10240-element fan step
-# exceeds the AIE2 per-dim wrap limit -- and would also lose the
-# air.coalesced_shim_feed cross-channel phase barrier). Exported so the weight
-# packers (llms/*_q4nx requant) key their cascade order and their cache off the
-# same flag as the build.
+# The split is SPATIAL, by cascade pair: channel 0 carries the low half of the
+# column's rows (cy 0..NCY/2-1) for every fan step, channel 1 the high half. Each
+# channel therefore feeds a DISJOINT set of cores through its own fan ring, so the
+# two run concurrently without ever being ordered against each other -- this is
+# FLM's layout (mem_C_1 takes shim ch0 on S2MM4 and ch1 on S2MM5, two independent
+# lock cycles). Each channel also reads one contiguous DDR run, so both stay single
+# 1D shim BDs and keep the air.coalesced_shim_feed cross-channel phase barrier.
+#
+# Do NOT split temporally (even/odd fan steps) instead: that makes every core's
+# MM2S BD chain alternate between the two channels' buffers, coupling the channels
+# at every step -- measured to deadlock on device. A temporal feed also cannot be a
+# single shim task, since the 10240-element fan step exceeds the AIE2 per-dim wrap
+# limit and only a contiguous 1D BD gets the wide buffer_length register.
+#
+# Requires the host weight array packed with pack_q4k_cascade(dual_chan=True).
+# Exported so the weight packers (llms/*_q4nx requant) key their cascade order and
+# their cache off the same flag as the build.
 W_DUAL_CHAN = int(_os.environ.get("W_DUAL_CHAN", "1"))
 
 

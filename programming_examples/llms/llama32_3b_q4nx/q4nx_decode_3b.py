@@ -99,9 +99,10 @@ def ensure_requant_cache(model_source, fd, n_layers, wcache_dir=None, verbose=Tr
     wc = Path(wcache_dir) if wcache_dir else (_HERE / ".decode_wcache")
     wc.mkdir(parents=True, exist_ok=True)
     fp = Q4nxModel(model_source).fingerprint()
-    # W_DUAL_CHAN reorders the cascade (even/odd fan steps for the two-MM2S weight
-    # feed), so it is part of the key: a warm single-channel cache would feed the
-    # dual-channel xclbin the wrong blocks.
+    # W_DUAL_CHAN reorders the cascade (the two-MM2S weight feed splits it by
+    # cascade pair into [low-row half | high-row half]), so it is part of the key:
+    # a warm single-channel cache would feed the dual-channel xclbin the wrong
+    # blocks.
     w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
     cache = wc / f"q4nx_3b_decode_L{n_layers}_v{fd.VOCAB_I2}{w2}_{fp}.npz"
     if cache.exists():
