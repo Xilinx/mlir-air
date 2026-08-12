@@ -409,9 +409,8 @@ def _set_attn_link(op, base):
 
 # The attention block loop is a compile-time ATTN_ROUNDS (=ceil(ATTN_MAXL/16)) loop; the kernel
 # masks/skips blocks beyond the runtime RTP-L so one ATTN_MAXL build serves every L. That loop is
-# ALWAYS single-buffered (air.disable_ping_pong, set unconditionally below): ping-pong would
-# unroll-by-2 + 1-remainder over a 3-buffer toK/toV ring whose remainder reads the wrong buffer vs
-# the DMA rotation -> misaligned KV -> coherent first token then garbage chat.
+# single-buffered: air-label-scf-for-to-ping-pong declines it because the running max and
+# accumulator are live across blocks and the score buffer is shared with the kv tile.
 # DECODE_RB_ROUNDS overrides the shim KV-readback nd-DMA outer block count (default ATTN_ROUNDS).
 # Used to (a) locate the readback-count word in insts.bin by diffing two builds, and (b) let the
 # host patch it to ceil(L/16) per token so the shim pushes exactly what the runtime core consumes.
@@ -2271,9 +2270,6 @@ def build_module():
                                     # 1-remainder over a 3-buffer toK ring whose remainder reads
                                     # the wrong buffer vs the DMA rotation -> misaligned KV ->
                                     # garbage chat. Single-buffer is aligned.
-                                    _blk.owner.owner.attributes[
-                                        "air.disable_ping_pong"
-                                    ] = UnitAttr.get()
                                     a_k = AllocOp(ak_l1, [], [])
                                     ChannelGet("toK", a_k, indices=[idx(_c)])
                                     blk_c = arith.index_cast(i32, _blk)
@@ -2300,9 +2296,6 @@ def build_module():
                                     # REQUIRED single-buffer (see _qk_body): keeps toV/toK
                                     # consumption aligned with the DMA rotation (no unroll-by-2
                                     # remainder desync -> no misaligned KV).
-                                    _blk.owner.owner.attributes[
-                                        "air.disable_ping_pong"
-                                    ] = UnitAttr.get()
                                     a_v = AllocOp(av_l1, [], [])
                                     ChannelGet("toV", a_v, indices=[idx(_c)])
                                     blk_c = arith.index_cast(i32, _blk)
@@ -2951,8 +2944,6 @@ def build_module():
                             # drained K-block. Total x-sends = VOCAB_RNDS, drain blocks =
                             # VOCAB_RNDS*PAYLOAD/K. rms recompute per round is negligible vs
                             # the vocab GEMV (matches the reference re-running rms per row-block).
-                            # air.disable_ping_pong keeps single-buffer rings (a_xnl / a_v
-                            # reused; fill==drain, trivially aligned; lm_head not perf-crit).
                             a_v = AllocOp(rms_l1, [], [])
                             _voc_blks_2k = VOCAB_RNDS * PAYLOAD // K
                             _xn_per_blk = K // PAYLOAD  # = VOCAB_RNDS // _voc_blks_2k
@@ -2965,13 +2956,7 @@ def build_module():
                                 f"{_xn_per_blk}"
                             )
                             for _rv in for_(idx(0), idx(_voc_blks_2k), idx(1)):
-                                _rv.owner.owner.attributes["air.disable_ping_pong"] = (
-                                    UnitAttr.get()
-                                )
                                 for _xr in for_(idx(0), idx(_xn_per_blk), idx(1)):
-                                    _xr.owner.owner.attributes[
-                                        "air.disable_ping_pong"
-                                    ] = UnitAttr.get()
                                     CallOp(_rms_final, [a_xnl, a_xl, a_wl, _arm])
                                     # Each vocab round emits x ONCE: VOCAB_RNDS
                                     # distinct puts give VOCAB_RNDS broadcasts,

@@ -1668,6 +1668,60 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
         aliasToCanonical[exec->getResults()[1]] = canonical;
     }
 
+    // The transform duplicates exactly the candidate allocs; every other
+    // memref the body touches stays single. Two rejections follow from that,
+    // and together they cover the cases designs used to opt out of by hand.
+    //
+    // (1) A candidate alloc must be dead on entry to the body. If the first
+    // access reads it, the value flows from one iteration into the next, and
+    // splitting it across the two instances gives each parity its own half of
+    // the accumulation. A channel.get filling the whole buffer is a definite
+    // write; an opaque callee may read, so it disqualifies. (Loop-carried
+    // accumulators reach this pass sunk into the body by
+    // air-fuse-alloc-dealloc, so they look per-iteration until you ask who
+    // touches them first.)
+    //
+    // (2) A memref that stays single must not be written by the body. A herd
+    // block argument is shared with the herd's other tiles under a handshake
+    // taken once per body; running the body twice per handshake races it.
+    auto isDefiniteWrite = [](Operation *op, Value v) {
+      if (auto get = dyn_cast<air::ChannelGetOp>(op))
+        return get.getMemref() == v;
+      auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+      if (!effects)
+        return false;
+      return !effects.getEffectOnValue<MemoryEffects::Read>(v) &&
+             effects.getEffectOnValue<MemoryEffects::Write>(v).has_value();
+    };
+    bool unsafeToDuplicate = false;
+    llvm::SmallPtrSet<Value, 8> firstAccessSeen;
+    forOp.getBody()->walk<WalkOrder::PreOrder>([&](Operation *op) {
+      // Neither allocating, freeing, nor yielding a buffer out of the
+      // air.execute that produced it is an access to its contents.
+      if (isa<memref::AllocOp, memref::DeallocOp>(op) ||
+          op->hasTrait<OpTrait::IsTerminator>())
+        return WalkResult::advance();
+      for (auto operand : op->getOperands()) {
+        if (!isa<MemRefType>(operand.getType()))
+          continue;
+        if (auto it = aliasToCanonical.find(operand);
+            it != aliasToCanonical.end()) {
+          if (firstAccessSeen.insert(it->second).second &&
+              !isDefiniteWrite(op, operand))
+            unsafeToDuplicate = true;
+          continue;
+        }
+        auto blockArg = dyn_cast<BlockArgument>(operand);
+        if (blockArg && isa<air::HerdOp>(blockArg.getOwner()->getParentOp()) &&
+            !isa<MemoryEffectOpInterface>(op))
+          unsafeToDuplicate = true;
+      }
+      return unsafeToDuplicate ? WalkResult::interrupt()
+                               : WalkResult::advance();
+    });
+    if (unsafeToDuplicate)
+      return false;
+
     // Reject if any candidate alloc has >1 channel.get/iter, or if any
     // intervening loop has a non-static trip count (can't bound the count).
     //
