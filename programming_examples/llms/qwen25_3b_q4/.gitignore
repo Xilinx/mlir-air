@@ -5,3 +5,7 @@ build_*/
 *.o
 *.xclbin
 *.log
+
+# Fused-decode build stamp + the prefill->decode KV hand-off cache (`make gen`).
+.decode_build_flags
+.kv_handoff.npz

@@ -521,6 +521,10 @@ LLM_HF_MODELS = {
     "qwen25_0_5b": "Qwen/Qwen2.5-0.5B",
     "qwen25_1_5b": "Qwen/Qwen2.5-1.5B",
     "qwen25_3b": "Qwen/Qwen2.5-3B",
+    # Q4_0-quantized straight from the bf16 checkpoint (no pre-quantized Qwen
+    # bundle exists), so it points at the same repo as the bf16 example above
+    # rather than at a FastFlowLM NPU2 bundle like the Llama/Gemma Q4NX rows.
+    "qwen25_3b_q4": "Qwen/Qwen2.5-3B-Instruct",
     "qwen3_0_6b": "Qwen/Qwen3-0.6B",
     "qwen3_1_7b": "Qwen/Qwen3-1.7B",
     "qwen3_4b": "Qwen/Qwen3-4B",

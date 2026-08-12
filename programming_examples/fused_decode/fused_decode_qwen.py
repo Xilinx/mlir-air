@@ -301,6 +301,28 @@ KVBLK = 16 * KVPC_DH  # 2048 one 16-key K (or V) block per CU
 ATTN_L = int(_os.environ.get("ATTN_L", "32"))
 ATTN_ROUNDS = (ATTN_L + 15) // 16
 
+# Attn kernel linkage. Same mechanism as the Llama driver (fused_decode.py): the
+# attn_qk/attn_kv kernels are linked as LLVM IR (.ll) rather than objects, so they
+# can be llvm-linked and INLINED into the core (kernels built alwaysinline via
+# -DDECODE_INLINE_ATTN). This is upstream mlir-aie's func-level inline-kernel API:
+# the kernel func.func declaration carries link_with = "<name>.ll" together with
+# link_with_mode = "merge", which aiecc's aie-assign-core-link-files pass routes
+# into the core's link_merge_files -> llvm-link merges the alwaysinline body into
+# the core module before opt/llc (no surviving func.call, no object link).
+# air-to-aie copies the decl's discardable attrs onto the lowered AIE func.func,
+# so setting link_with_mode here is all that is needed. The attn HERDS carry no
+# link_with at all -- the linkage comes from the kernel func each core calls.
+_ATTN_EXT = ".ll"  # fixed config: inline-attn merge-mode (.ll) is the only decode path
+_ATTN_MERGE = _ATTN_EXT == ".ll"  # emit link_with_mode="merge" for the inline path
+
+
+def _set_attn_link(op, base):
+    """Attach the kernel link_with (+ link_with_mode="merge" for the .ll inline path)."""
+    op.attributes["link_with"] = StringAttr.get(base + _ATTN_EXT)
+    if _ATTN_MERGE:
+        op.attributes["link_with_mode"] = StringAttr.get("merge")
+
+
 # ---- reference-mirroring KV-cache + attn config (ported from fused_decode.py, the proven
 # Llama AIR design, re-parameterized for Qwen 1x8x1 / DH=128 / 2 CUs on col 7). ----
 # The whole rope->q-broadcast(mem_6_1)->attn->attn-o(mem_6_1)->xnorm loopclose and the
@@ -625,17 +647,17 @@ def build_module():
             ([aq_l1, ak_l1, m_l1, c_l1, as_l1, i32, i32], []),
             visibility="private",
         )
-        attn_qk_blk.attributes["link_with"] = StringAttr.get("attn_qk.o")
+        _set_attn_link(attn_qk_blk, "attn_qk")
         attn_kv_blk = FuncOp(
             "attn_kv_blk",
             ([as_l1, av_l1, y_l1, lden_l1, i32, i32], []),
             visibility="private",
         )
-        attn_kv_blk.attributes["link_with"] = StringAttr.get("attn_kv.o")
+        _set_attn_link(attn_kv_blk, "attn_kv")
         attn_kv_fin = FuncOp(
             "attn_kv_fin", ([y_l1, lden_l1, ao_l1], []), visibility="private"
         )
-        attn_kv_fin.attributes["link_with"] = StringAttr.get("attn_kv.o")
+        _set_attn_link(attn_kv_fin, "attn_kv")
 
         # ---- channels (two-hop, mirroring the reference) ----
         channel_decl("toX", size=[1])  # host -> X memtile (col 1)
@@ -2217,10 +2239,12 @@ def run():
     art = backend.compile(
         module, output_binary_name="decode_qwen", insts="decode_qwen.insts.bin"
     )
-    # Stamp the flag next to the artifact. The Qwen decode has no Makefile build,
-    # so nothing else can stop qwen_prefill_to_decode from feeding a dual-layout
-    # weight stream to a single-channel xclbin (or vice versa) -- which produces
-    # silent garbage rather than an error. The runner checks this file.
+    # Stamp the flag next to the artifact. The Makefile's own build stamp
+    # (llms/qwen25_3b_q4/.decode_build_flags) only guards the BUILD; this one
+    # guards the RUN, so that driving the builder directly cannot leave
+    # qwen_prefill_to_decode feeding a dual-layout weight stream to a
+    # single-channel xclbin (or vice versa) -- silent garbage rather than an
+    # error. The runner checks this file; keep it one `KEY=VALUE` line.
     with open("decode_qwen.flags", "w") as _f:
         _f.write(f"W_DUAL_CHAN={W_DUAL_CHAN}\n")
     print(
