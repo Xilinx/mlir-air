@@ -303,11 +303,12 @@ class FusedDecoder:
         ).wait(60000)
         _voc_n = self.UNI_LM * self.VP
         self.y_bo.sync(FROM, _voc_n * 2, self.decode_y * 2)
-        yv = (
-            self.y_bo.read(_voc_n * 2, self.decode_y * 2)
-            .view(self.bf16)
-            .astype(np.float32)
-        )
+        # Zero-copy view into the BO (the shared infra's readback idiom): bo.read()
+        # returns a buffer whose stride metadata is pyxrt-build dependent, and
+        # .view() on it raises on some runners.
+        yv = np.frombuffer(
+            self.y_bo.map(), dtype=self.bf16, count=_voc_n, offset=self.decode_y * 2
+        ).astype(np.float32)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")
         return yv[: self.VOCAB_SIZE]
