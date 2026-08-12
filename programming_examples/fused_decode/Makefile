@@ -33,7 +33,15 @@ PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 # DECODE_GOLDEN=1 enables the post-attention-RMS decode path (a boolean flag; no
 # weight files are read at build time -- the compile is weight-free).
-DECODE_ENV     := VOCAB_CHUNK_I2=14 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1
+# W_DUAL_CHAN=1 feeds each proj column's weights on BOTH of its shim MM2S channels
+# (@inW even fan steps / @inW2 odd) instead of ch0 only. It also changes the DDR
+# cascade order, so any consumer must pack its weights with the SAME flag -- the
+# llms/*_q4nx drivers read it from the environment and key their requant cache on
+# it. Inherited from the environment so a consumer can set it once for both the
+# build and the run.
+W_DUAL_CHAN    ?= 1
+DECODE_ENV     := VOCAB_CHUNK_I2=14 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
+                  W_DUAL_CHAN=$(W_DUAL_CHAN)
 
 .PHONY: help compile-decode _compile_decode_build preflight-llvm-link clean
 
@@ -52,9 +60,12 @@ help:
 ## Build the fused decode: Peano kernels + two templates (decode_L2048 + decode_L2047
 ## slope ref). ~15 min. Weight-free (runtime BOs), like the prefill compile.
 ##
-## Idempotent: if both templates are already present, skip (the ~15 min build only
-## runs once). `make clean` forces a rebuild. Consumers that call this repeatedly
-## (e.g. the llama32_1b_q4nx verify + profile lits) thus pay the cost at most once.
+## Idempotent: if both templates are already present AND were built with the
+## current W_DUAL_CHAN setting, skip (the ~15 min build only runs once). `make clean`
+## forces a rebuild. Consumers that call this repeatedly (e.g. the llama32_1b_q4nx
+## verify + profile lits) thus pay the cost at most once. The .decode_flags stamp
+## exists because W_DUAL_CHAN changes the DDR weight layout: a warm template built
+## with the other setting would silently be fed the wrong blocks.
 ##
 ## REPRODUCIBILITY (toolchain): the inline-attn merge path shells out to an EXTERNAL
 ## `llvm-link` (resolved from PATH), which must be PRE-LIFETIME-CHANGE, i.e. LLVM < 23.
@@ -62,12 +73,17 @@ help:
 ## opt then rejects the merged IR ("Broken module found"). The preflight aborts on it.
 ## This is the same rule the lit harness gates on (lit.cfg.py, feature llvm_link_pre23);
 ## the two MUST agree -- see the preflight comment below.
+DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
+DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN)
+
 compile-decode:
 	@if [ -f $(srcdir)/decode_L2048.xclbin ] && [ -f $(srcdir)/decode_L2048.insts.bin ] \
-	    && [ -f $(srcdir)/decode_L2047.xclbin ] && [ -f $(srcdir)/decode_L2047.insts.bin ]; then \
-	  echo "Decode templates already built (decode_L2048 + decode_L2047); skipping. Run 'make clean' to force a rebuild."; \
+	    && [ -f $(srcdir)/decode_L2047.xclbin ] && [ -f $(srcdir)/decode_L2047.insts.bin ] \
+	    && [ "`cat $(DECODE_FLAGS_STAMP) 2>/dev/null`" = "$(DECODE_FLAGS)" ]; then \
+	  echo "Decode templates already built (decode_L2048 + decode_L2047, $(DECODE_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
 	else \
-	  $(MAKE) -f $(srcdir)/Makefile _compile_decode_build; \
+	  $(MAKE) -f $(srcdir)/Makefile _compile_decode_build \
+	    && echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP); \
 	fi
 
 ## Shared preflight for every inline-attn decode build. Any model driving this
@@ -126,5 +142,6 @@ _compile_decode_build: preflight-llvm-link
 ## Remove compiled kernels + decode templates.
 clean:
 	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin \
-	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
+	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
+	      $(DECODE_FLAGS_STAMP) 2>/dev/null || true
 	@echo "Kernels and decode templates removed. Rebuild with 'make compile-decode'."

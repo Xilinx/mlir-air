@@ -14,3 +14,7 @@ build_chess/
 air.mlir
 air.elf
 .decode_build_model
+
+# build-flag stamp: makes the decode-template skip W_DUAL_CHAN-aware
+.decode_flags
+decode_qwen.flags

@@ -57,6 +57,45 @@ per-block affine encoding regardless of model. That is why `llms/qwen25_3b_q4`
 quantizes the fp checkpoint directly rather than reading a bundle -- an affine
 bundle re-quantized into the symmetric device form would quantize twice.
 
+## Dual-MM2S weight feed (`W_DUAL_CHAN`, on by default)
+
+Batch-1 decode is a weight-streaming problem: every token reads every weight once,
+with no reuse. Each proj column's weights are therefore fed on **both** of that
+column's shim MM2S channels rather than ch0 alone, following FastFlowLM. Set
+`W_DUAL_CHAN=0` to fall back to the single-channel feed; the flag reaches both the
+build and the run (the DDR weight layout changes with it), and every consumer keys
+its requant cache and its `.decode_flags` template stamp on it, so the two can
+never silently disagree.
+
+Three things make it work, all mirroring FLM's `mem_C_1`:
+
+| | what | why |
+|---|---|---|
+| split axis | **spatial**, by cascade pair -- ch0 feeds rows 2/3, ch1 rows 4/5, on two independent lock cycles | a *temporal* split (alternating fan steps) gives every core one MM2S chain alternating between both channels' buffers, couples the two shim channels at every step, and deadlocks |
+| shim placement | per-column channels `@inW{0,1}c{cx}`, each pinned with `air.shim_col` | a `[NCX]` bundle cannot express a per-index column; unpinned, the extra flows steal the rms/rope column and silently violate *its* `air.shim_col` |
+| X memtile | on the hub column (`XMT_PCOL = MAIN_PCOL`) | FLM has **no** memtile in column 2. Leaving the 16-way X broadcast there alongside the shim feeds and both cores makes the pathfinder fail outright once the weight flows double |
+
+The DDR side is a pure permutation of the packed cascade
+(`pack_q4k_cascade(dual_chan=True)`), so each channel still reads one contiguous
+1-D run -- a strided feed cannot, because a 10240-element fan step exceeds the AIE2
+per-dim wrap limit and only a contiguous BD gets the wide `buffer_length` register.
+
+Measured on Strix (quiet box, `make profile N_TOKENS=64`, 3 runs each; the nightly
+dashboard numbers come from the Krackan Point runner instead):
+
+| model | single-channel | dual-channel | |
+|---|---|---|---|
+| Llama-3.2-1B | 46.2 tok/s | 52.3 tok/s | **1.13x** |
+| Llama-3.2-3B | 18.8 tok/s | 22.5 tok/s | **1.20x** |
+| Gemma3-4B | 15.2 tok/s | 17.1 tok/s | **1.12x** |
+| Qwen2.5-3B | 105.1 ms/tok | 105.5 ms/tok | none |
+
+Qwen gains nothing, and that is expected: it streams 1.91 GB/token at ~105 ms =
+**18.2 GB/s**, while the Llama-1B design already sustains 35.7 GB/s on four
+channels. Qwen's decode is not weight-bandwidth-bound (its layers do not
+pipeline), so doubling the channels cannot help. Check GB/s before assuming the
+feed is the bottleneck.
+
 ## Reproducibility (toolchain)
 
 `make compile-decode` merges an inline attention kernel into the core via an **external

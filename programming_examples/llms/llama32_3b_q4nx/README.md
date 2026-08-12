@@ -37,6 +37,11 @@ eps=1e-5, tied embeddings (lm_head = embed_tokens). Q4NX codec: 32×256 blocks,
   dispatch per token. FastFlowLM's own 3B decode measures ~19.6 tok/s on the same
   machine.
 
+> Decode streams each proj column's weights on **both** of that column's shim
+> MM2S channels (`W_DUAL_CHAN`, on by default) — see
+> [fused_decode/README.md](../../fused_decode/README.md#dual-mm2s-weight-feed-w_dual_chan-on-by-default).
+> The decode figure above predates that change and is therefore conservative.
+
 Both measured at turbo: `xrt-smi configure -d <BDF> --pmode turbo`.
 
 ## Prerequisites

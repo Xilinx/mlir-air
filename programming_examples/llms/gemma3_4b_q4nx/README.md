@@ -42,6 +42,11 @@ Divergences from Llama are parametric, host-side, or compile flags — see
 | prefill (TTFT) | **4.5 s** at CTX=2048 (452 tok/s); 4.50 s on-device, 29 ms host |
 | decode | **12.5 tok/s** (80 ms/token), ATTN_MAXL=2048, 64 tokens |
 
+> Decode streams each proj column's weights on **both** of that column's shim
+> MM2S channels (`W_DUAL_CHAN`, on by default) — see
+> [fused_decode/README.md](../../fused_decode/README.md#dual-mm2s-weight-feed-w_dual_chan-on-by-default).
+> The decode figure above predates that change and is therefore conservative.
+
 Prefill runs at a fixed padded context (`CTX`), so its cost is roughly constant
 in prompt length rather than proportional to it. Measure it with
 `make profile-prefill`. Per-op on-device split at CTX=2048:

@@ -61,6 +61,11 @@ def build_requant_cache(model, fd, cache_path, n_layers=16, verbose=True):
     G, NCX, NCY, NPH, K = fd.GROUP, fd.NCX, fd.NCY, fd.NPH, fd.K
     OP, GP, DP = fd.OPROJ_PHASE, fd.GLU_PHASE, fd.DOWN_PHASE
     GLU_CHUNK, W_LAYER = fd.GLU_CHUNK, fd.W_LAYER
+    # Dual-MM2S weight feed: the decode splits each column's slab across the
+    # column's two shim channels, which needs the cascade laid out as
+    # [even fan steps | odd fan steps]. Keyed off the SAME flag the decode was
+    # built with (fd.W_DUAL_CHAN) so the pack can never disagree with the xclbin.
+    DUAL = bool(getattr(fd, "W_DUAL_CHAN", 0))
     VP, VPF, VOCAB, UNI_LM = (
         fd.VOCAB_SIZE_PADDED,
         fd.VOCAB_SIZE_PADDED_FULL,
@@ -99,7 +104,9 @@ def build_requant_cache(model, fd, cache_path, n_layers=16, verbose=True):
         W_all.append(
             np.concatenate(
                 [
-                    fd.pack_q4k_cascade(*qm[p], NCX, NCY, iter_major=True)
+                    fd.pack_q4k_cascade(
+                        *qm[p], NCX, NCY, iter_major=True, dual_chan=DUAL
+                    )
                     for p in range(NPH)
                 ]
             )
@@ -124,6 +131,7 @@ def build_requant_cache(model, fd, cache_path, n_layers=16, verbose=True):
             NCX,
             NCY,
             iter_major=True,
+            dual_chan=DUAL,
         )
         for w in range(UNI_LM)
     ]

@@ -101,6 +101,25 @@ PROJ_ROW0 = 2  # physical row of grid ty=0
 # memtile on a column SEPARATE from its hub (col2 vs col1); QWEN_XMT_COL overrides for
 # the loopclose bisect.
 XMT_COL = int(_os.environ.get("QWEN_XMT_COL", "1"))
+
+# W_DUAL_CHAN=1: feed each proj column's weights on BOTH of its shim MM2S channels
+# instead of ch0 only, following FLM (its mem_C_1 takes shim ch0 on S2MM4 ->
+# w_buffer[0:5120] -> MM2S0/1 -> rows 2/3, and shim ch1 on S2MM5 -> w_buffer[5120:]
+# -> MM2S2/3 -> rows 4/5, on two INDEPENDENT lock cycles). The split is SPATIAL, by
+# cascade pair: each channel owns a disjoint half of the column's cores, so the two
+# are never ordered against each other. It also changes the DDR cascade order, so the
+# packer must run with the same flag (qwen25_3b_requant reads fd.W_DUAL_CHAN).
+# Qwen already has its X memtile on the hub column (XMT_COL=1), which is the
+# placement the llama engine had to move to before its dual feed would route.
+W_DUAL_CHAN = int(_os.environ.get("W_DUAL_CHAN", "1"))
+
+
+def _wname(ci, cx):
+    """Weight channel: the single @inW bundle when the flag is off, else the
+    per-column shim-col-pinned channel for shim channel ci of proj column cx."""
+    return f"inW{ci}c{cx}" if W_DUAL_CHAN else "inW"
+
+
 # X memtile get granularity (one packet per BD on the @xnorm packet channel).
 XCH = 2 * COL_BLOCK
 # attn-o (ph1 X) refeed memtile column. Default 6 (next to attn col 7), but that makes
@@ -517,7 +536,11 @@ def build_module():
 
         # ---- L2 memtile staging buffers ----
         xmt_l2 = MemRefType.get([2 * COL_BLOCK], bf16, memory_space=l2)  # 512
-        wfan_l2 = MemRefType.get([NCY * BLOCK_BF16], bf16, memory_space=l2)  # 4*2560
+        # one fan get; W_DUAL_CHAN halves it (each shim channel feeds its own ring
+        # covering half the column's cores -- FLM's w_buffer[0:5120]/[5120:] split).
+        wfan_l2 = MemRefType.get(
+            [(NCY // (2 if W_DUAL_CHAN else 1)) * BLOCK_BF16], bf16, memory_space=l2
+        )
         # per-col gather (reference y_buffer<130> = 2 hdr + 4x32; keeps core0's pkt header).
         col_l2 = MemRefType.get([2 + NCY * ROW_BLOCK], bf16, memory_space=l2)  # 130
         # hub gather (reference y_buffer<514> = 2 hdr + 4x128; keeps col0's pkt header).
@@ -625,7 +648,20 @@ def build_module():
             "inX", size=[1, 1], broadcast_shape=[NCX, NCY]
         )  # Xmt -> 16 cores
         _inX.operation.attributes["air.shared_resident_ring"] = UnitAttr.get()
-        channel_decl("inW", size=[NCX])  # host -> per-col W memtile
+        if W_DUAL_CHAN:
+            # Per-column channels PINNED to their own shim column. air.shim_col is a
+            # per-DECL attribute, so a [NCX] bundle cannot express "index k lives on
+            # column PROJ_COL0+k"; without the pin the extra flows perturb the whole
+            # hand-placed shim map (on the llama engine they stole the rms/rope
+            # column outright, silently violating ITS air.shim_col).
+            for _wc in range(NCX):
+                for _ci in range(2):
+                    _wch = channel_decl(_wname(_ci, _wc), size=[1])
+                    _wch.operation.attributes["air.shim_col"] = IntegerAttr.get(
+                        i32, PROJ_COL0 + _wc
+                    )
+        else:
+            channel_decl("inW", size=[NCX])  # host -> per-col W memtile
         channel_decl("wL2ToL1", size=[NCX, NCY])  # W memtile -> col cores
         # proj core egress is a PACKET flow (the reference: packet_flow(1/4/8) tile_C_r -> mem_C_1,
         # keep_pkt_header). The kernel-written id (flush_hdr @y+14) rides the packet so the
@@ -985,29 +1021,43 @@ def build_module():
 
                 def _feed_w_phase(p):
                     span_p = _RB[p] * _NJ[p] * STEP_BF16
-                    hp = span_p // 2
+                    nch = 2 if W_DUAL_CHAN else 1
+                    # per-channel share of this (col, phase) slab. W_DUAL_CHAN: the
+                    # packer laid the slab out [low-row half | high-row half], so
+                    # channel ci reads one contiguous run at cbase + ci*span_c.
+                    span_c = span_p // nch
+                    hp = span_c // 2
                     for cx in range(NCX):
                         cbase = (
                             _pbase[p] + cx * span_p
                             if W_PHASE_MAJOR
                             else cx * colspan + _woff[p]
                         )
-                        ChannelPut(
-                            "inW",
-                            W,
-                            indices=[idx(cx)],
-                            offsets=[_wo(cbase)],
-                            sizes=[idx(hp)],
-                            strides=[idx(1)],
-                        )
-                        ChannelPut(
-                            "inW",
-                            W,
-                            indices=[idx(cx)],
-                            offsets=[_wo(cbase + hp)],
-                            sizes=[idx(span_p - hp)],
-                            strides=[idx(1)],
-                        )
+                        for ci in range(nch):
+                            ch = _wname(ci, cx)
+                            # index built per put (not hoisted) so the flag-off IR stays
+                            # byte-identical: the original emitted one constant per put.
+                            wix = lambda: [idx(0) if W_DUAL_CHAN else idx(cx)]
+                            base = cbase + ci * span_c
+                            # two contiguous puts per channel so the shim coalescer
+                            # merges+tags them (air.coalesced_shim_feed); a single put
+                            # would skip coalescing and lose the phase barrier.
+                            ChannelPut(
+                                ch,
+                                W,
+                                indices=wix(),
+                                offsets=[_wo(base)],
+                                sizes=[idx(hp)],
+                                strides=[idx(1)],
+                            )
+                            ChannelPut(
+                                ch,
+                                W,
+                                indices=wix(),
+                                offsets=[_wo(base + hp)],
+                                sizes=[idx(span_c - hp)],
+                                strides=[idx(1)],
+                            )
 
                 # SPLIT THE WEIGHT FEED AROUND THE KV READBACK (mirror Llama's runtime
                 # sequence). The 4 phase groups are CONTIGUOUS in DDR per column, so the
@@ -1232,25 +1282,44 @@ def build_module():
                         _x_feed(_xsrc, X_CHUNKS)
 
                     # --- weight fan: per-col memtile peels NCY blocks/step -> cores ---
+                    # W_DUAL_CHAN emits ONE ring PER SHIM CHANNEL, each owning a
+                    # disjoint half of the column's cores (FLM's mem_C_1: ch0 -> rows
+                    # 2/3, ch1 -> rows 4/5, two independent lock cycles). A SPATIAL
+                    # split is what makes both channels usable -- they share no
+                    # consumer, so neither is ever ordered against the other. Do NOT
+                    # split temporally (alternating fan steps): that gives every core
+                    # one MM2S chain alternating between both channels' buffers and
+                    # deadlocks (proven on the llama engine).
+                    _fan_groups = (
+                        [(0, 0, NCY // 2), (1, NCY // 2, NCY)]
+                        if W_DUAL_CHAN
+                        else [(0, 0, NCY)]
+                    )
                     for cx in range(NCX):
-                        for _ in for_(idx(0), idx(W_FAN_STEPS), idx(1)):
-                            wf = AllocOp(wfan_l2, [], [])
-                            wf.operation.attributes["air.memtile_col"] = (
-                                IntegerAttr.get(T.i32(), PROJ_COL0 + cx)
-                            )
-                            wf.operation.attributes["air.no_split"] = UnitAttr.get()
-                            ChannelGet("inW", wf, indices=[idx(cx)])
-                            for cy in range(NCY):
-                                ChannelPut(
-                                    "wL2ToL1",
-                                    wf,
-                                    indices=[idx(cx), idx(cy)],
-                                    offsets=[cy * BLOCK_BF16],
-                                    sizes=[BLOCK_BF16],
-                                    strides=[1],
+                        for _ci, _cy0, _cy1 in _fan_groups:
+                            _wch = _wname(_ci, cx)
+                            for _ in for_(idx(0), idx(W_FAN_STEPS), idx(1)):
+                                wf = AllocOp(wfan_l2, [], [])
+                                wf.operation.attributes["air.memtile_col"] = (
+                                    IntegerAttr.get(T.i32(), PROJ_COL0 + cx)
                                 )
-                            DeallocOp(wf)
-                            yield_([])
+                                wf.operation.attributes["air.no_split"] = UnitAttr.get()
+                                ChannelGet(
+                                    _wch,
+                                    wf,
+                                    indices=[idx(0) if W_DUAL_CHAN else idx(cx)],
+                                )
+                                for cy in range(_cy0, _cy1):
+                                    ChannelPut(
+                                        "wL2ToL1",
+                                        wf,
+                                        indices=[idx(cx), idx(cy)],
+                                        offsets=[(cy - _cy0) * BLOCK_BF16],
+                                        sizes=[BLOCK_BF16],
+                                        strides=[1],
+                                    )
+                                DeallocOp(wf)
+                                yield_([])
 
                     # --- egress gather (mirror the reference/Llama _egress): BOTH hops INTERLEAVED
                     # in ONE round loop so they pipeline across tiles. SEPARATE put-loop
@@ -2138,6 +2207,12 @@ def build_module():
 
 def run():
     module = build_module()
+
+    # Emit-only hook (mirrors fused_decode.py): dump the built AIR MLIR and stop
+    # before the expensive NPU compile, so a no-op refactor can be byte-diffed.
+    if _os.environ.get("FUSED_DECODE_EMIT_ONLY"):
+        print(str(module))
+        return 0
     backend = XRTBackend(
         omit_while_true_loop=False,
         output_format="xclbin",
@@ -2155,7 +2230,15 @@ def run():
     art = backend.compile(
         module, output_binary_name="decode_qwen", insts="decode_qwen.insts.bin"
     )
-    print(f"[qwen_decode] emitted {art.output_binary} + {art.insts}")
+    # Stamp the flag next to the artifact. The Qwen decode has no Makefile build,
+    # so nothing else can stop qwen_prefill_to_decode from feeding a dual-layout
+    # weight stream to a single-channel xclbin (or vice versa) -- which produces
+    # silent garbage rather than an error. The runner checks this file.
+    with open("decode_qwen.flags", "w") as _f:
+        _f.write(f"W_DUAL_CHAN={W_DUAL_CHAN}\n")
+    print(
+        f"[qwen_decode] emitted {art.output_binary} + {art.insts} (W_DUAL_CHAN={W_DUAL_CHAN})"
+    )
     return 0
 
 
