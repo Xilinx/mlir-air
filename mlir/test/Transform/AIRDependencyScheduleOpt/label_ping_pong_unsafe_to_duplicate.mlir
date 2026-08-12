@@ -152,3 +152,58 @@ func.func @herd_without_shared_arg(%shared: memref<32xbf16, 2>) {
   }
   return
 }
+
+// -----
+
+// Labeling a loop unrolls its body by 2, which duplicates a nested loop and
+// whatever that loop allocates per trip. So an unsafe inner loop disqualifies
+// the outer candidate as well. Rejecting only the inner one would instead
+// release the outer, which the deepest-qualifying-loop rule had been
+// suppressing, and duplicate a bigger buffer at a worse level.
+
+// CHECK-LABEL: @nested_unsafe_disqualifies_outer
+// CHECK-NOT: hoist_alloc
+// CHECK-NOT: unroll
+air.channel @c4 [1, 1]
+air.channel @c5 [1, 1]
+func.func private @accum(memref<64xbf16, 2>, memref<16xf32, 2>)
+func.func @nested_unsafe_disqualifies_outer() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  %t = air.wait_all async
+  %outer = scf.for %i = %c0 to %c4 step %c1 iter_args(%tok = %t) -> (!air.async.token) {
+    %tok0, %big = air.execute [%tok] -> (memref<4096xbf16, 2>) {
+      %alloc = memref.alloc() : memref<4096xbf16, 2>
+      air.execute_terminator %alloc : memref<4096xbf16, 2>
+    }
+    %g = air.channel.get async [%tok0] @c4[] (%big[] [] []) : (memref<4096xbf16, 2>)
+    %inner = scf.for %j = %c0 to %c8 step %c1 iter_args(%itok = %g) -> (!air.async.token) {
+      %tok1, %buf = air.execute [%itok] -> (memref<64xbf16, 2>) {
+        %alloc = memref.alloc() : memref<64xbf16, 2>
+        air.execute_terminator %alloc : memref<64xbf16, 2>
+      }
+      %tok2, %acc = air.execute -> (memref<16xf32, 2>) {
+        %alloc = memref.alloc() : memref<16xf32, 2>
+        air.execute_terminator %alloc : memref<16xf32, 2>
+      }
+      %g2 = air.channel.get async [%tok1] @c5[] (%buf[] [] []) : (memref<64xbf16, 2>)
+      %tok3 = air.execute [%g2, %tok2] {
+        func.call @accum(%buf, %acc) : (memref<64xbf16, 2>, memref<16xf32, 2>) -> ()
+      }
+      %tok4 = air.execute [%tok3] {
+        memref.dealloc %buf : memref<64xbf16, 2>
+      }
+      %tok5 = air.execute [%tok3] {
+        memref.dealloc %acc : memref<16xf32, 2>
+      }
+      scf.yield %tok4 : !air.async.token
+    }
+    %tok6 = air.execute [%inner] {
+      memref.dealloc %big : memref<4096xbf16, 2>
+    }
+    scf.yield %tok6 : !air.async.token
+  }
+  return
+}

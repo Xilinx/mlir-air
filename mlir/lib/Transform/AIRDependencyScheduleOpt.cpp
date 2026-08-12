@@ -1613,9 +1613,97 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   // iteration -- the K fills are sequential overwrites; doubling the buffer
   // doesn't decouple them and the downstream ping-pong transform miscompiles.
   // `allocsOut`, if non-null, receives the matched allocs on success.
+  // The transform duplicates exactly the allocs directly in `forOp`'s body;
+  // every other memref the body touches stays single. Two things break under
+  // that, and together they cover what designs used to opt out of by hand.
+  //
+  // (1) An alloc that would be duplicated must be dead on entry to the body.
+  // If the first access reads it, the value flows from one iteration into the
+  // next, and splitting it across the two instances gives each parity its own
+  // half of the accumulation. A channel.get filling the whole buffer is a
+  // definite write; an opaque callee may read, so it disqualifies.
+  // (Loop-carried accumulators reach this pass sunk into the body by
+  // air-fuse-alloc-dealloc, so they look per-iteration until you ask who
+  // touches them first.)
+  //
+  // (2) A memref that stays single must not be reachable by an op whose
+  // effects are unknown. A herd block argument is shared with the herd's
+  // other tiles under a handshake taken once per body, so a second write
+  // inside one handshake races it, and an opaque callee may be that writer.
+  // Ops that do model their effects are left alone: a read-only use is fine.
+  static bool isUnsafeToDuplicate(scf::ForOp forOp) {
+    // Each air.execute wraps a single memref.alloc and yields it as the
+    // non-token result at index 1 (see AIR.td and HoistMemallocInForPattern).
+    // Map both spellings to the bare alloc result so one buffer counts once.
+    llvm::DenseMap<Value, Value> aliasToCanonical;
+    for (auto exec : forOp.getOps<air::ExecuteOp>())
+      for (auto alloc : exec.getOps<memref::AllocOp>()) {
+        Value canonical = alloc->getResult(0);
+        aliasToCanonical[canonical] = canonical;
+        if (exec->getNumResults() >= 2)
+          aliasToCanonical[exec->getResults()[1]] = canonical;
+      }
+
+    auto isDefiniteWrite = [](Operation *op, Value v) {
+      if (auto get = dyn_cast<air::ChannelGetOp>(op))
+        return get.getMemref() == v;
+      auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+      if (!effects)
+        return false;
+      return !effects.getEffectOnValue<MemoryEffects::Read>(v) &&
+             effects.getEffectOnValue<MemoryEffects::Write>(v).has_value();
+    };
+
+    bool unsafe = false;
+    llvm::SmallPtrSet<Value, 8> firstAccessSeen;
+    forOp.getBody()->walk<WalkOrder::PreOrder>([&](Operation *op) {
+      // Neither allocating, freeing, nor yielding a buffer out of the
+      // air.execute that produced it is an access to its contents.
+      if (isa<memref::AllocOp, memref::DeallocOp>(op) ||
+          op->hasTrait<OpTrait::IsTerminator>())
+        return WalkResult::advance();
+      for (auto operand : op->getOperands()) {
+        if (!isa<MemRefType>(operand.getType()))
+          continue;
+        if (auto it = aliasToCanonical.find(operand);
+            it != aliasToCanonical.end()) {
+          if (firstAccessSeen.insert(it->second).second &&
+              !isDefiniteWrite(op, operand))
+            unsafe = true;
+          continue;
+        }
+        auto blockArg = dyn_cast<BlockArgument>(operand);
+        if (blockArg && isa<air::HerdOp>(blockArg.getOwner()->getParentOp()) &&
+            !isa<MemoryEffectOpInterface>(op))
+          unsafe = true;
+      }
+      return unsafe ? WalkResult::interrupt() : WalkResult::advance();
+    });
+    return unsafe;
+  }
+
   static bool isPingPongCandidate(scf::ForOp forOp, StringRef omitMemorySpace,
                                   SmallVectorImpl<Operation *> *allocsOut) {
     if (forOp->hasAttr("unroll"))
+      return false;
+    // Labeling a loop unrolls its body by 2, which duplicates a nested loop
+    // and everything that loop allocates per trip. So an unsafe loop anywhere
+    // in the region tree disqualifies the enclosing candidate, exactly as the
+    // air.disable_ping_pong opt-out below does -- rejecting only the inner
+    // loop would instead release the outer one, which
+    // hasLabelableNestedFor had been suppressing, and duplicate a bigger
+    // buffer at a worse level.
+    if (isUnsafeToDuplicate(forOp))
+      return false;
+    bool nestedUnsafe = false;
+    forOp.getBody()->walk([&](scf::ForOp inner) -> WalkResult {
+      if (isUnsafeToDuplicate(inner)) {
+        nestedUnsafe = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (nestedUnsafe)
       return false;
     // User-facing opt-out: an scf.for in the candidate's region tree
     // (including the candidate itself) carrying `air.disable_ping_pong`
@@ -1667,63 +1755,6 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
           exec && exec->getNumResults() >= 2)
         aliasToCanonical[exec->getResults()[1]] = canonical;
     }
-
-    // The transform duplicates exactly the candidate allocs; every other
-    // memref the body touches stays single. Two rejections follow from that,
-    // and together they cover the cases designs used to opt out of by hand.
-    //
-    // (1) A candidate alloc must be dead on entry to the body. If the first
-    // access reads it, the value flows from one iteration into the next, and
-    // splitting it across the two instances gives each parity its own half of
-    // the accumulation. A channel.get filling the whole buffer is a definite
-    // write; an opaque callee may read, so it disqualifies. (Loop-carried
-    // accumulators reach this pass sunk into the body by
-    // air-fuse-alloc-dealloc, so they look per-iteration until you ask who
-    // touches them first.)
-    //
-    // (2) A memref that stays single must not be reachable by an op whose
-    // effects are unknown. A herd block argument is shared with the herd's
-    // other tiles under a handshake taken once per body, so a second write
-    // inside one handshake races it -- and an opaque callee may be that
-    // writer. Ops that do model their effects are left alone, since a
-    // read-only use is harmless.
-    auto isDefiniteWrite = [](Operation *op, Value v) {
-      if (auto get = dyn_cast<air::ChannelGetOp>(op))
-        return get.getMemref() == v;
-      auto effects = dyn_cast<MemoryEffectOpInterface>(op);
-      if (!effects)
-        return false;
-      return !effects.getEffectOnValue<MemoryEffects::Read>(v) &&
-             effects.getEffectOnValue<MemoryEffects::Write>(v).has_value();
-    };
-    bool unsafeToDuplicate = false;
-    llvm::SmallPtrSet<Value, 8> firstAccessSeen;
-    forOp.getBody()->walk<WalkOrder::PreOrder>([&](Operation *op) {
-      // Neither allocating, freeing, nor yielding a buffer out of the
-      // air.execute that produced it is an access to its contents.
-      if (isa<memref::AllocOp, memref::DeallocOp>(op) ||
-          op->hasTrait<OpTrait::IsTerminator>())
-        return WalkResult::advance();
-      for (auto operand : op->getOperands()) {
-        if (!isa<MemRefType>(operand.getType()))
-          continue;
-        if (auto it = aliasToCanonical.find(operand);
-            it != aliasToCanonical.end()) {
-          if (firstAccessSeen.insert(it->second).second &&
-              !isDefiniteWrite(op, operand))
-            unsafeToDuplicate = true;
-          continue;
-        }
-        auto blockArg = dyn_cast<BlockArgument>(operand);
-        if (blockArg && isa<air::HerdOp>(blockArg.getOwner()->getParentOp()) &&
-            !isa<MemoryEffectOpInterface>(op))
-          unsafeToDuplicate = true;
-      }
-      return unsafeToDuplicate ? WalkResult::interrupt()
-                               : WalkResult::advance();
-    });
-    if (unsafeToDuplicate)
-      return false;
 
     // Reject if any candidate alloc has >1 channel.get/iter, or if any
     // intervening loop has a non-static trip count (can't bound the count).
