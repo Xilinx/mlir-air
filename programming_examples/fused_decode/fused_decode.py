@@ -124,7 +124,7 @@ def refeed(n, emit):
     """Re-send ONE resident buffer n times: an n-trip scf.for around a single
     air.channel.put. The body holds nothing but the put and no operand depends
     on the induction variable, so this is a re-broadcast, not n productions --
-    air-fold-refeed-loops recognizes the shape, collapses the loop, and derives
+    air-annotate-refeed recognizes the shape, collapses the loop, and derives
     the count for the lock init. n <= 1 emits the bare put."""
     if n <= 1:
         emit()
@@ -2936,7 +2936,7 @@ def build_module():
                             # AcquireGreaterEqual(N) unsatisfiable -> DEADLOCK, forcing the
                             # 9-wave split (2*I2<=63). Here we mirror the reference: re-normalize + put
                             # xnorm PER ROUND (a_xnl is rewritten each round, so this is n
-                            # productions and air-fold-refeed-loops leaves it alone). The
+                            # productions and air-annotate-refeed leaves it alone). The
                             # sends are INTERLEAVED with the outY->layerOut relay (this ONE
                             # rms core both produces x and relays logits, unlike the reference's split
                             # tiles) so the producer never serializes ahead of the drain and
@@ -2963,7 +2963,7 @@ def build_module():
                                     # matching the X memtile's VOCAB_RNDS*(K/(2*
                                     # COL_BLOCK)) gets. This loop re-runs rms into
                                     # a_xnl every trip, so it is n productions, not
-                                    # a re-broadcast, and air-fold-refeed-loops
+                                    # a re-broadcast, and air-annotate-refeed
                                     # leaves it alone.
                                     ChannelPut(
                                         "xnorm",

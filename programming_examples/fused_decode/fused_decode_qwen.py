@@ -71,7 +71,7 @@ def refeed(n, emit):
     """Re-send ONE resident buffer n times: an n-trip scf.for around a single
     air.channel.put. The body holds nothing but the put and no operand depends
     on the induction variable, so this is a re-broadcast, not n productions --
-    air-fold-refeed-loops recognizes the shape, collapses the loop, and derives
+    air-annotate-refeed recognizes the shape, collapses the loop, and derives
     the count for the lock init. n <= 1 emits the bare put."""
     if n <= 1:
         emit()

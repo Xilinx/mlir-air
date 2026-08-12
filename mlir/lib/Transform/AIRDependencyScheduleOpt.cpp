@@ -1681,9 +1681,12 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     // air-fuse-alloc-dealloc, so they look per-iteration until you ask who
     // touches them first.)
     //
-    // (2) A memref that stays single must not be written by the body. A herd
-    // block argument is shared with the herd's other tiles under a handshake
-    // taken once per body; running the body twice per handshake races it.
+    // (2) A memref that stays single must not be reachable by an op whose
+    // effects are unknown. A herd block argument is shared with the herd's
+    // other tiles under a handshake taken once per body, so a second write
+    // inside one handshake races it -- and an opaque callee may be that
+    // writer. Ops that do model their effects are left alone, since a
+    // read-only use is harmless.
     auto isDefiniteWrite = [](Operation *op, Value v) {
       if (auto get = dyn_cast<air::ChannelGetOp>(op))
         return get.getMemref() == v;

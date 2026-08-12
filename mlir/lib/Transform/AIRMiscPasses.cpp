@@ -3310,8 +3310,9 @@ static air::ChannelPutOp matchRefeedLoop(Operation *loopOp, Block *body,
   // The async dependency is exempt from the invariance check: it is the carried
   // token, a block argument by construction, re-spliced when the loop is
   // erased.
-  llvm::SmallPtrSet<Value, 2> deps(llvm::from_range,
-                                   put.getAsyncDependencies());
+  llvm::SmallPtrSet<Value, 2> deps;
+  deps.insert(put.getAsyncDependencies().begin(),
+              put.getAsyncDependencies().end());
   for (auto operand : put->getOperands()) {
     if (deps.contains(operand))
       continue;
