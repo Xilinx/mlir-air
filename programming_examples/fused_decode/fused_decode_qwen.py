@@ -71,7 +71,7 @@ def refeed(n, emit):
     """Re-send ONE resident buffer n times: an n-trip scf.for around a single
     air.channel.put. The body holds nothing but the put and no operand depends
     on the induction variable, so this is a re-broadcast, not n productions --
-    air-fold-refeed-loops recognizes the shape, collapses the loop, and derives
+    air-annotate-refeed recognizes the shape, collapses the loop, and derives
     the count for the lock init. n <= 1 emits the bare put."""
     if n <= 1:
         emit()
@@ -425,11 +425,6 @@ ATTN_NOCOMPUTE = int(_os.environ.get("QWEN_ATTN_NOCOMPUTE", "0"))
 SKIP_QK = int(_os.environ.get("QWEN_SKIP_QK", "0")) or ATTN_NOCOMPUTE
 SKIP_KV = int(_os.environ.get("QWEN_SKIP_KV", "0")) or ATTN_NOCOMPUTE
 SKIP_KVFIN = int(_os.environ.get("QWEN_SKIP_KVFIN", "0")) or SKIP_KV
-# air.disable_ping_pong on the attn block loops forces the s/v/o handshake to
-# depth-1 (lock init 1). The reference's original double-buffers these (lock init 2, two
-# score buffers). QWEN_ATTN_PINGPONG=1 drops disable_ping_pong so AIR lowers the
-# depth-2 handshake reference uses (investigating the cross-tile-s deadlock).
-ATTN_PINGPONG = int(_os.environ.get("QWEN_ATTN_PINGPONG", "0"))
 # QWEN_SURROUND_NOCOMPUTE=1 (use ONLY with QWEN_ATTN=0): keep the ENTIRE base dataflow
 # (proj MVM + egress + X/weight feeds + rope/rms/glu channel gets+puts) but SKIP the
 # rope/rms/glu compute CallOps. COHERENT (not a header-skip): under ATTN=0/LOOPCLOSE=0
@@ -1838,10 +1833,6 @@ def build_module():
                         a_m = AllocOp(m_l1, [], [])
                         a_cc = AllocOp(c_l1, [], [])
                         for _blk in for_(idx(0), idx(ATTN_ROUNDS), idx(1)):
-                            if not ATTN_PINGPONG:
-                                _blk.owner.owner.attributes["air.disable_ping_pong"] = (
-                                    UnitAttr.get()
-                                )
                             a_k = AllocOp(ak_l1, [], [])
                             ChannelGet("toK", a_k, indices=[idx(cu)])
                             blk_c = arith.index_cast(i32, _blk)
@@ -1860,10 +1851,6 @@ def build_module():
                         a_l = AllocOp(lden_l1, [], [])
                         a_o = AllocOp(ao_l1, [], [])
                         for _blk in for_(idx(0), idx(ATTN_ROUNDS), idx(1)):
-                            if not ATTN_PINGPONG:
-                                _blk.owner.owner.attributes["air.disable_ping_pong"] = (
-                                    UnitAttr.get()
-                                )
                             a_v = AllocOp(av_l1, [], [])
                             ChannelGet("toV", a_v, indices=[idx(cu)])
                             blk_c = arith.index_cast(i32, _blk)

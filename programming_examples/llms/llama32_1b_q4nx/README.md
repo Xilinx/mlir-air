@@ -171,7 +171,8 @@ KV cache (`kv_view()`), and the prefill kernel cache is **seq_len-specific**
 **Decode** — the [`fused_decode`](../../fused_decode) example builds one fused xclbin (16 layers + LM
 head). The attention block loop reads `ceil(L/16)` KV blocks; blocks past `L` are
 skipped by the kernel so the online softmax is not contaminated, and the loop is
-always single-buffered (`air.disable_ping_pong`) to keep the KV ring aligned.
+single-buffered (`air-label-scf-for-to-ping-pong` declines it: the running max and
+accumulator are live across blocks).
 `decode_insts_gen.py` patches the per-token instruction words (RTP-L, KV-append
 offset) so one xclbin serves every `L`. The host performs embedding, sampling
 (`Sampler`: repetition/frequency penalties + temperature + top-k/top-p), chat
