@@ -26,3 +26,6 @@ air.insts.bin
 # Golden / weight caches produced at runtime (external data; see README.md).
 *.npz
 diag_cache/
+
+# build-flag stamp: makes the decode-template skip W_DUAL_CHAN-aware
+.decode_flags

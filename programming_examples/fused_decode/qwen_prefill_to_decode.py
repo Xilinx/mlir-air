@@ -67,8 +67,15 @@ def pack_layer(hf, ap, k):
         qr._interleave_chunks(su, sg, m.PAYLOAD),
     )
     ph[m.DOWN_PHASE] = qr.requant_q4_0(qr._pad_cols(R["down"], m.INTERMEDIATE))
+    # dual_chan must match the flag the decode xclbin was BUILT with: it reorders
+    # the cascade so each of a column's two shim channels reads a contiguous run.
     return np.concatenate(
-        [qr.pack_q4k_cascade_fast(*ph[p], m.NCX, m.NCY) for p in range(m.NPH)]
+        [
+            qr.pack_q4k_cascade_fast(
+                *ph[p], m.NCX, m.NCY, dual_chan=bool(getattr(m, "W_DUAL_CHAN", 0))
+            )
+            for p in range(m.NPH)
+        ]
     )
 
 
@@ -114,6 +121,33 @@ def main():
     KVL = m.N_ATTN_CU * 2 * m.ATTN_ROUNDS * m.KVBLK
     KVN = NL * KVL
     YN = max(m.DEST_TOTAL * m.PAYLOAD, m.K + m.DQ)
+
+    # The xclbin's weight layout is set by W_DUAL_CHAN at BUILD time; pack_layer
+    # below uses the CURRENT module value. A mismatch is silent garbage, so refuse.
+    # The stamp sits next to the xclbin it describes. An UNREADABLE stamp is just
+    # as unsafe as a mismatched one (an xclbin built before the stamp existed has
+    # an unknown layout), so that is refused too rather than assumed compatible.
+    _want = int(getattr(m, "W_DUAL_CHAN", 0))
+    _stamp = os.path.splitext(args.xclbin)[0] + ".flags"
+    try:
+        with open(_stamp) as _f:
+            _got = int(_f.read().strip().split("=")[1])
+    except (OSError, IndexError, ValueError):
+        _got = None
+    if _got is None:
+        raise SystemExit(
+            f"cannot read the W_DUAL_CHAN build stamp {_stamp}, so the weight "
+            f"layout of {args.xclbin} is unknown and packing for "
+            f"W_DUAL_CHAN={_want} may silently produce garbage. Rebuild with "
+            f"QWEN_NLAYERS=.. W_DUAL_CHAN={_want} python3 fused_decode_qwen.py"
+        )
+    if _got != _want:
+        raise SystemExit(
+            f"{args.xclbin} was built with W_DUAL_CHAN={_got} but this run "
+            f"packs weights for W_DUAL_CHAN={_want}. Rebuild the xclbin with the "
+            f"same setting (QWEN_NLAYERS=.. W_DUAL_CHAN={_want} python3 "
+            f"fused_decode_qwen.py) or re-run with W_DUAL_CHAN={_got}."
+        )
 
     print(f"[handoff] packing Q4_0 weights for {NL} layers...", flush=True)
     xd = np.zeros(X, bfloat16)

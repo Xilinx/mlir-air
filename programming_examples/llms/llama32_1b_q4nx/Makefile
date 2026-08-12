@@ -41,6 +41,14 @@ export Q4NX_CACHE_DIR := $(srcdir)/$(BUILD_DIR)/q4nx_kernel_cache_$(CTX)
 # CTX % 512 != 0). This is the headline ~0.93s TTFT prefill path.
 export TEMPORAL_CAUSAL_SKIP := 1
 
+# Dual-MM2S weight feed for the fused decode (see fused_decode/fused_decode.py).
+# The BUILD and the RUN must agree -- the flag selects both the shim channel split
+# and the weight cascade order -- so export it here and let it reach both the
+# delegated `compile-decode` and the inference driver. The requant cache is keyed
+# on it, so flipping it does not need a manual cache purge.
+W_DUAL_CHAN ?= 1
+export W_DUAL_CHAN
+
 # Unified prefill+decode inference driver (run/profile/chat/gen/ask/compile).
 DRIVER := $(srcdir)/llama32_1b_q4nx_inference.py
 # Prefill engine (weight-integrity Paris gate + the CTX prefill latency sweep).

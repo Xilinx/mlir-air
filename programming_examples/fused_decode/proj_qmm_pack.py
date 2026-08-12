@@ -57,7 +57,9 @@ def pack_q4k_block(q, scale, mn):
     return arr
 
 
-def pack_q4k_cascade(q, scale, mn, NCX, NCY, core_major=False, iter_major=False):
+def pack_q4k_cascade(
+    q, scale, mn, NCX, NCY, core_major=False, iter_major=False, dual_chan=False
+):
     """Pack an [M, K] q4 weight matrix in the memtile-cascade STREAM order
     [cx][i][j][cy], where each element is one 32x256 q4k block (BLOCK_BF16).
 
@@ -77,6 +79,21 @@ def pack_q4k_cascade(q, scale, mn, NCX, NCY, core_major=False, iter_major=False)
     -- while each core emits ONE contiguous packet (one header), a core-major
     layout where every Y BD is a plain linear transfer.
 
+    dual_chan=True (the two-MM2S-per-column weight feed): the column's stream is
+    split SPATIALLY, by cascade pair -- the low half of the rows (cy 0..NCY/2-1) is
+    emitted for every fan step, then the high half. This is FLM's layout: its
+    mem_C_1 takes shim ch0 on S2MM4 (writing w_buffer[0:5120], drained by MM2S0/1 to
+    rows 2/3) and shim ch1 on S2MM5 (w_buffer[5120:10240], drained by MM2S2/3 to
+    rows 4/5), with two INDEPENDENT lock cycles. Each channel therefore owns a
+    disjoint set of cores and never has to be ordered against the other; each also
+    reads one contiguous DDR run, so both stay single 1D shim BDs (a strided feed
+    cannot: the innermost dim exceeds the AIE2 per-dim wrap limit, and only a
+    contiguous 1D BD gets the wide buffer_length register).
+
+    Do NOT split temporally (even/odd fan steps) instead: that makes every core's
+    MM2S BD chain alternate between the two channels' buffers, which couples the two
+    shim channels at every step and deadlocks on device.
+
     Returns int16 [NCX*nbi_pc*nbj*NCY * BLOCK_BF16] = [nbi*nbj * BLOCK_BF16].
     """
     M, K = q.shape
@@ -85,28 +102,39 @@ def pack_q4k_cascade(q, scale, mn, NCX, NCY, core_major=False, iter_major=False)
     n_cores = NCX * NCY
     assert nbi % n_cores == 0, "row-blocks must split evenly across cores"
     nbi_pc = nbi // n_cores
+    steps = [(i, j) for i in range(nbi_pc) for j in range(nbj)]
+    # Per-column emission order: (step, cy) by default; dual_chan hoists the row
+    # half (the shim channel) outermost so each channel's share is contiguous.
+    if dual_chan:
+        assert NCY % 2 == 0, f"dual_chan needs an even NCY (got {NCY})"
+        order = [
+            (i, j, cy)
+            for h in range(2)
+            for (i, j) in steps
+            for cy in range(h * (NCY // 2), (h + 1) * (NCY // 2))
+        ]
+    else:
+        order = [(i, j, cy) for (i, j) in steps for cy in range(NCY)]
     blocks = []
     for cx in range(NCX):
-        for i in range(nbi_pc):
-            for j in range(nbj):
-                for cy in range(NCY):
-                    if iter_major:
-                        # iteration-major: rb = i*(NCX*NCY) + cx*NCY + cy.
-                        # iteration i owns a contiguous 16-row-block span, so the
-                        # natural QKV[M] emerges (Q=i0..3, K=i4, V=i5) and the
-                        # rope split sees K at rows 2048..2559 directly.
-                        gi = i * (NCX * NCY) + cx * NCY + cy
-                    elif core_major:
-                        gi = (cx * NCY + cy) * nbi_pc + i  # contiguous per core
-                    else:
-                        gi = cx * (NCY * nbi_pc) + i * NCY + cy  # global row-block
-                    rs, cs = gi * ROW_BLOCK, j * COL_BLOCK
-                    gs = j * (COL_BLOCK // GROUP)
-                    blocks.append(
-                        pack_q4k_block(
-                            q[rs : rs + ROW_BLOCK, cs : cs + COL_BLOCK],
-                            scale[rs : rs + ROW_BLOCK, gs : gs + N_GROUPS],
-                            mn[rs : rs + ROW_BLOCK, gs : gs + N_GROUPS],
-                        )
-                    )
+        for i, j, cy in order:
+            if iter_major:
+                # iteration-major: rb = i*(NCX*NCY) + cx*NCY + cy.
+                # iteration i owns a contiguous 16-row-block span, so the
+                # natural QKV[M] emerges (Q=i0..3, K=i4, V=i5) and the
+                # rope split sees K at rows 2048..2559 directly.
+                gi = i * (NCX * NCY) + cx * NCY + cy
+            elif core_major:
+                gi = (cx * NCY + cy) * nbi_pc + i  # contiguous per core
+            else:
+                gi = cx * (NCY * nbi_pc) + i * NCY + cy  # global row-block
+            rs, cs = gi * ROW_BLOCK, j * COL_BLOCK
+            gs = j * (COL_BLOCK // GROUP)
+            blocks.append(
+                pack_q4k_block(
+                    q[rs : rs + ROW_BLOCK, cs : cs + COL_BLOCK],
+                    scale[rs : rs + ROW_BLOCK, gs : gs + N_GROUPS],
+                    mn[rs : rs + ROW_BLOCK, gs : gs + N_GROUPS],
+                )
+            )
     return np.concatenate(blocks)

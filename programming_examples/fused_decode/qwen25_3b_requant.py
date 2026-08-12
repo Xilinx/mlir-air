@@ -125,7 +125,7 @@ def requant_q4_0(Wm, group=GROUP):
     return q.reshape(M, Kc).view(np.uint8), sc
 
 
-def pack_q4k_cascade_fast(q, scale, NCX, NCY):
+def pack_q4k_cascade_fast(q, scale, NCX, NCY, dual_chan=False):
     """Vectorized iteration-major cascade pack; == proj_qmm_pack.pack_q4k_cascade
     (iter_major=True) with all-zero mins, but packs every block at once.
 
@@ -171,6 +171,16 @@ def pack_q4k_cascade_fast(q, scale, NCX, NCY):
     cy = np.arange(NCY)[None, None, None, :]
     gi = np.broadcast_to(i * n_cores + cx * NCY + cy, (NCX, nbi_pc, nbj, NCY))
     gj = np.broadcast_to(j, (NCX, nbi_pc, nbj, NCY))
+    if dual_chan:
+        # Two-MM2S-per-column weight feed: hoist the ROW HALF (= the shim channel)
+        # to just inside cx, so each column's slab is [low-row half | high-row half]
+        # and each channel reads one contiguous DDR run. Matches FLM's mem_C_1
+        # (shim ch0 -> S2MM4 -> rows 2/3, shim ch1 -> S2MM5 -> rows 4/5) and the
+        # llama engine's pack_q4k_cascade(dual_chan=True).
+        assert NCY % 2 == 0, f"dual_chan needs an even NCY (got {NCY})"
+        sh = (NCX, nbi_pc, nbj, 2, NCY // 2)
+        gi = gi.reshape(sh).transpose(0, 3, 1, 2, 4)
+        gj = gj.reshape(sh).transpose(0, 3, 1, 2, 4)
     return blocks[gi.ravel(), gj.ravel()].reshape(-1)
 
 
@@ -244,6 +254,9 @@ def build_requant_cache(fd, cache_path, model=HF_REPO, n_layers=None, verbose=Tr
     hf = HFModel(model)
     aperm = attn_out_perm(fd)
     NCX, NCY, NPH, K = fd.NCX, fd.NCY, fd.NPH, fd.K
+    # Dual-MM2S weight feed: keyed off the SAME flag the decode was built with,
+    # so the cascade order can never disagree with the xclbin.
+    DUAL = bool(getattr(fd, "W_DUAL_CHAN", 0))
     RB, NJ = fd._RB, fd._NJ
     DQ, DK, DV = fd.DQ, fd.DK, fd.DV
     INTER = fd.INTERMEDIATE
@@ -272,7 +285,10 @@ def build_requant_cache(fd, cache_path, model=HF_REPO, n_layers=None, verbose=Tr
         )
         ph[DP] = requant_q4_0(_pad_cols(R["down"], INTER))
         w = np.concatenate(
-            [pack_q4k_cascade_fast(*ph[p], NCX, NCY) for p in range(NPH)]
+            [
+                pack_q4k_cascade_fast(*ph[p], NCX, NCY, dual_chan=DUAL)
+                for p in range(NPH)
+            ]
         )
         assert w.size == W_LAYER, (w.size, W_LAYER)
         W_all.append(w)

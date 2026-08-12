@@ -50,6 +50,12 @@ every context length.
   prompt length (the prefill processes the full padded `seq_len` each call).
 - **Decode**: ~**50 tok/s** end-to-end at turbo (single MAX_L=2048 template).
 
+> Decode streams each proj column's weights on **both** of that column's shim
+> MM2S channels (`W_DUAL_CHAN`, on by default) — see
+> [fused_decode/README.md](../../fused_decode/README.md#dual-mm2s-weight-feed-w_dual_chan-on-by-default).
+> The decode figure below predates that change and is therefore conservative.
+
+
 ## Prerequisites
 
 1. **MLIR-AIR base environment** — AMD NPU2, Peano (`PEANO_INSTALL_DIR`),

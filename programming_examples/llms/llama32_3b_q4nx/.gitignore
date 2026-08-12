@@ -31,3 +31,6 @@ decode_L*.xclbin
 decode_L*.insts.bin
 decode.xclbin
 decode.insts.bin
+
+# build-flag stamp: makes the decode-template skip W_DUAL_CHAN-aware
+.decode_flags

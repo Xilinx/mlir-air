@@ -38,6 +38,15 @@ MODEL    ?= instruct
 MODEL_SOURCE ?= FastFlowLM/Llama-3.2-3B-NPU2
 export Q4NX_MODEL_SOURCE := $(MODEL_SOURCE)
 
+# Dual-MM2S weight feed for the fused decode (fused_decode/fused_decode.py).
+# ON by default. The BUILD and the RUN must agree -- the flag selects both the
+# shim channel split and the DDR weight cascade order -- so export it here and let
+# it reach the delegated decode build AND the inference driver. The requant cache
+# is keyed on it, so flipping it needs no manual cache purge.
+W_DUAL_CHAN ?= 1
+export W_DUAL_CHAN
+
+
 DRIVER := $(srcdir)/llama32_3b_q4nx_inference.py
 # The fused per-token decode engine is a SEPARATE reusable example (one dispatch =
 # 28 layers + LM head); this Makefile drives it with the 3B model selection and
@@ -119,12 +128,20 @@ compile:
 ## ~15 min, skipped when both are already present. Weight-free; needs an llvm-link
 ## from LLVM <23 (the fused_decode preflight enforces it). The driver loads
 ## the templates from here at run time.
+# W_DUAL_CHAN changes the DDR weight layout, so a warm template built with the
+# other setting must NOT be reused -- it would be fed the wrong blocks and produce
+# silent garbage. The stamp makes the skip below flag-aware.
+DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
+DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN)
+
 compile-decode:
 	@if [ -f $(srcdir)/decode_L$(LBUILD).xclbin ] && [ -f $(srcdir)/decode_L$(LBUILD).insts.bin ] \
-	    && [ -f $(srcdir)/decode_L$(LREF).xclbin ] && [ -f $(srcdir)/decode_L$(LREF).insts.bin ]; then \
-	  echo "3B decode templates already built (decode_L$(LBUILD) + decode_L$(LREF)); skipping. Run 'make clean' to force a rebuild."; \
+	    && [ -f $(srcdir)/decode_L$(LREF).xclbin ] && [ -f $(srcdir)/decode_L$(LREF).insts.bin ] \
+	    && [ "`cat $(DECODE_FLAGS_STAMP) 2>/dev/null`" = "$(DECODE_FLAGS)" ]; then \
+	  echo "3B decode templates already built (decode_L$(LBUILD) + decode_L$(LREF), $(DECODE_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
 	else \
-	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build; \
+	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build \
+	    && echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP); \
 	fi
 
 _compile_decode_build:
@@ -216,6 +233,7 @@ gen:
 ## the lit tests run `clean` before every gate. Delete it by hand to force a re-pack.
 clean:
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
+	rm -f $(DECODE_FLAGS_STAMP) 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \
 	      $(addprefix $(DEC)/,$(addsuffix .ll,$(ATTN_LL_KERNELS))) 2>/dev/null || true
 	rm -rf $(BUILD_DIR) $(srcdir)/__pycache__ $(srcdir)/_q4nx_cache_seq* 2>/dev/null || true

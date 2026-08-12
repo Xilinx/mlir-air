@@ -323,14 +323,57 @@ GRP_PCOL = (
 # 4 separate per-lead egress on 0-3, mirroring FLM mem_C_1 -- NO packet-merge), so the
 # hub must NOT sit on a proj col. Put it on col 2, the X-broadcast memtile (5 free S2MM)
 # -- exactly FLM, whose hub mem_1_1 IS its X-broadcast memtile.
+# W_DUAL_CHAN=1: drive each proj column's weight stream on BOTH of its shim MM2S
+# channels (@inW0c{cx} and @inW1c{cx}) instead of ch0 only. Decode at batch 1 is
+# ~92% weight streaming, and the reference feeds 2 MM2S per weight column while we
+# feed 1; the per-column bandwidth gap (10.2 vs 14.4 GB/s on the SAME physical
+# columns) says the column is not saturated by one channel.
+#
+# The split is SPATIAL, by cascade pair: channel 0 carries the low half of the
+# column's rows (cy 0..NCY/2-1) for every fan step, channel 1 the high half. Each
+# channel therefore feeds a DISJOINT set of cores through its own fan ring, so the
+# two run concurrently without ever being ordered against each other -- this is
+# FLM's layout (mem_C_1 takes shim ch0 on S2MM4 and ch1 on S2MM5, two independent
+# lock cycles). Each channel also reads one contiguous DDR run, so both stay single
+# 1D shim BDs and keep the air.coalesced_shim_feed cross-channel phase barrier.
+#
+# Do NOT split temporally (even/odd fan steps) instead: that makes every core's
+# MM2S BD chain alternate between the two channels' buffers, coupling the channels
+# at every step -- measured to deadlock on device. A temporal feed also cannot be a
+# single shim task, since the 10240-element fan step exceeds the AIE2 per-dim wrap
+# limit and only a contiguous 1D BD gets the wide buffer_length register.
+#
+# Requires the host weight array packed with pack_q4k_cascade(dual_chan=True).
+# Exported so the weight packers (llms/*_q4nx requant) key their cascade order and
+# their cache off the same flag as the build.
+W_DUAL_CHAN = int(_os.environ.get("W_DUAL_CHAN", "1"))
+
+
+def _wname(ci, cx):
+    """Weight channel name: the single @inW bundle when W_DUAL_CHAN is off, else
+    the per-column, shim-col-pinned channel for shim channel ci of column cx."""
+    return f"inW{ci}c{cx}" if W_DUAL_CHAN else "inW"
+
+
 MAIN_PCOL = 2 if MODEL["PAIR_ROWS"] == 1 else 1  # phys col of the main memtile
 # Faithful X-feed (reproducer core_2_2): the rms producer core
 # (tile_2_2, col2) normalizes raw X once and re-feeds it via an output-lock release
-# of N (= REFEED) into a 512 x_buffer (col2 memtile) that broadcasts 256-blocks to
-# the 16 proj cores. (the reference puts x_buffer on col1/mem_1_1, but col1 congestion makes
-# AIR's weight-fan MM2S a repeat_count BD; the golden uses col2, kept here.)
-RMS_PCOL = 2  # rms producer core + X memtile column
-XMT_PCOL = RMS_PCOL
+# of N (= REFEED) into a 512 x_buffer that broadcasts 256-blocks to the 16 proj
+# cores. (An older note here claimed col-1 congestion forced that x_buffer onto
+# col 2, away from the reference's mem_1_1. That is STALE: with W_DUAL_CHAN the
+# x_buffer sits on mem_1_1 exactly like the reference, and it has to -- see
+# XMT_PCOL below.)
+RMS_PCOL = 2  # rms producer core column
+# X-broadcast memtile column. W_DUAL_CHAN follows FLM and puts it on the MAIN/hub
+# memtile (mem_1_1) instead of col 2: FLM has NO memtile in column 2 at all -- that
+# column holds only the shim rms/rope feeds and the rms/rope cores -- and broadcasts
+# X from mem_1_1 DMA:4 to all 16 proj cores. Keeping the X memtile on col 2 while
+# also doubling the weight flows makes the pathfinder fail outright (it cannot even
+# route the one-hop rms->X xnorm packet flow tile_2_2 DMA1 -> mem_2_1 DMA0), because
+# col 2 would carry the shim feeds, both cores, AND a 16-way broadcast hub.
+# Overridable so the floorplan move can be A/B-tested independently of the
+# channel split (XMT_PCOL=1 with W_DUAL_CHAN=0 isolates the placement effect).
+XMT_PCOL = int(_os.environ.get("XMT_PCOL", MAIN_PCOL if W_DUAL_CHAN else RMS_PCOL))
 # Column of the glu-down memtile, the third producer converging on @xnorm (the
 # other two are the o-proj memtile on col 5 and the rms core itself). Distinct
 # from col 5 either way, so the convergence never merges o+down onto one MM2S
@@ -542,6 +585,7 @@ VOCAB_PER_COL = VOCAB_I2 * PAIR_ROWS * NCY * NBJ  # blocks/col per chunk
 # LM_HEAD=1 builds the vocab-mode sequence (IS_ATTN=0); default 0 = decode.
 LM_HEAD = int(_os.environ.get("LM_HEAD", "0"))
 
+
 # ===== UNIFIED single-launch decode+lm_head (one PDI, no multi-launch) =====
 # UNIFIED=1: ONE air.launch in for_(0, UNI_DEC+UNI_LM); per-wave arm =
 # (iv<UNI_DEC)?1:0 drives the herds' on-core index_switch AND a launch-scope
@@ -577,6 +621,10 @@ NBI_PH = [I2P[p] * PAIR_ROWS * NCX * NCY for p in range(NPH)]  # [96, 64, 512, 6
 PER_COL_PH = [(NBI_PH[p] // NCX) * NBJ_PH[p] for p in range(NPH)]  # per-phase NBJ
 W_FAN_STEPS = sum(pc // NCY for pc in PER_COL_PH)  # per col, all phases
 W_TOTAL_BLOCKS = sum(NBI_PH[p] * NBJ_PH[p] for p in range(NPH))  # packed q4k blocks
+if W_DUAL_CHAN:
+    # The split is spatial (each shim channel owns half the column's cores), so
+    # the only requirement is an even core count per column.
+    assert NCY % 2 == 0, f"W_DUAL_CHAN needs an even NCY (got {NCY})"
 # X 256-blocks the cores consume across all phases: per core per phase = I2*2
 # row-blocks, each reading NBJ_PH[p] 256-blocks of that phase's K. The X memtile
 # relays this many (matched put/get sizes -> balanced count-free ring, no deadlock).
@@ -758,7 +806,12 @@ def build_module():
         # X memtile = reproducer x_buffer: 512 (2 blocks) so the producer re-feed +
         # broadcast has the same slack as the reference; the proj cores' 256 ring chops it.
         xmt_l2 = MemRefType.get([2 * COL_BLOCK], bf16, memory_space=l2)
-        wfan_l2 = MemRefType.get([NCY * BLOCK_BF16], bf16, memory_space=l2)
+        # One fan get. W_DUAL_CHAN halves it: each shim channel feeds its own
+        # ring covering half the column's cores (FLM's w_buffer[0:5120] /
+        # w_buffer[5120:10240] split).
+        wfan_l2 = MemRefType.get(
+            [(NCY // (2 if W_DUAL_CHAN else 1)) * BLOCK_BF16], bf16, memory_space=l2
+        )
         grp_l2 = MemRefType.get([GRP_ROWS], bf16, memory_space=l2)
         main_l2 = MemRefType.get([MAIN_ROWS], bf16, memory_space=l2)
         relay_l2 = MemRefType.get(
@@ -978,7 +1031,29 @@ def build_module():
                 channel_decl("inKV", size=[N_ATTN_CU])
         channel_decl("attnO", size=[N_ATTN_CU])
         # W: host (per col) -> group memtile -> NCY cores.
-        channel_decl("inW", size=[NCX])
+        if W_DUAL_CHAN:
+            # PER-COLUMN channels, each PINNED to its own shim column, rather than
+            # one [NCX] bundle. Two reasons:
+            #   1. Both of a column's shim MM2S channels must sit on THAT column's
+            #      shim tile (that is the whole point -- 2x the per-column weight
+            #      bandwidth). The default placement does not guarantee it: adding
+            #      the second set of flows makes AIR hand shim col 2 to the col-1
+            #      weights and push the rms/rope feed (air.shim_col = RMS_PCOL) to
+            #      col 1, i.e. it silently violates that pin and swaps two
+            #      hand-placed columns.
+            #   2. air.shim_col is a per-DECL attribute, so a [NCX] bundle cannot
+            #      express "index k belongs on column PCOL[k]".
+            # This reproduces FLM's map exactly: shim col C ch0+ch1 -> mem_C_1 for
+            # C in PCOL, and shim col 2 -> the rms/rope tiles, with no cross-column
+            # weight route at all.
+            for _wc in range(NCX):
+                for _nm in (_wname(0, _wc), _wname(1, _wc)):
+                    _wch = channel_decl(_nm, size=[1])
+                    _wch.operation.attributes["air.shim_col"] = IntegerAttr.get(
+                        T.i32(), PCOL[_wc]
+                    )
+        else:
+            channel_decl("inW", size=[NCX])
         _wL2 = channel_decl("wL2ToL1", size=[NCX, NCY])
         _wL2.operation.attributes["air.shared_resident_ring"] = UnitAttr.get()
         # Output: leads -> group MT -> main MT -> id-demux egress.
@@ -1085,6 +1160,80 @@ def build_module():
 
                 blk = BLOCK_BF16
                 wstep = NCY * blk  # 10240 = one fan get
+
+                def _feed_wcol(_cx, _cbase, nsteps):
+                    """One proj column's weight slab for one phase.
+
+                    Single-channel (default): TWO contiguous puts on @inW so the
+                    shim-dma coalescer merges+tags them (air.coalesced_shim_feed =
+                    the cross-channel phase barrier); a single put would skip
+                    coalescing and lose that barrier.
+
+                    W_DUAL_CHAN: the slab is packed [low-row half | high-row half]
+                    (see pack_q4k_cascade(dual_chan=True)), so channel 0 takes the
+                    first half of the column -- every fan step's cy 0..NCY/2-1
+                    blocks -- and channel 1 the second. Each is still one contiguous
+                    run, and each is still fed as two puts so BOTH keep their
+                    coalesced tag and both appear in the phase group. A phase group
+                    is the 2*NCX distinct channels; the next phase's repeat opens a
+                    new group (AIRRtToNpuPass phase-barrier grouping).
+
+                    `_cx` is a Python int when W_DUAL_CHAN (per-column channels), and
+                    the scf.parallel bundle IV otherwise.
+                    """
+                    nch = 2 if W_DUAL_CHAN else 1
+                    cstep = wstep // nch  # this channel's per-step share
+                    span = nsteps * cstep  # elements per channel
+                    half = (nsteps // 2) * cstep  # step-aligned inner split
+                    for ci in range(nch):
+                        base = _cbase if ci == 0 else arith.addi(_cbase, idx(span))
+                        ch = _wname(ci, _cx)
+                        ix = [idx(0)] if W_DUAL_CHAN else [_cx]
+                        ChannelPut(
+                            ch,
+                            W,
+                            indices=ix,
+                            offsets=[base],
+                            sizes=[half],
+                            strides=[1],
+                        )
+                        ChannelPut(
+                            ch,
+                            W,
+                            indices=ix,
+                            offsets=[arith.addi(base, idx(half))],
+                            sizes=[span - half],
+                            strides=[1],
+                        )
+
+                def _feed_wcols(_wcol0, _colspan, nsteps):
+                    """Fan the phase's weight slab over the NCX proj columns.
+
+                    W_DUAL_CHAN uses per-column pinned channels, so the column index
+                    has to be a Python constant -> plain unrolled loop. Otherwise the
+                    bundle index must be an scf.parallel IV (canonical form; a
+                    temporal scf.for over a bundle index is a verifier error), and
+                    air-to-aie spatially unrolls it to the same per-column feeds.
+                    """
+                    if W_DUAL_CHAN:
+                        for _cxi in range(NCX):
+                            _cbase = (
+                                _wcol0 + _cxi * _colspan
+                                if isinstance(_wcol0, int)
+                                else arith.addi(_wcol0, idx(_cxi * _colspan))
+                            )
+                            if isinstance(_cbase, int):
+                                _cbase = idx(_cbase)
+                            _feed_wcol(_cxi, _cbase, nsteps)
+                        return
+                    _w0 = idx(_wcol0) if isinstance(_wcol0, int) else _wcol0
+                    for _cx in parallel_(NCX):
+                        _feed_wcol(
+                            _cx,
+                            arith.addi(_w0, arith.muli(_cx, idx(_colspan))),
+                            nsteps,
+                        )
+
                 for _layer in range(NLAYERS if a_iv is None else 1):
                     _wbase = _lb(W_LAYER)  # weights slab for this layer
                     _rbase = _lb(RMS_LAYER)  # rms weights slab for this layer
@@ -1190,27 +1339,7 @@ def build_module():
                             # coalescer merges+tags them (see the decode feed).
                             assert VOCAB_PER_COL % NCY == 0
                             _colspan = VOCAB_PER_COL * blk
-                            _half = _colspan // 2
-                            for _cx in parallel_(NCX):
-                                _cbase = arith.addi(
-                                    _vwb, arith.muli(_cx, idx(_colspan))
-                                )
-                                ChannelPut(
-                                    "inW",
-                                    W,
-                                    indices=[_cx],
-                                    offsets=[_cbase],
-                                    sizes=[_half],
-                                    strides=[1],
-                                )
-                                ChannelPut(
-                                    "inW",
-                                    W,
-                                    indices=[_cx],
-                                    offsets=[arith.addi(_cbase, idx(_half))],
-                                    sizes=[_colspan - _half],
-                                    strides=[1],
-                                )
+                            _feed_wcols(_vwb, _colspan, VOCAB_PER_COL // NCY)
                             # ATTENTION FULLY GATED OFF in vocab (gate-off 2026-07-15b):
                             # the 8 attn cores' bodies index_switch to an empty idle case
                             # in vocab, and every launch-scope attn channel (ropeLUT,
@@ -1455,36 +1584,17 @@ def build_module():
                                 per_col = PER_COL_PH[p]
                                 assert per_col % NCY == 0
                                 _colspan = per_col * blk
-                                _half = _colspan // 2
                                 # Spatial fan over the NCX proj columns: the bundle index
                                 # @inW[cx] must be an scf.parallel IV (canonical form; a
                                 # temporal scf.for over a bundle index is a verifier error).
-                                # Each column is one contiguous DDR block fed as TWO halves
-                                # so the shim-dma coalescer merges+tags them
-                                # (air.coalesced_shim_feed = the cross-channel phase barrier);
-                                # a single put would skip coalescing and lose that barrier.
+                                # Each column is one contiguous DDR block; _feed_wcol
+                                # emits it as TWO halves per shim channel so the
+                                # coalescer merges+tags them (air.coalesced_shim_feed =
+                                # the cross-channel phase barrier) -- a single put would
+                                # skip coalescing and lose that barrier.
                                 # air-to-aie spatially unrolls this to the per-column feeds.
                                 _wcol0 = _lo(_wbase, woff)  # _wbase + woff (col 0 base)
-                                for _cx in parallel_(NCX):
-                                    _cbase = arith.addi(
-                                        _wcol0, arith.muli(_cx, idx(_colspan))
-                                    )
-                                    ChannelPut(
-                                        "inW",
-                                        W,
-                                        indices=[_cx],
-                                        offsets=[_cbase],
-                                        sizes=[_half],
-                                        strides=[1],
-                                    )
-                                    ChannelPut(
-                                        "inW",
-                                        W,
-                                        indices=[_cx],
-                                        offsets=[arith.addi(_cbase, idx(_half))],
-                                        sizes=[_colspan - _half],
-                                        strides=[1],
-                                    )
+                                _feed_wcols(_wcol0, _colspan, per_col // NCY)
                                 woff += NCX * per_col * blk
                                 if MULTIBLK and p == 0:
                                     _emit_append()
@@ -1638,28 +1748,54 @@ def build_module():
                     # ===== weight fan: per col MT peels NCY blocks/(i,j) -> cores ==
                     # Phase-agnostic flat ring (reproducer single w_buffer): W_FAN_STEPS
                     # = total (i,j) steps across all phases; each get fans NCY cy.
+                    #
+                    # W_DUAL_CHAN emits ONE SUCH RING PER SHIM CHANNEL, each owning a
+                    # disjoint half of the column's cores -- @inW drives cy 0..NCY/2-1,
+                    # @inW2 drives the rest. This is FLM's mem_C_1 exactly: shim ch0 on
+                    # S2MM4 -> w_buffer[0:5120] -> MM2S0/1 -> rows 2/3, shim ch1 on
+                    # S2MM5 -> w_buffer[5120:] -> MM2S2/3 -> rows 4/5, on two
+                    # INDEPENDENT lock cycles. A SPATIAL split is what makes the two
+                    # channels usable: they share no consumer, so neither is ever
+                    # ordered against the other.
+                    #
+                    # A temporal split (@inW even fan steps / @inW2 odd) was tried and
+                    # DEADLOCKS the first decode dispatch: it gives every core a single
+                    # MM2S BD chain alternating between both channels' buffers, so the
+                    # two shim channels are cross-coupled at every fan step. FLM has no
+                    # such edge. Do not reintroduce it.
+                    _fan_groups = (
+                        [(0, 0, NCY // 2), (1, NCY // 2, NCY)]
+                        if W_DUAL_CHAN
+                        else [(0, 0, NCY)]
+                    )
                     for cx in range(NCX):
-                        for _ in for_(idx(0), idx(W_FAN_STEPS), idx(1)):
-                            wf = AllocOp(wfan_l2, [], [])
-                            wf.operation.attributes["air.memtile_col"] = (
-                                IntegerAttr.get(T.i32(), PCOL[cx])
-                            )
-                            wf.operation.attributes["air.no_split"] = UnitAttr.get()
-                            ChannelGet("inW", wf, indices=[idx(cx)])
-                            for cy in range(NCY):
-                                # 1D fixed-offset read (reproducer w_buffer MM2S
-                                # shape) so AIR detects the 2-buffer rotation ->
-                                # count-free next_bd ring (NOT a repeat_count BD).
-                                ChannelPut(
-                                    "wL2ToL1",
-                                    wf,
-                                    indices=[idx(cx), idx(cy)],
-                                    offsets=[cy * BLOCK_BF16],
-                                    sizes=[BLOCK_BF16],
-                                    strides=[1],
+                        for _ci, _cy0, _cy1 in _fan_groups:
+                            _wch = _wname(_ci, cx)
+                            for _ in for_(idx(0), idx(W_FAN_STEPS), idx(1)):
+                                wf = AllocOp(wfan_l2, [], [])
+                                wf.operation.attributes["air.memtile_col"] = (
+                                    IntegerAttr.get(T.i32(), PCOL[cx])
                                 )
-                            DeallocOp(wf)
-                            yield_([])
+                                wf.operation.attributes["air.no_split"] = UnitAttr.get()
+                                ChannelGet(
+                                    _wch,
+                                    wf,
+                                    indices=[idx(0) if W_DUAL_CHAN else idx(cx)],
+                                )
+                                for cy in range(_cy0, _cy1):
+                                    # 1D fixed-offset read (reproducer w_buffer MM2S
+                                    # shape) so AIR detects the 2-buffer rotation ->
+                                    # count-free next_bd ring (NOT a repeat_count BD).
+                                    ChannelPut(
+                                        "wL2ToL1",
+                                        wf,
+                                        indices=[idx(cx), idx(cy)],
+                                        offsets=[(cy - _cy0) * BLOCK_BF16],
+                                        sizes=[BLOCK_BF16],
+                                        strides=[1],
+                                    )
+                                DeallocOp(wf)
+                                yield_([])
 
                     # ===== output assembly + id-demux egress (count-free ring) =====
                     # ONE for_ loop over all rounds -> count-free next_bd rings (NOT
