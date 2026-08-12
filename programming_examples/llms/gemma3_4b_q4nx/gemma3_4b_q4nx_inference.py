@@ -28,7 +28,7 @@ equals full causal), so for the Paris gate it is not yet wired; dual-theta + per
 qk-norm ARE wired (they affect every position).
 
 Run:
-  python3 gemma3_4b_q4nx_inference.py                 # Paris gate (greedy, first token 9079)
+  python3 gemma3_4b_q4nx_inference.py                 # Paris gate (greedy, PARIS_GREEDY)
   python3 gemma3_4b_q4nx_inference.py --prompt "The capital of France is" --n-tokens 12
   python3 gemma3_4b_q4nx_inference.py --numpy-prefill # numpy-oracle prefill instead
 """
@@ -49,6 +49,12 @@ MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma3-4B-NPU2")
 # <bos> + "The capital of France is"  (Gemma3 tokenizer); numpy ref -> 9079 " Paris".
 PARIS_PROMPT = [2, 818, 5279, 529, 7001, 563]
 PARIS_FIRST = 9079
+# Greedy continuation at the gate shape (`make verify` runs --n-tokens 9). The gate
+# checks this, not just PARIS_FIRST: a decode that starts right and then drifts is a
+# real failure mode here -- a stale decode template yields a correct first token and
+# fluent garbage after it, which a first-token gate passes. Greedy, so deterministic;
+# re-record from `make run` if a deliberate numerics change moves it.
+PARIS_GREEDY = [9079, 236761, 108, 50429, 563, 496, 4185, 3988, 573, 1610]
 EOS_IDS = (1, 106)  # <eos>, <end_of_turn>
 _Q4NX_CACHE = os.path.expanduser("~/.cache/q4nx_gemma")
 
@@ -406,6 +412,30 @@ def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True, numpy_prefill=F
     return gen_ids
 
 
+def _first_diff(got, want):
+    """Index of the first differing token, or the length of the shorter run."""
+    for i, (g, w) in enumerate(zip(got, want)):
+        if g != w:
+            return i
+    return min(len(got), len(want))
+
+
+def _paris_verdict(gen_ids):
+    """Lines to print for the Paris gate. The two misses are separated because they
+    point at different halves: the first token comes out of the prefill, the rest
+    out of the decode loop."""
+    n = min(len(gen_ids), len(PARIS_GREEDY))
+    if not gen_ids or gen_ids[0] != PARIS_FIRST:
+        return [f"*** MISS *** first token {gen_ids[:1]}, expected [{PARIS_FIRST}]"]
+    if gen_ids[:n] != PARIS_GREEDY[:n]:
+        return [
+            f"*** MISS *** decode drifted at token {_first_diff(gen_ids, PARIS_GREEDY)}",
+            f"    expected {PARIS_GREEDY[:n]}",
+            f"    got      {gen_ids[:n]}",
+        ]
+    return ["*** PARIS ***"]
+
+
 def _detok(ids, model=MODEL_DEFAULT):
     try:
         from transformers import AutoTokenizer
@@ -448,9 +478,8 @@ def main():
     print(f"[inference] gen ids: {gen_ids}")
     print(f"[inference] TEXT: {_detok(gen_ids, args.model)!r}")
     if prompt == PARIS_PROMPT:
-        print(
-            "*** PARIS ***" if gen_ids and gen_ids[0] == PARIS_FIRST else "*** MISS ***"
-        )
+        for line in _paris_verdict(gen_ids):
+            print(line)
 
 
 if __name__ == "__main__":
