@@ -587,9 +587,11 @@ VOCAB_FULL_ROWBLKS = VOCAB_SIZE_PADDED_FULL // ROW_BLOCK  # 4032
 #   3. VOCAB_I2 even               (the vocab relay drains whole-K blocks, so
 #      K/PAYLOAD = 4 must divide VOCAB_RNDS = VOCAB_I2*PAIR_ROWS; odd values
 #      floor-truncate the round count -> DEADLOCK. See the 3B entry's note.)
-#   4. 2*VOCAB_I2 <= 63            (the refeed credit is baked into ONE producer lock
-#      and the AIE-ML lock is 7-bit, max +63; larger makes AcquireGreaterEqual(N)
-#      unsatisfiable -> DEADLOCK. See the xnorm re-broadcast comment.)
+#   4. 2*VOCAB_I2 <= 63            (HISTORICAL: held when the whole VOCAB_RNDS xnorm
+#      count sat in ONE producer credit lock and the AIE-ML lock is 7-bit, max +63;
+#      larger made AcquireGreaterEqual(N) unsatisfiable -> DEADLOCK. The re-broadcast
+#      now carries only K/PAYLOAD=4 per outer trip, so the credit no longer scales
+#      with VOCAB_I2. Kept as the tested envelope -- larger I2 is untested on device.)
 #
 # Even divisors of 126 are {2,6,14,18,42,126}; (4) rules out 42 and 126, leaving
 # {2,6,14,18} -> UNI_LM {63,21,9,7}. 18 is therefore the largest legal chunk and 7 the
@@ -3222,21 +3224,23 @@ def build_module():
                                 ChannelGet("rmsW2", a_w2l, indices=[idx(0)])
                                 DeallocOp(a_w2l)
                             a_xnl = AllocOp(rms_l1, [], [])
-                            # the reference-FAITHFUL x re-broadcast (was one put x VOCAB_RNDS).
-                            # the reference re-supplies x every vocab round through value-1 ping-pong
-                            # rings and re-runs rms each persistent-loop iteration; the count
-                            # lives in the loop + runtime, NEVER in a lock (all the reference lock
-                            # values are 1/2/4). Baking N=VOCAB_RNDS as a re-broadcast puts it
-                            # into ONE producer-side credit lock; the AIE-ML lock is 7-bit
-                            # (max +63, xaie_locks_aieml.c 0x7F), so N>63 (I2>=32) made
-                            # AcquireGreaterEqual(N) unsatisfiable -> DEADLOCK, forcing the
-                            # 9-wave split (2*I2<=63). Here we mirror the reference: re-normalize + put
-                            # xnorm PER ROUND (a_xnl is rewritten each round, so this is n
-                            # productions and air-annotate-refeed leaves it alone). The
-                            # sends are INTERLEAVED with the outY->layerOut relay (this ONE
-                            # rms core both produces x and relays logits, unlike the reference's split
-                            # tiles) so the producer never serializes ahead of the drain and
-                            # backpressure-deadlocks: XN_PER_BLK (=K/PAYLOAD) x-sends per
+                            # x re-broadcast. Baking the WHOLE count N=VOCAB_RNDS into one
+                            # re-broadcast puts it in a single producer-side credit lock, and
+                            # the AIE-ML lock is 7-bit (max +63, xaie_locks_aieml.c 0x7F), so
+                            # N>63 (I2>=32) made AcquireGreaterEqual(N) unsatisfiable ->
+                            # DEADLOCK. That is why the count is split: the re-broadcast below
+                            # carries only XN_PER_BLK (=K/PAYLOAD=4) and the outer loop supplies
+                            # the rest, so the credit lock is a constant 4 -- independent of
+                            # VOCAB_I2, and the same 1/2/4 lock values the reference uses.
+                            # (Constraint 4 in the VOCAB_I2 derivation above therefore no longer
+                            # binds through this path; it has not been re-tested at larger I2.)
+                            # The sends are INTERLEAVED with the outY->layerOut relay -- this ONE
+                            # rms core both produces x and relays logits, and the reference does
+                            # the same on its rms tile CT02=tile(2,2) (x broadcast on MM2S DMA0
+                            # -> mem_tile_1_1, logits on MM2S DMA1 -> shim_noc_tile_3_0; AIR
+                            # mirrors that port split, layerOut on MM2S0 / xnorm on MM2S1). The
+                            # interleave keeps the producer from serializing ahead of the drain
+                            # and backpressure-deadlocking: XN_PER_BLK x-sends per
                             # drained K-block. Total x-sends = VOCAB_RNDS, drain blocks =
                             # VOCAB_RNDS*PAYLOAD/K. rms recompute per round is negligible vs
                             # the vocab GEMV (matches the reference re-running rms per row-block).
@@ -3251,24 +3255,43 @@ def build_module():
                                 f"{VOCAB_RNDS}, not a multiple of K/PAYLOAD="
                                 f"{_xn_per_blk}"
                             )
+                            # FLM-FAITHFUL final norm (rms_residual.cc, the
+                            # IS_ATTN[0]==0 branch): the reference calls rms_norm
+                            # ONCE for the whole LM head, before its vocab loop, and
+                            # the loop body then only re-AUTHORIZES DMA re-sends of
+                            # that one buffer (_lock_release(y_cons_lock,
+                            # y_repeats_per_round)) plus a memcpy relay of the
+                            # logits. It does NOT re-normalize per round -- the
+                            # earlier comment here claimed it did, and that is what
+                            # put the call inside the loop.
+                            # a_xl (raw x), a_wl (the norm weight) and _arm are all
+                            # loop-invariant, so every one of those calls recomputed
+                            # the identical bytes: VOCAB_RNDS per wave, 252 per token
+                            # at ~1.5k cycles each, sitting directly in front of each
+                            # x-send that the 16 proj cores wait on.
+                            CallOp(_rms_final, [a_xnl, a_xl, a_wl, _arm])
                             for _rv in for_(idx(0), idx(_voc_blks_2k), idx(1)):
-                                for _xr in for_(idx(0), idx(_xn_per_blk), idx(1)):
-                                    CallOp(_rms_final, [a_xnl, a_xl, a_wl, _arm])
-                                    # Each vocab round emits x ONCE: VOCAB_RNDS
-                                    # distinct puts give VOCAB_RNDS broadcasts,
-                                    # matching the X memtile's VOCAB_RNDS*(K/(2*
-                                    # COL_BLOCK)) gets. This loop re-runs rms into
-                                    # a_xnl every trip, so it is n productions, not
-                                    # a re-broadcast, and air-annotate-refeed
-                                    # leaves it alone.
-                                    ChannelPut(
+                                # a_xnl is now loop-invariant, so this IS a
+                                # re-broadcast: air-annotate-refeed collapses it to
+                                # one put whose credit lock is _xn_per_blk (=4) --
+                                # far inside the 7-bit (max +63) AIE-ML lock, and the
+                                # same 1/2/4 lock values the reference uses. The
+                                # interleave the backpressure deadlock depends on is
+                                # UNCHANGED: the drain below still runs between every
+                                # group of _xn_per_blk x-sends, exactly as when the
+                                # rms call sat in the inner loop. Total productions
+                                # stay _voc_blks_2k*_xn_per_blk == VOCAB_RNDS, so the
+                                # X memtile's get count is untouched.
+                                refeed(
+                                    _xn_per_blk,
+                                    lambda: ChannelPut(
                                         "xnorm",
                                         a_xnl,
                                         offsets=[0],
                                         sizes=[K],
                                         strides=[1],
-                                    )
-                                    yield_([])
+                                    ),
+                                )
                                 ChannelGet(
                                     "outY",
                                     a_v,
