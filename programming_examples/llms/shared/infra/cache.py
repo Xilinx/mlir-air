@@ -380,12 +380,16 @@ class KernelCache:
             import air
 
             roots = [Path(p) / "_mlir_libs" for p in air.__path__]
-            libs = sorted(l for r in roots for l in r.glob("_air*.so"))
+            libs = sorted(lib for r in roots for lib in r.glob("_air*.so"))
             if not libs:
                 raise FileNotFoundError("no _air*.so under air/_mlir_libs")
-            ids["air_lib"] = ";".join(
-                f"{l.name}:{l.stat().st_size}:{int(l.stat().st_mtime)}" for l in libs
-            )
+            # One stat per file: two calls could straddle a rebuild and pair a
+            # stale size with a fresh mtime, giving a stamp that matches neither.
+            stamps = []
+            for lib in libs:
+                st = lib.stat()
+                stamps.append(f"{lib.name}:{st.st_size}:{int(st.st_mtime)}")
+            ids["air_lib"] = ";".join(stamps)
         except Exception as e:
             ids["air_lib"] = f"?({type(e).__name__})"
         return ids
