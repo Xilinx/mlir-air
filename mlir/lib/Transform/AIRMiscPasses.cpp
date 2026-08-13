@@ -2177,6 +2177,20 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
         optOut = exec->hasAttr(air::attrs::NoSplit);
     if (optOut)
       continue;
+    // Already placed: this pass exists to distribute buffers that are
+    // *implicitly* spread over several memtiles (see the pass description). A
+    // buffer carrying an explicit air.memtile_col is assigned to one named
+    // memtile, so there is nothing to distribute -- every sub-buffer would
+    // belong to the same column, multiplying that memtile's DMA blocks for no
+    // gain. Worse, the sub-allocs are created fresh below and do not inherit
+    // the attribute, so partitioning silently drops the placement.
+    //
+    // Test exactly what AIRToAIE honours -- an IntegerAttr on the alloc itself
+    // (see allocPinCol) -- so the split decision and the placement decision
+    // cannot disagree. A pin that AIRToAIE would ignore must not suppress the
+    // split either, or the buffer ends up neither distributed nor placed.
+    if (allocOp->getAttrOfType<IntegerAttr>(air::attrs::MemtileCol))
+      continue;
     Value memref = allocOp.getMemref();
     if (auto exec = dyn_cast_if_present<air::ExecuteOp>(allocOp->getParentOp()))
       memref = exec->getResult(1);

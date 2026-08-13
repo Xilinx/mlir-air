@@ -2518,7 +2518,7 @@ void L2MemrefToMemTileMap(
   // Returns the user-pinned col for an alloc if it carries
   // `air.memtile_col`, else -1.
   auto allocPinCol = [](memref::AllocOp a) -> int {
-    if (auto attr = a->getAttrOfType<IntegerAttr>("air.memtile_col"))
+    if (auto attr = a->getAttrOfType<IntegerAttr>(air::attrs::MemtileCol))
       return static_cast<int>(attr.getInt());
     return -1;
   };

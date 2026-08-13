@@ -1246,7 +1246,6 @@ def build_module():
                             xb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), XMT_COL)
                             )
-                            xb.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet(
                                 src,
                                 xb,
@@ -1302,7 +1301,6 @@ def build_module():
                                 wf.operation.attributes["air.memtile_col"] = (
                                     IntegerAttr.get(T.i32(), PROJ_COL0 + cx)
                                 )
-                                wf.operation.attributes["air.no_split"] = UnitAttr.get()
                                 ChannelGet(
                                     _wch,
                                     wf,
@@ -1340,7 +1338,6 @@ def build_module():
                             cbuf.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), PROJ_COL0 + cx)
                             )
-                            cbuf.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet(
                                 "outA",
                                 cbuf,
@@ -1371,7 +1368,6 @@ def build_module():
                         hbuf.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                             T.i32(), XMT_COL
                         )
-                        hbuf.operation.attributes["air.no_split"] = UnitAttr.get()
                         ChannelGet(
                             "toHub",
                             hbuf,
@@ -1820,7 +1816,6 @@ def build_module():
                     qmtb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                         T.i32(), QMT_COL
                     )
-                    qmtb.operation.attributes["air.no_split"] = UnitAttr.get()
                     ChannelGet(
                         "hostQ" if ROPE_ECHO else "ropeQ", qmtb, indices=[idx(0)]
                     )
@@ -1850,12 +1845,10 @@ def build_module():
                             kb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), ATTN_COL)
                             )
-                            kb.operation.attributes["air.no_split"] = UnitAttr.get()
                             vb = AllocOp(kvcomb_l2, [], [])
                             vb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), ATTN_COL)
                             )
-                            vb.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet("inKV_K", kb, indices=[idx(gi)])
                             ChannelGet("inKV_V", vb, indices=[idx(gi)])
                             for _lc, _cc in enumerate(_cus):
@@ -2006,7 +1999,6 @@ def build_module():
                         # OREF_VIA_RMS: no refeed at the memtile -- it hands the gathered o
                         # over once and the rms core does the OPROJ_REFEED re-broadcast.
                         _oref_refeed_here = not (OREF_2HOP or OREF_VIA_RMS)
-                        omtb.operation.attributes["air.no_split"] = UnitAttr.get()
                         if OREF_NOCHAIN:
                             omtb.operation.attributes["air.no_chain_lock"] = (
                                 UnitAttr.get()
@@ -2064,7 +2056,6 @@ def build_module():
                             omt2.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), OREF2_COL)
                             )
-                            omt2.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet(
                                 "oref2",
                                 omt2,
@@ -2103,7 +2094,6 @@ def build_module():
                         db.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                             T.i32(), 0
                         )
-                        db.operation.attributes["air.no_split"] = UnitAttr.get()
                         # UNROLLED gather (constant offsets), not a rolled scf.for with
                         # an IV-derived offset. Rolled, the NGLU=22 gets lower to a BD ring
                         # whose wrap does not divide 22, so chunks are duplicated and

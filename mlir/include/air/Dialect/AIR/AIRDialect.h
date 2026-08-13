@@ -99,6 +99,10 @@ constexpr StringLiteral NoChainLock = "air.no_chain_lock";
 // hand-written aggregator patterns where splitting would multiply the
 // launch-level shim endpoint count.
 constexpr StringLiteral NoSplit = "air.no_split";
+// Explicit L2 placement (i32) on a memref.alloc (or its enclosing air.execute):
+// pin this buffer to that memtile column. Read by AIRToAIE's memtile bucketing,
+// and by air-split-l2-memref, which leaves an explicitly-placed buffer intact.
+constexpr StringLiteral MemtileCol = "air.memtile_col";
 } // namespace attrs
 
 // Copy the DMA-steering / runtime-ordering markers
