@@ -38,7 +38,10 @@
 // time-multiplex). Pre-fix the direct-to-core channel got its own shim
 // LTO because its bucket key (col=0) didn't match the memtile-routed
 // channels' bucket key (Op*=memtile LTO).
-// CHECK:        %[[shim:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// The bucket col the two flows agree on is stamped on the LTO, so the shim
+// lands in the column its consumers are in rather than wherever the placer's
+// centroid would independently put a col-less tile.
+// CHECK:        %[[shim:.*]] = aie.logical_tile<ShimNOCTile>(0, ?)
 // CHECK-NOT:    aie.logical_tile<ShimNOCTile>
 // CHECK-DAG:    aie.shim_dma_allocation @air_pkt_a(%[[shim]], MM2S, 0)
 // CHECK-DAG:    aie.shim_dma_allocation @air_pkt_b(%[[shim]], MM2S, 0)

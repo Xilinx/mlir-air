@@ -12,10 +12,13 @@
 // Path B buckets shim allocations by the far-side LTO Operation*, so each
 // of the 4 distinct memtile LTOs gets its own shim LTO — preserving the
 // 1-shim-per-compute-col placement that keeps packet routing legal.
-// WHOLEARRAY-DAG: %[[shim_noc_tile_0:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
-// WHOLEARRAY-DAG: %[[shim_noc_tile_1:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
-// WHOLEARRAY-DAG: %[[shim_noc_tile_2:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
-// WHOLEARRAY-DAG: %[[shim_noc_tile_3:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
+// Each shim carries the column its bucket resolved to, so the 1-shim-per-col
+// map is stated here rather than left to the placer's centroid: channel k's
+// shim sits in column k.
+// WHOLEARRAY-DAG: %[[shim_noc_tile_0:.*]] = aie.logical_tile<ShimNOCTile>(0, ?)
+// WHOLEARRAY-DAG: %[[shim_noc_tile_1:.*]] = aie.logical_tile<ShimNOCTile>(1, ?)
+// WHOLEARRAY-DAG: %[[shim_noc_tile_2:.*]] = aie.logical_tile<ShimNOCTile>(2, ?)
+// WHOLEARRAY-DAG: %[[shim_noc_tile_3:.*]] = aie.logical_tile<ShimNOCTile>(3, ?)
 // WHOLEARRAY-COUNT-4: aie.packet_flow({{[0-3]}}) {
 // WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_0(%[[shim_noc_tile_0]], MM2S, 0)
 // WHOLEARRAY-DAG: aie.shim_dma_allocation @air_channel_2_1(%[[shim_noc_tile_1]], MM2S, 0)

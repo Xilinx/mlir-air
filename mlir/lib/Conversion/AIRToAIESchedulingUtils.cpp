@@ -2019,8 +2019,14 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     }
     tileLT = AIE::LogicalTileOp::create(
         b, device.getLoc(), AIE::AIETileType::ShimNOCTile,
-        /*col=*/shimColPin >= 0 ? b.getI32IntegerAttr(shimColPin)
-                                : IntegerAttr(),
+        // Stamp the bucket column (already == shimColPin when pinned). This is
+        // the column the allocator grouped the flow into; emitting the LTO
+        // col-less discards it and lets aie-place-tiles re-derive one from its
+        // own centroid, which can disagree -- a weight feed bucketed on col 1
+        // was independently placed on col 3, giving a cross-column flow. Under
+        // SequentialPlacer the col is a preference, not a constraint
+        // (findTileWithCapacity ranks by distance), so a full column drifts.
+        /*col=*/bucketCol >= 0 ? b.getI32IntegerAttr(bucketCol) : IntegerAttr(),
         /*row=*/IntegerAttr(),
         /*allocation_scheme=*/StringAttr());
   }
