@@ -129,6 +129,21 @@ compile-decode:
 	    && echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP); \
 	fi
 
+## Staircase templates: one pair per ATTN_MAXL window; each token dispatches on the
+## smallest one covering the context. Writes $(DECODE_WINDOWS_STAMP) so a stray pair is
+## rejected at load rather than silently changing which window is selected.
+WINDOWS ?= 64 128 256 512 1024 2048
+DECODE_WINDOWS_STAMP := $(srcdir)/.decode_windows
+
+compile-decode-windows:
+	@for W in $(WINDOWS); do \
+	  echo ">>> staircase window ATTN_MAXL=$$W"; \
+	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build LBUILD=$$W \
+	    || exit 1; \
+	done
+	@echo "$(WINDOWS)" > $(DECODE_WINDOWS_STAMP)
+	@echo "Staircase templates built (ATTN_MAXL: $(WINDOWS)). Run with DECODE_STAIRCASE=1."
+
 _compile_decode_build:
 	@# Delegate the llvm-link version preflight to the engine that owns it rather
 	@# than keeping a copy here: the rule (LLVM <23) must stay in one place, in

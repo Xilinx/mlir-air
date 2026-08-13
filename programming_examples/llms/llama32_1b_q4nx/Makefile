@@ -63,7 +63,7 @@ VERIFY_RUNNER = $(srcdir)/../verify/verify_runner.py
 RUNNER_ADAPTER = llama32_1b_q4nx.verify_adapter
 
 .PHONY: help compile run profile chat verify verify-full diagnosis clean \
-        compile-decode profile-prefill verify-paris ask gen
+        compile-decode compile-decode-windows profile-prefill verify-paris ask gen
 
 help:
 	@echo "============================================================"
@@ -108,6 +108,10 @@ compile:
 ## Reproducibility). The inference driver loads its templates at run time.
 compile-decode:
 	$(MAKE) -C $(FUSED_DECODE) compile-decode
+
+## Staircase templates (one pair per ATTN_MAXL window); run with DECODE_STAIRCASE=1.
+compile-decode-windows:
+	$(MAKE) -C $(FUSED_DECODE) compile-decode-windows
 
 ## Run unified inference (NPU prefill + fused NPU decode).
 run:

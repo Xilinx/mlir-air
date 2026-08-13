@@ -74,6 +74,8 @@ help:
 ## opt then rejects the merged IR ("Broken module found"). The preflight aborts on it.
 ## This is the same rule the lit harness gates on (lit.cfg.py, feature llvm_link_pre23);
 ## the two MUST agree -- see the preflight comment below.
+LBUILD ?= 2048
+LREF   := $(shell echo $$(($(LBUILD) - 1)))
 DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
 DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN)
 
@@ -117,6 +119,23 @@ preflight-llvm-link:
 	    echo "ERROR: llvm-link is LLVM $$VER; the inline-attn merge needs LLVM <23"; \
 	    echo "       (see README Reproducibility for how to fetch one)"; exit 1; fi
 
+## Staircase templates: one pair per ATTN_MAXL window. Each token dispatches on the
+## smallest window covering the current context, so a short context streams
+## proportionally less KV. Writes $(DECODE_WINDOWS_STAMP) so the driver can reject a
+## directory whose templates do not match what was built.
+WINDOWS ?= 64 128 256 512 1024 2048
+DECODE_WINDOWS_STAMP := $(srcdir)/.decode_windows
+
+compile-decode-windows:
+	@for W in $(WINDOWS); do \
+	  echo ">>> staircase window ATTN_MAXL=$$W"; \
+	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build LBUILD=$$W \
+	    || exit 1; \
+	done
+	@echo "$(WINDOWS)" > $(DECODE_WINDOWS_STAMP)
+	@echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP)
+	@echo "Staircase templates built (ATTN_MAXL: $(WINDOWS)). Run with --staircase."
+
 _compile_decode_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
@@ -132,13 +151,13 @@ _compile_decode_build: preflight-llvm-link
 	@# patch any context length in [1, 2048] into one template at runtime (recompile-free decode).
 	@# The block loop is single-buffered: air-label-scf-for-to-ping-pong declines it, because the
 	@# running max and accumulator are live across blocks. Turbo for ~50 tok/s.
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=2048 python3 $(DECODE_DRIVER) >/tmp/decode_L2048.log 2>&1; \
-	  if [ -f decode.xclbin ]; then mv -f decode.xclbin decode_L2048.xclbin; mv -f decode.insts.bin decode_L2048.insts.bin; \
-	  else echo "decode_L2048 FAILED (see /tmp/decode_L2048.log)"; exit 1; fi
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=2047 python3 $(DECODE_DRIVER) >/tmp/decode_L2047.log 2>&1; \
-	  if [ -f decode.insts.bin ]; then mv -f decode.insts.bin decode_L2047.insts.bin; mv -f decode.xclbin decode_L2047.xclbin; \
-	  else echo "decode_L2047 FAILED (see /tmp/decode_L2047.log)"; exit 1; fi
-	@echo "Decode build complete: decode_L2048 + decode_L2047 templates."
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) python3 $(DECODE_DRIVER) >/tmp/decode_L$(LBUILD).log 2>&1; \
+	  if [ -f decode.xclbin ]; then mv -f decode.xclbin decode_L$(LBUILD).xclbin; mv -f decode.insts.bin decode_L$(LBUILD).insts.bin; \
+	  else echo "decode_L$(LBUILD) FAILED (see /tmp/decode_L$(LBUILD).log)"; exit 1; fi
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) python3 $(DECODE_DRIVER) >/tmp/decode_L$(LREF).log 2>&1; \
+	  if [ -f decode.insts.bin ]; then mv -f decode.insts.bin decode_L$(LREF).insts.bin; mv -f decode.xclbin decode_L$(LREF).xclbin; \
+	  else echo "decode_L$(LREF) FAILED (see /tmp/decode_L$(LREF).log)"; exit 1; fi
+	@echo "Decode build complete: decode_L$(LBUILD) + decode_L$(LREF) templates."
 
 ## Remove compiled kernels + decode templates.
 clean:

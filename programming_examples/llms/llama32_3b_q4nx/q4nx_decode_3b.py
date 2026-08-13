@@ -25,6 +25,9 @@ for _p in (str(_PROG), str(_LLMS), str(_DEC), str(_1B), str(_HERE)):
         sys.path.insert(0, _p)
 
 
+import decode_staircase as stair  # noqa: E402  (needs the sys.path above)
+
+
 def llama3_rope(
     n_pos,
     dim,
@@ -209,9 +212,7 @@ class FusedDecode3B:
         # covering the current L. The compiled KV readback streams ATTN_MAXL positions
         # whatever L is, so a smaller window moves proportionally fewer DDR bytes/token.
         # Off by default -- one window, byte-identical to the single-template path.
-        self.windows = (
-            self.gen.calibrated_windows() if staircase else [self.gen.attn_maxl]
-        )
+        self.windows = stair.resolve_windows(self.gen, staircase)
         # BOs and the rope table are sized for the largest window and shared by all.
         self.ATTN_MAXL = max(self.windows)
         self.rope_cos, self.rope_sin = llama3_rope(self.ATTN_MAXL, self.DH)
@@ -234,13 +235,7 @@ class FusedDecode3B:
         self.dev = xrt.device(0)
         self.TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
-        self._kern = {}
-        for m in self.windows:
-            xb = xrt.xclbin(self.gen.xclbin_for_maxl(m))
-            self.dev.register_xclbin(xb)
-            c = xrt.hw_context(self.dev, xb.get_uuid())
-            xk = [k for k in xb.get_kernels() if "MLIR_AIE" in k.get_name()][0]
-            self._kern[m] = (c, xrt.kernel(c, xk.get_name()))  # tuple keeps ctx alive
+        self._kern = stair.open_windows(self.dev, xrt, self.gen, self.windows)
         self.cur_maxl = self.ATTN_MAXL
         self.kern = self._kern[self.cur_maxl][1]
         g = self.kern.group_id
@@ -263,62 +258,22 @@ class FusedDecode3B:
 
         # Per window: insts base + the L-dependent word slope (RTP-L + KV-append
         # offsets, from that window's two builds) and its own instruction BO.
-        self._ist = {}
-        for m in self.windows:
-            i1 = self.gen.insts_for(m, 1)
-            i2 = self.gen.insts_for(m, 2)
-            ld = np.where(i1 != i2)[0]
-            ib = xrt.bo(self.dev, i1.nbytes, xrt.bo.cacheable, g(1))
-            self._ist[m] = dict(
-                ld=ld,
-                base=i1[ld].astype(np.int64),
-                slope=i2[ld].astype(np.int64) - i1[ld].astype(np.int64),
-                buf=i1.astype(np.uint32).copy(),
-                size=int(i1.size),
-                ib=ib,
-            )
+        self._ist = stair.make_insts_states(self.gen, xrt, self.dev, g(1), self.windows)
+        self._geom = stair.KVGeometry(
+            self.N_LAYERS, KVSZ_TOK, fd.REGION_W, fd.NGRP, self.LREG
+        )
         self._use_window(self.cur_maxl)
 
     def _use_window(self, m):
         """Point the active kernel / insts state at window `m` (no KV movement)."""
-        st = self._ist[m]
+        self._st = self._ist[m]
         self.cur_maxl = m
         self.kern = self._kern[m][1]
-        self.ib = st["ib"]
-        self.ld, self.ld_base, self.ld_slope = st["ld"], st["base"], st["slope"]
-        self.insts_buf, self.insts_size = st["buf"], st["size"]
-
-    def _cur_lreg(self, maxl=None):
-        """KV elements per layer at window `maxl` (default: the active window)."""
-        return (self.cur_maxl if maxl is None else maxl) * self.fd.KVSZ_TOK
+        self.ib = self._st["ib"]
 
     def _respace_kv(self, old_maxl, new_maxl, live):
-        """Re-lay the `live` filled positions from one window's KV layout into another's.
-
-        The cache is region-major with region_stride = ATTN_MAXL*REGION_W, so changing
-        window re-spaces the regions while each region's live prefix is unchanged.
-        Gathered to a compact temp first, so growing and shrinking are both safe. Cost
-        is proportional to `live`, and a crossing happens exactly when `live` is small.
-        """
-        if old_maxl == new_maxl or live <= 0:
-            return
-        fd = self.fd
-        R, NR = fd.REGION_W, 2 * fd.NGRP
-        self.kvc.sync(self.FROM)
-        src = np.frombuffer(
-            self.kvc.map(), dtype=bfloat16, count=self.N_LAYERS * self.LREG
-        )
-        dst = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
-        n = live * R
-        for lay in range(self.N_LAYERS):
-            so = lay * self._cur_lreg(old_maxl)
-            do = lay * self._cur_lreg(new_maxl)
-            for r in range(NR):
-                s = so + r * old_maxl * R
-                d = do + r * new_maxl * R
-                dst[d : d + n] = src[s : s + n]
-        self.kvc.write(dst.view(np.int16), 0)
-        self.kvc.sync(self.TO)
+        """Move the `live` filled positions into window `new_maxl`'s KV layout."""
+        stair.respace_kv(self.kvc, self._geom, old_maxl, new_maxl, live, self.xrt)
 
     def reset_kv(self):
         """Zero the device-resident KV cache (start a fresh sequence)."""
@@ -351,7 +306,7 @@ class FusedDecode3B:
         if len(self.windows) > 1:
             self._use_window(self.gen.window_for_L(ctx + 1))
         region_stride = self.cur_maxl * fd.REGION_W
-        lreg = self._cur_lreg()
+        lreg = self._geom.lreg(self.cur_maxl)
         buf = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
         for L in range(self.N_LAYERS):
             kL = np.asarray(k_layers[L], bfloat16).reshape(ctx, -1)
@@ -377,11 +332,7 @@ class FusedDecode3B:
                 # `p` positions are live; this token's K/V is appended by the dispatch.
                 self._respace_kv(self.cur_maxl, w, p)
                 self._use_window(w)
-        self.insts_buf[self.ld] = (self.ld_base + (L - 1) * self.ld_slope).astype(
-            np.uint32
-        )
-        self.ib.write(self.insts_buf, 0)
-        self.ib.sync(self.TO)
+        self.insts_size = stair.patch_insts(self._st, L, self.xrt, self.TO)
         x0 = np.asarray(self.embed[tok], bfloat16)
         h = self.DH // 2
         lut = np.empty(self.DH, dtype=bfloat16)
