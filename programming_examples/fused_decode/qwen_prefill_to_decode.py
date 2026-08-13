@@ -251,13 +251,16 @@ class QwenFusedDecoder:
         self.x_bo.sync(FR)
         self.kv_bo.sync(FR)
 
-        h = np.frombuffer(self.x_bo.read(self.X * 2, 0), dtype=bfloat16).astype(
+        # Zero-copy view into the BO (the shared infra's readback idiom): bo.read()
+        # returns a buffer whose stride metadata is pyxrt-build dependent, and on
+        # some runners it comes back non-contiguous, which np.frombuffer rejects.
+        h = np.frombuffer(self.x_bo.map(), dtype=bfloat16, count=self.X).astype(
             np.float32
         )[m.XO_RMSIN : m.XO_RMSIN + m.K]
         logits = self._logits(h)
 
         # Take this token's K/V (device wrote slot L-1) and slide the window.
-        kvo = np.frombuffer(self.kv_bo.read(self.KVN * 2, 0), dtype=bfloat16).astype(
+        kvo = np.frombuffer(self.kv_bo.map(), dtype=bfloat16, count=self.KVN).astype(
             np.float32
         )
         for k in range(NL):
