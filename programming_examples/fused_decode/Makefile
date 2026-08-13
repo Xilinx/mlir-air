@@ -68,6 +68,8 @@ help:
 	@echo "============================================================"
 	@echo ""
 	@echo "  make compile-decode   Build decode kernels + templates (decode_L2048 + L2047, ~15 min)"
+	@echo "  make bench-decode     C++ per-token latency in FLM-comparable scope; LATENCY ONLY,"
+	@echo "                        never a correctness gate.  L=1933 ITERS=64 WARMUP=8"
 	@echo "  make clean            Remove kernels + templates"
 	@echo ""
 	@echo "Consumed by the llama32_1b_q4nx LLM e2e (make chat / make gen there)."
@@ -156,9 +158,59 @@ _compile_decode_build: preflight-llvm-link
 	  else echo "decode_L2047 FAILED (see /tmp/decode_L2047.log)"; exit 1; fi
 	@echo "Decode build complete: decode_L2048 + decode_L2047 templates."
 
+## ---- C++ decode-latency benchmark (FLM-comparable scope) --------------------
+## `make bench-decode` times the same per-token sequence the Python driver's
+## dispatch() runs, but in C++ and ending where FastFlowLM's DECODING_TIME
+## accumulator stops: logits synced back, NO sampling and NO detokenization
+## (FLM keeps those in separate accumulators, so they are not in its published
+## tok/s). That is the only scope in which the two per-token numbers are
+## directly comparable. The Python driver's tok/s additionally carries a
+## 128k-element argmax (~0.14 ms) and ~0.10 ms of Python host work, so it reads
+## ~0.25 ms/token slower than this for the same build.
+##
+## LATENCY ONLY -- it fills the weight/KV/rms BOs with a fixed pattern instead
+## of loading the real requant, so it CANNOT check numerics. (Decode time here
+## is data-independent: every trip count is fixed except the attention block
+## loop, which is bounded by the patched RTP-L word. Verified -- synthetic vs
+## real weights agree to 0.05%.) Correctness stays with the llama32_1b_q4nx
+## driver's greedy id-sequence gate; never promote this to a gate.
+##
+## Needs both templates (compile-decode) since the per-L instruction stream is
+## derived from their per-word slope, exactly as DecodeInstsGen does it.
+## Geometry defaults are llama-3.2-1B; another model must pass --k/--w-elems/
+## --rms-size/--ny/--kv-elems/--decode-y/--voc-n/--rms-lut-off explicitly or the
+## numbers are silently wrong.
+L        ?= 1933
+ITERS    ?= 64
+WARMUP   ?= 8
+BENCH_EXE := $(srcdir)/bench_decode.exe
+
+$(BENCH_EXE): $(srcdir)/bench_decode.cpp
+	@GPP=$$( \
+		for bin in /usr/bin/g++-*; do \
+			ver=$$(echo $$bin | grep -oE '[0-9]+$$'); \
+			if [ "$$ver" -ge 13 ] 2>/dev/null; then echo "$$ver $$bin"; fi; \
+		done | sort -nr | head -n1 | awk '{print $$2}' \
+	); \
+	if [ -z "$$GPP" ]; then echo "Error: No g++ >= 13 in /usr/bin."; exit 1; fi; \
+	if [ -z "$$XILINX_XRT" ]; then echo "Error: source /opt/xilinx/xrt/setup.sh."; exit 1; fi; \
+	echo "Using compiler: $$GPP"; \
+	$$GPP $(srcdir)/bench_decode.cpp -o $(BENCH_EXE) \
+		-std=c++23 -O2 -Wall \
+		-I$$XILINX_XRT/include -L$$XILINX_XRT/lib \
+		-luuid -lxrt_coreutil -lrt -lstdc++
+
+.PHONY: bench-decode-exe bench-decode
+bench-decode-exe: $(BENCH_EXE)
+
+bench-decode: $(BENCH_EXE)
+	@if [ ! -f $(srcdir)/decode_L2048.insts.bin ] || [ ! -f $(srcdir)/decode_L2047.insts.bin ]; then \
+	  echo "Need both templates; run 'make compile-decode' first."; exit 1; fi
+	$(BENCH_EXE) --dir $(srcdir) --l $(L) --iters $(ITERS) --warmup $(WARMUP)
+
 ## Remove compiled kernels + decode templates.
 clean:
 	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin \
 	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
-	      $(DECODE_FLAGS_STAMP) 2>/dev/null || true
+	      $(BENCH_EXE) $(DECODE_FLAGS_STAMP) 2>/dev/null || true
 	@echo "Kernels and decode templates removed. Rebuild with 'make compile-decode'."
