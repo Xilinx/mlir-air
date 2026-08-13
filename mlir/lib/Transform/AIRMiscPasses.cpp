@@ -35,8 +35,11 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
+
+#include <set>
 
 #include <list>
 #include <numeric>
@@ -3530,12 +3533,612 @@ void AIRAnnotateAppendBarrierPass::runOnOperation() {
   });
 }
 
+namespace {
+//===--------------------------------------------------------------------===//
+// air-annotate-packet-ids helpers
+//===--------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+// Static volume
+//===----------------------------------------------------------------------===//
+
+/// Volume of a single channel op's access pattern, in elements: the product of
+/// its `sizes` when they are all static, else the whole memref. nullopt when
+/// any size is dynamic -- an unknown volume must never be silently treated as
+/// zero, since that would make a broadcast look like a partition.
+static std::optional<int64_t> accessVolume(air::ChannelInterface chanOp) {
+  SmallVector<OpFoldResult> sizes = chanOp.getMixedSizes();
+  if (sizes.empty()) {
+    auto memrefTy = dyn_cast<MemRefType>(chanOp.getMemref().getType());
+    if (!memrefTy || !memrefTy.hasStaticShape())
+      return std::nullopt;
+    return (int64_t)air::getTensorVolume(memrefTy);
+  }
+  int64_t vol = 1;
+  for (OpFoldResult s : sizes) {
+    std::optional<int64_t> c = getConstantIntValue(s);
+    if (!c)
+      return std::nullopt;
+    vol *= *c;
+  }
+  return vol;
+}
+
+/// Volume this op contributes across every execution of it, i.e. its access
+/// volume scaled by the trip counts of the loops it sits in. nullopt if either
+/// part is not static.
+static std::optional<int64_t> totalVolume(air::ChannelInterface chanOp,
+                                          Operation *scopeRoot) {
+  std::optional<int64_t> vol = accessVolume(chanOp);
+  if (!vol)
+    return std::nullopt;
+  std::optional<int64_t> trips =
+      air::getStaticTripCountInRange(chanOp.getOperation(), scopeRoot);
+  if (!trips)
+    return std::nullopt;
+  return *vol * *trips;
+}
+
+//===----------------------------------------------------------------------===//
+// Channel facts
+//===----------------------------------------------------------------------===//
+
+/// A destination is the coordinate along the channel's BROADCAST dimension.
+///
+/// Not the whole index tuple: air-to-aie fans out along exactly one dimension
+/// (specializeBroadcastShape keeps `getBroadcastDimension()` at its broadcast
+/// extent and pins every other dimension to 1), so the remaining indices select
+/// a bundle instance, not a destination. Keying on the full tuple would
+/// multiply the destination count by the bundle size -- e.g. a `[NCX,1]` bundle
+/// with `broadcast_shape=[NCX,NDEST]` would look like NCX*NDEST destinations
+/// and misclassify the channel.
+using DestKey = int64_t;
+
+static std::optional<DestKey> destKeyOf(air::ChannelInterface chanOp,
+                                        int broadcastDim) {
+  OperandRange indices = chanOp.getIndices();
+  if (broadcastDim < 0 || broadcastDim >= (int)indices.size())
+    return std::nullopt;
+  return getConstantIntValue(indices[broadcastDim]);
+}
+
+static bool isPacketChannel(air::ChannelOp chanOp) {
+  auto ty = chanOp->getAttrOfType<StringAttr>("channel_type");
+  return ty && ty.getValue() == "npu_dma_packet";
+}
+
+enum class Shape {
+  Broadcast,  // every dest receives every packet -> 1 id
+  Demux,      // dests partition the stream -> one id per dest
+  SingleDest, // nothing to decide
+  Unknown,    // not statically classifiable; say so, never guess
+};
+
+static StringRef shapeName(Shape s) {
+  switch (s) {
+  case Shape::Broadcast:
+    return "broadcast";
+  case Shape::Demux:
+    return "demux";
+  case Shape::SingleDest:
+    return "single-destination";
+  case Shape::Unknown:
+    return "unknown";
+  }
+  return "unknown";
+}
+
+struct Classification {
+  Shape shape = Shape::Unknown;
+  unsigned numDests = 0;
+  std::string reason;
+};
+
+/// Classify one packet channel from its put/get volumes.
+static Classification classify(air::ChannelOp chanOp,
+                               ArrayRef<air::ChannelInterface> puts,
+                               ArrayRef<air::ChannelInterface> gets,
+                               Operation *scopeRoot) {
+  Classification c;
+
+  // A channel's index tuple means one of two different things, and conflating
+  // them turns every bundle into a spurious demux:
+  //
+  //   air.channel @toHub [4]                        -- BUNDLE: four parallel,
+  //                                                    independent flows
+  //   air.channel @outY [1,1] {broadcast_shape=[1,2]} -- one flow, two DESTS
+  //
+  // Only the broadcast dimension is a fan-out that a packet id can select
+  // between. Without broadcast_shape each index is its own single-destination
+  // flow, however many of them there are.
+  if (!chanOp.isBroadcast()) {
+    c.shape = Shape::SingleDest;
+    c.numDests = 1;
+    return c;
+  }
+
+  // Group the gets by destination (a coordinate along the broadcast dimension).
+  int broadcastDim = chanOp.getBroadcastDimension();
+  if (broadcastDim < 0) {
+    c.reason = "broadcast channel with no resolvable broadcast dimension";
+    return c;
+  }
+  llvm::MapVector<DestKey, int64_t> volByDest;
+  for (air::ChannelInterface g : gets) {
+    std::optional<DestKey> key = destKeyOf(g, broadcastDim);
+    if (!key) {
+      c.reason = "a get has a non-constant index on the broadcast dimension";
+      return c;
+    }
+    std::optional<int64_t> v = totalVolume(g, scopeRoot);
+    if (!v) {
+      c.reason = "a get has a non-static volume";
+      return c;
+    }
+    volByDest[*key] += *v;
+  }
+  c.numDests = volByDest.size();
+
+  if (volByDest.empty()) {
+    c.reason = "no gets";
+    return c;
+  }
+  if (volByDest.size() == 1) {
+    c.shape = Shape::SingleDest;
+    return c;
+  }
+
+  int64_t putVol = 0;
+  for (air::ChannelInterface p : puts) {
+    std::optional<int64_t> v = totalVolume(p, scopeRoot);
+    if (!v) {
+      c.reason = "a put has a non-static volume";
+      return c;
+    }
+    putVol += *v;
+  }
+  if (putVol == 0) {
+    c.reason = "no puts";
+    return c;
+  }
+
+  // Replication: every destination sees the whole stream.
+  bool allFull =
+      llvm::all_of(volByDest, [&](auto &kv) { return kv.second == putVol; });
+  if (allFull) {
+    c.shape = Shape::Broadcast;
+    return c;
+  }
+
+  // Partition: the destinations' volumes sum to the stream. Header ownership
+  // is what makes such a split physically possible, so require it rather than
+  // inferring a demux from arithmetic alone.
+  int64_t sum = 0;
+  for (auto &kv : volByDest)
+    sum += kv.second;
+
+  // The producer side of a header-preserving hop carries a header word per
+  // packet that the destination may strip, so the received total can fall
+  // short of the sent total by that much. Accept a partition that accounts for
+  // at least the payload and never exceeds what was sent.
+  if (sum <= putVol && sum > 0) {
+    if (!air::channelKernelWritesHeader(chanOp)) {
+      c.reason = "destination volumes partition the stream, but the channel is "
+                 "not source-stamped, so per-packet routing is impossible";
+      return c;
+    }
+    c.shape = Shape::Demux;
+    return c;
+  }
+
+  c.reason = "destination volumes neither replicate nor partition the put "
+             "volume (sent " +
+             std::to_string(putVol) + ", received " + std::to_string(sum) + ")";
+  return c;
+}
+
+//===----------------------------------------------------------------------===//
+// Relabeling (assign mode)
+//===----------------------------------------------------------------------===//
+
+// Bound on the constant trace. The real producers are a couple of nested scf
+// regions; the cap only stops a pathological input from running away.
+static constexpr unsigned kMaxTraceDepth = 16;
+
+/// Collect the constant USES reaching `use` in FIRST-APPEARANCE order.
+///
+/// Uses, not defining ops: one `arith.constant` is routinely shared by several
+/// arms (the down phase reuses the o-proj id), and two arms can need different
+/// new values. Rewriting the shared def in place would corrupt whichever arm
+/// lost the race; skipping shared defs -- the first thing tried here -- instead
+/// left a PARTIAL relabel, which is precisely the drift this whole pass exists
+/// to prevent (caught on llama-3b by the contract check below). Recording
+/// the operand lets each use get its own fresh constant.
+///
+/// Order matters and is not sorted order. air-to-aie routes destination i with
+/// `packet_ids[i]`, and the builders derive that list as the ordered-unique of
+/// the per-phase ids -- so the i-th DISTINCT id the kernel can stamp, in phase
+/// order, belongs to destination i. Relabeling must preserve exactly that
+/// correspondence or packets land on the wrong tile. scf.index_switch stores
+/// its default region FIRST, so walk the case regions in case order and the
+/// default last.
+static LogicalResult collectConstantUses(OpOperand &use,
+                                         SmallVectorImpl<OpOperand *> &uses,
+                                         SmallVectorImpl<int64_t> &order,
+                                         unsigned depth = 0) {
+  if (depth > kMaxTraceDepth)
+    return failure();
+  Value v = use.get();
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return failure();
+
+  if (auto cst = dyn_cast<arith::ConstantOp>(def)) {
+    auto intAttr = dyn_cast<IntegerAttr>(cst.getValue());
+    if (!intAttr)
+      return failure();
+    uses.push_back(&use);
+    order.push_back(intAttr.getInt());
+    return success();
+  }
+
+  auto recurseRegion = [&](Region &r, unsigned resultIdx) {
+    for (Block &b : r) {
+      Operation *term = b.getTerminator();
+      if (!term || term->getNumOperands() <= resultIdx)
+        return failure();
+      if (failed(collectConstantUses(term->getOpOperand(resultIdx), uses, order,
+                                     depth + 1)))
+        return failure();
+    }
+    return success();
+  };
+
+  unsigned resultIdx = cast<OpResult>(v).getResultNumber();
+  if (auto sw = dyn_cast<scf::IndexSwitchOp>(def)) {
+    for (Region &r : sw.getCaseRegions())
+      if (failed(recurseRegion(r, resultIdx)))
+        return failure();
+    return recurseRegion(sw.getDefaultRegion(), resultIdx);
+  }
+  if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+    if (failed(recurseRegion(ifOp.getThenRegion(), resultIdx)))
+      return failure();
+    return recurseRegion(ifOp.getElseRegion(), resultIdx);
+  }
+  return failure();
+}
+
+/// Read the pinned ids off an air.channel, if it pins any.
+static std::optional<std::set<int64_t>> pinnedIDsOf(air::ChannelOp chanOp) {
+  auto attr = chanOp.getPacketIDs();
+  if (!attr)
+    return std::nullopt;
+  std::set<int64_t> ids;
+  for (Attribute a : attr) {
+    auto i = dyn_cast<IntegerAttr>(a);
+    if (!i)
+      return std::nullopt;
+    ids.insert(i.getInt());
+  }
+  return ids;
+}
+
+static std::string pktIDsToString(const std::set<int64_t> &s) {
+  std::string out = "["; // std::set iterates sorted
+  for (auto [i, v] : llvm::enumerate(s)) {
+    if (i)
+      out += ", ";
+    out += std::to_string(v);
+  }
+  return out + "]";
+}
+
+/// Check a marked header-writing call against its channel's ids.
+///
+/// The routing ids exist in two spellings -- the channel's `packet_ids`, which
+/// become switchbox rules, and the constant this call writes into the payload
+/// header. Nothing in the IR ties them together, so a divergence is invisible
+/// until the device hangs: the switchbox drops a packet stamped with an id it
+/// has no rule for. Reuses collectConstantUses (the tracer the id harvesting
+/// already needs) rather than carrying a second one.
+static LogicalResult checkPacketIDContract(Operation *call, ModuleOp mod) {
+  auto chanSym =
+      call->getAttrOfType<SymbolRefAttr>(air::attrs::PktHeaderChannel);
+  auto operandIdx =
+      call->getAttrOfType<IntegerAttr>(air::attrs::PktHeaderOperand);
+  if (!chanSym || !operandIdx)
+    return call->emitOpError()
+           << air::attrs::PktHeaderChannel << " and "
+           << air::attrs::PktHeaderOperand << " must be set together";
+
+  unsigned idx = operandIdx.getInt();
+  if (idx >= call->getNumOperands())
+    return call->emitOpError() << air::attrs::PktHeaderOperand << " = " << idx
+                               << " is out of range (call has "
+                               << call->getNumOperands() << " operands)";
+
+  auto chanOp = mod.lookupSymbol<air::ChannelOp>(chanSym.getLeafReference());
+  if (!chanOp)
+    return call->emitOpError()
+           << air::attrs::PktHeaderChannel << " references '"
+           << chanSym.getLeafReference().getValue()
+           << "', which is not an air.channel in this module";
+
+  // Only a channel with ids has a second spelling to disagree with.
+  auto pinned = pinnedIDsOf(chanOp);
+  if (!pinned)
+    return success();
+
+  // Unresolvable operand: the contract is unchecked, not violated. Silent.
+  SmallVector<OpOperand *> uses;
+  SmallVector<int64_t> order;
+  if (failed(collectConstantUses(call->getOpOperand(idx), uses, order)))
+    return success();
+  std::set<int64_t> stamped(order.begin(), order.end());
+
+  if (stamped == *pinned)
+    return success();
+
+  InFlightDiagnostic diag = call->emitOpError()
+                            << "packet id contract violated: the kernel stamps "
+                            << pktIDsToString(stamped) << " but channel '"
+                            << chanSym.getLeafReference().getValue() << "' has "
+                            << pktIDsToString(*pinned);
+  diag.attachNote(chanOp.getLoc()) << "channel declared here";
+  diag.attachNote()
+      << "the switchbox routes only these ids; a packet stamped with an "
+         "unrouted id is dropped, which reads on device as a hang";
+  return failure();
+}
+
+} // namespace
+
+class AIRAnnotatePacketIDsPass
+    : public air::impl::AIRAnnotatePacketIDsPassBase<AIRAnnotatePacketIDsPass> {
+public:
+  AIRAnnotatePacketIDsPass() = default;
+  AIRAnnotatePacketIDsPass(const AIRAnnotatePacketIDsPass &pass) {}
+  void runOnOperation() override;
+};
+
+void AIRAnnotatePacketIDsPass::runOnOperation() {
+
+  ModuleOp mod = getOperation();
+
+  // Index the put/get sites by channel symbol.
+  llvm::MapVector<StringRef, SmallVector<air::ChannelInterface>> puts, gets;
+  mod.walk([&](air::ChannelInterface op) {
+    if (isa<air::ChannelPutOp>(op.getOperation()))
+      puts[op.getChanName()].push_back(op);
+    else if (isa<air::ChannelGetOp>(op.getOperation()))
+      gets[op.getChanName()].push_back(op);
+  });
+
+  // Phase 1: local classification, and the id count it implies on its own.
+  llvm::MapVector<StringRef, Classification> shapeOf;
+  llvm::MapVector<StringRef, unsigned> localCardinality;
+  SmallVector<air::ChannelOp> packetChans;
+  mod.walk([&](air::ChannelOp chanOp) {
+    if (!isPacketChannel(chanOp))
+      return;
+    packetChans.push_back(chanOp);
+    StringRef name = chanOp.getSymName();
+    Classification c =
+        classify(chanOp, puts[name], gets[name], mod.getOperation());
+    shapeOf[name] = c;
+    localCardinality[name] = (c.shape == Shape::Demux)     ? c.numDests
+                             : (c.shape == Shape::Unknown) ? 0
+                                                           : 1;
+  });
+
+  // Phase 2: propagate demand backwards along header-preserving forwarding
+  // chains.
+  //
+  // A hop like @outA or @toHub is single-destination -- locally it needs one
+  // id. But it FORWARDS packets that a downstream demux will route, and it
+  // preserves their headers, so its switchbox must admit every id the demux
+  // will eventually key on. Miss this and the extra ids are filtered out
+  // mid-route and the demux never fires.
+  //
+  // The chain is plain SSA: a get lands the payload in a memref, and a put on
+  // the next channel sends that same memref onward.
+  llvm::DenseMap<Value, SmallVector<StringRef>> putters;
+  for (auto &[name, ops] : puts)
+    for (air::ChannelInterface p : ops)
+      putters[p.getMemref()].push_back(name);
+
+  llvm::MapVector<StringRef, SmallVector<StringRef>> feeds; // C -> successors
+  for (auto &[name, ops] : gets)
+    for (air::ChannelInterface g : ops)
+      for (StringRef succ : putters.lookup(g.getMemref()))
+        if (succ != name)
+          feeds[name].push_back(succ);
+
+  llvm::MapVector<StringRef, unsigned> cardinality = localCardinality;
+  llvm::DenseMap<StringRef, air::ChannelOp> chanByName;
+  for (air::ChannelOp c : packetChans)
+    chanByName[c.getSymName()] = c;
+
+  // Monotone fixpoint (counts only grow), bounded by the chain length.
+  for (unsigned iter = 0, e = packetChans.size() + 1; iter < e; ++iter) {
+    bool changed = false;
+    for (air::ChannelOp chanOp : packetChans) {
+      StringRef name = chanOp.getSymName();
+      // Only a header-preserving hop forwards someone else's routing id; a
+      // DMA-stamped one re-stamps and starts a fresh routing domain.
+      if (!air::channelKernelWritesHeader(chanOp))
+        continue;
+      unsigned want = cardinality[name];
+      for (StringRef succ : feeds[name])
+        want = std::max(want, cardinality.lookup(succ));
+      if (want != cardinality[name]) {
+        cardinality[name] = want;
+        changed = true;
+      }
+    }
+    if (!changed)
+      break;
+  }
+
+  bool anyMismatch = false;
+  for (air::ChannelOp chanOp : packetChans) {
+    StringRef name = chanOp.getSymName();
+    Classification c = shapeOf[name];
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "air-annotate-packet-ids: @" << name << " -> "
+               << shapeName(c.shape) << " (" << c.numDests << " dest(s))"
+               << (c.reason.empty() ? "" : " : " + c.reason) << "\n");
+
+    unsigned inferredIDs = cardinality[name];
+    bool viaChain = inferredIDs > localCardinality[name];
+    auto pinned = pinnedIDsOf(chanOp);
+
+    if (this->report) {
+      InFlightDiagnostic note = chanOp->emitRemark();
+      note << "packet channel @" << name << ": " << shapeName(c.shape)
+           << " over " << c.numDests << " destination(s)";
+      if (inferredIDs)
+        note << "; infers " << inferredIDs << " routing id(s)"
+             << (viaChain ? " (forwarded from a downstream demux)" : "");
+      if (pinned)
+        note << "; pins " << pinned->size();
+      if (!c.reason.empty())
+        note << " [" << c.reason << "]";
+    }
+
+    // Cross-check mode: the inference must agree with what a working design
+    // already pins. A disagreement means the model is wrong -- surface it
+    // loudly rather than quietly preferring one answer.
+    if (pinned && inferredIDs && pinned->size() != inferredIDs) {
+      chanOp->emitWarning()
+          << "air-annotate-packet-ids disagrees with the packet_ids on @"
+          << name << ": inferred " << inferredIDs << " id(s) from a "
+          << shapeName(c.shape) << " over " << c.numDests
+          << " destination(s), but the channel pins " << pinned->size();
+      anyMismatch = true;
+    }
+  }
+
+  if (anyMismatch && this->strict)
+    signalPassFailure();
+
+  // Assignment is opt-in; the contract check below is not, so this is a
+  // scope rather than an early return.
+  if (this->assign) {
+
+    // Assign mode fills in the DERIVABLE half of the routing domain.
+    //
+    // It never invents a value and never rewrites a kernel constant. Both were
+    // tried and both broke llama-3b on device: inventing renumbers every other
+    // packet channel (air-to-aie hands out the lowest free ids) and perturbs a
+    // tuned floorplan, and relabeling positionally assumes the kernel's arm
+    // order matches the declared list, which for llama swaps 1 and 4 and sends
+    // rope's packets to rms. The only safe operation is to COPY a list a
+    // channel already declares onto the hops that forward its packets, which is
+    // exactly the part that carries no ordering information.
+    OpBuilder builder(mod.getContext());
+
+    // Allocate ONE id list per routing domain, not per channel.
+    //
+    // A forwarding chain carries the same packets end to end: the id the core
+    // stamps at @outA is the id @toMain must admit and @outY must route on.
+    // Handing each channel its own fresh triple would compile, and then hang --
+    // every hop would filter out ids it had never heard of. So the demux owns
+    // the allocation and every header-preserving hop that feeds it inherits
+    // that exact list.
+    // name -> the id list its packet_flows should carry.
+    llvm::MapVector<StringRef, SmallVector<int64_t>> idsFor;
+
+    // Seed the propagation from channels that ALREADY declare their ids.
+    //
+    // A demux's id list is ordered (air-to-aie routes destination i with
+    // packet_ids[i]) and that order is not derivable, so designs declare it.
+    // The hops that FEED that demux are a different matter: each is
+    // single-destination, and air-to-aie returns their whole list for the one
+    // buffer (`numS2MMAllocs == 1 -> return pinned`), so their order carries no
+    // meaning and their SET is exactly the demux's. Those are derivable, and
+    // seeding from the declared list is what lets them be dropped from the
+    // front end.
+    llvm::DenseSet<StringRef> alreadyDeclared;
+    for (air::ChannelOp c : packetChans) {
+      auto p = pinnedIDsOf(c);
+      if (!p)
+        continue;
+      alreadyDeclared.insert(c.getSymName());
+      SmallVector<int64_t> declared;
+      for (Attribute a : c.getPacketIDs())
+        declared.push_back(cast<IntegerAttr>(a).getInt());
+      idsFor[c.getSymName()] = declared;
+    }
+
+    // Push each demux's list back up its header-preserving feeders.
+    for (unsigned iter = 0, e = packetChans.size() + 1; iter < e; ++iter) {
+      bool changed = false;
+      for (air::ChannelOp chanOp : packetChans) {
+        StringRef name = chanOp.getSymName();
+        if (pinnedIDsOf(chanOp) || idsFor.count(name) ||
+            !air::channelKernelWritesHeader(chanOp))
+          continue;
+        auto feedsIt = feeds.find(name);
+        if (feedsIt == feeds.end())
+          continue;
+        for (StringRef succ : feedsIt->second) {
+          auto it = idsFor.find(succ);
+          if (it == idsFor.end())
+            continue;
+          // Copy BEFORE inserting: idsFor[name] can reallocate the MapVector
+          // and leave `it` dangling, which silently yields an empty list.
+          SmallVector<int64_t> inherited = it->second;
+          idsFor[name] = inherited;
+          changed = true;
+          break;
+        }
+      }
+      if (!changed)
+        break;
+    }
+
+    for (air::ChannelOp chanOp : packetChans) {
+      auto it = idsFor.find(chanOp.getSymName());
+      if (it == idsFor.end() || alreadyDeclared.count(chanOp.getSymName()))
+        continue;
+      SmallVector<Attribute> attrs;
+      for (int64_t id : it->second)
+        attrs.push_back(builder.getI32IntegerAttr(id));
+      chanOp->setAttr(air::attrs::PacketIDs, builder.getArrayAttr(attrs));
+      LLVM_DEBUG(llvm::dbgs()
+                 << "air-annotate-packet-ids: assigned @" << chanOp.getSymName()
+                 << " " << it->second.size() << " id(s)\n");
+    }
+
+  } // if (assign)
+
+  // Same pass, because it is the same information: the id harvesting above
+  // already traces every marked header-writing call back to its constants, so
+  // the consistency check is a comparison, not a second analysis.
+  bool contractBroken = false;
+  mod.walk([&](Operation *op) {
+    if (!op->hasAttr(air::attrs::PktHeaderChannel) &&
+        !op->hasAttr(air::attrs::PktHeaderOperand))
+      return;
+    if (failed(checkPacketIDContract(op, mod)))
+      contractBroken = true;
+  });
+  if (contractBroken)
+    signalPassFailure();
+}
+
 std::unique_ptr<Pass> createAIRAnnotateRefeedPass() {
   return std::make_unique<AIRAnnotateRefeedPass>();
 }
 
 std::unique_ptr<Pass> createAIRAnnotateAppendBarrierPass() {
   return std::make_unique<AIRAnnotateAppendBarrierPass>();
+}
+
+std::unique_ptr<Pass> createAIRAnnotatePacketIDsPass() {
+  return std::make_unique<AIRAnnotatePacketIDsPass>();
 }
 
 } // namespace air

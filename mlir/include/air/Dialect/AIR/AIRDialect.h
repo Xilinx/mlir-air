@@ -65,6 +65,17 @@ constexpr StringLiteral RefeedCount = "air.refeed_count";
 // spelling matches the broadcast_shape discardable-attr convention on
 // air.channel; read via air::ChannelOp::getPacketIDs. Verified on air.channel.
 constexpr StringLiteral PacketIDs = "packet_ids";
+// Marks a call whose callee writes the packet routing header into the payload
+// (the kernel-written-header contract of a PacketIDs channel). The pair binds
+// that call to the channel it stamps for:
+//   air.pkt_header_channel : SymbolRefAttr -- the air.channel being stamped
+//   air.pkt_header_operand : i32           -- index of the id operand
+// The ids reaching that operand and the channel's packet_ids are two spellings
+// of one contract written in two places; nothing links them in the IR, so a
+// mismatch is a silent routing hang. air-annotate-packet-ids compares them
+// when both are statically known.
+constexpr StringLiteral PktHeaderChannel = "air.pkt_header_channel";
+constexpr StringLiteral PktHeaderOperand = "air.pkt_header_operand";
 // The kernel writes the routing packet header into the payload itself.
 // air-to-aie must not stamp a static pkt_id on the producer BD (that would
 // prepend a second header word) and emits the aie.packet_flow with
@@ -155,5 +166,19 @@ void walkAsyncTokenConsumers(Operation *root,
 // include TableGen generated Op definitions
 #define GET_OP_CLASSES
 #include "air/Dialect/AIR/AIR.h.inc"
+
+namespace xilinx {
+namespace air {
+// True if the PRODUCING KERNEL writes the packet routing header into the
+// payload, rather than the DMA stamping a static id onto the BD. Necessary for
+// any data-dependent routing: a DMA-stamped channel carries one id on one BD
+// and cannot select a destination per packet.
+//
+// Single source of truth. Both air-to-aie (which must not stamp such a BD) and
+// air-annotate-packet-ids (which uses it to gate demux classification) read
+// this; two copies drifted apart once already.
+bool channelKernelWritesHeader(ChannelOp chanOp);
+} // namespace air
+} // namespace xilinx
 
 #endif

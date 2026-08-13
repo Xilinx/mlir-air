@@ -1049,6 +1049,9 @@ static LogicalResult runAieCompilation() {
     // pass rewrites the channel ops. A shim readback that reads an L3 buffer a
     // shim append wrote is a RAW pair the runtime does not order on its own.
     os << ",air-annotate-append-barrier";
+    // Same slot, same reason. Derives a demux channel's packet id count from
+    // its fan-out shape and checks the ids against the ones its kernel stamps.
+    os << ",air-annotate-packet-ids{assign=true}";
     os << ",air-rank-to-launch";
     os << ",air-insert-launch-around-herd{insert-segment=true}";
     os << ",func.func(air-lower-herd-parallel)";
@@ -1101,6 +1104,20 @@ static LogicalResult runAieCompilation() {
     return failure();
 
   // Run AIR verifier passes on the placed IR, gated by --placed-ir-verifiers.
+  // NOTE: air-annotate-packet-ids (placement pipeline above) fills in the
+  // single-destination forwarding hops by propagating the demux's declared list
+  // back up the chain -- those carry an unordered SET, so they are derivable.
+  // The demux itself still declares its own packet_ids, because there the list
+  // is ORDERED (air-to-aie routes destination i with packet_ids[i]) and that
+  // order is not recoverable: the kernel's constants reveal only the set, and
+  // harvesting them on llama yields [4,1,8] where the design needs [1,4,8],
+  // which routes rope's packets to rms and hangs (device-confirmed on
+  // llama-3b). Deriving it too needs an IR surface tying each id to its
+  // destination. The remaining
+  // disagreement between a channel's packet_ids and the ids its kernel stamps,
+  // and a definitive finding is an error regardless of the strictness setting
+  // (same rule the locality verifier uses for definitive races). When it cannot
+  // prove either side it stays silent.
   if (placedIrVerifiers != PIV_off) {
     std::string strict = (placedIrVerifiers == PIV_error) ? "true" : "false";
     std::string pipeline =

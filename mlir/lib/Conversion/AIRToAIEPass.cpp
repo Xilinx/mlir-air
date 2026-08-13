@@ -3921,14 +3921,6 @@ static void removeDeadGlobalOps(AIE::DeviceOp device) {
 // header word). True for multi-id pinned channels (the core writes the id) and
 // for keep_pkt_header / air.src_writes_pkt_header channels (the kernel writes
 // the whole header).
-static bool channelKernelWritesHeader(air::ChannelOp chanOp) {
-  if (!chanOp)
-    return false;
-  if (auto pids = chanOp.getPacketIDs(); pids && pids.size() > 1)
-    return true;
-  return chanOp->hasAttr(air::attrs::KeepPktHeader) ||
-         chanOp->hasAttr(air::attrs::SrcWritesPktHeader);
-}
 
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 
@@ -5415,7 +5407,7 @@ public:
     // fallback below could tag it with an arbitrary flow id.
     if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
             memcpyOpIf.getOperation()))
-      if (channelKernelWritesHeader(
+      if (air::channelKernelWritesHeader(
               air::getChannelDeclarationThroughSymbol(ci)))
         return success();
 
@@ -6613,7 +6605,7 @@ public:
       // Channels whose kernel writes the routing header itself must NOT be
       // statically stamped: a static pkt_id would prepend a second header word
       // and shift the payload.
-      bool kernelWritesHeader = channelKernelWritesHeader(
+      bool kernelWritesHeader = air::channelKernelWritesHeader(
           air::getChannelDeclarationThroughSymbol(chanIfOp));
       auto it = packetIDForChannelName.find(chanIfOp.getChanName().str());
       if (!kernelWritesHeader && it != packetIDForChannelName.end())

@@ -40,6 +40,7 @@ from air.ir import (
     ArrayAttr,
     BF16Type,
     F32Type,
+    FlatSymbolRefAttr,
     IndexType,
     InsertionPoint,
     IntegerType,
@@ -516,6 +517,24 @@ W_FAN_STEPS = W_READS  # per-col fan steps (each fans NCY blocks) = 600
 W_LAYER = NCX * PER_COL_W * BLOCK_BF16  # weights per layer
 
 
+def _mark_pkt_header(call_op, chan_name, operand_idx):
+    """Bind a header-writing kernel call to the channel whose `packet_ids` it must
+    agree with.
+
+    The routing ids live in two places -- the channel's `packet_ids` (which become
+    the switchbox rules) and the constant handed to this call (which the kernel
+    writes into the payload header). Nothing in the IR links them, so a divergence
+    is invisible until the device hangs: the switchbox drops a packet stamped with
+    an id it has no rule for. This marking lets air-annotate-packet-ids
+    compare the two at compile time.
+    """
+    a = call_op.operation.attributes
+    a["air.pkt_header_channel"] = FlatSymbolRefAttr.get(chan_name)
+    a["air.pkt_header_operand"] = IntegerAttr.get(
+        IntegerType.get_signless(32), operand_idx
+    )
+
+
 def build_module():
     @module_builder
     def build():
@@ -682,16 +701,35 @@ def build_module():
         _pin = ArrayAttr.get([IntegerAttr.get(i32, k) for k in DEMUX_IDS])
         _outA = channel_decl("outA", size=[NCX, NCY], channel_type="npu_dma_packet")
         _outA.operation.attributes["keep_pkt_header"] = UnitAttr.get()
-        _outA.operation.attributes["packet_ids"] = _pin
+        # No packet_ids here. This hop is single-destination: air-to-aie hands its
+        # whole id list to the one buffer (numS2MMAllocs == 1 -> return pinned), so
+        # the ORDER carries no meaning and the SET is just the demux's. Both are
+        # derivable, so air-annotate-packet-ids fills them in by propagating @outY's
+        # declared list back up the header-preserving chain. Only the demux itself
+        # still has to declare, because there the order picks the destination.
         # col memtile -> mem_1_1 hub (packet, keep header so the hub can demux by id).
         _toHub = channel_decl("toHub", size=[NCX], channel_type="npu_dma_packet")
         _toHub.operation.attributes["keep_pkt_header"] = UnitAttr.get()
-        _toHub.operation.attributes["packet_ids"] = _pin
         # hub id-demux egress: emit the assembled 514 packet on ONE MM2S; switchbox routes
         # id 1->dest0(rope), 4->dest1(rms), 8->dest2(glu); strip header -> pure 512 payload.
         _outY = Channel("outY", size=[1, 1], broadcast_shape=[1, NDEST])
         _outY.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
+        # Header ownership stated OUTRIGHT, not inferred from len(packet_ids) > 1.
+        # air-to-aie's channelKernelWritesHeader currently accepts EITHER, so this
+        # is behaviour-neutral today -- but the id COUNT and the fact that the core
+        # (not the DMA) stamps the header are two independent properties, and
+        # deriving the second from the first means the demux stops being
+        # recognisable the moment the pinned ids go away. air-annotate-packet-ids
+        # needs this marker to classify outY as a demux at all.
+        _outY.operation.attributes["air.src_writes_pkt_header"] = UnitAttr.get()
         _outY.operation.attributes["packet_ids"] = _pin
+        # packet_ids stays DECLARED here. air-annotate-packet-ids derives the id
+        # COUNT for this demux and checks the ids against what the kernel stamps,
+        # but the ORDER of this list is load-bearing and is
+        # NOT recoverable from the IR: air-to-aie routes destination i with
+        # packet_ids[i], while the kernel's constants only reveal the SET (harvesting
+        # them yields [4,1,8] here, which would silently route rope's packets to rms).
+        # Removing the pin needs an IR surface that ties each id to its destination.
         # Keep the hub demux on S2MM0 at every consumer tile; the shim-sourced feeds
         # (ropeLUT/rmsIn/rmsW) are pinned to S2MM1 below. Without an explicit pin,
         # unpinned packet flows REUSE whatever packet channel the tile already has
@@ -884,7 +922,7 @@ def build_module():
                         DeallocOp(a_w)
                         yield_([])
                     a_y = AllocOp(ybuf_l1, [], [])
-                    CallOp(flush_hdr, [a_acc, a_y, pktv])
+                    _mark_pkt_header(CallOp(flush_hdr, [a_acc, a_y, pktv]), "outA", 2)
                     ChannelPut(
                         "outA",
                         a_y,
