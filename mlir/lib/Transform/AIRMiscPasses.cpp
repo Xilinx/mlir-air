@@ -4027,17 +4027,31 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
   // scope rather than an early return.
   if (this->assign) {
 
-    // Assign mode fills in the DERIVABLE half of the routing domain.
+    // Assign mode owns the routing domain: which ids exist, which destination
+    // each one selects, and the constant the kernel stamps to pick one.
     //
-    // It never invents a value and never rewrites a kernel constant. Both were
-    // tried and both broke llama-3b on device: inventing renumbers every other
-    // packet channel (air-to-aie hands out the lowest free ids) and perturbs a
-    // tuned floorplan, and relabeling positionally assumes the kernel's arm
-    // order matches the declared list, which for llama swaps 1 and 4 and sends
-    // rope's packets to rms. The only safe operation is to COPY a list a
-    // channel already declares onto the hops that forward its packets, which is
-    // exactly the part that carries no ordering information.
+    // Two earlier attempts at this broke llama-3b on device, and the shape of
+    // both failures is what constrains the design here.
+    //
+    // Inventing ids from the bottom of the space renumbered every other packet
+    // channel, because air-to-aie hands out the lowest free id and a pinned id
+    // is pre-claimed. Allocating DOWNWARD from kMaxPacketID instead leaves the
+    // low end untouched, so every other channel keeps the id it had and a tuned
+    // floorplan is not perturbed.
+    //
+    // Relabeling the kernel's constants POSITIONALLY assumed the order of the
+    // switch arms matched the declared list; for llama that swapped 1 and 4 and
+    // sent rope's packets to rms. The rewrite below is by VALUE: the front end
+    // stamps a destination ORDINAL, and ordinal k becomes ids[k]. Ordinals are
+    // what the receiving gets already index on (`indices=[0, p]`), so there is
+    // no second convention to keep in sync and no order to get wrong. An
+    // ordinal repeated across phases maps to the same id by construction.
     OpBuilder builder(mod.getContext());
+
+    // Channels whose ids were allocated here rather than declared by the front
+    // end. Only these get their kernel constants rewritten -- a design that
+    // still pins its ids is stamping real ids already.
+    llvm::DenseSet<StringRef> derived;
 
     // Allocate ONE id list per routing domain, not per channel.
     //
@@ -4072,6 +4086,29 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
       idsFor[c.getSymName()] = declared;
     }
 
+    // Allocate for a demux that declares nothing.
+    //
+    // The count comes from the volume classification (dests partition the
+    // stream), and the ids themselves are free -- any distinct set routes, as
+    // long as the kernel stamps the one matching the destination it means. So
+    // take them from the top of the space, where nothing else is looking.
+    for (air::ChannelOp c : packetChans) {
+      StringRef name = c.getSymName();
+      if (pinnedIDsOf(c) || !air::channelKernelWritesHeader(c))
+        continue;
+      auto shapeIt = shapeOf.find(name);
+      if (shapeIt == shapeOf.end() || shapeIt->second.shape != Shape::Demux)
+        continue;
+      unsigned n = shapeIt->second.numDests;
+      if (n < 2 || n > (unsigned)air::kMaxPacketID + 1)
+        continue;
+      SmallVector<int64_t> ids;
+      for (unsigned d = 0; d < n; ++d)
+        ids.push_back(air::kMaxPacketID - d);
+      idsFor[name] = ids;
+      derived.insert(name);
+    }
+
     // Push each demux's list back up its header-preserving feeders.
     for (unsigned iter = 0, e = packetChans.size() + 1; iter < e; ++iter) {
       bool changed = false;
@@ -4090,7 +4127,13 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
           // Copy BEFORE inserting: idsFor[name] can reallocate the MapVector
           // and leave `it` dangling, which silently yields an empty list.
           SmallVector<int64_t> inherited = it->second;
+          bool succDerived = derived.count(succ);
           idsFor[name] = inherited;
+          // A feeder inherits its successor's provenance too: if the demux's
+          // ids were allocated here, the core stamping into this hop is
+          // stamping ordinals and needs the same rewrite.
+          if (succDerived)
+            derived.insert(name);
           changed = true;
           break;
         }
@@ -4111,6 +4154,90 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
                  << "air-annotate-packet-ids: assigned @" << chanOp.getSymName()
                  << " " << it->second.size() << " id(s)\n");
     }
+
+    // Turn the ordinals the kernel stamps into the ids just allocated.
+    //
+    // The front end says WHICH DESTINATION a packet is for; it has no business
+    // knowing the number on the wire. Both spellings used to be written by
+    // hand, in two languages, with nothing tying them together -- a mismatch
+    // was a silent routing hang. Now there is one spelling and the compiler
+    // closes the gap. The contract check below re-reads these constants, so a
+    // botched rewrite is caught in the same pass rather than on device.
+    // Collect first, rewrite second. Several calls in one core stamp through
+    // the SAME switch arms, so they trace back to the same constant uses;
+    // rewriting as we walk would let the second call read the first one's
+    // output and reject it as an out-of-range ordinal.
+    llvm::MapVector<OpOperand *, int64_t> newValue;
+    bool rewriteFailed = false;
+    mod.walk([&](Operation *call) {
+      auto chanSym =
+          call->getAttrOfType<SymbolRefAttr>(air::attrs::PktHeaderChannel);
+      auto operandIdx =
+          call->getAttrOfType<IntegerAttr>(air::attrs::PktHeaderOperand);
+      if (!chanSym || !operandIdx)
+        return;
+      StringRef chanName = chanSym.getLeafReference().getValue();
+      if (!derived.count(chanName))
+        return; // front end pinned it; leave it alone
+      auto idsIt = idsFor.find(chanName);
+      if (idsIt == idsFor.end())
+        return;
+      ArrayRef<int64_t> ids = idsIt->second;
+
+      unsigned idx = operandIdx.getInt();
+      if (idx >= call->getNumOperands())
+        return; // reported by the contract check
+
+      SmallVector<OpOperand *> uses;
+      SmallVector<int64_t> ordinals;
+      if (failed(
+              collectConstantUses(call->getOpOperand(idx), uses, ordinals))) {
+        call->emitOpError()
+            << "stamps a packet header for '" << chanName
+            << "', whose ids are compiler-allocated, but the operand does not "
+               "trace back to constants, so the destination ordinal cannot be "
+               "resolved. Feed it a constant per branch arm";
+        rewriteFailed = true;
+        return;
+      }
+
+      for (auto [use, ord] : llvm::zip_equal(uses, ordinals)) {
+        if (ord < 0 || ord >= (int64_t)ids.size()) {
+          call->emitOpError()
+              << "stamps destination ordinal " << ord << " for '" << chanName
+              << "', which has " << ids.size()
+              << " destination(s). The kernel must stamp an ordinal in [0, "
+              << ids.size() << "), not a packet id";
+          rewriteFailed = true;
+          return;
+        }
+        int64_t id = ids[ord];
+        auto [it, inserted] = newValue.try_emplace(use, id);
+        if (!inserted && it->second != id) {
+          // One constant feeding two routing domains that disagree: there is
+          // no single value that satisfies both.
+          call->emitOpError()
+              << "stamps through a constant already bound to packet id "
+              << it->second << " by another flow, but '" << chanName
+              << "' needs " << id << " for the same destination ordinal";
+          rewriteFailed = true;
+          return;
+        }
+      }
+    });
+
+    for (auto &[use, id] : newValue) {
+      OpBuilder b(use->getOwner());
+      // One fresh constant PER USE: the ordinals are shared literals, and
+      // rewriting a shared constant in place would relabel every other use of
+      // it too (that mis-relabelled llama-3b once already).
+      auto cst =
+          arith::ConstantOp::create(b, use->getOwner()->getLoc(),
+                                    b.getIntegerAttr(use->get().getType(), id));
+      use->set(cst);
+    }
+    if (rewriteFailed)
+      signalPassFailure();
 
   } // if (assign)
 

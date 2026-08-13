@@ -237,6 +237,11 @@ _MTOT = [p[1] for p in PHASES][:NPH]
 # distinct packet ids (ordered) for the id-demux egress: 1->rope, 4->rms, 8->glu.
 DEMUX_IDS = list(dict.fromkeys(_PKT))  # [1, 4, 8]
 NDEST = len(DEMUX_IDS)
+# Phase -> DESTINATION ORDINAL. This is what the kernel stamps now; the packet
+# id on the wire is allocated by air-annotate-packet-ids and substituted into
+# these constants. The ordinal is the same index the receiving gets use
+# (`indices=[0, d]`), so there is only one numbering to keep straight.
+DEST = [DEMUX_IDS.index(k) for k in _PKT]
 # egress rounds per dest (id): rope=QKV(5); rms=oproj(4)+down(4)=8; glu=gateup(44).
 DEST_RNDS = [sum(_RB[p] for p in range(NPH) if _PKT[p] == d) for d in DEMUX_IDS]
 DEST_TOTAL = sum(DEST_RNDS)  # 57 rounds total
@@ -521,7 +526,9 @@ def _mark_pkt_header(call_op, chan_name, operand_idx):
     """Bind a header-writing kernel call to the channel whose `packet_ids` it must
     agree with.
 
-    The routing ids live in two places -- the channel's `packet_ids` (which become
+    The routing ids live in ONE place now: the compiler allocates them and
+    rewrites the constant this call stamps. (Historically they lived in two --
+    the channel's `packet_ids` (which become
     the switchbox rules) and the constant handed to this call (which the kernel
     writes into the payload header). Nothing in the IR links them, so a divergence
     is invisible until the device hangs: the switchbox drops a packet stamped with
@@ -698,7 +705,6 @@ def build_module():
         # proj core egress is a PACKET flow (the reference: packet_flow(1/4/8) tile_C_r -> mem_C_1,
         # keep_pkt_header). The kernel-written id (flush_hdr @y+14) rides the packet so the
         # hub can demux QKV(1)/oproj+down(4)/gateup(8) -> rope/rms/glu.
-        _pin = ArrayAttr.get([IntegerAttr.get(i32, k) for k in DEMUX_IDS])
         _outA = channel_decl("outA", size=[NCX, NCY], channel_type="npu_dma_packet")
         _outA.operation.attributes["keep_pkt_header"] = UnitAttr.get()
         # No packet_ids here. This hop is single-destination: air-to-aie hands its
@@ -722,14 +728,10 @@ def build_module():
         # recognisable the moment the pinned ids go away. air-annotate-packet-ids
         # needs this marker to classify outY as a demux at all.
         _outY.operation.attributes["air.src_writes_pkt_header"] = UnitAttr.get()
-        _outY.operation.attributes["packet_ids"] = _pin
-        # packet_ids stays DECLARED here. air-annotate-packet-ids derives the id
-        # COUNT for this demux and checks the ids against what the kernel stamps,
-        # but the ORDER of this list is load-bearing and is
-        # NOT recoverable from the IR: air-to-aie routes destination i with
-        # packet_ids[i], while the kernel's constants only reveal the SET (harvesting
-        # them yields [4,1,8] here, which would silently route rope's packets to rms).
-        # Removing the pin needs an IR surface that ties each id to its destination.
+        # No packet_ids. air-annotate-packet-ids allocates the ids from the top
+        # of the id space (nothing else is renumbered) and rewrites the ordinals
+        # the kernel stamps to match. air.src_writes_pkt_header above is what
+        # marks this channel as the demux now that the list is gone.
         # Keep the hub demux on S2MM0 at every consumer tile; the shim-sourced feeds
         # (ropeLUT/rmsIn/rmsW) are pinned to S2MM1 below. Without an explicit pin,
         # unpinned packet flows REUSE whatever packet channel the tile already has
@@ -879,7 +881,7 @@ def build_module():
             # epilogue -> clean depth-2 x_0/x_1 + w_0/w_1 rings (matches the reference/Llama).
             j2h = [idx(v // 2) for v in _NJ]  # [4,4,4,22]
             pktc = [
-                arith.ConstantOp(IntegerAttr.get(i32, k), None).result for k in _PKT
+                arith.ConstantOp(IntegerAttr.get(i32, d), None).result for d in DEST
             ]
 
             def _psw(ph, vals, ty_):

@@ -707,7 +707,9 @@ def _mark_pkt_header(call_op, chan_name, operand_idx):
     """Bind a header-writing kernel call to the channel whose `packet_ids` it must
     agree with.
 
-    The routing ids live in two places -- the channel's `packet_ids` (which become
+    The routing ids live in ONE place now: the compiler allocates them and
+    rewrites the constant this call stamps. The marking is what lets it find
+    that constant. (Historically the ids lived in two places -- `packet_ids` and
     the switchbox rules) and the constant handed to this call (which the kernel
     writes into the payload header). Nothing in the IR links them, so a divergence
     is invisible until the device hangs: the switchbox drops a packet stamped with
@@ -1084,7 +1086,6 @@ def build_module():
         _wL2 = channel_decl("wL2ToL1", size=[NCX, NCY])
         _wL2.operation.attributes["air.shared_resident_ring"] = UnitAttr.get()
         # Output: leads -> group MT -> main MT -> id-demux egress.
-        _pin = ArrayAttr.get([IntegerAttr.get(i32, k) for k in DISTINCT_IDS])
         _outA = channel_decl(
             "outA", size=[NCX, PAIRS_PC], channel_type="npu_dma_packet"
         )
@@ -1116,15 +1117,12 @@ def build_module():
         # recognisable the moment the pinned ids go away. air-annotate-packet-ids
         # needs this marker to classify outY as a demux at all.
         _outY.operation.attributes["air.src_writes_pkt_header"] = UnitAttr.get()
-        _outY.operation.attributes["packet_ids"] = _pin
-        # packet_ids stays DECLARED here. air-annotate-packet-ids derives the id
-        # COUNT for this demux and checks the ids against what the kernel stamps,
-        # but the ORDER of this list is load-bearing and is
-        # NOT recoverable from the IR: air-to-aie routes destination i with
-        # packet_ids[i], while the kernel's constants only reveal the SET (harvesting
-        # them yields [4,1,8] here, which would silently route rope's packets to rms).
-        # Removing the pin needs an IR surface that ties each id to its destination.
-        # per-dest host drain: dest p drains its phases' rounds.
+        # No packet_ids. The ids are ALLOCATED by air-annotate-packet-ids:
+        # it reads the demux shape (dests partition the stream) for the count,
+        # takes the ids from the top of the id space so nothing else is
+        # renumbered, and rewrites the ordinals the kernel stamps to match.
+        # air.src_writes_pkt_header is what marks this channel as the demux --
+        # the count alone no longer identifies one, now that the list is gone.
         channel_decl("toShim", size=[NDEST])
         # #4: layer output (residual2 = h + down) drained to host from the rms core.
         if FULL4:
@@ -2767,9 +2765,16 @@ def build_module():
                             gcy = ty
                             i2c = [idx(v) for v in I2P]
                             j2c = [idx(v) for v in J2P]
+                            # Stamp the DESTINATION ORDINAL, not a packet id.
+                            # DEST[ph] is the same index the receiving gets use
+                            # (`indices=[0, p]`); air-annotate-packet-ids
+                            # allocates the ids and rewrites these constants to
+                            # match, so the wire number lives in exactly one
+                            # place instead of being written here and on the
+                            # channel and hoped to agree.
                             pktc = [
-                                arith.ConstantOp(IntegerAttr.get(i32, k), None).result
-                                for k in KIDP
+                                arith.ConstantOp(IntegerAttr.get(i32, d), None).result
+                                for d in DEST
                             ]
                             c2 = idx(2)
 
@@ -2806,7 +2811,7 @@ def build_module():
 
                             _arm_i = arith.index_cast(idx_t, _arm)
                             _id4 = arith.ConstantOp(
-                                IntegerAttr.get(i32, KIDP[OPROJ_PHASE]), None
+                                IntegerAttr.get(i32, DEST[OPROJ_PHASE]), None
                             ).result
 
                             def _sel(voc_val, dec_thunk, ty_):
@@ -2873,9 +2878,16 @@ def build_module():
                             gcy = ty
                             i2c = [idx(v) for v in I2P]
                             j2c = [idx(v) for v in J2P]
+                            # Stamp the DESTINATION ORDINAL, not a packet id.
+                            # DEST[ph] is the same index the receiving gets use
+                            # (`indices=[0, p]`); air-annotate-packet-ids
+                            # allocates the ids and rewrites these constants to
+                            # match, so the wire number lives in exactly one
+                            # place instead of being written here and on the
+                            # channel and hoped to agree.
                             pktc = [
-                                arith.ConstantOp(IntegerAttr.get(i32, k), None).result
-                                for k in KIDP
+                                arith.ConstantOp(IntegerAttr.get(i32, d), None).result
+                                for d in DEST
                             ]
                             c1i = arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
 
@@ -2963,7 +2975,7 @@ def build_module():
                             # vocab phase (I2=VOCAB_I2, J2=VOCAB_J2, pkt=id4=RMS_DEST).
                             _arm_i = arith.index_cast(idx_t, _arm)
                             _id4 = arith.ConstantOp(
-                                IntegerAttr.get(i32, KIDP[OPROJ_PHASE]), None
+                                IntegerAttr.get(i32, DEST[OPROJ_PHASE]), None
                             ).result
 
                             def _sel(voc_val, dec_thunk, ty):

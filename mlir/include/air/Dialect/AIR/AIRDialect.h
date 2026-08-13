@@ -116,6 +116,12 @@ constexpr StringLiteral NoSplit = "air.no_split";
 constexpr StringLiteral MemtileCol = "air.memtile_col";
 } // namespace attrs
 
+// Largest routing id a packet header can carry. Mirrors the AIE target hook
+// getMaxPacketId(); the packet id field is 5 bits. Ids allocated for a demux
+// are taken DOWNWARD from here so they cannot collide with the upward
+// auto-assignment air-to-aie gives every other packet flow.
+constexpr int kMaxPacketID = 31;
+
 // Copy the DMA-steering / runtime-ordering markers
 // (attrs::MemtileDmaChannelMin, RuntimeHoist, AwaitAppends, AppendBarrier,
 // RefeedCount, PacketIDs, KeepPktHeader) that must survive channel-op
