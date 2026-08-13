@@ -138,10 +138,6 @@ void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
     dst->setAttr(attrs::AwaitAppends, aa);
   if (auto ab = src->getAttr(attrs::AppendBarrier))
     dst->setAttr(attrs::AppendBarrier, ab);
-  // Per-op preserve-pacing opt-out (fire-and-free shim feed), consumed by
-  // AIROptimizeShimDMABDs's preserve-marker propagation.
-  if (auto np = src->getAttr(attrs::ShimFeedNoPace))
-    dst->setAttr(attrs::ShimFeedNoPace, np);
   // Producer-side re-feed count (single-buffer count-free re-broadcast), read
   // by AIRToAIE's lock allocators.
   if (auto rc = src->getAttrOfType<IntegerAttr>(attrs::RefeedCount))

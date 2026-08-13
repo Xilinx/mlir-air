@@ -1,4 +1,4 @@
-//===- shim_feed_no_pace_lowering.mlir -------------------------*- MLIR -*-===//
+//===- paced_shim_feed_lowering.mlir ---------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -7,12 +7,12 @@
 
 // RUN: air-opt -airrt-to-npu %s | FileCheck %s
 
-// End-to-end consequence of the air.shim_feed_no_pace opt-out: airrt-to-npu
-// gates its double-buffered pacing on air.preserve_shim_dma_order. An opted-out
-// feed reaches this pass WITHOUT that marker (air-opt-shim-dma-bds excluded it),
-// so it lowers fire-and-free (issue_token unset, dma_free_task after start, no
-// await), while a sibling that kept the marker on the same channel is paced
-// (issue_token set, depth-2 completion-token awaits).
+// End-to-end consequence of the pacing exemption: airrt-to-npu gates its
+// double-buffered pacing on air.preserve_shim_dma_order. An exempted feed
+// reaches this pass WITHOUT that marker (air-opt-shim-dma-bds found it reaches
+// no broadcast-consuming herd), so it lowers fire-and-free (issue_token unset,
+// dma_free_task after start, no await), while a sibling that kept the marker on
+// the same channel is paced (issue_token set, depth-2 completion-token awaits).
 
 // CHECK-LABEL: aie.runtime_sequence @mixed_feeds
 // Paced feed: issue_token set, bounded (depth=2) awaits.
