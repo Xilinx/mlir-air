@@ -177,7 +177,14 @@ int main(int argc, char **argv) {
 
   // ---- timed loop: the same per-token sequence the Python dispatch() runs,
   // ending where FLM's forward() ends (logits back, no sampling) ----
-  std::vector<double> ms;
+  // Phase split. The four host phases bracket the one device phase, so
+  // `dispatch` isolates the on-NPU time from the fixed per-dispatch host cost
+  // that every measurement (including any UNI_WAVE_LO/HI part-build) pays once.
+  // Without that split, timing two wave-subsets and summing double-counts the
+  // host cost and inflates the apparent cost of whichever part you attribute it
+  // to. The four extra steady_clock reads are ~100 ns total, six orders of
+  // magnitude below the signal.
+  std::vector<double> ms, msInsts, msFeed, msDisp, msBack;
   ms.reserve(iters);
   for (long it = 0; it < warmup + iters; it++) {
     auto t0 = std::chrono::steady_clock::now();
@@ -185,10 +192,13 @@ int main(int argc, char **argv) {
     // per-token instruction patch (only the L-dependent slice is re-synced)
     std::memcpy(bo_i.map<uint32_t *>() + lo, insts.data() + lo, (hi - lo) * 4);
     bo_i.sync(XCL_BO_SYNC_BO_TO_DEVICE, (hi - lo) * 4, lo * 4);
+    auto t1 = std::chrono::steady_clock::now();
+
     // per-position rope LUT + the token embedding
     std::memcpy(bo_r.map<uint16_t *>() + RMS_LUT_OFF, lut.data(), 64 * 2);
     bo_r.sync(XCL_BO_SYNC_BO_TO_DEVICE, 64 * 2, RMS_LUT_OFF * 2);
     bo_x.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    auto t2 = std::chrono::steady_clock::now();
 
     auto run = kernel(3u, bo_i, static_cast<uint32_t>(insts.size()), bo_x, bo_w,
                       bo_r, bo_y, bo_kv);
@@ -197,11 +207,19 @@ int main(int argc, char **argv) {
       std::cerr << "dispatch did not complete: state=" << st << "\n";
       return 1;
     }
-    bo_y.sync(XCL_BO_SYNC_BO_FROM_DEVICE, VOC_N * 2, DECODE_Y * 2);
+    auto t3 = std::chrono::steady_clock::now();
 
-    auto t1 = std::chrono::steady_clock::now();
-    if (it >= warmup)
-      ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+    bo_y.sync(XCL_BO_SYNC_BO_FROM_DEVICE, VOC_N * 2, DECODE_Y * 2);
+    auto t4 = std::chrono::steady_clock::now();
+
+    if (it >= warmup) {
+      using d = std::chrono::duration<double, std::milli>;
+      ms.push_back(d(t4 - t0).count());
+      msInsts.push_back(d(t1 - t0).count());
+      msFeed.push_back(d(t2 - t1).count());
+      msDisp.push_back(d(t3 - t2).count());
+      msBack.push_back(d(t4 - t3).count());
+    }
   }
 
   double mean = 0;
@@ -220,5 +238,17 @@ int main(int argc, char **argv) {
   std::printf("\n[bench] n=%zu  mean %.3f ms  sd %.3f  min %.3f  max %.3f  "
               "(%.2f tok/s)\n",
               ms.size(), mean, sd, lo_ms, hi_ms, 1000.0 / mean);
+
+  auto avg = [](const std::vector<double> &v) {
+    double s = 0;
+    for (double x : v)
+      s += x;
+    return s / v.size();
+  };
+  const double aI = avg(msInsts), aF = avg(msFeed), aD = avg(msDisp),
+               aB = avg(msBack);
+  std::printf("[phase] insts %.3f  feed %.3f  dispatch %.3f  logits-back %.3f "
+              " (host total %.3f)\n",
+              aI, aF, aD, aB, aI + aF + aB);
   return 0;
 }
