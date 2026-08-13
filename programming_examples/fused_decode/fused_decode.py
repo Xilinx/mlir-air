@@ -1665,7 +1665,6 @@ def build_module():
                             xb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), XMT_PCOL)
                             )
-                            xb.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet(
                                 src, xb, offsets=[0], sizes=[2 * COL_BLOCK], strides=[1]
                             )
@@ -1757,7 +1756,6 @@ def build_module():
                                 wf.operation.attributes["air.memtile_col"] = (
                                     IntegerAttr.get(T.i32(), PCOL[cx])
                                 )
-                                wf.operation.attributes["air.no_split"] = UnitAttr.get()
                                 ChannelGet(
                                     _wch,
                                     wf,
@@ -1798,9 +1796,6 @@ def build_module():
                                 grp.operation.attributes["air.memtile_col"] = (
                                     IntegerAttr.get(T.i32(), GRP_PCOL[g])
                                 )
-                                grp.operation.attributes["air.no_split"] = (
-                                    UnitAttr.get()
-                                )
                                 for k, (cx, pp) in enumerate(grp_leads(g)):
                                     off = 0 if k == 0 else HDR + k * PAIR_PAY
                                     sz = (HDR + PAIR_PAY) if k == 0 else PAIR_PAY
@@ -1825,7 +1820,6 @@ def build_module():
                             ml.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), MAIN_PCOL)
                             )
-                            ml.operation.attributes["air.no_split"] = UnitAttr.get()
                             for g in range(N_GRP):
                                 off = (
                                     0
@@ -1885,7 +1879,6 @@ def build_module():
                             rb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), RELAY_COLS[p])
                             )
-                            rb.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet(
                                 "outY",
                                 rb,
@@ -2050,7 +2043,6 @@ def build_module():
                             5,  # reference mem_5_1; free for N<=2 (kv on col3).
                             # N=4 needs attn cols 3,4 + GLU->tile_5_2 relayout (TODO).
                         )
-                        qmtb.operation.attributes["air.no_split"] = UnitAttr.get()
                         ChannelGet("ropeQ", qmtb, indices=[idx(0)])
                         for c in range(N_ATTN_CU):
                             ChannelPut(
@@ -2117,7 +2109,6 @@ def build_module():
                             akb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), col)
                             )
-                            akb.operation.attributes["air.no_split"] = UnitAttr.get()
                             akbs.append(akb)
                         for c in range(N_ATTN_CU):
                             col = ATTN_CU_LOC[c][0]
@@ -2125,7 +2116,6 @@ def build_module():
                             avb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), col)
                             )
-                            avb.operation.attributes["air.no_split"] = UnitAttr.get()
                             avbs.append(avb)
                         # per col group: get its CUs' k then v from toAttnKV[gi]
                         # (matches rope's per-group put order; no cross-col FIFO).
@@ -2229,16 +2219,10 @@ def build_module():
                                         _kbuf.operation.attributes[
                                             "air.memtile_col"
                                         ] = IntegerAttr.get(T.i32(), col)
-                                        _kbuf.operation.attributes["air.no_split"] = (
-                                            UnitAttr.get()
-                                        )
                                         _vbuf = AllocOp(kvblk_l2, [], [])
                                         _vbuf.operation.attributes[
                                             "air.memtile_col"
                                         ] = IntegerAttr.get(T.i32(), col)
-                                        _vbuf.operation.attributes["air.no_split"] = (
-                                            UnitAttr.get()
-                                        )
                                         ChannelGet("inKV_K", _kbuf, indices=[idx(_gi)])
                                         ChannelGet("inKV_V", _vbuf, indices=[idx(_gi)])
                                         for _lc, _cc in enumerate(_cus):
@@ -2301,9 +2285,6 @@ def build_module():
                                     kvb = AllocOp(kvblk_l2, [], [])
                                     kvb.operation.attributes["air.memtile_col"] = (
                                         IntegerAttr.get(T.i32(), col)
-                                    )
-                                    kvb.operation.attributes["air.no_split"] = (
-                                        UnitAttr.get()
                                     )
                                     ChannelGet("inKV", kvb, indices=[idx(c)])
                                     _pk = ChannelPut(
@@ -2558,7 +2539,6 @@ def build_module():
                         omtb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                             T.i32(), 5
                         )
-                        omtb.operation.attributes["air.no_split"] = UnitAttr.get()
                         # loop close: gathered o (2048) is ph1 o-proj X, re-broadcast
                         # OPROJ_REFEED times into the convergent @xnorm, AFTER ph0 (rms)
                         # and BEFORE ph2. Reference mem_5_1 o_buffer -> mem_1_1 x_buffer.
@@ -2685,7 +2665,6 @@ def build_module():
                         db.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                             T.i32(), DOWN_PCOL
                         )
-                        db.operation.attributes["air.no_split"] = UnitAttr.get()
                         for _s in for_(idx(0), idx(NGLU), idx(1)):
                             soff = arith.muli(_s, idx(GLU_HID))
                             ChannelGet(
