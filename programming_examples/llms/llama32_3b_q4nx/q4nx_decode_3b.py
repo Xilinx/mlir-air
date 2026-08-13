@@ -170,7 +170,14 @@ class FusedDecode3B:
     The KV cache is device-resident and grown in place -- no CPU attention, no re-upload.
     """
 
-    def __init__(self, model_source, templates, model_type="LLAMA_3_2_3B", max_L=None):
+    def __init__(
+        self,
+        model_source,
+        templates,
+        model_type="LLAMA_3_2_3B",
+        max_L=None,
+        staircase=False,
+    ):
         import pyxrt as xrt
 
         self.xrt = xrt
@@ -198,7 +205,15 @@ class FusedDecode3B:
         from decode_insts_gen import DecodeInstsGen
 
         self.gen = DecodeInstsGen(str(templates), max_L=max_L)
-        self.ATTN_MAXL = self.gen.attn_maxl
+        # Staircase: hold every calibrated ATTN_MAXL window and run on the smallest one
+        # covering the current L. The compiled KV readback streams ATTN_MAXL positions
+        # whatever L is, so a smaller window moves proportionally fewer DDR bytes/token.
+        # Off by default -- one window, byte-identical to the single-template path.
+        self.windows = (
+            self.gen.calibrated_windows() if staircase else [self.gen.attn_maxl]
+        )
+        # BOs and the rope table are sized for the largest window and shared by all.
+        self.ATTN_MAXL = max(self.windows)
         self.rope_cos, self.rope_sin = llama3_rope(self.ATTN_MAXL, self.DH)
 
         RMS_LAYER = fd.RMS_LAYER
@@ -212,15 +227,22 @@ class FusedDecode3B:
             [np.concatenate([RMS_in[k], RMS_post[k]]) for k in range(self.N_LAYERS)]
         )
 
-        # XRT: one xclbin + one resident BO set (weights uploaded once)
+        # XRT: one kernel per window + ONE resident BO set (weights uploaded once).
+        # Host-only BOs are host memory registered with the device, not bound to a
+        # hw_context slot, so the same set is valid on every window's kernel -- which is
+        # what makes a window switch cheap (no 2 GB weight re-upload).
         self.dev = xrt.device(0)
         self.TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
-        xb = xrt.xclbin(self.gen.xclbin)
-        self.dev.register_xclbin(xb)
-        ctx = xrt.hw_context(self.dev, xb.get_uuid())
-        xk = [k for k in xb.get_kernels() if "MLIR_AIE" in k.get_name()][0]
-        self.kern = xrt.kernel(ctx, xk.get_name())
+        self._kern = {}
+        for m in self.windows:
+            xb = xrt.xclbin(self.gen.xclbin_for_maxl(m))
+            self.dev.register_xclbin(xb)
+            c = xrt.hw_context(self.dev, xb.get_uuid())
+            xk = [k for k in xb.get_kernels() if "MLIR_AIE" in k.get_name()][0]
+            self._kern[m] = (c, xrt.kernel(c, xk.get_name()))  # tuple keeps ctx alive
+        self.cur_maxl = self.ATTN_MAXL
+        self.kern = self._kern[self.cur_maxl][1]
         g = self.kern.group_id
         HO = xrt.bo.host_only
         self.x_bo = xrt.bo(self.dev, self.K * 2, HO, g(3))
@@ -228,7 +250,6 @@ class FusedDecode3B:
         self.r_bo = xrt.bo(self.dev, RMS_SIZE * 2, HO, g(5))
         self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
         self.kvc = xrt.bo(self.dev, self.N_LAYERS * self.LREG * 2, HO, g(7))
-        self.ib = xrt.bo(self.dev, self.gen.base.nbytes, xrt.bo.cacheable, g(1))
 
         self.w_bo.write(Wv16, 0)
         self.w_bo.sync(self.TO)
@@ -240,22 +261,73 @@ class FusedDecode3B:
         self.r_bo.sync(self.TO)
         self.rms_lut_off = int(rms_slabs.size)
 
-        # insts base + the L-dependent word slope (RTP-L + KV-append offsets), from two builds.
-        i1 = self.gen.insts_for_L(1)
-        i2 = self.gen.insts_for_L(2)
-        self.ld = np.where(i1 != i2)[0]
-        self.ld_base = i1[self.ld].astype(np.int64)
-        self.ld_slope = i2[self.ld].astype(np.int64) - i1[self.ld].astype(np.int64)
-        self.insts_buf = i1.astype(np.uint32).copy()
-        self.insts_size = int(i1.size)
-        self.ib.write(self.insts_buf, 0)
-        self.ib.sync(self.TO)
+        # Per window: insts base + the L-dependent word slope (RTP-L + KV-append
+        # offsets, from that window's two builds) and its own instruction BO.
+        self._ist = {}
+        for m in self.windows:
+            i1 = self.gen.insts_for(m, 1)
+            i2 = self.gen.insts_for(m, 2)
+            ld = np.where(i1 != i2)[0]
+            ib = xrt.bo(self.dev, i1.nbytes, xrt.bo.cacheable, g(1))
+            self._ist[m] = dict(
+                ld=ld,
+                base=i1[ld].astype(np.int64),
+                slope=i2[ld].astype(np.int64) - i1[ld].astype(np.int64),
+                buf=i1.astype(np.uint32).copy(),
+                size=int(i1.size),
+                ib=ib,
+            )
+        self._use_window(self.cur_maxl)
+
+    def _use_window(self, m):
+        """Point the active kernel / insts state at window `m` (no KV movement)."""
+        st = self._ist[m]
+        self.cur_maxl = m
+        self.kern = self._kern[m][1]
+        self.ib = st["ib"]
+        self.ld, self.ld_base, self.ld_slope = st["ld"], st["base"], st["slope"]
+        self.insts_buf, self.insts_size = st["buf"], st["size"]
+
+    def _cur_lreg(self, maxl=None):
+        """KV elements per layer at window `maxl` (default: the active window)."""
+        return (self.cur_maxl if maxl is None else maxl) * self.fd.KVSZ_TOK
+
+    def _respace_kv(self, old_maxl, new_maxl, live):
+        """Re-lay the `live` filled positions from one window's KV layout into another's.
+
+        The cache is region-major with region_stride = ATTN_MAXL*REGION_W, so changing
+        window re-spaces the regions while each region's live prefix is unchanged.
+        Gathered to a compact temp first, so growing and shrinking are both safe. Cost
+        is proportional to `live`, and a crossing happens exactly when `live` is small.
+        """
+        if old_maxl == new_maxl or live <= 0:
+            return
+        fd = self.fd
+        R, NR = fd.REGION_W, 2 * fd.NGRP
+        self.kvc.sync(self.FROM)
+        src = np.frombuffer(
+            self.kvc.map(), dtype=bfloat16, count=self.N_LAYERS * self.LREG
+        )
+        dst = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
+        n = live * R
+        for lay in range(self.N_LAYERS):
+            so = lay * self._cur_lreg(old_maxl)
+            do = lay * self._cur_lreg(new_maxl)
+            for r in range(NR):
+                s = so + r * old_maxl * R
+                d = do + r * new_maxl * R
+                dst[d : d + n] = src[s : s + n]
+        self.kvc.write(dst.view(np.int16), 0)
+        self.kvc.sync(self.TO)
 
     def reset_kv(self):
         """Zero the device-resident KV cache (start a fresh sequence)."""
         KV = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
         self.kvc.write(KV.view(np.int16), 0)
         self.kvc.sync(self.TO)
+        # A fresh sequence starts at L=1, so drop back to the cheapest window.
+        if getattr(self, "_ist", None):
+            self._use_window(self.windows[0])
 
     def seed_kv(self, k_layers, v_layers):
         """Seed the device KV cache from a prefill (the warm-start handoff).
@@ -274,12 +346,17 @@ class FusedDecode3B:
             raise RuntimeError(
                 f"prefill ctx {ctx} exceeds decode ATTN_MAXL {self.ATTN_MAXL}"
             )
-        region_stride = self.ATTN_MAXL * fd.REGION_W
+        # Seed straight into the layout of the window the first decode step will use
+        # (L = ctx+1), so no re-space is needed on the very first dispatch.
+        if len(self.windows) > 1:
+            self._use_window(self.gen.window_for_L(ctx + 1))
+        region_stride = self.cur_maxl * fd.REGION_W
+        lreg = self._cur_lreg()
         buf = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
         for L in range(self.N_LAYERS):
             kL = np.asarray(k_layers[L], bfloat16).reshape(ctx, -1)
             vL = np.asarray(v_layers[L], bfloat16).reshape(ctx, -1)
-            base = L * self.LREG
+            base = L * lreg
             for gi in range(fd.NGRP):
                 cols = slice(gi * fd.REGION_W, (gi + 1) * fd.REGION_W)
                 kreg = base + gi * region_stride
@@ -294,6 +371,12 @@ class FusedDecode3B:
         """One decode step at context length L=p+1: patch insts for L, feed embed[tok] +
         the position-p rope LUT, run the fused decode, return the vocab logits."""
         L = p + 1
+        if len(self.windows) > 1:
+            w = self.gen.window_for_L(L)
+            if w != self.cur_maxl:
+                # `p` positions are live; this token's K/V is appended by the dispatch.
+                self._respace_kv(self.cur_maxl, w, p)
+                self._use_window(w)
         self.insts_buf[self.ld] = (self.ld_base + (L - 1) * self.ld_slope).astype(
             np.uint32
         )
