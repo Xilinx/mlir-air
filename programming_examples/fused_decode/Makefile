@@ -41,8 +41,12 @@ PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
 # it. Inherited from the environment so a consumer can set it once for both the
 # build and the run.
 W_DUAL_CHAN    ?= 1
-DECODE_ENV     := VOCAB_CHUNK_I2=14 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
-                  W_DUAL_CHAN=$(W_DUAL_CHAN)
+# VOCAB_CHUNK_I2 / UNI_LM: overridable so the lm-head wave count can be varied at
+# CONSTANT work (UNI_LM*VOCAB_CHUNK_I2 must stay = VOCAB_FULL_ROWBLKS/32). Defaults
+# reproduce the shipped config exactly. fused_decode.py asserts the two agree.
+VOCAB_CHUNK_I2 ?= 18
+DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
+                  W_DUAL_CHAN=$(W_DUAL_CHAN) $(if $(UNI_LM),UNI_LM=$(UNI_LM),)
 
 .PHONY: help compile-decode _compile_decode_build preflight-llvm-link clean
 

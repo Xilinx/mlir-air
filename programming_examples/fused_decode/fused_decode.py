@@ -187,7 +187,12 @@ _MODELS = {
         HAS_QK_NORM=False,  # rope_w = cos/sin(DH) only
         VOCAB_SIZE=128256,
         UNI_DEC=16,  # decode waves (layers) in the unified sequence
-        UNI_LM=9,  # lm-head waves (vocab chunks) in the unified sequence
+        # lm-head waves (vocab chunks). 7 = the FLOOR: UNI_LM*VOCAB_CHUNK_I2 is
+        # pinned at VOCAB_FULL_ROWBLKS/ROW_BLOCK = 126, and 18 is the largest legal
+        # chunk (see the VOCAB_CHUNK_I2 derivation below), so 126/18 = 7 is the
+        # fewest lm-head waves this model can be built with. Each wave is a
+        # host-armed barrier, hence "fewest" is the direction to want.
+        UNI_LM=7,  # lm-head waves (vocab chunks) in the unified sequence
     ),
     # Gemma3-4B (text): mirrors the ONE built FLM reference (gemma_npu_bin).
     # PAIR_ROWS=1 -> FLM-gemma NON-PAIRED proj egress (each CT emits 1 block ->
@@ -568,9 +573,33 @@ VOCAB_FULL_ROWBLKS = VOCAB_SIZE_PADDED_FULL // ROW_BLOCK  # 4032
 # persistent chunk-sized xclbin (mirrors the reference's gen_lm_head_seq re-dispatch). A single
 # full-vocab dispatch is NOT buildable: 8064 launch inW puts kill air-to-aie, and a
 # per-round drain exhausts shim BD IDs. VOCAB_I2 = per-dispatch row-pair iters/core;
-# keep it small so the feed op-count + shim BDs + refeed lock (<=~32) all fit. 14 ->
-# RNDS 28, 448 rowblocks/chunk, 4032/448 = 9 dispatches, proven (cos 0.9979 argmax MATCH).
-VOCAB_I2 = int(_os.environ.get("VOCAB_CHUNK_I2", "14"))
+# keep it small so the feed op-count + shim BDs + refeed lock all fit.
+#
+# The value is NOT free -- four constraints fix the legal set, and within it we want
+# the LARGEST chunk, because UNI_LM = 126/VOCAB_I2 is the number of lm-head waves and
+# every wave is a host-armed barrier (the herd lock + RTP re-dispatch that gate all 27
+# cores). Measured cost of a wave: ~20 us, from a constant-work sweep at
+# (VOCAB_I2,UNI_LM) = (18,7)/(14,9)/(6,21) -> 18.13/18.18/18.40 ms/token at ctx 2k.
+#
+#   1. UNI_LM * VOCAB_I2 == VOCAB_FULL_ROWBLKS/ROW_BLOCK == 126   (covers the vocab;
+#      so every legal pair streams the identical 164 MB -- only the barrier count moves)
+#   2. VOCAB_I2 divides 126        (the assert below: a chunk must divide the vocab)
+#   3. VOCAB_I2 even               (the vocab relay drains whole-K blocks, so
+#      K/PAYLOAD = 4 must divide VOCAB_RNDS = VOCAB_I2*PAIR_ROWS; odd values
+#      floor-truncate the round count -> DEADLOCK. See the 3B entry's note.)
+#   4. 2*VOCAB_I2 <= 63            (the refeed credit is baked into ONE producer lock
+#      and the AIE-ML lock is 7-bit, max +63; larger makes AcquireGreaterEqual(N)
+#      unsatisfiable -> DEADLOCK. See the xnorm re-broadcast comment.)
+#
+# Even divisors of 126 are {2,6,14,18,42,126}; (4) rules out 42 and 126, leaving
+# {2,6,14,18} -> UNI_LM {63,21,9,7}. 18 is therefore the largest legal chunk and 7 the
+# minimum wave count. 18 -> RNDS 36, 576 rowblocks/chunk, 4032/576 = 7 dispatches.
+#
+# Was 14/9. 18/7 is numerically IDENTICAL (the 64-token greedy id sequence at ctx 2k
+# hashes the same) and ~0.05 ms/token faster -- consistent with 2 waves x ~20 us, but
+# that is BELOW run-to-run noise at n=4, so treat the win as principled rather than
+# measured. The wave-cost slope itself is only resolvable over the wider 23->37 range.
+VOCAB_I2 = int(_os.environ.get("VOCAB_CHUNK_I2", "18"))
 VOCAB_ROWBLKS = VOCAB_I2 * (NCX * NCY) * PAIR_ROWS  # rowblocks per chunk/dispatch
 VOCAB_SIZE_PADDED = VOCAB_ROWBLKS * ROW_BLOCK  # logits per chunk (device drain size)
 assert VOCAB_FULL_ROWBLKS % VOCAB_ROWBLKS == 0, "chunk must divide the full vocab"
@@ -594,7 +623,16 @@ LM_HEAD = int(_os.environ.get("LM_HEAD", "0"))
 # first folding test (separate ELF args come after folding is proven).
 UNIFIED = 1  # fixed config: single-launch unified decode + lm_head
 UNI_DEC = MODEL["UNI_DEC"]  # decode waves in the unified sequence
-UNI_LM = MODEL["UNI_LM"]  # lm-head waves in the unified sequence
+# lm-head waves in the unified sequence. Overridable so the wave count can be varied
+# while the LM-head WORK is held constant: UNI_LM * VOCAB_I2 == VOCAB_FULL_ROWBLKS/32
+# (=126) always, so (UNI_LM=9,VOCAB_I2=14) and (UNI_LM=21,VOCAB_I2=6) stream the exact
+# same 164 MB of vocab weights -- only the number of host-armed barriers differs. Used
+# to measure what a wave barrier costs; must stay consistent with N_VOCAB_CHUNKS.
+UNI_LM = int(_os.environ.get("UNI_LM", MODEL["UNI_LM"]))
+assert UNI_LM == N_VOCAB_CHUNKS, (
+    f"UNI_LM={UNI_LM} must equal N_VOCAB_CHUNKS={N_VOCAB_CHUNKS} "
+    f"(VOCAB_CHUNK_I2={VOCAB_I2}); their product covers the padded vocab"
+)
 UNI_WAVES = UNI_DEC + UNI_LM
 # Wave-range override (keeps ABI/CDO fixed at UNI_DEC/UNI_LM; only restricts which
 # waves the fused launch loop drives). Used to split the fused sequence into a
@@ -1559,10 +1597,28 @@ def build_module():
                                     _NRB = int(_os.environ.get("DECODE_KV_RB_NRB", "1"))
                                     _nb = RB_ROUNDS
                                     _cbk = (_nb + _NRB - 1) // _NRB  # blocks per chunk
+                                    # KV_RB_1D: emit the readback as ONE 1-D descriptor instead of
+                                    # the 3-D [cb,16,REGION_W]/[16*REGION_W,REGION_W,1]. Those
+                                    # strides are exactly the products of the inner sizes, so the
+                                    # region is already perfectly contiguous (max offset
+                                    # cb*16*REGION_W-1, no gaps) -- the 3-D form describes a plain
+                                    # linear run. It is NOT free, though: the shim DMA then has to
+                                    # sequence cb*16 (=2048 @L2k) inner runs of REGION_W*2 (=512) B
+                                    # per BD instead of one, and only a contiguous 1-D BD gets the
+                                    # wide buffer_length register (same reason the weight feed is
+                                    # kept 1-D). FLM issues this identical region as a single
+                                    # LINEAR transfer -- see its seq col3/col4 BDs, "A linear
+                                    # transfer, no D0", 1,056,768 B. Same bytes, same addresses,
+                                    # same order; only the descriptor shape differs.
+                                    _KV1D = int(_os.environ.get("KV_RB_1D", "0"))
                                     _ci = 0
                                     while _ci < _nb:
                                         _cb = min(_cbk, _nb - _ci)
                                         _coff = _ci * 16 * REGION_W
+                                        # Contiguous either way; _KV1D just states it as 1-D.
+                                        # Spelled inline (not hoisted) so the default path's
+                                        # constant emission order -- and thus the emitted IR --
+                                        # is byte-identical to before this flag existed.
                                         for gi in range(NGRP):
                                             ChannelPut(
                                                 "inKV_K",
@@ -1571,16 +1627,20 @@ def build_module():
                                                 offsets=[
                                                     _loi(_kbase, _kreg_off(gi) + _coff)
                                                 ],
-                                                sizes=[
-                                                    idx(_cb),
-                                                    idx(16),
-                                                    idx(REGION_W),
-                                                ],
-                                                strides=[
-                                                    idx(16 * REGION_W),
-                                                    idx(REGION_W),
-                                                    idx(1),
-                                                ],
+                                                sizes=(
+                                                    [idx(_cb * 16 * REGION_W)]
+                                                    if _KV1D
+                                                    else [idx(_cb), idx(16), idx(REGION_W)]
+                                                ),
+                                                strides=(
+                                                    [idx(1)]
+                                                    if _KV1D
+                                                    else [
+                                                        idx(16 * REGION_W),
+                                                        idx(REGION_W),
+                                                        idx(1),
+                                                    ]
+                                                ),
                                             )
                                             ChannelPut(
                                                 "inKV_V",
@@ -1589,16 +1649,20 @@ def build_module():
                                                 offsets=[
                                                     _loi(_kbase, _vreg_off(gi) + _coff)
                                                 ],
-                                                sizes=[
-                                                    idx(_cb),
-                                                    idx(16),
-                                                    idx(REGION_W),
-                                                ],
-                                                strides=[
-                                                    idx(16 * REGION_W),
-                                                    idx(REGION_W),
-                                                    idx(1),
-                                                ],
+                                                sizes=(
+                                                    [idx(_cb * 16 * REGION_W)]
+                                                    if _KV1D
+                                                    else [idx(_cb), idx(16), idx(REGION_W)]
+                                                ),
+                                                strides=(
+                                                    [idx(1)]
+                                                    if _KV1D
+                                                    else [
+                                                        idx(16 * REGION_W),
+                                                        idx(REGION_W),
+                                                        idx(1),
+                                                    ]
+                                                ),
                                             )
                                         _ci += _cb
                                     return
