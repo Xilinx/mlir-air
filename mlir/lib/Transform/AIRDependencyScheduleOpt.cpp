@@ -7127,6 +7127,73 @@ static scf::IndexSwitchOp restoreIndexSwitchDrainToken(scf::IndexSwitchOp sw,
   return newSw;
 }
 
+// Channel declarations whose data reaches a herd that also consumes a
+// broadcast channel.
+//
+// Such a herd advances all of the broadcast's destinations in lockstep, and
+// that couples every other feed landing in it: the feeds must be issued
+// round-major and kept under backpressure, or one channel over-commits its
+// in-flight BDs while its siblings starve and the schedule deadlocks. A feed
+// landing only in herds with no broadcast consumer has no such sibling to stay
+// in step with, and is free to run fire-and-free.
+//
+// Reachability is a fixpoint over the channel graph rather than a single hop:
+// a shim feed is normally consumed at L2 and re-emitted on another channel
+// before it ever reaches a herd (e.g. inW* -> memtile -> wL2ToL1 -> herd), so
+// an edge C -> D exists whenever a get on C fills a buffer that a put on D
+// then reads.
+static llvm::SmallPtrSet<Operation *, 16>
+findLockstepCoupledChannels(func::FuncOp func) {
+  auto declOf = [](air::ChannelGetOp g) {
+    return air::getChannelDeclarationThroughSymbol(
+        cast<air::ChannelInterface>(g.getOperation()));
+  };
+
+  // Seed: herds holding a get on a broadcast channel.
+  llvm::SmallPtrSet<Operation *, 4> lockstepHerds;
+  func.walk([&](air::ChannelGetOp g) {
+    auto decl = declOf(g);
+    if (!decl || !decl.isBroadcast())
+      return;
+    if (auto herd = g->getParentOfType<air::HerdOp>())
+      lockstepHerds.insert(herd.getOperation());
+  });
+
+  llvm::SmallPtrSet<Operation *, 16> coupled;
+  SmallVector<Operation *> worklist;
+  // Edges, reversed for propagation: producer channel <- consumer channel.
+  llvm::DenseMap<Operation *, llvm::SmallPtrSet<Operation *, 4>> feeders;
+  func.walk([&](air::ChannelGetOp g) {
+    auto decl = declOf(g);
+    if (!decl)
+      return;
+    if (auto herd = g->getParentOfType<air::HerdOp>())
+      if (lockstepHerds.contains(herd.getOperation()) &&
+          coupled.insert(decl.getOperation()).second)
+        worklist.push_back(decl.getOperation());
+    // The buffer this get fills is re-emitted by any put that reads it.
+    for (auto *user : g.getDstMemref().getUsers()) {
+      auto put = dyn_cast<air::ChannelPutOp>(user);
+      if (!put)
+        continue;
+      if (auto downstream = air::getChannelDeclarationThroughSymbol(
+              cast<air::ChannelInterface>(put.getOperation())))
+        feeders[downstream.getOperation()].insert(decl.getOperation());
+    }
+  });
+
+  while (!worklist.empty()) {
+    Operation *decl = worklist.pop_back_val();
+    auto it = feeders.find(decl);
+    if (it == feeders.end())
+      continue;
+    for (Operation *upstream : it->second)
+      if (coupled.insert(upstream).second)
+        worklist.push_back(upstream);
+  }
+  return coupled;
+}
+
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient shim dma block
 // descriptors (BD).
@@ -7463,6 +7530,7 @@ private:
     // (deadlocking) schedule.
     SmallVector<Region *> regionsToProcess;
     bool foundLaunch = false;
+    std::optional<llvm::SmallPtrSet<Operation *, 16>> coupledChannels;
     func.walk([&](air::LaunchOp launch) {
       foundLaunch = true;
       if (launch->hasAttr(air::attrs::PreserveShimDmaOrder)) {
@@ -7471,16 +7539,25 @@ private:
         // and reaches airrt-to-npu, where it enables issue_token + bounded
         // double-buffered awaits (backpressure) for these lockstep-coupled
         // shim feeds.
+        //
+        // A host feed whose data reaches no broadcast-consuming herd has no
+        // sibling to stay in step with, so it is left out of the pacing and
+        // lowers to a fire-and-free MM2S feed instead. It still gets the
+        // launch's no-fold guarantee (the early return below skips per-channel
+        // BD folding for the whole launch region). Only host feeds are
+        // exempted: the marker on everything else is left exactly as it was.
+        if (!coupledChannels)
+          coupledChannels = findLockstepCoupledChannels(func);
         launch.walk([&](Operation *op) {
           if (!isa<air::ChannelPutOp, air::ChannelGetOp>(op))
             return;
-          // Per-op opt-out: a feed explicitly marked air.shim_feed_no_pace is
-          // NOT lockstep-coupled to its siblings, so it must stay out of the
-          // preserve marker's bounded double-buffered pacing (it lowers to a
-          // fire-and-free MM2S feed instead). It still benefits from the
-          // launch's no-fold guarantee (the early return below skips
-          // per-channel BD folding for the whole launch region).
-          if (op->hasAttr(air::attrs::ShimFeedNoPace))
+          auto chanIf = cast<air::ChannelInterface>(op);
+          auto srcTy = dyn_cast<BaseMemRefType>(chanIf.getMemref().getType());
+          bool isHostFeed =
+              isa<air::ChannelPutOp>(op) && srcTy && air::isL3(srcTy);
+          auto decl = air::getChannelDeclarationThroughSymbol(chanIf);
+          if (isHostFeed && decl &&
+              !coupledChannels->contains(decl.getOperation()))
             return;
           op->setAttr(air::attrs::PreserveShimDmaOrder,
                       mlir::UnitAttr::get(op->getContext()));

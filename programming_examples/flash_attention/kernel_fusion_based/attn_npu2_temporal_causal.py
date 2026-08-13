@@ -603,8 +603,8 @@ def build_module(
         # buffer, the K/V column can host none (K+V alone is 16), and block 1 --
         # whose tiles sit in columns {2,3} -- is then left with a single usable
         # memtile for the 8 flows it must drain. Bounding the in-flight BDs
-        # instead (air.preserve_shim_dma_order, or the same awaits with K/V
-        # opted out via air.shim_feed_no_pace) compiles but deadlocks: one K BD
+        # instead (air.preserve_shim_dma_order, or the same awaits with K/V left
+        # unpaced) compiles but deadlocks: one K BD
         # carries up to 64 tiles into a 1-tile memtile ring, and the pacing's
         # await-on-drain cannot make progress on a BD that exceeds the ring
         # depth. Lifting this needs the reference's structure -- a runtime-fired

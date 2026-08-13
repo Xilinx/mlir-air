@@ -1503,11 +1503,11 @@ def build_module():
                                     # the reference fires its 4 KV readback memcpy fire-and-free (no
                                     # per-task await); K/V on independent channels stream
                                     # concurrently, backpressured only by the memtile ring
-                                    # locks. We reproduce that by tagging each readback put
-                                    # air.shim_feed_no_pace: the AIR compiler then keeps it
-                                    # OUT of the preserve-launch's depth-2 pacing (whose
-                                    # await-on-drain would serialize K before V and deadlock
-                                    # once a BD exceeds the ring depth) and lowers it to a
+                                    # locks. The readback reaches no broadcast-consuming
+                                    # herd, so the compiler keeps it OUT of the
+                                    # preserve-launch's depth-2 pacing (whose await-on-drain
+                                    # would serialize K before V and deadlock once a BD
+                                    # exceeds the ring depth) and lowers it to a
                                     # fire-and-free MM2S feed. With NRB=1 that is exactly
                                     # the reference's 2*NGRP (=4) whole-region contiguous transfers.
                                     _NRB = int(_os.environ.get("DECODE_KV_RB_NRB", "1"))
@@ -1518,7 +1518,7 @@ def build_module():
                                         _cb = min(_cbk, _nb - _ci)
                                         _coff = _ci * 16 * REGION_W
                                         for gi in range(NGRP):
-                                            _pk = ChannelPut(
+                                            ChannelPut(
                                                 "inKV_K",
                                                 KVC,
                                                 indices=[idx(gi)],
@@ -1536,7 +1536,7 @@ def build_module():
                                                     idx(1),
                                                 ],
                                             )
-                                            _pv = ChannelPut(
+                                            ChannelPut(
                                                 "inKV_V",
                                                 KVC,
                                                 indices=[idx(gi)],
@@ -1554,12 +1554,6 @@ def build_module():
                                                     idx(1),
                                                 ],
                                             )
-                                            _pk.operation.attributes[
-                                                "air.shim_feed_no_pace"
-                                            ] = UnitAttr.get()
-                                            _pv.operation.attributes[
-                                                "air.shim_feed_no_pace"
-                                            ] = UnitAttr.get()
                                         _ci += _cb
                                     return
 

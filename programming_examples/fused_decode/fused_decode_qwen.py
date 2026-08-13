@@ -1016,10 +1016,10 @@ def build_module():
                 # data, so each PHASE coalesces on its own -- the two halves within a phase
                 # stay adjacent, preserving the air.coalesced_shim_feed cross-channel
                 # barrier -- and the host awaits only the phase it needs next. NOTE the
-                # weight feed is lockstep-coupled to the X broadcast, so it must NOT use
-                # air.shim_feed_no_pace (that attr is documented for feeds with NO shared
-                # broadcast consumer; using it here dropped the barrier and deadlocked
-                # phase 0 -- device-confirmed 2026-08-05o). Total size unchanged (a permutation).
+                # weight feed is lockstep-coupled to the X broadcast, so the compiler paces
+                # it; a feed with NO shared broadcast consumer is exempted instead. Dropping
+                # that barrier here deadlocked phase 0 -- device-confirmed 2026-08-05o.
+                # Total size unchanged (a permutation).
                 # DEFAULT = column-major [col][phase]: the whole column coalesces into ONE
                 # shim task, which the ATTN=0 base REQUIRES (device-confirmed: phase-major
                 # regressed it to a timeout). Phase-major is kept behind QWEN_W_PHASE_MAJOR
@@ -1109,7 +1109,7 @@ def build_module():
                 #     receives rope's appendK/appendV packet flow into DDR.
                 # (2) READ BACK the whole cache region-major on inKV_K/inKV_V (one 3D nd-DMA
                 #     per region: [ATTN_ROUNDS blocks][16 keys][REGION_W]);
-                #     air.shim_feed_no_pace = fire-and-free feed.
+                #     no shared broadcast consumer -> fire-and-free feed.
                 # air-annotate-append-barrier derives the append->readback RAW ordering
                 # from the shared L3 cache memref.
                 if ATTN:
@@ -1131,7 +1131,7 @@ def build_module():
                         strides=[idx(REGION_STRIDE), idx(1)],
                     )
                     for gi in range(NGRP):
-                        _pk = ChannelPut(
+                        ChannelPut(
                             "inKV_K",
                             KV,
                             indices=[idx(gi)],
@@ -1139,19 +1139,13 @@ def build_module():
                             sizes=[idx(ATTN_ROUNDS), idx(16), idx(REGION_W)],
                             strides=[idx(16 * REGION_W), idx(REGION_W), idx(1)],
                         )
-                        _pv = ChannelPut(
+                        ChannelPut(
                             "inKV_V",
                             KV,
                             indices=[idx(gi)],
                             offsets=[_kvo((NGRP + gi) * REGION_STRIDE)],
                             sizes=[idx(ATTN_ROUNDS), idx(16), idx(REGION_W)],
                             strides=[idx(16 * REGION_W), idx(REGION_W), idx(1)],
-                        )
-                        _pk.operation.attributes["air.shim_feed_no_pace"] = (
-                            UnitAttr.get()
-                        )
-                        _pv.operation.attributes["air.shim_feed_no_pace"] = (
-                            UnitAttr.get()
                         )
                 if ATTN and ROPE_ECHO:
                     ChannelPut(
