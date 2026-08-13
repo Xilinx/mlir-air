@@ -711,7 +711,7 @@ def _mark_pkt_header(call_op, chan_name, operand_idx):
     the switchbox rules) and the constant handed to this call (which the kernel
     writes into the payload header). Nothing in the IR links them, so a divergence
     is invisible until the device hangs: the switchbox drops a packet stamped with
-    an id it has no rule for. This marking lets air-verify-packet-id-contract
+    an id it has no rule for. This marking lets air-annotate-packet-ids
     compare the two at compile time.
     """
     a = call_op.operation.attributes
@@ -1113,13 +1113,13 @@ def build_module():
         # is behaviour-neutral today -- but the id COUNT and the fact that the core
         # (not the DMA) stamps the header are two independent properties, and
         # deriving the second from the first means the demux stops being
-        # recognisable the moment the pinned ids go away. air-infer-packet-ids
+        # recognisable the moment the pinned ids go away. air-annotate-packet-ids
         # needs this marker to classify outY as a demux at all.
         _outY.operation.attributes["air.src_writes_pkt_header"] = UnitAttr.get()
         _outY.operation.attributes["packet_ids"] = _pin
-        # packet_ids stays a PIN. air-infer-packet-ids derives the id COUNT for this
-        # demux correctly, and air-verify-packet-id-contract checks the ids against
-        # what the kernel stamps -- but the ORDER of this list is load-bearing and is
+        # packet_ids stays DECLARED here. air-annotate-packet-ids derives the id
+        # COUNT for this demux and checks the ids against what the kernel stamps,
+        # but the ORDER of this list is load-bearing and is
         # NOT recoverable from the IR: air-to-aie routes destination i with
         # packet_ids[i], while the kernel's constants only reveal the SET (harvesting
         # them yields [4,1,8] here, which would silently route rope's packets to rms).

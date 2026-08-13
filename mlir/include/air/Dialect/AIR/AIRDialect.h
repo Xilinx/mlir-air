@@ -167,4 +167,18 @@ void walkAsyncTokenConsumers(Operation *root,
 #define GET_OP_CLASSES
 #include "air/Dialect/AIR/AIR.h.inc"
 
+namespace xilinx {
+namespace air {
+// True if the PRODUCING KERNEL writes the packet routing header into the
+// payload, rather than the DMA stamping a static id onto the BD. Necessary for
+// any data-dependent routing: a DMA-stamped channel carries one id on one BD
+// and cannot select a destination per packet.
+//
+// Single source of truth. Both air-to-aie (which must not stamp such a BD) and
+// air-annotate-packet-ids (which uses it to gate demux classification) read
+// this; two copies drifted apart once already.
+bool channelKernelWritesHeader(ChannelOp chanOp);
+} // namespace air
+} // namespace xilinx
+
 #endif

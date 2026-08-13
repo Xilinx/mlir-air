@@ -3846,6 +3846,18 @@ LogicalResult air::ChannelOp::verify() {
   return success();
 }
 
+bool air::channelKernelWritesHeader(air::ChannelOp chanOp) {
+  if (!chanOp)
+    return false;
+  // Several pinned ids on one channel is itself the kernel-written-header
+  // contract: the DMA cannot stamp more than one id, so the core must be
+  // writing it. See the packet_ids docs on air.channel.
+  if (auto pids = chanOp.getPacketIDs(); pids && pids.size() > 1)
+    return true;
+  return chanOp->hasAttr(air::attrs::KeepPktHeader) ||
+         chanOp->hasAttr(air::attrs::SrcWritesPktHeader);
+}
+
 int air::ChannelOp::getBroadcastDimension() {
   int broadcastDim = -1;
   auto bundle_size = getSize();

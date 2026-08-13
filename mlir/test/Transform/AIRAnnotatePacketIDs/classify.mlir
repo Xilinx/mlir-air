@@ -92,3 +92,50 @@ module {
     return
   }
 }
+
+// -----
+
+// Header ownership is also implied by the ids themselves: a DMA can stamp at
+// most ONE id, so several pinned ids mean the core must be writing the header.
+// This is the shape air.channel's own docs use (packet_ids = [1,4] with no
+// keep_pkt_header), and air-to-aie agrees via air::channelKernelWritesHeader.
+// Treating it as DMA-stamped would skip demux classification entirely.
+// expected-remark @below {{demux over 2 destination(s); infers 2 routing id(s)}}
+air.channel @ids_imply_header [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet", packet_ids = [1 : i32, 4 : i32]}
+func.func @f() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %src = memref.alloc() : memref<1024xbf16, 1 : i32>
+  %d0 = memref.alloc() : memref<512xbf16, 2 : i32>
+  %d1 = memref.alloc() : memref<512xbf16, 2 : i32>
+  air.channel.put @ids_imply_header[%c0, %c0] (%src[] [] []) : (memref<1024xbf16, 1 : i32>)
+  air.channel.get @ids_imply_header[%c0, %c0] (%d0[] [] []) : (memref<512xbf16, 2 : i32>)
+  air.channel.get @ids_imply_header[%c0, %c1] (%d1[] [] []) : (memref<512xbf16, 2 : i32>)
+  return
+}
+
+// -----
+
+// A bundle that ALSO broadcasts: `[2,1]` fanning to `[2,2]` is two parallel
+// instances each feeding two destinations. Only dimension 1 is the fan-out;
+// dimension 0 selects the instance. Keying destinations on the whole index
+// tuple would report 4 destinations here instead of 2 and misclassify.
+// expected-remark @below {{demux over 2 destination(s); infers 2 routing id(s)}}
+air.channel @bundle_and_bcast [2, 1] {broadcast_shape = [2 : index, 2 : index], channel_type = "npu_dma_packet", keep_pkt_header}
+func.func @g() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %s0 = memref.alloc() : memref<1024xbf16, 1 : i32>
+  %s1 = memref.alloc() : memref<1024xbf16, 1 : i32>
+  %a0 = memref.alloc() : memref<512xbf16, 2 : i32>
+  %a1 = memref.alloc() : memref<512xbf16, 2 : i32>
+  %b0 = memref.alloc() : memref<512xbf16, 2 : i32>
+  %b1 = memref.alloc() : memref<512xbf16, 2 : i32>
+  air.channel.put @bundle_and_bcast[%c0, %c0] (%s0[] [] []) : (memref<1024xbf16, 1 : i32>)
+  air.channel.put @bundle_and_bcast[%c1, %c0] (%s1[] [] []) : (memref<1024xbf16, 1 : i32>)
+  air.channel.get @bundle_and_bcast[%c0, %c0] (%a0[] [] []) : (memref<512xbf16, 2 : i32>)
+  air.channel.get @bundle_and_bcast[%c0, %c1] (%a1[] [] []) : (memref<512xbf16, 2 : i32>)
+  air.channel.get @bundle_and_bcast[%c1, %c0] (%b0[] [] []) : (memref<512xbf16, 2 : i32>)
+  air.channel.get @bundle_and_bcast[%c1, %c1] (%b1[] [] []) : (memref<512xbf16, 2 : i32>)
+  return
+}

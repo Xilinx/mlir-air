@@ -3582,29 +3582,23 @@ static std::optional<int64_t> totalVolume(air::ChannelInterface chanOp,
 // Channel facts
 //===----------------------------------------------------------------------===//
 
-/// A destination is identified by the channel-bundle index tuple on its get.
-/// In a demux the fan-out targets differ in exactly this tuple (outY's
-/// `@outY[0,0]` vs `@outY[0,1]`), so it is the natural destination key.
-using DestKey = SmallVector<int64_t, 2>;
+/// A destination is the coordinate along the channel's BROADCAST dimension.
+///
+/// Not the whole index tuple: air-to-aie fans out along exactly one dimension
+/// (specializeBroadcastShape keeps `getBroadcastDimension()` at its broadcast
+/// extent and pins every other dimension to 1), so the remaining indices select
+/// a bundle instance, not a destination. Keying on the full tuple would
+/// multiply the destination count by the bundle size -- e.g. a `[NCX,1]` bundle
+/// with `broadcast_shape=[NCX,NDEST]` would look like NCX*NDEST destinations
+/// and misclassify the channel.
+using DestKey = int64_t;
 
-static std::optional<DestKey> destKeyOf(air::ChannelInterface chanOp) {
-  DestKey key;
-  for (Value idx : chanOp.getIndices()) {
-    std::optional<int64_t> c = getConstantIntValue(idx);
-    if (!c)
-      return std::nullopt;
-    key.push_back(*c);
-  }
-  return key;
-}
-
-/// True if the producing kernel writes the routing header into the payload.
-/// Necessary for any data-dependent routing: a DMA-stamped channel carries one
-/// id on one BD and cannot select a destination per packet.
-static bool kernelWritesHeader(air::ChannelOp chanOp) {
-  return chanOp->hasAttr(air::attrs::KeepPktHeader) ||
-         chanOp->hasAttr(air::attrs::SrcWritesPktHeader) ||
-         chanOp->hasAttr("air.strip_pkt_header");
+static std::optional<DestKey> destKeyOf(air::ChannelInterface chanOp,
+                                        int broadcastDim) {
+  OperandRange indices = chanOp.getIndices();
+  if (broadcastDim < 0 || broadcastDim >= (int)indices.size())
+    return std::nullopt;
+  return getConstantIntValue(indices[broadcastDim]);
 }
 
 static bool isPacketChannel(air::ChannelOp chanOp) {
@@ -3662,12 +3656,17 @@ static Classification classify(air::ChannelOp chanOp,
     return c;
   }
 
-  // Group the gets by destination (a coordinate in the broadcast shape).
+  // Group the gets by destination (a coordinate along the broadcast dimension).
+  int broadcastDim = chanOp.getBroadcastDimension();
+  if (broadcastDim < 0) {
+    c.reason = "broadcast channel with no resolvable broadcast dimension";
+    return c;
+  }
   llvm::MapVector<DestKey, int64_t> volByDest;
   for (air::ChannelInterface g : gets) {
-    std::optional<DestKey> key = destKeyOf(g);
+    std::optional<DestKey> key = destKeyOf(g, broadcastDim);
     if (!key) {
-      c.reason = "a get has a non-constant channel index";
+      c.reason = "a get has a non-constant index on the broadcast dimension";
       return c;
     }
     std::optional<int64_t> v = totalVolume(g, scopeRoot);
@@ -3722,7 +3721,7 @@ static Classification classify(air::ChannelOp chanOp,
   // short of the sent total by that much. Accept a partition that accounts for
   // at least the payload and never exceeds what was sent.
   if (sum <= putVol && sum > 0) {
-    if (!kernelWritesHeader(chanOp)) {
+    if (!air::channelKernelWritesHeader(chanOp)) {
       c.reason = "destination volumes partition the stream, but the channel is "
                  "not source-stamped, so per-packet routing is impossible";
       return c;
@@ -3967,7 +3966,7 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
       StringRef name = chanOp.getSymName();
       // Only a header-preserving hop forwards someone else's routing id; a
       // DMA-stamped one re-stamps and starts a fresh routing domain.
-      if (!kernelWritesHeader(chanOp))
+      if (!air::channelKernelWritesHeader(chanOp))
         continue;
       unsigned want = cardinality[name];
       for (StringRef succ : feeds[name])
@@ -4079,7 +4078,7 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
       for (air::ChannelOp chanOp : packetChans) {
         StringRef name = chanOp.getSymName();
         if (pinnedIDsOf(chanOp) || idsFor.count(name) ||
-            !kernelWritesHeader(chanOp))
+            !air::channelKernelWritesHeader(chanOp))
           continue;
         auto feedsIt = feeds.find(name);
         if (feedsIt == feeds.end())
