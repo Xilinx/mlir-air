@@ -180,7 +180,7 @@ _MODELS = {
         NPH=4,  # proj phases (QKV, o, gate-up, down)
         I2P=[3, 2, 16, 2],  # per-phase row-pair iters/core
         J2P=[4, 4, 4, 16],  # per-phase col-block pairs (2*J2 = NBJ = K/COL_BLOCK)
-        KIDP=[1, 4, 8, 4],  # per-phase packet ids
+        DEST=["rope", "rms", "glu", "rms"],  # phase -> egress consumer
         GQA_SEG=4,  # GQA q-heads-per-group padding segment (ATTN_IMPL 2x4x1)
         PAIR_ROWS=2,  # proj egress: 2 = lead/partner shared-L1 pairing (FLM llama)
         N_NORMS=2,  # pre-norms only (input, post_attention) -- standard pre-norm
@@ -204,7 +204,7 @@ _MODELS = {
         NPH=4,
         I2P=[8, 5, 40, 5],  # blocks/tile per phase (non-paired)
         J2P=[5, 4, 5, 20],  # col-block pairs per phase (2*J2 = NBJ = Kphase/COL_BLOCK)
-        KIDP=[1, 4, 8, 4],
+        DEST=["rope", "rms", "glu", "rms"],
         GQA_SEG=4,  # ATTN_IMPL_1x4x1
         PAIR_ROWS=1,  # NON-PAIRED egress (FLM gemma)
         # Gemma3 sandwich norm: 4 norms/layer (input, post_attention, pre_feedforward,
@@ -236,7 +236,7 @@ _MODELS = {
         NPH=4,
         I2P=[5, 3, 16, 3],
         J2P=[6, 6, 6, 16],
-        KIDP=[1, 4, 8, 4],
+        DEST=["rope", "rms", "glu", "rms"],
         GQA_SEG=4,  # ATTN_IMPL_2x4x1
         PAIR_ROWS=2,
         N_NORMS=2,
@@ -531,10 +531,18 @@ def _vreg_off(gi):
 NPH = MODEL["NPH"]
 I2P = MODEL["I2P"]  # row-pair iters per phase
 J2P = MODEL["J2P"]  # col-block pairs (2*J2 = NBJ = K/COL_BLOCK)
-KIDP = MODEL["KIDP"]  # per-phase packet ids (down reuses the o-proj id)
-DISTINCT_IDS = list(dict.fromkeys(KIDP))  # ordered-unique
-NDEST = len(DISTINCT_IDS)
-DEST = [DISTINCT_IDS.index(k) for k in KIDP]
+# Which egress consumer each proj phase sends to, BY NAME. This used to be a
+# list of packet ids that the kernel hardcoded too; the ids are now allocated by
+# air-annotate-packet-ids, so all the design states is where a phase's output
+# goes. Repeats are meaningful -- down shares o-proj's consumer.
+#
+# The ordinal a name maps to is its position in first-appearance order, which is
+# also the @outY broadcast index the receiving gets use. Naming the consumer and
+# deriving the index keeps the routing number out of the source entirely.
+DEST_NAMES = MODEL["DEST"]
+DEMUX = list(dict.fromkeys(DEST_NAMES))  # ordinal order: ["rope", "rms", "glu"]
+NDEST = len(DEMUX)
+DEST = [DEMUX.index(d) for d in DEST_NAMES]  # phase -> ordinal
 DOWN_PHASE = NPH - 1
 NBJ_PH = [2 * J2P[p] for p in range(NPH)]  # per-phase col-blocks: [8,8,8,32]
 KPH = [NBJ_PH[p] * COL_BLOCK for p in range(NPH)]  # per-phase K: [2048,2048,2048,8192]
@@ -606,7 +614,7 @@ UNI_WAVE_HI = int(_os.environ.get("UNI_WAVE_HI", str(UNI_WAVES)))
 ROUNDS_PER_PH = [I2P[p] * PAIR_ROWS for p in range(NPH)]  # y0,y1 per v1 -> 2*I2
 N_ROUNDS = sum(ROUNDS_PER_PH)  # total egress rounds (phase0 6 + phase1 4 = 10)
 # id-demux egress: the main MT MM2S emits each round's assembled packet carrying
-# the kernel-written id; the switchbox routes id DISTINCT_IDS[p] -> dest p
+# the kernel-written ordinal; the switchbox routes the id allocated for dest p
 # (reproducer mem_1_1 DMA5: id1->tile_2_3, id4->tile_2_2). Rounds per dest =
 # sum of its phases' rounds (here 1:1 phase<->id so [6, 4]).
 ROUNDS_PER_DEST = [
@@ -656,12 +664,11 @@ GATEUP_REFEED = REFEED[GATEUP_PHASE]  # ph2 X re-feeds (32)
 # DMA0; NO relay). The GLU x buffer is 1024 = TWO stripped demux packets (512 each)
 # = [up 512 | gate 512]; glu_aie -> silu(gate)*up -> 512. 16 slices -> 8192.
 # The gate-up phase (ph2 of the 4-phase proj) is what feeds the GLU herd; its id is
-# whatever KIDP assigns to that phase. Derive it rather than hardcoding a value --
+# whatever DEST assigns to that phase. Derive it rather than hardcoding a value --
 # the ids are routing labels, not semantics, and mlir-aie #3429 (exact subcube cover)
 # removed the constraint that they be one-hot.
 GLU_PHASE = 2 if NPH == 4 else -1
-GLU_ID = KIDP[GLU_PHASE] if GLU_PHASE >= 0 else -1
-GLU_DEST = DISTINCT_IDS.index(GLU_ID) if GLU_ID in DISTINCT_IDS else -1
+GLU_DEST = DEST[GLU_PHASE] if GLU_PHASE >= 0 else -1
 # #4 faithful residual stream: o-proj + down (shared id4 -> RMS_DEST) are CONSUMED by
 # the rms core (residual1=input+o-proj -> h; residual2=h+down -> layer output), NOT
 # drained via the deadlocking memtile relay. The down egresses as the layer output.
@@ -671,7 +678,7 @@ GLU_DEST = DISTINCT_IDS.index(GLU_ID) if GLU_ID in DISTINCT_IDS else -1
 # and down (ph3) SHARE a destination (their common id -> RMS_DEST) while QKV (ph0)
 # and gate-up (ph2) each get their own -- i.e. 4 phases over exactly 3 destinations.
 # Matching on the literal [1,4,8,4] silently disabled #4 on any valid id relabel.
-FULL4 = NPH == 4 and DOWN_PHASE == 3 and KIDP[1] == KIDP[3] and len(DISTINCT_IDS) == 3
+FULL4 = NPH == 4 and DOWN_PHASE == 3 and DEST[1] == DEST[3] and NDEST == 3
 RMS_DEST = DEST[DOWN_PHASE] if FULL4 else -1
 HOST_DRAIN = [p for p in range(NDEST) if p != GLU_DEST and p != RMS_DEST]
 GLU_CHUNK = PAYLOAD  # 512 (gate-up packs up/gate interleaved in 512-row chunks)
@@ -1100,7 +1107,7 @@ def build_module():
         _toMain.operation.attributes["keep_pkt_header"] = UnitAttr.get()
         # id-demux egress (reproducer mem_1_1 DMA5): the main MT emits each round's
         # assembled 514 packet (carrying the kernel-written id) on ONE MM2S; the
-        # switchbox routes id DISTINCT_IDS[p] -> dest p (broadcast_shape=[1,NDEST]).
+        # switchbox routes the id allocated for dest p (broadcast_shape=[1,NDEST]).
         # keep_pkt_header keeps each dest's header so the host can strip it.
         _outY = Channel("outY", size=[1, 1], broadcast_shape=[1, NDEST])
         _outY.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
@@ -3405,7 +3412,7 @@ def run():
     )
     print(
         f"[q4nx_decode] proj: M={M} K={K} {NCX}x{NCY}=16 cores, "
-        f"8 cascade pairs, NPH={NPH} ids={DISTINCT_IDS}"
+        f"8 cascade pairs, NPH={NPH} dests={DEMUX}"
     )
     art = backend.compile(module, output_binary_name="decode", insts="decode.insts.bin")
     print(f"[q4nx_decode] emitted {art.output_binary} + {art.insts}")

@@ -206,14 +206,18 @@ YBUF = HDR + ROW_BLOCK  # 48
 PKT_OFF = 14  # dma egress start offset (2 id words + 32 payload)
 PKT_PAY = 2 + ROW_BLOCK  # 34 (matches reference dma_bd %y,14,34)
 
-PKT_ROPE = 1
-PKT_RMS = 4
-PKT_GLU = 8
+# Egress consumer names. The routing id is allocated by air-annotate-packet-ids;
+# the design only says which consumer a phase feeds, and the ordinal is that
+# name's position in first-appearance order (= the @outY broadcast index the
+# receiving gets use).
+D_ROPE = "rope"
+D_RMS = "rms"
+D_GLU = "glu"
 PHASES = [
-    ("qkv", DQ + DK + DV, MODEL_DIM, PKT_ROPE),
-    ("oproj", MODEL_DIM, DQ, PKT_RMS),
-    ("gateup", 2 * INTERMEDIATE, MODEL_DIM, PKT_GLU),
-    ("down", MODEL_DIM, INTERMEDIATE, PKT_RMS),
+    ("qkv", DQ + DK + DV, MODEL_DIM, D_ROPE),
+    ("oproj", MODEL_DIM, DQ, D_RMS),
+    ("gateup", 2 * INTERMEDIATE, MODEL_DIM, D_GLU),
+    ("down", MODEL_DIM, INTERMEDIATE, D_RMS),
 ]
 RB = [m // MVM_CORES // ROW_BLOCK for (_, m, _, _) in PHASES]  # [5,4,44,4]
 NJ = [kk // COL_BLOCK for (_, _, kk, _) in PHASES]  # [8,8,8,44]
@@ -232,18 +236,18 @@ import os as _os
 NPH = int(_os.environ.get("QWEN_NPH", "4"))
 _RB = RB[:NPH]
 _NJ = NJ[:NPH]
-_PKT = [p[3] for p in PHASES][:NPH]
+_DST = [p[3] for p in PHASES][:NPH]
 _MTOT = [p[1] for p in PHASES][:NPH]
 # distinct packet ids (ordered) for the id-demux egress: 1->rope, 4->rms, 8->glu.
-DEMUX_IDS = list(dict.fromkeys(_PKT))  # [1, 4, 8]
-NDEST = len(DEMUX_IDS)
+DEMUX = list(dict.fromkeys(_DST))  # ordinal order: ["rope", "rms", "glu"]
+NDEST = len(DEMUX)
 # Phase -> DESTINATION ORDINAL. This is what the kernel stamps now; the packet
 # id on the wire is allocated by air-annotate-packet-ids and substituted into
 # these constants. The ordinal is the same index the receiving gets use
 # (`indices=[0, d]`), so there is only one numbering to keep straight.
-DEST = [DEMUX_IDS.index(k) for k in _PKT]
+DEST = [DEMUX.index(d) for d in _DST]
 # egress rounds per dest (id): rope=QKV(5); rms=oproj(4)+down(4)=8; glu=gateup(44).
-DEST_RNDS = [sum(_RB[p] for p in range(NPH) if _PKT[p] == d) for d in DEMUX_IDS]
+DEST_RNDS = [sum(_RB[p] for p in range(NPH) if _DST[p] == d) for d in DEMUX]
 DEST_TOTAL = sum(DEST_RNDS)  # 57 rounds total
 PAYLOAD = MVM_CORES * ROW_BLOCK  # 512 = one round (16 cores x 32 rows)
 # Step B relay drain columns (free cols; rope/rms/glu compute cores replace these in C/D).
@@ -265,15 +269,15 @@ GLU_SLICE = 2 * PAYLOAD  # 1024 = [up 512 | gate 512] (two demux rounds per slic
 GLU_HID = PAYLOAD  # 512 silu(gate)*up out per slice
 # Phase-isolation (QWEN_NPH<4): a surround consumer exists only if its packet id is
 # still produced by one of the kept phases. HAS_ROPE is always true (phase 0 = QKV).
-HAS_ROPE = PKT_ROPE in DEMUX_IDS
-HAS_RMS = PKT_RMS in DEMUX_IDS  # oproj (ph1) and/or down (ph3) kept
-HAS_GLU = PKT_GLU in DEMUX_IDS  # gate-up (ph2) kept
+HAS_ROPE = D_ROPE in DEMUX
+HAS_RMS = D_RMS in DEMUX  # oproj (ph1) and/or down (ph3) kept
+HAS_GLU = D_GLU in DEMUX  # gate-up (ph2) kept
 NGLU = (
-    DEST_RNDS[DEMUX_IDS.index(PKT_GLU)] // 2 if HAS_GLU else 0
+    DEST_RNDS[DEMUX.index(D_GLU)] // 2 if HAS_GLU else 0
 )  # 44/2 = 22 slices -> 11264 = INTERMEDIATE
-DEST_ROPE = DEMUX_IDS.index(PKT_ROPE) if HAS_ROPE else None  # 0
-DEST_RMS = DEMUX_IDS.index(PKT_RMS) if HAS_RMS else None  # 1
-DEST_GLU = DEMUX_IDS.index(PKT_GLU) if HAS_GLU else None  # 2
+DEST_ROPE = DEMUX.index(D_ROPE) if HAS_ROPE else None  # 0
+DEST_RMS = DEMUX.index(D_RMS) if HAS_RMS else None  # 1
+DEST_GLU = DEMUX.index(D_GLU) if HAS_GLU else None  # 2
 
 # ---- attention (Step 2b): 1x8x1, 2 CUs on col 7, DH=128 ----
 # reference Qwen attn topology (from the reference QWEN2_3B layer IR): col 7; attn_qk tile_7_2 &
