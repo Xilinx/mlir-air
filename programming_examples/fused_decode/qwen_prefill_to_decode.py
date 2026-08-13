@@ -251,9 +251,10 @@ class QwenFusedDecoder:
         self.x_bo.sync(FR)
         self.kv_bo.sync(FR)
 
-        # Zero-copy view into the BO (the shared infra's readback idiom): bo.read()
-        # returns a buffer whose stride metadata is pyxrt-build dependent, and on
-        # some runners it comes back non-contiguous, which np.frombuffer rejects.
+        # Read through the mapped BO, not bo.read(): read() returns a buffer whose
+        # stride metadata is pyxrt-build dependent, and where it comes back
+        # non-contiguous np.frombuffer rejects it. (frombuffer is a view; the
+        # .astype below is where the copy happens.)
         h = np.frombuffer(self.x_bo.map(), dtype=bfloat16, count=self.X).astype(
             np.float32
         )[m.XO_RMSIN : m.XO_RMSIN + m.K]
