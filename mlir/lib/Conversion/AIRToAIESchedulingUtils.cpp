@@ -219,6 +219,16 @@ int64_t air::get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
 // (one repeat-count entry).
 static bool chansMappedToEquivalentBDs(air::ChannelInterface chanA,
                                        air::ChannelInterface chanB) {
+  // Two transfers on different channels are different FLOWS: they carry
+  // different packet ids and land on different destinations, so their BDs are
+  // not interchangeable however alike the access patterns look. Folding them
+  // would keep one BD and silently drop the other flow's routing -- every
+  // packet would then go wherever the surviving BD points, and the other
+  // consumers would wait forever. (chansPartOfSameRotation below already keys
+  // on the declaration for the same reason.)
+  if (air::getChannelDeclarationThroughSymbol(chanA) !=
+      air::getChannelDeclarationThroughSymbol(chanB))
+    return false;
   if (chanA.getMemref() != chanB.getMemref())
     return false;
   auto offsetsA = chanA.getMixedOffsets(), offsetsB = chanB.getMixedOffsets();
@@ -318,11 +328,12 @@ air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
   return uniqueBDPattern;
 }
 
-// Given a vector of memcpy operations, return a map of their repeat counts,
-// relative to a common ancestor region.
-llvm::MapVector<int, llvm::SetVector<Operation *>>
+// Given a vector of memcpy operations, split them into BD tasks paired with the
+// repeat count each task runs at, relative to a common ancestor region. See the
+// header for why adjacency in program order gates the merge.
+SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
 air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
-  llvm::MapVector<int, llvm::SetVector<Operation *>> repeatCounts;
+  SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeatCounts;
   llvm::SetVector<Operation *> memcpyIOps;
   for (auto o : memcpy_ops) {
     memcpyIOps.insert(o);
@@ -410,9 +421,9 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   // chain (infiniteBDLoopMode = true) instead of separate terminated tasks.
   if (detectNBufferRotation(memcpyIOps)) {
     SmallVector<Operation *> opVec = memcpyIOps.takeVector();
-    for (auto *op : opVec) {
-      repeatCounts[0].insert(op);
-    }
+    repeatCounts.emplace_back(0, llvm::SetVector<Operation *>());
+    for (auto *op : opVec)
+      repeatCounts.back().second.insert(op);
     return repeatCounts;
   }
 
@@ -423,7 +434,16 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   if (!commonRegion)
     return repeatCounts;
 
-  // Get each memcpy op's repeat count, relative to the common region.
+  // Get each memcpy op's repeat count, relative to the common region, and open
+  // a new task whenever the count changes. memcpyIOpVec is in program order, so
+  // a maximal run of equal counts is exactly the set of transfers that may
+  // share one task without any of them jumping over another.
+  //
+  // Two separate loops with the same trip count are NOT one task. Under the old
+  // grouping-by-count they became one, which spliced the later loop's BDs into
+  // the earlier loop's chain and ran them before every task in between -- so a
+  // three-phase egress [A x4, B x32, C x4] emitted A and C interleaved up front
+  // and B afterwards. Counts stayed right, order did not.
   for (auto o : memcpyIOpVec) {
     int tripCount = 1;
     Region *currRegion = o->getParentRegion();
@@ -439,7 +459,10 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
       }
     }
     // In English, repeat count is trip count minus one.
-    repeatCounts[tripCount - 1].insert(o);
+    int rep = tripCount - 1;
+    if (repeatCounts.empty() || repeatCounts.back().first != rep)
+      repeatCounts.emplace_back(rep, llvm::SetVector<Operation *>());
+    repeatCounts.back().second.insert(o);
   }
 
   return repeatCounts;
@@ -1437,8 +1460,16 @@ getCondPathKey(Operation *op, Operation *stopAt) {
 // the transfers reachable through it. Regions contributing no transfer give an
 // empty word, which is the "hole" case (one arm forgets to consume a flow the
 // other arm does).
-static bool allPathWordsEquivalent(ArrayRef<Operation *> ops,
-                                   Operation *stopAt) {
+//
+// `emptyPathsOk` drops the hole case, which is the difference between the two
+// directions. A CONSUMER that skips an arrival still receives it -- the packet
+// arrives, lands on whatever BD the pointer sits on, and the ring is out of
+// step from then on. A PRODUCER that takes an arm issuing nothing simply does
+// not advance the ring: it is where it was, still aligned, provided the arms
+// that do issue each cover a whole cycle -- which the equivalence check on the
+// remaining non-empty words is what establishes.
+static bool allPathWordsEquivalent(ArrayRef<Operation *> ops, Operation *stopAt,
+                                   bool emptyPathsOk = false) {
   llvm::SetVector<Operation *> branchOps;
   llvm::DenseMap<Operation *, SmallVector<std::pair<Operation *, unsigned>>>
       keys;
@@ -1461,6 +1492,8 @@ static bool allPathWordsEquivalent(ArrayRef<Operation *> ops,
     // hole case (one path forgets to consume a flow the other one does).
     SmallVector<Operation *> *ref = nullptr;
     for (auto [i, w] : llvm::enumerate(words)) {
+      if (emptyPathsOk && w.empty())
+        continue;
       if (!ref) {
         ref = &words[i];
         continue;
@@ -1475,10 +1508,12 @@ static bool allPathWordsEquivalent(ArrayRef<Operation *> ops,
   return true;
 }
 
-// Why a chain's BD ring cannot stay in step with its arrivals, or an empty
-// string when it can.
-static std::string diagnoseS2MMChain(ArrayRef<Operation *> ops,
-                                     Operation *stopAt) {
+// Why a chain's BD ring cannot stay in step with the transfers crossing it, or
+// an empty string when it can. Direction-neutral: the ring walks in order and
+// the header does not select a BD, so the same reasoning bounds both the S2MM
+// arrivals and the MM2S departures.
+static std::string diagnoseBDChain(ArrayRef<Operation *> ops, Operation *stopAt,
+                                   bool emptyPathsOk = false) {
   if (ops.size() <= 1)
     return "";
 
@@ -1495,7 +1530,7 @@ static std::string diagnoseS2MMChain(ArrayRef<Operation *> ops,
   // repeat-count buckets lower to a sequence of finite tasks that is re-armed
   // per dispatch, so the chain still covers exactly one round of arrivals.
   // Drift comes only from paths that deliver different rounds.
-  if (!allPathWordsEquivalent(ops, stopAt))
+  if (!allPathWordsEquivalent(ops, stopAt, emptyPathsOk))
     return "control-flow paths deliver different BD sequences: the ring was "
            "built for one path's transfers and will slip on the others";
 
@@ -1557,7 +1592,7 @@ void air::TileDMAAllocator::repairS2MMChains(
     // Bound the control-flow walk at the core body: transfers in different
     // herds are different consumers and share no BD ring.
     Operation *stopAt = ops.front()->getParentOfType<air::HerdOp>();
-    std::string why = diagnoseS2MMChain(ops, stopAt);
+    std::string why = diagnoseBDChain(ops, stopAt);
     if (why.empty())
       continue;
 
@@ -1581,7 +1616,7 @@ void air::TileDMAAllocator::repairS2MMChains(
         llvm::SetVector<Operation *> hd;
         for (auto *o : half)
           hd.insert(declOf(o));
-        return hd.size() < 2 || diagnoseS2MMChain(half, stopAt).empty();
+        return hd.size() < 2 || diagnoseBDChain(half, stopAt).empty();
       };
       if (!halfInStep(m) || !halfInStep(r))
         continue;
@@ -1667,6 +1702,80 @@ void air::TileDMAAllocator::repairS2MMChains(
                << ": moved " << moved.size() << " of " << ops.size()
                << " transfers to channel " << freeChan << "\n");
   }
+}
+
+LogicalResult air::TileDMAAllocator::verifyMM2SChains() {
+  // Group exactly as the emitter does: one BD chain per (tile, channel), from
+  // the concatenation of every allocation mapped to it in mm2s_allocs order.
+  llvm::MapVector<std::pair<Operation *, int>, SmallVector<size_t>> chains;
+  for (auto [i, alloc] : llvm::enumerate(mm2s_allocs))
+    if (alloc.dma_tile)
+      chains[{alloc.dma_tile.getOperation(), alloc.dma_channel.channel}]
+          .push_back(i);
+
+  auto declOf = [](Operation *o) -> Operation * {
+    auto chan = dyn_cast_if_present<air::ChannelInterface>(o);
+    if (!chan)
+      return nullptr;
+    auto decl = air::getChannelDeclarationThroughSymbol(chan);
+    return decl ? decl.getOperation() : nullptr;
+  };
+
+  LogicalResult result = success();
+  for (auto &[key, allocIdxs] : chains) {
+    std::vector<Operation *> ops;
+    for (size_t i : allocIdxs)
+      llvm::append_range(ops, mm2s_allocs[i].memcpyOps);
+    if (ops.size() <= 1)
+      continue;
+
+    // Only a chain carrying more than one flow can mis-route. A single-flow
+    // chain that slips sends its own slices out of order -- a different
+    // matter, and not one this check owns.
+    llvm::SetVector<Operation *> decls;
+    for (auto *o : ops) {
+      auto *d = declOf(o);
+      if (!d) {
+        decls.clear(); // Unkeyed transfer: not attributable to a flow.
+        break;
+      }
+      decls.insert(d);
+    }
+    if (decls.size() < 2)
+      continue;
+
+    Operation *stopAt = ops.front()->getParentOfType<air::HerdOp>();
+    // On the producer side an arm that issues nothing is not a hole: the ring
+    // only moves when a transfer goes out, so skipping an arm leaves it
+    // aligned.
+    std::string why = diagnoseBDChain(ops, stopAt, /*emptyPathsOk=*/true);
+    if (why.empty())
+      continue;
+
+    // The ring advances one BD per transfer no matter which branch the core
+    // took, so keeping it in step needs the branch sequence to cycle in
+    // lockstep with the ring. Nothing in the IR states that, and guessing
+    // wrong routes a packet to another flow's destination -- a silent hang.
+    // Emitting such a design is worse than refusing it.
+    std::string names;
+    for (auto *d : decls) {
+      if (!names.empty())
+        names += ", ";
+      names += ("@" + cast<air::ChannelOp>(d).getSymName()).str();
+    }
+    auto diag = ops.front()->emitOpError()
+                << "compute-tile MM2S channel " << key.second << " multiplexes "
+                << decls.size() << " flows (" << names << ") over "
+                << ops.size() << " transfers, but " << why
+                << ". Put each flow's transfers in its own unconditional loop, "
+                   "so the BD ring follows program order";
+    for (auto *d : decls)
+      diag.attachNote(d->getLoc())
+          << "flow @" << cast<air::ChannelOp>(d).getSymName()
+          << " on this chain";
+    result = failure();
+  }
+  return result;
 }
 
 FailureOr<AIE::BufferOp>

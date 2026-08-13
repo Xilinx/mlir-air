@@ -4965,6 +4965,13 @@ public:
     // arrivals onto a spare channel of the same tile.
     tile_dma_alloc.repairS2MMChains(memcpy_flows);
 
+    // Step 3c: the mirror check on the producer side. Nothing to repair there
+    // -- moving a producer to another MM2S would change which port its flows
+    // leave from -- so a chain that cannot stay in step is rejected rather
+    // than emitted as a design that hangs.
+    if (failed(tile_dma_alloc.verifyMM2SChains()))
+      return failure();
+
     // Step 4: Connect flows.
     //
     // Packet flows are assigned pkt_ids in two passes so that within one
@@ -6313,9 +6320,10 @@ public:
       AIE::DMAChannelDir dir = dma_chan.first;
       int chan = dma_chan.second;
 
-      // Map key: repeat counts. Map value: vector of memcpy operations sharing
-      // the same repeat count.
-      llvm::MapVector<int, llvm::SetVector<Operation *>> repeat_counts =
+      // One entry per BD task, in program order: the repeat count the task runs
+      // at, and the transfers it chains. A repeat count can recur -- two loops
+      // with equal trip counts are two tasks, not one (see getRepeatCounts).
+      SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeat_counts =
           air::getRepeatCounts(memcpy_ops);
 
       // Note: we designate each unique repeat value in repeat_counts map with a
