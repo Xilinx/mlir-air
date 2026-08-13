@@ -40,6 +40,7 @@ std::unique_ptr<mlir::Pass> createAIROverrideMemRefMemorySpacePass(
     AIROverrideMemRefMemorySpaceOptions options);
 std::unique_ptr<mlir::Pass> createAIRMergeUnrolledDevicesPass();
 std::unique_ptr<mlir::Pass> createAIRAnnotateAppendBarrierPass();
+std::unique_ptr<mlir::Pass> createAIRAnnotatePacketIDsPass();
 std::unique_ptr<mlir::Pass> createAIRAnnotateRefeedPass();
 
 } // namespace air

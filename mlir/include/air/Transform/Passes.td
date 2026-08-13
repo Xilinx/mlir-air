@@ -1068,6 +1068,63 @@ def AIRAnnotateAppendBarrierPass: Pass<"air-annotate-append-barrier", "ModuleOp"
   }];
 }
 
+def AIRAnnotatePacketIDsPass: Pass<"air-annotate-packet-ids", "ModuleOp"> {
+  let summary = "Derive packet routing ids from a demux's shape, and check them "
+                "against the ids its kernel stamps";
+  let constructor = "xilinx::air::createAIRAnnotatePacketIDsPass()";
+  let description = [{
+    A packet air.channel gets one auto-assigned id per symbol in air-to-aie, so
+    a channel whose destinations are selected PER PACKET (a demux) could only be
+    expressed by hand, via `packet_ids`. This derives that instead, from what is
+    already in the IR.
+
+    The discriminator is volume. A broadcast REPLICATES -- every destination
+    receives the whole stream, so each destination's volume equals the put
+    volume. A demux PARTITIONS -- the destinations' volumes sum to it. Only the
+    broadcast dimension counts as a fan-out: `air.channel @c [4]` is four
+    parallel flows, not a 4-way demux.
+
+    Volume is gated on header ownership (`keep_pkt_header` /
+    `air.src_writes_pkt_header`): a DMA-stamped channel is one BD with one id
+    and cannot route on payload content, so a partition without source stamping
+    is reported unclassifiable rather than turned into a demux. Anything not
+    statically resolvable is `unknown`; the pass never guesses a cardinality.
+
+    A single-destination hop that FORWARDS packets a downstream demux will route
+    must admit every id that demux keys on, or they are filtered out mid-route.
+    Those chains are plain SSA -- a get lands a memref, a put on the next
+    channel sends it onward -- so the id-set demand propagates backwards over
+    them to a fixpoint.
+
+    It also checks the two spellings of the ids against each other. Mark the
+    header-writing call:
+
+    ```mlir
+    func.call @proj_qmm_flush_hdr(%acc, %buf, %id) {
+      air.pkt_header_channel = @outA, air.pkt_header_operand = 2 : i32
+    } : (memref<32xf32, 2>, memref<48xbf16, 2>, i32) -> ()
+    ```
+
+    and the ids reaching that operand are compared with the channel's
+    `packet_ids`. A proven disagreement is an error: the switchbox has no rule
+    for an unrouted id, so it drops the packet and the design hangs. When either
+    side is not statically known the pass stays silent.
+
+    Runs in the same early slot as air-annotate-refeed and
+    air-annotate-append-barrier, and for the same reason: read the shape the
+    front end wrote, before another pass rewrites the channel ops.
+  }];
+  let options = [
+    Option<"report", "report", "bool", /*default=*/"false",
+           "Emit a remark per packet channel describing its classification.">,
+    Option<"strict", "strict", "bool", /*default=*/"false",
+           "Fail when the inference disagrees with a channel's existing "
+           "packet_ids (default: warn).">,
+    Option<"assign", "assign", "bool", /*default=*/"false",
+           "Write derived packet_ids onto channels that have none.">
+  ];
+}
+
 def AIRAnnotateRefeedPass: Pass<"air-annotate-refeed", "ModuleOp"> {
   let summary = "Derive air.refeed_count from a re-feed loop's trip count";
   let constructor = "xilinx::air::createAIRAnnotateRefeedPass()";

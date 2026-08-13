@@ -93,6 +93,7 @@ from air.ir import (
     ArrayAttr,
     BF16Type,
     F32Type,
+    FlatSymbolRefAttr,
     IndexType,
     InsertionPoint,
     IntegerType,
@@ -530,7 +531,7 @@ def _vreg_off(gi):
 NPH = MODEL["NPH"]
 I2P = MODEL["I2P"]  # row-pair iters per phase
 J2P = MODEL["J2P"]  # col-block pairs (2*J2 = NBJ = K/COL_BLOCK)
-KIDP = MODEL["KIDP"]  # one-hot mask-safe packet ids (down reuses o-proj id4)
+KIDP = MODEL["KIDP"]  # per-phase packet ids (down reuses the o-proj id)
 DISTINCT_IDS = list(dict.fromkeys(KIDP))  # ordered-unique
 NDEST = len(DISTINCT_IDS)
 DEST = [DISTINCT_IDS.index(k) for k in KIDP]
@@ -654,15 +655,23 @@ GATEUP_REFEED = REFEED[GATEUP_PHASE]  # ph2 X re-feeds (32)
 # GLU compute tile (reproducer packet_flow(8) keep=false: mem_1_1 DMA5 -> tile_5_2
 # DMA0; NO relay). The GLU x buffer is 1024 = TWO stripped demux packets (512 each)
 # = [up 512 | gate 512]; glu_aie -> silu(gate)*up -> 512. 16 slices -> 8192.
-GLU_ID = 8
+# The gate-up phase (ph2 of the 4-phase proj) is what feeds the GLU herd; its id is
+# whatever KIDP assigns to that phase. Derive it rather than hardcoding a value --
+# the ids are routing labels, not semantics, and mlir-aie #3429 (exact subcube cover)
+# removed the constraint that they be one-hot.
+GLU_PHASE = 2 if NPH == 4 else -1
+GLU_ID = KIDP[GLU_PHASE] if GLU_PHASE >= 0 else -1
 GLU_DEST = DISTINCT_IDS.index(GLU_ID) if GLU_ID in DISTINCT_IDS else -1
-GLU_PHASE = KIDP.index(GLU_ID) if GLU_ID in KIDP else -1
 # #4 faithful residual stream: o-proj + down (shared id4 -> RMS_DEST) are CONSUMED by
 # the rms core (residual1=input+o-proj -> h; residual2=h+down -> layer output), NOT
 # drained via the deadlocking memtile relay. The down egresses as the layer output.
 # #4 applies only to the full 4-phase proj (QKV, o-proj, gate-up, down) where o-proj
 # (ph1) + down (ph3) share id4 -> consumed by the rms residual.
-FULL4 = NPH == 4 and DOWN_PHASE == 3 and KIDP[:4] == [1, 4, 8, 4]
+# Structural, not value-based: what #4 needs is the 4-phase proj where o-proj (ph1)
+# and down (ph3) SHARE a destination (their common id -> RMS_DEST) while QKV (ph0)
+# and gate-up (ph2) each get their own -- i.e. 4 phases over exactly 3 destinations.
+# Matching on the literal [1,4,8,4] silently disabled #4 on any valid id relabel.
+FULL4 = NPH == 4 and DOWN_PHASE == 3 and KIDP[1] == KIDP[3] and len(DISTINCT_IDS) == 3
 RMS_DEST = DEST[DOWN_PHASE] if FULL4 else -1
 HOST_DRAIN = [p for p in range(NDEST) if p != GLU_DEST and p != RMS_DEST]
 GLU_CHUNK = PAYLOAD  # 512 (gate-up packs up/gate interleaved in 512-row chunks)
@@ -692,6 +701,24 @@ W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights /
 RMS_LAYER = N_NORMS * K  # rms weights / layer (2 llama pre-norm / 4 Gemma sandwich)
 KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
 Y_LAYER = sum(ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p != 0)  # Y / layer
+
+
+def _mark_pkt_header(call_op, chan_name, operand_idx):
+    """Bind a header-writing kernel call to the channel whose `packet_ids` it must
+    agree with.
+
+    The routing ids live in two places -- the channel's `packet_ids` (which become
+    the switchbox rules) and the constant handed to this call (which the kernel
+    writes into the payload header). Nothing in the IR links them, so a divergence
+    is invisible until the device hangs: the switchbox drops a packet stamped with
+    an id it has no rule for. This marking lets air-verify-packet-id-contract
+    compare the two at compile time.
+    """
+    a = call_op.operation.attributes
+    a["air.pkt_header_channel"] = FlatSymbolRefAttr.get(chan_name)
+    a["air.pkt_header_operand"] = IntegerAttr.get(
+        IntegerType.get_signless(32), operand_idx
+    )
 
 
 def build_module():
@@ -1062,10 +1089,14 @@ def build_module():
             "outA", size=[NCX, PAIRS_PC], channel_type="npu_dma_packet"
         )
         _outA.operation.attributes["keep_pkt_header"] = UnitAttr.get()
-        _outA.operation.attributes["packet_ids"] = _pin
+        # No packet_ids here. This hop is single-destination: air-to-aie hands its
+        # whole id list to the one buffer (numS2MMAllocs == 1 -> return pinned), so
+        # the ORDER carries no meaning and the SET is just the demux's. Both are
+        # derivable, so air-annotate-packet-ids fills them in by propagating @outY's
+        # declared list back up the header-preserving chain. Only the demux itself
+        # still has to declare, because there the order picks the destination.
         _toMain = channel_decl("toMain", size=[N_GRP], channel_type="npu_dma_packet")
         _toMain.operation.attributes["keep_pkt_header"] = UnitAttr.get()
-        _toMain.operation.attributes["packet_ids"] = _pin
         # id-demux egress (reproducer mem_1_1 DMA5): the main MT emits each round's
         # assembled 514 packet (carrying the kernel-written id) on ONE MM2S; the
         # switchbox routes id DISTINCT_IDS[p] -> dest p (broadcast_shape=[1,NDEST]).
@@ -1077,7 +1108,22 @@ def build_module():
         # tells air-to-aie the source writes its own header (no static stamp),
         # and keep is false because keep_pkt_header is not set here. The main MT
         # PUT stays MAIN_ROWS=514 (with header for routing); gets are PAYLOAD.
+        # Header ownership stated OUTRIGHT, not inferred from len(packet_ids) > 1.
+        # air-to-aie's channelKernelWritesHeader currently accepts EITHER, so this
+        # is behaviour-neutral today -- but the id COUNT and the fact that the core
+        # (not the DMA) stamps the header are two independent properties, and
+        # deriving the second from the first means the demux stops being
+        # recognisable the moment the pinned ids go away. air-infer-packet-ids
+        # needs this marker to classify outY as a demux at all.
+        _outY.operation.attributes["air.src_writes_pkt_header"] = UnitAttr.get()
         _outY.operation.attributes["packet_ids"] = _pin
+        # packet_ids stays a PIN. air-infer-packet-ids derives the id COUNT for this
+        # demux correctly, and air-verify-packet-id-contract checks the ids against
+        # what the kernel stamps -- but the ORDER of this list is load-bearing and is
+        # NOT recoverable from the IR: air-to-aie routes destination i with
+        # packet_ids[i], while the kernel's constants only reveal the SET (harvesting
+        # them yields [4,1,8] here, which would silently route rope's packets to rms).
+        # Removing the pin needs an IR surface that ties each id to its destination.
         # per-dest host drain: dest p drains its phases' rounds.
         channel_decl("toShim", size=[NDEST])
         # #4: layer output (residual2 = h + down) drained to host from the rms core.
@@ -2744,7 +2790,9 @@ def build_module():
 
                             def _emit(a_acc, pktv):
                                 yb = AllocOp(ypair_l1, [], [])
-                                CallOp(flush_hdr, [a_acc, yb, pktv])
+                                _mark_pkt_header(
+                                    CallOp(flush_hdr, [a_acc, yb, pktv]), "outA", 2
+                                )
                                 ChannelPut(
                                     "outA",
                                     yb,
@@ -2867,7 +2915,11 @@ def build_module():
                                     )
                                     _if = IfOp(_is_lead, [], has_else=True)
                                     with InsertionPoint(_if.thenRegion.blocks[0]):
-                                        CallOp(flush_hdr, [a_acc, bufs[yb], pktv])
+                                        _mark_pkt_header(
+                                            CallOp(flush_hdr, [a_acc, bufs[yb], pktv]),
+                                            "outA",
+                                            2,
+                                        )
                                         ChannelPut(
                                             "outA",
                                             bufs[yb],
