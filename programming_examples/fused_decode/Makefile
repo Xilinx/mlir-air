@@ -26,6 +26,20 @@ AIEOPT_DIR     := $(shell realpath $(dir $(shell which aie-opt))/..)
 #   deadlock, so they must stay -O1.
 NONATTN_KERNELS := proj_qmm rms_residual glu rope   # object .o, -O2
 ATTN_LL_KERNELS := attn_qk attn_kv                  # inline .ll only, -O1 (merge-linked)
+# Extra per-group kernel defines, for A/B diagnostics ONLY (empty in every normal
+# build, so the shipped path is byte-identical). They exist because the kernels'
+# cost is not separable from the outside: end-to-end latency cannot say how much
+# of a phase is compute vs waiting on its feed, and hardware tracing is not
+# available. Building a variant that keeps the dataflow but drops the math
+# answers it directly. Example -- attn_kv.cc/attn_qk.cc honour SKIP_ATTN_FV and
+# SKIP_CALC_L, which keep every lock handshake and DMA but remove the attention
+# math, and measured that attn_fv compute is 0.746 of the 1.137 ms/1k context
+# slope (the rest is feed):
+#     make compile-decode ATTN_EXTRA="-DSKIP_ATTN_FV -DSKIP_CALC_L"
+# Such builds produce WRONG results -- pair them with bench-decode (latency
+# only), never with make verify.
+ATTN_EXTRA     ?=
+NONATTN_EXTRA  ?=
 PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
   -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body -Wno-deprecated-declarations \
   -DNDEBUG -DMODEL_TYPE=LLAMA_3_2_1B -D__AIE_API_AIE_ADF_HPP__ \
@@ -138,12 +152,12 @@ preflight-llvm-link:
 _compile_decode_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
 	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
 	@# attn_qk/attn_kv are built ONLY as inline .ll (merge-linked into the core; mlir-aie #3399).
 	@# They MUST be -O1 (a -O2 attn do-while deadlock); non-attn MUST be -O2 (rope -O1 miscompiles).
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
 	@echo ">>> template decode_L2048 (+ L2047 slope ref) [region-major KV + fire-and-free readback + inline attn]"
 	@# The two same-ATTN_MAXL builds (L2048 + L2047) calibrate the L-slope so DecodeInstsGen can
