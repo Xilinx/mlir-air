@@ -605,6 +605,21 @@ VOCAB_SIZE_PADDED = VOCAB_ROWBLKS * ROW_BLOCK  # logits per chunk (device drain 
 assert VOCAB_FULL_ROWBLKS % VOCAB_ROWBLKS == 0, "chunk must divide the full vocab"
 N_VOCAB_CHUNKS = VOCAB_FULL_ROWBLKS // VOCAB_ROWBLKS  # host dispatches (9)
 VOCAB_J2 = J2P[0]  # 4 (K=MODEL_DIM=2048 -> NBJ=8 col-blocks)
+# ---- proj b_col_reduce_add cache (see kernels/proj_qmm.cc proj_qmm_acc256_c) ----
+# The +min-term reduction of the activation depends only on the col-block j, not
+# on the row-block i, so it is computed on the first row-block of a projection
+# and reused. PROJ_RC_CACHE=0 restores the recompute-every-block path
+# (proj_qmm_acc256) byte-identically, for A/B.
+PROJ_RC_CACHE = int(_os.environ.get("PROJ_RC_CACHE", "1"))
+# Debug bisect: keep the cache plumbing (buffer, slot index, extra args) but fill
+# EVERY row-block, i.e. compute exactly what the uncached path computes. Correct
+# output here isolates a broken reuse assumption; wrong output isolates broken
+# plumbing. Costs the full recompute, so it is a diagnostic only.
+PROJ_RC_FILL_ALL = int(_os.environ.get("PROJ_RC_FILL_ALL", "0"))
+# One slot of COL_BLOCK/32 bf16 per col-block, sized for the WIDEST projection
+# (2*J2 col-blocks; llama-1B down-proj K=8192 -> 32 -> 256 bf16 = 512 B/core).
+# Same size as the reference's b_col_reduce_add[INTERMEDIATE_SIZE/GROUP_SIZE].
+RCACHE_LEN = 2 * max(J2P + [VOCAB_J2]) * (COL_BLOCK // 32)
 VOCAB_RNDS = (
     VOCAB_I2 * PAIR_ROWS
 )  # egress PAYLOAD-rounds per chunk (VOCAB_SIZE_PADDED/512)
@@ -812,6 +827,9 @@ def build_module():
         xblk_l1 = MemRefType.get([COL_BLOCK], bf16, memory_space=l1)  # 256 X chunk
         wblk_l1 = MemRefType.get([BLOCK_BF16], bf16, memory_space=l1)  # 2560 weight
         yacc_l1 = MemRefType.get([ROW_BLOCK], f32, memory_space=l1)  # accumulator
+        # b_col_reduce_add cache, one slot (COL_BLOCK/32 bf16) per col-block of
+        # the WIDEST projection -- see RCACHE_LEN. 512 B/core for llama-1B.
+        rcache_l1 = MemRefType.get([RCACHE_LEN], bf16, memory_space=l1)
         ypair_l1 = MemRefType.get(
             [16 + PAIR_ROWS * ROW_BLOCK], bf16, memory_space=l1  # 80 shared
         )
@@ -894,6 +912,15 @@ def build_module():
             "proj_qmm_acc256", ([xblk_l1, wblk_l1, yacc_l1], []), visibility="private"
         )
         acc256.attributes["link_with"] = StringAttr.get("proj_qmm.o")
+        # Cached-reduction acc + the arm that pins the cache at projection scope.
+        acc256_c = FuncOp(
+            "proj_qmm_acc256_c",
+            ([xblk_l1, wblk_l1, yacc_l1, rcache_l1, i32, i32], []),
+            visibility="private",
+        )
+        acc256_c.attributes["link_with"] = StringAttr.get("proj_qmm.o")
+        rc_arm = FuncOp("proj_qmm_rc_arm", ([rcache_l1, i32], []), visibility="private")
+        rc_arm.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         flush_hdr = FuncOp(
             "proj_qmm_flush_hdr", ([yacc_l1, ypair_l1, i32], []), visibility="private"
         )
@@ -1630,7 +1657,11 @@ def build_module():
                                                 sizes=(
                                                     [idx(_cb * 16 * REGION_W)]
                                                     if _KV1D
-                                                    else [idx(_cb), idx(16), idx(REGION_W)]
+                                                    else [
+                                                        idx(_cb),
+                                                        idx(16),
+                                                        idx(REGION_W),
+                                                    ]
                                                 ),
                                                 strides=(
                                                     [idx(1)]
@@ -1652,7 +1683,11 @@ def build_module():
                                                 sizes=(
                                                     [idx(_cb * 16 * REGION_W)]
                                                     if _KV1D
-                                                    else [idx(_cb), idx(16), idx(REGION_W)]
+                                                    else [
+                                                        idx(_cb),
+                                                        idx(16),
+                                                        idx(REGION_W),
+                                                    ]
                                                 ),
                                                 strides=(
                                                     [idx(1)]
@@ -2942,6 +2977,10 @@ def build_module():
                                 for k in KIDP
                             ]
                             c1i = arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
+                            # fill=0 for every row-block after the phase's first
+                            _c0i = arith.ConstantOp(
+                                IntegerAttr.get(i32, 0), None
+                            ).result
 
                             c2 = idx(2)
 
@@ -2949,7 +2988,7 @@ def build_module():
                             # -> AIR 2-deep x_0/x_1 + w_0/w_1 rings (the reproducer's
                             # resident 2-buffer alternation). Separate a_x0/a_x1 gets
                             # would explode the core-mem BD count (>16).
-                            def _gemv(J2v):
+                            def _gemv(J2v, a_rc=None, fill=None):
                                 J2x2 = arith.muli(J2v, c2)
                                 a_acc = AllocOp(yacc_l1, [], [])
                                 CallOp(zero, [a_acc, _arm])
@@ -2958,7 +2997,16 @@ def build_module():
                                     ChannelGet("inX", a_x, indices=[gcx, gcy])
                                     a_w = AllocOp(wblk_l1, [], [])
                                     ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
-                                    CallOp(acc256, [a_x, a_w, a_acc])
+                                    if a_rc is None:
+                                        CallOp(acc256, [a_x, a_w, a_acc])
+                                    else:
+                                        # slot = this col-block; fill only on the
+                                        # projection's first row-block.
+                                        _ji = arith.index_cast(i32, _j)
+                                        CallOp(
+                                            acc256_c,
+                                            [a_x, a_w, a_acc, a_rc, _ji, fill],
+                                        )
                                     DeallocOp(a_x)
                                     DeallocOp(a_w)
                                     yield_([])
@@ -3052,14 +3100,50 @@ def build_module():
                                     idx(VOCAB_J2), lambda: _psw(ph, j2c, idx_t), idx_t
                                 )
                                 pktv = _sel(_id4, lambda: _psw(ph, pktc, i32), i32)
+                                # b_col_reduce_add cache: one per core, scoped to
+                                # the PROJECTION (x changes per phase, so it is
+                                # refilled on each phase's first row-block). The
+                                # rc_arm call is what holds the alloc at this
+                                # scope -- without a use outside the v1/j loops
+                                # AIR would sink it into the col-block loop and
+                                # the cache would reset every row-block.
+                                a_rc = None
+                                if PROJ_RC_CACHE:
+                                    a_rc = AllocOp(rcache_l1, [], [])
+                                    CallOp(rc_arm, [a_rc, _arm])
                                 for _v1 in for_(idx(0), I2v, idx(1)):
                                     # PAIR_ROWS GEMV emits per v1 into the PAIR_ROWS y
                                     # buffers: paired (llama) -> y_0 then y_1 (2 blocks/
                                     # round, lead+partner); non-paired (gemma) -> y_0 only
                                     # (1 block/round per tile, handles odd blocks/tile).
+                                    _fill0 = None
+                                    if PROJ_RC_CACHE:
+                                        # row-block index = _v1*PAIR_ROWS + _e, so
+                                        # only (_v1==0, _e==0) is the phase's first.
+                                        _fill0 = (
+                                            c1i
+                                            if PROJ_RC_FILL_ALL
+                                            else arith.extui(
+                                                i32,
+                                                arith.cmpi(
+                                                    arith.CmpIPredicate.eq, _v1, idx(0)
+                                                ),
+                                            )
+                                        )
                                     for _e in range(PAIR_ROWS):
-                                        _emit(_gemv(J2v), _e, pktv)
+                                        _f = (
+                                            None
+                                            if not PROJ_RC_CACHE
+                                            else (
+                                                c1i
+                                                if PROJ_RC_FILL_ALL
+                                                else (_fill0 if _e == 0 else _c0i)
+                                            )
+                                        )
+                                        _emit(_gemv(J2v, a_rc, _f), _e, pktv)
                                     yield_([])  # v1
+                                if PROJ_RC_CACHE:
+                                    DeallocOp(a_rc)
                                 yield_([])  # ph
 
                         return body

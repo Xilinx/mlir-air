@@ -45,8 +45,20 @@ W_DUAL_CHAN    ?= 1
 # CONSTANT work (UNI_LM*VOCAB_CHUNK_I2 must stay = VOCAB_FULL_ROWBLKS/32). Defaults
 # reproduce the shipped config exactly. fused_decode.py asserts the two agree.
 VOCAB_CHUNK_I2 ?= 18
+# PROJ_RC_CACHE=1 (default) computes the proj +min-term reduction of the
+# activation ONCE per col-block per projection and reuses it across that
+# projection's row-blocks, instead of recomputing it on every (row, col) block.
+# It is the reference proj_main's `if (i == 0)` guard -- see
+# kernels/proj_qmm.cc::proj_qmm_acc256_c. Numerically EXACT (same values, fewer
+# times): measured bit-identical 64-token greedy output at ctx 263 and 1933.
+# Worth -0.58 ms/token, all of it on the context-INDEPENDENT part (intercept
+# 15.87 -> 15.30 ms; slope unchanged at 1.14 ms/1k). Only engages on the
+# PAIR_ROWS=2 proj path (llama); the PAIR_ROWS=1 gemma path is untouched.
+# PROJ_RC_CACHE=0 restores the recompute-every-block kernel for A/B.
+PROJ_RC_CACHE  ?= 1
 DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
-                  W_DUAL_CHAN=$(W_DUAL_CHAN) $(if $(UNI_LM),UNI_LM=$(UNI_LM),)
+                  W_DUAL_CHAN=$(W_DUAL_CHAN) PROJ_RC_CACHE=$(PROJ_RC_CACHE) \
+                  $(if $(UNI_LM),UNI_LM=$(UNI_LM),)
 
 .PHONY: help compile-decode _compile_decode_build preflight-llvm-link clean
 

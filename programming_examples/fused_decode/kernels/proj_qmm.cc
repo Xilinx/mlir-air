@@ -100,6 +100,72 @@ void proj_qmm_acc256(bf16 *__restrict x_blk, bf16 *__restrict w,
 #endif
 }
 
+// CACHED-REDUCTION variant of proj_qmm_acc256 (the default; PROJ_RC_CACHE=0
+// falls back to the plain one above).
+//
+// b_col_reduce_add is the per-32-group sum of the ACTIVATION slice, so it
+// depends only on the col-block j -- NOT on the row-block i. proj_qmm_acc256
+// recomputes it on every (i, j) block because its 8-element result is a
+// call-local stack array with nowhere to live between calls. That reduction is
+// 171 of the function's 177 bundles and all 64 of its vector stack accesses
+// (measured: building with -DQ4_0, which drops the +min term, leaves 6 bundles
+// and 0 spills), so the waste is ~171 bundles + ~4 KB of L1 spill traffic per
+// block -- L1 traffic that contends with the DMA streaming the next weight
+// block into the same tile.
+//
+// The reference proj_main does the same thing correctly: it keeps a persistent
+// b_col_reduce_add[INTERMEDIATE_SIZE/Q4NX_GROUP_SIZE] in its caller frame,
+// indexes it by j, and fills it under `if (i == 0)` ("special logic for i == 0,
+// avoid recompute if it is repeat"). This is that, with the cache handed in by
+// AIR because the AIR kernel is a leaf call and has no caller frame of its own.
+//
+// Redundancy removed, llama-3.2-1B (row-blocks/phase = I2P*PAIR_ROWS =
+// [6,4,32,4] decode, 36 per lm-head wave): 9440 -> 952 reductions per token.
+//
+//   rc   : caller-owned cache, >= (max col-blocks)*(k/32) bf16, live across the
+//          row-block loop and refilled at each new projection. AIR sizes it
+//          RCACHE_LEN and pins its alloc at projection scope via
+//          proj_qmm_rc_arm below.
+//   j    : col-block index -- selects the slot
+//   fill : nonzero on the projection's FIRST row-block (computes the slot),
+//          zero afterwards (reuses it)
+void proj_qmm_acc256_c(bf16 *__restrict x_blk, bf16 *__restrict w,
+                       float *__restrict y_acc, bf16 *__restrict rc, int j,
+                       int fill) {
+  constexpr int m = Q4NX_ROW_BLOCK_SIZE; // 32
+  constexpr int k = Q4NX_COL_BLOCK_SIZE; // 256
+#ifndef Q4_0
+  bf16 *slot = rc + j * (k / 32);
+  if (fill) {
+    AIE_PREPARE_FOR_PIPELINING
+    AIE_LOOP_UNROLL_FULL
+    for (int l = 0; l < k / 32; l++)
+      AIE_LOOP_FLATTEN {
+        slot[l] = bf16(aie::reduce_add(aie::load_v<32>(x_blk + 32 * l)));
+      }
+  }
+  _qmm_q4k_bf16<m, k>((q4k_block_t *)w, x_blk, y_acc, slot);
+#else
+  (void)rc;
+  (void)j;
+  (void)fill;
+  _qmm_q4k_bf16<m, k>((q4k_block_t *)w, x_blk, y_acc);
+#endif
+}
+
+// Pin the reduce cache at PROJECTION scope. AIR sinks an alloc to the innermost
+// region that uses it, and proj_qmm_acc256_c is the cache's only other user --
+// which would sink it into the col-block loop and reset it every row-block,
+// silently defeating the cache. One call per projection, outside both the
+// row-block and col-block loops, keeps it alive across them. Same reason
+// proj_qmm_zero/proj_qmm_flush exist as separate entry points for y_acc.
+// Read-only on purpose: writing here would clobber slot 0.
+void proj_qmm_rc_arm(bf16 *__restrict rc, int _arm) {
+  volatile bf16 keep = rc[0];
+  (void)keep;
+  (void)_arm;
+}
+
 // Flush the accumulator to bf16 output (call once after the col-block loop).
 void proj_qmm_flush(float *__restrict y_acc, bf16 *__restrict y_out) {
   copy_float_to_bf16<Q4NX_ROW_BLOCK_SIZE>(y_out, y_acc);
