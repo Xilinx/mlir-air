@@ -449,9 +449,17 @@ private:
     // Check memref deps
     if (auto defop = operand.getDefiningOp<air::ExecuteOp>()) {
       // addNewAsyncDepToGraph<T>(defop.getResult(0), op);
+      if (!definingOpDominatesSink(defop.getOperation(), op.getOperation()))
+        return;
       op.addAsyncDependency(defop.getAsyncToken());
     }
   }
+
+  // Whether def's results are usable at sink. The sink is not always a user of
+  // the memref: traceDependencyFromScfForOp sinks into the wait_all it inserts
+  // for an scf.for's iter_arg init, which sits outside the loop, so a memref
+  // allocated in the loop body reaches here without dominating it.
+  bool definingOpDominatesSink(Operation *def, Operation *sink);
 
   // If sink op and operand's use are under the same scope
   void pushDepsAtCurrentScope(mlir::Value operand, air::AsyncOpInterface op,

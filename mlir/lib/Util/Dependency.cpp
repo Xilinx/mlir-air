@@ -3105,6 +3105,16 @@ void dependencyTracer::getPartialMemrefFromOp(
   llvm::append_range(sink_op_scalar_outs, *writeAccessedScalars);
 }
 
+bool dependencyTracer::definingOpDominatesSink(Operation *def,
+                                               Operation *sink) {
+  // AIR regions are single-block, so proper dominance reduces to: some
+  // ancestor of sink lives in def's block, and def precedes it.
+  Operation *sinkAncestor = def->getBlock()->findAncestorOpInBlock(*sink);
+  if (!sinkAncestor || sinkAncestor == def)
+    return false;
+  return def->isBeforeInBlock(sinkAncestor);
+}
+
 // Add dependency edge
 void dependencyTracer::addDependencyBetweenOps(Operation *source,
                                                Operation *sink) {
