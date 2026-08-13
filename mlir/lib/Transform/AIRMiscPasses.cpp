@@ -2184,11 +2184,12 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     // belong to the same column, multiplying that memtile's DMA blocks for no
     // gain. Worse, the sub-allocs are created fresh below and do not inherit
     // the attribute, so partitioning silently drops the placement.
-    bool placed = allocOp->hasAttr(air::attrs::MemtileCol);
-    if (!placed)
-      if (auto exec = allocOp->getParentOfType<air::ExecuteOp>())
-        placed = exec->hasAttr(air::attrs::MemtileCol);
-    if (placed)
+    //
+    // Test exactly what AIRToAIE honours -- an IntegerAttr on the alloc itself
+    // (see allocPinCol) -- so the split decision and the placement decision
+    // cannot disagree. A pin that AIRToAIE would ignore must not suppress the
+    // split either, or the buffer ends up neither distributed nor placed.
+    if (allocOp->getAttrOfType<IntegerAttr>(air::attrs::MemtileCol))
       continue;
     Value memref = allocOp.getMemref();
     if (auto exec = dyn_cast_if_present<air::ExecuteOp>(allocOp->getParentOp()))
