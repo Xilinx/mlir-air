@@ -33,10 +33,18 @@
 
 // The owner core writes the payload and then the header word. ONE acquire in
 // front of the pair, ONE release after it -- no lock op in between.
+//
+// The property is the LOCK SECTION, not line adjacency, so the writes are not
+// required to print on immediately successive lines: loop plumbing or a
+// scheduling change could legitimately land something harmless between them.
+// A CHECK-NOT in each gap says exactly what matters -- no lock op anywhere
+// from the acquire to the release -- and nothing more.
 // CHECK: aie.core(%[[MAIN_TILE]])
 // CHECK: aie.use_lock(%[[PROD]], AcquireGreaterEqual, %{{.*}})
-// CHECK-NEXT: func.call @zero_vectorized_bf16
-// CHECK-NEXT: vector.store
+// CHECK-NOT: aie.use_lock
+// CHECK: func.call @zero_vectorized_bf16
+// CHECK-NOT: aie.use_lock
+// CHECK: vector.store
 // CHECK-NOT: aie.use_lock
 // CHECK: aie.use_lock(%[[CONS]], Release, %{{.*}})
 
