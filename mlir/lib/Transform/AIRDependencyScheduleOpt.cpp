@@ -1686,14 +1686,6 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                   SmallVectorImpl<Operation *> *allocsOut) {
     if (forOp->hasAttr("unroll"))
       return false;
-    // A runtime trip count -- a core or memtile loop following a dispatch-time
-    // context length -- cannot take this. Unrolling by 2 leaves a remainder
-    // whose emitted form runs one extra iteration when the count is even, so
-    // the consumer would take one more block than the shim sends.
-    if (!getConstantIntValue(forOp.getLowerBound()) ||
-        !getConstantIntValue(forOp.getUpperBound()) ||
-        !getConstantIntValue(forOp.getStep()))
-      return false;
     // Labeling a loop unrolls its body by 2, which duplicates a nested loop
     // and everything that loop allocates per trip. So an unsafe loop anywhere
     // in the region tree disqualifies the enclosing candidate, exactly as the

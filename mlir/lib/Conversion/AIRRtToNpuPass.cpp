@@ -2256,9 +2256,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           }
         if (defIsAfter) {
           OpBuilder b(rtp);
-          if (::getenv("AIR_DEBUG_REMAT"))
-            llvm::errs() << "AIR_DEBUG_REMAT: rtp-clone " << defOp->getName()
-                         << "\n";
           Operation *cloned = b.clone(*defOp);
           operandUse.set(cloned->getResult(0));
           // The original is left for canonicalization: the op-order snapshot
@@ -2581,8 +2578,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         Operation *cloned = b.clone(*def);
         cloned->setOperands(operands);
         seen.insert(cloned);
-        if (::getenv("AIR_DEBUG_REMAT"))
-          llvm::errs() << "AIR_DEBUG_REMAT: remat " << def->getName() << "\n";
         return cloned->getResult(0);
       };
       for (Operation &o : blk) {

@@ -64,7 +64,7 @@ from air.dialects.air import channel as channel_decl
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects import arith
-from air.dialects.scf import for_, yield_, index_switch, IfOp
+from air.dialects.scf import for_, yield_, index_switch, IfOp, ForOp
 from air.backend.xrt import XRTBackend
 
 
@@ -304,6 +304,26 @@ ATTN_ROUNDS = (ATTN_L + 15) // 16
 # stream is then assembled per token from the emitted TXN builder rather than read
 # from a frozen insts.bin. Off by default; the template pair stays the shipping path.
 DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
+
+
+def _for_no_pingpong(start, stop, step):
+    """`for_` that opts the loop out of ping-pong (air.disable_ping_pong).
+
+    The memtile KV dequeue below is a ping-pong candidate here (llama's is
+    declined for live state). Labelling unrolls the body by 2 and leaves a
+    remainder; with a runtime trip count the remainder's bound arithmetic is
+    hoisted out of the loop, and air-to-aie then rejects the memtile DMA region
+    for using a value defined outside it.
+    """
+    params = [start, stop, step]
+    for i, p in enumerate(params):
+        if isinstance(p, int):
+            params[i] = arith.ConstantOp.create_index(p)
+    for_op = ForOp(*params, [])
+    for_op.operation.attributes["air.disable_ping_pong"] = UnitAttr.get()
+    with InsertionPoint(for_op.body):
+        yield for_op.induction_variable
+
 
 # Attn kernel linkage. Same mechanism as the Llama driver (fused_decode.py): the
 # attn_qk/attn_kv kernels are linked as LLVM IR (.ll) rather than objects, so they
@@ -1972,7 +1992,8 @@ def build_module():
                         REGION_W  # 256 (= len(cus)*KVPC_DH for the single col-7 group)
                     )
                     for gi, (_gcol, _cus) in enumerate(ATTN_COL_GROUPS):
-                        for _b in for_(idx(0), _seg_ceil16(), idx(1)):
+                        _kvfor = _for_no_pingpong if DYNSEQ else for_
+                        for _b in _kvfor(idx(0), _seg_ceil16(), idx(1)):
                             kb = AllocOp(kvcomb_l2, [], [])
                             kb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), ATTN_COL)
