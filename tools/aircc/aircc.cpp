@@ -269,6 +269,18 @@ static cl::opt<OutputFormatKind> outputFormat(
                clEnumValN(OF_none, "none", "Compile-only, no binary output")),
     cl::init(OF_xclbin), cl::cat(airCompilerOptions));
 
+// Emit a C++ TXN builder alongside the usual artifacts. A runtime-valued
+// access pattern (e.g. a KV readback whose extent is the context length) leaves
+// a scalar in the runtime sequence, and a frozen insts.bin cannot represent it:
+// the stream has to be assembled at dispatch. aie-translate --aie-npu-to-cpp
+// emits exactly that builder, but nothing in the AIR flow reached it.
+static cl::opt<bool>
+    emitTxnCpp("emit-txn-cpp",
+               cl::desc("Also emit a C++ TXN builder (<output>.txn.h) that "
+                        "assembles the instruction stream at runtime from the "
+                        "runtime sequence's scalar arguments"),
+               cl::init(false), cl::cat(airCompilerOptions));
+
 static cl::opt<std::string> kernelName("xclbin-kernel-name",
                                        cl::desc("Kernel name in xclbin file"),
                                        cl::init(""),
@@ -742,6 +754,45 @@ static OwningOpRef<ModuleOp> cloneModule(ModuleOp moduleOp) {
 //===----------------------------------------------------------------------===//
 // GPU Compilation Pipeline
 //===----------------------------------------------------------------------===//
+
+// Emit the C++ TXN builder for a module whose runtime sequence takes scalar
+// arguments. The npu-dialect lowering that aiecc performs internally is re-run
+// here on a copy purely to reach aie-translate; the artifacts aiecc produces
+// are unaffected.
+static LogicalResult emitTxnCppBuilder(StringRef npuFile) {
+  auto aieOpt = sys::findProgramByName("aie-opt");
+  auto aieTranslate = sys::findProgramByName("aie-translate");
+  if (!aieOpt || !aieTranslate) {
+    llvm::errs() << "Error: --emit-txn-cpp needs aie-opt and aie-translate on "
+                    "PATH\n";
+    return failure();
+  }
+  SmallString<256> loweredFile(npuFile);
+  sys::path::replace_extension(loweredFile, "txn.mlir");
+  if (failed(runCommand(
+          {*aieOpt, npuFile.str(), "--aie-substitute-shim-dma-allocations",
+           "--aie-assign-runtime-sequence-bd-ids", "--aie-dma-tasks-to-npu",
+           "--aie-dma-to-npu", "-o", loweredFile.str().str()})))
+    return failure();
+  SmallString<256> headerFile(npuFile);
+  sys::path::replace_extension(headerFile, "txn.h");
+  std::string out;
+  if (failed(runCommandCaptureOutput(
+          {*aieTranslate, "--aie-npu-to-cpp", loweredFile.str().str()}, out)))
+    return failure();
+  std::error_code ec;
+  llvm::raw_fd_ostream os(headerFile, ec);
+  if (ec) {
+    llvm::errs() << "Error: cannot write " << headerFile << ": " << ec.message()
+                 << "\n";
+    return failure();
+  }
+  os << out;
+  os.close();
+  if (verbose)
+    llvm::outs() << "TXN builder written to: " << headerFile << "\n";
+  return success();
+}
 
 static LogicalResult runGpuCompilation() {
   SmallString<256> baseName(sys::path::stem(inputFilename));
@@ -1246,6 +1297,9 @@ static LogicalResult runAieCompilation() {
     if (failed(runPassPipeline(npuPipeline, npuModule.get())))
       return failure();
     if (failed(saveModule(npuModule.get(), npuFile)))
+      return failure();
+
+    if (emitTxnCpp && failed(emitTxnCppBuilder(npuFile)))
       return failure();
 
     if (debugIr) {
