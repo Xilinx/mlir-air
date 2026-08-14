@@ -285,6 +285,7 @@ class ChannelPut(ChannelPutOp):
         sizes=[],
         strides=[],
         indices=[],
+        dest=None,
         async_token=None,
         async_dependencies=[],
         pad_before=None,
@@ -292,6 +293,13 @@ class ChannelPut(ChannelPutOp):
         loc=None,
         ip=None,
     ):
+        # `dest` selects, at run time, which consumer of a packet demux this
+        # packet is for -- the index along the channel's broadcast dimension,
+        # i.e. the same index the matching get sits at. The compiler allocates
+        # the packet id for that destination and emits the routing-header store;
+        # designs never name a wire id. Leave it None on a forwarding hop.
+        if dest is not None:
+            dest = pyint_to_index(dest)
         if (pad_before is None) != (pad_after is None):
             raise ValueError(
                 "pad_before and pad_after must both be specified or both omitted"
@@ -312,6 +320,7 @@ class ChannelPut(ChannelPutOp):
             static_src_offsets=static_offsets,
             static_src_sizes=static_sizes,
             static_src_strides=static_strides,
+            dest=dest,
             loc=loc,
             ip=ip,
         )

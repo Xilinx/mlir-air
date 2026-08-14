@@ -2953,8 +2953,8 @@ void air::ChannelPutOp::build(
   auto staticSizes = splitMixed(b, src_sizes, dynSizes);
   auto staticStrides = splitMixed(b, src_strides, dynStrides);
   build(b, result, resultTypes, async_dependencies, chan_name, indices, src,
-        dynOffsets, dynSizes, dynStrides, staticOffsets, staticSizes,
-        staticStrides, pad_before, pad_after);
+        dynOffsets, dynSizes, dynStrides, /*dest=*/Value(), staticOffsets,
+        staticSizes, staticStrides, pad_before, pad_after);
 }
 
 void air::ChannelPutOp::build(OpBuilder &b, OperationState &result,
@@ -2966,9 +2966,9 @@ void air::ChannelPutOp::build(OpBuilder &b, OperationState &result,
                               DenseI32ArrayAttr pad_before,
                               DenseI32ArrayAttr pad_after) {
   build(b, result, resultTypes, async_dependencies, chan_name, indices, src,
-        src_offsets, src_sizes, src_strides, allDynamic(b, src_offsets.size()),
-        allDynamic(b, src_sizes.size()), allDynamic(b, src_strides.size()),
-        pad_before, pad_after);
+        src_offsets, src_sizes, src_strides, /*dest=*/Value(),
+        allDynamic(b, src_offsets.size()), allDynamic(b, src_sizes.size()),
+        allDynamic(b, src_strides.size()), pad_before, pad_after);
 }
 
 void air::ChannelGetOp::build(

@@ -112,9 +112,10 @@ void proj_qmm_flush(float *__restrict y_acc, bf16 *__restrict y_out) {
 // air.channel.put streams from offset 14 (2 header + ROW_BLOCK payload) on a
 // {keep_pkt_header} channel so the kernel-written id (NOT a compiler-stamped
 // filter) drives routing. y_out must be sized >= 16 + Q4NX_ROW_BLOCK_SIZE.
-void proj_qmm_flush_hdr(float *__restrict y_acc, bf16 *__restrict y_out,
-                        unsigned int pkt_id) {
-  *reinterpret_cast<unsigned int *>(y_out + 14) = pkt_id;
+// The routing header used to be written here, from a pkt_id argument the design
+// also had to spell on the channel. The compiler emits that store now, from the
+// dest operand on the air.channel.put, so this is plain compute again.
+void proj_qmm_flush_hdr(float *__restrict y_acc, bf16 *__restrict y_out) {
   copy_float_to_bf16<Q4NX_ROW_BLOCK_SIZE>(y_out + 16, y_acc);
 }
 
@@ -122,18 +123,15 @@ void proj_qmm_flush_hdr(float *__restrict y_acc, bf16 *__restrict y_out,
 // row-blocks must emit them as ONE packet with a SINGLE header at the front
 // (a packet carries one header word; a per-flow keep_pkt_header keeps exactly
 // the offset-0 contribution). proj_qmm_flush_row writes row-block i's payload
-// at y_payload + i*ROW_BLOCK (no header); proj_qmm_write_hdr writes just the
-// 2-word packet id at the front. Layout: [hdr@14 | payload0@16 | payload1@16+RB
-// | ...]; the matching put streams from offset 14, size 2 + nbi_pc*ROW_BLOCK.
+// at y_payload + i*ROW_BLOCK. The header itself is not written here: the
+// compiler emits it from the put's `dest`, into element 14. Layout:
+// [hdr@14 | payload0@16 | payload1@16+RB | ...]; the matching put streams from
+// offset 14, size 2 + nbi_pc*ROW_BLOCK.
 void proj_qmm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
                         int i) {
   // payload region starts at element 16 (matching proj_qmm_flush_hdr).
   copy_float_to_bf16<Q4NX_ROW_BLOCK_SIZE>(y_out + 16 + i * Q4NX_ROW_BLOCK_SIZE,
                                           y_acc);
-}
-
-void proj_qmm_write_hdr(bf16 *__restrict y_out, unsigned int pkt_id) {
-  *reinterpret_cast<unsigned int *>(y_out + 14) = pkt_id;
 }
 
 // DEBUG: fill the resident activation X with a constant ON-CHIP, so the proj X

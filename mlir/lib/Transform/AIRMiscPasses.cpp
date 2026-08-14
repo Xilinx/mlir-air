@@ -3744,71 +3744,6 @@ static Classification classify(air::ChannelOp chanOp,
 // regions; the cap only stops a pathological input from running away.
 static constexpr unsigned kMaxTraceDepth = 16;
 
-/// Collect the constant USES reaching `use` in FIRST-APPEARANCE order.
-///
-/// Uses, not defining ops: one `arith.constant` is routinely shared by several
-/// arms (the down phase reuses the o-proj id), and two arms can need different
-/// new values. Rewriting the shared def in place would corrupt whichever arm
-/// lost the race; skipping shared defs -- the first thing tried here -- instead
-/// left a PARTIAL relabel, which is precisely the drift this whole pass exists
-/// to prevent (caught on llama-3b by the contract check below). Recording
-/// the operand lets each use get its own fresh constant.
-///
-/// Order matters and is not sorted order. air-to-aie routes destination i with
-/// `packet_ids[i]`, and the builders derive that list as the ordered-unique of
-/// the per-phase ids -- so the i-th DISTINCT id the kernel can stamp, in phase
-/// order, belongs to destination i. Relabeling must preserve exactly that
-/// correspondence or packets land on the wrong tile. scf.index_switch stores
-/// its default region FIRST, so walk the case regions in case order and the
-/// default last.
-static LogicalResult collectConstantUses(OpOperand &use,
-                                         SmallVectorImpl<OpOperand *> &uses,
-                                         SmallVectorImpl<int64_t> &order,
-                                         unsigned depth = 0) {
-  if (depth > kMaxTraceDepth)
-    return failure();
-  Value v = use.get();
-  Operation *def = v.getDefiningOp();
-  if (!def)
-    return failure();
-
-  if (auto cst = dyn_cast<arith::ConstantOp>(def)) {
-    auto intAttr = dyn_cast<IntegerAttr>(cst.getValue());
-    if (!intAttr)
-      return failure();
-    uses.push_back(&use);
-    order.push_back(intAttr.getInt());
-    return success();
-  }
-
-  auto recurseRegion = [&](Region &r, unsigned resultIdx) {
-    for (Block &b : r) {
-      Operation *term = b.getTerminator();
-      if (!term || term->getNumOperands() <= resultIdx)
-        return failure();
-      if (failed(collectConstantUses(term->getOpOperand(resultIdx), uses, order,
-                                     depth + 1)))
-        return failure();
-    }
-    return success();
-  };
-
-  unsigned resultIdx = cast<OpResult>(v).getResultNumber();
-  if (auto sw = dyn_cast<scf::IndexSwitchOp>(def)) {
-    for (Region &r : sw.getCaseRegions())
-      if (failed(recurseRegion(r, resultIdx)))
-        return failure();
-    return recurseRegion(sw.getDefaultRegion(), resultIdx);
-  }
-  if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
-    if (failed(recurseRegion(ifOp.getThenRegion(), resultIdx)))
-      return failure();
-    return recurseRegion(ifOp.getElseRegion(), resultIdx);
-  }
-  return failure();
-}
-
-/// Read the pinned ids off an air.channel, if it pins any.
 static std::optional<std::set<int64_t>> pinnedIDsOf(air::ChannelOp chanOp) {
   auto attr = chanOp.getPacketIDs();
   if (!attr)
@@ -3822,76 +3757,6 @@ static std::optional<std::set<int64_t>> pinnedIDsOf(air::ChannelOp chanOp) {
   }
   return ids;
 }
-
-static std::string pktIDsToString(const std::set<int64_t> &s) {
-  std::string out = "["; // std::set iterates sorted
-  for (auto [i, v] : llvm::enumerate(s)) {
-    if (i)
-      out += ", ";
-    out += std::to_string(v);
-  }
-  return out + "]";
-}
-
-/// Check a marked header-writing call against its channel's ids.
-///
-/// The routing ids exist in two spellings -- the channel's `packet_ids`, which
-/// become switchbox rules, and the constant this call writes into the payload
-/// header. Nothing in the IR ties them together, so a divergence is invisible
-/// until the device hangs: the switchbox drops a packet stamped with an id it
-/// has no rule for. Reuses collectConstantUses (the tracer the id harvesting
-/// already needs) rather than carrying a second one.
-static LogicalResult checkPacketIDContract(Operation *call, ModuleOp mod) {
-  auto chanSym =
-      call->getAttrOfType<SymbolRefAttr>(air::attrs::PktHeaderChannel);
-  auto operandIdx =
-      call->getAttrOfType<IntegerAttr>(air::attrs::PktHeaderOperand);
-  if (!chanSym || !operandIdx)
-    return call->emitOpError()
-           << air::attrs::PktHeaderChannel << " and "
-           << air::attrs::PktHeaderOperand << " must be set together";
-
-  unsigned idx = operandIdx.getInt();
-  if (idx >= call->getNumOperands())
-    return call->emitOpError() << air::attrs::PktHeaderOperand << " = " << idx
-                               << " is out of range (call has "
-                               << call->getNumOperands() << " operands)";
-
-  auto chanOp = mod.lookupSymbol<air::ChannelOp>(chanSym.getLeafReference());
-  if (!chanOp)
-    return call->emitOpError()
-           << air::attrs::PktHeaderChannel << " references '"
-           << chanSym.getLeafReference().getValue()
-           << "', which is not an air.channel in this module";
-
-  // Only a channel with ids has a second spelling to disagree with.
-  auto pinned = pinnedIDsOf(chanOp);
-  if (!pinned)
-    return success();
-
-  // Unresolvable operand: the contract is unchecked, not violated. Silent.
-  SmallVector<OpOperand *> uses;
-  SmallVector<int64_t> order;
-  if (failed(collectConstantUses(call->getOpOperand(idx), uses, order)))
-    return success();
-  std::set<int64_t> stamped(order.begin(), order.end());
-
-  if (stamped == *pinned)
-    return success();
-
-  InFlightDiagnostic diag = call->emitOpError()
-                            << "packet id contract violated: the kernel stamps "
-                            << pktIDsToString(stamped) << " but channel '"
-                            << chanSym.getLeafReference().getValue() << "' has "
-                            << pktIDsToString(*pinned);
-  diag.attachNote(chanOp.getLoc()) << "channel declared here";
-  diag.attachNote()
-      << "the switchbox routes only these ids; a packet stamped with an "
-         "unrouted id is dropped, which reads on device as a hang";
-  return failure();
-}
-
-} // namespace
 
 class AIRAnnotatePacketIDsPass
     : public air::impl::AIRAnnotatePacketIDsPassBase<AIRAnnotatePacketIDsPass> {
@@ -4132,8 +3997,9 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
           // A feeder inherits its successor's provenance too: if the demux's
           // ids were allocated here, the core stamping into this hop is
           // stamping ordinals and needs the same rewrite.
-          if (succDerived)
+          if (succDerived) {
             derived.insert(name);
+          }
           changed = true;
           break;
         }
@@ -4155,106 +4021,228 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
                  << " " << it->second.size() << " id(s)\n");
     }
 
-    // Turn the ordinals the kernel stamps into the ids just allocated.
+    // Emit the routing header ourselves, from the put.
     //
-    // The front end says WHICH DESTINATION a packet is for; it has no business
-    // knowing the number on the wire. Both spellings used to be written by
-    // hand, in two languages, with nothing tying them together -- a mismatch
-    // was a silent routing hang. Now there is one spelling and the compiler
-    // closes the gap. The contract check below re-reads these constants, so a
-    // botched rewrite is caught in the same pass rather than on device.
-    // Collect first, rewrite second. Several calls in one core stamp through
-    // the SAME switch arms, so they trace back to the same constant uses;
-    // rewriting as we walk would let the second call read the first one's
-    // output and reject it as an out-of-range ordinal.
-    llvm::MapVector<OpOperand *, int64_t> newValue;
-    bool rewriteFailed = false;
-    mod.walk([&](Operation *call) {
-      auto chanSym =
-          call->getAttrOfType<SymbolRefAttr>(air::attrs::PktHeaderChannel);
-      auto operandIdx =
-          call->getAttrOfType<IntegerAttr>(air::attrs::PktHeaderOperand);
-      if (!chanSym || !operandIdx)
-        return;
-      StringRef chanName = chanSym.getLeafReference().getValue();
-      if (!derived.count(chanName))
-        return; // front end pinned it; leave it alone
-      auto idsIt = idsFor.find(chanName);
-      if (idsIt == idsFor.end())
-        return;
-      ArrayRef<int64_t> ids = idsIt->second;
+    // A put that names a destination is originating a packet: the switchbox
+    // will route it on a header word the payload has to already contain, and a
+    // demux channel is precisely one the DMA must NOT stamp. Where that word
+    // goes is not a choice -- the switchbox reads the first word of what
+    // arrives, and the DMA sends the window starting at offsets[0], so the
+    // header IS offsets[0]. The only thing that was ever design input is WHICH
+    // consumer, and that is the dest operand.
+    //
+    // Previously a hand-written kernel call did this store, with the id passed
+    // in and the same ids also written on the channel -- two spellings, no
+    // link, and a silent hang if they disagreed. The put already has the
+    // compiler inject its locks; the routing header is the same kind of
+    // plumbing.
+    auto emitHeaderStore = [&](air::ChannelPutOp put,
+                               ArrayRef<int64_t> ids) -> LogicalResult {
+      Value dst = put.getDest();
+      auto memTy = dyn_cast<MemRefType>(put.getSrc().getType());
+      if (!memTy)
+        return put.emitOpError("dest requires a ranked memref source");
+      unsigned eltBits = memTy.getElementType().getIntOrFloatBitWidth();
+      if (!eltBits || 32 % eltBits || eltBits > 32)
+        return put.emitOpError()
+               << "cannot place a 32-bit routing header in a memref of "
+               << eltBits << "-bit elements";
+      unsigned nElts = 32 / eltBits;
 
-      unsigned idx = operandIdx.getInt();
-      if (idx >= call->getNumOperands())
-        return; // reported by the contract check
+      // Put the store in the SAME critical section as the payload write.
+      //
+      // The buffer is lock-protected: producer acquires, writes, releases to
+      // the consumer. A write that lands outside that section gets a section of
+      // its own -- which releases the buffer to the DMA once with no header,
+      // then signals the consumer lock a second time. The DMA reads a stale
+      // header and the lock counts drift; on device that is a hang, not
+      // corruption.
+      //
+      // The lock placer brackets each buffer-touching op ON ITS OWN -- that is
+      // deliberate, it is what lets several buffers ping-pong in one loop body
+      // -- so being merely adjacent to the payload write buys nothing. The
+      // store has to go INSIDE it. By the time this runs (after
+      // air-dependency; see the emit-headers option) the payload write is an
+      // air.execute, so the store is emitted into that region and the two
+      // become one op with one section.
+      //
+      // Only the store goes there. The arithmetic selecting the id is emitted
+      // ahead of the write, where it costs nothing: it touches no buffer.
+      //
+      // Everything the store reads must still dominate the anchor. Two kinds of
+      // operand are at stake: the destination selector, and the offsets saying
+      // where in the buffer the header goes. A CONSTANT offset is no constraint
+      // -- we re-materialize it below rather than reuse the put's copy, which
+      // is typically created between the payload write and the put and so would
+      // land after the anchor. Anything else pins us: stop the walk at its
+      // definition and accept a separate section rather than emit invalid IR.
+      SmallVector<OpFoldResult> offsets = put.getMixedOffsets();
+      llvm::SmallPtrSet<Operation *, 4> barriers;
+      if (Operation *d = dst.getDefiningOp())
+        barriers.insert(d);
+      for (OpFoldResult ofr : offsets)
+        if (!getConstantIntValue(ofr))
+          if (auto v = dyn_cast<Value>(ofr))
+            if (Operation *d = v.getDefiningOp())
+              barriers.insert(d);
 
-      SmallVector<OpOperand *> uses;
-      SmallVector<int64_t> ordinals;
-      if (failed(
-              collectConstantUses(call->getOpOperand(idx), uses, ordinals))) {
-        call->emitOpError()
-            << "stamps a packet header for '" << chanName
-            << "', whose ids are compiler-allocated, but the operand does not "
-               "trace back to constants, so the destination ordinal cannot be "
-               "resolved. Feed it a constant per branch arm";
-        rewriteFailed = true;
-        return;
+      // The payload write is normally wrapped in an air.execute, so the buffer
+      // is used inside a region rather than passed as an operand. Look through
+      // regions -- otherwise nothing is ever found and the store falls back to
+      // sitting beside the put, in a section of its own.
+      auto touchesSrc = [&](Operation *o) {
+        if (llvm::is_contained(o->getOperands(), put.getSrc()))
+          return true;
+        bool found = false;
+        o->walk([&](Operation *n) {
+          if (llvm::is_contained(n->getOperands(), put.getSrc())) {
+            found = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        return found;
+      };
+      Operation *writer = nullptr;
+      for (Operation *o = put->getPrevNode(); o; o = o->getPrevNode()) {
+        if (barriers.contains(o))
+          break; // a value the store needs is defined here; cannot go earlier
+        if (touchesSrc(o)) {
+          writer = o;
+          break;
+        }
+      }
+      OpBuilder b(writer ? writer : put.getOperation());
+      Location loc = put.getLoc();
+      auto i32Ty = b.getI32Type();
+
+      // id = ids[dest]. dest is a runtime value, so this is a lookup.
+      //
+      // The ids this pass allocates are a descending run from kMaxPacketID, so
+      // the lookup is affine and collapses to one multiply-add -- worth
+      // detecting, because the general form is a compare-and-select per
+      // destination and it runs on every packet the core produces. An explicit
+      // pin need not be affine, hence the fallback.
+      int64_t step = ids.size() > 1 ? ids[1] - ids[0] : 0;
+      bool affine =
+          llvm::all_of(llvm::seq<size_t>(1, ids.size()),
+                       [&](size_t k) { return ids[k] - ids[k - 1] == step; });
+      Value id;
+      if (affine) {
+        Value v = dst;
+        if (step != 1)
+          v = arith::MulIOp::create(
+              b, loc, v, arith::ConstantIndexOp::create(b, loc, step));
+        v = arith::AddIOp::create(
+            b, loc, v, arith::ConstantIndexOp::create(b, loc, ids[0]));
+        id = arith::IndexCastOp::create(b, loc, i32Ty, v);
+      } else {
+        id = arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(ids.back()));
+        for (int k = (int)ids.size() - 2; k >= 0; --k) {
+          Value kv = arith::ConstantIndexOp::create(b, loc, k);
+          Value eq =
+              arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, dst, kv);
+          Value kid =
+              arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(ids[k]));
+          id = arith::SelectOp::create(b, loc, eq, kid, id);
+        }
       }
 
-      for (auto [use, ord] : llvm::zip_equal(uses, ordinals)) {
-        if (ord < 0 || ord >= (int64_t)ids.size()) {
-          call->emitOpError()
-              << "stamps destination ordinal " << ord << " for '" << chanName
-              << "', which has " << ids.size()
-              << " destination(s). The kernel must stamp an ordinal in [0, "
-              << ids.size() << "), not a packet id";
-          rewriteFailed = true;
-          return;
-        }
-        int64_t id = ids[ord];
-        auto [it, inserted] = newValue.try_emplace(use, id);
-        if (!inserted && it->second != id) {
-          // One constant feeding two routing domains that disagree: there is
-          // no single value that satisfies both.
-          call->emitOpError()
-              << "stamps through a constant already bound to packet id "
-              << it->second << " by another flow, but '" << chanName
-              << "' needs " << id << " for the same destination ordinal";
-          rewriteFailed = true;
-          return;
-        }
+      // Reinterpret the 32-bit id as nElts elements of the buffer's own type,
+      // so the memref never has to claim a type it does not have. On AIE this
+      // lowers to the single 32-bit store the kernel used to do by hand.
+      Value v1 =
+          vector::BroadcastOp::create(b, loc, VectorType::get({1}, i32Ty), id);
+      Value v2 = vector::BitCastOp::create(
+          b, loc, VectorType::get({(int64_t)nElts}, memTy.getElementType()),
+          v1);
+
+      // Re-materialize constant offsets at the anchor instead of reusing the
+      // put's own Values -- see the dominance note above.
+      SmallVector<Value> idx;
+      for (OpFoldResult ofr : offsets) {
+        if (auto c = getConstantIntValue(ofr))
+          idx.push_back(arith::ConstantIndexOp::create(b, loc, *c));
+        else
+          idx.push_back(getValueOrCreateConstantIndexOp(b, loc, ofr));
       }
+      if (idx.empty())
+        idx.push_back(arith::ConstantIndexOp::create(b, loc, 0));
+      if (idx.size() != (size_t)memTy.getRank())
+        return put.emitOpError()
+               << "offset rank " << idx.size() << " does not match source rank "
+               << memTy.getRank() << ", cannot place the routing header";
+
+      // The store goes INSIDE the payload write, not beside it.
+      //
+      // Being merely adjacent is not enough. The payload write is an
+      // air.execute, the store would become one too, and the lock placer
+      // brackets each such op on its own: the buffer would reach the DMA after
+      // the payload with no header, and the consumer lock would be signalled
+      // twice per production. Writing the header in the same region makes it
+      // one op with one section -- the same shape the hand-written kernel had
+      // when it stamped the header itself.
+      if (writer) {
+        b.setInsertionPointAfter(writer);
+        for (Region &r : writer->getRegions())
+          for (Block &blk : r)
+            if (blk.mightHaveTerminator()) {
+              b.setInsertionPoint(blk.getTerminator());
+              break;
+            }
+      }
+      vector::StoreOp::create(b, loc, v2, put.getSrc(), idx,
+                              /*nontemporal=*/false, b.getI64IntegerAttr(4));
+
+      // Drop the operand now that the header exists.
+      //
+      // `dest` is front-end input to THIS pass, not a property of the transfer:
+      // once the routing word is in the payload the put is an ordinary put, and
+      // every later stage should see it as one. Leaving it attached made
+      // air-to-aie treat puts that differ only in destination as distinct
+      // transfers, so they stopped sharing an MM2S allocation and the demux
+      // sprouted a flow per producer -- 73 packet flows instead of 43, and the
+      // device timed out.
+      put.getDestMutable().clear();
+      return success();
+    };
+
+    // The store must share a lock section with the payload write, so it goes
+    // inside that write's air.execute -- which does not exist yet in the early
+    // slot where the ids are allocated. A caller that runs this pass twice
+    // turns emission off the first time and on the second, after
+    // air-dependency; allocation is idempotent (the second run reads back the
+    // ids it wrote and treats them as a pin).
+    bool emitFailed = false;
+    mod.walk([&](air::ChannelPutOp put) {
+      if (!emitHeaders)
+        return;
+      if (!put.getDest())
+        return;
+      auto chanOp = air::getChannelDeclarationThroughSymbol(put);
+      if (!chanOp) {
+        put.emitOpError("dest names a channel that does not resolve");
+        emitFailed = true;
+        return;
+      }
+      auto it = idsFor.find(chanOp.getSymName());
+      if (it == idsFor.end() || it->second.size() < 2) {
+        put.emitOpError()
+            << "selects a destination on '" << chanOp.getSymName()
+            << "', which is not a packet demux with more than one destination";
+        emitFailed = true;
+        return;
+      }
+      if (failed(emitHeaderStore(put, it->second)))
+        emitFailed = true;
     });
-
-    for (auto &[use, id] : newValue) {
-      OpBuilder b(use->getOwner());
-      // One fresh constant PER USE: the ordinals are shared literals, and
-      // rewriting a shared constant in place would relabel every other use of
-      // it too (that mis-relabelled llama-3b once already).
-      auto cst =
-          arith::ConstantOp::create(b, use->getOwner()->getLoc(),
-                                    b.getIntegerAttr(use->get().getType(), id));
-      use->set(cst);
-    }
-    if (rewriteFailed)
+    if (emitFailed)
       signalPassFailure();
 
   } // if (assign)
-
-  // Same pass, because it is the same information: the id harvesting above
-  // already traces every marked header-writing call back to its constants, so
-  // the consistency check is a comparison, not a second analysis.
-  bool contractBroken = false;
-  mod.walk([&](Operation *op) {
-    if (!op->hasAttr(air::attrs::PktHeaderChannel) &&
-        !op->hasAttr(air::attrs::PktHeaderOperand))
-      return;
-    if (failed(checkPacketIDContract(op, mod)))
-      contractBroken = true;
-  });
-  if (contractBroken)
-    signalPassFailure();
 }
+
+} // namespace
 
 std::unique_ptr<Pass> createAIRAnnotateRefeedPass() {
   return std::make_unique<AIRAnnotateRefeedPass>();

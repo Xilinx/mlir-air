@@ -526,26 +526,6 @@ W_FAN_STEPS = W_READS  # per-col fan steps (each fans NCY blocks) = 600
 W_LAYER = NCX * PER_COL_W * BLOCK_BF16  # weights per layer
 
 
-def _mark_pkt_header(call_op, chan_name, operand_idx):
-    """Bind a header-writing kernel call to the channel whose `packet_ids` it must
-    agree with.
-
-    The routing ids live in ONE place now: the compiler allocates them and
-    rewrites the constant this call stamps. (Historically they lived in two --
-    the channel's `packet_ids` (which become
-    the switchbox rules) and the constant handed to this call (which the kernel
-    writes into the payload header). Nothing in the IR links them, so a divergence
-    is invisible until the device hangs: the switchbox drops a packet stamped with
-    an id it has no rule for. This marking lets air-annotate-packet-ids
-    compare the two at compile time.
-    """
-    a = call_op.operation.attributes
-    a["air.pkt_header_channel"] = FlatSymbolRefAttr.get(chan_name)
-    a["air.pkt_header_operand"] = IntegerAttr.get(
-        IntegerType.get_signless(32), operand_idx
-    )
-
-
 def build_module():
     @module_builder
     def build():
@@ -631,7 +611,7 @@ def build_module():
         )
         acc256.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         flush_hdr = FuncOp(
-            "proj_qmm_flush_hdr", ([yacc_l1, ybuf_l1, i32], []), visibility="private"
+            "proj_qmm_flush_hdr", ([yacc_l1, ybuf_l1], []), visibility="private"
         )
         flush_hdr.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         # rope_compute(q,k,v, qkv, lut, arm): rotate-half RoPE on Q/K (V copied).
@@ -884,9 +864,7 @@ def build_module():
             # -> a THIRD X/W buffer (depth-3). A provably-even 2*half bound has no
             # epilogue -> clean depth-2 x_0/x_1 + w_0/w_1 rings (matches the reference/Llama).
             j2h = [idx(v // 2) for v in _NJ]  # [4,4,4,22]
-            pktc = [
-                arith.ConstantOp(IntegerAttr.get(i32, d), None).result for d in DEST
-            ]
+            pktc = [idx(d) for d in DEST]
 
             def _psw(ph, vals, ty_):
                 if len(vals) == 1:
@@ -910,7 +888,7 @@ def build_module():
             for ph in for_(idx(0), idx(NPH), idx(1)):
                 I2v = _psw(ph, i2c, idx_t)
                 J2v = _psw(ph, j2h, idx_t)
-                pktv = _psw(ph, pktc, i32)
+                pktv = _psw(ph, pktc, idx_t)
                 for _i in for_(idx(0), I2v, idx(1)):
                     # ONE reduction pass per round (single inX/wL2ToL1 get site) with a
                     # PROVABLY-EVEN 2*half trip count so the ping-pong unroll has no
@@ -928,7 +906,10 @@ def build_module():
                         DeallocOp(a_w)
                         yield_([])
                     a_y = AllocOp(ybuf_l1, [], [])
-                    _mark_pkt_header(CallOp(flush_hdr, [a_acc, a_y, pktv]), "outA", 2)
+                    CallOp(flush_hdr, [a_acc, a_y])
+                    # dest = which egress consumer this round feeds. The compiler
+                    # allocates that destination's packet id and emits the header
+                    # store at offsets[0]; the kernel no longer touches routing.
                     ChannelPut(
                         "outA",
                         a_y,
@@ -936,6 +917,7 @@ def build_module():
                         offsets=[idx(PKT_OFF)],
                         sizes=[idx(PKT_PAY)],
                         strides=[idx(1)],
+                        dest=pktv,
                     )
                     DeallocOp(a_acc)
                     DeallocOp(a_y)

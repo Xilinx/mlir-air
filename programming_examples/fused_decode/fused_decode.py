@@ -710,26 +710,6 @@ KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
 Y_LAYER = sum(ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p != 0)  # Y / layer
 
 
-def _mark_pkt_header(call_op, chan_name, operand_idx):
-    """Bind a header-writing kernel call to the channel whose `packet_ids` it must
-    agree with.
-
-    The routing ids live in ONE place now: the compiler allocates them and
-    rewrites the constant this call stamps. The marking is what lets it find
-    that constant. (Historically the ids lived in two places -- `packet_ids` and
-    the switchbox rules) and the constant handed to this call (which the kernel
-    writes into the payload header). Nothing in the IR links them, so a divergence
-    is invisible until the device hangs: the switchbox drops a packet stamped with
-    an id it has no rule for. This marking lets air-annotate-packet-ids
-    compare the two at compile time.
-    """
-    a = call_op.operation.attributes
-    a["air.pkt_header_channel"] = FlatSymbolRefAttr.get(chan_name)
-    a["air.pkt_header_operand"] = IntegerAttr.get(
-        IntegerType.get_signless(32), operand_idx
-    )
-
-
 def build_module():
     @module_builder
     def build():
@@ -866,7 +846,7 @@ def build_module():
         )
         acc256.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         flush_hdr = FuncOp(
-            "proj_qmm_flush_hdr", ([yacc_l1, ypair_l1, i32], []), visibility="private"
+            "proj_qmm_flush_hdr", ([yacc_l1, ypair_l1], []), visibility="private"
         )
         flush_hdr.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         flush_row = FuncOp(
@@ -1123,12 +1103,17 @@ def build_module():
         # deriving the second from the first means the demux stops being
         # recognisable the moment the pinned ids go away. air-annotate-packet-ids
         # needs this marker to classify outY as a demux at all.
+        # The header is written into the payload by the producing core (the
+        # compiler emits that store from the dest operand on the @outA put), so
+        # the DMA must not stamp. This marker is what says so: the dest operand
+        # sits three hops upstream on @outA, and nothing on @outY itself reveals
+        # that its packets carry their own routing word.
         _outY.operation.attributes["air.src_writes_pkt_header"] = UnitAttr.get()
         # No packet_ids. The ids are ALLOCATED by air-annotate-packet-ids:
         # it reads the demux shape (dests partition the stream) for the count,
         # takes the ids from the top of the id space so nothing else is
         # renumbered, and rewrites the ordinals the kernel stamps to match.
-        # air.src_writes_pkt_header is what marks this channel as the demux --
+        # air.src_writes_pkt_header marks this channel as the demux --
         # the count alone no longer identifies one, now that the list is gone.
         channel_decl("toShim", size=[NDEST])
         # #4: layer output (residual2 = h + down) drained to host from the rms core.
@@ -2779,10 +2764,7 @@ def build_module():
                             # match, so the wire number lives in exactly one
                             # place instead of being written here and on the
                             # channel and hoped to agree.
-                            pktc = [
-                                arith.ConstantOp(IntegerAttr.get(i32, d), None).result
-                                for d in DEST
-                            ]
+                            pktc = [idx(d) for d in DEST]
                             c2 = idx(2)
 
                             def _gemv(J2v):
@@ -2800,11 +2782,13 @@ def build_module():
                                     yield_([])
                                 return a_acc
 
-                            def _emit(a_acc, pktv):
+                            def _emit(a_acc, destv):
                                 yb = AllocOp(ypair_l1, [], [])
-                                _mark_pkt_header(
-                                    CallOp(flush_hdr, [a_acc, yb, pktv]), "outA", 2
-                                )
+                                CallOp(flush_hdr, [a_acc, yb])
+                                # dest = which egress consumer this round feeds.
+                                # The compiler allocates that destination's packet
+                                # id and emits the header store at offsets[0]; the
+                                # kernel no longer touches routing.
                                 ChannelPut(
                                     "outA",
                                     yb,
@@ -2812,14 +2796,13 @@ def build_module():
                                     offsets=[idx(14)],
                                     sizes=[idx(HDR + PAIR_PAY)],
                                     strides=[idx(1)],
+                                    dest=destv,
                                 )
                                 DeallocOp(yb)
                                 DeallocOp(a_acc)
 
                             _arm_i = arith.index_cast(idx_t, _arm)
-                            _id4 = arith.ConstantOp(
-                                IntegerAttr.get(i32, DEST[OPROJ_PHASE]), None
-                            ).result
+                            _id4 = idx(DEST[OPROJ_PHASE])
 
                             def _sel(voc_val, dec_thunk, ty_):
                                 return index_switch(
@@ -2842,7 +2825,7 @@ def build_module():
                                 J2v = _sel(
                                     idx(VOCAB_J2), lambda: _psw(ph, j2c, idx_t), idx_t
                                 )
-                                pktv = _sel(_id4, lambda: _psw(ph, pktc, i32), i32)
+                                pktv = _sel(_id4, lambda: _psw(ph, pktc, idx_t), idx_t)
                                 for _v1 in for_(idx(0), I2v, idx(1)):
                                     for _e in range(PAIR_ROWS):  # 1 (non-paired)
                                         _emit(_gemv(J2v), pktv)
@@ -2892,10 +2875,7 @@ def build_module():
                             # match, so the wire number lives in exactly one
                             # place instead of being written here and on the
                             # channel and hoped to agree.
-                            pktc = [
-                                arith.ConstantOp(IntegerAttr.get(i32, d), None).result
-                                for d in DEST
-                            ]
+                            pktc = [idx(d) for d in DEST]
                             c1i = arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
 
                             c2 = idx(2)
@@ -2934,11 +2914,7 @@ def build_module():
                                     )
                                     _if = IfOp(_is_lead, [], has_else=True)
                                     with InsertionPoint(_if.thenRegion.blocks[0]):
-                                        _mark_pkt_header(
-                                            CallOp(flush_hdr, [a_acc, bufs[yb], pktv]),
-                                            "outA",
-                                            2,
-                                        )
+                                        CallOp(flush_hdr, [a_acc, bufs[yb]])
                                         ChannelPut(
                                             "outA",
                                             bufs[yb],
@@ -2946,6 +2922,7 @@ def build_module():
                                             offsets=[idx(14)],
                                             sizes=[idx(HDR + PAIR_PAY)],
                                             strides=[idx(1)],
+                                            dest=pktv,
                                         )
                                         yield_([])
                                     with InsertionPoint(_if.elseRegion.blocks[0]):
@@ -2981,9 +2958,7 @@ def build_module():
                             # would -> >16). _arm==1 -> NPH decode phases; _arm==0 -> 1
                             # vocab phase (I2=VOCAB_I2, J2=VOCAB_J2, pkt=id4=RMS_DEST).
                             _arm_i = arith.index_cast(idx_t, _arm)
-                            _id4 = arith.ConstantOp(
-                                IntegerAttr.get(i32, DEST[OPROJ_PHASE]), None
-                            ).result
+                            _id4 = idx(DEST[OPROJ_PHASE])
 
                             def _sel(voc_val, dec_thunk, ty):
                                 return index_switch(
@@ -3006,7 +2981,7 @@ def build_module():
                                 J2v = _sel(
                                     idx(VOCAB_J2), lambda: _psw(ph, j2c, idx_t), idx_t
                                 )
-                                pktv = _sel(_id4, lambda: _psw(ph, pktc, i32), i32)
+                                pktv = _sel(_id4, lambda: _psw(ph, pktc, idx_t), idx_t)
                                 for _v1 in for_(idx(0), I2v, idx(1)):
                                     # PAIR_ROWS GEMV emits per v1 into the PAIR_ROWS y
                                     # buffers: paired (llama) -> y_0 then y_1 (2 blocks/

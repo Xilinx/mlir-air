@@ -1071,6 +1071,10 @@ def AIRAnnotateAppendBarrierPass: Pass<"air-annotate-append-barrier", "ModuleOp"
 def AIRAnnotatePacketIDsPass: Pass<"air-annotate-packet-ids", "ModuleOp"> {
   let summary = "Derive packet routing ids from a demux's shape, and check them "
                 "against the ids its kernel stamps";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "vector::VectorDialect"
+  ];
   let constructor = "xilinx::air::createAIRAnnotatePacketIDsPass()";
   let description = [{
     A packet air.channel gets one auto-assigned id per symbol in air-to-aie, so
@@ -1096,23 +1100,26 @@ def AIRAnnotatePacketIDsPass: Pass<"air-annotate-packet-ids", "ModuleOp"> {
     channel sends it onward -- so the id-set demand propagates backwards over
     them to a fixpoint.
 
-    It also checks the two spellings of the ids against each other. Mark the
-    header-writing call:
+    It also WRITES the routing header, for any put that names its destination:
 
     ```mlir
-    func.call @proj_qmm_flush_hdr(%acc, %buf, %id) {
-      air.pkt_header_channel = @outA, air.pkt_header_operand = 2 : i32
-    } : (memref<32xf32, 2>, memref<48xbf16, 2>, i32) -> ()
+    air.channel.put @outA[%c0, %c0] (%buf[%c14] [%c66] [%c1]) dest(%d)
     ```
 
-    and the ids reaching that operand are compared with the channel's
-    `packet_ids`. A proven disagreement is an error: the switchbox has no rule
-    for an unrouted id, so it drops the packet and the design hangs. When either
-    side is not statically known the pass stays silent.
+    `dest` is the index, along the broadcast dimension, of the consumer this
+    packet is for -- the same index the matching get sits at. The pass maps it
+    through the ids it allocated and stores the result at `offsets[0]`, which is
+    where the header has to be: the switchbox reads the first word of what
+    arrives, and the DMA sends from `offsets[0]`.
+
+    That replaces a hand-written kernel call taking the id as an argument, with
+    the same ids also spelled on the channel -- two spellings, nothing linking
+    them, and a silent routing hang when they disagreed.
 
     Runs in the same early slot as air-annotate-refeed and
     air-annotate-append-barrier, and for the same reason: read the shape the
-    front end wrote, before another pass rewrites the channel ops.
+    front end wrote, before another pass rewrites the channel ops. Header
+    emission is the exception and runs in a second slot -- see `emit-headers`.
   }];
   let options = [
     Option<"report", "report", "bool", /*default=*/"false",
@@ -1121,7 +1128,13 @@ def AIRAnnotatePacketIDsPass: Pass<"air-annotate-packet-ids", "ModuleOp"> {
            "Fail when the inference disagrees with a channel's existing "
            "packet_ids (default: warn).">,
     Option<"assign", "assign", "bool", /*default=*/"false",
-           "Write derived packet_ids onto channels that have none.">
+           "Write derived packet_ids onto channels that have none.">,
+    Option<"emitHeaders", "emit-headers", "bool", /*default=*/"true",
+           "Write the routing header into the payload of every put that names "
+           "a `dest`, and drop the operand. Turn this off in the early slot "
+           "when a later slot will do it: the store has to share a lock "
+           "section with the payload write, so it must be emitted once the "
+           "air.execute regions exist (after air-dependency).">
   ];
 }
 

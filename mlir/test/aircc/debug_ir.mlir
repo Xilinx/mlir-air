@@ -34,7 +34,11 @@
 // CHECK: [PASS 004] air-rank-to-launch
 // CHECK: [PASS 005] air-insert-launch-around-herd
 // CHECK: [PASS 008] air-dependency
-// CHECK: [PASS 012] air-dma-to-channel
+// air-annotate-packet-ids runs twice: ids in the early slot, and the routing
+// header here, once air-dependency has created the regions the store has to
+// share a lock section with.
+// CHECK: [PASS 009] air-annotate-packet-ids
+// CHECK: [PASS 013] air-dma-to-channel
 
 // Pass log should have checkpoints
 // LOG: MLIR-AIR Compilation Pass Log
