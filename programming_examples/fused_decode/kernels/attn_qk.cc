@@ -10,12 +10,40 @@
 // so the .ll kernel is llvm-merged into AIR's per-block scf.for loop (no
 // per-block call ABI). Peano only, always built with -DDECODE_INLINE_ATTN (see
 // the chatbot Makefile).
-// Peano (llvm-aie) spills the online-softmax attention's many live BFP16 matrix
-// accumulators, and a residual cross-regfile spill/reload defect corrupts /
-// deadlocks the inlined attn (the reference implementation). Keep the hot attn
-// helpers (attn_fv/calculate_l/_attn_qk/update) NOINLINE on Peano so each stays
-// a bounded-register function; chess schedules the inlined form correctly.
-#if defined(__chess__)
+// Peano used to need the hot helpers (attn_fv/calculate_l/_attn_qk/update)
+// NOINLINE: it spills the online-softmax attention's many live BFP16 matrix
+// accumulators, and a cross-regfile spill/reload defect corrupted / deadlocked
+// the inlined form, so each helper was kept a bounded-register function.
+//
+// That defect no longer reproduces on llvm-aie f4a72c27 (measured 2026-08-14).
+// The inlined form still exercises the same path -- inlining raises ACC2048
+// allocation pressure 35 -> 192 in this file and does emit cross-regfile
+// spill/reload -- and is correct: `make verify` PASS 2/2 for llama32_1b_q4nx
+// with NPU output bit-identical to the NOINLINE build (same divergence steps,
+// token ids, top-5 sets).
+//
+// NOINLINE is not free. These helpers run once per 16-token KV block (~2048
+// invocations per token at ctx 2048), and each call carries a prologue that
+// saves/restores callee-saved accumulators. That is a per-block cost, so it
+// shows up in the context SLOPE, not the intercept -- llama-3.2-1B decode:
+//
+//   NOINLINE       13.230 + 1.899*(ctx/1k) ms   17.03 ms @2k  58.8 tok/s
+//   always_inline  13.267 + 1.278*(ctx/1k) ms   15.82 ms @2k  63.2 tok/s
+//   (chess         13.050 + 1.249*(ctx/1k) ms   15.55 ms @2k  64.3 tok/s)
+//
+// No model is known to still need the workaround. All four users of this
+// engine build inlined; accumulator pressure / stack spills per kernel are
+//
+//   MODEL_TYPE      attn_qk ACC2048/spills   attn_kv ACC2048/spills
+//   LLAMA_3_2_1B          192 / 16                194 / 16   <- verify-gated
+//   LLAMA_3_2_3B          149 /  8                193 / 16
+//   GEMMA3_4B              61 /  2                234 /  8
+//   QWEN2_5_3B             41 /  0                141 /  0
+//
+// LLAMA_3_2_1B ties for the most spills, so the gated config is the worst case
+// for the defect this workaround guarded. 3B / gemma / qwen still want their
+// own `make verify`. ATTN_PEANO_NOINLINE=1 restores the old form if one bites.
+#if defined(__chess__) || !defined(ATTN_PEANO_NOINLINE)
 #define ATTN_HOT inline __attribute__((always_inline))
 #else
 #define ATTN_HOT __attribute__((noinline))

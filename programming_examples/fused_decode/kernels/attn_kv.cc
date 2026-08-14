@@ -8,12 +8,10 @@
 // Hot-path inlining (see attn_qk.cc): tuned functions + entry wrappers are
 // always_inline'd so the .ll kernel is llvm-merged into AIR's per-block scf.for
 // loop. Peano only, always built with -DDECODE_INLINE_ATTN.
-// Peano (llvm-aie) spills the online-softmax attention's many live BFP16 matrix
-// accumulators, and a residual cross-regfile spill/reload defect corrupts /
-// deadlocks the inlined attn (the reference implementation). Keep the hot attn
-// helpers (attn_fv/calculate_l/_attn_qk/update) NOINLINE on Peano so each stays
-// a bounded-register function; chess schedules the inlined form correctly.
-#if defined(__chess__)
+// The Peano NOINLINE workaround is retired here too -- see attn_qk.cc for the
+// defect history, the evidence that it no longer reproduces, and the numbers.
+// ATTN_PEANO_NOINLINE=1 restores it.
+#if defined(__chess__) || !defined(ATTN_PEANO_NOINLINE)
 #define ATTN_HOT inline __attribute__((always_inline))
 #else
 #define ATTN_HOT __attribute__((noinline))
