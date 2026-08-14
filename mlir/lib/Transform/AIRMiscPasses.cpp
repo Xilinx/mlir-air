@@ -3737,12 +3737,8 @@ static Classification classify(air::ChannelOp chanOp,
 }
 
 //===----------------------------------------------------------------------===//
-// Relabeling (assign mode)
+// Id allocation and header emission (assign mode)
 //===----------------------------------------------------------------------===//
-
-// Bound on the constant trace. The real producers are a couple of nested scf
-// regions; the cap only stops a pathological input from running away.
-static constexpr unsigned kMaxTraceDepth = 16;
 
 static std::optional<std::set<int64_t>> pinnedIDsOf(air::ChannelOp chanOp) {
   auto attr = chanOp.getPacketIDs();
