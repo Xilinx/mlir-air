@@ -12,17 +12,15 @@
 // being folded away. It used to be silently replaced by 1, emitting a
 // wrong-sized transfer with no diagnostic.
 //
-// The runtime case takes the aiex.npu.dma_memcpy_nd path rather than the
-// DMA-task path: both accept mixed static/dynamic sizes, but only the memcpy_nd
-// lowering carries the size's magnitude into buffer_length. The dma_task
-// encoder folds a runtime size into an (n > 1) predicate and otherwise keeps
-// the static extent, so the transfer would silently stay its compile-time size.
+// A pure repeat -- a runtime outermost size over a zero stride -- leaves the
+// descriptor constant and drives the task's repeat_count, which mlir-aie takes
+// as (n - 1).
 
 // CHECK-LABEL: aie.runtime_sequence @func0
-// CHECK-SAME:    %[[ARG0:.*]]: memref<64xi32>, %[[N:.*]]: i64
-// CHECK:         aiex.npu.dma_memcpy_nd(%[[ARG0]]
-// CHECK-SAME:      %[[N]]
-// CHECK-SAME:      metadata = @airMemcpyId2
+// CHECK-SAME:    %{{.*}}: memref<64xi32>, %[[N:[a-zA-Z0-9_]+]]: i64
+// CHECK:         %[[T:.*]] = arith.trunci %[[N]]
+// CHECK:         %[[R:.*]] = arith.subi %[[T]]
+// CHECK:         aiex.dma_configure_task_for @airMemcpyId2 repeat %[[R]]
 module {
   aie.device(npu1_1col) {
     %shim_noc_tile_0_0 = aie.tile(0, 0)
@@ -47,9 +45,10 @@ module {
 // it (verified register-equivalent to the same transfer built statically).
 
 // CHECK-LABEL: aie.runtime_sequence @func1
-// CHECK-SAME:    %[[BUF:.*]]: memref<1048576xbf16>, %[[CB:.*]]: i64
-// CHECK:         aiex.npu.dma_memcpy_nd(%[[BUF]]
-// CHECK-SAME:      %[[CB]]
+// CHECK-SAME:    %{{.*}}: memref<1048576xbf16>, %[[CB:[a-zA-Z0-9_]+]]: i64
+// CHECK:         %[[M:.*]] = arith.muli %[[CB]]
+// CHECK:         %[[L:.*]] = arith.trunci %[[M]]
+// CHECK:         aie.dma_bd(%{{.*}} offset = 0 len = %[[L]])
 module {
   aie.device(npu2) {
     %shim_noc_tile_0_0 = aie.tile(0, 0)
@@ -71,18 +70,17 @@ module {
 // -----
 
 // A runtime OFFSET with static sizes: the KV append writes this token at slot
-// L-1, an address that moves every dispatch. It took the DMA-task path before,
-// where constify() folded it to 0 -- every token overwriting position 0.
-// A runtime offset and a runtime size together are fine as well; only the
-// memcpy_nd descriptor can carry either.
+// L-1, an address that moves every dispatch. constify() used to fold it to 0 --
+// every token overwriting position 0. A runtime offset and a runtime size
+// together are fine as well; the BD takes both as operands.
 
 // CHECK-LABEL: aie.runtime_sequence @func2
 // CHECK-SAME:    %{{.*}}: memref<1048576xbf16>, %[[OFF:[a-zA-Z0-9_]+]]: i64, %[[CB:[a-zA-Z0-9_]+]]: i64
-// CHECK:         aiex.npu.dma_memcpy_nd
-// CHECK-SAME:      %[[OFF]]
-// CHECK:         aiex.npu.dma_memcpy_nd
-// CHECK-SAME:      %[[OFF]]
-// CHECK-SAME:      %[[CB]]
+// CHECK:         %[[O:.*]] = arith.trunci %[[OFF]]
+// CHECK:         aie.dma_bd(%{{.*}} offset = %[[O]] len = 4096)
+// CHECK:         %[[M:.*]] = arith.muli %[[CB]]
+// CHECK:         %[[L:.*]] = arith.trunci %[[M]]
+// CHECK:         aie.dma_bd(%{{.*}} offset = %[[O]] len = %[[L]])
 module {
   aie.device(npu2) {
     %shim_noc_tile_0_0 = aie.tile(0, 0)

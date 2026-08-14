@@ -637,25 +637,79 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         getMixedValues(adaptor.getStaticStrides(), adaptor.getStrides(), ctx);
     SmallVector<OpFoldResult> mixedOffsets =
         getMixedValues(adaptor.getStaticOffsets(), adaptor.getOffsets(), ctx);
-    bool hasDynSize = false;
-    bool hasDynOffset = false;
+    // A runtime size becomes the BD's `len`, which is only meaningful if the
+    // transfer is one linear run: contiguous row-major below the runtime
+    // dimension and inert above it. Then no descriptor dimension is needed and
+    // the length is that size scaled by the extent below it.
+    Value dynLen;       // runtime transfer length, in elements (i64)
+    Value dynOuterSize; // runtime repeat count (zero outer stride)
+    Value dynOffset;    // runtime start offset, in elements (i64)
     {
       for (auto ofr : mixedStrides)
         if (!getConstantIntValue(ofr))
           return op->emitOpError("runtime-valued DMA stride is not supported");
-      unsigned nDyn = 0;
-      for (auto ofr : mixedLengths)
+      SmallVector<unsigned> dynDims;
+      for (auto [dim, ofr] : llvm::enumerate(mixedLengths))
         if (!getConstantIntValue(ofr))
-          nDyn++;
-      if (nDyn > 1)
+          dynDims.push_back(dim);
+      if (dynDims.size() > 1)
         return op->emitOpError(
             "more than one runtime-valued DMA size is not supported");
-      hasDynSize = nDyn == 1;
-      for (auto ofr : mixedOffsets)
-        if (!getConstantIntValue(ofr))
-          hasDynOffset = true;
+      if (!dynDims.empty()) {
+        unsigned dim = dynDims.front();
+        Value dynVal = cast<Value>(mixedLengths[dim]);
+        int64_t below = 1;
+        bool contiguous = true;
+        for (int i = mixedLengths.size() - 1; i > (int)dim; i--) {
+          auto sz = *getConstantIntValue(mixedLengths[i]);
+          auto st = *getConstantIntValue(mixedStrides[i]);
+          if (st != below && sz != 1)
+            contiguous = false;
+          below *= sz;
+        }
+        for (unsigned i = 0; i < dim; i++)
+          if (*getConstantIntValue(mixedLengths[i]) != 1)
+            contiguous = false;
+        int64_t thisStride = *getConstantIntValue(mixedStrides[dim]);
+        if (contiguous && thisStride == below) {
+          dynLen = below == 1 ? dynVal
+                              : arith::MulIOp::create(
+                                    rewriter, op.getLoc(), dynVal,
+                                    arith::ConstantOp::create(
+                                        rewriter, op.getLoc(),
+                                        rewriter.getI64IntegerAttr(below)))
+                                    .getResult();
+        } else if (dim == 0 && thisStride == 0) {
+          // A pure repeat: the outermost dim re-runs the same descriptor, which
+          // the task's repeat_count takes as an operand.
+          dynOuterSize = dynVal;
+        } else {
+          return op->emitOpError("runtime-valued DMA size in dimension ")
+                 << (3 - dim)
+                 << " requires a contiguous transfer or a zero outer stride";
+        }
+      }
+      // A runtime offset rides in the BD's `offset` operand. Only one dimension
+      // may carry it, and the dimensions it is scaled against must be constant,
+      // so fold the scaling here.
+      for (auto [dim, ofr] : llvm::enumerate(mixedOffsets)) {
+        if (getConstantIntValue(ofr))
+          continue;
+        if (dynOffset)
+          return op->emitOpError(
+              "more than one runtime-valued DMA offset is not supported");
+        int64_t stride = *getConstantIntValue(mixedStrides[dim]);
+        Value v = cast<Value>(ofr);
+        dynOffset =
+            stride == 1
+                ? v
+                : arith::MulIOp::create(rewriter, op.getLoc(), v,
+                                        arith::ConstantOp::create(
+                                            rewriter, op.getLoc(),
+                                            rewriter.getI64IntegerAttr(stride)))
+                      .getResult();
+      }
     }
-    bool isDynamic = hasDynSize || hasDynOffset;
 
     // Entry i of each list is dimension 3-i, outermost first.
     SmallVector<int64_t> staticOffsets = constify(
@@ -688,7 +742,18 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // repeat_count = 0 means execute once, repeat_count = 3 means execute 4
     // times
     int64_t repeatCount = std::max((int64_t)0, staticSizes[0] - 1);
-    Value repeatCountVal; // unused: a runtime size rides in the descriptor
+    // A pure-repeat runtime outer size drives the task's repeat_count operand;
+    // the descriptor itself stays constant. mlir-aie wants (n - 1).
+    Value repeatCountVal;
+    if (dynOuterSize) {
+      auto i32 = rewriter.getI32Type();
+      Value n =
+          arith::TruncIOp::create(rewriter, op.getLoc(), i32, dynOuterSize);
+      repeatCountVal = arith::SubIOp::create(
+          rewriter, op.getLoc(), n,
+          arith::ConstantOp::create(rewriter, op.getLoc(),
+                                    rewriter.getI32IntegerAttr(1)));
+    }
 
     // The 4th dimension is included in dma_bd dimensions if stride[0] != 0
     // (the iteration_stride tells the hardware how to advance offset each
@@ -736,35 +801,24 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     bool paced = op->hasAttr(air::attrs::PreserveShimDmaOrder);
     bool issueToken = air::isDeviceToHostShimDMA(op) || paced;
 
-    // Runtime access pattern: emit aiex.npu.dma_memcpy_nd rather than the
-    // DMA-task path. Both accept mixed static/dynamic values, but only the
-    // memcpy_nd lowering carries them into the descriptor -- the dma_task
-    // encoder folds a runtime size into an (n > 1) predicate and otherwise
-    // keeps the static template, and constify() below would fold a runtime
-    // offset to 0. Either way the transfer silently keeps its compile-time
-    // shape. (Upstream's dma_task_dynamic_size test cannot see the size case:
-    // it only compares at the argument value the static side bakes in.)
-    if (isDynamic) {
-      SmallVector<Value> dynOffs, dynSizes, dynStrides;
-      SmallVector<int64_t> statOffs, statSizes, statStrides;
-      dispatchIndexOpFoldResults(mixedOffsets, dynOffs, statOffs);
-      dispatchIndexOpFoldResults(mixedLengths, dynSizes, statSizes);
-      dispatchIndexOpFoldResults(mixedStrides, dynStrides, statStrides);
-      AIEX::NpuDmaMemcpyNdOp::create(
-          rewriter, op.getLoc(), memref, dynOffs, dynSizes, dynStrides,
-          rewriter.getDenseI64ArrayAttr(statOffs),
-          rewriter.getDenseI64ArrayAttr(statSizes),
-          rewriter.getDenseI64ArrayAttr(statStrides),
-          op->getAttrOfType<AIE::PacketInfoAttr>("packet"), metadata,
-          rewriter.getI64IntegerAttr(0), rewriter.getBoolAttr(issueToken),
-          /*d0_zero_before=*/nullptr,
-          /*d1_zero_before=*/nullptr, /*d2_zero_before=*/nullptr,
-          /*d0_zero_after=*/nullptr, /*d1_zero_after=*/nullptr,
-          /*d2_zero_after=*/nullptr, /*burst_length=*/nullptr,
-          /*offset_parameter=*/nullptr, /*offset_state_table_idx=*/nullptr);
-      rewriter.eraseOp(op);
-      return success();
-    }
+    // Narrow the runtime length/offset here, not inside the descriptor block:
+    // that block admits only the BD ops themselves. Place each narrowing at its
+    // operand's definition rather than at the rewriter's cursor -- a converted
+    // operand can be materialized further down the block, and a use built at
+    // the cursor would then not be dominated by it.
+    auto narrowToI32 = [&](Value v) -> Value {
+      if (!v)
+        return Value();
+      OpBuilder::InsertionGuard g(rewriter);
+      if (Operation *def = v.getDefiningOp())
+        rewriter.setInsertionPointAfter(def);
+      else
+        rewriter.setInsertionPointToStart(cast<BlockArgument>(v).getOwner());
+      return arith::TruncIOp::create(rewriter, op.getLoc(),
+                                     rewriter.getI32Type(), v);
+    };
+    Value dynLenI32 = narrowToI32(dynLen);
+    Value dynOffsetI32 = narrowToI32(dynOffset);
 
     // Create DMAConfigureTaskForOp with proper repeat_count from highest
     // dimension
@@ -812,8 +866,26 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // the packet header for correct routing.
     auto pktAttr = op->getAttrOfType<AIE::PacketInfoAttr>("packet");
 
-    // Create aie.dma_bd inside the task body, passing packet info if present.
-    if (dimLayouts.empty() && !pktAttr) {
+    // Runtime length or offset: the descriptor carries no dimensions -- it is
+    // one linear run -- and takes `len` / `offset` as operands, the form
+    // mlir-aie's shim-NOC lowering encodes into a runtime BD. Staying on the
+    // DMA-task path matters: npu.dma_memcpy_nd's dynamic lowering hardwires BD
+    // id 0, so a dynamic transfer sharing a shim tile with a task-path one
+    // would silently overwrite its descriptor.
+    if (dynLenI32 || dynOffsetI32) {
+      Value lenI32 = dynLenI32, offI32 = dynOffsetI32;
+      AIE::DMABDOp::create(
+          rewriter, op.getLoc(), memref, offI32, lenI32,
+          /*static_offset=*/
+          offI32 ? nullptr : rewriter.getI32IntegerAttr(totalOffset),
+          /*static_len=*/
+          lenI32 ? nullptr : rewriter.getI32IntegerAttr(transferLen),
+          /*sizes=*/ValueRange{}, /*strides=*/ValueRange{},
+          /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
+          /*pad_dimensions=*/nullptr, /*bd_id=*/nullptr, pktAttr,
+          /*burst_length=*/nullptr, /*offset_parameter=*/nullptr,
+          /*offset_state_table_idx=*/nullptr, /*next_bd_id=*/nullptr);
+    } else if (dimLayouts.empty() && !pktAttr) {
       AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
                            static_cast<int>(totalOffset),
                            static_cast<int>(transferLen));
@@ -2447,6 +2519,60 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           barrierStarts.front()->emitWarning(
               "air.await_appends: readback tagged but no air.append_barrier "
               "appends found to await; no ordering was enforced");
+      }
+    });
+
+    // Repair dominance after the reordering above. Every hoist here moves a
+    // configure task or an RTP write past other ops, and a runtime access
+    // pattern brings along the small arith chain that narrows a sequence
+    // argument into the BD's i32 length or offset. That chain is pure and
+    // rooted at block arguments, so re-materializing it at the moved use is
+    // sound -- and is the only option, since the hoists are ordering decisions
+    // that cannot be undone. A chain reaching anything impure is left alone and
+    // will be caught by the verifier rather than silently miscompiled.
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      Block &blk = seq.getBody().front();
+      llvm::DenseSet<Operation *> seen;
+      // Clone `v`'s defining chain immediately before `user`, returning the
+      // re-materialized value, or null if any step is not safely clonable.
+      std::function<Value(Value, Operation *)> rematerialize =
+          [&](Value v, Operation *user) -> Value {
+        Operation *def = v.getDefiningOp();
+        if (!def || def->getBlock() != &blk || seen.contains(def))
+          return v;
+        if (!isMemoryEffectFree(def) || def->getNumResults() != 1)
+          return Value();
+        SmallVector<Value> operands;
+        for (Value o : def->getOperands()) {
+          Value r = rematerialize(o, user);
+          if (!r)
+            return Value();
+          operands.push_back(r);
+        }
+        OpBuilder b(user);
+        Operation *cloned = b.clone(*def);
+        cloned->setOperands(operands);
+        seen.insert(cloned);
+        return cloned->getResult(0);
+      };
+      for (Operation &o : blk) {
+        SmallVector<OpOperand *> uses;
+        for (OpOperand &u : o.getOpOperands())
+          uses.push_back(&u);
+        o.walk([&](Operation *nested) {
+          for (OpOperand &u : nested->getOpOperands())
+            uses.push_back(&u);
+        });
+        for (OpOperand *u : uses) {
+          Operation *def = u->get().getDefiningOp();
+          if (!def || def->getBlock() != &blk || seen.contains(def))
+            continue;
+          if (Value r = rematerialize(u->get(), &o))
+            u->set(r);
+        }
+        seen.insert(&o);
       }
     });
 
