@@ -794,6 +794,30 @@ static LogicalResult emitTxnCppBuilder(StringRef npuFile) {
   return success();
 }
 
+// Pin every runtime-sequence scalar to a constant so aiecc can still translate
+// the sequence into a static insts.bin.
+//
+// aiecc refuses a non-constant write32 -- rightly, since a frozen binary cannot
+// hold one -- but the xclbin and the core ELFs do not depend on these values,
+// and the instruction stream's *length* is fixed by the IR's op structure, not
+// by the scalars. So a placeholder build yields a valid xclbin and a
+// correctly-sized instruction buffer, whose contents the host then replaces per
+// dispatch with the TXN builder's output. Only reachable under --emit-txn-cpp,
+// i.e. when the caller has committed to assembling the stream at runtime.
+static void pinRuntimeSequenceScalars(ModuleOp moduleOp) {
+  moduleOp.walk([](xilinx::AIE::RuntimeSequenceOp seq) {
+    Block &body = seq.getBody().front();
+    OpBuilder builder = OpBuilder::atBlockBegin(&body);
+    for (BlockArgument arg : body.getArguments()) {
+      if (arg.use_empty() || !arg.getType().isIntOrIndex())
+        continue;
+      Value one = arith::ConstantOp::create(
+          builder, seq.getLoc(), builder.getIntegerAttr(arg.getType(), 1));
+      arg.replaceAllUsesWith(one);
+    }
+  });
+}
+
 static LogicalResult runGpuCompilation() {
   SmallString<256> baseName(sys::path::stem(inputFilename));
 
@@ -1299,8 +1323,15 @@ static LogicalResult runAieCompilation() {
     if (failed(saveModule(npuModule.get(), npuFile)))
       return failure();
 
-    if (emitTxnCpp && failed(emitTxnCppBuilder(npuFile)))
-      return failure();
+    if (emitTxnCpp) {
+      if (failed(emitTxnCppBuilder(npuFile)))
+        return failure();
+      // The builder is emitted from the module as lowered; what aiecc gets is
+      // the placeholder-pinned copy it can actually translate.
+      pinRuntimeSequenceScalars(npuModule.get());
+      if (failed(saveModule(npuModule.get(), npuFile)))
+        return failure();
+    }
 
     if (debugIr) {
       addCheckpoint("NPU Instruction Generation Complete", "npu.air.mlir");

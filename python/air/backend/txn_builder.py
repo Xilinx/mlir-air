@@ -11,6 +11,11 @@ at dispatch from that scalar. aie-translate emits a header of
 `generate_txn_*(...)` functions that do the assembling; this wraps one in a
 shared library and calls it from Python, returning the words to upload to the
 instruction buffer.
+
+Size that buffer from the returned words, not from the companion insts.bin: the
+static build constant-folds writes the dynamic one has to keep separate, so its
+stream is the shorter of the two. The length does not depend on the argument
+values -- it follows the sequence's op structure -- so one call sizes it for all.
 """
 
 import ctypes
