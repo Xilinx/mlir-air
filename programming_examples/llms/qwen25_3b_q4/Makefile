@@ -88,7 +88,7 @@ VERIFY_PROMPTS := $(srcdir)/verify_prompts.txt
 MODEL_CHOICE   ?= instruct
 MAX_PROMPTS    ?= 2
 
-.PHONY: help compile compile-decode _compile_decode_build run gen dump-kv bench \
+.PHONY: help compile compile-decode compile-decode-dynseq _compile_decode_build run gen dump-kv bench \
         weights verify verify-topk verify-topk-full verify-paris diagnosis \
         profile clean
 
@@ -138,6 +138,30 @@ compile-decode:
 	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build \
 	    && echo "$(DECODE_FLAGS)" > $(DECODE_STAMP); \
 	fi
+
+## Dynamic-runtime-sequence template: ONE build for every context length (see
+## fused_decode/Makefile compile-decode-dynseq). Run with DECODE_DYNSEQ=1.
+compile-decode-dynseq:
+	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
+	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
+	@echo ">>> qwen non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
+	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
+	@echo ">>> qwen attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
+	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
+	@echo ">>> qwen dynseq template decode_dyn_L$(LBUILD)"
+	@cd $(DEC) && QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN) \
+	  DECODE_DYNSEQ=1 python3 $(DECODE_DRIVER) >/tmp/qwen_decode_dyn_L$(LBUILD).log 2>&1; \
+	  if [ -f $(DEC)/decode_qwen.xclbin ] && [ -f $(DEC)/air_project/npu.air.txn.h ]; then \
+	    mv -f $(DEC)/decode_qwen.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
+	    cp -f $(DEC)/air_project/npu.air.txn.h $(srcdir)/decode_dyn_L$(LBUILD).txn.h; \
+	    mv -f $(DEC)/decode_qwen.flags $(srcdir)/decode_dyn_L$(LBUILD).flags 2>/dev/null || true; \
+	    rm -f $(DEC)/npu_seq_*.mlir; \
+	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/qwen_decode_dyn_L$(LBUILD).log)"; \
+	    tail -30 /tmp/qwen_decode_dyn_L$(LBUILD).log; exit 1; fi
+	@echo "Qwen dynseq build complete: decode_dyn_L$(LBUILD). Run with DECODE_DYNSEQ=1."
 
 _compile_decode_build:
 	@# Delegate the llvm-link version preflight to the engine that owns it rather
