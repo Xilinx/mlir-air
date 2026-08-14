@@ -167,9 +167,16 @@ static PacketChannelFacts classify(ChannelOp chanOp,
     return c;
   }
 
-  // Partition: the destinations' volumes sum to the stream. Header ownership
-  // is what makes such a split physically possible, so require it rather than
-  // inferring a demux from arithmetic alone.
+  // Partition: the destinations' volumes sum to the stream.
+  //
+  // This is EVIDENCE, not proof. A partition is only physically routable if
+  // something upstream writes a routing header per packet, and volumes cannot
+  // say whether anything does. buildDomains() establishes that separately, from
+  // a put naming a `dest`, and verify() rejects a partition nothing confirms.
+  //
+  // Requiring the header attribute HERE, as this used to, is what made the
+  // attribute load-bearing for classification -- and therefore impossible for a
+  // design to stop declaring.
   int64_t sum = 0;
   for (auto &kv : volByDest)
     sum += kv.second;
@@ -179,11 +186,6 @@ static PacketChannelFacts classify(ChannelOp chanOp,
   // short of the sent total by that much. Accept a partition that accounts for
   // at least the payload and never exceeds what was sent.
   if (sum <= putVol && sum > 0) {
-    if (!air::channelSourceWritesHeader(chanOp)) {
-      c.reason = "destination volumes partition the stream, but the channel is "
-                 "not source-stamped, so per-packet routing is impossible";
-      return c;
-    }
     c.fanout = PacketFanout::Demux;
     return c;
   }
@@ -413,30 +415,101 @@ void PacketRoutingDomainAnalysis::buildDomains() {
     return ids;
   };
 
+  // Everything each dest-carrying put can reach downstream.
+  //
+  // A put naming a `dest` is choosing, at run time, which leaf this packet is
+  // for. Nothing else it could mean -- so the packet channel it eventually
+  // reaches covers its broadcast dimension over TIME, and that is the whole
+  // space-vs-time question, answered by the design without an attribute for it.
+  struct Origin {
+    ChannelPutOp put;
+    llvm::SmallPtrSet<Operation *, 8> reaches;
+  };
+  SmallVector<Origin> origins;
+  {
+    ModuleOp m = mod;
+    m.walk([&](ChannelPutOp put) {
+      if (!put.getDest())
+        return;
+      ChannelOp c0 = getChannelDeclarationThroughSymbol(put);
+      if (!c0)
+        return;
+      Origin o;
+      o.put = put;
+      o.reaches.insert(c0.getOperation());
+      SmallVector<ChannelOp> wl{c0};
+      while (!wl.empty()) {
+        ChannelOp cur = wl.pop_back_val();
+        for (ChannelOp succ : feeds.lookup(cur.getOperation()))
+          if (o.reaches.insert(succ.getOperation()).second)
+            wl.push_back(succ);
+      }
+      origins.push_back(std::move(o));
+    });
+  }
+
   // One domain per demux. Ids belong to the domain, so this is also the only
   // place they are handed out.
   for (ChannelOp d : packetChans) {
     if (getFacts(d).fanout != PacketFanout::Demux)
       continue;
-    if (!channelSourceWritesHeader(d))
-      continue;
 
     PacketRoutingDomain dom;
     dom.demux = d;
 
-    // Walk upstream, entering only channels that carry someone else's header.
-    // A DMA-stamped channel re-stamps and starts a fresh domain.
-    SmallVector<ChannelOp> worklist{d};
-    llvm::SmallPtrSet<Operation *, 8> visited{d.getOperation()};
-    while (!worklist.empty()) {
-      ChannelOp cur = worklist.pop_back_val();
-      for (ChannelOp pred : fedBy.lookup(cur.getOperation())) {
-        if (!channelSourceWritesHeader(pred))
-          continue;
-        if (!visited.insert(pred.getOperation()).second)
-          continue;
-        dom.hops.push_back(pred);
-        worklist.push_back(pred);
+    // Everything that can reach the demux, with no attribute gate.
+    llvm::SmallPtrSet<Operation *, 8> upstream;
+    {
+      SmallVector<ChannelOp> wl{d};
+      while (!wl.empty()) {
+        ChannelOp cur = wl.pop_back_val();
+        for (ChannelOp pred : fedBy.lookup(cur.getOperation()))
+          if (upstream.insert(pred.getOperation()).second)
+            wl.push_back(pred);
+      }
+    }
+
+    // A hop lies on a path from an originating put to this demux: reachable
+    // FORWARD from the put and BACKWARD from the demux. Intersecting the two
+    // is what keeps an unrelated channel that merely happens to feed the same
+    // buffer out of the domain -- the old attribute gate excluded those only
+    // incidentally.
+    llvm::SmallPtrSet<Operation *, 8> onPath;
+    for (const Origin &o : origins) {
+      if (!o.reaches.contains(d.getOperation()))
+        continue;
+      dom.originators.push_back(o.put);
+      for (Operation *c : o.reaches)
+        if (upstream.contains(c))
+          onPath.insert(c);
+    }
+    for (ChannelOp c : packetChans)
+      if (onPath.contains(c.getOperation()))
+        dom.hops.push_back(c);
+
+    if (dom.originators.empty()) {
+      // No put names a dest anywhere upstream. Either the design predates
+      // `dest` and declares its own header ownership, or the chain is broken.
+      // Fall back to the attribute-gated walk so such designs keep working;
+      // verify() is what tells the two apart.
+      //
+      // Deliberately NOT `continue` when the attribute is absent too: a
+      // partition with no header writer anywhere is a broken design, and
+      // forming the (empty) domain is what lets verify() say so instead of
+      // silently declining to allocate and leaving air-to-aie to auto-assign a
+      // single id that half the destinations will never match.
+      SmallVector<ChannelOp> worklist{d};
+      llvm::SmallPtrSet<Operation *, 8> visited{d.getOperation()};
+      while (!worklist.empty()) {
+        ChannelOp cur = worklist.pop_back_val();
+        for (ChannelOp pred : fedBy.lookup(cur.getOperation())) {
+          if (!channelSourceWritesHeader(pred))
+            continue;
+          if (!visited.insert(pred.getOperation()).second)
+            continue;
+          dom.hops.push_back(pred);
+          worklist.push_back(pred);
+        }
       }
     }
     // Furthest upstream first: the order the packet actually travels, which is
@@ -478,20 +551,6 @@ void PacketRoutingDomainAnalysis::buildDomains() {
     domainIdxOf[d.getOperation()] = idx;
     domains.push_back(std::move(dom));
   }
-
-  // Originators: puts that name a destination. Attach each to the domain of
-  // the channel it puts on.
-  mod.walk([&](ChannelPutOp put) {
-    if (!put.getDest())
-      return;
-    ChannelOp c = getChannelDeclarationThroughSymbol(put);
-    if (!c)
-      return;
-    auto it = domainIdxOf.find(c.getOperation());
-    if (it == domainIdxOf.end())
-      return;
-    domains[it->second].originators.push_back(put);
-  });
 }
 
 const PacketRoutingDomain *

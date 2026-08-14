@@ -717,32 +717,29 @@ def build_module():
         # numeric id appears here -- the reference's 1/4/8 were the pinned spelling this
         # replaced.
         _outA = channel_decl("outA", size=[NCX, NCY], channel_type="npu_dma_packet")
-        _outA.operation.attributes["keep_pkt_header"] = UnitAttr.get()
-        # No packet_ids here. This hop is single-destination: air-to-aie hands its
-        # whole id list to the one buffer (numS2MMAllocs == 1 -> return pinned), so
-        # the ORDER carries no meaning and the SET is just the demux's. Both are
-        # derivable, so air-annotate-packet-ids fills them in by propagating @outY's
-        # declared list back up the header-preserving chain. Only the demux itself
-        # still has to declare, because there the order picks the destination.
+        # No keep_pkt_header and no packet_ids. Both are DERIVED.
+        #
+        # This hop carries a routing decision made here (the dest operand on its
+        # put) to a switchbox further downstream, so it MUST preserve the header
+        # -- forced by the topology, not a choice, and air-annotate-packet-ids
+        # injects it. The ids likewise: the hop is single-destination, so its
+        # list is just the demux's set with no meaningful order.
         # col memtile -> mem_1_1 hub (packet, keep header so the hub can demux by id).
         _toHub = channel_decl("toHub", size=[NCX], channel_type="npu_dma_packet")
-        _toHub.operation.attributes["keep_pkt_header"] = UnitAttr.get()
+        # keep_pkt_header derived, as for @outA above.
         # hub id-demux egress: emit the assembled 514 packet on ONE MM2S; switchbox routes
         # id 1->dest0(rope), 4->dest1(rms), 8->dest2(glu); strip header -> pure 512 payload.
         _outY = Channel("outY", size=[1, 1], broadcast_shape=[1, NDEST])
         _outY.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
-        # Header ownership stated OUTRIGHT, not inferred from len(packet_ids) > 1.
-        # air-to-aie's channelKernelWritesHeader currently accepts EITHER, so this
-        # is behaviour-neutral today -- but the id COUNT and the fact that the core
-        # (not the DMA) stamps the header are two independent properties, and
-        # deriving the second from the first means the demux stops being
-        # recognisable the moment the pinned ids go away. air-annotate-packet-ids
-        # needs this marker to classify outY as a demux at all.
-        _outY.operation.attributes["air.src_writes_pkt_header"] = UnitAttr.get()
-        # No packet_ids. air-annotate-packet-ids allocates the ids from the top
-        # of the id space (nothing else is renumbered) and rewrites the ordinals
-        # the kernel stamps to match. air.src_writes_pkt_header above is what
-        # marks this channel as the demux now that the list is gone.
+        # Nothing declared here. That this channel demuxes is DERIVED: its
+        # destinations partition the stream, and a put naming a `dest` reaches
+        # it through the hops above. A dest operand can only mean "this packet
+        # is for that leaf", which is exactly the statement that the fanout is
+        # over time rather than over space.
+        #
+        # No packet_ids either. air-annotate-packet-ids allocates them from the
+        # top of the id space (so nothing else is renumbered) and rewrites the
+        # ordinals the kernel stamps to match.
         # Keep the hub demux on S2MM0 at every consumer tile; the shim-sourced feeds
         # (ropeLUT/rmsIn/rmsW) are pinned to S2MM1 below. Without an explicit pin,
         # unpinned packet flows REUSE whatever packet channel the tile already has

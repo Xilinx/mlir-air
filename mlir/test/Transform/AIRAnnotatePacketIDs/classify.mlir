@@ -50,11 +50,19 @@ module {
 
 // -----
 
-// A partition on a channel that is NOT source-stamped cannot be a demux: with
-// the DMA stamping one id on one BD there is no per-packet routing decision to
-// make. Report it as unclassifiable rather than inventing ids.
+// A partition on a channel that nothing source-stamps still cannot be a demux:
+// with the DMA stamping one id on one BD there is no per-packet routing
+// decision to make.
+//
+// But that is no longer decided HERE. Classification reports the volume
+// EVIDENCE -- these destinations partition the stream -- and confirmation is a
+// separate question, answered by whether a put naming a `dest` reaches the
+// channel. Keeping the header attribute in this decision is what made it
+// load-bearing for classification, and so impossible for a design to stop
+// declaring. Under `assign` this exact module is rejected outright; see
+// no_header_source.mlir.
 module {
-  // expected-remark @below {{not source-stamped}}
+  // expected-remark @below {{demux over 2 destination(s); infers 2 routing id(s)}}
   air.channel @nohdr [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet"}
   func.func @f() {
     %c0 = arith.constant 0 : index
