@@ -3273,15 +3273,38 @@ def build_module():
                             for _rv in for_(idx(0), idx(_voc_blks_2k), idx(1)):
                                 # a_xnl is now loop-invariant, so this IS a
                                 # re-broadcast: air-annotate-refeed collapses it to
-                                # one put whose credit lock is _xn_per_blk (=4) --
-                                # far inside the 7-bit (max +63) AIE-ML lock, and the
-                                # same 1/2/4 lock values the reference uses. The
-                                # interleave the backpressure deadlock depends on is
-                                # UNCHANGED: the drain below still runs between every
-                                # group of _xn_per_blk x-sends, exactly as when the
-                                # rms call sat in the inner loop. Total productions
-                                # stay _voc_blks_2k*_xn_per_blk == VOCAB_RNDS, so the
-                                # X memtile's get count is untouched.
+                                # one put whose credit is _xn_per_blk -- 4 (1B), 6
+                                # (3B), 5 (gemma), all far inside the 7-bit (max +63)
+                                # AIE-ML lock. Total productions stay
+                                # _voc_blks_2k*_xn_per_blk == VOCAB_RNDS, so the X
+                                # memtile's get count is untouched.
+                                #
+                                # No backpressure hazard, for a stronger reason than
+                                # the send/drain interleave (which is unchanged, but
+                                # is NOT what makes this safe -- gemma has
+                                # _voc_blks_2k=1, i.e. one group and one drain both
+                                # before and after the hoist, so there is no
+                                # interleave there to rely on). The rms core's three
+                                # @xnorm re-broadcasts SHARE one buf-free lock, and
+                                # the DECODE path's counts are larger in every model:
+                                # 1B 4 vs 6/32, 3B 6 vs 10/32, gemma 5 vs 8/40. The
+                                # lock init is that max (32/32/40) and is unchanged by
+                                # this hoist, so the LM-head AcquireGreaterEqual has
+                                # 6-8x credit slack and cannot block ahead of the
+                                # drain. More generally N x Acquire(1) and 1 x
+                                # Acquire(N) have identical liveness on a counting
+                                # semaphore when the credit supply is unchanged and
+                                # nothing else contends -- both hold here, so the
+                                # collapse can delay but never deadlock.
+                                #
+                                # Verified rather than argued: the pre/post lowering
+                                # diff shows zero aie.buffer / dma_bd / dma_start /
+                                # flow changes and a bit-identical 189-entry lock
+                                # table, and of 27 core ELFs exactly one (core_2_2,
+                                # this core) differs -- in all three models. On
+                                # device: llama-1B emits a bit-identical 64-token
+                                # greedy id sequence vs a pre-hoist control, 3B passes
+                                # top-5 verify, gemma passes its Paris gate.
                                 refeed(
                                     _xn_per_blk,
                                     lambda: ChannelPut(
