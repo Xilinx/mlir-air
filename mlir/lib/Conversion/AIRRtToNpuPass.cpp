@@ -3461,13 +3461,17 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         SmallVector<SmallVector<AIEX::DMAConfigureTaskForOp>> phaseGroups;
         SmallVector<AIEX::DMAConfigureTaskForOp> cur;
         llvm::DenseSet<StringRef> seen;
+        // A phase group is a run within one block: the awaits go after the
+        // group's last start, which only has a meaning among siblings.
+        Block *curBlock = nullptr;
         for (auto ct : coalTasks) {
           StringRef c = ct.getAlloc().getLeafReference().getValue();
-          if (seen.contains(c)) {
+          if (seen.contains(c) || (curBlock && ct->getBlock() != curBlock)) {
             phaseGroups.push_back(cur);
             cur.clear();
             seen.clear();
           }
+          curBlock = ct->getBlock();
           cur.push_back(ct);
           seen.insert(c);
         }
@@ -3513,7 +3517,29 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // Segment per launch iteration when the iteration count divides the task
       // count evenly (each iteration emits the same per-channel feeds).
       // Otherwise fall back to whole-list pacing.
-      if (numIters > 1 && sawWave) {
+      // Rolled: the wave is the loop IV, so every task in the body carries the
+      // same wave index and wave segmentation collapses. Segment by block
+      // instead -- a loop body and each arm of a feed select are separate
+      // segments, pacing never has to pair across them, and the back edge is
+      // the iteration fence the per-wave segmentation was providing.
+      if (clKeepLoopsRolled) {
+        SmallVector<AIEX::DMAConfigureTaskForOp> seg;
+        Block *segBlock = nullptr;
+        auto flush = [&]() {
+          if (!seg.empty()) {
+            paceSegment(seg, /*fenceEnd=*/true);
+            seg.clear();
+          }
+        };
+        for (auto ct : tasks) {
+          if (ct->getBlock() != segBlock) {
+            flush();
+            segBlock = ct->getBlock();
+          }
+          seg.push_back(ct);
+        }
+        flush();
+      } else if (numIters > 1 && sawWave) {
         // Boundary-delimited per-wave segmentation. Each contiguous run of
         // same-wave tasks is paced+fenced independently, so a channel absent
         // from some waves simply contributes fewer segments (no assumption that

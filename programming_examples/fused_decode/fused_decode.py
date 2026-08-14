@@ -483,6 +483,8 @@ DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # aiecc unrolls it either way, so the instruction stream is unchanged -- this is
 # about not having two unrollers in the stack.
 ROLLED = int(_os.environ.get("DECODE_ROLLED", "0"))
+# DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
+COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # DECODE_KV_SPLIT=1: decouple the attention K and V memtile rings (mirror the reference mem_3_1:
 # separate k_mem_buffer / v_mem_buffer, filled by SEPARATE S2MM = inKV_K / inKV_V, so
 # the qk core's K supply is NOT lock-chained to the kv core's V drain). Default off
@@ -3684,7 +3686,7 @@ def run():
         kernel_name="MLIR_AIE",
         stack_size=10240,
         use_lock_race_condition_fix_v2=True,
-        coalesce_shim_dma=True,
+        coalesce_shim_dma=bool(COALESCE),
         # DYNSEQ: the runtime sequence now holds a scalar, so the stream is built
         # per dispatch from the emitted header instead of read from insts.bin.
         emit_txn_cpp=bool(DYNSEQ),
