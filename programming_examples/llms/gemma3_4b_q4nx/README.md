@@ -218,6 +218,22 @@ The rms tile's DMA layout depends on a compute-tile allocator rule
 the sublayer result twice per dispatch beside once-per-dispatch norm weights,
 and such unequal-multiplicity flows must not share one S2MM BD chain.
 
+## Decode staircase (opt-in, ~1.1-1.2x)
+
+The decode template streams `ATTN_MAXL` KV positions per token regardless of the real
+context length, so a 2048-window build wastes most of that readback at short context.
+Building one template pair per window and dispatching each token on the smallest covering
+window recovers it, with a token stream identical to the single-window baseline.
+
+```bash
+make compile-decode-windows      # once; WINDOWS="64 512 2048" to override the set
+DECODE_STAIRCASE=1 make run
+```
+
+Off by default. See
+[`programming_examples/fused_decode/README.md`](../../fused_decode/README.md) for the
+mechanism, the measurements and the `.decode_windows` manifest guard.
+
 ## Key Files
 
 | file | role |

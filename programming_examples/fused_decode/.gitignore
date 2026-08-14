@@ -4,6 +4,7 @@
 *.ll
 *.xclbin
 *.bin
+*.exe
 
 # Build / cache artifacts
 __pycache__/
@@ -18,3 +19,6 @@ air.elf
 # build-flag stamp: makes the decode-template skip W_DUAL_CHAN-aware
 .decode_flags
 decode_qwen.flags
+
+# Staircase window manifest (which ATTN_MAXL pairs this dir holds).
+.decode_windows

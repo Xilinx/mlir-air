@@ -96,6 +96,7 @@ help:
 	@echo "Quick start:"
 	@echo "  make compile          Compile prefill ELFs (~4 min, one-time; no weights)"
 	@echo "  make compile-decode   Decode templates, built into this dir (~15 min, no weights)"
+	@echo "  make compile-decode-windows  Staircase: one template pair per ATTN_MAXL ($(WINDOWS)); ~1.11x decode"
 	@echo "  make run              Run inference ($(N_TOKENS) tokens)"
 	@echo "  make chat             Interactive chat REPL (streaming output)"
 	@echo "  make profile          Run with profiling breakdown"
@@ -143,6 +144,26 @@ compile-decode:
 	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build \
 	    && echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP); \
 	fi
+
+## Staircase templates: one pair per ATTN_MAXL window. The compiled KV readback streams
+## ATTN_MAXL positions whatever the real context length is, so running each token on the
+## smallest covering window moves proportionally less DDR per token (measured 1.11x over
+## 300 tokens, token stream bit-identical). Run the driver with --staircase to use them.
+## Writes $(DECODE_WINDOWS_STAMP) so the driver can reject a directory whose templates do
+## not match what was built -- template discovery is a directory scan, and a stray pair
+## silently changes which window is selected.
+WINDOWS ?= 64 128 256 512 1024 2048
+DECODE_WINDOWS_STAMP := $(srcdir)/.decode_windows
+
+compile-decode-windows:
+	@for W in $(WINDOWS); do \
+	  echo ">>> staircase window ATTN_MAXL=$$W"; \
+	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build LBUILD=$$W \
+	    || exit 1; \
+	done
+	@echo "$(WINDOWS)" > $(DECODE_WINDOWS_STAMP)
+	@echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP)
+	@echo "Staircase templates built (ATTN_MAXL: $(WINDOWS)). Run with --staircase."
 
 _compile_decode_build:
 	@# Delegate the llvm-link version preflight to the engine that owns it:
@@ -233,7 +254,7 @@ gen:
 ## the lit tests run `clean` before every gate. Delete it by hand to force a re-pack.
 clean:
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
-	rm -f $(DECODE_FLAGS_STAMP) 2>/dev/null || true
+	rm -f $(DECODE_FLAGS_STAMP) $(DECODE_WINDOWS_STAMP) 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \
 	      $(addprefix $(DEC)/,$(addsuffix .ll,$(ATTN_LL_KERNELS))) 2>/dev/null || true
 	rm -rf $(BUILD_DIR) $(srcdir)/__pycache__ $(srcdir)/_q4nx_cache_seq* 2>/dev/null || true

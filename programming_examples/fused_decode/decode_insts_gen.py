@@ -79,7 +79,32 @@ class DecodeInstsGen:
                 Ls=Ls,
                 xclbin=os.path.join(artifact_dir, f"decode_L{base_L}.xclbin"),
             )
+        self._check_declared_windows(artifact_dir)
         self.select(max_L)
+
+    # Build stamp naming the ATTN_MAXL windows a directory is meant to hold, written by
+    # `make compile-decode-windows`.
+    WINDOWS_STAMP = ".decode_windows"
+
+    def _check_declared_windows(self, artifact_dir):
+        """Reject a directory whose calibrated windows differ from what the build declared.
+
+        Templates are discovered by scanning, so a leftover pair from an unrelated build
+        otherwise changes which window is selected -- silently, and the symptom is a
+        plausible-looking but wrong generation rather than an error.
+        """
+        stamp = os.path.join(artifact_dir, self.WINDOWS_STAMP)
+        if not os.path.exists(stamp):
+            return  # nothing declared (single-template tree) -- nothing to check
+        with open(stamp) as f:
+            want = sorted(int(t) for t in f.read().split())
+        have = self.calibrated_windows()
+        if have != want:
+            raise RuntimeError(
+                f"decode templates in {artifact_dir} do not match {self.WINDOWS_STAMP}: "
+                f"declared ATTN_MAXL {want}, found calibrated {have}. Remove strays or "
+                f"re-run `make compile-decode-windows`."
+            )
 
     def select(self, max_L=None):
         """Pick the active template: smallest calibrated ATTN_MAXL >= max_L (or the largest
@@ -122,13 +147,38 @@ class DecodeInstsGen:
 
     def insts_for_L(self, L):
         """uint32 insts stream for context length L on the active template (1 <= L <= ATTN_MAXL)."""
-        if not (1 <= L <= self.active_maxl):
-            raise ValueError(f"L={L} out of range for ATTN_MAXL={self.active_maxl}")
-        t = self._t
+        return self.insts_for(self.active_maxl, L)
+
+    def insts_for(self, maxl, L):
+        """uint32 insts stream for L on the `maxl` template, leaving the active one alone.
+
+        A staircase driver holds every window at once and picks per token, so it needs
+        the streams without the select()/active_maxl round trip.
+        """
+        t = self.templates[maxl]
+        if t["slope"] is None:
+            raise KeyError(f"template ATTN_MAXL={maxl} is not calibrated")
+        if not (1 <= L <= maxl):
+            raise ValueError(f"L={L} out of range for ATTN_MAXL={maxl}")
         out = t["base"].astype(np.int64)
         ld = t["slope"] != 0
         out[ld] = t["base"][ld].astype(np.int64) + (L - t["base_L"]) * t["slope"][ld]
         return out.astype(np.uint32)
+
+    def calibrated_windows(self):
+        """Calibrated ATTN_MAXL windows, ascending."""
+        return sorted(m for m, t in self.templates.items() if t["slope"] is not None)
+
+    def window_for_L(self, L):
+        """Smallest calibrated window that can serve context length L.
+
+        The compiled KV readback streams ATTN_MAXL positions regardless of L, so the
+        smallest covering window is also the cheapest one to run at.
+        """
+        for m in self.calibrated_windows():
+            if m >= L:
+                return m
+        raise KeyError(f"no calibrated window covers L={L}")
 
     def xclbin_for_maxl(self, m):
         return self.templates[m]["xclbin"]

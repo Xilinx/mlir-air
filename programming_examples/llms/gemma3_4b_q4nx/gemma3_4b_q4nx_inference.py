@@ -84,6 +84,19 @@ def _ensure_requant_cache(fd, model):
 # specializer) is imported from fused_decode/ but scans this dir for the templates.
 _DECODE_DIR = Path(os.environ.get("Q4NX_GEMMA_DECODE_DIR", str(_HERE)))
 
+# decode_staircase lives in fused_decode/, which joins sys.path in _pick_decode_gen;
+# imported lazily and cached for the methods that need it.
+_stair = None
+
+
+def _load_stair():
+    global _stair
+    if _stair is None:
+        import decode_staircase
+
+        _stair = decode_staircase
+    return _stair
+
 
 def _pick_decode_gen(dec_dir, max_L=None):
     sys.path.insert(0, str(_DEC))
@@ -98,7 +111,7 @@ class FusedDecoder:
     The weight + KV BOs are uploaded once; the kernel appends each new token's K/V in place.
     """
 
-    def __init__(self, model=MODEL_DEFAULT, max_L=None):
+    def __init__(self, model=MODEL_DEFAULT, max_L=None, staircase=False):
         import importlib.util
         import numpy as np
         from ml_dtypes import bfloat16
@@ -111,7 +124,12 @@ class FusedDecoder:
         self.gw = gw
 
         self.gen = _pick_decode_gen(_DECODE_DIR, max_L)
-        self.ATTN_MAXL = self.gen.attn_maxl
+        _load_stair()
+        # Staircase: hold every calibrated ATTN_MAXL window and dispatch each token on the
+        # smallest one covering L (the readback streams ATTN_MAXL positions regardless).
+        # Off by default -- one window, identical to the single-template path.
+        self.windows = _stair.resolve_windows(self.gen, staircase)
+        self.ATTN_MAXL = max(self.windows)
         self.maxL = min(int(max_L), self.ATTN_MAXL) if max_L else self.ATTN_MAXL
 
         # DECODE_MODEL / geometry env must be set BEFORE importing fused_decode.py (its
@@ -197,12 +215,9 @@ class FusedDecoder:
         # ONE xclbin + ONE self-contained BO set (weight BO uploaded once)
         self.dev = xrt.device(0)
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
-        xb = xrt.xclbin(self.gen.xclbin)
-        self.dev.register_xclbin(xb)
-        self._ctx = xrt.hw_context(self.dev, xb.get_uuid())
-        self._xb = xb
-        xk = [k for k in xb.get_kernels() if "MLIR_AIE" in k.get_name()][0]
-        self.kern = xrt.kernel(self._ctx, xk.get_name())
+        self._kern = _stair.open_windows(self.dev, xrt, self.gen, self.windows)
+        self.cur_maxl = self.ATTN_MAXL
+        self.kern = self._kern[self.cur_maxl][1]
         g = self.kern.group_id
         HO = xrt.bo.host_only
         self.x_bo = xrt.bo(self.dev, self.K * 2, HO, g(3))
@@ -210,16 +225,32 @@ class FusedDecoder:
         self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
         self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
         self.kvc = xrt.bo(self.dev, self.UNI_DEC * self.LREG * 2, HO, g(7))
-        self.ib = xrt.bo(self.dev, self.gen.base.nbytes, xrt.bo.cacheable, g(1))
+        self._ist = _stair.make_insts_states(
+            self.gen, xrt, self.dev, g(1), self.windows
+        )
+        self._geom = _stair.KVGeometry(
+            self.UNI_DEC, self.KVSZ_TOK, self.REGION_W, self.NGRP, self.LREG
+        )
+        self._use_window(self.cur_maxl)
         self.w_bo.write(self.Wv16, 0)
         self.w_bo.sync(TO)
         self.KV = np.zeros((self.UNI_DEC, self.LREG), dtype=bfloat16)
+
+    def _use_window(self, m):
+        """Point the active kernel / insts state at window `m` (no KV movement)."""
+        self._st = self._ist[m]
+        self.cur_maxl = m
+        self.kern = self._kern[m][1]
+        self.ib = self._st["ib"]
 
     def seed_kv(self, fk, fv, P):
         """Place the numpy-prefill K/V (fk/fv: [UNI_DEC,P,DK_TOT_A]) into the device KV cache
         region-major, then prefetch to the device (before the timed decode loop)."""
         np = self.np
-        RW, RS, NG = self.REGION_W, self.REGION_STRIDE, self.NGRP
+        if len(self.windows) > 1:
+            self._use_window(self.gen.window_for_L(P + 1))
+        RW, NG = self.REGION_W, self.NGRP
+        RS = self.cur_maxl * RW
         self.KV[:] = 0
         for Lyr in range(self.UNI_DEC):
             for gi in range(NG):
@@ -230,10 +261,11 @@ class FusedDecoder:
                     :
                 ] = fv[Lyr, :P, gi * RW : (gi + 1) * RW].astype(self.bf16)
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
+        _lreg = self._geom.lreg(self.cur_maxl)
         for Lyr in range(self.UNI_DEC):
-            boff = Lyr * self.LREG * 2
-            self.kvc.write(self.KV[Lyr].view(np.int16), boff)
-            self.kvc.sync(TO, self.LREG * 2, boff)
+            boff = Lyr * _lreg * 2
+            self.kvc.write(self.KV[Lyr, :_lreg].view(np.int16), boff)
+            self.kvc.sync(TO, _lreg * 2, boff)
         self._kv_dirty = False
 
     def _rope_slab(self, p):
@@ -256,26 +288,13 @@ class FusedDecoder:
         FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
         L = p + 1
         # insts: write full stream once, then patch only the L-dependent [lo:hi] slice.
-        if not hasattr(self, "_ld"):
-            i1 = self.gen.insts_for_L(1)
-            i2 = self.gen.insts_for_L(2)
-            ld = np.where(i1 != i2)[0]
-            self._ld = ld
-            self._ld_lo = int(ld.min())
-            self._ld_hi = int(ld.max()) + 1
-            self._ld_base = i1[ld].astype(np.int64)
-            self._ld_slope = i2[ld].astype(np.int64) - i1[ld].astype(np.int64)
-            self._insts_buf = i1.astype(np.uint32).copy()
-            self._insts_size = int(i1.size)
-            self.ib.write(self._insts_buf, 0)
-            self.ib.sync(TO)
-        self._insts_buf[self._ld] = (self._ld_base + (L - 1) * self._ld_slope).astype(
-            np.uint32
-        )
-        _lo, _hi = self._ld_lo, self._ld_hi
-        self.ib.write(self._insts_buf[_lo:_hi], _lo * 4)
-        self.ib.sync(TO, (_hi - _lo) * 4, _lo * 4)
-        insts_size = self._insts_size
+        if len(self.windows) > 1:
+            _w = self.gen.window_for_L(L)
+            if _w != self.cur_maxl:
+                # `p` positions are live; this token's K/V is appended by the dispatch.
+                _stair.respace_kv(self.kvc, self._geom, self.cur_maxl, _w, p, xrt)
+                self._use_window(_w)
+        insts_size = _stair.patch_insts(self._st, L, xrt, TO)
         # KV uploaded once (seed), then device-resident (kernel appends in place).
         if getattr(self, "_kv_dirty", True):
             packed = np.ascontiguousarray(self.KV).reshape(-1)
@@ -377,7 +396,11 @@ def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True, numpy_prefill=F
     # Machine-readable line for bench/extract_perf.py (nightly LLM dashboard).
     print(f"Time to first token (TTFT): {ttft:.3f}s", flush=True)
 
-    dec = FusedDecoder(model=model, max_L=P + n_tokens)
+    dec = FusedDecoder(
+        model=model,
+        max_L=P + n_tokens,
+        staircase=os.environ.get("DECODE_STAIRCASE") == "1",
+    )
     n_eff = min(n_tokens, dec.ATTN_MAXL - P)
     if n_eff <= 0:
         print(f"[inference] P={P} >= ATTN_MAXL={dec.ATTN_MAXL}; abort")

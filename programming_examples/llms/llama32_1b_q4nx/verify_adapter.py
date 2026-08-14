@@ -80,6 +80,11 @@ def build_runner(
     return NpuRunner(max_seq=max_seq, tokenizer=tokenizer, lite_mode=lite_mode)
 
 
+def _stair_on():
+    """Multi-window decode opt-in; same env switch as the CLI."""
+    return os.environ.get("DECODE_STAIRCASE") == "1"
+
+
 class NpuRunner:
     """Adapter over the Q4NX fused prefill + one-xclbin decode.
 
@@ -100,7 +105,7 @@ class NpuRunner:
 
         self.prefiller = LlamaQ4nxPrefill(seq_len=max_seq, n_layers=_N_LAYERS)
         self.prefiller.load_weights(model=Q4NX_MODEL_SOURCE)
-        self.dec = FusedDecoder()
+        self.dec = FusedDecoder(staircase=_stair_on())
         self.attn_maxl = self.dec.ATTN_MAXL
         self._P = 0
 

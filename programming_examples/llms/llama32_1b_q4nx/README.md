@@ -151,6 +151,22 @@ Options: `--temperature 0.7 --top-k 5 --top-p 0.9`, `--rep-penalty`, `--seed`,
 `--system "..."`, `--n-tokens N`, `--no-eos-stop`. Enable turbo for ~50 tok/s:
 `xrt-smi configure -d <BDF> --pmode turbo`.
 
+## Decode staircase (opt-in, ~1.1-1.2x)
+
+The decode template streams `ATTN_MAXL` KV positions per token regardless of the real
+context length, so a 2048-window build wastes most of that readback at short context.
+Building one template pair per window and dispatching each token on the smallest covering
+window recovers it, with a token stream identical to the single-window baseline.
+
+```bash
+make compile-decode-windows      # once; WINDOWS="64 512 2048" to override the set
+DECODE_STAIRCASE=1 make chat
+```
+
+Off by default. See
+[`programming_examples/fused_decode/README.md`](../../fused_decode/README.md) for the
+mechanism, the measurements and the `.decode_windows` manifest guard.
+
 ## Correctness
 
 `make verify` runs the shared `verify/` top-k token-set inclusion gate (k=5,
