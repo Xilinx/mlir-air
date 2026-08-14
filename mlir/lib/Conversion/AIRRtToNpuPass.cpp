@@ -1843,15 +1843,51 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
 // channel's transfers ahead of the sibling-channel round-major interleave; that
 // reorder is numerically equivalent to the fragmented feed (verified
 // output-identical on an exercising design).
-static void coalesceShimDmaOrder(ModuleOp module) {
+// Peel an offset into (base, constant addend): a rolled body's offsets are
+// `addi(loop-derived base, const)`, so two feeds are contiguous when they
+// share a base and their addends are. A constant offset has a null base,
+// which is the straight-line case.
+static std::pair<Value, int64_t> peelOffset(Value v) {
+  int64_t addend = 0;
+  while (v) {
+    if (auto c = getConstantIntValue(v))
+      return {nullptr, addend + *c};
+    Operation *def = v.getDefiningOp();
+    if (auto cast = dyn_cast_if_present<arith::IndexCastOp>(def)) {
+      v = cast.getIn();
+      continue;
+    }
+    if (auto add = dyn_cast_if_present<arith::AddIOp>(def)) {
+      if (auto c = getConstantIntValue(add.getRhs())) {
+        addend += *c;
+        v = add.getLhs();
+        continue;
+      }
+      if (auto c = getConstantIntValue(add.getLhs())) {
+        addend += *c;
+        v = add.getRhs();
+        continue;
+      }
+    }
+    break;
+  }
+  return {v, addend};
+}
+
+static void coalesceShimDmaOrder(ModuleOp module, bool symbolicBase) {
   SmallVector<func::FuncOp> funcOps;
   module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
 
   // Return (totalOffset, len) for a pure contiguous 1D transfer, or nullopt if
   // the op is not a mergeable contiguous 1D transfer (non-constant descriptor,
   // multi-dim wrap, or non-unit inner stride).
+  struct Desc {
+    Value base;
+    int64_t offset;
+    int64_t len;
+  };
   auto describe =
-      [](airrt::DmaMemcpyNdOp d) -> std::optional<std::pair<int64_t, int64_t>> {
+      [symbolicBase](airrt::DmaMemcpyNdOp d) -> std::optional<Desc> {
     // Never merge packet-switched transfers: consecutive BDs on one channel may
     // carry different packet ids (different routing destinations). Merging them
     // into one BD would send all data with the first id, starving the other
@@ -1859,20 +1895,33 @@ static void coalesceShimDmaOrder(ModuleOp module) {
     // safe to coalesce.
     if (d->hasAttr("packet"))
       return std::nullopt;
-    auto offsets = getConstantIntValues(d.getMixedOffsets());
     auto lengths = getConstantIntValues(d.getMixedLengths());
     auto strides = getConstantIntValues(d.getMixedStrides());
-    if (!offsets || !lengths || !strides)
+    if (!lengths || !strides)
       return std::nullopt;
     // Pure contiguous 1D: only the innermost dim carries data, unit inner
     // stride (the higher dims are size-1 dummies).
     if ((*lengths)[0] != 1 || (*lengths)[1] != 1 || (*lengths)[2] != 1 ||
         (*strides)[3] != 1)
       return std::nullopt;
+    Value base = nullptr;
     int64_t totalOffset = 0;
-    for (auto [off, str] : llvm::zip_equal(*offsets, *strides))
-      totalOffset += off * str;
-    return std::make_pair(totalOffset, (*lengths)[3]);
+    for (auto [off, str] : llvm::zip_equal(d.getMixedOffsets(), *strides)) {
+      if (auto c = getConstantIntValue(off)) {
+        totalOffset += *c * str;
+        continue;
+      }
+      // One dynamic offset, on the unit-stride innermost dim, and only when
+      // symbolic bases are allowed.
+      if (!symbolicBase || base || str != 1)
+        return std::nullopt;
+      auto [b, addend] = peelOffset(cast<Value>(off));
+      if (!b)
+        return std::nullopt;
+      base = b;
+      totalOffset += addend;
+    }
+    return Desc{base, totalOffset, (*lengths)[3]};
   };
 
   for (auto f : funcOps) {
@@ -1896,7 +1945,10 @@ static void coalesceShimDmaOrder(ModuleOp module) {
       int64_t offset;
       int64_t len;
     };
-    llvm::MapVector<std::tuple<int64_t, StringRef, void *>, SmallVector<Entry>>
+    // The base joins the key: feeds off different bases are never contiguous,
+    // and for a rolled body the base is what distinguishes one wave's slice.
+    llvm::MapVector<std::tuple<int64_t, StringRef, void *, void *>,
+                    SmallVector<Entry>>
         groups;
     for (auto d : paced) {
       auto desc = describe(d);
@@ -1908,8 +1960,9 @@ static void coalesceShimDmaOrder(ModuleOp module) {
       int64_t wave = -1;
       if (auto w = d->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
         wave = w.getInt();
-      groups[{wave, md.getValue(), d.getMemref().getAsOpaquePointer()}]
-          .push_back({d, desc->first, desc->second});
+      groups[{wave, md.getValue(), d.getMemref().getAsOpaquePointer(),
+              desc->base.getAsOpaquePointer()}]
+          .push_back({d, desc->offset, desc->len});
     }
 
     for (auto &kv : groups) {
@@ -2290,7 +2343,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // op keeps its wave attribute) and before WaitAll->wait conversion (erased
     // ops' event tokens are redirected to the merged op).
     if (clCoalesceShimDma)
-      coalesceShimDmaOrder(module);
+      coalesceShimDmaOrder(module, /*symbolicBase=*/clKeepLoopsRolled);
 
     generateNpuWaitFromAIRRtWaitAll(module);
 
@@ -2503,86 +2556,100 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
-      Block &blk = seq.getBody().front();
-      // Snapshot the op order; the delimiters never move, and RTP/set_lock ops
-      // only move within their own region, so region membership computed from
-      // this snapshot stays valid across the moves below.
-      SmallVector<Operation *> ops;
-      for (auto &o : blk)
-        ops.push_back(&o);
+      // Rolled, the arms and the feeds they arm both live in the loop body, so
+      // hoisting only within the sequence's entry block moves nothing and the
+      // cores are released after the first wave's data is already in flight.
+      // Hoist within every block instead.
+      SmallVector<Block *> blocks;
+      if (clKeepLoopsRolled)
+        seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      else
+        blocks.push_back(&seq.getBody().front());
+      for (Block *blkPtr : blocks) {
+        Block &blk = *blkPtr;
+        // Snapshot the op order; the delimiters never move, and RTP/set_lock
+        // ops only move within their own region, so region membership computed
+        // from this snapshot stays valid across the moves below.
+        SmallVector<Operation *> ops;
+        for (auto &o : blk)
+          ops.push_back(&o);
 
-      auto device = seq->getParentOfType<xilinx::AIE::DeviceOp>();
-      bool fused = device && deviceHasMultiIterLaunch(device);
-      auto getWave = [](Operation *o) -> std::optional<int64_t> {
-        if (auto a = o->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
-          return a.getInt();
-        return std::nullopt;
-      };
-
-      if (fused) {
-        // Wave-keyed arm placement. Every RTP write / set_lock carries the wave
-        // index of the herd_load it lowered from; move it before the first data
-        // movement of the same wave (that wave's first feed), RTP writes first
-        // then set_locks, preserving program order within a wave. This is
-        // authoritative: no inference of which wave an arm belongs to from its
-        // position in the flattened sequence.
-        llvm::DenseMap<int64_t, Operation *> waveAnchor;
-        for (Operation *o : ops) {
-          if (isa<AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(o))
-            continue;
-          if (o->hasAttr(air::attrs::RuntimeHoist))
-            continue;
-          if (auto w = getWave(o))
-            waveAnchor.try_emplace(*w, o);
-        }
-        for (Operation *o : ops)
-          if (isa<AIEX::NpuWriteRTPOp>(o))
-            if (auto w = getWave(o)) {
-              auto it = waveAnchor.find(*w);
-              if (it != waveAnchor.end())
-                moveRtpBefore(o, it->second);
-            }
-        for (Operation *o : ops)
-          if (isa<AIEX::SetLockOp>(o))
-            if (auto w = getWave(o)) {
-              auto it = waveAnchor.find(*w);
-              if (it != waveAnchor.end())
-                o->moveBefore(it->second);
-            }
-      } else {
-        // Single-dispatch (non-fused): hoist each delimiter-bounded region's
-        // own RTP block (RTP writes first, then set_locks) to the front of its
-        // own feeds. Anchor = first data movement (not an RTP write, set_lock,
-        // or air.runtime_hoist feed).
-        struct RegionInfo {
-          Operation *anchor = nullptr;
-          SmallVector<Operation *> rtps;
-          SmallVector<Operation *> locks;
+        auto device = seq->getParentOfType<xilinx::AIE::DeviceOp>();
+        bool fused = device && deviceHasMultiIterLaunch(device);
+        auto getWave = [](Operation *o) -> std::optional<int64_t> {
+          if (auto a = o->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
+            return a.getInt();
+          return std::nullopt;
         };
-        SmallVector<RegionInfo> regions;
-        for (size_t i = 0, e = ops.size(); i < e;) {
-          size_t j = i;
-          while (j < e && !isRegionDelimiter(ops[j]))
-            ++j;
-          RegionInfo r;
-          for (size_t k = i; k < j; ++k) {
-            if (isa<AIEX::NpuWriteRTPOp>(ops[k]))
-              r.rtps.push_back(ops[k]);
-            else if (isa<AIEX::SetLockOp>(ops[k]))
-              r.locks.push_back(ops[k]);
-            else if (!ops[k]->hasAttr(air::attrs::RuntimeHoist) && !r.anchor)
-              r.anchor = ops[k];
+
+        // Rolled, every arm in the body belongs to the same (IV-valued) wave,
+        // so wave keying cannot order them; fall back to the delimiter-region
+        // form, which arms at the top of the block -- ahead of the feed select.
+        if (fused && !clKeepLoopsRolled) {
+          // Wave-keyed arm placement. Every RTP write / set_lock carries the
+          // wave index of the herd_load it lowered from; move it before the
+          // first data movement of the same wave (that wave's first feed), RTP
+          // writes first then set_locks, preserving program order within a
+          // wave. This is authoritative: no inference of which wave an arm
+          // belongs to from its position in the flattened sequence.
+          llvm::DenseMap<int64_t, Operation *> waveAnchor;
+          for (Operation *o : ops) {
+            if (isa<AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(o))
+              continue;
+            if (o->hasAttr(air::attrs::RuntimeHoist))
+              continue;
+            if (auto w = getWave(o))
+              waveAnchor.try_emplace(*w, o);
           }
-          regions.push_back(r);
-          i = (j < e) ? j + 1 : j;
-        }
-        for (auto &r : regions) {
-          if (!r.anchor)
-            continue;
-          for (auto *rtp : r.rtps)
-            moveRtpBefore(rtp, r.anchor);
-          for (auto *lk : r.locks)
-            lk->moveBefore(r.anchor);
+          for (Operation *o : ops)
+            if (isa<AIEX::NpuWriteRTPOp>(o))
+              if (auto w = getWave(o)) {
+                auto it = waveAnchor.find(*w);
+                if (it != waveAnchor.end())
+                  moveRtpBefore(o, it->second);
+              }
+          for (Operation *o : ops)
+            if (isa<AIEX::SetLockOp>(o))
+              if (auto w = getWave(o)) {
+                auto it = waveAnchor.find(*w);
+                if (it != waveAnchor.end())
+                  o->moveBefore(it->second);
+              }
+        } else {
+          // Single-dispatch (non-fused): hoist each delimiter-bounded region's
+          // own RTP block (RTP writes first, then set_locks) to the front of
+          // its own feeds. Anchor = first data movement (not an RTP write,
+          // set_lock, or air.runtime_hoist feed).
+          struct RegionInfo {
+            Operation *anchor = nullptr;
+            SmallVector<Operation *> rtps;
+            SmallVector<Operation *> locks;
+          };
+          SmallVector<RegionInfo> regions;
+          for (size_t i = 0, e = ops.size(); i < e;) {
+            size_t j = i;
+            while (j < e && !isRegionDelimiter(ops[j]))
+              ++j;
+            RegionInfo r;
+            for (size_t k = i; k < j; ++k) {
+              if (isa<AIEX::NpuWriteRTPOp>(ops[k]))
+                r.rtps.push_back(ops[k]);
+              else if (isa<AIEX::SetLockOp>(ops[k]))
+                r.locks.push_back(ops[k]);
+              else if (!ops[k]->hasAttr(air::attrs::RuntimeHoist) && !r.anchor)
+                r.anchor = ops[k];
+            }
+            regions.push_back(r);
+            i = (j < e) ? j + 1 : j;
+          }
+          for (auto &r : regions) {
+            if (!r.anchor)
+              continue;
+            for (auto *rtp : r.rtps)
+              moveRtpBefore(rtp, r.anchor);
+            for (auto *lk : r.locks)
+              lk->moveBefore(r.anchor);
+          }
         }
       }
     });
@@ -2616,37 +2683,53 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           return a.getInt();
         return std::nullopt;
       };
-      Block &blk = seq.getBody().front();
-      SmallVector<Operation *> ops;
-      for (auto &o : blk)
-        ops.push_back(&o);
-      // Wave-keyed: for each wave, its first input feed (an MM2S configure) is
-      // the anchor; hoist that wave's output-S2MM configure+start ahead of it.
-      llvm::DenseMap<int64_t, Operation *> waveInputAnchor;
-      for (Operation *o : ops) {
-        auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
-        if (!cfg || isS2MMOutput(cfg))
-          continue;
-        if (auto w = getWave(o))
-          waveInputAnchor.try_emplace(*w, o);
-      }
-      for (Operation *o : ops) {
-        auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
-        if (!cfg || !isS2MMOutput(cfg))
-          continue;
-        auto w = getWave(o);
-        if (!w)
-          continue;
-        auto it = waveInputAnchor.find(*w);
-        if (it == waveInputAnchor.end())
-          continue;
-        Operation *anchor = it->second;
-        if (!cfg->isBeforeInBlock(anchor))
-          cfg->moveBefore(anchor);
-        // its single start task moves with it, staying right after the cfg.
-        for (auto *u : cfg.getResult().getUsers())
-          if (isa<AIEX::DMAStartTaskOp>(u) && !u->isBeforeInBlock(anchor))
-            u->moveBefore(anchor);
+      // Rolled, the wave is the loop IV, so key by block instead: within each
+      // block the first input feed anchors that block's output arming. Same
+      // rule, one level down.
+      SmallVector<Block *> blocks;
+      if (clKeepLoopsRolled)
+        seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      else
+        blocks.push_back(&seq.getBody().front());
+      for (Block *blkPtr : blocks) {
+        Block &blk = *blkPtr;
+        SmallVector<Operation *> ops;
+        for (auto &o : blk)
+          ops.push_back(&o);
+        // Wave-keyed: for each wave, its first input feed (an MM2S configure)
+        // is the anchor; hoist that wave's output-S2MM configure+start ahead
+        // of it. Rolled, the key is the block itself.
+        llvm::DenseMap<int64_t, Operation *> waveInputAnchor;
+        auto key = [&](Operation *o) -> std::optional<int64_t> {
+          if (clKeepLoopsRolled)
+            return 0;
+          return getWave(o);
+        };
+        for (Operation *o : ops) {
+          auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
+          if (!cfg || isS2MMOutput(cfg))
+            continue;
+          if (auto w = key(o))
+            waveInputAnchor.try_emplace(*w, o);
+        }
+        for (Operation *o : ops) {
+          auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
+          if (!cfg || !isS2MMOutput(cfg))
+            continue;
+          auto w = key(o);
+          if (!w)
+            continue;
+          auto it = waveInputAnchor.find(*w);
+          if (it == waveInputAnchor.end())
+            continue;
+          Operation *anchor = it->second;
+          if (!cfg->isBeforeInBlock(anchor))
+            cfg->moveBefore(anchor);
+          // its single start task moves with it, staying right after the cfg.
+          for (auto *u : cfg.getResult().getUsers())
+            if (isa<AIEX::DMAStartTaskOp>(u) && !u->isBeforeInBlock(anchor))
+              u->moveBefore(anchor);
+        }
       }
     });
 
@@ -2657,128 +2740,140 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
-      Block &blk = seq.getBody().front();
-      Operation *anchor = nullptr;
-      for (auto &o : blk) {
-        if (isa<AIEX::NpuLoadPdiOp, AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(&o))
-          continue;
-        if (o.hasAttr(air::attrs::RuntimeHoist))
-          continue;
-        anchor = &o;
-        break;
-      }
-      if (!anchor)
-        return; // nothing to order before.
-      // Hoist input DMA feeds marked `air.runtime_hoist` ahead of the bulk
-      // input-feed DMAs. Otherwise the control program can block on a later
-      // input's dma_await -- whose consumer is stalled in a feedback loop
-      // waiting on the compute that the hoisted feed drives -- BEFORE it ever
-      // issues the hoisted feed, so that compute never receives its input,
-      // produces no output, and the sequence deadlocks. Each configure task and
-      // its single start task are moved together, preserving relative order.
-      SmallVector<AIEX::DMAConfigureTaskForOp> hoistCfgs;
-      for (auto &o : blk)
-        if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
-          if (c->hasAttr(air::attrs::RuntimeHoist))
-            hoistCfgs.push_back(c);
-      for (auto c : hoistCfgs) {
-        Operation *startOp = nullptr;
-        for (auto *u : c.getResult().getUsers())
-          if (isa<AIEX::DMAStartTaskOp>(u)) {
-            startOp = u;
-            break;
-          }
-        c->moveBefore(anchor);
-        if (startOp)
-          startOp->moveBefore(anchor);
-        else
-          // A present marker that cannot be honored is a silent-deadlock
-          // hazard; surface it rather than dropping the requested ordering
-          // quietly.
-          c->emitWarning("air.runtime_hoist: no matching dma_start_task; the "
-                         "feed was hoisted but its start was not, so the "
-                         "requested ordering may not take effect");
-      }
-
-      // air.await_appends barrier: a same-L3 write-after-write / read-after-
-      // write ordering that the async dependence graph cannot express. A
-      // shared- DDR readback tagged `air.await_appends` must observe values
-      // written by one or more device-side appends (S2MM drains into that same
-      // DDR buffer), but an append's completion await is deferred to the launch
-      // terminator, so the readback -- issued in program order after the append
-      // START -- would race the append S2MM and read a stale slot. Each
-      // participating append is tagged `air.append_barrier`; move those
-      // appends' completion awaits to just BEFORE the tagged readback's start,
-      // so the runtime blocks on append completion before reading back.
-      //
-      // A runtime sequence may contain one or MORE independent readbacks (e.g.
-      // an unrolled loop with N append/readback pairs). Each append's
-      // completion await is moved before the FIRST tagged readback start that
-      // follows the append in program order -- the readback that consumes it.
-      // Collapsing every append onto the first readback would move a later
-      // readback's append await ahead of an earlier readback, violating SSA
-      // dominance and the append->readback ordering. With a single readback
-      // this reduces to moving every append's await before that one readback.
-      SmallVector<AIEX::DMAConfigureTaskForOp> awaitCfgs;
-      for (auto &o : blk)
-        if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
-          if (c->hasAttr(air::attrs::AwaitAppends))
-            awaitCfgs.push_back(c);
-      if (!awaitCfgs.empty()) {
-        // First dma_start_task among a configure task's users, if any.
-        auto getStart = [](AIEX::DMAConfigureTaskForOp c) {
-          for (auto *u : c.getResult().getUsers())
-            if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u))
-              return s;
-          return AIEX::DMAStartTaskOp(nullptr);
-        };
-        // Program-order index for every op in the block. Only awaits are
-        // relocated below (append/readback starts stay put), so the indices
-        // used for the interval decisions remain valid throughout.
-        DenseMap<Operation *, unsigned> order;
-        unsigned idx = 0;
-        for (auto &o : blk)
-          order[&o] = idx++;
-        // Tagged readback starts, in program order.
-        SmallVector<AIEX::DMAStartTaskOp> barrierStarts;
-        for (auto c : awaitCfgs) {
-          if (auto s = getStart(c))
-            barrierStarts.push_back(s);
-          else
-            c->emitWarning(
-                "air.await_appends: tagged readback has no dma_start_task; the "
-                "append barrier cannot be applied");
-        }
-        bool anyAppendAwait = false;
+      // Rolled, the hoisted feeds and the append/readback pair live in the
+      // loop body or a select arm, so scoping to the entry block finds nothing
+      // and the append barrier is silently not applied.
+      SmallVector<Block *> blocks;
+      if (clKeepLoopsRolled)
+        seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      else
+        blocks.push_back(&seq.getBody().front());
+      for (Block *blkPtr : blocks) {
+        Block &blk = *blkPtr;
+        Operation *anchor = nullptr;
         for (auto &o : blk) {
-          auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
-          if (!cfg || !cfg->hasAttr(air::attrs::AppendBarrier))
+          if (isa<AIEX::NpuLoadPdiOp, AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(&o))
             continue;
-          AIEX::DMAAwaitTaskOp aAwait = nullptr;
-          for (auto *u : cfg.getResult().getUsers())
-            if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(u))
-              aAwait = aw;
-          if (!aAwait)
+          if (o.hasAttr(air::attrs::RuntimeHoist))
             continue;
-          anyAppendAwait = true;
-          AIEX::DMAStartTaskOp aStart = getStart(cfg);
-          unsigned apos = order[aStart ? aStart.getOperation() : &o];
-          AIEX::DMAStartTaskOp target = nullptr;
-          unsigned best = std::numeric_limits<unsigned>::max();
-          for (auto s : barrierStarts) {
-            unsigned sp = order[s.getOperation()];
-            if (sp > apos && sp < best) {
-              best = sp;
-              target = s;
-            }
-          }
-          if (target)
-            aAwait->moveBefore(target);
+          anchor = &o;
+          break;
         }
-        if (!anyAppendAwait && !barrierStarts.empty())
-          barrierStarts.front()->emitWarning(
-              "air.await_appends: readback tagged but no air.append_barrier "
-              "appends found to await; no ordering was enforced");
+        if (!anchor)
+          return; // nothing to order before.
+        // Hoist input DMA feeds marked `air.runtime_hoist` ahead of the bulk
+        // input-feed DMAs. Otherwise the control program can block on a later
+        // input's dma_await -- whose consumer is stalled in a feedback loop
+        // waiting on the compute that the hoisted feed drives -- BEFORE it ever
+        // issues the hoisted feed, so that compute never receives its input,
+        // produces no output, and the sequence deadlocks. Each configure task
+        // and its single start task are moved together, preserving relative
+        // order.
+        SmallVector<AIEX::DMAConfigureTaskForOp> hoistCfgs;
+        for (auto &o : blk)
+          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
+            if (c->hasAttr(air::attrs::RuntimeHoist))
+              hoistCfgs.push_back(c);
+        for (auto c : hoistCfgs) {
+          Operation *startOp = nullptr;
+          for (auto *u : c.getResult().getUsers())
+            if (isa<AIEX::DMAStartTaskOp>(u)) {
+              startOp = u;
+              break;
+            }
+          c->moveBefore(anchor);
+          if (startOp)
+            startOp->moveBefore(anchor);
+          else
+            // A present marker that cannot be honored is a silent-deadlock
+            // hazard; surface it rather than dropping the requested ordering
+            // quietly.
+            c->emitWarning("air.runtime_hoist: no matching dma_start_task; the "
+                           "feed was hoisted but its start was not, so the "
+                           "requested ordering may not take effect");
+        }
+
+        // air.await_appends barrier: a same-L3 write-after-write / read-after-
+        // write ordering that the async dependence graph cannot express. A
+        // shared- DDR readback tagged `air.await_appends` must observe values
+        // written by one or more device-side appends (S2MM drains into that
+        // same DDR buffer), but an append's completion await is deferred to the
+        // launch terminator, so the readback -- issued in program order after
+        // the append START -- would race the append S2MM and read a stale slot.
+        // Each participating append is tagged `air.append_barrier`; move those
+        // appends' completion awaits to just BEFORE the tagged readback's
+        // start, so the runtime blocks on append completion before reading
+        // back.
+        //
+        // A runtime sequence may contain one or MORE independent readbacks
+        // (e.g. an unrolled loop with N append/readback pairs). Each append's
+        // completion await is moved before the FIRST tagged readback start that
+        // follows the append in program order -- the readback that consumes it.
+        // Collapsing every append onto the first readback would move a later
+        // readback's append await ahead of an earlier readback, violating SSA
+        // dominance and the append->readback ordering. With a single readback
+        // this reduces to moving every append's await before that one readback.
+        SmallVector<AIEX::DMAConfigureTaskForOp> awaitCfgs;
+        for (auto &o : blk)
+          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
+            if (c->hasAttr(air::attrs::AwaitAppends))
+              awaitCfgs.push_back(c);
+        if (!awaitCfgs.empty()) {
+          // First dma_start_task among a configure task's users, if any.
+          auto getStart = [](AIEX::DMAConfigureTaskForOp c) {
+            for (auto *u : c.getResult().getUsers())
+              if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u))
+                return s;
+            return AIEX::DMAStartTaskOp(nullptr);
+          };
+          // Program-order index for every op in the block. Only awaits are
+          // relocated below (append/readback starts stay put), so the indices
+          // used for the interval decisions remain valid throughout.
+          DenseMap<Operation *, unsigned> order;
+          unsigned idx = 0;
+          for (auto &o : blk)
+            order[&o] = idx++;
+          // Tagged readback starts, in program order.
+          SmallVector<AIEX::DMAStartTaskOp> barrierStarts;
+          for (auto c : awaitCfgs) {
+            if (auto s = getStart(c))
+              barrierStarts.push_back(s);
+            else
+              c->emitWarning("air.await_appends: tagged readback has no "
+                             "dma_start_task; the "
+                             "append barrier cannot be applied");
+          }
+          bool anyAppendAwait = false;
+          for (auto &o : blk) {
+            auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
+            if (!cfg || !cfg->hasAttr(air::attrs::AppendBarrier))
+              continue;
+            AIEX::DMAAwaitTaskOp aAwait = nullptr;
+            for (auto *u : cfg.getResult().getUsers())
+              if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(u))
+                aAwait = aw;
+            if (!aAwait)
+              continue;
+            anyAppendAwait = true;
+            AIEX::DMAStartTaskOp aStart = getStart(cfg);
+            unsigned apos = order[aStart ? aStart.getOperation() : &o];
+            AIEX::DMAStartTaskOp target = nullptr;
+            unsigned best = std::numeric_limits<unsigned>::max();
+            for (auto s : barrierStarts) {
+              unsigned sp = order[s.getOperation()];
+              if (sp > apos && sp < best) {
+                best = sp;
+                target = s;
+              }
+            }
+            if (target)
+              aAwait->moveBefore(target);
+          }
+          if (!anyAppendAwait && !barrierStarts.empty())
+            barrierStarts.front()->emitWarning(
+                "air.await_appends: readback tagged but no air.append_barrier "
+                "appends found to await; no ordering was enforced");
+        }
       }
     });
 
@@ -2793,46 +2888,55 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
-      Block &blk = seq.getBody().front();
-      llvm::DenseSet<Operation *> seen;
-      // Clone `v`'s defining chain immediately before `user`, returning the
-      // re-materialized value, or null if any step is not safely clonable.
-      std::function<Value(Value, Operation *)> rematerialize =
-          [&](Value v, Operation *user) -> Value {
-        Operation *def = v.getDefiningOp();
-        if (!def || def->getBlock() != &blk || seen.contains(def))
-          return v;
-        if (!isMemoryEffectFree(def) || def->getNumResults() != 1)
-          return Value();
-        SmallVector<Value> operands;
-        for (Value o : def->getOperands()) {
-          Value r = rematerialize(o, user);
-          if (!r)
-            return Value();
-          operands.push_back(r);
-        }
-        OpBuilder b(user);
-        Operation *cloned = b.clone(*def);
-        cloned->setOperands(operands);
-        seen.insert(cloned);
-        return cloned->getResult(0);
-      };
-      for (Operation &o : blk) {
-        SmallVector<OpOperand *> uses;
-        for (OpOperand &u : o.getOpOperands())
-          uses.push_back(&u);
-        o.walk([&](Operation *nested) {
-          for (OpOperand &u : nested->getOpOperands())
-            uses.push_back(&u);
-        });
-        for (OpOperand *u : uses) {
-          Operation *def = u->get().getDefiningOp();
+      // Same reason as the hoist above: rolled, the ops that moved are in the
+      // loop body, not the sequence's entry block.
+      SmallVector<Block *> blocks;
+      if (clKeepLoopsRolled)
+        seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      else
+        blocks.push_back(&seq.getBody().front());
+      for (Block *blkPtr : blocks) {
+        Block &blk = *blkPtr;
+        llvm::DenseSet<Operation *> seen;
+        // Clone `v`'s defining chain immediately before `user`, returning the
+        // re-materialized value, or null if any step is not safely clonable.
+        std::function<Value(Value, Operation *)> rematerialize =
+            [&](Value v, Operation *user) -> Value {
+          Operation *def = v.getDefiningOp();
           if (!def || def->getBlock() != &blk || seen.contains(def))
-            continue;
-          if (Value r = rematerialize(u->get(), &o))
-            u->set(r);
+            return v;
+          if (!isMemoryEffectFree(def) || def->getNumResults() != 1)
+            return Value();
+          SmallVector<Value> operands;
+          for (Value o : def->getOperands()) {
+            Value r = rematerialize(o, user);
+            if (!r)
+              return Value();
+            operands.push_back(r);
+          }
+          OpBuilder b(user);
+          Operation *cloned = b.clone(*def);
+          cloned->setOperands(operands);
+          seen.insert(cloned);
+          return cloned->getResult(0);
+        };
+        for (Operation &o : blk) {
+          SmallVector<OpOperand *> uses;
+          for (OpOperand &u : o.getOpOperands())
+            uses.push_back(&u);
+          o.walk([&](Operation *nested) {
+            for (OpOperand &u : nested->getOpOperands())
+              uses.push_back(&u);
+          });
+          for (OpOperand *u : uses) {
+            Operation *def = u->get().getDefiningOp();
+            if (!def || def->getBlock() != &blk || seen.contains(def))
+              continue;
+            if (Value r = rematerialize(u->get(), &o))
+              u->set(r);
+          }
+          seen.insert(&o);
         }
-        seen.insert(&o);
       }
     });
 
