@@ -2222,9 +2222,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // scaffolding, which has to go either way for the airrt ops to sit
     // directly in the sequence.
     unrollAffineFors(module);
-    if (clKeepLoopsRolled)
+    if (clKeepLoopsRolled) {
+      dropAirrtEventResults(module);
       dropAirrtEventIterArgs(module);
-    else
+    } else
       unrollSCFFors(module);
 
     // Fold affine.apply ops with constant operands after loop unrolling.
@@ -3295,6 +3296,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
         if (matchingConfigTask) {
           OpBuilder builder(waitOp);
+          // Block dominance is satisfied by an op in a sibling region -- a
+          // configure in one arm of a rolled feed select -- but its result is
+          // not visible outside that arm. Await at the end of the arm instead.
+          if (clKeepLoopsRolled &&
+              !matchingConfigTask->getParentRegion()->isAncestor(
+                  waitOp->getParentRegion()))
+            builder.setInsertionPoint(
+                matchingConfigTask->getBlock()->getTerminator());
           if (isS2MM) {
             // S2MM (output): await task - waits for completion AND frees BD
             AIEX::DMAAwaitTaskOp::create(builder, waitOp.getLoc(),
@@ -3705,6 +3714,62 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           signalPassFailure();
         }
       }
+    }
+  }
+
+  // The same for an scf.if / scf.index_switch that yields a token -- a
+  // per-wave feed select does, once the loop around it stays rolled and its
+  // condition no longer folds. Results and yield operands line up one to one
+  // here, so dropping is symmetric.
+  void dropAirrtEventResults(ModuleOp module) {
+    SmallVector<Operation *> ops;
+    module.walk([&](Operation *o) {
+      if (!isa<scf::IfOp, scf::IndexSwitchOp>(o))
+        return;
+      if (llvm::any_of(o->getResultTypes(),
+                       [](Type t) { return isa<airrt::EventType>(t); }))
+        ops.push_back(o);
+    });
+    for (auto *op : llvm::reverse(ops)) {
+      OpBuilder builder(op);
+      auto eventTy = airrt::EventType::get(op->getContext());
+      SmallVector<Type> keptTypes;
+      SmallVector<unsigned> keptIdx;
+      for (auto [i, t] : llvm::enumerate(op->getResultTypes()))
+        if (!isa<airrt::EventType>(t)) {
+          keptTypes.push_back(t);
+          keptIdx.push_back(i);
+        }
+      OperationState state(op->getLoc(), op->getName());
+      state.addOperands(op->getOperands());
+      state.addTypes(keptTypes);
+      state.addAttributes(op->getAttrs());
+      for (unsigned i = 0, e = op->getNumRegions(); i < e; i++)
+        state.addRegion();
+      Operation *newOp = builder.create(state);
+      for (auto [oldRegion, newRegion] :
+           llvm::zip(op->getRegions(), newOp->getRegions()))
+        newRegion.takeBody(oldRegion);
+      for (Region &r : newOp->getRegions())
+        for (Block &blk : r) {
+          auto yield = dyn_cast<scf::YieldOp>(blk.getTerminator());
+          if (!yield)
+            continue;
+          SmallVector<Value> keptYields;
+          for (unsigned i : keptIdx)
+            keptYields.push_back(yield.getOperand(i));
+          yield->setOperands(keptYields);
+        }
+      builder.setInsertionPointAfter(newOp);
+      unsigned kept = 0;
+      for (auto res : op->getResults())
+        res.replaceAllUsesWith(
+            isa<airrt::EventType>(res.getType())
+                ? airrt::WaitAllOp::create(builder, op->getLoc(), eventTy,
+                                           SmallVector<Value>{})
+                      .getResult(0)
+                : newOp->getResult(kept++));
+      op->erase();
     }
   }
 
