@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Qwen2.5-3B fused decode compile smoke test: builds the QWEN2_5_3B Peano
-// kernels and the single-dispatch decode_qwen xclbin through the
+// kernels and the single-dispatch decode template pair through the
 // AIR -> AIE -> aiecc -> Peano pipeline. Weights are runtime BOs, so this
 // compile needs no weight data (like the prefill's run_npu2_compile.lit).
 //

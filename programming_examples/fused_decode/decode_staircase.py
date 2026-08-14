@@ -85,8 +85,24 @@ def make_insts_states(gen, xrt, dev, group_id, windows):
     that slice. `primed` tracks whether the full base stream has been written yet.
     """
     st = {}
+    exact = getattr(gen, "exact", False)
     for m in windows:
         i1 = gen.insts_for(m, 1)
+        if exact:
+            # A dynseq build computes the stream, so there is nothing to calibrate
+            # -- and nothing that could be: its readback length steps with
+            # ceil(L/16), which no two-point slope reproduces. Keep the generator
+            # and rewrite the whole stream per token.
+            st[m] = dict(
+                exact=True,
+                gen=gen,
+                maxl=m,
+                buf=i1.astype(np.uint32).copy(),
+                size=int(i1.size),
+                ib=xrt.bo(dev, i1.nbytes, xrt.bo.cacheable, group_id),
+                primed=False,
+            )
+            continue
         i2 = gen.insts_for(m, 2)
         ld = np.where(i1 != i2)[0]
         st[m] = dict(
@@ -109,6 +125,13 @@ def patch_insts(state, L, xrt, to_dir):
     The base stream is written whole once; afterwards only the [lo:hi] slice is rewritten
     and synced.
     """
+    if state.get("exact"):
+        # Whole stream: the L-dependent words are scattered across it and cost
+        # far less to rewrite than to locate.
+        state["buf"][:] = state["gen"].insts_for(state["maxl"], L)
+        state["ib"].write(state["buf"], 0)
+        state["ib"].sync(to_dir)
+        return state["size"]
     state["buf"][state["ld"]] = (state["base"] + (L - 1) * state["slope"]).astype(
         np.uint32
     )

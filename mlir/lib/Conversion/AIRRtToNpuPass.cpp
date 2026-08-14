@@ -617,6 +617,100 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     };
     auto *ctx = rewriter.getContext();
 
+    // Runtime-valued access pattern. mlir-aie's shim-NOC BD lowering
+    // (AIEDMATasksToNPU rewriteSingleBDDynamic) takes a runtime size as a
+    // descriptor operand, so a loop-invariant dynamic dim does not have to be
+    // folded away. The descriptor keeps its dimensions and the runtime value
+    // rides in the mixed sizes list -- the shape upstream's own static-vs-
+    // dynamic equivalence test uses, and the one that lands register-equivalent
+    // to the static baseline. (Collapsing a contiguous nest to a runtime `len`
+    // instead looks simpler but programs d1_size differently.)
+    //
+    // Sizes and offsets may be runtime -- a size for a context-length-sized
+    // transfer, an offset for a slot that moves per dispatch (a KV append
+    // writes position L-1). At most one size, though: constify() below would
+    // otherwise silently substitute a default and emit a wrong-sized transfer
+    // with no diagnostic.
+    SmallVector<OpFoldResult> mixedLengths =
+        getMixedValues(adaptor.getStaticLengths(), adaptor.getLengths(), ctx);
+    SmallVector<OpFoldResult> mixedStrides =
+        getMixedValues(adaptor.getStaticStrides(), adaptor.getStrides(), ctx);
+    SmallVector<OpFoldResult> mixedOffsets =
+        getMixedValues(adaptor.getStaticOffsets(), adaptor.getOffsets(), ctx);
+    // A runtime size becomes the BD's `len`, which is only meaningful if the
+    // transfer is one linear run: contiguous row-major below the runtime
+    // dimension and inert above it. Then no descriptor dimension is needed and
+    // the length is that size scaled by the extent below it.
+    Value dynLen;       // runtime transfer length, in elements (i64)
+    Value dynOuterSize; // runtime repeat count (zero outer stride)
+    Value dynOffset;    // runtime start offset, in elements (i64)
+    {
+      for (auto ofr : mixedStrides)
+        if (!getConstantIntValue(ofr))
+          return op->emitOpError("runtime-valued DMA stride is not supported");
+      SmallVector<unsigned> dynDims;
+      for (auto [dim, ofr] : llvm::enumerate(mixedLengths))
+        if (!getConstantIntValue(ofr))
+          dynDims.push_back(dim);
+      if (dynDims.size() > 1)
+        return op->emitOpError(
+            "more than one runtime-valued DMA size is not supported");
+      if (!dynDims.empty()) {
+        unsigned dim = dynDims.front();
+        Value dynVal = cast<Value>(mixedLengths[dim]);
+        int64_t below = 1;
+        bool contiguous = true;
+        for (int i = mixedLengths.size() - 1; i > (int)dim; i--) {
+          auto sz = *getConstantIntValue(mixedLengths[i]);
+          auto st = *getConstantIntValue(mixedStrides[i]);
+          if (st != below && sz != 1)
+            contiguous = false;
+          below *= sz;
+        }
+        for (unsigned i = 0; i < dim; i++)
+          if (*getConstantIntValue(mixedLengths[i]) != 1)
+            contiguous = false;
+        int64_t thisStride = *getConstantIntValue(mixedStrides[dim]);
+        if (contiguous && thisStride == below) {
+          dynLen = below == 1 ? dynVal
+                              : arith::MulIOp::create(
+                                    rewriter, op.getLoc(), dynVal,
+                                    arith::ConstantOp::create(
+                                        rewriter, op.getLoc(),
+                                        rewriter.getI64IntegerAttr(below)))
+                                    .getResult();
+        } else if (dim == 0 && thisStride == 0) {
+          // A pure repeat: the outermost dim re-runs the same descriptor, which
+          // the task's repeat_count takes as an operand.
+          dynOuterSize = dynVal;
+        } else {
+          return op->emitOpError("runtime-valued DMA size in dimension ")
+                 << (3 - dim)
+                 << " requires a contiguous transfer or a zero outer stride";
+        }
+      }
+      // A runtime offset rides in the BD's `offset` operand. Only one dimension
+      // may carry it, and the dimensions it is scaled against must be constant,
+      // so fold the scaling here.
+      for (auto [dim, ofr] : llvm::enumerate(mixedOffsets)) {
+        if (getConstantIntValue(ofr))
+          continue;
+        if (dynOffset)
+          return op->emitOpError(
+              "more than one runtime-valued DMA offset is not supported");
+        int64_t stride = *getConstantIntValue(mixedStrides[dim]);
+        Value v = cast<Value>(ofr);
+        dynOffset =
+            stride == 1
+                ? v
+                : arith::MulIOp::create(rewriter, op.getLoc(), v,
+                                        arith::ConstantOp::create(
+                                            rewriter, op.getLoc(),
+                                            rewriter.getI64IntegerAttr(stride)))
+                      .getResult();
+      }
+    }
+
     // Entry i of each list is dimension 3-i, outermost first.
     SmallVector<int64_t> staticOffsets = constify(
         getMixedValues(adaptor.getStaticOffsets(), adaptor.getOffsets(), ctx),
@@ -648,6 +742,18 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // repeat_count = 0 means execute once, repeat_count = 3 means execute 4
     // times
     int64_t repeatCount = std::max((int64_t)0, staticSizes[0] - 1);
+    // A pure-repeat runtime outer size drives the task's repeat_count operand;
+    // the descriptor itself stays constant. mlir-aie wants (n - 1).
+    Value repeatCountVal;
+    if (dynOuterSize) {
+      auto i32 = rewriter.getI32Type();
+      Value n =
+          arith::TruncIOp::create(rewriter, op.getLoc(), i32, dynOuterSize);
+      repeatCountVal = arith::SubIOp::create(
+          rewriter, op.getLoc(), n,
+          arith::ConstantOp::create(rewriter, op.getLoc(),
+                                    rewriter.getI32IntegerAttr(1)));
+    }
 
     // The 4th dimension is included in dma_bd dimensions if stride[0] != 0
     // (the iteration_stride tells the hardware how to advance offset each
@@ -695,6 +801,25 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     bool paced = op->hasAttr(air::attrs::PreserveShimDmaOrder);
     bool issueToken = air::isDeviceToHostShimDMA(op) || paced;
 
+    // Narrow the runtime length/offset here, not inside the descriptor block:
+    // that block admits only the BD ops themselves. Place each narrowing at its
+    // operand's definition rather than at the rewriter's cursor -- a converted
+    // operand can be materialized further down the block, and a use built at
+    // the cursor would then not be dominated by it.
+    auto narrowToI32 = [&](Value v) -> Value {
+      if (!v)
+        return Value();
+      OpBuilder::InsertionGuard g(rewriter);
+      if (Operation *def = v.getDefiningOp())
+        rewriter.setInsertionPointAfter(def);
+      else
+        rewriter.setInsertionPointToStart(cast<BlockArgument>(v).getOwner());
+      return arith::TruncIOp::create(rewriter, op.getLoc(),
+                                     rewriter.getI32Type(), v);
+    };
+    Value dynLenI32 = narrowToI32(dynLen);
+    Value dynOffsetI32 = narrowToI32(dynOffset);
+
     // Create DMAConfigureTaskForOp with proper repeat_count from highest
     // dimension
     auto configTaskOp = AIEX::DMAConfigureTaskForOp::create(
@@ -704,7 +829,7 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         rewriter.getBoolAttr(issueToken), // issue_token = true for S2MM / paced
         rewriter.getI32IntegerAttr(
             repeatCount), // repeat_count from highest dim
-        Value()           // repeat_count_val (dynamic repeat count unused here)
+        repeatCountVal    // runtime repeat count, when the outer size is one
     );
     if (paced)
       configTaskOp->setAttr(air::attrs::PreserveShimDmaOrder,
@@ -741,8 +866,49 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // the packet header for correct routing.
     auto pktAttr = op->getAttrOfType<AIE::PacketInfoAttr>("packet");
 
-    // Create aie.dma_bd inside the task body, passing packet info if present.
-    if (dimLayouts.empty() && !pktAttr) {
+    // Runtime length or offset: the descriptor carries no dimensions -- it is
+    // one linear run -- and takes `len` / `offset` as operands, the form
+    // mlir-aie's shim-NOC lowering encodes into a runtime BD. Staying on the
+    // DMA-task path matters: npu.dma_memcpy_nd's dynamic lowering hardwires BD
+    // id 0, so a dynamic transfer sharing a shim tile with a task-path one
+    // would silently overwrite its descriptor.
+    if (dynLenI32) {
+      // A runtime length only arises for a transfer this pass has already
+      // checked is one linear run, so the descriptor needs no dimensions --
+      // the length carries the whole extent.
+      AIE::DMABDOp::create(
+          rewriter, op.getLoc(), memref, dynOffsetI32, dynLenI32,
+          /*static_offset=*/
+          dynOffsetI32 ? nullptr : rewriter.getI32IntegerAttr(totalOffset),
+          /*static_len=*/nullptr,
+          /*sizes=*/ValueRange{}, /*strides=*/ValueRange{},
+          /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
+          /*pad_dimensions=*/nullptr, /*bd_id=*/nullptr, pktAttr,
+          /*burst_length=*/nullptr, /*offset_parameter=*/nullptr,
+          /*offset_state_table_idx=*/nullptr, /*next_bd_id=*/nullptr);
+    } else if (dynOffsetI32) {
+      // Only the address moves. Build the descriptor exactly as the static path
+      // would -- a KV append writes NGRP chunks at a region stride, and
+      // collapsing that to one linear run would scatter every group but the
+      // first -- then swap the constant offset for the runtime one.
+      AIE::DMABDOp bd =
+          dimLayouts.empty()
+              ? (pktAttr
+                     ? AIE::DMABDOp::create(rewriter, op.getLoc(), memref, 0,
+                                            static_cast<int>(transferLen),
+                                            pktAttr)
+                     : AIE::DMABDOp::create(rewriter, op.getLoc(), memref, 0,
+                                            static_cast<int>(transferLen)))
+              : (pktAttr
+                     ? AIE::DMABDOp::create(rewriter, op.getLoc(), memref, 0,
+                                            static_cast<int>(transferLen),
+                                            dimsAttr, pktAttr)
+                     : AIE::DMABDOp::create(rewriter, op.getLoc(), memref, 0,
+                                            static_cast<int>(transferLen),
+                                            dimsAttr));
+      bd.getOffsetMutable().assign(dynOffsetI32);
+      bd.removeStaticOffsetAttr();
+    } else if (dimLayouts.empty() && !pktAttr) {
       AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
                            static_cast<int>(totalOffset),
                            static_cast<int>(transferLen));
@@ -888,13 +1054,34 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
             if (!llvm::isa<IntegerType, IndexType, FloatType>(oper.getType()))
               continue;
 
-            auto constOp =
-                dyn_cast_if_present<arith::ConstantOp>(oper.getDefiningOp());
-            if (constOp && isa<IntegerType, IndexType>(oper.getType())) {
-              uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
-              Value vVal = arith::ConstantOp::create(
-                  rewriter, op.getLoc(), rewriter.getI32Type(),
-                  rewriter.getI32IntegerAttr(v));
+            // The core loads this slot unconditionally, so a slot left
+            // unwritten is a read of stale memory -- not a value that merely
+            // defaults. A runtime operand therefore has to be written too: it
+            // is how a core's trip count can follow a dispatch-time context
+            // length, and how that count stays equal to the shim's push count.
+            Value vVal;
+            if (isa<IntegerType, IndexType>(oper.getType())) {
+              auto i32Ty = rewriter.getI32Type();
+              if (auto constOp = dyn_cast_if_present<arith::ConstantOp>(
+                      oper.getDefiningOp())) {
+                vVal = arith::ConstantOp::create(
+                    rewriter, op.getLoc(), i32Ty,
+                    rewriter.getI32IntegerAttr(
+                        cast<IntegerAttr>(constOp.getValue()).getInt()));
+              } else if (isa<IndexType>(oper.getType())) {
+                vVal = arith::IndexCastOp::create(rewriter, op.getLoc(), i32Ty,
+                                                  oper);
+              } else if (oper.getType() == i32Ty) {
+                vVal = oper;
+              } else if (oper.getType().getIntOrFloatBitWidth() > 32) {
+                vVal =
+                    arith::TruncIOp::create(rewriter, op.getLoc(), i32Ty, oper);
+              } else {
+                vVal =
+                    arith::ExtUIOp::create(rewriter, op.getLoc(), i32Ty, oper);
+              }
+            }
+            if (vVal) {
               auto rtpOp = AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(),
                                                        name, rtp_slot, vVal);
               if (waveAttr)
@@ -2041,18 +2228,24 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     auto isRegionDelimiter = [](Operation *o) {
       return isa<AIEX::NpuLoadPdiOp>(o);
     };
-    // Move an NpuWriteRTPOp before `anchor`, cloning any defining
-    // arith.ConstantOp operand that would otherwise end up after it. The #1732
-    // AIEX API materializes the RTP value as an SSA operand (not an attribute),
-    // so the constant must dominate the moved RTP write.
+    // Move an NpuWriteRTPOp before `anchor`, re-materializing any defining op
+    // that would otherwise end up after it. The #1732 AIEX API materializes the
+    // RTP value as an SSA operand (not an attribute), so its definition must
+    // dominate the moved write. Constants are the usual case; a runtime RTP
+    // value adds the narrowing cast that carries a sequence argument into the
+    // slot's i32. Both are pure and rooted at block arguments, so cloning them
+    // at the new position is sound; anything else is left where it is.
     auto moveRtpBefore = [](Operation *rtp, Operation *anchor) {
       rtp->moveBefore(anchor);
       for (OpOperand &operandUse : rtp->getOpOperands()) {
         Value operand = operandUse.get();
         auto *defOp = operand.getDefiningOp();
-        if (!defOp || !isa<arith::ConstantOp>(defOp))
+        if (!defOp || defOp->getBlock() != rtp->getBlock())
           continue;
-        if (defOp->getBlock() != rtp->getBlock())
+        if (!isMemoryEffectFree(defOp) || defOp->getNumResults() != 1)
+          continue;
+        if (llvm::any_of(defOp->getOperands(),
+                         [](Value v) { return v.getDefiningOp() != nullptr; }))
           continue;
         bool defIsAfter = false;
         for (Operation *cur = rtp->getNextNode(); cur != nullptr;
@@ -2065,6 +2258,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           OpBuilder b(rtp);
           Operation *cloned = b.clone(*defOp);
           operandUse.set(cloned->getResult(0));
+          // The original is left for canonicalization: the op-order snapshot
+          // this hoist walks still points at it.
         }
       }
     };
@@ -2347,6 +2542,60 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           barrierStarts.front()->emitWarning(
               "air.await_appends: readback tagged but no air.append_barrier "
               "appends found to await; no ordering was enforced");
+      }
+    });
+
+    // Repair dominance after the reordering above. Every hoist here moves a
+    // configure task or an RTP write past other ops, and a runtime access
+    // pattern brings along the small arith chain that narrows a sequence
+    // argument into the BD's i32 length or offset. That chain is pure and
+    // rooted at block arguments, so re-materializing it at the moved use is
+    // sound -- and is the only option, since the hoists are ordering decisions
+    // that cannot be undone. A chain reaching anything impure is left alone and
+    // will be caught by the verifier rather than silently miscompiled.
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      Block &blk = seq.getBody().front();
+      llvm::DenseSet<Operation *> seen;
+      // Clone `v`'s defining chain immediately before `user`, returning the
+      // re-materialized value, or null if any step is not safely clonable.
+      std::function<Value(Value, Operation *)> rematerialize =
+          [&](Value v, Operation *user) -> Value {
+        Operation *def = v.getDefiningOp();
+        if (!def || def->getBlock() != &blk || seen.contains(def))
+          return v;
+        if (!isMemoryEffectFree(def) || def->getNumResults() != 1)
+          return Value();
+        SmallVector<Value> operands;
+        for (Value o : def->getOperands()) {
+          Value r = rematerialize(o, user);
+          if (!r)
+            return Value();
+          operands.push_back(r);
+        }
+        OpBuilder b(user);
+        Operation *cloned = b.clone(*def);
+        cloned->setOperands(operands);
+        seen.insert(cloned);
+        return cloned->getResult(0);
+      };
+      for (Operation &o : blk) {
+        SmallVector<OpOperand *> uses;
+        for (OpOperand &u : o.getOpOperands())
+          uses.push_back(&u);
+        o.walk([&](Operation *nested) {
+          for (OpOperand &u : nested->getOpOperands())
+            uses.push_back(&u);
+        });
+        for (OpOperand *u : uses) {
+          Operation *def = u->get().getDefiningOp();
+          if (!def || def->getBlock() != &blk || seen.contains(def))
+            continue;
+          if (Value r = rematerialize(u->get(), &o))
+            u->set(r);
+        }
+        seen.insert(&o);
       }
     });
 

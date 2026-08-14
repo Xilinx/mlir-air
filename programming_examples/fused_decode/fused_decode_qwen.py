@@ -65,7 +65,7 @@ from air.dialects.air import channel as channel_decl
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects import arith
-from air.dialects.scf import for_, yield_, index_switch, IfOp
+from air.dialects.scf import for_, yield_, index_switch, IfOp, ForOp
 from air.backend.xrt import XRTBackend
 
 
@@ -307,6 +307,33 @@ KVBLK = 16 * KVPC_DH  # 2048 one 16-key K (or V) block per CU
 # patches runtime L). Default small for a fast lower-check.
 ATTN_L = int(_os.environ.get("ATTN_L", "32"))
 ATTN_ROUNDS = (ATTN_L + 15) // 16
+# DECODE_DYNSEQ=1: take the context length as a runtime scalar instead of baking it
+# in. It becomes a launch operand driving the KV readback's block count, the append's
+# slot address, the memtile dequeue and the attention herd's RTP-L, so the shim pushes
+# exactly what the cores consume at whatever L the host dispatches. The instruction
+# stream is then assembled per token from the emitted TXN builder rather than read
+# from a frozen insts.bin. Off by default; the template pair stays the shipping path.
+DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
+
+
+def _for_no_pingpong(start, stop, step):
+    """`for_` that opts the loop out of ping-pong (air.disable_ping_pong).
+
+    The memtile KV dequeue below is a ping-pong candidate here (llama's is
+    declined for live state). Labelling unrolls the body by 2 and leaves a
+    remainder; with a runtime trip count the remainder's bound arithmetic is
+    hoisted out of the loop, and air-to-aie then rejects the memtile DMA region
+    for using a value defined outside it.
+    """
+    params = [start, stop, step]
+    for i, p in enumerate(params):
+        if isinstance(p, int):
+            params[i] = arith.ConstantOp.create_index(p)
+    for_op = ForOp(*params, [])
+    for_op.operation.attributes["air.disable_ping_pong"] = UnitAttr.get()
+    with InsertionPoint(for_op.body):
+        yield for_op.induction_variable
+
 
 # Attn kernel linkage. Same mechanism as the Llama driver (fused_decode.py): the
 # attn_qk/attn_kv kernels are linked as LLVM IR (.ll) rather than objects, so they
@@ -933,15 +960,38 @@ def build_module():
                 yield_([])
 
         # ============================ top function ==============================
-        @FuncOp.from_py_func(x_l3, w_l3, kv_l3, y_l3)
+        # DYNSEQ appends the context length as a trailing scalar, so the DDR
+        # argument positions -- and the host binding built around them -- are unchanged.
+        _fn_args = [x_l3, w_l3, kv_l3, y_l3] + ([i32] if DYNSEQ else [])
+
+        @FuncOp.from_py_func(*_fn_args)
         def qwen_decode(*_fa):
             def launch_body(*_la):
                 X, W, KV, Y = _la[4], _la[5], _la[6], _la[7]
+                # The dispatch-time context length (DYNSEQ), last operand before the
+                # multi-layer induction variable.
+                L_rt = _la[4 + len(_fa) - 1] if DYNSEQ else None
                 # Multi-layer: the last launch operand is the scf.for induction variable
                 # (see the emit branch at the end of build()). a_iv is None for the
                 # single-layer build, so every per-layer offset below folds to the plain
                 # Python constant it had before and the IR is byte-identical.
-                a_iv = _la[8] if len(_la) > 8 else None
+                a_iv = _la[4 + len(_fa)] if len(_la) > 4 + len(_fa) else None
+
+                def _ceil16(v):
+                    """ceil(v/16) as an index Value, computed in i32.
+
+                    aie-translate's C++ TXN target emits the integer widths but has no
+                    case for index-typed arithmetic, and this has to survive into the
+                    emitted builder.
+                    """
+                    _s = arith.addi(
+                        v, arith.ConstantOp(IntegerAttr.get(i32, 15), None).result
+                    )
+                    _q = arith.divui(
+                        _s, arith.ConstantOp(IntegerAttr.get(i32, 16), None).result
+                    )
+                    return arith.index_cast(idx_t, _q)
+
                 KV_LAYER = N_ATTN_CU * 2 * ATTN_ROUNDS * KVBLK
 
                 def _po(slab, off):
@@ -1147,12 +1197,33 @@ def build_module():
                 # air-annotate-append-barrier derives the append->readback RAW ordering
                 # from the shared L3 cache memref.
                 if ATTN:
+                    # DYNSEQ: this token's slot is a runtime address, so the append
+                    # lands on the position being generated rather than a fixed one.
+                    if DYNSEQ:
+                        _rwv = arith.index_cast(
+                            idx_t,
+                            arith.muli(
+                                arith.subi(
+                                    L_rt,
+                                    arith.ConstantOp(
+                                        IntegerAttr.get(i32, 1), None
+                                    ).result,
+                                ),
+                                arith.ConstantOp(
+                                    IntegerAttr.get(i32, REGION_W), None
+                                ).result,
+                            ),
+                        )
+
+                        def _kvo_slot(base):
+                            return arith.addi(_kvo(base), _rwv)
+
                     _rw = (ATTN_L - 1) * REGION_W  # this token's slot within a region
                     _apk = ChannelGet(
                         "appendK",
                         KV,
                         indices=[idx(0)],
-                        offsets=[_kvo(_rw)],
+                        offsets=[_kvo_slot(0) if DYNSEQ else _kvo(_rw)],
                         sizes=[idx(NGRP), idx(REGION_W)],
                         strides=[idx(REGION_STRIDE), idx(1)],
                     )
@@ -1160,7 +1231,13 @@ def build_module():
                         "appendV",
                         KV,
                         indices=[idx(0)],
-                        offsets=[_kvo(NGRP * REGION_STRIDE + _rw)],
+                        offsets=[
+                            (
+                                _kvo_slot(NGRP * REGION_STRIDE)
+                                if DYNSEQ
+                                else _kvo(NGRP * REGION_STRIDE + _rw)
+                            )
+                        ],
                         sizes=[idx(NGRP), idx(REGION_W)],
                         strides=[idx(REGION_STRIDE), idx(1)],
                     )
@@ -1170,7 +1247,11 @@ def build_module():
                             KV,
                             indices=[idx(gi)],
                             offsets=[_kvo(gi * REGION_STRIDE)],
-                            sizes=[idx(ATTN_ROUNDS), idx(16), idx(REGION_W)],
+                            sizes=[
+                                _ceil16(L_rt) if DYNSEQ else idx(ATTN_ROUNDS),
+                                idx(16),
+                                idx(REGION_W),
+                            ],
                             strides=[idx(16 * REGION_W), idx(REGION_W), idx(1)],
                         )
                         ChannelPut(
@@ -1178,7 +1259,11 @@ def build_module():
                             KV,
                             indices=[idx(gi)],
                             offsets=[_kvo((NGRP + gi) * REGION_STRIDE)],
-                            sizes=[idx(ATTN_ROUNDS), idx(16), idx(REGION_W)],
+                            sizes=[
+                                _ceil16(L_rt) if DYNSEQ else idx(ATTN_ROUNDS),
+                                idx(16),
+                                idx(REGION_W),
+                            ],
                             strides=[idx(16 * REGION_W), idx(REGION_W), idx(1)],
                         )
                 if ATTN and ROPE_ECHO:
@@ -1267,8 +1352,37 @@ def build_module():
                         )
                         yield_([])
 
-                @segment(name="seg", operands=[])
+                @segment(name="seg", operands=([L_rt] if DYNSEQ else []))
                 def seg_body(*_sa):
+                    # The context length reaches the attention herd from here as a herd
+                    # operand: an RTP slot the instruction stream writes per dispatch,
+                    # not a constant folded into the core ELF.
+                    _seg_L = _sa[0] if DYNSEQ else None
+
+                    def _seg_ceil16():
+                        if not DYNSEQ:
+                            return idx(ATTN_ROUNDS)
+                        _s = arith.addi(
+                            _seg_L,
+                            arith.ConstantOp(IntegerAttr.get(i32, 15), None).result,
+                        )
+                        _q = arith.divui(
+                            _s,
+                            arith.ConstantOp(IntegerAttr.get(i32, 16), None).result,
+                        )
+                        return arith.index_cast(idx_t, _q)
+
+                    def _core_ceil16(Lh):
+                        if not DYNSEQ:
+                            return idx(ATTN_ROUNDS)
+                        _s = arith.addi(
+                            Lh, arith.ConstantOp(IntegerAttr.get(i32, 15), None).result
+                        )
+                        _q = arith.divui(
+                            _s, arith.ConstantOp(IntegerAttr.get(i32, 16), None).result
+                        )
+                        return arith.index_cast(idx_t, _q)
+
                     # --- X memtile hop (col 1): get 512 -> broadcast 2x256 to 16 cores ---
                     # LOOPCLOSE: the X source is the convergent @xnorm (rms/attn-o/glu),
                     # NOT host toX. ONE count-free feed loop reads all 4 phases in order.
@@ -1874,7 +1988,8 @@ def build_module():
                         REGION_W  # 256 (= len(cus)*KVPC_DH for the single col-7 group)
                     )
                     for gi, (_gcol, _cus) in enumerate(ATTN_COL_GROUPS):
-                        for _b in for_(idx(0), idx(ATTN_ROUNDS), idx(1)):
+                        _kvfor = _for_no_pingpong if DYNSEQ else for_
+                        for _b in _kvfor(idx(0), _seg_ceil16(), idx(1)):
                             kb = AllocOp(kvcomb_l2, [], [])
                             kb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), ATTN_COL)
@@ -1932,7 +2047,7 @@ def build_module():
                         ChannelGet("toAttnQ", a_q, indices=[idx(cu)])
                         a_m = AllocOp(m_l1, [], [])
                         a_cc = AllocOp(c_l1, [], [])
-                        for _blk in for_(idx(0), idx(ATTN_ROUNDS), idx(1)):
+                        for _blk in for_(idx(0), _core_ceil16(Lh), idx(1)):
                             a_k = AllocOp(ak_l1, [], [])
                             ChannelGet("toK", a_k, indices=[idx(cu)])
                             blk_c = arith.index_cast(i32, _blk)
@@ -1950,7 +2065,7 @@ def build_module():
                         a_y = AllocOp(y_l1, [], [])
                         a_l = AllocOp(lden_l1, [], [])
                         a_o = AllocOp(ao_l1, [], [])
-                        for _blk in for_(idx(0), idx(ATTN_ROUNDS), idx(1)):
+                        for _blk in for_(idx(0), _core_ceil16(Lh), idx(1)):
                             a_v = AllocOp(av_l1, [], [])
                             ChannelGet("toV", a_v, indices=[idx(cu)])
                             blk_c = arith.index_cast(i32, _blk)
@@ -1992,13 +2107,21 @@ def build_module():
                             _leaf(ty, 1, shs[1], Lh, 2)  # ty2=qk, ty3=kv (CU1)
                             yield_([])
 
+                    # RTP-L: segment scope so this is a herd OPERAND (an RTP slot the
+                    # instruction stream writes, hence patchable per token), not a
+                    # herd-body constant that folds into the core ELF.
+                    _Lc = (
+                        _seg_L
+                        if DYNSEQ
+                        else arith.ConstantOp(IntegerAttr.get(i32, ATTN_L), None).result
+                    )
+
                     @herd(
                         name="attn",
                         sizes=[1, 2 * N_ATTN_CU],
-                        operands=[s_bufs[0].result, s_bufs[1].result],
+                        operands=[s_bufs[0].result, s_bufs[1].result, _Lc],
                     )
-                    def attn_h(_tx, _ty, _sx, _sy, s0, s1):
-                        Lh = arith.ConstantOp(IntegerAttr.get(i32, ATTN_L), None).result
+                    def attn_h(_tx, _ty, _sx, _sy, s0, s1, Lh):
                         _dispatch(_ty, [s0, s1], Lh)
 
                     attn_h.attributes["x_loc"] = IntegerAttr.get(T.i64(), ATTN_COL)
@@ -2237,6 +2360,9 @@ def run():
         use_lock_race_condition_fix_v2=True,
         coalesce_shim_dma=True,
         debug_ir=bool(int(_os.environ.get("QWEN_DEBUG_IR", "0"))),
+        # DYNSEQ: the runtime sequence holds a scalar, so the stream is built per
+        # dispatch from the emitted header instead of read from insts.bin.
+        emit_txn_cpp=bool(DYNSEQ),
     )
     print(
         f"[qwen_decode] proj grid {NCX}x{NCY}=16 cores cols "

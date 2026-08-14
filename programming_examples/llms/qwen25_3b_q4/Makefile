@@ -9,7 +9,7 @@
 # builds, run/gen/bench dispatch on the NPU.
 #
 #   make compile         — build/cache the prefill ELFs (no weights, no NPU dispatch)
-#   make compile-decode  — build the fused decode kernels + decode_qwen.xclbin
+#   make compile-decode  — build the fused decode kernels + the decode_L<N> template pair
 #   make run             — prefill "The capital of France is" -> expect " Paris"
 #   make gen             — end-to-end: NPU prefill -> KV hand-off -> NPU fused decode
 #   make bench           — warm TTFT at BENCH_L (default 2048)
@@ -36,11 +36,14 @@ DECODE_DRIVER  := $(DEC)/fused_decode_qwen.py
 HANDOFF        := $(DEC)/qwen_prefill_to_decode.py
 AIEOPT_DIR     := $(shell realpath $(dir $(shell which aie-opt))/..)
 
-# Decode context window. The device always appends this token's K/V at slot
-# ATTN_L-1 and attends over all ATTN_L slots, so the host keeps a sliding window
-# of exactly this many positions (see qwen_prefill_to_decode.py). The prompt fed
-# to `make gen` must therefore tokenize to at least ATTN_L tokens.
-ATTN_L      ?= 32
+# Decode context CAP. The attention herd takes L as a runtime operand (an RTP the
+# instruction stream writes), so the device attends over the real context and
+# appends at the real position; LBUILD only sizes the KV cache. Two templates one
+# apart are built so DecodeInstsGen can calibrate the per-token L slope. Any
+# prompt up to LBUILD works -- there is no minimum.
+LBUILD      ?= 256
+LREF        := $(shell echo $$(($(LBUILD) - 1)))
+ATTN_L      ?= $(LBUILD)
 # W_DUAL_CHAN feeds each proj column's weights on BOTH of its shim MM2S channels
 # and reorders the DDR cascade accordingly, so the build and the weight packer
 # must agree. The builder stamps decode_qwen.flags and the hand-off refuses a
@@ -66,14 +69,11 @@ DECODE_ENV      := QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$(ATTN_L) W_DUAL_CHAN=$(W_DUA
 # decode_qwen.flags, which records W_DUAL_CHAN for the *runtime* packer check and
 # whose single-line format the hand-off parses.)
 DECODE_STAMP := $(srcdir)/.decode_build_flags
-DECODE_FLAGS := MODEL_TYPE=QWEN2_5_3B NLAYERS=$(N_LAYERS) ATTN_L=$(ATTN_L) W_DUAL_CHAN=$(W_DUAL_CHAN)
+DECODE_FLAGS := MODEL_TYPE=QWEN2_5_3B NLAYERS=$(N_LAYERS) LBUILD=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN)
 
-# End-to-end generation demo. Prompt length is bounded on BOTH sides by the
-# window: below ATTN_L the hand-off cannot seed it (`ctx >= ATTN_L` asserts),
-# and above ATTN_L the head of the prompt slides out of context, so a much
-# longer prompt visibly degrades the continuation. 32 Qwen2.5 BPE tokens at the
-# default ATTN_L=32 -- see verify_prompts.txt for the same reasoning applied to
-# the correctness gate. Resize if you change ATTN_L.
+# End-to-end generation demo. The only bound now is the cache cap: the prompt
+# plus the generated tokens must fit in LBUILD positions. There is no minimum --
+# the decode attends over whatever context it actually has.
 N_GEN      ?= 16
 GEN_PROMPT ?= The capital city of France is called Paris, and the most famous landmark in the entire world is probably the very tall iron tower that stands right in the middle of
 KV_NPZ     ?= $(srcdir)/.kv_handoff.npz
@@ -81,13 +81,14 @@ KV_NPZ     ?= $(srcdir)/.kv_handoff.npz
 # ---- shared verify subsystem (programming_examples/llms/verify/) ----
 VERIFY_RUNNER  := $(srcdir)/../verify/verify_runner.py
 RUNNER_ADAPTER := qwen25_3b_q4.verify_adapter
-# This example's own prompt file: every line must be >= ATTN_L tokens, which the
-# shared verify/prompts/*.txt lines are not. See verify_prompts.txt for why.
+# This example's own prompt file. It predates the growing KV cache (it exists
+# because every line had to be >= ATTN_L tokens); kept so the gate's prompt set
+# stays comparable across runs.
 VERIFY_PROMPTS := $(srcdir)/verify_prompts.txt
 MODEL_CHOICE   ?= instruct
 MAX_PROMPTS    ?= 2
 
-.PHONY: help compile compile-decode _compile_decode_build run gen dump-kv bench \
+.PHONY: help compile compile-decode compile-decode-dynseq _compile_decode_build run gen dump-kv bench \
         weights verify verify-topk verify-topk-full verify-paris diagnosis \
         profile clean
 
@@ -97,7 +98,7 @@ help:
 	@echo "============================================================"
 	@echo ""
 	@echo "  make compile         Build/cache the prefill ELFs (CI-runnable, no weights)"
-	@echo "  make compile-decode  Build the fused decode (kernels + decode_qwen.xclbin, no weights)"
+	@echo "  make compile-decode  Build the fused decode (kernels + decode_L<N> templates, no weights)"
 	@echo "  make run             Prefill gate: 'The capital of France is' -> ' Paris'"
 	@echo "  make gen             End-to-end NPU prefill -> KV hand-off -> NPU fused decode"
 	@echo "  make bench           Warm prefill TTFT at BENCH_L=$(BENCH_L)"
@@ -106,14 +107,14 @@ help:
 	@echo "Correctness:"
 	@echo "  make verify          CI gate: prefill argmax (12095 ' Paris') + a full fused-decode generation"
 	@echo "  make verify-paris    Fast prefill-only weight-integrity smoke (no decode build)"
-	@echo "  make verify-topk     Top-k token-set gate vs HF bf16 (informational; 2/5 prompts pass today)"
+	@echo "  make verify-topk     Top-k token-set gate vs HF bf16 (informational; 4/5 prompts pass today)"
 	@echo "  make verify-topk-full  Same over every prompt in verify_prompts.txt"
 	@echo "  make diagnosis       Single-prompt lens through the shared runner (informational)"
 	@echo "  make profile         Perf capture (prefill TTFT + decode tok/s) for bench/extract_perf.py"
 	@echo ""
 	@echo "Options (override with make VAR=value):"
 	@echo "  N_LAYERS=$(N_LAYERS)        Transformer layers (prefill and decode)"
-	@echo "  ATTN_L=$(ATTN_L)           Decode context window (>= prompt length for gen)"
+	@echo "  LBUILD=$(LBUILD)           Decode KV cache cap (max prompt + generated tokens)"
 	@echo "  W_DUAL_CHAN=$(W_DUAL_CHAN)        Two-MM2S-channel weight feed per proj column"
 	@echo "  N_GEN=$(N_GEN)            Tokens generated by 'make gen'"
 
@@ -122,19 +123,45 @@ compile:
 	cd $(srcdir) && python3 $(PREFILL) --compile-only \
 		--seq-len $(SEQ_LEN) --n-layers $(N_LAYERS)
 
-## Build the fused Qwen decode: the Peano kernels (QWEN2_5_3B) + decode_qwen.xclbin.
+## Build the fused Qwen decode: the Peano kernels (QWEN2_5_3B) + two templates
+## one L apart, which is what calibrates the per-token L patch.
 ## Weight-free (everything is a runtime BO), like `make compile`.
 ##
 ## Idempotent: skipped when the xclbin, its instruction stream and a matching
 ## build-flag stamp are all present. `make clean` forces a rebuild.
 compile-decode:
-	@if [ -f $(DEC)/decode_qwen.xclbin ] && [ -f $(DEC)/decode_qwen.insts.bin ] \
+	@if [ -f $(srcdir)/decode_L$(LBUILD).xclbin ] && [ -f $(srcdir)/decode_L$(LBUILD).insts.bin ] \
+	    && [ -f $(srcdir)/decode_L$(LREF).xclbin ] && [ -f $(srcdir)/decode_L$(LREF).insts.bin ] \
 	    && [ "`cat $(DECODE_STAMP) 2>/dev/null`" = "$(DECODE_FLAGS)" ]; then \
-	  echo "Qwen decode already built ($(DECODE_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
+	  echo "Qwen decode already built (decode_L$(LBUILD) + decode_L$(LREF), $(DECODE_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
 	else \
 	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build \
 	    && echo "$(DECODE_FLAGS)" > $(DECODE_STAMP); \
 	fi
+
+## Dynamic-runtime-sequence template: ONE build for every context length (see
+## fused_decode/Makefile compile-decode-dynseq). Run with DECODE_DYNSEQ=1.
+compile-decode-dynseq:
+	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
+	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
+	@echo ">>> qwen non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
+	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
+	@echo ">>> qwen attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
+	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
+	@echo ">>> qwen dynseq template decode_dyn_L$(LBUILD)"
+	@cd $(DEC) && QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN) \
+	  DECODE_DYNSEQ=1 python3 $(DECODE_DRIVER) >/tmp/qwen_decode_dyn_L$(LBUILD).log 2>&1; \
+	  if [ -f $(DEC)/decode_qwen.xclbin ] && [ -f $(DEC)/air_project/npu.air.txn.h ]; then \
+	    mv -f $(DEC)/decode_qwen.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
+	    cp -f $(DEC)/air_project/npu.air.txn.h $(srcdir)/decode_dyn_L$(LBUILD).txn.h; \
+	    mv -f $(DEC)/decode_qwen.flags $(srcdir)/decode_dyn_L$(LBUILD).flags 2>/dev/null || true; \
+	    rm -f $(DEC)/npu_seq_*.mlir; \
+	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/qwen_decode_dyn_L$(LBUILD).log)"; \
+	    tail -30 /tmp/qwen_decode_dyn_L$(LBUILD).log; exit 1; fi
+	@echo "Qwen dynseq build complete: decode_dyn_L$(LBUILD). Run with DECODE_DYNSEQ=1."
 
 _compile_decode_build:
 	@# Delegate the llvm-link version preflight to the engine that owns it rather
@@ -152,13 +179,22 @@ _compile_decode_build:
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
-	@echo ">>> qwen decode xclbin ($(DECODE_FLAGS))"
-	@cd $(DEC) && $(DECODE_ENV) python3 $(DECODE_DRIVER) >/tmp/qwen_decode_L$(ATTN_L).log 2>&1; \
-	  if [ -f decode_qwen.xclbin ] && [ -f decode_qwen.insts.bin ]; then \
-	    grep -h '\[qwen_decode\] emitted' /tmp/qwen_decode_L$(ATTN_L).log; \
-	  else echo "decode_qwen FAILED (see /tmp/qwen_decode_L$(ATTN_L).log)"; \
-	    tail -30 /tmp/qwen_decode_L$(ATTN_L).log; exit 1; fi
-	@echo "Qwen decode build complete: decode_qwen.xclbin + decode_qwen.insts.bin."
+	@# Two templates one L apart, into THIS example's dir. They must not land in
+	@# $(DEC): DecodeInstsGen discovers templates by scanning for decode_L*, so a
+	@# Qwen pair sitting next to the Llama decode_L2048 pair would be picked up as
+	@# another window of the same model.
+	@for W in $(LBUILD) $(LREF); do \
+	  echo ">>> qwen decode template decode_L$$W (NLAYERS=$(N_LAYERS) W_DUAL_CHAN=$(W_DUAL_CHAN))"; \
+	  cd $(DEC) && QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$$W W_DUAL_CHAN=$(W_DUAL_CHAN) \
+	    python3 $(DECODE_DRIVER) >/tmp/qwen_decode_L$$W.log 2>&1; \
+	  if [ -f $(DEC)/decode_qwen.xclbin ] && [ -f $(DEC)/decode_qwen.insts.bin ]; then \
+	    mv -f $(DEC)/decode_qwen.xclbin $(srcdir)/decode_L$$W.xclbin; \
+	    mv -f $(DEC)/decode_qwen.insts.bin $(srcdir)/decode_L$$W.insts.bin; \
+	    mv -f $(DEC)/decode_qwen.flags $(srcdir)/decode_L$$W.flags; \
+	  else echo "decode_L$$W FAILED (see /tmp/qwen_decode_L$$W.log)"; \
+	    tail -30 /tmp/qwen_decode_L$$W.log; exit 1; fi; \
+	done
+	@echo "Qwen decode build complete: decode_L$(LBUILD) + decode_L$(LREF) templates."
 
 ## First-token gate: prefill "The capital of France is"; PASS iff argmax == 12095.
 run:
@@ -172,14 +208,13 @@ dump-kv:
 		--prompt "$(GEN_PROMPT)" --dump-kv $(KV_NPZ)
 
 ## End-to-end: NPU prefill -> KV hand-off -> N_GEN tokens on the fused NPU decode.
-## No reference model in the loop. When the prompt fits the decode window
-## (len <= ATTN_L, which the default GEN_PROMPT is sized for) the decode's first
-## token equals the prefill's own argmax, and that is the cross-check that the
-## hand-off is exact. For a longer prompt the two legitimately differ: the
-## prefill attended over all of it, the decode only over the last ATTN_L
-## positions.
+## No reference model in the loop. The decode's first token equals the prefill's
+## own argmax, which is the cross-check that the hand-off is exact -- and now
+## holds for ANY prompt that fits the cache, since both sides see the same
+## context (they used to diverge once the prompt outgrew the decode's window).
 gen: dump-kv
-	cd $(DEC) && $(DECODE_ENV) python3 $(HANDOFF) --kv $(KV_NPZ) --n-gen $(N_GEN)
+	cd $(DEC) && $(DECODE_ENV) python3 $(HANDOFF) --kv $(KV_NPZ) --n-gen $(N_GEN) \
+		--templates $(srcdir)
 
 ## Warm TTFT benchmark (+ per-ELF profile).
 bench:
@@ -196,8 +231,10 @@ weights:
 # WHY `verify` IS NOT THE TOP-K GATE HERE (it is for the Llama Q4NX examples).
 # The shared top-k gate demands that, at the first token where NPU and HF bf16
 # disagree, each side's pick is in the other's top-5. Measured on this design:
-# 2/5 prompts pass. The decode itself is sound -- `make gen` produces "the city.
-# Paris. The tower is called the Eiffel Tower, after" -- but greedy runs of a
+# 4/5 prompts pass (2/5 before the decode grew a real KV cache; the head of a
+# 32+ token prompt used to slide out of context). The decode itself is sound --
+# `make gen` produces "the city. It is called the Eiffel Tower, and it was
+# built" -- but greedy runs of a
 # Q4_0 36-layer model and a bf16 reference diverge early on open-ended
 # continuations, and near-ties there fall outside top-5. Gating CI on that would
 # be red, and loosening k or hand-picking prompts until it passed would make the
@@ -255,6 +292,8 @@ profile: bench gen
 clean:
 	rm -rf $(srcdir)/_q4_cache_seq* $(srcdir)/__pycache__ 2>/dev/null || true
 	rm -f $(DECODE_STAMP) $(KV_NPZ) 2>/dev/null || true
+	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
+	      $(srcdir)/decode_L*.flags 2>/dev/null || true
 	rm -f $(DEC)/decode_qwen.xclbin $(DEC)/decode_qwen.insts.bin \
 	      $(DEC)/decode_qwen.flags 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \

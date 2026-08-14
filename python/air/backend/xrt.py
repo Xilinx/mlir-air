@@ -71,6 +71,7 @@ class XRTCompileArtifact:
         output_binary,
         kernel,
         insts,
+        txn_header=None,
     ):
         """
         Constructor for an XRTCompileArtifact
@@ -79,10 +80,15 @@ class XRTCompileArtifact:
             output_binary: output binary file name/path (.xclbin, .elf, or .txn)
             kernel: kernel name
             insts: instruction file name/path
+            txn_header: path to the C++ TXN builder, when emit_txn_cpp was set.
+                A runtime-valued access pattern cannot be frozen into insts, so
+                the stream is assembled per dispatch from this header instead
+                (see air.backend.txn_builder.TxnBuilder).
         """
         self.output_binary = output_binary
         self.kernel = kernel
         self.insts = insts
+        self.txn_header = txn_header
 
 
 class XRTBackend(AirBackend):
@@ -111,6 +117,7 @@ class XRTBackend(AirBackend):
         xclbin_input: str = "",
         num_device_cols: int = 0,
         debug_ir: bool = False,
+        emit_txn_cpp: bool = False,
         bf16_emulation: bool = False,
         stack_size: int = 1024,
         n_perf_iters: int = 0,
@@ -142,6 +149,11 @@ class XRTBackend(AirBackend):
                 For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
             debug_ir: enable debug mode to emit IR after each individual pass for fine-grained inspection.
                 IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
+            emit_txn_cpp: also emit a C++ TXN builder that assembles the instruction
+                stream at dispatch from the runtime sequence's scalar arguments. Set
+                this when an access pattern has a runtime-valued extent, which a
+                frozen insts.bin cannot represent. The path lands on the returned
+                artifact's txn_header.
             bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
             stack_size: stack size in bytes per AIE core (default: 1024). Increase when
                 kernels have deep call chains (e.g., scalar fdiv needs ~1152 bytes).
@@ -184,6 +196,7 @@ class XRTBackend(AirBackend):
         self.xclbin_input = xclbin_input
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
+        self.emit_txn_cpp = emit_txn_cpp
         self.bf16_emulation = bf16_emulation
         if not isinstance(n_perf_iters, int) or n_perf_iters < 0:
             raise ValueError("`n_perf_iters` must be a non-negative integer")
@@ -434,6 +447,9 @@ class XRTBackend(AirBackend):
             if self.debug_ir:
                 aircc_options += ["--debug-ir"]
 
+            if self.emit_txn_cpp:
+                aircc_options += ["--emit-txn-cpp"]
+
             if self.bf16_emulation:
                 aircc_options += ["--bf16-emulation"]
 
@@ -486,7 +502,21 @@ class XRTBackend(AirBackend):
         else:
             elf_kernel = kernel
 
-        return XRTCompileArtifact(output_binary, elf_kernel, insts)
+        txn_header = None
+        if self.emit_txn_cpp:
+            # aircc names it after the input it was handed, in its tmpdir.
+            txn_header = os.path.join("air_project", "npu.air.txn.h")
+            if not os.path.exists(txn_header):
+                raise AirBackendError(
+                    f"emit_txn_cpp was set but aircc produced no {txn_header}"
+                )
+            # There is no insts.bin to name: a sequence holding a runtime scalar
+            # cannot be frozen into one, which is the whole point of the builder.
+            # Say so in the artifact rather than hand back a path that cannot
+            # exist.
+            insts = None
+
+        return XRTCompileArtifact(output_binary, elf_kernel, insts, txn_header)
 
     def compile_from_torch_mlir(
         self,
@@ -670,7 +700,15 @@ class XRTBackend(AirBackend):
 
         else:
             # xclbin loading path - original implementation
-            if not os.path.isfile(artifact.insts):
+            if artifact.insts is None and artifact.txn_header:
+                raise AirBackendError(
+                    "This artifact was built with emit_txn_cpp, so its instruction "
+                    "stream is assembled per dispatch and there is no insts.bin to "
+                    f"load. Build it from {artifact.txn_header} with "
+                    "air.backend.txn_builder.TxnBuilder and drive the kernel "
+                    "directly."
+                )
+            if not artifact.insts or not os.path.isfile(artifact.insts):
                 raise AirBackendError(
                     f"Cannot load XRTCompileArtifact because {artifact.insts} insts file does not exist"
                 )

@@ -205,9 +205,12 @@ class FusedDecode3B:
         self.embed = np.asarray(embed, np.float32).reshape(self.VOCAB_SIZE, self.K)
         final_norm = np.asarray(final_norm, bfloat16)
 
-        from decode_insts_gen import DecodeInstsGen
+        import decode_dynseq as _dyn
+        from decode_dynseq import pick_insts_gen
 
-        self.gen = DecodeInstsGen(str(templates), max_L=max_L)
+        self._dyn = _dyn
+
+        self.gen = pick_insts_gen(str(templates), max_L=max_L)
         # Staircase: hold every calibrated ATTN_MAXL window and run on the smallest one
         # covering the current L. The compiled KV readback streams ATTN_MAXL positions
         # whatever L is, so a smaller window moves proportionally fewer DDR bytes/token.
@@ -351,6 +354,7 @@ class FusedDecode3B:
             self.r_bo,
             self.y_bo,
             self.kvc,
+            *self._dyn.dispatch_args(self.gen, p + 1),
         ).wait(60000)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")

@@ -80,7 +80,7 @@ W_DUAL_CHAN ?= 1
 export W_DUAL_CHAN
 
 
-.PHONY: help compile compile-prefill compile-decode _compile_decode_build prefill \
+.PHONY: help compile compile-prefill compile-decode compile-decode-dynseq _compile_decode_build prefill \
         run ask verify verify-paris profile profile-prefill gen clean
 
 help:
@@ -143,6 +143,29 @@ compile-decode-windows:
 	done
 	@echo "$(WINDOWS)" > $(DECODE_WINDOWS_STAMP)
 	@echo "Staircase templates built (ATTN_MAXL: $(WINDOWS)). Run with DECODE_STAIRCASE=1."
+
+## Dynamic-runtime-sequence template: ONE build for every context length. The
+## context length becomes a runtime scalar, so a single xclbin plus the emitted
+## TXN builder serves any L and the readback moves only this token's context.
+## Run with DECODE_DYNSEQ=1. No pair: there is no slope to calibrate.
+compile-decode-dynseq:
+	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
+	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
+	@echo ">>> gemma non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
+	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
+	@echo ">>> gemma attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
+	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
+	@echo ">>> gemma dynseq template decode_dyn_L$(LBUILD)"
+	@cd $(DEC) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_GOLDEN_L=$(LBUILD) python3 $(DECODE_DRIVER) >/tmp/gemma_decode_dyn_L$(LBUILD).log 2>&1; \
+	  if [ -f decode.xclbin ] && [ -f air_project/npu.air.txn.h ]; then \
+	    mv -f decode.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
+	    cp -f air_project/npu.air.txn.h $(srcdir)/decode_dyn_L$(LBUILD).txn.h; \
+	    rm -f npu_seq_*.mlir; \
+	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/gemma_decode_dyn_L$(LBUILD).log)"; tail -30 /tmp/gemma_decode_dyn_L$(LBUILD).log; exit 1; fi
+	@echo "Gemma dynseq build complete: decode_dyn_L$(LBUILD). Run with DECODE_DYNSEQ=1."
 
 _compile_decode_build:
 	@# Delegate the llvm-link version preflight to the engine that owns it rather

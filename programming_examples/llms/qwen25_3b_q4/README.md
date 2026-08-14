@@ -17,7 +17,7 @@ relationship `llama32_1b_q4nx` has to `llama32_1b`); this example supplies the
 | First token, `"The capital of France is"`, 36 layers on NPU2 | **argmax 12095 = `" Paris"`** — PASS |
 | Warm TTFT @ seq_len=2048 | **4.17 s** (491 tok/s prefill), NPU-dispatch 4.17 s, host 5 ms |
 | End-to-end NPU prefill -> NPU fused decode, 36 layers, no reference model | coherent text, **12.2 tok/s** device-only decode |
-| Top-k token-set inclusion vs HF bf16 (`make verify-topk-full`) | 2/5 prompts — informational, not the CI gate ([why](#why-verify-is-not-the-top-k-gate-here)) |
+| Top-k token-set inclusion vs HF bf16 (`make verify-topk-full`) | 4/5 prompts — informational, not the CI gate ([why](#why-verify-is-not-the-top-k-gate-here)) |
 
 The 36 transformer layers run on the NPU for both prefill and decode. The final
 RMSNorm + LM-head projection and the argmax still run on the host each decode
@@ -73,7 +73,7 @@ QKV bias, no QK-norm.
 
 ```bash
 make compile          # build/cache the prefill ELFs (no weights, no NPU)
-make compile-decode   # build the fused decode kernels + decode_qwen.xclbin (no weights)
+make compile-decode   # build the fused decode kernels + decode_L<N> templates (no weights)
 make run              # first-token gate -> " Paris"
 make gen              # end-to-end: NPU prefill -> KV hand-off -> NPU fused decode
 make bench BENCH_L=2048   # warm TTFT + per-ELF profile
@@ -94,10 +94,10 @@ The Llama Q4NX examples gate on the shared top-k check: at the first token where
 NPU and HF bf16 disagree, each side's pick must be in the other's top-5. That
 path is fully wired up here — [`verify_adapter.py`](verify_adapter.py) binds the
 Q4_0 prefill and the fused decode to the shared runner contract — but it scores
-**2/5 prompts** today.
+**4/5 prompts** today (2/5 before the decode grew a real KV cache).
 
 That is not a broken decode. `make gen` produces
-*" the city. Paris. The tower is called the Eiffel Tower, after"*. What fails is
+*" the city. It is called the Eiffel Tower, and it was built"*. What fails is
 strictness: a Q4_0 36-layer model and a bf16 reference free-running greedily
 diverge within a few tokens on open-ended continuations, and the near-ties at the
 divergence point fall outside top-5. Gating CI on that would be permanently red,
@@ -112,12 +112,10 @@ mechanism exists to prevent and the reason the other three Q4NX designs each
 carry one.
 
 `verify-topk` uses this example's own [`verify_prompts.txt`](verify_prompts.txt)
-rather than the shared `verify/prompts/*.txt`, and every line there is 32–34
-tokens. The fused decode is a sliding window of exactly `ATTN_L` (=32): shorter
-prompts cannot seed it at all, and longer ones push the head of the prompt out of
-context so the NPU answers from a truncation the reference never sees (at 37
-tokens the gate fails because *"A graphics **processing** unit"* has already slid
-out).
+rather than the shared `verify/prompts/*.txt`. That file predates the growing KV
+cache, when the decode was a fixed 32-slot sliding window and every line had to be
+32–34 tokens; it is kept so the gate's prompt set stays comparable across runs.
+Any prompt that fits the cache cap works now.
 
 Weights are downloaded from HuggingFace on first use and cached under
 `~/.cache/huggingface/hub/`. Override with `--model` or
@@ -169,18 +167,23 @@ its geometry from the environment at import and defaults to 1 layer (a fast
 lowering check), so omitting it packs a 1-layer weight stream for a 36-layer
 xclbin.
 
-**Context window.** The decode attends over exactly `ATTN_L` (=32) slots and
-appends at slot `ATTN_L-1`, so the host keeps a sliding window of the last 32
-positions. The prompt must therefore be at least 32 tokens. A prompt longer than
-the window is truncated to its tail from the decode's point of view, which is
-also why the decode's first token need not equal the prefill's argmax when
-`ctx > ATTN_L`: the prefill attended over all `ctx` positions, the decode over
-the last 32. They agree exactly when `ctx == ATTN_L`, which is the cross-check
-the adapter warns on.
+**Context.** The decode grows a KV cache inside a build-time cap. The attention
+herd takes the context length `L` as a scalar operand, which AIR gives an RTP slot
+the runtime sequence writes, so `DecodeInstsGen` rewrites the RTP-L words and the
+KV-append offset per token from one template pair -- the same per-token
+specialization the Llama Q4NX decodes use. The device therefore appends at the
+real position and attends over the real context: any prompt up to `LBUILD` works,
+with no minimum, and the decode's first token always equals the prefill's argmax
+(the cross-check the adapter warns on).
 
-Measured: prompt *"The capital city of France is called Paris, ... the very tall
-iron tower that stands right"* -> *" in the middle. The Eiffel Tower. The tower
-is 33"*, 104.8 ms/token device.
+This replaced a fixed 32-slot sliding window that could not run a prompt shorter
+than 32 tokens and silently dropped the head of a longer one. `make compile-decode
+LBUILD=<N>` sets the cap; it costs two builds, one L apart, to calibrate the
+slope.
+
+Measured: prompt *"The capital city of France is called Paris, ... that stands
+right in the middle of"* -> *" the city. It is called the Eiffel Tower, and it
+was built"*, 106.0 ms/token device at LBUILD=256.
 
 ## Files
 
@@ -190,6 +193,6 @@ is 33"*, 104.8 ms/token device.
 | `qwen25_3b_q4_prefill.py` | `Qwen25Q4Prefill` — compile/preload/prefill/KV-cache/bench |
 | `Makefile` | compile / compile-decode / run / gen / verify / bench / weights / clean |
 | `verify_adapter.py` | Binds the prefill + fused decode to the shared `verify/` runner contract |
-| `verify_prompts.txt` | Prompts for `make verify` (>= ATTN_L tokens each; see above) |
+| `verify_prompts.txt` | Prompts for `make verify` (32–34 tokens each; see above) |
 | `run_npu2_*.lit` | CI gates: prefill compile, decode compile, verify, profile |
 | `../../fused_decode/qwen_prefill_to_decode.py` | `QwenFusedDecoder` (KV hand-off + per-token dispatch) and its CLI |

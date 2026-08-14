@@ -269,6 +269,18 @@ static cl::opt<OutputFormatKind> outputFormat(
                clEnumValN(OF_none, "none", "Compile-only, no binary output")),
     cl::init(OF_xclbin), cl::cat(airCompilerOptions));
 
+// Emit a C++ TXN builder alongside the usual artifacts. A runtime-valued
+// access pattern (e.g. a KV readback whose extent is the context length) leaves
+// a scalar in the runtime sequence, and a frozen insts.bin cannot represent it:
+// the stream has to be assembled at dispatch. aie-translate --aie-npu-to-cpp
+// emits exactly that builder, but nothing in the AIR flow reached it.
+static cl::opt<bool>
+    emitTxnCpp("emit-txn-cpp",
+               cl::desc("Also emit a C++ TXN builder (<output>.txn.h) that "
+                        "assembles the instruction stream at runtime from the "
+                        "runtime sequence's scalar arguments"),
+               cl::init(false), cl::cat(airCompilerOptions));
+
 static cl::opt<std::string> kernelName("xclbin-kernel-name",
                                        cl::desc("Kernel name in xclbin file"),
                                        cl::init(""),
@@ -742,6 +754,58 @@ static OwningOpRef<ModuleOp> cloneModule(ModuleOp moduleOp) {
 //===----------------------------------------------------------------------===//
 // GPU Compilation Pipeline
 //===----------------------------------------------------------------------===//
+
+// Emit the C++ TXN builder from the per-sequence module aiecc itself lowered.
+//
+// Re-running the npu-dialect passes on a copy looks equivalent and is not: by
+// the time aiecc reaches that lowering it has also assigned lock ids, buffer
+// descriptor ids, tile controller ids and buffer addresses, and the DMA
+// lowering reads all of them. A shortcut pipeline silently drops, among other
+// things, the controller-id mask write that tags a transfer's completion token
+// -- so every TCT wait in the emitted stream waits for a token that never
+// matches. Ask aiecc for the module it actually translated instead.
+static LogicalResult emitTxnCppBuilder(StringRef seqFile,
+                                       StringRef headerFile) {
+  auto aieTranslate = sys::findProgramByName("aie-translate");
+  if (!aieTranslate) {
+    llvm::errs() << "Error: --emit-txn-cpp needs aie-translate on PATH\n";
+    return failure();
+  }
+  std::string out;
+  if (failed(runCommandCaptureOutput(
+          {*aieTranslate, "--aie-npu-to-cpp", seqFile.str()}, out)))
+    return failure();
+  std::error_code ec;
+  llvm::raw_fd_ostream os(headerFile, ec);
+  if (ec) {
+    llvm::errs() << "Error: cannot write " << headerFile << ": " << ec.message()
+                 << "\n";
+    return failure();
+  }
+  os << out;
+  os.close();
+  if (verbose)
+    llvm::outs() << "TXN builder written to: " << headerFile << "\n";
+  return success();
+}
+
+// The per-sequence modules aiecc emitted for this run. The artifact name is
+// templated on the sequence key, so the file lands next to aiecc's other --get
+// outputs rather than at a name aircc chose. Directory iteration order is not
+// stable, so sort: which sequence the builder is emitted for must not vary
+// between two runs of the same compile.
+static void collectNpuSeqFiles(StringRef dir,
+                               SmallVectorImpl<std::string> &out) {
+  std::error_code ec;
+  size_t first = out.size();
+  for (sys::fs::directory_iterator it(dir, ec), e; it != e && !ec;
+       it.increment(ec)) {
+    StringRef name = sys::path::filename(it->path());
+    if (name.starts_with("npu_seq_") && name.ends_with(".mlir"))
+      out.push_back(it->path());
+  }
+  std::sort(out.begin() + first, out.end());
+}
 
 static LogicalResult runGpuCompilation() {
   SmallString<256> baseName(sys::path::stem(inputFilename));
@@ -1334,7 +1398,13 @@ static LogicalResult runAieCompilation() {
     // - PDI: sidecar insts file needed by the alternative runtime to program
     //   shim DMAs at dispatch time.
     // - xclbin/txn: always needed.
-    if (outputFormat != OF_elf && outputFormat != OF_none) {
+    // A runtime sequence holding a scalar cannot be frozen into insts.bin at
+    // all -- aiecc rightly refuses a non-constant write32 -- so ask for the
+    // lowered per-sequence module instead and hand that to the TXN builder.
+    // The host assembles the stream from it per dispatch.
+    if (emitTxnCpp) {
+      aieccCmd.push_back("--get=npu_seq_{0}.mlir");
+    } else if (outputFormat != OF_elf && outputFormat != OF_none) {
       aieccCmd.push_back("--get-npu-insts");
       aieccCmd.push_back("--npu-insts-name=" + instsFile);
     }
@@ -1389,6 +1459,33 @@ static LogicalResult runAieCompilation() {
 
     if (failed(runCommand(aieccCmd)))
       return failure();
+
+    if (emitTxnCpp) {
+      SmallVector<std::string> seqFiles;
+      collectNpuSeqFiles(".", seqFiles);
+      collectNpuSeqFiles(tmpDir, seqFiles);
+      if (seqFiles.empty()) {
+        llvm::errs() << "Error: --emit-txn-cpp requested but aiecc produced no "
+                        "npu_seq_*.mlir\n";
+        return failure();
+      }
+      SmallString<256> headerFile(tmpDir);
+      sys::path::append(headerFile, "npu." + airMlirFilename);
+      sys::path::replace_extension(headerFile, "txn.h");
+      // One runtime sequence per header: a design with several would need the
+      // host to pick among them, and none of the decoders has more than one.
+      // Picking one silently would hand the host a builder for whichever
+      // sequence sorted first, so make it an error rather than a warning.
+      if (seqFiles.size() > 1) {
+        llvm::errs() << "Error: --emit-txn-cpp found " << seqFiles.size()
+                     << " runtime sequences and cannot choose between them:\n";
+        for (StringRef f : seqFiles)
+          llvm::errs() << "  " << f << "\n";
+        return failure();
+      }
+      if (failed(emitTxnCppBuilder(seqFiles.front(), headerFile)))
+        return failure();
+    }
 
   } else {
     // --- Non-NPU path (Versal/legacy) ---

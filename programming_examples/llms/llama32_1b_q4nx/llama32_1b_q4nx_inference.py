@@ -250,13 +250,21 @@ def _compile_only(seq_len=2048):
 
 # ------------------------------------------------------------------ fused decoder
 def _pick_decode_gen(dec_dir, max_L=None):
-    """Return the decode insts generator: the compile-time decode_L<M> template
-    (DecodeInstsGen, ATTN_MAXL=2048, masked-block skip) that serves every L in
-    [1, 2048]. This is the only decode path (the runtime-L rt128 path was removed)."""
-    sys.path.insert(0, str(dec_dir))
-    from decode_insts_gen import DecodeInstsGen
+    """Return the decode insts generator.
 
-    return DecodeInstsGen(str(dec_dir), max_L=max_L)
+    Default: the compile-time decode_L<M> template (DecodeInstsGen, ATTN_MAXL=2048,
+    masked-block skip) serving every L in [1, 2048] by extrapolating its
+    L-dependent words.
+
+    DECODE_DYNSEQ=1: a build that takes the context length as a runtime scalar, so
+    the stream is assembled per token from the compiler-emitted TXN builder. The
+    readback then moves this token's context instead of the padded ATTN_MAXL --
+    what the staircase approximates with a template per window, exactly and from a
+    single build."""
+    sys.path.insert(0, str(dec_dir))
+    from decode_dynseq import pick_insts_gen
+
+    return pick_insts_gen(dec_dir, max_L=max_L)
 
 
 class FusedDecoder:
@@ -491,8 +499,21 @@ class FusedDecoder:
         # per-token full-y zeroing (ny int16 write + sync) is unnecessary.
         _t_io = _tk() - _a
         _a = _tk()
+        # A dynseq build's runtime sequence takes the context length as a trailing
+        # scalar, so the kernel signature carries it. The value the hardware acts on
+        # is already assembled into the stream above; this keeps the arity right.
+        import decode_dynseq as _dyn
+
         st = self.kern(
-            3, self.ib, insts_size, self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc
+            3,
+            self.ib,
+            insts_size,
+            self.x_bo,
+            self.w_bo,
+            self.r_bo,
+            self.y_bo,
+            self.kvc,
+            *_dyn.dispatch_args(self.gen, L),
         ).wait(60000)
         _t_dev = _tk() - _a
         _a = _tk()

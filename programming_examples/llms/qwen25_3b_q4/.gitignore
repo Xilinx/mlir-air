@@ -9,3 +9,10 @@ build_*/
 # Fused-decode build stamp + the prefill->decode KV hand-off cache (`make gen`).
 .decode_build_flags
 .kv_handoff.npz
+
+# Decode templates built here by `make compile-decode` (the decode_L<N> pair the
+# per-token insts patch calibrates from). They live in this directory rather than
+# fused_decode/ so DecodeInstsGen's decode_L* scan cannot mix them with another
+# model's templates.
+decode_L*.insts.bin
+decode_L*.flags

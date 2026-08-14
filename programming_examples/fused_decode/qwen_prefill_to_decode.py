@@ -25,12 +25,14 @@
 # Same element order, so the hand-off is a slice, not a shuffle -- the check
 # below asserts that rather than assuming it.
 #
-# SLIDING WINDOW. The device always appends this token's K/V at slot ATTN_L-1
-# and attends over all ATTN_L slots, so the host keeps a window of exactly the
-# last ATTN_L positions and shifts it left after every token. Seeding it with
-# the LAST ATTN_L rows of the prefill (absolute positions ctx-ATTN_L .. ctx-1)
-# keeps RoPE consistent -- RoPE is absolute, so a cached entry carries the
-# roping of the position it was computed at.
+# GROWING CACHE. The decode attends over a runtime context length: the attention
+# herd takes L as a scalar operand, which AIR gives an RTP slot the runtime
+# sequence writes, so `DecodeInstsGen` rewrites both the RTP-L words and the
+# KV-append offset per token (the same per-token specialization the Llama Q4NX
+# decodes use). The cache is device-resident and grows in place -- token at
+# absolute position p is appended at slot p and positions >= L are masked in
+# kernel -- so the context is bounded by the build's ATTN_MAXL, not by a window
+# the host has to shift. Prompts shorter than ATTN_MAXL are fine.
 #
 # The generation loop lives in `QwenFusedDecoder`, not in main(), so the shared
 # verify subsystem can drive it one token at a time: `seed_kv()` + `dispatch()`
@@ -38,14 +40,14 @@
 # what llms/qwen25_3b_q4/verify_adapter.py binds to. main() is a thin CLI over it.
 #
 #   cd programming_examples/llms/qwen25_3b_q4
-#   make compile-decode          # kernels + decode_qwen.xclbin
+#   make compile-decode          # kernels + decode_L<LBUILD> template pair
 #   make gen                     # prefill -> hand-off -> N_GEN tokens
 #
 # or by hand:
 #
-#   python3 qwen25_3b_q4_prefill.py --dump-kv /tmp/kv.npz --prompt "<32+ tokens>"
+#   python3 qwen25_3b_q4_prefill.py --dump-kv /tmp/kv.npz --prompt "..."
 #   cd ../../fused_decode
-#   QWEN_NLAYERS=36 python3 fused_decode_qwen.py      # 36-layer xclbin
+#   QWEN_NLAYERS=36 ATTN_L=32 python3 fused_decode_qwen.py   # one template
 #   QWEN_NLAYERS=36 python3 qwen_prefill_to_decode.py --kv /tmp/kv.npz --n-gen 16
 import argparse
 import os
@@ -59,6 +61,7 @@ from ml_dtypes import bfloat16
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fused_decode_qwen as m  # noqa: E402
 import qwen25_3b_requant as qr  # noqa: E402
+import decode_staircase as _stair  # noqa: E402
 
 TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
 FR = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
@@ -123,23 +126,44 @@ def _check_w_dual_chan_stamp(xclbin):
 class QwenFusedDecoder:
     """One-dispatch-per-token Qwen2.5-3B decode over the fused NPU superkernel.
 
-    Owns the resident BOs, the token-invariant Q4_0 weight stream and the host
-    sliding KV window. Two entry points, matching llama32_1b_q4nx's FusedDecoder
-    so the shared verify Runner contract can bind to either:
+    Owns the resident BOs, the token-invariant Q4_0 weight stream and the
+    device-resident KV cache. Two entry points, matching llama32_1b_q4nx's
+    FusedDecoder so the shared verify Runner contract can bind to either:
 
-        seed_kv(K, V, ctx)      seed the window from a prefill's KV cache
+        seed_kv(K, V, ctx)      seed positions 0..ctx-1 from a prefill's KV cache
         dispatch(token, pos)    one token -> logits [VOCAB]
 
     Construction packs 36 layers of Q4_0 weights on the host (~1 min) and writes
     them to the device once; they never change again.
     """
 
-    def __init__(self, xclbin="decode_qwen.xclbin", insts="decode_qwen.insts.bin"):
+    def __init__(self, templates=None, max_L=None):
         self.NL = m.NLAYERS
-        # ATTN_MAXL is the decode's fixed context window: the device attends over
-        # exactly this many slots and appends at slot ATTN_MAXL-1.
-        self.ATTN_MAXL = m.ATTN_L
+        import decode_dynseq as _dyn
+        from decode_dynseq import pick_insts_gen
+
+        self._dyn = _dyn
+
+        # Template pair (decode_L<N> + an adjacent same-ATTN_MAXL build) rather than
+        # one frozen stream: the pair calibrates the per-token L slope. ATTN_MAXL is
+        # the context CAP now, not the context -- the runtime L is what the device
+        # attends over. DECODE_DYNSEQ=1 instead takes a single build whose sequence
+        # is assembled per token, with no pair and nothing to calibrate.
+        self.gen = pick_insts_gen(
+            templates or os.path.dirname(os.path.abspath(__file__)), max_L=max_L
+        )
+        self.ATTN_MAXL = self.gen.attn_maxl
+        # The KV geometry below comes from the builder module, whose ATTN_L is read
+        # from the environment at import. If that disagrees with the template the
+        # offsets are wrong by a region stride -- silent garbage, so check it.
+        if m.ATTN_MAXL != self.ATTN_MAXL:
+            raise RuntimeError(
+                f"template ATTN_MAXL={self.ATTN_MAXL} but the builder module was "
+                f"imported with ATTN_L={m.ATTN_L} (ATTN_MAXL={m.ATTN_MAXL}). Set "
+                f"ATTN_L={self.ATTN_MAXL} in the environment."
+            )
         assert m.REGION_W == m.DK, (m.REGION_W, m.DK)
+        xclbin = self.gen.xclbin
         _check_w_dual_chan_stamp(xclbin)
 
         hf = qr.HFModel()
@@ -184,35 +208,53 @@ class QwenFusedDecoder:
         self.w_bo = xrt.bo(dev, self.WSZ * 2, HO, g_(4))
         self.kv_bo = xrt.bo(dev, self.KVN * 2, HO, g_(5))
         self.y_bo = xrt.bo(dev, self.YN * 2, HO, g_(6))
-        self._insts = np.fromfile(insts, dtype=np.uint32)
-        self.ib = xrt.bo(dev, self._insts.nbytes, xrt.bo.cacheable, g_(1))
-        self.ib.write(self._insts, 0)
-        self.ib.sync(TO)
+        # Per-token instruction stream. `_st` holds the base + L-slope and the
+        # cacheable BO; patch_insts rewrites only the L-dependent slice per token.
+        self._st = _stair.make_insts_states(
+            self.gen, xrt, dev, g_(1), [self.ATTN_MAXL]
+        )[self.ATTN_MAXL]
         self.w_bo.write(wd.view(np.uint16), 0)
         self.w_bo.sync(TO)  # weights are token-invariant
 
-        # Host sliding KV window, [NL, ATTN_MAXL, DK]. seed_kv() fills it.
-        self.Kc = np.zeros((NL, L, m.DK), np.float32)
-        self.Vc = np.zeros((NL, L, m.DK), np.float32)
+        self.reset_kv()
         self.dev_ms = 0.0  # accumulated device dispatch time
 
-    def seed_kv(self, K, V, ctx):
-        """Seed the window with the LAST ATTN_MAXL positions of a prefill's KV.
+    def reset_kv(self):
+        """Clear the device KV cache and the fill level for a new sequence.
 
-        K/V are [n_layers, ctx, DK]. RoPE is absolute, so a cached entry carries
-        the roping of the position it was computed at -- taking the tail keeps
-        the window's positions contiguous with the next token's."""
-        L = self.ATTN_MAXL
-        if ctx < L:
+        The cache lives on the device across tokens (the rope core appends into it
+        in place), so starting a new sequence means zeroing it here rather than
+        just dropping a host mirror.
+        """
+        self.kv_bo.write(np.zeros(self.KVN, bfloat16).view(np.int16), 0)
+        self.kv_bo.sync(TO)
+        self.live = 0  # positions currently filled
+
+    def seed_kv(self, K, V, ctx):
+        """Seed device positions 0..ctx-1 from a prefill's KV cache.
+
+        K/V are [n_layers, ctx, DK], seq-major, and the device wants each layer's
+        K rows at offset 0 and V rows at NGRP*REGION_STRIDE with position p at
+        p*REGION_W -- same element order, so this is a strided copy, not a
+        shuffle. The whole prompt is seeded (no tail slicing): RoPE is absolute
+        and every cached entry already carries the roping of its own position.
+        """
+        if ctx > self.ATTN_MAXL:
             raise SystemExit(
-                f"prompt gave {ctx} tokens, decode window ATTN_L={L}. The decode "
-                f"seeds its window with the last {L} prefill positions, so the "
-                f"prompt must be at least that long (or rebuild with a smaller "
-                f"ATTN_L)."
+                f"prompt gave {ctx} tokens, decode cap ATTN_MAXL={self.ATTN_MAXL}. "
+                f"Rebuild with a larger ATTN_L (make compile-decode LBUILD=...)."
             )
         assert K.shape == (self.NL, ctx, m.DK), (K.shape, (self.NL, ctx, m.DK))
-        self.Kc[:] = K[:, ctx - L :, :]
-        self.Vc[:] = V[:, ctx - L :, :]
+        kvd = np.zeros(self.KVN, bfloat16)
+        n = ctx * m.REGION_W
+        for k in range(self.NL):
+            kvd[k * self.KVL :][:n] = K[k].astype(bfloat16).ravel()
+            kvd[k * self.KVL + m.NGRP * m.REGION_STRIDE :][:n] = (
+                V[k].astype(bfloat16).ravel()
+            )
+        self.kv_bo.write(kvd.view(np.int16), 0)
+        self.kv_bo.sync(TO)
+        self.live = ctx
 
     def _logits(self, h):
         """Host final RMSNorm + tied LM head over the decode's hidden state."""
@@ -221,35 +263,39 @@ class QwenFusedDecoder:
     def dispatch(self, token, pos):
         """One fused decode dispatch: token at absolute position `pos` -> logits.
 
-        Also slides the KV window by one, consuming the K/V the device just
-        appended at slot ATTN_MAXL-1, so consecutive calls chain."""
-        L, NL, KVL = self.ATTN_MAXL, self.NL, self.KVL
+        The device appends this token's K/V at slot `pos` and attends over
+        L = pos+1 positions; both come from the per-token insts patch. The cache
+        stays on the device, so nothing about it crosses the bus here.
+        """
+        L = pos + 1
+        if not 1 <= L <= self.ATTN_MAXL:
+            raise ValueError(f"pos {pos} outside [0, {self.ATTN_MAXL - 1}]")
         lut = qr.rope_lut(pos, m.DH).astype(bfloat16)
-        for k in range(NL):
+        for k in range(self.NL):
             self.xd[k * m.XLAYER + m.XO_ROPE : k * m.XLAYER + m.XO_ROPE + m.DH] = lut
         self.xd[m.XO_RMSIN : m.XO_RMSIN + m.K] = np.asarray(
             self.emb[token], np.float32
         ).astype(bfloat16)
-        kvd = np.zeros(self.KVN, bfloat16)
-        for k in range(NL):
-            kvd[k * KVL :][: L * m.REGION_W] = self.Kc[k].astype(bfloat16).ravel()
-            kvd[k * KVL + m.NGRP * m.REGION_STRIDE :][: L * m.REGION_W] = (
-                self.Vc[k].astype(bfloat16).ravel()
-            )
         self.x_bo.write(self.xd.view(np.uint16), 0)
         self.x_bo.sync(TO)
-        self.kv_bo.write(kvd.view(np.uint16), 0)
-        self.kv_bo.sync(TO)
+        insts_size = _stair.patch_insts(self._st, L, xrt, TO)
 
         t0 = time.time()
         st = self.kern(
-            3, self.ib, self._insts.size, self.x_bo, self.w_bo, self.kv_bo, self.y_bo
+            3,
+            self._st["ib"],
+            insts_size,
+            self.x_bo,
+            self.w_bo,
+            self.kv_bo,
+            self.y_bo,
+            *self._dyn.dispatch_args(self.gen, L),
         ).wait(20000)
         self.dev_ms += (time.time() - t0) * 1e3
         if "COMPLETED" not in str(st):
             raise RuntimeError(f"decode dispatch pos{pos} state={st}")
         self.x_bo.sync(FR)
-        self.kv_bo.sync(FR)
+        self.live = max(self.live, L)
 
         # Read through the mapped BO, not bo.read(): read() returns a buffer whose
         # stride metadata is pyxrt-build dependent, and where it comes back
@@ -258,22 +304,7 @@ class QwenFusedDecoder:
         h = np.frombuffer(self.x_bo.map(), dtype=bfloat16, count=self.X).astype(
             np.float32
         )[m.XO_RMSIN : m.XO_RMSIN + m.K]
-        logits = self._logits(h)
-
-        # Take this token's K/V (device wrote slot L-1) and slide the window.
-        kvo = np.frombuffer(self.kv_bo.map(), dtype=bfloat16, count=self.KVN).astype(
-            np.float32
-        )
-        for k in range(NL):
-            newk = kvo[k * KVL :][: L * m.REGION_W].reshape(L, m.REGION_W)[L - 1]
-            newv = kvo[k * KVL + m.NGRP * m.REGION_STRIDE :][: L * m.REGION_W].reshape(
-                L, m.REGION_W
-            )[L - 1]
-            self.Kc[k] = np.roll(self.Kc[k], -1, 0)
-            self.Kc[k][L - 2], self.Kc[k][L - 1] = newk, 0
-            self.Vc[k] = np.roll(self.Vc[k], -1, 0)
-            self.Vc[k][L - 2], self.Vc[k][L - 1] = newv, 0
-        return logits
+        return self._logits(h)
 
 
 def main():
@@ -282,8 +313,11 @@ def main():
     ap_.add_argument(
         "--n-gen", type=int, default=int(os.environ.get("QWEN_NGEN", "20"))
     )
-    ap_.add_argument("--xclbin", default="decode_qwen.xclbin")
-    ap_.add_argument("--insts", default="decode_qwen.insts.bin")
+    ap_.add_argument(
+        "--templates",
+        default=os.environ.get("QWEN_DECODE_TEMPLATES"),
+        help="directory holding the decode_L<N> template pair",
+    )
     args = ap_.parse_args()
 
     NL = m.NLAYERS
@@ -294,10 +328,10 @@ def main():
     vp = z["v"].view(bfloat16).astype(np.float32)
     assert kp.shape == (NL, ctx, m.DK), f"prefill KV {kp.shape} != {(NL, ctx, m.DK)}"
 
-    dec = QwenFusedDecoder(xclbin=args.xclbin, insts=args.insts)
+    dec = QwenFusedDecoder(templates=args.templates, max_L=ctx + args.n_gen)
     print(
-        f"[handoff] prefill KV: {NL} layers x {ctx} tokens; seeding the last "
-        f"ATTN_L={dec.ATTN_MAXL} positions ({ctx - dec.ATTN_MAXL}..{ctx - 1})",
+        f"[handoff] prefill KV: {NL} layers x {ctx} tokens; seeding positions "
+        f"0..{ctx - 1} (cache cap ATTN_MAXL={dec.ATTN_MAXL})",
         flush=True,
     )
     dec.seed_kv(kp, vp, ctx)
@@ -331,12 +365,11 @@ def main():
     # "device-only".
     #
     # The dashboard's "Context" column sits next to the decode throughput, so
-    # report the depth that throughput was actually measured at: this decode
-    # attends over a FIXED window of ATTN_MAXL slots every token, no matter how
-    # long the prompt was. Printing ctx would overstate it for any prompt longer
-    # than the window (the prefill saw those tokens; the decode never does).
+    # report the depth that throughput was actually measured at. The decode now
+    # attends over the real context, so that is the prompt length -- it used to
+    # be the fixed window, which overstated it for any longer prompt.
     print(f"Tokens/second: {1000/(dec.dev_ms/n):.2f}")
-    print(f"prompt_len: {dec.ATTN_MAXL}")
+    print(f"prompt_len: {ctx}")
     return 0
 
 
