@@ -169,7 +169,7 @@ compile-decode-dynseq: preflight-llvm-link
 	  if [ -f decode.xclbin ] && [ -f air_project/npu.air.txn.h ]; then \
 	    mv -f decode.xclbin decode_dyn_L$(LBUILD).xclbin; \
 	    cp -f air_project/npu.air.txn.h decode_dyn_L$(LBUILD).txn.h; \
-	    rm -f decode.insts.bin; \
+	    rm -f npu_seq_*.mlir; \
 	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/decode_dyn_L$(LBUILD).log)"; exit 1; fi
 	@echo "Dynseq build complete: decode_dyn_L$(LBUILD).{xclbin,txn.h}. Run with DECODE_DYNSEQ=1."
 

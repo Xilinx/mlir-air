@@ -473,6 +473,14 @@ RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L + 15) // 16)))
 # calls per token (air.backend.txn_builder). Off by default: the staircase templates
 # remain the shipping path until this is measured across all four decoders.
 DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
+# Bisect gates: which of the three runtime bindings to enable (1 = readback block
+# count + memtile dequeue, 2 = append slot address, 4 = RTP-L and the core loops).
+# DECODE_DYNSEQ=1 turns all three on; a bitmask above 7 selects them individually.
+# The four bindings move together: the shim's push count, the memtile's dequeue
+# count and the cores' trip count must agree, and the append has to land on the
+# position the cores are about to read. Named separately only because each one
+# reads better at its use.
+DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # DECODE_KV_SPLIT=1: decouple the attention K and V memtile rings (mirror the reference mem_3_1:
 # separate k_mem_buffer / v_mem_buffer, filled by SEPARATE S2MM = inKV_K / inKV_V, so
 # the qk core's K supply is NOT lock-chained to the kv core's V drain). Default off
@@ -1312,7 +1320,7 @@ def build_module():
                     DYNSEQ makes it a runtime address -- the append has to land on
                     the position being generated, not on the compile-time one.
                     """
-                    if not DYNSEQ:
+                    if not DYNSEQ_APPEND:
                         return (ATTN_L - 1) * REGION_W
                     _m = arith.subi(
                         L_rt, arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
@@ -1325,7 +1333,7 @@ def build_module():
 
                 def _loi_slot(base, extra):
                     """_loi with the runtime slot offset folded in."""
-                    if not DYNSEQ:
+                    if not DYNSEQ_APPEND:
                         return _loi(base, extra + (ATTN_L - 1) * REGION_W)
                     _b = base if a_iv is not None else idx(base)
                     _s = arith.addi(_b, _slot_off())
@@ -1713,7 +1721,9 @@ def build_module():
                                         # use, not hoisted, so the static path's constant
                                         # emission order -- and thus its IR -- is unchanged.
                                         _cbv = (
-                                            _rt_blocks if DYNSEQ else (lambda: idx(_cb))
+                                            _rt_blocks
+                                            if DYNSEQ_RB
+                                            else (lambda: idx(_cb))
                                         )
                                         # Contiguous either way; _KV1D just states it as 1-D.
                                         # Spelled inline (not hoisted) so the default path's
@@ -1867,7 +1877,7 @@ def build_module():
                         cores, so its trip count has to be the same ceil(L/16) both
                         of those use.
                         """
-                        if not DYNSEQ:
+                        if not DYNSEQ_MEM:
                             return idx(ATTN_ROUNDS)
                         _s = arith.addi(
                             _seg_L,
@@ -2435,7 +2445,7 @@ def build_module():
                             # the last partial block). Compute proven in attn_iso.
                             L_c = (
                                 _seg_L
-                                if DYNSEQ
+                                if DYNSEQ_RTP
                                 else arith.ConstantOp(
                                     IntegerAttr.get(i32, ATTN_L), None
                                 ).result
@@ -2608,7 +2618,7 @@ def build_module():
                                 pushes, which is what keeps the core off a channel get
                                 that never arrives.
                                 """
-                                if not DYNSEQ:
+                                if not DYNSEQ_RTP:
                                     return idx(ATTN_ROUNDS)
                                 _s = arith.addi(
                                     Lh,
