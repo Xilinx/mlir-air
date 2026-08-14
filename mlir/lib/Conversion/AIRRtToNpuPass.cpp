@@ -617,6 +617,44 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     };
     auto *ctx = rewriter.getContext();
 
+    // Runtime-valued access pattern. mlir-aie's shim-NOC BD lowering accepts a
+    // runtime size/stride/len (AIEDMATasksToNPU rewriteSingleBDDynamic), so a
+    // loop-invariant dynamic dim does not have to be folded away. What is
+    // carried through here is the OUTERMOST size: with a zero outer stride it
+    // is purely a repeat, so it lands on the task's repeat_count_val and the
+    // descriptor itself stays constant. Every other dynamic dim would be
+    // silently replaced by the constify() default below -- a wrong-sized
+    // transfer with no diagnostic -- so reject those instead.
+    Value dynOuterSize;
+    {
+      auto mixedLengths =
+          getMixedValues(adaptor.getStaticLengths(), adaptor.getLengths(), ctx);
+      auto mixedStrides =
+          getMixedValues(adaptor.getStaticStrides(), adaptor.getStrides(), ctx);
+      for (auto [dim, ofr] : llvm::enumerate(mixedLengths)) {
+        if (getConstantIntValue(ofr))
+          continue;
+        if (dim != 0)
+          return op->emitOpError("runtime-valued DMA size in dimension ")
+                 << (3 - dim)
+                 << "; only the outermost dimension may be runtime-valued";
+        dynOuterSize = cast<Value>(ofr);
+      }
+      for (auto ofr : mixedStrides)
+        if (!getConstantIntValue(ofr))
+          return op->emitOpError("runtime-valued DMA stride is not supported");
+      // A non-zero outer stride puts the outermost dim in the descriptor as the
+      // iteration wrap (iteration_size comes from the BD dims, not from
+      // repeat_count), which needs the mixed-operand aie.dma_bd form.
+      if (dynOuterSize) {
+        auto outerStride = getConstantIntValue(mixedStrides.front());
+        if (!outerStride || *outerStride != 0)
+          return op->emitOpError(
+              "runtime-valued outermost DMA size requires a zero outer stride "
+              "(pure repeat); a strided iteration wrap is not supported");
+      }
+    }
+
     // Entry i of each list is dimension 3-i, outermost first.
     SmallVector<int64_t> staticOffsets = constify(
         getMixedValues(adaptor.getStaticOffsets(), adaptor.getOffsets(), ctx),
@@ -648,6 +686,16 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // repeat_count = 0 means execute once, repeat_count = 3 means execute 4
     // times
     int64_t repeatCount = std::max((int64_t)0, staticSizes[0] - 1);
+    // Runtime outer size: the same count, computed at runtime. The i64 access
+    // pattern operand is narrowed to the i32 the task op takes.
+    Value repeatCountVal;
+    if (dynOuterSize) {
+      Value asI32 = arith::TruncIOp::create(
+          rewriter, op.getLoc(), rewriter.getI32Type(), dynOuterSize);
+      Value one = arith::ConstantOp::create(rewriter, op.getLoc(),
+                                            rewriter.getI32IntegerAttr(1));
+      repeatCountVal = arith::SubIOp::create(rewriter, op.getLoc(), asI32, one);
+    }
 
     // The 4th dimension is included in dma_bd dimensions if stride[0] != 0
     // (the iteration_stride tells the hardware how to advance offset each
@@ -704,7 +752,7 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         rewriter.getBoolAttr(issueToken), // issue_token = true for S2MM / paced
         rewriter.getI32IntegerAttr(
             repeatCount), // repeat_count from highest dim
-        Value()           // repeat_count_val (dynamic repeat count unused here)
+        repeatCountVal    // runtime repeat count, when the outer size is one
     );
     if (paced)
       configTaskOp->setAttr(air::attrs::PreserveShimDmaOrder,
