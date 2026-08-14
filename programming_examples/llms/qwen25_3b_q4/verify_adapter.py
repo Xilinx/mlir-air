@@ -14,12 +14,12 @@ through the one-xclbin `QwenFusedDecoder` (extracted from
 `fused_decode/qwen_prefill_to_decode.py`), so this adapter drives those two
 components directly to satisfy the shared `prefill()` / `decode_step()` contract.
 
-PROMPT LENGTH IS A HARD CONSTRAINT HERE. The fused Qwen decode is a sliding
-window of exactly `ATTN_L` positions (32 by default): the device attends over all
-`ATTN_L` slots and appends at slot `ATTN_L-1`, so the window must be seeded with
-that many real prefill positions. Prompts shorter than `ATTN_L` cannot be run at
-all. The shared prompt files are far shorter than that, so this example ships its
-own `verify_prompts.txt` and its Makefile points `--prompts-file` at it.
+PROMPT LENGTH. The fused Qwen decode grows a KV cache inside a build-time cap
+(`LBUILD`, 32 by default): the device attends over the real context and appends
+at the real position, so any prompt that fits the cap works and there is no
+minimum. This example still ships its own `verify_prompts.txt` (it predates the
+growing cache, when every line had to be at least `ATTN_L` tokens) so the gate's
+prompt set stays comparable across runs.
 
 Pointed at via `--runner=qwen25_3b_q4.verify_adapter`.
 """
@@ -132,26 +132,22 @@ class NpuRunner:
 
         self.prefiller = Qwen25Q4Prefill(seq_len=_SEQ_LEN, n_layers=_N_LAYERS)
         self.prefiller.load_weights(model=QWEN_Q4_MODEL_SOURCE or model_name)
-        # The decode xclbin is built by `make compile-decode` into fused_decode/;
-        # QwenFusedDecoder resolves it relative to the CWD, so anchor it here
-        # rather than depending on where the runner was launched from.
-        self.dec = QwenFusedDecoder(
-            xclbin=str(_FUSED / "decode_qwen.xclbin"),
-            insts=str(_FUSED / "decode_qwen.insts.bin"),
-        )
+        # `make compile-decode` builds the decode_L<N> template pair into THIS
+        # example's directory; anchor it here rather than depending on where the
+        # runner was launched from.
+        self.dec = QwenFusedDecoder(templates=str(_THIS_DIR))
         self.attn_maxl = self.dec.ATTN_MAXL
         self._P = 0
 
     def prefill(self, prompt_tokens: np.ndarray) -> PrefillRecord:
         ids = [int(t) for t in prompt_tokens]
-        if len(ids) < self.attn_maxl:
+        if len(ids) > self.attn_maxl:
             raise SystemExit(
-                f"prompt is {len(ids)} tokens but the fused Qwen decode window is "
-                f"ATTN_L={self.attn_maxl}; it can only be seeded from a prompt at "
-                f"least that long. Use this example's verify_prompts.txt (what "
-                f"`make verify` passes via --prompts-file), or rebuild the decode "
-                f"with a smaller ATTN_L."
+                f"prompt is {len(ids)} tokens but the fused Qwen decode KV cache "
+                f"caps at {self.attn_maxl}. Rebuild with a larger cap "
+                f"(`make compile-decode LBUILD=...`)."
             )
+        self.dec.reset_kv()
         self.prefiller.clear_context()
         logits = np.asarray(self.prefiller.prefill(ids), np.float32)
         first = int(logits.argmax())
@@ -170,21 +166,16 @@ class NpuRunner:
         self._P = K.shape[1]
         self.dec.seed_kv(K, V, self._P)
 
-        # Prime the device window. seed_kv leaves the last prompt position in
-        # slot ATTN_L-1, which is exactly the slot the device appends into, so
-        # the first real decode step would overwrite it. Re-run the last prompt
-        # token at its own absolute position (what the CLI loop's first
-        # iteration does): the device rewrites that slot with the same content
-        # and the slide then frees the slot for position P. After this,
-        # decode_step(token, P) lines up with the runner's `cur`.
+        # Re-run the last prompt token at its own absolute position (what the CLI
+        # loop's first iteration does): the device rewrites that slot with the
+        # same content, so after this decode_step(token, P) lines up with the
+        # runner's `cur`.
         prime = int(np.asarray(self.dec.dispatch(ids[-1], self._P - 1)).argmax())
-        if prime != first and self._P <= self.attn_maxl:
+        if prime != first:
             # The priming step recomputes the prefill's own last position, so the
             # two should agree -- that is the documented cross-check that the KV
-            # hand-off is exact. It is only a valid comparison when the whole
-            # prompt fits the window: for a longer prompt the decode attends over
-            # the last ATTN_L positions while the prefill attended over all P, so
-            # they legitimately differ and this would be a false alarm.
+            # hand-off is exact. Both sides now see the same context for any
+            # prompt that fits the cap, so this comparison is always valid.
             # Not fatal either way; the verify gate itself is the real check.
             print(
                 f"[verify] WARN: fused decode re-ran the last prompt token and "

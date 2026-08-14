@@ -1996,13 +1996,19 @@ def build_module():
                             _leaf(ty, 1, shs[1], Lh, 2)  # ty2=qk, ty3=kv (CU1)
                             yield_([])
 
+                    # RTP-L: built at segment scope so it is a herd OPERAND, not a
+                    # herd-body constant. An integer herd operand gets an RTP buffer
+                    # slot the core loads from (AIRToAIEPass), so ATTN_L lands in the
+                    # instruction stream and DecodeInstsGen can rewrite it per token;
+                    # a constant inside the body folds into the core ELF instead.
+                    _Lc = arith.ConstantOp(IntegerAttr.get(i32, ATTN_L), None).result
+
                     @herd(
                         name="attn",
                         sizes=[1, 2 * N_ATTN_CU],
-                        operands=[s_bufs[0].result, s_bufs[1].result],
+                        operands=[s_bufs[0].result, s_bufs[1].result, _Lc],
                     )
-                    def attn_h(_tx, _ty, _sx, _sy, s0, s1):
-                        Lh = arith.ConstantOp(IntegerAttr.get(i32, ATTN_L), None).result
+                    def attn_h(_tx, _ty, _sx, _sy, s0, s1, Lh):
                         _dispatch(_ty, [s0, s1], Lh)
 
                     attn_h.attributes["x_loc"] = IntegerAttr.get(T.i64(), ATTN_COL)
