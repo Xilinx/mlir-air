@@ -1776,6 +1776,141 @@ static void coalesceShimDmaOrder(ModuleOp module) {
   }
 }
 
+// AIE2 shim BDs encode each dimension's stride in a 20-bit field, so a stride
+// above AIE2_STRIDE_UPPER_BOUND cannot be expressed at all. Unlike an illegal
+// wrap, an illegal stride cannot be tiled away: splitting the dim leaves the
+// stride unchanged.
+//
+// It CAN be turned into base offsets. A dim (wrap W, stride S) contributes the
+// address set {(off + k) * S : k in [0, W)}, so the transfer is equivalent to W
+// separate BDs that drop the dim and fold its contribution into the base:
+//   offset_k = offset + (off + k) * S
+// Same bytes, same addresses, same order, same channel -- only the descriptor
+// count changes, by a factor of W.
+//
+// That is only worth doing when W is small, which is the case this exists for:
+// a KV cache laid out region-major strides its per-group dim by
+// ATTN_MAXL*REGION_W, which crosses the 20-bit field once the context is long
+// enough, while the dim itself stays tiny (one entry per KV group). A large W
+// is left alone rather than silently exploding the runtime sequence.
+const int AIE2_STRIDE_UNROLL_LIMIT = 16;
+
+// Index of the outermost dim whose stride exceeds the hardware field, or
+// std::nullopt. Dims of wrap 1 are ignored: they contribute a single address
+// and the stride is dead, so the BD builder drops them.
+static std::optional<unsigned>
+findIllegalStrideDim(SmallVector<OpFoldResult> wraps,
+                     SmallVector<OpFoldResult> strides) {
+  for (unsigned i = 0; i < strides.size(); i++) {
+    auto s = getConstantIntValue(strides[i]);
+    auto w = getConstantIntValue(wraps[i]);
+    if (s && w && *s > AIE2_STRIDE_UPPER_BOUND && *w > 1)
+      return i;
+  }
+  return std::nullopt;
+}
+
+bool violatesAIE2StrideLimit(airrt::DmaMemcpyNdOp dma) {
+  return findIllegalStrideDim(dma.getMixedLengths(), dma.getMixedStrides())
+      .has_value();
+}
+
+// Replace one over-strided dim with `wrap` copies of the transfer, each
+// carrying that dim's address contribution in its own base offset.
+//
+// The rewrite is in place, not a rank reduction: DmaToNpuPattern indexes the
+// wrap-and-stride lists as a fixed rank-4 layout. Instead the dim is set to
+// wrap 1 with offset (off + k), which
+//   - keeps the rank, and
+//   - keeps the address, because that pattern computes the BD base as
+//     sum(offsets[i] * strides[i]) -- so (off + k) * S lands in the base
+//     exactly as the strided walk would have reached it, and
+//   - drops the dim from the BD, because a middle dim of size 1 fails the
+//     `size > 1 || i == 3 || (use4thDimInBd && i > 0)` test that decides which
+//     dims become BDDimLayout entries. The over-limit stride is therefore never
+//     encoded.
+// The last point is what makes this legal, so it is checked rather than
+// assumed: only a middle dim of a BD that does not use the 4th dim qualifies.
+LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
+                                     bool &folded) {
+  auto loc = memcpy_op->getLoc();
+  OpBuilder builder(memcpy_op);
+  SmallVector<OpFoldResult> offsets = memcpy_op.getMixedOffsets();
+  SmallVector<OpFoldResult> wraps = memcpy_op.getMixedLengths();
+  SmallVector<OpFoldResult> strides = memcpy_op.getMixedStrides();
+
+  folded = false;
+  auto dim = findIllegalStrideDim(wraps, strides);
+  if (!dim)
+    return success();
+  unsigned i = *dim;
+
+  auto constOff = getConstantIntValue(offsets[i]);
+  auto constWrap = getConstantIntValue(wraps[i]);
+  auto constStride = getConstantIntValue(strides[i]);
+  auto outerStride =
+      strides.empty() ? std::nullopt : getConstantIntValue(strides[0]);
+  // Everything below is a REASON NOT TO FOLD, never a reason to fail. A large
+  // airrt-level stride does not by itself mean the emitted BD is illegal --
+  // later steps still reshape the access pattern -- so an op this rewrite
+  // cannot help is left exactly as it was, and downstream decides. Erroring
+  // here instead would reject transfers that compiled fine before this existed.
+  if (!constOff || !constWrap || !constStride || !outerStride)
+    return success();
+  // Only a middle dim of a BD whose 4th dim is unused is dropped once its wrap
+  // becomes 1; anywhere else the over-limit stride would still be encoded.
+  if (strides.size() != AIE2_DIM_COUNT || i == 0 || i + 1 == strides.size() ||
+      *outerStride != 0)
+    return success();
+  // Folding costs one descriptor per entry of the folded dim.
+  if (*constWrap > AIE2_STRIDE_UNROLL_LIMIT)
+    return success();
+
+  for (int64_t k = 0; k < *constWrap; k++) {
+    SmallVector<OpFoldResult> newOffsets(offsets), newWraps(wraps),
+        newStrides(strides);
+    newOffsets[i] = builder.getI64IntegerAttr(*constOff + k);
+    newWraps[i] = builder.getI64IntegerAttr(1);
+    auto newOp = airrt::DmaMemcpyNdOp::create(
+        builder, loc, SmallVector<Type>{}, memcpy_op.getId(), memcpy_op.getX(),
+        memcpy_op.getY(), memcpy_op.getMemref(), newOffsets, newWraps,
+        newStrides);
+    // Ordering/barrier markers must ride along on every piece, or the split
+    // silently drops the append barrier and the shim order constraint.
+    newOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
+  }
+  memcpy_op.erase();
+  folded = true;
+  return success();
+}
+
+LogicalResult enforceAIE2StrideLimit(ModuleOp module) {
+  // One pass peels one dim; a transfer with several illegal strides needs
+  // several. Iterate to a fixpoint, bounded by the dim count.
+  for (unsigned round = 0; round < AIE2_DIM_COUNT; round++) {
+    SmallVector<airrt::DmaMemcpyNdOp> targets;
+    module.walk([&](func::FuncOp f) {
+      f.walk([&](airrt::DmaMemcpyNdOp dma) {
+        if (violatesAIE2StrideLimit(dma))
+          targets.push_back(dma);
+      });
+    });
+    if (targets.empty())
+      return success();
+    bool changed = false;
+    for (auto op : targets) {
+      bool folded = false;
+      if (failed(unrollIllegalStrideDim(op, folded)))
+        return failure();
+      changed |= folded;
+    }
+    // Nothing left that this rewrite can help with; the rest is downstream's.
+    if (!changed)
+      return success();
+  }
+  return success();
+}
+
 LogicalResult enforceAIE2WrapLimit(ModuleOp module) {
   // Identify airrt.dma_memcpy_nd ops that violate the AIE2 wrap size
   // constraint.
@@ -1918,6 +2053,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Enforce AIE2 hardware constraints.
     if (failed(enforceAIE2WrapLimit(module))) {
+      signalPassFailure();
+      return;
+    }
+
+    // After wrap tiling, since tiling can introduce a new outer dim whose
+    // stride is the product of the tiled ones.
+    if (failed(enforceAIE2StrideLimit(module))) {
       signalPassFailure();
       return;
     }
