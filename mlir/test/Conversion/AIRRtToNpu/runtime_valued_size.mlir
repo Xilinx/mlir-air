@@ -67,3 +67,37 @@ module {
     return
   }
 }
+
+// -----
+
+// A runtime OFFSET with static sizes: the KV append writes this token at slot
+// L-1, an address that moves every dispatch. It took the DMA-task path before,
+// where constify() folded it to 0 -- every token overwriting position 0.
+// A runtime offset and a runtime size together are fine as well; only the
+// memcpy_nd descriptor can carry either.
+
+// CHECK-LABEL: aie.runtime_sequence @func2
+// CHECK-SAME:    %{{.*}}: memref<1048576xbf16>, %[[OFF:[a-zA-Z0-9_]+]]: i64, %[[CB:[a-zA-Z0-9_]+]]: i64
+// CHECK:         aiex.npu.dma_memcpy_nd
+// CHECK-SAME:      %[[OFF]]
+// CHECK:         aiex.npu.dma_memcpy_nd
+// CHECK-SAME:      %[[OFF]]
+// CHECK-SAME:      %[[CB]]
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "segment2"}
+  func.func @func2(%arg0: memref<1048576xbf16>, %off: i64, %cb: i64) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c16_i64 = arith.constant 16 : i64
+    %c256_i64 = arith.constant 256 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %p = airrt.segment_load "segment2" : i64
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %off], [%c1_i64, %c1_i64, %c16_i64, %c256_i64], [%c0_i64, %c0_i64, %c256_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<1048576xbf16>)
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %off], [%c1_i64, %cb, %c16_i64, %c256_i64], [%c0_i64, %c4096_i64, %c256_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<1048576xbf16>)
+    return
+  }
+}

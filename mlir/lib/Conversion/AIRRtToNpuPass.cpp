@@ -626,14 +626,19 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // to the static baseline. (Collapsing a contiguous nest to a runtime `len`
     // instead looks simpler but programs d1_size differently.)
     //
-    // Only sizes may be runtime, and only one of them: constify() below would
+    // Sizes and offsets may be runtime -- a size for a context-length-sized
+    // transfer, an offset for a slot that moves per dispatch (a KV append
+    // writes position L-1). At most one size, though: constify() below would
     // otherwise silently substitute a default and emit a wrong-sized transfer
     // with no diagnostic.
     SmallVector<OpFoldResult> mixedLengths =
         getMixedValues(adaptor.getStaticLengths(), adaptor.getLengths(), ctx);
     SmallVector<OpFoldResult> mixedStrides =
         getMixedValues(adaptor.getStaticStrides(), adaptor.getStrides(), ctx);
+    SmallVector<OpFoldResult> mixedOffsets =
+        getMixedValues(adaptor.getStaticOffsets(), adaptor.getOffsets(), ctx);
     bool hasDynSize = false;
+    bool hasDynOffset = false;
     {
       for (auto ofr : mixedStrides)
         if (!getConstantIntValue(ofr))
@@ -646,18 +651,11 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         return op->emitOpError(
             "more than one runtime-valued DMA size is not supported");
       hasDynSize = nDyn == 1;
-      if (hasDynSize) {
-        // The runtime path is shim-NOC only, and offsets must be resolved --
-        // an unresolved offset would be defaulted to 0 by constify().
-        auto mixedOffsets = getMixedValues(adaptor.getStaticOffsets(),
-                                           adaptor.getOffsets(), ctx);
-        for (auto ofr : mixedOffsets)
-          if (!getConstantIntValue(ofr))
-            return op->emitOpError(
-                "runtime-valued DMA offset is not supported alongside a "
-                "runtime size");
-      }
+      for (auto ofr : mixedOffsets)
+        if (!getConstantIntValue(ofr))
+          hasDynOffset = true;
     }
+    bool isDynamic = hasDynSize || hasDynOffset;
 
     // Entry i of each list is dimension 3-i, outermost first.
     SmallVector<int64_t> staticOffsets = constify(
@@ -738,18 +736,17 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     bool paced = op->hasAttr(air::attrs::PreserveShimDmaOrder);
     bool issueToken = air::isDeviceToHostShimDMA(op) || paced;
 
-    // Runtime size: emit aiex.npu.dma_memcpy_nd rather than the DMA-task path.
-    // Both accept mixed static/dynamic sizes, but only the memcpy_nd lowering
-    // carries a runtime size's MAGNITUDE into buffer_length; the dma_task
-    // encoder folds the runtime value into an (n > 1) predicate and otherwise
-    // keeps the static template, so the transfer would silently keep its
-    // compile-time extent. (Upstream's dma_task_dynamic_size test cannot see
-    // this: it only compares at the argument value the static side bakes in.)
-    if (hasDynSize) {
+    // Runtime access pattern: emit aiex.npu.dma_memcpy_nd rather than the
+    // DMA-task path. Both accept mixed static/dynamic values, but only the
+    // memcpy_nd lowering carries them into the descriptor -- the dma_task
+    // encoder folds a runtime size into an (n > 1) predicate and otherwise
+    // keeps the static template, and constify() below would fold a runtime
+    // offset to 0. Either way the transfer silently keeps its compile-time
+    // shape. (Upstream's dma_task_dynamic_size test cannot see the size case:
+    // it only compares at the argument value the static side bakes in.)
+    if (isDynamic) {
       SmallVector<Value> dynOffs, dynSizes, dynStrides;
       SmallVector<int64_t> statOffs, statSizes, statStrides;
-      SmallVector<OpFoldResult> mixedOffsets =
-          getMixedValues(adaptor.getStaticOffsets(), adaptor.getOffsets(), ctx);
       dispatchIndexOpFoldResults(mixedOffsets, dynOffs, statOffs);
       dispatchIndexOpFoldResults(mixedLengths, dynSizes, statSizes);
       dispatchIndexOpFoldResults(mixedStrides, dynStrides, statStrides);
