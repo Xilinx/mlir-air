@@ -134,7 +134,7 @@ compile-decode-windows:
 	done
 	@echo "$(WINDOWS)" > $(DECODE_WINDOWS_STAMP)
 	@echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP)
-	@echo "Staircase templates built (ATTN_MAXL: $(WINDOWS)). Run with --staircase."
+	@echo "Staircase templates built (ATTN_MAXL: $(WINDOWS)). Run with DECODE_STAIRCASE=1."
 
 _compile_decode_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"

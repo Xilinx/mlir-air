@@ -41,8 +41,17 @@ class KVGeometry:
 
 
 def resolve_windows(gen, staircase):
-    """Windows to hold open: every calibrated one, or just the active one when off."""
-    return gen.calibrated_windows() if staircase else [gen.attn_maxl]
+    """Windows to hold open: the staircase up to the active one, or just the active one.
+
+    `gen.attn_maxl` is what `DecodeInstsGen.select(max_L)` already resolved to -- the
+    smallest calibrated window covering the caller's reach. Anything above it can never be
+    selected for L <= that reach, so opening it would only cost init time and an unused
+    hw_context. With `max_L=None` the active window is the largest and the full staircase
+    is kept.
+    """
+    if not staircase:
+        return [gen.attn_maxl]
+    return [m for m in gen.calibrated_windows() if m <= gen.attn_maxl]
 
 
 def open_windows(dev, xrt, gen, windows, kernel_match="MLIR_AIE"):
@@ -58,8 +67,14 @@ def open_windows(dev, xrt, gen, windows, kernel_match="MLIR_AIE"):
         xb = xrt.xclbin(gen.xclbin_for_maxl(m))
         dev.register_xclbin(xb)
         ctx = xrt.hw_context(dev, xb.get_uuid())
-        xk = [k for k in xb.get_kernels() if kernel_match in k.get_name()][0]
-        out[m] = (ctx, xrt.kernel(ctx, xk.get_name()))
+        xks = [k for k in xb.get_kernels() if kernel_match in k.get_name()]
+        if not xks:
+            raise RuntimeError(
+                f"no kernel matching {kernel_match!r} in "
+                f"{gen.xclbin_for_maxl(m)} (found: "
+                f"{[k.get_name() for k in xb.get_kernels()]})"
+            )
+        out[m] = (ctx, xrt.kernel(ctx, xks[0].get_name()))
     return out
 
 
