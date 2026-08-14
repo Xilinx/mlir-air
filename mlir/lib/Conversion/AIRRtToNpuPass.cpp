@@ -2217,9 +2217,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     }
 
-    // Unroll for loops
+    // Unroll for loops. Skipping this leaves the runtime sequence rolled for
+    // aiecc to unroll instead; the affine.for nests are the launch/segment
+    // scaffolding, which has to go either way for the airrt ops to sit
+    // directly in the sequence.
     unrollAffineFors(module);
-    unrollSCFFors(module);
+    if (clKeepLoopsRolled)
+      dropAirrtEventIterArgs(module);
+    else
+      unrollSCFFors(module);
 
     // Fold affine.apply ops with constant operands after loop unrolling.
     // After unrolling, induction variables become constants, but
@@ -2335,6 +2341,45 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
       return true;
     });
+    // A DMA that stays inside an scf.for has to be created under the
+    // runtime_sequence directly: the AIEX ops require it as an ancestor, and
+    // nothing hoists them out of the loop later the way unrolling did. So for
+    // the rolled path the func becomes the sequence first, and the L3 alloc
+    // buffering that reads func arguments moves ahead of it.
+    if (clKeepLoopsRolled) {
+      RewritePatternSet earlyCast(ctx);
+      air::populateBufferMemrefToFuncArgsPattern(earlyCast);
+      (void)applyPatternsGreedily(module, std::move(earlyCast));
+      // Its own target: the airrt ops are still there and are legal until the
+      // main conversion below runs.
+      ConversionTarget seqTarget(getContext());
+      seqTarget.addLegalDialect<arith::ArithDialect, AIE::AIEDialect,
+                                AIEX::AIEXDialect, memref::MemRefDialect,
+                                airrt::AIRRtDialect, scf::SCFDialect,
+                                affine::AffineDialect>();
+      // Illegal exactly where ControlFuncConversion matches: the kernel
+      // declarations sitting in the device are not control funcs.
+      seqTarget.addDynamicallyLegalOp<func::FuncOp>([](func::FuncOp f) {
+        if (f.isExternal() || !f->getParentOfType<AIE::DeviceOp>())
+          return true;
+        bool relevant = false;
+        f.walk([&](Operation *o) {
+          if (o->getName().getStringRef().starts_with("aiex.npu.") ||
+              o->getName().getStringRef().starts_with("aiex.dma_") ||
+              isa<airrt::DmaMemcpyNdOp>(o))
+            relevant = true;
+        });
+        return !relevant;
+      });
+      RewritePatternSet earlySeq(ctx);
+      earlySeq.add<ControlFuncConversion>(ctx);
+      if (failed(
+              applyPartialConversion(module, seqTarget, std::move(earlySeq)))) {
+        signalPassFailure();
+        return;
+      }
+    }
+
     RewritePatternSet patterns(ctx);
     patterns.add<DmaToNpuPattern, HerdLoadToNpuPattern, SegmentLoadToNpuPattern,
                  ModuleMetadataToNpuPattern, L1MemRefStoreOpConversion,
@@ -3156,15 +3201,18 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // For S2MM (output) channels: generate DMAAwaitTaskOp (wait + free BD)
   // For MM2S (input) channels: generate DMAFreeTaskOp (just free BD, no wait)
   void generateAwaitsFromWaitAllOps(ModuleOp module) {
-    SmallVector<func::FuncOp> funcOps;
+    // Either container is possible here: the rolled path has already turned
+    // the control func into its runtime_sequence.
+    SmallVector<Operation *> funcOps;
     module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
+    module.walk([&](AIE::RuntimeSequenceOp s) { funcOps.push_back(s); });
 
     for (auto f : funcOps) {
       auto device = f->getParentOfType<AIE::DeviceOp>();
       if (!device)
         continue;
 
-      if (f.getBody().empty())
+      if (f->getRegion(0).empty())
         continue;
 
       mlir::DominanceInfo domInfo(f);
@@ -3178,7 +3226,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       llvm::DenseMap<StringRef, unsigned> channelToNextConfigIdx;
 
       // Walk the function body in order
-      f.walk([&](AIEX::DMAConfigureTaskForOp configTask) {
+      f->walk([&](AIEX::DMAConfigureTaskForOp configTask) {
         auto allocSymbol = configTask.getAlloc();
         StringRef metadata = allocSymbol.getLeafReference().getValue();
         channelToConfigTasks[metadata].push_back(configTask);
@@ -3192,7 +3240,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // Second pass: process NpuDmaWaitOp ops in order
       // For each wait, find the next unconsumed ConfigTask for that channel
       SmallVector<AIEX::NpuDmaWaitOp> waitOps;
-      f.walk([&](AIEX::NpuDmaWaitOp waitOp) { waitOps.push_back(waitOp); });
+      f->walk([&](AIEX::NpuDmaWaitOp waitOp) { waitOps.push_back(waitOp); });
 
       for (auto waitOp : waitOps) {
         StringRef metadata = waitOp.getSymbol();
@@ -3281,11 +3329,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // Keeping at most `depth` tasks in flight per channel (await task i-depth
   // before reusing its BD at start i, then drain the final `depth`) bounds the
   // in-flight set and preserves the drainable round-major schedule.
-  void synthesizeDoubleBufferedAwaits(func::FuncOp f, AIE::DeviceOp device,
+  void synthesizeDoubleBufferedAwaits(Operation *f, AIE::DeviceOp device,
                                       unsigned depth) {
     // Group marked MM2S config tasks per channel, in program order.
     llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>> groups;
-    f.walk([&](AIEX::DMAConfigureTaskForOp ct) {
+    f->walk([&](AIEX::DMAConfigureTaskForOp ct) {
       if (!ct->hasAttr(air::attrs::PreserveShimDmaOrder))
         return;
       StringRef md = ct.getAlloc().getLeafReference().getValue();
@@ -3298,7 +3346,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       return;
     // Map each config task to its start op.
     llvm::DenseMap<Operation *, AIEX::DMAStartTaskOp> startOf;
-    f.walk([&](AIEX::DMAStartTaskOp st) {
+    f->walk([&](AIEX::DMAStartTaskOp st) {
       if (auto *def = st.getTask().getDefiningOp())
         startOf[def] = st;
     });
@@ -3370,7 +3418,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // transition.
     llvm::DenseMap<Operation *, int64_t> taskWave;
     bool sawWave = false;
-    f.walk([&](AIEX::DMAConfigureTaskForOp ct) {
+    f->walk([&](AIEX::DMAConfigureTaskForOp ct) {
       if (!ct->hasAttr(air::attrs::PreserveShimDmaOrder))
         return;
       if (auto a = ct->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave)) {
@@ -3392,7 +3440,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // whose waves just append more phase groups).
     {
       SmallVector<AIEX::DMAConfigureTaskForOp> coalTasks;
-      f.walk([&](AIEX::DMAConfigureTaskForOp ct) {
+      f->walk([&](AIEX::DMAConfigureTaskForOp ct) {
         if (!ct->hasAttr(air::attrs::CoalescedShimFeed))
           return;
         StringRef md = ct.getAlloc().getLeafReference().getValue();
@@ -3593,9 +3641,18 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Taking into account for loop nests
     module.walk([&](mlir::func::FuncOp f) {
       SmallVector<affine::AffineForOp> afos;
-      for (auto op : f.getOps<affine::AffineForOp>()) {
-        afos.push_back(op);
-      }
+      if (clKeepLoopsRolled) {
+        // The launch/segment affine scaffolding nested inside a kept scf.for
+        // would otherwise survive: nothing unrolls it once the enclosing
+        // scf.for stops being unrolled out from under it.
+        f.walk([&](affine::AffineForOp op) {
+          if (!op->getParentOfType<affine::AffineForOp>())
+            afos.push_back(op);
+        });
+      } else
+        for (auto op : f.getOps<affine::AffineForOp>()) {
+          afos.push_back(op);
+        }
       for (auto op : afos) {
         unrollAffineFor(op);
         // Renumber unrolled memcpy ops
@@ -3648,6 +3705,71 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           signalPassFailure();
         }
       }
+    }
+  }
+
+  // Drop !airrt.event iter_args from scf.for loops. Unrolling used to dissolve
+  // them; a loop that stays rolled carries the token across the back edge, and
+  // the conversion has nothing to replace a loop-carried event with. Every
+  // reader becomes a fresh empty airrt.wait_all, which the conversion erases.
+  void dropAirrtEventIterArgs(ModuleOp module) {
+    SmallVector<scf::ForOp> forOps;
+    module.walk([&](mlir::func::FuncOp f) {
+      f.walk([&](scf::ForOp forOp) {
+        if (llvm::any_of(forOp.getResultTypes(),
+                         [](Type t) { return isa<airrt::EventType>(t); }))
+          forOps.push_back(forOp);
+      });
+    });
+    for (auto forOp : llvm::reverse(forOps)) {
+      OpBuilder builder(forOp);
+      auto eventTy = airrt::EventType::get(forOp->getContext());
+      SmallVector<Value> keptInits;
+      SmallVector<unsigned> keptIdx;
+      for (auto [i, init] : llvm::enumerate(forOp.getInitArgs()))
+        if (!isa<airrt::EventType>(init.getType())) {
+          keptInits.push_back(init);
+          keptIdx.push_back(i);
+        }
+      auto newFor =
+          scf::ForOp::create(builder, forOp.getLoc(), forOp.getLowerBound(),
+                             forOp.getUpperBound(), forOp.getStep(), keptInits);
+      newFor->setAttrs(forOp->getAttrs());
+      Block *newBody = newFor.getBody();
+      // scf.for materializes an scf.yield in an empty body; the moved body
+      // brings its own, with the event operands dropped below.
+      newBody->getTerminator()->erase();
+      SmallVector<Value> argRepl;
+      argRepl.push_back(newFor.getInductionVar());
+      builder.setInsertionPointToStart(newBody);
+      unsigned kept = 0;
+      for (auto regionArg : forOp.getRegionIterArgs())
+        argRepl.push_back(
+            isa<airrt::EventType>(regionArg.getType())
+                ? airrt::WaitAllOp::create(builder, forOp.getLoc(), eventTy,
+                                           SmallVector<Value>{})
+                      .getResult(0)
+                : newFor.getRegionIterArgs()[kept++]);
+      newBody->getOperations().splice(newBody->end(),
+                                      forOp.getBody()->getOperations());
+      for (auto [oldArg, newArg] :
+           llvm::zip(forOp.getBody()->getArguments(), argRepl))
+        oldArg.replaceAllUsesWith(newArg);
+      auto yield = cast<scf::YieldOp>(newBody->getTerminator());
+      SmallVector<Value> keptYields;
+      for (unsigned i : keptIdx)
+        keptYields.push_back(yield.getOperand(i));
+      yield->setOperands(keptYields);
+      builder.setInsertionPointAfter(newFor);
+      kept = 0;
+      for (auto res : forOp.getResults())
+        res.replaceAllUsesWith(
+            isa<airrt::EventType>(res.getType())
+                ? airrt::WaitAllOp::create(builder, forOp.getLoc(), eventTy,
+                                           SmallVector<Value>{})
+                      .getResult(0)
+                : newFor.getResult(kept++));
+      forOp.erase();
     }
   }
 
