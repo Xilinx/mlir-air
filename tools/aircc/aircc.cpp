@@ -789,18 +789,22 @@ static LogicalResult emitTxnCppBuilder(StringRef seqFile,
   return success();
 }
 
-// The per-sequence modules aiecc emitted for this run, newest first. The
-// artifact name is templated on the sequence key, so the file lands next to
-// aiecc's other --get outputs rather than at a name aircc chose.
+// The per-sequence modules aiecc emitted for this run. The artifact name is
+// templated on the sequence key, so the file lands next to aiecc's other --get
+// outputs rather than at a name aircc chose. Directory iteration order is not
+// stable, so sort: which sequence the builder is emitted for must not vary
+// between two runs of the same compile.
 static void collectNpuSeqFiles(StringRef dir,
                                SmallVectorImpl<std::string> &out) {
   std::error_code ec;
+  size_t first = out.size();
   for (sys::fs::directory_iterator it(dir, ec), e; it != e && !ec;
        it.increment(ec)) {
     StringRef name = sys::path::filename(it->path());
     if (name.starts_with("npu_seq_") && name.ends_with(".mlir"))
       out.push_back(it->path());
   }
+  std::sort(out.begin() + first, out.end());
 }
 
 static LogicalResult runGpuCompilation() {
@@ -1454,10 +1458,15 @@ static LogicalResult runAieCompilation() {
       sys::path::replace_extension(headerFile, "txn.h");
       // One runtime sequence per header: a design with several would need the
       // host to pick among them, and none of the decoders has more than one.
-      if (seqFiles.size() > 1)
-        llvm::errs() << "Warning: " << seqFiles.size()
-                     << " runtime sequences; emitting the builder for "
-                     << seqFiles.front() << " only\n";
+      // Picking one silently would hand the host a builder for whichever
+      // sequence sorted first, so make it an error rather than a warning.
+      if (seqFiles.size() > 1) {
+        llvm::errs() << "Error: --emit-txn-cpp found " << seqFiles.size()
+                     << " runtime sequences and cannot choose between them:\n";
+        for (StringRef f : seqFiles)
+          llvm::errs() << "  " << f << "\n";
+        return failure();
+      }
       if (failed(emitTxnCppBuilder(seqFiles.front(), headerFile)))
         return failure();
     }

@@ -510,6 +510,11 @@ class XRTBackend(AirBackend):
                 raise AirBackendError(
                     f"emit_txn_cpp was set but aircc produced no {txn_header}"
                 )
+            # There is no insts.bin to name: a sequence holding a runtime scalar
+            # cannot be frozen into one, which is the whole point of the builder.
+            # Say so in the artifact rather than hand back a path that cannot
+            # exist.
+            insts = None
 
         return XRTCompileArtifact(output_binary, elf_kernel, insts, txn_header)
 
@@ -695,7 +700,15 @@ class XRTBackend(AirBackend):
 
         else:
             # xclbin loading path - original implementation
-            if not os.path.isfile(artifact.insts):
+            if artifact.insts is None and artifact.txn_header:
+                raise AirBackendError(
+                    "This artifact was built with emit_txn_cpp, so its instruction "
+                    "stream is assembled per dispatch and there is no insts.bin to "
+                    f"load. Build it from {artifact.txn_header} with "
+                    "air.backend.txn_builder.TxnBuilder and drive the kernel "
+                    "directly."
+                )
+            if not artifact.insts or not os.path.isfile(artifact.insts):
                 raise AirBackendError(
                     f"Cannot load XRTCompileArtifact because {artifact.insts} insts file does not exist"
                 )

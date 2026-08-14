@@ -135,7 +135,8 @@ class TxnBuilder:
         if workdir is None:
             # Key the cache on the source so a recompiled model picks up a new
             # builder without the caller having to clean anything.
-            digest = hashlib.sha256(src.encode() + open(self.header, "rb").read())
+            with open(self.header, "rb") as f:
+                digest = hashlib.sha256(src.encode() + f.read())
             workdir = os.path.join(
                 tempfile.gettempdir(), f"air_txn_{digest.hexdigest()[:16]}"
             )

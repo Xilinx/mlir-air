@@ -473,9 +473,6 @@ RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L + 15) // 16)))
 # calls per token (air.backend.txn_builder). Off by default: the staircase templates
 # remain the shipping path until this is measured across all four decoders.
 DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
-# Bisect gates: which of the three runtime bindings to enable (1 = readback block
-# count + memtile dequeue, 2 = append slot address, 4 = RTP-L and the core loops).
-# DECODE_DYNSEQ=1 turns all three on; a bitmask above 7 selects them individually.
 # The four bindings move together: the shim's push count, the memtile's dequeue
 # count and the cores' trip count must agree, and the append has to land on the
 # position the cores are about to read. Named separately only because each one
