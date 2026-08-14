@@ -766,8 +766,13 @@ class Session:
             [128000]
         )  # 1-token dummy, padded to seq_len -> warms the full path
         self.prefiller.clear_context()
+        _win = (
+            f", staircase windows={self.dec.windows}"
+            if len(self.dec.windows) > 1
+            else ""
+        )
         print(
-            f"[session] ready: prefill+decode resident (ATTN_MAXL={self.attn_maxl}, "
+            f"[session] ready: prefill+decode resident (ATTN_MAXL={self.attn_maxl}{_win}, "
             f"weights preloaded, warmup {time.perf_counter() - t_w:.2f}s).",
             flush=True,
         )
@@ -925,6 +930,11 @@ def interactive_chat(
                 sys.stdout.write(d)
                 sys.stdout.flush()
 
+        if len(sess.dec.windows) > 1:
+            print(
+                f"[chat] context {len(ids)} tok -> KV window {sess.dec.gen.window_for_L(len(ids) + 1)}",
+                flush=True,
+            )
         gen_ids = sess.run_turn(
             ids,
             temperature=temperature,
