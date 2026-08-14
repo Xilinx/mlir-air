@@ -38,6 +38,9 @@
 // Prefill half.
 // CHECK: first-token argmax=12095
 // CHECK: *** PARIS ***
-// Decode half: the greedy continuation, then a completed 16-token run.
-// CHECK: generated : ' the city. Paris. The tower is called the Eiffel Tower, after'
+// Decode half: the greedy continuation, then a completed 16-token run. The
+// continuation changed when the decode grew a real KV cache -- it used to run a
+// 32-slot sliding window, so the head of this 32-token prompt was already out of
+// context by the first generated token.
+// CHECK: generated : ' the city. It is called the Eiffel Tower, and it was built'
 // CHECK: 16 tokens | device
