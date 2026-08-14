@@ -34,12 +34,15 @@
 // Build:  make bench-decode-exe      Run:  make bench-decode [L=1933]
 // [ITERS=64]
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 

@@ -272,12 +272,15 @@ class FusedDecoder:
         # match the xclbin the DecodeInstsGen base was compiled at. The decode is always
         # REGION-MAJOR (the reference quadrants K03|K47|V03|V47 + fire-and-free readback, ~50 tok/s @2K);
         # seed_kv lays the seeded prefill K/V out region-major to match the decode module.
-        # UNI_DEC/UNI_LM are fixed constants in fused_decode.py (Llama-3.2-1B: 16/9).
+        # UNI_DEC/UNI_LM are fixed constants in fused_decode.py (Llama-3.2-1B: 16/7).
         os.environ.update(
             UNIFIED="1",
             # Must match the value the decode templates were BUILT with; honour an
-            # explicit override so the lm-head wave count can be varied (paired with
-            # UNI_LM, whose product with this is fixed by the vocab size).
+            # explicit override so the lm-head wave count can be varied. It is
+            # PAIRED with UNI_LM -- their product is fixed by the vocab size -- so
+            # overriding this one alone trips fused_decode.py's
+            # `UNI_LM == N_VOCAB_CHUNKS` assert. That is deliberate: the assert names
+            # both values, and a silent mismatch would sweep the wrong vocab length.
             VOCAB_CHUNK_I2=os.environ.get("VOCAB_CHUNK_I2", "18"),
             LM_HEAD="0",
             NLAYERS="1",

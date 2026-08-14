@@ -159,9 +159,18 @@ void proj_qmm_acc256_c(bf16 *__restrict x_blk, bf16 *__restrict w,
 // silently defeating the cache. One call per projection, outside both the
 // row-block and col-block loops, keeps it alive across them. Same reason
 // proj_qmm_zero/proj_qmm_flush exist as separate entry points for y_acc.
-// Read-only on purpose: writing here would clobber slot 0.
+//
+// The pin is an IR-level effect: AIR decides where to sink the alloc from the
+// operands of this func.call, long before Peano sees the body. So the body only
+// has to be a side effect that is not undefined. It must NOT read rc -- on the
+// first call the buffer is uninitialized, and reading an indeterminate bf16 is
+// UB the compiler is free to resolve by deleting the call outright -- and it
+// must not write rc either, since slot 0 is live cache state. Storing the
+// POINTER to a volatile satisfies both: a volatile store is a side effect the
+// compiler must emit, and it never dereferences rc. (Inline asm is not an
+// option here: the Peano AIE2P backend fails to translate it.)
 void proj_qmm_rc_arm(bf16 *__restrict rc, int _arm) {
-  volatile bf16 keep = rc[0];
+  bf16 *volatile keep = rc;
   (void)keep;
   (void)_arm;
 }
