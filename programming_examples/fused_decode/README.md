@@ -138,7 +138,7 @@ Three things make it work, all mirroring FLM's `mem_C_1`:
 | | what | why |
 |---|---|---|
 | split axis | **spatial**, by cascade pair -- ch0 feeds rows 2/3, ch1 rows 4/5, on two independent lock cycles | a *temporal* split (alternating fan steps) gives every core one MM2S chain alternating between both channels' buffers, couples the two shim channels at every step, and deadlocks |
-| shim placement | per-column channels `@inW{0,1}c{cx}`, each pinned with `air.shim_col` | a `[NCX]` bundle cannot express a per-index column; unpinned, the extra flows steal the rms/rope column and silently violate *its* `air.shim_col` |
+| shim placement | per-column channels `@inW{0,1}c{cx}`, columns derived | a `[NCX]` bundle cannot express a per-index column, so the channels stay separate; the column itself is not stated -- each feeds an L2 buffer pinned with `air.memtile_col`, and the tile placer puts the shim in the column of the memtile it feeds |
 | X memtile | on the hub column (`XMT_PCOL = MAIN_PCOL`) | FLM has **no** memtile in column 2. Leaving the 16-way X broadcast there alongside the shim feeds and both cores makes the pathfinder fail outright once the weight flows double |
 
 The DDR side is a pure permutation of the packed cascade
