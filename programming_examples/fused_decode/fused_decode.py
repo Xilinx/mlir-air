@@ -69,13 +69,14 @@
 #
 #   16 proj cores (cols 0,1,6,7 x rows 2..5) form 8 CASCADE PAIRS (lead row 2/4 +
 #   partner row 3/5 per col). Each pair shares two L1 y-buffers (memref<80> =
-#   16 hdr region + 2*32 payload) on the LEAD tile. The lead writes the packet id
-#   into the header (proj_qmm_flush_hdr -> id@14, its row@16) and emits a 2-row
-#   packet (offset 14, size 66); the partner writes its row (proj_qmm_flush_row
-#   i=1 -> @48, no header) cross-tile into the SAME lead buffer. Output flows are
-#   PACKET channels carrying the compiler-written routing header; the group memtile does the
-#   asymmetric one-header gather (258 = hdr + 4*64), the main memtile a 2-slot
-#   daisy chain (514), and ONE egress demuxes by id (id1 = QKV).
+#   16 hdr region + 2*32 payload) on the LEAD tile. The lead writes its row
+#   (proj_qmm_flush_row i=0 -> @16) and emits a 2-row packet (offset 14, size
+#   66); the partner writes its row (i=1 -> @48) cross-tile into the SAME lead
+#   buffer. Neither writes the routing header at @14 -- the compiler stores it
+#   from the `dest` the lead's put names. Output flows are PACKET channels
+#   carrying that header; the group memtile does the asymmetric one-header
+#   gather (258 = hdr + 4*64), the main memtile a 2-slot daisy chain (514), and
+#   ONE egress demuxes by it.
 #
 #   The proj core is the reproducer's persistent phase loop: for ph in 0..NPH with
 #   scf.index_switch selecting I2 (row-pair iters) / J2 (col-block pairs) / pkt id
@@ -912,10 +913,6 @@ def build_module():
         acc256_c.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         rc_arm = FuncOp("proj_qmm_rc_arm", ([rcache_l1, i32], []), visibility="private")
         rc_arm.attributes["link_with"] = StringAttr.get("proj_qmm.o")
-        flush_hdr = FuncOp(
-            "proj_qmm_flush_hdr", ([yacc_l1, ypair_l1], []), visibility="private"
-        )
-        flush_hdr.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         flush_row = FuncOp(
             "proj_qmm_flush_row", ([yacc_l1, ypair_l1, i32], []), visibility="private"
         )
@@ -2858,15 +2855,19 @@ def build_module():
                             gcy = ty
                             i2c = [idx(v) for v in I2P]
                             j2c = [idx(v) for v in J2P]
-                            # Stamp the DESTINATION ORDINAL, not a packet id.
-                            # DEST[ph] is the same index the receiving gets sit at
-                            # (`indices=[0, p]`); air-annotate-packet-ids
-                            # allocates the ids and rewrites these constants to
-                            # match, so the wire number lives in exactly one
-                            # place instead of being written here and on the
-                            # channel and hoped to agree.
+                            # Name the DESTINATION, not a packet id. DEST[ph]
+                            # is the same index the receiving gets sit at
+                            # (`indices=[0, p]`); the put carries it as `dest`
+                            # and air-annotate-packet-ids allocates that
+                            # destination's id and stores the routing header. The
+                            # wire number lives in exactly one place instead of
+                            # being written here and on the channel and hoped to
+                            # agree.
                             pktc = [idx(d) for d in DEST]
                             c2 = idx(2)
+                            # Row 0 of the packet payload; the pair's partner
+                            # writes row 1. See proj_qmm_flush_row.
+                            c0i = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
 
                             def _gemv(J2v):
                                 J2x2 = arith.muli(J2v, c2)
@@ -2885,7 +2886,7 @@ def build_module():
 
                             def _emit(a_acc, destv):
                                 yb = AllocOp(ypair_l1, [], [])
-                                CallOp(flush_hdr, [a_acc, yb])
+                                CallOp(flush_row, [a_acc, yb, c0i])
                                 # dest = which egress consumer this round feeds.
                                 # The compiler allocates that destination's packet
                                 # id and emits the header store at offsets[0]; the
@@ -2977,6 +2978,7 @@ def build_module():
                             # place instead of being written here and on the
                             # channel and hoped to agree.
                             pktc = [idx(d) for d in DEST]
+                            c0i = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
                             c1i = arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
                             # fill=0 for every row-block after the phase's first
                             _c0i = arith.ConstantOp(
@@ -3028,7 +3030,7 @@ def build_module():
                                     )
                                     _if = IfOp(_is_lead, [], has_else=True)
                                     with InsertionPoint(_if.thenRegion.blocks[0]):
-                                        CallOp(flush_hdr, [a_acc, bufs[yb]])
+                                        CallOp(flush_row, [a_acc, bufs[yb], c0i])
                                         ChannelPut(
                                             "outA",
                                             bufs[yb],

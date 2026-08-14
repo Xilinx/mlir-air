@@ -25,11 +25,12 @@
 # proj SPMD contract (the reference proj kernel + array layout):
 #   MVM_CORES=16; each core computes M_total/16 output rows per phase, in m=32-row
 #   blocks (outer i loop), contracting K in k=256 col-blocks (inner j loop). Each
-#   32-row block is emitted as ONE packet: y buffer = 16 hdr + 32 payload = 48,
-#   pkt_id at y+14 (proj_qmm_flush_hdr writes exactly *(u32)(y+14)=id; copy<32>(y+16)).
-#   Phases (IS_ATTN==1): ph1 QKV M=2560 K=2048 ->5 rnd pkt1->ROPE; ph2 oproj M=2048
-#   K=2048 ->4 rnd pkt4->RMS; ph3 gateup M=22528 K=2048 ->44 rnd pkt8->GLU; ph4 down
-#   M=2048 K=11264 ->4 rnd pkt4->RMS. round-major core-interleave: round r core c emits r*16+c.
+#   32-row block is emitted as ONE packet: y buffer = 16 hdr + 32 payload = 48.
+#   proj_qmm_flush_row writes the payload at y+16; the routing id at y+14 is stored
+#   by the compiler, from the `dest` the air.channel.put names.
+#   Phases (IS_ATTN==1): ph1 QKV M=2560 K=2048 ->5 rnd ->ROPE; ph2 oproj M=2048
+#   K=2048 ->4 rnd ->RMS; ph3 gateup M=22528 K=2048 ->44 rnd ->GLU; ph4 down
+#   M=2048 K=11264 ->4 rnd ->RMS. round-major core-interleave: round r core c emits r*16+c.
 #
 # STAGE 1 (this file): QKV-only proj grid, host-fed X/W (memtile-staged), per-col gather.
 # Goal = lower clean through aircc + IR-diff the proj-tile region vs the reference QWEN2_3B layer IR.
@@ -476,7 +477,7 @@ SKIP_KVFIN = int(_os.environ.get("QWEN_SKIP_KVFIN", "0")) or SKIP_KV
 # (proj MVM + egress + X/weight feeds + rope/rms/glu channel gets+puts) but SKIP the
 # rope/rms/glu compute CallOps. COHERENT (not a header-skip): under ATTN=0/LOOPCLOSE=0
 # the surround outputs (qDrain/layerOut/gluDrain) are circuit drains to host, NOT packet
-# flows, and proj (the header writer via proj_qmm_flush_hdr) still runs. If the base then
+# flows, and proj (whose put carries the dest the header is stored from) still runs. If the base then
 # COMPLETES, the deadlock is inside a surround kernel (rope/rms/glu miscompile); if it
 # still HANGS, the deadlock is in the proj/egress/feed dataflow.
 SURROUND_NOCOMPUTE = int(_os.environ.get("QWEN_SURROUND_NOCOMPUTE", "0"))
@@ -610,10 +611,10 @@ def build_module():
             "proj_qmm_acc256", ([xblk_l1, wblk_l1, yacc_l1], []), visibility="private"
         )
         acc256.attributes["link_with"] = StringAttr.get("proj_qmm.o")
-        flush_hdr = FuncOp(
-            "proj_qmm_flush_hdr", ([yacc_l1, ybuf_l1], []), visibility="private"
+        flush_row = FuncOp(
+            "proj_qmm_flush_row", ([yacc_l1, ybuf_l1, i32], []), visibility="private"
         )
-        flush_hdr.attributes["link_with"] = StringAttr.get("proj_qmm.o")
+        flush_row.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         # rope_compute(q,k,v, qkv, lut, arm): rotate-half RoPE on Q/K (V copied).
         rope_compute = FuncOp(
             "rope_compute",
@@ -909,7 +910,11 @@ def build_module():
                         DeallocOp(a_w)
                         yield_([])
                     a_y = AllocOp(ybuf_l1, [], [])
-                    CallOp(flush_hdr, [a_acc, a_y])
+                    # Row 0 of the payload; this core produces one row-block, so
+                    # there is no partner row. No routing header is written here
+                    # -- the compiler stores it from the put's `dest`.
+                    _c0i = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
+                    CallOp(flush_row, [a_acc, a_y, _c0i])
                     # dest = which egress consumer this round feeds. The compiler
                     # allocates that destination's packet id and emits the header
                     # store at offsets[0]; the kernel no longer touches routing.
