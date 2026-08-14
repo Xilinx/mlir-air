@@ -26,6 +26,20 @@ AIEOPT_DIR     := $(shell realpath $(dir $(shell which aie-opt))/..)
 #   deadlock, so they must stay -O1.
 NONATTN_KERNELS := proj_qmm rms_residual glu rope   # object .o, -O2
 ATTN_LL_KERNELS := attn_qk attn_kv                  # inline .ll only, -O1 (merge-linked)
+# Extra per-group kernel defines, for A/B diagnostics ONLY (empty in every normal
+# build, so the shipped path is byte-identical). They exist because the kernels'
+# cost is not separable from the outside: end-to-end latency cannot say how much
+# of a phase is compute vs waiting on its feed, and hardware tracing is not
+# available. Building a variant that keeps the dataflow but drops the math
+# answers it directly. Example -- attn_kv.cc/attn_qk.cc honour SKIP_ATTN_FV and
+# SKIP_CALC_L, which keep every lock handshake and DMA but remove the attention
+# math, and measured that attn_fv compute is 0.746 of the 1.137 ms/1k context
+# slope (the rest is feed):
+#     make compile-decode ATTN_EXTRA="-DSKIP_ATTN_FV -DSKIP_CALC_L"
+# Such builds produce WRONG results -- pair them with bench-decode (latency
+# only), never with make verify.
+ATTN_EXTRA     ?=
+NONATTN_EXTRA  ?=
 PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
   -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body -Wno-deprecated-declarations \
   -DNDEBUG -DMODEL_TYPE=LLAMA_3_2_1B -D__AIE_API_AIE_ADF_HPP__ \
@@ -41,8 +55,24 @@ PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
 # it. Inherited from the environment so a consumer can set it once for both the
 # build and the run.
 W_DUAL_CHAN    ?= 1
-DECODE_ENV     := VOCAB_CHUNK_I2=14 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
-                  W_DUAL_CHAN=$(W_DUAL_CHAN)
+# VOCAB_CHUNK_I2 / UNI_LM: overridable so the lm-head wave count can be varied at
+# CONSTANT work (UNI_LM*VOCAB_CHUNK_I2 must stay = VOCAB_FULL_ROWBLKS/32). Defaults
+# reproduce the shipped config exactly. fused_decode.py asserts the two agree.
+VOCAB_CHUNK_I2 ?= 18
+# PROJ_RC_CACHE=1 (default) computes the proj +min-term reduction of the
+# activation ONCE per col-block per projection and reuses it across that
+# projection's row-blocks, instead of recomputing it on every (row, col) block.
+# It is the reference proj_main's `if (i == 0)` guard -- see
+# kernels/proj_qmm.cc::proj_qmm_acc256_c. Numerically EXACT (same values, fewer
+# times): measured bit-identical 64-token greedy output at ctx 263 and 1933.
+# Worth -0.58 ms/token, all of it on the context-INDEPENDENT part (intercept
+# 15.87 -> 15.30 ms; slope unchanged at 1.14 ms/1k). Only engages on the
+# PAIR_ROWS=2 proj path (llama); the PAIR_ROWS=1 gemma path is untouched.
+# PROJ_RC_CACHE=0 restores the recompute-every-block kernel for A/B.
+PROJ_RC_CACHE  ?= 1
+DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
+                  W_DUAL_CHAN=$(W_DUAL_CHAN) PROJ_RC_CACHE=$(PROJ_RC_CACHE) \
+                  $(if $(UNI_LM),UNI_LM=$(UNI_LM),)
 
 .PHONY: help compile-decode _compile_decode_build preflight-llvm-link clean
 
@@ -52,6 +82,8 @@ help:
 	@echo "============================================================"
 	@echo ""
 	@echo "  make compile-decode   Build decode kernels + templates (decode_L2048 + L2047, ~15 min)"
+	@echo "  make bench-decode     C++ per-token latency in FLM-comparable scope; LATENCY ONLY,"
+	@echo "                        never a correctness gate.  L=1933 ITERS=64 WARMUP=8"
 	@echo "  make clean            Remove kernels + templates"
 	@echo ""
 	@echo "Consumed by the llama32_1b_q4nx LLM e2e (make chat / make gen there)."
@@ -139,12 +171,12 @@ compile-decode-windows:
 _compile_decode_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
 	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
 	@# attn_qk/attn_kv are built ONLY as inline .ll (merge-linked into the core; mlir-aie #3399).
 	@# They MUST be -O1 (a -O2 attn do-while deadlock); non-attn MUST be -O2 (rope -O1 miscompiles).
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
 	@echo ">>> template decode_L2048 (+ L2047 slope ref) [region-major KV + fire-and-free readback + inline attn]"
 	@# The two same-ATTN_MAXL builds (L2048 + L2047) calibrate the L-slope so DecodeInstsGen can
@@ -159,9 +191,59 @@ _compile_decode_build: preflight-llvm-link
 	  else echo "decode_L$(LREF) FAILED (see /tmp/decode_L$(LREF).log)"; exit 1; fi
 	@echo "Decode build complete: decode_L$(LBUILD) + decode_L$(LREF) templates."
 
+## ---- C++ decode-latency benchmark (FLM-comparable scope) --------------------
+## `make bench-decode` times the same per-token sequence the Python driver's
+## dispatch() runs, but in C++ and ending where FastFlowLM's DECODING_TIME
+## accumulator stops: logits synced back, NO sampling and NO detokenization
+## (FLM keeps those in separate accumulators, so they are not in its published
+## tok/s). That is the only scope in which the two per-token numbers are
+## directly comparable. The Python driver's tok/s additionally carries a
+## 128k-element argmax (~0.14 ms) and ~0.10 ms of Python host work, so it reads
+## ~0.25 ms/token slower than this for the same build.
+##
+## LATENCY ONLY -- it fills the weight/KV/rms BOs with a fixed pattern instead
+## of loading the real requant, so it CANNOT check numerics. (Decode time here
+## is data-independent: every trip count is fixed except the attention block
+## loop, which is bounded by the patched RTP-L word. Verified -- synthetic vs
+## real weights agree to 0.05%.) Correctness stays with the llama32_1b_q4nx
+## driver's greedy id-sequence gate; never promote this to a gate.
+##
+## Needs both templates (compile-decode) since the per-L instruction stream is
+## derived from their per-word slope, exactly as DecodeInstsGen does it.
+## Geometry defaults are llama-3.2-1B; another model must pass --k/--w-elems/
+## --rms-size/--ny/--kv-elems/--decode-y/--voc-n/--rms-lut-off explicitly or the
+## numbers are silently wrong.
+L        ?= 1933
+ITERS    ?= 64
+WARMUP   ?= 8
+BENCH_EXE := $(srcdir)/bench_decode.exe
+
+$(BENCH_EXE): $(srcdir)/bench_decode.cpp
+	@GPP=$$( \
+		for bin in /usr/bin/g++-*; do \
+			ver=$$(echo $$bin | grep -oE '[0-9]+$$'); \
+			if [ "$$ver" -ge 13 ] 2>/dev/null; then echo "$$ver $$bin"; fi; \
+		done | sort -nr | head -n1 | awk '{print $$2}' \
+	); \
+	if [ -z "$$GPP" ]; then echo "Error: No g++ >= 13 in /usr/bin."; exit 1; fi; \
+	if [ -z "$$XILINX_XRT" ]; then echo "Error: source /opt/xilinx/xrt/setup.sh."; exit 1; fi; \
+	echo "Using compiler: $$GPP"; \
+	$$GPP $(srcdir)/bench_decode.cpp -o $(BENCH_EXE) \
+		-std=c++23 -O2 -Wall \
+		-I$$XILINX_XRT/include -L$$XILINX_XRT/lib \
+		-luuid -lxrt_coreutil -lrt -lstdc++
+
+.PHONY: bench-decode-exe bench-decode
+bench-decode-exe: $(BENCH_EXE)
+
+bench-decode: $(BENCH_EXE)
+	@if [ ! -f $(srcdir)/decode_L2048.insts.bin ] || [ ! -f $(srcdir)/decode_L2047.insts.bin ]; then \
+	  echo "Need both templates; run 'make compile-decode' first."; exit 1; fi
+	$(BENCH_EXE) --dir $(srcdir) --l $(L) --iters $(ITERS) --warmup $(WARMUP)
+
 ## Remove compiled kernels + decode templates.
 clean:
 	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin \
 	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
-	      $(DECODE_FLAGS_STAMP) 2>/dev/null || true
+	      $(BENCH_EXE) $(DECODE_FLAGS_STAMP) 2>/dev/null || true
 	@echo "Kernels and decode templates removed. Rebuild with 'make compile-decode'."

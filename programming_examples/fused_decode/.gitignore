@@ -4,6 +4,7 @@
 *.ll
 *.xclbin
 *.bin
+*.exe
 
 # Build / cache artifacts
 __pycache__/

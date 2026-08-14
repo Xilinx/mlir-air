@@ -155,8 +155,15 @@ def _ensure_requant_cache(fd):
         # a warm single-channel cache would feed the wrong blocks. Key on the flag
         # too so both layouts can coexist.
         _w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
+        # The lm-head weights are packed PER VOCAB CHUNK (UNI_LM chunks of
+        # VOCAB_SIZE_PADDED rows), so VOCAB_CHUNK_I2/UNI_LM change the vocab layout
+        # exactly the way W_DUAL_CHAN changes the decode layout. Key on it too: the
+        # default moved 14/9 -> 18/7, and a cache warmed under the old split would be
+        # silently fed the wrong vocab blocks (wrong logits, no error).
+        _vc = getattr(fd, "VOCAB_I2", 0)
+        _v = f"_v{_vc}" if _vc and _vc != 14 else ""
         rc = os.path.join(
-            _Q4NX_CACHE, f"requant_{Q4nxModel(src).fingerprint()}{_w2}.npz"
+            _Q4NX_CACHE, f"requant_{Q4nxModel(src).fingerprint()}{_w2}{_v}.npz"
         )
     if not os.path.exists(rc):
         q4nx_requant.build_requant_cache(src, fd, rc)
@@ -291,10 +298,16 @@ class FusedDecoder:
         # match the xclbin the DecodeInstsGen base was compiled at. The decode is always
         # REGION-MAJOR (the reference quadrants K03|K47|V03|V47 + fire-and-free readback, ~50 tok/s @2K);
         # seed_kv lays the seeded prefill K/V out region-major to match the decode module.
-        # UNI_DEC/UNI_LM are fixed constants in fused_decode.py (Llama-3.2-1B: 16/9).
+        # UNI_DEC/UNI_LM are fixed constants in fused_decode.py (Llama-3.2-1B: 16/7).
         os.environ.update(
             UNIFIED="1",
-            VOCAB_CHUNK_I2="14",
+            # Must match the value the decode templates were BUILT with; honour an
+            # explicit override so the lm-head wave count can be varied. It is
+            # PAIRED with UNI_LM -- their product is fixed by the vocab size -- so
+            # overriding this one alone trips fused_decode.py's
+            # `UNI_LM == N_VOCAB_CHUNKS` assert. That is deliberate: the assert names
+            # both values, and a silent mismatch would sweep the wrong vocab length.
+            VOCAB_CHUNK_I2=os.environ.get("VOCAB_CHUNK_I2", "18"),
             LM_HEAD="0",
             NLAYERS="1",
             DECODE_GOLDEN="1",  # boolean flag: enable post-attn-RMS decode path
