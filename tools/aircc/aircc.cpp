@@ -834,7 +834,16 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
   std::string pipeline;
   raw_string_ostream os(pipeline);
 
-  os << "air-dependency,air-hoist-dma-in-accum-pattern";
+  os << "air-dependency";
+  // Second half of air-annotate-packet-ids: now that air-dependency has wrapped
+  // each computation in an air.execute, write the routing header of every put
+  // that names a `dest` INTO the region that produced the payload. Emitting it
+  // in the early slot would make it an air.execute of its own, and the lock
+  // placer brackets those one at a time -- the buffer would reach the DMA
+  // before the header existed, and the consumer lock would be signalled twice
+  // per production. Allocation already happened; this run reads those ids back.
+  os << ",air-annotate-packet-ids{assign=true}";
+  os << ",air-hoist-dma-in-accum-pattern";
 
   if (!omitAutoBroadcast) {
     os << ",air-broadcast-detection,air-specialize-dma-broadcast";
@@ -1051,7 +1060,14 @@ static LogicalResult runAieCompilation() {
     os << ",air-annotate-append-barrier";
     // Same slot, same reason. Derives a demux channel's packet id count from
     // its fan-out shape and checks the ids against the ones its kernel stamps.
-    os << ",air-annotate-packet-ids{assign=true}";
+    // Header emission is deferred to a second run of this pass, inside the
+    // optimization pipeline just after air-dependency -- see there. That
+    // pipeline is NPU-only, so anywhere else this slot has to do both.
+    bool deferHeaders = deviceName.getValue().find("npu") != std::string::npos;
+    os << ",air-annotate-packet-ids{assign=true";
+    if (deferHeaders)
+      os << " emit-headers=false";
+    os << "}";
     os << ",air-rank-to-launch";
     os << ",air-insert-launch-around-herd{insert-segment=true}";
     os << ",func.func(air-lower-herd-parallel)";

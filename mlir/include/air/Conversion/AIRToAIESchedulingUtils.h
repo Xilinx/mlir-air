@@ -50,9 +50,14 @@ bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 int64_t get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
                     ArrayRef<OpFoldResult> memcpy_strides);
 
-// Given a vector of memcpy operations, return a map of their repeat counts,
-// relative to a common ancestor region.
-llvm::MapVector<int, llvm::SetVector<Operation *>>
+// Given a vector of memcpy operations, split them into BD tasks paired with the
+// repeat count each task runs at, relative to a common ancestor region. Tasks
+// come back in program order, and a repeat count may appear more than once:
+// only transfers ADJACENT in program order are merged into one task, because
+// the DMA runs the tasks back to back in the order returned. Grouping every
+// transfer that happens to share a trip count would hoist a later one into an
+// earlier task and emit it ahead of the transfers it must follow.
+SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
 getRepeatCounts(std::vector<Operation *> memcpy_ops);
 
 // True if the two ops lower to interchangeable BDs (same memref and matching
@@ -318,6 +323,12 @@ public:
   // target the channel the BDs moved to. Run after sortMemcpyOps, before flows
   // are connected.
   void repairS2MMChains(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
+  // Reject MM2S chains whose BD ring cannot stay in step with the transfers the
+  // core actually issues. Diagnosis only: unlike the S2MM side there is nothing
+  // to repair, because moving a producer to another MM2S would change which
+  // physical port its flows originate from. Returns failure if any chain is
+  // rejected.
+  LogicalResult verifyMM2SChains();
 };
 
 class ShimDMAAllocator : public DMAAllocator {

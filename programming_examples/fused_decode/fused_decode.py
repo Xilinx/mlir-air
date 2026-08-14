@@ -69,13 +69,14 @@
 #
 #   16 proj cores (cols 0,1,6,7 x rows 2..5) form 8 CASCADE PAIRS (lead row 2/4 +
 #   partner row 3/5 per col). Each pair shares two L1 y-buffers (memref<80> =
-#   16 hdr region + 2*32 payload) on the LEAD tile. The lead writes the packet id
-#   into the header (proj_qmm_flush_hdr -> id@14, its row@16) and emits a 2-row
-#   packet (offset 14, size 66); the partner writes its row (proj_qmm_flush_row
-#   i=1 -> @48, no header) cross-tile into the SAME lead buffer. Output flows are
-#   PACKET channels carrying the kernel-written id; the group memtile does the
-#   asymmetric one-header gather (258 = hdr + 4*64), the main memtile a 2-slot
-#   daisy chain (514), and ONE egress demuxes by id (id1 = QKV).
+#   16 hdr region + 2*32 payload) on the LEAD tile. The lead writes its row
+#   (proj_qmm_flush_row i=0 -> @16) and emits a 2-row packet (offset 14, size
+#   66); the partner writes its row (i=1 -> @48) cross-tile into the SAME lead
+#   buffer. Neither writes the routing header at @14 -- the compiler stores it
+#   from the `dest` the lead's put names. Output flows are PACKET channels
+#   carrying that header; the group memtile does the asymmetric one-header
+#   gather (258 = hdr + 4*64), the main memtile a 2-slot daisy chain (514), and
+#   ONE egress demuxes by it.
 #
 #   The proj core is the reproducer's persistent phase loop: for ph in 0..NPH with
 #   scf.index_switch selecting I2 (row-pair iters) / J2 (col-block pairs) / pkt id
@@ -180,7 +181,7 @@ _MODELS = {
         NPH=4,  # proj phases (QKV, o, gate-up, down)
         I2P=[3, 2, 16, 2],  # per-phase row-pair iters/core
         J2P=[4, 4, 4, 16],  # per-phase col-block pairs (2*J2 = NBJ = K/COL_BLOCK)
-        KIDP=[1, 4, 8, 4],  # per-phase packet ids
+        DEST=["rope", "rms", "glu", "rms"],  # phase -> egress consumer
         GQA_SEG=4,  # GQA q-heads-per-group padding segment (ATTN_IMPL 2x4x1)
         PAIR_ROWS=2,  # proj egress: 2 = lead/partner shared-L1 pairing (FLM llama)
         N_NORMS=2,  # pre-norms only (input, post_attention) -- standard pre-norm
@@ -209,7 +210,7 @@ _MODELS = {
         NPH=4,
         I2P=[8, 5, 40, 5],  # blocks/tile per phase (non-paired)
         J2P=[5, 4, 5, 20],  # col-block pairs per phase (2*J2 = NBJ = Kphase/COL_BLOCK)
-        KIDP=[1, 4, 8, 4],
+        DEST=["rope", "rms", "glu", "rms"],
         GQA_SEG=4,  # ATTN_IMPL_1x4x1
         PAIR_ROWS=1,  # NON-PAIRED egress (FLM gemma)
         # Gemma3 sandwich norm: 4 norms/layer (input, post_attention, pre_feedforward,
@@ -241,7 +242,7 @@ _MODELS = {
         NPH=4,
         I2P=[5, 3, 16, 3],
         J2P=[6, 6, 6, 16],
-        KIDP=[1, 4, 8, 4],
+        DEST=["rope", "rms", "glu", "rms"],
         GQA_SEG=4,  # ATTN_IMPL_2x4x1
         PAIR_ROWS=2,
         N_NORMS=2,
@@ -536,16 +537,24 @@ def _vreg_off(gi):
 NPH = MODEL["NPH"]
 I2P = MODEL["I2P"]  # row-pair iters per phase
 J2P = MODEL["J2P"]  # col-block pairs (2*J2 = NBJ = K/COL_BLOCK)
-KIDP = MODEL["KIDP"]  # per-phase packet ids (down reuses the o-proj id)
-DISTINCT_IDS = list(dict.fromkeys(KIDP))  # ordered-unique
-NDEST = len(DISTINCT_IDS)
-DEST = [DISTINCT_IDS.index(k) for k in KIDP]
+# Which egress consumer each proj phase sends to, BY NAME. This used to be a
+# list of packet ids that the kernel hardcoded too; the ids are now allocated by
+# air-annotate-packet-ids, so all the design states is where a phase's output
+# goes. Repeats are meaningful -- down shares o-proj's consumer.
+#
+# The ordinal a name maps to is its position in first-appearance order, which is
+# also the @outY broadcast index the receiving gets sit at. Naming the consumer and
+# deriving the index keeps the routing number out of the source entirely.
+DEST_NAMES = MODEL["DEST"]
+DEMUX = list(dict.fromkeys(DEST_NAMES))  # ordinal order: ["rope", "rms", "glu"]
+NDEST = len(DEMUX)
+DEST = [DEMUX.index(d) for d in DEST_NAMES]  # phase -> ordinal
 DOWN_PHASE = NPH - 1
 NBJ_PH = [2 * J2P[p] for p in range(NPH)]  # per-phase col-blocks: [8,8,8,32]
 KPH = [NBJ_PH[p] * COL_BLOCK for p in range(NPH)]  # per-phase K: [2048,2048,2048,8192]
 
 # Output wire layout (reproducer y_0_2_0 memref<80>, group 258, main 514).
-HDR = 2  # wire header words (kernel writes id@elem14)
+HDR = 2  # wire header words (the compiler stores the routing id at elem 14)
 PAIR_ROWS = MODEL["PAIR_ROWS"]  # 2 = lead/partner shared-L1 pairing (FLM llama)
 PAIR_PAY = PAIR_ROWS * ROW_BLOCK  # 64
 GRP_ROWS = HDR + LEADS_PER_GRP * PAIR_PAY  # 258
@@ -661,7 +670,7 @@ UNI_WAVE_HI = int(_os.environ.get("UNI_WAVE_HI", str(UNI_WAVES)))
 ROUNDS_PER_PH = [I2P[p] * PAIR_ROWS for p in range(NPH)]  # y0,y1 per v1 -> 2*I2
 N_ROUNDS = sum(ROUNDS_PER_PH)  # total egress rounds (phase0 6 + phase1 4 = 10)
 # id-demux egress: the main MT MM2S emits each round's assembled packet carrying
-# the kernel-written id; the switchbox routes id DISTINCT_IDS[p] -> dest p
+# the destination the put names; the switchbox routes the id allocated for dest p
 # (reproducer mem_1_1 DMA5: id1->tile_2_3, id4->tile_2_2). Rounds per dest =
 # sum of its phases' rounds (here 1:1 phase<->id so [6, 4]).
 ROUNDS_PER_DEST = [
@@ -711,12 +720,11 @@ GATEUP_REFEED = REFEED[GATEUP_PHASE]  # ph2 X re-feeds (32)
 # DMA0; NO relay). The GLU x buffer is 1024 = TWO stripped demux packets (512 each)
 # = [up 512 | gate 512]; glu_aie -> silu(gate)*up -> 512. 16 slices -> 8192.
 # The gate-up phase (ph2 of the 4-phase proj) is what feeds the GLU herd; its id is
-# whatever KIDP assigns to that phase. Derive it rather than hardcoding a value --
+# whatever DEST assigns to that phase. Derive it rather than hardcoding a value --
 # the ids are routing labels, not semantics, and mlir-aie #3429 (exact subcube cover)
 # removed the constraint that they be one-hot.
 GLU_PHASE = 2 if NPH == 4 else -1
-GLU_ID = KIDP[GLU_PHASE] if GLU_PHASE >= 0 else -1
-GLU_DEST = DISTINCT_IDS.index(GLU_ID) if GLU_ID in DISTINCT_IDS else -1
+GLU_DEST = DEST[GLU_PHASE] if GLU_PHASE >= 0 else -1
 # #4 faithful residual stream: o-proj + down (shared id4 -> RMS_DEST) are CONSUMED by
 # the rms core (residual1=input+o-proj -> h; residual2=h+down -> layer output), NOT
 # drained via the deadlocking memtile relay. The down egresses as the layer output.
@@ -726,7 +734,7 @@ GLU_DEST = DISTINCT_IDS.index(GLU_ID) if GLU_ID in DISTINCT_IDS else -1
 # and down (ph3) SHARE a destination (their common id -> RMS_DEST) while QKV (ph0)
 # and gate-up (ph2) each get their own -- i.e. 4 phases over exactly 3 destinations.
 # Matching on the literal [1,4,8,4] silently disabled #4 on any valid id relabel.
-FULL4 = NPH == 4 and DOWN_PHASE == 3 and KIDP[1] == KIDP[3] and len(DISTINCT_IDS) == 3
+FULL4 = NPH == 4 and DOWN_PHASE == 3 and DEST[1] == DEST[3] and NDEST == 3
 RMS_DEST = DEST[DOWN_PHASE] if FULL4 else -1
 HOST_DRAIN = [p for p in range(NDEST) if p != GLU_DEST and p != RMS_DEST]
 GLU_CHUNK = PAYLOAD  # 512 (gate-up packs up/gate interleaved in 512-row chunks)
@@ -756,24 +764,6 @@ W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights /
 RMS_LAYER = N_NORMS * K  # rms weights / layer (2 llama pre-norm / 4 Gemma sandwich)
 KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
 Y_LAYER = sum(ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p != 0)  # Y / layer
-
-
-def _mark_pkt_header(call_op, chan_name, operand_idx):
-    """Bind a header-writing kernel call to the channel whose `packet_ids` it must
-    agree with.
-
-    The routing ids live in two places -- the channel's `packet_ids` (which become
-    the switchbox rules) and the constant handed to this call (which the kernel
-    writes into the payload header). Nothing in the IR links them, so a divergence
-    is invisible until the device hangs: the switchbox drops a packet stamped with
-    an id it has no rule for. This marking lets air-annotate-packet-ids
-    compare the two at compile time.
-    """
-    a = call_op.operation.attributes
-    a["air.pkt_header_channel"] = FlatSymbolRefAttr.get(chan_name)
-    a["air.pkt_header_operand"] = IntegerAttr.get(
-        IntegerType.get_signless(32), operand_idx
-    )
 
 
 def build_module():
@@ -923,10 +913,6 @@ def build_module():
         acc256_c.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         rc_arm = FuncOp("proj_qmm_rc_arm", ([rcache_l1, i32], []), visibility="private")
         rc_arm.attributes["link_with"] = StringAttr.get("proj_qmm.o")
-        flush_hdr = FuncOp(
-            "proj_qmm_flush_hdr", ([yacc_l1, ypair_l1, i32], []), visibility="private"
-        )
-        flush_hdr.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         flush_row = FuncOp(
             "proj_qmm_flush_row", ([yacc_l1, ypair_l1, i32], []), visibility="private"
         )
@@ -1151,7 +1137,6 @@ def build_module():
         _wL2 = channel_decl("wL2ToL1", size=[NCX, NCY])
         _wL2.operation.attributes["air.shared_resident_ring"] = UnitAttr.get()
         # Output: leads -> group MT -> main MT -> id-demux egress.
-        _pin = ArrayAttr.get([IntegerAttr.get(i32, k) for k in DISTINCT_IDS])
         _outA = channel_decl(
             "outA", size=[NCX, PAIRS_PC], channel_type="npu_dma_packet"
         )
@@ -1165,8 +1150,8 @@ def build_module():
         _toMain = channel_decl("toMain", size=[N_GRP], channel_type="npu_dma_packet")
         _toMain.operation.attributes["keep_pkt_header"] = UnitAttr.get()
         # id-demux egress (reproducer mem_1_1 DMA5): the main MT emits each round's
-        # assembled 514 packet (carrying the kernel-written id) on ONE MM2S; the
-        # switchbox routes id DISTINCT_IDS[p] -> dest p (broadcast_shape=[1,NDEST]).
+        # assembled 514 packet (carrying the routing header) on ONE MM2S; the
+        # switchbox routes the id allocated for dest p (broadcast_shape=[1,NDEST]).
         # keep_pkt_header keeps each dest's header so the host can strip it.
         _outY = Channel("outY", size=[1, 1], broadcast_shape=[1, NDEST])
         _outY.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
@@ -1182,16 +1167,18 @@ def build_module():
         # deriving the second from the first means the demux stops being
         # recognisable the moment the pinned ids go away. air-annotate-packet-ids
         # needs this marker to classify outY as a demux at all.
+        # The header is written into the payload by the producing core (the
+        # compiler emits that store from the dest operand on the @outA put), so
+        # the DMA must not stamp. This marker is what says so: the dest operand
+        # sits three hops upstream on @outA, and nothing on @outY itself reveals
+        # that its packets carry their own routing word.
         _outY.operation.attributes["air.src_writes_pkt_header"] = UnitAttr.get()
-        _outY.operation.attributes["packet_ids"] = _pin
-        # packet_ids stays DECLARED here. air-annotate-packet-ids derives the id
-        # COUNT for this demux and checks the ids against what the kernel stamps,
-        # but the ORDER of this list is load-bearing and is
-        # NOT recoverable from the IR: air-to-aie routes destination i with
-        # packet_ids[i], while the kernel's constants only reveal the SET (harvesting
-        # them yields [4,1,8] here, which would silently route rope's packets to rms).
-        # Removing the pin needs an IR surface that ties each id to its destination.
-        # per-dest host drain: dest p drains its phases' rounds.
+        # No packet_ids. The ids are ALLOCATED by air-annotate-packet-ids:
+        # it reads the demux shape (dests partition the stream) for the count,
+        # takes the ids from the top of the id space so nothing else is
+        # renumbered, and rewrites the ordinals the kernel stamps to match.
+        # air.src_writes_pkt_header marks this channel as the demux --
+        # the count alone no longer identifies one, now that the list is gone.
         channel_decl("toShim", size=[NDEST])
         # #4: layer output (residual2 = h + down) drained to host from the rms core.
         if FULL4:
@@ -1928,7 +1915,7 @@ def build_module():
                     # Python-unrolled, which overflows the 48-BD memtile limit). Per
                     # round: each group MT gathers its 4 leads' packets (asym, one
                     # header @0); the main MT daisy-chains the 2 groups (514); the
-                    # egress (outY, packet) is demuxed by the kernel-written id and
+                    # egress (outY, packet) is demuxed by the routing header and
                     # relayed (rb) to the shim drain. NPH=1 -> all rounds id1 -> dest0;
                     # the put+get are interleaved in the same iteration so they
                     # pipeline across tiles (separate put-loop/get-loop would deadlock).
@@ -2868,11 +2855,19 @@ def build_module():
                             gcy = ty
                             i2c = [idx(v) for v in I2P]
                             j2c = [idx(v) for v in J2P]
-                            pktc = [
-                                arith.ConstantOp(IntegerAttr.get(i32, k), None).result
-                                for k in KIDP
-                            ]
+                            # Name the DESTINATION, not a packet id. DEST[ph]
+                            # is the same index the receiving gets sit at
+                            # (`indices=[0, p]`); the put carries it as `dest`
+                            # and air-annotate-packet-ids allocates that
+                            # destination's id and stores the routing header. The
+                            # wire number lives in exactly one place instead of
+                            # being written here and on the channel and hoped to
+                            # agree.
+                            pktc = [idx(d) for d in DEST]
                             c2 = idx(2)
+                            # Row 0 of the packet payload; the pair's partner
+                            # writes row 1. See proj_qmm_flush_row.
+                            c0i = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
 
                             def _gemv(J2v):
                                 J2x2 = arith.muli(J2v, c2)
@@ -2889,11 +2884,13 @@ def build_module():
                                     yield_([])
                                 return a_acc
 
-                            def _emit(a_acc, pktv):
+                            def _emit(a_acc, destv):
                                 yb = AllocOp(ypair_l1, [], [])
-                                _mark_pkt_header(
-                                    CallOp(flush_hdr, [a_acc, yb, pktv]), "outA", 2
-                                )
+                                CallOp(flush_row, [a_acc, yb, c0i])
+                                # dest = which egress consumer this round feeds.
+                                # The compiler allocates that destination's packet
+                                # id and emits the header store at offsets[0]; the
+                                # kernel no longer touches routing.
                                 ChannelPut(
                                     "outA",
                                     yb,
@@ -2901,14 +2898,13 @@ def build_module():
                                     offsets=[idx(14)],
                                     sizes=[idx(HDR + PAIR_PAY)],
                                     strides=[idx(1)],
+                                    dest=destv,
                                 )
                                 DeallocOp(yb)
                                 DeallocOp(a_acc)
 
                             _arm_i = arith.index_cast(idx_t, _arm)
-                            _id4 = arith.ConstantOp(
-                                IntegerAttr.get(i32, KIDP[OPROJ_PHASE]), None
-                            ).result
+                            _id4 = idx(DEST[OPROJ_PHASE])
 
                             def _sel(voc_val, dec_thunk, ty_):
                                 return index_switch(
@@ -2931,7 +2927,7 @@ def build_module():
                                 J2v = _sel(
                                     idx(VOCAB_J2), lambda: _psw(ph, j2c, idx_t), idx_t
                                 )
-                                pktv = _sel(_id4, lambda: _psw(ph, pktc, i32), i32)
+                                pktv = _sel(_id4, lambda: _psw(ph, pktc, idx_t), idx_t)
                                 for _v1 in for_(idx(0), I2v, idx(1)):
                                     for _e in range(PAIR_ROWS):  # 1 (non-paired)
                                         _emit(_gemv(J2v), pktv)
@@ -2974,10 +2970,15 @@ def build_module():
                             gcy = ty
                             i2c = [idx(v) for v in I2P]
                             j2c = [idx(v) for v in J2P]
-                            pktc = [
-                                arith.ConstantOp(IntegerAttr.get(i32, k), None).result
-                                for k in KIDP
-                            ]
+                            # Stamp the DESTINATION ORDINAL, not a packet id.
+                            # DEST[ph] is the same index the receiving gets sit at
+                            # (`indices=[0, p]`); air-annotate-packet-ids
+                            # allocates the ids and rewrites these constants to
+                            # match, so the wire number lives in exactly one
+                            # place instead of being written here and on the
+                            # channel and hoped to agree.
+                            pktc = [idx(d) for d in DEST]
+                            c0i = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
                             c1i = arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
                             # fill=0 for every row-block after the phase's first
                             _c0i = arith.ConstantOp(
@@ -3029,11 +3030,7 @@ def build_module():
                                     )
                                     _if = IfOp(_is_lead, [], has_else=True)
                                     with InsertionPoint(_if.thenRegion.blocks[0]):
-                                        _mark_pkt_header(
-                                            CallOp(flush_hdr, [a_acc, bufs[yb], pktv]),
-                                            "outA",
-                                            2,
-                                        )
+                                        CallOp(flush_row, [a_acc, bufs[yb], c0i])
                                         ChannelPut(
                                             "outA",
                                             bufs[yb],
@@ -3041,6 +3038,7 @@ def build_module():
                                             offsets=[idx(14)],
                                             sizes=[idx(HDR + PAIR_PAY)],
                                             strides=[idx(1)],
+                                            dest=pktv,
                                         )
                                         yield_([])
                                     with InsertionPoint(_if.elseRegion.blocks[0]):
@@ -3076,9 +3074,7 @@ def build_module():
                             # would -> >16). _arm==1 -> NPH decode phases; _arm==0 -> 1
                             # vocab phase (I2=VOCAB_I2, J2=VOCAB_J2, pkt=id4=RMS_DEST).
                             _arm_i = arith.index_cast(idx_t, _arm)
-                            _id4 = arith.ConstantOp(
-                                IntegerAttr.get(i32, KIDP[OPROJ_PHASE]), None
-                            ).result
+                            _id4 = idx(DEST[OPROJ_PHASE])
 
                             def _sel(voc_val, dec_thunk, ty):
                                 return index_switch(
@@ -3101,7 +3097,7 @@ def build_module():
                                 J2v = _sel(
                                     idx(VOCAB_J2), lambda: _psw(ph, j2c, idx_t), idx_t
                                 )
-                                pktv = _sel(_id4, lambda: _psw(ph, pktc, i32), i32)
+                                pktv = _sel(_id4, lambda: _psw(ph, pktc, idx_t), idx_t)
                                 # b_col_reduce_add cache: one per core, scoped to
                                 # the PROJECTION (x changes per phase, so it is
                                 # refilled on each phase's first row-block). The
@@ -3587,7 +3583,7 @@ def run():
     )
     print(
         f"[q4nx_decode] proj: M={M} K={K} {NCX}x{NCY}=16 cores, "
-        f"8 cascade pairs, NPH={NPH} ids={DISTINCT_IDS}"
+        f"8 cascade pairs, NPH={NPH} dests={DEMUX}"
     )
     art = backend.compile(module, output_binary_name="decode", insts="decode.insts.bin")
     print(f"[q4nx_decode] emitted {art.output_binary} + {art.insts}")

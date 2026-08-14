@@ -769,6 +769,13 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
         Variadic<Index>:$dynamic_src_offsets,
         Variadic<Index>:$dynamic_src_sizes,
         Variadic<Index>:$dynamic_src_strides,
+        // Runtime destination select for a packet demux: the index, along the
+        // channel's broadcast dimension, of the consumer this packet is for --
+        // the same index the matching get is at. Present only on a put that
+        // ORIGINATES a routing header; a forwarding hop leaves it unset. The
+        // compiler allocates the packet id for that destination and emits the
+        // header store, so the design never names a wire id.
+        Optional<Index>:$dest,
         DenseI64ArrayAttr:$static_src_offsets,
         DenseI64ArrayAttr:$static_src_sizes,
         DenseI64ArrayAttr:$static_src_strides,
@@ -823,6 +830,7 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
         custom<DynamicIndexList>($dynamic_src_offsets, $static_src_offsets)
         custom<DynamicIndexList>($dynamic_src_sizes, $static_src_sizes)
         custom<DynamicIndexList>($dynamic_src_strides, $static_src_strides) `)`
+    (`dest` `(` $dest^ `)`)?
     attr-dict `:` `(` type($src) `)`
   }];
   let extraClassDeclaration = [{

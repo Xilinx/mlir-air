@@ -25,11 +25,12 @@
 # proj SPMD contract (the reference proj kernel + array layout):
 #   MVM_CORES=16; each core computes M_total/16 output rows per phase, in m=32-row
 #   blocks (outer i loop), contracting K in k=256 col-blocks (inner j loop). Each
-#   32-row block is emitted as ONE packet: y buffer = 16 hdr + 32 payload = 48,
-#   pkt_id at y+14 (proj_qmm_flush_hdr writes exactly *(u32)(y+14)=id; copy<32>(y+16)).
-#   Phases (IS_ATTN==1): ph1 QKV M=2560 K=2048 ->5 rnd pkt1->ROPE; ph2 oproj M=2048
-#   K=2048 ->4 rnd pkt4->RMS; ph3 gateup M=22528 K=2048 ->44 rnd pkt8->GLU; ph4 down
-#   M=2048 K=11264 ->4 rnd pkt4->RMS. round-major core-interleave: round r core c emits r*16+c.
+#   32-row block is emitted as ONE packet: y buffer = 16 hdr + 32 payload = 48.
+#   proj_qmm_flush_row writes the payload at y+16; the routing id at y+14 is stored
+#   by the compiler, from the `dest` the air.channel.put names.
+#   Phases (IS_ATTN==1): ph1 QKV M=2560 K=2048 ->5 rnd ->ROPE; ph2 oproj M=2048
+#   K=2048 ->4 rnd ->RMS; ph3 gateup M=22528 K=2048 ->44 rnd ->GLU; ph4 down
+#   M=2048 K=11264 ->4 rnd ->RMS. round-major core-interleave: round r core c emits r*16+c.
 #
 # STAGE 1 (this file): QKV-only proj grid, host-fed X/W (memtile-staged), per-col gather.
 # Goal = lower clean through aircc + IR-diff the proj-tile region vs the reference QWEN2_3B layer IR.
@@ -206,14 +207,18 @@ YBUF = HDR + ROW_BLOCK  # 48
 PKT_OFF = 14  # dma egress start offset (2 id words + 32 payload)
 PKT_PAY = 2 + ROW_BLOCK  # 34 (matches reference dma_bd %y,14,34)
 
-PKT_ROPE = 1
-PKT_RMS = 4
-PKT_GLU = 8
+# Egress consumer names. The routing id is allocated by air-annotate-packet-ids;
+# the design only says which consumer a phase feeds, and the ordinal is that
+# name's position in first-appearance order (= the @outY broadcast index the
+# receiving gets use).
+D_ROPE = "rope"
+D_RMS = "rms"
+D_GLU = "glu"
 PHASES = [
-    ("qkv", DQ + DK + DV, MODEL_DIM, PKT_ROPE),
-    ("oproj", MODEL_DIM, DQ, PKT_RMS),
-    ("gateup", 2 * INTERMEDIATE, MODEL_DIM, PKT_GLU),
-    ("down", MODEL_DIM, INTERMEDIATE, PKT_RMS),
+    ("qkv", DQ + DK + DV, MODEL_DIM, D_ROPE),
+    ("oproj", MODEL_DIM, DQ, D_RMS),
+    ("gateup", 2 * INTERMEDIATE, MODEL_DIM, D_GLU),
+    ("down", MODEL_DIM, INTERMEDIATE, D_RMS),
 ]
 RB = [m // MVM_CORES // ROW_BLOCK for (_, m, _, _) in PHASES]  # [5,4,44,4]
 NJ = [kk // COL_BLOCK for (_, _, kk, _) in PHASES]  # [8,8,8,44]
@@ -232,13 +237,18 @@ import os as _os
 NPH = int(_os.environ.get("QWEN_NPH", "4"))
 _RB = RB[:NPH]
 _NJ = NJ[:NPH]
-_PKT = [p[3] for p in PHASES][:NPH]
+_DST = [p[3] for p in PHASES][:NPH]
 _MTOT = [p[1] for p in PHASES][:NPH]
 # distinct packet ids (ordered) for the id-demux egress: 1->rope, 4->rms, 8->glu.
-DEMUX_IDS = list(dict.fromkeys(_PKT))  # [1, 4, 8]
-NDEST = len(DEMUX_IDS)
+DEMUX = list(dict.fromkeys(_DST))  # ordinal order: ["rope", "rms", "glu"]
+NDEST = len(DEMUX)
+# Phase -> DESTINATION ORDINAL. This is what the kernel stamps now; the packet
+# id on the wire is allocated by air-annotate-packet-ids and substituted into
+# these constants. The ordinal is the same index the receiving gets sit at
+# (`indices=[0, d]`), so there is only one numbering to keep straight.
+DEST = [DEMUX.index(d) for d in _DST]
 # egress rounds per dest (id): rope=QKV(5); rms=oproj(4)+down(4)=8; glu=gateup(44).
-DEST_RNDS = [sum(_RB[p] for p in range(NPH) if _PKT[p] == d) for d in DEMUX_IDS]
+DEST_RNDS = [sum(_RB[p] for p in range(NPH) if _DST[p] == d) for d in DEMUX]
 DEST_TOTAL = sum(DEST_RNDS)  # 57 rounds total
 PAYLOAD = MVM_CORES * ROW_BLOCK  # 512 = one round (16 cores x 32 rows)
 # Step B relay drain columns (free cols; rope/rms/glu compute cores replace these in C/D).
@@ -260,15 +270,15 @@ GLU_SLICE = 2 * PAYLOAD  # 1024 = [up 512 | gate 512] (two demux rounds per slic
 GLU_HID = PAYLOAD  # 512 silu(gate)*up out per slice
 # Phase-isolation (QWEN_NPH<4): a surround consumer exists only if its packet id is
 # still produced by one of the kept phases. HAS_ROPE is always true (phase 0 = QKV).
-HAS_ROPE = PKT_ROPE in DEMUX_IDS
-HAS_RMS = PKT_RMS in DEMUX_IDS  # oproj (ph1) and/or down (ph3) kept
-HAS_GLU = PKT_GLU in DEMUX_IDS  # gate-up (ph2) kept
+HAS_ROPE = D_ROPE in DEMUX
+HAS_RMS = D_RMS in DEMUX  # oproj (ph1) and/or down (ph3) kept
+HAS_GLU = D_GLU in DEMUX  # gate-up (ph2) kept
 NGLU = (
-    DEST_RNDS[DEMUX_IDS.index(PKT_GLU)] // 2 if HAS_GLU else 0
+    DEST_RNDS[DEMUX.index(D_GLU)] // 2 if HAS_GLU else 0
 )  # 44/2 = 22 slices -> 11264 = INTERMEDIATE
-DEST_ROPE = DEMUX_IDS.index(PKT_ROPE) if HAS_ROPE else None  # 0
-DEST_RMS = DEMUX_IDS.index(PKT_RMS) if HAS_RMS else None  # 1
-DEST_GLU = DEMUX_IDS.index(PKT_GLU) if HAS_GLU else None  # 2
+DEST_ROPE = DEMUX.index(D_ROPE) if HAS_ROPE else None  # 0
+DEST_RMS = DEMUX.index(D_RMS) if HAS_RMS else None  # 1
+DEST_GLU = DEMUX.index(D_GLU) if HAS_GLU else None  # 2
 
 # ---- attention (Step 2b): 1x8x1, 2 CUs on col 7, DH=128 ----
 # reference Qwen attn topology (from the reference QWEN2_3B layer IR): col 7; attn_qk tile_7_2 &
@@ -467,7 +477,7 @@ SKIP_KVFIN = int(_os.environ.get("QWEN_SKIP_KVFIN", "0")) or SKIP_KV
 # (proj MVM + egress + X/weight feeds + rope/rms/glu channel gets+puts) but SKIP the
 # rope/rms/glu compute CallOps. COHERENT (not a header-skip): under ATTN=0/LOOPCLOSE=0
 # the surround outputs (qDrain/layerOut/gluDrain) are circuit drains to host, NOT packet
-# flows, and proj (the header writer via proj_qmm_flush_hdr) still runs. If the base then
+# flows, and proj (whose put carries the dest the header is stored from) still runs. If the base then
 # COMPLETES, the deadlock is inside a surround kernel (rope/rms/glu miscompile); if it
 # still HANGS, the deadlock is in the proj/egress/feed dataflow.
 SURROUND_NOCOMPUTE = int(_os.environ.get("QWEN_SURROUND_NOCOMPUTE", "0"))
@@ -515,24 +525,6 @@ PER_COL_W = NCY * W_READS  # weight blocks per column = 4*600 = 2400
 W_FAN_STEPS = W_READS  # per-col fan steps (each fans NCY blocks) = 600
 # Per-layer DDR slab sizes (elements), used only when NLAYERS>1.
 W_LAYER = NCX * PER_COL_W * BLOCK_BF16  # weights per layer
-
-
-def _mark_pkt_header(call_op, chan_name, operand_idx):
-    """Bind a header-writing kernel call to the channel whose `packet_ids` it must
-    agree with.
-
-    The routing ids live in two places -- the channel's `packet_ids` (which become
-    the switchbox rules) and the constant handed to this call (which the kernel
-    writes into the payload header). Nothing in the IR links them, so a divergence
-    is invisible until the device hangs: the switchbox drops a packet stamped with
-    an id it has no rule for. This marking lets air-annotate-packet-ids
-    compare the two at compile time.
-    """
-    a = call_op.operation.attributes
-    a["air.pkt_header_channel"] = FlatSymbolRefAttr.get(chan_name)
-    a["air.pkt_header_operand"] = IntegerAttr.get(
-        IntegerType.get_signless(32), operand_idx
-    )
 
 
 def build_module():
@@ -619,10 +611,10 @@ def build_module():
             "proj_qmm_acc256", ([xblk_l1, wblk_l1, yacc_l1], []), visibility="private"
         )
         acc256.attributes["link_with"] = StringAttr.get("proj_qmm.o")
-        flush_hdr = FuncOp(
-            "proj_qmm_flush_hdr", ([yacc_l1, ybuf_l1, i32], []), visibility="private"
+        flush_row = FuncOp(
+            "proj_qmm_flush_row", ([yacc_l1, ybuf_l1, i32], []), visibility="private"
         )
-        flush_hdr.attributes["link_with"] = StringAttr.get("proj_qmm.o")
+        flush_row.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         # rope_compute(q,k,v, qkv, lut, arm): rotate-half RoPE on Q/K (V copied).
         rope_compute = FuncOp(
             "rope_compute",
@@ -695,10 +687,12 @@ def build_module():
         else:
             channel_decl("inW", size=[NCX])  # host -> per-col W memtile
         channel_decl("wL2ToL1", size=[NCX, NCY])  # W memtile -> col cores
-        # proj core egress is a PACKET flow (the reference: packet_flow(1/4/8) tile_C_r -> mem_C_1,
-        # keep_pkt_header). The kernel-written id (flush_hdr @y+14) rides the packet so the
-        # hub can demux QKV(1)/oproj+down(4)/gateup(8) -> rope/rms/glu.
-        _pin = ArrayAttr.get([IntegerAttr.get(i32, k) for k in DEMUX_IDS])
+        # proj core egress is a PACKET flow (the reference: packet_flow tile_C_r -> mem_C_1,
+        # keep_pkt_header). A routing header at y+14 rides the packet so the hub can demux
+        # QKV/oproj+down/gateup -> rope/rms/glu. The design names the DESTINATION on the put
+        # (dest=...); air-annotate-packet-ids allocates the id and stores the header. No
+        # numeric id appears here -- the reference's 1/4/8 were the pinned spelling this
+        # replaced.
         _outA = channel_decl("outA", size=[NCX, NCY], channel_type="npu_dma_packet")
         _outA.operation.attributes["keep_pkt_header"] = UnitAttr.get()
         # No packet_ids here. This hop is single-destination: air-to-aie hands its
@@ -722,14 +716,10 @@ def build_module():
         # recognisable the moment the pinned ids go away. air-annotate-packet-ids
         # needs this marker to classify outY as a demux at all.
         _outY.operation.attributes["air.src_writes_pkt_header"] = UnitAttr.get()
-        _outY.operation.attributes["packet_ids"] = _pin
-        # packet_ids stays DECLARED here. air-annotate-packet-ids derives the id
-        # COUNT for this demux and checks the ids against what the kernel stamps,
-        # but the ORDER of this list is load-bearing and is
-        # NOT recoverable from the IR: air-to-aie routes destination i with
-        # packet_ids[i], while the kernel's constants only reveal the SET (harvesting
-        # them yields [4,1,8] here, which would silently route rope's packets to rms).
-        # Removing the pin needs an IR surface that ties each id to its destination.
+        # No packet_ids. air-annotate-packet-ids allocates the ids from the top
+        # of the id space (nothing else is renumbered) and rewrites the ordinals
+        # the kernel stamps to match. air.src_writes_pkt_header above is what
+        # marks this channel as the demux now that the list is gone.
         # Keep the hub demux on S2MM0 at every consumer tile; the shim-sourced feeds
         # (ropeLUT/rmsIn/rmsW) are pinned to S2MM1 below. Without an explicit pin,
         # unpinned packet flows REUSE whatever packet channel the tile already has
@@ -878,9 +868,7 @@ def build_module():
             # -> a THIRD X/W buffer (depth-3). A provably-even 2*half bound has no
             # epilogue -> clean depth-2 x_0/x_1 + w_0/w_1 rings (matches the reference/Llama).
             j2h = [idx(v // 2) for v in _NJ]  # [4,4,4,22]
-            pktc = [
-                arith.ConstantOp(IntegerAttr.get(i32, k), None).result for k in _PKT
-            ]
+            pktc = [idx(d) for d in DEST]
 
             def _psw(ph, vals, ty_):
                 if len(vals) == 1:
@@ -904,7 +892,7 @@ def build_module():
             for ph in for_(idx(0), idx(NPH), idx(1)):
                 I2v = _psw(ph, i2c, idx_t)
                 J2v = _psw(ph, j2h, idx_t)
-                pktv = _psw(ph, pktc, i32)
+                pktv = _psw(ph, pktc, idx_t)
                 for _i in for_(idx(0), I2v, idx(1)):
                     # ONE reduction pass per round (single inX/wL2ToL1 get site) with a
                     # PROVABLY-EVEN 2*half trip count so the ping-pong unroll has no
@@ -922,7 +910,14 @@ def build_module():
                         DeallocOp(a_w)
                         yield_([])
                     a_y = AllocOp(ybuf_l1, [], [])
-                    _mark_pkt_header(CallOp(flush_hdr, [a_acc, a_y, pktv]), "outA", 2)
+                    # Row 0 of the payload; this core produces one row-block, so
+                    # there is no partner row. No routing header is written here
+                    # -- the compiler stores it from the put's `dest`.
+                    _c0i = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
+                    CallOp(flush_row, [a_acc, a_y, _c0i])
+                    # dest = which egress consumer this round feeds. The compiler
+                    # allocates that destination's packet id and emits the header
+                    # store at offsets[0]; the kernel no longer touches routing.
                     ChannelPut(
                         "outA",
                         a_y,
@@ -930,6 +925,7 @@ def build_module():
                         offsets=[idx(PKT_OFF)],
                         sizes=[idx(PKT_PAY)],
                         strides=[idx(1)],
+                        dest=pktv,
                     )
                     DeallocOp(a_acc)
                     DeallocOp(a_y)

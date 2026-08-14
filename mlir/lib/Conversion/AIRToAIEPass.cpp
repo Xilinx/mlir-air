@@ -1353,6 +1353,28 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     }
   }
 
+  // Group a program-ordered list of accesses into maximal runs of immediate
+  // successors, returned as (first, last) pairs. Wherever locks are placed
+  // per-access, they are placed per-RUN instead: a run is bracketed once.
+  //
+  // Two ADJACENT writes to one buffer must not take a section each. The first
+  // release hands the buffer to the DMA before the second write has happened,
+  // and the consumer lock is signalled twice per production. A compiler-emitted
+  // packet header sitting next to its payload write is exactly that shape, and
+  // on device it hangs. Accesses separated by other work are untouched, so
+  // ping-ponged buffers keep the per-access placement they need.
+  auto adjacentRuns = [](ArrayRef<Operation *> ops) {
+    SmallVector<std::pair<Operation *, Operation *>> runs;
+    for (size_t i = 0; i < ops.size();) {
+      size_t j = i;
+      while (j + 1 < ops.size() && ops[j]->getNextNode() == ops[j + 1])
+        ++j;
+      runs.push_back({ops[i], ops[j]});
+      i = j + 1;
+    }
+    return runs;
+  };
+
   for (auto &info : coreInfos) {
     auto coreOp = info.coreOp;
     auto &accessingOps = info.accessingOps;
@@ -1373,25 +1395,26 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     // because the accessing op is inside the loop. Symmetric across cores
     // (all writers access at the same nesting), so no cadence-mismatch risk.
     if (isThreeWay) {
-      for (auto *op : accessingOps) {
-        OpBuilder builder(op);
-        auto loc = op->getLoc();
+      // Per RUN of back-to-back accesses (see adjacentRuns), not per access.
+      for (auto [first, last] : adjacentRuns(accessingOps)) {
+        OpBuilder builder(first);
+        auto loc = first->getLoc();
         if (coreIsProducer && !coreIsConsumer) {
           AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
-          builder.setInsertionPointAfter(op);
+          builder.setInsertionPointAfter(last);
           AIE::UseLockOp::create(builder, loc, consLock,
                                  AIE::LockAction::Release, 1);
         } else if (coreIsConsumer && !coreIsProducer) {
           AIE::UseLockOp::create(builder, loc, consLock, acqAction,
                                  numProducerCores);
-          builder.setInsertionPointAfter(op);
+          builder.setInsertionPointAfter(last);
           AIE::UseLockOp::create(builder, loc, prodLock,
                                  AIE::LockAction::Release, numProducerCores);
         } else {
           AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
           AIE::UseLockOp::create(builder, loc, consLock, acqAction,
                                  numProducerCores);
-          builder.setInsertionPointAfter(op);
+          builder.setInsertionPointAfter(last);
           AIE::UseLockOp::create(builder, loc, consLock,
                                  AIE::LockAction::Release, 1);
           AIE::UseLockOp::create(builder, loc, prodLock,
@@ -1463,35 +1486,36 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
           wrappingOps.insert(op);
       }
 
-      for (auto *op : wrappingOps) {
-        OpBuilder builder(op);
+      // Per RUN of back-to-back accesses (see adjacentRuns), not per access.
+      for (auto [first, last] : adjacentRuns(wrappingOps.getArrayRef())) {
+        OpBuilder builder(first);
+        auto loc = first->getLoc();
 
         if (strategy == LockStrategy::Mutex) {
-          AIE::UseLockOp::create(builder, op->getLoc(), mutexLock, acqAction,
-                                 1);
-          builder.setInsertionPointAfter(op);
-          AIE::UseLockOp::create(builder, op->getLoc(), mutexLock,
+          AIE::UseLockOp::create(builder, loc, mutexLock, acqAction, 1);
+          builder.setInsertionPointAfter(last);
+          AIE::UseLockOp::create(builder, loc, mutexLock,
                                  AIE::LockAction::Release, 1);
         } else if (coreIsProducer && !coreIsConsumer) {
-          AIE::UseLockOp::create(builder, op->getLoc(), prodLock, acqAction, 1);
-          builder.setInsertionPointAfter(op);
-          AIE::UseLockOp::create(builder, op->getLoc(), consLock,
+          AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
+          builder.setInsertionPointAfter(last);
+          AIE::UseLockOp::create(builder, loc, consLock,
                                  AIE::LockAction::Release, 1);
         } else if (coreIsConsumer && !coreIsProducer) {
-          AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction,
+          AIE::UseLockOp::create(builder, loc, consLock, acqAction,
                                  numProducerCores);
-          builder.setInsertionPointAfter(op);
-          AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
+          builder.setInsertionPointAfter(last);
+          AIE::UseLockOp::create(builder, loc, prodLock,
                                  AIE::LockAction::Release, numProducerCores);
         } else {
           // Both producer and consumer
-          AIE::UseLockOp::create(builder, op->getLoc(), prodLock, acqAction, 1);
-          AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction,
+          AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
+          AIE::UseLockOp::create(builder, loc, consLock, acqAction,
                                  numProducerCores);
-          builder.setInsertionPointAfter(op);
-          AIE::UseLockOp::create(builder, op->getLoc(), consLock,
+          builder.setInsertionPointAfter(last);
+          AIE::UseLockOp::create(builder, loc, consLock,
                                  AIE::LockAction::Release, 1);
-          AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
+          AIE::UseLockOp::create(builder, loc, prodLock,
                                  AIE::LockAction::Release, numProducerCores);
         }
       }
@@ -4965,6 +4989,13 @@ public:
     // arrivals onto a spare channel of the same tile.
     tile_dma_alloc.repairS2MMChains(memcpy_flows);
 
+    // Step 3c: the mirror check on the producer side. Nothing to repair there
+    // -- moving a producer to another MM2S would change which port its flows
+    // leave from -- so a chain that cannot stay in step is rejected rather
+    // than emitted as a design that hangs.
+    if (failed(tile_dma_alloc.verifyMM2SChains()))
+      return failure();
+
     // Step 4: Connect flows.
     //
     // Packet flows are assigned pkt_ids in two passes so that within one
@@ -6313,15 +6344,17 @@ public:
       AIE::DMAChannelDir dir = dma_chan.first;
       int chan = dma_chan.second;
 
-      // Map key: repeat counts. Map value: vector of memcpy operations sharing
-      // the same repeat count.
-      llvm::MapVector<int, llvm::SetVector<Operation *>> repeat_counts =
+      // One entry per BD task, in program order: the repeat count the task runs
+      // at, and the transfers it chains. A repeat count can recur -- two loops
+      // with equal trip counts are two tasks, not one (see getRepeatCounts).
+      SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeat_counts =
           air::getRepeatCounts(memcpy_ops);
 
-      // Note: we designate each unique repeat value in repeat_counts map with a
-      // new BD task. If there is only one repeat value for all memcpy ops
-      // associated to the channel, then there is no need to do repeat count; we
-      // generate BDs in infinite loop mode instead.
+      // Note: each entry in repeat_counts is one BD task, in program order. If
+      // the whole channel collapses to a single entry -- every memcpy op on it
+      // repeating the same number of times, with nothing between them to split
+      // the run -- there is no repeat count to program and we generate BDs in
+      // infinite loop mode instead.
       bool infiniteBDLoopMode = repeat_counts.size() == 1;
 
       unsigned taskId = 0;

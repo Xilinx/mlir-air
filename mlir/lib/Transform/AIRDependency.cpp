@@ -578,6 +578,11 @@ private:
           channel_put_op.getMixedSrcStrides(),
           /*pad_before=*/nullptr, /*pad_after=*/nullptr);
       air::copyPaddingAttributes(channel_put_op, new_channel_put_op);
+      // The optional `dest` operand is not part of the builder above, so it
+      // has to be carried over by hand -- dropping it silently discards the
+      // put's routing destination, and the packet header never gets written.
+      if (Value dest = channel_put_op.getDest())
+        new_channel_put_op.getDestMutable().assign(dest);
       assignOpId(new_channel_put_op);
       event_name = "Put";
       // Update op-to-graph map

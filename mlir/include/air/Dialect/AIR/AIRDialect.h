@@ -65,17 +65,6 @@ constexpr StringLiteral RefeedCount = "air.refeed_count";
 // spelling matches the broadcast_shape discardable-attr convention on
 // air.channel; read via air::ChannelOp::getPacketIDs. Verified on air.channel.
 constexpr StringLiteral PacketIDs = "packet_ids";
-// Marks a call whose callee writes the packet routing header into the payload
-// (the kernel-written-header contract of a PacketIDs channel). The pair binds
-// that call to the channel it stamps for:
-//   air.pkt_header_channel : SymbolRefAttr -- the air.channel being stamped
-//   air.pkt_header_operand : i32           -- index of the id operand
-// The ids reaching that operand and the channel's packet_ids are two spellings
-// of one contract written in two places; nothing links them in the IR, so a
-// mismatch is a silent routing hang. air-annotate-packet-ids compares them
-// when both are statically known.
-constexpr StringLiteral PktHeaderChannel = "air.pkt_header_channel";
-constexpr StringLiteral PktHeaderOperand = "air.pkt_header_operand";
 // The kernel writes the routing packet header into the payload itself.
 // air-to-aie must not stamp a static pkt_id on the producer BD (that would
 // prepend a second header word) and emits the aie.packet_flow with
@@ -115,6 +104,12 @@ constexpr StringLiteral NoSplit = "air.no_split";
 // and by air-split-l2-memref, which leaves an explicitly-placed buffer intact.
 constexpr StringLiteral MemtileCol = "air.memtile_col";
 } // namespace attrs
+
+// Largest routing id a packet header can carry. Mirrors the AIE target hook
+// getMaxPacketId(); the packet id field is 5 bits. Ids allocated for a demux
+// are taken DOWNWARD from here so they cannot collide with the upward
+// auto-assignment air-to-aie gives every other packet flow.
+constexpr int kMaxPacketID = 31;
 
 // Copy the DMA-steering / runtime-ordering markers
 // (attrs::MemtileDmaChannelMin, RuntimeHoist, AwaitAppends, AppendBarrier,
