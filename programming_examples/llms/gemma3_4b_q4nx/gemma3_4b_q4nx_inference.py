@@ -98,11 +98,16 @@ def _load_stair():
     return _stair
 
 
+_dyn = None  # set by _pick_decode_gen, which joins fused_decode/ to sys.path
+
+
 def _pick_decode_gen(dec_dir, max_L=None):
     sys.path.insert(0, str(_DEC))
-    from decode_insts_gen import DecodeInstsGen
+    global _dyn
+    import decode_dynseq as _dyn
+    from decode_dynseq import pick_insts_gen
 
-    return DecodeInstsGen(str(dec_dir), max_L=max_L)
+    return pick_insts_gen(str(dec_dir), max_L=max_L)
 
 
 class FusedDecoder:
@@ -324,7 +329,15 @@ class FusedDecoder:
         self.x_bo.write(x0.view(np.int16), 0)
         self.x_bo.sync(TO)
         st = self.kern(
-            3, self.ib, insts_size, self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc
+            3,
+            self.ib,
+            insts_size,
+            self.x_bo,
+            self.w_bo,
+            self.r_bo,
+            self.y_bo,
+            self.kvc,
+            *_dyn.dispatch_args(self.gen, L),
         ).wait(60000)
         _voc_n = self.UNI_LM * self.VP
         self.y_bo.sync(FROM, _voc_n * 2, self.decode_y * 2)

@@ -133,3 +133,32 @@ class DynseqInstsGen:
             + (" (active)" if m == self.active_maxl else "")
             for m, t in sorted(self.templates.items())
         )
+
+
+def pick_insts_gen(artifact_dir, max_L=None, verbose=False):
+    """The decode instruction generator a driver should use.
+
+    DECODE_DYNSEQ=1 selects the build that takes its context length at dispatch
+    (one xclbin for every L, streaming only this token's context); otherwise the
+    compile-time template pair, extrapolated per token. Shared by every model so
+    the choice cannot drift between them.
+    """
+    if os.environ.get("DECODE_DYNSEQ") == "1":
+        return DynseqInstsGen(str(artifact_dir), max_L=max_L, verbose=verbose)
+    import sys
+
+    if str(artifact_dir) not in sys.path:
+        sys.path.insert(0, str(artifact_dir))
+    from decode_insts_gen import DecodeInstsGen
+
+    return DecodeInstsGen(str(artifact_dir), max_L=max_L)
+
+
+def dispatch_args(gen, L):
+    """Trailing kernel arguments for a dispatch at context length L.
+
+    A dynseq build's runtime sequence takes the context length as a scalar, so
+    the kernel signature carries it. The value the hardware acts on is already
+    assembled into the instruction stream; this keeps the arity right.
+    """
+    return [int(L)] if getattr(gen, "exact", False) else []

@@ -1,0 +1,7 @@
+{
+  "inject3_pos1000_seq1008_kv50": {
+    "output_binary": "inject_cache_stage3/inject3_pos1000_seq1008_kv50.elf",
+    "kernel": "main:mha_bf16",
+    "insts": null
+  }
+}

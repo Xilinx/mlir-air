@@ -139,13 +139,17 @@ class QwenFusedDecoder:
 
     def __init__(self, templates=None, max_L=None):
         self.NL = m.NLAYERS
-        from decode_insts_gen import DecodeInstsGen
+        import decode_dynseq as _dyn
+        from decode_dynseq import pick_insts_gen
+
+        self._dyn = _dyn
 
         # Template pair (decode_L<N> + an adjacent same-ATTN_MAXL build) rather than
         # one frozen stream: the pair calibrates the per-token L slope. ATTN_MAXL is
         # the context CAP now, not the context -- the runtime L is what the device
-        # attends over.
-        self.gen = DecodeInstsGen(
+        # attends over. DECODE_DYNSEQ=1 instead takes a single build whose sequence
+        # is assembled per token, with no pair and nothing to calibrate.
+        self.gen = pick_insts_gen(
             templates or os.path.dirname(os.path.abspath(__file__)), max_L=max_L
         )
         self.ATTN_MAXL = self.gen.attn_maxl
@@ -278,7 +282,14 @@ class QwenFusedDecoder:
 
         t0 = time.time()
         st = self.kern(
-            3, self._st["ib"], insts_size, self.x_bo, self.w_bo, self.kv_bo, self.y_bo
+            3,
+            self._st["ib"],
+            insts_size,
+            self.x_bo,
+            self.w_bo,
+            self.kv_bo,
+            self.y_bo,
+            *self._dyn.dispatch_args(self.gen, L),
         ).wait(20000)
         self.dev_ms += (time.time() - t0) * 1e3
         if "COMPLETED" not in str(st):

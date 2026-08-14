@@ -1,0 +1,17 @@
+{
+  "rms_qkv_int4_rope": {
+    "output_binary": "shared_kc/rms_qkv_int4_rope.elf",
+    "kernel": "main:rms_qkv_int4_rope",
+    "insts": null
+  },
+  "o_gemv_ffn_int4": {
+    "output_binary": "shared_kc/o_gemv_ffn_int4.elf",
+    "kernel": "main:o_gemv_ffn_int4",
+    "insts": null
+  },
+  "lm_head_gemv": {
+    "output_binary": "shared_kc/lm_head_gemv.elf",
+    "kernel": "main:lm_head_gemv",
+    "insts": null
+  }
+}
