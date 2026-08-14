@@ -1006,14 +1006,8 @@ def build_module():
         # Debug configs keep the original circuit + dedicated-channel rmsX.
         if FULL4:
             _rx = channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
-            _rx.operation.attributes["air.shim_col"] = IntegerAttr.get(
-                T.i32(), RMS_PCOL
-            )
         else:
             _rx = channel_decl("rmsX", size=[1])
-            _rx.operation.attributes["air.shim_col"] = IntegerAttr.get(
-                T.i32(), RMS_PCOL
-            )
             _rx.operation.attributes["air.dedicated_dma_channel"] = UnitAttr.get()
         _rw = channel_decl("rmsW", size=[1])
         if POST_RMS:
@@ -1028,7 +1022,6 @@ def build_module():
             # (rmsW = [input | post_attn], rmsW2 = [pre_ffn | post_ffn], each 2K) so the
             # rms tile's S2MM0 carries only {rmsX, rmsW, rmsW2, o-proj/down} = 4 packet
             # ids (a compute-tile S2MM port demuxes at most 4). No rmsW3/rmsW4 channels.
-        _rw.operation.attributes["air.shim_col"] = IntegerAttr.get(T.i32(), RMS_PCOL)
         _rw.operation.attributes["air.dedicated_dma_channel"] = UnitAttr.get()
         # FAITHFUL convergent X feed (reproducer x_buffer DMA:3): ONE channel
         # carries BOTH the rmsnorm'd token X (phases 0..2) and the GLU-output X
@@ -1126,26 +1119,15 @@ def build_module():
         channel_decl("attnO", size=[N_ATTN_CU])
         # W: host (per col) -> group memtile -> NCY cores.
         if W_DUAL_CHAN:
-            # PER-COLUMN channels, each PINNED to its own shim column, rather than
-            # one [NCX] bundle. Two reasons:
-            #   1. Both of a column's shim MM2S channels must sit on THAT column's
-            #      shim tile (that is the whole point -- 2x the per-column weight
-            #      bandwidth). The default placement does not guarantee it: adding
-            #      the second set of flows makes AIR hand shim col 2 to the col-1
-            #      weights and push the rms/rope feed (air.shim_col = RMS_PCOL) to
-            #      col 1, i.e. it silently violates that pin and swaps two
-            #      hand-placed columns.
-            #   2. air.shim_col is a per-DECL attribute, so a [NCX] bundle cannot
-            #      express "index k belongs on column PCOL[k]".
-            # This reproduces FLM's map exactly: shim col C ch0+ch1 -> mem_C_1 for
-            # C in PCOL, and shim col 2 -> the rms/rope tiles, with no cross-column
-            # weight route at all.
+            # PER-COLUMN channels rather than one [NCX] bundle, so that both of a
+            # column's shim MM2S channels sit on THAT column's shim tile -- the
+            # whole point is 2x the per-column weight bandwidth. The columns are
+            # not stated here: each channel feeds an L2 buffer the allocator
+            # already buckets by column, and AIRToAIE stamps that bucket column
+            # on the shim tile it opens.
             for _wc in range(NCX):
                 for _nm in (_wname(0, _wc), _wname(1, _wc)):
-                    _wch = channel_decl(_nm, size=[1])
-                    _wch.operation.attributes["air.shim_col"] = IntegerAttr.get(
-                        T.i32(), PCOL[_wc]
-                    )
+                    channel_decl(_nm, size=[1])
         else:
             channel_decl("inW", size=[NCX])
         _wL2 = channel_decl("wL2ToL1", size=[NCX, NCY])

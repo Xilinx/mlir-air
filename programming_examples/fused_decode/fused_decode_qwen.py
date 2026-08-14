@@ -700,17 +700,13 @@ def build_module():
         )  # Xmt -> 16 cores
         _inX.operation.attributes["air.shared_resident_ring"] = UnitAttr.get()
         if W_DUAL_CHAN:
-            # Per-column channels PINNED to their own shim column. air.shim_col is a
-            # per-DECL attribute, so a [NCX] bundle cannot express "index k lives on
-            # column PROJ_COL0+k"; without the pin the extra flows perturb the whole
-            # hand-placed shim map (on the llama engine they stole the rms/rope
-            # column outright, silently violating ITS air.shim_col).
+            # Per-column channels rather than one [NCX] bundle, so each column's
+            # two shim MM2S channels land on that column's shim tile. The column
+            # itself is not stated: the W memtile these feed is already bucketed
+            # by column, and AIRToAIE stamps that bucket column on the shim tile.
             for _wc in range(NCX):
                 for _ci in range(2):
-                    _wch = channel_decl(_wname(_ci, _wc), size=[1])
-                    _wch.operation.attributes["air.shim_col"] = IntegerAttr.get(
-                        i32, PROJ_COL0 + _wc
-                    )
+                    channel_decl(_wname(_ci, _wc), size=[1])
         else:
             channel_decl("inW", size=[NCX])  # host -> per-col W memtile
         channel_decl("wL2ToL1", size=[NCX, NCY])  # W memtile -> col cores
