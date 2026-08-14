@@ -11,7 +11,7 @@
 // yet. Each used to be silently replaced by a default (size 1, stride 0),
 // emitting a wrong-sized transfer with no diagnostic.
 
-// CHECK: op runtime-valued DMA size in dimension 2; only the outermost dimension may be runtime-valued
+// CHECK: op runtime-valued DMA size in dimension 2 requires a contiguous transfer
 // CHECK: op runtime-valued outermost DMA size requires a zero outer stride
 
 
