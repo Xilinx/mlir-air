@@ -73,7 +73,7 @@ QKV bias, no QK-norm.
 
 ```bash
 make compile          # build/cache the prefill ELFs (no weights, no NPU)
-make compile-decode   # build the fused decode kernels + decode_qwen.xclbin (no weights)
+make compile-decode   # build the fused decode kernels + decode_L<N> templates (no weights)
 make run              # first-token gate -> " Paris"
 make gen              # end-to-end: NPU prefill -> KV hand-off -> NPU fused decode
 make bench BENCH_L=2048   # warm TTFT + per-ELF profile

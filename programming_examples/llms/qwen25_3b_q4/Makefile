@@ -9,7 +9,7 @@
 # builds, run/gen/bench dispatch on the NPU.
 #
 #   make compile         — build/cache the prefill ELFs (no weights, no NPU dispatch)
-#   make compile-decode  — build the fused decode kernels + decode_qwen.xclbin
+#   make compile-decode  — build the fused decode kernels + the decode_L<N> template pair
 #   make run             — prefill "The capital of France is" -> expect " Paris"
 #   make gen             — end-to-end: NPU prefill -> KV hand-off -> NPU fused decode
 #   make bench           — warm TTFT at BENCH_L (default 2048)
@@ -98,7 +98,7 @@ help:
 	@echo "============================================================"
 	@echo ""
 	@echo "  make compile         Build/cache the prefill ELFs (CI-runnable, no weights)"
-	@echo "  make compile-decode  Build the fused decode (kernels + decode_qwen.xclbin, no weights)"
+	@echo "  make compile-decode  Build the fused decode (kernels + decode_L<N> templates, no weights)"
 	@echo "  make run             Prefill gate: 'The capital of France is' -> ' Paris'"
 	@echo "  make gen             End-to-end NPU prefill -> KV hand-off -> NPU fused decode"
 	@echo "  make bench           Warm prefill TTFT at BENCH_L=$(BENCH_L)"
@@ -123,7 +123,8 @@ compile:
 	cd $(srcdir) && python3 $(PREFILL) --compile-only \
 		--seq-len $(SEQ_LEN) --n-layers $(N_LAYERS)
 
-## Build the fused Qwen decode: the Peano kernels (QWEN2_5_3B) + decode_qwen.xclbin.
+## Build the fused Qwen decode: the Peano kernels (QWEN2_5_3B) + two templates
+## one L apart, which is what calibrates the per-token L patch.
 ## Weight-free (everything is a runtime BO), like `make compile`.
 ##
 ## Idempotent: skipped when the xclbin, its instruction stream and a matching
