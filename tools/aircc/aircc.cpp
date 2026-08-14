@@ -755,38 +755,25 @@ static OwningOpRef<ModuleOp> cloneModule(ModuleOp moduleOp) {
 // GPU Compilation Pipeline
 //===----------------------------------------------------------------------===//
 
-// Emit the C++ TXN builder for a module whose runtime sequence takes scalar
-// arguments. The npu-dialect lowering that aiecc performs internally is re-run
-// here on a copy purely to reach aie-translate; the artifacts aiecc produces
-// are unaffected.
-static LogicalResult emitTxnCppBuilder(StringRef npuFile) {
-  auto aieOpt = sys::findProgramByName("aie-opt");
+// Emit the C++ TXN builder from the per-sequence module aiecc itself lowered.
+//
+// Re-running the npu-dialect passes on a copy looks equivalent and is not: by
+// the time aiecc reaches that lowering it has also assigned lock ids, buffer
+// descriptor ids, tile controller ids and buffer addresses, and the DMA
+// lowering reads all of them. A shortcut pipeline silently drops, among other
+// things, the controller-id mask write that tags a transfer's completion token
+// -- so every TCT wait in the emitted stream waits for a token that never
+// matches. Ask aiecc for the module it actually translated instead.
+static LogicalResult emitTxnCppBuilder(StringRef seqFile,
+                                       StringRef headerFile) {
   auto aieTranslate = sys::findProgramByName("aie-translate");
-  if (!aieOpt || !aieTranslate) {
-    llvm::errs() << "Error: --emit-txn-cpp needs aie-opt and aie-translate on "
-                    "PATH\n";
+  if (!aieTranslate) {
+    llvm::errs() << "Error: --emit-txn-cpp needs aie-translate on PATH\n";
     return failure();
   }
-  SmallString<256> loweredFile(npuFile);
-  sys::path::replace_extension(loweredFile, "txn.mlir");
-  // Mirrors aiecc's own per-device DMA lowering
-  // (getPerDeviceDmaLoweringPipeline), plus the buffer-address assignment it
-  // has already done by that point -- rtp_write needs an address to resolve to,
-  // and a herd whose trip count comes from an RTP slot is exactly the case this
-  // builder exists for.
-  if (failed(
-          runCommand({*aieOpt, npuFile.str(), "--aie-assign-buffer-addresses",
-                      "--aie-materialize-bd-chains",
-                      "--aie-substitute-shim-dma-allocations",
-                      "--aie-assign-runtime-sequence-bd-ids", "--canonicalize",
-                      "--aie-dma-tasks-to-npu", "--aie-dma-to-npu",
-                      "--aie-lower-set-lock", "-o", loweredFile.str().str()})))
-    return failure();
-  SmallString<256> headerFile(npuFile);
-  sys::path::replace_extension(headerFile, "txn.h");
   std::string out;
   if (failed(runCommandCaptureOutput(
-          {*aieTranslate, "--aie-npu-to-cpp", loweredFile.str().str()}, out)))
+          {*aieTranslate, "--aie-npu-to-cpp", seqFile.str()}, out)))
     return failure();
   std::error_code ec;
   llvm::raw_fd_ostream os(headerFile, ec);
@@ -802,28 +789,18 @@ static LogicalResult emitTxnCppBuilder(StringRef npuFile) {
   return success();
 }
 
-// Pin every runtime-sequence scalar to a constant so aiecc can still translate
-// the sequence into a static insts.bin.
-//
-// aiecc refuses a non-constant write32 -- rightly, since a frozen binary cannot
-// hold one -- but the xclbin and the core ELFs do not depend on these values,
-// and the instruction stream's *length* is fixed by the IR's op structure, not
-// by the scalars. So a placeholder build yields a valid xclbin and a
-// correctly-sized instruction buffer, whose contents the host then replaces per
-// dispatch with the TXN builder's output. Only reachable under --emit-txn-cpp,
-// i.e. when the caller has committed to assembling the stream at runtime.
-static void pinRuntimeSequenceScalars(ModuleOp moduleOp) {
-  moduleOp.walk([](xilinx::AIE::RuntimeSequenceOp seq) {
-    Block &body = seq.getBody().front();
-    OpBuilder builder = OpBuilder::atBlockBegin(&body);
-    for (BlockArgument arg : body.getArguments()) {
-      if (arg.use_empty() || !arg.getType().isIntOrIndex())
-        continue;
-      Value one = arith::ConstantOp::create(
-          builder, seq.getLoc(), builder.getIntegerAttr(arg.getType(), 1));
-      arg.replaceAllUsesWith(one);
-    }
-  });
+// The per-sequence modules aiecc emitted for this run, newest first. The
+// artifact name is templated on the sequence key, so the file lands next to
+// aiecc's other --get outputs rather than at a name aircc chose.
+static void collectNpuSeqFiles(StringRef dir,
+                               SmallVectorImpl<std::string> &out) {
+  std::error_code ec;
+  for (sys::fs::directory_iterator it(dir, ec), e; it != e && !ec;
+       it.increment(ec)) {
+    StringRef name = sys::path::filename(it->path());
+    if (name.starts_with("npu_seq_") && name.ends_with(".mlir"))
+      out.push_back(it->path());
+  }
 }
 
 static LogicalResult runGpuCompilation() {
@@ -1331,16 +1308,6 @@ static LogicalResult runAieCompilation() {
     if (failed(saveModule(npuModule.get(), npuFile)))
       return failure();
 
-    if (emitTxnCpp) {
-      if (failed(emitTxnCppBuilder(npuFile)))
-        return failure();
-      // The builder is emitted from the module as lowered; what aiecc gets is
-      // the placeholder-pinned copy it can actually translate.
-      pinRuntimeSequenceScalars(npuModule.get());
-      if (failed(saveModule(npuModule.get(), npuFile)))
-        return failure();
-    }
-
     if (debugIr) {
       addCheckpoint("NPU Instruction Generation Complete", "npu.air.mlir");
       dumpPassLog();
@@ -1411,7 +1378,13 @@ static LogicalResult runAieCompilation() {
     // - PDI: sidecar insts file needed by the alternative runtime to program
     //   shim DMAs at dispatch time.
     // - xclbin/txn: always needed.
-    if (outputFormat != OF_elf && outputFormat != OF_none) {
+    // A runtime sequence holding a scalar cannot be frozen into insts.bin at
+    // all -- aiecc rightly refuses a non-constant write32 -- so ask for the
+    // lowered per-sequence module instead and hand that to the TXN builder.
+    // The host assembles the stream from it per dispatch.
+    if (emitTxnCpp) {
+      aieccCmd.push_back("--get=npu_seq_{0}.mlir");
+    } else if (outputFormat != OF_elf && outputFormat != OF_none) {
       aieccCmd.push_back("--get-npu-insts");
       aieccCmd.push_back("--npu-insts-name=" + instsFile);
     }
@@ -1466,6 +1439,28 @@ static LogicalResult runAieCompilation() {
 
     if (failed(runCommand(aieccCmd)))
       return failure();
+
+    if (emitTxnCpp) {
+      SmallVector<std::string> seqFiles;
+      collectNpuSeqFiles(".", seqFiles);
+      collectNpuSeqFiles(tmpDir, seqFiles);
+      if (seqFiles.empty()) {
+        llvm::errs() << "Error: --emit-txn-cpp requested but aiecc produced no "
+                        "npu_seq_*.mlir\n";
+        return failure();
+      }
+      SmallString<256> headerFile(tmpDir);
+      sys::path::append(headerFile, "npu." + airMlirFilename);
+      sys::path::replace_extension(headerFile, "txn.h");
+      // One runtime sequence per header: a design with several would need the
+      // host to pick among them, and none of the decoders has more than one.
+      if (seqFiles.size() > 1)
+        llvm::errs() << "Warning: " << seqFiles.size()
+                     << " runtime sequences; emitting the builder for "
+                     << seqFiles.front() << " only\n";
+      if (failed(emitTxnCppBuilder(seqFiles.front(), headerFile)))
+        return failure();
+    }
 
   } else {
     // --- Non-NPU path (Versal/legacy) ---
