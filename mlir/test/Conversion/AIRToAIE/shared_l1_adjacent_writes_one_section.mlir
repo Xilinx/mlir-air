@@ -22,12 +22,18 @@
 
 // RUN: air-opt %s -air-to-aie='device=npu2 row-offset=2 test-patterns=to-aie-mlir' | FileCheck %s
 
-// CHECK-DAG: %[[CONS:.*]] = aie.lock(%{{.*}}) {init = 0 : i32, sym_name = "shared_l1{{.*}}_cons_lock"}
-// CHECK-DAG: %[[PROD:.*]] = aie.lock(%{{.*}}) {init = 2 : i32, sym_name = "shared_l1{{.*}}_prod_lock"}
+// Anchor on the OWNER tile. @main is pinned at y_loc=2 and @helper at y_loc=3,
+// but only the tile operand distinguishes their cores in the output -- and
+// @helper's core opens with the same acquire-then-call pair. An unanchored
+// `aie.core` would match whichever is emitted first and then fail at the
+// vector.store, which reads exactly like the adjacency merge regressing.
+// CHECK: %[[MAIN_TILE:.*]] = aie.tile(0, 2)
+// CHECK-DAG: %[[CONS:.*]] = aie.lock(%[[MAIN_TILE]], {{.*}}) {init = 0 : i32, sym_name = "shared_l1{{.*}}_cons_lock"}
+// CHECK-DAG: %[[PROD:.*]] = aie.lock(%[[MAIN_TILE]], {{.*}}) {init = 2 : i32, sym_name = "shared_l1{{.*}}_prod_lock"}
 
 // The owner core writes the payload and then the header word. ONE acquire in
 // front of the pair, ONE release after it -- no lock op in between.
-// CHECK: aie.core
+// CHECK: aie.core(%[[MAIN_TILE]])
 // CHECK: aie.use_lock(%[[PROD]], AcquireGreaterEqual, %{{.*}})
 // CHECK-NEXT: func.call @zero_vectorized_bf16
 // CHECK-NEXT: vector.store
