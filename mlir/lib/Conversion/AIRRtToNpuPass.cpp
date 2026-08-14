@@ -617,83 +617,45 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     };
     auto *ctx = rewriter.getContext();
 
-    // Runtime-valued access pattern. mlir-aie's shim-NOC BD lowering accepts a
-    // runtime size/stride/len (AIEDMATasksToNPU rewriteSingleBDDynamic), so a
-    // loop-invariant dynamic dim does not have to be folded away. What is
-    // carried through here is the OUTERMOST size: with a zero outer stride it
-    // is purely a repeat, so it lands on the task's repeat_count_val and the
-    // descriptor itself stays constant. Every other dynamic dim would be
-    // silently replaced by the constify() default below -- a wrong-sized
-    // transfer with no diagnostic -- so reject those instead.
-    // Two shapes are carried through, both requiring the rest of the pattern to
-    // be constant:
-    //   - a CONTIGUOUS transfer (row-major, unit innermost stride) whose only
-    //     runtime dimension sets the transfer length. The descriptor has no
-    //     dimensions at all, just a runtime `len`.
-    //   - a runtime OUTERMOST size over a zero stride, i.e. a pure repeat,
-    //     which lands on the task's repeat_count_val.
-    // Anything else -- a runtime stride, or a runtime dim that is neither of
-    // the above -- would have to become a mixed-operand descriptor, so reject
-    // it rather than let constify() silently substitute a default.
-    Value dynOuterSize; // runtime repeat count (zero outer stride)
-    Value dynContigLen; // runtime length of a contiguous transfer
+    // Runtime-valued access pattern. mlir-aie's shim-NOC BD lowering
+    // (AIEDMATasksToNPU rewriteSingleBDDynamic) takes a runtime size as a
+    // descriptor operand, so a loop-invariant dynamic dim does not have to be
+    // folded away. The descriptor keeps its dimensions and the runtime value
+    // rides in the mixed sizes list -- the shape upstream's own static-vs-
+    // dynamic equivalence test uses, and the one that lands register-equivalent
+    // to the static baseline. (Collapsing a contiguous nest to a runtime `len`
+    // instead looks simpler but programs d1_size differently.)
+    //
+    // Only sizes may be runtime, and only one of them: constify() below would
+    // otherwise silently substitute a default and emit a wrong-sized transfer
+    // with no diagnostic.
+    SmallVector<OpFoldResult> mixedLengths =
+        getMixedValues(adaptor.getStaticLengths(), adaptor.getLengths(), ctx);
+    SmallVector<OpFoldResult> mixedStrides =
+        getMixedValues(adaptor.getStaticStrides(), adaptor.getStrides(), ctx);
+    bool hasDynSize = false;
     {
-      auto mixedLengths =
-          getMixedValues(adaptor.getStaticLengths(), adaptor.getLengths(), ctx);
-      auto mixedStrides =
-          getMixedValues(adaptor.getStaticStrides(), adaptor.getStrides(), ctx);
       for (auto ofr : mixedStrides)
         if (!getConstantIntValue(ofr))
           return op->emitOpError("runtime-valued DMA stride is not supported");
-      SmallVector<int> dynDims;
-      for (auto [dim, ofr] : llvm::enumerate(mixedLengths))
+      unsigned nDyn = 0;
+      for (auto ofr : mixedLengths)
         if (!getConstantIntValue(ofr))
-          dynDims.push_back(dim);
-      if (dynDims.size() > 1)
+          nDyn++;
+      if (nDyn > 1)
         return op->emitOpError(
             "more than one runtime-valued DMA size is not supported");
-      if (!dynDims.empty()) {
-        int dim = dynDims.front();
-        Value dynVal = cast<Value>(mixedLengths[dim]);
-        // Contiguous iff every dimension below the runtime one is a unit-stride
-        // row-major nest: stride[i] == product of sizes below it. Then the
-        // transfer is linear and its length is the runtime size scaled by that
-        // product, so no descriptor dimension is needed.
-        int64_t below = 1;
-        bool contiguous = true;
-        for (int i = mixedLengths.size() - 1; i > dim; i--) {
-          auto sz = *getConstantIntValue(mixedLengths[i]);
-          auto st = *getConstantIntValue(mixedStrides[i]);
-          if (st != below && sz != 1)
-            contiguous = false;
-          below *= sz;
-        }
-        // Dimensions ABOVE the runtime one must be inert (size 1), else the
-        // transfer is not a single linear run.
-        for (int i = 0; i < dim; i++)
-          if (*getConstantIntValue(mixedLengths[i]) != 1)
-            contiguous = false;
-        auto thisStride = *getConstantIntValue(mixedStrides[dim]);
-        if (contiguous && thisStride == below) {
-          dynContigLen = below == 1
-                             ? dynVal
-                             : arith::MulIOp::create(
-                                   rewriter, op.getLoc(), dynVal,
-                                   arith::ConstantOp::create(
-                                       rewriter, op.getLoc(),
-                                       rewriter.getI64IntegerAttr(below)))
-                                   .getResult();
-        } else if (dim == 0 && thisStride == 0) {
-          dynOuterSize = dynVal;
-        } else if (dim == 0) {
-          return op->emitOpError(
-              "runtime-valued outermost DMA size requires a zero outer stride "
-              "(pure repeat) or a contiguous transfer; a strided iteration "
-              "wrap is not supported");
-        } else {
-          return op->emitOpError("runtime-valued DMA size in dimension ")
-                 << (3 - dim) << " requires a contiguous transfer";
-        }
+      hasDynSize = nDyn == 1;
+      if (hasDynSize) {
+        // The runtime path is shim-NOC only, and offsets must be resolved --
+        // an unresolved offset would be defaulted to 0 by constify().
+        auto mixedOffsets = getMixedValues(adaptor.getStaticOffsets(),
+                                           adaptor.getOffsets(), ctx);
+        for (auto ofr : mixedOffsets)
+          if (!getConstantIntValue(ofr))
+            return op->emitOpError(
+                "runtime-valued DMA offset is not supported alongside a "
+                "runtime size");
       }
     }
 
@@ -728,16 +690,7 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // repeat_count = 0 means execute once, repeat_count = 3 means execute 4
     // times
     int64_t repeatCount = std::max((int64_t)0, staticSizes[0] - 1);
-    // Runtime outer size: the same count, computed at runtime. The i64 access
-    // pattern operand is narrowed to the i32 the task op takes.
-    Value repeatCountVal;
-    if (dynOuterSize) {
-      Value asI32 = arith::TruncIOp::create(
-          rewriter, op.getLoc(), rewriter.getI32Type(), dynOuterSize);
-      Value one = arith::ConstantOp::create(rewriter, op.getLoc(),
-                                            rewriter.getI32IntegerAttr(1));
-      repeatCountVal = arith::SubIOp::create(rewriter, op.getLoc(), asI32, one);
-    }
+    Value repeatCountVal; // unused: a runtime size rides in the descriptor
 
     // The 4th dimension is included in dma_bd dimensions if stride[0] != 0
     // (the iteration_stride tells the hardware how to advance offset each
@@ -785,12 +738,36 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     bool paced = op->hasAttr(air::attrs::PreserveShimDmaOrder);
     bool issueToken = air::isDeviceToHostShimDMA(op) || paced;
 
-    // Narrow the runtime length to the i32 the BD field holds. Built here,
-    // outside the task, because a BD block admits only aie.dma_bd and aie.end.
-    Value lenI32;
-    if (dynContigLen)
-      lenI32 = arith::TruncIOp::create(rewriter, op.getLoc(),
-                                       rewriter.getI32Type(), dynContigLen);
+    // Runtime size: emit aiex.npu.dma_memcpy_nd rather than the DMA-task path.
+    // Both accept mixed static/dynamic sizes, but only the memcpy_nd lowering
+    // carries a runtime size's MAGNITUDE into buffer_length; the dma_task
+    // encoder folds the runtime value into an (n > 1) predicate and otherwise
+    // keeps the static template, so the transfer would silently keep its
+    // compile-time extent. (Upstream's dma_task_dynamic_size test cannot see
+    // this: it only compares at the argument value the static side bakes in.)
+    if (hasDynSize) {
+      SmallVector<Value> dynOffs, dynSizes, dynStrides;
+      SmallVector<int64_t> statOffs, statSizes, statStrides;
+      SmallVector<OpFoldResult> mixedOffsets =
+          getMixedValues(adaptor.getStaticOffsets(), adaptor.getOffsets(), ctx);
+      dispatchIndexOpFoldResults(mixedOffsets, dynOffs, statOffs);
+      dispatchIndexOpFoldResults(mixedLengths, dynSizes, statSizes);
+      dispatchIndexOpFoldResults(mixedStrides, dynStrides, statStrides);
+      AIEX::NpuDmaMemcpyNdOp::create(
+          rewriter, op.getLoc(), memref, dynOffs, dynSizes, dynStrides,
+          rewriter.getDenseI64ArrayAttr(statOffs),
+          rewriter.getDenseI64ArrayAttr(statSizes),
+          rewriter.getDenseI64ArrayAttr(statStrides),
+          op->getAttrOfType<AIE::PacketInfoAttr>("packet"), metadata,
+          rewriter.getI64IntegerAttr(0), rewriter.getBoolAttr(issueToken),
+          /*d0_zero_before=*/nullptr,
+          /*d1_zero_before=*/nullptr, /*d2_zero_before=*/nullptr,
+          /*d0_zero_after=*/nullptr, /*d1_zero_after=*/nullptr,
+          /*d2_zero_after=*/nullptr, /*burst_length=*/nullptr,
+          /*offset_parameter=*/nullptr, /*offset_state_table_idx=*/nullptr);
+      rewriter.eraseOp(op);
+      return success();
+    }
 
     // Create DMAConfigureTaskForOp with proper repeat_count from highest
     // dimension
@@ -837,30 +814,6 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // direct L3→L1 packet-switched flows where the shim DMA BD must include
     // the packet header for correct routing.
     auto pktAttr = op->getAttrOfType<AIE::PacketInfoAttr>("packet");
-
-    // Runtime transfer length: a contiguous transfer whose extent is known only
-    // at dispatch. The descriptor carries no dimensions (it is one linear run),
-    // just `len` as an operand, which is the form mlir-aie's shim-NOC lowering
-    // takes for a runtime BD. The i64 access-pattern value is narrowed to the
-    // i32 the BD field holds.
-    if (dynContigLen) {
-      AIE::DMABDOp::create(
-          rewriter, op.getLoc(), memref, /*offset=*/Value(), /*len=*/lenI32,
-          /*static_offset=*/rewriter.getI32IntegerAttr(totalOffset),
-          /*static_len=*/nullptr, /*sizes=*/ValueRange{},
-          /*strides=*/ValueRange{}, /*static_sizes=*/nullptr,
-          /*static_strides=*/nullptr, /*pad_dimensions=*/nullptr,
-          /*bd_id=*/nullptr, pktAttr, /*burst_length=*/nullptr,
-          /*offset_parameter=*/nullptr, /*offset_state_table_idx=*/nullptr,
-          /*next_bd_id=*/nullptr);
-      AIE::EndOp::create(rewriter, op.getLoc());
-      rewriter.setInsertionPointAfter(configTaskOp);
-      auto startTaskOpDyn =
-          AIEX::DMAStartTaskOp::create(rewriter, op.getLoc(), configTaskOp);
-      (void)startTaskOpDyn;
-      rewriter.eraseOp(op);
-      return success();
-    }
 
     // Create aie.dma_bd inside the task body, passing packet info if present.
     if (dimLayouts.empty() && !pktAttr) {
