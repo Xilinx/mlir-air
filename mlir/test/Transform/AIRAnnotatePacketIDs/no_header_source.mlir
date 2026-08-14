@@ -126,3 +126,56 @@ module {
     return
   }
 }
+
+// -----
+
+// A hop pinning the domain's ids in a DIFFERENT ORDER is fine. A hop is
+// single-destination, so air-to-aie returns its whole list for the one buffer
+// and the sequence carries no meaning. No diagnostic.
+module {
+  air.channel @hop [1] {channel_type = "npu_dma_packet", keep_pkt_header, packet_ids = [17 : i32, 13 : i32]}
+  air.channel @fanout [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet", keep_pkt_header, packet_ids = [13 : i32, 17 : i32]}
+  func.func @f() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %src = memref.alloc() : memref<1024xbf16, 2 : i32>
+    %hub = memref.alloc() : memref<1024xbf16, 1 : i32>
+    %d0 = memref.alloc() : memref<512xbf16, 2 : i32>
+    %d1 = memref.alloc() : memref<512xbf16, 2 : i32>
+    air.channel.put @hop[%c0] (%src[] [] []) : (memref<1024xbf16, 2 : i32>)
+    air.channel.get @hop[%c0] (%hub[] [] []) : (memref<1024xbf16, 1 : i32>)
+    air.channel.put @fanout[%c0, %c0] (%hub[] [] []) : (memref<1024xbf16, 1 : i32>)
+    air.channel.get @fanout[%c0, %c0] (%d0[] [] []) : (memref<512xbf16, 2 : i32>)
+    air.channel.get @fanout[%c0, %c1] (%d1[] [] []) : (memref<512xbf16, 2 : i32>)
+    return
+  }
+}
+
+// -----
+
+// A hop pinning the RIGHT NUMBER of ids and the WRONG ONES. Comparing counts
+// alone would wave this through, and the design would hang: @hop's switchbox
+// admits 1 and 2, the demux keys on 13 and 17, so every packet is filtered out
+// at the hop and the demux never fires.
+module {
+  // expected-error @below {{pins routing ids [1, 2], but forwards for a demux routing [13, 17]}}
+  // expected-note @below {{the demux is @fanout}}
+  // expected-note @below {{a hop must admit exactly the ids the demux keys on}}
+  // expected-note @below {{the order of a hop's list is not checked}}
+  air.channel @hop [1] {channel_type = "npu_dma_packet", keep_pkt_header, packet_ids = [1 : i32, 2 : i32]}
+  air.channel @fanout [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet", keep_pkt_header, packet_ids = [13 : i32, 17 : i32]}
+  func.func @f() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %src = memref.alloc() : memref<1024xbf16, 2 : i32>
+    %hub = memref.alloc() : memref<1024xbf16, 1 : i32>
+    %d0 = memref.alloc() : memref<512xbf16, 2 : i32>
+    %d1 = memref.alloc() : memref<512xbf16, 2 : i32>
+    air.channel.put @hop[%c0] (%src[] [] []) : (memref<1024xbf16, 2 : i32>)
+    air.channel.get @hop[%c0] (%hub[] [] []) : (memref<1024xbf16, 1 : i32>)
+    air.channel.put @fanout[%c0, %c0] (%hub[] [] []) : (memref<1024xbf16, 1 : i32>)
+    air.channel.get @fanout[%c0, %c0] (%d0[] [] []) : (memref<512xbf16, 2 : i32>)
+    air.channel.get @fanout[%c0, %c1] (%d1[] [] []) : (memref<512xbf16, 2 : i32>)
+    return
+  }
+}

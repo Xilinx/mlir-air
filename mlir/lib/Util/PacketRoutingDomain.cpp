@@ -642,18 +642,51 @@ LogicalResult PacketRoutingDomainAnalysis::verify() const {
 
   // A pinned list that disagrees with its domain. An explicit declaration is an
   // assertion to check, never a second source of truth.
+  auto renderIds = [](ArrayRef<int64_t> ids) {
+    std::string out;
+    for (int64_t id : ids)
+      out += (out.empty() ? "" : ", ") + std::to_string(id);
+    return "[" + out + "]";
+  };
   for (const PacketRoutingDomain &domRef : domains) {
     PacketRoutingDomain dom = domRef;
+    SmallVector<int64_t> sortedWant(dom.ids);
+    llvm::sort(sortedWant);
     for (ChannelOp hop : dom.hops) {
       auto attr = hop.getPacketIDs();
-      if (!attr || attr.size() == dom.ids.size())
+      if (!attr)
+        continue;
+      // Compare the id VALUES, not just how many there are. A hop pinning
+      // {1,2} for a demux routing {3,4} has the right cardinality and entirely
+      // the wrong routes: its switchbox admits two ids, neither of which the
+      // demux keys on, so every packet is filtered out mid-route. Counting
+      // alone would wave that through -- and a pin agreeing with itself is the
+      // precise shape of "two spellings, no link" this analysis exists to
+      // remove.
+      //
+      // Order is NOT compared. A hop is single-destination, so air-to-aie
+      // returns its whole list for the one buffer and the sequence carries no
+      // meaning. On a demux order does matter (destination i routes with
+      // ids[i]), but a demux's list IS the domain's by construction, so there
+      // is nothing to disagree with.
+      SmallVector<int64_t> pinned;
+      for (Attribute a : attr)
+        if (auto i = dyn_cast<IntegerAttr>(a))
+          pinned.push_back(i.getInt());
+      SmallVector<int64_t> sortedPinned(pinned);
+      llvm::sort(sortedPinned);
+      if (sortedPinned == sortedWant)
         continue;
       emit(hop.getOperation(),
-           "pins " + Twine(attr.size()) +
-               " routing id(s), but forwards for a demux with " +
-               Twine(dom.ids.size()),
+           "pins routing ids " + renderIds(pinned) +
+               ", but forwards for a demux routing " + renderIds(dom.ids),
            {("the demux is @" + dom.demux.getSymName()).str(),
-            "every hop must admit exactly the ids the demux keys on"});
+            "a hop must admit exactly the ids the demux keys on -- any id it "
+            "omits is filtered out at its own switchbox and never reaches the "
+            "demux",
+            "the order of a hop's list is not checked: it is "
+            "single-destination, so air-to-aie returns the whole list for its "
+            "one buffer"});
     }
   }
 
