@@ -464,6 +464,15 @@ def _set_attn_link(op, base):
 # Used to (a) locate the readback-count word in insts.bin by diffing two builds, and (b) let the
 # host patch it to ceil(L/16) per token so the shim pushes exactly what the runtime core consumes.
 RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L + 15) // 16)))
+# DECODE_DYNSEQ=1: take the context length as a runtime scalar instead of baking it
+# in. It becomes a launch operand that drives BOTH the shim readback's block count
+# and the attention herd's RTP-L, so the shim pushes exactly what the cores consume
+# at whatever L the host dispatches -- one build serving every context, with the KV
+# traffic of the actual context rather than of ATTN_MAXL. The instruction stream can
+# no longer be a frozen insts.bin, so the build also emits a TXN builder the host
+# calls per token (air.backend.txn_builder). Off by default: the staircase templates
+# remain the shipping path until this is measured across all four decoders.
+DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # DECODE_KV_SPLIT=1: decouple the attention K and V memtile rings (mirror the reference mem_3_1:
 # separate k_mem_buffer / v_mem_buffer, filled by SEPARATE S2MM = inKV_K / inKV_V, so
 # the qk core's K supply is NOT lock-chained to the kv core's V drain). Default off
@@ -1228,7 +1237,14 @@ def build_module():
         # MULTIBLK adds a 5th DDR arg (kv_cache) so the reference's append+readback (and the reference's
         # _gen_sequence) can drive it; the L=1 ABI (4 args) is unchanged when MULTIBLK
         # is off, preserving the bring-up/PASS interface.
-        _fn_args = [x_l3, w_l3, rms_l3, y_l3] + ([kvc_l3] if MULTIBLK else [])
+        # DYNSEQ appends the context length as a trailing scalar. Kept last so the
+        # DDR argument positions -- and every host binding built around them --
+        # are unchanged.
+        _fn_args = (
+            [x_l3, w_l3, rms_l3, y_l3]
+            + ([kvc_l3] if MULTIBLK else [])
+            + ([i32] if DYNSEQ else [])
+        )
 
         @FuncOp.from_py_func(*_fn_args)
         def q4nx_decode(*_fa):
@@ -1242,6 +1258,25 @@ def build_module():
             def launch_body(*_la):
                 X, W, RMS, Y = _la[4], _la[5], _la[6], _la[7]
                 KVC = _la[8] if MULTIBLK else None
+                # The dispatch-time context length (DYNSEQ). Last operand before
+                # the multi-layer induction variable.
+                L_rt = _la[4 + len(_fa) - 1] if DYNSEQ else None
+
+                def _rt_blocks():
+                    """ceil(L/16) as an index Value, for the readback's block count.
+
+                    Kept in i32: aie-translate's C++ TXN target emits the integer
+                    widths but has no case for index-typed arithmetic, and this
+                    expression has to survive all the way into the emitted builder.
+                    """
+                    _s = arith.addi(
+                        L_rt, arith.ConstantOp(IntegerAttr.get(i32, 15), None).result
+                    )
+                    _q = arith.divui(
+                        _s, arith.ConstantOp(IntegerAttr.get(i32, 16), None).result
+                    )
+                    return arith.index_cast(idx_t, _q)
+
                 # Multi-layer fused decode: the device (segment/herds, below) is
                 # emitted ONCE and reused temporally. When NLAYERS>1 the launch is
                 # wrapped in an AIR scf.for (see the emit branch after this def) whose
@@ -1270,6 +1305,31 @@ def build_module():
                     if a_iv is None:
                         return idx(base + extra)
                     return arith.addi(base, idx(extra)) if extra else base
+
+                def _slot_off():
+                    """(L-1) * REGION_W: this token's slot within a KV region.
+
+                    DYNSEQ makes it a runtime address -- the append has to land on
+                    the position being generated, not on the compile-time one.
+                    """
+                    if not DYNSEQ:
+                        return (ATTN_L - 1) * REGION_W
+                    _m = arith.subi(
+                        L_rt, arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
+                    )
+                    _p = arith.muli(
+                        _m,
+                        arith.ConstantOp(IntegerAttr.get(i32, REGION_W), None).result,
+                    )
+                    return arith.index_cast(idx_t, _p)
+
+                def _loi_slot(base, extra):
+                    """_loi with the runtime slot offset folded in."""
+                    if not DYNSEQ:
+                        return _loi(base, extra + (ATTN_L - 1) * REGION_W)
+                    _b = base if a_iv is not None else idx(base)
+                    _s = arith.addi(_b, _slot_off())
+                    return arith.addi(_s, idx(extra)) if extra else _s
 
                 blk = BLOCK_BF16
                 wstep = NCY * blk  # 10240 = one fan get
@@ -1566,7 +1626,7 @@ def build_module():
                                         "appendK",
                                         KVC,
                                         indices=[idx(0)],
-                                        offsets=[_loi(_kbase, (ATTN_L - 1) * REGION_W)],
+                                        offsets=[_loi_slot(_kbase, 0)],
                                         sizes=[idx(NGRP), idx(REGION_W)],
                                         strides=[idx(REGION_STRIDE), idx(1)],
                                     )
@@ -1574,12 +1634,7 @@ def build_module():
                                         "appendV",
                                         KVC,
                                         indices=[idx(0)],
-                                        offsets=[
-                                            _loi(
-                                                _kbase,
-                                                _vreg_off(0) + (ATTN_L - 1) * REGION_W,
-                                            )
-                                        ],
+                                        offsets=[_loi_slot(_kbase, _vreg_off(0))],
                                         sizes=[idx(NGRP), idx(REGION_W)],
                                         strides=[idx(REGION_STRIDE), idx(1)],
                                     )
@@ -1640,10 +1695,26 @@ def build_module():
                                     # transfer, no D0", 1,056,768 B. Same bytes, same addresses,
                                     # same order; only the descriptor shape differs.
                                     _KV1D = int(_os.environ.get("KV_RB_1D", "0"))
+                                    if DYNSEQ and (_NRB != 1 or _KV1D):
+                                        raise SystemExit(
+                                            "DECODE_DYNSEQ needs the single whole-region "
+                                            "readback (DECODE_KV_RB_NRB=1, KV_RB_1D=0): "
+                                            "chunking splits a runtime count across "
+                                            "compile-time BDs, and the 1-D form folds it "
+                                            "into a length the shim cannot recompute."
+                                        )
                                     _ci = 0
                                     while _ci < _nb:
                                         _cb = min(_cbk, _nb - _ci)
                                         _coff = _ci * 16 * REGION_W
+                                        # DYNSEQ: the outer block count is the runtime
+                                        # ceil(L/16), so the BD moves this token's context
+                                        # rather than the padded ATTN_MAXL. Called at each
+                                        # use, not hoisted, so the static path's constant
+                                        # emission order -- and thus its IR -- is unchanged.
+                                        _cbv = (
+                                            _rt_blocks if DYNSEQ else (lambda: idx(_cb))
+                                        )
                                         # Contiguous either way; _KV1D just states it as 1-D.
                                         # Spelled inline (not hoisted) so the default path's
                                         # constant emission order -- and thus the emitted IR --
@@ -1660,7 +1731,7 @@ def build_module():
                                                     [idx(_cb * 16 * REGION_W)]
                                                     if _KV1D
                                                     else [
-                                                        idx(_cb),
+                                                        _cbv(),
                                                         idx(16),
                                                         idx(REGION_W),
                                                     ]
@@ -1686,7 +1757,7 @@ def build_module():
                                                     [idx(_cb * 16 * REGION_W)]
                                                     if _KV1D
                                                     else [
-                                                        idx(_cb),
+                                                        _cbv(),
                                                         idx(16),
                                                         idx(REGION_W),
                                                     ]
@@ -1777,9 +1848,37 @@ def build_module():
                 # (No GLU host drain: the GLU output is consumed on-chip by the down
                 # phase. The down output egresses via the rms layer output above.)
 
-                @segment(name="seg", operands=([a_iv] if a_iv is not None else []))
+                _seg_opers = ([a_iv] if a_iv is not None else []) + (
+                    [L_rt] if DYNSEQ else []
+                )
+
+                @segment(name="seg", operands=_seg_opers)
                 def seg(*_sa):
-                    _seg_iv = _sa[0] if _sa else None
+                    _seg_iv = _sa[0] if a_iv is not None else None
+                    # The context length reaches the attention herd from here, as a
+                    # herd operand: an RTP slot the instruction stream writes per
+                    # dispatch, not a constant folded into the core ELF.
+                    _seg_L = _sa[-1] if DYNSEQ else None
+
+                    def _seg_rounds():
+                        """ceil(L/16) for the memtile's block dequeue.
+
+                        The memtile sits between the shim's readback BD and the
+                        cores, so its trip count has to be the same ceil(L/16) both
+                        of those use.
+                        """
+                        if not DYNSEQ:
+                            return idx(ATTN_ROUNDS)
+                        _s = arith.addi(
+                            _seg_L,
+                            arith.ConstantOp(IntegerAttr.get(i32, 15), None).result,
+                        )
+                        _q = arith.divui(
+                            _s,
+                            arith.ConstantOp(IntegerAttr.get(i32, 16), None).result,
+                        )
+                        return arith.index_cast(idx_t, _q)
+
                     if _seg_iv is not None:
                         _seg_cmp = arith.cmpi(
                             arith.CmpIPredicate.slt, _seg_iv, idx(UNI_DEC)
@@ -2334,9 +2433,13 @@ def build_module():
                             # on blk==0 in-kernel); attn_kv_fin normalizes after
                             # the last block. Lh = RTP_L herd operand (kernel masks
                             # the last partial block). Compute proven in attn_iso.
-                            L_c = arith.ConstantOp(
-                                IntegerAttr.get(i32, ATTN_L), None
-                            ).result
+                            L_c = (
+                                _seg_L
+                                if DYNSEQ
+                                else arith.ConstantOp(
+                                    IntegerAttr.get(i32, ATTN_L), None
+                                ).result
+                            )
 
                             # per-block KV staging ring (attn_iso PASS): fresh kvb
                             # per block -> count-free ping-pong ring (1 fill : 1
@@ -2361,7 +2464,7 @@ def build_module():
                                     if c != _cus[0]:
                                         return
                                     _gw = len(_cus) * KVPC_DH
-                                    for _blk in for_(idx(0), idx(ATTN_ROUNDS), idx(1)):
+                                    for _blk in for_(idx(0), _seg_rounds(), idx(1)):
                                         _kbuf = AllocOp(kvblk_l2, [], [])
                                         _kbuf.operation.attributes[
                                             "air.memtile_col"
@@ -2428,7 +2531,7 @@ def build_module():
                                 # weight-fan) so large ATTN_L stays under the 16-BD limit.
                                 # Fresh kvb per iter (no_split, memtile_col) = the share-ring
                                 # pattern AIR lowers to next_bd rotation, not a repeat_count BD.
-                                for _blk in for_(idx(0), idx(ATTN_ROUNDS), idx(1)):
+                                for _blk in for_(idx(0), _seg_rounds(), idx(1)):
                                     kvb = AllocOp(kvblk_l2, [], [])
                                     kvb.operation.attributes["air.memtile_col"] = (
                                         IntegerAttr.get(T.i32(), col)
@@ -2496,6 +2599,31 @@ def build_module():
                             else:
                                 _reblock_dec()
 
+                            def _core_rounds(Lh):
+                                """ceil(Lh/16) as a core-side loop bound.
+
+                                Lh is the RTP-L herd block-arg, so this is opaque to
+                                folding and survives to core codegen as a real runtime
+                                trip count -- the same count the shim's readback BD
+                                pushes, which is what keeps the core off a channel get
+                                that never arrives.
+                                """
+                                if not DYNSEQ:
+                                    return idx(ATTN_ROUNDS)
+                                _s = arith.addi(
+                                    Lh,
+                                    arith.ConstantOp(
+                                        IntegerAttr.get(i32, 15), None
+                                    ).result,
+                                )
+                                _q = arith.divui(
+                                    _s,
+                                    arith.ConstantOp(
+                                        IntegerAttr.get(i32, 16), None
+                                    ).result,
+                                )
+                                return arith.index_cast(idx_t, _q)
+
                             def _qk_body(sh, Lh, _c):
                                 a_q = AllocOp(aq_l1, [], [])
                                 ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
@@ -2507,9 +2635,7 @@ def build_module():
                                 # shim writes, exactly like the reference's in-core rounds=(L+15)/16).
                                 # unrollSCFFors only unrolls all-constant loops, so this
                                 # survives to core codegen as a real runtime loop.
-                                _nblk_qk = idx(
-                                    ATTN_ROUNDS
-                                )  # compile-time 128-block loop
+                                _nblk_qk = _core_rounds(Lh)
                                 for _blk in for_(idx(0), _nblk_qk, idx(1)):
                                     # REQUIRED single-buffer: ping-pong would unroll-by-2 +
                                     # 1-remainder over a 3-buffer toK ring whose remainder reads
@@ -2534,9 +2660,7 @@ def build_module():
                                 a_o = AllocOp(ao_l1, [], [])
                                 # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
                                 # loops per RTP-L; matched by the shim readback push count.
-                                _nblk_kv = idx(
-                                    ATTN_ROUNDS
-                                )  # compile-time 128-block loop
+                                _nblk_kv = _core_rounds(Lh)
                                 for _blk in for_(idx(0), _nblk_kv, idx(1)):
                                     # REQUIRED single-buffer (see _qk_body): keeps toV/toK
                                     # consumption aligned with the DMA rotation (no unroll-by-2
@@ -3584,6 +3708,9 @@ def run():
         stack_size=10240,
         use_lock_race_condition_fix_v2=True,
         coalesce_shim_dma=True,
+        # DYNSEQ: the runtime sequence now holds a scalar, so the stream is built
+        # per dispatch from the emitted header instead of read from insts.bin.
+        emit_txn_cpp=bool(DYNSEQ),
     )
     print(
         f"[q4nx_decode] proj: M={M} K={K} {NCX}x{NCY}=16 cores, "
