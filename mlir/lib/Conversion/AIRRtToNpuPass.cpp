@@ -962,13 +962,34 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
             if (!llvm::isa<IntegerType, IndexType, FloatType>(oper.getType()))
               continue;
 
-            auto constOp =
-                dyn_cast_if_present<arith::ConstantOp>(oper.getDefiningOp());
-            if (constOp && isa<IntegerType, IndexType>(oper.getType())) {
-              uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
-              Value vVal = arith::ConstantOp::create(
-                  rewriter, op.getLoc(), rewriter.getI32Type(),
-                  rewriter.getI32IntegerAttr(v));
+            // The core loads this slot unconditionally, so a slot left
+            // unwritten is a read of stale memory -- not a value that merely
+            // defaults. A runtime operand therefore has to be written too: it
+            // is how a core's trip count can follow a dispatch-time context
+            // length, and how that count stays equal to the shim's push count.
+            Value vVal;
+            if (isa<IntegerType, IndexType>(oper.getType())) {
+              auto i32Ty = rewriter.getI32Type();
+              if (auto constOp = dyn_cast_if_present<arith::ConstantOp>(
+                      oper.getDefiningOp())) {
+                vVal = arith::ConstantOp::create(
+                    rewriter, op.getLoc(), i32Ty,
+                    rewriter.getI32IntegerAttr(
+                        cast<IntegerAttr>(constOp.getValue()).getInt()));
+              } else if (isa<IndexType>(oper.getType())) {
+                vVal = arith::IndexCastOp::create(rewriter, op.getLoc(), i32Ty,
+                                                  oper);
+              } else if (oper.getType() == i32Ty) {
+                vVal = oper;
+              } else if (oper.getType().getIntOrFloatBitWidth() > 32) {
+                vVal =
+                    arith::TruncIOp::create(rewriter, op.getLoc(), i32Ty, oper);
+              } else {
+                vVal =
+                    arith::ExtUIOp::create(rewriter, op.getLoc(), i32Ty, oper);
+              }
+            }
+            if (vVal) {
               auto rtpOp = AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(),
                                                        name, rtp_slot, vVal);
               if (waveAttr)
@@ -2115,18 +2136,24 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     auto isRegionDelimiter = [](Operation *o) {
       return isa<AIEX::NpuLoadPdiOp>(o);
     };
-    // Move an NpuWriteRTPOp before `anchor`, cloning any defining
-    // arith.ConstantOp operand that would otherwise end up after it. The #1732
-    // AIEX API materializes the RTP value as an SSA operand (not an attribute),
-    // so the constant must dominate the moved RTP write.
+    // Move an NpuWriteRTPOp before `anchor`, re-materializing any defining op
+    // that would otherwise end up after it. The #1732 AIEX API materializes the
+    // RTP value as an SSA operand (not an attribute), so its definition must
+    // dominate the moved write. Constants are the usual case; a runtime RTP
+    // value adds the narrowing cast that carries a sequence argument into the
+    // slot's i32. Both are pure and rooted at block arguments, so cloning them
+    // at the new position is sound; anything else is left where it is.
     auto moveRtpBefore = [](Operation *rtp, Operation *anchor) {
       rtp->moveBefore(anchor);
       for (OpOperand &operandUse : rtp->getOpOperands()) {
         Value operand = operandUse.get();
         auto *defOp = operand.getDefiningOp();
-        if (!defOp || !isa<arith::ConstantOp>(defOp))
+        if (!defOp || defOp->getBlock() != rtp->getBlock())
           continue;
-        if (defOp->getBlock() != rtp->getBlock())
+        if (!isMemoryEffectFree(defOp) || defOp->getNumResults() != 1)
+          continue;
+        if (llvm::any_of(defOp->getOperands(),
+                         [](Value v) { return v.getDefiningOp() != nullptr; }))
           continue;
         bool defIsAfter = false;
         for (Operation *cur = rtp->getNextNode(); cur != nullptr;
@@ -2139,6 +2166,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           OpBuilder b(rtp);
           Operation *cloned = b.clone(*defOp);
           operandUse.set(cloned->getResult(0));
+          // The original is left for canonicalization: the op-order snapshot
+          // this hoist walks still points at it.
         }
       }
     };

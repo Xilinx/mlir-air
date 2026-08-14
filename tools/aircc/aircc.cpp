@@ -769,10 +769,18 @@ static LogicalResult emitTxnCppBuilder(StringRef npuFile) {
   }
   SmallString<256> loweredFile(npuFile);
   sys::path::replace_extension(loweredFile, "txn.mlir");
-  if (failed(runCommand(
-          {*aieOpt, npuFile.str(), "--aie-substitute-shim-dma-allocations",
-           "--aie-assign-runtime-sequence-bd-ids", "--aie-dma-tasks-to-npu",
-           "--aie-dma-to-npu", "-o", loweredFile.str().str()})))
+  // Mirrors aiecc's own per-device DMA lowering
+  // (getPerDeviceDmaLoweringPipeline), plus the buffer-address assignment it
+  // has already done by that point -- rtp_write needs an address to resolve to,
+  // and a herd whose trip count comes from an RTP slot is exactly the case this
+  // builder exists for.
+  if (failed(
+          runCommand({*aieOpt, npuFile.str(), "--aie-assign-buffer-addresses",
+                      "--aie-materialize-bd-chains",
+                      "--aie-substitute-shim-dma-allocations",
+                      "--aie-assign-runtime-sequence-bd-ids", "--canonicalize",
+                      "--aie-dma-tasks-to-npu", "--aie-dma-to-npu",
+                      "--aie-lower-set-lock", "-o", loweredFile.str().str()})))
     return failure();
   SmallString<256> headerFile(npuFile);
   sys::path::replace_extension(headerFile, "txn.h");
