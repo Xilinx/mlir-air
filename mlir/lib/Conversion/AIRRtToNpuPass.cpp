@@ -884,7 +884,8 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*sizes=*/ValueRange{}, /*strides=*/ValueRange{},
           /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
           /*pad_dimensions=*/nullptr, /*bd_id=*/nullptr, pktAttr,
-          /*burst_length=*/nullptr, /*offset_parameter=*/nullptr,
+          /*burst_length=*/nullptr, /*iteration=*/nullptr,
+          /*offset_parameter=*/nullptr,
           /*offset_state_table_idx=*/nullptr, /*next_bd_id=*/nullptr);
     } else if (dynOffsetI32) {
       // Only the address moves. Build the descriptor exactly as the static path
