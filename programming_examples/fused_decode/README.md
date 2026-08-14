@@ -57,6 +57,72 @@ per-block affine encoding regardless of model. That is why `llms/qwen25_3b_q4`
 quantizes the fp checkpoint directly rather than reading a bundle -- an affine
 bundle re-quantized into the symmetric device form would quantize twice.
 
+## Decode staircase: one template per KV window (opt-in)
+
+The compiled KV readback streams `ATTN_MAXL` positions **whatever the real context length
+is**. `RB_ROUNDS` (default `ceil(ATTN_L/16)`) feeds the outer size of the readback nd-DMA
+and is a build constant, so a template built at `ATTN_MAXL=2048` moves the whole padded
+cache on every token -- 224 MiB/token on the 3B -- to use 7 MiB of it at L=50. The core
+does skip fully-masked far blocks, but only *after* the DMA has hauled them from DDR:
+masking saves compute, not bandwidth.
+
+`DecodeInstsGen` cannot patch this away. It recovers per-word slopes by diffing two builds,
+and `ceil(L/16)` is a step function whose calibration points (e.g. 2047 and 2048) sit in
+the same step, so the readback count never appears among its L-dependent words.
+
+The staircase builds a template pair **per window** and dispatches each token on the
+smallest one covering the current L. At the same L, an `ATTN_MAXL=64` build and a 2048
+build differ in only 500 of 70,648 instruction words -- all `ATTN_MAXL`-scaled shim-NOC BD
+sizes, strides and offsets.
+
+### Using it
+
+```bash
+# once: builds a pair per window (default 64 128 256 512 1024 2048)
+make -C ../llms/llama32_1b_q4nx compile-decode-windows
+
+DECODE_STAIRCASE=1 make -C ../llms/llama32_1b_q4nx chat     # 1B, gemma3_4b_q4nx
+make -C ../llms/llama32_3b_q4nx chat ... --staircase        # 3B uses a CLI flag
+```
+
+`WINDOWS="64 512 2048"` overrides the set. Off by default: with a single template the
+behaviour and the code path are unchanged, and `staircase=True` against a one-window
+directory is identical to off.
+
+Measured over 300 greedy tokens from an empty cache, token stream **identical** to the
+single-window baseline in every case:
+
+| model | baseline | staircase | |
+|---|---|---|---|
+| `llama32_1b_q4nx` | 53.00 tok/s | 58.61 | **1.106x** |
+| `llama32_3b_q4nx` | 22.20 tok/s | 24.45 | **1.101x** |
+| `gemma3_4b_q4nx` | 15.41 tok/s | 18.55 | **1.204x** |
+
+The saving is `(1 - L/ATTN_MAXL) x` the full readback cost -- ~10% at short context, ~5%
+typical, and 0 once the context fills the window. Gemma gains most: 34 layers at head_dim
+256 is the largest padded cache.
+
+### How a window switch stays cheap
+
+Host-only BOs stay valid across an xclbin/hw_context swap, so every window's kernel is
+created once up front and a switch is kernel selection plus a KV re-space -- **no weight
+re-upload**. The cache is region-major on `ATTN_MAXL*REGION_W`, so changing window re-lays
+each region's live prefix (`respace_kv` in `decode_staircase.py`); the cost is proportional
+to the live positions, and a crossing happens exactly when that prefix is small (~33 ms,
+three crossings per 300 tokens).
+
+Templates are discovered by scanning a directory, and the staircase makes multi-window
+directories normal rather than a mistake, so the build writes a `.decode_windows` manifest
+and `DecodeInstsGen` rejects a directory whose calibrated set does not match it. A stray
+pair fails loudly instead of silently changing which window is selected.
+
+### Not applicable to `fused_decode_qwen.py`
+
+Qwen's decode is a sliding window of exactly `ATTN_L`: `seed_kv` fills it with the *last*
+`ATTN_L` positions, the hand-off asserts `ctx >= ATTN_L`, and the kernel appends at slot
+`ATTN_L-1`. The cache is fully occupied at every step, so there is no padding to stop
+streaming at any window size -- nothing for the staircase to reclaim.
+
 ## Dual-MM2S weight feed (`W_DUAL_CHAN`, on by default)
 
 Batch-1 decode is a weight-streaming problem: every token reads every weight once,
