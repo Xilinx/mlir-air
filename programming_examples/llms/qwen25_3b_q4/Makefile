@@ -107,7 +107,7 @@ help:
 	@echo "Correctness:"
 	@echo "  make verify          CI gate: prefill argmax (12095 ' Paris') + a full fused-decode generation"
 	@echo "  make verify-paris    Fast prefill-only weight-integrity smoke (no decode build)"
-	@echo "  make verify-topk     Top-k token-set gate vs HF bf16 (informational; 2/5 prompts pass today)"
+	@echo "  make verify-topk     Top-k token-set gate vs HF bf16 (informational; 4/5 prompts pass today)"
 	@echo "  make verify-topk-full  Same over every prompt in verify_prompts.txt"
 	@echo "  make diagnosis       Single-prompt lens through the shared runner (informational)"
 	@echo "  make profile         Perf capture (prefill TTFT + decode tok/s) for bench/extract_perf.py"
@@ -206,8 +206,10 @@ weights:
 # WHY `verify` IS NOT THE TOP-K GATE HERE (it is for the Llama Q4NX examples).
 # The shared top-k gate demands that, at the first token where NPU and HF bf16
 # disagree, each side's pick is in the other's top-5. Measured on this design:
-# 2/5 prompts pass. The decode itself is sound -- `make gen` produces "the city.
-# Paris. The tower is called the Eiffel Tower, after" -- but greedy runs of a
+# 4/5 prompts pass (2/5 before the decode grew a real KV cache; the head of a
+# 32+ token prompt used to slide out of context). The decode itself is sound --
+# `make gen` produces "the city. It is called the Eiffel Tower, and it was
+# built" -- but greedy runs of a
 # Q4_0 36-layer model and a bf16 reference diverge early on open-ended
 # continuations, and near-ties there fall outside top-5. Gating CI on that would
 # be red, and loosening k or hand-picking prompts until it passed would make the
