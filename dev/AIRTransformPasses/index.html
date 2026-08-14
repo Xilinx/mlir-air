@@ -3630,23 +3630,26 @@ must admit every id that demux keys on, or they are filtered out mid-route.
 Those chains are plain SSA -- a get lands a memref, a put on the next
 channel sends it onward -- so the id-set demand propagates backwards over
 them to a fixpoint.</p>
-<p>It also checks the two spellings of the ids against each other. Mark the
-header-writing call:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>func.call @proj_qmm_flush_hdr(%acc, %buf, %id) {
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  air.pkt_header_channel = @outA, air.pkt_header_operand = 2 : i32
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>} : (memref&lt;32xf32, 2&gt;, memref&lt;48xbf16, 2&gt;, i32) -&gt; ()
+<p>It also WRITES the routing header, for any put that names its destination:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>air.channel.put @outA[%c0, %c0] (%buf[%c14] [%c66] [%c1]) dest(%d)
 </code></pre></div>
-<p>and the ids reaching that operand are compared with the channel's
-<code>packet_ids</code>. A proven disagreement is an error: the switchbox has no rule
-for an unrouted id, so it drops the packet and the design hangs. When either
-side is not statically known the pass stays silent.</p>
+<p><code>dest</code> is the index, along the broadcast dimension, of the consumer this
+packet is for -- the same index the matching get sits at. The pass maps it
+through the ids it allocated and stores the result at <code>offsets[0]</code>, which is
+where the header has to be: the switchbox reads the first word of what
+arrives, and the DMA sends from <code>offsets[0]</code>.</p>
+<p>That replaces a hand-written kernel call taking the id as an argument, with
+the same ids also spelled on the channel -- two spellings, nothing linking
+them, and a silent routing hang when they disagreed.</p>
 <p>Runs in the same early slot as air-annotate-refeed and
 air-annotate-append-barrier, and for the same reason: read the shape the
-front end wrote, before another pass rewrites the channel ops.</p>
+front end wrote, before another pass rewrites the channel ops. Header
+emission is the exception and runs in a second slot -- see <code>emit-headers</code>.</p>
 <h4 id="options_1">Options<a class="headerlink" href="#options_1" title="Permanent link">&para;</a></h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>-report : Emit a remark per packet channel describing its classification.
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>-strict : Fail when the inference disagrees with a channel&#39;s existing packet_ids (default: warn).
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>-assign : Write derived packet_ids onto channels that have none.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>-report       : Emit a remark per packet channel describing its classification.
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>-strict       : Fail when the inference disagrees with a channel&#39;s existing packet_ids (default: warn).
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>-assign       : Write derived packet_ids onto channels that have none.
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>-emit-headers : Write the routing header into the payload of every put that names a `dest`, and drop the operand. Turn this off in the early slot when a later slot will do it: the store has to share a lock section with the payload write, so it must be emitted once the air.execute regions exist (after air-dependency).
 </code></pre></div>
 <h3 id="-air-annotate-refeed"><code>-air-annotate-refeed</code><a class="headerlink" href="#-air-annotate-refeed" title="Permanent link">&para;</a></h3>
 <p><em>Derive air.refeed_count from a re-feed loop's trip count</em></p>
