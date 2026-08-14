@@ -6350,10 +6350,11 @@ public:
       SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeat_counts =
           air::getRepeatCounts(memcpy_ops);
 
-      // Note: we designate each unique repeat value in repeat_counts map with a
-      // new BD task. If there is only one repeat value for all memcpy ops
-      // associated to the channel, then there is no need to do repeat count; we
-      // generate BDs in infinite loop mode instead.
+      // Note: each entry in repeat_counts is one BD task, in program order. If
+      // the whole channel collapses to a single entry -- every memcpy op on it
+      // repeating the same number of times, with nothing between them to split
+      // the run -- there is no repeat count to program and we generate BDs in
+      // infinite loop mode instead.
       bool infiniteBDLoopMode = repeat_counts.size() == 1;
 
       unsigned taskId = 0;

@@ -243,7 +243,7 @@ DEMUX = list(dict.fromkeys(_DST))  # ordinal order: ["rope", "rms", "glu"]
 NDEST = len(DEMUX)
 # Phase -> DESTINATION ORDINAL. This is what the kernel stamps now; the packet
 # id on the wire is allocated by air-annotate-packet-ids and substituted into
-# these constants. The ordinal is the same index the receiving gets use
+# these constants. The ordinal is the same index the receiving gets sit at
 # (`indices=[0, d]`), so there is only one numbering to keep straight.
 DEST = [DEMUX.index(d) for d in _DST]
 # egress rounds per dest (id): rope=QKV(5); rms=oproj(4)+down(4)=8; glu=gateup(44).
@@ -686,9 +686,12 @@ def build_module():
         else:
             channel_decl("inW", size=[NCX])  # host -> per-col W memtile
         channel_decl("wL2ToL1", size=[NCX, NCY])  # W memtile -> col cores
-        # proj core egress is a PACKET flow (the reference: packet_flow(1/4/8) tile_C_r -> mem_C_1,
-        # keep_pkt_header). The kernel-written id (flush_hdr @y+14) rides the packet so the
-        # hub can demux QKV(1)/oproj+down(4)/gateup(8) -> rope/rms/glu.
+        # proj core egress is a PACKET flow (the reference: packet_flow tile_C_r -> mem_C_1,
+        # keep_pkt_header). A routing header at y+14 rides the packet so the hub can demux
+        # QKV/oproj+down/gateup -> rope/rms/glu. The design names the DESTINATION on the put
+        # (dest=...); air-annotate-packet-ids allocates the id and stores the header. No
+        # numeric id appears here -- the reference's 1/4/8 were the pinned spelling this
+        # replaced.
         _outA = channel_decl("outA", size=[NCX, NCY], channel_type="npu_dma_packet")
         _outA.operation.attributes["keep_pkt_header"] = UnitAttr.get()
         # No packet_ids here. This hop is single-destination: air-to-aie hands its

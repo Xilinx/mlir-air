@@ -73,7 +73,7 @@
 #   into the header (proj_qmm_flush_hdr -> id@14, its row@16) and emits a 2-row
 #   packet (offset 14, size 66); the partner writes its row (proj_qmm_flush_row
 #   i=1 -> @48, no header) cross-tile into the SAME lead buffer. Output flows are
-#   PACKET channels carrying the kernel-written id; the group memtile does the
+#   PACKET channels carrying the compiler-written routing header; the group memtile does the
 #   asymmetric one-header gather (258 = hdr + 4*64), the main memtile a 2-slot
 #   daisy chain (514), and ONE egress demuxes by id (id1 = QKV).
 #
@@ -542,7 +542,7 @@ J2P = MODEL["J2P"]  # col-block pairs (2*J2 = NBJ = K/COL_BLOCK)
 # goes. Repeats are meaningful -- down shares o-proj's consumer.
 #
 # The ordinal a name maps to is its position in first-appearance order, which is
-# also the @outY broadcast index the receiving gets use. Naming the consumer and
+# also the @outY broadcast index the receiving gets sit at. Naming the consumer and
 # deriving the index keeps the routing number out of the source entirely.
 DEST_NAMES = MODEL["DEST"]
 DEMUX = list(dict.fromkeys(DEST_NAMES))  # ordinal order: ["rope", "rms", "glu"]
@@ -553,7 +553,7 @@ NBJ_PH = [2 * J2P[p] for p in range(NPH)]  # per-phase col-blocks: [8,8,8,32]
 KPH = [NBJ_PH[p] * COL_BLOCK for p in range(NPH)]  # per-phase K: [2048,2048,2048,8192]
 
 # Output wire layout (reproducer y_0_2_0 memref<80>, group 258, main 514).
-HDR = 2  # wire header words (kernel writes id@elem14)
+HDR = 2  # wire header words (the compiler stores the routing id at elem 14)
 PAIR_ROWS = MODEL["PAIR_ROWS"]  # 2 = lead/partner shared-L1 pairing (FLM llama)
 PAIR_PAY = PAIR_ROWS * ROW_BLOCK  # 64
 GRP_ROWS = HDR + LEADS_PER_GRP * PAIR_PAY  # 258
@@ -669,7 +669,7 @@ UNI_WAVE_HI = int(_os.environ.get("UNI_WAVE_HI", str(UNI_WAVES)))
 ROUNDS_PER_PH = [I2P[p] * PAIR_ROWS for p in range(NPH)]  # y0,y1 per v1 -> 2*I2
 N_ROUNDS = sum(ROUNDS_PER_PH)  # total egress rounds (phase0 6 + phase1 4 = 10)
 # id-demux egress: the main MT MM2S emits each round's assembled packet carrying
-# the kernel-written ordinal; the switchbox routes the id allocated for dest p
+# the destination the put names; the switchbox routes the id allocated for dest p
 # (reproducer mem_1_1 DMA5: id1->tile_2_3, id4->tile_2_2). Rounds per dest =
 # sum of its phases' rounds (here 1:1 phase<->id so [6, 4]).
 ROUNDS_PER_DEST = [
@@ -1153,7 +1153,7 @@ def build_module():
         _toMain = channel_decl("toMain", size=[N_GRP], channel_type="npu_dma_packet")
         _toMain.operation.attributes["keep_pkt_header"] = UnitAttr.get()
         # id-demux egress (reproducer mem_1_1 DMA5): the main MT emits each round's
-        # assembled 514 packet (carrying the kernel-written id) on ONE MM2S; the
+        # assembled 514 packet (carrying the routing header) on ONE MM2S; the
         # switchbox routes the id allocated for dest p (broadcast_shape=[1,NDEST]).
         # keep_pkt_header keeps each dest's header so the host can strip it.
         _outY = Channel("outY", size=[1, 1], broadcast_shape=[1, NDEST])
@@ -1918,7 +1918,7 @@ def build_module():
                     # Python-unrolled, which overflows the 48-BD memtile limit). Per
                     # round: each group MT gathers its 4 leads' packets (asym, one
                     # header @0); the main MT daisy-chains the 2 groups (514); the
-                    # egress (outY, packet) is demuxed by the kernel-written id and
+                    # egress (outY, packet) is demuxed by the routing header and
                     # relayed (rb) to the shim drain. NPH=1 -> all rounds id1 -> dest0;
                     # the put+get are interleaved in the same iteration so they
                     # pipeline across tiles (separate put-loop/get-loop would deadlock).
@@ -2859,7 +2859,7 @@ def build_module():
                             i2c = [idx(v) for v in I2P]
                             j2c = [idx(v) for v in J2P]
                             # Stamp the DESTINATION ORDINAL, not a packet id.
-                            # DEST[ph] is the same index the receiving gets use
+                            # DEST[ph] is the same index the receiving gets sit at
                             # (`indices=[0, p]`); air-annotate-packet-ids
                             # allocates the ids and rewrites these constants to
                             # match, so the wire number lives in exactly one
@@ -2970,7 +2970,7 @@ def build_module():
                             i2c = [idx(v) for v in I2P]
                             j2c = [idx(v) for v in J2P]
                             # Stamp the DESTINATION ORDINAL, not a packet id.
-                            # DEST[ph] is the same index the receiving gets use
+                            # DEST[ph] is the same index the receiving gets sit at
                             # (`indices=[0, p]`); air-annotate-packet-ids
                             # allocates the ids and rewrites these constants to
                             # match, so the wire number lives in exactly one
