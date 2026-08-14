@@ -19,6 +19,7 @@
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRTilingUtils.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/PacketRoutingDomain.h"
 #include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -3537,204 +3538,6 @@ namespace {
 //===--------------------------------------------------------------------===//
 // air-annotate-packet-ids helpers
 //===--------------------------------------------------------------------===//
-//===----------------------------------------------------------------------===//
-// Static volume
-//===----------------------------------------------------------------------===//
-
-/// Volume of a single channel op's access pattern, in elements: the product of
-/// its `sizes` when they are all static, else the whole memref. nullopt when
-/// any size is dynamic -- an unknown volume must never be silently treated as
-/// zero, since that would make a broadcast look like a partition.
-static std::optional<int64_t> accessVolume(air::ChannelInterface chanOp) {
-  SmallVector<OpFoldResult> sizes = chanOp.getMixedSizes();
-  if (sizes.empty()) {
-    auto memrefTy = dyn_cast<MemRefType>(chanOp.getMemref().getType());
-    if (!memrefTy || !memrefTy.hasStaticShape())
-      return std::nullopt;
-    return (int64_t)air::getTensorVolume(memrefTy);
-  }
-  int64_t vol = 1;
-  for (OpFoldResult s : sizes) {
-    std::optional<int64_t> c = getConstantIntValue(s);
-    if (!c)
-      return std::nullopt;
-    vol *= *c;
-  }
-  return vol;
-}
-
-/// Volume this op contributes across every execution of it, i.e. its access
-/// volume scaled by the trip counts of the loops it sits in. nullopt if either
-/// part is not static.
-static std::optional<int64_t> totalVolume(air::ChannelInterface chanOp,
-                                          Operation *scopeRoot) {
-  std::optional<int64_t> vol = accessVolume(chanOp);
-  if (!vol)
-    return std::nullopt;
-  std::optional<int64_t> trips =
-      air::getStaticTripCountInRange(chanOp.getOperation(), scopeRoot);
-  if (!trips)
-    return std::nullopt;
-  return *vol * *trips;
-}
-
-//===----------------------------------------------------------------------===//
-// Channel facts
-//===----------------------------------------------------------------------===//
-
-/// A destination is the coordinate along the channel's BROADCAST dimension.
-///
-/// Not the whole index tuple: air-to-aie fans out along exactly one dimension
-/// (specializeBroadcastShape keeps `getBroadcastDimension()` at its broadcast
-/// extent and pins every other dimension to 1), so the remaining indices select
-/// a bundle instance, not a destination. Keying on the full tuple would
-/// multiply the destination count by the bundle size -- e.g. a `[NCX,1]` bundle
-/// with `broadcast_shape=[NCX,NDEST]` would look like NCX*NDEST destinations
-/// and misclassify the channel.
-using DestKey = int64_t;
-
-static std::optional<DestKey> destKeyOf(air::ChannelInterface chanOp,
-                                        int broadcastDim) {
-  OperandRange indices = chanOp.getIndices();
-  if (broadcastDim < 0 || broadcastDim >= (int)indices.size())
-    return std::nullopt;
-  return getConstantIntValue(indices[broadcastDim]);
-}
-
-static bool isPacketChannel(air::ChannelOp chanOp) {
-  auto ty = chanOp->getAttrOfType<StringAttr>("channel_type");
-  return ty && ty.getValue() == "npu_dma_packet";
-}
-
-enum class Shape {
-  Broadcast,  // every dest receives every packet -> 1 id
-  Demux,      // dests partition the stream -> one id per dest
-  SingleDest, // nothing to decide
-  Unknown,    // not statically classifiable; say so, never guess
-};
-
-static StringRef shapeName(Shape s) {
-  switch (s) {
-  case Shape::Broadcast:
-    return "broadcast";
-  case Shape::Demux:
-    return "demux";
-  case Shape::SingleDest:
-    return "single-destination";
-  case Shape::Unknown:
-    return "unknown";
-  }
-  return "unknown";
-}
-
-struct Classification {
-  Shape shape = Shape::Unknown;
-  unsigned numDests = 0;
-  std::string reason;
-};
-
-/// Classify one packet channel from its put/get volumes.
-static Classification classify(air::ChannelOp chanOp,
-                               ArrayRef<air::ChannelInterface> puts,
-                               ArrayRef<air::ChannelInterface> gets,
-                               Operation *scopeRoot) {
-  Classification c;
-
-  // A channel's index tuple means one of two different things, and conflating
-  // them turns every bundle into a spurious demux:
-  //
-  //   air.channel @toHub [4]                        -- BUNDLE: four parallel,
-  //                                                    independent flows
-  //   air.channel @outY [1,1] {broadcast_shape=[1,2]} -- one flow, two DESTS
-  //
-  // Only the broadcast dimension is a fan-out that a packet id can select
-  // between. Without broadcast_shape each index is its own single-destination
-  // flow, however many of them there are.
-  if (!chanOp.isBroadcast()) {
-    c.shape = Shape::SingleDest;
-    c.numDests = 1;
-    return c;
-  }
-
-  // Group the gets by destination (a coordinate along the broadcast dimension).
-  int broadcastDim = chanOp.getBroadcastDimension();
-  if (broadcastDim < 0) {
-    c.reason = "broadcast channel with no resolvable broadcast dimension";
-    return c;
-  }
-  llvm::MapVector<DestKey, int64_t> volByDest;
-  for (air::ChannelInterface g : gets) {
-    std::optional<DestKey> key = destKeyOf(g, broadcastDim);
-    if (!key) {
-      c.reason = "a get has a non-constant index on the broadcast dimension";
-      return c;
-    }
-    std::optional<int64_t> v = totalVolume(g, scopeRoot);
-    if (!v) {
-      c.reason = "a get has a non-static volume";
-      return c;
-    }
-    volByDest[*key] += *v;
-  }
-  c.numDests = volByDest.size();
-
-  if (volByDest.empty()) {
-    c.reason = "no gets";
-    return c;
-  }
-  if (volByDest.size() == 1) {
-    c.shape = Shape::SingleDest;
-    return c;
-  }
-
-  int64_t putVol = 0;
-  for (air::ChannelInterface p : puts) {
-    std::optional<int64_t> v = totalVolume(p, scopeRoot);
-    if (!v) {
-      c.reason = "a put has a non-static volume";
-      return c;
-    }
-    putVol += *v;
-  }
-  if (putVol == 0) {
-    c.reason = "no puts";
-    return c;
-  }
-
-  // Replication: every destination sees the whole stream.
-  bool allFull =
-      llvm::all_of(volByDest, [&](auto &kv) { return kv.second == putVol; });
-  if (allFull) {
-    c.shape = Shape::Broadcast;
-    return c;
-  }
-
-  // Partition: the destinations' volumes sum to the stream. Header ownership
-  // is what makes such a split physically possible, so require it rather than
-  // inferring a demux from arithmetic alone.
-  int64_t sum = 0;
-  for (auto &kv : volByDest)
-    sum += kv.second;
-
-  // The producer side of a header-preserving hop carries a header word per
-  // packet that the destination may strip, so the received total can fall
-  // short of the sent total by that much. Accept a partition that accounts for
-  // at least the payload and never exceeds what was sent.
-  if (sum <= putVol && sum > 0) {
-    if (!air::channelKernelWritesHeader(chanOp)) {
-      c.reason = "destination volumes partition the stream, but the channel is "
-                 "not source-stamped, so per-packet routing is impossible";
-      return c;
-    }
-    c.shape = Shape::Demux;
-    return c;
-  }
-
-  c.reason = "destination volumes neither replicate nor partition the put "
-             "volume (sent " +
-             std::to_string(putVol) + ", received " + std::to_string(sum) + ")";
-  return c;
-}
 
 //===----------------------------------------------------------------------===//
 // Id allocation and header emission (assign mode)
@@ -3766,255 +3569,88 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
 
   ModuleOp mod = getOperation();
 
-  // Index the put/get sites by channel symbol.
-  llvm::MapVector<StringRef, SmallVector<air::ChannelInterface>> puts, gets;
-  mod.walk([&](air::ChannelInterface op) {
-    if (isa<air::ChannelPutOp>(op.getOperation()))
-      puts[op.getChanName()].push_back(op);
-    else if (isa<air::ChannelGetOp>(op.getOperation()))
-      gets[op.getChanName()].push_back(op);
-  });
+  // Which packet channels share a routing header, and what ids that header can
+  // take. Everything below reads this rather than re-deriving the relation:
+  // four copies of "walk the hops" is how the pinned ids and the ids the kernel
+  // stamped drifted apart in the first place.
+  air::PacketRoutingDomainAnalysis domains(mod);
 
-  // Phase 1: local classification, and the id count it implies on its own.
-  llvm::MapVector<StringRef, Classification> shapeOf;
-  llvm::MapVector<StringRef, unsigned> localCardinality;
-  SmallVector<air::ChannelOp> packetChans;
-  mod.walk([&](air::ChannelOp chanOp) {
-    if (!isPacketChannel(chanOp))
-      return;
-    packetChans.push_back(chanOp);
-    StringRef name = chanOp.getSymName();
-    Classification c =
-        classify(chanOp, puts[name], gets[name], mod.getOperation());
-    shapeOf[name] = c;
-    localCardinality[name] = (c.shape == Shape::Demux)     ? c.numDests
-                             : (c.shape == Shape::Unknown) ? 0
-                                                           : 1;
-  });
+  if (this->report)
+    domains.emitReportRemarks();
 
-  // Phase 2: propagate demand backwards along header-preserving forwarding
-  // chains.
-  //
-  // A hop like @outA or @toHub is single-destination -- locally it needs one
-  // id. But it FORWARDS packets that a downstream demux will route, and it
-  // preserves their headers, so its switchbox must admit every id the demux
-  // will eventually key on. Miss this and the extra ids are filtered out
-  // mid-route and the demux never fires.
-  //
-  // The chain is plain SSA: a get lands the payload in a memref, and a put on
-  // the next channel sends that same memref onward.
-  llvm::DenseMap<Value, SmallVector<StringRef>> putters;
-  for (auto &[name, ops] : puts)
-    for (air::ChannelInterface p : ops)
-      putters[p.getMemref()].push_back(name);
-
-  llvm::MapVector<StringRef, SmallVector<StringRef>> feeds; // C -> successors
-  for (auto &[name, ops] : gets)
-    for (air::ChannelInterface g : ops)
-      for (StringRef succ : putters.lookup(g.getMemref()))
-        if (succ != name)
-          feeds[name].push_back(succ);
-
-  llvm::MapVector<StringRef, unsigned> cardinality = localCardinality;
-  llvm::DenseMap<StringRef, air::ChannelOp> chanByName;
-  for (air::ChannelOp c : packetChans)
-    chanByName[c.getSymName()] = c;
-
-  // Monotone fixpoint (counts only grow), bounded by the chain length.
-  for (unsigned iter = 0, e = packetChans.size() + 1; iter < e; ++iter) {
-    bool changed = false;
-    for (air::ChannelOp chanOp : packetChans) {
-      StringRef name = chanOp.getSymName();
-      // Only a header-preserving hop forwards someone else's routing id; a
-      // DMA-stamped one re-stamps and starts a fresh routing domain.
-      if (!air::channelKernelWritesHeader(chanOp))
-        continue;
-      unsigned want = cardinality[name];
-      for (StringRef succ : feeds[name])
-        want = std::max(want, cardinality.lookup(succ));
-      if (want != cardinality[name]) {
-        cardinality[name] = want;
-        changed = true;
-      }
-    }
-    if (!changed)
-      break;
+  // A structural fault means the switchboxes will not agree on which ids exist,
+  // which on device is a timeout rather than a wrong answer. Say so at compile
+  // time -- but only when actually assigning. Without `assign` this pass is a
+  // pure reporter, and a reduced module that stops short of the demux's
+  // upstream is describing a classification, not proposing a design.
+  bool structurallyValid = true;
+  if (this->assign) {
+    structurallyValid = succeeded(domains.verify());
+    if (!structurallyValid)
+      signalPassFailure();
   }
 
+  // Cross-check against what a working design already pins: a disagreement
+  // means the model is wrong, so surface it loudly rather than quietly
+  // preferring one answer.
   bool anyMismatch = false;
-  for (air::ChannelOp chanOp : packetChans) {
-    StringRef name = chanOp.getSymName();
-    Classification c = shapeOf[name];
-
-    LLVM_DEBUG(llvm::dbgs()
-               << "air-annotate-packet-ids: @" << name << " -> "
-               << shapeName(c.shape) << " (" << c.numDests << " dest(s))"
-               << (c.reason.empty() ? "" : " : " + c.reason) << "\n");
-
-    unsigned inferredIDs = cardinality[name];
-    bool viaChain = inferredIDs > localCardinality[name];
+  for (air::ChannelOp chanOp : domains.getPacketChannels()) {
     auto pinned = pinnedIDsOf(chanOp);
-
-    if (this->report) {
-      InFlightDiagnostic note = chanOp->emitRemark();
-      note << "packet channel @" << name << ": " << shapeName(c.shape)
-           << " over " << c.numDests << " destination(s)";
-      if (inferredIDs)
-        note << "; infers " << inferredIDs << " routing id(s)"
-             << (viaChain ? " (forwarded from a downstream demux)" : "");
-      if (pinned)
-        note << "; pins " << pinned->size();
-      if (!c.reason.empty())
-        note << " [" << c.reason << "]";
-    }
-
-    // Cross-check mode: the inference must agree with what a working design
-    // already pins. A disagreement means the model is wrong -- surface it
-    // loudly rather than quietly preferring one answer.
-    if (pinned && inferredIDs && pinned->size() != inferredIDs) {
-      chanOp->emitWarning()
-          << "air-annotate-packet-ids disagrees with the packet_ids on @"
-          << name << ": inferred " << inferredIDs << " id(s) from a "
-          << shapeName(c.shape) << " over " << c.numDests
-          << " destination(s), but the channel pins " << pinned->size();
-      anyMismatch = true;
-    }
+    unsigned inferredIDs = domains.getInferredIdCount(chanOp);
+    if (!pinned || !inferredIDs || pinned->size() == inferredIDs)
+      continue;
+    const air::PacketChannelFacts &f = domains.getFacts(chanOp);
+    chanOp->emitWarning()
+        << "air-annotate-packet-ids disagrees with the packet_ids on @"
+        << chanOp.getSymName() << ": inferred " << inferredIDs
+        << " id(s) from a " << air::getPacketFanoutName(f.fanout) << " over "
+        << f.numDests << " destination(s), but the channel pins "
+        << pinned->size();
+    anyMismatch = true;
   }
 
   if (anyMismatch && this->strict)
     signalPassFailure();
 
-  // Assignment is opt-in; the contract check below is not, so this is a
-  // scope rather than an early return.
-  if (this->assign) {
+  // Assignment is opt-in; the checks above are not, so this is a scope rather
+  // than an early return.
+  if (this->assign && structurallyValid) {
 
-    // Assign mode owns the routing domain: which ids exist, which destination
-    // each one selects, and the constant the kernel stamps to pick one.
-    //
-    // Two earlier attempts at this broke llama-3b on device, and the shape of
-    // both failures is what constrains the design here.
-    //
-    // Inventing ids from the bottom of the space renumbered every other packet
-    // channel, because air-to-aie hands out the lowest free id and a pinned id
-    // is pre-claimed. Allocating DOWNWARD from kMaxPacketID instead leaves the
-    // low end untouched, so every other channel keeps the id it had and a tuned
-    // floorplan is not perturbed.
-    //
-    // Relabeling the kernel's constants POSITIONALLY assumed the order of the
-    // switch arms matched the declared list; for llama that swapped 1 and 4 and
-    // sent rope's packets to rms. The rewrite below is by VALUE: the front end
-    // stamps a destination ORDINAL, and ordinal k becomes ids[k]. Ordinals are
-    // what the receiving gets already index on (`indices=[0, p]`), so there is
-    // no second convention to keep in sync and no order to get wrong. An
-    // ordinal repeated across phases maps to the same id by construction.
     OpBuilder builder(mod.getContext());
 
-    // Channels whose ids were allocated here rather than declared by the front
-    // end. Only these get their kernel constants rewritten -- a design that
-    // still pins its ids is stamping real ids already.
-    llvm::DenseSet<StringRef> derived;
-
-    // Allocate ONE id list per routing domain, not per channel.
+    // Write each domain's id list onto every channel in it.
     //
-    // A forwarding chain carries the same packets end to end: the id the core
-    // stamps at @outA is the id @toMain must admit and @outY must route on.
-    // Handing each channel its own fresh triple would compile, and then hang --
-    // every hop would filter out ids it had never heard of. So the demux owns
-    // the allocation and every header-preserving hop that feeds it inherits
-    // that exact list.
-    // name -> the id list its packet_flows should carry.
-    llvm::MapVector<StringRef, SmallVector<int64_t>> idsFor;
-
-    // Seed the propagation from channels that ALREADY declare their ids.
+    // The list belongs to the DOMAIN: the id a core stamps at the originating
+    // hop is the id every hop in between must admit and the demux must route
+    // on. Handing each channel its own fresh triple would compile, and then
+    // hang -- every hop would filter out ids it had never heard of.
     //
-    // A demux's id list is ordered (air-to-aie routes destination i with
-    // packet_ids[i]) and that order is not derivable, so designs declare it.
-    // The hops that FEED that demux are a different matter: each is
-    // single-destination, and air-to-aie returns their whole list for the one
-    // buffer (`numS2MMAllocs == 1 -> return pinned`), so their order carries no
-    // meaning and their SET is exactly the demux's. Those are derivable, and
-    // seeding from the declared list is what lets them be dropped from the
-    // front end.
-    llvm::DenseSet<StringRef> alreadyDeclared;
-    for (air::ChannelOp c : packetChans) {
-      auto p = pinnedIDsOf(c);
-      if (!p)
-        continue;
-      alreadyDeclared.insert(c.getSymName());
-      SmallVector<int64_t> declared;
-      for (Attribute a : c.getPacketIDs())
-        declared.push_back(cast<IntegerAttr>(a).getInt());
-      idsFor[c.getSymName()] = declared;
-    }
-
-    // Allocate for a demux that declares nothing.
-    //
-    // The count comes from the volume classification (dests partition the
-    // stream), and the ids themselves are free -- any distinct set routes, as
-    // long as the kernel stamps the one matching the destination it means. So
-    // take them from the top of the space, where nothing else is looking.
-    for (air::ChannelOp c : packetChans) {
-      StringRef name = c.getSymName();
-      if (pinnedIDsOf(c) || !air::channelKernelWritesHeader(c))
-        continue;
-      auto shapeIt = shapeOf.find(name);
-      if (shapeIt == shapeOf.end() || shapeIt->second.shape != Shape::Demux)
-        continue;
-      unsigned n = shapeIt->second.numDests;
-      if (n < 2 || n > (unsigned)air::kMaxPacketID + 1)
-        continue;
-      SmallVector<int64_t> ids;
-      for (unsigned d = 0; d < n; ++d)
-        ids.push_back(air::kMaxPacketID - d);
-      idsFor[name] = ids;
-      derived.insert(name);
-    }
-
-    // Push each demux's list back up its header-preserving feeders.
-    for (unsigned iter = 0, e = packetChans.size() + 1; iter < e; ++iter) {
-      bool changed = false;
-      for (air::ChannelOp chanOp : packetChans) {
-        StringRef name = chanOp.getSymName();
-        if (pinnedIDsOf(chanOp) || idsFor.count(name) ||
-            !air::channelKernelWritesHeader(chanOp))
-          continue;
-        auto feedsIt = feeds.find(name);
-        if (feedsIt == feeds.end())
-          continue;
-        for (StringRef succ : feedsIt->second) {
-          auto it = idsFor.find(succ);
-          if (it == idsFor.end())
-            continue;
-          // Copy BEFORE inserting: idsFor[name] can reallocate the MapVector
-          // and leave `it` dangling, which silently yields an empty list.
-          SmallVector<int64_t> inherited = it->second;
-          bool succDerived = derived.count(succ);
-          idsFor[name] = inherited;
-          // A feeder inherits its successor's provenance too: if the demux's
-          // ids were allocated here, the core stamping into this hop is
-          // stamping ordinals and needs the same rewrite.
-          if (succDerived) {
-            derived.insert(name);
-          }
-          changed = true;
-          break;
-        }
-      }
-      if (!changed)
-        break;
-    }
-
-    for (air::ChannelOp chanOp : packetChans) {
-      auto it = idsFor.find(chanOp.getSymName());
-      if (it == idsFor.end() || alreadyDeclared.count(chanOp.getSymName()))
+    // A demux's list is ORDERED (air-to-aie routes destination i with
+    // packet_ids[i]) and that order is not derivable, so a design may declare
+    // it; those are left exactly as written. The hops that feed it are a
+    // different matter: each is single-destination, and air-to-aie returns the
+    // whole list for the one buffer, so their order carries no meaning and
+    // their SET is just the demux's. Those are derivable, which is what lets
+    // them be dropped from the front end.
+    for (const air::PacketRoutingDomain &domRef : domains.getDomains()) {
+      air::PacketRoutingDomain dom = domRef;
+      if (dom.ids.empty())
         continue;
       SmallVector<Attribute> attrs;
-      for (int64_t id : it->second)
+      for (int64_t id : dom.ids)
         attrs.push_back(builder.getI32IntegerAttr(id));
-      chanOp->setAttr(air::attrs::PacketIDs, builder.getArrayAttr(attrs));
-      LLVM_DEBUG(llvm::dbgs()
-                 << "air-annotate-packet-ids: assigned @" << chanOp.getSymName()
-                 << " " << it->second.size() << " id(s)\n");
+      ArrayAttr idsAttr = builder.getArrayAttr(attrs);
+      for (air::ChannelOp member : dom.hops) {
+        if (member.getPacketIDs())
+          continue;
+        member->setAttr(air::attrs::PacketIDs, idsAttr);
+      }
+      if (!dom.idsDeclared)
+        dom.demux->setAttr(air::attrs::PacketIDs, idsAttr);
+      LLVM_DEBUG(llvm::dbgs() << "air-annotate-packet-ids: domain on @"
+                              << dom.demux.getSymName() << " -> "
+                              << dom.ids.size() << " id(s) across "
+                              << (dom.hops.size() + 1) << " channel(s)\n");
     }
 
     // Emit the routing header ourselves, from the put.
@@ -4209,29 +3845,20 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
     // turns emission off the first time and on the second, after
     // air-dependency; allocation is idempotent (the second run reads back the
     // ids it wrote and treats them as a pin).
+    // Every originator was already checked by domains.verify(), which is what
+    // guarantees the lookup below finds a demux with a usable id list. That
+    // check used to live here, and could only name the put's own channel --
+    // reporting "@outA is not a demux" when @outA is a hop and the real fault
+    // was a severed link two channels downstream.
     bool emitFailed = false;
-    mod.walk([&](air::ChannelPutOp put) {
-      if (!emitHeaders)
-        return;
-      if (!put.getDest())
-        return;
-      auto chanOp = air::getChannelDeclarationThroughSymbol(put);
-      if (!chanOp) {
-        put.emitOpError("dest names a channel that does not resolve");
-        emitFailed = true;
-        return;
+    if (emitHeaders) {
+      for (const air::PacketRoutingDomain &domRef : domains.getDomains()) {
+        air::PacketRoutingDomain dom = domRef;
+        for (air::ChannelPutOp put : dom.originators)
+          if (failed(emitHeaderStore(put, dom.ids)))
+            emitFailed = true;
       }
-      auto it = idsFor.find(chanOp.getSymName());
-      if (it == idsFor.end() || it->second.size() < 2) {
-        put.emitOpError()
-            << "selects a destination on '" << chanOp.getSymName()
-            << "', which is not a packet demux with more than one destination";
-        emitFailed = true;
-        return;
-      }
-      if (failed(emitHeaderStore(put, it->second)))
-        emitFailed = true;
-    });
+    }
     if (emitFailed)
       signalPassFailure();
 

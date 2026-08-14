@@ -172,7 +172,7 @@ namespace air {
 // Single source of truth. Both air-to-aie (which must not stamp such a BD) and
 // air-annotate-packet-ids (which uses it to gate demux classification) read
 // this; two copies drifted apart once already.
-bool channelKernelWritesHeader(ChannelOp chanOp);
+bool channelSourceWritesHeader(ChannelOp chanOp);
 } // namespace air
 } // namespace xilinx
 

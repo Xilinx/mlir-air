@@ -65,15 +65,18 @@ module {
 // packet flow, so adding a demux does not renumber the rest of the design --
 // claiming the low end instead is what broke llama-3b on device.
 // CHECK: air.channel @unmarked {{.*}}packet_ids = [31 : i32, 30 : i32]
+// The source is L1: a compute core, which is the only thing that can have
+// CHOSEN the destination and written the header. A demux fed from L2 with
+// nothing upstream of it is rejected -- see no_header_source.mlir.
 module {
   air.channel @unmarked [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet", keep_pkt_header}
   func.func @f() {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %src = memref.alloc() : memref<1024xbf16, 1 : i32>
+    %src = memref.alloc() : memref<1024xbf16, 2 : i32>
     %d0 = memref.alloc() : memref<512xbf16, 2 : i32>
     %d1 = memref.alloc() : memref<512xbf16, 2 : i32>
-    air.channel.put @unmarked[%c0, %c0] (%src[] [] []) : (memref<1024xbf16, 1 : i32>)
+    air.channel.put @unmarked[%c0, %c0] (%src[] [] []) : (memref<1024xbf16, 2 : i32>)
     air.channel.get @unmarked[%c0, %c0] (%d0[] [] []) : (memref<512xbf16, 2 : i32>)
     air.channel.get @unmarked[%c0, %c1] (%d1[] [] []) : (memref<512xbf16, 2 : i32>)
     return

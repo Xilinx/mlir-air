@@ -700,6 +700,65 @@ air::DmaMemcpyNdOp air::getAIRDmaInBlock(mlir::Block *block) {
   return air::DmaMemcpyNdOp();
 }
 
+void air::collectBufferAliases(Value buffer,
+                               llvm::SmallDenseSet<Value> &aliases) {
+  if (!buffer)
+    return;
+  aliases.insert(buffer);
+  SmallVector<Value> worklist{buffer};
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    for (Operation *user : current.getUsers()) {
+      auto viewOp = dyn_cast_if_present<ViewLikeOpInterface>(user);
+      if (!viewOp)
+        continue;
+      Value result = viewOp->getResult(0);
+      if (aliases.insert(result).second)
+        worklist.push_back(result);
+    }
+  }
+}
+
+Value air::resolveBufferRoot(Value v) {
+  // Bounded rather than while(true): the walk is up an SSA def chain, which is
+  // acyclic, but a malformed hierarchy arg mapping could still cycle. Prefer a
+  // slightly-too-shallow answer to hanging the compiler.
+  for (unsigned step = 0; v && step < 64; ++step) {
+    if (auto view =
+            dyn_cast_if_present<ViewLikeOpInterface>(v.getDefiningOp())) {
+      v = view.getViewSource();
+      continue;
+    }
+    if (auto exec = dyn_cast_if_present<air::ExecuteOp>(v.getDefiningOp())) {
+      // air.execute yields (token, results...); result i of the op is operand i
+      // of the terminator, which has no token.
+      auto res = cast<OpResult>(v);
+      unsigned idx = res.getResultNumber();
+      if (idx == 0)
+        return v; // the async token names no buffer
+      Operation *term = exec.getRegion().front().getTerminator();
+      if (idx - 1 < term->getNumOperands()) {
+        v = term->getOperand(idx - 1);
+        continue;
+      }
+      return v;
+    }
+    if (auto bbArg = dyn_cast<BlockArgument>(v)) {
+      auto hier = dyn_cast_if_present<air::HierarchyInterface>(
+          bbArg.getOwner()->getParentOp());
+      if (hier) {
+        if (Value tied = hier.getTiedKernelOperand(bbArg)) {
+          v = tied;
+          continue;
+        }
+      }
+      return v;
+    }
+    return v;
+  }
+  return v;
+}
+
 // Erase a kernel operand from air.hierarchy op
 void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
   if (index + 1 > op->getNumOperands()) {

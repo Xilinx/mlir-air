@@ -909,28 +909,6 @@ void push_back_if_unique(std::vector<T> &vec, T entry) {
 /// Collect all values that alias the given buffer through view-like operations.
 /// This includes memref.subview, memref.collapse_shape, memref.expand_shape,
 /// memref.reinterpret_cast, etc.
-static void collectBufferAliases(Value buffer,
-                                 llvm::SmallDenseSet<Value> &aliases) {
-  aliases.insert(buffer);
-  SmallVector<Value> worklist;
-  worklist.push_back(buffer);
-
-  while (!worklist.empty()) {
-    Value current = worklist.pop_back_val();
-    for (Operation *user : current.getUsers()) {
-      // Check if this is a view-like op that creates an alias
-      Value result = nullptr;
-      if (auto viewOp = dyn_cast_if_present<ViewLikeOpInterface>(user)) {
-        result = viewOp->getResult(0);
-      }
-      if (result && !aliases.contains(result)) {
-        aliases.insert(result);
-        worklist.push_back(result);
-      }
-    }
-  }
-}
-
 // Forward declaration (defined later): whether `op` executes within its
 // enclosing aie.core given the constant tile-index guards. Used to ignore
 // dead per-core branches (not yet folded) when analyzing shared L1 buffers.
@@ -993,7 +971,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
 
   // Collect all aliases of the shared buffer
   llvm::SmallDenseSet<Value> bufferAliases;
-  collectBufferAliases(sharedBuffer->getResult(0), bufferAliases);
+  air::collectBufferAliases(sharedBuffer->getResult(0), bufferAliases);
 
   for (auto coreOp : coreOps) {
     coreOp.walk([&](Operation *op) {
@@ -1811,7 +1789,7 @@ LogicalResult createAIEModulesAndOutlineCores(
       // owner tile MUST be a DMA-accessor tile, otherwise the DMA references a
       // cross-tile lock and verification fails. Try DMA-accessor tiles first.
       llvm::SmallDenseSet<Value> ownerBufferAliases;
-      collectBufferAliases(memref, ownerBufferAliases);
+      air::collectBufferAliases(memref, ownerBufferAliases);
       auto coreHasDmaAccess = [&](AIE::CoreOp coreOp) {
         return coreOp
             .walk([&](Operation *op) {
@@ -5438,7 +5416,7 @@ public:
     // fallback below could tag it with an arbitrary flow id.
     if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
             memcpyOpIf.getOperation()))
-      if (air::channelKernelWritesHeader(
+      if (air::channelSourceWritesHeader(
               air::getChannelDeclarationThroughSymbol(ci)))
         return success();
 
@@ -6638,7 +6616,7 @@ public:
       // Channels whose kernel writes the routing header itself must NOT be
       // statically stamped: a static pkt_id would prepend a second header word
       // and shift the payload.
-      bool kernelWritesHeader = air::channelKernelWritesHeader(
+      bool kernelWritesHeader = air::channelSourceWritesHeader(
           air::getChannelDeclarationThroughSymbol(chanIfOp));
       auto it = packetIDForChannelName.find(chanIfOp.getChanName().str());
       if (!kernelWritesHeader && it != packetIDForChannelName.end())
