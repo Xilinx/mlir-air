@@ -872,19 +872,42 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // DMA-task path matters: npu.dma_memcpy_nd's dynamic lowering hardwires BD
     // id 0, so a dynamic transfer sharing a shim tile with a task-path one
     // would silently overwrite its descriptor.
-    if (dynLenI32 || dynOffsetI32) {
-      Value lenI32 = dynLenI32, offI32 = dynOffsetI32;
+    if (dynLenI32) {
+      // A runtime length only arises for a transfer this pass has already
+      // checked is one linear run, so the descriptor needs no dimensions --
+      // the length carries the whole extent.
       AIE::DMABDOp::create(
-          rewriter, op.getLoc(), memref, offI32, lenI32,
+          rewriter, op.getLoc(), memref, dynOffsetI32, dynLenI32,
           /*static_offset=*/
-          offI32 ? nullptr : rewriter.getI32IntegerAttr(totalOffset),
-          /*static_len=*/
-          lenI32 ? nullptr : rewriter.getI32IntegerAttr(transferLen),
+          dynOffsetI32 ? nullptr : rewriter.getI32IntegerAttr(totalOffset),
+          /*static_len=*/nullptr,
           /*sizes=*/ValueRange{}, /*strides=*/ValueRange{},
           /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
           /*pad_dimensions=*/nullptr, /*bd_id=*/nullptr, pktAttr,
           /*burst_length=*/nullptr, /*offset_parameter=*/nullptr,
           /*offset_state_table_idx=*/nullptr, /*next_bd_id=*/nullptr);
+    } else if (dynOffsetI32) {
+      // Only the address moves. Build the descriptor exactly as the static path
+      // would -- a KV append writes NGRP chunks at a region stride, and
+      // collapsing that to one linear run would scatter every group but the
+      // first -- then swap the constant offset for the runtime one.
+      AIE::DMABDOp bd =
+          dimLayouts.empty()
+              ? (pktAttr
+                     ? AIE::DMABDOp::create(rewriter, op.getLoc(), memref, 0,
+                                            static_cast<int>(transferLen),
+                                            pktAttr)
+                     : AIE::DMABDOp::create(rewriter, op.getLoc(), memref, 0,
+                                            static_cast<int>(transferLen)))
+              : (pktAttr
+                     ? AIE::DMABDOp::create(rewriter, op.getLoc(), memref, 0,
+                                            static_cast<int>(transferLen),
+                                            dimsAttr, pktAttr)
+                     : AIE::DMABDOp::create(rewriter, op.getLoc(), memref, 0,
+                                            static_cast<int>(transferLen),
+                                            dimsAttr));
+      bd.getOffsetMutable().assign(dynOffsetI32);
+      bd.removeStaticOffsetAttr();
     } else if (dimLayouts.empty() && !pktAttr) {
       AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
                            static_cast<int>(totalOffset),
@@ -2233,6 +2256,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           }
         if (defIsAfter) {
           OpBuilder b(rtp);
+          if (::getenv("AIR_DEBUG_REMAT"))
+            llvm::errs() << "AIR_DEBUG_REMAT: rtp-clone " << defOp->getName()
+                         << "\n";
           Operation *cloned = b.clone(*defOp);
           operandUse.set(cloned->getResult(0));
           // The original is left for canonicalization: the op-order snapshot
@@ -2555,6 +2581,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         Operation *cloned = b.clone(*def);
         cloned->setOperands(operands);
         seen.insert(cloned);
+        if (::getenv("AIR_DEBUG_REMAT"))
+          llvm::errs() << "AIR_DEBUG_REMAT: remat " << def->getName() << "\n";
         return cloned->getResult(0);
       };
       for (Operation &o : blk) {

@@ -77,7 +77,11 @@ module {
 // CHECK-LABEL: aie.runtime_sequence @func2
 // CHECK-SAME:    %{{.*}}: memref<1048576xbf16>, %[[OFF:[a-zA-Z0-9_]+]]: i64, %[[CB:[a-zA-Z0-9_]+]]: i64
 // CHECK:         %[[O:.*]] = arith.trunci %[[OFF]]
-// CHECK:         aie.dma_bd(%{{.*}} offset = %[[O]] len = 4096)
+// A moving address alone must not flatten the descriptor: the KV append writes
+// NGRP chunks at a region stride, and one linear run would scatter all but the
+// first. Only a runtime LENGTH (below) collapses the shape, and only because
+// that case is checked contiguous.
+// CHECK:         aie.dma_bd(%{{.*}} offset = %[[O]] len = 4096 sizes = [16, 256] strides = [256, 1])
 // CHECK:         %[[M:.*]] = arith.muli %[[CB]]
 // CHECK:         %[[L:.*]] = arith.trunci %[[M]]
 // CHECK:         aie.dma_bd(%{{.*}} offset = %[[O]] len = %[[L]])
