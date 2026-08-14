@@ -785,6 +785,13 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     bool paced = op->hasAttr(air::attrs::PreserveShimDmaOrder);
     bool issueToken = air::isDeviceToHostShimDMA(op) || paced;
 
+    // Narrow the runtime length to the i32 the BD field holds. Built here,
+    // outside the task, because a BD block admits only aie.dma_bd and aie.end.
+    Value lenI32;
+    if (dynContigLen)
+      lenI32 = arith::TruncIOp::create(rewriter, op.getLoc(),
+                                       rewriter.getI32Type(), dynContigLen);
+
     // Create DMAConfigureTaskForOp with proper repeat_count from highest
     // dimension
     auto configTaskOp = AIEX::DMAConfigureTaskForOp::create(
@@ -837,8 +844,6 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // takes for a runtime BD. The i64 access-pattern value is narrowed to the
     // i32 the BD field holds.
     if (dynContigLen) {
-      Value lenI32 = arith::TruncIOp::create(
-          rewriter, op.getLoc(), rewriter.getI32Type(), dynContigLen);
       AIE::DMABDOp::create(
           rewriter, op.getLoc(), memref, /*offset=*/Value(), /*len=*/lenI32,
           /*static_offset=*/rewriter.getI32IntegerAttr(totalOffset),
