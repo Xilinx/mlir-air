@@ -98,7 +98,7 @@ module {
 // Header ownership is also implied by the ids themselves: a DMA can stamp at
 // most ONE id, so several pinned ids mean the core must be writing the header.
 // This is the shape air.channel's own docs use (packet_ids = [1,4] with no
-// keep_pkt_header), and air-to-aie agrees via air::channelKernelWritesHeader.
+// keep_pkt_header), and air-to-aie agrees via air::channelSourceWritesHeader.
 // Treating it as DMA-stamped would skip demux classification entirely.
 // expected-remark @below {{demux over 2 destination(s); infers 2 routing id(s)}}
 air.channel @ids_imply_header [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet", packet_ids = [1 : i32, 4 : i32]}

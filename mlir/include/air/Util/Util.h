@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/DenseSet.h"
 
 using namespace mlir;
 
@@ -105,6 +106,27 @@ getStaticAffineForTripCountAsInt(affine::AffineForOp for_op);
 // has a non-static trip count; returns 1 if no loops sit between.
 std::optional<int64_t> getStaticTripCountInRange(Operation *inner,
                                                  Operation *outer);
+
+// ===----------------------------------------------------------------------===//
+// Buffer aliasing
+// ===----------------------------------------------------------------------===//
+
+// Every value that names the same underlying buffer as `buffer`, reachable by
+// walking DOWN through view-like ops (subview, reinterpret_cast, ...).
+// `aliases` is added to, not cleared, so several roots can be accumulated.
+void collectBufferAliases(Value buffer, llvm::SmallDenseSet<Value> &aliases);
+
+// The canonical value naming the buffer that `v` refers to, reached by walking
+// UP from `v`. Undoes the wrappers that let two ops touch one buffer through
+// different SSA values:
+//   - view-like ops (memref.subview / reinterpret_cast / expand_ / collapse_)
+//   - an air.execute result, to the value its terminator yields
+//   - an air.hierarchy block argument, to the matching `args(...)` operand
+// Returns `v` itself when it is already a root. Two values comparing equal
+// under this are the same buffer; two that differ MAY still alias (this is a
+// canonicalizer, not an alias oracle), so use it to link, never to prove
+// disjointness.
+Value resolveBufferRoot(Value v);
 
 // Erase a kernel operand from air.hierarchy op
 void eraseAIRHierarchyOperand(HierarchyInterface op, unsigned index);

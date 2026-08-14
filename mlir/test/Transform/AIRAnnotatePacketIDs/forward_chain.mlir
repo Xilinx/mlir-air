@@ -15,9 +15,9 @@
 module {
   // Two hops upstream of the demux. Each is single-destination on its own, but
   // both must carry the demux's 2 ids.
-  // expected-remark @below {{infers 2 routing id(s) (forwarded from a downstream demux)}}
+  // expected-remark @below {{infers 2 routing id(s) (forwarded from the demux @fanout)}}
   air.channel @hopA [1] {channel_type = "npu_dma_packet", keep_pkt_header}
-  // expected-remark @below {{infers 2 routing id(s) (forwarded from a downstream demux)}}
+  // expected-remark @below {{infers 2 routing id(s) (forwarded from the demux @fanout)}}
   air.channel @hopB [1] {channel_type = "npu_dma_packet", keep_pkt_header}
   // expected-remark @below {{demux over 2 destination(s); infers 2 routing id(s)}}
   air.channel @fanout [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet", keep_pkt_header}

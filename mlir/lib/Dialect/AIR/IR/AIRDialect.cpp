@@ -3846,7 +3846,7 @@ LogicalResult air::ChannelOp::verify() {
   return success();
 }
 
-bool air::channelKernelWritesHeader(air::ChannelOp chanOp) {
+bool air::channelSourceWritesHeader(air::ChannelOp chanOp) {
   if (!chanOp)
     return false;
   // Several pinned ids on one channel is itself the kernel-written-header
