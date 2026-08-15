@@ -172,3 +172,48 @@ jobs:
 
           popd
           rm -rf build_assert
+
+      # A wedged NPU surfaces in userspace only as "DRM_IOCTL_AMDXDNA_EXEC_CMD
+      # IOCTL failed (err=-5)", which says nothing about why the context could
+      # not be created. The kernel log carries the actual cascade -- a command
+      # timeout, then "Bad message ID"/"Channel in bad state" on the firmware
+      # mailbox, then aie2_ctx_connect() failing, and in the worst case
+      # "aie2_smu_start: Access power failed", after which the driver can no
+      # longer probe the device and the runner needs a power cycle. Dump it so
+      # the next occurrence is diagnosable from the CI log alone.
+      - name: NPU diagnostics on failure
+        if: failure()
+        run: |
+          # Report "journalctl did not work" and "journalctl worked but the
+          # device never logged" as distinct outcomes -- they point at opposite
+          # conclusions, and collapsing them into one message would mislead
+          # whoever reads this next. Checked explicitly rather than via a
+          # pipeline's exit status, which depends on `pipefail` being set.
+          echo "::group::amdxdna kernel log"
+          if klog=$(journalctl -k --no-pager 2>&1); then
+            hits=$(printf '%s\n' "$klog" | grep -i amdxdna | tail -60 || true)
+            if [ -n "$hits" ]; then
+              printf '%s\n' "$hits"
+            else
+              echo "(journalctl read OK; no amdxdna entries -- the driver never"
+              echo " logged a fault, so look elsewhere than a wedged device)"
+            fi
+          else
+            echo "(kernel log unavailable; journalctl said:)"
+            printf '%s\n' "$klog" | head -3
+          fi
+          echo "::endgroup::"
+
+          # A missing /dev/accel is the severe signature: the driver could not
+          # probe the device at all (typically "aie2_smu_start: Access power
+          # failed"), and the runner needs a power cycle -- a module reload
+          # will not bring it back.
+          echo "::group::device state"
+          if [ -e /dev/accel ]; then
+            ls -l /dev/accel/ || true
+          else
+            echo "/dev/accel MISSING -- driver failed to probe; runner needs a power cycle"
+          fi
+          source /opt/xilinx/xrt/setup.sh >/dev/null 2>&1 || true
+          xrt-smi examine 2>&1 | sed -n '/Device(s) Present/,$p' || true
+          echo "::endgroup::"
