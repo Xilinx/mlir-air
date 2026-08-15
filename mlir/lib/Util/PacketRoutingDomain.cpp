@@ -483,9 +483,26 @@ void PacketRoutingDomainAnalysis::buildDomains() {
         if (upstream.contains(c))
           onPath.insert(c);
     }
-    for (ChannelOp c : packetChans)
-      if (onPath.contains(c.getOperation()))
-        dom.hops.push_back(c);
+    // Collect by walking UPSTREAM from the demux, filtered to the path, so the
+    // order means something. Iterating packetChans here would collect in
+    // declaration order, which the std::reverse below then INVERTS -- in a
+    // simple chain that yields exactly the reverse of the travel order the
+    // field is documented to hold.
+    {
+      SmallVector<ChannelOp> wl{d};
+      llvm::SmallPtrSet<Operation *, 8> visited{d.getOperation()};
+      while (!wl.empty()) {
+        ChannelOp cur = wl.pop_back_val();
+        for (ChannelOp pred : fedBy.lookup(cur.getOperation())) {
+          if (!onPath.contains(pred.getOperation()))
+            continue;
+          if (!visited.insert(pred.getOperation()).second)
+            continue;
+          dom.hops.push_back(pred);
+          wl.push_back(pred);
+        }
+      }
+    }
 
     if (dom.originators.empty()) {
       // No put names a dest anywhere upstream. Either the design predates
@@ -795,6 +812,17 @@ void PacketRoutingDomainAnalysis::emitReportRemarks() const {
     }
     if (auto pinned = c.getPacketIDs())
       note << "; pins " << pinned.size();
+    // Spell the chain out on the demux. The hop ORDER is a documented property
+    // of the domain and was silently wrong once; printing it is what lets a
+    // test pin it.
+    if (dom && dom->demux == c && !dom->hops.empty()) {
+      note << "; fed by ";
+      bool first = true;
+      for (ChannelOp h : dom->hops) {
+        note << (first ? "@" : " -> @") << h.getSymName();
+        first = false;
+      }
+    }
     if (!f.reason.empty())
       note << " [" << f.reason << "]";
   }

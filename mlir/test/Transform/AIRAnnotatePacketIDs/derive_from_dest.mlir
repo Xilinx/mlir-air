@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-annotate-packet-ids="assign=true emit-headers=false" -split-input-file | FileCheck %s
+// RUN: air-opt %s -air-annotate-packet-ids="assign=true emit-headers=false report=true" -split-input-file 2>&1 | FileCheck %s --check-prefix=CHAIN
 
 // A design states NOTHING about packet headers. Not keep_pkt_header, not
 // air.src_writes_pkt_header, not packet_ids. Everything is derived from one
@@ -29,6 +30,11 @@
 // The demux gets the ids but NOT keep: at the final consumers, stripping to a
 // pure payload is a real choice and stays the design's to make.
 // CHECK-DAG: air.channel @fanout [1, 1] {broadcast_shape = [1 : index, 3 : index], channel_type = "npu_dma_packet", packet_ids = [31 : i32, 30 : i32, 29 : i32]}
+// The hops are reported in the order the PACKET TRAVELS, furthest upstream
+// first -- not declaration order, and not its reverse. Collecting them by
+// iterating the channel list and then reversing produced exactly the backwards
+// answer here, which nothing caught because no consumer read the order.
+// CHAIN: @fanout: demux over 3 destination(s); infers 3 routing id(s); fed by @hopA -> @hopB
 module @derived {
   air.channel @hopA [1] {channel_type = "npu_dma_packet"}
   air.channel @hopB [1] {channel_type = "npu_dma_packet"}
