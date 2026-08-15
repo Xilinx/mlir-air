@@ -124,3 +124,52 @@ module {
     return
   }
 }
+
+// -----
+
+// The extra waits go at the transfer's own wait, not straight after the pieces.
+// Placement does not change the FIFO pairing -- waits are ordered among
+// themselves, and anywhere after the pieces and before the original wait pairs
+// piece k with the kth new wait -- but it does change when the awaits execute.
+// A design that waits late should keep the overlap it asked for.
+//
+// Here an unrelated channel's transfer sits between the folded one and the
+// wait_all that covers both. The two extra awaits must land after that
+// channel's config, not before it.
+
+// CHECK-LABEL: aie.device(npu1)
+// CHECK: aiex.dma_configure_task_for @airMemcpyId4
+// CHECK: aiex.dma_configure_task_for @airMemcpyId4
+// CHECK: aiex.dma_configure_task_for @airMemcpyId5
+// CHECK: aiex.dma_await_task
+// CHECK: aiex.dma_await_task
+// CHECK: aiex.dma_await_task
+
+module {
+  aie.device(npu1) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    %shim_noc_tile_1_0 = aie.tile(1, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @airMemcpyId5(%shim_noc_tile_1_0, S2MM, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<268435456xbf16>, %arg1: memref<268435456xbf16>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c256_i64 = arith.constant 256 : i64
+    %c16383_i64 = arith.constant 16383 : i64
+    %c4194304_i64 = arith.constant 4194304 : i64
+    %c4_i32 = arith.constant 4 : i32
+    %c5_i32 = arith.constant 5 : i32
+    %p = airrt.segment_load "forward_0" : i64
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c16383_i64], [%c1_i64, %c1_i64, %c2_i64, %c256_i64], [%c0_i64, %c0_i64, %c4194304_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<268435456xbf16>) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c5_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c256_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId5} : (i32, i64, i64, memref<268435456xbf16>) : !airrt.event
+    airrt.wait_all %0, %1
+    return
+  }
+}

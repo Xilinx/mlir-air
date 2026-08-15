@@ -2094,13 +2094,26 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
     // silently drops the append barrier and the shim order constraint.
     lastOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
   }
-  // The builder now sits between the last piece and the op being replaced, so
-  // these land after every piece (each one dominates them, which the pairing's
-  // dominance guard requires) and before the transfer's original wait. FIFO
-  // then gives piece k the kth of these and the last piece the original wait,
-  // leaving the whole-transfer sync point exactly where it was.
-  for (int64_t k = 1; k < *constWrap && !waitedSym.empty(); k++)
-    AIEX::NpuDmaWaitOp::create(builder, loc, waitedSym);
+  // Where they go does not change the pairing -- FIFO orders waits among
+  // themselves, and anywhere after the pieces and before the transfer's own
+  // wait gives piece k the kth of these and the last piece the original wait.
+  // It does change when the awaits execute, so prefer the transfer's own wait:
+  // a design that deliberately waits late keeps the overlap it asked for
+  // instead of being synchronised early. Only in the same block, though -- a
+  // wait in a nested region (a per-iteration drain inside an scf.for, say)
+  // would multiply these by the trip count and unbalance the very pairing they
+  // exist to preserve. Falling back to right after the pieces is always valid:
+  // every piece dominates them, which the pairing's dominance guard requires.
+  if (!waitedSym.empty()) {
+    for (Operation *o = memcpy_op->getNextNode(); o; o = o->getNextNode())
+      if (auto wait = dyn_cast<AIEX::NpuDmaWaitOp>(o))
+        if (wait.getSymbol() == waitedSym) {
+          builder.setInsertionPoint(wait);
+          break;
+        }
+    for (int64_t k = 1; k < *constWrap; k++)
+      AIEX::NpuDmaWaitOp::create(builder, loc, waitedSym);
+  }
   memcpy_op->replaceAllUsesWith(lastOp);
   memcpy_op.erase();
   folded = true;
