@@ -85,8 +85,8 @@ PREFILL := $(srcdir)/llama32_3b_q4nx_prefill.py
 # Padded prefill length for profile-prefill.
 CTX ?= 2048
 
-.PHONY: help compile compile-decode compile-decode-dynseq _compile_decode_build run profile chat verify \
-        verify-full ask gen verify-paris profile-prefill clean
+.PHONY: help compile compile-decode compile-decode-dynseq compile-decode-windows _compile_decode_build run profile chat verify \
+        verify-full ask gen verify-paris diagnosis profile-prefill clean
 
 help:
 	@echo "============================================================"
@@ -104,12 +104,11 @@ help:
 	@echo "More targets:"
 	@echo "  make verify           Top-k token-set inclusion gate: NPU q4nx vs HF bf16 (2 prompts x 32 tokens, k=5)"
 	@echo "  make verify-full      Same gate over the full 8-prompt set"
+	@echo "  make diagnosis        Single-prompt lens through the shared runner (informational)"
 	@echo "  make gen              Paris gate: greedy decode of \"The capital of France is\""
 	@echo "  make verify-paris     Prefill-only weight-integrity smoke (first token == Paris)"
 	@echo "  make profile-prefill  Warm prefill TTFT benchmark at CTX=$(CTX)"
 	@echo "  make ask PROMPT=...   Single Q&A turn"
-	@echo "  (no 'diagnosis': the fused decode runs all 28 layers in one dispatch,"
-	@echo "   so per-layer intermediates are not observable from the host)"
 	@echo ""
 	@echo "Options (override with make VAR=value):"
 	@echo "  N_TOKENS=1000         Max decode tokens for run/profile/chat"
@@ -244,9 +243,14 @@ verify-full:
 	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL)
 
-# No `diagnosis` target: the fused decode runs all 28 layers + the LM head inside a
-# single dispatch, so the per-layer intermediates that lens needs are not observable
-# from the host. `make verify` (token-set vs HF bf16) is the PASS/FAIL gate.
+## Diagnosis lens (single prompt through the shared runner, informational).
+## The fused decode runs all 28 layers + the LM head inside one dispatch, so the
+## per-layer intermediates that lens wants are not observable from the host; this
+## reports the token-level view instead. `make verify` is the PASS/FAIL gate.
+diagnosis:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+		--prompts single --prompt "$(PROMPT)" --model $(MODEL)
 
 ## Fast weight-integrity smoke: prefill "The capital of France is"; PASS iff the
 ## first-token argmax == 12366 (" Paris"). Cheap (prefill only, no decode build).

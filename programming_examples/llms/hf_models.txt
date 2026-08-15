@@ -40,5 +40,9 @@ lerobot/smolvla_base
 HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 
 # Same Q4NX packaging of Gemma3-4B (text). Used by llms/gemma3_4b_q4nx (the
-# fused decode loads weights from this repo).
+# fused decode loads weights from this repo), plus the bf16 reference `make
+# verify` compares against. FastFlowLM/Gemma3-4B-NPU2's model card declares
+# `base_model: google/gemma-3-4b-it`; unsloth mirrors that checkpoint without
+# google's manual license gate, so CI needs no license grant for it.
 FastFlowLM/Gemma3-4B-NPU2
+unsloth/gemma-3-4b-it

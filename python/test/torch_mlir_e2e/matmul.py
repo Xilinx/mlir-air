@@ -118,11 +118,11 @@ for t in dtypes:
     for s in sizes:
         print(f"running test for {t} and {s}")
         num_tests = num_tests + 1
-        try:
-            passed = passed + run_test(t, s)
-        except Exception as e:
-            print("test failed:", e)
-            pass
+        # Deliberately not wrapped in try/except: a swallowed exception here
+        # let this test report PASS while every submit was returning -EIO, so
+        # a dead NPU looked like a two-test failure instead of a whole-suite
+        # one. Let it propagate, the way mul.py and relu.py do.
+        passed = passed + run_test(t, s)
 
 if passed != num_tests:
     print(f"failed. {passed}/{num_tests}")
