@@ -172,3 +172,24 @@ jobs:
 
           popd
           rm -rf build_assert
+
+      # A wedged NPU surfaces in userspace only as "DRM_IOCTL_AMDXDNA_EXEC_CMD
+      # IOCTL failed (err=-5)", which says nothing about why the context could
+      # not be created. The kernel log carries the actual cascade -- a command
+      # timeout, then "Bad message ID"/"Channel in bad state" on the firmware
+      # mailbox, then aie2_ctx_connect() failing, and in the worst case
+      # "aie2_smu_start: Access power failed", after which the driver can no
+      # longer probe the device and the runner needs a power cycle. Dump it so
+      # the next occurrence is diagnosable from the CI log alone.
+      - name: NPU diagnostics on failure
+        if: failure()
+        run: |
+          echo "::group::amdxdna kernel log"
+          journalctl -k --no-pager 2>/dev/null | grep -i amdxdna | tail -60 || \
+            echo "(kernel log unavailable)"
+          echo "::endgroup::"
+          echo "::group::device state"
+          ls -l /dev/accel/ 2>&1 || true
+          source /opt/xilinx/xrt/setup.sh >/dev/null 2>&1 || true
+          xrt-smi examine 2>&1 | sed -n '/Device(s) Present/,$p' || true
+          echo "::endgroup::"

@@ -97,7 +97,18 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
                 model = str(m.group(4))
             print(f"\tmodel: '{model}'")
             config.available_features.add("ryzen_ai")
-            run_on_npu = f"{config.air_src_root}/utils/run_on_npu.sh"
+            # Serialize hardware access. Concurrent hwctx creation on a single
+            # NPU can time out a command, which takes down the driver/firmware
+            # mailbox ("Bad message ID", "Channel in bad state"). Every later
+            # aie2_ctx_connect() then fails, the context is marked
+            # CTX_STATE_DEAD, and all subsequent submits -- in this process and
+            # in every process after it -- return -EIO ("DRM_IOCTL_AMDXDNA_
+            # EXEC_CMD IOCTL failed (err=-5)"). The device does not recover on
+            # its own; it needs a power cycle. test/lit.cfg.py takes the same
+            # lock, and the two must stay in agreement.
+            run_on_npu = (
+                f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
+            )
             if model in ["npu1", "Phoenix"]:
                 run_on_npu1 = run_on_npu
                 config.available_features.add("ryzen_ai_npu1")
