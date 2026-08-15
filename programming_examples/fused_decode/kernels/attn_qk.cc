@@ -42,7 +42,10 @@
 //
 // LLAMA_3_2_1B ties for the most spills, so the gated config is the worst case
 // for the defect this workaround guarded. 3B / gemma / qwen still want their
-// own `make verify`. ATTN_PEANO_NOINLINE=1 restores the old form if one bites.
+// own `make verify`. Compiling with -DATTN_PEANO_NOINLINE restores the old form
+// if one bites -- the guard tests only whether the macro is DEFINED, so any
+// value works and a bare make variable of that name will not reach the
+// compiler; it has to be passed as a -D (e.g. via the kernel CXXFLAGS).
 #if defined(__chess__) || !defined(ATTN_PEANO_NOINLINE)
 #define ATTN_HOT inline __attribute__((always_inline))
 #else

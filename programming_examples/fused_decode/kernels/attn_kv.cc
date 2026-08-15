@@ -10,7 +10,9 @@
 // loop. Peano only, always built with -DDECODE_INLINE_ATTN.
 // The Peano NOINLINE workaround is retired here too -- see attn_qk.cc for the
 // defect history, the evidence that it no longer reproduces, and the numbers.
-// ATTN_PEANO_NOINLINE=1 restores it.
+// Compiling with -DATTN_PEANO_NOINLINE restores it (the guard tests only
+// whether the macro is defined, so the value is irrelevant and it must be a
+// compile define, not a make variable).
 #if defined(__chess__) || !defined(ATTN_PEANO_NOINLINE)
 #define ATTN_HOT inline __attribute__((always_inline))
 #else
