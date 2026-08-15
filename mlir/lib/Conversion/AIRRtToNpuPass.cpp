@@ -2384,26 +2384,27 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           llvm::cast<BaseMemRefType>(op.getMemref().getType()));
     });
     target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {
-      auto f = op->getParentOfType<func::FuncOp>();
-      if (f) {
-        for (auto arg : f.getArguments()) {
-          if (op.getTarget() == arg)
-            return false;
-          else if (op.getSource() == arg)
-            return false;
-        }
+      // Either container: on the rolled path the control func has already
+      // become its runtime_sequence by the time this runs, and a copy against
+      // a sequence argument still has to be folded away.
+      ValueRange args;
+      if (auto f = op->getParentOfType<func::FuncOp>())
+        args = f.getArguments();
+      else if (auto s = op->getParentOfType<AIE::RuntimeSequenceOp>())
+        args = s.getBody().getArguments();
+      for (auto arg : args) {
+        if (op.getTarget() == arg)
+          return false;
+        else if (op.getSource() == arg)
+          return false;
       }
       return true;
     });
     // A DMA that stays inside an scf.for has to be created under the
     // runtime_sequence directly: the AIEX ops require it as an ancestor, and
     // nothing hoists them out of the loop later the way unrolling did. So for
-    // the rolled path the func becomes the sequence first, and the L3 alloc
-    // buffering that reads func arguments moves ahead of it.
+    // the rolled path the func becomes the sequence first.
     if (clKeepLoopsRolled) {
-      RewritePatternSet earlyCast(ctx);
-      air::populateBufferMemrefToFuncArgsPattern(earlyCast);
-      (void)applyPatternsGreedily(module, std::move(earlyCast));
       // Its own target: the airrt ops are still there and are legal until the
       // main conversion below runs.
       ConversionTarget seqTarget(getContext());
@@ -2453,10 +2454,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Unroll any affine for loops
     unrollAffineFors(module);
 
-    // Buffer npu.dma_memcpy_nd memref to function's argument list.
+    // Buffer npu.dma_memcpy_nd memref to function's argument list. Has to run
+    // here, after the copy folding above has removed the L3 allocs it would
+    // otherwise promote; on the rolled path the container is already a
+    // runtime_sequence, which the func-shaped pattern cannot see.
     RewritePatternSet castPattern(ctx);
     air::populateBufferMemrefToFuncArgsPattern(castPattern);
     (void)applyPatternsGreedily(module, std::move(castPattern));
+    bufferMemrefToSequenceArgs(module);
 
     // Convert NpuDmaWaitOp → DMAAwaitTaskOp AFTER DMA conversion.
     // NpuDmaWaitOp was placed at WaitAllOp locations (clustered), and now we
@@ -3847,6 +3852,27 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
   }
 
+  // Runtime-sequence twin of BufferMemrefToFuncArgsPattern: promote L3 allocs
+  // sitting directly in the sequence body to sequence arguments.
+  void bufferMemrefToSequenceArgs(ModuleOp module) {
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      llvm::SetVector<Value> memrefs;
+      for (auto &op : seq.getBody().front()) {
+        if (!isa<memref::AllocOp, memref::AssumeAlignmentOp>(op))
+          continue;
+        for (auto res : op.getResults())
+          if (auto t = dyn_cast_if_present<BaseMemRefType>(res.getType()))
+            if (air::isL3(t))
+              memrefs.insert(res);
+      }
+      for (Value v : memrefs)
+        v.replaceAllUsesWith(
+            seq.getBody().addArgument(v.getType(), seq.getLoc()));
+    });
+  }
+
   // The same for an scf.if / scf.index_switch that yields a token -- a
   // per-wave feed select does, once the loop around it stays rolled and its
   // condition no longer folds. Results and yield operands line up one to one
@@ -4117,8 +4143,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // configure events to monitor
   LogicalResult insertNpuWrite32ForTrace(ModuleOp module, int64_t trace_size,
                                          int64_t trace_offset) {
-    SmallVector<mlir::func::FuncOp> funcOps;
+    // Either container: the rolled path has already turned the control func
+    // into its runtime_sequence by the time this runs.
+    SmallVector<Operation *> funcOps;
     module.walk([&](mlir::func::FuncOp f) { funcOps.push_back(f); });
+    module.walk([&](AIE::RuntimeSequenceOp s) { funcOps.push_back(s); });
 
     for (auto f : funcOps) {
       OpBuilder builder(f);
@@ -4128,9 +4157,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
       auto &target_model = d.getTargetModel();
       std::map<int, int> chanToIdMap;
-      if (f.getBody().empty())
+      if (f->getRegion(0).empty())
         continue;
-      builder.setInsertionPointToStart(&f.front());
+      builder.setInsertionPointToStart(&f->getRegion(0).front());
       // Helper: emit NpuWrite32Op from integer address/value literals.
       auto makeNpuWrite32Fn = [&](uint32_t addr, uint32_t val,
                                   IntegerAttr colAttr, IntegerAttr rowAttr) {
