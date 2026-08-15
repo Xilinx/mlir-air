@@ -3641,9 +3641,17 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
         attrs.push_back(builder.getI32IntegerAttr(id));
       ArrayAttr idsAttr = builder.getArrayAttr(attrs);
       for (air::ChannelOp member : dom.hops) {
-        if (member.getPacketIDs())
-          continue;
-        member->setAttr(air::attrs::PacketIDs, idsAttr);
+        if (!member.getPacketIDs())
+          member->setAttr(air::attrs::PacketIDs, idsAttr);
+        // A hop MUST preserve the header. It is carrying a routing decision
+        // made upstream to a switchbox further downstream; strip it here and
+        // the demux has nothing left to route on. That is forced by the
+        // topology, not a design choice, so derive it rather than requiring
+        // every design to restate it. (At the demux itself keep is a real
+        // choice -- its consumers generally want pure payload -- so it is left
+        // alone.)
+        if (!member->hasAttr(air::attrs::KeepPktHeader))
+          member->setAttr(air::attrs::KeepPktHeader, builder.getUnitAttr());
       }
       if (!dom.idsDeclared)
         dom.demux->setAttr(air::attrs::PacketIDs, idsAttr);
