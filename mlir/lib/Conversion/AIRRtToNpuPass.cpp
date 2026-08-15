@@ -1865,20 +1865,46 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
   // Folding costs one descriptor per entry of the folded dim.
   if (*constWrap > AIE2_STRIDE_UNROLL_LIMIT)
     return success();
+  // generateAwaitsFromWaitAllOps matches waits to configure tasks FIFO per
+  // channel -- the Nth wait for a channel awaits the Nth config for it. This
+  // rewrite turns one config into `wrap` of them without adding waits, so on a
+  // channel that already carries a wait the pairing shifts and the wait lands
+  // on the first piece while the rest go unawaited. Leave those alone: a
+  // silently under-synchronised transfer is far worse than an unfolded one.
+  if (auto metadata = memcpy_op->getAttrOfType<FlatSymbolRefAttr>("metadata")) {
+    bool channelIsWaited = false;
+    if (auto func = memcpy_op->getParentOfType<func::FuncOp>())
+      func.walk([&](AIEX::NpuDmaWaitOp wait) {
+        if (wait.getSymbol() == metadata.getValue())
+          channelIsWaited = true;
+      });
+    if (channelIsWaited)
+      return success();
+  }
 
+  // The op's !airrt.event is optional and, unlike tileIllegalWrapDim (which
+  // rewrites in place), this replaces the op -- so the result has to be
+  // carried across. The pieces are issued in program order on one channel, so
+  // the last one completing implies all of them have; give it the event and
+  // let it stand in for the original. This mirrors how coalesceShimDmaOrder
+  // redirects the event tokens of the ops it merges away.
+  SmallVector<Type> eventTy(memcpy_op->getResultTypes());
+  airrt::DmaMemcpyNdOp lastOp;
   for (int64_t k = 0; k < *constWrap; k++) {
     SmallVector<OpFoldResult> newOffsets(offsets), newWraps(wraps),
         newStrides(strides);
     newOffsets[i] = builder.getI64IntegerAttr(*constOff + k);
     newWraps[i] = builder.getI64IntegerAttr(1);
-    auto newOp = airrt::DmaMemcpyNdOp::create(
-        builder, loc, SmallVector<Type>{}, memcpy_op.getId(), memcpy_op.getX(),
-        memcpy_op.getY(), memcpy_op.getMemref(), newOffsets, newWraps,
-        newStrides);
+    bool isLast = k + 1 == *constWrap;
+    lastOp = airrt::DmaMemcpyNdOp::create(
+        builder, loc, isLast ? eventTy : SmallVector<Type>{}, memcpy_op.getId(),
+        memcpy_op.getX(), memcpy_op.getY(), memcpy_op.getMemref(), newOffsets,
+        newWraps, newStrides);
     // Ordering/barrier markers must ride along on every piece, or the split
     // silently drops the append barrier and the shim order constraint.
-    newOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
+    lastOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
   }
+  memcpy_op->replaceAllUsesWith(lastOp);
   memcpy_op.erase();
   folded = true;
   return success();

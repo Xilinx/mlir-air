@@ -77,3 +77,40 @@ module {
     return
   }
 }
+
+// -----
+
+// A channel that already carries a wait is left alone. generateAwaitsFromWaitAllOps
+// pairs waits to configure tasks FIFO per channel, so splitting one config into
+// several without adding waits would leave the wait on the first piece and the
+// rest unawaited. Not folding keeps the transfer correctly synchronized; the
+// over-limit stride is then downstream's problem, as everywhere else here.
+
+// CHECK-LABEL: aie.device(npu1)
+// CHECK: aie.dma_bd(%arg0 : memref<268435456xbf16> offset = 16383 len = 512 sizes = [2, 256] strides = [4194304, 1])
+// CHECK: aiex.dma_await_task
+
+module {
+  aie.device(npu1) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, S2MM, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<268435456xbf16>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c256_i64 = arith.constant 256 : i64
+    %c16383_i64 = arith.constant 16383 : i64
+    %c4194304_i64 = arith.constant 4194304 : i64
+    %c4_i32 = arith.constant 4 : i32
+    %p = airrt.segment_load "forward_0" : i64
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c16383_i64], [%c1_i64, %c1_i64, %c2_i64, %c256_i64], [%c0_i64, %c0_i64, %c4194304_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<268435456xbf16>) : !airrt.event
+    airrt.wait_all %0
+    return
+  }
+}
