@@ -80,15 +80,25 @@ module {
 
 // -----
 
-// A channel that already carries a wait is left alone. generateAwaitsFromWaitAllOps
-// pairs waits to configure tasks FIFO per channel, so splitting one config into
-// several without adding waits would leave the wait on the first piece and the
-// rest unawaited. Not folding keeps the transfer correctly synchronized; the
-// over-limit stride is then downstream's problem, as everywhere else here.
+// A channel that already carries a wait still folds, but the split has to carry
+// the synchronization with it. generateAwaitsFromWaitAllOps pairs waits to
+// configure tasks FIFO per channel, so turning one config into `wrap` of them
+// needs `wrap` waits: with only the original one the wait would land on the
+// first piece, every later transfer on the channel would be awaited one slot
+// early, and the tail pieces would go unawaited -- on this S2MM channel both a
+// missed completion token and a BD that is never freed.
+//
+// This is the shape the pass exists for -- the real KV append channels are
+// waited -- so check the whole chain: both pieces are configured, and both are
+// awaited, leaving no config unpaired.
 
 // CHECK-LABEL: aie.device(npu1)
-// CHECK: aie.dma_bd(%arg0 : memref<268435456xbf16> offset = 16383 len = 512 sizes = [2, 256] strides = [4194304, 1])
-// CHECK: aiex.dma_await_task
+// CHECK: %[[T0:.*]] = aiex.dma_configure_task_for @airMemcpyId4
+// CHECK: aie.dma_bd(%arg0 : memref<268435456xbf16> offset = 16383 len = 256 sizes = [256] strides = [1])
+// CHECK: %[[T1:.*]] = aiex.dma_configure_task_for @airMemcpyId4
+// CHECK: aie.dma_bd(%arg0 : memref<268435456xbf16> offset = 4210687 len = 256 sizes = [256] strides = [1])
+// CHECK-DAG: aiex.dma_await_task(%[[T0]])
+// CHECK-DAG: aiex.dma_await_task(%[[T1]])
 
 module {
   aie.device(npu1) {

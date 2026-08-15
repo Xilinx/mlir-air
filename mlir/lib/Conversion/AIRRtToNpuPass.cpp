@@ -2055,20 +2055,22 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
     return success();
   // generateAwaitsFromWaitAllOps matches waits to configure tasks FIFO per
   // channel -- the Nth wait for a channel awaits the Nth config for it. This
-  // rewrite turns one config into `wrap` of them without adding waits, so on a
-  // channel that already carries a wait the pairing shifts and the wait lands
-  // on the first piece while the rest go unawaited. Leave those alone: a
-  // silently under-synchronised transfer is far worse than an unfolded one.
-  if (auto metadata = memcpy_op->getAttrOfType<FlatSymbolRefAttr>("metadata")) {
-    bool channelIsWaited = false;
+  // rewrite turns one config into `wrap` of them, so the channel needs `wrap`
+  // waits or the pairing shifts: the original wait would land on the first
+  // piece, every later transfer on the channel would be awaited one slot
+  // early, and the tail pieces would go unawaited -- on an S2MM channel that
+  // is both a missed completion token and a BD that is never freed. Emit the
+  // extra waits alongside the extra configs so the 1:1 invariant survives.
+  //
+  // Only on a channel that is already waited: adding waits to a fire-and-
+  // forget channel would impose synchronisation the design never asked for.
+  StringRef waitedSym;
+  if (auto metadata = memcpy_op->getAttrOfType<FlatSymbolRefAttr>("metadata"))
     if (auto func = memcpy_op->getParentOfType<func::FuncOp>())
       func.walk([&](AIEX::NpuDmaWaitOp wait) {
         if (wait.getSymbol() == metadata.getValue())
-          channelIsWaited = true;
+          waitedSym = metadata.getValue();
       });
-    if (channelIsWaited)
-      return success();
-  }
 
   // The op's !airrt.event is optional and, unlike tileIllegalWrapDim (which
   // rewrites in place), this replaces the op -- so the result has to be
@@ -2092,6 +2094,13 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
     // silently drops the append barrier and the shim order constraint.
     lastOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
   }
+  // The builder now sits between the last piece and the op being replaced, so
+  // these land after every piece (each one dominates them, which the pairing's
+  // dominance guard requires) and before the transfer's original wait. FIFO
+  // then gives piece k the kth of these and the last piece the original wait,
+  // leaving the whole-transfer sync point exactly where it was.
+  for (int64_t k = 1; k < *constWrap && !waitedSym.empty(); k++)
+    AIEX::NpuDmaWaitOp::create(builder, loc, waitedSym);
   memcpy_op->replaceAllUsesWith(lastOp);
   memcpy_op.erase();
   folded = true;
