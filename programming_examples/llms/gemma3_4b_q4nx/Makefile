@@ -80,8 +80,14 @@ W_DUAL_CHAN ?= 1
 export W_DUAL_CHAN
 
 
-.PHONY: help compile compile-prefill compile-decode compile-decode-dynseq _compile_decode_build prefill \
-        run ask verify verify-paris profile profile-prefill gen clean
+# ---- shared verify subsystem (programming_examples/llms/verify/) ----
+VERIFY_RUNNER  := $(srcdir)/../verify/verify_runner.py
+RUNNER_ADAPTER := gemma3_4b_q4nx.verify_adapter
+MODEL_CHOICE   ?= instruct
+MAX_PROMPTS    ?= 2
+
+.PHONY: help compile compile-prefill compile-decode compile-decode-dynseq compile-decode-windows _compile_decode_build prefill \
+        run ask verify verify-full verify-paris diagnosis profile profile-prefill gen clean
 
 help:
 	@echo "============================================================"
@@ -94,8 +100,10 @@ help:
 	@echo "  make compile-decode      Decode templates only (weight-free)"
 	@echo "  make run                 Decode 'The capital of France is' -> Paris gate"
 	@echo "  make ask PROMPT=\"...\"    Single Q&A turn"
-	@echo "  make verify              Same Paris argmax gate (9079) as the CI check"
+	@echo "  make verify              Top-k token-set gate vs HF bf16 (2 prompts x 32 tokens, k=5)"
+	@echo "  make verify-full         Same over every prompt in the shared prompt file"
 	@echo "  make verify-paris        Fast prefill-only weight-integrity gate"
+	@echo "  make diagnosis           Single-prompt lens through the shared runner (informational)"
 	@echo "  make profile             TTFT + decode throughput over N_TOKENS tokens"
 	@echo "  make profile-prefill     Warm prefill TTFT at CTX"
 	@echo "  make clean               Remove build artifacts, caches, gemma kernels"
@@ -216,21 +224,43 @@ ask:
 	@cd $(srcdir) && python3 gemma3_4b_q4nx_inference.py \
 		--n-tokens $(N_TOKENS) $(PROMPT_ARG)
 
-## Correctness gate: the greedy first-token argmax (" Paris", 9079), matching
-## FastFlowLM's own Gemma3 NPU output.
+## Top-k token-set inclusion gate (NPU q4nx vs HF bf16, 2 prompts x 32 tokens,
+## k=5) -- the same gate, through the same shared verify/ subsystem, as the other
+## three Q4NX examples.
 ##
-## Unlike the other llms/ examples this example has no verify_adapter.py and does
-## not drive the shared verify/ subsystem (top-k token-set inclusion vs an HF bf16
-## reference). That subsystem needs an HF bf16 checkpoint of the same weights; for
-## Gemma3-4B that is google/gemma-3-4b-pt, a gated multimodal checkpoint the shared
-## HfRunner (AutoModelForCausalLM) does not load as a text-only model. So the gate
-## here is greedy-token parity against the reference implementation instead.
-## `run` and `verify` are the same gate; `verify` is the name CI expects.
-verify: run
+## REFERENCE. FastFlowLM/Gemma3-4B-NPU2's model card declares
+## `base_model: google/gemma-3-4b-it` and is tagged unsloth, and FLM's converter
+## builds the bundle from gemma-3-4b-it-Q4_1.gguf. unsloth/gemma-3-4b-it is that
+## checkpoint without google's manual license gate. (An earlier note here named
+## google/gemma-3-4b-pt and concluded no top-k gate was possible: wrong model, and
+## AutoModelForCausalLM does load this one -- Gemma3-4B is multimodal, so it
+## returns Gemma3ForConditionalGeneration, whose text-only forward is what the
+## gate compares.)
+verify:
+	cd $(srcdir)/.. && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+		--prompts topk_token --model $(MODEL_CHOICE) --max-prompts $(MAX_PROMPTS)
+
+## Full-sweep variant of `make verify` (all prompts in the prompt file).
+verify-full:
+	cd $(srcdir)/.. && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+		--prompts topk_token --model $(MODEL_CHOICE)
 
 ## Fast weight-integrity smoke: prefill only, PASS iff the first-token argmax is
-## 9079 (" Paris"). Cheap -- no decode templates needed.
+## 9079 (" Paris"). Cheap -- no decode templates, no HF reference needed.
 verify-paris: prefill
+
+## Diagnosis lens (single prompt through the shared runner, informational).
+## The Q4NX prefill does not expose per-layer ffn_out and the decode runs all 34
+## layers in one dispatch, so this reports the token-level view, not per-layer
+## cosines.
+##
+## Its own prompt variable: PROMPT is empty by default (that is what selects the
+## canonical Paris prompt for `make run`), and an empty --prompt is not a prompt.
+DIAG_PROMPT ?= What is the capital of France?
+diagnosis:
+	cd $(srcdir)/.. && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+		--prompts single --prompt "$(if $(PROMPT),$(PROMPT),$(DIAG_PROMPT))" \
+		--model $(MODEL_CHOICE)
 
 ## Warm prefill TTFT at CTX (warmup pass, then a timed one). Isolates the
 ## prefill dispatch from the one-time weight load the e2e path also pays.

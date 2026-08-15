@@ -1,27 +1,32 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// GEMMA3-4B Q4NX end-to-end correctness gate: greedy token sequence.
-// Runs the batched AIR prefill (which produces the first token and the KV seed)
-// followed by the fused on-device decode (34 layers + tied LM head in one
-// dispatch) for "The capital of France is", and PASSes iff the greedy tokens
-// match PARIS_GREEDY -- first token 9079 (" Paris"), matching FastFlowLM's
-// Gemma3 NPU output, plus the continuation. The continuation is load-bearing:
-// the first token comes out of the prefill, so gating on it alone leaves the
-// whole decode loop untested (a stale decode template passes it, then emits
-// fluent garbage).
+// Gemma3-4B Q4NX verify gate: top-k token-level inclusion check, NPU q4nx vs HF
+// bf16, 2 prompts x 32 greedy tokens, k=5 (use `make verify-full` for the full
+// sweep locally). Exercises the full production prefill + fused decode path
+// through the verify subsystem (verify/verify_runner.py); NPU weights come from
+// the FastFlowLM model.q4nx bundle, the reference from the HF bf16 checkpoint
+// that bundle was built from.
 //
-// This is the Q4NX analogue of the other examples' `make verify` vs HF bf16
-// (which does not apply here: greedy-token parity against the reference
-// implementation, not top-k). The weights come from the model.q4nx bundle on
-// the Hub, pre-seeded into the perf runner's HF cache, so it is gated on that
-// repo being present (skips cleanly where absent).
+// REFERENCE. FastFlowLM/Gemma3-4B-NPU2's model card declares
+// `base_model: google/gemma-3-4b-it`; unsloth/gemma-3-4b-it is that checkpoint
+// without google's manual license gate, so CI needs no license grant. See
+// verify_adapter.py.
 //
-// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_fastflowlm_gemma3_4b_npu2
+// (The fast prefill-only Paris-argmax smoke lives at `make verify-paris`, and
+// `make run` still prints its own greedy PARIS_GREEDY verdict as a demo check.)
+//
+// LBUILD=128 sizes the decode KV cache for CI only: the gate's longest prompt
+// plus its 32 generated tokens fits well inside it, and the templates build far
+// faster than at the 2048 default.
+//
+// Skips cleanly when HF_TOKEN is unset (reference + tokenizer downloads need it).
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_fastflowlm_gemma3_4b_npu2, hfweights_unsloth_gemma_3_4b_it
 //
 // RUN: mkdir -p test_npu2_verify
 // RUN: cd test_npu2_verify
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile compile LBUILD=16 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile compile LBUILD=128 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
-// CHECK: *** PARIS ***
+// CHECK: [verify] PASS

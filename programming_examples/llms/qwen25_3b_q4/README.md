@@ -17,7 +17,7 @@ relationship `llama32_1b_q4nx` has to `llama32_1b`); this example supplies the
 | First token, `"The capital of France is"`, 36 layers on NPU2 | **argmax 12095 = `" Paris"`** — PASS |
 | Warm TTFT @ seq_len=2048 | **4.17 s** (491 tok/s prefill), NPU-dispatch 4.17 s, host 5 ms |
 | End-to-end NPU prefill -> NPU fused decode, 36 layers, no reference model | coherent text, **12.2 tok/s** device-only decode |
-| Top-k token-set inclusion vs HF bf16 (`make verify-topk-full`) | 4/5 prompts — informational, not the CI gate ([why](#why-verify-is-not-the-top-k-gate-here)) |
+| Top-k token-set inclusion vs HF bf16 (`make verify-full`) | **8/8 prompts PASS** (shared prompt file) — the CI gate |
 
 The 36 transformer layers run on the NPU for both prefill and decode. The final
 RMSNorm + LM-head projection and the argmax still run on the host each decode
@@ -83,39 +83,30 @@ make weights          # Q4_0 quant-error report, layer 0
 Correctness gates (CI runs these via `run_npu2_*.lit`):
 
 ```bash
-make verify           # CI gate: prefill argmax 12095 + a full 16-token fused decode
-make verify-paris     # fast prefill-only weight-integrity smoke (no decode build)
-make verify-topk      # top-k token-set inclusion vs HF bf16 (informational, see below)
+make verify           # top-k token-set inclusion vs HF bf16 (2 prompts x 32 tokens, k=5)
+make verify-full      # the same over every prompt in the shared prompt file
+make verify-paris     # fast prefill-only weight-integrity smoke (no decode build, no reference)
+make diagnosis        # single-prompt lens through the shared runner (informational)
 ```
 
-### Why `verify` is not the top-k gate here
+This is the same gate, on the same shared prompt file, as the other three Q4NX
+examples: at the first token where NPU and HF bf16 disagree, each side's pick
+must be in the other's top-5. [`verify_adapter.py`](verify_adapter.py) binds the
+Q4_0 prefill and the fused decode to the shared runner contract.
 
-The Llama Q4NX examples gate on the shared top-k check: at the first token where
-NPU and HF bf16 disagree, each side's pick must be in the other's top-5. That
-path is fully wired up here — [`verify_adapter.py`](verify_adapter.py) binds the
-Q4_0 prefill and the fused decode to the shared runner contract — but it scores
-**4/5 prompts** today (2/5 before the decode grew a real KV cache).
+This example used to carry its own 5-prompt file and score 4/5, which is why it
+used to gate on something else. The prompt file is the whole difference —
+measured on one build, changing only that file: 4/5 on the old one, 8/8 on the
+shared one. Note that is not the same five prompts passing: the old lines were
+mid-sentence continuations padded to 32-34 tokens to clear the long-gone fixed
+decode window, the shared ones are complete instructions, and a next-token
+distribution after a complete instruction is sharper. The decode cap (`LBUILD`)
+is not a factor either way -- these prompts reach L~47, and the decode attends
+over the real context, so a 256 and a 2048 build score identically.
 
-That is not a broken decode. `make gen` produces
-*" the city. It is called the Eiffel Tower, and it was built"*. What fails is
-strictness: a Q4_0 36-layer model and a bf16 reference free-running greedily
-diverge within a few tokens on open-ended continuations, and the near-ties at the
-divergence point fall outside top-5. Gating CI on that would be permanently red,
-and raising `k` or cherry-picking prompts until it passed would make the gate
-meaningless — so `make verify` gates on the prefill argmax plus a complete
-fused-decode generation, both deterministic, and the top-k number stays visible
-here. `gemma3_4b_q4nx` made the same call for the same reason.
-
-The decode gate is not just a liveness check: it is the guard against an
-under-primed fill lock (a decode deadlock), which is the failure mode the refeed
-mechanism exists to prevent and the reason the other three Q4NX designs each
-carry one.
-
-`verify-topk` uses this example's own [`verify_prompts.txt`](verify_prompts.txt)
-rather than the shared `verify/prompts/*.txt`. That file predates the growing KV
-cache, when the decode was a fixed 32-slot sliding window and every line had to be
-32–34 tokens; it is kept so the gate's prompt set stays comparable across runs.
-Any prompt that fits the cache cap works now.
+The gate is not just a numeric check: it runs 32 fused decode dispatches per
+prompt, so it is also the guard against an under-primed fill lock (a decode
+deadlock), the failure mode the refeed mechanism exists to prevent.
 
 Weights are downloaded from HuggingFace on first use and cached under
 `~/.cache/huggingface/hub/`. Override with `--model` or
@@ -179,11 +170,21 @@ with no minimum, and the decode's first token always equals the prefill's argmax
 This replaced a fixed 32-slot sliding window that could not run a prompt shorter
 than 32 tokens and silently dropped the head of a longer one. `make compile-decode
 LBUILD=<N>` sets the cap; it costs two builds, one L apart, to calibrate the
-slope.
+slope. The default is **2048**, matching the three Llama/Gemma Q4NX decodes.
 
 Measured: prompt *"The capital city of France is called Paris, ... that stands
 right in the middle of"* -> *" the city. It is called the Eiffel Tower, and it
-was built"*, 106.0 ms/token device at LBUILD=256.
+was built"*. Same box and power mode, 16-token `make gen`, output byte-identical
+at both caps:
+
+| `LBUILD` | device |
+|---|---|
+| 256 | 82.7 ms/token |
+| 2048 | 85.4 ms/token |
+
+The 2.7 ms is the padded readback: the KV nd-DMA streams `ATTN_MAXL` positions
+whatever the real context is. `make compile-decode-dynseq` takes the block count
+off the runtime scalar instead and removes it.
 
 ## Files
 
@@ -191,8 +192,7 @@ was built"*, 106.0 ms/token device at LBUILD=256.
 |---|---|
 | `qwen25_3b_q4_weights.py` | Q4_0 requant/dequant loader → the `qwen25_3b` `LlamaWeights` container |
 | `qwen25_3b_q4_prefill.py` | `Qwen25Q4Prefill` — compile/preload/prefill/KV-cache/bench |
-| `Makefile` | compile / compile-decode / run / gen / verify / bench / weights / clean |
+| `Makefile` | compile / compile-decode / run / gen / verify / verify-full / bench / weights / clean |
 | `verify_adapter.py` | Binds the prefill + fused decode to the shared `verify/` runner contract |
-| `verify_prompts.txt` | Prompts for `make verify` (32–34 tokens each; see above) |
 | `run_npu2_*.lit` | CI gates: prefill compile, decode compile, verify, profile |
 | `../../fused_decode/qwen_prefill_to_decode.py` | `QwenFusedDecoder` (KV hand-off + per-token dispatch) and its CLI |

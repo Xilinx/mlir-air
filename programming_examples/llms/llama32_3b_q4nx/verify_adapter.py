@@ -126,7 +126,12 @@ class FusedDecodeRunner:
             for p, t in enumerate(toks):
                 logits = self._dec.dispatch(t, p)
         return PrefillRecord(
-            layer_intermediates=[],  # single-dispatch superkernel: not observable
+            # Single-dispatch superkernel: per-layer intermediates are not
+            # observable. One empty dict per layer rather than an empty list --
+            # the diagnosis path indexes layer_intermediates[li] per layer and
+            # `.get("ffn_out")` on {} yields None, which the shared runner skips;
+            # an empty list would IndexError. Same as the 1B/gemma/qwen adapters.
+            layer_intermediates=[{} for _ in range(self._dec.N_LAYERS)],
             final_hidden_normed=np.empty(0, np.float32),
             logits_at_pred=logits,
             top1_token=int(np.argmax(logits)),

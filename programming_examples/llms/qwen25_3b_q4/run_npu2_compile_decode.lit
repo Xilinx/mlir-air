@@ -6,11 +6,10 @@
 // AIR -> AIE -> aiecc -> Peano pipeline. Weights are runtime BOs, so this
 // compile needs no weight data (like the prefill's run_npu2_compile.lit).
 //
-// This is the only automated gate on fused_decode_qwen.py. It matters because
-// under-priming a fill lock is a deadlock, which is exactly the failure mode
-// the refeed mechanism exists to prevent: the three other Q4NX designs driven
-// by that engine each have a CI gate against it, and until this file existed
-// the Qwen one had none.
+// This is the compile-side gate on fused_decode_qwen.py; run_npu2_verify.lit
+// gates it at run time, dispatching it 32 times per prompt through the shared
+// top-k check. That run-time half is what catches an under-primed fill lock,
+// i.e. a deadlock -- the failure mode the refeed mechanism exists to prevent.
 //
 // The attn kernels are merge-linked as inline .ll (link_with_mode="merge"),
 // not object-linked, so the build needs a pre-change `llvm-link` (< LLVM 23)
