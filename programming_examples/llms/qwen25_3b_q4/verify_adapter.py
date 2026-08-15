@@ -15,11 +15,9 @@ through the one-xclbin `QwenFusedDecoder` (extracted from
 components directly to satisfy the shared `prefill()` / `decode_step()` contract.
 
 PROMPT LENGTH. The fused Qwen decode grows a KV cache inside a build-time cap
-(`LBUILD`, 32 by default): the device attends over the real context and appends
-at the real position, so any prompt that fits the cap works and there is no
-minimum. This example still ships its own `verify_prompts.txt` (it predates the
-growing cache, when every line had to be at least `ATTN_L` tokens) so the gate's
-prompt set stays comparable across runs.
+(`LBUILD`): the device attends over the real context and appends at the real
+position, so any prompt that fits the cap works and there is no minimum. The
+gate therefore runs the shared `verify/prompts/*.txt` like the Llama adapters.
 
 Pointed at via `--runner=qwen25_3b_q4.verify_adapter`.
 """
@@ -105,8 +103,8 @@ class NpuRunner:
     """Adapter over the Q4_0 prefill + one-xclbin fused Qwen decode.
 
     prefill() runs `Qwen25Q4Prefill` (full logits + per-layer roped-K / biased-V)
-    and seeds the decoder's sliding KV window; decode_step() dispatches one fused
-    token through `QwenFusedDecoder`. Mirrors the loop in
+    and seeds the decoder's KV cache; decode_step() dispatches one fused token
+    through `QwenFusedDecoder`. Mirrors the loop in
     `fused_decode/qwen_prefill_to_decode.py:main`."""
 
     name = "npu_q4"

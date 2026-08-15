@@ -110,11 +110,15 @@ make compile
 make compile-prefill            # the 8 prefill ELFs (CTX=2048)
 make compile-decode LBUILD=16   # small decode templates (much faster)
 
-# Paris gate: first generated token must be 9079 (" Paris").
-make run          # or: make verify   (same gate, the name CI uses)
+# Correctness gate: top-k token-set inclusion vs HF bf16 (k=5, 32 tokens).
+make verify       # 2-prompt CI slice;  make verify-full  sweeps every prompt
 
-# Prefill only (no decode loop) -- same 9079 gate, useful when bringing up the
-# prefill on its own.
+# Demo run: greedy decode, prints a *** PARIS *** verdict against a recorded
+# 10-token continuation.
+make run
+
+# Prefill only (no decode loop, no reference) -- first-token 9079 smoke, useful
+# when bringing up the prefill on its own.
 make prefill      # or: make verify-paris
 
 # A single Q&A turn on your own prompt.
@@ -129,24 +133,47 @@ make run CTX=2048 MODEL_SOURCE=/path/to/Gemma3-4B-NPU2
 
 ## Correctness
 
-Gated on FastFlowLM's Gemma3 NPU output rather than HF bf16 top-k: greedy
-first-token argmax for "The capital of France is" must be **9079** (" Paris"),
-and generation continues coherently:
+`make verify` is the shared gate every `llms/` example uses: top-k token-set
+inclusion (k=5, first divergence over 32 greedy tokens) of the NPU q4nx run
+against an HF **bf16** reference, driven through
+[`verify_adapter.py`](verify_adapter.py) and `llms/verify/`.
 
-> ' Paris.\n\nParis is a global center for art, fashion, gastronomy and
-> culture.\n\nIt is located on the River Seine. ...'
+**The reference is `unsloth/gemma-3-4b-it`.** FastFlowLM's own model card for
+`FastFlowLM/Gemma3-4B-NPU2` declares `base_model: google/gemma-3-4b-it` and is
+tagged `unsloth`, and their converter builds the bundle from
+`gemma-3-4b-it-Q4_1.gguf` (`FLM_Q4NX_Converter/convert.py`). unsloth's mirror
+carries those weights without google's manual license gate, so CI needs no
+license grant.
 
-`make verify` is that gate. CI runs it via `run_npu2_verify.lit`, skipping
-cleanly when the Q4NX weights are absent from the runner's HF cache.
+Gemma3-4B is multimodal, so `AutoModelForCausalLM` returns
+`Gemma3ForConditionalGeneration`; its weights bind correctly and a text-only
+forward gives text logits (argmax 9079 = `" Paris"` on the canonical prompt), so
+the shared `HfRunner` needs no special case. Only the text half is compared —
+the NPU example implements only that.
 
-This is the one place the example departs from the shared `llms/` contract: it
-ships no `verify_adapter.py` and does not drive `llms/verify/` (top-k token-set
-inclusion vs an HF bf16 reference). That subsystem needs an HF bf16 checkpoint of
-the same weights, and for Gemma3-4B that is `google/gemma-3-4b-pt` — a gated,
-multimodal checkpoint that the shared `HfRunner` (`AutoModelForCausalLM`) does not
-load as a text-only model. Greedy-token parity against the reference
-implementation is the substitute. Adding the adapter is the natural follow-up if
-the text-only reference path is ever wired up.
+Measured on NPU2 (`LBUILD=2048`, `unsloth/gemma-3-4b-it` reference):
+
+| | result |
+|---|---|
+| `make verify` (2-prompt CI slice) | **2 / 2 PASS** |
+| `make verify-full` (8 prompts) | **7 / 8** — prompt 3 diverges at step 1 |
+
+The one failure is 4-bit drift at a formatting near-tie, not a broken decode:
+after the agreed `"\n\n"` the NPU picks `"Let"` where the bf16 reference picks
+`"**"`, and although the reference's choice is rank 3 in the NPU's distribution,
+the NPU's is outside the reference's top-5, so the symmetric check fails. The
+CI slice is the 2-prompt gate above; `verify-full` is the honest full number and
+is reported, not tuned.
+
+Two cheaper checks sit beside the gate. `make verify-paris` is a prefill-only
+first-token smoke (no decode templates, no reference) for bringing the prefill up
+on its own, and `make run` prints a `*** PARIS ***` verdict against a recorded
+10-token greedy continuation — a demo self-check, not the gate.
+
+> An earlier revision of this file claimed no top-k gate was possible here,
+> naming `google/gemma-3-4b-pt` as the reference. That was the wrong checkpoint
+> (`-pt`, not the `-it` FLM actually quantized) and the loader claim was wrong
+> too.
 
 ## How it works
 
@@ -242,6 +269,7 @@ mechanism, the measurements and the `.decode_windows` manifest guard.
 | `gemma3_4b_q4nx_prefill.py` | the 8-ELF batched prefill and its `causal_lm` interface |
 | `gemma3_4b_q4nx_weights.py` | `model.q4nx` loader, Q4NX dequant, RoPE LUTs, numpy reference |
 | `gemma3_4b_q4nx_requant.py` | Q4NX re-quantization helper |
-| `Makefile` | build / run / verify / profile |
+| `Makefile` | build / run / verify / verify-full / verify-paris / diagnosis / profile |
+| `verify_adapter.py` | Binds the Q4NX prefill + fused decode to the shared `verify/` runner contract |
 | `../../fused_decode/models/gemma3-4b.h` | kernel-side model config |
 | `../../fused_decode/fused_decode.py` | the shared superkernel IR builder |

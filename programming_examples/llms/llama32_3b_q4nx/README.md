@@ -119,11 +119,15 @@ make verify-full
 
 # Prefill-only weight-integrity smoke (first token == " Paris")
 make verify-paris
+
+# Single-prompt lens through the shared runner (informational)
+make diagnosis
 ```
 
-There is no `make diagnosis` here: the fused decode runs all 28 layers and the LM
-head inside one dispatch, so the per-layer intermediates that lens needs are not
-observable from the host. `make verify` is the PASS/FAIL gate.
+`make verify` is the PASS/FAIL gate. `make diagnosis` reports the token-level
+view only: the fused decode runs all 28 layers and the LM head inside one
+dispatch, so the per-layer cosines that lens would otherwise show are not
+observable from the host.
 
 Override the NPU weight source (e.g. a local bundle):
 
@@ -184,7 +188,7 @@ mechanism, the measurements and the `.decode_windows` manifest guard.
 | `q4nx_decode_3b.py` | `FusedDecode3B` — one-dispatch-per-token driver for the `fused_decode` superkernel |
 | `llama32_3b_q4nx_inference.py` | Driver + generation loop: prefill → fused decode, chat template, streaming |
 | `verify_adapter.py` | Hooks into the shared `../verify/` subsystem; NPU q4nx vs HF bf16 gate |
-| `Makefile` | compile / compile-decode / run / profile / chat / verify / verify-full / verify-paris / clean |
+| `Makefile` | compile / compile-decode / run / profile / chat / verify / verify-full / verify-paris / diagnosis / clean |
 
 Cross-directory reuse: the [`fused_decode`](../../fused_decode) superkernel, the
 sibling [`llama32_3b`](../llama32_3b) prefill builders, the `Q4nxModel` reader from

@@ -41,7 +41,12 @@ AIEOPT_DIR     := $(shell realpath $(dir $(shell which aie-opt))/..)
 # appends at the real position; LBUILD only sizes the KV cache. Two templates one
 # apart are built so DecodeInstsGen can calibrate the per-token L slope. Any
 # prompt up to LBUILD works -- there is no minimum.
-LBUILD      ?= 256
+#
+# 2048 matches the three Llama/Gemma Q4NX decodes. It costs 2.7 ms/token against
+# a 256 build (85.4 vs 82.7 ms/tok, same box and power mode, 16-token `make gen`,
+# byte-identical output), because the readback streams the padded ATTN_MAXL --
+# `make compile-decode-dynseq` removes exactly that.
+LBUILD      ?= 2048
 LREF        := $(shell echo $$(($(LBUILD) - 1)))
 ATTN_L      ?= $(LBUILD)
 # W_DUAL_CHAN feeds each proj column's weights on BOTH of its shim MM2S channels
@@ -81,16 +86,11 @@ KV_NPZ     ?= $(srcdir)/.kv_handoff.npz
 # ---- shared verify subsystem (programming_examples/llms/verify/) ----
 VERIFY_RUNNER  := $(srcdir)/../verify/verify_runner.py
 RUNNER_ADAPTER := qwen25_3b_q4.verify_adapter
-# This example's own prompt file. It predates the growing KV cache (it exists
-# because every line had to be >= ATTN_L tokens); kept so the gate's prompt set
-# stays comparable across runs.
-VERIFY_PROMPTS := $(srcdir)/verify_prompts.txt
 MODEL_CHOICE   ?= instruct
 MAX_PROMPTS    ?= 2
 
 .PHONY: help compile compile-decode compile-decode-dynseq _compile_decode_build run gen dump-kv bench \
-        weights verify verify-topk verify-topk-full verify-paris diagnosis \
-        profile clean
+        weights verify verify-full verify-paris diagnosis profile profile-prefill clean
 
 help:
 	@echo "============================================================"
@@ -101,14 +101,13 @@ help:
 	@echo "  make compile-decode  Build the fused decode (kernels + decode_L<N> templates, no weights)"
 	@echo "  make run             Prefill gate: 'The capital of France is' -> ' Paris'"
 	@echo "  make gen             End-to-end NPU prefill -> KV hand-off -> NPU fused decode"
-	@echo "  make bench           Warm prefill TTFT at BENCH_L=$(BENCH_L)"
+	@echo "  make bench           Warm prefill TTFT at BENCH_L=$(BENCH_L) (alias: profile-prefill)"
 	@echo "  make weights         Q4_0 quant-error report for layer 0 (no NPU)"
 	@echo ""
 	@echo "Correctness:"
-	@echo "  make verify          CI gate: prefill argmax (12095 ' Paris') + a full fused-decode generation"
+	@echo "  make verify          Top-k token-set gate vs HF bf16 (2 prompts x 32 tokens, k=5)"
+	@echo "  make verify-full     Same over every prompt in the shared prompt file"
 	@echo "  make verify-paris    Fast prefill-only weight-integrity smoke (no decode build)"
-	@echo "  make verify-topk     Top-k token-set gate vs HF bf16 (informational; 4/5 prompts pass today)"
-	@echo "  make verify-topk-full  Same over every prompt in verify_prompts.txt"
 	@echo "  make diagnosis       Single-prompt lens through the shared runner (informational)"
 	@echo "  make profile         Perf capture (prefill TTFT + decode tok/s) for bench/extract_perf.py"
 	@echo ""
@@ -222,56 +221,34 @@ bench:
 		--seq-len $(SEQ_LEN) --n-layers $(N_LAYERS) --model $(MODEL) \
 		--bench-l $(BENCH_L)
 
+## The name the other three use for the same thing. `bench` stays because
+## `profile` composes it and llms/bench/extract_perf.py parses its output.
+profile-prefill: bench
+
 ## Q4_0 quant-error report for layer 0 (no NPU).
 weights:
 	cd $(srcdir) && python3 $(srcdir)/qwen25_3b_q4_weights.py --model $(MODEL)
 
-# ---- correctness gates ----
+# ---- correctness gate (identical to the other three Q4NX examples) ----
 #
-# WHY `verify` IS NOT THE TOP-K GATE HERE (it is for the Llama Q4NX examples).
-# The shared top-k gate demands that, at the first token where NPU and HF bf16
-# disagree, each side's pick is in the other's top-5. Measured on this design:
-# 4/5 prompts pass (2/5 before the decode grew a real KV cache; the head of a
-# 32+ token prompt used to slide out of context). The decode itself is sound --
-# `make gen` produces "the city. It is called the Eiffel Tower, and it was
-# built" -- but greedy runs of a
-# Q4_0 36-layer model and a bf16 reference diverge early on open-ended
-# continuations, and near-ties there fall outside top-5. Gating CI on that would
-# be red, and loosening k or hand-picking prompts until it passed would make the
-# gate meaningless. So `verify` gates on two things that DO hold deterministically,
-# and the top-k path stays available (and honest) as `verify-topk`.
-# gemma3_4b_q4nx made the same call for the same reason.
+# DECODE_ENV is passed here too, not just to the build: fused_decode_qwen reads
+# QWEN_NLAYERS / ATTN_L / W_DUAL_CHAN from the environment at import and they
+# default to a 1-layer lowering check. Without them the runner would pack a
+# 1-layer weight stream for a 36-layer xclbin.
 
-## CI correctness gate: prefill first-token argmax + a full fused-decode
-## generation. Between them these cover both halves on device:
-##   run  36 NPU prefill layers -> argmax 12095 (" Paris")
-##   gen  36 NPU decode layers, 16 one-dispatch tokens over the KV hand-off
-## `gen` is also the guard against an under-primed fill lock, i.e. a decode
-## deadlock -- the failure mode the refeed mechanism exists to prevent, and the
-## reason the other three Q4NX designs each have a decode gate.
-verify: run gen
-
-## Full production top-k token-set inclusion gate (NPU q4 vs HF bf16, k=5) via
-## the shared verify subsystem and verify_adapter.py. Informational today; see
-## the note above for why it is not the CI gate.
-##
-## DECODE_ENV is passed here too, not just to the build: fused_decode_qwen reads
-## QWEN_NLAYERS / ATTN_L / W_DUAL_CHAN from the environment at import and they
-## default to a 1-layer lowering check. Without them the runner would pack a
-## 1-layer weight stream for a 36-layer xclbin.
-verify-topk:
+## Top-k token-set inclusion gate (NPU q4 vs HF bf16, 2 prompts x 32 tokens, k=5).
+verify:
 	cd $(srcdir)/.. && $(DECODE_ENV) python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
-		--prompts topk_token --prompts-file $(VERIFY_PROMPTS) \
-		--model $(MODEL_CHOICE) --max-prompts $(MAX_PROMPTS)
+		--prompts topk_token --model $(MODEL_CHOICE) --max-prompts $(MAX_PROMPTS)
 
-## Full-sweep variant of `make verify-topk` (every prompt in verify_prompts.txt).
-verify-topk-full:
+## Full-sweep variant of `make verify` (all prompts in the prompt file).
+verify-full:
 	cd $(srcdir)/.. && $(DECODE_ENV) python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
-		--prompts topk_token --prompts-file $(VERIFY_PROMPTS) \
-		--model $(MODEL_CHOICE)
+		--prompts topk_token --model $(MODEL_CHOICE)
 
-## Fast weight-integrity smoke: prefill only, no decode build required.
-## PASS iff the first-token argmax is 12095 (" Paris"). Alias for `make run`.
+## Fast weight-integrity smoke: prefill "The capital of France is"; PASS iff the
+## first-token argmax == 12095 (" Paris"). Cheap (prefill only, no decode build,
+## no HF reference) -- runnable when the top-k gate above is not.
 verify-paris: run
 
 ## Diagnosis lens (single prompt through the shared runner, informational).

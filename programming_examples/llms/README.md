@@ -77,8 +77,24 @@ See each model's `ARCHITECTURE.md` for the full per-layer NPU/CPU ELF sequence.
 
 Every model gates on the shared `verify/` subsystem against an HF bf16 reference
 using a top-k token-set inclusion check (k=5, first-divergence over 32 tokens).
-Per-layer cosine via `make diagnosis` is informational. Run `make verify` in any
-model directory.
+Run `make verify` in any model directory; `make verify-full` sweeps every prompt.
+
+For the 4-bit examples the NPU side runs the quantized weights and the reference
+is the bf16 checkpoint they were derived from, so the gate measures NPU drift on
+top of quantization error:
+
+| example | NPU weights | bf16 reference |
+|---|---|---|
+| `llama32_1b_q4nx` / `llama32_3b_q4nx` | `FastFlowLM/Llama-3.2-{1,3}B-NPU2` | `meta-llama/Llama-3.2-{1,3}B-Instruct` |
+| `gemma3_4b_q4nx` | `FastFlowLM/Gemma3-4B-NPU2` | `unsloth/gemma-3-4b-it` |
+| `qwen25_3b_q4` | Q4_0, quantized on the host from the reference | `Qwen/Qwen2.5-3B-Instruct` |
+
+Two cheaper lenses sit beside the gate, and neither is a substitute for it:
+`make verify-paris` is a prefill-only first-token smoke that needs no decode
+build and no reference (so it runs where `verify` cannot), and `make diagnosis`
+probes one prompt through the same runner. Per-layer cosine only has data where
+the prefill exposes per-layer `ffn_out`; the fused single-dispatch decodes do
+not, so there `diagnosis` reports the token-level view instead.
 
 ## Layout
 
