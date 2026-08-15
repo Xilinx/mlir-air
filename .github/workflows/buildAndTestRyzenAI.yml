@@ -184,12 +184,36 @@ jobs:
       - name: NPU diagnostics on failure
         if: failure()
         run: |
+          # Report "journalctl did not work" and "journalctl worked but the
+          # device never logged" as distinct outcomes -- they point at opposite
+          # conclusions, and collapsing them into one message would mislead
+          # whoever reads this next. Checked explicitly rather than via a
+          # pipeline's exit status, which depends on `pipefail` being set.
           echo "::group::amdxdna kernel log"
-          journalctl -k --no-pager 2>/dev/null | grep -i amdxdna | tail -60 || \
-            echo "(kernel log unavailable)"
+          if klog=$(journalctl -k --no-pager 2>&1); then
+            hits=$(printf '%s\n' "$klog" | grep -i amdxdna | tail -60 || true)
+            if [ -n "$hits" ]; then
+              printf '%s\n' "$hits"
+            else
+              echo "(journalctl read OK; no amdxdna entries -- the driver never"
+              echo " logged a fault, so look elsewhere than a wedged device)"
+            fi
+          else
+            echo "(kernel log unavailable; journalctl said:)"
+            printf '%s\n' "$klog" | head -3
+          fi
           echo "::endgroup::"
+
+          # A missing /dev/accel is the severe signature: the driver could not
+          # probe the device at all (typically "aie2_smu_start: Access power
+          # failed"), and the runner needs a power cycle -- a module reload
+          # will not bring it back.
           echo "::group::device state"
-          ls -l /dev/accel/ 2>&1 || true
+          if [ -e /dev/accel ]; then
+            ls -l /dev/accel/ || true
+          else
+            echo "/dev/accel MISSING -- driver failed to probe; runner needs a power cycle"
+          fi
           source /opt/xilinx/xrt/setup.sh >/dev/null 2>&1 || true
           xrt-smi examine 2>&1 | sed -n '/Device(s) Present/,$p' || true
           echo "::endgroup::"
