@@ -695,6 +695,9 @@ air.channel @name [dim₀, dim₁, …] {channel_type = "npu_dma_stream", depth 
 air.channel.put @name[indices] (src[offsets][sizes][strides]) : (type_src)
 air.channel.get @name[indices] (dst[offsets][sizes][strides]) : (type_dst)
 
+// Put naming a run-time destination — fan-out over time
+air.channel.put @name[indices] (src[offsets][sizes][strides]) dest(%d) : (type_src)
+
 // Asynchronous put/get — return !air.token; transfer completes when token signals
 [%token =] air.channel.put @name[indices] [dependency = [%t₀, …]]
            (src[offsets][sizes][strides]) : (type_src)
@@ -723,6 +726,31 @@ use the `gpu_` prefix.
 
 The `broadcast_shape` attribute enables one-to-many communication following NumPy
 broadcasting rules.
+
+#### Fan-out over space and over time
+
+`broadcast_shape` declares how many destinations a channel reaches — the geometry of the
+destination space. It does not say whether a given transfer reaches all of them.
+
+A `put` may name a destination, `dest(%d)`. `%d` selects one coordinate along the
+channel's broadcast dimension — the index the matching `get` sits at — and it is a
+run-time value. Its presence changes what the fan-out means:
+
+| Form | Meaning |
+|---|---|
+| no `dest` | **Spatial** fan-out: every destination receives every transfer. |
+| `dest(%d)` | **Temporal** fan-out: each transfer is delivered to exactly one destination, and which one may differ from transfer to transfer. |
+
+`dest` names the destination of the *eventual* fan-out, which need not be the channel
+the `put` is on. A transfer may cross intermediate channels first; those forwarding
+`put`s leave `dest` unset. This matters because the fan-out is typically performed by a
+data-mover stage that only relays a buffer it did not produce, and so cannot itself know
+where the data should go — the choice has to accompany the data from the producer that
+made it.
+
+Run-time destination selection requires an interconnect that can route each transfer
+independently. Backends may therefore restrict which `channel_type` values support it;
+see the backend mapping sections.
 
 #### Capacity and depth
 
@@ -862,6 +890,24 @@ directly to physical hardware structures:
 The `air-to-aie` pass translates each `air.herd` into AIE tile operations (`aie.core`,
 `aie.buffer`, `aie.lock`), routes channels through the switch boxes, and generates the
 SHIM DMA configuration for L3 transfers.
+
+#### Temporal fan-out on AIE
+
+Circuit-switched channel types (`npu_dma_stream` and the default) are statically routed:
+a route is programmed once and every destination on the broadcast dimension receives
+every transfer. They support spatial fan-out only, so `dest` (§2.5) has no meaning on
+them.
+
+`npu_dma_packet` is the packet-switched overlay, on which each transfer is routed
+individually. It supports both modes, and a `dest` on the originating `put` is what
+selects the temporal one.
+
+Realising that mode requires a routing decision to travel with the data, from the
+producer that made it to the switch box that acts on it, and requires every stage in
+between to preserve it. The compiler does all of this from the `dest` operand alone. It
+is also checked rather than assumed: a `dest` that cannot be realised — no
+multi-destination channel downstream of it, or no producer upstream of one that could
+have made the choice — is a compile error, not a misrouted packet at run time.
 
 ### Placement
 
