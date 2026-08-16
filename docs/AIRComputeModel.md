@@ -695,7 +695,7 @@ air.channel @name [dim₀, dim₁, …] {channel_type = "npu_dma_stream", depth 
 air.channel.put @name[indices] (src[offsets][sizes][strides]) : (type_src)
 air.channel.get @name[indices] (dst[offsets][sizes][strides]) : (type_dst)
 
-// Put naming a run-time destination — fan-out over time
+// Put naming a runtime destination — fan-out over time
 air.channel.put @name[indices] (src[offsets][sizes][strides]) dest(%d) : (type_src)
 
 // Asynchronous put/get — return !air.token; transfer completes when token signals
@@ -734,7 +734,7 @@ destination space. It does not say whether a given transfer reaches all of them.
 
 A `put` may name a destination, `dest(%d)`. `%d` selects one coordinate along the
 channel's broadcast dimension — the index the matching `get` sits at — and it is a
-run-time value. Its presence changes what the fan-out means:
+runtime value. Its presence changes what the fan-out means:
 
 | Form | Meaning |
 |---|---|
@@ -748,7 +748,7 @@ data-mover stage that only relays a buffer it did not produce, and so cannot its
 where the data should go — the choice has to accompany the data from the producer that
 made it.
 
-Run-time destination selection requires an interconnect that can route each transfer
+Runtime destination selection requires an interconnect that can route each transfer
 independently. Backends may therefore restrict which `channel_type` values support it;
 see the backend mapping sections.
 
@@ -907,7 +907,7 @@ producer that made it to the switch box that acts on it, and requires every stag
 between to preserve it. The compiler does all of this from the `dest` operand alone. It
 is also checked rather than assumed: a `dest` that cannot be realised — no
 multi-destination channel downstream of it, or no producer upstream of one that could
-have made the choice — is a compile error, not a misrouted packet at run time.
+have made the choice — is a compile error, not a misrouted packet at runtime.
 
 ### Placement
 
