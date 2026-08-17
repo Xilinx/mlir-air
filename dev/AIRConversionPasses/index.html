@@ -2130,7 +2130,7 @@ is threaded into the enclosed operations as loop induction variables.</p>
 <h3 id="-air-split-devices"><code>-air-split-devices</code><a class="headerlink" href="#-air-split-devices" title="Permanent link">&para;</a></h3>
 <p><em>Split the input into one output per aie.device op</em></p>
 <h4 id="options_5">Options<a class="headerlink" href="#options_5" title="Permanent link">&para;</a></h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>-output-prefix : File name prefix for split AIE modules. Set to &#39;-&#39; for stdout (default).
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>-output-prefix : File name prefix for split AIE modules. Set to '-' for stdout (default).
 </code></pre></div>
 <h3 id="-air-to-aie"><code>-air-to-aie</code><a class="headerlink" href="#-air-to-aie" title="Permanent link">&para;</a></h3>
 <p><em>Lower air.launch_herd to AIE dialect</em></p>
@@ -2192,7 +2192,7 @@ generated from the AIRRt metadata by the <code>air-to-std</code> pass.</p>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  %0 = aie.tile(1, 1)
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>  %1 = aie.tile(2, 0)
 <a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>  %2 = aie.lock(%0, 0)
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>  %3 = aie.buffer(%0) {sym_name = &quot;buf0&quot;} : memref&lt;1024xi32, 2&gt;
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>  %3 = aie.buffer(%0) {sym_name = "buf0"} : memref&lt;1024xi32, 2&gt;
 <a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>  aie.flow(%1, DMA : 0, %0, DMA : 0)
 </code></pre></div>
 the AIE DMA program,
@@ -2220,14 +2220,14 @@ the AIE Core program,
 </code></pre></div>
 and the AIRRt metadata,
 <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>airrt.module_metadata{
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>  airrt.segment_metadata attributes {sym_name = &quot;segment_0&quot;}{
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    airrt.herd_metadata {dma_allocations = [{channel = 2 : i64, col = 0 : i64, id = 1 : i64, location = 2 : i64, row = 0 : i64} ], sym_name = &quot;herd_0&quot;}
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>  airrt.segment_metadata attributes {sym_name = "segment_0"}{
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    airrt.herd_metadata {dma_allocations = [{channel = 2 : i64, col = 0 : i64, id = 1 : i64, location = 2 : i64, row = 0 : i64} ], sym_name = "herd_0"}
 <a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>  }
 <a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>}
 </code></pre></div></p>
 <h4 id="options_6">Options<a class="headerlink" href="#options_6" title="Permanent link">&para;</a></h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>-row-offset                     : The default start row for any herds without &#39;y_loc&#39; attribute.
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>-col-offset                     : The default start column for any herds without &#39;x_loc&#39; attribute.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>-row-offset                     : The default start row for any herds without 'y_loc' attribute.
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>-col-offset                     : The default start column for any herds without 'x_loc' attribute.
 <a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>-emit-while-loop                : Emit a while(1) around the herd code in generated AIR.core ops.
 <a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>-emit-herd-lock                 : Acquire and release a lock at the start and end of herd execution. The default is to acquire lock 0 with value zero and release it with value 0. There is currently no way to override the default behavior.
 <a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>-test-patterns                  : Test the given patterns.
@@ -2264,7 +2264,7 @@ AIR dialect memcpy operations into AIRRt memcpy operations.</p>
 <h4 id="output_1">Output<a class="headerlink" href="#output_1" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>  func.func @f(%arg0: memref&lt;1024xi32&gt;, %arg1: memref&lt;1024xi32&gt;) {
 <a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>    %c1 = arith.constant 1 : index
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>    %h = airrt.herd_load &quot;herd_0&quot; : i64
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>    %h = airrt.herd_load "herd_0" : i64
 <a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>    affine.for %arg2 = 0 to 1 {
 <a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>      affine.for %arg3 = 0 to 1 {
 <a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>        %alloc = memref.alloc() : memref&lt;1024xi32, 2&gt;
@@ -2275,8 +2275,8 @@ AIR dialect memcpy operations into AIRRt memcpy operations.</p>
 <a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a>        %c1_i64 = arith.constant 1 : i64
 <a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a>        airrt.dma_memcpy_nd(%c1_i32, %0, %1, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c1_i64], [%c0_i64, %c0_i64, %c0_i64]) : (i32, i64, i64, memref&lt;1024xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 <a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a>        memref.dealloc %alloc : memref&lt;1024xi32, 2&gt;
-<a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a>      } {air.herd = &quot;inner&quot;}
-<a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a>    } {air.herd = &quot;outer&quot;}
+<a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a>      } {air.herd = "inner"}
+<a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a>    } {air.herd = "outer"}
 <a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a>    return
 <a id="__codelineno-13-17" name="__codelineno-13-17" href="#__codelineno-13-17"></a>  }
 </code></pre></div>
@@ -2289,7 +2289,7 @@ The pass assumes that:
 (3) The scf.parallel loop is inserted at the beginning of the function, wrapping all existing operations.</p>
 <h4 id="options_7">Options<a class="headerlink" href="#options_7" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>-loop-bounds  : Specify upper bounds for scf.parallel loops
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>-actual-sizes : Actual data sizes per launch dimension (for DMA padding). Attached as &#39;air.actual_sizes&#39; on the created loop.
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>-actual-sizes : Actual data sizes per launch dimension (for DMA padding). Attached as 'air.actual_sizes' on the created loop.
 </code></pre></div>
 <h3 id="-airrt-to-llvm"><code>-airrt-to-llvm</code><a class="headerlink" href="#-airrt-to-llvm" title="Permanent link">&para;</a></h3>
 <p><em>Lower AIRRt dialect to LLVM dialect</em></p>
@@ -2310,15 +2310,15 @@ platform.</p>
 <a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>  aie.device(npu1_1col) {
 <a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>    ...
 <a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>    aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
-<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>    memref.global &quot;public&quot; @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>    memref.global "public" @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
 <a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>    ...
 <a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>    aie.shim_dma_allocation @airMemcpyId19(MM2S, 0, 0)
-<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>    memref.global &quot;public&quot; @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>    memref.global "public" @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
 <a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a>    ...
 <a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a>    aie.shim_dma_allocation @airMemcpyId15(MM2S, 0, 2)
-<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a>    memref.global &quot;public&quot; @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a>    memref.global "public" @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
 <a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a>    ...
-<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a>  } {sym_name = &quot;segment_0&quot;}
+<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a>  } {sym_name = "segment_0"}
 <a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a>  ...
 <a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a>  func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
 <a id="__codelineno-15-16" name="__codelineno-15-16" href="#__codelineno-15-16"></a>    ...
@@ -2342,13 +2342,13 @@ platform.</p>
 <a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>  aie.device(npu1_1col) {
 <a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>    ...
 <a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>    aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
-<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>    memref.global &quot;public&quot; @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>    memref.global "public" @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
 <a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>    ...
 <a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>    aie.shim_dma_allocation @airMemcpyId19(MM2S, 0, 0)
-<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>    memref.global &quot;public&quot; @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>    memref.global "public" @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
 <a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>    ...
 <a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>    aie.shim_dma_allocation @airMemcpyId15(MM2S, 0, 2)
-<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>    memref.global &quot;public&quot; @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>    memref.global "public" @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
 <a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>    ...
 <a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>    func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
 <a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a>      ...
@@ -2366,14 +2366,14 @@ platform.</p>
 <a id="__codelineno-16-26" name="__codelineno-16-26" href="#__codelineno-16-26"></a>      ...
 <a id="__codelineno-16-27" name="__codelineno-16-27" href="#__codelineno-16-27"></a>      return
 <a id="__codelineno-16-28" name="__codelineno-16-28" href="#__codelineno-16-28"></a>    }
-<a id="__codelineno-16-29" name="__codelineno-16-29" href="#__codelineno-16-29"></a>  } {sym_name = &quot;segment_0&quot;}
+<a id="__codelineno-16-29" name="__codelineno-16-29" href="#__codelineno-16-29"></a>  } {sym_name = "segment_0"}
 <a id="__codelineno-16-30" name="__codelineno-16-30" href="#__codelineno-16-30"></a>}
 </code></pre></div></p>
 <h4 id="options_8">Options<a class="headerlink" href="#options_8" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>-trace-size        : Trace buffer size for cores and memtiles (in bytes)
 <a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>-trace-offset      : Trace buffer offset appended to ddr_id=2
 <a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>-output-elf        : Enable ELF output mode. When set, generates a main aie.device wrapper with configure/run ops.
-<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>-coalesce-shim-dma : Coalesce consecutive contiguous shim DMA transfers on the same channel (marked air.preserve_shim_dma_order) into a single wide transfer, reducing the number of host-issued DMA task configure/start/await triplets. Opt-in: this reorders a channel&#39;s paced feeds ahead of the sibling-channel interleave, so enable it only for feeds verified numerically equivalent when coalesced.
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>-coalesce-shim-dma : Coalesce consecutive contiguous shim DMA transfers on the same channel (marked air.preserve_shim_dma_order) into a single wide transfer, reducing the number of host-issued DMA task configure/start/await triplets. Opt-in: this reorders a channel's paced feeds ahead of the sibling-channel interleave, so enable it only for feeds verified numerically equivalent when coalesced.
 </code></pre></div>
 
 

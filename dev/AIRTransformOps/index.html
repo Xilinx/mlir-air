@@ -4231,14 +4231,14 @@ are transformed.</p>
 that can only execute certain operations on vector engines, not on scalar units.
 Common in layer normalization and other neural network operations.</p>
 <p>Example usage (all qualifying unary ops):
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>%func = transform.structured.match ops{[&quot;func.func&quot;]} in %arg0
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>%func = transform.structured.match ops{["func.func"]} in %arg0
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>  : (!transform.any_op) -&gt; !transform.any_op
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>transform.air.broadcast_before_unary %func
 </code></pre></div></p>
 <p>Example usage (specific operation only):
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>%func = transform.structured.match ops{[&quot;func.func&quot;]} in %arg0
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>%func = transform.structured.match ops{["func.func"]} in %arg0
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>  : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>transform.air.broadcast_before_unary %func {op_name = &quot;math.rsqrt&quot;}
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>transform.air.broadcast_before_unary %func {op_name = "math.rsqrt"}
 </code></pre></div></p>
 <p>Returns a handle to the transformed operation.</p>
 <p>Traits: <code>FunctionalStyleTransformOpTrait</code></p>
@@ -4304,7 +4304,7 @@ rsqrt instructions, as it's typically faster and more accurate than
 separate sqrt + division operations. This is a common pattern in layer
 normalization and other neural network operations.</p>
 <p>Example usage:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>%herd = transform.structured.match ops{[&quot;air.herd&quot;]} in %arg0 
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>%herd = transform.structured.match ops{["air.herd"]} in %arg0 
 <a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>  : (!transform.any_op) -&gt; !transform.any_op
 <a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>transform.air.convert_divf_sqrt_to_rsqrt %herd
 </code></pre></div></p>
@@ -4452,7 +4452,7 @@ Canonicalization then folds redundant extract(broadcast(x)) → x pairs.</p>
 <p><strong>Result:</strong> Clean scalar operations on memref.load/store with extract/broadcast only 
 at region boundaries. Canonicalization folds adjacent extract/broadcast pairs automatically.</p>
 <p>Usage:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>%func = transform.structured.match ops{[&quot;func.func&quot;]} in %arg0 
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>%func = transform.structured.match ops{["func.func"]} in %arg0 
 <a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>  : (!transform.any_op) -&gt; !transform.any_op
 <a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>transform.air.convert_size1_vector_to_scalar %func
 </code></pre></div></p>
@@ -4821,7 +4821,7 @@ pass on the target function.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>// Before fusion:
 <a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>%0 = linalg.generic {
 <a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>  indexing_maps = [#map0, #map1],
-<a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>  iterator_types = [&quot;parallel&quot;]
+<a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>  iterator_types = ["parallel"]
 <a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>} ins(%input : tensor&lt;16xf32&gt;) outs(%temp1 : tensor&lt;16xf32&gt;) {
 <a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>  ^bb0(%arg0: f32, %arg1: f32):
 <a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a>    %1 = arith.mulf %arg0, %cst : f32
@@ -4830,7 +4830,7 @@ pass on the target function.</p>
 <a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a>
 <a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a>%result = linalg.generic {
 <a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a>  indexing_maps = [#map0, #map2, #map1],
-<a id="__codelineno-29-13" name="__codelineno-29-13" href="#__codelineno-29-13"></a>  iterator_types = [&quot;parallel&quot;]
+<a id="__codelineno-29-13" name="__codelineno-29-13" href="#__codelineno-29-13"></a>  iterator_types = ["parallel"]
 <a id="__codelineno-29-14" name="__codelineno-29-14" href="#__codelineno-29-14"></a>} ins(%0, %input2 : tensor&lt;16xf32&gt;, tensor&lt;16xf32&gt;) outs(%temp2 : tensor&lt;16xf32&gt;) {
 <a id="__codelineno-29-15" name="__codelineno-29-15" href="#__codelineno-29-15"></a>  ^bb0(%arg0: f32, %arg1: f32, %arg2: f32):
 <a id="__codelineno-29-16" name="__codelineno-29-16" href="#__codelineno-29-16"></a>    %2 = arith.addf %arg0, %arg1 : f32
@@ -4840,7 +4840,7 @@ pass on the target function.</p>
 <a id="__codelineno-29-20" name="__codelineno-29-20" href="#__codelineno-29-20"></a>// After fusion:
 <a id="__codelineno-29-21" name="__codelineno-29-21" href="#__codelineno-29-21"></a>%result = linalg.generic {
 <a id="__codelineno-29-22" name="__codelineno-29-22" href="#__codelineno-29-22"></a>  indexing_maps = [#map0, #map2, #map1],
-<a id="__codelineno-29-23" name="__codelineno-29-23" href="#__codelineno-29-23"></a>  iterator_types = [&quot;parallel&quot;]
+<a id="__codelineno-29-23" name="__codelineno-29-23" href="#__codelineno-29-23"></a>  iterator_types = ["parallel"]
 <a id="__codelineno-29-24" name="__codelineno-29-24" href="#__codelineno-29-24"></a>} ins(%input, %input2 : tensor&lt;16xf32&gt;, tensor&lt;16xf32&gt;) outs(%temp2 : tensor&lt;16xf32&gt;) {
 <a id="__codelineno-29-25" name="__codelineno-29-25" href="#__codelineno-29-25"></a>  ^bb0(%arg0: f32, %arg1: f32, %arg2: f32):
 <a id="__codelineno-29-26" name="__codelineno-29-26" href="#__codelineno-29-26"></a>    %1 = arith.mulf %arg0, %cst : f32
@@ -4959,7 +4959,7 @@ The fusion is performed by:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>// Before fusion:
 <a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a>%0 = linalg.generic {
 <a id="__codelineno-32-3" name="__codelineno-32-3" href="#__codelineno-32-3"></a>  indexing_maps = [#map0, #map1],
-<a id="__codelineno-32-4" name="__codelineno-32-4" href="#__codelineno-32-4"></a>  iterator_types = [&quot;parallel&quot;, &quot;parallel&quot;]
+<a id="__codelineno-32-4" name="__codelineno-32-4" href="#__codelineno-32-4"></a>  iterator_types = ["parallel", "parallel"]
 <a id="__codelineno-32-5" name="__codelineno-32-5" href="#__codelineno-32-5"></a>} ins(%input : tensor&lt;16x8xf16&gt;) outs(%temp : tensor&lt;16x8xf32&gt;) {
 <a id="__codelineno-32-6" name="__codelineno-32-6" href="#__codelineno-32-6"></a>  ^bb0(%arg0: f16):
 <a id="__codelineno-32-7" name="__codelineno-32-7" href="#__codelineno-32-7"></a>    %1 = arith.extf %arg0 : f16 to f32
@@ -4969,7 +4969,7 @@ The fusion is performed by:
 <a id="__codelineno-32-11" name="__codelineno-32-11" href="#__codelineno-32-11"></a>
 <a id="__codelineno-32-12" name="__codelineno-32-12" href="#__codelineno-32-12"></a>%result = linalg.generic {
 <a id="__codelineno-32-13" name="__codelineno-32-13" href="#__codelineno-32-13"></a>  indexing_maps = [#map2, #map3],
-<a id="__codelineno-32-14" name="__codelineno-32-14" href="#__codelineno-32-14"></a>  iterator_types = [&quot;parallel&quot;, &quot;reduction&quot;]
+<a id="__codelineno-32-14" name="__codelineno-32-14" href="#__codelineno-32-14"></a>  iterator_types = ["parallel", "reduction"]
 <a id="__codelineno-32-15" name="__codelineno-32-15" href="#__codelineno-32-15"></a>} ins(%0 : tensor&lt;16x8xf32&gt;) outs(%output : tensor&lt;16xf32&gt;) {
 <a id="__codelineno-32-16" name="__codelineno-32-16" href="#__codelineno-32-16"></a>  ^bb0(%arg0: f32, %arg1: f32):
 <a id="__codelineno-32-17" name="__codelineno-32-17" href="#__codelineno-32-17"></a>    %3 = arith.addf %arg0, %arg1 : f32
@@ -4979,7 +4979,7 @@ The fusion is performed by:
 <a id="__codelineno-32-21" name="__codelineno-32-21" href="#__codelineno-32-21"></a>// After fusion:
 <a id="__codelineno-32-22" name="__codelineno-32-22" href="#__codelineno-32-22"></a>%result = linalg.generic {
 <a id="__codelineno-32-23" name="__codelineno-32-23" href="#__codelineno-32-23"></a>  indexing_maps = [#map4, #map3],
-<a id="__codelineno-32-24" name="__codelineno-32-24" href="#__codelineno-32-24"></a>  iterator_types = [&quot;parallel&quot;, &quot;reduction&quot;]
+<a id="__codelineno-32-24" name="__codelineno-32-24" href="#__codelineno-32-24"></a>  iterator_types = ["parallel", "reduction"]
 <a id="__codelineno-32-25" name="__codelineno-32-25" href="#__codelineno-32-25"></a>} ins(%input : tensor&lt;16x8xf16&gt;) outs(%output : tensor&lt;16xf32&gt;) {
 <a id="__codelineno-32-26" name="__codelineno-32-26" href="#__codelineno-32-26"></a>  ^bb0(%arg0: f16, %arg1: f32):
 <a id="__codelineno-32-27" name="__codelineno-32-27" href="#__codelineno-32-27"></a>    %1 = arith.extf %arg0 : f16 to f32
@@ -5159,7 +5159,7 @@ and other vectorizable operations.</p>
 - disable_multi_reduction_to_contract_patterns: Disables multi-reduction to contract patterns
 - vectorize_padding: Enables vectorization of padding operations</p>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>%herd = transform.structured.match ops{[&quot;air.herd&quot;]} in %f : (!transform.any_op) -&gt; !transform.any_op
+<div class="highlight"><pre><span></span><code><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>%herd = transform.structured.match ops{["air.herd"]} in %f : (!transform.any_op) -&gt; !transform.any_op
 <a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>%vectorized = transform.air.herd_vectorize %herd {
 <a id="__codelineno-37-3" name="__codelineno-37-3" href="#__codelineno-37-3"></a>  vectorize_nd_extract = false,
 <a id="__codelineno-37-4" name="__codelineno-37-4" href="#__codelineno-37-4"></a>  flatten_1d_depthwise_conv = false,
@@ -5347,7 +5347,7 @@ exact number and ordering of transfer operations, which can change with
 different unroll factors, tile sizes, or data types.</p>
 <p>The op works across all matmul variants (BF16, I8, I16) and any unroll factor.</p>
 <p>Example usage:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>%herd = transform.structured.match ops{[&quot;air.herd&quot;]} attributes{compute_herd}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>%herd = transform.structured.match ops{["air.herd"]} attributes{compute_herd}
 <a id="__codelineno-42-2" name="__codelineno-42-2" href="#__codelineno-42-2"></a>  in %arg0 : (!transform.any_op) -&gt; !transform.any_op
 <a id="__codelineno-42-3" name="__codelineno-42-3" href="#__codelineno-42-3"></a>%loop = ...  // innermost scf.for loop
 <a id="__codelineno-42-4" name="__codelineno-42-4" href="#__codelineno-42-4"></a>%updated_loop = transform.air.hoist_loop_invariant_transfers %herd, %loop
@@ -5549,19 +5549,19 @@ inplace.</p>
 allocated buffers can be specified with with the memory_space attribute as
 "L1", "L2" or "L3". The default memory space is L1.</p>
 <p>example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a>%0 = transform.structured.match ops{[&quot;linalg.matmul&quot;]} in %code  : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-50-2" name="__codelineno-50-2" href="#__codelineno-50-2"></a>%1 = transform.air.linalg_promote %0 {memory_space=&quot;L2&quot;, operands_to_promote=[0]}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a>%0 = transform.structured.match ops{["linalg.matmul"]} in %code  : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-50-2" name="__codelineno-50-2" href="#__codelineno-50-2"></a>%1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0]}
 </code></pre></div></p>
 <p>The <code>group_size</code> attribute is used to apply promotion to multiple
 linalg ops. When <code>group_size=N</code>, the <code>operands_to_promote</code> attribute refers to
 <code>N</code> payload operations at a time and the operand indices apply to the
 operands of the <code>N</code> operations in the order they appear in the target handle.</p>
 <p>For example,
-<div class="highlight"><pre><span></span><code><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a>%m = transform.structured.match ops{[&quot;linalg.matmul&quot;]} in %f : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-51-2" name="__codelineno-51-2" href="#__codelineno-51-2"></a>%f = transform.structured.match ops{[&quot;linalg.fill&quot;]} in %f : (!transform.any_op) -&gt; !transform.any_op
+<div class="highlight"><pre><span></span><code><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a>%m = transform.structured.match ops{["linalg.matmul"]} in %f : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-51-2" name="__codelineno-51-2" href="#__codelineno-51-2"></a>%f = transform.structured.match ops{["linalg.fill"]} in %f : (!transform.any_op) -&gt; !transform.any_op
 <a id="__codelineno-51-3" name="__codelineno-51-3" href="#__codelineno-51-3"></a>%h = transform.merge_handles %f, %m : !transform.any_op
 <a id="__codelineno-51-4" name="__codelineno-51-4" href="#__codelineno-51-4"></a>// promote the input of the fill operation and the output of the matmul operation to L1 memory
-<a id="__codelineno-51-5" name="__codelineno-51-5" href="#__codelineno-51-5"></a>transform.air.linalg_promote %h {&quot;group_size&quot;=2, &quot;operands_to_promote&quot;=[1,4], &quot;memory_space&quot;=&quot;L1&quot;}
+<a id="__codelineno-51-5" name="__codelineno-51-5" href="#__codelineno-51-5"></a>transform.air.linalg_promote %h {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
 </code></pre></div></p>
 <p>Interfaces: <code>MemoryEffectOpInterface</code>, <code>TransformOpInterface</code></p>
 <h4 id="attributes_2">Attributes:<a class="headerlink" href="#attributes_2" title="Permanent link">&para;</a></h4>
@@ -5670,8 +5670,8 @@ to link the function call to a prebuilt object that contains the
 implementation of the function. If the linalg op is inside a herd, the 
 <code>link_with</code> attribute is propagated to the herd.</p>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a>%matmul = transform.structured.match ops{[&quot;linalg.matmul&quot;]} in %f : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-53-2" name="__codelineno-53-2" href="#__codelineno-53-2"></a>%call = transform.air.linalg_to_library_call %matmul { function_name = &quot;my_matmul&quot;, link_with = &quot;extern_func.o&quot; } : (!transform.any_op) -&gt; !transform.any_op
+<div class="highlight"><pre><span></span><code><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a>%matmul = transform.structured.match ops{["linalg.matmul"]} in %f : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-53-2" name="__codelineno-53-2" href="#__codelineno-53-2"></a>%call = transform.air.linalg_to_library_call %matmul { function_name = "my_matmul", link_with = "extern_func.o" } : (!transform.any_op) -&gt; !transform.any_op
 </code></pre></div></p>
 <p>Traits: <code>FunctionalStyleTransformOpTrait</code>, <code>TransformEachOpTrait</code></p>
 <p>Interfaces: <code>MemoryEffectsOpInterface</code>, <code>TransformOpInterface</code></p>
@@ -5799,13 +5799,13 @@ hierarchy levels by invoking the op multiple times with different targets.</p>
 <p>This is the transform dialect equivalent of the <code>air-override-memref-memory-space</code> pass.</p>
 <p>Example:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-57-1" name="__codelineno-57-1" href="#__codelineno-57-1"></a>// Override herd allocs to L1 (memory_space 2)
-<a id="__codelineno-57-2" name="__codelineno-57-2" href="#__codelineno-57-2"></a>%herd = transform.structured.match ops{[&quot;air.herd&quot;]} in %arg1
+<a id="__codelineno-57-2" name="__codelineno-57-2" href="#__codelineno-57-2"></a>%herd = transform.structured.match ops{["air.herd"]} in %arg1
 <a id="__codelineno-57-3" name="__codelineno-57-3" href="#__codelineno-57-3"></a>  : (!transform.any_op) -&gt; !transform.any_op
 <a id="__codelineno-57-4" name="__codelineno-57-4" href="#__codelineno-57-4"></a>transform.air.override_memref_memory_space %herd {memory_space = 2}
 <a id="__codelineno-57-5" name="__codelineno-57-5" href="#__codelineno-57-5"></a>  : (!transform.any_op) -&gt; !transform.any_op
 <a id="__codelineno-57-6" name="__codelineno-57-6" href="#__codelineno-57-6"></a>
 <a id="__codelineno-57-7" name="__codelineno-57-7" href="#__codelineno-57-7"></a>// Override func-level allocs to L2 (memory_space 1), excluding herds
-<a id="__codelineno-57-8" name="__codelineno-57-8" href="#__codelineno-57-8"></a>%func = transform.structured.match ops{[&quot;func.func&quot;]} in %arg1
+<a id="__codelineno-57-8" name="__codelineno-57-8" href="#__codelineno-57-8"></a>%func = transform.structured.match ops{["func.func"]} in %arg1
 <a id="__codelineno-57-9" name="__codelineno-57-9" href="#__codelineno-57-9"></a>  : (!transform.any_op) -&gt; !transform.any_op
 <a id="__codelineno-57-10" name="__codelineno-57-10" href="#__codelineno-57-10"></a>transform.air.override_memref_memory_space %func {memory_space = 1}
 <a id="__codelineno-57-11" name="__codelineno-57-11" href="#__codelineno-57-11"></a>  : (!transform.any_op) -&gt; !transform.any_op

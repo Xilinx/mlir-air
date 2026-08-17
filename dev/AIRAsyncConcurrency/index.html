@@ -1578,7 +1578,7 @@ MLIR-AIR provides a graph canonicalization pass <code>-air-dependency-canonicali
 <h4 id="dumping-dependency-graphs">Dumping dependency graphs<a class="headerlink" href="#dumping-dependency-graphs" title="Permanent link">&para;</a></h4>
 <p>Use the <code>output-dir</code> option to specify where DOT files are written:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>air-opt<span class="w"> </span>input.mlir<span class="w"> </span>-air-dependency<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">    </span>-air-dependency-parse-graph<span class="o">=</span><span class="s1">&#39;output-dir=/tmp/my_graphs&#39;</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">    </span>-air-dependency-parse-graph<span class="o">=</span><span class="s1">'output-dir=/tmp/my_graphs'</span>
 </code></pre></div>
 <p>This generates one DOT file per hierarchy level, plus a <code>combined.dot</code> that nests all levels using GraphViz subgraph clusters:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>/tmp/my_graphs/
@@ -1590,11 +1590,11 @@ MLIR-AIR provides a graph canonicalization pass <code>-air-dependency-canonicali
 </code></pre></div>
 <p>To visualize the post-canonicalization (transitive-reduced) graph instead, use <code>dump-graph</code> on <code>-air-dependency-canonicalize</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>air-opt<span class="w"> </span>input.mlir<span class="w"> </span>-air-dependency<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">    </span>-air-dependency-canonicalize<span class="o">=</span><span class="s1">&#39;dump-graph=true output-dir=/tmp/canon_graphs&#39;</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">    </span>-air-dependency-canonicalize<span class="o">=</span><span class="s1">'dump-graph=true output-dir=/tmp/canon_graphs'</span>
 </code></pre></div>
 <p>To show per-core graphs within each herd (instead of a single herd-level graph), use the <code>show-cores</code> option:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>air-opt<span class="w"> </span>input.mlir<span class="w"> </span>-air-dependency<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span>-air-dependency-parse-graph<span class="o">=</span><span class="s1">&#39;output-dir=/tmp/core_graphs show-cores=true&#39;</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span>-air-dependency-parse-graph<span class="o">=</span><span class="s1">'output-dir=/tmp/core_graphs show-cores=true'</span>
 </code></pre></div>
 <h4 id="rendering-dot-files">Rendering DOT files<a class="headerlink" href="#rendering-dot-files" title="Permanent link">&para;</a></h4>
 <p>The generated DOT files can be rendered using <a href="https://graphviz.org/">Graphviz</a>:</p>

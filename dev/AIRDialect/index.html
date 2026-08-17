@@ -3456,31 +3456,31 @@ engine does not stamp/filter these ids; the flows only install switchbox routing
 Without <code>packet_ids</code> a packet channel gets a single auto-assigned id.</p>
 <p>Example:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>// An array of 4 x 4 streaming DMA channels (NPU)
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>air.channel @channel_0 [4, 4] {channel_type = &quot;npu_dma_stream&quot;}
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>air.channel @channel_0 [4, 4] {channel_type = "npu_dma_stream"}
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>// A streaming DMA channel broadcasting to 4 destinations (NPU)
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4], channel_type = &quot;npu_dma_stream&quot;}
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "npu_dma_stream"}
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>// An array of 1 x 4 streaming DMA channels broadcasting to 4 x 4 destinations (NPU).
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>// Broadcasting follows NumPy&#39;s rules.
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>air.channel @channel_2 [1, 4] {broadcast_shape = [4, 4], channel_type = &quot;npu_dma_stream&quot;}
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>// Broadcasting follows NumPy's rules.
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>air.channel @channel_2 [1, 4] {broadcast_shape = [4, 4], channel_type = "npu_dma_stream"}
 <a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
 <a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>// A packet-switched DMA channel (NPU)
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>air.channel @channel_3 [] {channel_type = &quot;npu_dma_packet&quot;}
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>air.channel @channel_3 [] {channel_type = "npu_dma_packet"}
 <a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>
 <a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>// A cascade channel using core-to-core cascade connections (NPU)
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>air.channel @channel_4 [] {channel_type = &quot;npu_cascade&quot;}
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>air.channel @channel_4 [] {channel_type = "npu_cascade"}
 <a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>
 <a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>// An MMIO channel: the put writes a constant from host into L1 of each
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>// get&#39;s destination tile via runtime-sequence blockwrites (NPU)
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>air.channel @channel_5 [] {channel_type = &quot;npu_mmio&quot;}
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>// get's destination tile via runtime-sequence blockwrites (NPU)
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>air.channel @channel_5 [] {channel_type = "npu_mmio"}
 <a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>
 <a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>// A cross-GPU channel through the symmetric heap (GPU). Must appear inside
 <a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>// an air.rank scope; the indices on put/get encode the peer rank.
-<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>air.channel @channel_6 [] {channel_type = &quot;gpu_symmetric_heap&quot;}
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>air.channel @channel_6 [] {channel_type = "gpu_symmetric_heap"}
 <a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>
 <a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>// A packet-switched channel pinning two routing ids (NPU)
-<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>air.channel @channel_7 [] {channel_type = &quot;npu_dma_packet&quot;, packet_ids = [1, 4]}
+<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>air.channel @channel_7 [] {channel_type = "npu_dma_packet", packet_ids = [1, 4]}
 </code></pre></div>
 <p>Interfaces: <code>Symbol</code></p>
 <h4 id="attributes">Attributes:<a class="headerlink" href="#attributes" title="Permanent link">&para;</a></h4>

@@ -1175,6 +1175,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#fan-out-over-space-and-over-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fan-out over space and over time
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#capacity-and-depth" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1270,6 +1281,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Data movement on NPU">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#temporal-fan-out-on-aie" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Temporal fan-out on AIE
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -2305,6 +2333,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#fan-out-over-space-and-over-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fan-out over space and over time
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#capacity-and-depth" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2400,6 +2439,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Data movement on NPU">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#temporal-fan-out-on-aie" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Temporal fan-out on AIE
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -3131,7 +3187,7 @@ Currently defined values:</p>
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>air.herd [@name] tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>         args(%a₀=%v₀, …) : &lt;types&gt;
 <a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>         [x_loc=&lt;col&gt;] [y_loc=&lt;row&gt;]
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>         [link_with=&quot;&lt;object&gt;&quot;]
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>         [link_with="&lt;object&gt;"]
 <a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>         [dependency  = [%t₀, …]]
 <a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>         [affinity    = [%t₀, …]]
 <a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>         [concurrency = [%t₀, …]]
@@ -3145,7 +3201,7 @@ Currently defined values:</p>
 <a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>           tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
 <a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>           args(%a₀=%v₀, …) : &lt;types&gt;
 <a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>           [x_loc=&lt;col&gt;] [y_loc=&lt;row&gt;]
-<a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a>           [link_with=&quot;&lt;object&gt;&quot;]
+<a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a>           [link_with="&lt;object&gt;"]
 <a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a>           [dependency  = [%t₀, …]]
 <a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a>           [affinity    = [%t₀, …]]
 <a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>           [concurrency = [%t₀, …]]
@@ -3244,24 +3300,27 @@ referenced memref to be <code>air.symmetric</code>-tagged (see §2.7). Lowering 
 GPU backend (planned: <code>air-cross-rank-dma-to-mgpu</code>) will expand these into
 <code>mgpuGetHeapBases()</code>-based peer-VA arithmetic + <code>mgpuMemcpy</code>; the NPU
 backend does not support these attributes.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>// Read 1024 floats from rank 0&#39;s symmetric buffer into local L1.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>// Read 1024 floats from rank 0's symmetric buffer into local L1.
 <a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>air.dma_memcpy_nd (%local[][][], %sym[][][]) {src_rank = 0 : i64}
 <a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    : (memref&lt;1024xf32, 2&gt;, memref&lt;1024xf32, 0&gt;)
 </code></pre></div>
 <hr />
 <h3 id="25-airchannel-airchannelput-airchannelget">2.5 <code>air.channel</code>, <code>air.channel.put</code>, <code>air.channel.get</code><a class="headerlink" href="#25-airchannel-airchannelput-airchannelget" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>// Channel declaration — at module scope
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>air.channel @name [dim₀, dim₁, …] {channel_type = &quot;npu_dma_stream&quot;, depth = &lt;N&gt;}
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>air.channel @name [dim₀, dim₁, …] {channel_type = "npu_dma_stream", depth = &lt;N&gt;}
 <a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
 <a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>// Synchronous put/get — block until the transfer completes
 <a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>air.channel.put @name[indices] (src[offsets][sizes][strides]) : (type_src)
 <a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>air.channel.get @name[indices] (dst[offsets][sizes][strides]) : (type_dst)
 <a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>
-<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>// Asynchronous put/get — return !air.token; transfer completes when token signals
-<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>[%token =] air.channel.put @name[indices] [dependency = [%t₀, …]]
-<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>           (src[offsets][sizes][strides]) : (type_src)
-<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>[%token =] air.channel.get @name[indices] [dependency = [%t₀, …]]
-<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>           (dst[offsets][sizes][strides]) : (type_dst)
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>// Put naming a runtime destination — fan-out over time
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>air.channel.put @name[indices] (src[offsets][sizes][strides]) dest(%d) : (type_src)
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>// Asynchronous put/get — return !air.token; transfer completes when token signals
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>[%token =] air.channel.put @name[indices] [dependency = [%t₀, …]]
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>           (src[offsets][sizes][strides]) : (type_src)
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>[%token =] air.channel.get @name[indices] [dependency = [%t₀, …]]
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>           (dst[offsets][sizes][strides]) : (type_dst)
 </code></pre></div>
 <p>Channels are <strong>declared</strong> once (at module scope) and <strong>used</strong> at distinct producer and
 consumer sites. They decouple the put and get sides, allowing the compiler to schedule
@@ -3303,6 +3362,39 @@ use the <code>gpu_</code> prefix.</p>
 </table>
 <p>The <code>broadcast_shape</code> attribute enables one-to-many communication following NumPy
 broadcasting rules.</p>
+<h4 id="fan-out-over-space-and-over-time">Fan-out over space and over time<a class="headerlink" href="#fan-out-over-space-and-over-time" title="Permanent link">&para;</a></h4>
+<p><code>broadcast_shape</code> declares how many destinations a channel reaches — the geometry of the
+destination space. It does not say whether a given transfer reaches all of them.</p>
+<p>A <code>put</code> may name a destination, <code>dest(%d)</code>. <code>%d</code> selects one coordinate along the
+channel's broadcast dimension — the index the matching <code>get</code> sits at — and it is a
+runtime value. Its presence changes what the fan-out means:</p>
+<table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>no <code>dest</code></td>
+<td><strong>Spatial</strong> fan-out: every destination receives every transfer.</td>
+</tr>
+<tr>
+<td><code>dest(%d)</code></td>
+<td><strong>Temporal</strong> fan-out: each transfer is delivered to exactly one destination, and which one may differ from transfer to transfer.</td>
+</tr>
+</tbody>
+</table>
+<p><code>dest</code> names the destination of the <em>eventual</em> fan-out, which need not be the channel
+the <code>put</code> is on. A transfer may cross intermediate channels first; those forwarding
+<code>put</code>s leave <code>dest</code> unset. This matters because the fan-out is typically performed by a
+data-mover stage that only relays a buffer it did not produce, and so cannot itself know
+where the data should go — the choice has to accompany the data from the producer that
+made it.</p>
+<p>Runtime destination selection requires an interconnect that can route each transfer
+independently. Backends may therefore restrict which <code>channel_type</code> values support it;
+see the backend mapping sections.</p>
 <h4 id="capacity-and-depth">Capacity and depth<a class="headerlink" href="#capacity-and-depth" title="Permanent link">&para;</a></h4>
 <p>A channel has a finite buffer capacity set by the <code>depth</code> attribute (default <strong>1</strong>).
 The depth specifies how many transfers may be in-flight simultaneously:</p>
@@ -3478,6 +3570,20 @@ directly to physical hardware structures:</p>
 <p>The <code>air-to-aie</code> pass translates each <code>air.herd</code> into AIE tile operations (<code>aie.core</code>,
 <code>aie.buffer</code>, <code>aie.lock</code>), routes channels through the switch boxes, and generates the
 SHIM DMA configuration for L3 transfers.</p>
+<h4 id="temporal-fan-out-on-aie">Temporal fan-out on AIE<a class="headerlink" href="#temporal-fan-out-on-aie" title="Permanent link">&para;</a></h4>
+<p>Circuit-switched channel types (<code>npu_dma_stream</code> and the default) are statically routed:
+a route is programmed once and every destination on the broadcast dimension receives
+every transfer. They support spatial fan-out only, so <code>dest</code> (§2.5) has no meaning on
+them.</p>
+<p><code>npu_dma_packet</code> is the packet-switched overlay, on which each transfer is routed
+individually. It supports both modes, and a <code>dest</code> on the originating <code>put</code> is what
+selects the temporal one.</p>
+<p>Realising that mode requires a routing decision to travel with the data, from the
+producer that made it to the switch box that acts on it, and requires every stage in
+between to preserve it. The compiler does all of this from the <code>dest</code> operand alone. It
+is also checked rather than assumed: a <code>dest</code> that cannot be realised — no
+multi-destination channel downstream of it, or no producer upstream of one that could
+have made the choice — is a compile error, not a misrouted packet at runtime.</p>
 <h3 id="placement">Placement<a class="headerlink" href="#placement" title="Permanent link">&para;</a></h3>
 <p>Placement of a segment on physical tiles is guided by the optional <code>x_loc</code>/<code>y_loc</code>
 (column/row offset) and <code>x_size</code>/<code>y_size</code> (column/row count) attributes on

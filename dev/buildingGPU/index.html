@@ -2310,12 +2310,12 @@
 </code></pre></div>
 <h3 id="step-3-llvm-lowering">Step 3: LLVM Lowering<a class="headerlink" href="#step-3-llvm-lowering" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>mlir-opt<span class="w"> </span>step2_outlined.mlir<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span>--pass-pipeline<span class="o">=</span><span class="s2">&quot;builtin.module(func.func(lower-affine,convert-linalg-to-loops,convert-scf-to-cf),gpu-kernel-outlining)&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span>--pass-pipeline<span class="o">=</span><span class="s2">"builtin.module(func.func(lower-affine,convert-linalg-to-loops,convert-scf-to-cf),gpu-kernel-outlining)"</span><span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span>-o<span class="w"> </span>step3_gpu.mlir
 </code></pre></div>
 <h3 id="step-4-rocdl-binary-generation">Step 4: ROCDL Binary Generation<a class="headerlink" href="#step-4-rocdl-binary-generation" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>mlir-opt<span class="w"> </span>step3_gpu.mlir<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">    </span>--pass-pipeline<span class="o">=</span><span class="s2">&quot;builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary,func.func(gpu-async-region),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">    </span>--pass-pipeline<span class="o">=</span><span class="s2">"builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary,func.func(gpu-async-region),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)"</span><span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span>-o<span class="w"> </span>step4_final.mlir
 </code></pre></div>
 <h3 id="step-5-run-with-mlir-runner">Step 5: Run with mlir-runner<a class="headerlink" href="#step-5-run-with-mlir-runner" title="Permanent link">&para;</a></h3>
@@ -2336,7 +2336,7 @@
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <h3 id="missing-python-bindings">Missing Python Bindings<a class="headerlink" href="#missing-python-bindings" title="Permanent link">&para;</a></h3>
 <p>If you see:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>ModuleNotFoundError: No module named &#39;air&#39;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>ModuleNotFoundError: No module named 'air'
 </code></pre></div></p>
 <p>Make sure to source the environment setup:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
@@ -2362,7 +2362,7 @@
 </code></pre></div></p>
 <h3 id="named-barrier-error">Named Barrier Error<a class="headerlink" href="#named-barrier-error" title="Permanent link">&para;</a></h3>
 <p>If you see:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>error: cannot evaluate equated symbol &#39;air_kernel_0.num_named_barrier&#39;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>error: cannot evaluate equated symbol 'air_kernel_0.num_named_barrier'
 </code></pre></div></p>
 <p>This can be fixed by configuring the <code>rocdl-attach-target</code> pass with <code>wave64=true</code>. Note that this is not enabled by default in <code>aircc</code>, so you must pass this option explicitly in your GPU pipeline.</p>
 <h2 id="building-with-both-aie-and-gpu-support">Building with Both AIE and GPU Support<a class="headerlink" href="#building-with-both-aie-and-gpu-support" title="Permanent link">&para;</a></h2>

@@ -3647,7 +3647,7 @@ front end wrote, before another pass rewrites the channel ops. Header
 emission is the exception and runs in a second slot -- see <code>emit-headers</code>.</p>
 <h4 id="options_1">Options<a class="headerlink" href="#options_1" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>-report       : Emit a remark per packet channel describing its classification.
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>-strict       : Fail when the inference disagrees with a channel&#39;s existing packet_ids (default: warn).
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>-strict       : Fail when the inference disagrees with a channel's existing packet_ids (default: warn).
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>-assign       : Write derived packet_ids onto channels that have none.
 <a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>-emit-headers : Write the routing header into the payload of every put that names a `dest`, and drop the operand. Turn this off in the early slot when a later slot will do it: the store has to share a lock section with the payload write, so it must be emitted once the air.execute regions exist (after air-dependency).
 </code></pre></div>
@@ -3696,8 +3696,8 @@ the loop spaces are hyper-rectangular.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>module  {
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>  func.func @task(%arg0: tensor&lt;4096xi32&gt;, %arg1: tensor&lt;4096xi32&gt;) -&gt; tensor&lt;4096xi32&gt; {
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    %0 = memref.alloc() : memref&lt;4096xi32&gt;
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    %1 = &quot;aten.type_cast&quot;(%arg0) : (tensor&lt;4096xi32&gt;) -&gt; memref&lt;4096xi32&gt;
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    %2 = &quot;aten.type_cast&quot;(%arg1) : (tensor&lt;4096xi32&gt;) -&gt; memref&lt;4096xi32&gt;
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;4096xi32&gt;) -&gt; memref&lt;4096xi32&gt;
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;4096xi32&gt;) -&gt; memref&lt;4096xi32&gt;
 <a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    %c0 = constant 0 : index
 <a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    %c4096 = constant 4096 : index
 <a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    %c0_0 = constant 0 : index
@@ -3706,8 +3706,8 @@ the loop spaces are hyper-rectangular.</p>
 <a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>      %5 = affine.load %2[%arg2] : memref&lt;4096xi32&gt;
 <a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>      %6 = muli %4, %5 : i32
 <a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>      affine.store %6, %0[%arg2] : memref&lt;4096xi32&gt;
-<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>    } {affine_opt_label = &quot;air.binary_op&quot;}
-<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>    %3 = &quot;aten.type_cast&quot;(%0) : (memref&lt;4096xi32&gt;) -&gt; tensor&lt;4096xi32&gt;
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>    } {affine_opt_label = "air.binary_op"}
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;4096xi32&gt;) -&gt; tensor&lt;4096xi32&gt;
 <a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>    return %3 : tensor&lt;4096xi32&gt;
 <a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>  }
 <a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>}
@@ -3717,8 +3717,8 @@ Output:
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>module  {
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>  func.func @task(%arg0: tensor&lt;4096xi32&gt;, %arg1: tensor&lt;4096xi32&gt;) -&gt; tensor&lt;4096xi32&gt; {
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    %0 = memref.alloc() : memref&lt;4096xi32&gt;
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    %1 = &quot;aten.type_cast&quot;(%arg0) : (tensor&lt;4096xi32&gt;) -&gt; memref&lt;4096xi32&gt;
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    %2 = &quot;aten.type_cast&quot;(%arg1) : (tensor&lt;4096xi32&gt;) -&gt; memref&lt;4096xi32&gt;
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;4096xi32&gt;) -&gt; memref&lt;4096xi32&gt;
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;4096xi32&gt;) -&gt; memref&lt;4096xi32&gt;
 <a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    affine.for %arg2 = 0 to 16 {
 <a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>      affine.for %arg3 = 0 to 2 {
 <a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>        affine.for %arg4 = 0 to 2 {
@@ -3731,8 +3731,8 @@ Output:
 <a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>          }
 <a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>        }
 <a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>      }
-<a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>    } {affine_opt_label = &quot;&quot;}
-<a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>    %3 = &quot;aten.type_cast&quot;(%0) : (memref&lt;4096xi32&gt;) -&gt; tensor&lt;4096xi32&gt;
+<a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>    } {affine_opt_label = ""}
+<a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;4096xi32&gt;) -&gt; tensor&lt;4096xi32&gt;
 <a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>    return %3 : tensor&lt;4096xi32&gt;
 <a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>  }
 <a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>}
@@ -3743,8 +3743,8 @@ Output:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>module  {
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  func.func @task(%arg0: tensor&lt;28x10xf32&gt;, %arg1: tensor&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt; {
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    %0 = memref.alloc() : memref&lt;28x10xf32&gt;
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    %1 = &quot;aten.type_cast&quot;(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>    %2 = &quot;aten.type_cast&quot;(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
 <a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>    affine.for %arg2 = 0 to 28 {
 <a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>      affine.for %arg3 = 0 to 10 {
 <a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>        %4 = affine.load %1[%arg2, %arg3] : memref&lt;28x10xf32&gt;
@@ -3752,8 +3752,8 @@ Output:
 <a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>        %6 = mulf %4, %5 : f32
 <a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>        affine.store %6, %0[%arg2, %arg3] : memref&lt;28x10xf32&gt;
 <a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>      }
-<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>    } {affine_opt_label = &quot;air.binary_op&quot;}
-<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>    %3 = &quot;aten.type_cast&quot;(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>    } {affine_opt_label = "air.binary_op"}
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
 <a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>    return %3 : tensor&lt;28x10xf32&gt;
 <a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>  }
 <a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>}
@@ -3764,8 +3764,8 @@ Output:
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>module  {
 <a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>  func.func @task(%arg0: tensor&lt;28x10xf32&gt;, %arg1: tensor&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt; {
 <a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    %0 = memref.alloc() : memref&lt;28x10xf32&gt;
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    %1 = &quot;aten.type_cast&quot;(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    %2 = &quot;aten.type_cast&quot;(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
 <a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    affine.for %arg2 = 0 to 2 {
 <a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>      affine.for %arg3 = 0 to 2 {
 <a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>        affine.for %arg4 = 0 to 7 {
@@ -3782,7 +3782,7 @@ Output:
 <a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a>        }
 <a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>      }
 <a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a>    }
-<a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a>    %3 = &quot;aten.type_cast&quot;(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
+<a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
 <a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a>    return %3 : tensor&lt;28x10xf32&gt;
 <a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a>  }
 <a id="__codelineno-8-27" name="__codelineno-8-27" href="#__codelineno-8-27"></a>}
@@ -3863,7 +3863,7 @@ The pass also generates a dot file which visualizes the dependency graph.</p>
 <p><code>-air-dependency</code></p>
 <p>Input:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>#map = affine_map&lt;()[s0] -&gt; (s0 * 32)&gt;
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>module attributes {torch.debug_module_name = &quot;mmult&quot;} {
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>module attributes {torch.debug_module_name = "mmult"} {
 <a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>  func.func @forward(%arg0: memref&lt;1024x1024xf32&gt;, %arg1: memref&lt;1024x1024xf32&gt;, %arg2: memref&lt;1024x1024xf32&gt;) {
 <a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>    %c1024 = arith.constant 1024 : index
 <a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>    %cst = arith.constant 0.000000e+00 : f32
@@ -3878,7 +3878,7 @@ The pass also generates a dot file which visualizes the dependency graph.</p>
 <a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a>    scf.for %arg3 = %c0 to %c1024 step %c128 {
 <a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>      scf.for %arg4 = %c0 to %c1024 step %c128 {
 <a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a>        scf.for %arg5 = %c0 to %c1024 step %c32 {
-<a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a>          air.launch_herd  tile (%arg6, %arg7) in (%arg8=%c4, %arg9=%c4) args(%arg10=%arg3, %arg11=%arg5, %arg12=%arg0, %arg13=%arg4, %arg14=%arg1, %arg15=%1) : index, index, memref&lt;1024x1024xf32&gt;, index, memref&lt;1024x1024xf32&gt;, memref&lt;1024x1024xf32&gt; attributes {sym_name = &quot;herd_0&quot;} {
+<a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a>          air.launch_herd  tile (%arg6, %arg7) in (%arg8=%c4, %arg9=%c4) args(%arg10=%arg3, %arg11=%arg5, %arg12=%arg0, %arg13=%arg4, %arg14=%arg1, %arg15=%1) : index, index, memref&lt;1024x1024xf32&gt;, index, memref&lt;1024x1024xf32&gt;, memref&lt;1024x1024xf32&gt; attributes {sym_name = "herd_0"} {
 <a id="__codelineno-12-18" name="__codelineno-12-18" href="#__codelineno-12-18"></a>            %c1 = arith.constant 1 : index
 <a id="__codelineno-12-19" name="__codelineno-12-19" href="#__codelineno-12-19"></a>            %c1024_0 = arith.constant 1024 : index
 <a id="__codelineno-12-20" name="__codelineno-12-20" href="#__codelineno-12-20"></a>            %c32_1 = arith.constant 32 : index
@@ -3910,7 +3910,7 @@ The pass also generates a dot file which visualizes the dependency graph.</p>
 </code></pre></div>
 <p>Output:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>#map = affine_map&lt;()[s0] -&gt; (s0 * 32)&gt;
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>module attributes {torch.debug_module_name = &quot;mmult&quot;} {
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>module attributes {torch.debug_module_name = "mmult"} {
 <a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>  func.func @forward(%arg0: memref&lt;1024x1024xf32&gt;, %arg1: memref&lt;1024x1024xf32&gt;, %arg2: memref&lt;1024x1024xf32&gt;) {
 <a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>    %c1024 = arith.constant 1024 : index
 <a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>    %cst = arith.constant 0.000000e+00 : f32
@@ -3947,7 +3947,7 @@ The pass also generates a dot file which visualizes the dependency graph.</p>
 <a id="__codelineno-13-36" name="__codelineno-13-36" href="#__codelineno-13-36"></a>        %5 = air.wait_all async [%arg6]  {id = 2 : i32}
 <a id="__codelineno-13-37" name="__codelineno-13-37" href="#__codelineno-13-37"></a>        %6 = scf.for %arg7 = %c0_8 to %c1024_9 step %c32_10 iter_args(%arg8 = %5) -&gt; (!air.async.token) {
 <a id="__codelineno-13-38" name="__codelineno-13-38" href="#__codelineno-13-38"></a>          %c4_11 = arith.constant 4 : index
-<a id="__codelineno-13-39" name="__codelineno-13-39" href="#__codelineno-13-39"></a>          %8 = air.launch_herd async [%arg8]  tile (%arg9, %arg10) in (%arg11=%c4_11, %arg12=%c4_11) args(%arg13=%arg3, %arg14=%arg7, %arg15=%arg0, %arg16=%arg5, %arg17=%arg1, %arg18=%valOut_1) : index, index, memref&lt;1024x1024xf32&gt;, index, memref&lt;1024x1024xf32&gt;, memref&lt;1024x1024xf32&gt; attributes {id = 1 : i32, sym_name = &quot;herd_0&quot;} {
+<a id="__codelineno-13-39" name="__codelineno-13-39" href="#__codelineno-13-39"></a>          %8 = air.launch_herd async [%arg8]  tile (%arg9, %arg10) in (%arg11=%c4_11, %arg12=%c4_11) args(%arg13=%arg3, %arg14=%arg7, %arg15=%arg0, %arg16=%arg5, %arg17=%arg1, %arg18=%valOut_1) : index, index, memref&lt;1024x1024xf32&gt;, index, memref&lt;1024x1024xf32&gt;, memref&lt;1024x1024xf32&gt; attributes {id = 1 : i32, sym_name = "herd_0"} {
 <a id="__codelineno-13-40" name="__codelineno-13-40" href="#__codelineno-13-40"></a>            %c1 = arith.constant 1 : index
 <a id="__codelineno-13-41" name="__codelineno-13-41" href="#__codelineno-13-41"></a>            %c1024_12 = arith.constant 1024 : index
 <a id="__codelineno-13-42" name="__codelineno-13-42" href="#__codelineno-13-42"></a>            %c32_13 = arith.constant 32 : index
@@ -4138,7 +4138,7 @@ loop hierarchy, where every parent loops must have matching loop bounds. The
 possible by time-multiplexing air.channel.puts and air.channel.gets to share the same
 air.channel symbol.</p>
 <h4 id="options_6">Options<a class="headerlink" href="#options_6" title="Permanent link">&para;</a></h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>-aggressive-mode : List of memory spaces to enable aggressive channel fusion with. Available options include [&#39;L1&#39;, &#39;L2&#39;, &#39;L3&#39;].
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>-aggressive-mode : List of memory spaces to enable aggressive channel fusion with. Available options include ['L1', 'L2', 'L3'].
 </code></pre></div>
 <h3 id="-air-fuse-nested-herd"><code>-air-fuse-nested-herd</code><a class="headerlink" href="#-air-fuse-nested-herd" title="Permanent link">&para;</a></h3>
 <p><em>Fuse a perfectly nested pair of air.herd loops into a single air.herd.</em></p>
@@ -4207,7 +4207,7 @@ which is a direct child op of said scf.for, as candidate loop for ping-pong
 transformation. The label includes an attribute added to the child memref.alloc ops
 for subsequent hoisting, and an attribute added to the scf.for with an unroll factor.</p>
 <h4 id="options_11">Options<a class="headerlink" href="#options_11" title="Permanent link">&para;</a></h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>-omit-memory-space : Omit ping-pong labeling for the specified memory space. Supported values: &#39;&#39;, &#39;L1&#39;, &#39;L2&#39;. Empty string means label all loops (default).
+<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>-omit-memory-space : Omit ping-pong labeling for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means label all loops (default).
 </code></pre></div>
 <h3 id="-air-linalg-codegen"><code>-air-linalg-codegen</code><a class="headerlink" href="#-air-linalg-codegen" title="Permanent link">&para;</a></h3>
 <p><em>AIR codegen strategies for linalg</em></p>
@@ -4255,8 +4255,8 @@ loop levels they want to merge together.</p>
 <a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>module  {
 <a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a>  func.func @task(%arg0: tensor&lt;28x10xf32&gt;, %arg1: tensor&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt; {
 <a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a>    %0 = memref.alloc() : memref&lt;28x10xf32&gt;
-<a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a>    %1 = &quot;aten.type_cast&quot;(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a>    %2 = &quot;aten.type_cast&quot;(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
 <a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a>    affine.for %arg2 = 0 to 2 {
 <a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a>      affine.for %arg3 = 0 to 2 {
 <a id="__codelineno-27-10" name="__codelineno-27-10" href="#__codelineno-27-10"></a>        affine.for %arg4 = 0 to 7 {
@@ -4272,8 +4272,8 @@ loop levels they want to merge together.</p>
 <a id="__codelineno-27-20" name="__codelineno-27-20" href="#__codelineno-27-20"></a>          }
 <a id="__codelineno-27-21" name="__codelineno-27-21" href="#__codelineno-27-21"></a>        }
 <a id="__codelineno-27-22" name="__codelineno-27-22" href="#__codelineno-27-22"></a>      }
-<a id="__codelineno-27-23" name="__codelineno-27-23" href="#__codelineno-27-23"></a>    } {affine_opt_label = &quot;&quot;}
-<a id="__codelineno-27-24" name="__codelineno-27-24" href="#__codelineno-27-24"></a>    %3 = &quot;aten.type_cast&quot;(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
+<a id="__codelineno-27-23" name="__codelineno-27-23" href="#__codelineno-27-23"></a>    } {affine_opt_label = ""}
+<a id="__codelineno-27-24" name="__codelineno-27-24" href="#__codelineno-27-24"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
 <a id="__codelineno-27-25" name="__codelineno-27-25" href="#__codelineno-27-25"></a>    return %3 : tensor&lt;28x10xf32&gt;
 <a id="__codelineno-27-26" name="__codelineno-27-26" href="#__codelineno-27-26"></a>  }
 <a id="__codelineno-27-27" name="__codelineno-27-27" href="#__codelineno-27-27"></a>}
@@ -4284,8 +4284,8 @@ loop levels they want to merge together.</p>
 <a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>module  {
 <a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a>  func.func @task(%arg0: tensor&lt;28x10xf32&gt;, %arg1: tensor&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt; {
 <a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a>    %0 = memref.alloc() : memref&lt;28x10xf32&gt;
-<a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a>    %1 = &quot;aten.type_cast&quot;(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a>    %2 = &quot;aten.type_cast&quot;(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
 <a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a>    affine.for %arg2 = 0 to 2 {
 <a id="__codelineno-28-9" name="__codelineno-28-9" href="#__codelineno-28-9"></a>      affine.for %arg3 = 0 to 28 {
 <a id="__codelineno-28-10" name="__codelineno-28-10" href="#__codelineno-28-10"></a>        affine.for %arg4 = 0 to 5 {
@@ -4297,8 +4297,8 @@ loop levels they want to merge together.</p>
 <a id="__codelineno-28-16" name="__codelineno-28-16" href="#__codelineno-28-16"></a>          affine.store %8, %0[%4, %5] : memref&lt;28x10xf32&gt;
 <a id="__codelineno-28-17" name="__codelineno-28-17" href="#__codelineno-28-17"></a>        }
 <a id="__codelineno-28-18" name="__codelineno-28-18" href="#__codelineno-28-18"></a>      }
-<a id="__codelineno-28-19" name="__codelineno-28-19" href="#__codelineno-28-19"></a>    } {affine_opt_label = &quot;&quot;}
-<a id="__codelineno-28-20" name="__codelineno-28-20" href="#__codelineno-28-20"></a>    %3 = &quot;aten.type_cast&quot;(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
+<a id="__codelineno-28-19" name="__codelineno-28-19" href="#__codelineno-28-19"></a>    } {affine_opt_label = ""}
+<a id="__codelineno-28-20" name="__codelineno-28-20" href="#__codelineno-28-20"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
 <a id="__codelineno-28-21" name="__codelineno-28-21" href="#__codelineno-28-21"></a>    return %3 : tensor&lt;28x10xf32&gt;
 <a id="__codelineno-28-22" name="__codelineno-28-22" href="#__codelineno-28-22"></a>  }
 <a id="__codelineno-28-23" name="__codelineno-28-23" href="#__codelineno-28-23"></a>}
@@ -4318,8 +4318,8 @@ the input mapping.</p>
 <a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>module  {
 <a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>  func.func @task(%arg0: tensor&lt;28x10xf32&gt;, %arg1: tensor&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt; {
 <a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>    %0 = memref.alloc() : memref&lt;28x10xf32&gt;
-<a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>    %1 = &quot;aten.type_cast&quot;(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a>    %2 = &quot;aten.type_cast&quot;(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
 <a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a>    affine.for %arg2 = 0 to 2 {
 <a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a>      affine.for %arg3 = 0 to 2 {
 <a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a>        affine.for %arg4 = 0 to 7 {
@@ -4336,7 +4336,7 @@ the input mapping.</p>
 <a id="__codelineno-29-21" name="__codelineno-29-21" href="#__codelineno-29-21"></a>        }
 <a id="__codelineno-29-22" name="__codelineno-29-22" href="#__codelineno-29-22"></a>      }
 <a id="__codelineno-29-23" name="__codelineno-29-23" href="#__codelineno-29-23"></a>    }
-<a id="__codelineno-29-24" name="__codelineno-29-24" href="#__codelineno-29-24"></a>    %3 = &quot;aten.type_cast&quot;(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
+<a id="__codelineno-29-24" name="__codelineno-29-24" href="#__codelineno-29-24"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
 <a id="__codelineno-29-25" name="__codelineno-29-25" href="#__codelineno-29-25"></a>    return %3 : tensor&lt;28x10xf32&gt;
 <a id="__codelineno-29-26" name="__codelineno-29-26" href="#__codelineno-29-26"></a>  }
 <a id="__codelineno-29-27" name="__codelineno-29-27" href="#__codelineno-29-27"></a>}
@@ -4347,8 +4347,8 @@ the input mapping.</p>
 <a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>module  {
 <a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a>  func.func @task(%arg0: tensor&lt;28x10xf32&gt;, %arg1: tensor&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt; {
 <a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a>    %0 = memref.alloc() : memref&lt;28x10xf32&gt;
-<a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>    %1 = &quot;aten.type_cast&quot;(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a>    %2 = &quot;aten.type_cast&quot;(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
 <a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a>    affine.for %arg2 = 0 to 5 {
 <a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a>      affine.for %arg3 = 0 to 2 {
 <a id="__codelineno-30-10" name="__codelineno-30-10" href="#__codelineno-30-10"></a>        affine.for %arg4 = 0 to 7 {
@@ -4365,7 +4365,7 @@ the input mapping.</p>
 <a id="__codelineno-30-21" name="__codelineno-30-21" href="#__codelineno-30-21"></a>        }
 <a id="__codelineno-30-22" name="__codelineno-30-22" href="#__codelineno-30-22"></a>      }
 <a id="__codelineno-30-23" name="__codelineno-30-23" href="#__codelineno-30-23"></a>    }
-<a id="__codelineno-30-24" name="__codelineno-30-24" href="#__codelineno-30-24"></a>    %3 = &quot;aten.type_cast&quot;(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
+<a id="__codelineno-30-24" name="__codelineno-30-24" href="#__codelineno-30-24"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
 <a id="__codelineno-30-25" name="__codelineno-30-25" href="#__codelineno-30-25"></a>    return %3 : tensor&lt;28x10xf32&gt;
 <a id="__codelineno-30-26" name="__codelineno-30-26" href="#__codelineno-30-26"></a>  }
 <a id="__codelineno-30-27" name="__codelineno-30-27" href="#__codelineno-30-27"></a>}
@@ -4445,14 +4445,14 @@ pong buffers, and a surrounding scf.for loop, to construct explicit dependency
 edges which represent a ping-pong buffering scheduling.</p>
 <h4 id="options_18">Options<a class="headerlink" href="#options_18" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>-keep-memref-dealloc : Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.
-<a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>-omit-memory-space   : Omit ping-pong transformation for the specified memory space. Supported values: &#39;&#39;, &#39;L1&#39;, &#39;L2&#39;. Empty string means apply ping-pong to all memory levels (default).
+<a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>-omit-memory-space   : Omit ping-pong transformation for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means apply ping-pong to all memory levels (default).
 </code></pre></div>
 <h3 id="-air-pipeline-reduce"><code>-air-pipeline-reduce</code><a class="headerlink" href="#-air-pipeline-reduce" title="Permanent link">&para;</a></h3>
 <p><em>Turn a reduction dimension into a herd pipeline</em></p>
 <h4 id="options_19">Options<a class="headerlink" href="#options_19" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>-tile-size          : Tile factors to pass to L1 tiling
 <a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a>-pipeline-depth     : Pipeline depth to generate
-<a id="__codelineno-38-3" name="__codelineno-38-3" href="#__codelineno-38-3"></a>-pipeline-direction : Pipeline direction attribute to use. Can be &#39;vert&#39; or &#39;horiz&#39;
+<a id="__codelineno-38-3" name="__codelineno-38-3" href="#__codelineno-38-3"></a>-pipeline-direction : Pipeline direction attribute to use. Can be 'vert' or 'horiz'
 <a id="__codelineno-38-4" name="__codelineno-38-4" href="#__codelineno-38-4"></a>-promote            : Promote subviews to memory buffers and insert copies.
 </code></pre></div>
 <h3 id="-air-place-herds"><code>-air-place-herds</code><a class="headerlink" href="#-air-place-herds" title="Permanent link">&para;</a></h3>
@@ -4470,7 +4470,7 @@ edges which represent a ping-pong buffering scheduling.</p>
   <div class="highlight"><pre><span></span><code><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>#map0 = affine_map&lt;()[s0] -&gt; (s0 * 64)&gt;
 <a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a>#map1 = affine_map&lt;()[s0] -&gt; (s0 * 512)&gt;
 <a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a>#map2 = affine_map&lt;()[s0] -&gt; (s0 * 32)&gt;
-<a id="__codelineno-39-4" name="__codelineno-39-4" href="#__codelineno-39-4"></a>module attributes {torch.debug_module_name = &quot;mmult&quot;} {
+<a id="__codelineno-39-4" name="__codelineno-39-4" href="#__codelineno-39-4"></a>module attributes {torch.debug_module_name = "mmult"} {
 <a id="__codelineno-39-5" name="__codelineno-39-5" href="#__codelineno-39-5"></a>  func.func @forward(%arg0: memref&lt;24576x1024xbf16&gt;, %arg1: memref&lt;1024x1024xbf16&gt;) -&gt; memref&lt;24576x1024xbf16&gt; {
 <a id="__codelineno-39-6" name="__codelineno-39-6" href="#__codelineno-39-6"></a>    %c16 = arith.constant 16 : index
 <a id="__codelineno-39-7" name="__codelineno-39-7" href="#__codelineno-39-7"></a>    %c48 = arith.constant 48 : index
@@ -4480,8 +4480,8 @@ edges which represent a ping-pong buffering scheduling.</p>
 <a id="__codelineno-39-11" name="__codelineno-39-11" href="#__codelineno-39-11"></a>    %1 = memref.alloc() {alignment = 128 : i64} : memref&lt;24576x1024xbf16&gt;
 <a id="__codelineno-39-12" name="__codelineno-39-12" href="#__codelineno-39-12"></a>    memref.copy %0, %1 : memref&lt;24576x1024xbf16&gt; to memref&lt;24576x1024xbf16&gt;
 <a id="__codelineno-39-13" name="__codelineno-39-13" href="#__codelineno-39-13"></a>    %2 = memref.alloc() {alignment = 128 : i64} : memref&lt;24576x1024xbf16&gt;
-<a id="__codelineno-39-14" name="__codelineno-39-14" href="#__codelineno-39-14"></a>    air.launch @launch_0 (%arg2, %arg3) in (%arg4=%c48, %arg5=%c16) args(%arg6=%arg0, %arg7=%arg1, %arg8=%1, %arg9=%2) : memref&lt;24576x1024xbf16&gt;, memref&lt;1024x1024xbf16&gt;, memref&lt;24576x1024xbf16&gt;, memref&lt;24576x1024xbf16&gt; attributes {resource_type = &quot;vckxyz&quot;, size_x = 6 : i64, size_y = 2 : i64} {
-<a id="__codelineno-39-15" name="__codelineno-39-15" href="#__codelineno-39-15"></a>      air.segment @segment_0  args(%arg10=%arg2, %arg11=%arg3, %arg12=%arg4, %arg13=%arg5, %arg14=%arg6, %arg15=%arg7, %arg16=%arg8, %arg17=%arg9) : index, index, index, index, memref&lt;24576x1024xbf16&gt;, memref&lt;1024x1024xbf16&gt;, memref&lt;24576x1024xbf16&gt;, memref&lt;24576x1024xbf16&gt; attributes {resource_type = &quot;vckxyz&quot;, size_x = 3 : i64, size_y = 2 : i64} {
+<a id="__codelineno-39-14" name="__codelineno-39-14" href="#__codelineno-39-14"></a>    air.launch @launch_0 (%arg2, %arg3) in (%arg4=%c48, %arg5=%c16) args(%arg6=%arg0, %arg7=%arg1, %arg8=%1, %arg9=%2) : memref&lt;24576x1024xbf16&gt;, memref&lt;1024x1024xbf16&gt;, memref&lt;24576x1024xbf16&gt;, memref&lt;24576x1024xbf16&gt; attributes {resource_type = "vckxyz", size_x = 6 : i64, size_y = 2 : i64} {
+<a id="__codelineno-39-15" name="__codelineno-39-15" href="#__codelineno-39-15"></a>      air.segment @segment_0  args(%arg10=%arg2, %arg11=%arg3, %arg12=%arg4, %arg13=%arg5, %arg14=%arg6, %arg15=%arg7, %arg16=%arg8, %arg17=%arg9) : index, index, index, index, memref&lt;24576x1024xbf16&gt;, memref&lt;1024x1024xbf16&gt;, memref&lt;24576x1024xbf16&gt;, memref&lt;24576x1024xbf16&gt; attributes {resource_type = "vckxyz", size_x = 3 : i64, size_y = 2 : i64} {
 <a id="__codelineno-39-16" name="__codelineno-39-16" href="#__codelineno-39-16"></a>        %c1 = arith.constant 1 : index
 <a id="__codelineno-39-17" name="__codelineno-39-17" href="#__codelineno-39-17"></a>        %c2 = arith.constant 2 : index
 <a id="__codelineno-39-18" name="__codelineno-39-18" href="#__codelineno-39-18"></a>        %c0 = arith.constant 0 : index
@@ -4563,8 +4563,8 @@ loop is dependent on the operation or there are no loops at the same level.</p>
 <a id="__codelineno-42-3" name="__codelineno-42-3" href="#__codelineno-42-3"></a>module  {
 <a id="__codelineno-42-4" name="__codelineno-42-4" href="#__codelineno-42-4"></a>  func.func @task(%arg0: tensor&lt;28x10xf32&gt;, %arg1: tensor&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt; {
 <a id="__codelineno-42-5" name="__codelineno-42-5" href="#__codelineno-42-5"></a>    %0 = memref.alloc() : memref&lt;28x10xf32&gt;
-<a id="__codelineno-42-6" name="__codelineno-42-6" href="#__codelineno-42-6"></a>    %1 = &quot;aten.type_cast&quot;(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-42-7" name="__codelineno-42-7" href="#__codelineno-42-7"></a>    %2 = &quot;aten.type_cast&quot;(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-42-6" name="__codelineno-42-6" href="#__codelineno-42-6"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-42-7" name="__codelineno-42-7" href="#__codelineno-42-7"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
 <a id="__codelineno-42-8" name="__codelineno-42-8" href="#__codelineno-42-8"></a>    affine.for %arg2 = 0 to 2 {
 <a id="__codelineno-42-9" name="__codelineno-42-9" href="#__codelineno-42-9"></a>      affine.for %arg3 = 0 to 2 {
 <a id="__codelineno-42-10" name="__codelineno-42-10" href="#__codelineno-42-10"></a>        affine.for %arg4 = 0 to 7 {
@@ -4581,7 +4581,7 @@ loop is dependent on the operation or there are no loops at the same level.</p>
 <a id="__codelineno-42-21" name="__codelineno-42-21" href="#__codelineno-42-21"></a>        }
 <a id="__codelineno-42-22" name="__codelineno-42-22" href="#__codelineno-42-22"></a>      }
 <a id="__codelineno-42-23" name="__codelineno-42-23" href="#__codelineno-42-23"></a>    }
-<a id="__codelineno-42-24" name="__codelineno-42-24" href="#__codelineno-42-24"></a>    %3 = &quot;aten.type_cast&quot;(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
+<a id="__codelineno-42-24" name="__codelineno-42-24" href="#__codelineno-42-24"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
 <a id="__codelineno-42-25" name="__codelineno-42-25" href="#__codelineno-42-25"></a>    return %3 : tensor&lt;28x10xf32&gt;
 <a id="__codelineno-42-26" name="__codelineno-42-26" href="#__codelineno-42-26"></a>  }
 <a id="__codelineno-42-27" name="__codelineno-42-27" href="#__codelineno-42-27"></a>}
@@ -4592,8 +4592,8 @@ loop is dependent on the operation or there are no loops at the same level.</p>
 <a id="__codelineno-43-3" name="__codelineno-43-3" href="#__codelineno-43-3"></a>module  {
 <a id="__codelineno-43-4" name="__codelineno-43-4" href="#__codelineno-43-4"></a>  func.func @task(%arg0: tensor&lt;28x10xf32&gt;, %arg1: tensor&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt; {
 <a id="__codelineno-43-5" name="__codelineno-43-5" href="#__codelineno-43-5"></a>    %0 = memref.alloc() : memref&lt;28x10xf32&gt;
-<a id="__codelineno-43-6" name="__codelineno-43-6" href="#__codelineno-43-6"></a>    %1 = &quot;aten.type_cast&quot;(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-43-7" name="__codelineno-43-7" href="#__codelineno-43-7"></a>    %2 = &quot;aten.type_cast&quot;(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-43-6" name="__codelineno-43-6" href="#__codelineno-43-6"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
+<a id="__codelineno-43-7" name="__codelineno-43-7" href="#__codelineno-43-7"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
 <a id="__codelineno-43-8" name="__codelineno-43-8" href="#__codelineno-43-8"></a>    affine.for %arg2 = 0 to 2 {
 <a id="__codelineno-43-9" name="__codelineno-43-9" href="#__codelineno-43-9"></a>      affine.for %arg3 = 0 to 2 {
 <a id="__codelineno-43-10" name="__codelineno-43-10" href="#__codelineno-43-10"></a>        affine.for %arg4 = 0 to 7 {
@@ -4610,7 +4610,7 @@ loop is dependent on the operation or there are no loops at the same level.</p>
 <a id="__codelineno-43-21" name="__codelineno-43-21" href="#__codelineno-43-21"></a>        }
 <a id="__codelineno-43-22" name="__codelineno-43-22" href="#__codelineno-43-22"></a>      }
 <a id="__codelineno-43-23" name="__codelineno-43-23" href="#__codelineno-43-23"></a>    }
-<a id="__codelineno-43-24" name="__codelineno-43-24" href="#__codelineno-43-24"></a>    %3 = &quot;aten.type_cast&quot;(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
+<a id="__codelineno-43-24" name="__codelineno-43-24" href="#__codelineno-43-24"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
 <a id="__codelineno-43-25" name="__codelineno-43-25" href="#__codelineno-43-25"></a>    return %3 : tensor&lt;28x10xf32&gt;
 <a id="__codelineno-43-26" name="__codelineno-43-26" href="#__codelineno-43-26"></a>  }
 <a id="__codelineno-43-27" name="__codelineno-43-27" href="#__codelineno-43-27"></a>}
@@ -4828,9 +4828,9 @@ Single-launch mode currently only supports air.dma_memcpy_nd; using
 it with channel-based IR will produce an error.</p>
 <p>Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.</p>
 <h4 id="options_24">Options<a class="headerlink" href="#options_24" title="Permanent link">&para;</a></h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>-split-mode     : How to partition the launch grid: &#39;multi-launch&#39; (separate launches per partition) or &#39;single-launch&#39; (single launch with scf.if on block indices).
-<a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a>-pad-location   : Where to apply DMA padding: &#39;memtile&#39; (L2 MM2S, 3-level hierarchy) or &#39;source&#39; (pad at L3 read, direct source-level padding).
-<a id="__codelineno-48-3" name="__codelineno-48-3" href="#__codelineno-48-3"></a>-use-dma-memcpy : DEPRECATED: Use pad-location=&#39;source&#39; instead.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>-split-mode     : How to partition the launch grid: 'multi-launch' (separate launches per partition) or 'single-launch' (single launch with scf.if on block indices).
+<a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a>-pad-location   : Where to apply DMA padding: 'memtile' (L2 MM2S, 3-level hierarchy) or 'source' (pad at L3 read, direct source-level padding).
+<a id="__codelineno-48-3" name="__codelineno-48-3" href="#__codelineno-48-3"></a>-use-dma-memcpy : DEPRECATED: Use pad-location='source' instead.
 </code></pre></div>
 <h3 id="-air-transform"><code>-air-transform</code><a class="headerlink" href="#-air-transform" title="Permanent link">&para;</a></h3>
 <p><em>Transform IR with transform dialect</em></p>
@@ -4873,7 +4873,7 @@ representation of ping and pong processes, respectively.</p>
 <a id="__codelineno-51-14" name="__codelineno-51-14" href="#__codelineno-51-14"></a>        }
 <a id="__codelineno-51-15" name="__codelineno-51-15" href="#__codelineno-51-15"></a>      }
 <a id="__codelineno-51-16" name="__codelineno-51-16" href="#__codelineno-51-16"></a>    }
-<a id="__codelineno-51-17" name="__codelineno-51-17" href="#__codelineno-51-17"></a>  } {affine_opt_label = &quot;&quot;}
+<a id="__codelineno-51-17" name="__codelineno-51-17" href="#__codelineno-51-17"></a>  } {affine_opt_label = ""}
 <a id="__codelineno-51-18" name="__codelineno-51-18" href="#__codelineno-51-18"></a>  return
 <a id="__codelineno-51-19" name="__codelineno-51-19" href="#__codelineno-51-19"></a>}
 </code></pre></div>

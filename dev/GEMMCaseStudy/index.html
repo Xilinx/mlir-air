@@ -2063,11 +2063,11 @@
 <h3 id="air-linalg-to-func">air-linalg-to-func<a class="headerlink" href="#air-linalg-to-func" title="Permanent link">&para;</a></h3>
 <p>Links <code>linalg.generic</code> operation and variants with object file (.o) compiled from each <code>aie.core</code>'s compute kernel.</p>
 <p><em>Input IR:</em>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>linalg.generic {library_call = &quot;zero_f32&quot;, indexing_maps = [#map, #map1], iterator_types = [&quot;parallel&quot;, &quot;parallel&quot;]} ins(%cst : f32) outs(%arg2 : memref&lt;64x64xf32&gt;) {
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>linalg.generic {library_call = "zero_f32", indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel"]} ins(%cst : f32) outs(%arg2 : memref&lt;64x64xf32&gt;) {
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>^bb0(%in: f32, %out: f32):
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  linalg.yield %in : f32
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>}
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>linalg.generic {library_call = &quot;matmul_f32&quot;, indexing_maps = [#map2, #map3, #map4], iterator_types = [&quot;parallel&quot;, &quot;parallel&quot;, &quot;reduction&quot;]} ins(%arg0, %arg1 : memref&lt;64x256xf32&gt;, memref&lt;256x64xf32&gt;) outs(%arg2 : memref&lt;64x64xf32&gt;) {
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>linalg.generic {library_call = "matmul_f32", indexing_maps = [#map2, #map3, #map4], iterator_types = ["parallel", "parallel", "reduction"]} ins(%arg0, %arg1 : memref&lt;64x256xf32&gt;, memref&lt;256x64xf32&gt;) outs(%arg2 : memref&lt;64x64xf32&gt;) {
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>^bb0(%in: f32, %in_0: f32, %out: f32):
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  %0 = arith.mulf %in, %in_0 : f32
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  %1 = arith.addf %out, %0 : f32
@@ -2076,8 +2076,8 @@
 </code></pre></div>
 The input IR has <code>linalg.generic</code> attribute <code>library_call</code> that specifies the name of an external library call.</p>
 <p><em>Output IR:</em>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>func.func private @zero_f32(f32, memref&lt;64x64xf32&gt;) attributes {link_with = &quot;test.o&quot;, llvm.emit_c_interface}
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>func.func private @matmul_f32(memref&lt;64x256xf32&gt;, memref&lt;256x64xf32&gt;, memref&lt;64x64xf32&gt;) attributes {link_with = &quot;test.o&quot;, llvm.emit_c_interface}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>func.func private @zero_f32(f32, memref&lt;64x64xf32&gt;) attributes {link_with = "test.o", llvm.emit_c_interface}
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>func.func private @matmul_f32(memref&lt;64x256xf32&gt;, memref&lt;256x64xf32&gt;, memref&lt;64x64xf32&gt;) attributes {link_with = "test.o", llvm.emit_c_interface}
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>call @zero_f32(%cst, %arg2) : (f32, memref&lt;64x64xf32&gt;) -&gt; ()
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>call @matmul_f32(%arg0, %arg1, %arg2) : (memref&lt;64x256xf32&gt;, memref&lt;256x64xf32&gt;, memref&lt;64x64xf32&gt;) -&gt; ()
 </code></pre></div>
@@ -2894,7 +2894,7 @@ The pass is responsible for spatially placing <code>air.herd</code> opertaions o
 <p>Converts an input IR from MLIR-AIR dialect into MLIR-AIE dialect, for efficient mapping onto AIEs. Outlines (1) <code>air.herd</code> to <code>aie.cores</code> and <code>aie.mems</code>, (2) <code>air.segment</code> to <code>aie.memtiles</code>, (3) <code>air.channel.put/get</code> to <code>aie.dma_start</code>, <code>aie.dma_bd</code> and <code>aie.use_locks</code>, and (4) <code>memref.alloc</code> to <code>aie.buffer</code>.</p>
 <h4 id="outline-airherd-to-aiecores-and-aiemems">Outline air.herd to aie.cores and aie.mems<a class="headerlink" href="#outline-airherd-to-aiecores-and-aiemems" title="Permanent link">&para;</a></h4>
 <p><em>Input IR:</em>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref&lt;1024xi32&gt;, memref&lt;1024xi32&gt; attributes { sym_name=&quot;herd1&quot;} {
+<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref&lt;1024xi32&gt;, memref&lt;1024xi32&gt; attributes { sym_name="herd1"} {
 <a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>  %buf0 = memref.alloc() : memref&lt;1024xi32, 2&gt;
 <a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>  %buf1 = memref.alloc() : memref&lt;512xi32, 2&gt;
 <a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a>  air.channel.get @channel_0[%tx, %ty] (%buf0[] [] []) {id = 2 : i32} : (memref&lt;1024xi32, 2&gt;)
@@ -2906,8 +2906,8 @@ The pass is responsible for spatially placing <code>air.herd</code> opertaions o
 </code></pre></div>
 The input MLIR-AIR dialect code specifies the spatial compute across a rectangular plot of AIE cores using <code>air.herd</code>.</p>
 <p><em>Output IR:</em>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>%buf1 = aie.buffer(%tile_2_3) {sym_name = &quot;buf1&quot;} : memref&lt;1024xi32, 2&gt; 
-<a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a>%buf0 = aie.buffer(%tile_2_3) {sym_name = &quot;buf0&quot;} : memref&lt;512xi32, 2&gt; 
+<div class="highlight"><pre><span></span><code><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>%buf1 = aie.buffer(%tile_2_3) {sym_name = "buf1"} : memref&lt;1024xi32, 2&gt; 
+<a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a>%buf0 = aie.buffer(%tile_2_3) {sym_name = "buf0"} : memref&lt;512xi32, 2&gt; 
 <a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a>...
 <a id="__codelineno-31-4" name="__codelineno-31-4" href="#__codelineno-31-4"></a>%mem_2_3 = aie.mem(%tile_2_3) {
 <a id="__codelineno-31-5" name="__codelineno-31-5" href="#__codelineno-31-5"></a>  %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
@@ -2936,7 +2936,7 @@ The input MLIR-AIR dialect code specifies the spatial compute across a rectangul
 <a id="__codelineno-31-28" name="__codelineno-31-28" href="#__codelineno-31-28"></a>  aie.use_lock(%lock_2_3, Release, 1)
 <a id="__codelineno-31-29" name="__codelineno-31-29" href="#__codelineno-31-29"></a>  aie.use_lock(%lock_2_3_2, Release, 1)
 <a id="__codelineno-31-30" name="__codelineno-31-30" href="#__codelineno-31-30"></a>  aie.end
-<a id="__codelineno-31-31" name="__codelineno-31-31" href="#__codelineno-31-31"></a>} {elf_file = &quot;herd1_core_2_3.elf&quot;}
+<a id="__codelineno-31-31" name="__codelineno-31-31" href="#__codelineno-31-31"></a>} {elf_file = "herd1_core_2_3.elf"}
 </code></pre></div>
 The output IR outlines the computation in each AIE core using <code>aie.core</code>, and data movement to/from the core using <code>aie.dma_bd</code> within <code>aie.mem</code>. Memref is allocated to <code>aie.buffer</code>. Each AIE tile's <code>aie.core</code> and <code>aie.mem</code> synchronize using <code>aie.use_lock</code>. Each core links to a unique <code>elf</code> file. The AIE core code includes explicit control flow for data movement and computation (<code>cf.br</code>, <code>scf.for</code> loops) iterating over data chunks.</p>
 <h4 id="outline-airsegment-to-aiememtile">Outline air.segment to aie.memtile<a class="headerlink" href="#outline-airsegment-to-aiememtile" title="Permanent link">&para;</a></h4>
@@ -2948,7 +2948,7 @@ The output IR outlines the computation in each AIE core using <code>aie.core</co
 <a id="__codelineno-32-5" name="__codelineno-32-5" href="#__codelineno-32-5"></a>  air.channel.get @channel_2[] (%memtile0[] [] []) {id = 2 : i32} : (memref&lt;1024xi32, 1&gt;)
 <a id="__codelineno-32-6" name="__codelineno-32-6" href="#__codelineno-32-6"></a>  air.channel.put @channel_3[] (%memtile0[] [] []) {id = 3 : i32} : (memref&lt;1024xi32, 1&gt;)
 <a id="__codelineno-32-7" name="__codelineno-32-7" href="#__codelineno-32-7"></a>  memref.dealloc %memtile0 : memref&lt;1024xi32, 1&gt;
-<a id="__codelineno-32-8" name="__codelineno-32-8" href="#__codelineno-32-8"></a>  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) attributes { sym_name=&quot;herd4&quot;} {
+<a id="__codelineno-32-8" name="__codelineno-32-8" href="#__codelineno-32-8"></a>  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) attributes { sym_name="herd4"} {
 <a id="__codelineno-32-9" name="__codelineno-32-9" href="#__codelineno-32-9"></a>    ...
 <a id="__codelineno-32-10" name="__codelineno-32-10" href="#__codelineno-32-10"></a>    air.herd_terminator
 <a id="__codelineno-32-11" name="__codelineno-32-11" href="#__codelineno-32-11"></a>  }
@@ -2961,8 +2961,8 @@ The output IR outlines the computation in each AIE core using <code>aie.core</co
 </code></pre></div>
 The input MLIR-AIR dialect code encapsulates any L2 memory allocation, deallocation, and data movement within <code>air.segment</code>.</p>
 <p><em>Output IR:</em>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>%buf2 = aie.buffer(%tile_2_1) {sym_name = &quot;buf2&quot;} : memref&lt;1024xi32, 1&gt; 
-<a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a>%buf1 = aie.buffer(%tile_2_1) {sym_name = &quot;buf1&quot;} : memref&lt;1024xi32, 1&gt; 
+<div class="highlight"><pre><span></span><code><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>%buf2 = aie.buffer(%tile_2_1) {sym_name = "buf2"} : memref&lt;1024xi32, 1&gt; 
+<a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a>%buf1 = aie.buffer(%tile_2_1) {sym_name = "buf1"} : memref&lt;1024xi32, 1&gt; 
 <a id="__codelineno-33-3" name="__codelineno-33-3" href="#__codelineno-33-3"></a>...
 <a id="__codelineno-33-4" name="__codelineno-33-4" href="#__codelineno-33-4"></a>%memtile_dma_2_1 = aie.memtile_dma(%tile_2_1) {
 <a id="__codelineno-33-5" name="__codelineno-33-5" href="#__codelineno-33-5"></a>  %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb7, repeat_count = 1)
@@ -3046,11 +3046,11 @@ The input IR represent data movements to/from external memory using <code>air.ch
 <div class="highlight"><pre><span></span><code><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>aie.device(xcve2802) {
 <a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>  ...
 <a id="__codelineno-37-3" name="__codelineno-37-3" href="#__codelineno-37-3"></a>  aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 2)
-<a id="__codelineno-37-4" name="__codelineno-37-4" href="#__codelineno-37-4"></a>  memref.global &quot;public&quot; @airMemcpyId7 : memref&lt;1024xi32, 1&gt;
+<a id="__codelineno-37-4" name="__codelineno-37-4" href="#__codelineno-37-4"></a>  memref.global "public" @airMemcpyId7 : memref&lt;1024xi32, 1&gt;
 <a id="__codelineno-37-5" name="__codelineno-37-5" href="#__codelineno-37-5"></a>  aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 2)
-<a id="__codelineno-37-6" name="__codelineno-37-6" href="#__codelineno-37-6"></a>  memref.global &quot;public&quot; @airMemcpyId2 : memref&lt;1024xi32, 1&gt;
+<a id="__codelineno-37-6" name="__codelineno-37-6" href="#__codelineno-37-6"></a>  memref.global "public" @airMemcpyId2 : memref&lt;1024xi32, 1&gt;
 <a id="__codelineno-37-7" name="__codelineno-37-7" href="#__codelineno-37-7"></a>  ...
-<a id="__codelineno-37-8" name="__codelineno-37-8" href="#__codelineno-37-8"></a>} {sym_name = &quot;segment0&quot;}
+<a id="__codelineno-37-8" name="__codelineno-37-8" href="#__codelineno-37-8"></a>} {sym_name = "segment0"}
 <a id="__codelineno-37-9" name="__codelineno-37-9" href="#__codelineno-37-9"></a>...
 <a id="__codelineno-37-10" name="__codelineno-37-10" href="#__codelineno-37-10"></a>func.func @func4(%arg0: memref&lt;1024xi32&gt;, %arg1: memref&lt;1024xi32&gt;) {
 <a id="__codelineno-37-11" name="__codelineno-37-11" href="#__codelineno-37-11"></a>  ...
@@ -3069,15 +3069,15 @@ The output IR generates <code>aie.shim_dma_allocation</code> as handle to link w
 <a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a>  aie.device(npu1_4col) {
 <a id="__codelineno-38-3" name="__codelineno-38-3" href="#__codelineno-38-3"></a>    ...
 <a id="__codelineno-38-4" name="__codelineno-38-4" href="#__codelineno-38-4"></a>    aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
-<a id="__codelineno-38-5" name="__codelineno-38-5" href="#__codelineno-38-5"></a>    memref.global &quot;public&quot; @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
+<a id="__codelineno-38-5" name="__codelineno-38-5" href="#__codelineno-38-5"></a>    memref.global "public" @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
 <a id="__codelineno-38-6" name="__codelineno-38-6" href="#__codelineno-38-6"></a>    ...
 <a id="__codelineno-38-7" name="__codelineno-38-7" href="#__codelineno-38-7"></a>    aie.shim_dma_allocation @airMemcpyId19(MM2S, 0, 0)
-<a id="__codelineno-38-8" name="__codelineno-38-8" href="#__codelineno-38-8"></a>    memref.global &quot;public&quot; @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
+<a id="__codelineno-38-8" name="__codelineno-38-8" href="#__codelineno-38-8"></a>    memref.global "public" @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
 <a id="__codelineno-38-9" name="__codelineno-38-9" href="#__codelineno-38-9"></a>    ...
 <a id="__codelineno-38-10" name="__codelineno-38-10" href="#__codelineno-38-10"></a>    aie.shim_dma_allocation @airMemcpyId15(MM2S, 0, 2)
-<a id="__codelineno-38-11" name="__codelineno-38-11" href="#__codelineno-38-11"></a>    memref.global &quot;public&quot; @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
+<a id="__codelineno-38-11" name="__codelineno-38-11" href="#__codelineno-38-11"></a>    memref.global "public" @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
 <a id="__codelineno-38-12" name="__codelineno-38-12" href="#__codelineno-38-12"></a>    ...
-<a id="__codelineno-38-13" name="__codelineno-38-13" href="#__codelineno-38-13"></a>  } {sym_name = &quot;segment_0&quot;}
+<a id="__codelineno-38-13" name="__codelineno-38-13" href="#__codelineno-38-13"></a>  } {sym_name = "segment_0"}
 <a id="__codelineno-38-14" name="__codelineno-38-14" href="#__codelineno-38-14"></a>  ...
 <a id="__codelineno-38-15" name="__codelineno-38-15" href="#__codelineno-38-15"></a>  func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
 <a id="__codelineno-38-16" name="__codelineno-38-16" href="#__codelineno-38-16"></a>    ...
@@ -3101,15 +3101,15 @@ The input IR contains some <code>air.channel.put</code> and <code>air.channel.ge
 <a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a>  aie.device(npu1_4col) {
 <a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a>    ...
 <a id="__codelineno-39-4" name="__codelineno-39-4" href="#__codelineno-39-4"></a>    aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
-<a id="__codelineno-39-5" name="__codelineno-39-5" href="#__codelineno-39-5"></a>    memref.global &quot;public&quot; @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
+<a id="__codelineno-39-5" name="__codelineno-39-5" href="#__codelineno-39-5"></a>    memref.global "public" @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
 <a id="__codelineno-39-6" name="__codelineno-39-6" href="#__codelineno-39-6"></a>    ...
 <a id="__codelineno-39-7" name="__codelineno-39-7" href="#__codelineno-39-7"></a>    aie.shim_dma_allocation @airMemcpyId19(MM2S, 0, 0)
-<a id="__codelineno-39-8" name="__codelineno-39-8" href="#__codelineno-39-8"></a>    memref.global &quot;public&quot; @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
+<a id="__codelineno-39-8" name="__codelineno-39-8" href="#__codelineno-39-8"></a>    memref.global "public" @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
 <a id="__codelineno-39-9" name="__codelineno-39-9" href="#__codelineno-39-9"></a>    ...
 <a id="__codelineno-39-10" name="__codelineno-39-10" href="#__codelineno-39-10"></a>    aie.shim_dma_allocation @airMemcpyId15(MM2S, 0, 2)
-<a id="__codelineno-39-11" name="__codelineno-39-11" href="#__codelineno-39-11"></a>    memref.global &quot;public&quot; @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
+<a id="__codelineno-39-11" name="__codelineno-39-11" href="#__codelineno-39-11"></a>    memref.global "public" @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
 <a id="__codelineno-39-12" name="__codelineno-39-12" href="#__codelineno-39-12"></a>    ...
-<a id="__codelineno-39-13" name="__codelineno-39-13" href="#__codelineno-39-13"></a>  } {sym_name = &quot;segment_0&quot;}
+<a id="__codelineno-39-13" name="__codelineno-39-13" href="#__codelineno-39-13"></a>  } {sym_name = "segment_0"}
 <a id="__codelineno-39-14" name="__codelineno-39-14" href="#__codelineno-39-14"></a>  ...
 <a id="__codelineno-39-15" name="__codelineno-39-15" href="#__codelineno-39-15"></a>  func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
 <a id="__codelineno-39-16" name="__codelineno-39-16" href="#__codelineno-39-16"></a>    ...
@@ -3126,7 +3126,7 @@ The input IR contains some <code>air.channel.put</code> and <code>air.channel.ge
 <a id="__codelineno-39-27" name="__codelineno-39-27" href="#__codelineno-39-27"></a>        %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_24, %c0_i64_24, %106, %107], [%c1_i64_25, %c1_i64_25, %109, %110], [%c0_i64_24, %c0_i64_24, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref&lt;512x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
 <a id="__codelineno-39-28" name="__codelineno-39-28" href="#__codelineno-39-28"></a>        ...
 <a id="__codelineno-39-29" name="__codelineno-39-29" href="#__codelineno-39-29"></a>      }
-<a id="__codelineno-39-30" name="__codelineno-39-30" href="#__codelineno-39-30"></a>    } {affine_opt_label = &quot;tiling&quot;}
+<a id="__codelineno-39-30" name="__codelineno-39-30" href="#__codelineno-39-30"></a>    } {affine_opt_label = "tiling"}
 <a id="__codelineno-39-31" name="__codelineno-39-31" href="#__codelineno-39-31"></a>    return
 <a id="__codelineno-39-32" name="__codelineno-39-32" href="#__codelineno-39-32"></a>  }
 <a id="__codelineno-39-33" name="__codelineno-39-33" href="#__codelineno-39-33"></a>}
@@ -3150,7 +3150,7 @@ After the conversion, the control flow, synchronization and DMA operations respo
 <a id="__codelineno-40-10" name="__codelineno-40-10" href="#__codelineno-40-10"></a>      %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_24, %c0_i64_24, %106, %107], [%c1_i64_25, %c1_i64_25, %109, %110], [%c0_i64_24, %c0_i64_24, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref&lt;512x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
 <a id="__codelineno-40-11" name="__codelineno-40-11" href="#__codelineno-40-11"></a>      ...
 <a id="__codelineno-40-12" name="__codelineno-40-12" href="#__codelineno-40-12"></a>    }
-<a id="__codelineno-40-13" name="__codelineno-40-13" href="#__codelineno-40-13"></a>  } {affine_opt_label = &quot;tiling&quot;}
+<a id="__codelineno-40-13" name="__codelineno-40-13" href="#__codelineno-40-13"></a>  } {affine_opt_label = "tiling"}
 <a id="__codelineno-40-14" name="__codelineno-40-14" href="#__codelineno-40-14"></a>  return
 <a id="__codelineno-40-15" name="__codelineno-40-15" href="#__codelineno-40-15"></a>}
 </code></pre></div>
@@ -3172,7 +3172,7 @@ The input AIRRt dialect code represents the runtime program for the AIE accelera
 <a id="__codelineno-41-14" name="__codelineno-41-14" href="#__codelineno-41-14"></a>        }
 <a id="__codelineno-41-15" name="__codelineno-41-15" href="#__codelineno-41-15"></a>      }
 <a id="__codelineno-41-16" name="__codelineno-41-16" href="#__codelineno-41-16"></a>    }
-<a id="__codelineno-41-17" name="__codelineno-41-17" href="#__codelineno-41-17"></a>  } {affine_opt_label = &quot;&quot;}
+<a id="__codelineno-41-17" name="__codelineno-41-17" href="#__codelineno-41-17"></a>  } {affine_opt_label = ""}
 <a id="__codelineno-41-18" name="__codelineno-41-18" href="#__codelineno-41-18"></a>  return
 <a id="__codelineno-41-19" name="__codelineno-41-19" href="#__codelineno-41-19"></a>}
 </code></pre></div>
@@ -3196,7 +3196,7 @@ The most notable transformation applied by the pass is loop tiling on <code>affi
 <a id="__codelineno-42-14" name="__codelineno-42-14" href="#__codelineno-42-14"></a>        }
 <a id="__codelineno-42-15" name="__codelineno-42-15" href="#__codelineno-42-15"></a>      }
 <a id="__codelineno-42-16" name="__codelineno-42-16" href="#__codelineno-42-16"></a>    }
-<a id="__codelineno-42-17" name="__codelineno-42-17" href="#__codelineno-42-17"></a>  } {affine_opt_label = &quot;&quot;}
+<a id="__codelineno-42-17" name="__codelineno-42-17" href="#__codelineno-42-17"></a>  } {affine_opt_label = ""}
 <a id="__codelineno-42-18" name="__codelineno-42-18" href="#__codelineno-42-18"></a>  return
 <a id="__codelineno-42-19" name="__codelineno-42-19" href="#__codelineno-42-19"></a>}
 </code></pre></div>
@@ -3226,15 +3226,15 @@ This pass works together with a prior pass (<code>affine-loop-opt</code>) to gen
 <a id="__codelineno-44-2" name="__codelineno-44-2" href="#__codelineno-44-2"></a>  aie.device(npu1_4col) {
 <a id="__codelineno-44-3" name="__codelineno-44-3" href="#__codelineno-44-3"></a>    ...
 <a id="__codelineno-44-4" name="__codelineno-44-4" href="#__codelineno-44-4"></a>    aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
-<a id="__codelineno-44-5" name="__codelineno-44-5" href="#__codelineno-44-5"></a>    memref.global &quot;public&quot; @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
+<a id="__codelineno-44-5" name="__codelineno-44-5" href="#__codelineno-44-5"></a>    memref.global "public" @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
 <a id="__codelineno-44-6" name="__codelineno-44-6" href="#__codelineno-44-6"></a>    ...
 <a id="__codelineno-44-7" name="__codelineno-44-7" href="#__codelineno-44-7"></a>    aie.shim_dma_allocation @airMemcpyId19(MM2S, 0, 0)
-<a id="__codelineno-44-8" name="__codelineno-44-8" href="#__codelineno-44-8"></a>    memref.global &quot;public&quot; @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
+<a id="__codelineno-44-8" name="__codelineno-44-8" href="#__codelineno-44-8"></a>    memref.global "public" @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
 <a id="__codelineno-44-9" name="__codelineno-44-9" href="#__codelineno-44-9"></a>    ...
 <a id="__codelineno-44-10" name="__codelineno-44-10" href="#__codelineno-44-10"></a>    aie.shim_dma_allocation @airMemcpyId15(MM2S, 0, 2)
-<a id="__codelineno-44-11" name="__codelineno-44-11" href="#__codelineno-44-11"></a>    memref.global &quot;public&quot; @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
+<a id="__codelineno-44-11" name="__codelineno-44-11" href="#__codelineno-44-11"></a>    memref.global "public" @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
 <a id="__codelineno-44-12" name="__codelineno-44-12" href="#__codelineno-44-12"></a>    ...
-<a id="__codelineno-44-13" name="__codelineno-44-13" href="#__codelineno-44-13"></a>  } {sym_name = &quot;segment_0&quot;}
+<a id="__codelineno-44-13" name="__codelineno-44-13" href="#__codelineno-44-13"></a>  } {sym_name = "segment_0"}
 <a id="__codelineno-44-14" name="__codelineno-44-14" href="#__codelineno-44-14"></a>  ...
 <a id="__codelineno-44-15" name="__codelineno-44-15" href="#__codelineno-44-15"></a>  func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
 <a id="__codelineno-44-16" name="__codelineno-44-16" href="#__codelineno-44-16"></a>    ...
@@ -3259,13 +3259,13 @@ The input IR contains some L3 memory operations (<code>airrt.dma_memcpy_nd</code
 <a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>  aie.device(npu1_4col) {
 <a id="__codelineno-45-3" name="__codelineno-45-3" href="#__codelineno-45-3"></a>    ...
 <a id="__codelineno-45-4" name="__codelineno-45-4" href="#__codelineno-45-4"></a>    aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
-<a id="__codelineno-45-5" name="__codelineno-45-5" href="#__codelineno-45-5"></a>    memref.global &quot;public&quot; @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
+<a id="__codelineno-45-5" name="__codelineno-45-5" href="#__codelineno-45-5"></a>    memref.global "public" @airMemcpyId78 : memref&lt;32x128xi32, 1&gt;
 <a id="__codelineno-45-6" name="__codelineno-45-6" href="#__codelineno-45-6"></a>    ...
 <a id="__codelineno-45-7" name="__codelineno-45-7" href="#__codelineno-45-7"></a>    aie.shim_dma_allocation @airMemcpyId19(MM2S, 0, 0)
-<a id="__codelineno-45-8" name="__codelineno-45-8" href="#__codelineno-45-8"></a>    memref.global &quot;public&quot; @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
+<a id="__codelineno-45-8" name="__codelineno-45-8" href="#__codelineno-45-8"></a>    memref.global "public" @airMemcpyId19 : memref&lt;32x256xi32, 1&gt;
 <a id="__codelineno-45-9" name="__codelineno-45-9" href="#__codelineno-45-9"></a>    ...
 <a id="__codelineno-45-10" name="__codelineno-45-10" href="#__codelineno-45-10"></a>    aie.shim_dma_allocation @airMemcpyId15(MM2S, 0, 2)
-<a id="__codelineno-45-11" name="__codelineno-45-11" href="#__codelineno-45-11"></a>    memref.global &quot;public&quot; @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
+<a id="__codelineno-45-11" name="__codelineno-45-11" href="#__codelineno-45-11"></a>    memref.global "public" @airMemcpyId15 : memref&lt;256x32xi32, 1&gt;
 <a id="__codelineno-45-12" name="__codelineno-45-12" href="#__codelineno-45-12"></a>    ...
 <a id="__codelineno-45-13" name="__codelineno-45-13" href="#__codelineno-45-13"></a>    func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
 <a id="__codelineno-45-14" name="__codelineno-45-14" href="#__codelineno-45-14"></a>      ...
@@ -3283,7 +3283,7 @@ The input IR contains some L3 memory operations (<code>airrt.dma_memcpy_nd</code
 <a id="__codelineno-45-26" name="__codelineno-45-26" href="#__codelineno-45-26"></a>      ...
 <a id="__codelineno-45-27" name="__codelineno-45-27" href="#__codelineno-45-27"></a>      return
 <a id="__codelineno-45-28" name="__codelineno-45-28" href="#__codelineno-45-28"></a>    }
-<a id="__codelineno-45-29" name="__codelineno-45-29" href="#__codelineno-45-29"></a>  } {sym_name = &quot;segment_0&quot;}
+<a id="__codelineno-45-29" name="__codelineno-45-29" href="#__codelineno-45-29"></a>  } {sym_name = "segment_0"}
 <a id="__codelineno-45-30" name="__codelineno-45-30" href="#__codelineno-45-30"></a>}
 </code></pre></div>
 The output is significantly simplified and optimized compared to the input. It focuses on the data movement instructions on the AIE SHIM DMA controller (<code>aiex.npu.dma_memcpy_nd</code>) driving the data movement between the AIE accelerator and external memory via the SHIM DMA.</p>
