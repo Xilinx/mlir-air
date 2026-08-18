@@ -2509,9 +2509,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // to the front of its own feeds. Fused multi-iteration launches take the
     // wave-keyed path below instead (each arm is placed by its air.launch_wave
     // index).
-    auto isRegionDelimiter = [](Operation *o) {
-      return isa<AIEX::NpuLoadPdiOp>(o);
-    };
     // Move an NpuWriteRTPOp before `anchor`, re-materializing any defining op
     // that would otherwise end up after it. The #1732 AIEX API materializes the
     // RTP value as an SSA operand (not an attribute), so its definition must
@@ -2565,85 +2562,58 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         for (auto &o : blk)
           ops.push_back(&o);
 
-        // Block first, then wave within the block. A rolled loop body is one
-        // block holding one wave (the wave is the IV), so wave keying has
-        // nothing to separate and this falls through to the region form below.
-        // A sequence that arrives already flattened -- several waves laid out
-        // in one block -- still needs each wave armed before its own feed,
-        // because collapsing the arms to the block's front would let a later
-        // wave's RTP value land before an earlier wave has run.
+        // One arm group per launch. Both things that can delimit a launch
+        // boundary are cuts of this block's op list, emitted from the SAME
+        // air.launch_end marker: AIRRtWaitAllOpConversion turns each marker
+        // into an aiex.npu.load_pdi (ELF + lock reset) or into dma_waits
+        // (plain xclbin), while assignLaunchWaveIndices turns markers into a
+        // wave index on each op. So cut on either signal: a load_pdi, or a
+        // change of wave. Single dispatch has neither and stays one group.
+        //
+        // Cutting on both matters because neither alone covers every mode. A
+        // plain xclbin multi-iteration launch emits no load_pdi, so only the
+        // wave index separates its launches -- collapsing them would let a
+        // later launch's RTP value land before an earlier one has run. And an
+        // arm must never be hoisted above a load_pdi, or the reload clobbers
+        // the RTP write it just placed.
         auto getWave = [](Operation *o) -> std::optional<int64_t> {
           if (auto a = o->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
             return a.getInt();
           return std::nullopt;
         };
-        llvm::SmallDenseSet<int64_t> wavesHere;
-        for (Operation *o : ops)
-          if (auto w = getWave(o))
-            wavesHere.insert(*w);
-
-        if (wavesHere.size() > 1) {
-          // Wave-keyed arm placement: move each arm before the first data
-          // movement carrying the same wave index, RTP writes then set_locks,
-          // preserving program order within a wave.
-          llvm::DenseMap<int64_t, Operation *> waveAnchor;
-          for (Operation *o : ops) {
-            if (isa<AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(o))
-              continue;
-            if (o->hasAttr(air::attrs::RuntimeHoist))
-              continue;
-            if (auto w = getWave(o))
-              waveAnchor.try_emplace(*w, o);
+        struct ArmGroup {
+          Operation *anchor = nullptr;
+          SmallVector<Operation *> rtps;
+          SmallVector<Operation *> locks;
+        };
+        SmallVector<ArmGroup> groups(1);
+        std::optional<int64_t> curWave;
+        for (Operation *o : ops) {
+          if (isa<AIEX::NpuLoadPdiOp>(o)) {
+            groups.emplace_back();
+            curWave.reset();
+            continue;
           }
-          for (Operation *o : ops)
-            if (isa<AIEX::NpuWriteRTPOp>(o))
-              if (auto w = getWave(o)) {
-                auto it = waveAnchor.find(*w);
-                if (it != waveAnchor.end())
-                  moveRtpBefore(o, it->second);
-              }
-          for (Operation *o : ops)
-            if (isa<AIEX::SetLockOp>(o))
-              if (auto w = getWave(o)) {
-                auto it = waveAnchor.find(*w);
-                if (it != waveAnchor.end())
-                  o->moveBefore(it->second);
-              }
-        } else {
-          // One wave in this block: hoist each delimiter-bounded region's own
-          // RTP block (RTP writes first, then set_locks) to the front of its
-          // own feeds. Anchor = first data movement (not an RTP write,
-          // set_lock, or air.runtime_hoist feed).
-          struct RegionInfo {
-            Operation *anchor = nullptr;
-            SmallVector<Operation *> rtps;
-            SmallVector<Operation *> locks;
-          };
-          SmallVector<RegionInfo> regions;
-          for (size_t i = 0, e = ops.size(); i < e;) {
-            size_t j = i;
-            while (j < e && !isRegionDelimiter(ops[j]))
-              ++j;
-            RegionInfo r;
-            for (size_t k = i; k < j; ++k) {
-              if (isa<AIEX::NpuWriteRTPOp>(ops[k]))
-                r.rtps.push_back(ops[k]);
-              else if (isa<AIEX::SetLockOp>(ops[k]))
-                r.locks.push_back(ops[k]);
-              else if (!ops[k]->hasAttr(air::attrs::RuntimeHoist) && !r.anchor)
-                r.anchor = ops[k];
-            }
-            regions.push_back(r);
-            i = (j < e) ? j + 1 : j;
+          if (auto w = getWave(o)) {
+            if (curWave && *w != *curWave)
+              groups.emplace_back();
+            curWave = w;
           }
-          for (auto &r : regions) {
-            if (!r.anchor)
-              continue;
-            for (auto *rtp : r.rtps)
-              moveRtpBefore(rtp, r.anchor);
-            for (auto *lk : r.locks)
-              lk->moveBefore(r.anchor);
-          }
+          ArmGroup &g = groups.back();
+          if (isa<AIEX::NpuWriteRTPOp>(o))
+            g.rtps.push_back(o);
+          else if (isa<AIEX::SetLockOp>(o))
+            g.locks.push_back(o);
+          else if (!o->hasAttr(air::attrs::RuntimeHoist) && !g.anchor)
+            g.anchor = o;
+        }
+        for (auto &g : groups) {
+          if (!g.anchor)
+            continue;
+          for (auto *rtp : g.rtps)
+            moveRtpBefore(rtp, g.anchor);
+          for (auto *lk : g.locks)
+            lk->moveBefore(g.anchor);
         }
       }
     });
