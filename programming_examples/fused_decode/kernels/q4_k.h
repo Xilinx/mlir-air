@@ -21,6 +21,19 @@
 // above. The additive form matches the newer "I8" bundle dtype instead. Naming
 // the layout after either bundle codec invites reading the algebra backwards,
 // so it is named after what it is.
+
+// How the Q4_0 path sign-corrects a nibble when peano is the backend:
+//   1  xor bias, (u ^ 8) - 8    (default)
+//   0  compare/select, select(f, f - 16, f >= 8)
+//   2  no sign fix at all -- NUMERICALLY WRONG, static-cost attribution only
+// Defaulted here rather than at the use site because the preprocessor has no
+// scope: defining it inside the function body would still leak to the rest of
+// the translation unit, just less visibly. See the block above its use for what
+// the modes cost and why the emulation exists at all.
+#ifndef Q4_SFIX_MODE
+#define Q4_SFIX_MODE 1
+#endif
+
 #ifndef Q4_0
 template <int M, int N>
 void _qmm_q4k_bf16(const q4k_block_t *A, const bf16 *B, float *c,
@@ -300,9 +313,7 @@ inline void _qmm_q4k_bf16(const q4k_block_t *A, const bf16 *B, float *c) {
         //
         // Only this Q4_0 branch has a sign fix at all -- Q4NX nibbles are
         // unsigned -- so nothing outside the Q4_0 models is affected.
-#ifndef Q4_SFIX_MODE
-#define Q4_SFIX_MODE 1
-#endif
+        // Q4_SFIX_MODE is defaulted at the top of this file.
         const aie::vector<float, pr * 8> k_eight =
             aie::broadcast<float, pr * 8>(8.0f);
 #if Q4_SFIX_MODE == 0
