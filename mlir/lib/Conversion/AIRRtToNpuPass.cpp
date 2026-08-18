@@ -2098,6 +2098,16 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
   // Folding costs one descriptor per entry of the folded dim.
   if (*constWrap > AIE2_STRIDE_UNROLL_LIMIT)
     return success();
+  // The pieces are issued back to back, so an enclosing dim that still walks is
+  // traversed inside each piece instead of around them: (d,k) order becomes
+  // (k,d). Same addresses, different arrival order, which an S2MM consumer
+  // synchronising on locks reads as corrupt data. A stride-0 repeat counts --
+  // it revisits the same addresses, so only the order distinguishes it. Only
+  // fold when every enclosing dim is degenerate, which is the shape this exists
+  // for: the KV append is wrap 1 outside the folded dim.
+  for (unsigned d = 0; d < i; d++)
+    if (getConstantIntValue(wraps[d]).value_or(0) != 1)
+      return success();
   // generateAwaitsFromWaitAllOps matches waits to configure tasks FIFO per
   // channel -- the Nth wait for a channel awaits the Nth config for it. This
   // rewrite turns one config into `wrap` of them, so the channel needs `wrap`

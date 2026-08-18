@@ -26,7 +26,7 @@
 // be redefined in each scope body. Herds must be 2D.
 //
 // Reference: https://github.com/ROCm/iris
-// Reference: https://xilinx.github.io/mlir-air/AIRComputeModel.html
+// Reference: https://xilinx.github.io/mlir-air/dev/AIRComputeModel/
 //
 //===----------------------------------------------------------------------===//
 

@@ -173,3 +173,41 @@ module {
     return
   }
 }
+
+// -----
+
+// A dim outside the folded one that still walks blocks the fold. The pieces are
+// issued back to back, so that dim ends up traversed inside each piece instead
+// of around them -- (d,k) order becomes (k,d). Same addresses, different arrival
+// order, which an S2MM consumer synchronising on locks reads as corrupt data.
+// Here dim 0 is a stride-0 repeat of wrap 2: it revisits the same addresses, so
+// order is the only thing that distinguishes it. Shape taken from the
+// llama-3.2-1B int4 bfp16 prefill, which this silently miscompiled.
+
+// CHECK-LABEL: aie.device(npu1)
+// CHECK: aie.dma_bd(%arg0 : memref<268435456xbf16> offset = 0 len = 589824 sizes = [2, 384, 768] strides = [1179648, 768, 1])
+
+module {
+  aie.device(npu1) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, S2MM, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<268435456xbf16>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c384_i64 = arith.constant 384 : i64
+    %c768_i64 = arith.constant 768 : i64
+    %c1179648_i64 = arith.constant 1179648 : i64
+    %c4_i32 = arith.constant 4 : i32
+    %p = airrt.segment_load "forward_0" : i64
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c2_i64, %c384_i64, %c768_i64], [%c0_i64, %c1179648_i64, %c768_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<268435456xbf16>) : !airrt.event
+    airrt.wait_all %0
+    return
+  }
+}
