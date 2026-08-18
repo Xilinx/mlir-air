@@ -1096,16 +1096,10 @@ def build_module():
                 # the append OFF rope's own col2 (whose congestion deadlocks the
                 # front-end).
                 _apK = channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
-                _apK.operation.attributes["air.shim_col"] = IntegerAttr.get(
-                    T.i32(), ATTN_COL_GROUPS[0][0]
-                )
                 _apK.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
                     T.i32(), 1
                 )
                 _apV = channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
-                _apV.operation.attributes["air.shim_col"] = IntegerAttr.get(
-                    T.i32(), ATTN_COL_GROUPS[1][0]
-                )
                 _apV.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
                     T.i32(), 1
                 )
@@ -1167,7 +1161,6 @@ def build_module():
         # #4: layer output (residual2 = h + down) drained to host from the rms core.
         if FULL4:
             _lo = channel_decl("layerOut", size=[1])
-            _lo.operation.attributes["air.shim_col"] = IntegerAttr.get(T.i32(), 5)
             if KV_APPEND:
                 # Keep layerOut on rms MM2S0 (circuit) so xnorm (pinned to MM2S1)
                 # does not share/flip it to packet. See xnorm pin above.

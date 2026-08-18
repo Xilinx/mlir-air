@@ -1869,6 +1869,10 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   AIE::DMAChannelDir dir =
       isMM2S.value() ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
 
+  // The shim receiving (S2MM) means this flow ends off-chip: a readback to host
+  // DDR. `otherSide`/`col` then describe the PRODUCER core, not a destination.
+  bool isHostReadback = !isMM2S.value();
+
   // Check if allocating for a packet flow (packet flow supports channel time
   // multiplexing at the shim DMA level)
   bool isPacketFlowOp = false;
@@ -1939,6 +1943,17 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   // on the (saturated) producer column.
   if (shimColPin >= 0)
     bucketCol = shimColPin;
+  // Channel declaration behind a memcpy, or null. Sub-channels of one bundled
+  // decl (e.g. @outD [2,2]) share it; independent channels do not.
+  auto declOf = [](Operation *op) -> Operation * {
+    auto chanIf = dyn_cast_if_present<air::ChannelInterface>(op);
+    if (!chanIf)
+      return nullptr;
+    auto decl = getChannelDeclarationThroughSymbol(chanIf);
+    return decl ? decl.getOperation() : nullptr;
+  };
+  Operation *thisDecl = declOf(memcpyOp.getOperation());
+
   auto sameBucket = [&](const allocation_info_t &t) {
     int tCol = bucketColFor(t.col, t.otherSideLTO);
     if (bucketCol >= 0 && tCol >= 0)
@@ -2007,6 +2022,19 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
             break;
           }
         }
+        // Never collapse two INDEPENDENT readbacks onto one shim packet
+        // channel. A readback ends off-chip, so its bucket key is the producer
+        // core's column -- which says nothing about where the transfer should
+        // leave the array, and lands every readback out of a herd in the same
+        // bucket. Packet reuse then puts them on one channel: llama-1b's
+        // appendK, appendV and layerOut all became (2,0) S2MM 0, which the
+        // pathfinder cannot route, and which air.shim_col was pinning apart by
+        // hand. Sub-channels of ONE bundled decl still multiplex -- that is a
+        // single logical transfer and is what the packing exists for.
+        if (isHostReadback && t.isHostReadback &&
+            declOf(t.memcpyOps.empty() ? nullptr : t.memcpyOps.front()) !=
+                thisDecl)
+          continue;
         // Never collapse onto a channel that hosts a dedicated flow.
         if (tPacket && !t.containsDedicatedChannel()) {
           packetLT = lt;
@@ -2036,19 +2064,90 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   // on the pinned column -- otherwise a col-less (or off-column) bucket LTO
   // would capture this flow on the non-packet/dedicated paths and silently
   // drop the pin.
-  AIE::LogicalTileOp tileLT = nullptr;
-  walkBucketLTOs([&](AIE::LogicalTileOp lt) {
-    if (shimColPin >= 0) {
-      auto ltCol = lt.tryGetCol();
-      if (!ltCol || (int)*ltCol != shimColPin)
-        return false;
-    }
-    if ((int)channelsUsedOn(lt).size() < shim_dma_channels) {
-      tileLT = lt;
-      return true;
+  // Does `lt` already carry a packet readback from a DIFFERENT channel decl?
+  auto hostsOtherPacketReadback = [&](AIE::LogicalTileOp lt) {
+    for (auto &t : llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
+      if (t.dma_tile.getOperation() != lt.getOperation() || !t.isHostReadback)
+        continue;
+      if (declOf(t.memcpyOps.empty() ? nullptr : t.memcpyOps.front()) !=
+          thisDecl)
+        return true;
     }
     return false;
-  });
+  };
+
+  // A readback ends off-chip, so it has no column affinity at all: its bucket
+  // key is the PRODUCER's column, which only says where the data came from.
+  // Restricting it to that bucket puts every readback out of a herd on one
+  // shim tile -- llama-1b's appendK/appendV/layerOut -- which does not route,
+  // and is what air.shim_col was pinning apart by hand. Give it the SPARSEST
+  // existing shim LTO with a free channel instead, so readbacks spread over
+  // tiles the design already owns.
+  //
+  // Spreading this way rather than by opening a fresh LTO per readback is
+  // deliberate: the AIR pipeline runs aie-place-tiles with
+  // merge-logical-tiles=false, so every LTO costs a whole shim tile and NPU2
+  // only has 8. One-LTO-per-readback needs 9 for this design and fails to
+  // place. Joining another column's existing bucket is exactly what a
+  // shim_col pin achieves (appendK pinned to col 3 shares the inKV LTO).
+  // Bucket column of an LTO, from any allocation that owns it, or -1.
+  auto ltoBucketCol = [&](AIE::LogicalTileOp lt) {
+    for (auto &t : llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs))
+      if (t.dma_tile.getOperation() == lt.getOperation()) {
+        int c = bucketColFor(t.col, t.otherSideLTO);
+        if (c >= 0)
+          return c;
+      }
+    return -1;
+  };
+  // Nearest LTO to the producer that is free and holds no other readback.
+  // Distance still matters -- picking purely the emptiest tile scatters
+  // readbacks away from their producers and cost ~1.8% decode throughput on
+  // llama-1b. Rank by (distance from the producer column, channels used).
+  auto spreadShimLTO = [&]() -> AIE::LogicalTileOp {
+    AIE::LogicalTileOp best = nullptr;
+    std::pair<int, int> bestKey = {std::numeric_limits<int>::max(),
+                                   std::numeric_limits<int>::max()};
+    llvm::SmallPtrSet<Operation *, 8> seen;
+    for (auto &t : llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
+      auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+      if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
+        continue;
+      if (!seen.insert(lt.getOperation()).second)
+        continue;
+      if (hostsOtherPacketReadback(lt))
+        continue;
+      int used = (int)channelsUsedOn(lt).size();
+      if (used >= shim_dma_channels)
+        continue;
+      int ltCol = ltoBucketCol(lt);
+      int dist = (ltCol < 0 || col < 0) ? shim_dma_channels
+                                        : std::abs(ltCol - (int)col);
+      std::pair<int, int> key = {dist, used};
+      if (key < bestKey) {
+        best = lt;
+        bestKey = key;
+      }
+    }
+    return best;
+  };
+
+  AIE::LogicalTileOp tileLT = nullptr;
+  if (shimColPin < 0 && isPacketFlowOp && isHostReadback)
+    tileLT = spreadShimLTO();
+  if (!tileLT)
+    walkBucketLTOs([&](AIE::LogicalTileOp lt) {
+      if (shimColPin >= 0) {
+        auto ltCol = lt.tryGetCol();
+        if (!ltCol || (int)*ltCol != shimColPin)
+          return false;
+      }
+      if ((int)channelsUsedOn(lt).size() < shim_dma_channels) {
+        tileLT = lt;
+        return true;
+      }
+      return false;
+    });
   // Broadcast fallback: reuse the sparsest existing shim LTO across all
   // buckets before opening a new one.
   if (!tileLT && isBroadcastL3Put && !isPacketFlowOp) {
@@ -2168,10 +2267,13 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
            t.dma_channel == baseRes->dma_channel;
   };
   for (auto &t : llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
-    if (matchesReturned(t))
+    if (matchesReturned(t)) {
       t.otherSideLTO = otherSideOp;
+      t.isHostReadback = isHostReadback;
+    }
   }
   baseRes->otherSideLTO = otherSideOp;
+  baseRes->isHostReadback = isHostReadback;
   return baseRes;
 }
 
