@@ -1087,14 +1087,16 @@ def build_module():
             # cache is streamed back per CU (inKV) into a readback memtile that
             # re-blocks into per-block toK/toV.
             if KV_APPEND:
-                # the reference-faithful: rope K/V -> shim col3 (K) / col4 (V) S2MM -> DDR,
-                # mirroring reference pkt14/15. PACKET (not circuit) so the append
-                # can leave rope on its 2nd MM2S and fan to distinct cols. TWO
-                # channels (one per col) because air.shim_col pins a single col
-                # per channel DECL (compiler reads it from the decl). Pinning
-                # cols 3/4 (attention CU cols; readback reuses them on MM2S) keeps
-                # the append OFF rope's own col2 (whose congestion deadlocks the
-                # front-end).
+                # the reference-faithful: rope K/V -> shim S2MM -> DDR, mirroring
+                # reference pkt14/15. PACKET (not circuit) so the append can leave
+                # rope on its 2nd MM2S and fan to distinct cols. TWO channel DECLS
+                # so the allocator can place them independently -- one decl's
+                # sub-channels are treated as a single logical transfer and may
+                # share a shim channel, which is the opposite of what is wanted
+                # here. The columns are no longer pinned: the allocator spreads
+                # independent packet readbacks over distinct shim tiles, keeping
+                # the append off rope's own col2 (whose congestion deadlocks the
+                # front-end) without air.shim_col.
                 _apK = channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
                 _apK.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
                     T.i32(), 1
@@ -1565,9 +1567,9 @@ def build_module():
                             # (2) READ BACK the whole cache per CU (inKV, strided) for the flash
                             # block loop. = the reference _receive + _move.
                             def _emit_append(_kbase=_kbase):
-                                # K -> shim col3 S2MM, V -> shim col4 S2MM (attention CU cols;
-                                # cols pinned on the appendK/appendV channel DECLS via
-                                # air.shim_col). air-annotate-append-barrier derives the
+                                # K and V each drain to a shim S2MM; the allocator
+                                # picks distinct shim tiles for the two decls.
+                                # air-annotate-append-barrier derives the
                                 # append->readback ordering from the RAW on the shared DDR
                                 # cache: these gets write it, the readback below reads it.
                                 if KV_REGION:

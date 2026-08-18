@@ -2064,14 +2064,26 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   // on the pinned column -- otherwise a col-less (or off-column) bucket LTO
   // would capture this flow on the non-packet/dedicated paths and silently
   // drop the pin.
-  // Does `lt` already carry a packet readback from a DIFFERENT channel decl?
+  // Does `lt` already carry a PACKET readback from a DIFFERENT channel decl?
+  // Packet matters: only packet flows time-multiplex a shim channel, so only
+  // they can collapse onto one. A circuit readback holds a channel of its own
+  // and sharing a tile with it is ordinary packing. Same decl is excluded too
+  // -- its sub-channels are one logical transfer and are meant to multiplex.
   auto hostsOtherPacketReadback = [&](AIE::LogicalTileOp lt) {
     for (auto &t : llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
       if (t.dma_tile.getOperation() != lt.getOperation() || !t.isHostReadback)
         continue;
-      if (declOf(t.memcpyOps.empty() ? nullptr : t.memcpyOps.front()) !=
+      if (declOf(t.memcpyOps.empty() ? nullptr : t.memcpyOps.front()) ==
           thisDecl)
-        return true;
+        continue;
+      for (auto o : t.memcpyOps) {
+        auto mc = dyn_cast_if_present<air::MemcpyInterface>(o);
+        if (!mc)
+          continue;
+        auto ct = air::getChannelType(mc);
+        if (succeeded(ct) && ct.value() == "npu_dma_packet")
+          return true;
+      }
     }
     return false;
   };
@@ -2100,7 +2112,8 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       }
     return -1;
   };
-  // Nearest LTO to the producer that is free and holds no other readback.
+  // Nearest LTO to the producer that has a free channel and carries no packet
+  // readback from another decl (same-decl sub-channels may still share it).
   // Distance still matters -- picking purely the emptiest tile scatters
   // readbacks away from their producers and cost ~1.8% decode throughput on
   // llama-1b. Rank by (distance from the producer column, channels used).
