@@ -74,7 +74,7 @@ DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GO
                   W_DUAL_CHAN=$(W_DUAL_CHAN) PROJ_RC_CACHE=$(PROJ_RC_CACHE) \
                   $(if $(UNI_LM),UNI_LM=$(UNI_LM),)
 
-.PHONY: help compile-decode _compile_decode_build compile-decode-dynseq preflight-llvm-link clean
+.PHONY: help compile-decode _compile_decode_build compile-decode-dynseq preflight-peano preflight-llvm-link clean
 
 help:
 	@echo "============================================================"
@@ -132,7 +132,26 @@ compile-decode:
 ## with no regard for Peano's major. If this preflight is stricter than lit, lit
 ## marks such a test supported, runs it, and the test hard-fails right here,
 ## which is the exact outcome the feature exists to avoid.
-preflight-llvm-link:
+# The repo pins llvm-aie (utils/build-mlir-air-using-wheels.sh). That script only
+# installs at setup time, so a sandbox created before a pin bump keeps building
+# with a stale Peano and nothing says so. #1808 retired the NOINLINE attn
+# workaround on the strength of a Peano fix; built against the older Peano the
+# decode emits a coherent first token and then garbage -- and the Paris gate
+# still passes, because that token comes from prefill.
+preflight-peano:
+	@PIN=$$(grep -oE 'llvm-aie==[0-9][^"]*' $(srcdir)/../../utils/build-mlir-air-using-wheels.sh | head -1 | cut -d= -f3); \
+	  HAVE=$$(cat $(PEANO_INSTALL_DIR)/../llvm_aie-*.dist-info/METADATA 2>/dev/null \
+	          | grep -m1 '^Version:' | awk '{print $$2}'); \
+	  if [ -z "$$PIN" ]; then echo "    preflight: no llvm-aie pin found, skipping"; exit 0; fi; \
+	  if [ "$$HAVE" != "$$PIN" ]; then \
+	    echo "ERROR: Peano is $$HAVE but this repo pins $$PIN"; \
+	    echo "       A stale Peano miscompiles the inlined attn: correct first token, garbage after."; \
+	    echo "       Fix: pip install --upgrade --force-reinstall 'llvm-aie==$$PIN' \\"; \
+	    echo "              -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly"; \
+	    exit 1; fi; \
+	  echo "    Peano = $$HAVE (matches pin)"
+
+preflight-llvm-link: preflight-peano
 	@echo ">>> preflight: llvm-link must be LLVM <23 (pre-lifetime-change) for the inline-attn merge"
 	@# A >=23 llvm-link rewrites llvm.lifetime.* to the no-size form, which Peano
 	@# opt then rejects outright ("Broken module found") -- loud, at build time.
