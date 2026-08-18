@@ -42,8 +42,8 @@ AIEOPT_DIR     := $(shell realpath $(dir $(shell which aie-opt))/..)
 # apart are built so DecodeInstsGen can calibrate the per-token L slope. Any
 # prompt up to LBUILD works -- there is no minimum.
 #
-# 2048 matches the three Llama/Gemma Q4NX decodes. It costs 2.7 ms/token against
-# a 256 build (85.4 vs 82.7 ms/tok, same box and power mode, 16-token `make gen`,
+# 2048 matches the three Llama/Gemma Q4NX decodes. It costs 2.5 ms/token against
+# a 256 build (35.5 vs 33.0 ms/tok, same box and power mode, 16-token `make gen`,
 # byte-identical output), because the readback streams the padded ATTN_MAXL --
 # `make compile-decode-dynseq` removes exactly that.
 LBUILD      ?= 2048
@@ -61,6 +61,17 @@ W_DUAL_CHAN ?= 1
 # Llama build only by -DMODEL_TYPE=QWEN2_5_3B.
 NONATTN_KERNELS := proj_qmm rms_residual glu rope   # object .o, -O2
 ATTN_LL_KERNELS := attn_qk attn_kv                  # inline .ll only, -O1 (merge-linked)
+
+# Extra kernel defines, as in fused_decode/Makefile -- read that file's header
+# for what these are for. The other three Q4NX examples delegate their kernel
+# builds to it and so inherit the hook; this Makefile compiles its own kernels
+# (it drives fused_decode_qwen.py rather than fused_decode.py) and had dropped
+# it. Empty by default, so the shipped path is byte-identical. Example:
+#     make compile-decode NONATTN_EXTRA=-DQ4_SFIX_MODE=0
+# rebuilds against the pre-xor-bias int4 sign fix, which is how the 2.4x in
+# README.md's decode table was measured on one box in one session.
+ATTN_EXTRA      ?=
+NONATTN_EXTRA   ?=
 PEANO_KBASE     := -std=c++20 --target=aie2p-none-unknown-elf \
   -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body -Wno-deprecated-declarations \
   -DNDEBUG -DMODEL_TYPE=QWEN2_5_3B -D__AIE_API_AIE_ADF_HPP__ \
@@ -69,12 +80,18 @@ PEANO_KBASE     := -std=c++20 --target=aie2p-none-unknown-elf \
 DECODE_ENV      := QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$(ATTN_L) W_DUAL_CHAN=$(W_DUAL_CHAN)
 
 # Build-flag stamp for the idempotent skip. Every variable below changes either the
-# xclbin's dataflow or its DDR weight layout, so a warm build made with different
-# settings must NOT be silently reused. (Distinct from the builder's own
-# decode_qwen.flags, which records W_DUAL_CHAN for the *runtime* packer check and
-# whose single-line format the hand-off parses.)
+# xclbin's dataflow, its DDR weight layout or its core ELFs, so a warm build made
+# with different settings must NOT be silently reused. (Distinct from the builder's
+# own decode_qwen.flags, which records W_DUAL_CHAN for the *runtime* packer check
+# and whose single-line format the hand-off parses.)
+#
+# The kernel defines are in the stamp for the same reason the rest are: without
+# them `make compile-decode NONATTN_EXTRA=...` would find the templates present,
+# skip the build and hand back the PREVIOUS kernels -- an A/B that silently
+# measures the same binary twice.
 DECODE_STAMP := $(srcdir)/.decode_build_flags
-DECODE_FLAGS := MODEL_TYPE=QWEN2_5_3B NLAYERS=$(N_LAYERS) LBUILD=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN)
+DECODE_FLAGS := MODEL_TYPE=QWEN2_5_3B NLAYERS=$(N_LAYERS) LBUILD=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN) \
+                ATTN_EXTRA=$(ATTN_EXTRA) NONATTN_EXTRA=$(NONATTN_EXTRA)
 
 # End-to-end generation demo. The only bound now is the cache cap: the prompt
 # plus the generated tokens must fit in LBUILD positions. There is no minimum --
@@ -145,10 +162,10 @@ compile-decode-dynseq:
 	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
 	@echo ">>> qwen non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
 	@echo ">>> qwen attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
 	@echo ">>> qwen dynseq template decode_dyn_L$(LBUILD)"
 	@cd $(DEC) && QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN) \
@@ -171,12 +188,12 @@ _compile_decode_build:
 	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
 	@echo ">>> qwen non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
 	@echo ">>> qwen attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
 	@# Merge-linked INTO the core (mlir-aie #3399), not object-linked: the builder
 	@# tags the kernel decls link_with="<name>.ll" + link_with_mode="merge".
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
 	@# Two templates one L apart, into THIS example's dir. They must not land in
 	@# $(DEC): DecodeInstsGen discovers templates by scanning for decode_L*, so a
