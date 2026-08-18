@@ -1,17 +1,17 @@
-//===- keep_loops_rolled.mlir ----------------------------------*- MLIR -*-===//
+//===- rolled_runtime_sequence.mlir -----------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -airrt-to-npu="keep-loops-rolled=true" -canonicalize -cse --split-input-file %s | FileCheck %s
+// RUN: air-opt -airrt-to-npu -canonicalize -cse --split-input-file %s | FileCheck %s
 
-// keep-loops-rolled leaves the runtime sequence's scf.for in place instead of
-// unrolling it, so what reaches aiecc is one configure inside a loop rather
-// than N copies of it. aiecc unrolls the constant-trip case itself, so the
-// instruction stream is unchanged; a runtime-bound loop stays rolled through
-// to the dynamic BD pool.
+// airrt-to-npu leaves the runtime sequence's scf.for in place, so what reaches
+// aiecc is one configure inside a loop rather than N copies of it. aiecc's
+// aie-unroll-runtime-sequence-loops unrolls the constant-trip case itself --
+// one unroller in the stack -- so the instruction stream is unchanged; a
+// runtime-bound loop stays rolled through to the dynamic BD pool.
 //
 // The DMA has to be built directly under the runtime_sequence -- the AIEX ops
 // require it as an ancestor -- so the control func becomes the sequence before

@@ -243,13 +243,6 @@ static cl::opt<bool> coalesceShimDma(
              "only for feeds verified numerically equivalent when coalesced."),
     cl::init(false), cl::cat(airCompilerOptions));
 
-static cl::opt<bool> keepLoopsRolled(
-    "keep-loops-rolled",
-    cl::desc("Leave the runtime sequence's constant-trip loops rolled for "
-             "aiecc to unroll, instead of unrolling them here. The "
-             "instruction stream is unchanged; AIR's IR stays small."),
-    cl::init(false), cl::cat(airCompilerOptions));
-
 enum PlacedIrVerifyMode { PIV_off, PIV_warn, PIV_error };
 
 static cl::opt<PlacedIrVerifyMode> placedIrVerifiers(
@@ -1296,7 +1289,6 @@ static LogicalResult runAieCompilation() {
       bool outputElf = (outputFormat == OF_elf);
       os << " output-elf=" << (outputElf ? "true" : "false");
       os << " coalesce-shim-dma=" << (coalesceShimDma ? "true" : "false");
-      os << " keep-loops-rolled=" << (keepLoopsRolled ? "true" : "false");
       os << "}";
     }
 

@@ -432,13 +432,7 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
           "transfer, reducing the number of host-issued DMA task "
           "configure/start/await triplets. Opt-in: this reorders a channel's "
           "paced feeds ahead of the sibling-channel interleave, so enable it "
-          "only for feeds verified numerically equivalent when coalesced.">,
-    Option<"clKeepLoopsRolled", "keep-loops-rolled", "bool",
-          /*default=*/"false",
-          "Leave constant-trip loops in the runtime sequence rolled instead of "
-          "fully unrolling them. aiecc's aie-unroll-runtime-sequence-loops "
-          "unrolls what is left, so the instruction stream is unchanged; this "
-          "only keeps AIR's own IR small.">
+          "only for feeds verified numerically equivalent when coalesced.">
   ];
   let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
 }

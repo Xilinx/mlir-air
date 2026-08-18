@@ -314,8 +314,6 @@ ATTN_ROUNDS = (ATTN_L + 15) // 16
 # stream is then assembled per token from the emitted TXN builder rather than read
 # from a frozen insts.bin. Off by default; the template pair stays the shipping path.
 DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
-# DECODE_ROLLED=1: hand aiecc the wave loop rolled instead of unrolling it here.
-ROLLED = int(_os.environ.get("DECODE_ROLLED", "0"))
 
 
 def _for_no_pingpong(start, stop, step):
@@ -2358,7 +2356,6 @@ def run():
         # DYNSEQ: the runtime sequence holds a scalar, so the stream is built per
         # dispatch from the emitted header instead of read from insts.bin.
         emit_txn_cpp=bool(DYNSEQ),
-        keep_loops_rolled=bool(ROLLED),
     )
     print(
         f"[qwen_decode] proj grid {NCX}x{NCY}=16 cores cols "

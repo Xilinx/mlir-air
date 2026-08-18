@@ -479,10 +479,6 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # position the cores are about to read. Named separately only because each one
 # reads better at its use.
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
-# DECODE_ROLLED=1: hand aiecc the wave loop rolled instead of unrolling it here.
-# aiecc unrolls it either way, so the instruction stream is unchanged -- this is
-# about not having two unrollers in the stack.
-ROLLED = int(_os.environ.get("DECODE_ROLLED", "0"))
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # DECODE_KV_SPLIT=1: decouple the attention K and V memtile rings (mirror the reference mem_3_1:
@@ -3690,7 +3686,6 @@ def run():
         # DYNSEQ: the runtime sequence now holds a scalar, so the stream is built
         # per dispatch from the emitted header instead of read from insts.bin.
         emit_txn_cpp=bool(DYNSEQ),
-        keep_loops_rolled=bool(ROLLED),
     )
     print(
         f"[q4nx_decode] proj: M={M} K={K} {NCX}x{NCY}=16 cores, "
