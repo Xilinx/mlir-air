@@ -16,16 +16,19 @@ relationship `llama32_1b_q4nx` has to `llama32_1b`); this example supplies the
 |---|---|
 | First token, `"The capital of France is"`, 36 layers on NPU2 | **argmax 12095 = `" Paris"`** — PASS |
 | Warm TTFT @ seq_len=2048 | **4.17 s** (491 tok/s prefill), NPU-dispatch 4.17 s, host 5 ms |
-| End-to-end NPU prefill -> NPU fused decode, 36 layers, no reference model | coherent text, **12.2 tok/s** device-only decode |
+| End-to-end NPU prefill -> NPU fused decode, 36 layers, no reference model | coherent text, **30.3 tok/s** device-only decode (`LBUILD=256`; 28.2 at the 2048 default) |
 | Top-k token-set inclusion vs HF bf16 (`make verify-full`) | **8/8 prompts PASS** (shared prompt file) — the CI gate |
 
 The 36 transformer layers run on the NPU for both prefill and decode. The final
 RMSNorm + LM-head projection and the argmax still run on the host each decode
 token; moving them on-device is a performance item, not a correctness one.
 
-Measured 2026-08-06 on a quiet NPU2 box (load < 0.1). Verify the box is idle
-before trusting any timing here — a busy host makes this DDR-bandwidth-bound
-workload ~30% slower.
+Prefill measured 2026-08-06, decode re-measured 2026-08-18, both on a quiet
+(load < 0.1) **AMD Ryzen AI 7 350 (Krackan Point)**, XRT 2.21.75. Verify the box
+is idle before trusting any timing here — a busy host makes this
+DDR-bandwidth-bound workload ~30% slower. The part matters as much as the load:
+"NPU2" spans more than one array configuration, so a number from another NPU2
+box is not comparable to these.
 
 ## Quant codec: Q4_0, not Q4NX
 
@@ -175,16 +178,22 @@ slope. The default is **2048**, matching the three Llama/Gemma Q4NX decodes.
 Measured: prompt *"The capital city of France is called Paris, ... that stands
 right in the middle of"* -> *" the city. It is called the Eiffel Tower, and it
 was built"*. Same box and power mode, 16-token `make gen`, output byte-identical
-at both caps:
+in all four cells:
 
-| `LBUILD` | device |
-|---|---|
-| 256 | 82.7 ms/token |
-| 2048 | 85.4 ms/token |
+| `LBUILD` | device | `NONATTN_EXTRA=-DQ4_SFIX_MODE=0` |
+|---|---|---|
+| 256 | **33.0 ms/token** (30.3 tok/s) | 81.8 ms/token (12.2 tok/s) |
+| 2048 | **35.5 ms/token** (28.2 tok/s) | 84.2 ms/token (11.9 tok/s) |
 
-The 2.7 ms is the padded readback: the KV nd-DMA streams `ATTN_MAXL` positions
-whatever the real context is. `make compile-decode-dynseq` takes the block count
-off the runtime scalar instead and removes it.
+The 2.5 ms between the caps is the padded readback: the KV nd-DMA streams
+`ATTN_MAXL` positions whatever the real context is. `make
+compile-decode-dynseq` takes the block count off the runtime scalar instead and
+removes it.
+
+The right-hand column is the same design built against the pre-xor-bias int4
+sign fix (see [`kernels/q4_k.h`](../../fused_decode/kernels/q4_k.h)), measured in
+the same session on the same box so the 2.4x is not a cross-box comparison. It
+is also what this table used to report.
 
 ## Files
 
