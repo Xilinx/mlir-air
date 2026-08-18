@@ -140,9 +140,19 @@ compile-decode:
 # still passes, because that token comes from prefill.
 preflight-peano:
 	@PIN=$$(grep -oE 'llvm-aie==[0-9][^"]*' $(srcdir)/../../utils/build-mlir-air-using-wheels.sh | head -1 | cut -d= -f3); \
+	  if [ -z "$$PIN" ]; then echo "    preflight: no llvm-aie pin found, skipping"; exit 0; fi; \
+	  if [ -z "$(PEANO_INSTALL_DIR)" ] || [ ! -x "$(PEANO_INSTALL_DIR)/bin/clang" ]; then \
+	    echo "ERROR: PEANO_INSTALL_DIR does not point at a Peano install"; \
+	    echo "       (no $(PEANO_INSTALL_DIR)/bin/clang); this repo pins llvm-aie==$$PIN"; \
+	    exit 1; fi; \
 	  HAVE=$$(cat $(PEANO_INSTALL_DIR)/../llvm_aie-*.dist-info/METADATA 2>/dev/null \
 	          | grep -m1 '^Version:' | awk '{print $$2}'); \
-	  if [ -z "$$PIN" ]; then echo "    preflight: no llvm-aie pin found, skipping"; exit 0; fi; \
+	  if [ -z "$$HAVE" ]; then \
+	    echo "ERROR: cannot read an llvm-aie version next to $(PEANO_INSTALL_DIR)"; \
+	    echo "       (no llvm_aie-*.dist-info/METADATA), so it cannot be checked"; \
+	    echo "       against the pinned llvm-aie==$$PIN. A stale Peano miscompiles"; \
+	    echo "       the inlined attn: correct first token, garbage after."; \
+	    exit 1; fi; \
 	  if [ "$$HAVE" != "$$PIN" ]; then \
 	    echo "ERROR: Peano is $$HAVE but this repo pins $$PIN"; \
 	    echo "       A stale Peano miscompiles the inlined attn: correct first token, garbage after."; \
