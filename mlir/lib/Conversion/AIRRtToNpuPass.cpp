@@ -254,11 +254,11 @@ static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
     if (numLaunchEnds >= 1 && (numLaunchEnds > 1 || anyMultiTrip)) {
       device->setAttr(kMultiIterLaunchAttr,
                       mlir::UnitAttr::get(device.getContext()));
-      // The loop-unroll (unrollSCFFors) runs before this, so a fused scf.for
-      // over air.launch presents as `numLaunchEnds` unrolled launch_end markers
-      // == the iteration count. (If the loop somehow survived unrolling there
-      // is a single marker in a multi-trip loop; leave the count at 1 so the
-      // pacing stays per-loop-body, which is already correct in that form.)
+      // air-opt-shim-dma-bds stamps one marker per air.launch, so several
+      // markers means several launches flattened into this func. A launch
+      // iteration loop is NOT that shape: it keeps its single marker inside
+      // the loop, so the count stays 1 and the pacing stays per-loop-body,
+      // which is already correct in that form.
       if (numLaunchEnds > 1)
         device->setAttr(kNumLaunchItersAttr,
                         mlir::IntegerAttr::get(
