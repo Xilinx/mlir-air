@@ -44,13 +44,19 @@ class CostModel:
     def op_stats(self, module):
         """Return operation count information as JSON"""
         air_module = _convert_module(module)
+        # Close the handle before the pass writes to the path and before the
+        # unlink. Only POSIX lets you unlink a file that is still open; on
+        # Windows both the write and the unlink fail with a sharing violation.
         with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
             name = tmpfile.name
+        try:
             with air_module.context:
                 pipeline = f"builtin.module(air-linalg-op-stats{{outputfile={name}}})"
                 pm = air.passmanager.PassManager.parse(pipeline)
                 pm.run(air_module.operation)
-            stats = open(name).read()
+            with open(name) as f:
+                stats = f.read()
+        finally:
             os.unlink(name)
         return stats
 
@@ -76,7 +82,11 @@ class Runner:
         trace_tmpfile = None
         trace_filename = self.trace_filename
         if trace_filename is None:
+            # Close it immediately: the runner below writes to this path, and
+            # Windows refuses both that write and the later unlink while our
+            # own handle is still open.
             trace_tmpfile = tempfile.NamedTemporaryFile(delete=False)
+            trace_tmpfile.close()
             trace_filename = trace_tmpfile.name
 
         # the json model can be:
@@ -111,7 +121,8 @@ class Runner:
         # if the user didn't provide an output filename
         return_trace = None
         if trace_tmpfile:
-            return_trace = open(trace_tmpfile.name).read()
+            with open(trace_tmpfile.name) as f:
+                return_trace = f.read()
             os.unlink(trace_tmpfile.name)
 
         return return_trace
