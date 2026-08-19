@@ -89,7 +89,7 @@ EXAMPLES = [
         "category": "Element-wise",
         "name": "Element-wise Add",
         "path": "eltwise_add",
-        "datatypes": "f32",
+        "datatypes": "bf16, f32",
     },
     {
         "category": "Element-wise",

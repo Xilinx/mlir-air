@@ -32,6 +32,58 @@ NPU_MODELS = {
 }
 
 
+def detect_target_device(verbose=False, default="npu1"):
+    """Return the NPU generation xrt-smi reports, or `default` if it can't tell.
+
+    Callers that have to size a design before handing it to the backend need the
+    same answer compile() reaches, so this is the one place that maps xrt-smi
+    output onto NPU_MODELS. Compiling for a generation that is not the one
+    installed is not diagnosed anywhere downstream -- an aie.device(npu1) binary
+    loads on npu2 without error and computes nothing -- so guessing is worse
+    than asking.
+    """
+    try:
+        xrtsmi = shutil.which("xrt-smi") or "/opt/xilinx/xrt/bin/xrt-smi"
+        result = subprocess.run(
+            [xrtsmi, "examine"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+    except Exception as e:
+        if verbose:
+            print("Failed to run xrt-smi, using default target device")
+            print(e)
+        return default
+
+    if result.returncode != 0:
+        if verbose:
+            print(
+                f"xrt-smi exited with code {result.returncode}, "
+                f"using default target device"
+            )
+            stderr = result.stderr.decode("utf-8").strip()
+            if stderr:
+                print(f"xrt-smi stderr: {stderr}")
+        return default
+
+    # Case-insensitive substring matching against NPU_MODELS, aligned with
+    # mlir-aie's hostruntime.py approach.
+    output_lc = result.stdout.decode("utf-8").lower()
+    for version, keywords in NPU_MODELS.items():
+        if any(kw.lower() in output_lc for kw in keywords):
+            if verbose:
+                print(f"Detected NPU device: {version}")
+            return version
+
+    print(
+        f"WARNING: xrt-smi did not report a recognized NPU model. "
+        f"Supported: {dict(NPU_MODELS)}. "
+        f"Falling back to '{default}'."
+    )
+    return default
+
+
 def _find_peano_install_dir():
     """Return the installed llvm-aie (Peano) directory, or "" if there is none.
 
@@ -243,47 +295,7 @@ class XRTBackend(AirBackend):
             if self.verbose:
                 print(f"Using explicitly specified target device: {target_device}")
         else:
-            # Try to auto-detect device via xrt-smi
-            target_device = "npu1"  # Default fallback
-            try:
-                xrtsmi = shutil.which("xrt-smi") or "/opt/xilinx/xrt/bin/xrt-smi"
-                result = subprocess.run(
-                    [xrtsmi, "examine"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=10,
-                )
-                if result.returncode != 0:
-                    if self.verbose:
-                        print(
-                            f"xrt-smi exited with code {result.returncode}, "
-                            f"using default target device"
-                        )
-                        stderr = result.stderr.decode("utf-8").strip()
-                        if stderr:
-                            print(f"xrt-smi stderr: {stderr}")
-                else:
-                    output_lc = result.stdout.decode("utf-8").lower()
-                    # Use case-insensitive substring matching against NPU_MODELS,
-                    # aligned with mlir-aie's hostruntime.py approach.
-                    detected = False
-                    for version, keywords in NPU_MODELS.items():
-                        if any(kw.lower() in output_lc for kw in keywords):
-                            target_device = version
-                            detected = True
-                            if self.verbose:
-                                print(f"Detected NPU device: {version}")
-                            break
-                    if not detected:
-                        print(
-                            f"WARNING: xrt-smi did not report a recognized NPU model. "
-                            f"Supported: {dict(NPU_MODELS)}. "
-                            f"Falling back to '{target_device}'."
-                        )
-            except Exception as e:
-                if self.verbose:
-                    print("Failed to run xrt-smi, using default target device")
-                    print(e)
+            target_device = detect_target_device(verbose=self.verbose)
 
         # Validate output_format compatibility with target device.
         # Full ELF requires aiebu-asm aie2_config which targets npu2/AIE2P only.

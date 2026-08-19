@@ -13,28 +13,6 @@ endif
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
-# AIE target: aie2 (NPU1) or aie2p (NPU2, default)
-AIE_TARGET ?= aie2p
-
-# Device-dependent defaults
-ifeq ($(AIE_TARGET),aie2p)
-  # NPU2: BF16 vectorized, 8-column config
-  DTYPE ?= bf16
-  VECTOR_SIZE ?= 16
-  HERD_X ?= 8
-  HERD_Y ?= 1
-  TILE_N ?= 2048
-  N ?= 4194304
-else
-  # NPU1: F32 scalar, 2-tile config
-  DTYPE ?= f32
-  VECTOR_SIZE ?= 0
-  HERD_X ?= 1
-  HERD_Y ?= 2
-  TILE_N ?= 1024
-  N ?= 65536
-endif
-
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 
 # Auto-detect XILINX_XRT if not set
@@ -45,27 +23,49 @@ EXTRA_PY_FLAGS ?=
 
 all: run
 
+# SHAPE is 1-D (N) or 2-D (M N); TILE and VECTOR_SIZE default per rank and
+# dtype. See eltwise_add.py.
+SHAPE ?= 1024 1024
+DTYPE ?= bf16
+TILE ?=
+VECTOR_SIZE ?=
+PERF_ITERS ?= 0
+
+TILE_FLAG = $(if $(TILE),--tile $(TILE),)
+VEC_FLAG = $(if $(VECTOR_SIZE),--vector-size $(VECTOR_SIZE),)
+# The device is auto-detected: one invocation has to run on whichever NPU is
+# installed. Set TARGET=npu1|npu2 to compile for a generation that is not
+# plugged in.
+TARGET ?= auto
+PY_FLAGS = --shape $(SHAPE) --dtype $(DTYPE) $(TILE_FLAG) $(VEC_FLAG) \
+	--target $(TARGET) $(OUTPUT_FORMAT_FLAG) $(EXTRA_PY_FLAGS)
+
+# Total element count, for the -S argument of test.exe.
+SHAPE_ELEMENTS = $(shell python3 -c "import math,sys;print(math.prod([int(x) for x in '$(SHAPE)'.split()]))")
+
 print:
-	${powershell} python3 ${srcdir}/eltwise_add.py $(OUTPUT_FORMAT_FLAG) \
-		--n $(N) --dtype $(DTYPE) --vector-size $(VECTOR_SIZE) \
-		--herd-x $(HERD_X) --herd-y $(HERD_Y) \
-		--tile-n $(TILE_N) $(EXTRA_PY_FLAGS) -p
+	${powershell} python3 ${srcdir}/eltwise_add.py $(PY_FLAGS) --print-ir
+
+compile:
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
+		${powershell} python3 ${srcdir}/eltwise_add.py $(PY_FLAGS) --compile-only
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/eltwise_add.py \
-		$(OUTPUT_FORMAT_FLAG) --n $(N) --dtype $(DTYPE) --vector-size $(VECTOR_SIZE) \
-		--herd-x $(HERD_X) --herd-y $(HERD_Y) --tile-n $(TILE_N) $(EXTRA_PY_FLAGS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
+		${powershell} python3 ${srcdir}/eltwise_add.py $(PY_FLAGS) \
+		--perf-iters $(PERF_ITERS)
 
+# Bandwidth profiling via the shared test.cpp harness. bf16 only -- test.cpp
+# fixes DATATYPE to std::bfloat16_t -- but rank-agnostic, since it takes a
+# total element count.
 profile: build-test-exe
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		python3 ${srcdir}/eltwise_add.py --n $(N) --tile-n $(TILE_N) \
-		--dtype $(DTYPE) --vector-size $(VECTOR_SIZE) \
-		--herd-x $(HERD_X) --herd-y $(HERD_Y) \
-		--compile-mode compile-only --output-format xclbin
+		python3 ${srcdir}/eltwise_add.py $(PY_FLAGS) --compile-only
 	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin \
-		-S $(N)
+		-S $(SHAPE_ELEMENTS)
 
 build-test-exe:
 	@GPP=$$( \
