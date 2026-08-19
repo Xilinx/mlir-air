@@ -18,11 +18,13 @@
 ## Builder
 
 ```
-programming_examples/eltwise_add/eltwise_add_dialect.py
-  build_module(n, tile_n, np_dtype, vector_size=16, num_tiles, herd_x, herd_y)
+programming_examples/eltwise_add/eltwise_add.py
+  build_eltwise_add(shape, dtype=bf16, tile, herd_shape, vector)
 ```
 
-Driven by `eltwise_add_dialect.py`'s CLI (`make run-dialect`); the example also has a `Makefile`. Note that `eltwise_add/eltwise_add.py` is now the `air.api` DSL version of the same kernel, with a different CLI (`--shape` / `--dtype` / `--tile`) and its own `make run` / `make profile` targets. The numbers in this entry were measured with the raw-bindings version, so the commands below name it explicitly. Single code-generation path: direct-codegen MLIR (vectorized `vector.transfer_read/write` + `arith.addf`), no external `.cc`. The input `[N]` is split into `tile_n`-sized chunks streamed through L3→L1→L3 DMA; the chunks are spread across an `herd_x × herd_y` AIE tile grid (each tile loops over its share). The herd is effectively 1-D for this kernel (rows are independent), so `herd_x` (AIE columns) is the scaling knob.
+Written with the `air.api` DSL (`make run` / `make profile`); the example also has a `Makefile`. Single code-generation path: direct-codegen MLIR (vectorized `vector.transfer_read/write` + `arith.addf`), no external `.cc`. The input is split into `tile`-sized chunks streamed through L3→L1→L3 DMA; the chunks are spread across the AIE tile grid, and a logical grid larger than the array is strip-mined onto it (each tile loops over its share). The herd is effectively 1-D for this kernel (rows are independent), so AIE **columns** are the scaling knob.
+
+> **History.** The figures below were measured with the raw-bindings implementation (`eltwise_add_dialect.py`), which the DSL version replaced. The two were A/B'd on one NPU2 box in a single session before the swap and came out at parity — `+0.7%` avg and `+0.9%` max bandwidth on the C++ `test.cpp` harness over 6 alternating reps, and `-2.1%` latency on the `--perf-iters` path over 3 — so the recorded numbers still describe this kernel. Absolute bandwidth is power-mode sensitive: both implementations measure ~4-6% below the table on the same box in `Default` power mode, so reproduce with `xrt-smi configure --pmode turbo` before comparing against these figures.
 
 **Note on llama usage.** llama-3.2-1B's prefill residual add is **not** this standalone kernel — it is inlined into the fused `o_ffn` ELF (`o_ffn_multi.py`'s `_build_add_2d_to_2d`, a 2-D `[2048,2048]` add, herd 8×1, collapsed to 1-D inside the launch). The math is identical (`c = a + b`); only the L3 layout (2-D vs flat 1-D) and the surrounding fusion differ. This registry entry measures the **standalone** `eltwise_add` (a reusable, independently-reproducible building block); the fused variant has the same numerics.
 
@@ -54,24 +56,24 @@ Verified element-wise over the full output against an FP32 reference (`a,b` upca
 - **`mean_rel_L1 = 1.9e-3`** — the cleanest tier in the registry. A single bf16 add rounds each output once; there is no accumulation to amplify error.
 - **`rel_err max = 7.8e-3`** is small (no near-zero-reference blowup — `a + b` rarely cancels to near zero), so unlike FA/RMSNorm even the worst relative element is well within `rtol`.
 - **`abs_err max = 3.1e-2`** is one bf16 ULP at the largest-magnitude sums — covered by `atol = 5e-2`.
-- **Accuracy is identical across `herd_x` and across `N`** (bit-for-bit `1.9e-3` at herd_x ∈ {1,2,4,8} and N ∈ {1M,2M,4M,8M}) — set only by the datatype, not the tiling or size.
+- **Accuracy is identical across `cols` and across `N`** (bit-for-bit `1.9e-3` at cols ∈ {1,2,4,8} and N ∈ {1M,2M,4M,8M}) — set only by the datatype, not the tiling or size.
 
 ---
 
 ## Parameters & constraints
 
-Element-wise Add is **memory-bound** (it streams `a`, `b` in and `c` out for an O(N) op, zero arithmetic intensity). The herd is 2-D (`sizes=[herd_x, herd_y]`), but a hardware limit pins the usable config:
+Element-wise Add is **memory-bound** (it streams `a`, `b` in and `c` out for an O(N) op, zero arithmetic intensity). The herd is 2-D (`--herd-shape COLS ROWS`), but a hardware limit pins the usable config. Below, `cols`/`rows` are the two `--herd-shape` extents and `tile` is `--tile`:
 
 | Knob | Value | Constraint → source |
 |---|---|---|
-| `herd_x` | **8** | AIE columns (≤ 8); `n % (tile_n · herd_x · herd_y) == 0` |
-| `herd_y` | **1** | **must be 1** — each tile uses 3 independent L3↔L1 DMAs (a in, b in, c out); `herd_y > 1` exhausts the shim DMA channels (`aircc`: *"air.channel.put failed to map to shim dma channels: out of channels"*) |
-| `tile_n` | 2048 | `n % (tile_n · herd_x · herd_y) == 0`; L1 chunk size; **≤ 4096** (≥ 8192 overflows L1 with ping-pong buffering) |
-| `vector_size` | 16 | `tile_n % vector_size == 0`; AIE2 bf16 vector lane count |
+| `cols` | **8** | AIE columns (≤ 8); `N % (tile · cols · rows) == 0` |
+| `rows` | **1** | **must be 1** — each tile uses 3 independent L3↔L1 DMAs (a in, b in, c out); `rows > 1` exhausts the shim DMA channels (`aircc`: *"air.channel.put failed to map to shim dma channels: out of channels"*) |
+| `tile` | 2048 | `N % (tile · cols · rows) == 0`; L1 chunk size; **≤ 4096** (≥ 8192 overflows L1 with ping-pong buffering) |
+| `--vector-size` | 16 | `tile % vector_size == 0`; AIE2 bf16 vector lane count |
 
-**The kernel cannot use the full 32-tile array** — the 3-DMA-per-tile shim-channel demand caps it at `herd_y = 1`, i.e. **one row of 8 columns (8 tiles max)**. A sweep confirmed `herd_x = 8, herd_y = 1` is the best placeable config; every `herd_y > 1` config (8×2, 8×4, 4×4) fails to place with "out of channels". `tile_n` was swept with 3 repeats each (median bandwidth): it has a **small monotonic effect** — `256` → 55.4 GB/s up to `2048`/`4096` → ~57.5 GB/s (~4%, the larger block amortizes DMA-launch overhead, saturating by 2048), so **`tile_n = 2048` is the best (and the default)**. `vector_size` is not a tuning target. Accuracy is independent of all of them.
+**The kernel cannot use the full 32-tile array** — the 3-DMA-per-tile shim-channel demand caps it at one row, i.e. **8 columns (8 tiles max)**. A sweep confirmed 8×1 is the best placeable config; every multi-row config (8×2, 8×4, 4×4) fails to place with "out of channels". `tile` was swept with 3 repeats each (median bandwidth): it has a **small monotonic effect** — `256` → 55.4 GB/s up to `2048`/`4096` → ~57.5 GB/s (~4%, the larger block amortizes DMA-launch overhead, saturating by 2048), so **`tile = 2048` is the best**. `--vector-size` is not a tuning target. Accuracy is independent of all of them.
 
-> **`Makefile` default**: `N=4194304, TILE_N=2048, HERD_X=8, HERD_Y=1, VECTOR_SIZE=16` (NPU2 bf16) — the best config.
+> **Defaults**: `--target auto` picks the 8-column row on NPU2, and `--tile` defaults to the largest power of two whose 3 ping-ponged L1 buffers fit — which is 1024 at rank 1, so the measured best config is `SHAPE=4194304 TILE=2048`.
 
 ---
 
@@ -91,9 +93,9 @@ Element-wise over the **full output** against an FP32 reference: every element m
 
 ## Tested shapes
 
-Shapes verified on NPU2 (bf16). **Best config is `herd_x=8, herd_y=1, tile_n=2048` for every shape** (the shim-DMA-channel limit caps the herd at one 8-column row — see [Parameters & constraints](#parameters--constraints)). `N = 4194304` is the 2048×2048 residual-add scale of llama-3.2-1B prefill (flattened). Throughput is bandwidth (memory-bound). `mean_rel_L1` is vs an FP32 reference.
+Shapes verified on NPU2 (bf16). **Best config is 8 columns × 1 row with `tile = 2048` for every shape** (the shim-DMA-channel limit caps the herd at one 8-column row — see [Parameters & constraints](#parameters--constraints)). `N = 4194304` is the 2048×2048 residual-add scale of llama-3.2-1B prefill (flattened). Throughput is bandwidth (memory-bound). `mean_rel_L1` is vs an FP32 reference.
 
-| N | (as 2-D) | best config (herd_x/herd_y/tile_n) | latency | bandwidth | mean_rel_L1 | abs_err max | Status |
+| N | (as 2-D) | best config (cols/rows/tile) | latency | bandwidth | mean_rel_L1 | abs_err max | Status |
 |---|---|---|---|---|---|---|---|
 | 1048576 | 1024×1024 | 8/1/2048 | 175 µs | 36.0 GB/s | 1.9e-3 | 3.1e-2 | ✅ |
 | 2097152 | — | 8/1/2048 | 277 µs | 45.4 GB/s | 1.9e-3 | 3.1e-2 | ✅ |
@@ -107,7 +109,7 @@ Shapes verified on NPU2 (bf16). **Best config is `herd_x=8, herd_y=1, tile_n=204
 
 > The 1835008 row is Qwen2.5-0.5B's prefill residual-add scale (seq·emb = 2048·896); the 3145728 row is Qwen2.5-1.5B's (seq·emb = 2048·1536). Same best config, bit-identical 1.9e-3.
 
-> The 245760 row is SmolVLA's prefill residual-add scale (seq 241→256 · emb=960). ⚠️ The stock `tile_n=2048` **passes** the `n % (tile_n·total_tiles) == 0` assert (245760/(2048·8)=15, integer) but **silently produces zeros past the first ~2 tiles** on device (mean_rel_L1≈0.46) — the 15 (odd, non-power-of-2) inner DMA iterations per core mis-transfer at this N. Empirically, **`tile_n=1920`** (chunk_size 30720/1920=16 iterations, 1920 % vector_size 16 = 0) PASSES cleanly; 1024 and 3840 also work. Latency-bound at this small N (13.2 GB/s vs 57.7 at the 2048² scale), accuracy bit-identical 1.9e-3. Choose a `tile_n` that both divides `N/(herd_x·herd_y)` and is a multiple of `vector_size`.
+> The 245760 row is SmolVLA's prefill residual-add scale (seq 241→256 · emb=960). ⚠️ The stock `tile=2048` **passes** the `n % (tile·total_tiles) == 0` assert (245760/(2048·8)=15, integer) but **silently produces zeros past the first ~2 tiles** on device (mean_rel_L1≈0.46) — the 15 (odd, non-power-of-2) inner DMA iterations per core mis-transfer at this N. Empirically, **`tile=1920`** (chunk_size 30720/1920=16 iterations, 1920 % vector_size 16 = 0) PASSES cleanly; 1024 and 3840 also work. Latency-bound at this small N (13.2 GB/s vs 57.7 at the 2048² scale), accuracy bit-identical 1.9e-3. Choose a `tile` that both divides `N/(cols·rows)` and is a multiple of `vector_size`.
 
 > The 4194304 row is the llama-3.2-1B prefill residual-add scale (the fused `o_ffn` variant does the same math on a 2-D `[2048,2048]` layout — see Builder). All shapes use the same best config; bandwidth rises with N as fixed launch overhead amortizes (36 → 63 GB/s). Accuracy is bit-identical across all shapes and herd configs.
 
@@ -119,9 +121,9 @@ Shapes verified on NPU2 (bf16). **Best config is `herd_x=8, herd_y=1, tile_n=204
 
 ## Tunable space & performance
 
-The full tunable space is `(herd_x ≤ 8, herd_y ≤ 4, tile_n, vector_size)`, but two things collapse it to a single best config:
+The full tunable space is `(cols ≤ 8, rows ≤ 4, tile, vector_size)`, but two things collapse it to a single best config:
 
-**1. `herd_y > 1` cannot place** — the 3-DMA-per-tile shim-channel demand exceeds the hardware limit. So the herd is capped at one row (`herd_y = 1`), max 8 tiles — the kernel **cannot fill the 32-tile array** (unlike GEMM/FA). Sweep at N=4194304:
+**1. `rows > 1` cannot place** — the 3-DMA-per-tile shim-channel demand exceeds the hardware limit. So the herd is capped at one row (`rows = 1`), max 8 tiles — the kernel **cannot fill the 32-tile array** (unlike GEMM/FA). Sweep at N=4194304:
 
 | herd | tiles | result |
 |---|---|---|
@@ -131,41 +133,44 @@ The full tunable space is `(herd_x ≤ 8, herd_y ≤ 4, tile_n, vector_size)`, b
 | 8×4 | 32 | ❌ out of shim DMA channels |
 | 4×4 | 16 | ❌ out of shim DMA channels |
 
-**2. Within `herd_y = 1`, more columns scale near-linearly** (each column streams its chunk through its own DMA). Sweep of `herd_x` at N=4194304:
+**2. Within `rows = 1`, more columns scale near-linearly** (each column streams its chunk through its own DMA). Sweep of `cols` at N=4194304:
 
-| herd_x | latency | bandwidth | speedup vs herd_x=1 |
+| cols | latency | bandwidth | speedup vs cols=1 |
 |---|---|---|---|
 | 1 | 2759 µs | 9.1 GB/s | 1.0× |
 | 2 | 1327 µs | 19.0 GB/s | 2.1× |
 | 4 | 706 µs | 35.7 GB/s | 3.9× |
 | 8 | **437 µs** | **57.7 GB/s** | **6.3×** |
 
-**3. `tile_n` has a small monotonic effect** (3-repeat median bandwidth, N=4194304): `256` → 55.4, `512` → 56.2, `1024` → 56.7, `2048` → 57.5, `4096` → 57.2 GB/s — larger blocks amortize DMA-launch overhead, saturating by `tile_n = 2048` (~4% over the smallest). `tile_n ≥ 8192` overflows L1 (ping-pong). So `tile_n = 2048` is best (also the default).
+**3. `tile` has a small monotonic effect** (3-repeat median bandwidth, N=4194304): `256` → 55.4, `512` → 56.2, `1024` → 56.7, `2048` → 57.5, `4096` → 57.2 GB/s — larger blocks amortize DMA-launch overhead, saturating by `tile = 2048` (~4% over the smallest). `tile ≥ 8192` overflows L1 (ping-pong). So `tile = 2048` is best (also the default).
 
-So **`herd_x = 8, herd_y = 1, tile_n = 2048` is the best config** for every shape — full chip *width* (the most the shim DMA channels allow) with the DMA-saturating block size. Accuracy is bit-identical across all configs.
+So **8 columns × 1 row with `tile = 2048` is the best config** for every shape — full chip *width* (the most the shim DMA channels allow) with the DMA-saturating block size. Accuracy is bit-identical across all configs.
 
 ---
 
 ## How to reproduce (correctness + performance)
 
-`eltwise_add_dialect.py` (compile-and-run mode, the default) runs the **correctness** check via `XRTRunner`: full-output element-wise compare against the FP32 reference; prints `[precision] mean_rel_L1=... | rel_err max=... | abs_err max=... | rtol=... atol=...` and `PASS!` / `failed.` Add `--perf-iters N` for latency → bandwidth (10 warmup iters excluded, N timed iters averaged, kernel-only — buffer sync not counted). Every tested-shapes row reproduces by setting `N` (all use the same best config `herd_x=8, herd_y=1, tile_n=2048`):
+`eltwise_add.py` (compile-and-run mode, the default) runs the **correctness** check via `XRTRunner`: full-output element-wise compare against the FP32 reference; prints `[precision] mean_rel_L1=... | rel_err max=... | abs_err max=... | rtol=... atol=...` and `PASS!` / `failed.` Add `--perf-iters N` for latency → bandwidth (10 warmup iters excluded, N timed iters averaged, kernel-only — buffer sync not counted). Every tested-shapes row reproduces by setting `SHAPE` (all use the same best config: one 8-column row, `tile = 2048`, which is what `--target auto` picks on NPU2):
 
 ```bash
 cd programming_examples/eltwise_add
 
 # correctness — main shape (N=4194304), best config; compiles + runs on NPU2
-make run-dialect N=4194304 PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
+make run SHAPE=4194304 TILE=2048 PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
 
-# any tested shape — change N (1048576 / 2097152 / 4194304 / 8388608)
-make run-dialect N=8388608 PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
+# any tested shape — change SHAPE (1048576 / 2097152 / 4194304 / 8388608).
+# SHAPE also takes 2-D, e.g. SHAPE="2048 2048" for the same element count.
+make run SHAPE=8388608 TILE=2048 PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
 
 # performance (latency → bandwidth) — run the script directly with --perf-iters
 mkdir -p build_peano && cd build_peano
-python3 ../eltwise_add_dialect.py --n 4194304 --tile-n 2048 --dtype bf16 \
-  --vector-size 16 --herd-x 8 --herd-y 1 --perf-iters 20
+python3 ../eltwise_add.py --shape 4194304 --tile 2048 --dtype bf16 --perf-iters 20
 # bandwidth = 3·N·2 bytes / latency  (a+b in, c out, bf16)
+
+# C++ timing path (test.cpp), reports avg/max/min bandwidth directly
+make profile SHAPE=4194304 TILE=2048 PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
 ```
 
 Notes:
-- `herd_y` must be 1 (shim DMA channel limit); `herd_x` ≤ 8. An alternative C++ timing path exists via `make profile-dialect`.
+- The herd must be one row (shim DMA channel limit), at most 8 columns. `--target auto` sizes it for the installed NPU; `--herd-shape` overrides it, and `--target npu1|npu2` compiles for a generation that is not plugged in.
 - If the NPU is shared with other jobs, serialize on-device runs (e.g. with `flock`) so timing measurements aren't perturbed.

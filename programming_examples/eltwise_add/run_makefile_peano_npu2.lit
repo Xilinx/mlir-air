@@ -1,12 +1,19 @@
 // (c) Copyright 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
+// npu2-only coverage: 1-D f32 at the dtype's default vector width, the flagship
+// 1-D shape, and the bandwidth harness at the registry's measured size. The rest
+// of the rank and dtype matrix is not repeated here -- run_makefile_peano.lit
+// already covers it on this hardware, since the device is detected rather than
+// pinned. It runs 1-D f32 scalar, so the vectorised form stays here.
+//
 // REQUIRES: ryzen_ai_npu2, peano
 //
-// RUN: mkdir -p dialect_test_peano_npu2
-// RUN: cd dialect_test_peano_npu2
+// RUN: mkdir -p test_peano_npu2
+// RUN: cd test_peano_npu2
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run-dialect PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
-// RUN: make -f %S/Makefile profile-dialect PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck --check-prefix=PROFILE %s
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR SHAPE=65536 DTYPE=f32 | FileCheck %s
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR SHAPE=4194304 TILE=2048 | FileCheck %s
+// RUN: make -f %S/Makefile profile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR SHAPE=4194304 TILE=2048 | FileCheck --check-prefix=PROFILE %s
 // CHECK: PASS!
 // PROFILE: PASS

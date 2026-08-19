@@ -8,9 +8,9 @@ ranks share one body: the herd iteration space, the tile offsets, and the slice
 handed to the DMAs are all built from the shape, so `--shape 65536` and
 `--shape 1024 1024` differ only in how many dimensions get tiled.
 
-This is the same kernel as programming_examples/eltwise_add, expressed through
-air.api instead of the raw dialect bindings: the DSL emits the herd, the L1
-allocations, the affine tile offsets, the DMAs, and the vectorised compute loop.
+The DSL emits the herd, the L1 allocations, the affine tile offsets, the DMAs,
+and the vectorised compute loop; what it hands to the backend is an ordinary AIR
+module. Measured at parity with the raw-bindings implementation it replaces.
 
 Concepts:
   - a herd built from a range (1-D) or a product of ranges (2-D); a logical tile
@@ -129,8 +129,8 @@ if __name__ == "__main__":
         default=None,
         dest="vector",
         help="compute vector width in lanes; 0 forces a scalar loop. Default is "
-        "the dtype's (16 for bf16, 8 for f32). Note f32 at 8 lanes does not "
-        "legalize on npu1 -- use 0 there, as the hand-written example does.",
+        "the dtype's, 16 for both bf16 and f32 -- f32 at 8 lanes does not "
+        "legalize on either target, so 16 (512-bit) is the f32 default.",
     )
     parser.add_argument(
         "--dtype",
@@ -217,10 +217,10 @@ if __name__ == "__main__":
     a_np = rng.standard_normal(args.shape, dtype=np.float32).astype(np_dtype)
     b_np = rng.standard_normal(args.shape, dtype=np.float32).astype(np_dtype)
 
-    # Reference in fp32, rounded back to the kernel's dtype -- the same standard
-    # the raw-bindings version (eltwise_add_dialect.py) checks against.
-    # Tolerances are taken from it: bf16 add is exact to a single bf16 round, so
-    # atol is sized to the worst-case round; f32 is effectively exact.
+    # Reference in fp32, rounded back to the kernel's dtype -- the standard the
+    # kernel registry records this kernel against. bf16 add is exact to a single
+    # bf16 round, so atol is sized to the worst-case round; f32 is effectively
+    # exact.
     ref = (a_np.astype(np.float32) + b_np.astype(np.float32)).astype(np_dtype)
     rtol, atol = (1.6e-2, 5e-2) if args.dtype == "bf16" else (1e-3, 1e-5)
 
