@@ -14,7 +14,7 @@ and they must compose with the arithmetic operators in the same tree.
 
 from air import api as air
 from air.api import ops
-from air.api.types import bf16, f32
+from air.api.types import bf16, f32, i32
 
 
 def build(N, tile, body, herd_shape=None, dtype=bf16, vector=None):
@@ -94,3 +94,15 @@ def relu_f32_scalar():
             65536, 1024, lambda b: ops.relu(b[:]), herd_shape=(4,), dtype=f32, vector=0
         ).mlir()
     )
+
+
+# CHECK-LABEL: TEST: relu_integer
+# ops.relu takes the Python type of its zero from the operand's dtype. An
+# integer buffer lowers through arith.maxsi, and building an integer
+# arith.constant from a Python float fails with "expected floating point type".
+# CHECK: memref.alloc() : memref<512xi32, 2 : i32>
+# CHECK: arith.constant 0 : i32
+# CHECK: arith.maxsi
+@run
+def relu_integer():
+    print(build(4096, 512, lambda b: ops.relu(b[:]), herd_shape=(4,), dtype=i32).mlir())

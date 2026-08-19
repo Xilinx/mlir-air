@@ -159,8 +159,17 @@ def minimum(a, b):
 
 
 def relu(x):
-    """max(x, 0), the composition the hand-written relu kernel emits."""
-    return maximum(x, 0.0)
+    """max(x, 0), the composition the hand-written relu kernel emits.
+
+    The zero takes its Python type from the operand's dtype: an integer buffer
+    lowers through ``_INT_OPS``, and building an integer ``arith.constant`` from
+    a Python float fails with "expected floating point type".
+    """
+    expr = BufferExpr.coerce(x)
+    leaves = expr.leaves()
+    if not leaves:
+        raise ValueError("air.api.ops.relu needs a buffer operand, got a scalar")
+    return maximum(expr, 0.0 if leaves[0].dtype.is_float else 0)
 
 
 def _unimplemented(name, needs):

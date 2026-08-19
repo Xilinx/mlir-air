@@ -167,7 +167,20 @@ def _eval(node, ivs, ops, ety, vectorized, vec_ty=None, minor=None, pad=None):
         return _result(memref_load(node.buffer.value, ivs))
 
     if node.kind == "scalar":
-        scalar = _result(arith.ConstantOp(ety, node.scalar))
+        value = node.scalar
+        if ops is _INT_OPS and isinstance(value, float):
+            # arith.constant of an integer type rejects a Python float with
+            # "expected floating point type", which says nothing about which
+            # scalar in the expression was wrong. A whole-number float is a
+            # harmless way to write an integer constant, so accept it; anything
+            # else would silently truncate, so refuse it here.
+            if not value.is_integer():
+                raise ValueError(
+                    f"cannot use the non-integral scalar {value} in an integer "
+                    "elementwise expression; it would be truncated"
+                )
+            value = int(value)
+        scalar = _result(arith.ConstantOp(ety, value))
         return _result(broadcast(vec_ty, scalar)) if vectorized else scalar
 
     if node.kind == "binary":
