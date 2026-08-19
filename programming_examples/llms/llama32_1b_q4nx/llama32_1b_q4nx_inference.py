@@ -540,6 +540,32 @@ class FusedDecoder:
             )
         return logits[: self.VOCAB_SIZE]
 
+    _XRT_RELEASE_ORDER = (
+        "ib",
+        "_st",
+        "_ist",
+        "kvc",
+        "y_bo",
+        "r_bo",
+        "w_bo",
+        "x_bo",
+        "kern",
+        "_kern",
+        "dev",
+    )
+
+    def close(self):
+        """Release the XRT objects in reverse dependency order."""
+        for name in self._XRT_RELEASE_ORDER:
+            if name in self.__dict__:
+                self.__dict__[name] = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 # ------------------------------------------------------------------ orchestration
 EOS_IDS = (128001, 128009)  # <|end_of_text|>, <|eot_id|>
