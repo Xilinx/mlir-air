@@ -26,8 +26,9 @@ so the emitted arithmetic is the predecessor's, op for op.
     f32 path to offer, unlike the other air.api examples.
   - Scalar bf16 tanh does not legalize either ("s16 G_FTANH"), so unlike every
     other air.api example there is no scalar fallback to drop to. The builder
-    rejects `--vector-size 0`, and rejects a tile that is not a multiple of the
-    vector width, since that would reach the same scalar path indirectly.
+    rejects a non-positive `--vector-size`, and rejects a tile that is not a
+    multiple of the vector width, since that would reach the same scalar path
+    indirectly.
 """
 
 import argparse
@@ -68,10 +69,10 @@ def build_silu(n, tile_n, herd_shape=None, vector=None):
     # emitter's usual scalar fallback a trap here rather than a safety net, so
     # both routes into it are refused up front.
     width = bf16.default_vector_width if vector is None else int(vector)
-    if width == 0:
+    if width <= 0:
         raise ValueError(
-            "this kernel has no scalar form: math.tanh only lowers as a vector "
-            "op, so --vector-size 0 cannot compile"
+            f"--vector-size must be positive, got {width}: this kernel has no "
+            "scalar form, as math.tanh only lowers as a vector op"
         )
     if tile_n % width:
         raise ValueError(

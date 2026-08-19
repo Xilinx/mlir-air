@@ -18,10 +18,13 @@ Elementwise compute ops (``maximum``, ``minimum``, ``relu``, ``tanh``, and the
 ``sigmoid``/``silu``/``gelu`` compositions built on them) build lazy expression
 nodes instead, and return a :class:`~air.api._value.BufferExpr`.
 
-The remaining compute ops from the wider API proposal (``dot``, ``reduce``,
-``stack``, ``dequant``, ``atomic_add``) are not implemented. They raise
-rather than returning a plausible-looking placeholder: a DSL that accepts an op
-it cannot lower produces a kernel that runs and is silently wrong.
+The remaining compute ops from the wider API proposal (``dot``, ``exp``,
+``reduce``, ``stack``, ``dequant``, ``atomic_add``) are not implemented. They
+raise rather than returning a plausible-looking placeholder: a DSL that accepts
+an op it cannot lower produces a kernel that runs and is silently wrong.
+``exp`` is on that list by choice rather than by oversight -- the activations
+here are composed from ``tanh``, which has a checked lowering, so nothing has
+needed a vector ``exp`` yet.
 """
 
 from ._value import Buffer, BufferExpr, TensorSlice, Token
