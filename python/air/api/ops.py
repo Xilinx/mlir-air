@@ -14,15 +14,18 @@ real asynchronous dependency graph from program order in the ``air-dependency``
 pass, so a v1 token carries no SSA value -- it exists so that ``dependency=``
 can be type-checked instead of silently ignored.
 
-Compute ops from the wider API proposal (``dot``, ``reduce``, ``exp``, ``relu``,
-``stack``, ``dequant``, ``atomic_add``) are not implemented. They raise rather
-than returning a plausible-looking placeholder: a DSL that accepts an op it
-cannot lower produces a kernel that runs and is silently wrong.
+Elementwise compute ops (``maximum``, ``minimum``, ``relu``) build lazy
+expression nodes instead, and return a :class:`~air.api._value.BufferExpr`.
+
+The remaining compute ops from the wider API proposal (``dot``, ``reduce``,
+``exp``, ``stack``, ``dequant``, ``atomic_add``) are not implemented. They raise
+rather than returning a plausible-looking placeholder: a DSL that accepts an op
+it cannot lower produces a kernel that runs and is silently wrong.
 """
 
-from ._value import Buffer, TensorSlice, Token
+from ._value import Buffer, BufferExpr, TensorSlice, Token
 
-__all__ = ["load", "store", "copy"]
+__all__ = ["load", "store", "copy", "maximum", "minimum", "relu"]
 
 
 def _check_dependency(dependency):
@@ -119,6 +122,47 @@ def copy(src_slice, dst_slice, pad_before=None, pad_after=None, dependency=None)
     )
 
 
+# ---------------------------------------------------------------------------
+# Elementwise compute
+#
+# These build lazy expression nodes rather than emitting anything, exactly like
+# the `+ - * /` operators on a buffer slice. Nothing reaches the IR until the
+# tree is assigned into a buffer (`out[:] = ...`), so a whole expression still
+# lowers as one vectorised loop.
+# ---------------------------------------------------------------------------
+
+
+def _elementwise(name, key, a, b):
+    for operand, pos in ((a, "first"), (b, "second")):
+        if not isinstance(operand, (Buffer, BufferExpr, int, float)):
+            raise TypeError(
+                f"air.api.ops.{name} expects a buffer slice or a numeric scalar "
+                f"as its {pos} argument, got {type(operand).__name__}"
+            )
+    a, b = BufferExpr.coerce(a), BufferExpr.coerce(b)
+    if not a.leaves() and not b.leaves():
+        raise ValueError(
+            f"air.api.ops.{name} needs at least one buffer operand; both "
+            "arguments are scalars, which the emitter cannot shape"
+        )
+    return BufferExpr("binary", op=key, args=(a, b))
+
+
+def maximum(a, b):
+    """Elementwise max. Lowers to arith.maximumf (float) / arith.maxsi (int)."""
+    return _elementwise("maximum", "max", a, b)
+
+
+def minimum(a, b):
+    """Elementwise min. Lowers to arith.minimumf (float) / arith.minsi (int)."""
+    return _elementwise("minimum", "min", a, b)
+
+
+def relu(x):
+    """max(x, 0), the composition the hand-written relu kernel emits."""
+    return maximum(x, 0.0)
+
+
 def _unimplemented(name, needs):
     def stub(*args, **kwargs):
         raise NotImplementedError(
@@ -134,7 +178,6 @@ def _unimplemented(name, needs):
 dot = _unimplemented("dot", "linalg/vector.contract lowering")
 reduce = _unimplemented("reduce", "a reduction emitter")
 exp = _unimplemented("exp", "math dialect lowering")
-relu = _unimplemented("relu", "a max(0, x) emitter")
 stack = _unimplemented("stack", "multi-buffer concatenation")
 dequant = _unimplemented("dequant", "BlockType support")
 atomic_add = _unimplemented("atomic_add", "CacheDomain support")

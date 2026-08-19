@@ -34,6 +34,11 @@ _FLOAT_OPS = {
     "sub": arith.SubFOp,
     "mul": arith.MulFOp,
     "div": arith.DivFOp,
+    # maximumf/minimumf, not maxnumf/minnumf: these are what the hand-written
+    # relu kernel uses, so they are the forms known to legalize on AIE2, and the
+    # LLVM 24 bump regressed scalar f32 maxnumf specifically.
+    "max": arith.MaximumFOp,
+    "min": arith.MinimumFOp,
 }
 
 _INT_OPS = {
@@ -41,6 +46,8 @@ _INT_OPS = {
     "sub": arith.SubIOp,
     "mul": arith.MulIOp,
     "div": arith.DivSIOp,
+    "max": arith.MaxSIOp,
+    "min": arith.MinSIOp,
 }
 
 

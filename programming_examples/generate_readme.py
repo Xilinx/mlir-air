@@ -137,7 +137,7 @@ EXAMPLES = [
         "category": "Activation/Math",
         "name": "RELU",
         "path": "relu",
-        "datatypes": "bf16",
+        "datatypes": "bf16, f32",
     },
     {
         "category": "Activation/Math",
