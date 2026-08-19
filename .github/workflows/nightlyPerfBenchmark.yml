@@ -329,6 +329,13 @@ jobs:
           # Perf capture: writes <model>.perf.json under test/llms/<model>/.
           LIT_OPTS="--timeout 1800" \
             ninja check-programming-examples-llms-profile || rc=1
+          # Decode tok/s vs context, for the four fused-decode models: writes
+          # <model>.sweep.json alongside. The profile capture above measures one
+          # point at the profile prompt's ~6 tokens of context, which is the
+          # flattering end of a ~12x range and cannot see a KV-path regression.
+          # Each sweep is ~4-5 min (a template build per context).
+          LIT_OPTS="--timeout 3600" \
+            ninja check-programming-examples-llms-sweep || rc=1
           popd
           exit $rc
 
@@ -428,6 +435,27 @@ jobs:
           recs.sort(key=lambda r: r["model"])
           json.dump(recs, open("perf.json", "w"), indent=2)
           print(json.dumps(recs, indent=2))
+
+          # Decode tok/s-vs-context sweeps, kept in their own file rather than
+          # folded into perf.json: a sweep is a curve, not a scalar, and
+          # history.ndjson's one-row-per-model shape cannot hold one. The four
+          # models that have a sweep are published from this file instead of the
+          # perf.json table (generate_readme.py drops them from the latter).
+          sweeps = []
+          for f in sorted(glob.glob("build_assert/test/llms/**/*.sweep.json", recursive=True)):
+              d = json.load(open(f))
+              d["runner"] = "amdryzenai5pro340"
+              d["toolchain"] = {
+                  "mlir_air_sha": air_sha,
+                  "mlir_aie_hash": aie_hash,
+                  "llvm_aie_version": peano_ver,
+              }
+              d["verify_status"] = vstatus.get(d["model"], "")
+              sweeps.append(d)
+          sweeps.sort(key=lambda r: r["model"])
+          json.dump(sweeps, open("sweep.json", "w"), indent=2)
+          print(f"{len(sweeps)} sweep(s):",
+                ", ".join(f"{s['model']}({len(s['points'])} pts)" for s in sweeps))
           PY
 
       # Append this run's datapoints to the durable `perf-history` branch so the
@@ -462,9 +490,21 @@ jobs:
             --perf perf.json \
             --history "$workdir/history.ndjson" \
             --run-id "${{ github.run_id }}"
+          # Sweeps go to their own series. Kept separate from history.ndjson so
+          # the existing one-row-per-model time series keeps its shape and its
+          # continuity -- every row in it predates the sweep and was taken at
+          # ~6 tokens of context, so folding curve points in would silently
+          # change what the plotted number means.
+          if [ -f sweep.json ]; then
+            python3 programming_examples/llms/bench/append_history.py \
+              --sweep sweep.json \
+              --history "$workdir/sweep_history.ndjson" \
+              --run-id "${{ github.run_id }}"
+          fi
           pushd "$workdir"
           if [ -n "$(git status --porcelain)" ]; then
             git add history.ndjson
+            [ -f sweep_history.ndjson ] && git add sweep_history.ndjson
             git commit -m "perf-history: nightly ${{ github.sha }} run ${{ github.run_id }}"
             git push origin HEAD:perf-history
           else
@@ -499,6 +539,7 @@ jobs:
           name: perf-${{ github.run_id }}
           path: |
             perf.json
+            sweep.json
             perf_out/
             verify.xml
 

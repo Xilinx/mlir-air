@@ -142,6 +142,12 @@ jobs:
           test -f /tmp/llmperf/perf.json \
             && echo "perf.json fetched" \
             || echo "no nightly perf artifact with perf.json available"
+          # sweep.json rides in the same artifact but is younger than perf.json,
+          # so an older nightly may have one and not the other. Its absence just
+          # drops the tok/s-vs-context table; the rest of the page still builds.
+          test -f /tmp/llmperf/sweep.json \
+            && echo "sweep.json fetched" \
+            || echo "no sweep.json in that artifact; context table omitted"
 
       # Pull the append-only time series from the durable `perf-history` branch
       # (accumulated by nightlyPerfBenchmark.yml). Best-effort: if the branch
@@ -173,6 +179,7 @@ jobs:
           python3 programming_examples/generate_readme.py \
             --section llm --base-url "$BASE" \
             --llm-perf /tmp/llmperf/perf.json \
+            --llm-sweep /tmp/llmperf/sweep.json \
             --output docs/llms/index.md
           python3 programming_examples/generate_perf_history.py \
             --embed --history /tmp/llmperf_history/history.ndjson \
