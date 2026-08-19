@@ -2853,6 +2853,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     });
 
+    // Bound how far one shim feed channel may run ahead of its siblings.
+    boundShimFeedBursts(module);
+
     // Repair dominance after the reordering above. Every hoist here moves a
     // configure task or an RTP write past other ops, and a runtime access
     // pattern brings along the small arith chain that narrows a sequence
@@ -2926,6 +2929,183 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     module.walk([](xilinx::AIE::DeviceOp device) {
       device->removeAttr(kMultiIterLaunchAttr);
       device->removeAttr(kNumLaunchItersAttr);
+    });
+  }
+
+  // Bound how far one shim MM2S feed channel may run ahead of its siblings, and
+  // how many tasks it may have in flight at once.
+  //
+  // Feeds come out of the conversion channel-major -- every task for A, then
+  // every task for B -- because that is the order the channels' puts appear in,
+  // and nothing bounds how many one channel may have outstanding. A shim
+  // channel absorbs only a few: its DMA task queue (4 entries on AIE2) plus
+  // whatever the L2 consumer is double-buffering. Measured on a 2x2 herd GEMM,
+  // <= 6 tasks in flight on one channel completes and >= 7 hangs, independent
+  // of the output drain's structure, the launch count, and the dtype
+  // (Xilinx/mlir-air#1822).
+  //
+  // Two things are wrong, and both need fixing:
+  //
+  //   - Channel-major order lets A consume the whole budget before B is fed at
+  //     all, so the cores wait on a B chunk that was never sent. Interleaving
+  //     the burst round-robin fixes that, and costs nothing.
+  //
+  //   - The overflow itself is per channel and absolute: a push past what the
+  //     channel holds is dropped, not deferred. A perfect A/B/A/B weave at 16
+  //     deep still hangs, so interleaving alone is not a fix. Capping each
+  //     channel's in-flight set -- await task i-limit before starting task i --
+  //     is what actually removes the deadlock.
+  //
+  // Only bursts that exceed the limit are touched. A design whose channels were
+  // already short-run keeps its emission order and its await structure byte for
+  // byte, which is what keeps this off the hot path of the tuned LLM decoders.
+  void boundShimFeedBursts(ModuleOp module) {
+    // Per-channel tasks in flight that a shim channel absorbs without the
+    // control program blocking on the push: the AIE2 shim DMA task queue depth.
+    // The measured limit is 6 (queue + an L2 ping-pong); staying at the queue
+    // depth alone keeps the bound independent of what the consumer buffers.
+    constexpr unsigned burstLimit = 4;
+
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      auto device = seq->getParentOfType<AIE::DeviceOp>();
+      if (!device)
+        return;
+
+      // A feed whose position is already load-bearing is left alone, and fences
+      // the burst it sits in: `air.runtime_hoist` was deliberately moved to the
+      // front, the paced/coalesced feeds are bounded by
+      // synthesizeDoubleBufferedAwaits, and the append-barrier feeds carry a
+      // write-after-write ordering the dependence graph cannot express.
+      auto isReorderable = [&](AIEX::DMAConfigureTaskForOp cfg) {
+        for (StringRef a :
+             {air::attrs::RuntimeHoist, air::attrs::PreserveShimDmaOrder,
+              air::attrs::CoalescedShimFeed, air::attrs::AppendBarrier,
+              air::attrs::AwaitAppends})
+          if (cfg->hasAttr(a))
+            return false;
+        auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(
+            device, cfg.getAlloc().getLeafReference().getValue());
+        return allocOp && allocOp.getChannelDir() == AIE::DMAChannelDir::MM2S;
+      };
+
+      struct Unit {
+        AIEX::DMAConfigureTaskForOp cfg;
+        Operation *start;
+        StringRef chan;
+      };
+
+      SmallVector<Block *> blocks;
+      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      for (Block *blk : blocks) {
+        SmallVector<Unit> run;
+        SmallVector<Operation *> staleFrees;
+
+        // Lay the burst back down just before `fence`, round-robin over the
+        // channels it feeds, then cap each channel's in-flight set. Each
+        // channel keeps its own relative order -- the consumer ring depends on
+        // it -- so the weave only changes how the channels are interleaved with
+        // each other. A single-channel burst has nothing to weave and just gets
+        // the cap.
+        auto flush = [&](Operation *fence) {
+          if (run.size() < 2 || !fence)
+            return;
+          llvm::MapVector<StringRef, SmallVector<Unit>> byChan;
+          for (const Unit &u : run)
+            byChan[u.chan].push_back(u);
+          unsigned deepest = 0;
+          for (auto &kv : byChan)
+            deepest = std::max<unsigned>(deepest, kv.second.size());
+          if (deepest <= burstLimit)
+            return; // already within what a channel absorbs; leave as emitted.
+          for (unsigned i = 0; i < deepest; i++)
+            for (auto &kv : byChan) {
+              if (i >= kv.second.size())
+                continue;
+              const Unit &u = kv.second[i];
+              u.cfg->moveBefore(fence);
+              u.start->moveBefore(fence);
+            }
+          // Interleaving alone is not enough. It does bound how far one channel
+          // runs ahead, but the overflow is per channel and absolute: a push
+          // past what the channel can hold is dropped, not deferred, so the
+          // chunk is simply never sent. Measured with a perfect A/B/A/B weave
+          // at 16 deep, the design still hangs. So cap each channel's in-flight
+          // set as well: before starting task i, await the token from task
+          // i-burstLimit, which cannot have retired any later than that.
+          for (auto &kv : byChan) {
+            SmallVector<Unit> &chan = kv.second;
+            for (unsigned i = burstLimit; i < chan.size(); i++) {
+              AIEX::DMAConfigureTaskForOp older = chan[i - burstLimit].cfg;
+              // An MM2S task issues no completion token by default, so there
+              // would be nothing to wait on.
+              older.setIssueToken(true);
+              OpBuilder b(chan[i].start);
+              AIEX::DMAAwaitTaskOp::create(b, chan[i].start->getLoc(),
+                                           older.getResult());
+              // An await also frees the BD, so the fire-and-free this task was
+              // given at conversion would now be a second release. Erase those
+              // only once the block walk is done -- a free sits after the
+              // burst, so erasing it here would pull the ground out from under
+              // the iterator.
+              for (auto *u : older.getResult().getUsers())
+                if (isa<AIEX::DMAFreeTaskOp>(u))
+                  staleFrees.push_back(u);
+            }
+          }
+        };
+
+        // Walk the block, growing a run of reorderable feeds. Anything that is
+        // not such a feed and is not pure ends it: an await, a free, an RTP
+        // write, a lock set, a PDI load -- each is an ordering point, and a
+        // burst only exists between them. Pure ops (the arith chain narrowing a
+        // runtime length or offset) are transparent; moving a feed above its
+        // operands is repaired by the rematerialization pass below, which is
+        // there for exactly this.
+        for (Operation &o : llvm::make_early_inc_range(*blk)) {
+          if (auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o)) {
+            Operation *start = nullptr;
+            for (auto *u : cfg.getResult().getUsers()) {
+              if (!isa<AIEX::DMAStartTaskOp>(u) || u->getBlock() != blk)
+                continue;
+              if (start) { // more than one start: not a plain single-shot feed
+                start = nullptr;
+                break;
+              }
+              start = u;
+            }
+            if (start && isReorderable(cfg)) {
+              run.push_back(
+                  {cfg, start, cfg.getAlloc().getLeafReference().getValue()});
+              continue;
+            }
+            flush(&o);
+            run.clear();
+            continue;
+          }
+          if (isa<AIEX::DMAStartTaskOp>(&o)) {
+            // The start of a feed already in the run travels with its configure
+            // and does not break the burst; any other start does.
+            bool owned =
+                llvm::any_of(run, [&](const Unit &u) { return u.start == &o; });
+            if (owned)
+              continue;
+            flush(&o);
+            run.clear();
+            continue;
+          }
+          if (isMemoryEffectFree(&o))
+            continue;
+          flush(&o);
+          run.clear();
+        }
+        if (blk->mightHaveTerminator())
+          flush(blk->getTerminator());
+        run.clear();
+        for (Operation *f : staleFrees)
+          f->erase();
+      }
     });
   }
 

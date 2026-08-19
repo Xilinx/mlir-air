@@ -14,6 +14,7 @@ import air.compiler.util
 # This was previously done as a side effect of importing aircc.main.
 from air.dialects import air as _air_dialect  # noqa: F401
 
+import functools
 import numpy as np
 import os
 import shutil
@@ -141,6 +142,39 @@ class XRTCompileArtifact:
         self.kernel = kernel
         self.insts = insts
         self.txn_header = txn_header
+
+
+@functools.lru_cache(maxsize=1)
+def _ert_completed_state():
+    """The `ERT_CMD_STATE_COMPLETED` enumerator, or None if unavailable.
+
+    pyxrt is imported lazily -- it is needed for load(), not for compile() -- so
+    this cannot be resolved at module scope. Cached because `_check_run_state`
+    runs inside the timed region of a perf-iteration loop.
+    """
+    try:
+        import pyxrt
+
+        return getattr(pyxrt.ert_cmd_state, "ERT_CMD_STATE_COMPLETED", None)
+    except ImportError:
+        return None
+
+
+def _check_run_state(state):
+    """Raise unless the kernel run completed.
+
+    `wait2()` and `wait()` return an ert_cmd_state rather than raising, so a run
+    the driver timed out or aborted is otherwise indistinguishable from a
+    successful one: the output BOs get synced back and returned, and the caller
+    sees a partially written buffer with no indication anything went wrong. A
+    device-side deadlock then reads as a numerical failure (Xilinx/mlir-air#1822).
+    """
+    # Older bindings return None from wait(); treat an unavailable status as "no
+    # status" rather than inventing a failure.
+    completed = _ert_completed_state()
+    if state is None or completed is None or state == completed:
+        return
+    raise AirBackendError(f"NPU kernel run did not complete: {state}")
 
 
 class XRTBackend(AirBackend):
@@ -690,16 +724,16 @@ class XRTBackend(AirBackend):
                     # after n_warmup_iters warmup runs (buffer sync excluded).
                     for _ in range(self.n_warmup_iters):
                         run.start()
-                        run.wait2()
+                        _check_run_state(run.wait2())
                     t0 = time.perf_counter()
                     for _ in range(self.n_perf_iters):
                         run.start()
-                        run.wait2()
+                        _check_run_state(run.wait2())
                     t1 = time.perf_counter()
                     self.last_latency_us = (t1 - t0) / self.n_perf_iters * 1e6
                 else:
                     run.start()
-                    run.wait2()
+                    _check_run_state(run.wait2())
 
                 for i in range(len(args)):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
@@ -789,15 +823,23 @@ class XRTBackend(AirBackend):
                     # n_perf_iters after n_warmup_iters warmup runs (buffer sync
                     # excluded — matches the C++ test-harness timing range).
                     for _ in range(self.n_warmup_iters):
-                        self.kernel(3, self.bo_instr, len(self.instr_v), *bos).wait()
+                        _check_run_state(
+                            self.kernel(
+                                3, self.bo_instr, len(self.instr_v), *bos
+                            ).wait()
+                        )
                     t0 = time.perf_counter()
                     for _ in range(self.n_perf_iters):
-                        self.kernel(3, self.bo_instr, len(self.instr_v), *bos).wait()
+                        _check_run_state(
+                            self.kernel(
+                                3, self.bo_instr, len(self.instr_v), *bos
+                            ).wait()
+                        )
                     t1 = time.perf_counter()
                     self.last_latency_us = (t1 - t0) / self.n_perf_iters * 1e6
                 else:
                     h = self.kernel(3, self.bo_instr, len(self.instr_v), *bos)
-                    h.wait()
+                    _check_run_state(h.wait())
 
                 for i in range(len(args)):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
