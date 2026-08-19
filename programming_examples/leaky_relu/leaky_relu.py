@@ -205,11 +205,20 @@ if __name__ == "__main__":
 
     # Reference in the predecessor's own form (select, not the identity), so the
     # check is against the semantics being replaced rather than against the
-    # rewrite. The predecessor's rtol=1e-2 with the runner's default atol=1e-8 is
-    # carried unchanged, applied to the full array instead of 100 sampled indices.
+    # rewrite.
+    #
+    # bf16 carries the predecessor's gate unchanged (rtol=1e-2 with the runner's
+    # default atol), applied to the full array instead of 100 sampled indices.
+    # Its measured rel_err max of 7.8e-03 is one bf16 ULP and comes from alpha
+    # rounding to bf16, so the 1e-2 bar is genuinely needed there.
+    #
+    # f32 is new coverage with no predecessor tolerance to inherit, and it is
+    # bit-exact (measured 0.000e+00), so it takes the runner's own default
+    # instead of borrowing the bf16 number -- that would leave the f32 path an
+    # order of magnitude slacker than the library standard for no reason.
     xf = x_np.astype(np.float32)
     ref = np.where(xf >= 0, xf, args.alpha * xf).astype(np_dtype)
-    rtol, atol = 1e-2, 1e-8
+    rtol, atol = (1e-2, 1e-8) if args.dtype == "bf16" else (1e-3, 1e-8)
 
     module = launch.build(target=args.target)
     print(
