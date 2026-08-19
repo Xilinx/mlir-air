@@ -73,5 +73,9 @@ _BY_NP = {d.np_dtype: d for d in (bf16, f16, f32, i8, i16, i32)}
 
 
 def dtype_of(np_dtype):
-    """Map a numpy dtype back onto the API's DType, for error messages."""
-    return _BY_NP.get(np_dtype)
+    """Map a numpy dtype back onto the API's DType, for error messages.
+
+    Accepts either the scalar type (``np.float32``) or a dtype instance
+    (``np.dtype("float32")``); the table is keyed by the former.
+    """
+    return _BY_NP.get(np_dtype) or _BY_NP.get(getattr(np_dtype, "type", None))

@@ -228,6 +228,30 @@ def _():
     air.herd([0, 1, 2, 3])
 
 
+# A range that does not tile its extent exactly would put the last tile past
+# the end of the tensor.
+# CHECK-LABEL: TEST: partial_tile_range
+# CHECK: ValueError: iteration range range(0, 3000, 1024) does not tile its extent exactly
+@expect(ValueError, "partial_tile_range")
+def _():
+    air.herd(range(0, 3000, 1024))
+
+
+# CHECK-LABEL: TEST: nonzero_start_range
+# CHECK: NotImplementedError: air.api requires a herd iteration space starting at 0
+@expect(NotImplementedError, "nonzero_start_range")
+def _():
+    air.herd(range(1024, 3072, 1024))
+
+
+# The product path keeps only the offsets, so the start is still checked there.
+# CHECK-LABEL: TEST: nonzero_start_product
+# CHECK: NotImplementedError: air.api requires a herd iteration space starting at 0
+@expect(NotImplementedError, "nonzero_start_product")
+def _():
+    air.herd(product(range(0, 128, 64), range(64, 192, 64)))
+
+
 # CHECK-LABEL: TEST: bad_dependency
 # CHECK: TypeError: dependency= expects a Token
 @expect(TypeError, "bad_dependency")

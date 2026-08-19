@@ -58,6 +58,14 @@ def build_eltwise_add(shape, dtype=bf16, tile=None, herd_shape=None, vector=None
     if rank not in (1, 2):
         raise ValueError(f"shape must be 1-D or 2-D, got {rank}-D: {shape}")
     tile = default_tile(rank, dtype) if tile is None else tile
+    for extent in shape:
+        if extent % tile:
+            raise ValueError(
+                f"shape extent {extent} is not a multiple of tile {tile}: this "
+                "kernel has no partial tiles, so the last tile would run "
+                f"{tile - extent % tile} elements past the end of the tensor. "
+                f"Pass --tile with a divisor of {extent}."
+            )
 
     A = air.tensor(shape, dtype)
     B = air.tensor(shape, dtype)

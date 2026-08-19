@@ -293,28 +293,58 @@ class Scope:
 
 
 class _Dim:
-    """One dimension of an iteration space: ``count`` tiles of size ``step``."""
+    """One dimension of an iteration space: ``count`` tiles of size ``step``.
 
-    __slots__ = ("start", "step", "count")
+    There is no ``start``: the space must begin at 0, enforced below.
+    """
 
-    def __init__(self, start, step, count):
-        self.start = start
+    __slots__ = ("step", "count")
+
+    def __init__(self, step, count):
         self.step = step
         self.count = count
+
+
+def _reject_nonzero_start(start, what):
+    """A herd body gets tile *indices*, so a non-zero start cannot survive."""
+    if start:
+        raise NotImplementedError(
+            f"air.api requires a herd iteration space starting at 0; got {what}"
+            f" (start={start}). A body receives tile indices and a slice built "
+            "from them offsets by index * tile_size, so a non-zero start would "
+            "be dropped and the kernel would read the wrong window. Index from "
+            "0 and add the start inside the body."
+        )
 
 
 def _dim_from_range(r):
     if len(r) == 0:
         raise ValueError(f"empty iteration range {r}")
-    return _Dim(r.start, r.step, len(r))
+    _reject_nonzero_start(r.start, f"range({r.start}, {r.stop}, {r.step})")
+    if (r.stop - r.start) % r.step:
+        raise ValueError(
+            f"iteration range range({r.start}, {r.stop}, {r.step}) does not "
+            f"tile its extent exactly: {len(r)} steps of {r.step} span "
+            f"{len(r) * r.step}, past the extent of {r.stop - r.start}. "
+            "air.api has no partial tiles, so the last tile would read and "
+            f"write {len(r) * r.step - (r.stop - r.start)} elements past the "
+            "end of the tensor. Use a step that divides the extent."
+        )
+    return _Dim(r.step, len(r))
 
 
 def _dim_from_values(values):
-    """Recover (start, step, count) from a materialised sequence of offsets."""
+    """Recover (step, count) from a materialised sequence of offsets.
+
+    Only the offsets survive itertools.product, so unlike a range there is no
+    extent here to check the last tile against -- that check belongs to the
+    caller, which knows the tensor shape.
+    """
     if len(values) == 0:
         raise ValueError("empty iteration range")
+    _reject_nonzero_start(values[0], f"{list(values[:4])}...")
     if len(values) == 1:
-        return _Dim(values[0], 1, 1)
+        return _Dim(1, 1)
     step = values[1] - values[0]
     for a, b in zip(values, values[1:]):
         if b - a != step:
@@ -322,7 +352,7 @@ def _dim_from_values(values):
                 "air.api requires a uniformly strided iteration space; got a "
                 f"non-constant step in {list(values[:4])}..."
             )
-    return _Dim(values[0], step, len(values))
+    return _Dim(step, len(values))
 
 
 def parse_grid(iterable):
