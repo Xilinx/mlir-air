@@ -89,11 +89,16 @@ def _bf16_block_to_bfp16ebs8(block_f32):
     signed_mant = np.where(
         sign, (~mant_explicit + 1) & 0xFFFFFFFF, mant_explicit
     ).astype(np.int64)
-    base = (signed_mant.astype(np.int64) >> (23 - 7 + 1)).astype(np.int64)
-    shift = max_exp - exp.astype(np.int64)
-    aligned = np.where(shift >= 32, np.where(sign, -1, 0), base >> shift).astype(
-        np.int8
-    )
+    # Truncate to 8 bits FIRST, then arithmetic-shift the int8 by (max_exp - exp).
+    # This is the order floatToBfp16() uses in mlir-aie
+    # programming_examples/ml/block_datatypes/helper.h. Shifting the 32-bit value
+    # first and truncating afterwards diverges for NEGATIVE values whose in-block
+    # exponent spread reaches 8, producing a packing the hardware would not.
+    b8 = (signed_mant >> (23 - 7 + 1)).astype(np.uint8).view(np.int8).astype(np.int32)
+    shift = (max_exp - exp).astype(np.int32)
+    aligned = np.where(
+        shift >= 32, np.where(sign, -1, 0), b8 >> np.minimum(shift, 31)
+    ).astype(np.int8)
     out = np.empty(BFP16_BYTES_PER_BLOCK, dtype=np.uint8)
     out[0] = np.uint8(max_exp)
     out[1:] = aligned.view(np.uint8)
@@ -135,11 +140,13 @@ def pack_b_bfp16ebs8(B_bf16, tile_n, tile_k_l1):
     signed_mant = np.where(
         sign, (~mant_explicit + np.uint32(1)) & np.uint32(0xFFFFFFFF), mant_explicit
     ).astype(np.int64)
-    base = signed_mant >> (23 - 7 + 1)  # 24-bit -> 8-bit-with-sign
-    shift = (max_exp - exp).astype(np.int64)  # [n_records, 8] >= 0
-    big_shift = shift >= 32
+    # 24-bit -> 8-bit-with-sign. Truncate to 8 bits FIRST, then arithmetic-shift
+    # the int8 by (max_exp - exp) -- the order floatToBfp16() uses in helper.h.
+    # See _bf16_block_to_bfp16ebs8 for why the order matters.
+    b8 = (signed_mant >> (23 - 7 + 1)).astype(np.uint8).view(np.int8).astype(np.int32)
+    shift = (max_exp - exp).astype(np.int32)  # [n_records, 8] >= 0
     aligned = np.where(
-        big_shift, np.where(sign, -1, 0), base >> np.minimum(shift, 31)
+        shift >= 32, np.where(sign, -1, 0), b8 >> np.minimum(shift, 31)
     ).astype(np.int8)
 
     # Interleave [shared_exp, m0..m7] per record into 9-byte stride.
