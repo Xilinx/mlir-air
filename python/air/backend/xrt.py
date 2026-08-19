@@ -14,6 +14,7 @@ import air.compiler.util
 # This was previously done as a side effect of importing aircc.main.
 from air.dialects import air as _air_dialect  # noqa: F401
 
+import functools
 import numpy as np
 import os
 import shutil
@@ -91,6 +92,22 @@ class XRTCompileArtifact:
         self.txn_header = txn_header
 
 
+@functools.lru_cache(maxsize=1)
+def _ert_completed_state():
+    """The `ERT_CMD_STATE_COMPLETED` enumerator, or None if unavailable.
+
+    pyxrt is imported lazily -- it is needed for load(), not for compile() -- so
+    this cannot be resolved at module scope. Cached because `_check_run_state`
+    runs inside the timed region of a perf-iteration loop.
+    """
+    try:
+        import pyxrt
+
+        return getattr(pyxrt.ert_cmd_state, "ERT_CMD_STATE_COMPLETED", None)
+    except ImportError:
+        return None
+
+
 def _check_run_state(state):
     """Raise unless the kernel run completed.
 
@@ -100,16 +117,9 @@ def _check_run_state(state):
     sees a partially written buffer with no indication anything went wrong. A
     device-side deadlock then reads as a numerical failure (Xilinx/mlir-air#1822).
     """
-    # pyxrt is imported lazily -- it is needed for load(), not for compile() --
-    # so resolve the enum here rather than at module scope.
-    try:
-        import pyxrt
-
-        completed = getattr(pyxrt.ert_cmd_state, "ERT_CMD_STATE_COMPLETED", None)
-    except ImportError:
-        completed = None
     # Older bindings return None from wait(); treat an unavailable status as "no
     # status" rather than inventing a failure.
+    completed = _ert_completed_state()
     if state is None or completed is None or state == completed:
         return
     raise AirBackendError(f"NPU kernel run did not complete: {state}")
