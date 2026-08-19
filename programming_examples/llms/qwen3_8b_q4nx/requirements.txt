@@ -1,0 +1,16 @@
+# Additional Python packages for the GEMMA3-4B Q4NX example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, filelock, pyxrt, etc.). Install with:
+#     pip install -r requirements.txt
+#
+# The nightly LLM benchmark installs every llms/*/requirements.txt before running
+# the lit suites, so anything imported by the drivers belongs here.
+
+# Download the model.q4nx weight bundle from the Hub (Q4NX_MODEL_SOURCE).
+huggingface_hub
+
+# Tokenizer for `make ask` and for detokenizing generated ids. The FastFlowLM
+# Q4NX repo ships tokenizer.json/tokenizer_config.json, so no separate
+# (gated) google/gemma-3-4b checkpoint is needed.
+transformers

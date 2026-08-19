@@ -46,3 +46,10 @@ HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 # google's manual license gate, so CI needs no license grant for it.
 FastFlowLM/Gemma3-4B-NPU2
 unsloth/gemma-3-4b-it
+
+# Same Q4NX packaging of Qwen3-8B. Used by llms/qwen3_8b_q4nx (NPU weights),
+# plus the bf16 reference `make verify` compares against. The FLM card declares
+# `base_model: Qwen/Qwen3-8B`, and Qwen3 unifies base + instruct in one
+# checkpoint, so that single repo is the reference.
+FastFlowLM/Qwen3-8B-NPU2
+Qwen/Qwen3-8B

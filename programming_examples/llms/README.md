@@ -87,6 +87,7 @@ top of quantization error:
 |---|---|---|
 | `llama32_1b_q4nx` / `llama32_3b_q4nx` | `FastFlowLM/Llama-3.2-{1,3}B-NPU2` | `meta-llama/Llama-3.2-{1,3}B-Instruct` |
 | `gemma3_4b_q4nx` | `FastFlowLM/Gemma3-4B-NPU2` | `unsloth/gemma-3-4b-it` |
+| `qwen3_8b_q4nx` | `FastFlowLM/Qwen3-8B-NPU2` | `Qwen/Qwen3-8B` |
 | `qwen25_3b_q4` | Q4_0, quantized on the host from the reference | `Qwen/Qwen2.5-3B-Instruct` |
 
 Two cheaper lenses sit beside the gate, and neither is a substitute for it:
@@ -114,6 +115,7 @@ llms/
 ├── qwen3_0_6b/         # Qwen3-0.6B    (QK-norm, head_dim=128)
 ├── qwen3_1_7b/         # Qwen3-1.7B    (QK-norm, head_dim=128)
 ├── qwen3_4b/           # Qwen3-4B      (QK-norm, decoupled q_dim=4096)
+├── qwen3_8b_q4nx/      # Q4NX 4-bit Qwen3-8B (fused decode, split weight BOs)
 ├── shared/
 │   ├── infra/          # KernelCache, profiling, external-kernel compilation,
 │   │                   #   backend presets, MLIR text-stitching (incl. stitch_elf)
