@@ -110,6 +110,7 @@ nav:
   - Getting Started:
     - getting_started.md
     - Ryzen AI (Linux): buildingRyzenLin.md
+    - Ryzen AI (Windows): buildingRyzenWin.md
     - GPU (Linux): buildingGPU.md
   - Programming Guide:
     - programming_guide.md
