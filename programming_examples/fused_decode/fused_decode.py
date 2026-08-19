@@ -479,6 +479,8 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # position the cores are about to read. Named separately only because each one
 # reads better at its use.
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
+# DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
+COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # DECODE_KV_SPLIT=1: decouple the attention K and V memtile rings (mirror the reference mem_3_1:
 # separate k_mem_buffer / v_mem_buffer, filled by SEPARATE S2MM = inKV_K / inKV_V, so
 # the qk core's K supply is NOT lock-chained to the kv core's V drain). Default off
@@ -1087,25 +1089,21 @@ def build_module():
             # cache is streamed back per CU (inKV) into a readback memtile that
             # re-blocks into per-block toK/toV.
             if KV_APPEND:
-                # the reference-faithful: rope K/V -> shim col3 (K) / col4 (V) S2MM -> DDR,
-                # mirroring reference pkt14/15. PACKET (not circuit) so the append
-                # can leave rope on its 2nd MM2S and fan to distinct cols. TWO
-                # channels (one per col) because air.shim_col pins a single col
-                # per channel DECL (compiler reads it from the decl). Pinning
-                # cols 3/4 (attention CU cols; readback reuses them on MM2S) keeps
-                # the append OFF rope's own col2 (whose congestion deadlocks the
-                # front-end).
+                # the reference-faithful: rope K/V -> shim S2MM -> DDR, mirroring
+                # reference pkt14/15. PACKET (not circuit) so the append can leave
+                # rope on its 2nd MM2S and fan to distinct cols. TWO channel DECLS
+                # so the allocator can place them independently -- one decl's
+                # sub-channels are treated as a single logical transfer and may
+                # share a shim channel, which is the opposite of what is wanted
+                # here. The columns are no longer pinned: the allocator spreads
+                # independent packet readbacks over distinct shim tiles, keeping
+                # the append off rope's own col2 (whose congestion deadlocks the
+                # front-end) without air.shim_col.
                 _apK = channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
-                _apK.operation.attributes["air.shim_col"] = IntegerAttr.get(
-                    T.i32(), ATTN_COL_GROUPS[0][0]
-                )
                 _apK.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
                     T.i32(), 1
                 )
                 _apV = channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
-                _apV.operation.attributes["air.shim_col"] = IntegerAttr.get(
-                    T.i32(), ATTN_COL_GROUPS[1][0]
-                )
                 _apV.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
                     T.i32(), 1
                 )
@@ -1167,7 +1165,6 @@ def build_module():
         # #4: layer output (residual2 = h + down) drained to host from the rms core.
         if FULL4:
             _lo = channel_decl("layerOut", size=[1])
-            _lo.operation.attributes["air.shim_col"] = IntegerAttr.get(T.i32(), 5)
             if KV_APPEND:
                 # Keep layerOut on rms MM2S0 (circuit) so xnorm (pinned to MM2S1)
                 # does not share/flip it to packet. See xnorm pin above.
@@ -1572,9 +1569,9 @@ def build_module():
                             # (2) READ BACK the whole cache per CU (inKV, strided) for the flash
                             # block loop. = the reference _receive + _move.
                             def _emit_append(_kbase=_kbase):
-                                # K -> shim col3 S2MM, V -> shim col4 S2MM (attention CU cols;
-                                # cols pinned on the appendK/appendV channel DECLS via
-                                # air.shim_col). air-annotate-append-barrier derives the
+                                # K and V each drain to a shim S2MM; the allocator
+                                # picks distinct shim tiles for the two decls.
+                                # air-annotate-append-barrier derives the
                                 # append->readback ordering from the RAW on the shared DDR
                                 # cache: these gets write it, the readback below reads it.
                                 if KV_REGION:
@@ -3680,7 +3677,7 @@ def run():
         kernel_name="MLIR_AIE",
         stack_size=10240,
         use_lock_race_condition_fix_v2=True,
-        coalesce_shim_dma=True,
+        coalesce_shim_dma=bool(COALESCE),
         # DYNSEQ: the runtime sequence now holds a scalar, so the stream is built
         # per dispatch from the emitted header instead of read from insts.bin.
         emit_txn_cpp=bool(DYNSEQ),

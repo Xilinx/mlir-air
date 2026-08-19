@@ -1,0 +1,12 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// bfp16ebs8 (v8bfp16ebs8 / mac_8x8_8x8T) is an AIE2P-only datapath. Requesting
+// aie2 must fail with a diagnostic rather than emitting IR that cannot lower.
+// Host-only check: no device and no Peano needed.
+//
+// RUN: mkdir -p test_npu1_unsupported_arch
+// RUN: cd test_npu1_unsupported_arch
+// RUN: not python3 %S/run.py --arch aie2 --compile-mode compile-only 2>&1 | FileCheck %s
+// CHECK: Error: --arch aie2 is not supported
+// CHECK: AIE2P-only

@@ -22,10 +22,12 @@ from lit.llvm import llvm_config
 config.name = "AIRPYTHON"
 
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
-config.environment["PYTHONPATH"] = "{}:{}:{}".format(
-    os.path.join(config.air_obj_root, "python"),
-    os.path.join(config.aie_obj_root, "python"),
-    os.path.join(config.xrt_dir, "python"),
+config.environment["PYTHONPATH"] = os.pathsep.join(
+    [
+        os.path.join(config.air_obj_root, "python"),
+        os.path.join(config.aie_obj_root, "python"),
+        os.path.join(config.xrt_dir, "python"),
+    ]
 )
 
 try:

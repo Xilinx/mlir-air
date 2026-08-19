@@ -10,7 +10,7 @@ The fastest way to get MLIR-AIR is to install the prebuilt wheel — no source b
 - **pip**
 - **XRT** (optional, required only for running on hardware) — see [mlir-aie's XRT install instructions](https://github.com/Xilinx/mlir-aie#install-the-xdna-driver-and-xrt)
 
-> Windows wheels are also published. This guide covers Linux only; Windows users will need to translate the `source`/`export` commands to PowerShell equivalents.
+> This guide covers Linux only. Windows wheels are also published — see [Getting Started and Running on Windows Ryzen™ AI](buildingRyzenWin.md) for the native Windows setup, including `cmd.exe` and PowerShell equivalents of the `source`/`export` commands below.
 
 ### Steps
 

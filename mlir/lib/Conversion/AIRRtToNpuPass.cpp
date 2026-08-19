@@ -208,12 +208,6 @@ static bool deviceHasMultiIterLaunch(xilinx::AIE::DeviceOp device) {
   return device->hasAttr(kMultiIterLaunchAttr);
 }
 
-static int64_t deviceNumLaunchIters(xilinx::AIE::DeviceOp device) {
-  if (auto a = device->getAttrOfType<mlir::IntegerAttr>(kNumLaunchItersAttr))
-    return a.getInt();
-  return 1;
-}
-
 // Stamp a per-op launch-iteration ("wave") index on the source airrt ops of a
 // fused multi-iteration launch (airrt.dma_memcpy_nd / airrt.herd_load). Must
 // run after the fused launch loop is unrolled (so each iteration's ops are laid
@@ -260,11 +254,11 @@ static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
     if (numLaunchEnds >= 1 && (numLaunchEnds > 1 || anyMultiTrip)) {
       device->setAttr(kMultiIterLaunchAttr,
                       mlir::UnitAttr::get(device.getContext()));
-      // The loop-unroll (unrollSCFFors) runs before this, so a fused scf.for
-      // over air.launch presents as `numLaunchEnds` unrolled launch_end markers
-      // == the iteration count. (If the loop somehow survived unrolling there
-      // is a single marker in a multi-trip loop; leave the count at 1 so the
-      // pacing stays per-loop-body, which is already correct in that form.)
+      // air-opt-shim-dma-bds stamps one marker per air.launch, so several
+      // markers means several launches flattened into this func. A launch
+      // iteration loop is NOT that shape: it keeps its single marker inside
+      // the loop, so the count stays 1 and the pacing stays per-loop-body,
+      // which is already correct in that form.
       if (numLaunchEnds > 1)
         device->setAttr(kNumLaunchItersAttr,
                         mlir::IntegerAttr::get(
@@ -1843,6 +1837,37 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
 // channel's transfers ahead of the sibling-channel round-major interleave; that
 // reorder is numerically equivalent to the fragmented feed (verified
 // output-identical on an exercising design).
+// Peel an offset into (base, constant addend): a rolled body's offsets are
+// `addi(loop-derived base, const)`, so two feeds are contiguous when they
+// share a base and their addends are. A constant offset has a null base,
+// which is the straight-line case.
+static std::pair<Value, int64_t> peelOffset(Value v) {
+  int64_t addend = 0;
+  while (v) {
+    if (auto c = getConstantIntValue(v))
+      return {nullptr, addend + *c};
+    Operation *def = v.getDefiningOp();
+    if (auto cast = dyn_cast_if_present<arith::IndexCastOp>(def)) {
+      v = cast.getIn();
+      continue;
+    }
+    if (auto add = dyn_cast_if_present<arith::AddIOp>(def)) {
+      if (auto c = getConstantIntValue(add.getRhs())) {
+        addend += *c;
+        v = add.getLhs();
+        continue;
+      }
+      if (auto c = getConstantIntValue(add.getLhs())) {
+        addend += *c;
+        v = add.getRhs();
+        continue;
+      }
+    }
+    break;
+  }
+  return {v, addend};
+}
+
 static void coalesceShimDmaOrder(ModuleOp module) {
   SmallVector<func::FuncOp> funcOps;
   module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
@@ -1850,8 +1875,12 @@ static void coalesceShimDmaOrder(ModuleOp module) {
   // Return (totalOffset, len) for a pure contiguous 1D transfer, or nullopt if
   // the op is not a mergeable contiguous 1D transfer (non-constant descriptor,
   // multi-dim wrap, or non-unit inner stride).
-  auto describe =
-      [](airrt::DmaMemcpyNdOp d) -> std::optional<std::pair<int64_t, int64_t>> {
+  struct Desc {
+    Value base;
+    int64_t offset;
+    int64_t len;
+  };
+  auto describe = [](airrt::DmaMemcpyNdOp d) -> std::optional<Desc> {
     // Never merge packet-switched transfers: consecutive BDs on one channel may
     // carry different packet ids (different routing destinations). Merging them
     // into one BD would send all data with the first id, starving the other
@@ -1859,20 +1888,32 @@ static void coalesceShimDmaOrder(ModuleOp module) {
     // safe to coalesce.
     if (d->hasAttr("packet"))
       return std::nullopt;
-    auto offsets = getConstantIntValues(d.getMixedOffsets());
     auto lengths = getConstantIntValues(d.getMixedLengths());
     auto strides = getConstantIntValues(d.getMixedStrides());
-    if (!offsets || !lengths || !strides)
+    if (!lengths || !strides)
       return std::nullopt;
     // Pure contiguous 1D: only the innermost dim carries data, unit inner
     // stride (the higher dims are size-1 dummies).
     if ((*lengths)[0] != 1 || (*lengths)[1] != 1 || (*lengths)[2] != 1 ||
         (*strides)[3] != 1)
       return std::nullopt;
+    Value base = nullptr;
     int64_t totalOffset = 0;
-    for (auto [off, str] : llvm::zip_equal(*offsets, *strides))
-      totalOffset += off * str;
-    return std::make_pair(totalOffset, (*lengths)[3]);
+    for (auto [off, str] : llvm::zip_equal(d.getMixedOffsets(), *strides)) {
+      if (auto c = getConstantIntValue(off)) {
+        totalOffset += *c * str;
+        continue;
+      }
+      // One dynamic offset, on the unit-stride innermost dim.
+      if (base || str != 1)
+        return std::nullopt;
+      auto [b, addend] = peelOffset(cast<Value>(off));
+      if (!b)
+        return std::nullopt;
+      base = b;
+      totalOffset += addend;
+    }
+    return Desc{base, totalOffset, (*lengths)[3]};
   };
 
   for (auto f : funcOps) {
@@ -1896,7 +1937,10 @@ static void coalesceShimDmaOrder(ModuleOp module) {
       int64_t offset;
       int64_t len;
     };
-    llvm::MapVector<std::tuple<int64_t, StringRef, void *>, SmallVector<Entry>>
+    // The base joins the key: feeds off different bases are never contiguous,
+    // and for a rolled body the base is what distinguishes one wave's slice.
+    llvm::MapVector<std::tuple<int64_t, StringRef, void *, void *>,
+                    SmallVector<Entry>>
         groups;
     for (auto d : paced) {
       auto desc = describe(d);
@@ -1908,8 +1952,9 @@ static void coalesceShimDmaOrder(ModuleOp module) {
       int64_t wave = -1;
       if (auto w = d->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
         wave = w.getInt();
-      groups[{wave, md.getValue(), d.getMemref().getAsOpaquePointer()}]
-          .push_back({d, desc->first, desc->second});
+      groups[{wave, md.getValue(), d.getMemref().getAsOpaquePointer(),
+              desc->base.getAsOpaquePointer()}]
+          .push_back({d, desc->offset, desc->len});
     }
 
     for (auto &kv : groups) {
@@ -2227,9 +2272,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     }
 
-    // Unroll for loops
+    // The runtime sequence's loops stay rolled; aiecc's
+    // aie-unroll-runtime-sequence-loops is the one unroller in the stack. The
+    // affine.for nests are the launch/segment scaffolding, which still has to
+    // go for the airrt ops to sit directly in the sequence.
     unrollAffineFors(module);
-    unrollSCFFors(module);
+    dropAirrtEventResults(module);
+    dropAirrtEventIterArgs(module);
 
     // Fold affine.apply ops with constant operands after loop unrolling.
     // After unrolling, induction variables become constants, but
@@ -2334,17 +2383,57 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           llvm::cast<BaseMemRefType>(op.getMemref().getType()));
     });
     target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {
-      auto f = op->getParentOfType<func::FuncOp>();
-      if (f) {
-        for (auto arg : f.getArguments()) {
-          if (op.getTarget() == arg)
-            return false;
-          else if (op.getSource() == arg)
-            return false;
-        }
+      // Either container: on the rolled path the control func has already
+      // become its runtime_sequence by the time this runs, and a copy against
+      // a sequence argument still has to be folded away.
+      ValueRange args;
+      if (auto f = op->getParentOfType<func::FuncOp>())
+        args = f.getArguments();
+      else if (auto s = op->getParentOfType<AIE::RuntimeSequenceOp>())
+        args = s.getBody().getArguments();
+      for (auto arg : args) {
+        if (op.getTarget() == arg)
+          return false;
+        else if (op.getSource() == arg)
+          return false;
       }
       return true;
     });
+    // A DMA that stays inside an scf.for has to be created under the
+    // runtime_sequence directly: the AIEX ops require it as an ancestor, and
+    // nothing hoists them out of the loop later the way unrolling did. So for
+    // the rolled path the func becomes the sequence first.
+    {
+      // Its own target: the airrt ops are still there and are legal until the
+      // main conversion below runs.
+      ConversionTarget seqTarget(getContext());
+      seqTarget.addLegalDialect<arith::ArithDialect, AIE::AIEDialect,
+                                AIEX::AIEXDialect, memref::MemRefDialect,
+                                airrt::AIRRtDialect, scf::SCFDialect,
+                                affine::AffineDialect>();
+      // Illegal exactly where ControlFuncConversion matches: the kernel
+      // declarations sitting in the device are not control funcs.
+      seqTarget.addDynamicallyLegalOp<func::FuncOp>([](func::FuncOp f) {
+        if (f.isExternal() || !f->getParentOfType<AIE::DeviceOp>())
+          return true;
+        bool relevant = false;
+        f.walk([&](Operation *o) {
+          if (o->getName().getStringRef().starts_with("aiex.npu.") ||
+              o->getName().getStringRef().starts_with("aiex.dma_") ||
+              isa<airrt::DmaMemcpyNdOp>(o))
+            relevant = true;
+        });
+        return !relevant;
+      });
+      RewritePatternSet earlySeq(ctx);
+      earlySeq.add<ControlFuncConversion>(ctx);
+      if (failed(
+              applyPartialConversion(module, seqTarget, std::move(earlySeq)))) {
+        signalPassFailure();
+        return;
+      }
+    }
+
     RewritePatternSet patterns(ctx);
     patterns.add<DmaToNpuPattern, HerdLoadToNpuPattern, SegmentLoadToNpuPattern,
                  ModuleMetadataToNpuPattern, L1MemRefStoreOpConversion,
@@ -2364,10 +2453,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Unroll any affine for loops
     unrollAffineFors(module);
 
-    // Buffer npu.dma_memcpy_nd memref to function's argument list.
+    // Buffer npu.dma_memcpy_nd memref to function's argument list. Has to run
+    // here, after the copy folding above has removed the L3 allocs it would
+    // otherwise promote; on the rolled path the container is already a
+    // runtime_sequence, which the func-shaped pattern cannot see.
     RewritePatternSet castPattern(ctx);
     air::populateBufferMemrefToFuncArgsPattern(castPattern);
     (void)applyPatternsGreedily(module, std::move(castPattern));
+    bufferMemrefToSequenceArgs(module);
 
     // Convert NpuDmaWaitOp → DMAAwaitTaskOp AFTER DMA conversion.
     // NpuDmaWaitOp was placed at WaitAllOp locations (clustered), and now we
@@ -2426,9 +2519,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // to the front of its own feeds. Fused multi-iteration launches take the
     // wave-keyed path below instead (each arm is placed by its air.launch_wave
     // index).
-    auto isRegionDelimiter = [](Operation *o) {
-      return isa<AIEX::NpuLoadPdiOp>(o);
-    };
     // Move an NpuWriteRTPOp before `anchor`, re-materializing any defining op
     // that would otherwise end up after it. The #1732 AIEX API materializes the
     // RTP value as an SSA operand (not an attribute), so its definition must
@@ -2467,86 +2557,73 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
-      Block &blk = seq.getBody().front();
-      // Snapshot the op order; the delimiters never move, and RTP/set_lock ops
-      // only move within their own region, so region membership computed from
-      // this snapshot stays valid across the moves below.
-      SmallVector<Operation *> ops;
-      for (auto &o : blk)
-        ops.push_back(&o);
+      // Rolled, the arms and the feeds they arm both live in the loop body, so
+      // hoisting only within the sequence's entry block moves nothing and the
+      // cores are released after the first wave's data is already in flight.
+      // Hoist within every block instead.
+      SmallVector<Block *> blocks;
+      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      for (Block *blkPtr : blocks) {
+        Block &blk = *blkPtr;
+        // Snapshot the op order; the delimiters never move, and RTP/set_lock
+        // ops only move within their own region, so region membership computed
+        // from this snapshot stays valid across the moves below.
+        SmallVector<Operation *> ops;
+        for (auto &o : blk)
+          ops.push_back(&o);
 
-      auto device = seq->getParentOfType<xilinx::AIE::DeviceOp>();
-      bool fused = device && deviceHasMultiIterLaunch(device);
-      auto getWave = [](Operation *o) -> std::optional<int64_t> {
-        if (auto a = o->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
-          return a.getInt();
-        return std::nullopt;
-      };
-
-      if (fused) {
-        // Wave-keyed arm placement. Every RTP write / set_lock carries the wave
-        // index of the herd_load it lowered from; move it before the first data
-        // movement of the same wave (that wave's first feed), RTP writes first
-        // then set_locks, preserving program order within a wave. This is
-        // authoritative: no inference of which wave an arm belongs to from its
-        // position in the flattened sequence.
-        llvm::DenseMap<int64_t, Operation *> waveAnchor;
-        for (Operation *o : ops) {
-          if (isa<AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(o))
-            continue;
-          if (o->hasAttr(air::attrs::RuntimeHoist))
-            continue;
-          if (auto w = getWave(o))
-            waveAnchor.try_emplace(*w, o);
-        }
-        for (Operation *o : ops)
-          if (isa<AIEX::NpuWriteRTPOp>(o))
-            if (auto w = getWave(o)) {
-              auto it = waveAnchor.find(*w);
-              if (it != waveAnchor.end())
-                moveRtpBefore(o, it->second);
-            }
-        for (Operation *o : ops)
-          if (isa<AIEX::SetLockOp>(o))
-            if (auto w = getWave(o)) {
-              auto it = waveAnchor.find(*w);
-              if (it != waveAnchor.end())
-                o->moveBefore(it->second);
-            }
-      } else {
-        // Single-dispatch (non-fused): hoist each delimiter-bounded region's
-        // own RTP block (RTP writes first, then set_locks) to the front of its
-        // own feeds. Anchor = first data movement (not an RTP write, set_lock,
-        // or air.runtime_hoist feed).
-        struct RegionInfo {
+        // One arm group per launch. Both things that can delimit a launch
+        // boundary are cuts of this block's op list, emitted from the SAME
+        // air.launch_end marker: AIRRtWaitAllOpConversion turns each marker
+        // into an aiex.npu.load_pdi (ELF + lock reset) or into dma_waits
+        // (plain xclbin), while assignLaunchWaveIndices turns markers into a
+        // wave index on each op. So cut on either signal: a load_pdi, or a
+        // change of wave. Single dispatch has neither and stays one group.
+        //
+        // Cutting on both matters because neither alone covers every mode. A
+        // plain xclbin multi-iteration launch emits no load_pdi, so only the
+        // wave index separates its launches -- collapsing them would let a
+        // later launch's RTP value land before an earlier one has run. And an
+        // arm must never be hoisted above a load_pdi, or the reload clobbers
+        // the RTP write it just placed.
+        auto getWave = [](Operation *o) -> std::optional<int64_t> {
+          if (auto a = o->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
+            return a.getInt();
+          return std::nullopt;
+        };
+        struct ArmGroup {
           Operation *anchor = nullptr;
           SmallVector<Operation *> rtps;
           SmallVector<Operation *> locks;
         };
-        SmallVector<RegionInfo> regions;
-        for (size_t i = 0, e = ops.size(); i < e;) {
-          size_t j = i;
-          while (j < e && !isRegionDelimiter(ops[j]))
-            ++j;
-          RegionInfo r;
-          for (size_t k = i; k < j; ++k) {
-            if (isa<AIEX::NpuWriteRTPOp>(ops[k]))
-              r.rtps.push_back(ops[k]);
-            else if (isa<AIEX::SetLockOp>(ops[k]))
-              r.locks.push_back(ops[k]);
-            else if (!ops[k]->hasAttr(air::attrs::RuntimeHoist) && !r.anchor)
-              r.anchor = ops[k];
-          }
-          regions.push_back(r);
-          i = (j < e) ? j + 1 : j;
-        }
-        for (auto &r : regions) {
-          if (!r.anchor)
+        SmallVector<ArmGroup> groups(1);
+        std::optional<int64_t> curWave;
+        for (Operation *o : ops) {
+          if (isa<AIEX::NpuLoadPdiOp>(o)) {
+            groups.emplace_back();
+            curWave.reset();
             continue;
-          for (auto *rtp : r.rtps)
-            moveRtpBefore(rtp, r.anchor);
-          for (auto *lk : r.locks)
-            lk->moveBefore(r.anchor);
+          }
+          if (auto w = getWave(o)) {
+            if (curWave && *w != *curWave)
+              groups.emplace_back();
+            curWave = w;
+          }
+          ArmGroup &g = groups.back();
+          if (isa<AIEX::NpuWriteRTPOp>(o))
+            g.rtps.push_back(o);
+          else if (isa<AIEX::SetLockOp>(o))
+            g.locks.push_back(o);
+          else if (!o->hasAttr(air::attrs::RuntimeHoist) && !g.anchor)
+            g.anchor = o;
+        }
+        for (auto &g : groups) {
+          if (!g.anchor)
+            continue;
+          for (auto *rtp : g.rtps)
+            moveRtpBefore(rtp, g.anchor);
+          for (auto *lk : g.locks)
+            lk->moveBefore(g.anchor);
         }
       }
     });
@@ -2575,42 +2652,63 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(device, sym);
         return alloc && alloc.getChannelDir() == AIE::DMAChannelDir::S2MM;
       };
-      auto getWave = [](Operation *o) -> std::optional<int64_t> {
-        if (auto a = o->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
-          return a.getInt();
-        return std::nullopt;
-      };
-      Block &blk = seq.getBody().front();
-      SmallVector<Operation *> ops;
-      for (auto &o : blk)
-        ops.push_back(&o);
-      // Wave-keyed: for each wave, its first input feed (an MM2S configure) is
-      // the anchor; hoist that wave's output-S2MM configure+start ahead of it.
-      llvm::DenseMap<int64_t, Operation *> waveInputAnchor;
-      for (Operation *o : ops) {
-        auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
-        if (!cfg || isS2MMOutput(cfg))
-          continue;
-        if (auto w = getWave(o))
-          waveInputAnchor.try_emplace(*w, o);
-      }
-      for (Operation *o : ops) {
-        auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
-        if (!cfg || !isS2MMOutput(cfg))
-          continue;
-        auto w = getWave(o);
-        if (!w)
-          continue;
-        auto it = waveInputAnchor.find(*w);
-        if (it == waveInputAnchor.end())
-          continue;
-        Operation *anchor = it->second;
-        if (!cfg->isBeforeInBlock(anchor))
-          cfg->moveBefore(anchor);
-        // its single start task moves with it, staying right after the cfg.
-        for (auto *u : cfg.getResult().getUsers())
-          if (isa<AIEX::DMAStartTaskOp>(u) && !u->isBeforeInBlock(anchor))
-            u->moveBefore(anchor);
+      // Rolled, the wave is the loop IV, so key by block instead: within each
+      // block the first input feed anchors that block's output arming. Same
+      // rule, one level down.
+      SmallVector<Block *> blocks;
+      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      for (Block *blkPtr : blocks) {
+        Block &blk = *blkPtr;
+        SmallVector<Operation *> ops;
+        for (auto &o : blk)
+          ops.push_back(&o);
+        // Wave-keyed: for each wave, its first input feed (an MM2S configure)
+        // is the anchor; hoist that wave's output-S2MM configure+start ahead
+        // of it. Rolled, the key is the block itself.
+        // Block first, then wave within the block: a rolled body holds one
+        // wave and keys to 0, while an already-flattened multi-wave block
+        // still arms each wave's output ahead of that wave's own input.
+        auto getWave = [](Operation *o) -> std::optional<int64_t> {
+          if (auto a = o->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
+            return a.getInt();
+          return std::nullopt;
+        };
+        llvm::SmallDenseSet<int64_t> wavesHere;
+        for (Operation *o : ops)
+          if (auto w = getWave(o))
+            wavesHere.insert(*w);
+        bool byWave = wavesHere.size() > 1;
+        llvm::DenseMap<int64_t, Operation *> waveInputAnchor;
+        auto key = [&](Operation *o) -> std::optional<int64_t> {
+          if (!byWave)
+            return 0;
+          return getWave(o);
+        };
+        for (Operation *o : ops) {
+          auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
+          if (!cfg || isS2MMOutput(cfg))
+            continue;
+          if (auto w = key(o))
+            waveInputAnchor.try_emplace(*w, o);
+        }
+        for (Operation *o : ops) {
+          auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
+          if (!cfg || !isS2MMOutput(cfg))
+            continue;
+          auto w = key(o);
+          if (!w)
+            continue;
+          auto it = waveInputAnchor.find(*w);
+          if (it == waveInputAnchor.end())
+            continue;
+          Operation *anchor = it->second;
+          if (!cfg->isBeforeInBlock(anchor))
+            cfg->moveBefore(anchor);
+          // its single start task moves with it, staying right after the cfg.
+          for (auto *u : cfg.getResult().getUsers())
+            if (isa<AIEX::DMAStartTaskOp>(u) && !u->isBeforeInBlock(anchor))
+              u->moveBefore(anchor);
+        }
       }
     });
 
@@ -2621,128 +2719,137 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
-      Block &blk = seq.getBody().front();
-      Operation *anchor = nullptr;
-      for (auto &o : blk) {
-        if (isa<AIEX::NpuLoadPdiOp, AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(&o))
-          continue;
-        if (o.hasAttr(air::attrs::RuntimeHoist))
-          continue;
-        anchor = &o;
-        break;
-      }
-      if (!anchor)
-        return; // nothing to order before.
-      // Hoist input DMA feeds marked `air.runtime_hoist` ahead of the bulk
-      // input-feed DMAs. Otherwise the control program can block on a later
-      // input's dma_await -- whose consumer is stalled in a feedback loop
-      // waiting on the compute that the hoisted feed drives -- BEFORE it ever
-      // issues the hoisted feed, so that compute never receives its input,
-      // produces no output, and the sequence deadlocks. Each configure task and
-      // its single start task are moved together, preserving relative order.
-      SmallVector<AIEX::DMAConfigureTaskForOp> hoistCfgs;
-      for (auto &o : blk)
-        if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
-          if (c->hasAttr(air::attrs::RuntimeHoist))
-            hoistCfgs.push_back(c);
-      for (auto c : hoistCfgs) {
-        Operation *startOp = nullptr;
-        for (auto *u : c.getResult().getUsers())
-          if (isa<AIEX::DMAStartTaskOp>(u)) {
-            startOp = u;
-            break;
-          }
-        c->moveBefore(anchor);
-        if (startOp)
-          startOp->moveBefore(anchor);
-        else
-          // A present marker that cannot be honored is a silent-deadlock
-          // hazard; surface it rather than dropping the requested ordering
-          // quietly.
-          c->emitWarning("air.runtime_hoist: no matching dma_start_task; the "
-                         "feed was hoisted but its start was not, so the "
-                         "requested ordering may not take effect");
-      }
-
-      // air.await_appends barrier: a same-L3 write-after-write / read-after-
-      // write ordering that the async dependence graph cannot express. A
-      // shared- DDR readback tagged `air.await_appends` must observe values
-      // written by one or more device-side appends (S2MM drains into that same
-      // DDR buffer), but an append's completion await is deferred to the launch
-      // terminator, so the readback -- issued in program order after the append
-      // START -- would race the append S2MM and read a stale slot. Each
-      // participating append is tagged `air.append_barrier`; move those
-      // appends' completion awaits to just BEFORE the tagged readback's start,
-      // so the runtime blocks on append completion before reading back.
-      //
-      // A runtime sequence may contain one or MORE independent readbacks (e.g.
-      // an unrolled loop with N append/readback pairs). Each append's
-      // completion await is moved before the FIRST tagged readback start that
-      // follows the append in program order -- the readback that consumes it.
-      // Collapsing every append onto the first readback would move a later
-      // readback's append await ahead of an earlier readback, violating SSA
-      // dominance and the append->readback ordering. With a single readback
-      // this reduces to moving every append's await before that one readback.
-      SmallVector<AIEX::DMAConfigureTaskForOp> awaitCfgs;
-      for (auto &o : blk)
-        if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
-          if (c->hasAttr(air::attrs::AwaitAppends))
-            awaitCfgs.push_back(c);
-      if (!awaitCfgs.empty()) {
-        // First dma_start_task among a configure task's users, if any.
-        auto getStart = [](AIEX::DMAConfigureTaskForOp c) {
-          for (auto *u : c.getResult().getUsers())
-            if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u))
-              return s;
-          return AIEX::DMAStartTaskOp(nullptr);
-        };
-        // Program-order index for every op in the block. Only awaits are
-        // relocated below (append/readback starts stay put), so the indices
-        // used for the interval decisions remain valid throughout.
-        DenseMap<Operation *, unsigned> order;
-        unsigned idx = 0;
-        for (auto &o : blk)
-          order[&o] = idx++;
-        // Tagged readback starts, in program order.
-        SmallVector<AIEX::DMAStartTaskOp> barrierStarts;
-        for (auto c : awaitCfgs) {
-          if (auto s = getStart(c))
-            barrierStarts.push_back(s);
-          else
-            c->emitWarning(
-                "air.await_appends: tagged readback has no dma_start_task; the "
-                "append barrier cannot be applied");
-        }
-        bool anyAppendAwait = false;
+      // Rolled, the hoisted feeds and the append/readback pair live in the
+      // loop body or a select arm, so scoping to the entry block finds nothing
+      // and the append barrier is silently not applied.
+      SmallVector<Block *> blocks;
+      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      for (Block *blkPtr : blocks) {
+        Block &blk = *blkPtr;
+        Operation *anchor = nullptr;
         for (auto &o : blk) {
-          auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
-          if (!cfg || !cfg->hasAttr(air::attrs::AppendBarrier))
+          if (isa<AIEX::NpuLoadPdiOp, AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(&o))
             continue;
-          AIEX::DMAAwaitTaskOp aAwait = nullptr;
-          for (auto *u : cfg.getResult().getUsers())
-            if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(u))
-              aAwait = aw;
-          if (!aAwait)
+          if (o.hasAttr(air::attrs::RuntimeHoist))
             continue;
-          anyAppendAwait = true;
-          AIEX::DMAStartTaskOp aStart = getStart(cfg);
-          unsigned apos = order[aStart ? aStart.getOperation() : &o];
-          AIEX::DMAStartTaskOp target = nullptr;
-          unsigned best = std::numeric_limits<unsigned>::max();
-          for (auto s : barrierStarts) {
-            unsigned sp = order[s.getOperation()];
-            if (sp > apos && sp < best) {
-              best = sp;
-              target = s;
-            }
-          }
-          if (target)
-            aAwait->moveBefore(target);
+          anchor = &o;
+          break;
         }
-        if (!anyAppendAwait && !barrierStarts.empty())
-          barrierStarts.front()->emitWarning(
-              "air.await_appends: readback tagged but no air.append_barrier "
-              "appends found to await; no ordering was enforced");
+        if (!anchor)
+          return; // nothing to order before.
+        // Hoist input DMA feeds marked `air.runtime_hoist` ahead of the bulk
+        // input-feed DMAs. Otherwise the control program can block on a later
+        // input's dma_await -- whose consumer is stalled in a feedback loop
+        // waiting on the compute that the hoisted feed drives -- BEFORE it ever
+        // issues the hoisted feed, so that compute never receives its input,
+        // produces no output, and the sequence deadlocks. Each configure task
+        // and its single start task are moved together, preserving relative
+        // order.
+        SmallVector<AIEX::DMAConfigureTaskForOp> hoistCfgs;
+        for (auto &o : blk)
+          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
+            if (c->hasAttr(air::attrs::RuntimeHoist))
+              hoistCfgs.push_back(c);
+        for (auto c : hoistCfgs) {
+          Operation *startOp = nullptr;
+          for (auto *u : c.getResult().getUsers())
+            if (isa<AIEX::DMAStartTaskOp>(u)) {
+              startOp = u;
+              break;
+            }
+          c->moveBefore(anchor);
+          if (startOp)
+            startOp->moveBefore(anchor);
+          else
+            // A present marker that cannot be honored is a silent-deadlock
+            // hazard; surface it rather than dropping the requested ordering
+            // quietly.
+            c->emitWarning("air.runtime_hoist: no matching dma_start_task; the "
+                           "feed was hoisted but its start was not, so the "
+                           "requested ordering may not take effect");
+        }
+
+        // air.await_appends barrier: a same-L3 write-after-write / read-after-
+        // write ordering that the async dependence graph cannot express. A
+        // shared- DDR readback tagged `air.await_appends` must observe values
+        // written by one or more device-side appends (S2MM drains into that
+        // same DDR buffer), but an append's completion await is deferred to the
+        // launch terminator, so the readback -- issued in program order after
+        // the append START -- would race the append S2MM and read a stale slot.
+        // Each participating append is tagged `air.append_barrier`; move those
+        // appends' completion awaits to just BEFORE the tagged readback's
+        // start, so the runtime blocks on append completion before reading
+        // back.
+        //
+        // A runtime sequence may contain one or MORE independent readbacks
+        // (e.g. an unrolled loop with N append/readback pairs). Each append's
+        // completion await is moved before the FIRST tagged readback start that
+        // follows the append in program order -- the readback that consumes it.
+        // Collapsing every append onto the first readback would move a later
+        // readback's append await ahead of an earlier readback, violating SSA
+        // dominance and the append->readback ordering. With a single readback
+        // this reduces to moving every append's await before that one readback.
+        SmallVector<AIEX::DMAConfigureTaskForOp> awaitCfgs;
+        for (auto &o : blk)
+          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
+            if (c->hasAttr(air::attrs::AwaitAppends))
+              awaitCfgs.push_back(c);
+        if (!awaitCfgs.empty()) {
+          // First dma_start_task among a configure task's users, if any.
+          auto getStart = [](AIEX::DMAConfigureTaskForOp c) {
+            for (auto *u : c.getResult().getUsers())
+              if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u))
+                return s;
+            return AIEX::DMAStartTaskOp(nullptr);
+          };
+          // Program-order index for every op in the block. Only awaits are
+          // relocated below (append/readback starts stay put), so the indices
+          // used for the interval decisions remain valid throughout.
+          DenseMap<Operation *, unsigned> order;
+          unsigned idx = 0;
+          for (auto &o : blk)
+            order[&o] = idx++;
+          // Tagged readback starts, in program order.
+          SmallVector<AIEX::DMAStartTaskOp> barrierStarts;
+          for (auto c : awaitCfgs) {
+            if (auto s = getStart(c))
+              barrierStarts.push_back(s);
+            else
+              c->emitWarning("air.await_appends: tagged readback has no "
+                             "dma_start_task; the "
+                             "append barrier cannot be applied");
+          }
+          bool anyAppendAwait = false;
+          for (auto &o : blk) {
+            auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
+            if (!cfg || !cfg->hasAttr(air::attrs::AppendBarrier))
+              continue;
+            AIEX::DMAAwaitTaskOp aAwait = nullptr;
+            for (auto *u : cfg.getResult().getUsers())
+              if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(u))
+                aAwait = aw;
+            if (!aAwait)
+              continue;
+            anyAppendAwait = true;
+            AIEX::DMAStartTaskOp aStart = getStart(cfg);
+            unsigned apos = order[aStart ? aStart.getOperation() : &o];
+            AIEX::DMAStartTaskOp target = nullptr;
+            unsigned best = std::numeric_limits<unsigned>::max();
+            for (auto s : barrierStarts) {
+              unsigned sp = order[s.getOperation()];
+              if (sp > apos && sp < best) {
+                best = sp;
+                target = s;
+              }
+            }
+            if (target)
+              aAwait->moveBefore(target);
+          }
+          if (!anyAppendAwait && !barrierStarts.empty())
+            barrierStarts.front()->emitWarning(
+                "air.await_appends: readback tagged but no air.append_barrier "
+                "appends found to await; no ordering was enforced");
+        }
       }
     });
 
@@ -2757,46 +2864,52 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
-      Block &blk = seq.getBody().front();
-      llvm::DenseSet<Operation *> seen;
-      // Clone `v`'s defining chain immediately before `user`, returning the
-      // re-materialized value, or null if any step is not safely clonable.
-      std::function<Value(Value, Operation *)> rematerialize =
-          [&](Value v, Operation *user) -> Value {
-        Operation *def = v.getDefiningOp();
-        if (!def || def->getBlock() != &blk || seen.contains(def))
-          return v;
-        if (!isMemoryEffectFree(def) || def->getNumResults() != 1)
-          return Value();
-        SmallVector<Value> operands;
-        for (Value o : def->getOperands()) {
-          Value r = rematerialize(o, user);
-          if (!r)
-            return Value();
-          operands.push_back(r);
-        }
-        OpBuilder b(user);
-        Operation *cloned = b.clone(*def);
-        cloned->setOperands(operands);
-        seen.insert(cloned);
-        return cloned->getResult(0);
-      };
-      for (Operation &o : blk) {
-        SmallVector<OpOperand *> uses;
-        for (OpOperand &u : o.getOpOperands())
-          uses.push_back(&u);
-        o.walk([&](Operation *nested) {
-          for (OpOperand &u : nested->getOpOperands())
-            uses.push_back(&u);
-        });
-        for (OpOperand *u : uses) {
-          Operation *def = u->get().getDefiningOp();
+      // Same reason as the hoist above: rolled, the ops that moved are in the
+      // loop body, not the sequence's entry block.
+      SmallVector<Block *> blocks;
+      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      for (Block *blkPtr : blocks) {
+        Block &blk = *blkPtr;
+        llvm::DenseSet<Operation *> seen;
+        // Clone `v`'s defining chain immediately before `user`, returning the
+        // re-materialized value, or null if any step is not safely clonable.
+        std::function<Value(Value, Operation *)> rematerialize =
+            [&](Value v, Operation *user) -> Value {
+          Operation *def = v.getDefiningOp();
           if (!def || def->getBlock() != &blk || seen.contains(def))
-            continue;
-          if (Value r = rematerialize(u->get(), &o))
-            u->set(r);
+            return v;
+          if (!isMemoryEffectFree(def) || def->getNumResults() != 1)
+            return Value();
+          SmallVector<Value> operands;
+          for (Value o : def->getOperands()) {
+            Value r = rematerialize(o, user);
+            if (!r)
+              return Value();
+            operands.push_back(r);
+          }
+          OpBuilder b(user);
+          Operation *cloned = b.clone(*def);
+          cloned->setOperands(operands);
+          seen.insert(cloned);
+          return cloned->getResult(0);
+        };
+        for (Operation &o : blk) {
+          SmallVector<OpOperand *> uses;
+          for (OpOperand &u : o.getOpOperands())
+            uses.push_back(&u);
+          o.walk([&](Operation *nested) {
+            for (OpOperand &u : nested->getOpOperands())
+              uses.push_back(&u);
+          });
+          for (OpOperand *u : uses) {
+            Operation *def = u->get().getDefiningOp();
+            if (!def || def->getBlock() != &blk || seen.contains(def))
+              continue;
+            if (Value r = rematerialize(u->get(), &o))
+              u->set(r);
+          }
+          seen.insert(&o);
         }
-        seen.insert(&o);
       }
     });
 
@@ -3166,15 +3279,18 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // For S2MM (output) channels: generate DMAAwaitTaskOp (wait + free BD)
   // For MM2S (input) channels: generate DMAFreeTaskOp (just free BD, no wait)
   void generateAwaitsFromWaitAllOps(ModuleOp module) {
-    SmallVector<func::FuncOp> funcOps;
+    // Either container is possible here: the rolled path has already turned
+    // the control func into its runtime_sequence.
+    SmallVector<Operation *> funcOps;
     module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
+    module.walk([&](AIE::RuntimeSequenceOp s) { funcOps.push_back(s); });
 
     for (auto f : funcOps) {
       auto device = f->getParentOfType<AIE::DeviceOp>();
       if (!device)
         continue;
 
-      if (f.getBody().empty())
+      if (f->getRegion(0).empty())
         continue;
 
       mlir::DominanceInfo domInfo(f);
@@ -3188,7 +3304,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       llvm::DenseMap<StringRef, unsigned> channelToNextConfigIdx;
 
       // Walk the function body in order
-      f.walk([&](AIEX::DMAConfigureTaskForOp configTask) {
+      f->walk([&](AIEX::DMAConfigureTaskForOp configTask) {
         auto allocSymbol = configTask.getAlloc();
         StringRef metadata = allocSymbol.getLeafReference().getValue();
         channelToConfigTasks[metadata].push_back(configTask);
@@ -3202,7 +3318,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // Second pass: process NpuDmaWaitOp ops in order
       // For each wait, find the next unconsumed ConfigTask for that channel
       SmallVector<AIEX::NpuDmaWaitOp> waitOps;
-      f.walk([&](AIEX::NpuDmaWaitOp waitOp) { waitOps.push_back(waitOp); });
+      f->walk([&](AIEX::NpuDmaWaitOp waitOp) { waitOps.push_back(waitOp); });
 
       for (auto waitOp : waitOps) {
         StringRef metadata = waitOp.getSymbol();
@@ -3257,6 +3373,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
         if (matchingConfigTask) {
           OpBuilder builder(waitOp);
+          // Block dominance is satisfied by an op in a sibling region -- a
+          // configure in one arm of a rolled feed select -- but its result is
+          // not visible outside that arm. Await at the end of the arm instead.
+          if (!matchingConfigTask->getParentRegion()->isAncestor(
+                  waitOp->getParentRegion()))
+            builder.setInsertionPoint(
+                matchingConfigTask->getBlock()->getTerminator());
           if (isS2MM) {
             // S2MM (output): await task - waits for completion AND frees BD
             AIEX::DMAAwaitTaskOp::create(builder, waitOp.getLoc(),
@@ -3291,11 +3414,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // Keeping at most `depth` tasks in flight per channel (await task i-depth
   // before reusing its BD at start i, then drain the final `depth`) bounds the
   // in-flight set and preserves the drainable round-major schedule.
-  void synthesizeDoubleBufferedAwaits(func::FuncOp f, AIE::DeviceOp device,
+  void synthesizeDoubleBufferedAwaits(Operation *f, AIE::DeviceOp device,
                                       unsigned depth) {
     // Group marked MM2S config tasks per channel, in program order.
     llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>> groups;
-    f.walk([&](AIEX::DMAConfigureTaskForOp ct) {
+    f->walk([&](AIEX::DMAConfigureTaskForOp ct) {
       if (!ct->hasAttr(air::attrs::PreserveShimDmaOrder))
         return;
       StringRef md = ct.getAlloc().getLeafReference().getValue();
@@ -3308,22 +3431,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       return;
     // Map each config task to its start op.
     llvm::DenseMap<Operation *, AIEX::DMAStartTaskOp> startOf;
-    f.walk([&](AIEX::DMAStartTaskOp st) {
+    f->walk([&](AIEX::DMAStartTaskOp st) {
       if (auto *def = st.getTask().getDefiningOp())
         startOf[def] = st;
     });
-    // A fused multi-iteration launch (scf.for over air.launch, unrolled to N
-    // stitched iterations) must pace each channel PER ITERATION: the
-    // per-channel task list is the N iterations' feeds concatenated, and
-    // pacing/draining it as one list lets the double-buffered in-flight set
-    // straddle an iteration boundary, accumulating a `depth`-deep imbalance
-    // that deadlocks after a few iterations. Splitting into N equal contiguous
-    // segments and draining each segment's final `depth` before the next
-    // segment's first start makes every iteration's backpressure self-contained
-    // (one dispatch behaves like N drained dispatches). N==1 (single launch, or
-    // a surviving loop body) is the original whole-list behavior.
-    int64_t numIters = deviceNumLaunchIters(device);
-
     // `fenceEnd` forces the segment's in-flight tail to be fully drained after
     // its last start (a per-iteration fence) even when the segment fits in
     // flight; used for the per-iteration segments of a fused multi-iteration
@@ -3372,23 +3483,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     };
 
-    // Assign each paced MM2S config task to its launch iteration (wave) from
-    // the air.launch_wave index it carries (propagated from the source
-    // airrt.dma_memcpy_nd). This tolerates HETEROGENEOUS waves (a channel
-    // present in only some waves): each channel is segmented by the waves in
-    // which it actually appears, so no channel's in-flight set straddles a mode
-    // transition.
-    llvm::DenseMap<Operation *, int64_t> taskWave;
-    bool sawWave = false;
-    f.walk([&](AIEX::DMAConfigureTaskForOp ct) {
-      if (!ct->hasAttr(air::attrs::PreserveShimDmaOrder))
-        return;
-      if (auto a = ct->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave)) {
-        taskWave[ct.getOperation()] = a.getInt();
-        sawWave = true;
-      }
-    });
-
     // Cross-channel phase barrier for coalesced feeds. After coalescing, each
     // channel contributes one task per phase, emitted phase-major across
     // channels (all channels' phase p, then all channels' phase p+1, ...). Each
@@ -3402,7 +3496,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // whose waves just append more phase groups).
     {
       SmallVector<AIEX::DMAConfigureTaskForOp> coalTasks;
-      f.walk([&](AIEX::DMAConfigureTaskForOp ct) {
+      f->walk([&](AIEX::DMAConfigureTaskForOp ct) {
         if (!ct->hasAttr(air::attrs::CoalescedShimFeed))
           return;
         StringRef md = ct.getAlloc().getLeafReference().getValue();
@@ -3414,13 +3508,17 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         SmallVector<SmallVector<AIEX::DMAConfigureTaskForOp>> phaseGroups;
         SmallVector<AIEX::DMAConfigureTaskForOp> cur;
         llvm::DenseSet<StringRef> seen;
+        // A phase group is a run within one block: the awaits go after the
+        // group's last start, which only has a meaning among siblings.
+        Block *curBlock = nullptr;
         for (auto ct : coalTasks) {
           StringRef c = ct.getAlloc().getLeafReference().getValue();
-          if (seen.contains(c)) {
+          if (seen.contains(c) || (curBlock && ct->getBlock() != curBlock)) {
             phaseGroups.push_back(cur);
             cur.clear();
             seen.clear();
           }
+          curBlock = ct->getBlock();
           cur.push_back(ct);
           seen.insert(c);
         }
@@ -3466,43 +3564,39 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // Segment per launch iteration when the iteration count divides the task
       // count evenly (each iteration emits the same per-channel feeds).
       // Otherwise fall back to whole-list pacing.
-      if (numIters > 1 && sawWave) {
-        // Boundary-delimited per-wave segmentation. Each contiguous run of
-        // same-wave tasks is paced+fenced independently, so a channel absent
-        // from some waves simply contributes fewer segments (no assumption that
-        // every wave emits the same per-channel feed count).
+      // Rolled: the wave is the loop IV, so every task in the body carries the
+      // same wave index and wave segmentation collapses. Segment by block
+      // instead -- a loop body and each arm of a feed select are separate
+      // segments, pacing never has to pair across them, and the back edge is
+      // the iteration fence the per-wave segmentation was providing.
+      {
         SmallVector<AIEX::DMAConfigureTaskForOp> seg;
-        int64_t segWave = -1;
+        Block *segBlock = nullptr;
         auto flush = [&]() {
           if (!seg.empty()) {
             paceSegment(seg, /*fenceEnd=*/true);
             seg.clear();
           }
         };
+        // Segment on block, and on wave within a block: a rolled body is one
+        // block and one wave, so only the block boundary fires; an already
+        // flattened multi-wave block is still paced and fenced per wave, so no
+        // channel's in-flight set straddles an iteration boundary.
+        int64_t segWave = -1;
+        auto waveOf = [](AIEX::DMAConfigureTaskForOp ct) -> int64_t {
+          if (auto a = ct->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
+            return a.getInt();
+          return -1;
+        };
         for (auto ct : tasks) {
-          auto wi = taskWave.find(ct.getOperation());
-          int64_t w = (wi != taskWave.end()) ? wi->second : segWave;
-          if (w != segWave) {
+          if (ct->getBlock() != segBlock || waveOf(ct) != segWave) {
             flush();
-            segWave = w;
+            segBlock = ct->getBlock();
+            segWave = waveOf(ct);
           }
           seg.push_back(ct);
         }
         flush();
-      } else if (numIters > 1 && n % numIters == 0) {
-        unsigned seg = n / (unsigned)numIters;
-        for (int64_t it = 0; it < numIters; it++)
-          paceSegment(
-              ArrayRef<AIEX::DMAConfigureTaskForOp>(tasks).slice(it * seg, seg),
-              /*fenceEnd=*/true);
-      } else {
-        if (numIters > 1)
-          tasks.front()->emitWarning(
-              "air.multi_iter_launch: MM2S task count (" + llvm::Twine(n) +
-              ") is not evenly divisible by iteration count (" +
-              llvm::Twine(numIters) +
-              "); falling back to whole-list pacing which may deadlock");
-        paceSegment(tasks, /*fenceEnd=*/false);
       }
     }
   }
@@ -3602,10 +3696,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   void unrollAffineFors(ModuleOp module) {
     // Taking into account for loop nests
     module.walk([&](mlir::func::FuncOp f) {
+      // The launch/segment affine scaffolding nested inside the kept scf.for
+      // has nothing else to unroll it.
       SmallVector<affine::AffineForOp> afos;
-      for (auto op : f.getOps<affine::AffineForOp>()) {
-        afos.push_back(op);
-      }
+      f.walk([&](affine::AffineForOp op) {
+        if (!op->getParentOfType<affine::AffineForOp>())
+          afos.push_back(op);
+      });
       for (auto op : afos) {
         unrollAffineFor(op);
         // Renumber unrolled memcpy ops
@@ -3658,6 +3755,148 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           signalPassFailure();
         }
       }
+    }
+  }
+
+  // Runtime-sequence twin of BufferMemrefToFuncArgsPattern: promote L3 allocs
+  // sitting directly in the sequence body to sequence arguments.
+  void bufferMemrefToSequenceArgs(ModuleOp module) {
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      llvm::SetVector<Value> memrefs;
+      for (auto &op : seq.getBody().front()) {
+        if (!isa<memref::AllocOp, memref::AssumeAlignmentOp>(op))
+          continue;
+        for (auto res : op.getResults())
+          if (auto t = dyn_cast_if_present<BaseMemRefType>(res.getType()))
+            if (air::isL3(t))
+              memrefs.insert(res);
+      }
+      for (Value v : memrefs)
+        v.replaceAllUsesWith(
+            seq.getBody().addArgument(v.getType(), seq.getLoc()));
+    });
+  }
+
+  // The same for an scf.if / scf.index_switch that yields a token -- a
+  // per-wave feed select does, once the loop around it stays rolled and its
+  // condition no longer folds. Results and yield operands line up one to one
+  // here, so dropping is symmetric.
+  void dropAirrtEventResults(ModuleOp module) {
+    SmallVector<Operation *> ops;
+    module.walk([&](Operation *o) {
+      if (!isa<scf::IfOp, scf::IndexSwitchOp>(o))
+        return;
+      if (llvm::any_of(o->getResultTypes(),
+                       [](Type t) { return isa<airrt::EventType>(t); }))
+        ops.push_back(o);
+    });
+    for (auto *op : llvm::reverse(ops)) {
+      OpBuilder builder(op);
+      auto eventTy = airrt::EventType::get(op->getContext());
+      SmallVector<Type> keptTypes;
+      SmallVector<unsigned> keptIdx;
+      for (auto [i, t] : llvm::enumerate(op->getResultTypes()))
+        if (!isa<airrt::EventType>(t)) {
+          keptTypes.push_back(t);
+          keptIdx.push_back(i);
+        }
+      OperationState state(op->getLoc(), op->getName());
+      state.addOperands(op->getOperands());
+      state.addTypes(keptTypes);
+      state.addAttributes(op->getAttrs());
+      for (unsigned i = 0, e = op->getNumRegions(); i < e; i++)
+        state.addRegion();
+      Operation *newOp = builder.create(state);
+      for (auto [oldRegion, newRegion] :
+           llvm::zip(op->getRegions(), newOp->getRegions()))
+        newRegion.takeBody(oldRegion);
+      for (Region &r : newOp->getRegions())
+        for (Block &blk : r) {
+          auto yield = dyn_cast<scf::YieldOp>(blk.getTerminator());
+          if (!yield)
+            continue;
+          SmallVector<Value> keptYields;
+          for (unsigned i : keptIdx)
+            keptYields.push_back(yield.getOperand(i));
+          yield->setOperands(keptYields);
+        }
+      builder.setInsertionPointAfter(newOp);
+      unsigned kept = 0;
+      for (auto res : op->getResults())
+        res.replaceAllUsesWith(
+            isa<airrt::EventType>(res.getType())
+                ? airrt::WaitAllOp::create(builder, op->getLoc(), eventTy,
+                                           SmallVector<Value>{})
+                      .getResult(0)
+                : newOp->getResult(kept++));
+      op->erase();
+    }
+  }
+
+  // Drop !airrt.event iter_args from scf.for loops. Unrolling used to dissolve
+  // them; a loop that stays rolled carries the token across the back edge, and
+  // the conversion has nothing to replace a loop-carried event with. Every
+  // reader becomes a fresh empty airrt.wait_all, which the conversion erases.
+  void dropAirrtEventIterArgs(ModuleOp module) {
+    SmallVector<scf::ForOp> forOps;
+    module.walk([&](mlir::func::FuncOp f) {
+      f.walk([&](scf::ForOp forOp) {
+        if (llvm::any_of(forOp.getResultTypes(),
+                         [](Type t) { return isa<airrt::EventType>(t); }))
+          forOps.push_back(forOp);
+      });
+    });
+    for (auto forOp : llvm::reverse(forOps)) {
+      OpBuilder builder(forOp);
+      auto eventTy = airrt::EventType::get(forOp->getContext());
+      SmallVector<Value> keptInits;
+      SmallVector<unsigned> keptIdx;
+      for (auto [i, init] : llvm::enumerate(forOp.getInitArgs()))
+        if (!isa<airrt::EventType>(init.getType())) {
+          keptInits.push_back(init);
+          keptIdx.push_back(i);
+        }
+      auto newFor =
+          scf::ForOp::create(builder, forOp.getLoc(), forOp.getLowerBound(),
+                             forOp.getUpperBound(), forOp.getStep(), keptInits);
+      newFor->setAttrs(forOp->getAttrs());
+      Block *newBody = newFor.getBody();
+      // scf.for materializes an scf.yield in an empty body; the moved body
+      // brings its own, with the event operands dropped below.
+      newBody->getTerminator()->erase();
+      SmallVector<Value> argRepl;
+      argRepl.push_back(newFor.getInductionVar());
+      builder.setInsertionPointToStart(newBody);
+      unsigned kept = 0;
+      for (auto regionArg : forOp.getRegionIterArgs())
+        argRepl.push_back(
+            isa<airrt::EventType>(regionArg.getType())
+                ? airrt::WaitAllOp::create(builder, forOp.getLoc(), eventTy,
+                                           SmallVector<Value>{})
+                      .getResult(0)
+                : newFor.getRegionIterArgs()[kept++]);
+      newBody->getOperations().splice(newBody->end(),
+                                      forOp.getBody()->getOperations());
+      for (auto [oldArg, newArg] :
+           llvm::zip(forOp.getBody()->getArguments(), argRepl))
+        oldArg.replaceAllUsesWith(newArg);
+      auto yield = cast<scf::YieldOp>(newBody->getTerminator());
+      SmallVector<Value> keptYields;
+      for (unsigned i : keptIdx)
+        keptYields.push_back(yield.getOperand(i));
+      yield->setOperands(keptYields);
+      builder.setInsertionPointAfter(newFor);
+      kept = 0;
+      for (auto res : forOp.getResults())
+        res.replaceAllUsesWith(
+            isa<airrt::EventType>(res.getType())
+                ? airrt::WaitAllOp::create(builder, forOp.getLoc(), eventTy,
+                                           SmallVector<Value>{})
+                      .getResult(0)
+                : newFor.getResult(kept++));
+      forOp.erase();
     }
   }
 
@@ -3810,8 +4049,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // configure events to monitor
   LogicalResult insertNpuWrite32ForTrace(ModuleOp module, int64_t trace_size,
                                          int64_t trace_offset) {
-    SmallVector<mlir::func::FuncOp> funcOps;
+    // Either container: the rolled path has already turned the control func
+    // into its runtime_sequence by the time this runs.
+    SmallVector<Operation *> funcOps;
     module.walk([&](mlir::func::FuncOp f) { funcOps.push_back(f); });
+    module.walk([&](AIE::RuntimeSequenceOp s) { funcOps.push_back(s); });
 
     for (auto f : funcOps) {
       OpBuilder builder(f);
@@ -3821,9 +4063,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
       auto &target_model = d.getTargetModel();
       std::map<int, int> chanToIdMap;
-      if (f.getBody().empty())
+      if (f->getRegion(0).empty())
         continue;
-      builder.setInsertionPointToStart(&f.front());
+      builder.setInsertionPointToStart(&f->getRegion(0).front());
       // Helper: emit NpuWrite32Op from integer address/value literals.
       auto makeNpuWrite32Fn = [&](uint32_t addr, uint32_t val,
                                   IntegerAttr colAttr, IntegerAttr rowAttr) {

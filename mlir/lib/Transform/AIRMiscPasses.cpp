@@ -1535,7 +1535,7 @@ private:
       SmallVector<air::ChannelPutOp> &puts,
       SmallVector<air::ChannelGetOp> &gets, int memrefDim, Operation *allocOp,
       llvm::MapVector<air::ChannelInterface, infoEntryTy> &opToSplitInfoMap);
-  FailureOr<llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy>>
+  FailureOr<llvm::MapVector<memref::AllocOp, memrefSplitInfoTy>>
   getTargetMemrefAllocs(
       func::FuncOp func,
       llvm::MapVector<air::ChannelInterface, infoEntryTy> &opToSplitInfoMap);
@@ -2088,7 +2088,7 @@ std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
 
 // Get a vector of allocs whose memrefs require splitting; label the single
 // split dimension with split factor, split_type and affine_map (if any).
-FailureOr<llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy>>
+FailureOr<llvm::MapVector<memref::AllocOp, memrefSplitInfoTy>>
 AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     func::FuncOp func,
     llvm::MapVector<air::ChannelInterface, infoEntryTy> &opToSplitInfoMap) {
@@ -2104,7 +2104,10 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   // Condition to split a memref: detected multiple-in-single-out or
   // single-in-multiple-out channel patterns. Such pattern is represented via
   // the memref being accessed by multiple unique channel puts/gets.
-  llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy> targetMemrefsToInfoMap;
+  // MapVector, not DenseMap: STEP 3 iterates this and mints a fresh channel
+  // name per entry, so a pointer-hashed order would rename channels
+  // differently run to run and change the physical shim assignment.
+  llvm::MapVector<memref::AllocOp, memrefSplitInfoTy> targetMemrefsToInfoMap;
 
   // Launch-level endpoint cap state. Each approved split multiplies the
   // post-split endpoint count on the single-channel-side symbol. Track those

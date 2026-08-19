@@ -828,11 +828,14 @@ class XRTBackend(AirBackend):
 
     def unload(self):
         """Unload any loaded module and shutdown the air runtime."""
+        # Release in reverse dependency order: every BO is allocated against
+        # the device, so dropping the device first leaves bo_instr holding a
+        # dangling handle. Linux XRT tolerates that; Windows XRT faults.
+        self.bo_instr = None
+        self.instr_v = None
         self.kernel = None
         self.context = None
         self.xclbin = None
         self.elf = None
         self.device = None
-        self.bo_instr = None
-        self.instr_v = None
         self.currently_loaded = False
