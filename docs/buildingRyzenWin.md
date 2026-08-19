@@ -206,20 +206,24 @@ pip install cmake ninja lit nanobind numpy
 
 MLIR-AIR consumes LLVM/MLIR as a prebuilt "distro wheel" rather than building it. Download the exact pinned version and unpack it:
 
+The pinned version lives in `utils\clone-llvm.sh`, as a `WHEEL_VERSION` built from the `commithash` and `DATETIME` lines above it. Read it without a shell:
+
 ```bat
 cd C:\dev\mlir-air
-
-REM Print the pinned version. `bash` ships with Git for Windows; the value is
-REM also derivable from the `commithash` and `DATETIME` lines at the top of the
-REM script, as 24.0.0.<DATETIME>+<first 8 chars of commithash>.
-bash utils\clone-llvm.sh --get-wheel-version
+python -c "import re;s=open('utils/clone-llvm.sh').read();g=lambda p:re.search(p,s).group(1);print(g(r'WHEEL_VERSION=(\S+)').replace('$DATETIME',g(r'DATETIME=(\d+)')).replace('${commithash:0:8}',g(r'commithash=(\w+)')[:8]))"
 REM e.g. 24.0.0.2026080106+56bcc187
+```
 
+Then download and unpack it:
+
+```bat
 mkdir my_install
 cd my_install
 pip download mlir==<version printed above> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
 python -c "import zipfile,glob;zipfile.ZipFile(glob.glob('mlir-*.whl')[0]).extractall('.')"
 ```
+
+(If you do have Git Bash handy, `bash utils\clone-llvm.sh --get-wheel-version` prints the same string.)
 
 If you already staged this wheel for a MLIR-AIE source build, check whether the version matches (`utils\clone-llvm.sh --get-wheel-version` in each repo) and reuse that tree rather than downloading 1 GB again.
 

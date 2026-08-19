@@ -11,8 +11,8 @@ import air._mlir_libs._air.runner as runner
 from air._mlir_libs._air import run_transform as run_transform
 
 import json
+import pathlib
 import tempfile
-import os
 
 __all__ = ["CostModel", "LINALG_TENSOR_TO_MEMREF_PIPELINE", "run_transform"]
 
@@ -57,7 +57,9 @@ class CostModel:
             with open(name) as f:
                 stats = f.read()
         finally:
-            os.unlink(name)
+            # missing_ok: if the pass raised before writing the file, a
+            # FileNotFoundError here would replace the failure worth reporting.
+            pathlib.Path(name).unlink(missing_ok=True)
         return stats
 
 
@@ -105,24 +107,27 @@ class Runner:
         json_tmpfile.write(str.encode(json.dumps(json_model)))
         json_tmpfile.close()
 
-        runner.run(
-            air_module,
-            json_tmpfile.name,
-            trace_filename,
-            function,
-            self.sim_granularity,
-            self.launch_iterations,
-            self.verbose,
-        )
-
-        os.unlink(json_tmpfile.name)
-
-        # return the trace and remove the temporary file
-        # if the user didn't provide an output filename
         return_trace = None
-        if trace_tmpfile:
-            with open(trace_tmpfile.name) as f:
-                return_trace = f.read()
-            os.unlink(trace_tmpfile.name)
+        try:
+            runner.run(
+                air_module,
+                json_tmpfile.name,
+                trace_filename,
+                function,
+                self.sim_granularity,
+                self.launch_iterations,
+                self.verbose,
+            )
+
+            # return the trace if the user didn't provide an output filename
+            if trace_tmpfile:
+                with open(trace_tmpfile.name) as f:
+                    return_trace = f.read()
+        finally:
+            # Clean up on the failure paths too, and missing_ok throughout: a
+            # cleanup error must not replace the failure worth reporting.
+            pathlib.Path(json_tmpfile.name).unlink(missing_ok=True)
+            if trace_tmpfile:
+                pathlib.Path(trace_tmpfile.name).unlink(missing_ok=True)
 
         return return_trace
