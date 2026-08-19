@@ -19,7 +19,6 @@ AIE_TARGET ?= aie2p
 # Device-dependent defaults
 ifeq ($(AIE_TARGET),aie2p)
   # NPU2: BF16 vectorized, 8-column config
-  TARGET ?= npu2
   DTYPE ?= bf16
   VECTOR_SIZE ?= 16
   HERD_X ?= 8
@@ -28,7 +27,6 @@ ifeq ($(AIE_TARGET),aie2p)
   N ?= 4194304
 else
   # NPU1: F32 scalar, 2-tile config
-  TARGET ?= npu1
   DTYPE ?= f32
   VECTOR_SIZE ?= 0
   HERD_X ?= 1
@@ -83,8 +81,13 @@ PERF_ITERS ?= 0
 
 TILE_FLAG = $(if $(TILE),--tile $(TILE),)
 VEC_FLAG = $(if $(API_VECTOR_SIZE),--vector-size $(API_VECTOR_SIZE),)
+# The device is auto-detected, not taken from AIE_TARGET: like the raw-bindings
+# version, one invocation has to run on whichever NPU is installed. AIE_TARGET
+# still selects the config knobs above. Set API_TARGET=npu1|npu2 to compile for
+# a generation that is not plugged in.
+API_TARGET ?= auto
 API_FLAGS = --shape $(SHAPE) --dtype $(API_DTYPE) $(TILE_FLAG) $(VEC_FLAG) \
-	--target $(TARGET) $(OUTPUT_FORMAT_FLAG) $(EXTRA_PY_FLAGS)
+	--target $(API_TARGET) $(OUTPUT_FORMAT_FLAG) $(EXTRA_PY_FLAGS)
 
 # Total element count, for the -S argument of test.exe.
 SHAPE_ELEMENTS = $(shell python3 -c "import math,sys;print(math.prod([int(x) for x in '$(SHAPE)'.split()]))")

@@ -8,5 +8,5 @@
 // RUN: mkdir -p api_test_peano_elf
 // RUN: cd api_test_peano_elf
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run AIE_TARGET=aie2p OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: make -f %S/Makefile run OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: PASS!

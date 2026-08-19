@@ -26,6 +26,7 @@ from ._trace import (
     PENDING_SYMBOLS,
     PENDING_TENSORS,
     Trace,
+    resolve_target,
     set_active_trace,
     set_target,
 )
@@ -93,7 +94,10 @@ class LaunchContext:
                 "opening the launch"
             )
 
-        self.target = target or self.target
+        # Resolved here rather than in __init__ so that declaring a launch does
+        # not shell out to xrt-smi; `target` is a concrete generation from this
+        # point on, and `self.target` is what the backend must compile for.
+        self.target = resolve_target(target or self.target)
 
         from air.ir import Context, InsertionPoint, Location, MemRefType, Module
         from air.dialects.func import FuncOp
@@ -253,7 +257,10 @@ class CompiledKernel:
 
 
 def launch(name="kernel", target=None):
-    """Open a launch; claims every tensor declared since the last launch."""
+    """Open a launch; claims every tensor declared since the last launch.
+
+    `target` names an NPU generation, or "auto"/None to use the installed one.
+    """
     return LaunchContext(name=name, target=target)
 
 

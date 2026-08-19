@@ -147,7 +147,16 @@ if __name__ == "__main__":
         metavar="EXTENT",
         help="override the physical herd shape (default: chosen per target)",
     )
-    parser.add_argument("--target", type=str, default="npu2", choices=["npu1", "npu2"])
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        choices=["auto", "npu1", "npu2"],
+        help="NPU generation to size the herd for and compile against "
+        "(default: auto, i.e. whichever one xrt-smi reports). Naming one "
+        "explicitly is for compiling off-device: a binary built for a "
+        "generation that is not installed still loads, and computes nothing.",
+    )
     parser.add_argument(
         "--output-format",
         type=str,
@@ -187,15 +196,18 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     if args.compile_only:
+        # Build first: it resolves --target auto, and the backend has to compile
+        # for the same generation the herd was sized for.
+        module = launch.build(target=args.target)
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="eltwise_add",
-            target_device=args.target,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
-        backend.compile(launch.build(target=args.target))
+        backend.compile(module)
         backend.unload()
         print("Compiled successfully.")
         print("Search space:", launch.search_space)
@@ -217,20 +229,25 @@ if __name__ == "__main__":
     # the same error statistics (report_precision) and the same PASS!/failed.
     # reporting that the lit harnesses grep for. air.api's job ends at
     # launch.build() -- what it hands over is an ordinary AIR module.
-    print(f"Eltwise add shape={tuple(args.shape)} dtype={args.dtype}")
+    # Build first: it resolves --target auto, and the runner has to compile for
+    # the same generation the herd was sized for.
+    module = launch.build(target=args.target)
+    print(
+        f"Eltwise add shape={tuple(args.shape)} dtype={args.dtype} on {launch.target}"
+    )
     runner = XRTRunner(
         verbose=args.verbose,
         omit_while_true_loop=False,
         output_format=args.output_format,
         instance_name="eltwise_add",
-        target_device=args.target,
+        target_device=launch.target,
         runtime_loop_tiling_sizes=[4, 4],
         report_precision=True,
         n_perf_iters=args.perf_iters,
     )
     raise SystemExit(
         runner.run_test(
-            launch.build(target=args.target),
+            module,
             inputs=[a_np, b_np],
             expected_outputs=[ref],
             rtol=rtol,

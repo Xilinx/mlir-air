@@ -79,7 +79,11 @@ PHYSICAL_HERD = {
     "npu1": {1: (4,), 2: (1, 4)},
     "npu2": {1: (8,), 2: (2, 4)},
 }
-DEFAULT_TARGET = "npu2"
+# Resolved against the installed NPU rather than pinned, so one traced program
+# runs on whichever generation is present. npu2 is only the answer when there is
+# no device to ask (compile-only on a host without XRT).
+DEFAULT_TARGET = "auto"
+NO_DEVICE_TARGET = "npu2"
 
 
 # L1 (tile-local) memory per compute tile. Same on AIE2 and AIE2p.
@@ -111,7 +115,27 @@ def set_target(target):
 
 
 def current_target():
-    return _CURRENT_TARGET or DEFAULT_TARGET
+    return _CURRENT_TARGET or resolve_target(DEFAULT_TARGET)
+
+
+def resolve_target(target):
+    """Map None/"auto" onto the NPU generation actually installed.
+
+    The herd sizes itself from this (PHYSICAL_HERD) and the backend compiles for
+    it, so both have to agree: a design sized for one generation and compiled
+    for the other places wrong, and a design compiled for a generation that is
+    not plugged in loads without error and computes nothing.
+    """
+    if target not in (None, "auto"):
+        if target not in PHYSICAL_HERD:
+            raise ValueError(
+                f"unknown target {target!r}; expected 'auto' or one of "
+                f"{sorted(PHYSICAL_HERD)}"
+            )
+        return target
+    from air.backend.xrt import detect_target_device
+
+    return detect_target_device(default=NO_DEVICE_TARGET)
 
 
 def active_trace():
@@ -360,7 +384,7 @@ class HerdContext:
                 f"air.api supports 1-D and 2-D herd grids; got {len(self.dims)}-D"
             )
         self.name = name or "herd_0"
-        self.target = target or current_target()
+        self.target = resolve_target(target) if target else current_target()
         self.grid = tuple(d.count for d in self.dims)
         self.tile_sizes = tuple(d.step for d in self.dims)
         self.physical = self._resolve_physical(shape)
@@ -369,7 +393,7 @@ class HerdContext:
         self._registered = False
 
     def _resolve_physical(self, shape):
-        by_rank = PHYSICAL_HERD.get(self.target, PHYSICAL_HERD[DEFAULT_TARGET])
+        by_rank = PHYSICAL_HERD[self.target]
         default = by_rank.get(len(self.grid))
         if default is None:
             raise NotImplementedError(
