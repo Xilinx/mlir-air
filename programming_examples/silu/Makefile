@@ -46,16 +46,5 @@ run:
 		${powershell} python3 ${srcdir}/silu.py $(PY_FLAGS) \
 		--perf-iters $(PERF_ITERS)
 
-# ---------------------------------------------------------------------------
-# The raw-bindings predecessor, kept until the npu2 A/B is done.
-# ---------------------------------------------------------------------------
-
-DIALECT_PY_FLAGS = --n $(N) --tile-n $(TILE_N) $(OUTPUT_FORMAT_FLAG)
-
-run-dialect:
-	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/silu_dialect.py $(DIALECT_PY_FLAGS)
-
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
