@@ -4,9 +4,15 @@
 # NumPy port of the bfp16ebs8 host helpers in mlir-aie
 # programming_examples/ml/block_datatypes/helper.h.
 #
-# These are used by the Python dev loop only. The authoritative correctness
-# gate for this example is mlir-aie's own bfp_test.cpp, which uses the C++
-# originals; see the Makefile's `verify` target.
+# These build the device operands: quantize the float inputs, then apply the
+# same sub-tile shuffle, so the buffers handed to the NPU are byte-for-byte
+# what mlir-aie's own bfp_test.cpp produces for the same shapes. They were
+# validated against the C++ originals on random and adversarial signed
+# wide-exponent data.
+#
+# The correctness gate itself lives in run.py: XRTRunner compares the device
+# output against a float reference computed from the PRE-quantization inputs,
+# so the check covers the input quantization too.
 #
 # bfp16ebs8 layout: every 8 consecutive scalars become 9 bytes -- one shared
 # 8-bit exponent (the block max) followed by eight 8-bit two's-complement
@@ -66,7 +72,13 @@ def float_to_bfp16ebs8(x):
 
 
 def bfp16ebs8_to_float(b):
-    """[..., W*9//8] uint8 -> [..., W] float32. Inverse of the above."""
+    """[..., W*9//8] uint8 -> [..., W] float32. Inverse of the above.
+
+    Mirrors bfp16ebs8ToFloat() in helper.h. Not needed to drive the device --
+    the output is a real float tensor -- but it is what makes the packer
+    round-trippable, and it is how a packed operand can be inspected when
+    debugging a layout problem.
+    """
     b = np.ascontiguousarray(b, dtype=np.uint8)
     lead, WB = b.shape[:-1], b.shape[-1]
     assert WB % BYTES_PER_BLOCK == 0, f"{WB} is not a multiple of {BYTES_PER_BLOCK}"
@@ -114,16 +126,3 @@ def shuffle_bfp16ebs8(mat, tile_h, tile_w_elems, unshuffle=False):
         )
     out = boxes.reshape(ty, tx, tile_h, tw).transpose(0, 2, 1, 3).reshape(H, MW)
     return np.ascontiguousarray(out)
-
-
-def nearly_equal(a, e, rel_tol=0.05, abs_tol=0.5):
-    """matmul_common::nearly_equal from mlir-aie basic/matrix_multiplication/common.h.
-
-    Note this is `|a-e| < max(abs_tol, rel_tol*(|a|+|e|))` -- a max, and the
-    norm is the SUM of magnitudes. It is NOT np.isclose's `atol + rtol*|e|`.
-    """
-    a = np.asarray(a, dtype=np.float64)
-    e = np.asarray(e, dtype=np.float64)
-    diff = np.abs(a - e)
-    norm = np.abs(a) + np.abs(e)
-    return (a == e) | (diff < np.maximum(abs_tol, rel_tol * norm))
