@@ -16,7 +16,7 @@
         <link rel="prev" href="../getting_started/">
       
       
-        <link rel="next" href="../buildingGPU/">
+        <link rel="next" href="../buildingRyzenWin/">
       
       
         
@@ -482,6 +482,8 @@
       
         
       
+        
+      
     
     
     
@@ -881,6 +883,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../buildingRyzenWin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ryzen AI (Windows)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1833,7 +1863,7 @@
 <li><strong>XRT</strong> (optional, required only for running on hardware) — see <a href="https://github.com/Xilinx/mlir-aie#install-the-xdna-driver-and-xrt">mlir-aie's XRT install instructions</a></li>
 </ul>
 <blockquote>
-<p>Windows wheels are also published. This guide covers Linux only; Windows users will need to translate the <code>source</code>/<code>export</code> commands to PowerShell equivalents.</p>
+<p>This guide covers Linux only. Windows wheels are also published — see <a href="../buildingRyzenWin/">Getting Started and Running on Windows Ryzen™ AI</a> for the native Windows setup, including <code>cmd.exe</code> and PowerShell equivalents of the <code>source</code>/<code>export</code> commands below.</p>
 </blockquote>
 <h3 id="steps">Steps<a class="headerlink" href="#steps" title="Permanent link">&para;</a></h3>
 <p>AIR supports multiple backends — AIE (NPU / Versal AI Engines), <a href="../buildingGPU/">GPU</a>, and <a href="../buildingVCK5000/">VCK5000</a>. Backend dependencies are exposed as pip <strong>extras</strong> so you only install what you need. For the AIE backend on Ryzen™ AI, use the <code>[aie]</code> extra; pip reads the pinned <code>mlir_aie==&lt;version&gt;</code> and <code>llvm-aie</code> from the wheel's metadata and resolves them from the additional <code>--find-links</code> pages.</p>
@@ -2196,13 +2226,13 @@ Once the prerequisites are set up, run the following commands to build MLIR-AIE.
         
         
           
-          <a href="../buildingGPU/" class="md-footer__link md-footer__link--next" aria-label="Next: GPU (Linux)">
+          <a href="../buildingRyzenWin/" class="md-footer__link md-footer__link--next" aria-label="Next: Ryzen AI (Windows)">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                GPU (Linux)
+                Ryzen AI (Windows)
               </div>
             </div>
             <div class="md-footer__button md-icon">

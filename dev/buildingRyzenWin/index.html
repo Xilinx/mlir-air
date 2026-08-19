@@ -1,0 +1,2183 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Compiler infrastructure for mapping AI workloads onto AMD NPUs and Versal AI Engine arrays through MLIR dialects.">
+      
+      
+        <meta name="author" content="AMD Advanced Micro Devices">
+      
+      
+      
+        <link rel="prev" href="../buildingRyzenLin/">
+      
+      
+        <link rel="next" href="../buildingGPU/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Ryzen AI (Windows) - MLIR-AIR</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/css/air.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#getting-started-and-running-on-windows-ryzentm-ai" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="MLIR-AIR" class="md-header__button md-logo" aria-label="MLIR-AIR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            MLIR-AIR
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Ryzen AI (Windows)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Xilinx/mlir-air" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Xilinx/mlir-air
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../getting_started/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../programming_guide/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Programming Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../programming_examples/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Programming Examples
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../llms/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  LLMs on NPU
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../ai_skills/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Official AI Skills
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../mlir_reference/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  MLIR Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../used_in/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Used in / Cited in
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="MLIR-AIR" class="md-nav__button md-logo" aria-label="MLIR-AIR" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    MLIR-AIR
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Xilinx/mlir-air" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Xilinx/mlir-air
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting_started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../buildingRyzenLin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ryzen AI (Linux)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ryzen AI (Windows)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ryzen AI (Windows)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-install-the-windows-development-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Install the Windows development environment
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Install the Windows development environment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-visual-studio-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Visual Studio components
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-install-the-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 Install the tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-update-and-verify-the-npu-driver" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Update and verify the NPU driver
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-install-the-windows-xrt-sdk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Install the Windows XRT SDK
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-install-prebuilt-wheels-recommended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Install prebuilt wheels (recommended)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Install prebuilt wheels (recommended)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#choosing-a-wheel-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a wheel release
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-running-a-quick-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Running a quick example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-build-from-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Build from source
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Build from source">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-stage-llvmmlir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 Stage LLVM/MLIR
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#63-configure-and-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.3 Configure and build
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#64-set-up-the-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.4 Set up the environment
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#65-testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.5 Testing
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../buildingGPU/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU (Linux)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Programming Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Programming Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../programming_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Programming Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRComputeModel/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRAsyncConcurrency/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Async Concurrency
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../GEMMCaseStudy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GEMM Case Study
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../programming_examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Programming Examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../llms/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLMs on NPU
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    LLMs on NPU
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../llms/perf-history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance History
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ai_skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Official AI Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MLIR Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    MLIR Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mlir_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MLIR Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRDialect/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AIR Dialect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRRtDialect/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AIRRt Dialect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRConversionPasses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conversion Passes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRTransformPasses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Transform Passes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AIRTransformOps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Transform Ops
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../used_in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Used in / Cited in
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-install-the-windows-development-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Install the Windows development environment
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Install the Windows development environment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-visual-studio-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Visual Studio components
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-install-the-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 Install the tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-update-and-verify-the-npu-driver" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Update and verify the NPU driver
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-install-the-windows-xrt-sdk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Install the Windows XRT SDK
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-install-prebuilt-wheels-recommended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Install prebuilt wheels (recommended)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Install prebuilt wheels (recommended)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#choosing-a-wheel-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a wheel release
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-running-a-quick-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Running a quick example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-build-from-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Build from source
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Build from source">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-stage-llvmmlir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 Stage LLVM/MLIR
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#63-configure-and-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.3 Configure and build
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#64-set-up-the-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.4 Set up the environment
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#65-testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.5 Testing
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="getting-started-and-running-on-windows-ryzentm-ai">Getting Started and Running on Windows Ryzen™ AI<a class="headerlink" href="#getting-started-and-running-on-windows-ryzentm-ai" title="Permanent link">&para;</a></h1>
+<p>This guide covers the <strong>native Windows</strong> setup for MLIR-AIR. It supports compiling AIR designs and running them on a Ryzen™ AI NPU entirely within Windows, without a POSIX environment. Users who prefer POSIX-style development can instead run WSL2 and follow the <a href="../buildingRyzenLin/">Linux guide</a>.</p>
+<p>Use an <strong>x64 Native Tools Command Prompt for Visual Studio</strong> (<code>cmd.exe</code>) for the commands in this guide. It provides MSVC, the linker, and the Windows SDK in one configured environment. Visual Studio and Visual Studio Build Tools both install that prompt and add a Start menu shortcut. PowerShell is also supported; the equivalent commands are collected in <a href="#addendum-a-powershell">Addendum A</a>.</p>
+<p>MLIR-AIR builds on <a href="https://github.com/Xilinx/mlir-aie">MLIR-AIE</a>, and the two share the same Windows host requirements. Where this guide and <a href="https://github.com/Xilinx/mlir-aie/blob/main/docs/buildHostWinNative.md">mlir-aie's native Windows guide</a> overlap, they are intended to agree; sections 1–3 below are the common host setup.</p>
+<blockquote>
+<p><strong>Python note:</strong> The Windows XRT SDK supplies <code>pyxrt</code> bindings for <strong>CPython 3.13</strong>. Use Python 3.13. Another Python version requires an XRT distribution with matching bindings. The whole stack will build and then fail at the final <code>import pyxrt</code> if the minor version does not match.</p>
+</blockquote>
+<h2 id="contents">Contents<a class="headerlink" href="#contents" title="Permanent link">&para;</a></h2>
+<ol>
+<li><a href="#1-install-the-windows-development-environment">Install the Windows development environment</a></li>
+<li><a href="#2-update-and-verify-the-npu-driver">Update and verify the NPU driver</a></li>
+<li><a href="#3-install-the-windows-xrt-sdk">Install the Windows XRT SDK</a></li>
+<li><a href="#4-install-prebuilt-wheels-recommended">Install prebuilt wheels (recommended)</a></li>
+<li><a href="#5-running-a-quick-example">Running a quick example</a></li>
+<li><a href="#6-build-from-source">Build from source</a></li>
+<li><a href="#addendum-a-powershell">Addendum A: PowerShell</a></li>
+<li><a href="#addendum-b-windows-differences-and-limitations">Addendum B: Windows differences and limitations</a></li>
+</ol>
+<h2 id="1-install-the-windows-development-environment">1. Install the Windows development environment<a class="headerlink" href="#1-install-the-windows-development-environment" title="Permanent link">&para;</a></h2>
+<ul>
+<li>A Windows 11 system with a supported Ryzen™ AI / XDNA™ NPU.</li>
+<li><strong>Visual Studio 2026</strong> (preferred) or <strong>Visual Studio 2022</strong> — the full IDE or the matching <strong>Build Tools</strong> package. Only needed for the source build in section 6; the wheel path in section 4 does not require a compiler.</li>
+<li><strong>Python 3.13</strong> (see the note above).</li>
+<li><strong>Git for Windows</strong>.</li>
+</ul>
+<h3 id="11-visual-studio-components">1.1 Visual Studio components<a class="headerlink" href="#11-visual-studio-components" title="Permanent link">&para;</a></h3>
+<p>Select <strong>Desktop development with C++</strong>, and confirm these individual components:</p>
+<ul>
+<li>MSVC x64/x86 build tools</li>
+<li>Windows SDK</li>
+<li>C++ CMake tools for Windows</li>
+<li>Git for Windows, unless Git is installed separately</li>
+</ul>
+<h3 id="12-install-the-tools">1.2 Install the tools<a class="headerlink" href="#12-install-the-tools" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1">REM Choose one: the full IDE or the matching Build Tools package</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>winget install -e --id Microsoft.VisualStudio.Community
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1">REM winget install -e --id Microsoft.VisualStudio.BuildTools</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>winget install -e --id Python.Python.3.13
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>winget install -e --id Git.Git
+</code></pre></div>
+<p>CMake and Ninja do <strong>not</strong> need a system-wide install; both are pulled into the Python environment in sections 4 and 6.</p>
+<h2 id="2-update-and-verify-the-npu-driver">2. Update and verify the NPU driver<a class="headerlink" href="#2-update-and-verify-the-npu-driver" title="Permanent link">&para;</a></h2>
+<p>Install the latest Ryzen™ AI / XDNA™ driver, then verify the NPU is visible:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="s2">"C:\Windows\System32\AMD\xrt-smi.exe"</span> examine
+</code></pre></div>
+<p>NPU driver <strong>32.0.20101.3760</strong> (XRT <strong>2.21.0</strong>) is the minimum supported on Windows.</p>
+<p>Two things worth knowing when checking a driver version:</p>
+<ul>
+<li>AMD publishes two version series that are not comparable — <code>32.0.203.x</code> (Ryzen AI direct) and <code>32.0.201xx.xxxx</code> (WHQL/OEM). <strong>Compare the XRT version instead</strong>; it is a single monotonic series and is what actually matters here.</li>
+<li>The driver version reported by <code>xrt-smi</code> can be confirmed independently through PnP, which is useful when an installer claims success but changed nothing:</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">Get-CimInstance</span> <span class="n">Win32_PnPSignedDriver</span> <span class="p">|</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  <span class="nb">Where-Object</span> <span class="p">{</span> <span class="nv">$_</span><span class="p">.</span><span class="n">DeviceName</span> <span class="o">-match</span> <span class="s1">'NPU'</span> <span class="p">}</span> <span class="p">|</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  <span class="nb">Select-Object</span> <span class="n">DeviceName</span><span class="p">,</span> <span class="n">DriverVersion</span><span class="p">,</span> <span class="n">DriverDate</span>
+</code></pre></div>
+<h2 id="3-install-the-windows-xrt-sdk">3. Install the Windows XRT SDK<a class="headerlink" href="#3-install-the-windows-xrt-sdk" title="Permanent link">&para;</a></h2>
+<p>The XRT SDK provides the headers, import libraries, tools, and <code>pyxrt</code> bindings. Pair the SDK with the <strong>driver's</strong> XRT version, so install the driver first.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>https://github.com/Xilinx/XRT/releases/download/2.21.75/xrt_windows_sdk.zip
+</code></pre></div>
+<p>Extract the archive so that its <code>xrt_sdk\xrt</code> directory becomes:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>C:\Xilinx\XRT
+</code></pre></div>
+<p><code>C:\Xilinx\XRT\python\pyxrt.pyd</code> should now exist. <code>C:\Xilinx\XRT</code> is the canonical location; a different path works as long as the environment variables in the following sections point at it.</p>
+<p>To confirm which CPython ABI the bindings were built against, read the binary rather than trusting a label:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>python -c <span class="s2">"import re,pathlib;print(re.search(rb'python(\d)(\d{2})\.dll',pathlib.Path(r'C:\Xilinx\XRT\python\pyxrt.pyd').read_bytes(),re.I).groups())"</span>
+</code></pre></div>
+<h2 id="4-install-prebuilt-wheels-recommended">4. Install prebuilt wheels (recommended)<a class="headerlink" href="#4-install-prebuilt-wheels-recommended" title="Permanent link">&para;</a></h2>
+<p>This is the fastest path and needs no compiler, no CMake, and no LLVM clone. Use it unless you intend to modify MLIR-AIR itself.</p>
+<p>MLIR-AIR publishes <strong>Windows AMD64</strong> wheels. Backend dependencies are exposed as pip <strong>extras</strong>; for the AIE backend use the <code>[aie]</code> extra, which pins the exact <code>mlir_aie</code> version this AIR wheel was tested against and pulls <code>llvm-aie</code> (the Peano backend compiler).</p>
+<ol>
+<li><strong>Create a virtual environment</strong> with Python 3.13:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>python -m venv airenv
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>airenv\Scripts\activate.bat
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>python -m pip install --upgrade pip
+</code></pre></div>
+<ol>
+<li><strong>Install MLIR-AIR with the AIE backend:</strong></li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>pip install <span class="s2">"mlir_air[aie]"</span> <span class="se">^</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="se"> </span> -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels <span class="se">^</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="se"> </span> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4 <span class="se">^</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="se"> </span> -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+</code></pre></div>
+<ol>
+<li><strong>Set up the environment.</strong> Save this as <code>air_env.cmd</code> next to your venv and <code>call</code> it in each new prompt:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="p">@</span><span class="k">echo</span> off
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="k">call</span> <span class="s2">"</span><span class="nv">%~dp0</span><span class="s2">airenv\Scripts\activate.bat"</span> <span class="p">||</span> <span class="k">exit</span> /b 1
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">set</span> <span class="s2">"SP=</span><span class="nv">%VIRTUAL_ENV%</span><span class="s2">\Lib\site-packages"</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="k">set</span> <span class="s2">"MLIR_AIR_INSTALL_DIR=</span><span class="nv">%SP%</span><span class="s2">\mlir_air"</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="k">set</span> <span class="s2">"MLIR_AIE_INSTALL_DIR=</span><span class="nv">%SP%</span><span class="s2">\mlir_aie"</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="k">set</span> <span class="s2">"PEANO_INSTALL_DIR=</span><span class="nv">%SP%</span><span class="s2">\llvm-aie"</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="k">set</span> <span class="s2">"XRT_ROOT=C:\Xilinx\XRT"</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="k">set</span> <span class="s2">"PATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\bin;</span><span class="nv">%MLIR_AIE_INSTALL_DIR%</span><span class="s2">\bin;</span><span class="nv">%XRT_ROOT%</span><span class="s2">;</span><span class="nv">%XRT_ROOT%</span><span class="s2">\lib;C:\Windows\System32\AMD;</span><span class="nv">%PATH%</span><span class="s2">"</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="k">set</span> <span class="s2">"PYTHONPATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\python;</span><span class="nv">%MLIR_AIE_INSTALL_DIR%</span><span class="s2">\python;</span><span class="nv">%XRT_ROOT%</span><span class="s2">\python"</span>
+</code></pre></div>
+<blockquote>
+<p><strong><code>C:\Windows\System32\AMD</code> on <code>PATH</code> is not optional.</strong> MLIR-AIR selects the target device by running <code>xrt-smi examine</code> and matching the reported NPU model. If <code>xrt-smi</code> cannot be found the lookup fails silently and falls back to <strong>npu1</strong>, so an npu2 part (Strix, Strix Halo, Krackan) is compiled for the wrong target. Alternatively, pass <code>target_device="npu2"</code> explicitly to <code>XRTBackend</code> / <code>XRTRunner</code>.</p>
+</blockquote>
+<ol>
+<li><strong>Verify the install:</strong></li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">call</span> air_env.cmd
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>air-opt --version
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>python -c <span class="s2">"import air, pyxrt; print('ok')"</span>
+</code></pre></div>
+<h3 id="choosing-a-wheel-release">Choosing a wheel release<a class="headerlink" href="#choosing-a-wheel-release" title="Permanent link">&para;</a></h3>
+<p>Both RTTI and no-RTTI variants are published so downstream projects can match their LLVM build configuration.</p>
+<table>
+<thead>
+<tr>
+<th>Tag</th>
+<th>When to use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels"><code>latest-air-wheels</code></a></td>
+<td>Default. RTTI enabled. Use this for standalone development; the command above targets this tag.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Xilinx/mlir-air/releases/tag/latest-air-wheels-no-rtti"><code>latest-air-wheels-no-rtti</code></a></td>
+<td>For integrating into a downstream project whose LLVM is built with <code>-DLLVM_ENABLE_RTTI=OFF</code>. Point both find-links at the no-RTTI pages so pip resolves the matching <code>mlir_aie</code>.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Xilinx/mlir-air/releases"><code>v*.*.*</code></a></td>
+<td>Pinned tagged release, for reproducible builds.</td>
+</tr>
+</tbody>
+</table>
+<p>When mixing wheels, all three (<code>mlir</code>, <code>mlir_aie</code>, <code>mlir_air</code>) must agree on RTTI.</p>
+<h2 id="5-running-a-quick-example">5. Running a quick example<a class="headerlink" href="#5-running-a-quick-example" title="Permanent link">&para;</a></h2>
+<p>The element-wise add example stages data L3 → L2 → L1 across a two-core herd and checks the result against a NumPy reference. It exercises the whole toolchain: the Python builder, <code>aircc</code>, Peano, xclbin packaging, and XRT dispatch.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">call</span> air_env.cmd
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">cd</span> programming_examples\eltwise_add_with_l2
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="k">mkdir</span> build_peano
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="k">cd</span> build_peano
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>python ..\eltwise_add.py --output-format xclbin
+</code></pre></div>
+<p>A final <code>PASS!</code> confirms the toolchain, XRT installation, and NPU are working together.</p>
+<p>On npu2 parts you can also exercise the full-ELF output path, which is npu2-only:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="k">cd</span> programming_examples\matrix_scalar_add\single_core_dma
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="k">mkdir</span> build_peano
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="k">cd</span> build_peano
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>python ..\single_core_dma.py --output-format elf
+</code></pre></div>
+<blockquote>
+<p><strong>Most examples ship a <code>Makefile</code>, and Windows has no <code>make</code>.</strong> The Makefiles are thin wrappers — the <code>run</code> target is a <code>mkdir</code> plus the <code>python</code> invocation shown above, so it is easy to run by hand. <code>make</code> from MSYS2 or Chocolatey also works if you prefer. See <a href="#addendum-b-windows-differences-and-limitations">Addendum B</a>.</p>
+</blockquote>
+<p>Explore <code>programming_examples\</code> for many more designs: GEMM, element-wise operations, softmax, RMSNorm, RoPE, FlashAttention, and end-to-end LLM examples.</p>
+<h2 id="6-build-from-source">6. Build from source<a class="headerlink" href="#6-build-from-source" title="Permanent link">&para;</a></h2>
+<p>Build from source only to modify MLIR-AIR itself. LLVM/MLIR and MLIR-AIE come from prebuilt wheels, so this compiles MLIR-AIR alone — a few minutes on a modern laptop, not an LLVM-sized build.</p>
+<h3 id="61-prerequisites">6.1 Prerequisites<a class="headerlink" href="#61-prerequisites" title="Permanent link">&para;</a></h3>
+<p>Sections 1–3 above, plus a <strong>native Windows MLIR-AIE setup</strong>, which supplies three things the build needs: the <code>ironenv</code> Python environment, the <code>cmake\modulesXilinx</code> CMake modules, and the <code>mlir_aie</code> package that <code>AIE_DIR</code> points at. Follow <a href="https://github.com/Xilinx/mlir-aie/blob/main/docs/buildHostWinNative.md">mlir-aie's native Windows guide</a>, which reduces to:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>git clone --recurse-submodules https://github.com/Xilinx/mlir-aie.git C:\dev\mlir-aie
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="k">cd</span> C:\dev\mlir-aie
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>python utils\iron_setup.py --dev
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="k">call</span> .\iron_env.cmd
+</code></pre></div>
+<p><code>--dev</code> installs the pinned CMake, Ninja, and lit into <code>ironenv</code>. Reusing that environment keeps MLIR-AIR's tool versions aligned with MLIR-AIE's.</p>
+<p>If you would rather not clone MLIR-AIE, you need the CMake modules and the <code>mlir_aie</code> wheel separately:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>git clone --depth 1 https://github.com/Xilinx/cmakeModules.git C:\dev\cmakeModules
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>pip install cmake ninja lit nanobind numpy
+</code></pre></div>
+<h3 id="62-stage-llvmmlir">6.2 Stage LLVM/MLIR<a class="headerlink" href="#62-stage-llvmmlir" title="Permanent link">&para;</a></h3>
+<p>MLIR-AIR consumes LLVM/MLIR as a prebuilt "distro wheel" rather than building it. Download the exact pinned version and unpack it:</p>
+<p>The pinned version lives in <code>utils\clone-llvm.sh</code>, as a <code>WHEEL_VERSION</code> built from the <code>commithash</code> and <code>DATETIME</code> lines above it. Read it without a shell:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">cd</span> C:\dev\mlir-air
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>python -c <span class="s2">"import re;s=open('utils/clone-llvm.sh').read();g=lambda p:re.search(p,s).group(1);print(g(r'WHEEL_VERSION=(\S+)').replace('$DATETIME',g(r'DATETIME=(\d+)')).replace('${commithash:0:8}',g(r'commithash=(\w+)')[:8]))"</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="c1">REM e.g. 24.0.0.2026080106+56bcc187</span>
+</code></pre></div>
+<p>Then download and unpack it:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="k">mkdir</span> my_install
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="k">cd</span> my_install
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>pip download mlir==<span class="p">&lt;</span>version printed above<span class="p">&gt;</span> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>python -c <span class="s2">"import zipfile,glob;zipfile.ZipFile(glob.glob('mlir-*.whl')[0]).extractall('.')"</span>
+</code></pre></div>
+<p>(If you do have Git Bash handy, <code>bash utils\clone-llvm.sh --get-wheel-version</code> prints the same string.)</p>
+<p>If you already staged this wheel for a MLIR-AIE source build, check whether the version matches (<code>utils\clone-llvm.sh --get-wheel-version</code> in each repo) and reuse that tree rather than downloading 1 GB again.</p>
+<p>See <a href="#addendum-b-windows-differences-and-limitations">Addendum B</a> for two post-extraction fixups that may be needed.</p>
+<h3 id="63-configure-and-build">6.3 Configure and build<a class="headerlink" href="#63-configure-and-build" title="Permanent link">&para;</a></h3>
+<p><strong>Do not use <code>utils\build-mlir-air-using-wheels.sh</code> or <code>utils\build-mlir-air-xrt.sh</code> on Windows.</strong> Both auto-detect a linker with <code>if [ -x "$(command -v lld)" ]; then CMAKE_ARGS="$CMAKE_ARGS -DLLVM_USE_LINKER=lld"</code>. Peano and the Visual Studio Clang components both put <code>lld</code> on <code>PATH</code>, LLVM then probes the GCC/Clang-style <code>-fuse-ld=lld</code> flag, and MSVC rejects it with a configure-time fatal error. Invoke CMake directly instead, as MLIR-AIR's own Windows CI does.</p>
+<p>Save this as <code>configure.cmd</code> and adjust the paths:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="p">@</span><span class="k">echo</span> off
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="k">call</span> <span class="s2">"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"</span> -arch=x64 -host_arch=x64 <span class="p">&gt;</span>nul <span class="mi">2</span><span class="p">&gt;&amp;</span><span class="mi">1</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="k">call</span> <span class="s2">"C:\dev\mlir-aie\iron_env.cmd"</span> <span class="p">||</span> <span class="k">exit</span> /b 1
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="k">set</span> <span class="s2">"AIR_SRC=C:/dev/mlir-air"</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="k">set</span> <span class="s2">"MLIR_DISTRO=C:/dev/mlir-air/my_install/mlir"</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="k">set</span> <span class="s2">"AIE_PKG=C:/dev/mlir-aie/ironenv/Lib/site-packages/mlir_aie"</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="k">if</span> <span class="k">not</span> <span class="k">exist</span> <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">/build"</span> <span class="k">mkdir</span> <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">\build"</span>
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a><span class="k">cd</span> /d <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">\build"</span>
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>cmake <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">"</span> <span class="se">^</span>
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a><span class="se"> </span> -G Ninja <span class="se">^</span>
+<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a><span class="se"> </span> -DCMAKE_BUILD_TYPE=Release <span class="se">^</span>
+<a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a><span class="se"> </span> -DCMAKE_MODULE_PATH=C:/dev/mlir-aie/cmake/modulesXilinx <span class="se">^</span>
+<a id="__codelineno-16-16" name="__codelineno-16-16" href="#__codelineno-16-16"></a><span class="se"> </span> -DMLIR_DIR=<span class="nv">%MLIR_DISTRO%</span>/lib/cmake/mlir <span class="se">^</span>
+<a id="__codelineno-16-17" name="__codelineno-16-17" href="#__codelineno-16-17"></a><span class="se"> </span> -DLLVM_DIR=<span class="nv">%MLIR_DISTRO%</span>/lib/cmake/llvm <span class="se">^</span>
+<a id="__codelineno-16-18" name="__codelineno-16-18" href="#__codelineno-16-18"></a><span class="se"> </span> -DAIE_DIR=<span class="nv">%AIE_PKG%</span>/lib/cmake/aie <span class="se">^</span>
+<a id="__codelineno-16-19" name="__codelineno-16-19" href="#__codelineno-16-19"></a><span class="se"> </span> -DPEANO_INSTALL_DIR=C:/dev/mlir-aie/ironenv/Lib/site-packages/llvm-aie <span class="se">^</span>
+<a id="__codelineno-16-20" name="__codelineno-16-20" href="#__codelineno-16-20"></a><span class="se"> </span> -DXRT_ROOT=C:/Xilinx/XRT <span class="se">^</span>
+<a id="__codelineno-16-21" name="__codelineno-16-21" href="#__codelineno-16-21"></a><span class="se"> </span> -DLLVM_EXTERNAL_LIT=C:/dev/mlir-aie/ironenv/Scripts/lit.exe <span class="se">^</span>
+<a id="__codelineno-16-22" name="__codelineno-16-22" href="#__codelineno-16-22"></a><span class="se"> </span> -DPython3_EXECUTABLE=C:/dev/mlir-aie/ironenv/Scripts/python.exe <span class="se">^</span>
+<a id="__codelineno-16-23" name="__codelineno-16-23" href="#__codelineno-16-23"></a><span class="se"> </span> -DCMAKE_INSTALL_PREFIX=<span class="nv">%AIR_SRC%</span>/install
+</code></pre></div>
+<p>Every path handed to CMake uses forward slashes. Three configure lines are worth checking before building:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>-- Found xrt_coreutil
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>-- Using AIEConfig.cmake in: .../mlir_aie/lib/cmake/aie
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>-- Skipping e2e tests on Windows (runtime libraries not built)
+</code></pre></div>
+<p>The third is expected — see <a href="#addendum-b-windows-differences-and-limitations">Addendum B</a>. Reports that Vitis, <code>xchesscc</code>, AIETools, and LibXAIE were not found are also expected and harmless: Windows uses Peano exclusively.</p>
+<p>Then build and install:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="k">cd</span> C:\dev\mlir-air\build
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>ninja install
+</code></pre></div>
+<h3 id="64-set-up-the-environment">6.4 Set up the environment<a class="headerlink" href="#64-set-up-the-environment" title="Permanent link">&para;</a></h3>
+<p>Layer the freshly built install on top of the MLIR-AIE environment. Save as <code>air_env.cmd</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="p">@</span><span class="k">echo</span> off
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="k">call</span> <span class="s2">"C:\dev\mlir-aie\iron_env.cmd"</span> <span class="p">||</span> <span class="k">exit</span> /b 1
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="k">set</span> <span class="s2">"MLIR_AIR_INSTALL_DIR=C:\dev\mlir-air\install"</span>
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="k">set</span> <span class="s2">"PATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\bin;</span><span class="nv">%PATH%</span><span class="s2">"</span>
+<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="k">set</span> <span class="s2">"PYTHONPATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\python;</span><span class="nv">%PYTHONPATH%</span><span class="s2">"</span>
+</code></pre></div>
+<p><code>iron_env.cmd</code> already adds XRT, <code>pyxrt</code> on <code>PYTHONPATH</code>, and <code>C:\Windows\System32\AMD</code>, so device detection works. Section 5's examples now run against your build.</p>
+<blockquote>
+<p>Because <code>iron_env.cmd</code> points <code>MLIR_AIE_INSTALL_DIR</code> at the <strong>wheel</strong>, <code>PYTHONPATH</code> order decides which MLIR-AIR you get. Prepending your install directory, as above, ensures a source build shadows any <code>mlir_air</code> wheel that happens to be installed in the same environment.</p>
+</blockquote>
+<h3 id="65-testing">6.5 Testing<a class="headerlink" href="#65-testing" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="k">cd</span> C:\dev\mlir-air\build
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>ninja check-air-cpp
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>ninja check-air-mlir
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>ninja check-air-python
+</code></pre></div>
+<p><code>check-air-cpp</code> and <code>check-air-python</code> pass on Windows. <code>check-air-mlir</code> currently has known failures confined to the <code>Util/Runner</code> and <code>Util/Channel</code> suites; see <a href="#addendum-b-windows-differences-and-limitations">Addendum B</a>.</p>
+<p>The hardware end-to-end suites (<code>check-air-e2e*</code>) are <strong>not available on Windows</strong> — they depend on the host runtime libraries, which are not built. Run designs under <code>programming_examples\</code> instead.</p>
+<hr />
+<p><a id="addendum-a-powershell"></a></p>
+<details>
+<summary><strong>Addendum A: PowerShell</strong></summary>
+
+Visual Studio installs a **Developer PowerShell for VS** shortcut providing the same compiler environment as the Native Tools `cmd.exe` prompt. PowerShell can also be started from an existing Native Tools prompt with `pwsh`, inheriting the compiler environment.
+
+The toolchain is identical; only shell syntax differs. `cmd.exe` uses `%NAME%` and `call`; PowerShell uses `$env:NAME` and `&`, dot-sourcing (`. .\script.ps1`) to keep changes in the current scope.
+
+**Wheel install (section 4):**
+
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="n">python</span> <span class="n">-m</span> <span class="n">venv</span> <span class="n">airenv</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="p">.\</span><span class="n">airenv</span><span class="p">\</span><span class="n">Scripts</span><span class="p">\</span><span class="n">Activate</span><span class="p">.</span><span class="n">ps1</span>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="n">python</span> <span class="n">-m</span> <span class="n">pip</span> <span class="n">install</span> <span class="p">-</span><span class="n">-upgrade</span> <span class="n">pip</span>
+<a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="n">pip</span> <span class="n">install</span> <span class="s2">"mlir_air[aie]"</span> <span class="p">`</span>
+<a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>  <span class="o">-f</span> <span class="n">https</span><span class="p">://</span><span class="n">github</span><span class="p">.</span><span class="n">com</span><span class="p">/</span><span class="n">Xilinx</span><span class="p">/</span><span class="n">mlir-air</span><span class="p">/</span><span class="n">releases</span><span class="p">/</span><span class="n">expanded_assets</span><span class="p">/</span><span class="n">latest-air-wheels</span> <span class="p">`</span>
+<a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>  <span class="o">-f</span> <span class="n">https</span><span class="p">://</span><span class="n">github</span><span class="p">.</span><span class="n">com</span><span class="p">/</span><span class="n">Xilinx</span><span class="p">/</span><span class="n">mlir-aie</span><span class="p">/</span><span class="n">releases</span><span class="p">/</span><span class="n">expanded_assets</span><span class="p">/</span><span class="n">latest-wheels</span><span class="p">-</span><span class="n">4</span> <span class="p">`</span>
+<a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>  <span class="o">-f</span> <span class="n">https</span><span class="p">://</span><span class="n">github</span><span class="p">.</span><span class="n">com</span><span class="p">/</span><span class="n">Xilinx</span><span class="p">/</span><span class="n">llvm-aie</span><span class="p">/</span><span class="n">releases</span><span class="p">/</span><span class="n">expanded_assets</span><span class="p">/</span><span class="n">nightly</span>
+</code></pre></div>
+
+**Environment (section 4 step 3), as `air_env.ps1` — dot-source it, the leading dot is required:**
+
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="p">.</span> <span class="p">.\</span><span class="n">airenv</span><span class="p">\</span><span class="n">Scripts</span><span class="p">\</span><span class="n">Activate</span><span class="p">.</span><span class="n">ps1</span>
+<a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="nv">$SP</span> <span class="p">=</span> <span class="nb">Join-Path</span> <span class="nv">$env:VIRTUAL_ENV</span> <span class="s1">'Lib\site-packages'</span>
+<a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="nv">$env:MLIR_AIR_INSTALL_DIR</span> <span class="p">=</span> <span class="nb">Join-Path</span> <span class="nv">$SP</span> <span class="s1">'mlir_air'</span>
+<a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="nv">$env:MLIR_AIE_INSTALL_DIR</span> <span class="p">=</span> <span class="nb">Join-Path</span> <span class="nv">$SP</span> <span class="s1">'mlir_aie'</span>
+<a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a><span class="nv">$env:PEANO_INSTALL_DIR</span>    <span class="p">=</span> <span class="nb">Join-Path</span> <span class="nv">$SP</span> <span class="s1">'llvm-aie'</span>
+<a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a><span class="nv">$env:XRT_ROOT</span>             <span class="p">=</span> <span class="s1">'C:\Xilinx\XRT'</span>
+<a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a><span class="nv">$env:PATH</span> <span class="p">=</span> <span class="s2">"$env:MLIR_AIR_INSTALL_DIR\bin;$env:MLIR_AIE_INSTALL_DIR\bin;"</span> <span class="p">+</span>
+<a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a>            <span class="s2">"$env:XRT_ROOT;$env:XRT_ROOT\lib;C:\Windows\System32\AMD;$env:PATH"</span>
+<a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a><span class="nv">$env:PYTHONPATH</span> <span class="p">=</span> <span class="s2">"$env:MLIR_AIR_INSTALL_DIR\python;$env:MLIR_AIE_INSTALL_DIR\python;$env:XRT_ROOT\python"</span>
+</code></pre></div>
+
+**Source build (section 6):** dot-source MLIR-AIE's `iron_env.ps1` instead of `iron_env.cmd`, and use backticks for line continuation in the `cmake` invocation:
+
+<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="p">.</span> <span class="n">C</span><span class="p">:\</span><span class="n">dev</span><span class="p">\</span><span class="n">mlir-aie</span><span class="p">\</span><span class="n">iron_env</span><span class="p">.</span><span class="n">ps1</span>
+<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="n">cmake</span> <span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-air</span> <span class="p">`</span>
+<a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>  <span class="n">-G</span> <span class="n">Ninja</span> <span class="p">`</span>
+<a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a>  <span class="n">-DCMAKE_BUILD_TYPE</span><span class="p">=</span><span class="n">Release</span> <span class="p">`</span>
+<a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>  <span class="n">-DCMAKE_MODULE_PATH</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-aie</span><span class="p">/</span><span class="n">cmake</span><span class="p">/</span><span class="n">modulesXilinx</span> <span class="p">`</span>
+<a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a>  <span class="n">-DMLIR_DIR</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-air</span><span class="p">/</span><span class="n">my_install</span><span class="p">/</span><span class="n">mlir</span><span class="p">/</span><span class="n">lib</span><span class="p">/</span><span class="n">cmake</span><span class="p">/</span><span class="n">mlir</span> <span class="p">`</span>
+<a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a>  <span class="n">-DLLVM_DIR</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-air</span><span class="p">/</span><span class="n">my_install</span><span class="p">/</span><span class="n">mlir</span><span class="p">/</span><span class="n">lib</span><span class="p">/</span><span class="n">cmake</span><span class="p">/</span><span class="n">llvm</span> <span class="p">`</span>
+<a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a>  <span class="n">-DAIE_DIR</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-aie</span><span class="p">/</span><span class="n">ironenv</span><span class="p">/</span><span class="n">Lib</span><span class="p">/</span><span class="n">site-packages</span><span class="p">/</span><span class="n">mlir_aie</span><span class="p">/</span><span class="n">lib</span><span class="p">/</span><span class="n">cmake</span><span class="p">/</span><span class="n">aie</span> <span class="p">`</span>
+<a id="__codelineno-23-9" name="__codelineno-23-9" href="#__codelineno-23-9"></a>  <span class="n">-DPEANO_INSTALL_DIR</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-aie</span><span class="p">/</span><span class="n">ironenv</span><span class="p">/</span><span class="n">Lib</span><span class="p">/</span><span class="n">site-packages</span><span class="p">/</span><span class="n">llvm-aie</span> <span class="p">`</span>
+<a id="__codelineno-23-10" name="__codelineno-23-10" href="#__codelineno-23-10"></a>  <span class="n">-DXRT_ROOT</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">Xilinx</span><span class="p">/</span><span class="n">XRT</span> <span class="p">`</span>
+<a id="__codelineno-23-11" name="__codelineno-23-11" href="#__codelineno-23-11"></a>  <span class="n">-DLLVM_EXTERNAL_LIT</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-aie</span><span class="p">/</span><span class="n">ironenv</span><span class="p">/</span><span class="n">Scripts</span><span class="p">/</span><span class="n">lit</span><span class="p">.</span><span class="n">exe</span> <span class="p">`</span>
+<a id="__codelineno-23-12" name="__codelineno-23-12" href="#__codelineno-23-12"></a>  <span class="n">-DPython3_EXECUTABLE</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-aie</span><span class="p">/</span><span class="n">ironenv</span><span class="p">/</span><span class="n">Scripts</span><span class="p">/</span><span class="n">python</span><span class="p">.</span><span class="n">exe</span> <span class="p">`</span>
+<a id="__codelineno-23-13" name="__codelineno-23-13" href="#__codelineno-23-13"></a>  <span class="n">-DCMAKE_INSTALL_PREFIX</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-air</span><span class="p">/</span><span class="n">install</span>
+</code></pre></div>
+
+The MSVC environment must still be present — start from a Developer PowerShell, or run `VsDevCmd.bat` in a `cmd.exe` prompt and launch `pwsh` from it.
+
+### Conda or Miniforge Python
+
+A dedicated Conda or Miniforge environment works with the SDK when it uses Python 3.13. Activate it before running MLIR-AIE's `iron_setup.py`, which uses the active interpreter when creating `ironenv`.
+
+</details>
+
+<p><a id="addendum-b-windows-differences-and-limitations"></a></p>
+<details>
+<summary><strong>Addendum B: Windows differences and limitations</strong></summary>
+
+### Not built on Windows
+
+`runtime_lib` (the `airhost` / `aircpu` host runtimes) depends on POSIX APIs — `dlopen`, `mmap`, `ioctl` — and on the Linux `amdair` kernel driver, so CMake skips it on Windows. Consequently:
+
+- The `check-air-e2e*` targets and the `test/xrt` suite do not exist in a Windows build. `programming_examples\` is the end-to-end path.
+- `Util/Channel` tests in `check-air-mlir` fail because they link a host executable against that runtime.
+
+### Peano only, no Chess
+
+Vitis and `xchesscc` are unavailable on Windows, so Peano is the only core compiler. CMake reporting `Unable to find xchesscc` / `Could NOT find Vitis` / `Could NOT find AIETools` is expected. Chess-gated LIT tests report *unsupported* rather than failing, and examples should be run with `PEANO_INSTALL_DIR` set.
+
+### `check-air-mlir` failures
+
+`Util/Runner` (the `air-runner` performance simulator) currently produces different output on Windows than the tests expect, and a handful of its tests use the `|&` shell operator, which lit's internal shell does not parse on Windows. These are open issues, not setup problems — the rest of the suite passes.
+
+### No `make`
+
+Most `programming_examples` ship Makefiles, and Windows has no `make`. The recipes are thin: `run` is a `mkdir` plus a `python` invocation. Read the Makefile and run the `python` line directly, or install `make` from MSYS2 or Chocolatey. Examples that compile an AIE kernel first (the GEMM examples, for instance) additionally invoke Peano's `clang++` with `--target=aie2p-none-unknown-elf` — that command is also in the Makefile and can be run as-is.
+
+LIT tests driven by Makefiles are skipped automatically on Windows.
+
+### Wrong device auto-detected
+
+`XRTBackend` runs `xrt-smi examine` and matches the reported model name against its device table. If `xrt-smi` is not on `PATH`, detection fails **silently** and falls back to `npu1`. Keep `C:\Windows\System32\AMD` on `PATH`, or pass `target_device="npu2"` explicitly. A design compiled for the wrong target typically shows up as a runtime timeout rather than a clear error.
+
+### Staged LLVM wheel fixups
+
+Two problems can appear after extracting the MLIR distro wheel (section 6.2):
+
+- **Hardcoded DIA SDK path.** `LLVMExports.cmake` inside the wheel can carry an absolute `diaguids.lib` path from the machine that built it. If CMake fails importing LLVM targets over a missing `diaguids.lib`, MLIR-AIE ships a fixup that rewrites it to your Visual Studio installation:
+
+  <div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>python -c <span class="s2">"import sys;sys.path.insert(0,r'C:\dev\mlir-aie\utils\mlir_aie_wheels\scripts');from pathlib import Path;import download_mlir;download_mlir._fixup_llvm_diaguids(Path(r'C:\dev\mlir-air\my_install\mlir'))"</span>
+</code></pre></div>
+
+- **Future-dated timestamps.** Files extracted from these wheels can carry mtimes in the future, which makes Ninja re-run configuration indefinitely. The symptom is a hang, not an error. Stamp them into the past:
+
+  <div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>python -c <span class="s2">"import os;[os.utime(os.path.join(r,f),(315600000,315600000)) for r,_,fs in os.walk(r'C:\dev\mlir-air\my_install\mlir') for f in fs]"</span>
+</code></pre></div>
+
+Both are avoided by reusing a tree that a MLIR-AIE build already staged and patched.
+
+### Endpoint security
+
+Endpoint protection has been observed quarantining individual executables out of the extracted LLVM wheel, which surfaces later as a confusing CMake error. A quick assertion after extraction:
+
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="k">if</span> <span class="k">not</span> <span class="k">exist</span> my_install\mlir\bin\llvm-debuginfod.exe <span class="k">echo</span> POSSIBLE AV QUARANTINE
+</code></pre></div>
+
+</details>
+
+<hr />
+<p align="center">Copyright&copy; 2026 Advanced Micro Devices, Inc.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../buildingRyzenLin/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Ryzen AI (Linux)">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Ryzen AI (Linux)
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../buildingGPU/" class="md-footer__link md-footer__link--next" aria-label="Next: GPU (Linux)">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                GPU (Linux)
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://github.com/Xilinx/mlir-air" target="_blank" rel="noopener" title="mlir-air on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.indexes", "navigation.top", "navigation.footer", "search.suggest", "search.highlight", "content.tabs.link", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "default": "dev", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
