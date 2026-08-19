@@ -83,7 +83,7 @@ EXAMPLES = [
         "category": "Linear Algebra",
         "name": "AXPY",
         "path": "axpy",
-        "datatypes": "bf16",
+        "datatypes": "bf16, f32",
     },
     {
         "category": "Element-wise",

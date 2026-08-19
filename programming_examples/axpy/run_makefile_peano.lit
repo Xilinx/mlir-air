@@ -1,10 +1,20 @@
 // (c) Copyright 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
+// Runs on whichever NPU is installed: both dtypes, plus a forced scalar bf16
+// loop and an off-default alpha and tile. The herd sizes itself for the
+// detected generation, so one lit covers both.
+//
+// DTYPE=f32 runs scalar by default -- the chained f32 multiply-add does not
+// legalize at any vector width. See axpy.py.
+//
 // REQUIRES: ryzen_ai, peano
 //
 // RUN: mkdir -p test_peano
 // RUN: cd test_peano
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR DTYPE=f32 | FileCheck %s
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR VECTOR_SIZE=0 | FileCheck %s
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR ALPHA=-0.5 TILE_N=2048 | FileCheck %s
 // CHECK: PASS!
