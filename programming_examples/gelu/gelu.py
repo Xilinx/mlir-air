@@ -1,280 +1,232 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Vectorized GELU (Tanh Approximation) Example
+"""GELU, written with the air.api DSL.
 
-Implements element-wise GELU on a 1D input [N] using the standard
-tanh approximation:
-  GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+Computes out = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))) over a 1-D [N] bf16 vector.
 
-Uses the hardware tanh intrinsic (__builtin_aie2p_tanh) directly,
-matching the IRON project's GELU implementation. No exp or division
-needed.
+The whole compute body is one line:
 
-Uses a 1x2 AIE herd with DMA transfers between L3 and L1 memory.
-Computation is vectorized using vector.transfer_read/write.
+    out_buf[:] = ops.gelu(x_buf[:])
+
+`ops.gelu` is a composition over `ops.tanh`, written the same way the
+raw-bindings kernel it replaces wrote it. Operand order differs in
+places, but only where multiplication is commutative, which is exact in IEEE --
+so the emitted arithmetic is the predecessor's, op for op.
+
+**npu2 only, and bf16 only.** Both limits are inherited, not introduced:
+
+  - On npu1, bf16 `math.tanh` lowers to a C call via `emitc.include`, which the
+    peano path cannot translate ("missing LLVMTranslationDialectInterface
+    registration ... for op: emitc.include"). The predecessor fails identically
+    on npu1; its lit was already `REQUIRES: ryzen_ai_npu2`.
+  - f32 `math.tanh` does not legalize on either generation, at any vector width
+    including scalar ("unable to legalize instruction: G_FTANH"). So there is no
+    f32 path to offer, unlike the other air.api examples.
+  - Scalar bf16 tanh does not legalize either ("s16 G_FTANH"), so unlike every
+    other air.api example there is no scalar fallback to drop to. The builder
+    rejects `--vector-size 0`, and rejects a tile that is not a multiple of the
+    vector width, since that would reach the same scalar path indirectly.
 """
 
 import argparse
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith, math as math_dialect
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+# Two tiles live in L1 and the pipeline ping-pongs them, so the figure that has
+# to fit a 64 KB compute tile is about twice what is declared.
+L1_BYTES = 65536
+LIVE_BUFFERS = 2
+PINGPONG = 2
 
-SQRT_2_OVER_PI = 0.7978845608  # sqrt(2/pi)
-GELU_BETA = 0.044715
 
-
-@module_builder
-def build_module(n, tile_n, np_dtype_in, vector_size=16, herd_x=1, herd_y=None):
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    # herd_x / herd_y were previously hardcoded (num_tiles=2 -> 1x2 herd).
-    # Exposed as tunable knobs (type-(a) change) so the herd can be swept.
-    # Default herd_x=1, herd_y=2 preserves the original 1x2 herd (lit test).
-    if herd_y is None:
-        herd_y = 2
-    total_tiles = herd_x * herd_y
-    assert n % (tile_n * total_tiles) == 0
-    assert tile_n % vector_size == 0
-    VECTOR_SIZE = vector_size
-    index_type = IndexType.get()
-
-    l3memrefTy = MemRefType.get([n], xrt_dtype_in)
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
-
-    vecTy = VectorType.get([VECTOR_SIZE], xrt_dtype_in)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
-    def gelu(arg0, arg1):
-
-        @herd(name="herd_0", sizes=[herd_x, herd_y], operands=[arg0, arg1])
-        def herd_body(_tx, _ty, _sx, _sy, _l3_in, _l3_out):
-            l1_in = AllocOp(l1MemrefTy, [], [])
-            l1_out = AllocOp(l1MemrefTy, [], [])
-
-            for _l_ivx in range_(0, n, tile_n * total_tiles):
-                # linear tile index = tx * herd_y + ty; offset = iv + lin*tile_n
-                offset_map = AffineMap.get(
-                    0,
-                    3,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineExpr.get_add(
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(1),
-                                        AffineConstantExpr.get(herd_y),
-                                    ),
-                                    AffineSymbolExpr.get(2),
-                                ),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _tx, _ty])
-
-                dma_memcpy_nd(
-                    l1_in,
-                    _l3_in,
-                    src_offsets=[offset],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
-
-                c0 = ConstantOp(index_type, 0)
-                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
-                cTileN = ConstantOp(index_type, tile_n)
-                cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
-                half_const = arith.ConstantOp(xrt_dtype_in, 0.5)
-                one_const = arith.ConstantOp(xrt_dtype_in, 1.0)
-                beta_const = arith.ConstantOp(xrt_dtype_in, GELU_BETA)
-                s2opi_const = arith.ConstantOp(xrt_dtype_in, SQRT_2_OVER_PI)
-                v_half = BroadcastOp(vecTy, half_const)
-                v_one = BroadcastOp(vecTy, one_const)
-                v_beta = BroadcastOp(vecTy, beta_const)
-                v_s2opi = BroadcastOp(vecTy, s2opi_const)
-
-                for j in range_(c0, cTileN, cVecSize):
-                    sub_in = subview(l1_in.result, [j], [VECTOR_SIZE], [1])
-                    sub_out = subview(l1_out.result, [j], [VECTOR_SIZE], [1])
-
-                    v_x = transfer_read(vecTy, sub_in, [c0], identity_map, cst0, [True])
-
-                    # GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-                    # Uses hardware tanh intrinsic — no exp or division needed.
-                    v_x2 = arith.mulf(v_x, v_x)
-                    v_x3 = arith.mulf(v_x, v_x2)
-                    v_beta_x3 = arith.mulf(v_x3, v_beta.result)
-                    v_inner = arith.addf(v_x, v_beta_x3)
-                    v_scaled = arith.mulf(v_inner, v_s2opi.result)
-                    v_tanh = math_dialect.tanh(v_scaled)
-                    v_one_plus_tanh = arith.addf(v_tanh, v_one.result)
-                    v_half_x = arith.mulf(v_x, v_half.result)
-                    v_gelu = arith.mulf(v_half_x, v_one_plus_tanh)
-
-                    transfer_write(None, v_gelu, sub_out, [c0], identity_map, [True])
-                    yield_([])
-
-                dma_memcpy_nd(
-                    _l3_out,
-                    l1_out,
-                    dst_offsets=[offset],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_in)
-                DeallocOp(l1_out)
-                yield_([])
+def max_tile():
+    """Largest tile whose ping-ponged bf16 buffers fit L1."""
+    return L1_BYTES // (LIVE_BUFFERS * PINGPONG * bf16.itemsize)
 
 
 def gelu_reference(x):
-    """Full-output FP32 GELU (tanh approximation) reference.
-
-    GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-
-    This is the *tanh* approximation (GELUTanh), matching the NPU kernel and
-    the SmolVLA SigLIP vision MLP activation — NOT the exact erf-GELU. bf16
-    inputs are upcast to f32, the whole formula is evaluated in f32, and the
-    result is cast back to bf16 — the standard way a GPU/HF bf16 elementwise
-    op is verified (isolates the NPU quantization error, not bf16-vs-fp32).
-    """
+    """GELU reference, evaluated in fp32 and rounded back to the input dtype."""
     xf = x.astype(np.float32)
-    inner = SQRT_2_OVER_PI * (xf + GELU_BETA * xf * xf * xf)
-    return (0.5 * xf * (1.0 + np.tanh(inner))).astype(x.dtype)
+    return (
+        0.5
+        * xf
+        * (1.0 + np.tanh(ops.GELU_SQRT_2_OVER_PI * (xf + ops.GELU_BETA * xf * xf * xf)))
+    ).astype(x.dtype)
+
+
+def build_gelu(n, tile_n, herd_shape=None, vector=None):
+    """Build a GELU launch over a 1-D vector of length n."""
+    if n % tile_n:
+        raise ValueError(f"n ({n}) must be divisible by tile_n ({tile_n})")
+    # math.tanh exists only as a vector lowering: scalar bf16 tanh fails with
+    # "unable to legalize instruction: s16 G_FTANH" on npu2 too. That makes the
+    # emitter's usual scalar fallback a trap here rather than a safety net, so
+    # both routes into it are refused up front.
+    width = bf16.default_vector_width if vector is None else int(vector)
+    if width == 0:
+        raise ValueError(
+            "this kernel has no scalar form: math.tanh only lowers as a vector "
+            "op, so --vector-size 0 cannot compile"
+        )
+    if tile_n % width:
+        raise ValueError(
+            f"tile_n {tile_n} must be a multiple of the vector width {width}; "
+            "otherwise the emitter falls back to a scalar loop, and math.tanh "
+            "has no scalar lowering"
+        )
+    if tile_n > max_tile():
+        raise ValueError(
+            f"tile_n {tile_n} does not fit L1: the ping-ponged buffers of that "
+            f"size exceed {L1_BYTES // 1024} KB (max tile is {max_tile()})"
+        )
+
+    x = air.tensor([n], bf16)
+    out = air.tensor([n], bf16)
+
+    tile = air.symbol(hint=tile_n, name="tile_n")
+
+    with air.launch(name="gelu") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(0, n, tile), shape=herd_shape) as h:
+
+                @h.body
+                def _(tx):
+                    tn = h.tile_sizes[0]
+                    window = slice(tx * tn, tx * tn + tn)
+
+                    x_buf = air.alloc([tn], bf16, scope=h.private(), vector=vector)
+                    out_buf = air.alloc([tn], bf16, scope=h.private(), vector=vector)
+
+                    air.ops.load(x_buf, x[window])
+
+                    out_buf[:] = ops.gelu(x_buf[:])
+
+                    air.ops.store(out_buf, out[window])
+
+    return launch
 
 
 if __name__ == "__main__":
-    N = 65536
-    TILE_N = 1024
-    INPUT_DATATYPE = bfloat16
-
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the GELU example",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
-    parser.add_argument("--n", type=int, default=N, help="Total number of elements")
-    parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
+    parser = argparse.ArgumentParser(description="air.api GELU example")
+    parser.add_argument("--n", type=int, default=65536, help="vector length")
+    parser.add_argument("--tile-n", type=int, default=1024, help="tile size")
     parser.add_argument(
-        "--vector-size", type=int, default=16, help="Vector size for SIMD operations"
-    )
-    parser.add_argument(
-        "--herd-x",
-        type=int,
-        default=1,
-        help="Herd x dimension (AIE columns, default: 1)",
-    )
-    parser.add_argument(
-        "--herd-y",
+        "--vector-size",
         type=int,
         default=None,
-        help="Herd y dimension (AIE rows, default: 2 — the original 1x2 herd)",
+        dest="vector",
+        help="compute vector width in lanes (default: 16, the bf16 width). "
+        "0 is rejected: math.tanh has no scalar lowering.",
+    )
+    parser.add_argument(
+        "--herd-shape",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="EXTENT",
+        help="override the physical herd shape (default: chosen per target)",
+    )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        choices=["auto", "npu1", "npu2"],
+        help="NPU generation to size the herd for and compile against "
+        "(default: auto). This kernel needs npu2: bf16 math.tanh does not "
+        "compile through the peano path on npu1.",
+    )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        default="xclbin",
+        choices=["xclbin", "elf"],
+        dest="output_format",
+        help="binary format aircc produces (default: xclbin)",
     )
     parser.add_argument(
         "--perf-iters",
         type=int,
         default=0,
         dest="perf_iters",
-        help="If >0, time the kernel over this many iters (after warmup) and "
-        "print Latency in addition to the correctness check",
+        help="if >0, time the kernel over this many iterations (after warmup) "
+        "and print Latency alongside the correctness check",
     )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-    )
+    parser.add_argument("--print-ir", action="store_true")
+    parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
     if args.perf_iters < 0:
         parser.error("--perf-iters must be >= 0")
 
-    mlir_module = build_module(
-        args.n,
-        args.tile_n,
-        INPUT_DATATYPE,
-        args.vector_size,
-        herd_x=args.herd_x,
-        herd_y=args.herd_y,
+    launch = build_gelu(
+        n=args.n,
+        tile_n=args.tile_n,
+        herd_shape=args.herd_shape,
+        vector=args.vector,
     )
-    if args.print_module_only:
-        print(mlir_module)
-        exit(0)
 
-    # Use N(0,1) (matching the GPU/HF activation test standard) so the check
-    # sees a realistic signed distribution. Generate in float32 to avoid a
-    # large f64 intermediate.
-    rng = np.random.default_rng(0)
-    input_a = rng.standard_normal(args.n, dtype=np.float32).astype(INPUT_DATATYPE)
+    if args.print_ir:
+        print(launch.mlir())
+        raise SystemExit(0)
 
-    # Reference: full-output FP32 GELU-tanh (bf16 in upcast to f32, tanh
-    # approximation, cast back to bf16) — the bf16-rounded reference a GPU/HF
-    # GELUTanh op is verified against. The NPU kernel uses the hardware
-    # __builtin_aie2p_tanh; the bf16-tanh-LUT deviation is exactly this measures.
-    expected = gelu_reference(input_a)
-
-    if args.compile_mode == "compile-and-run":
-        # bf16 GELU-tanh: rtol = canonical bf16 1.6e-2; atol = 5e-2 sized to
-        # the measured worst-case single-element error (NPU2: abs_err max
-        # ~1.56e-2). GELU chains a hardware tanh LUT plus several bf16
-        # roundings (the bf16 "one transcendental" tier, like SiLU-and-Mul),
-        # but its worst element is much smaller than SiLU's (0.125) because the
-        # tanh argument is scaled down; atol=5e-2 matches the RoPE/RMSNorm/
-        # EltwiseAdd convention and clears the worst element with margin. The
-        # mean error (mean_rel_L1 ~8.4e-3) sits inside rtol.
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="gelu",
-            runtime_loop_tiling_sizes=[4, 4],
-            report_precision=True,
-            n_perf_iters=args.perf_iters,
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                expected_outputs=[expected],
-                rtol=1.6e-2,
-                atol=5e-2,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
+    if args.compile_only:
+        # Build first: it resolves --target auto, and the backend has to compile
+        # for the same generation the herd was sized for.
+        module = launch.build(target=args.target)
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            instance_name="gelu",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
-        module_function = backend.compile(mlir_module)
+        backend.compile(module)
         backend.unload()
+        print("Compiled successfully.")
+        print("Search space:", launch.search_space)
+        raise SystemExit(0)
+
+    rng = np.random.default_rng(0)
+    x_np = rng.standard_normal(args.n, dtype=np.float32).astype(bfloat16)
+
+    # The predecessor's tolerance, carried unchanged, and already justified there
+    # from measurement: rtol is the canonical bf16 1.6e-2, and atol=5e-2 is
+    # sized to the measured worst-case element on npu2 (abs_err max ~1.56e-2),
+    # which a chained tanh LUT plus several bf16 roundings produces. The
+    # predecessor already compared the full array, so this is unchanged.
+    ref = gelu_reference(x_np)
+    rtol, atol = 1.6e-2, 5e-2
+
+    module = launch.build(target=args.target)
+    print(f"GELU n={args.n} tile_n={args.tile_n} bf16 on {launch.target}")
+    runner = XRTRunner(
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="gelu",
+        target_device=launch.target,
+        runtime_loop_tiling_sizes=[4, 4],
+        report_precision=True,
+        n_perf_iters=args.perf_iters,
+    )
+    raise SystemExit(
+        runner.run_test(
+            module,
+            inputs=[x_np],
+            expected_outputs=[ref],
+            rtol=rtol,
+            atol=atol,
+        )
+    )

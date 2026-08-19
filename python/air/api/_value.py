@@ -195,7 +195,7 @@ class BufferExpr:
     __slots__ = ("kind", "op", "args", "buffer", "scalar")
 
     def __init__(self, kind, op=None, args=(), buffer=None, scalar=None):
-        self.kind = kind  # "buffer" | "scalar" | "binary"
+        self.kind = kind  # "buffer" | "scalar" | "unary" | "binary"
         self.op = op
         self.args = tuple(args)
         self.buffer = buffer
@@ -264,4 +264,6 @@ class BufferExpr:
             return repr(self.buffer)
         if self.kind == "scalar":
             return repr(self.scalar)
+        if self.kind == "unary":
+            return f"{self.op}({self.args[0]!r})"
         return f"({self.args[0]!r} {self.op} {self.args[1]!r})"

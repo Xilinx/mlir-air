@@ -1,210 +1,229 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Vectorized SiLU (Sigmoid Linear Unit) Example
+"""SiLU, written with the air.api DSL.
 
-Implements element-wise SiLU on a 1D input [N]:
-  SiLU(x) = x * sigmoid(x) = x * 0.5 * (tanh(x/2) + 1)
+Computes out = x * sigmoid(x), also known as swish over a 1-D [N] bf16 vector.
 
-Uses the tanh-based sigmoid identity to avoid exp and division, which
-have precision and correctness issues on AIE2P. The hardware tanh
-intrinsic (__builtin_aie2p_tanh) is used directly.
+The whole compute body is one line:
 
-Uses a 1x2 AIE herd with DMA transfers between L3 and L1 memory.
-Computation is vectorized using vector.transfer_read/write.
+    out_buf[:] = ops.silu(x_buf[:])
+
+`ops.silu` is a composition over `ops.tanh`, written the same way the
+raw-bindings kernel it replaces wrote it -- via tanh rather than exp, which avoids a
+division that bf16 cannot vectorise. Operand order differs in
+places, but only where multiplication is commutative, which is exact in IEEE --
+so the emitted arithmetic is the predecessor's, op for op.
+
+**npu2 only, and bf16 only.** Both limits are inherited, not introduced:
+
+  - On npu1, bf16 `math.tanh` lowers to a C call via `emitc.include`, which the
+    peano path cannot translate ("missing LLVMTranslationDialectInterface
+    registration ... for op: emitc.include"). The predecessor fails identically
+    on npu1; its lit was already `REQUIRES: ryzen_ai_npu2`.
+  - f32 `math.tanh` does not legalize on either generation, at any vector width
+    including scalar ("unable to legalize instruction: G_FTANH"). So there is no
+    f32 path to offer, unlike the other air.api examples.
+  - Scalar bf16 tanh does not legalize either ("s16 G_FTANH"), so unlike every
+    other air.api example there is no scalar fallback to drop to. The builder
+    rejects `--vector-size 0`, and rejects a tile that is not a multiple of the
+    vector width, since that would reach the same scalar path indirectly.
 """
 
 import argparse
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith, math as math_dialect
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+# Two tiles live in L1 and the pipeline ping-pongs them, so the figure that has
+# to fit a 64 KB compute tile is about twice what is declared.
+L1_BYTES = 65536
+LIVE_BUFFERS = 2
+PINGPONG = 2
 
 
-@module_builder
-def build_module(n, tile_n, np_dtype_in, vector_size=16):
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    num_tiles = 2
-    assert n % (tile_n * num_tiles) == 0
-    assert tile_n % vector_size == 0
-    VECTOR_SIZE = vector_size
-    index_type = IndexType.get()
+def max_tile():
+    """Largest tile whose ping-ponged bf16 buffers fit L1."""
+    return L1_BYTES // (LIVE_BUFFERS * PINGPONG * bf16.itemsize)
 
-    l3memrefTy = MemRefType.get([n], xrt_dtype_in)
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
 
-    vecTy = VectorType.get([VECTOR_SIZE], xrt_dtype_in)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+def silu_reference(x):
+    """SiLU reference, evaluated in fp32 and rounded back to the input dtype."""
+    xf = x.astype(np.float32)
+    return (xf * 0.5 * (np.tanh(xf / 2.0) + 1.0)).astype(x.dtype)
 
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
-    def silu(arg0, arg1):
 
-        @herd(name="herd_0", sizes=[1, num_tiles], operands=[arg0, arg1])
-        def herd_body(_tx, _ty, _sx, _sy, _l3_in, _l3_out):
-            l1_in = AllocOp(l1MemrefTy, [], [])
-            l1_out = AllocOp(l1MemrefTy, [], [])
+def build_silu(n, tile_n, herd_shape=None, vector=None):
+    """Build a SiLU launch over a 1-D vector of length n."""
+    if n % tile_n:
+        raise ValueError(f"n ({n}) must be divisible by tile_n ({tile_n})")
+    # math.tanh exists only as a vector lowering: scalar bf16 tanh fails with
+    # "unable to legalize instruction: s16 G_FTANH" on npu2 too. That makes the
+    # emitter's usual scalar fallback a trap here rather than a safety net, so
+    # both routes into it are refused up front.
+    width = bf16.default_vector_width if vector is None else int(vector)
+    if width == 0:
+        raise ValueError(
+            "this kernel has no scalar form: math.tanh only lowers as a vector "
+            "op, so --vector-size 0 cannot compile"
+        )
+    if tile_n % width:
+        raise ValueError(
+            f"tile_n {tile_n} must be a multiple of the vector width {width}; "
+            "otherwise the emitter falls back to a scalar loop, and math.tanh "
+            "has no scalar lowering"
+        )
+    if tile_n > max_tile():
+        raise ValueError(
+            f"tile_n {tile_n} does not fit L1: the ping-ponged buffers of that "
+            f"size exceed {L1_BYTES // 1024} KB (max tile is {max_tile()})"
+        )
 
-            for _l_ivx in range_(0, n, tile_n * num_tiles):
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+    x = air.tensor([n], bf16)
+    out = air.tensor([n], bf16)
 
-                dma_memcpy_nd(
-                    l1_in,
-                    _l3_in,
-                    src_offsets=[offset],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
+    tile = air.symbol(hint=tile_n, name="tile_n")
 
-                c0 = ConstantOp(index_type, 0)
-                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
-                cTileN = ConstantOp(index_type, tile_n)
-                cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
-                half_const = arith.ConstantOp(xrt_dtype_in, 0.5)
-                one_const = arith.ConstantOp(xrt_dtype_in, 1.0)
-                v_half = BroadcastOp(vecTy, half_const)
-                v_one = BroadcastOp(vecTy, one_const)
+    with air.launch(name="silu") as launch:
 
-                for j in range_(c0, cTileN, cVecSize):
-                    sub_in = subview(l1_in.result, [j], [VECTOR_SIZE], [1])
-                    sub_out = subview(l1_out.result, [j], [VECTOR_SIZE], [1])
+        @launch.body
+        def _():
+            with air.herd(range(0, n, tile), shape=herd_shape) as h:
 
-                    v_x = transfer_read(vecTy, sub_in, [c0], identity_map, cst0, [True])
+                @h.body
+                def _(tx):
+                    tn = h.tile_sizes[0]
+                    window = slice(tx * tn, tx * tn + tn)
 
-                    # SiLU(x) = x * sigmoid(x)
-                    #         = x * 0.5 * (tanh(x/2) + 1)
-                    # Uses hardware tanh intrinsic — no exp or division needed.
-                    v_half_x = arith.mulf(v_x, v_half.result)
-                    v_tanh = math_dialect.tanh(v_half_x)
-                    v_tanh_plus_one = arith.addf(v_tanh, v_one.result)
-                    v_sigmoid = arith.mulf(v_tanh_plus_one, v_half.result)
-                    v_silu = arith.mulf(v_x, v_sigmoid)
+                    x_buf = air.alloc([tn], bf16, scope=h.private(), vector=vector)
+                    out_buf = air.alloc([tn], bf16, scope=h.private(), vector=vector)
 
-                    transfer_write(None, v_silu, sub_out, [c0], identity_map, [True])
-                    yield_([])
+                    air.ops.load(x_buf, x[window])
 
-                dma_memcpy_nd(
-                    _l3_out,
-                    l1_out,
-                    dst_offsets=[offset],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_in)
-                DeallocOp(l1_out)
-                yield_([])
+                    out_buf[:] = ops.silu(x_buf[:])
+
+                    air.ops.store(out_buf, out[window])
+
+    return launch
 
 
 if __name__ == "__main__":
-    N = 65536
-    TILE_N = 1024
-    INPUT_DATATYPE = bfloat16
-
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the SiLU example",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
-    parser.add_argument("--n", type=int, default=N, help="Total number of elements")
-    parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
+    parser = argparse.ArgumentParser(description="air.api SiLU example")
+    parser.add_argument("--n", type=int, default=65536, help="vector length")
+    parser.add_argument("--tile-n", type=int, default=1024, help="tile size")
     parser.add_argument(
-        "--vector-size", type=int, default=16, help="Vector size for SIMD operations"
+        "--vector-size",
+        type=int,
+        default=None,
+        dest="vector",
+        help="compute vector width in lanes (default: 16, the bf16 width). "
+        "0 is rejected: math.tanh has no scalar lowering.",
     )
     parser.add_argument(
-        "--compile-mode",
+        "--herd-shape",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="EXTENT",
+        help="override the physical herd shape (default: chosen per target)",
+    )
+    parser.add_argument(
+        "--target",
         type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
+        default="auto",
+        choices=["auto", "npu1", "npu2"],
+        help="NPU generation to size the herd for and compile against "
+        "(default: auto). This kernel needs npu2: bf16 math.tanh does not "
+        "compile through the peano path on npu1.",
     )
     parser.add_argument(
         "--output-format",
         type=str,
-        choices=["xclbin", "elf"],
         default="xclbin",
+        choices=["xclbin", "elf"],
         dest="output_format",
+        help="binary format aircc produces (default: xclbin)",
     )
+    parser.add_argument(
+        "--perf-iters",
+        type=int,
+        default=0,
+        dest="perf_iters",
+        help="if >0, time the kernel over this many iterations (after warmup) "
+        "and print Latency alongside the correctness check",
+    )
+    parser.add_argument("--print-ir", action="store_true")
+    parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    mlir_module = build_module(args.n, args.tile_n, INPUT_DATATYPE, args.vector_size)
-    if args.print_module_only:
-        print(mlir_module)
-        exit(0)
+    if args.perf_iters < 0:
+        parser.error("--perf-iters must be >= 0")
 
-    np.random.seed(0)
-    input_a = np.random.uniform(-4.0, 4.0, args.n).astype(INPUT_DATATYPE)
+    launch = build_silu(
+        n=args.n,
+        tile_n=args.tile_n,
+        herd_shape=args.herd_shape,
+        vector=args.vector,
+    )
 
-    if args.compile_mode == "compile-and-run":
-        num_samples = 100
-        sampled_indices = np.vstack([np.random.randint(0, args.n, num_samples)])
+    if args.print_ir:
+        print(launch.mlir())
+        raise SystemExit(0)
 
-        # SiLU reference using tanh-based sigmoid (matches hardware computation)
-        def silu_ref(x):
-            x_f32 = x.astype(np.float32)
-            return x_f32 * 0.5 * (np.tanh(x_f32 / 2.0) + 1.0)
-
-        sampled_values = np.array(
-            [silu_ref(input_a[i]) for i in zip(*sampled_indices)],
-            dtype=INPUT_DATATYPE,
-        )
-        sampled_data = {
-            "shape": (args.n,),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
-
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="silu",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=1e-1,
-                atol=5e-2,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
+    if args.compile_only:
+        # Build first: it resolves --target auto, and the backend has to compile
+        # for the same generation the herd was sized for.
+        module = launch.build(target=args.target)
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            instance_name="silu",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
-        module_function = backend.compile(mlir_module)
+        backend.compile(module)
         backend.unload()
+        print("Compiled successfully.")
+        print("Search space:", launch.search_space)
+        raise SystemExit(0)
+
+    rng = np.random.default_rng(0)
+    x_np = rng.standard_normal(args.n, dtype=np.float32).astype(bfloat16)
+
+    # The predecessor's tolerance, carried unchanged and applied to the whole
+    # array instead of the 100 random indices it sampled. rtol=1e-1 is loose
+    # for an activation, but it is the bar this kernel was accepted against and
+    # tightening it would need a measurement on npu2, which this example cannot
+    # be run on from an npu1 host.
+    ref = silu_reference(x_np)
+    rtol, atol = 1e-1, 5e-2
+
+    module = launch.build(target=args.target)
+    print(f"SiLU n={args.n} tile_n={args.tile_n} bf16 on {launch.target}")
+    runner = XRTRunner(
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="silu",
+        target_device=launch.target,
+        runtime_loop_tiling_sizes=[4, 4],
+        report_precision=True,
+        n_perf_iters=args.perf_iters,
+    )
+    raise SystemExit(
+        runner.run_test(
+            module,
+            inputs=[x_np],
+            expected_outputs=[ref],
+            rtol=rtol,
+            atol=atol,
+        )
+    )
