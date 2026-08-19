@@ -1,0 +1,18 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// QWEN3-8B Q4NX prefill compile-only smoke test: builds the prefill ELFs
+// (rms_qkv_qknorm_rope + flash attention + o_res_norm + gate + up + swiglu +
+// down_add + lm_head_gemv) through the AIR -> AIE -> aiecc -> Peano pipeline.
+// No NPU dispatch and no weight data (weights are runtime BOs), so this is the
+// signal CI can always give without the external Q4NX weights. Pairs with
+// run_npu2_compile.lit (the decode half) and run_npu2_verify.lit (end-to-end
+// top-k vs HF bf16).
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_npu2_compile_prefill
+// RUN: cd test_npu2_compile_prefill
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: Compilation passed.

@@ -4,12 +4,14 @@
 # Qwen3-8B Q4NX end-to-end decode on NPU2 (MLIR-AIR), FLM-faithful.
 #
 # Same driver contract as the other llms/ examples (run/profile/ask drive the inference
-# driver; compile/compile-decode are weight-free builds). Where it differs from them is
-# `verify`: see the comment on that target.
+# driver; compile/compile-decode are weight-free builds).
 #
 # ONE dispatch = 36 decoder layers + the untied LM head, reading and appending a shared per-layer
 # KV cache. Drives the shared fused_decode engine (DECODE_MODEL=qwen3-8b): 2-norm pre-norm,
-# dual-theta RoPE + qk-norm, GELU-tanh GLU, DH=256 GQA2 attention.
+# single-theta RoPE + qk-norm, SwiGLU, DH=128 GQA4 attention.
+#
+# The weights are split over several BOs (DECODE_WGROUP below): 36 layers is 4.04 GiB
+# and a shim BD's byte offset is a uint32, so one BO only reaches 4 GiB.
 #
 # The KV seed + greedy first-token golden come from a numpy reference forward
 # (qwen3_8b_q4nx_weights.forward_prompt); the fused per-token decode then generates.
@@ -41,7 +43,7 @@ export Q4NX_CACHE_DIR := $(srcdir)/$(BUILD_DIR)/q4nx_kernel_cache_$(CTX)
 
 # Per-kernel -O is LOAD-BEARING (see fused_decode/Makefile): proj_qmm/rms_residual/glu/rope
 # -O2; attn_qk/attn_kv inline .ll -O1. Qwen3-8B differs only by -DMODEL_TYPE=QWEN3_8B (the
-# header auto-sets A_FUNC=A_GELU, HAS_QK_NORM, ATTN_IMPL, dims/vocab).
+# header auto-sets A_FUNC=A_SILU, HAS_QK_NORM, ATTN_IMPL, dims/vocab).
 NONATTN_KERNELS := proj_qmm rms_residual glu rope
 ATTN_LL_KERNELS := attn_qk attn_kv
 PEANO_KBASE := -std=c++20 --target=aie2p-none-unknown-elf \
@@ -121,6 +123,8 @@ help:
 	@echo "  PROMPT=\"...\"             Prompt for 'make run' / 'make ask'"
 	@echo "  CTX=2048                 Prefill context length (padded)"
 	@echo "  MODEL_SOURCE=<repo|dir>  model.q4nx source (default FastFlowLM/Qwen3-8B-NPU2)"
+	@echo "  DECODE_WGROUP=$(DECODE_WGROUP)          Decode layers per weight BO (one BO reaches only 4 GiB)"
+	@echo "  DECODE_STACK=$(DECODE_STACK)        Decode core stack; K=4096 needs less than the 10240 default"
 
 ## Build the Qwen3-8B decode: kernels (QWEN3_8B) + two same-ATTN_MAXL templates
 ## (decode_L$(LBUILD) + decode_L$(LREF)) into this dir. Weight-free build.
@@ -232,7 +236,7 @@ ask:
 
 ## Top-k token-set inclusion gate (NPU q4nx vs HF bf16, 2 prompts x 32 tokens,
 ## k=5) -- the same gate, through the same shared verify/ subsystem, as the other
-## three Q4NX examples.
+## quantized examples.
 ##
 ## REFERENCE. FastFlowLM/Qwen3-8B-NPU2's model card declares `base_model:
 ## Qwen/Qwen3-8B`, and Qwen3 ships a single checkpoint (no separate base/instruct
@@ -281,13 +285,15 @@ gen: run
 
 ## Remove build artifacts, kernel/weight caches, and the decode templates. Also
 ## removes the QWEN3_8B-compiled kernels this Makefile writes into the shared
-## fused_decode/ dir -- leaving them there makes a later Llama build silently
+## fused_decode/ dir -- leaving them there makes another model's build silently
 ## link Qwen3-8B objects.
 clean:
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
-	rm -f $(DECODE_FLAGS_STAMP) 2>/dev/null || true
+	rm -f $(srcdir)/decode_dyn_L*.xclbin $(srcdir)/decode_dyn_L*.insts.bin \
+	      $(srcdir)/decode_dyn_L*.txn.h 2>/dev/null || true
+	rm -f $(DECODE_FLAGS_STAMP) $(DECODE_WINDOWS_STAMP) 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \
 	      $(addprefix $(DEC)/,$(addsuffix .ll,$(ATTN_LL_KERNELS))) 2>/dev/null || true
 	rm -rf $(srcdir)/build_peano $(srcdir)/build_chess $(srcdir)/__pycache__ \
-	       $(srcdir)/_q4nx_* $(srcdir)/.wcache 2>/dev/null || true
+	       $(srcdir)/_q4nx_* 2>/dev/null || true
 	@echo "Qwen3-8B decode templates, build dirs and shared-dir kernels removed."

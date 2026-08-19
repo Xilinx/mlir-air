@@ -18,3 +18,9 @@
 // RUN: %PYTHON %S/../bench/extract_perf.py profile.txt --model qwen3_8b_q4nx --n-tokens 64 > qwen3_8b_q4nx.perf.json
 // RUN: FileCheck %s < qwen3_8b_q4nx.perf.json
 // CHECK: "model": "qwen3_8b_q4nx"
+// A parsed number, not just a well-formed file: if a driver's print format drifts
+// out of extract_perf.py's regexes the metric goes null and the published
+// benchmark row silently blanks while the test stays green.
+// CHECK: "ttft_ms": {{[0-9]}}
+// CHECK: "decode_tokens_per_sec": {{[0-9]}}
+// CHECK: "context_len": {{[0-9]}}
