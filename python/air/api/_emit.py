@@ -138,15 +138,30 @@ def _emit_scalar(dst, expr, ops):
 # ---------------------------------------------------------------------------
 
 
+def _result(v):
+    """Reduce a single-result OpView to its Value.
+
+    Every consumer here has to receive a Value, not an OpView: the generated
+    arith builders infer their own result type from ``operands[0].type``, and
+    only a Value carries ``.type``. A one-operator expression never exposes this
+    -- its operands come straight from ``transfer_read``, which already yields a
+    Value -- but any nested expression (``alpha * x[:] + y[:]``) feeds one
+    builder's output into the next.
+    """
+    return v.result if hasattr(v, "result") else v
+
+
 def _eval(node, ivs, ops, ety, vectorized, vec_ty=None, minor=None, pad=None):
     if node.kind == "buffer":
         if vectorized:
-            return transfer_read(vec_ty, node.buffer.value, ivs, minor, pad, [True])
-        return memref_load(node.buffer.value, ivs)
+            return _result(
+                transfer_read(vec_ty, node.buffer.value, ivs, minor, pad, [True])
+            )
+        return _result(memref_load(node.buffer.value, ivs))
 
     if node.kind == "scalar":
-        scalar = arith.ConstantOp(ety, node.scalar)
-        return broadcast(vec_ty, scalar) if vectorized else scalar
+        scalar = _result(arith.ConstantOp(ety, node.scalar))
+        return _result(broadcast(vec_ty, scalar)) if vectorized else scalar
 
     if node.kind == "binary":
         op = ops.get(node.op)
@@ -157,6 +172,6 @@ def _eval(node, ivs, ops, ety, vectorized, vec_ty=None, minor=None, pad=None):
             )
         lhs = _eval(node.args[0], ivs, ops, ety, vectorized, vec_ty, minor, pad)
         rhs = _eval(node.args[1], ivs, ops, ety, vectorized, vec_ty, minor, pad)
-        return op(lhs, rhs)
+        return _result(op(lhs, rhs))
 
     raise AssertionError(f"unknown expression node kind {node.kind!r}")
