@@ -21,6 +21,19 @@
 // above. The additive form matches the newer "I8" bundle dtype instead. Naming
 // the layout after either bundle codec invites reading the algebra backwards,
 // so it is named after what it is.
+
+// How the Q4_0 path sign-corrects a nibble when peano is the backend:
+//   1  xor bias, (u ^ 8) - 8    (default)
+//   0  compare/select, select(f, f - 16, f >= 8)
+//   2  no sign fix at all -- NUMERICALLY WRONG, static-cost attribution only
+// Defaulted here rather than at the use site because the preprocessor has no
+// scope: defining it inside the function body would still leak to the rest of
+// the translation unit, just less visibly. See the block above its use for what
+// the modes cost and why the emulation exists at all.
+#ifndef Q4_SFIX_MODE
+#define Q4_SFIX_MODE 1
+#endif
+
 #ifndef Q4_0
 template <int M, int N>
 void _qmm_q4k_bf16(const q4k_block_t *A, const bf16 *B, float *c,
@@ -270,9 +283,45 @@ inline void _qmm_q4k_bf16(const q4k_block_t *A, const bf16 *B, float *c) {
         aie::vector<float, pr * 8> a_cc_f32_3 = aie::to_float(a_cc_3, 0);
 #else
         // Peano's aie-api folds aie::to_float(vector<int4>) to zero (signed
-        // int4 unsupported) -> the whole matmul gets DCE'd. Load as uint4
-        // (works on peano) and sign-correct the 2's-complement nibble (v>=8 ->
-        // v-16) to match chess's to_float(int4).
+        // int4 unsupported) -> the whole matmul gets DCE'd. So the nibbles are
+        // loaded as uint4 and sign-corrected here, two ways:
+        //
+        //   Q4_SFIX_MODE 1 (default) -- XOR-BIAS. (u ^ 8) - 8 == q over the
+        //     whole signed-int4 range, so one integer xor and one float
+        //     subtract do the job. The xor runs on the PACKED bytes (0x88
+        //     flips bit 3 of both nibbles at once) because peano's aie-api has
+        //     no uint4 bit_xor -- aie::bit_xor on a vector<uint4> segfaults
+        //     the frontend.
+        //
+        //   Q4_SFIX_MODE 0 -- the original compare/select (v >= 8 -> v - 16).
+        //     Same values, but the select's operands keep four float<128>
+        //     vectors and two broadcast constants live at once, which is far
+        //     past the register file, and peano spills the difference.
+        //
+        // Measured, aie2p -O2, inner-loop body of this function:
+        //
+        //   mode      bundles   vlda   vst   vge   vsel
+        //   0             355    226    23    32     32
+        //   1             140     33     4     0      0
+        //   (chess)       142      4     0     0      0
+        //
+        // The body runs 8x2 per 32x256 block, and the core issues ~1 bundle
+        // per cycle, so those 215 bundles were 68% of the whole qwen2.5-3B
+        // projection: mode 1 took its decode intercept from 81.10 ms to
+        // 32.40 ms per token (measured, 36 layers, NPU2). See
+        // Q4_SFIX_MODE 2 in the A/B note below for how that was attributed.
+        //
+        // Only this Q4_0 branch has a sign fix at all -- Q4NX nibbles are
+        // unsigned -- so nothing outside the Q4_0 models is affected.
+        // Q4_SFIX_MODE is defaulted at the top of this file.
+        const aie::vector<float, pr * 8> k_eight =
+            aie::broadcast<float, pr * 8>(8.0f);
+#if Q4_SFIX_MODE == 0
+        const aie::vector<float, pr * 8> k_sixteen =
+            aie::broadcast<float, pr * 8>(16.0f);
+#endif
+
+#if Q4_SFIX_MODE == 0
         aie::vector<uint4, pr * 8> u_cc_0 =
             aie::load_v<pr * 8>((uint4 *)qs_ptr);
         qs_ptr += pr * 4;
@@ -285,14 +334,35 @@ inline void _qmm_q4k_bf16(const q4k_block_t *A, const bf16 *B, float *c) {
         aie::vector<uint4, pr * 8> u_cc_3 =
             aie::load_v<pr * 8>((uint4 *)qs_ptr);
         qs_ptr += pr * 4;
-        const aie::vector<float, pr * 8> k_sixteen =
-            aie::broadcast<float, pr * 8>(16.0f);
-        const aie::vector<float, pr * 8> k_eight =
-            aie::broadcast<float, pr * 8>(8.0f);
         auto sfix = [&](aie::vector<uint4, pr * 8> uv) {
           aie::vector<float, pr * 8> f = aie::to_float(uv, 0);
           return aie::select(f, aie::sub(f, k_sixteen), aie::ge(f, k_eight));
         };
+#else
+        const aie::vector<uint8, pr * 4> k_88 =
+            aie::broadcast<uint8, pr * 4>((uint8)0x88);
+        auto ldx = [&]() {
+          aie::vector<uint8, pr * 4> raw = aie::load_v<pr * 4>(qs_ptr);
+          qs_ptr += pr * 4;
+          return aie::bit_xor(raw, k_88).template cast_to<uint4>();
+        };
+        aie::vector<uint4, pr * 8> u_cc_0 = ldx();
+        aie::vector<uint4, pr * 8> u_cc_1 = ldx();
+        aie::vector<uint4, pr * 8> u_cc_2 = ldx();
+        aie::vector<uint4, pr * 8> u_cc_3 = ldx();
+#if Q4_SFIX_MODE == 2
+        // A/B BOUND ONLY -- NUMERICALLY WRONG. Drops the -8 so the body's
+        // static bundle count says what is left after the xor is paid for
+        // (113 bundles). Never ship; objdump/bench only.
+        auto sfix = [&](aie::vector<uint4, pr * 8> uv) {
+          return aie::to_float(uv, 0);
+        };
+#else
+        auto sfix = [&](aie::vector<uint4, pr * 8> uv) {
+          return aie::sub(aie::to_float(uv, 0), k_eight);
+        };
+#endif
+#endif
         aie::vector<float, pr * 8> a_cc_f32_0 = sfix(u_cc_0);
         aie::vector<float, pr * 8> a_cc_f32_1 = sfix(u_cc_1);
         aie::vector<float, pr * 8> a_cc_f32_2 = sfix(u_cc_2);

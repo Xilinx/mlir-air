@@ -52,6 +52,33 @@ This mirrors FastFlowLM, whose own Qwen design sets `#define Q4_0` in its
 `Qwen2_5/decoding_3b/models/qwen2_3b.h` while its Llama and Gemma designs leave
 it undefined.
 
+### The Q4_0 branch splits again, on the toolchain
+
+Only the Q4_0 side has a *signed* nibble to decode, and only chess can do it
+directly: `aie::to_float(vector<int4>)` on peano folds to zero and the whole
+matmul is dead-code-eliminated. So under `#if defined(__chess__)` the two
+backends compile **different source** from this one file -- worth knowing before
+concluding that a peano and a chess build of "the same kernel" should cost the
+same.
+
+The peano side loads the nibbles as `uint4` and sign-corrects them itself, under
+`Q4_SFIX_MODE`:
+
+| | how | inner-loop body |
+|---|---|---|
+| `1` (default) | xor bias: `(u ^ 8) - 8 == q`, the xor done on the packed bytes since `0x88` flips both nibbles | 140 bundles |
+| `0` | compare/select: `select(f, f - 16, f >= 8)` | 355 bundles |
+| `2` | no sign fix at all -- **numerically wrong**, for attributing static cost only | 121 bundles |
+| | (chess, for reference) | 142 bundles |
+
+Mode 0 is only 64 bundles of compare and select; the rest of its cost is spill
+traffic, because keeping four `vector<float,128>` and two broadcast constants
+live at once is well past the register file. That body runs 8x2 per 32x256
+weight block, and an AIE2P core issues about one bundle per cycle, so the
+difference is most of the projection: it moved the qwen2.5-3B decode intercept
+from 81.1 to 32.6 ms/token. `aie::bit_xor` on a `vector<uint4>` segfaults
+peano's frontend, which is why the xor is applied a byte at a time.
+
 The weight *bundles* are uniform: every FastFlowLM `model.q4nx` is the same
 per-block affine encoding regardless of model. That is why `llms/qwen25_3b_q4`
 quantizes the fp checkpoint directly rather than reading a bundle -- an affine
