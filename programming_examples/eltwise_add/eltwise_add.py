@@ -1,349 +1,239 @@
-# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Vectorized Element-Wise Add
+"""Element-wise Add, written with the air.api DSL.
 
-Implements element-wise addition on a 1D input [N]:
-  c = a + b
+Computes C = A + B, over either a 1-D [N] or a 2-D [M, N] bf16 array. The two
+ranks share one body: the herd iteration space, the tile offsets, and the slice
+handed to the DMAs are all built from the shape, so `--shape 65536` and
+`--shape 1024 1024` differ only in how many dimensions get tiled.
 
-Uses a 1xnum_tiles AIE herd with DMA transfers between L3 and L1 memory.
-Computation is vectorized using vector.transfer_read/write with
-configurable VECTOR_SIZE (default 16 for BF16, 8 for F32).
+This is the same kernel as programming_examples/eltwise_add, expressed through
+air.api instead of the raw dialect bindings: the DSL emits the herd, the L1
+allocations, the affine tile offsets, the DMAs, and the vectorised compute loop.
+
+Concepts:
+  - a herd built from a range (1-D) or a product of ranges (2-D); a logical tile
+    grid larger than the physical array is strip-mined onto it automatically
+  - air.symbol() as a compile-time tile size, reported in launch.search_space
+  - whole-tile elementwise assignment (c[:] = a[:] + b[:]), which lowers to a
+    vector.transfer_read / arith.addf / transfer_write loop
 """
 
 import argparse
-
-from ml_dtypes import bfloat16
-
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
-from air.dialects.vector import transfer_read, transfer_write
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from itertools import product
 
 import numpy as np
+from ml_dtypes import bfloat16
 
-np.random.seed(42)
+from air import api as air
+from air.api import ops  # registers air.ops  # noqa: F401
+from air.api.types import bf16, f32
+from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+DTYPES = {"bf16": (bf16, bfloat16), "f32": (f32, np.float32)}
+
+# This kernel keeps three tiles live in L1, and the pipeline ping-pongs them, so
+# the figure that has to fit a 64 KB compute tile is about twice what is
+# declared. Derive the default tile from that budget rather than hardcoding it:
+# an f32 tile has to be half the width of a bf16 one.
+L1_BYTES = 65536
+LIVE_BUFFERS = 3
+PINGPONG = 2
 
 
-@module_builder
-def build_module(
-    n, tile_n, np_dtype_in, vector_size=0, num_tiles=2, herd_x=1, herd_y=None
-):
-    a_size = [n]
-    b_size = a_size
-    out_size = a_size
-    xrt_dtype_in = type_mapper(np_dtype_in)
+def default_tile(rank, dtype, cap=1024):
+    """Largest power-of-two tile whose 3 ping-ponged buffers fit L1."""
+    budget = L1_BYTES // (LIVE_BUFFERS * PINGPONG * dtype.itemsize)
+    tile = 1
+    while (2 * tile) ** rank <= budget and 2 * tile <= cap:
+        tile *= 2
+    return tile
 
-    # Determine herd shape
-    if herd_y is None:
-        herd_y = num_tiles
-    total_tiles = herd_x * herd_y
-    assert (
-        n % (tile_n * total_tiles) == 0
-    ), f"n ({n}) must be divisible by tile_n*total_tiles ({tile_n}*{total_tiles}={tile_n*total_tiles})"
 
-    # L3 MemRefTypes
-    l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
+def build_eltwise_add(shape, dtype=bf16, tile=None, herd_shape=None, vector=None):
+    """Build an elementwise-add launch over a 1-D or 2-D shape."""
+    rank = len(shape)
+    if rank not in (1, 2):
+        raise ValueError(f"shape must be 1-D or 2-D, got {rank}-D: {shape}")
+    tile = default_tile(rank, dtype) if tile is None else tile
 
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    A = air.tensor(shape, dtype)
+    B = air.tensor(shape, dtype)
+    C = air.tensor(shape, dtype)
 
-    # Vectorization setup
-    vectorize = vector_size > 0
-    if vectorize:
-        assert (
-            tile_n % vector_size == 0
-        ), f"tile_n ({tile_n}) must be divisible by vector_size ({vector_size})"
-        vecTy = VectorType.get([vector_size], xrt_dtype_in)
-        identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-        index_type = IndexType.get()
+    # Compile-time tile sizes, one per tiled dimension. v1 resolves these to
+    # `tile` and reports the binding in launch.search_space; it does not search.
+    tiles = [air.symbol(hint=tile, name=f"tile_{d}") for d in range(rank)]
 
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy, l3memrefTy)
-    def eltwise_add(arg0, arg1, arg2):
-        @herd(
-            name="herd_0",
-            sizes=[herd_x, herd_y],
-            operands=[arg0, arg1, arg2],
-        )
-        def herd_body(
-            _tx,
-            _ty,
-            _sx,
-            _sy,
-            _l3_a,
-            _l3_b,
-            _l3_c,
-        ):
-            l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_b_data = AllocOp(l1MemrefTy, [], [])
-            l1_out_data = AllocOp(l1MemrefTy, [], [])
+    def tile_body(h, coords):
+        """One tile: stage both operands into L1, add, stage the result out."""
+        sizes = h.tile_sizes
+        window = tuple(slice(c * s, c * s + s) for c, s in zip(coords, sizes))
+        a_buf = air.alloc(sizes, dtype, scope=h.private(), vector=vector)
+        b_buf = air.alloc(sizes, dtype, scope=h.private(), vector=vector)
+        c_buf = air.alloc(sizes, dtype, scope=h.private(), vector=vector)
 
-            chunk_size = n // total_tiles
-            for _l_ivx in range_(0, chunk_size, tile_n):
+        air.ops.load(a_buf, A[window])
+        air.ops.load(b_buf, B[window])
 
-                # Contiguous partitioning: each tile gets a contiguous block.
-                # offset = linear_tile_idx * chunk_size + loop_var
-                offset_map = AffineMap.get(
-                    0,
-                    3,
-                    [
-                        AffineExpr.get_add(
-                            AffineExpr.get_mul(
-                                AffineExpr.get_add(
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(1),
-                                        AffineConstantExpr.get(herd_y),
-                                    ),
-                                    AffineSymbolExpr.get(2),
-                                ),
-                                AffineConstantExpr.get(chunk_size),
-                            ),
-                            AffineSymbolExpr.get(0),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _tx, _ty])
+        c_buf[:] = a_buf[:] + b_buf[:]
 
-                dma_memcpy_nd(
-                    l1_a_data,
-                    _l3_a,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
-                dma_memcpy_nd(
-                    l1_b_data,
-                    _l3_b,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
+        air.ops.store(c_buf, C[window])
 
-                if vectorize:
-                    # Vectorized compute loop
-                    c0 = ConstantOp(index_type, 0)
-                    cVecSize = ConstantOp(index_type, vector_size)
-                    cTileN = ConstantOp(index_type, tile_n)
-                    cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
+    with air.launch(name="eltwise_add") as launch:
 
-                    for j in range_(c0, cTileN, cVecSize):
-                        sub_a = subview(l1_a_data.result, [j], [vector_size], [1])
-                        sub_b = subview(l1_b_data.result, [j], [vector_size], [1])
-                        sub_c = subview(l1_out_data.result, [j], [vector_size], [1])
-                        v_a = transfer_read(
-                            vecTy, sub_a, [c0], identity_map, cst0, [True]
-                        )
-                        v_b = transfer_read(
-                            vecTy, sub_b, [c0], identity_map, cst0, [True]
-                        )
-                        v_c = arith.AddFOp(v_a, v_b)
-                        transfer_write(None, v_c, sub_c, [c0], identity_map, [True])
-                        yield_([])
+        @launch.body
+        def _():
+            axes = [range(0, extent, t) for extent, t in zip(shape, tiles)]
+            grid = axes[0] if rank == 1 else product(*axes)
+
+            with air.herd(grid, shape=herd_shape) as h:
+                if rank == 1:
+
+                    @h.body
+                    def _(tx):
+                        tile_body(h, [tx])
+
                 else:
-                    # Scalar compute loop (original)
-                    for i in range_(tile_n):
-                        val_a = load(l1_a_data, [i])
-                        val_b = load(l1_b_data, [i])
-                        val_out = arith.addf(val_a, val_b)
-                        store(val_out, l1_out_data, [i])
-                        yield_([])
 
-                dma_memcpy_nd(
-                    _l3_c,
-                    l1_out_data,
-                    dst_offsets=[
-                        offset,
-                    ],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_b_data)
-                DeallocOp(l1_out_data)
+                    @h.body
+                    def _(tx, ty):
+                        tile_body(h, [tx, ty])
 
-                yield_([])
+    return launch
 
 
 if __name__ == "__main__":
-    # Default values — optimized BF16 vectorized config for NPU2.
-    # For NPU1 (F32 scalar): --dtype f32 --vector-size 0 --herd-x 1 --herd-y 2
-    N = 65536
-    TILE_N = 1024
-    INPUT_DATATYPE = bfloat16
-    VECTOR_SIZE = 16
-    NUM_TILES = 2
-
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the eltwise_add example",
-    )
+    parser = argparse.ArgumentParser(description="air.api element-wise add example")
     parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--n",
+        "--shape",
         type=int,
-        default=N,
-        help="Total number of elements",
+        nargs="+",
+        default=[1024, 1024],
+        metavar="EXTENT",
+        help="1-D (N) or 2-D (M N) problem shape, e.g. --shape 65536 "
+        "or --shape 1024 1024 (default: 1024 1024)",
     )
-    parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
+    parser.add_argument(
+        "--tile",
+        type=int,
+        default=None,
+        help="tile size per tiled dimension (default: the largest power of two "
+        "whose ping-ponged buffers fit L1, which depends on rank and dtype)",
+    )
     parser.add_argument(
         "--vector-size",
         type=int,
-        default=VECTOR_SIZE,
-        help="Vector width (0 for scalar, 16 for BF16, 8 for F32)",
-    )
-    parser.add_argument(
-        "--num-tiles",
-        type=int,
-        default=NUM_TILES,
-        help="Number of herd tiles (parallel cores), used as herd_y when herd-x/herd-y not set",
-    )
-    parser.add_argument(
-        "--herd-x",
-        type=int,
-        default=1,
-        help="Herd x dimension (default: 1)",
-    )
-    parser.add_argument(
-        "--herd-y",
-        type=int,
         default=None,
-        help="Herd y dimension (default: num-tiles)",
+        dest="vector",
+        help="compute vector width in lanes; 0 forces a scalar loop. Default is "
+        "the dtype's (16 for bf16, 8 for f32). Note f32 at 8 lanes does not "
+        "legalize on npu1 -- use 0 there, as the hand-written example does.",
     )
     parser.add_argument(
         "--dtype",
         type=str,
-        choices=["bf16", "f32"],
         default="bf16",
-        help="Data type (default: bf16)",
+        choices=sorted(DTYPES),
+        help="element type (default: bf16)",
     )
     parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-        help="Configure to whether to run after compile",
+        "--herd-shape",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="EXTENT",
+        help="override the physical herd shape (default: chosen per target)",
     )
+    parser.add_argument("--target", type=str, default="npu2", choices=["npu1", "npu2"])
     parser.add_argument(
         "--output-format",
         type=str,
-        choices=["xclbin", "elf"],
         default="xclbin",
+        choices=["xclbin", "elf"],
         dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
+        help="binary format aircc produces (default: xclbin). "
+        "elf is npu2-only -- npu1 does not support the full-ELF flow.",
     )
     parser.add_argument(
         "--perf-iters",
         type=int,
         default=0,
         dest="perf_iters",
-        help="If >0, time the kernel over this many iters (after warmup) and "
-        "print Latency + bandwidth in addition to the correctness check",
+        help="if >0, time the kernel over this many iterations (after warmup) "
+        "and print Latency alongside the correctness check",
     )
+    parser.add_argument("--print-ir", action="store_true")
+    parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
     if args.perf_iters < 0:
         parser.error("--perf-iters must be >= 0")
 
-    if args.dtype == "bf16":
-        INPUT_DATATYPE = bfloat16
-    else:
-        INPUT_DATATYPE = np.float32
-
-    mlir_module = build_module(
-        args.n,
-        args.tile_n,
-        INPUT_DATATYPE,
-        vector_size=args.vector_size,
-        num_tiles=args.num_tiles,
-        herd_x=args.herd_x,
-        herd_y=args.herd_y,
+    dtype, np_dtype = DTYPES[args.dtype]
+    launch = build_eltwise_add(
+        shape=args.shape,
+        dtype=dtype,
+        tile=args.tile,
+        herd_shape=args.herd_shape,
+        vector=args.vector,
     )
-    if args.print_module_only:
-        print(mlir_module)
-        exit(0)
 
-    # Use N(0,1) (matching the GPU test standard) so the correctness check sees
-    # a realistic signed distribution rather than an all-positive one. Generate
-    # in float32 (not the default float64) to avoid a large f64 intermediate.
-    rng = np.random.default_rng(0)
-    input_a_f32 = rng.standard_normal(args.n, dtype=np.float32)
-    input_b_f32 = rng.standard_normal(args.n, dtype=np.float32)
-    input_a = input_a_f32.astype(INPUT_DATATYPE)
-    input_b = input_b_f32.astype(INPUT_DATATYPE)
+    if args.print_ir:
+        print(launch.mlir())
+        raise SystemExit(0)
 
-    if args.compile_mode == "compile-and-run":
-
-        # Reference computed in FP32, then rounded to the output dtype (a
-        # bf16-rounded reference when dtype=bf16) — matches how a GPU/HF bf16
-        # elementwise op is verified. Add the actual bf16-rounded operands in
-        # f32 so the reference sees the same inputs the kernel does.
-        ref = (input_a.astype(np.float32) + input_b.astype(np.float32)).astype(
-            INPUT_DATATYPE
-        )
-
-        ###### Compile and test
-        runner = XRTRunner(
+    if args.compile_only:
+        backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="eltwise_add",
-            runtime_loop_tiling_sizes=[4, 4],
-            report_precision=True,
-            n_perf_iters=args.perf_iters,
-        )
-        # Two dtype branches only (--dtype choices = bf16 | f32):
-        #   bf16: canonical rtol 1.6e-2; add is exact-to-bf16-round
-        #         (mean_rel_L1 ~1.9e-3), atol sized to the measured worst-case
-        #         single-element bf16 round (~3e-2).
-        #   f32:  effectively exact, so tight rtol/atol.
-        rtol = 1.6e-2 if INPUT_DATATYPE == bfloat16 else 1e-3
-        atol = 5e-2 if INPUT_DATATYPE == bfloat16 else 1e-5
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a, input_b],
-                expected_outputs=[ref],
-                rtol=rtol,
-                atol=atol,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        ###### Compile only
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            omit_auto_broadcast=True,
-            output_format=args.output_format,
+            target_device=args.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
-        module_function = backend.compile(mlir_module)
-
+        backend.compile(launch.build(target=args.target))
         backend.unload()
+        print("Compiled successfully.")
+        print("Search space:", launch.search_space)
+        raise SystemExit(0)
+
+    rng = np.random.default_rng(0)
+    a_np = rng.standard_normal(args.shape, dtype=np.float32).astype(np_dtype)
+    b_np = rng.standard_normal(args.shape, dtype=np.float32).astype(np_dtype)
+
+    # Reference in fp32, rounded back to the kernel's dtype -- the same standard
+    # the raw-bindings version (eltwise_add_dialect.py) checks against.
+    # Tolerances are taken from it: bf16 add is exact to a single bf16 round, so
+    # atol is sized to the worst-case round; f32 is effectively exact.
+    ref = (a_np.astype(np.float32) + b_np.astype(np.float32)).astype(np_dtype)
+    rtol, atol = (1.6e-2, 5e-2) if args.dtype == "bf16" else (1e-3, 1e-5)
+
+    # Checked through XRTRunner rather than a bare np.allclose: it is the same
+    # harness every other example in this tree uses, so an air.api kernel gets
+    # the same error statistics (report_precision) and the same PASS!/failed.
+    # reporting that the lit harnesses grep for. air.api's job ends at
+    # launch.build() -- what it hands over is an ordinary AIR module.
+    print(f"Eltwise add shape={tuple(args.shape)} dtype={args.dtype}")
+    runner = XRTRunner(
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="eltwise_add",
+        target_device=args.target,
+        runtime_loop_tiling_sizes=[4, 4],
+        report_precision=True,
+        n_perf_iters=args.perf_iters,
+    )
+    raise SystemExit(
+        runner.run_test(
+            launch.build(target=args.target),
+            inputs=[a_np, b_np],
+            expected_outputs=[ref],
+            rtol=rtol,
+            atol=atol,
+        )
+    )

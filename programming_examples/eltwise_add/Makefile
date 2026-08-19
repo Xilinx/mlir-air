@@ -19,6 +19,7 @@ AIE_TARGET ?= aie2p
 # Device-dependent defaults
 ifeq ($(AIE_TARGET),aie2p)
   # NPU2: BF16 vectorized, 8-column config
+  TARGET ?= npu2
   DTYPE ?= bf16
   VECTOR_SIZE ?= 16
   HERD_X ?= 8
@@ -27,6 +28,7 @@ ifeq ($(AIE_TARGET),aie2p)
   N ?= 4194304
 else
   # NPU1: F32 scalar, 2-tile config
+  TARGET ?= npu1
   DTYPE ?= f32
   VECTOR_SIZE ?= 0
   HERD_X ?= 1
@@ -45,27 +47,71 @@ EXTRA_PY_FLAGS ?=
 
 all: run
 
-print:
-	${powershell} python3 ${srcdir}/eltwise_add.py $(OUTPUT_FORMAT_FLAG) \
+print-dialect:
+	${powershell} python3 ${srcdir}/eltwise_add_dialect.py $(OUTPUT_FORMAT_FLAG) \
 		--n $(N) --dtype $(DTYPE) --vector-size $(VECTOR_SIZE) \
 		--herd-x $(HERD_X) --herd-y $(HERD_Y) \
 		--tile-n $(TILE_N) $(EXTRA_PY_FLAGS) -p
 
-run:
+run-dialect:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/eltwise_add.py \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/eltwise_add_dialect.py \
 		$(OUTPUT_FORMAT_FLAG) --n $(N) --dtype $(DTYPE) --vector-size $(VECTOR_SIZE) \
 		--herd-x $(HERD_X) --herd-y $(HERD_Y) --tile-n $(TILE_N) $(EXTRA_PY_FLAGS)
 
-profile: build-test-exe
+profile-dialect: build-test-exe
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		python3 ${srcdir}/eltwise_add.py --n $(N) --tile-n $(TILE_N) \
+		python3 ${srcdir}/eltwise_add_dialect.py --n $(N) --tile-n $(TILE_N) \
 		--dtype $(DTYPE) --vector-size $(VECTOR_SIZE) \
 		--herd-x $(HERD_X) --herd-y $(HERD_Y) \
 		--compile-mode compile-only --output-format xclbin
 	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin \
 		-S $(N)
+
+# ---------------------------------------------------------------------------
+# air.api (default). SHAPE is 1-D (N) or 2-D (M N); TILE and VECTOR_SIZE
+# default per rank and dtype. See eltwise_add.py.
+# ---------------------------------------------------------------------------
+SHAPE ?= 1024 1024
+API_DTYPE ?= bf16
+TILE ?=
+# Named API_* so it does not collide with the dialect config above, which
+# pins VECTOR_SIZE=0 on npu1 for its f32 scalar path.
+API_VECTOR_SIZE ?=
+PERF_ITERS ?= 0
+
+TILE_FLAG = $(if $(TILE),--tile $(TILE),)
+VEC_FLAG = $(if $(API_VECTOR_SIZE),--vector-size $(API_VECTOR_SIZE),)
+API_FLAGS = --shape $(SHAPE) --dtype $(API_DTYPE) $(TILE_FLAG) $(VEC_FLAG) \
+	--target $(TARGET) $(OUTPUT_FORMAT_FLAG) $(EXTRA_PY_FLAGS)
+
+# Total element count, for the -S argument of test.exe.
+SHAPE_ELEMENTS = $(shell python3 -c "import math,sys;print(math.prod([int(x) for x in '$(SHAPE)'.split()]))")
+
+print:
+	${powershell} python3 ${srcdir}/eltwise_add.py $(API_FLAGS) --print-ir
+
+compile:
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
+		${powershell} python3 ${srcdir}/eltwise_add.py $(API_FLAGS) --compile-only
+
+run:
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
+		${powershell} python3 ${srcdir}/eltwise_add.py $(API_FLAGS) \
+		--perf-iters $(PERF_ITERS)
+
+# Bandwidth profiling via the shared test.cpp harness. bf16 only -- test.cpp
+# fixes DATATYPE to std::bfloat16_t -- but rank-agnostic, since it takes a
+# total element count.
+profile: build-test-exe
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
+		python3 ${srcdir}/eltwise_add.py $(API_FLAGS) --compile-only
+	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin \
+		-S $(SHAPE_ELEMENTS)
 
 build-test-exe:
 	@GPP=$$( \

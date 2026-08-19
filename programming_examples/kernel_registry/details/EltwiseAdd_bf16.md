@@ -18,11 +18,11 @@
 ## Builder
 
 ```
-programming_examples/eltwise_add/eltwise_add.py
+programming_examples/eltwise_add/eltwise_add_dialect.py
   build_module(n, tile_n, np_dtype, vector_size=16, num_tiles, herd_x, herd_y)
 ```
 
-Driven by `eltwise_add.py`'s CLI; the example also has a `Makefile`. Single code-generation path: direct-codegen MLIR (vectorized `vector.transfer_read/write` + `arith.addf`), no external `.cc`. The input `[N]` is split into `tile_n`-sized chunks streamed through L3→L1→L3 DMA; the chunks are spread across an `herd_x × herd_y` AIE tile grid (each tile loops over its share). The herd is effectively 1-D for this kernel (rows are independent), so `herd_x` (AIE columns) is the scaling knob.
+Driven by `eltwise_add_dialect.py`'s CLI (`make run-dialect`); the example also has a `Makefile`. Note that `eltwise_add/eltwise_add.py` is now the `air.api` DSL version of the same kernel, with a different CLI (`--shape` / `--dtype` / `--tile`) and its own `make run` / `make profile` targets. The numbers in this entry were measured with the raw-bindings version, so the commands below name it explicitly. Single code-generation path: direct-codegen MLIR (vectorized `vector.transfer_read/write` + `arith.addf`), no external `.cc`. The input `[N]` is split into `tile_n`-sized chunks streamed through L3→L1→L3 DMA; the chunks are spread across an `herd_x × herd_y` AIE tile grid (each tile loops over its share). The herd is effectively 1-D for this kernel (rows are independent), so `herd_x` (AIE columns) is the scaling knob.
 
 **Note on llama usage.** llama-3.2-1B's prefill residual add is **not** this standalone kernel — it is inlined into the fused `o_ffn` ELF (`o_ffn_multi.py`'s `_build_add_2d_to_2d`, a 2-D `[2048,2048]` add, herd 8×1, collapsed to 1-D inside the launch). The math is identical (`c = a + b`); only the L3 layout (2-D vs flat 1-D) and the surrounding fusion differ. This registry entry measures the **standalone** `eltwise_add` (a reusable, independently-reproducible building block); the fused variant has the same numerics.
 
@@ -148,24 +148,24 @@ So **`herd_x = 8, herd_y = 1, tile_n = 2048` is the best config** for every shap
 
 ## How to reproduce (correctness + performance)
 
-`eltwise_add.py` (compile-and-run mode, the default) runs the **correctness** check via `XRTRunner`: full-output element-wise compare against the FP32 reference; prints `[precision] mean_rel_L1=... | rel_err max=... | abs_err max=... | rtol=... atol=...` and `PASS!` / `failed.` Add `--perf-iters N` for latency → bandwidth (10 warmup iters excluded, N timed iters averaged, kernel-only — buffer sync not counted). Every tested-shapes row reproduces by setting `N` (all use the same best config `herd_x=8, herd_y=1, tile_n=2048`):
+`eltwise_add_dialect.py` (compile-and-run mode, the default) runs the **correctness** check via `XRTRunner`: full-output element-wise compare against the FP32 reference; prints `[precision] mean_rel_L1=... | rel_err max=... | abs_err max=... | rtol=... atol=...` and `PASS!` / `failed.` Add `--perf-iters N` for latency → bandwidth (10 warmup iters excluded, N timed iters averaged, kernel-only — buffer sync not counted). Every tested-shapes row reproduces by setting `N` (all use the same best config `herd_x=8, herd_y=1, tile_n=2048`):
 
 ```bash
 cd programming_examples/eltwise_add
 
 # correctness — main shape (N=4194304), best config; compiles + runs on NPU2
-make run N=4194304 PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
+make run-dialect N=4194304 PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
 
 # any tested shape — change N (1048576 / 2097152 / 4194304 / 8388608)
-make run N=8388608 PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
+make run-dialect N=8388608 PEANO_INSTALL_DIR=$PEANO_INSTALL_DIR
 
 # performance (latency → bandwidth) — run the script directly with --perf-iters
 mkdir -p build_peano && cd build_peano
-python3 ../eltwise_add.py --n 4194304 --tile-n 2048 --dtype bf16 \
+python3 ../eltwise_add_dialect.py --n 4194304 --tile-n 2048 --dtype bf16 \
   --vector-size 16 --herd-x 8 --herd-y 1 --perf-iters 20
 # bandwidth = 3·N·2 bytes / latency  (a+b in, c out, bf16)
 ```
 
 Notes:
-- `herd_y` must be 1 (shim DMA channel limit); `herd_x` ≤ 8. An alternative C++ timing path exists via `make profile`.
+- `herd_y` must be 1 (shim DMA channel limit); `herd_x` ≤ 8. An alternative C++ timing path exists via `make profile-dialect`.
 - If the NPU is shared with other jobs, serialize on-device runs (e.g. with `flock`) so timing measurements aren't perturbed.

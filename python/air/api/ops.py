@@ -1,0 +1,140 @@
+# ./python/air/api/ops.py -*- Python -*-
+#
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
+"""Imperative memory operations.
+
+Import as::
+
+    import air.api.ops
+
+Every implemented op returns a :class:`~air.api._value.Token`. AIR builds its
+real asynchronous dependency graph from program order in the ``air-dependency``
+pass, so a v1 token carries no SSA value -- it exists so that ``dependency=``
+can be type-checked instead of silently ignored.
+
+Compute ops from the wider API proposal (``dot``, ``reduce``, ``exp``, ``relu``,
+``stack``, ``dequant``, ``atomic_add``) are not implemented. They raise rather
+than returning a plausible-looking placeholder: a DSL that accepts an op it
+cannot lower produces a kernel that runs and is silently wrong.
+"""
+
+from ._value import Buffer, TensorSlice, Token
+
+__all__ = ["load", "store", "copy"]
+
+
+def _check_dependency(dependency):
+    if dependency is None:
+        return
+    deps = dependency if isinstance(dependency, (list, tuple)) else [dependency]
+    for d in deps:
+        if not isinstance(d, Token):
+            raise TypeError(
+                f"dependency= expects a Token (or list of them), got "
+                f"{type(d).__name__}"
+            )
+
+
+def _check_padding(pad_before, pad_after):
+    if pad_before is None and pad_after is None:
+        return
+    raise NotImplementedError(
+        "pad_before/pad_after are not supported by air.api yet; the underlying "
+        "air.dma_memcpy_nd accepts them, but the DSL does not validate them"
+    )
+
+
+def _check_transfer(buf, sl, direction):
+    if not isinstance(buf, Buffer):
+        raise TypeError(
+            f"air.api.ops.{direction} expects an L1 buffer from air.alloc(), got "
+            f"{type(buf).__name__}"
+        )
+    if not isinstance(sl, TensorSlice):
+        raise TypeError(
+            f"air.api.ops.{direction} expects a tensor slice such as A[i:i+n], "
+            f"got {type(sl).__name__}"
+        )
+    if buf.value is None:
+        raise RuntimeError("buffer used before allocation")
+    if tuple(sl.sizes) != buf.shape:
+        raise ValueError(
+            f"transfer shape mismatch: buffer is {buf.shape} but the tensor "
+            f"slice is {tuple(sl.sizes)}"
+        )
+    if sl.dtype is not buf.dtype:
+        raise ValueError(
+            f"transfer dtype mismatch: buffer is {buf.dtype} but the tensor is "
+            f"{sl.dtype}"
+        )
+
+
+def load(dst, src_slice, pad_before=None, pad_after=None, dependency=None):
+    """Copy a tile from a global tensor into an L1 buffer (L3 -> L1)."""
+    from air.dialects.air import dma_memcpy_nd
+
+    _check_dependency(dependency)
+    _check_padding(pad_before, pad_after)
+    _check_transfer(dst, src_slice, "load")
+
+    op = dma_memcpy_nd(
+        dst.value,
+        src_slice.tensor.value,
+        src_offsets=src_slice.materialize_offsets(),
+        src_sizes=list(src_slice.sizes),
+        src_strides=list(src_slice.strides),
+    )
+    return Token(op)
+
+
+def store(src, dst_slice, pad_before=None, pad_after=None, dependency=None):
+    """Copy an L1 buffer back into a global tensor (L1 -> L3)."""
+    from air.dialects.air import dma_memcpy_nd
+
+    _check_dependency(dependency)
+    _check_padding(pad_before, pad_after)
+    _check_transfer(src, dst_slice, "store")
+
+    # Being the destination of a store is what makes a tensor an output, which
+    # in turn fixes the kernel's calling convention (inputs first, then outputs).
+    dst_slice.tensor.is_output = True
+
+    op = dma_memcpy_nd(
+        dst_slice.tensor.value,
+        src.value,
+        dst_offsets=dst_slice.materialize_offsets(),
+        dst_sizes=list(dst_slice.sizes),
+        dst_strides=list(dst_slice.strides),
+    )
+    return Token(op)
+
+
+def copy(src_slice, dst_slice, pad_before=None, pad_after=None, dependency=None):
+    """Tensor-to-tensor copy. Not implemented."""
+    raise NotImplementedError(
+        "air.api.ops.copy (tensor-to-tensor) is not implemented; use load() into "
+        "an L1 buffer followed by store()"
+    )
+
+
+def _unimplemented(name, needs):
+    def stub(*args, **kwargs):
+        raise NotImplementedError(
+            f"air.api.ops.{name} is not implemented yet (needs {needs})"
+        )
+
+    stub.__name__ = name
+    return stub
+
+
+# Named so that a program using them fails loudly at the call site rather than
+# at compile time with a confusing IR error.
+dot = _unimplemented("dot", "linalg/vector.contract lowering")
+reduce = _unimplemented("reduce", "a reduction emitter")
+exp = _unimplemented("exp", "math dialect lowering")
+relu = _unimplemented("relu", "a max(0, x) emitter")
+stack = _unimplemented("stack", "multi-buffer concatenation")
+dequant = _unimplemented("dequant", "BlockType support")
+atomic_add = _unimplemented("atomic_add", "CacheDomain support")
