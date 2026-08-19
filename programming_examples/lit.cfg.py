@@ -82,6 +82,10 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
 
     try:
         xrtsmi = os.path.join(config.xrt_bin_dir, "xrt-smi")
+        # Windows ships xrt-smi.exe with the NPU driver (System32\AMD, on PATH)
+        # rather than under the XRT SDK, and it needs the .exe suffix. which()
+        # covers both; on Linux the path above already resolves and is used.
+        xrtsmi = shutil.which(xrtsmi) or shutil.which("xrt-smi") or xrtsmi
         result = subprocess.run(
             [xrtsmi, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
