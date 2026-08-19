@@ -143,7 +143,7 @@ EXAMPLES = [
         "category": "Activation/Math",
         "name": "Leaky RELU",
         "path": "leaky_relu",
-        "datatypes": "bf16",
+        "datatypes": "bf16, f32",
     },
     {
         "category": "Activation/Math",
