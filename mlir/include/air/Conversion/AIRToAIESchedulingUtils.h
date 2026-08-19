@@ -139,6 +139,20 @@ struct allocation_info_t {
   Operation *otherSideLTO = nullptr;
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
+  // True when the shim is this flow's DESTINATION (S2MM), i.e. a readback whose
+  // data leaves for host DDR. `otherSideLTO`/`col` then describe the PRODUCER
+  // core, because the real far side is off-chip and has no column. Bucketing on
+  // a producer column is wrong -- it says nothing about where a transfer should
+  // leave the array, and it forces every readback out of a herd onto that
+  // herd's column. That is how three llama-1b readbacks plus the feeds to the
+  // same cores landed on one shim tile and one channel, which does not route.
+  // A readback is therefore steered to the nearest free shim LTO holding no
+  // other readback, instead of to its producer's bucket. See the readback
+  // handling in ShimDMAAllocator::allocNewDmaChannel.
+  //
+  // Declared last on purpose: several sites aggregate-initialize this struct
+  // positionally, so a field inserted earlier silently shifts them.
+  bool isHostReadback = false;
   bool valid();
   AIE::TileLike getDmaTile();
   bool foundAlloc(AIE::TileLike tile);
