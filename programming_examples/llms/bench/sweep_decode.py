@@ -125,6 +125,7 @@ def bench_qwen(workdir, ctx, args):
             str(ctx),
             str(workdir),
             str(args.iters),
+            str(args.warmup),
         ],
         cwd=FUSED_DECODE,
         timeout=1800,
@@ -244,9 +245,12 @@ def main():
                 hard_fail = True
         points.append(rec)
         tps = rec["decode_tokens_per_sec"]
+        # `is not None`, not truthiness: a genuine 0.00 tok/s is a measurement,
+        # and printing it as the status would hide a real (if pathological)
+        # result behind what looks like a failure.
         print(
             f"[sweep] {a.model_name} ctx={ctx:<7} "
-            f"{f'{tps:.2f} tok/s' if tps else rec['status']}",
+            f"{f'{tps:.2f} tok/s' if tps is not None else rec['status']}",
             flush=True,
         )
 

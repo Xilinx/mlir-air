@@ -22,7 +22,10 @@ ctx = int(sys.argv[1])
 nl = int(os.environ.get("QWEN_NLAYERS", "36"))
 d = sys.argv[2]
 iters = int(sys.argv[3]) if len(sys.argv) > 3 else 32
-warm = 8
+# Warmup is an argument, not a constant, because sweep_decode.py records it in
+# the emitted run_params: hard-coding it here would make that metadata describe
+# a run that did not happen.
+warm = int(sys.argv[4]) if len(sys.argv) > 4 else 8
 os.environ.update(ATTN_L=str(ctx), QWEN_NLAYERS=str(nl), W_DUAL_CHAN="1")
 import numpy as np, pyxrt as xrt
 from ml_dtypes import bfloat16

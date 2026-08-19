@@ -570,7 +570,14 @@ def load_llm_sweeps(sweep_path):
         recs = json.loads(p.read_text())
     except (json.JSONDecodeError, OSError):
         return []
-    return recs or []
+    # The combined artifact is a list of per-model records. A single per-model
+    # <model>.sweep.json is a dict and is an easy thing to point this at by
+    # mistake; iterating one yields its keys as strings and blows up further
+    # down, so reject the shape here and just drop the table.
+    if not isinstance(recs, list):
+        print(f"warning: {p} is not a list of sweep records; ignoring it")
+        return []
+    return [r for r in recs if isinstance(r, dict)]
 
 
 def render_llm_sweep(recs, base_url=""):
