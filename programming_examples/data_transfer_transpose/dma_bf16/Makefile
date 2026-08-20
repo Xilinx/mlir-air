@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -20,7 +22,7 @@ PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLA
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/transpose_bf16.py $(OUTPUT_FORMAT_FLAG) -p -m $(M) -k $(K)
+	${powershell} $(PYTHON) ${srcdir}/transpose_bf16.py $(OUTPUT_FORMAT_FLAG) -p -m $(M) -k $(K)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
@@ -32,7 +34,7 @@ run: compile-kernel
 	mkdir -p $(BUILD_DIR)/air_project
 	cp $(BUILD_DIR)/transpose.o $(BUILD_DIR)/air_project/transpose.o
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/transpose_bf16.py $(OUTPUT_FORMAT_FLAG) -m $(M) -k $(K)
+		${powershell} $(PYTHON) ${srcdir}/transpose_bf16.py $(OUTPUT_FORMAT_FLAG) -m $(M) -k $(K)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

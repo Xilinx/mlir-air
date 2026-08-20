@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-place-herds="num-rows=6 num-cols=11" |& FileCheck %s
+// RUN: air-opt %s -air-place-herds="num-rows=6 num-cols=11" 2>&1 | FileCheck %s
 
 // CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 4
 // CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 2

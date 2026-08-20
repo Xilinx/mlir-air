@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -16,11 +18,11 @@ OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/single_core_channel.py $(OUTPUT_FORMAT_FLAG) -p
+	${powershell} $(PYTHON) ${srcdir}/single_core_channel.py $(OUTPUT_FORMAT_FLAG) -p
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_core_channel.py $(OUTPUT_FORMAT_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/single_core_channel.py $(OUTPUT_FORMAT_FLAG)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

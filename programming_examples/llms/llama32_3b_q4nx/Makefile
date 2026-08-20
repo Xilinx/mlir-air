@@ -24,6 +24,8 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -55,8 +57,7 @@ DRIVER := $(srcdir)/llama32_3b_q4nx_inference.py
 # 1B build from silently satisfying a 3B run.
 DEC           := $(srcdir)/../../fused_decode
 DECODE_DRIVER := $(DEC)/fused_decode.py
-AIEOPT_DIR    := $(shell realpath $(dir $(shell which aie-opt))/..)
-
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 # Per-kernel -O is LOAD-BEARING (see fused_decode/Makefile): proj_qmm/rms_residual/
 # glu/rope -O2; attn_qk/attn_kv inline .ll -O1. 3B differs only by
 # -DMODEL_TYPE=LLAMA_3_2_3B (the header sets the dims, DH=128, ATTN_IMPL, vocab).
@@ -121,7 +122,7 @@ help:
 ## templates are a separate ~15 min build -- see `make compile-decode`.
 compile:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) --compile-only
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) --compile-only
 
 ## Build the fused decode at the 3B geometry: Peano kernels (LLAMA_3_2_3B) + two
 ## same-ATTN_MAXL templates (decode_L$(LBUILD) + decode_L$(LREF)) into THIS dir.
@@ -177,7 +178,7 @@ compile-decode-dynseq:
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
 	@echo ">>> 3B dynseq template decode_dyn_L$(LBUILD)"
-	@cd $(DEC) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_GOLDEN_L=$(LBUILD) python3 $(DECODE_DRIVER) >/tmp/llama3b_decode_dyn_L$(LBUILD).log 2>&1; \
+	@cd $(DEC) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/llama3b_decode_dyn_L$(LBUILD).log 2>&1; \
 	  if [ -f decode.xclbin ] && [ -f air_project/npu.air.txn.h ]; then \
 	    mv -f decode.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
 	    cp -f air_project/npu.air.txn.h $(srcdir)/decode_dyn_L$(LBUILD).txn.h; \
@@ -198,10 +199,10 @@ _compile_decode_build:
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
 	@echo ">>> 3B template decode_L$(LBUILD) (+ L$(LREF) slope ref)"
-	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) python3 $(DECODE_DRIVER) >/tmp/llama3b_decode_L$(LBUILD).log 2>&1; \
+	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/llama3b_decode_L$(LBUILD).log 2>&1; \
 	  if [ -f decode.xclbin ]; then mv -f decode.xclbin $(srcdir)/decode_L$(LBUILD).xclbin; mv -f decode.insts.bin $(srcdir)/decode_L$(LBUILD).insts.bin; \
 	  else echo "decode_L$(LBUILD) FAILED (see /tmp/llama3b_decode_L$(LBUILD).log)"; tail -30 /tmp/llama3b_decode_L$(LBUILD).log; exit 1; fi
-	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) python3 $(DECODE_DRIVER) >/tmp/llama3b_decode_L$(LREF).log 2>&1; \
+	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) $(PYTHON) $(DECODE_DRIVER) >/tmp/llama3b_decode_L$(LREF).log 2>&1; \
 	  if [ -f decode.insts.bin ]; then mv -f decode.insts.bin $(srcdir)/decode_L$(LREF).insts.bin; mv -f decode.xclbin $(srcdir)/decode_L$(LREF).xclbin; \
 	  else echo "decode_L$(LREF) FAILED (see /tmp/llama3b_decode_L$(LREF).log)"; tail -30 /tmp/llama3b_decode_L$(LREF).log; exit 1; fi
 	@echo "3B decode build complete: decode_L$(LBUILD) + decode_L$(LREF) templates."
@@ -209,7 +210,7 @@ _compile_decode_build:
 ## Run unified inference
 run:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) \
 		--run-only --n-tokens $(N_TOKENS) --prompt "$(PROMPT)" --model $(MODEL)
 
 ## Run with detailed profiling breakdown. --no-eos-stop so throughput is averaged
@@ -218,13 +219,13 @@ run:
 ## llama32_1b_q4nx, whose profile target has carried this since it was written.
 profile:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) \
 		--run-only --n-tokens $(N_TOKENS) --profile --no-eos-stop \
 		--prompt "$(PROMPT)" --model $(MODEL)
 
 ## Interactive chat REPL
 chat:
-	cd $(BUILD_DIR) && python3 $(DRIVER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) \
 		--run-only --interactive --n-tokens $(N_TOKENS) --model $(MODEL)
 
 # The shared verify framework lives under programming_examples/llms/verify/.
@@ -234,13 +235,13 @@ RUNNER_ADAPTER = llama32_3b_q4nx.verify_adapter
 ## Top-k token-set inclusion gate (NPU q4nx vs HF bf16, 2 prompts x 32 tokens, k=5).
 verify:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL) --max-prompts 2
 
 ## Full-sweep variant of `make verify` (all prompts in the prompt file).
 verify-full:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL)
 
 ## Diagnosis lens (single prompt through the shared runner, informational).
@@ -249,29 +250,29 @@ verify-full:
 ## reports the token-level view instead. `make verify` is the PASS/FAIL gate.
 diagnosis:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts single --prompt "$(PROMPT)" --model $(MODEL)
 
 ## Fast weight-integrity smoke: prefill "The capital of France is"; PASS iff the
 ## first-token argmax == 12366 (" Paris"). Cheap (prefill only, no decode build).
 verify-paris:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(PREFILL) --model $(MODEL_SOURCE)
+	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL) --model $(MODEL_SOURCE)
 
 ## Warm prefill TTFT benchmark at CTX (per-ELF BO-write / NPU-run / BO-read breakdown).
 profile-prefill:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) python3 $(PREFILL)
+	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) $(PYTHON) $(PREFILL)
 
 ## Single Q&A turn:  make ask PROMPT="What is the capital of France?"
 ask:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) --run-only --prompt "$(PROMPT)" --model $(MODEL) --n-tokens $(N_TOKENS)
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) --run-only --prompt "$(PROMPT)" --model $(MODEL) --n-tokens $(N_TOKENS)
 
 ## Paris gate: greedy-decode "The capital of France is"; first token must be 12366.
 gen:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) --run-only --model base --n-tokens 12 \
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) --run-only --model base --n-tokens 12 \
 		--prompt "The capital of France is"
 
 ## Remove build artifacts. Deliberately KEEPS $(srcdir)/.decode_wcache: that is the

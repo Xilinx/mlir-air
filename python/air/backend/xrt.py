@@ -33,6 +33,34 @@ NPU_MODELS = {
 }
 
 
+def _xrt_smi_fallback():
+    """Where xrt-smi lives when it is not on PATH.
+
+    The NPU driver installs it under %SystemRoot%\\System32\\AMD on Windows and
+    the XRT package puts it in /opt/xilinx/xrt/bin on Linux.
+    """
+    if os.name == "nt":
+        return os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"), "System32", "AMD", "xrt-smi"
+        )
+    return "/opt/xilinx/xrt/bin/xrt-smi"
+
+
+def _warn_undetected(reason, default):
+    """Announce that the target device is a guess, and how to stop guessing.
+
+    Always printed rather than gated behind `verbose`: a design built for the
+    wrong generation loads and computes nothing, with no later diagnostic, so a
+    silent fallback turns a missing tool into a wrong numerical result.
+    """
+    print(
+        f"WARNING: could not detect the NPU generation ({reason}); "
+        f"falling back to '{default}'. If that is not this machine's NPU, the "
+        f"design will build and run but produce wrong results. Pass "
+        f"target_device= explicitly, or put xrt-smi on PATH."
+    )
+
+
 def detect_target_device(verbose=False, default="npu1"):
     """Return the NPU generation xrt-smi reports, or `default` if it can't tell.
 
@@ -44,7 +72,7 @@ def detect_target_device(verbose=False, default="npu1"):
     than asking.
     """
     try:
-        xrtsmi = shutil.which("xrt-smi") or "/opt/xilinx/xrt/bin/xrt-smi"
+        xrtsmi = shutil.which("xrt-smi") or _xrt_smi_fallback()
         result = subprocess.run(
             [xrtsmi, "examine"],
             stdout=subprocess.PIPE,
@@ -52,20 +80,16 @@ def detect_target_device(verbose=False, default="npu1"):
             timeout=10,
         )
     except Exception as e:
-        if verbose:
-            print("Failed to run xrt-smi, using default target device")
-            print(e)
+        _warn_undetected(f"could not run xrt-smi ({e})", default)
         return default
 
     if result.returncode != 0:
-        if verbose:
-            print(
-                f"xrt-smi exited with code {result.returncode}, "
-                f"using default target device"
-            )
-            stderr = result.stderr.decode("utf-8").strip()
-            if stderr:
-                print(f"xrt-smi stderr: {stderr}")
+        stderr = result.stderr.decode("utf-8").strip()
+        _warn_undetected(
+            f"xrt-smi exited with code {result.returncode}"
+            + (f": {stderr}" if stderr else ""),
+            default,
+        )
         return default
 
     # Case-insensitive substring matching against NPU_MODELS, aligned with
@@ -77,10 +101,10 @@ def detect_target_device(verbose=False, default="npu1"):
                 print(f"Detected NPU device: {version}")
             return version
 
-    print(
-        f"WARNING: xrt-smi did not report a recognized NPU model. "
-        f"Supported: {dict(NPU_MODELS)}. "
-        f"Falling back to '{default}'."
+    _warn_undetected(
+        f"xrt-smi did not report a recognized NPU model "
+        f"(supported: {dict(NPU_MODELS)})",
+        default,
     )
     return default
 

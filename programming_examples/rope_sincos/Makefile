@@ -1,8 +1,9 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -32,7 +33,7 @@ endif
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/rope_sincos.py $(OUTPUT_FORMAT_FLAG) -p
+	${powershell} $(PYTHON) ${srcdir}/rope_sincos.py $(OUTPUT_FORMAT_FLAG) -p
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
@@ -51,13 +52,13 @@ compile-xclbin: compile-kernel
 	mkdir -p $(BUILD_DIR)/air_project
 	cp $(BUILD_DIR)/rope.o $(BUILD_DIR)/air_project/rope.o
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/rope_sincos.py --output-format xclbin --compile-mode compile-only
+		${powershell} $(PYTHON) ${srcdir}/rope_sincos.py --output-format xclbin --compile-mode compile-only
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)/air_project
 	cp $(BUILD_DIR)/rope.o $(BUILD_DIR)/air_project/rope.o
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/rope_sincos.py $(OUTPUT_FORMAT_FLAG)
+		${powershell} $(PYTHON) ${srcdir}/rope_sincos.py $(OUTPUT_FORMAT_FLAG)
 
 # C++ profiling harness (10 warmup + 20 measured iterations, microsecond precision)
 profile: compile-xclbin build-test-exe

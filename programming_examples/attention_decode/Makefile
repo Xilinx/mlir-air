@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -13,7 +15,7 @@ endif
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 # -Os (aggressive size opt) keeps the AIE2P core ELF under the 16 KB
 # program memory limit when rms shares a tile with vecmat + attn +
@@ -42,11 +44,11 @@ ITERS ?= 20
 all: run-attn-decode
 
 print-attn-decode:
-	${powershell} python3 ${srcdir}/attn_decode_npu2.py $(OUTPUT_FORMAT_FLAG) -p --nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK)
+	${powershell} $(PYTHON) ${srcdir}/attn_decode_npu2.py $(OUTPUT_FORMAT_FLAG) -p --nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK)
 
 run-attn-decode: compile-attn-decode-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py $(OUTPUT_FORMAT_FLAG) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) --nkv $(NKV) --compile-mode compile-and-run
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/attn_decode_npu2.py $(OUTPUT_FORMAT_FLAG) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) --nkv $(NKV) --compile-mode compile-and-run
 
 compile-attn-decode-kernel:
 	mkdir -p $(BUILD_DIR)
@@ -70,7 +72,7 @@ compile-attn-decode-kernel-nocompute:
 
 profile-decode-nocompute: compile-attn-decode-kernel-nocompute build-test-exe-decode
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/attn_decode_npu2.py \
 		--nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) \
 		--compile-mode compile-only --output-format xclbin
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_xclbin_decode.exe \
@@ -85,7 +87,7 @@ profile-decode-nocompute: compile-attn-decode-kernel-nocompute build-test-exe-de
 # ============================================================================
 profile-decode: compile-attn-decode-kernel build-test-exe-decode
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/attn_decode_npu2.py \
 		--nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) \
 		--compile-mode compile-only --output-format xclbin
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_xclbin_decode.exe \
@@ -97,7 +99,7 @@ profile-decode: compile-attn-decode-kernel build-test-exe-decode
 # Both xclbin and ELF formats run multi-iteration cleanly for this design.
 profile-decode-elf: compile-attn-decode-kernel build-test-exe-decode-elf
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn_decode_npu2.py \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/attn_decode_npu2.py \
 		--nkv $(NKV) --pos $(POS) --k $(N_IN) --n $(DK) --tile-k $(TILE_K) --tile-n $(TILE_N) --seq-len $(LK) \
 		--compile-mode compile-only --output-format elf
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_elf_npu2_decode.exe \

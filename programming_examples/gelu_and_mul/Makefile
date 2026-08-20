@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # NPU2 (Strix / AIE2P) only. The kernel links an external C++ vector
 # microkernel (gelu_and_mul.cc -> gelu_and_mul.o) that needs the hardware
 # aie::tanh, so there is no NPU1 / direct-codegen path.
 BUILD_DIR := build_peano
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
@@ -33,20 +35,20 @@ compile-kernel:
 
 # Print the MLIR module (no kernel .o / NPU needed)
 print:
-	${powershell} python3 ${srcdir}/gelu_and_mul.py \
+	${powershell} $(PYTHON) ${srcdir}/gelu_and_mul.py \
 		--n $(N) --tile-n $(TILE_N) --herd-x $(HERD_X) --herd-y $(HERD_Y) -p
 
 # Compile + run correctness check on NPU2
 run: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/gelu_and_mul.py \
+		${powershell} $(PYTHON) ${srcdir}/gelu_and_mul.py \
 		--output-format $(OUTPUT_FORMAT) \
 		--n $(N) --tile-n $(TILE_N) --herd-x $(HERD_X) --herd-y $(HERD_Y)
 
 # Compile + run with latency/bandwidth profiling (correctness still checked)
 profile: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/gelu_and_mul.py \
+		${powershell} $(PYTHON) ${srcdir}/gelu_and_mul.py \
 		--output-format $(OUTPUT_FORMAT) \
 		--n $(N) --tile-n $(TILE_N) --herd-x $(HERD_X) --herd-y $(HERD_Y) \
 		--perf-iters $(ITERATIONS)

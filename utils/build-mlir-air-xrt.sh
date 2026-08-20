@@ -77,9 +77,17 @@ CMAKE_ARGS="$CMAKE_ARGS -DENABLE_RUN_XRT_TESTS=ON"
 CMAKE_ARGS="$CMAKE_ARGS -DLLVM_ENABLE_ASSERTIONS=on"
 CMAKE_ARGS="$CMAKE_ARGS -DPEANO_INSTALL_DIR=${PEANO_INSTALL_DIR}"
 
-if [ -x "$(command -v lld)" ]; then
-  CMAKE_ARGS="$CMAKE_ARGS -DLLVM_USE_LINKER=lld"
-fi
+# LLVM_USE_LINKER is a GNU/Clang driver option that MSVC's link.exe rejects.
+# Under Git Bash the probe below still succeeds, because Peano ships an lld, so
+# without this guard a native Windows configure fails on a linker it never uses.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*) ;;
+  *)
+    if [ -x "$(command -v lld)" ]; then
+      CMAKE_ARGS="$CMAKE_ARGS -DLLVM_USE_LINKER=lld"
+    fi
+    ;;
+esac
 
 if [ -x "$(command -v ccache)" ]; then
   CMAKE_ARGS="$CMAKE_ARGS -DLLVM_CCACHE_BUILD=ON"

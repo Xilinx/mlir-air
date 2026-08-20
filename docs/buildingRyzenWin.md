@@ -2,29 +2,21 @@
 
 This guide covers the **native Windows** setup for MLIR-AIR. It supports compiling AIR designs and running them on a Ryzen™ AI NPU entirely within Windows, without a POSIX environment. Users who prefer POSIX-style development can instead run WSL2 and follow the [Linux guide](buildingRyzenLin.md).
 
-Use an **x64 Native Tools Command Prompt for Visual Studio** (`cmd.exe`) for the commands in this guide. It provides MSVC, the linker, and the Windows SDK in one configured environment. Visual Studio and Visual Studio Build Tools both install that prompt and add a Start menu shortcut. PowerShell is also supported; the equivalent commands are collected in [Addendum A](#addendum-a-powershell).
+Use an **x64 Native Tools Command Prompt for Visual Studio** (`cmd.exe`) for the commands in this guide. It provides MSVC, the linker, and the Windows SDK in one configured environment. Visual Studio and Visual Studio Build Tools both install that prompt and add a Start menu shortcut. PowerShell is also supported; the equivalent commands are collected in [section 7](#7-powershell).
 
 MLIR-AIR builds on [MLIR-AIE](https://github.com/Xilinx/mlir-aie), and the two share the same Windows host requirements. Where this guide and [mlir-aie's native Windows guide](https://github.com/Xilinx/mlir-aie/blob/main/docs/buildHostWinNative.md) overlap, they are intended to agree; sections 1–3 below are the common host setup.
 
-> **Python note:** The Windows XRT SDK supplies `pyxrt` bindings for **CPython 3.13**. Use Python 3.13. Another Python version requires an XRT distribution with matching bindings. The whole stack will build and then fail at the final `import pyxrt` if the minor version does not match.
-
-## Contents
-
-1. [Install the Windows development environment](#1-install-the-windows-development-environment)
-2. [Update and verify the NPU driver](#2-update-and-verify-the-npu-driver)
-3. [Install the Windows XRT SDK](#3-install-the-windows-xrt-sdk)
-4. [Install prebuilt wheels (recommended)](#4-install-prebuilt-wheels-recommended)
-5. [Running a quick example](#5-running-a-quick-example)
-6. [Build from source](#6-build-from-source)
-7. [Addendum A: PowerShell](#addendum-a-powershell)
-8. [Addendum B: Windows differences and limitations](#addendum-b-windows-differences-and-limitations)
+> **Python note:** `pyxrt` is a compiled extension module, so your Python has to be the exact CPython minor version the XRT SDK built it against — **3.13** at the time of writing. Any other minor version installs and builds the whole stack, then fails at `import pyxrt`. [Section 3](#3-install-the-windows-xrt-sdk) reads the required version straight out of `pyxrt.pyd`; that check is authoritative if a newer SDK has moved on and this note has not.
 
 ## 1. Install the Windows development environment
 
 - A Windows 11 system with a supported Ryzen™ AI / XDNA™ NPU.
 - **Visual Studio 2026** (preferred) or **Visual Studio 2022** — the full IDE or the matching **Build Tools** package. Only needed for the source build in section 6; the wheel path in section 4 does not require a compiler.
-- **Python 3.13** (see the note above).
+- **Python**, at the minor version the note above names.
 - **Git for Windows**.
+- **GNU make**, only if you intend to run the example test suites in
+  [section 6.5](#65-testing) — most of those tests shell out to it. Running an
+  individual example does not need it.
 
 ### 1.1 Visual Studio components
 
@@ -42,11 +34,26 @@ REM Choose one: the full IDE or the matching Build Tools package
 winget install -e --id Microsoft.VisualStudio.Community
 REM winget install -e --id Microsoft.VisualStudio.BuildTools
 
+REM The package id carries the minor version; match the Python note above
 winget install -e --id Python.Python.3.13
 winget install -e --id Git.Git
+
+REM Only needed to run the example test suites (section 6.5)
+winget install -e --id ezwinports.make
 ```
 
+`winget` installs Visual Studio without any workload, so open the Visual Studio
+Installer afterwards and add the components in
+[section 1.1](#11-visual-studio-components) — otherwise there is no C++ compiler
+and [section 6.3](#63-configure-and-build) stops with a message saying so.
+
+`ezwinports.make` is a standalone GNU make with no other dependencies; it picks
+up Git's `sh.exe` as its shell, which is what the Makefile recipes expect. `make`
+from MSYS2 or Chocolatey works equally well.
+
 CMake and Ninja do **not** need a system-wide install; both are pulled into the Python environment in sections 4 and 6.
+
+A dedicated Conda or Miniforge environment works too, as long as it is on that same minor version. Activate it before running MLIR-AIE's `iron_setup.py` in [section 6.1](#61-prerequisites), which creates `ironenv` from the active interpreter.
 
 ## 2. Update and verify the NPU driver
 
@@ -56,28 +63,15 @@ Install the latest Ryzen™ AI / XDNA™ driver, then verify the NPU is visible:
 "C:\Windows\System32\AMD\xrt-smi.exe" examine
 ```
 
-NPU driver **32.0.20101.3760** (XRT **2.21.0**) is the minimum supported on Windows.
-
-Two things worth knowing when checking a driver version:
-
-- AMD publishes two version series that are not comparable — `32.0.203.x` (Ryzen AI direct) and `32.0.201xx.xxxx` (WHQL/OEM). **Compare the XRT version instead**; it is a single monotonic series and is what actually matters here.
-- The driver version reported by `xrt-smi` can be confirmed independently through PnP, which is useful when an installer claims success but changed nothing:
-
-```powershell
-Get-CimInstance Win32_PnPSignedDriver |
-  Where-Object { $_.DeviceName -match 'NPU' } |
-  Select-Object DeviceName, DriverVersion, DriverDate
-```
+MLIR-AIR adds no driver requirement of its own; the supported floor is whatever
+[mlir-aie's native Windows guide](https://github.com/Xilinx/mlir-aie/blob/main/docs/buildHostWinNative.md)
+states, since that is the host setup both repositories share.
 
 ## 3. Install the Windows XRT SDK
 
-The XRT SDK provides the headers, import libraries, tools, and `pyxrt` bindings. Pair the SDK with the **driver's** XRT version, so install the driver first.
+The XRT SDK provides the headers, import libraries, tools, and `pyxrt` bindings. Its version has to match the **driver's** XRT version, which `xrt-smi examine` reports — so install the driver first, then pick the SDK to match.
 
-```text
-https://github.com/Xilinx/XRT/releases/download/2.21.75/xrt_windows_sdk.zip
-```
-
-Extract the archive so that its `xrt_sdk\xrt` directory becomes:
+Download that release's `xrt_windows_sdk.zip` from the [XRT releases page](https://github.com/Xilinx/XRT/releases) and extract it so that its `xrt_sdk\xrt` directory becomes:
 
 ```text
 C:\Xilinx\XRT
@@ -85,11 +79,14 @@ C:\Xilinx\XRT
 
 `C:\Xilinx\XRT\python\pyxrt.pyd` should now exist. `C:\Xilinx\XRT` is the canonical location; a different path works as long as the environment variables in the following sections point at it.
 
-To confirm which CPython ABI the bindings were built against, read the binary rather than trusting a label:
+Read the CPython ABI out of the bindings rather than trusting a label, and check it against the Python you installed in section 1:
 
 ```bat
 python -c "import re,pathlib;print(re.search(rb'python(\d)(\d{2})\.dll',pathlib.Path(r'C:\Xilinx\XRT\python\pyxrt.pyd').read_bytes(),re.I).groups())"
+python -c "import sys;print(sys.version_info[:2])"
 ```
+
+Both must print the same major and minor. If they differ, this SDK wants a different Python than the one you have; install that version and use it for the virtual environment in section 4. This check, not the note at the top of the guide, is the authority.
 
 ## 4. Install prebuilt wheels (recommended)
 
@@ -97,7 +94,7 @@ This is the fastest path and needs no compiler, no CMake, and no LLVM clone. Use
 
 MLIR-AIR publishes **Windows AMD64** wheels. Backend dependencies are exposed as pip **extras**; for the AIE backend use the `[aie]` extra, which pins the exact `mlir_aie` version this AIR wheel was tested against and pulls `llvm-aie` (the Peano backend compiler).
 
-1. **Create a virtual environment** with Python 3.13:
+1. **Create a virtual environment** with that Python:
 
    ```bat
    python -m venv airenv
@@ -128,7 +125,7 @@ MLIR-AIR publishes **Windows AMD64** wheels. Backend dependencies are exposed as
    set "PYTHONPATH=%MLIR_AIR_INSTALL_DIR%\python;%MLIR_AIE_INSTALL_DIR%\python;%XRT_ROOT%\python"
    ```
 
-   > **`C:\Windows\System32\AMD` on `PATH` is not optional.** MLIR-AIR selects the target device by running `xrt-smi examine` and matching the reported NPU model. If `xrt-smi` cannot be found the lookup fails silently and falls back to **npu1**, so an npu2 part (Strix, Strix Halo, Krackan) is compiled for the wrong target. Alternatively, pass `target_device="npu2"` explicitly to `XRTBackend` / `XRTRunner`.
+   > `C:\Windows\System32\AMD` is on `PATH` so that MLIR-AIR can find `xrt-smi` and select the target device from the NPU model it reports. Passing `target_device="npu2"` to `XRTBackend` / `XRTRunner` selects it explicitly instead.
 
 4. **Verify the install:**
 
@@ -173,7 +170,8 @@ cd build_peano
 python ..\single_core_dma.py --output-format elf
 ```
 
-> **Most examples ship a `Makefile`, and Windows has no `make`.** The Makefiles are thin wrappers — the `run` target is a `mkdir` plus the `python` invocation shown above, so it is easy to run by hand. `make` from MSYS2 or Chocolatey also works if you prefer. See [Addendum B](#addendum-b-windows-differences-and-limitations).
+Most examples also ship a `Makefile` whose `run` target does the same thing, so
+`make run` works too once GNU make is installed ([section 1.2](#12-install-the-tools)).
 
 Explore `programming_examples\` for many more designs: GEMM, element-wise operations, softmax, RMSNorm, RoPE, FlashAttention, and end-to-end LLM examples.
 
@@ -221,23 +219,38 @@ mkdir my_install
 cd my_install
 pip download mlir==<version printed above> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
 python -c "import zipfile,glob;zipfile.ZipFile(glob.glob('mlir-*.whl')[0]).extractall('.')"
+cd ..
+python utils\fixup-llvm-diaguids.py my_install\mlir
 ```
+
+That last step repoints one absolute path the wheel carries from the machine
+that built it — `diaguids.lib`, the DIA SDK import library
+`LLVMDebugInfoPDB` links against. Skipping it surfaces much later, as a link
+failure naming a Visual Studio directory you do not have. The script is
+idempotent, so re-running it after a re-extract is harmless.
 
 (If you do have Git Bash handy, `bash utils\clone-llvm.sh --get-wheel-version` prints the same string.)
 
 If you already staged this wheel for a MLIR-AIE source build, check whether the version matches (`utils\clone-llvm.sh --get-wheel-version` in each repo) and reuse that tree rather than downloading 1 GB again.
 
-See [Addendum B](#addendum-b-windows-differences-and-limitations) for two post-extraction fixups that may be needed.
-
 ### 6.3 Configure and build
 
-**Do not use `utils\build-mlir-air-using-wheels.sh` or `utils\build-mlir-air-xrt.sh` on Windows.** Both auto-detect a linker with `if [ -x "$(command -v lld)" ]; then CMAKE_ARGS="$CMAKE_ARGS -DLLVM_USE_LINKER=lld"`. Peano and the Visual Studio Clang components both put `lld` on `PATH`, LLVM then probes the GCC/Clang-style `-fuse-ld=lld` flag, and MSVC rejects it with a configure-time fatal error. Invoke CMake directly instead, as MLIR-AIR's own Windows CI does.
-
-Save this as `configure.cmd` and adjust the paths:
+Invoke CMake directly, as MLIR-AIR's own Windows CI does. Save this as
+`configure.cmd` and adjust the paths. `vswhere` finds Visual Studio whatever its
+edition, version or location: `-products *` is needed because the default filter
+covers Community/Professional/Enterprise but silently omits Build Tools, and
+`-requires` rejects an install that has no C++ toolset, which is what a bare
+`winget install` leaves you with.
 
 ```bat
 @echo off
-call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul 2>&1
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+if not defined VSPATH (
+  echo No Visual Studio with the C++ toolset found -- see section 1.1.
+  exit /b 1
+)
+call "%VSPATH%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul 2>&1 || exit /b 1
 call "C:\dev\mlir-aie\iron_env.cmd" || exit /b 1
 
 set "AIR_SRC=C:/dev/mlir-air"
@@ -258,10 +271,15 @@ cmake "%AIR_SRC%" ^
   -DXRT_ROOT=C:/Xilinx/XRT ^
   -DLLVM_EXTERNAL_LIT=C:/dev/mlir-aie/ironenv/Scripts/lit.exe ^
   -DPython3_EXECUTABLE=C:/dev/mlir-aie/ironenv/Scripts/python.exe ^
+  -DENABLE_RUN_XRT_TESTS=ON ^
   -DCMAKE_INSTALL_PREFIX=%AIR_SRC%/install
 ```
 
-Every path handed to CMake uses forward slashes. Three configure lines are worth checking before building:
+`-DENABLE_RUN_XRT_TESTS=ON` defaults to OFF and is what lets the test suites in
+[section 6.5](#65-testing) dispatch to the NPU. Every path handed to CMake uses
+forward slashes.
+
+Three configure lines are worth checking before building:
 
 ```text
 -- Found xrt_coreutil
@@ -269,7 +287,11 @@ Every path handed to CMake uses forward slashes. Three configure lines are worth
 -- Skipping e2e tests on Windows (runtime libraries not built)
 ```
 
-The third is expected — see [Addendum B](#addendum-b-windows-differences-and-limitations). Reports that Vitis, `xchesscc`, AIETools, and LibXAIE were not found are also expected and harmless: Windows uses Peano exclusively.
+The third is expected: the `airhost` / `aircpu` host runtimes need POSIX APIs
+(`dlopen`, `mmap`, `ioctl`) and the Linux `amdair` kernel driver, so CMake skips
+them, and with them the `test/` tree. Reports that Vitis, `xchesscc`, AIETools,
+and LibXAIE were not found are also expected and harmless: Windows uses Peano
+exclusively, and Chess-gated tests report *unsupported* rather than failing.
 
 Then build and install:
 
@@ -296,6 +318,8 @@ set "PYTHONPATH=%MLIR_AIR_INSTALL_DIR%\python;%PYTHONPATH%"
 
 ### 6.5 Testing
 
+The compile-only suites need nothing beyond the build environment:
+
 ```bat
 cd C:\dev\mlir-air\build
 ninja check-air-cpp
@@ -303,15 +327,54 @@ ninja check-air-mlir
 ninja check-air-python
 ```
 
-`check-air-cpp` and `check-air-python` pass on Windows. `check-air-mlir` currently has known failures confined to the `Util/Runner` and `Util/Channel` suites; see [Addendum B](#addendum-b-windows-differences-and-limitations).
+#### Running the examples on hardware
 
-The hardware end-to-end suites (`check-air-e2e*`) are **not available on Windows** — they depend on the host runtime libraries, which are not built. Run designs under `programming_examples\` instead.
+`check-programming-examples-peano` dispatches to the NPU, so it needs the
+**runtime** environment of [section 6.4](#64-set-up-the-environment) rather than
+the build environment, plus GNU make on `PATH` — most example tests shell out to
+it. A wrapper that layers both:
 
----
+```bat
+@echo off
+call C:\dev\mlir-aie\iron_env.cmd || exit /b 1
+set "MLIR_AIR_INSTALL_DIR=C:\dev\mlir-air\install"
+set "PATH=%MLIR_AIR_INSTALL_DIR%\bin;%PATH%"
 
-<a id="addendum-a-powershell"></a>
-<details>
-<summary><strong>Addendum A: PowerShell</strong></summary>
+REM GNU make, plus Git's usr\bin for the sh.exe make uses as its shell. Both
+REM install per-user or machine-wide depending on how they were installed, so
+REM probe rather than assume; add your own directories if either came from
+REM MSYS2 or Chocolatey instead.
+if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links\make.exe" set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
+if exist "%ProgramFiles%\Git\usr\bin\sh.exe" set "PATH=%ProgramFiles%\Git\usr\bin;%PATH%"
+if exist "%LOCALAPPDATA%\Programs\Git\usr\bin\sh.exe" set "PATH=%LOCALAPPDATA%\Programs\Git\usr\bin;%PATH%"
+
+where make >nul 2>&1 || (echo GNU make not found -- see section 1.2. & exit /b 1)
+where sh   >nul 2>&1 || (echo sh.exe not found; is Git for Windows installed? & exit /b 1)
+
+cd /d C:\dev\mlir-air\build
+ninja check-programming-examples-peano
+```
+
+`iron_env.cmd` supplies XRT — which provides `aiebu-asm.exe`, needed to package a
+full ELF — and `C:\Windows\System32\AMD` for `xrt-smi.exe`. The full suite takes
+roughly 20 minutes on a Krackan Point NPU2.
+
+Use `lit` directly, in the same environment, to run one example:
+
+```bat
+lit -sv -j1 --filter "eltwise_add_with_l2.*peano" C:/dev/mlir-air/build/programming_examples
+```
+
+#### The xrt end-to-end suites
+
+`check-air-e2e*` and `check-air-runner` do not exist in a Windows build: the
+`test/` tree is skipped along with the host runtimes it needs
+([section 6.3](#63-configure-and-build)). Even with that guard lifted, much of
+`test/xrt` builds a Linux host binary (`g++-13`, boost, `-luuid -lrt`) or wraps
+execution in `flock`. Use `programming_examples\` as the end-to-end path on
+Windows.
+
+## 7. PowerShell
 
 Visual Studio installs a **Developer PowerShell for VS** shortcut providing the same compiler environment as the Native Tools `cmd.exe` prompt. PowerShell can also be started from an existing Native Tools prompt with `pwsh`, inheriting the compiler environment.
 
@@ -362,69 +425,6 @@ cmake C:/dev/mlir-air `
 ```
 
 The MSVC environment must still be present — start from a Developer PowerShell, or run `VsDevCmd.bat` in a `cmd.exe` prompt and launch `pwsh` from it.
-
-### Conda or Miniforge Python
-
-A dedicated Conda or Miniforge environment works with the SDK when it uses Python 3.13. Activate it before running MLIR-AIE's `iron_setup.py`, which uses the active interpreter when creating `ironenv`.
-
-</details>
-
-<a id="addendum-b-windows-differences-and-limitations"></a>
-<details>
-<summary><strong>Addendum B: Windows differences and limitations</strong></summary>
-
-### Not built on Windows
-
-`runtime_lib` (the `airhost` / `aircpu` host runtimes) depends on POSIX APIs — `dlopen`, `mmap`, `ioctl` — and on the Linux `amdair` kernel driver, so CMake skips it on Windows. Consequently:
-
-- The `check-air-e2e*` targets and the `test/xrt` suite do not exist in a Windows build. `programming_examples\` is the end-to-end path.
-- `Util/Channel` tests in `check-air-mlir` fail because they link a host executable against that runtime.
-
-### Peano only, no Chess
-
-Vitis and `xchesscc` are unavailable on Windows, so Peano is the only core compiler. CMake reporting `Unable to find xchesscc` / `Could NOT find Vitis` / `Could NOT find AIETools` is expected. Chess-gated LIT tests report *unsupported* rather than failing, and examples should be run with `PEANO_INSTALL_DIR` set.
-
-### `check-air-mlir` failures
-
-`Util/Runner` (the `air-runner` performance simulator) currently produces different output on Windows than the tests expect, and a handful of its tests use the `|&` shell operator, which lit's internal shell does not parse on Windows. These are open issues, not setup problems — the rest of the suite passes.
-
-### No `make`
-
-Most `programming_examples` ship Makefiles, and Windows has no `make`. The recipes are thin: `run` is a `mkdir` plus a `python` invocation. Read the Makefile and run the `python` line directly, or install `make` from MSYS2 or Chocolatey. Examples that compile an AIE kernel first (the GEMM examples, for instance) additionally invoke Peano's `clang++` with `--target=aie2p-none-unknown-elf` — that command is also in the Makefile and can be run as-is.
-
-LIT tests driven by Makefiles are skipped automatically on Windows.
-
-### Wrong device auto-detected
-
-`XRTBackend` runs `xrt-smi examine` and matches the reported model name against its device table. If `xrt-smi` is not on `PATH`, detection fails **silently** and falls back to `npu1`. Keep `C:\Windows\System32\AMD` on `PATH`, or pass `target_device="npu2"` explicitly. A design compiled for the wrong target typically shows up as a runtime timeout rather than a clear error.
-
-### Staged LLVM wheel fixups
-
-Two problems can appear after extracting the MLIR distro wheel (section 6.2):
-
-- **Hardcoded DIA SDK path.** `LLVMExports.cmake` inside the wheel can carry an absolute `diaguids.lib` path from the machine that built it. If CMake fails importing LLVM targets over a missing `diaguids.lib`, MLIR-AIE ships a fixup that rewrites it to your Visual Studio installation:
-
-  ```bat
-  python -c "import sys;sys.path.insert(0,r'C:\dev\mlir-aie\utils\mlir_aie_wheels\scripts');from pathlib import Path;import download_mlir;download_mlir._fixup_llvm_diaguids(Path(r'C:\dev\mlir-air\my_install\mlir'))"
-  ```
-
-- **Future-dated timestamps.** Files extracted from these wheels can carry mtimes in the future, which makes Ninja re-run configuration indefinitely. The symptom is a hang, not an error. Stamp them into the past:
-
-  ```bat
-  python -c "import os;[os.utime(os.path.join(r,f),(315600000,315600000)) for r,_,fs in os.walk(r'C:\dev\mlir-air\my_install\mlir') for f in fs]"
-  ```
-
-Both are avoided by reusing a tree that a MLIR-AIE build already staged and patched.
-
-### Endpoint security
-
-Endpoint protection has been observed quarantining individual executables out of the extracted LLVM wheel, which surfaces later as a confusing CMake error. A quick assertion after extraction:
-
-```bat
-if not exist my_install\mlir\bin\llvm-debuginfod.exe echo POSSIBLE AV QUARANTINE
-```
-
-</details>
 
 -----
 

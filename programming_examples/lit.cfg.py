@@ -37,6 +37,24 @@ config.environment["PYTHONPATH"] = os.pathsep.join(
 # os.environ['PYTHONPATH']
 print("Running with PYTHONPATH", config.environment["PYTHONPATH"])
 
+# The example Makefiles resolve the AIE headers through MLIR_AIE_INSTALL_DIR
+# rather than by locating aie-opt on PATH, so point it at the mlir-aie this
+# build was configured against. An explicit setting in the environment wins,
+# matching how llms/shared/infra/external_kernels.py treats the same variable.
+config.environment["MLIR_AIE_INSTALL_DIR"] = os.environ.get(
+    "MLIR_AIE_INSTALL_DIR", config.aie_obj_root
+)
+
+# Makefiles and tests that shell out to Python must use the interpreter this
+# build was configured with, not whichever one PATH happens to resolve first.
+config.environment["PYTHON"] = config.python_executable
+
+# Examples that build a host program need the XRT this build was configured
+# against. On Linux that arrives via run_on_npu.sh sourcing setup.sh, which
+# exports XILINX_XRT; there is no such script on Windows, so pass the
+# configured path down directly. XILINX_XRT still wins where it is set.
+config.environment["XRT_ROOT"] = os.environ.get("XRT_ROOT", config.xrt_dir)
+
 # suffixes: A list of file extensions to treat as test files.
 config.suffixes = [".lit"]
 
@@ -210,7 +228,10 @@ try:
 except ImportError:
     print("lerobot not installed; lerobot feature disabled.")
 
-llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
+# OS is forwarded because lit sanitizes the environment: without it, make's
+# $(OS) is empty under lit and any Windows_NT test in a Makefile silently takes
+# the POSIX branch. Unset on Linux, so forwarding it is a no-op there.
+llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP", "OS"])
 
 llvm_config.use_default_substitutions()
 

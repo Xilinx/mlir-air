@@ -19,6 +19,8 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 SEQ_LEN  ?= 2048
 N_LAYERS ?= 36
 BENCH_L  ?= 2048
@@ -34,8 +36,7 @@ PREFILL := $(srcdir)/qwen25_3b_q4_prefill.py
 DEC            := $(srcdir)/../../fused_decode
 DECODE_DRIVER  := $(DEC)/fused_decode_qwen.py
 HANDOFF        := $(DEC)/qwen_prefill_to_decode.py
-AIEOPT_DIR     := $(shell realpath $(dir $(shell which aie-opt))/..)
-
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 # Decode context CAP. The attention herd takes L as a runtime operand (an RTP the
 # instruction stream writes), so the device attends over the real context and
 # appends at the real position; LBUILD only sizes the KV cache. Two templates one
@@ -136,7 +137,7 @@ help:
 
 ## Build/cache the prefill ELFs and exit. No weights, no NPU dispatch.
 compile:
-	cd $(srcdir) && python3 $(PREFILL) --compile-only \
+	cd $(srcdir) && $(PYTHON) $(PREFILL) --compile-only \
 		--seq-len $(SEQ_LEN) --n-layers $(N_LAYERS)
 
 ## Build the fused Qwen decode: the Peano kernels (QWEN2_5_3B) + two templates
@@ -169,7 +170,7 @@ compile-decode-dynseq:
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
 	@echo ">>> qwen dynseq template decode_dyn_L$(LBUILD)"
 	@cd $(DEC) && QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN) \
-	  DECODE_DYNSEQ=1 python3 $(DECODE_DRIVER) >/tmp/qwen_decode_dyn_L$(LBUILD).log 2>&1; \
+	  DECODE_DYNSEQ=1 $(PYTHON) $(DECODE_DRIVER) >/tmp/qwen_decode_dyn_L$(LBUILD).log 2>&1; \
 	  if [ -f $(DEC)/decode_qwen.xclbin ] && [ -f $(DEC)/air_project/npu.air.txn.h ]; then \
 	    mv -f $(DEC)/decode_qwen.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
 	    cp -f $(DEC)/air_project/npu.air.txn.h $(srcdir)/decode_dyn_L$(LBUILD).txn.h; \
@@ -202,7 +203,7 @@ _compile_decode_build:
 	@for W in $(LBUILD) $(LREF); do \
 	  echo ">>> qwen decode template decode_L$$W (NLAYERS=$(N_LAYERS) W_DUAL_CHAN=$(W_DUAL_CHAN))"; \
 	  cd $(DEC) && QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$$W W_DUAL_CHAN=$(W_DUAL_CHAN) \
-	    python3 $(DECODE_DRIVER) >/tmp/qwen_decode_L$$W.log 2>&1; \
+	    $(PYTHON) $(DECODE_DRIVER) >/tmp/qwen_decode_L$$W.log 2>&1; \
 	  if [ -f $(DEC)/decode_qwen.xclbin ] && [ -f $(DEC)/decode_qwen.insts.bin ]; then \
 	    mv -f $(DEC)/decode_qwen.xclbin $(srcdir)/decode_L$$W.xclbin; \
 	    mv -f $(DEC)/decode_qwen.insts.bin $(srcdir)/decode_L$$W.insts.bin; \
@@ -214,12 +215,12 @@ _compile_decode_build:
 
 ## First-token gate: prefill "The capital of France is"; PASS iff argmax == 12095.
 run:
-	cd $(srcdir) && python3 $(PREFILL) \
+	cd $(srcdir) && $(PYTHON) $(PREFILL) \
 		--seq-len $(SEQ_LEN) --n-layers $(N_LAYERS) --model $(MODEL)
 
 ## Prefill GEN_PROMPT and dump the per-layer roped-K / biased-V hand-off cache.
 dump-kv:
-	cd $(srcdir) && python3 $(PREFILL) \
+	cd $(srcdir) && $(PYTHON) $(PREFILL) \
 		--seq-len $(SEQ_LEN) --n-layers $(N_LAYERS) --model $(MODEL) \
 		--prompt "$(GEN_PROMPT)" --dump-kv $(KV_NPZ)
 
@@ -229,12 +230,12 @@ dump-kv:
 ## holds for ANY prompt that fits the cache, since both sides see the same
 ## context (they used to diverge once the prompt outgrew the decode's window).
 gen: dump-kv
-	cd $(DEC) && $(DECODE_ENV) python3 $(HANDOFF) --kv $(KV_NPZ) --n-gen $(N_GEN) \
+	cd $(DEC) && $(DECODE_ENV) $(PYTHON) $(HANDOFF) --kv $(KV_NPZ) --n-gen $(N_GEN) \
 		--templates $(srcdir)
 
 ## Warm TTFT benchmark (+ per-ELF profile).
 bench:
-	cd $(srcdir) && python3 $(PREFILL) \
+	cd $(srcdir) && $(PYTHON) $(PREFILL) \
 		--seq-len $(SEQ_LEN) --n-layers $(N_LAYERS) --model $(MODEL) \
 		--bench-l $(BENCH_L)
 
@@ -244,7 +245,7 @@ profile-prefill: bench
 
 ## Q4_0 quant-error report for layer 0 (no NPU).
 weights:
-	cd $(srcdir) && python3 $(srcdir)/qwen25_3b_q4_weights.py --model $(MODEL)
+	cd $(srcdir) && $(PYTHON) $(srcdir)/qwen25_3b_q4_weights.py --model $(MODEL)
 
 # ---- correctness gate (identical to the other three Q4NX examples) ----
 #
@@ -255,12 +256,12 @@ weights:
 
 ## Top-k token-set inclusion gate (NPU q4 vs HF bf16, 2 prompts x 32 tokens, k=5).
 verify:
-	cd $(srcdir)/.. && $(DECODE_ENV) python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(srcdir)/.. && $(DECODE_ENV) $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL_CHOICE) --max-prompts $(MAX_PROMPTS)
 
 ## Full-sweep variant of `make verify` (all prompts in the prompt file).
 verify-full:
-	cd $(srcdir)/.. && $(DECODE_ENV) python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(srcdir)/.. && $(DECODE_ENV) $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL_CHOICE)
 
 ## Fast weight-integrity smoke: prefill "The capital of France is"; PASS iff the
@@ -272,7 +273,7 @@ verify-paris: run
 ## The Q4_0 prefill does not expose per-layer ffn_out, so this reports the
 ## token-level view rather than per-layer cosines.
 diagnosis:
-	cd $(srcdir)/.. && $(DECODE_ENV) python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(srcdir)/.. && $(DECODE_ENV) $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts single --prompt "$(GEN_PROMPT)" --model $(MODEL_CHOICE)
 
 ## Perf capture for llms/bench/extract_perf.py: prefill TTFT + fused decode

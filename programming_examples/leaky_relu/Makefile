@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -34,17 +36,17 @@ PY_FLAGS = --n $(N) --tile-n $(TILE_N) --alpha $(ALPHA) --dtype $(DTYPE) $(VEC_F
 	--target $(TARGET) $(OUTPUT_FORMAT_FLAG) $(EXTRA_PY_FLAGS)
 
 print:
-	${powershell} python3 ${srcdir}/leaky_relu.py $(PY_FLAGS) --print-ir
+	${powershell} $(PYTHON) ${srcdir}/leaky_relu.py $(PY_FLAGS) --print-ir
 
 compile:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/leaky_relu.py $(PY_FLAGS) --compile-only
+		${powershell} $(PYTHON) ${srcdir}/leaky_relu.py $(PY_FLAGS) --compile-only
 
 run:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/leaky_relu.py $(PY_FLAGS) \
+		${powershell} $(PYTHON) ${srcdir}/leaky_relu.py $(PY_FLAGS) \
 		--perf-iters $(PERF_ITERS)
 
 clean:

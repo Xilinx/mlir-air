@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -19,11 +21,11 @@ SHIFT_AMOUNT ?= 4
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/scalar_shift_saturate.py -p --shift-amount $(SHIFT_AMOUNT)
+	${powershell} $(PYTHON) ${srcdir}/scalar_shift_saturate.py -p --shift-amount $(SHIFT_AMOUNT)
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/scalar_shift_saturate.py $(OUTPUT_FORMAT_FLAG) --shift-amount $(SHIFT_AMOUNT)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/scalar_shift_saturate.py $(OUTPUT_FORMAT_FLAG) --shift-amount $(SHIFT_AMOUNT)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

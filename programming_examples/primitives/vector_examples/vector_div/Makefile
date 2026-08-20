@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -22,11 +24,11 @@ AIE_TARGET ?= aie2
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/vector_div.py $(OUTPUT_FORMAT_FLAG) -p --arch $(AIE_TARGET)
+	${powershell} $(PYTHON) ${srcdir}/vector_div.py $(OUTPUT_FORMAT_FLAG) -p --arch $(AIE_TARGET)
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_div.py $(OUTPUT_FORMAT_FLAG) --arch $(AIE_TARGET)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_div.py $(OUTPUT_FORMAT_FLAG) --arch $(AIE_TARGET)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

@@ -31,10 +31,10 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 # The interpreter that runs the model. It needs torch + lerobot (installed by
 # requirements.txt) AND air + pyxrt (from the sourced mlir-air environment) in
 # ONE process, which is what makes the in-process NPU path work. Defaults to
-# the environment's python3; override if your lerobot install lives elsewhere:
+# the environment's $(PYTHON); override if your lerobot install lives elsewhere:
 #     make verify LEROBOT_PYTHON=/path/to/venv/bin/python
-LEROBOT_PYTHON ?= python3
-NPU_PYTHON     ?= python3
+LEROBOT_PYTHON ?= $(PYTHON)
+NPU_PYTHON     ?= $(PYTHON)
 BUILD_DIR      ?= build
 REPS           ?= 5
 

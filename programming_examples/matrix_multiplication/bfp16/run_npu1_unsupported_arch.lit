@@ -7,6 +7,6 @@
 //
 // RUN: mkdir -p test_npu1_unsupported_arch
 // RUN: cd test_npu1_unsupported_arch
-// RUN: not python3 %S/run.py --arch aie2 --compile-mode compile-only 2>&1 | FileCheck %s
+// RUN: not %PYTHON %S/run.py --arch aie2 --compile-mode compile-only 2>&1 | FileCheck %s
 // CHECK: Error: --arch aie2 is not supported
 // CHECK: AIE2P-only

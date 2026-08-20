@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Which NPU generation the herd default is sized for: aie2 (NPU1) or aie2p
 # (NPU2, default). This picks the HERD_X default below and nothing else -- the
 # example takes its compilation target from XRT device auto-detection, not from
@@ -34,17 +36,17 @@ OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/layer_norm.py $(OUTPUT_FORMAT_FLAG) -p
+	${powershell} $(PYTHON) ${srcdir}/layer_norm.py $(OUTPUT_FORMAT_FLAG) -p
 
 # Default: multi-tile execution (8 tiles on NPU2, configurable via HERD_X)
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/layer_norm.py $(OUTPUT_FORMAT_FLAG) --M $(M) --N $(N) --herd-x $(HERD_X)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/layer_norm.py $(OUTPUT_FORMAT_FLAG) --M $(M) --N $(N) --herd-x $(HERD_X)
 
 # Original single-tile baseline (herd_x=1)
 run_single_tile:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/layer_norm.py $(OUTPUT_FORMAT_FLAG) --M $(M) --N $(N) --herd-x 1
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/layer_norm.py $(OUTPUT_FORMAT_FLAG) --M $(M) --N $(N) --herd-x 1
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

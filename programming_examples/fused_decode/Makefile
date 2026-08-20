@@ -16,9 +16,10 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-DECODE_DRIVER  := $(srcdir)/fused_decode.py
-AIEOPT_DIR     := $(shell realpath $(dir $(shell which aie-opt))/..)
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
 
+DECODE_DRIVER  := $(srcdir)/fused_decode.py
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 # Per-kernel -O is LOAD-BEARING (do not use one -O for all):
 #   proj_qmm/rms_residual/glu/rope MUST be -O2; attn_qk/attn_kv MUST be -O1.
 #   rope.cc at -O1 MISCOMPILES (Peano loop-metadata) -> the decode HANGS on device
@@ -194,7 +195,7 @@ compile-decode-dynseq: preflight-llvm-link
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
 	@echo ">>> dynseq template decode_dyn_L$(LBUILD)"
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_GOLDEN_L=$(LBUILD) python3 $(DECODE_DRIVER) >/tmp/decode_dyn_L$(LBUILD).log 2>&1; \
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_dyn_L$(LBUILD).log 2>&1; \
 	  if [ -f decode.xclbin ] && [ -f air_project/npu.air.txn.h ]; then \
 	    mv -f decode.xclbin decode_dyn_L$(LBUILD).xclbin; \
 	    cp -f air_project/npu.air.txn.h decode_dyn_L$(LBUILD).txn.h; \
@@ -234,10 +235,10 @@ _compile_decode_build: preflight-llvm-link
 	@# patch any context length in [1, 2048] into one template at runtime (recompile-free decode).
 	@# The block loop is single-buffered: air-label-scf-for-to-ping-pong declines it, because the
 	@# running max and accumulator are live across blocks. Turbo for ~50 tok/s.
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) python3 $(DECODE_DRIVER) >/tmp/decode_L$(LBUILD).log 2>&1; \
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_L$(LBUILD).log 2>&1; \
 	  if [ -f decode.xclbin ]; then mv -f decode.xclbin decode_L$(LBUILD).xclbin; mv -f decode.insts.bin decode_L$(LBUILD).insts.bin; \
 	  else echo "decode_L$(LBUILD) FAILED (see /tmp/decode_L$(LBUILD).log)"; exit 1; fi
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) python3 $(DECODE_DRIVER) >/tmp/decode_L$(LREF).log 2>&1; \
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_L$(LREF).log 2>&1; \
 	  if [ -f decode.insts.bin ]; then mv -f decode.insts.bin decode_L$(LREF).insts.bin; mv -f decode.xclbin decode_L$(LREF).xclbin; \
 	  else echo "decode_L$(LREF) FAILED (see /tmp/decode_L$(LREF).log)"; exit 1; fi
 	@echo "Decode build complete: decode_L$(LBUILD) + decode_L$(LREF) templates."

@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Attention parameters
 LK ?= 12288
 LKP ?= 96
@@ -22,7 +24,7 @@ endif
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 
 # AIE_TARGET can be set to 'aie2' (default) or 'aie2p' to select the target architecture.
@@ -41,13 +43,13 @@ endif
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/attn.py -p --arch $(AIE_TARGET)
+	${powershell} $(PYTHON) ${srcdir}/attn.py -p --arch $(AIE_TARGET)
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)
 	mkdir -p $(BUILD_DIR)/air_project
 	cp $(BUILD_DIR)/attn.o $(BUILD_DIR)/air_project/attn.o
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py --lk $(LK) --lkp $(LKP) --lq $(LQ) --dk $(DK) --dv $(DV) --arch $(AIE_TARGET) $(OUTPUT_FORMAT_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/attn.py --lk $(LK) --lkp $(LKP) --lq $(LQ) --dk $(DK) --dv $(DV) --arch $(AIE_TARGET) $(OUTPUT_FORMAT_FLAG)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)

@@ -3,6 +3,8 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 M       ?= 64
 K       ?= 128
 N       ?= 128
@@ -21,7 +23,7 @@ else
   BUILD_DIR := build_chess
 endif
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
@@ -33,7 +35,7 @@ PY_ARGS = --m $(M) --k $(K) --n $(N) \
 all: run
 
 print:
-	${powershell} python3 $(srcdir)/matmul_bf16_x_bfp16.py $(PY_ARGS) -p
+	${powershell} $(PYTHON) $(srcdir)/matmul_bf16_x_bfp16.py $(PY_ARGS) -p
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
@@ -48,11 +50,11 @@ compile-kernel:
 
 run: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  ${powershell} python3 $(srcdir)/matmul_bf16_x_bfp16.py $(PY_ARGS)
+	  ${powershell} $(PYTHON) $(srcdir)/matmul_bf16_x_bfp16.py $(PY_ARGS)
 
 compile-only: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  ${powershell} python3 $(srcdir)/matmul_bf16_x_bfp16.py $(PY_ARGS) --compile-mode compile-only
+	  ${powershell} $(PYTHON) $(srcdir)/matmul_bf16_x_bfp16.py $(PY_ARGS) --compile-mode compile-only
 
 # Build the C++ XRT timing harness. Mirrors bf16/Makefile:build-test-exe.
 build-test-exe:
@@ -86,7 +88,7 @@ build-test-exe:
 # End-to-end latency profile: build xclbin then run the C++ harness.
 profile: compile-kernel build-test-exe
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  ${powershell} python3 $(srcdir)/matmul_bf16_x_bfp16.py $(PY_ARGS) \
+	  ${powershell} $(PYTHON) $(srcdir)/matmul_bf16_x_bfp16.py $(PY_ARGS) \
 	    --compile-mode compile-and-xclbin
 	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE \
 	  -i air.insts.bin -M $(M) -K $(K) -N $(N)

@@ -14,6 +14,8 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Build directory
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -70,21 +72,21 @@ help:
 ## Compile all kernels (prefill + decode, ~4 min)
 compile:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py --compile-only
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_inference.py --compile-only
 
 ## Run unified inference
 run:
-	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_inference.py \
 		--run-only --n-tokens $(N_TOKENS) --prompt "$(PROMPT)" --model $(MODEL)
 
 ## Run with detailed profiling breakdown
 profile:
-	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_inference.py \
 		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" --model $(MODEL)
 
 ## Interactive chat: prepare runtime once, then loop on prompts
 chat:
-	cd $(BUILD_DIR) && python3 $(srcdir)/llama32_1b_inference.py \
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_inference.py \
 		--run-only --interactive --n-tokens $(N_TOKENS) --model $(MODEL)
 
 ## Compile and run in one step
@@ -100,20 +102,20 @@ RUNNER_ADAPTER = llama32_1b.verify_adapter
 ## This is the fast CI gate. For the full 8-prompt sweep, use `make verify-full`.
 verify:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL) --max-prompts 2
 
 ## Full-sweep variant of `make verify`: runs all prompts in the prompt file
 ## (currently 8). Use locally for exhaustive validation; CI uses `make verify`.
 verify-full:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL)
 
 ## Run the diagnosis lens (per-layer ffn_out cosine vs HF bf16, single prompt, informational)
 diagnosis:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts single --prompt "$(PROMPT)" --model $(MODEL)
 
 # ============================================================

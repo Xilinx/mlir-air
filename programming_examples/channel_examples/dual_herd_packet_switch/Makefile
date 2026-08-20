@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -21,28 +23,28 @@ ITERATIONS ?= 100
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(OUTPUT_FORMAT_FLAG) -p
+	${powershell} $(PYTHON) ${srcdir}/dual_herd_packet_switch.py $(OUTPUT_FORMAT_FLAG) -p
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(OUTPUT_FORMAT_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/dual_herd_packet_switch.py $(OUTPUT_FORMAT_FLAG)
 
 PROFILE_ARGS = $(OUTPUT_FORMAT_FLAG) --tile-size $(TILE_SIZE) --warmup $(WARMUP) --iterations $(ITERATIONS)
 
 profile:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(PROFILE_ARGS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/dual_herd_packet_switch.py $(PROFILE_ARGS)
 
 compare:
 	mkdir -p $(BUILD_DIR)
 	@echo "=== Single-herd add ==="
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_herd_add.py $(PROFILE_ARGS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/single_herd_add.py $(PROFILE_ARGS)
 	@echo ""
 	@echo "=== Single-herd mul ==="
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_herd_mul.py $(PROFILE_ARGS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/single_herd_mul.py $(PROFILE_ARGS)
 	@echo ""
 	@echo "=== Dual-herd (fused) ==="
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(PROFILE_ARGS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/dual_herd_packet_switch.py $(PROFILE_ARGS)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

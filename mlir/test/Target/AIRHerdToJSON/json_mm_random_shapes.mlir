@@ -23,7 +23,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-place-herds="num-rows=6 num-cols=11" | air-translate -air-herds-to-json -num-rows=6 -num-cols=11 |& FileCheck %s
+// RUN: air-opt %s -air-place-herds="num-rows=6 num-cols=11" | air-translate -air-herds-to-json -num-rows=6 -num-cols=11 2>&1 | FileCheck %s
 
 // CHECK: "row": 5, 
 // CHECK: "col": 10
