@@ -38,7 +38,6 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from air import api as air
-from air.api import ops  # registers air.ops  # noqa: F401
 from air.api.types import bf16, f32
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner

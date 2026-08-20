@@ -46,3 +46,10 @@ HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 # google's manual license gate, so CI needs no license grant for it.
 FastFlowLM/Gemma3-4B-NPU2
 unsloth/gemma-3-4b-it
+
+# Same Q4NX packaging of Phi-4-mini-instruct. Used by llms/phi4_mini_q4nx (the
+# fused decode loads weights from this repo), plus the bf16 reference `make
+# verify` compares against -- microsoft/Phi-4-mini-instruct is ungated, and is
+# the same repo FastFlowLM's own reference generator uses.
+FastFlowLM/Phi4-mini-Instruct-NPU2
+microsoft/Phi-4-mini-instruct

@@ -259,6 +259,39 @@ _MODELS = {
         # VOCAB_CHUNK_I2=9 (env) to match this UNI_LM.
         UNI_LM=14,  # vocab chunks per LM head (VOCAB_CHUNK_I2=9)
     ),
+    # Phi-4-mini-instruct. Attention topology and per-phase block counts are
+    # IDENTICAL to llama-3.2-3b (K=3072, M=5120, 8 kv heads, 2x4x1, DH=128), so
+    # I2P/J2P carry over unchanged. Two things differ:
+    #   - PARTIAL ROTARY. partial_rotary_factor=0.75 -> RoPE covers the leading
+    #     96 of 128 head dims, the rest passes through. ROPE_DIM shrinks the
+    #     cos/sin LUT to 96 and selects rope.cc's partial path (FLM ships a
+    #     separate rope_phi4.cc for the same thing).
+    #   - VOCAB 200064, which re-derives the chunking below.
+    "phi4-mini": dict(
+        K=3072,
+        M=5120,  # DQ+DK+DV = 3072+1024+1024
+        DH_A=128,
+        ROPE_DIM=96,  # partial rotary (0.75 * 128)
+        KV_PER_CU=2,  # 8 kv / 4 CU
+        N_ATTN_CU=4,
+        NPH=4,
+        I2P=[5, 3, 16, 3],
+        J2P=[6, 6, 6, 16],
+        DEST=["rope", "rms", "glu", "rms"],
+        GQA_SEG=4,  # ATTN_IMPL_2x4x1
+        PAIR_ROWS=2,
+        N_NORMS=2,
+        HAS_QK_NORM=False,
+        VOCAB_SIZE=200064,
+        UNI_DEC=32,
+        # VOCAB_SIZE_PADDED_FULL = ceil(200064/3072)*3072 = 202752 -> 6336
+        # rowblocks = 198 * (NCX*NCY*PAIR_ROWS), so VOCAB_I2 must divide 198.
+        # K/PAYLOAD = 6 must divide VOCAB_I2*PAIR_ROWS, i.e. 3 | VOCAB_I2, and the
+        # tested envelope caps 2*VOCAB_I2 <= 63. That leaves {3,6,9,18}; 18 is the
+        # largest, i.e. the fewest host-armed waves: 198/18 = 11.
+        # The driver MUST set VOCAB_CHUNK_I2=18 (env) to match this UNI_LM.
+        UNI_LM=11,  # vocab chunks per LM head (VOCAB_CHUNK_I2=18)
+    ),
 }
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = _MODELS[MODEL_NAME]
@@ -271,7 +304,12 @@ DH = MODEL["DH_A"]  # head dim (64 / 256)
 # per-head RMSNorm weights -> rope_w = [cos/sin, q_norm, k_norm] = 3*DH. The rope
 # kernel reads segments 2,3 behind #ifdef HAS_QK_NORM (already present).
 HAS_QK_NORM = MODEL.get("HAS_QK_NORM", False)
-ROPE_W_LEN = (3 * DH) if HAS_QK_NORM else DH  # 64 / 768
+# Rotary width: DH for full rotary, less for a partial-rotary model (Phi-4 ropes
+# 96 of 128 and copies the tail), which also shrinks the cos/sin LUT to ROPE_DIM.
+# Must agree with PARTIAL_ROPE_DIM in the model's C++ header -- the kernel reads
+# sin at rope_w + ROPE_DIM/2. Partial rotary + qk-norm is rejected there.
+ROPE_DIM = MODEL.get("ROPE_DIM", DH)
+ROPE_W_LEN = (3 * DH) if HAS_QK_NORM else ROPE_DIM  # 64 / 768 / 96
 NUM_KV_HEADS = MODEL["N_ATTN_CU"] * MODEL["KV_PER_CU"]  # 8 / 4
 NUM_Q_HEADS = (MODEL["M"] - 2 * NUM_KV_HEADS * DH) // DH  # 32 / 8
 Q_HEADS_PER_CU = NUM_Q_HEADS // MODEL["N_ATTN_CU"]  # 8 / 2

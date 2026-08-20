@@ -137,13 +137,13 @@ EXAMPLES = [
         "category": "Activation/Math",
         "name": "RELU",
         "path": "relu",
-        "datatypes": "bf16",
+        "datatypes": "bf16, f32",
     },
     {
         "category": "Activation/Math",
         "name": "Leaky RELU",
         "path": "leaky_relu",
-        "datatypes": "bf16",
+        "datatypes": "bf16, f32",
     },
     {
         "category": "Activation/Math",
@@ -524,6 +524,7 @@ LLM_HF_MODELS = {
     "llama32_1b_q4nx": "FastFlowLM/Llama-3.2-1B-NPU2",
     "llama32_3b": "meta-llama/Llama-3.2-3B",
     "llama32_3b_q4nx": "FastFlowLM/Llama-3.2-3B-NPU2",
+    "phi4_mini_q4nx": "FastFlowLM/Phi4-mini-Instruct-NPU2",
     "qwen25_0_5b": "Qwen/Qwen2.5-0.5B",
     "qwen25_1_5b": "Qwen/Qwen2.5-1.5B",
     "qwen25_3b": "Qwen/Qwen2.5-3B",

@@ -592,6 +592,14 @@ def alloc(shape, dtype, scope=None, vector=None):
         raise NotImplementedError(
             f"air.api can only allocate in a herd's private (L1) scope, got {scope!r}"
         )
+    # 0 is meaningful -- it selects the scalar path. Negative is not, and it
+    # would otherwise pass a caller's own `tile % width` guard unnoticed, since
+    # Python's modulo is 0 for any divisor of the tile regardless of sign.
+    if vector is not None and int(vector) < 0:
+        raise ValueError(
+            f"air.alloc vector width must be >= 0, got {vector} "
+            "(0 selects the scalar path)"
+        )
 
     memref_ty = MemRefType.get(
         [int(s) for s in shape],

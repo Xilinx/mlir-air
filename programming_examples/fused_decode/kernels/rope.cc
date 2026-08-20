@@ -62,11 +62,14 @@ void qk_norm(const bf16 *restrict x, const bf16 *restrict w) {
 }
 #endif
 
+// Rotates the leading ROPE_DIM of the head (halves ROPE_DIM/2 apart) and copies
+// the remaining DH-ROPE_DIM through untouched. ROPE_DIM == DH (every model but
+// Phi-4) leaves the tail loop empty, so those builds are unchanged.
 void apply_rope(bf16 *restrict y, bf16 *restrict x, bf16 *restrict cos_val,
                 bf16 *restrict sin_val) {
   constexpr int vector_size = 16;
-  const int DH_2 = DH / 2;
-  constexpr int F = DH_2 / vector_size;
+  const int DH_2 = ROPE_DIM / 2;
+  constexpr int F = ROPE_DIM / 2 / vector_size;
   bf16 *it_y_p1 = y;
   bf16 *it_y_p2 = y + DH_2;
   bf16 *it_x_p1 = x;
@@ -98,6 +101,18 @@ void apply_rope(bf16 *restrict y, bf16 *restrict x, bf16 *restrict cos_val,
     it_x_p2 += vector_size;
     it_cos += vector_size;
     it_sin += vector_size;
+  }
+  // Partial rotary (Phi-4): the trailing DH-ROPE_DIM of the head is not
+  // rotated, it is copied verbatim. Compile-time empty when ROPE_DIM == DH.
+  if constexpr (ROPE_DIM < DH) {
+    bf16 *it_x_t = x + ROPE_DIM;
+    bf16 *it_y_t = y + ROPE_DIM;
+    AIE_PREPARE_FOR_PIPELINING
+    for (int i = 0; i < (DH - ROPE_DIM) / vector_size; i++) {
+      aie::store_v(it_y_t, aie::load_v<vector_size>(it_x_t));
+      it_x_t += vector_size;
+      it_y_t += vector_size;
+    }
   }
 }
 
@@ -139,8 +154,11 @@ void pseduo_rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
 #endif
   const int DH_2 = DH / 2;
 
+  // The cos/sin LUT is ROPE_DIM wide (== DH for full rotary), so sin starts at
+  // ROPE_DIM/2, not DH/2. The zero-padding stores below stay DH-wide: that pads
+  // whole q heads for GQA-segment alignment, independent of the rotary width.
   bf16 *cos_val = it_rope;
-  bf16 *sin_val = it_rope + DH_2;
+  bf16 *sin_val = it_rope + ROPE_DIM / 2;
 
   for (int h = 0; h < NUM_KV_HEADS; h++) {
     for (int g = 0; g < Q_HEADS_PER_GROUP; g++) {

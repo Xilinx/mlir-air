@@ -1,8 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Reusable NPU2 fused-decode driver for Llama-3.2-3B Q4NX: the FLM-faithful on-device
-# decode (proj -> rope -> flash-attn with on-device KV -> o -> FFN x28 -> lm_head). Loads
+# Reusable NPU2 fused-decode driver for Phi-4-mini Q4NX: the FLM-faithful on-device
+# decode (proj -> rope -> flash-attn with on-device KV -> o -> FFN x32 -> lm_head). Loads
 # the 3B fused_decode template + q4k-cascade requant weights + embed/final-norm from the
 # model.q4nx bundle, and exposes dispatch(tok, pos) -> logits. One ATTN_MAXL=2048 template
 # serves every context length via an RTP-L + KV-append insts patch (no CPU attention).
@@ -28,44 +28,40 @@ for _p in (str(_PROG), str(_LLMS), str(_DEC), str(_1B), str(_HERE)):
 import decode_staircase as stair  # noqa: E402  (needs the sys.path above)
 
 
-def llama3_rope(
-    n_pos,
-    dim,
-    theta=500000.0,
-    factor=32.0,
-    low_freq_factor=1.0,
-    high_freq_factor=4.0,
-    old_ctx=8192.0,
-):
-    """RoPE cos/sin [n_pos, dim] for Llama-3.2 (rope_theta=5e5 + llama3 freq scaling)."""
-    inv = 1.0 / (theta ** (np.arange(0, dim, 2) / dim))
-    low_wl = old_ctx / low_freq_factor
-    high_wl = old_ctx / high_freq_factor
-    wl = 2 * np.pi / inv
-    new = inv.copy()
-    for i in range(len(inv)):
-        if wl[i] > low_wl:
-            new[i] = inv[i] / factor
-        elif wl[i] < high_wl:
-            new[i] = inv[i]
-        else:
-            s = (old_ctx / wl[i] - low_freq_factor) / (
-                high_freq_factor - low_freq_factor
-            )
-            new[i] = (1 - s) * inv[i] / factor + s * inv[i]
-    fr = np.arange(n_pos)[:, None] * new[None, :]
-    emb = np.concatenate([fr, fr], axis=1)
-    return np.cos(emb).astype(np.float32), np.sin(emb).astype(np.float32)
+def phi4_rope(n_pos, model_source):
+    """RoPE cos/sin [n_pos, ROPE_DIM/2] for Phi-4-mini.
+
+    PARTIAL rotary: only ROPE_DIM=96 of the 128 head dims are rotated (config
+    partial_rotary_factor=0.75), so there are 48 frequencies and the device LUT
+    is 96 wide, not 128. LongRoPE picks the short factor table within
+    original_max_position_embeddings=4096 and the long one beyond; short is all
+    1.0, so at the shipped 2048 template this is plain inv_freq(1e4, 96) --
+    exactly FastFlowLM's phi4_rope short half.
+    """
+    from phi4_mini_q4nx_weights import (
+        load_rope_factors,
+        longrope_attention_scaling,
+        longrope_inv_freq,
+        ROPE_DIM,
+        ROPE_ORIG_MAX_POS,
+    )
+
+    short, long_ = load_rope_factors(model_source)
+    inv = longrope_inv_freq(short if n_pos <= ROPE_ORIG_MAX_POS else long_)
+    # HF scales BOTH cos and sin by this; FLM does not (see the weights module).
+    sc = longrope_attention_scaling()
+    fr = np.arange(n_pos)[:, None] * inv[None, :]
+    return (np.cos(fr) * sc).astype(np.float32), (np.sin(fr) * sc).astype(np.float32)
 
 
 # fused_decode model key + vocab chunking. VOCAB_CHUNK_I2 must satisfy
-# (K/PAYLOAD) | VOCAB_I2*PAIR_ROWS -- 6 | 18 here -- or the vocab wave deadlocks;
+# (K/PAYLOAD) | VOCAB_I2*PAIR_ROWS -- 6 | 36 here -- or the vocab wave deadlocks;
 # it also has to match the model entry's UNI_LM (see fused_decode.py).
-DECODE_MODEL = "llama-3.2-3b"
-VOCAB_CHUNK_I2 = "9"
+DECODE_MODEL = "phi4-mini"
+VOCAB_CHUNK_I2 = "18"
 
 
-def load_fd(model_type="LLAMA_3_2_3B"):
+def load_fd(model_type="PHI4_4B"):
     """Load the fused_decode module for the 3B geometry (unified decode+lm_head,
     decode path enabled). `model_type` is the C++ -DMODEL_TYPE name; the Python
     generator selects the same model with DECODE_MODEL."""
@@ -78,7 +74,9 @@ def load_fd(model_type="LLAMA_3_2_3B"):
         DECODE_GOLDEN="1",
         DECODE_GOLDEN_L="2048",
     )
-    spec = importlib.util.spec_from_file_location("fu3b", str(_DEC / "fused_decode.py"))
+    spec = importlib.util.spec_from_file_location(
+        "fuphi4", str(_DEC / "fused_decode.py")
+    )
     fd = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fd)
     return fd
@@ -107,20 +105,24 @@ def ensure_requant_cache(model_source, fd, n_layers, wcache_dir=None, verbose=Tr
     # a warm single-channel cache would feed the dual-channel xclbin the wrong
     # blocks.
     w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
-    cache = wc / f"q4nx_3b_decode_L{n_layers}_v{fd.VOCAB_I2}{w2}_{fp}.npz"
+    cache = wc / f"q4nx_phi4_decode_L{n_layers}_v{fd.VOCAB_I2}{w2}_{fp}.npz"
     if cache.exists():
         return str(cache)
     if verbose:
         print(
-            f"[q4nx-3b] requantizing {n_layers} decode layers + lm_head "
+            f"[q4nx-phi4] requantizing {n_layers} decode layers + lm_head "
             f"(VOCAB_I2={fd.VOCAB_I2}); cached ONCE to {cache}",
             flush=True,
         )
+    # Phi-4 sets tie_word_embeddings=true (and the HF checkpoint has no lm_head at
+    # all), so the LM head IS the bf16 embedding -- the default tied path. Measured
+    # cosine(bundle lm_head, embed) = 0.9996, so the bundle's quantized copy is the
+    # same matrix, only lossier.
     build_requant_cache(model_source, fd, str(cache), n_layers=n_layers)
     return str(cache)
 
 
-EOS_IDS = (128001, 128009)  # <|end_of_text|>, <|eot_id|>
+EOS_IDS = (199999, 200020)  # <|endoftext|>, <|end|>
 
 
 def generate(dec, prompt_ids, n_tokens, greedy=True, sampler=None, stop_on_eos=True):
@@ -159,16 +161,16 @@ def generate(dec, prompt_ids, n_tokens, greedy=True, sampler=None, stop_on_eos=T
     t_gen = time.perf_counter() - t1
     if gen:
         print(
-            f"[q4nx-3b] prompt {P} tok in {t_prompt:.2f}s; decode {len(gen)} tok in "
+            f"[q4nx-phi4] prompt {P} tok in {t_prompt:.2f}s; decode {len(gen)} tok in "
             f"{t_gen:.2f}s ({len(gen) / max(t_gen, 1e-9):.1f} tok/s)",
             flush=True,
         )
     return gen
 
 
-class FusedDecode3B:
+class FusedDecodePhi4:
     """One-xclbin fused decode. dispatch(tok, pos) writes the token embedding + per-position
-    rope LUT, runs the 28-layer decode + lm_head on the AIE array (appending this token's
+    rope LUT, runs the 32-layer decode + lm_head on the AIE array (appending this token's
     roped-K/raw-V into the on-device KV cache at slot `pos`), and returns the vocab logits.
     The KV cache is device-resident and grown in place -- no CPU attention, no re-upload.
     """
@@ -177,7 +179,7 @@ class FusedDecode3B:
         self,
         model_source,
         templates,
-        model_type="LLAMA_3_2_3B",
+        model_type="PHI4_4B",
         max_L=None,
         staircase=False,
     ):
@@ -201,7 +203,11 @@ class FusedDecode3B:
         RMS_in = list(z["RMS_in"].view(bfloat16))
         RMS_post = list(z["RMS_post"].view(bfloat16))
         qm = Q4nxModel(model_source)
-        embed, final_norm, _ = qm.embed_norm_lmhead()
+        # Only the input embedding + final norm are read here; the LM head lives in
+        # the requant cache above (untied, from the bundle's own lm_head tensor), so
+        # embed_norm_lmhead()'s tied third return is deliberately not used.
+        embed = qm.bf16("model.embed_tokens.weight")
+        final_norm = qm.bf16("model.norm.weight")
         self.embed = np.asarray(embed, np.float32).reshape(self.VOCAB_SIZE, self.K)
         final_norm = np.asarray(final_norm, bfloat16)
 
@@ -218,7 +224,8 @@ class FusedDecode3B:
         self.windows = stair.resolve_windows(self.gen, staircase)
         # BOs and the rope table are sized for the largest window and shared by all.
         self.ATTN_MAXL = max(self.windows)
-        self.rope_cos, self.rope_sin = llama3_rope(self.ATTN_MAXL, self.DH)
+        self.ROPE_W = fd.ROPE_W_LEN  # 96: partial rotary, not DH
+        self.rope_cos, self.rope_sin = phi4_rope(self.ATTN_MAXL, model_source)
 
         RMS_LAYER = fd.RMS_LAYER
         KVSZ_TOK = fd.KVSZ_TOK
@@ -226,7 +233,7 @@ class FusedDecode3B:
         self.decode_y = (fd.HOST_ROUNDS + fd.LAYER_RNDS) * fd.PAYLOAD
         self.ny = self.decode_y + fd.UNI_LM * self.VP
         self.LREG = self.ATTN_MAXL * KVSZ_TOK
-        RMS_SIZE = self.N_LAYERS * RMS_LAYER + self.DH + self.K
+        RMS_SIZE = self.N_LAYERS * RMS_LAYER + self.ROPE_W + self.K
         rms_slabs = np.concatenate(
             [np.concatenate([RMS_in[k], RMS_post[k]]) for k in range(self.N_LAYERS)]
         )
@@ -254,7 +261,9 @@ class FusedDecode3B:
         # KV cache seeded empty; the kernel appends each token in-place at slot `pos`.
         self.reset_kv()
         # RMS BO: [rms_slabs | DH-wide LUT slot | final_norm]; LUT patched per position.
-        rmsbuf = np.concatenate([rms_slabs, np.zeros(self.DH, bfloat16), final_norm])
+        rmsbuf = np.concatenate(
+            [rms_slabs, np.zeros(self.ROPE_W, bfloat16), final_norm]
+        )
         self.r_bo.write(rmsbuf.view(np.int16), 0)
         self.r_bo.sync(self.TO)
         self.rms_lut_off = int(rms_slabs.size)
@@ -291,7 +300,7 @@ class FusedDecode3B:
         """Seed the device KV cache from a prefill (the warm-start handoff).
 
         `k_layers[L]` / `v_layers[L]` are [ctx, n_kv_heads*DH] roped-K / raw-V as
-        produced by llama32_3b_q4nx_prefill (head-major rows). The device cache is
+        produced by phi4_mini_q4nx_prefill (head-major rows). The device cache is
         REGION-major: per layer, NGRP K regions then NGRP V regions, each
         ATTN_MAXL*REGION_W, with position p at p*REGION_W. Within a region the
         heads served by that column group sit contiguously, so a head-major row
@@ -337,12 +346,12 @@ class FusedDecode3B:
                 self._use_window(w)
         self.insts_size = stair.patch_insts(self._st, L, self.xrt, self.TO)
         x0 = np.asarray(self.embed[tok], bfloat16)
-        h = self.DH // 2
-        lut = np.empty(self.DH, dtype=bfloat16)
+        h = self.ROPE_W // 2
+        lut = np.empty(self.ROPE_W, dtype=bfloat16)
         lut[:h] = self.rope_cos[p][:h].astype(bfloat16)
         lut[h:] = self.rope_sin[p][:h].astype(bfloat16)
         self.r_bo.write(lut.view(np.int16), self.rms_lut_off * 2)
-        self.r_bo.sync(self.TO, self.DH * 2, self.rms_lut_off * 2)
+        self.r_bo.sync(self.TO, self.ROPE_W * 2, self.rms_lut_off * 2)
         self.x_bo.write(x0.view(np.int16), 0)
         self.x_bo.sync(self.TO)
         st = self.kern(
@@ -367,36 +376,3 @@ class FusedDecode3B:
             self.y_bo.map(), dtype=bfloat16, count=voc_n, offset=self.decode_y * 2
         ).astype(np.float32)
         return yv[: self.VOCAB_SIZE]
-
-    # Kernels, insts states and BOs are all created against self.dev, but
-    # self.dev is assigned first and CPython clears an instance __dict__ in
-    # insertion order, so the device is released before the objects that
-    # depend on it. Linux XRT tolerates that; Windows XRT faults with an
-    # access violation while the decoder is collected. `ib` and `_st` alias
-    # into `_ist`, so they have to be dropped ahead of it or they keep that
-    # state (and its cacheable BO) alive past the device.
-    _XRT_RELEASE_ORDER = (
-        "ib",
-        "_st",
-        "_ist",
-        "kvc",
-        "y_bo",
-        "r_bo",
-        "w_bo",
-        "x_bo",
-        "kern",
-        "_kern",
-        "dev",
-    )
-
-    def close(self):
-        """Release the XRT objects in reverse dependency order."""
-        for name in self._XRT_RELEASE_ORDER:
-            if name in self.__dict__:
-                self.__dict__[name] = None
-
-    def __del__(self):
-        try:
-            self.close()
-        except Exception:
-            pass
