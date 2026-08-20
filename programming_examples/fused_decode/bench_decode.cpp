@@ -80,6 +80,16 @@ std::string argStr(int argc, char **argv, const std::string &flag,
   return dflt;
 }
 
+std::vector<size_t> parseList(const std::string &csv) {
+  std::vector<size_t> v;
+  for (size_t pos = 0; pos < csv.size();) {
+    size_t comma = std::min(csv.find(',', pos), csv.size());
+    v.push_back(std::stoull(csv.substr(pos, comma - pos)));
+    pos = comma + 1;
+  }
+  return v;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -93,6 +103,22 @@ int main(int argc, char **argv) {
   const size_t DECODE_Y = argLong(argc, argv, "--decode-y", 5120);
   const size_t VOC_N = argLong(argc, argv, "--voc-n", 7 * 18432);
   const size_t RMS_LUT_OFF = argLong(argc, argv, "--rms-lut-off", 65536);
+
+  // --w-parts: per-buffer weight element counts for a DECODE_WGROUP build (a
+  // shim BD's byte offset is a uint32, so one buffer only reaches 4 GiB and
+  // qwen3-8b's 4.41 GiB of weights must be split). Empty => the single-buffer
+  // models, which is every other one. The sum is checked against --w-elems
+  // because a wrong split still dispatches -- it just feeds the later layers
+  // from the wrong base and reports a plausible number.
+  std::vector<size_t> wParts = parseList(argStr(argc, argv, "--w-parts", ""));
+  if (wParts.empty())
+    wParts.push_back(W_ELEMS);
+  size_t wTotal = 0;
+  for (size_t n : wParts)
+    wTotal += n;
+  if (wTotal != W_ELEMS)
+    throw std::runtime_error("--w-parts sums to " + std::to_string(wTotal) +
+                             ", not --w-elems " + std::to_string(W_ELEMS));
 
   const long L = argLong(argc, argv, "--l", 1933);
   const long iters = argLong(argc, argv, "--iters", 64);
@@ -136,7 +162,9 @@ int main(int argc, char **argv) {
             << "insts       " << insts.size() << " words, L-dependent [" << lo
             << ", " << hi << ")\n"
             << "L           " << L << "   iters " << iters << " (warmup "
-            << warmup << ")\n";
+            << warmup << ")\n"
+            << "weights     " << W_ELEMS << " elems in " << wParts.size()
+            << " buffer(s)\n";
 
   // ---- device / kernel ----
   auto device = xrt::device(0);
@@ -153,7 +181,13 @@ int main(int argc, char **argv) {
 
   const auto HO = XRT_BO_FLAGS_HOST_ONLY;
   auto bo_x = xrt::bo(device, K * 2, HO, kernel.group_id(3));
-  auto bo_w = xrt::bo(device, W_ELEMS * 2, HO, kernel.group_id(4));
+  // Weight group 0 keeps the original weight arg; the remaining groups and the
+  // lm-head slab are appended after kvc, so every pre-existing binding position
+  // is unchanged (fused_decode.py `_w_extra` / WARG).
+  std::vector<xrt::bo> bo_w;
+  for (size_t i = 0; i < wParts.size(); i++)
+    bo_w.emplace_back(device, wParts[i] * 2, HO,
+                      kernel.group_id(i == 0 ? 4 : 7 + static_cast<int>(i)));
   auto bo_r = xrt::bo(device, RMS_SIZE * 2, HO, kernel.group_id(5));
   auto bo_y = xrt::bo(device, NY * 2, HO, kernel.group_id(6));
   auto bo_kv = xrt::bo(device, KV_ELEMS * 2, HO, kernel.group_id(7));
@@ -169,7 +203,8 @@ int main(int argc, char **argv) {
       p[i] = pat;
     bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   };
-  fill(bo_w, W_ELEMS * 2, 0x3C00);
+  for (size_t i = 0; i < bo_w.size(); i++)
+    fill(bo_w[i], wParts[i] * 2, 0x3C00);
   fill(bo_r, RMS_SIZE * 2, 0x3C00);
   fill(bo_kv, KV_ELEMS * 2, 0x3C00);
   fill(bo_x, K * 2, 0x3C00);
@@ -203,8 +238,23 @@ int main(int argc, char **argv) {
     bo_x.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     auto t2 = std::chrono::steady_clock::now();
 
-    auto run = kernel(3u, bo_i, static_cast<uint32_t>(insts.size()), bo_x, bo_w,
-                      bo_r, bo_y, bo_kv);
+    // set_arg rather than kernel(...): the argument count is not fixed, because
+    // a split-weight build appends one buffer per extra group. Same sequence
+    // xrt::kernel::operator() runs (construct, set, start), so the per-dispatch
+    // host cost inside the `dispatch` phase is unchanged.
+    xrt::run run(kernel);
+    int a = 0;
+    run.set_arg(a++, 3u);
+    run.set_arg(a++, bo_i);
+    run.set_arg(a++, static_cast<uint32_t>(insts.size()));
+    run.set_arg(a++, bo_x);
+    run.set_arg(a++, bo_w[0]);
+    run.set_arg(a++, bo_r);
+    run.set_arg(a++, bo_y);
+    run.set_arg(a++, bo_kv);
+    for (size_t i = 1; i < bo_w.size(); i++)
+      run.set_arg(a++, bo_w[i]);
+    run.start();
     auto st = run.wait(60000);
     if (st != ERT_CMD_STATE_COMPLETED) {
       std::cerr << "dispatch did not complete: state=" << st << "\n";

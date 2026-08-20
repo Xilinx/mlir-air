@@ -28,8 +28,8 @@ on:
         description: >-
           Comma-separated lit suites to run: verify, profile, sweep. Defaults to
           all three, which is what the schedule runs. Narrow it to iterate on one
-          suite without paying for the others -- a full run is ~4h, sweep alone is
-          ~25 min. A narrowed run does NOT publish (see below), because its
+          suite without paying for the others -- a full run is ~4h, sweep alone
+          well under an hour. A narrowed run does NOT publish (see below), because its
           perf.json is partial by construction.
         default: verify,profile,sweep
         type: string
@@ -347,7 +347,7 @@ jobs:
             LIT_OPTS="--timeout 1800" \
               ninja check-programming-examples-llms-profile || rc=1
           fi
-          # Decode tok/s vs context, for the four fused-decode models: writes
+          # Decode tok/s vs context, for the fused-decode models: writes
           # <model>.sweep.json alongside. The profile capture above measures one
           # point at the profile prompt's ~6 tokens of context, which is the
           # flattering end of a ~12x range and cannot see a KV-path regression.
@@ -458,7 +458,7 @@ jobs:
 
           # Decode tok/s-vs-context sweeps, kept in their own file rather than
           # folded into perf.json: a sweep is a curve, not a scalar, and
-          # history.ndjson's one-row-per-model shape cannot hold one. The four
+          # history.ndjson's one-row-per-model shape cannot hold one. The
           # models that have a sweep are published from this file instead of the
           # perf.json table (generate_readme.py drops them from the latter).
           sweeps = []
