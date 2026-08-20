@@ -170,6 +170,9 @@ jobs:
             git show FETCH_HEAD:history.ndjson > /tmp/llmperf_history/history.ndjson \
               && echo "history.ndjson fetched" \
               || echo "perf-history branch has no history.ndjson; empty-state page"
+            git show FETCH_HEAD:sweep_history.ndjson > /tmp/llmperf_history/sweep_history.ndjson \
+              && echo "sweep_history.ndjson fetched" \
+              || echo "perf-history branch has no sweep_history.ndjson"
           else
             echo "no perf-history branch yet; empty-state page"
           fi
@@ -188,6 +191,7 @@ jobs:
           python3 programming_examples/generate_readme.py \
             --section llm --base-url "$BASE" \
             --llm-history /tmp/llmperf_history/history.ndjson \
+            --llm-sweep-history /tmp/llmperf_history/sweep_history.ndjson \
             --llm-perf /tmp/llmperf/perf.json \
             --llm-sweep /tmp/llmperf/sweep.json \
             --output docs/llms/index.md

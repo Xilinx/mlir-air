@@ -585,15 +585,31 @@ jobs:
           PY
 
       # The artifact NAME decides whether this run can reach the page:
-      # generateDocs.yml consumes the first `perf-<run id>` it finds. A partial
-      # run uploads under another name -- downloadable, but not publishable.
-      # Gating the dispatch below is not enough, and was the bug: generateDocs
-      # also runs on every push to main and fetches the artifact itself.
+      # generateDocs.yml consumes the first `perf-<run id>` it finds. Gating the
+      # dispatch below is not enough, and was the bug: generateDocs also runs on
+      # every push to main and fetches the artifact itself.
+      #
+      # Two steps rather than one with a computed name, because cancellation has
+      # to be part of the condition and the status functions are only defined
+      # for `if:`. A cancelled full run is partial at an arbitrary point, so it
+      # must land under the non-publishable name like a narrowed run does.
       - name: Upload perf artifact
-        if: always()
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') && format('perf-{0}', github.run_id) || format('perf-partial-{0}', github.run_id) }}
+          name: perf-${{ github.run_id }}
+          path: |
+            perf.json
+            sweep.json
+            perf_out/
+            verify.xml
+
+      # Same payload, name the publisher ignores: still there to download.
+      - name: Upload perf artifact (partial run)
+        if: ${{ cancelled() || !(github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-partial-${{ github.run_id }}
           path: |
             perf.json
             sweep.json

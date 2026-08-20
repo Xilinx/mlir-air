@@ -560,6 +560,45 @@ def _ctx_label(n):
     return f"{n // 1024}k" if n and n % 1024 == 0 else str(n)
 
 
+def load_llm_sweep_history(path):
+    """Newest point per (model, context) from sweep_history.ndjson, as curves.
+
+    Same reason as load_llm_history: a snapshot makes publishing destructive, so
+    a run that swept nothing would empty the curve table.
+    """
+    if not path or not Path(path).is_file():
+        return []
+    newest = {}
+    for line in Path(path).read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        model, ctx = r.get("model"), r.get("context_len")
+        if not model or ctx is None:
+            continue
+        ts = r.get("timestamp_utc") or r.get("date") or ""
+        cur = newest.get((model, ctx))
+        # A measured point outranks a failed one at the same context, so a bad
+        # run leaves the last real number rather than punching a hole.
+        better = r.get("decode_tokens_per_sec") is not None
+        if cur is None or (better, ts) >= (cur[0], cur[1]):
+            newest[(model, ctx)] = (better, ts, r)
+    curves = {}
+    for (model, ctx), (_, _, r) in sorted(newest.items()):
+        curves.setdefault(model, {"model": model, "points": []})["points"].append(
+            {
+                "context_len": ctx,
+                "decode_tokens_per_sec": r.get("decode_tokens_per_sec"),
+                "ms_per_token": r.get("ms_per_token"),
+                "status": r.get("status", ""),
+            }
+        )
+    return [curves[m] for m in sorted(curves)]
+
+
 def load_llm_sweeps(sweep_path):
     """Read sweep.json (list of per-model tok/s-vs-context curves), or []."""
     if not sweep_path:
@@ -848,6 +887,7 @@ def generate_readme(
     section="full",
     llm_sweep_path=None,
     llm_history_path=None,
+    llm_sweep_history_path=None,
 ):
     """Generate dashboard content.
 
@@ -867,7 +907,8 @@ def generate_readme(
             llm_perf_path,
             base_url=base_url,
             perf_history_link="perf-history.md",
-            sweep_recs=load_llm_sweeps(llm_sweep_path),
+            sweep_recs=load_llm_sweep_history(llm_sweep_history_path)
+            or load_llm_sweeps(llm_sweep_path),
             history_path=llm_history_path,
         )
         return f"""\
@@ -882,7 +923,8 @@ End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped t
     llm_section = render_llm_benchmark(
         llm_perf_path,
         base_url=base_url,
-        sweep_recs=load_llm_sweeps(llm_sweep_path),
+        sweep_recs=load_llm_sweep_history(llm_sweep_history_path)
+        or load_llm_sweeps(llm_sweep_path),
         history_path=llm_history_path,
     )
     return (
@@ -926,6 +968,12 @@ if __name__ == "__main__":
         "a model leaves its previous value in place instead of erasing it.",
     )
     parser.add_argument(
+        "--llm-sweep-history",
+        default=None,
+        help="Path to sweep_history.ndjson. Preferred over --llm-sweep, same "
+        "reason as --llm-history.",
+    )
+    parser.add_argument(
         "--section",
         choices=["full", "operators", "llm"],
         default="full",
@@ -940,6 +988,7 @@ if __name__ == "__main__":
         section=args.section,
         llm_sweep_path=args.llm_sweep,
         llm_history_path=args.llm_history,
+        llm_sweep_history_path=args.llm_sweep_history,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(content)
