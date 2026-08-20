@@ -4974,6 +4974,14 @@ public:
     if (failed(tile_dma_alloc.verifyMM2SChains()))
       return failure();
 
+    // Step 3d: packet multiplexing exists to exceed a tile's channel count,
+    // but the allocator applies it before it ever looks for a free channel, so
+    // a shim can carry four flows on MM2S 0 with MM2S 1 idle. Redistribute
+    // onto the free channels now that every allocation is known; collapse that
+    // is load-bearing (bundled sub-channels, broadcasts, pinned/dedicated
+    // flows) is left alone.
+    shim_dma_alloc.spreadCollapsedPacketChannels(memcpy_flows);
+
     // Step 4: Connect flows.
     //
     // Packet flows are assigned pkt_ids in two passes so that within one

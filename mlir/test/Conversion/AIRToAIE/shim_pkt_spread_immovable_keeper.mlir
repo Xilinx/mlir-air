@@ -1,35 +1,31 @@
-//===- shim_pkt_channel_sharing.mlir ---------------------------*- MLIR -*-===//
+//===- shim_pkt_spread_immovable_keeper.mlir -------------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-// Test that multiple dma_packet channels from L3 to L2 on the same shim column
-// can share physical DMA channels via packet-flow time multiplexing, exceeding
-// the 2 physical MM2S channel limit per shim tile.
+// ShimDMAAllocator::spreadCollapsedPacketChannels must pick an IMMOVABLE decl as
+// the one that keeps the collapsed channel, not simply the first-allocated one.
+//
+// Here all three L3->L2 packet channels collapse onto shim MM2S 0, and the two
+// allocated AFTER the first carry broadcast_shape -- a broadcast fans out from
+// one port by construction, so it cannot be moved. Keeping order[0] and only
+// considering later decls leaves nothing eligible: all three stay on MM2S 0 and
+// MM2S 1 sits idle, which is exactly the wasted-channel case the pass exists to
+// remove. Keeping the first immovable decl instead frees the earlier movable one.
 
 // RUN: air-opt %s -air-to-aie='row-offset=2 col-offset=0 device=npu1_1col' | FileCheck %s
 
-// Three packet-flow L3-to-L2 input channels sharing one shim tile (col 0).
-// Multiplexing is an OVERFLOW mechanism, not the first choice: the two physical
-// MM2S channels are filled first (pkt_in_0 -> 0, pkt_in_1 -> 1, spread out of
-// the allocator's collapse by ShimDMAAllocator::spreadCollapsedPacketChannels),
-// and only the third channel, which has nowhere else to go, shares. All three
-// still get packet_flow ops with unique IDs, which is what lets the shim carry
-// more flows than it has channels.
-// CHECK: aie.packet_flow(0)
-// CHECK: aie.packet_flow(1)
-// CHECK: aie.packet_flow(2)
-// CHECK: aie.shim_dma_allocation @air_out({{.*}}, S2MM, 0)
-// CHECK: aie.shim_dma_allocation @air_pkt_in_0({{.*}}, MM2S, 0)
-// CHECK: aie.shim_dma_allocation @air_pkt_in_1({{.*}}, MM2S, 1)
-// CHECK: aie.shim_dma_allocation @air_pkt_in_2({{.*}}, MM2S, 0)
+// The broadcasts keep MM2S 0; the movable channel is the one that spreads.
+// CHECK-DAG: aie.shim_dma_allocation @air_pkt_in_0({{.*}}, MM2S, 1)
+// CHECK-DAG: aie.shim_dma_allocation @air_pkt_in_1({{.*}}, MM2S, 0)
+// CHECK-DAG: aie.shim_dma_allocation @air_pkt_in_2({{.*}}, MM2S, 0)
 
 module {
   air.channel @pkt_in_0 [1, 1] {channel_type = "npu_dma_packet"}
-  air.channel @pkt_in_1 [1, 1] {channel_type = "npu_dma_packet"}
-  air.channel @pkt_in_2 [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @pkt_in_1 [1, 1] {channel_type = "npu_dma_packet", broadcast_shape = [1, 1]}
+  air.channel @pkt_in_2 [1, 1] {channel_type = "npu_dma_packet", broadcast_shape = [1, 1]}
   air.channel @to_core [1, 1]
   air.channel @from_core [1, 1]
   air.channel @out [1, 1]

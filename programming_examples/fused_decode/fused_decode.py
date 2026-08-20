@@ -1138,12 +1138,11 @@ def build_module():
         # #4 (FULL4): rmsX is PACKET so it converges with the id4 demux (o-proj+down)
         # on the rms core's S2MM0 -- the reference's tile_2_2 DMA0 receives @xy(id0)+id4
         # both as packets into one 2-slot ping-pong (input, then o-proj, then down).
-        # Debug configs keep the original circuit + dedicated-channel rmsX.
+        # Debug configs keep the original circuit rmsX.
         if FULL4:
             _rx = channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
         else:
             _rx = channel_decl("rmsX", size=[1])
-            _rx.operation.attributes["air.dedicated_dma_channel"] = UnitAttr.get()
         _rw = channel_decl("rmsW", size=[1])
         if POST_RMS:
             # Separate channel for the post_attention_layernorm weight. A single
@@ -1157,7 +1156,6 @@ def build_module():
             # (rmsW = [input | post_attn], rmsW2 = [pre_ffn | post_ffn], each 2K) so the
             # rms tile's S2MM0 carries only {rmsX, rmsW, rmsW2, o-proj/down} = 4 packet
             # ids (a compute-tile S2MM port demuxes at most 4). No rmsW3/rmsW4 channels.
-        _rw.operation.attributes["air.dedicated_dma_channel"] = UnitAttr.get()
         # FAITHFUL convergent X feed (reproducer x_buffer DMA:3): ONE channel
         # carries BOTH the rmsnorm'd token X (phases 0..2) and the GLU-output X
         # (down phase), as convergent packet sources into ONE X-memtile S2MM, read
