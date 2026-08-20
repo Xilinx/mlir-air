@@ -34,7 +34,7 @@ from ``tanh``, which has a checked lowering, so nothing has needed a vector
 ``exp`` yet.
 """
 
-from ._value import Buffer, BufferExpr, BufferSlice, TensorSlice, Token
+from ._value import Buffer, BufferExpr, BufferSlice, Tensor, TensorSlice, Token
 
 __all__ = [
     "load",
@@ -124,6 +124,19 @@ def _endpoint(obj, direction, role):
             tensor=obj.tensor,
             what="tensor slice",
             raw=(list(obj.offsets), list(obj.sizes), list(obj.strides)),
+        )
+    if isinstance(obj, Tensor):
+        # A whole tensor, which channel put/get take routinely --
+        # `ChannelPut("ChanIn", a)` is the commonest line in the hand-written
+        # channel examples. There is no access pattern: the transfer is the
+        # whole memref, which the op prints as [] [] [].
+        if obj.value is None:
+            raise RuntimeError(
+                "tensor used before the function was traced; air.tensor(...) "
+                "declares an argument, and it is bound when the launch body runs"
+            )
+        return _Endpoint(
+            obj.value, obj.dtype, obj.shape, None, tensor=obj, what="tensor"
         )
     raise TypeError(
         f"air.api.ops.{direction} expects its {role} to be a buffer from "

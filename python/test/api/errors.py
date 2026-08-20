@@ -844,3 +844,119 @@ def _():
 @expect(TypeError, "dot_kernel_is_keyword_only")
 def _():
     ops.dot(None, None, None, 1.0, False, None, "matmul_bf16")
+
+
+# ---------------------------------------------------------------------------
+# Channels
+# ---------------------------------------------------------------------------
+
+
+# CHECK-LABEL: TEST: channel_broadcast_needs_size
+# broadcast_shape describes a fan-out relative to the channel's own extents, so
+# it is meaningless without them.
+# CHECK: ValueError: air.channel(broadcast_shape=...) also needs size=
+@expect(ValueError, "channel_broadcast_needs_size")
+def _():
+    air.channel("C", broadcast_shape=[1, 3])
+
+
+# CHECK-LABEL: TEST: channel_broadcast_rank
+# CHECK: ValueError: air.channel: broadcast_shape [1, 3, 3] has rank 3 but size [1, 1] has rank 2
+@expect(ValueError, "channel_broadcast_rank")
+def _():
+    air.channel("C", size=[1, 1], broadcast_shape=[1, 3, 3])
+
+
+# CHECK-LABEL: TEST: channel_broadcast_not_multiple
+# A fan-out has to be a whole number of destinations per source.
+# CHECK: ValueError: air.channel: broadcast_shape [1, 3] is not a whole multiple of size [1, 2]
+@expect(ValueError, "channel_broadcast_not_multiple")
+def _():
+    air.channel("C", size=[1, 2], broadcast_shape=[1, 3])
+
+
+# CHECK-LABEL: TEST: channel_size_scalar
+# size=[2] is a 1-D array of two channels; size=2 is a mistake worth naming,
+# because it would otherwise iterate an int and fail somewhere less obvious.
+# CHECK: TypeError: air.channel(size=...) takes a list of extents
+@expect(TypeError, "channel_size_scalar")
+def _():
+    air.channel("C", size=2)
+
+
+# CHECK-LABEL: TEST: channel_type_unsupported
+# Accepting channel_type and ignoring it would compile a cascade request as a
+# DMA stream -- the silent-wrongness this package exists to avoid.
+# CHECK: NotImplementedError: air.api does not implement channel_type=
+@expect(NotImplementedError, "channel_type_unsupported")
+def _():
+    air.channel("C", channel_type="npu_cascade")
+
+
+# CHECK-LABEL: TEST: channel_indices_without_size
+# CHECK: ValueError: air.channel 'C' was declared without size=
+@expect(ValueError, "channel_indices_without_size")
+def _():
+    ch = air.channel("C")
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([64], bf16, scope=h.private())
+        ch.get(buf, indices=[0])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_indices_rank
+# CHECK: ValueError: air.channel 'C' has size [2, 2], so it takes 2 index/indices; got 1
+@expect(ValueError, "channel_indices_rank")
+def _():
+    ch = air.channel("C", size=[2, 2])
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([64], bf16, scope=h.private())
+        ch.get(buf, indices=[0])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_index_out_of_range
+# Only a constant index can be checked here; a herd coordinate is bounded by the
+# herd shape instead.
+# CHECK: ValueError: air.channel 'C' index 3 is out of range on axis 0
+@expect(ValueError, "channel_index_out_of_range")
+def _():
+    ch = air.channel("C", size=[2, 2])
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([64], bf16, scope=h.private())
+        ch.get(buf, indices=[3, 0])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_l3_needs_segment
+# Reaching L3 needs a shim DMA allocation, which only a segment brings. Measured
+# on npu1: the same design with its put hoisted out of the segment fails in
+# air-to-aie with "failed to link to any shim dma allocation", so this raises at
+# the call site instead, naming the fix.
+# CHECK: RuntimeError: air.channel.put on an L3 tensor has to be inside an air.segment
+@expect(RuntimeError, "channel_l3_needs_segment")
+def _():
+    ch = air.channel("C")
+
+    def body(h, tx, ty, A, B, C):
+        ch.put(A)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_bad_endpoint
+# CHECK: TypeError: air.api.ops.channel.get expects its argument to be a buffer
+@expect(TypeError, "channel_bad_endpoint")
+def _():
+    ch = air.channel("C")
+
+    def body(h, tx, ty, A, B, C):
+        ch.get([1, 2, 3])
+
+    _trace(body)
