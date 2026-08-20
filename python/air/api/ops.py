@@ -526,7 +526,7 @@ def _check_packed_operands(a, b, acc):
         )
 
 
-def dot(a, b, acc=None, alpha=1.0, transpose_b=False, kernel=None, dependency=None):
+def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel=None):
     """``acc += a @ b`` over L1 tiles. Returns a :class:`Token`.
 
     This is a *statement*, not an expression, and the accumulator is a buffer
@@ -560,7 +560,10 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, kernel=None, dependency=No
     One rule covers all four: ``a``'s last axis contracts against ``b``'s first,
     and ``acc`` keeps what is left of each.
 
-    ``kernel=`` names the external function this contraction should lower to
+    ``kernel=`` is keyword-only, and sits after ``dependency`` so that every
+    existing positional binding is unchanged: inserting it earlier would have
+    silently rebound a positionally-passed ``dependency`` to it. It names the
+    external function this contraction should lower to
     under ``lower_linalg_to_func``, by setting linalg's ``library_call``
     attribute. Without it a micro-tiled contraction lowers to
     ``op_has_no_registered_library_name`` -- MLIR's placeholder for an op with no
