@@ -54,6 +54,21 @@ factor 8.0 reproduces that table to 4e-05 (its print precision), 32.0 is off by
 
 Worst 0.99523 — the expected range for this codec.
 
+## Measured on NPU2
+
+| gate | result |
+|---|---|
+| `make verify` (2 prompts x 32 tokens, k=5, vs HF bf16) | PASS 2/2 |
+| `make verify-full` (8 prompts) | PASS 8/8 |
+| `make verify-paris` (prefill weight-integrity smoke) | PASS (argmax 12366) |
+| `make profile N_TOKENS=128` | TTFT 1.60 s, decode 10.7 tok/s |
+
+The Paris smoke gates on **"The capital city of France is called"**, not the bare
+"The capital of France is" the 1B/3B siblings use. On the bare phrasing this model
+ranks `" a"` (16.000) just above `" Paris"` (15.938) — and the HF bf16 reference
+ranks them the same way, so that prompt fails a correct build. The "...is called"
+phrasing puts `" Paris"` 3.4 logits clear.
+
 ## Quick start
 
 ```bash
@@ -69,13 +84,25 @@ make verify           # top-k token-set gate: NPU q4nx vs HF bf16
   preflights this). On a box where the AIR env script puts an LLVM 24 `llvm-link`
   first on `PATH`, prepend a compatible one, e.g.
   `export PATH=/usr/lib/llvm-20/bin:$PATH`.
-- **The rms/residual core runs a trimmed stack at this size.** It holds 7 K-sized
-  bf16 buffers; at K=4096 that is 56 KB of the 64 KB L1, so the engine's default
-  10240-byte stack does not fit and buffer allocation fails outright. The
-  `llama-3.1-8b` entry in `fused_decode.py` sets `STACK=8064`, which fits in banks
-  (bank0 = stack + 1 buffer + the 4-byte per-herd RTP) and still leaves >2x
-  headroom over the measured worst frame (2112 B). Models that do not set `STACK`
-  are unchanged. Any model with K=4096 hits this same wall.
+- **The weights do not fit one buffer (`DECODE_WGROUP=8`).** A shim BD's byte
+  offset is a `uint32` end to end, so a single BO is addressable over at most
+  4 GiB. This model's 32 layer slabs plus the lm-head are **4.375 GiB**: the
+  offsets wrapped past the boundary and every logit came back NaN. `DECODE_WGROUP`
+  splits the weights into four 1.02 GiB layer groups plus a 0.31 GiB lm-head
+  buffer, each addressed from its own base, and the host slices its BOs to match
+  (read off the engine, not the environment, so the two cannot disagree). The
+  build and the run must use the same value; the Makefile's `DECODE_WGROUP` and
+  `q4nx_decode_8b.py`'s constant are both 8, and the template stamp is keyed on it.
+- **The rms/residual core runs a trimmed stack at this size (`DECODE_STACK=8064`).**
+  It holds 7 K-sized bf16 buffers; at K=4096 that is 56 KB of the 64 KB L1, so the
+  engine's default 10240-byte stack does not fit and buffer allocation fails
+  outright. 8064 fits in banks (bank0 = stack + 1 buffer + the 4-byte per-herd RTP)
+  and still leaves >2x headroom over the measured worst frame (2112 B). Any model
+  at K=4096 hits this same wall.
+- **The LM-head GEMV needs a halved `tile_m`.** Its L2 A stage needs
+  `herd_m*tile_m*(K+1)*2 <= 512 KiB`, which at K=4096 overflows by exactly 128 B
+  at the default 8x8. `herd_m` must stay 8 (4 builds but hangs the dispatch), so
+  `tile_m` halves to 4 and `mv.o` is rebuilt at that `DIM_M_OUTPUT`.
 - **Vocab chunking is `VOCAB_CHUNK_I2=16`, `UNI_LM=8`.** The vocab relay drains
   whole-K blocks, so `K/PAYLOAD = 8` must divide `VOCAB_I2*PAIR_ROWS`; with
   `VOCAB_FULL_ROWBLKS = 4096` the legal set is {4,8,16} and 16 gives the fewest

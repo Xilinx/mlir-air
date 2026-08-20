@@ -47,11 +47,14 @@ env:
   # and verify runs its NPU-capture and HF-compare phases as separate subprocesses
   # so the reference never coexists with the NPU peak.
   #
-  # qwen3_8b's peak has NOT been measured here. Bound: the HF-compare phase holds
-  # the ~16GB bf16 reference, the NPU phase ~6GB of dequantized Q4NX weights plus
-  # five decode weight BOs (4x1.01GB + 0.37GB, see llms/qwen3_8b_q4nx). Separate
-  # subprocesses, so the peak is the larger, not the sum. Confirm against a
-  # nightly rather than assuming.
+  # The two 8B models' peaks have NOT been measured here. Bound for each: the
+  # HF-compare phase holds a ~16GB bf16 reference, the NPU phase ~6GB (qwen3_8b) /
+  # ~13GB (llama31_8b, its prefill preloads all 32 layers into resident BOs) of
+  # dequantized Q4NX weights plus the split decode weight BOs (qwen3_8b
+  # 4x1.01GB + 0.37GB; llama31_8b 4x1.02GB + 0.31GB). Separate subprocesses, so
+  # each model's peak is the larger of its two phases, not the sum -- but the two
+  # models' verifies must not overlap. Confirm against a nightly rather than
+  # assuming.
 
 jobs:
   benchmark:
