@@ -822,3 +822,25 @@ def _():
         air.alloc([1, 1, 32, 32], bf16, scope=seg.shared())
 
     _staged(body)
+
+
+# CHECK-LABEL: TEST: dot_kernel_must_be_a_name
+# CHECK: TypeError: air.api.ops.dot(kernel=...) takes the external function's symbol name
+@expect(TypeError, "dot_kernel_must_be_a_name")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([32, 32], bf16, scope=h.private())
+        acc = air.alloc([32, 32], f32, scope=h.private())
+        ops.dot(a, a, acc=acc, kernel=42)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dot_kernel_is_keyword_only
+# kernel= sits after dependency and is keyword-only, so adding it did not shift
+# any existing positional binding. Passing it positionally is refused rather
+# than silently rebinding whatever was in that slot.
+# CHECK: TypeError: dot() takes from 2 to 6 positional arguments but 7 were given
+@expect(TypeError, "dot_kernel_is_keyword_only")
+def _():
+    ops.dot(None, None, None, 1.0, False, None, "matmul_bf16")
