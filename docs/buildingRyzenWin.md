@@ -6,13 +6,13 @@ Use an **x64 Native Tools Command Prompt for Visual Studio** (`cmd.exe`) for the
 
 MLIR-AIR builds on [MLIR-AIE](https://github.com/Xilinx/mlir-aie), and the two share the same Windows host requirements. Where this guide and [mlir-aie's native Windows guide](https://github.com/Xilinx/mlir-aie/blob/main/docs/buildHostWinNative.md) overlap, they are intended to agree; sections 1–3 below are the common host setup.
 
-> **Python note:** The Windows XRT SDK supplies `pyxrt` bindings for **CPython 3.13**. Use Python 3.13. Another Python version requires an XRT distribution with matching bindings. The whole stack will build and then fail at the final `import pyxrt` if the minor version does not match.
+> **Python note:** `pyxrt` is a compiled extension module, so your Python has to be the exact CPython minor version the XRT SDK built it against — **3.13** at the time of writing. Any other minor version installs and builds the whole stack, then fails at `import pyxrt`. [Section 3](#3-install-the-windows-xrt-sdk) reads the required version straight out of `pyxrt.pyd`; that check is authoritative if a newer SDK has moved on and this note has not.
 
 ## 1. Install the Windows development environment
 
 - A Windows 11 system with a supported Ryzen™ AI / XDNA™ NPU.
 - **Visual Studio 2026** (preferred) or **Visual Studio 2022** — the full IDE or the matching **Build Tools** package. Only needed for the source build in section 6; the wheel path in section 4 does not require a compiler.
-- **Python 3.13** (see the note above).
+- **Python**, at the minor version the note above names.
 - **Git for Windows**.
 - **GNU make**, only if you intend to run the example test suites in
   [section 6.5](#65-testing) — most of those tests shell out to it. Running an
@@ -34,6 +34,7 @@ REM Choose one: the full IDE or the matching Build Tools package
 winget install -e --id Microsoft.VisualStudio.Community
 REM winget install -e --id Microsoft.VisualStudio.BuildTools
 
+REM The package id carries the minor version; match the Python note above
 winget install -e --id Python.Python.3.13
 winget install -e --id Git.Git
 
@@ -47,7 +48,7 @@ from MSYS2 or Chocolatey works equally well.
 
 CMake and Ninja do **not** need a system-wide install; both are pulled into the Python environment in sections 4 and 6.
 
-A dedicated Conda or Miniforge environment works too, when it uses Python 3.13. Activate it before running MLIR-AIE's `iron_setup.py` in [section 6.1](#61-prerequisites), which creates `ironenv` from the active interpreter.
+A dedicated Conda or Miniforge environment works too, as long as it is on that same minor version. Activate it before running MLIR-AIE's `iron_setup.py` in [section 6.1](#61-prerequisites), which creates `ironenv` from the active interpreter.
 
 ## 2. Update and verify the NPU driver
 
@@ -57,24 +58,15 @@ Install the latest Ryzen™ AI / XDNA™ driver, then verify the NPU is visible:
 "C:\Windows\System32\AMD\xrt-smi.exe" examine
 ```
 
-NPU driver **32.0.20101.3760** (XRT **2.21.0**) is the minimum supported on Windows.
-
-Two things worth knowing when checking a driver version:
-
-- AMD publishes two version series that are not comparable — `32.0.203.x` (Ryzen AI direct) and `32.0.201xx.xxxx` (WHQL/OEM). **Compare the XRT version instead**; it is a single monotonic series and is what actually matters here.
-- The driver version reported by `xrt-smi` can be confirmed independently through PnP, which is useful when an installer claims success but changed nothing:
-
-```powershell
-Get-CimInstance Win32_PnPSignedDriver |
-  Where-Object { $_.DeviceName -match 'NPU' } |
-  Select-Object DeviceName, DriverVersion, DriverDate
-```
+MLIR-AIR adds no driver requirement of its own; the supported floor is whatever
+[mlir-aie's native Windows guide](https://github.com/Xilinx/mlir-aie/blob/main/docs/buildHostWinNative.md)
+states, since that is the host setup both repositories share.
 
 ## 3. Install the Windows XRT SDK
 
-The XRT SDK provides the headers, import libraries, tools, and `pyxrt` bindings. Pair the SDK with the **driver's** XRT version, so install the driver first.
+The XRT SDK provides the headers, import libraries, tools, and `pyxrt` bindings. Its version has to match the **driver's** XRT version, which `xrt-smi examine` reports — so install the driver first, then pick the SDK to match.
 
-Download `xrt_windows_sdk.zip` from the [XRT releases page](https://github.com/Xilinx/XRT/releases), choosing the tag matching your driver's XRT version — 2.21.75 or newer. Extract the archive so that its `xrt_sdk\xrt` directory becomes:
+Download that release's `xrt_windows_sdk.zip` from the [XRT releases page](https://github.com/Xilinx/XRT/releases) and extract it so that its `xrt_sdk\xrt` directory becomes:
 
 ```text
 C:\Xilinx\XRT
@@ -82,11 +74,14 @@ C:\Xilinx\XRT
 
 `C:\Xilinx\XRT\python\pyxrt.pyd` should now exist. `C:\Xilinx\XRT` is the canonical location; a different path works as long as the environment variables in the following sections point at it.
 
-To confirm which CPython ABI the bindings were built against, read the binary rather than trusting a label:
+Read the CPython ABI out of the bindings rather than trusting a label, and check it against the Python you installed in section 1:
 
 ```bat
 python -c "import re,pathlib;print(re.search(rb'python(\d)(\d{2})\.dll',pathlib.Path(r'C:\Xilinx\XRT\python\pyxrt.pyd').read_bytes(),re.I).groups())"
+python -c "import sys;print(sys.version_info[:2])"
 ```
+
+Both must print the same major and minor. If they differ, this SDK wants a different Python than the one you have; install that version and use it for the virtual environment in section 4. This check, not the note at the top of the guide, is the authority.
 
 ## 4. Install prebuilt wheels (recommended)
 
@@ -94,7 +89,7 @@ This is the fastest path and needs no compiler, no CMake, and no LLVM clone. Use
 
 MLIR-AIR publishes **Windows AMD64** wheels. Backend dependencies are exposed as pip **extras**; for the AIE backend use the `[aie]` extra, which pins the exact `mlir_aie` version this AIR wheel was tested against and pulls `llvm-aie` (the Peano backend compiler).
 
-1. **Create a virtual environment** with Python 3.13:
+1. **Create a virtual environment** with that Python:
 
    ```bat
    python -m venv airenv
