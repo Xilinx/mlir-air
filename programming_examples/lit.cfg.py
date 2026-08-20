@@ -142,7 +142,7 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
             config.available_features.add("ryzen_ai_npu1")
             config.environment["AIR_TARGET_DEVICE"] = "npu1"
             run_on_npu1 = run_on_npu
-            print("Running tests on NPU1 with command line: ", run_on_npu or "(none)")
+            print("Running tests on NPU1 with command line: ", run_on_npu1 or "(none)")
         else:
             # No recognized model: dump xrt-smi output so the cause (format
             # change, or a driver error such as an mmap/memlock failure) is
