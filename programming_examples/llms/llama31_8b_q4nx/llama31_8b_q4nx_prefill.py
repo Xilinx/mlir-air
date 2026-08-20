@@ -17,7 +17,8 @@
 # warm KV cache (see q4nx_decode_3b.FusedDecode3B.seed_kv) -- prompt tokens then
 # cost one batched prefill instead of one full decode dispatch each.
 #
-# Gate: first prompt token argmax 12366 (" Paris") for "The capital of France is".
+# Gate: first prompt token argmax 12366 (" Paris") for "The capital city of France
+# is called" (see PROMPT below for why not the siblings' bare phrasing).
 #
 # Weight source (env-overridable):
 #   Q4NX_MODEL_SOURCE : the model.q4nx bundle -- HF repo id or a local dir/file.
@@ -48,12 +49,35 @@ from shared.infra.cache import KernelCache  # noqa: E402
 MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Llama-3.1-8B-NPU2")
 
 VOCAB = 128256
-PROMPT = [128000, 791, 6864, 315, 9822, 374]  # "The capital of France is"
+# The bare "The capital of France is" that the 1B/3B siblings gate on does NOT
+# work for this model: Llama-3.1-8B-Instruct ranks " a" (264, logit 16.000)
+# fractionally above " Paris" (12366, 15.938) there, and the HF bf16 reference
+# agrees -- so that gate would fail on a perfectly correct build. "...is called"
+# makes it decisive: " Paris" leads the runner-up by 3.4 logits.
+PROMPT = [
+    128000,
+    791,
+    6864,
+    3363,
+    315,
+    9822,
+    374,
+    2663,
+]  # "The capital city of France is called"
 EXPECT_FIRST = 12366  # " Paris"
 
 # On-device LM head GEMV: 8 partitions of M=16384 (8*16384=131072 >= VOCAB), K=emb_dim.
 _LM_N_PART = 16384
 _LM_N_PARTITIONS = 8
+# K=4096 breaks both default GEMV budgets, exactly as it does for the Qwen3-8B
+# sibling: the L2 A stage needs herd_m*tile_m*(K+1)*2 <= 512 KiB (so
+# herd_m*tile_m <= 63, vs the default 64 -- it overflows by 128 B), and m_input=4
+# puts the ping-pong L1 A tiles at 2*32 KiB = all of L1. herd_m must stay 8 (4
+# builds but hangs the dispatch), so tile_m halves instead, which means mv.o has
+# to be rebuilt at DIM_M_OUTPUT=tile_m.
+_LM_HERD_M = 8
+_LM_TILE_M = 4
+_LM_M_INPUT = 2
 
 
 def _bf(a):
@@ -116,11 +140,18 @@ class LlamaQ4nxPrefill:
         # LM head on the NPU -- an 8-partition GEMV.
         if "lm_head_gemv" not in cached:
             from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
+            from shared.infra.external_kernels import compile_mv
 
+            compile_mv(tile_m=_LM_TILE_M)  # mv.o, the GEMV micro-kernel linked below
             self.cache.compile_and_cache(
                 "lm_head_gemv",
                 build_lm_head_gemv_module(
-                    self.D, n_partitions=_LM_N_PARTITIONS, n_part=_LM_N_PART
+                    self.D,
+                    n_partitions=_LM_N_PARTITIONS,
+                    n_part=_LM_N_PART,
+                    herd_m=_LM_HERD_M,
+                    tile_m=_LM_TILE_M,
+                    m_input=_LM_M_INPUT,
                 ),
                 {"verbose": self.cache.verbose, **self._lm_backend},
             )

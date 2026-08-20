@@ -115,7 +115,7 @@ help:
 	@echo "  make verify           Top-k token-set inclusion gate: NPU q4nx vs HF bf16 (2 prompts x 32 tokens, k=5)"
 	@echo "  make verify-full      Same gate over the full 8-prompt set"
 	@echo "  make diagnosis        Single-prompt lens through the shared runner (informational)"
-	@echo "  make gen              Paris gate: greedy decode of \"The capital of France is\""
+	@echo "  make gen              Paris gate: greedy decode of \"The capital city of France is called\""
 	@echo "  make verify-paris     Prefill-only weight-integrity smoke (first token == Paris)"
 	@echo "  make profile-prefill  Warm prefill TTFT benchmark at CTX=$(CTX)"
 	@echo "  make ask PROMPT=...   Single Q&A turn"
@@ -262,7 +262,8 @@ diagnosis:
 	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts single --prompt "$(PROMPT)" --model $(MODEL)
 
-## Fast weight-integrity smoke: prefill "The capital of France is"; PASS iff the
+## Fast weight-integrity smoke: prefill "The capital city of France is called";
+## PASS iff the
 ## first-token argmax == 12366 (" Paris"). Cheap (prefill only, no decode build).
 verify-paris:
 	@mkdir -p $(BUILD_DIR)
@@ -278,11 +279,11 @@ ask:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(DRIVER) --run-only --prompt "$(PROMPT)" --model $(MODEL) --n-tokens $(N_TOKENS)
 
-## Paris gate: greedy-decode "The capital of France is"; first token must be 12366.
+## Paris gate: greedy-decode "The capital city of France is called"; first token 12366.
 gen:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(DRIVER) --run-only --model base --n-tokens 12 \
-		--prompt "The capital of France is"
+		--prompt "The capital city of France is called"
 
 ## Remove build artifacts. Deliberately KEEPS $(srcdir)/.decode_wcache: that is the
 ## ~2 GB q4k-cascade requant of the Q4NX weights and takes ~15 min to rebuild, while

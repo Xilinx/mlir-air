@@ -5,7 +5,7 @@
 # superkernel (fused_decode retuned to 8B: MODEL_DIM=4096, DH=128, 32 layers,
 # INTERMEDIATE=14336, untied LM head).
 #
-# Feeds "The capital of France is" token-by-token THROUGH THE ON-DEVICE DECODE
+# Feeds "The capital city of France is called" token-by-token THROUGH THE ON-DEVICE DECODE
 # (no prefill, no CPU attention): the decode kernel appends each token's roped-K/
 # raw-V into the on-device KV cache and runs attention on the AIE array for every
 # step. The last step's argmax must be 12366 (" Paris"). This validates that the
@@ -27,7 +27,19 @@ from q4nx_decode_8b import FusedDecode8B, generate  # noqa: E402
 from llama31_8b_q4nx_weights import Q4NX_REPO  # noqa: E402
 
 MODEL_SOURCE = os.environ.get("Q4NX_MODEL_SOURCE", Q4NX_REPO)
-PROMPT = [128000, 791, 6864, 315, 9822, 374]  # "The capital of France is"
+# Bare "The capital of France is" is a near-tie for this model (" a" edges out
+# " Paris" by 0.06 logits, in the HF bf16 reference too), so gate on the
+# "...is called" phrasing, where " Paris" leads by 3.4.
+PROMPT = [
+    128000,
+    791,
+    6864,
+    3363,
+    315,
+    9822,
+    374,
+    2663,
+]  # "The capital city of France is called"
 EXPECT = 12366  # " Paris"
 
 
