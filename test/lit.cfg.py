@@ -140,17 +140,28 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
         # test gated on it reported UNSUPPORTED on hardware that can run it.
         npu2_models = ["npu4", "strix", "npu5", "strix halo", "npu6", "krackan"]
         npu1_models = ["npu1", "phoenix"]
-        run_on_npu = f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
+        # Serializing through flock and run_on_npu.sh is POSIX-only: flock is
+        # util-linux, and the script is bash that sources
+        # /opt/xilinx/xrt/setup.sh. Now that xrt-smi is found on Windows too,
+        # reusing it there would let the suite configure and then fail to launch
+        # every test carrying this substitution. Run the command directly
+        # instead -- the environment is already set up by whoever invoked lit.
+        if os.name == "nt":
+            run_on_npu = ""
+        else:
+            run_on_npu = (
+                f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
+            )
         if any(k in out_lc for k in npu2_models):
             config.available_features.add("ryzen_ai")
             config.available_features.add("ryzen_ai_npu2")
             run_on_npu2 = run_on_npu
-            print("Running tests on NPU2 with command line: ", run_on_npu2)
+            print("Running tests on NPU2 with command line: ", run_on_npu2 or "(none)")
         elif any(k in out_lc for k in npu1_models):
             config.available_features.add("ryzen_ai")
             config.available_features.add("ryzen_ai_npu1")
             run_on_npu1 = run_on_npu
-            print("Running tests on NPU1 with command line: ", run_on_npu1)
+            print("Running tests on NPU1 with command line: ", run_on_npu1 or "(none)")
         else:
             # No recognized model: dump xrt-smi output so the cause (a format
             # change, or a driver error) is visible instead of silently
