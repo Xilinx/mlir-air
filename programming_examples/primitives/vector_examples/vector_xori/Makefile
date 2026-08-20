@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -18,11 +20,11 @@ VECTOR_SIZE ?= 16
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/vector_xori.py $(OUTPUT_FORMAT_FLAG) -p --vector-size $(VECTOR_SIZE)
+	${powershell} $(PYTHON) ${srcdir}/vector_xori.py $(OUTPUT_FORMAT_FLAG) -p --vector-size $(VECTOR_SIZE)
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_xori.py $(OUTPUT_FORMAT_FLAG) --vector-size $(VECTOR_SIZE)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_xori.py $(OUTPUT_FORMAT_FLAG) --vector-size $(VECTOR_SIZE)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

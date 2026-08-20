@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # NPU2 (Strix / AIE2P) only. The kernel links an external C++ vector
 # microkernel (rope_halfsplit.cc -> rope.o, the half-split RoPE that
 # llama-3.2-1B links via external_kernels.py:compile_rope). No NPU1 path.
 BUILD_DIR := build_peano
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
@@ -32,14 +34,14 @@ compile-kernel:
 
 # Print the MLIR module (no kernel .o / NPU needed)
 print:
-	${powershell} python3 ${srcdir}/rope_halfsplit.py \
+	${powershell} $(PYTHON) ${srcdir}/rope_halfsplit.py \
 		--rows $(ROWS) --head-dim $(HEAD_DIM) --herd-x $(HERD_X) \
 		--herd-y $(HERD_Y) -p
 
 # Compile + run correctness check on NPU2
 run: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/rope_halfsplit.py \
+		${powershell} $(PYTHON) ${srcdir}/rope_halfsplit.py \
 		--output-format $(OUTPUT_FORMAT) \
 		--rows $(ROWS) --head-dim $(HEAD_DIM) --herd-x $(HERD_X) \
 		--herd-y $(HERD_Y)
@@ -47,7 +49,7 @@ run: compile-kernel
 # Compile + run with latency profiling (correctness still checked)
 profile: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/rope_halfsplit.py \
+		${powershell} $(PYTHON) ${srcdir}/rope_halfsplit.py \
 		--output-format $(OUTPUT_FORMAT) \
 		--rows $(ROWS) --head-dim $(HEAD_DIM) --herd-x $(HERD_X) \
 		--herd-y $(HERD_Y) \

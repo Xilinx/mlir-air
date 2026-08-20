@@ -22,11 +22,12 @@
 #   make compile-decode             Build production templates (ATTN_MAXL=2048, ~15 min)
 
 srcdir     := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
 DEC        := $(srcdir)/../../fused_decode
 DECODE_DRIVER := $(DEC)/fused_decode.py
 PREFILL_DRIVER := $(srcdir)/gemma3_4b_q4nx_prefill.py
-AIEOPT_DIR := $(shell realpath $(dir $(shell which aie-opt))/..)
-
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -167,7 +168,7 @@ compile-decode-dynseq:
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
 	@echo ">>> gemma dynseq template decode_dyn_L$(LBUILD)"
-	@cd $(DEC) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_GOLDEN_L=$(LBUILD) python3 $(DECODE_DRIVER) >/tmp/gemma_decode_dyn_L$(LBUILD).log 2>&1; \
+	@cd $(DEC) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/gemma_decode_dyn_L$(LBUILD).log 2>&1; \
 	  if [ -f decode.xclbin ] && [ -f air_project/npu.air.txn.h ]; then \
 	    mv -f decode.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
 	    cp -f air_project/npu.air.txn.h $(srcdir)/decode_dyn_L$(LBUILD).txn.h; \
@@ -190,10 +191,10 @@ _compile_decode_build:
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
 	@echo ">>> gemma template decode_L$(LBUILD) (+ L$(LREF) slope ref)"
-	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) python3 $(DECODE_DRIVER) >/tmp/gemma_decode_L$(LBUILD).log 2>&1; \
+	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/gemma_decode_L$(LBUILD).log 2>&1; \
 	  if [ -f decode.xclbin ]; then mv -f decode.xclbin $(srcdir)/decode_L$(LBUILD).xclbin; mv -f decode.insts.bin $(srcdir)/decode_L$(LBUILD).insts.bin; \
 	  else echo "decode_L$(LBUILD) FAILED (see /tmp/gemma_decode_L$(LBUILD).log)"; tail -30 /tmp/gemma_decode_L$(LBUILD).log; exit 1; fi
-	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) python3 $(DECODE_DRIVER) >/tmp/gemma_decode_L$(LREF).log 2>&1; \
+	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) $(PYTHON) $(DECODE_DRIVER) >/tmp/gemma_decode_L$(LREF).log 2>&1; \
 	  if [ -f decode.insts.bin ]; then mv -f decode.insts.bin $(srcdir)/decode_L$(LREF).insts.bin; mv -f decode.xclbin $(srcdir)/decode_L$(LREF).xclbin; \
 	  else echo "decode_L$(LREF) FAILED (see /tmp/gemma_decode_L$(LREF).log)"; tail -30 /tmp/gemma_decode_L$(LREF).log; exit 1; fi
 	@echo "Gemma decode build complete: decode_L$(LBUILD) + decode_L$(LREF) templates."
@@ -203,12 +204,12 @@ _compile_decode_build:
 ## lm_head_gemv). Weight-free build, no NPU dispatch.
 compile-prefill:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(PREFILL_DRIVER) --compile-only
+	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL_DRIVER) --compile-only
 
 ## Prefill-only Paris gate: PASS iff the first token argmax is 9079 (" Paris").
 prefill:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(PREFILL_DRIVER)
+	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL_DRIVER)
 
 ## Build everything the end-to-end chatbot needs: the prefill ELFs and the
 ## decode templates.
@@ -217,11 +218,11 @@ compile: compile-prefill compile-decode
 ## Run inference (NPU prefill + fused NPU decode). With no PROMPT this is the
 ## canonical Paris gate: PASS iff the first token is 9079 (" Paris").
 run:
-	@cd $(srcdir) && python3 gemma3_4b_q4nx_inference.py --n-tokens 9 $(PROMPT_ARG)
+	@cd $(srcdir) && $(PYTHON) gemma3_4b_q4nx_inference.py --n-tokens 9 $(PROMPT_ARG)
 
 ## Single Q&A turn:  make ask PROMPT="What is the capital of France?"
 ask:
-	@cd $(srcdir) && python3 gemma3_4b_q4nx_inference.py \
+	@cd $(srcdir) && $(PYTHON) gemma3_4b_q4nx_inference.py \
 		--n-tokens $(N_TOKENS) $(PROMPT_ARG)
 
 ## Top-k token-set inclusion gate (NPU q4nx vs HF bf16, 2 prompts x 32 tokens,
@@ -237,12 +238,12 @@ ask:
 ## returns Gemma3ForConditionalGeneration, whose text-only forward is what the
 ## gate compares.)
 verify:
-	cd $(srcdir)/.. && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(srcdir)/.. && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL_CHOICE) --max-prompts $(MAX_PROMPTS)
 
 ## Full-sweep variant of `make verify` (all prompts in the prompt file).
 verify-full:
-	cd $(srcdir)/.. && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(srcdir)/.. && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL_CHOICE)
 
 ## Fast weight-integrity smoke: prefill only, PASS iff the first-token argmax is
@@ -258,7 +259,7 @@ verify-paris: prefill
 ## canonical Paris prompt for `make run`), and an empty --prompt is not a prompt.
 DIAG_PROMPT ?= What is the capital of France?
 diagnosis:
-	cd $(srcdir)/.. && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(srcdir)/.. && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts single --prompt "$(if $(PROMPT),$(PROMPT),$(DIAG_PROMPT))" \
 		--model $(MODEL_CHOICE)
 
@@ -266,13 +267,13 @@ diagnosis:
 ## prefill dispatch from the one-time weight load the e2e path also pays.
 profile-prefill:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) python3 $(PREFILL_DRIVER)
+	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) $(PYTHON) $(PREFILL_DRIVER)
 
 ## End-to-end: TTFT + decode throughput over N_TOKENS tokens (prints the TTFT and
 ## Tokens/second lines the nightly LLM benchmark extracts). Needs production
 ## templates: make compile.
 profile:
-	@cd $(srcdir) && python3 gemma3_4b_q4nx_inference.py --n-tokens $(N_TOKENS)
+	@cd $(srcdir) && $(PYTHON) gemma3_4b_q4nx_inference.py --n-tokens $(N_TOKENS)
 
 ## Back-compat alias for the Paris gate.
 gen: run

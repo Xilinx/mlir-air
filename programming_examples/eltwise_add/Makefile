@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -13,8 +15,7 @@ endif
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
-
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 # Auto-detect XILINX_XRT if not set
 XILINX_XRT ?= $(wildcard /opt/xilinx/xrt)
 
@@ -41,20 +42,20 @@ PY_FLAGS = --shape $(SHAPE) --dtype $(DTYPE) $(TILE_FLAG) $(VEC_FLAG) \
 	--target $(TARGET) $(OUTPUT_FORMAT_FLAG) $(EXTRA_PY_FLAGS)
 
 # Total element count, for the -S argument of test.exe.
-SHAPE_ELEMENTS = $(shell python3 -c "import math,sys;print(math.prod([int(x) for x in '$(SHAPE)'.split()]))")
+SHAPE_ELEMENTS = $(shell $(PYTHON) -c "import math,sys;print(math.prod([int(x) for x in '$(SHAPE)'.split()]))")
 
 print:
-	${powershell} python3 ${srcdir}/eltwise_add.py $(PY_FLAGS) --print-ir
+	${powershell} $(PYTHON) ${srcdir}/eltwise_add.py $(PY_FLAGS) --print-ir
 
 compile:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/eltwise_add.py $(PY_FLAGS) --compile-only
+		${powershell} $(PYTHON) ${srcdir}/eltwise_add.py $(PY_FLAGS) --compile-only
 
 run:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/eltwise_add.py $(PY_FLAGS) \
+		${powershell} $(PYTHON) ${srcdir}/eltwise_add.py $(PY_FLAGS) \
 		--perf-iters $(PERF_ITERS)
 
 # Bandwidth profiling via the shared test.cpp harness. bf16 only -- test.cpp
@@ -63,7 +64,7 @@ run:
 profile: build-test-exe
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		python3 ${srcdir}/eltwise_add.py $(PY_FLAGS) --compile-only
+		$(PYTHON) ${srcdir}/eltwise_add.py $(PY_FLAGS) --compile-only
 	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin \
 		-S $(SHAPE_ELEMENTS)
 

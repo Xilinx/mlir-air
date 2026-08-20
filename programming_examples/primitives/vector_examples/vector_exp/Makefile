@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 BUILD_DIR := build_peano
 
 # Output format: xclbin (default) or elf
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__ -mllvm -aie-disable-fold-imm
 
@@ -27,11 +29,11 @@ VECTOR_SIZE ?= 16
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/vector_exp.py $(OUTPUT_FORMAT_FLAG) -p --arch $(AIE_TARGET) --vector-size $(VECTOR_SIZE)
+	${powershell} $(PYTHON) ${srcdir}/vector_exp.py $(OUTPUT_FORMAT_FLAG) -p --arch $(AIE_TARGET) --vector-size $(VECTOR_SIZE)
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_exp.py $(OUTPUT_FORMAT_FLAG) --arch $(AIE_TARGET) --vector-size $(VECTOR_SIZE)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_exp.py $(OUTPUT_FORMAT_FLAG) --arch $(AIE_TARGET) --vector-size $(VECTOR_SIZE)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)

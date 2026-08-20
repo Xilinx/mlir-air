@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-runner %s -f test -m %S/arch.json -g core |& FileCheck %s
+// RUN: air-runner %s -f test -m %S/arch.json -g core 2>&1 | FileCheck %s
 
 // Check for error emission when not enough resources are allocated to run a herd.
 // Trace simulation mode set to per-core granularity.

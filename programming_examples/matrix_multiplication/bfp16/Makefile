@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Tile sizes.
 # bfp16ebs8 constrains these more than bf16 does: the host shuffle requires
 # TILE_K_L1 % 64 == 0 and TILE_N % 64 == 0 (tile width in elements), and
@@ -20,7 +22,7 @@ else
   BUILD_DIR := build_chess
 endif
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
@@ -55,34 +57,34 @@ COMMON_ARGS = --tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L
 all: run4x4
 
 print:
-	${powershell} python3 ${srcdir}/run.py -p --herd-m 8 --herd-n 4 --m 2048 --n 1024 --k 512 \
+	${powershell} $(PYTHON) ${srcdir}/run.py -p --herd-m 8 --herd-n 4 --m 2048 --n 1024 --k 512 \
 		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --arch $(AIE_TARGET)
 
 run8x4: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 1024 --n 512 --k 512 -v \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 1024 --n 512 --k 512 -v \
 		$(COMMON_ARGS)
 
 run4x4: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 4 --herd-n 4 --m 512 --n 512 --k 512 \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --herd-m 4 --herd-n 4 --m 512 --n 512 --k 512 \
 		$(COMMON_ARGS)
 
 run2x4: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 4 --m 512 --n 512 --k 512 \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --herd-m 2 --herd-n 4 --m 512 --n 512 --k 512 \
 		$(COMMON_ARGS)
 
 run2x2: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 \
 		$(COMMON_ARGS)
 
 # 576 = 9 * 64, so the 64-element tile floor still divides it 3 ways.
 run3x3: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 \
 		--tile-m 64 --tile-k-l2 192 --tile-k-l1 64 --tile-n 64 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(OUTPUT_DTYPE_FLAG)
 
 # Smallest single-PE config. TILE_K_L1/TILE_N cannot go below 64 for bfp16ebs8
 # (host shuffle granularity), so this is 64x64x64 rather than bf16's 32x32x16.
 run1x1: compile-kernel-1x1
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 1 --herd-n 1 --m 64 --n 64 --k 64 \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --herd-m 1 --herd-n 1 --m 64 --n 64 --k 64 \
 		--tile-m 64 --tile-k-l2 64 --tile-k-l1 64 --tile-n 64 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(OUTPUT_DTYPE_FLAG)
 
 compile-kernel-1x1:
@@ -112,25 +114,25 @@ LLAMA_ARGS = --tile-m $(LLAMA_TILE_M) --tile-k-l2 128 --tile-k-l1 $(LLAMA_TILE_K
 run_llama_4x4: run_llama_4x4_qo run_llama_4x4_kv run_llama_4x4_gate_up
 
 run_llama_4x4_qo: compile-kernel-llama
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m $(LLAMA_HERD_M) --herd-n $(LLAMA_HERD_N) --m 128 --k 2048 --n 2048 \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && $(PYTHON) ${srcdir}/run.py --herd-m $(LLAMA_HERD_M) --herd-n $(LLAMA_HERD_N) --m 128 --k 2048 --n 2048 \
 		$(LLAMA_ARGS)
 
 run_llama_4x4_kv: compile-kernel-llama
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m $(LLAMA_HERD_M) --herd-n $(LLAMA_HERD_N) --m 128 --k 2048 --n 512 \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && $(PYTHON) ${srcdir}/run.py --herd-m $(LLAMA_HERD_M) --herd-n $(LLAMA_HERD_N) --m 128 --k 2048 --n 512 \
 		$(LLAMA_ARGS)
 
 run_llama_4x4_gate_up: compile-kernel-llama
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m $(LLAMA_HERD_M) --herd-n $(LLAMA_HERD_N) --m 128 --k 2048 --n 8192 \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && $(PYTHON) ${srcdir}/run.py --herd-m $(LLAMA_HERD_M) --herd-n $(LLAMA_HERD_N) --m 128 --k 2048 --n 8192 \
 		$(LLAMA_ARGS)
 
 run_llama_4x4_down: compile-kernel-llama
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 ${srcdir}/run.py --herd-m $(LLAMA_HERD_M) --herd-n $(LLAMA_HERD_N) --m 128 --k 8192 --n 2048 \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && $(PYTHON) ${srcdir}/run.py --herd-m $(LLAMA_HERD_M) --herd-n $(LLAMA_HERD_N) --m 128 --k 8192 --n 2048 \
 		$(LLAMA_ARGS)
 
 # Report latency + GFLOPs alongside the correctness check. Uses XRTRunner's
 # built-in timing (--perf-iters), so no separate C++ harness is needed.
 profile: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --m 1024 --k 1024 --n 1024 \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --m 1024 --k 1024 --n 1024 \
 		--herd-m $(MAX_HERD_M) --herd-n $(MAX_HERD_N) --perf-iters 50 $(COMMON_ARGS)
 
 # Measure the e2e latencies across a range of problem shapes.
@@ -139,7 +141,7 @@ sweep4x4: compile-kernel
 		for N in 256 512 1024 2048; do \
 			for K in 256 512 1024 2048; do \
 				echo "Running with M=$$M, N=$$N, K=$$K"; \
-				cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --m $$M --n $$N --k $$K \
+				cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --m $$M --n $$N --k $$K \
 					--herd-m 4 --herd-n 4 --perf-iters 20 $(COMMON_ARGS); \
 			done; \
 		done; \

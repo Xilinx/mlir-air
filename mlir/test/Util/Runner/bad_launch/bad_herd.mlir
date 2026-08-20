@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-runner %s -f test -m %S/arch.json |& FileCheck %s
+// RUN: air-runner %s -f test -m %S/arch.json 2>&1 | FileCheck %s
 
 // Check for error emission when not enough resources are allocated to run a herd.
 

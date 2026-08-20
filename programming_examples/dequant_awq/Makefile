@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -28,7 +30,7 @@ HERD_N ?= 4
 # Per-tile N -- the C kernel processes one tile per call.
 N_TILE := $(shell expr $(N) / $(HERD_N))
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 PEANOWRAP2_FLAGS  = -O2 -std=c++20 --target=aie2-none-unknown-elf  ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__ -mllvm -aie-disable-fold-imm
@@ -46,7 +48,7 @@ PY_ARGS = --device $(DEVICE) --n $(N) --group-size $(GROUP_SIZE) --herd-n $(HERD
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/dequant_awq.py $(OUTPUT_FORMAT_FLAG) -p $(PY_ARGS) $(DIRECT_CODEGEN_FLAG)
+	${powershell} $(PYTHON) ${srcdir}/dequant_awq.py $(OUTPUT_FORMAT_FLAG) -p $(PY_ARGS) $(DIRECT_CODEGEN_FLAG)
 
 # Build dequant.o for the extern path. No-op when --direct-codegen is set
 # (the inline path has no external kernel object).
@@ -74,7 +76,7 @@ ifeq ($(DIRECT_CODEGEN_FLAG),)
 	cp $(BUILD_DIR)/dequant.o $(BUILD_DIR)/air_project/dequant.o
 endif
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/dequant_awq.py $(OUTPUT_FORMAT_FLAG) $(DIRECT_CODEGEN_FLAG) $(PY_ARGS)
+		${powershell} $(PYTHON) ${srcdir}/dequant_awq.py $(OUTPUT_FORMAT_FLAG) $(DIRECT_CODEGEN_FLAG) $(PY_ARGS)
 
 # ELF profile harness (compile module ELF, then run XRT benchmark loop)
 build-test-dequant-exe:
@@ -89,7 +91,7 @@ ifeq ($(DIRECT_CODEGEN_FLAG),)
 	cp $(BUILD_DIR)/dequant.o $(BUILD_DIR)/air_project/dequant.o
 endif
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/dequant_awq.py --compile-mode compile-only --output-format elf $(DIRECT_CODEGEN_FLAG) $(PY_ARGS)
+		${powershell} $(PYTHON) ${srcdir}/dequant_awq.py --compile-mode compile-only --output-format elf $(DIRECT_CODEGEN_FLAG) $(PY_ARGS)
 	cd $(BUILD_DIR) && ./test_dequant.exe -e air.elf -k "main:dequant" \
 		-N $(N) -G $(GROUP_SIZE) -H $(HERD_N)
 

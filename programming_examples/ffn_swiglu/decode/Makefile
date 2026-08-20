@@ -1,8 +1,9 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 DIM ?= 128
 NUM_COLS ?= 4
 DIM_M_PER_COL = $(shell echo $$(( $(DIM) / $(NUM_COLS) )))
@@ -22,7 +23,7 @@ PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLA
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/ffn_decode.py $(OUTPUT_FORMAT_FLAG) -p --dim $(DIM) --num-cols $(NUM_COLS)
+	${powershell} $(PYTHON) ${srcdir}/ffn_decode.py $(OUTPUT_FORMAT_FLAG) -p --dim $(DIM) --num-cols $(NUM_COLS)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
@@ -39,7 +40,7 @@ run: compile-kernel
 	mkdir -p $(BUILD_DIR)/air_project
 	cp $(BUILD_DIR)/ffn_kernels.o $(BUILD_DIR)/air_project/ffn_kernels.o
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/ffn_decode.py --dim $(DIM) --num-cols $(NUM_COLS) $(OUTPUT_FORMAT_FLAG)
+		${powershell} $(PYTHON) ${srcdir}/ffn_decode.py --dim $(DIM) --num-cols $(NUM_COLS) $(OUTPUT_FORMAT_FLAG)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

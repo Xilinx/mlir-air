@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -13,7 +15,7 @@ endif
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 # Peano's aie2 backend implements the plain mul_elem_16/mac_elem_16 float
 # intrinsics but not the _conf variants that stock Xilinx/aie_api calls; the
@@ -23,10 +25,10 @@ PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/single_core.py $(OUTPUT_FORMAT_FLAG) -p
+	${powershell} $(PYTHON) ${srcdir}/single_core.py $(OUTPUT_FORMAT_FLAG) -p
 
 run: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_core.py $(OUTPUT_FORMAT_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/single_core.py $(OUTPUT_FORMAT_FLAG)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)

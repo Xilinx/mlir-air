@@ -4,6 +4,8 @@
 # int4 AWQ GEMV / GEMV+R examples (packed Q+S+Z BO).
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -20,7 +22,7 @@ GS      ?= 128
 M_TILE  ?= 8
 K_CHUNK ?= 2048
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
@@ -29,10 +31,10 @@ PY_ARGS = --m $(M) --k $(K) --gs $(GS) --m-tile $(M_TILE) --k-chunk $(K_CHUNK)
 all: run_packed
 
 print_packed:
-	${powershell} python3 ${srcdir}/matvec_int4_packed.py $(OUTPUT_FORMAT_FLAG) -p $(PY_ARGS)
+	${powershell} $(PYTHON) ${srcdir}/matvec_int4_packed.py $(OUTPUT_FORMAT_FLAG) -p $(PY_ARGS)
 
 print_packed_add:
-	${powershell} python3 ${srcdir}/matvec_int4_packed_add.py $(OUTPUT_FORMAT_FLAG) -p $(PY_ARGS)
+	${powershell} $(PYTHON) ${srcdir}/matvec_int4_packed_add.py $(OUTPUT_FORMAT_FLAG) -p $(PY_ARGS)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
@@ -48,13 +50,13 @@ compile-kernel:
 run_packed: compile-kernel
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  ${powershell} python3 ${srcdir}/matvec_int4_packed.py $(OUTPUT_FORMAT_FLAG) $(PY_ARGS)
+	  ${powershell} $(PYTHON) ${srcdir}/matvec_int4_packed.py $(OUTPUT_FORMAT_FLAG) $(PY_ARGS)
 
 # GEMV + fused residual add (LA-style 2-tile cascade)
 run_packed_add: compile-kernel
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  ${powershell} python3 ${srcdir}/matvec_int4_packed_add.py $(OUTPUT_FORMAT_FLAG) $(PY_ARGS)
+	  ${powershell} $(PYTHON) ${srcdir}/matvec_int4_packed_add.py $(OUTPUT_FORMAT_FLAG) $(PY_ARGS)
 
 # ELF profile harnesses (compile module, then run XRT benchmark loop)
 build-test-packed-exe:
@@ -66,14 +68,14 @@ build-test-packed-add-exe:
 profile_packed: build-test-packed-exe compile-kernel
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  ${powershell} python3 ${srcdir}/matvec_int4_packed.py --compile-mode compile-only --output-format elf $(PY_ARGS)
+	  ${powershell} $(PYTHON) ${srcdir}/matvec_int4_packed.py --compile-mode compile-only --output-format elf $(PY_ARGS)
 	cd $(BUILD_DIR) && ./test_packed.exe -e air.elf -k "main:matvec_int4_packed" \
 	  -M $(M) -K $(K) -G $(GS) -T $(M_TILE) -C $(K_CHUNK)
 
 profile_packed_add: build-test-packed-add-exe compile-kernel
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  ${powershell} python3 ${srcdir}/matvec_int4_packed_add.py --compile-mode compile-only --output-format elf $(PY_ARGS)
+	  ${powershell} $(PYTHON) ${srcdir}/matvec_int4_packed_add.py --compile-mode compile-only --output-format elf $(PY_ARGS)
 	cd $(BUILD_DIR) && ./test_packed_add.exe -e air.elf -k "main:matvec_int4_packed_add" \
 	  -M $(M) -K $(K) -G $(GS) -T $(M_TILE) -C $(K_CHUNK)
 

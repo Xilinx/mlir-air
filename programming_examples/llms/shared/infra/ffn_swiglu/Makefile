@@ -1,6 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
 progdir := $(realpath $(srcdir)/../..)
 
 ifdef PEANO_INSTALL_DIR
@@ -10,7 +12,7 @@ else
 endif
 
 # Peano compiler flags
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
@@ -25,21 +27,21 @@ compile-kernel:
 
 # Print combined MLIR module
 print:
-	${powershell} python3 ${srcdir}/run.py -p
+	${powershell} $(PYTHON) ${srcdir}/run.py -p
 
 # Print each sub-kernel's MLIR separately
 print-kernels:
-	${powershell} python3 ${srcdir}/run.py --print-kernels -p
+	${powershell} $(PYTHON) ${srcdir}/run.py --print-kernels -p
 
 # Compile + run correctness test
 run: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/run.py
+		${powershell} $(PYTHON) ${srcdir}/run.py
 
 # Compile + run with profiling
 profile: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/run.py --profile
+		${powershell} $(PYTHON) ${srcdir}/run.py --profile
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

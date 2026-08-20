@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -14,11 +16,11 @@ NE1 ?= 500
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/run.py --ne0 $(NE0) --ne1 $(NE1) -p
+	${powershell} $(PYTHON) ${srcdir}/run.py --ne0 $(NE0) --ne1 $(NE1) -p
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --ne0 $(NE0) --ne1 $(NE1) -v
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --ne0 $(NE0) --ne1 $(NE1) -v
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

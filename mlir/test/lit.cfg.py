@@ -59,6 +59,13 @@ config.substitutions.append(
     )
 )
 
+# Tests that link a host executable against the aircpu runtime can only run
+# where that runtime was built. It needs POSIX APIs, so the top-level
+# CMakeLists skips runtime_lib on Windows; gate on the artifact rather than on
+# the platform, which also covers a POSIX build with the runtimes disabled.
+if os.path.isdir(os.path.join(air_runtime_lib, "aircpu")):
+    config.available_features.add("aircpu")
+
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
 llvm_config.use_default_substitutions()

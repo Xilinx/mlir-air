@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -19,15 +21,15 @@ K ?= 32
 all: run_int run_float
 
 print:
-	${powershell} python3 ${srcdir}/transpose.py $(OUTPUT_FORMAT_FLAG) -p
+	${powershell} $(PYTHON) ${srcdir}/transpose.py $(OUTPUT_FORMAT_FLAG) -p
 
 run_int:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/transpose.py $(OUTPUT_FORMAT_FLAG) -m ${M} -k ${K} -t uint32
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/transpose.py $(OUTPUT_FORMAT_FLAG) -m ${M} -k ${K} -t uint32
 
 run_float:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/transpose.py $(OUTPUT_FORMAT_FLAG) -m ${M} -k ${K} -t float32
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/transpose.py $(OUTPUT_FORMAT_FLAG) -m ${M} -k ${K} -t float32
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -9,7 +11,7 @@ else
   BUILD_DIR := build_chess
 endif
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__ -mllvm -aie-disable-fold-imm
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
@@ -27,7 +29,7 @@ endif
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/bottleneck.py -p
+	${powershell} $(PYTHON) ${srcdir}/bottleneck.py -p
 
 compile-kernels:
 	mkdir -p $(BUILD_DIR)
@@ -49,12 +51,12 @@ compile-kernels:
 
 run: compile-kernels
 	mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) ${powershell} python3 ${srcdir}/bottleneck.py
+	cd $(BUILD_DIR) && PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) ${powershell} $(PYTHON) ${srcdir}/bottleneck.py
 
 # All kernels are inline MLIR in bottleneck_mlir.py — no .o files needed
 run-mlir:
 	mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) ${powershell} python3 ${srcdir}/bottleneck_mlir.py
+	cd $(BUILD_DIR) && PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) ${powershell} $(PYTHON) ${srcdir}/bottleneck_mlir.py
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

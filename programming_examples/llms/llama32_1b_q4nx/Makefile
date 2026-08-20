@@ -19,6 +19,8 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -100,7 +102,7 @@ help:
 ## No weight data or NPU dispatch required.
 compile:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) --compile-only
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) --compile-only
 
 ## Build the fused decode (delegates to the standalone programming_examples/fused_decode
 ## example): the Peano kernels + two templates (decode_L2048 + decode_L2047). ~15 min.
@@ -123,7 +125,7 @@ compile-decode-dynseq:
 ## Run unified inference (NPU prefill + fused NPU decode).
 run:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) \
 		--run-only --n-tokens $(N_TOKENS) --prompt "$(PROMPT)" --model $(MODEL)
 
 ## Run with the decode-throughput / TTFT profiling summary. --no-eos-stop so
@@ -132,14 +134,14 @@ run:
 ## (cold) dispatch and understates steady-state tok/s by ~20%.
 profile:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) \
 		--run-only --n-tokens $(N_TOKENS) --profile --no-eos-stop \
 		--prompt "$(PROMPT)" --model $(MODEL)
 
 ## Interactive chat REPL (streams the reply token-by-token; /clear resets, /exit quits).
 chat:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) \
 		--run-only --interactive --n-tokens $(N_TOKENS) --model $(MODEL)
 
 # ---- shared verify subsystem (top-k token-set inclusion, NPU q4nx vs HF bf16) ----
@@ -147,41 +149,41 @@ chat:
 ## Top-k token-set inclusion gate (NPU q4nx vs HF bf16, 2 prompts x 32 tokens, k=5).
 verify:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL) --max-prompts 2
 
 ## Full-sweep variant of `make verify` (all prompts in the prompt file).
 verify-full:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL)
 
 ## Diagnosis lens (per-layer ffn_out cosine vs HF bf16, single prompt, informational).
 diagnosis:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts single --prompt "$(PROMPT)" --model $(MODEL)
 
 ## Fast weight-integrity smoke: prefill "The capital of France is"; PASS iff the
 ## first-token argmax == 12366 (" Paris"). Cheap (prefill only, no decode build).
 verify-paris:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(PREFILL) --model $(MODEL_SOURCE)
+	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL) --model $(MODEL_SOURCE)
 
 ## Warm prefill TTFT benchmark at CTX (per-ELF BO-write / NPU-run / BO-read breakdown).
 profile-prefill:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) python3 $(PREFILL)
+	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) $(PYTHON) $(PREFILL)
 
 ## Single Q&A turn:  make ask PROMPT="What is the capital of France?"
 ask:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) --run-only --prompt "$(PROMPT)" --model $(MODEL) --n-tokens $(N_TOKENS)
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) --run-only --prompt "$(PROMPT)" --model $(MODEL) --n-tokens $(N_TOKENS)
 
 ## Full prefill+decode Paris gate: first generated token 12366 -> *** PARIS ***.
 gen:
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 $(DRIVER) --run-only --greedy --n-tokens 12
+	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) --run-only --greedy --n-tokens 12
 
 ## Remove all build artifacts, kernel/weight caches, and verify reports. Also cleans
 ## the fused_decode example, because this one's decode templates live THERE: leaving

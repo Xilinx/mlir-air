@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
 targetname := shim_dma_2d
 
 # AIE_TARGET can be set to 'aie2' (default) or 'aie2p' to select the target architecture.
@@ -33,7 +35,7 @@ all: $(BUILD_DIR)/final.xclbin
 
 $(BUILD_DIR)/air.mlir: ${srcdir}/${targetname}.py
 	mkdir -p ${@D}
-	python3 $< > $@
+	$(PYTHON) $< > $@
 
 $(BUILD_DIR)/final.xclbin: $(BUILD_DIR)/air.mlir
 	mkdir -p ${@D}
@@ -41,7 +43,7 @@ $(BUILD_DIR)/final.xclbin: $(BUILD_DIR)/air.mlir
 
 $(BUILD_DIR)/final.py.xclbin: $(BUILD_DIR)/air.mlir
 	mkdir -p ${@D}
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 build.py $(OUTPUT_FORMAT_FLAG) air.mlir
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && $(PYTHON) build.py $(OUTPUT_FORMAT_FLAG) air.mlir
 
 ${targetname}.exe: ${srcdir}/test.cpp
 	@GPP=$$( \
@@ -76,11 +78,11 @@ run: ${targetname}.exe $(BUILD_DIR)/final.xclbin $(BUILD_DIR)/final.insts.bin
 	${powershell} $(BUILD_DIR)/${targetname}.exe -x $(BUILD_DIR)/final.xclbin -i $(BUILD_DIR)/final.insts.bin -k MLIR_AIE
 
 run_py: $(BUILD_DIR)/final.xclbin $(BUILD_DIR)/final.insts.bin
-	${powershell} python3 ${srcdir}/test.py $(BUILD_DIR)/final.xclbin $(BUILD_DIR)/final.insts.bin
+	${powershell} $(PYTHON) ${srcdir}/test.py $(BUILD_DIR)/final.xclbin $(BUILD_DIR)/final.insts.bin
 
 pyworkflow:
 	mkdir -p pybuild
-	cd pybuild && ${powershell} python3 ${srcdir}/run.py
+	cd pybuild && ${powershell} $(PYTHON) ${srcdir}/run.py
 
 clean:
 	rm -rf build_peano build_chess pybuild tmp __pycache__

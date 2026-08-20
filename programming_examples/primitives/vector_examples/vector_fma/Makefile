@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -28,10 +30,10 @@ BF16_EMULATION ?=
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/vector_fma.py $(OUTPUT_FORMAT_FLAG) -p --vector-size $(VECTOR_SIZE) $(if $(BF16_EMULATION),--bf16-emulation,)
+	${powershell} $(PYTHON) ${srcdir}/vector_fma.py $(OUTPUT_FORMAT_FLAG) -p --vector-size $(VECTOR_SIZE) $(if $(BF16_EMULATION),--bf16-emulation,)
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_fma.py $(OUTPUT_FORMAT_FLAG) --vector-size $(VECTOR_SIZE) $(if $(BF16_EMULATION),--bf16-emulation,)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_fma.py $(OUTPUT_FORMAT_FLAG) --vector-size $(VECTOR_SIZE) $(if $(BF16_EMULATION),--bf16-emulation,)
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-place-herds="num-rows=4 num-cols=11" |& FileCheck %s
+// RUN: air-opt %s -air-place-herds="num-rows=4 num-cols=11" 2>&1 | FileCheck %s
 // CHECK: No valid placement found.
 // CHECK: Unplaced herd: matmul_herd_2
 // CHECK: Unplaced herd: gelu_herd_2

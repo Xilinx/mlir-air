@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # AIE target: aie2 (NPU1) or aie2p (NPU2, default)
 AIE_TARGET ?= aie2p
 
@@ -27,22 +29,22 @@ ITERATIONS ?= 5
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/weighted_rms_norm.py $(OUTPUT_FORMAT_FLAG) -p
+	${powershell} $(PYTHON) ${srcdir}/weighted_rms_norm.py $(OUTPUT_FORMAT_FLAG) -p
 
 # Default: multi-tile execution (8 tiles on NPU2, configurable via HERD_X)
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/weighted_rms_norm.py $(OUTPUT_FORMAT_FLAG) --herd-x $(HERD_X)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/weighted_rms_norm.py $(OUTPUT_FORMAT_FLAG) --herd-x $(HERD_X)
 
 # Original single-tile baseline (herd_x=1)
 run_single_tile:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/weighted_rms_norm.py $(OUTPUT_FORMAT_FLAG) --herd-x 1
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/weighted_rms_norm.py $(OUTPUT_FORMAT_FLAG) --herd-x 1
 
 # Profile multi-tile execution (timing + bandwidth; correctness via `make run`)
 profile:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/weighted_rms_norm.py $(OUTPUT_FORMAT_FLAG) --herd-x $(HERD_X) --profile --iterations $(ITERATIONS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/weighted_rms_norm.py $(OUTPUT_FORMAT_FLAG) --herd-x $(HERD_X) --profile --iterations $(ITERATIONS)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

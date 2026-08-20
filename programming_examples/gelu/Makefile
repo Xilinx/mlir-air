@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -25,15 +27,15 @@ ARGS = $(if $(N),--n $(N)) $(if $(TILE_N),--tile-n $(TILE_N)) \
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/gelu.py $(OUTPUT_FORMAT_FLAG) $(ARGS) -p
+	${powershell} $(PYTHON) ${srcdir}/gelu.py $(OUTPUT_FORMAT_FLAG) $(ARGS) -p
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/gelu.py $(OUTPUT_FORMAT_FLAG) $(ARGS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/gelu.py $(OUTPUT_FORMAT_FLAG) $(ARGS)
 
 profile:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/gelu.py $(OUTPUT_FORMAT_FLAG) $(ARGS) --perf-iters $(ITERATIONS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/gelu.py $(OUTPUT_FORMAT_FLAG) $(ARGS) --perf-iters $(ITERATIONS)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

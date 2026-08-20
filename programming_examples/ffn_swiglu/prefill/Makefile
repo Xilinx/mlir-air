@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -16,14 +18,14 @@ DIM ?= 128
 NUM_COLS ?= 4
 DIM_N = $(shell echo $$(( $(DIM) / $(NUM_COLS) )))
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/ffn_prefill.py $(OUTPUT_FORMAT_FLAG) -p \
+	${powershell} $(PYTHON) ${srcdir}/ffn_prefill.py $(OUTPUT_FORMAT_FLAG) -p \
 		--seq-len $(SEQ_LEN) --dim $(DIM) --num-cols $(NUM_COLS)
 
 compile-kernel:
@@ -45,7 +47,7 @@ run: compile-kernel
 	mkdir -p $(BUILD_DIR)/air_project
 	cp $(BUILD_DIR)/ffn_kernels.o $(BUILD_DIR)/air_project/ffn_kernels.o
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/ffn_prefill.py $(OUTPUT_FORMAT_FLAG) \
+		${powershell} $(PYTHON) ${srcdir}/ffn_prefill.py $(OUTPUT_FORMAT_FLAG) \
 		--seq-len $(SEQ_LEN) --dim $(DIM) --num-cols $(NUM_COLS)
 
 clean:

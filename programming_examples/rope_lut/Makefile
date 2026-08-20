@@ -1,8 +1,9 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -22,7 +23,7 @@ PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLA
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/rope_lut.py $(OUTPUT_FORMAT_FLAG) \
+	${powershell} $(PYTHON) ${srcdir}/rope_lut.py $(OUTPUT_FORMAT_FLAG) \
 		--seq-len $(SEQ_LEN) --embed-dim $(EMBED_DIM) --herd-x $(HERD_X) -p
 
 compile-kernel:
@@ -40,14 +41,14 @@ compile-xclbin: compile-kernel
 	mkdir -p $(BUILD_DIR)/air_project
 	cp $(BUILD_DIR)/rope.o $(BUILD_DIR)/air_project/rope.o
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/rope_lut.py --output-format xclbin --compile-mode compile-only \
+		${powershell} $(PYTHON) ${srcdir}/rope_lut.py --output-format xclbin --compile-mode compile-only \
 		--seq-len $(SEQ_LEN) --embed-dim $(EMBED_DIM) --herd-x $(HERD_X)
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)/air_project
 	cp $(BUILD_DIR)/rope.o $(BUILD_DIR)/air_project/rope.o
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		${powershell} python3 ${srcdir}/rope_lut.py $(OUTPUT_FORMAT_FLAG) \
+		${powershell} $(PYTHON) ${srcdir}/rope_lut.py $(OUTPUT_FORMAT_FLAG) \
 		--seq-len $(SEQ_LEN) --embed-dim $(EMBED_DIM) --herd-x $(HERD_X)
 
 # C++ profiling harness (10 warmup + 20 measured iterations, microsecond precision)
@@ -63,7 +64,7 @@ run_llama: compile-kernel build-test-exe
 	mkdir -p $(BUILD_DIR)/air_project
 	cp $(BUILD_DIR)/rope.o $(BUILD_DIR)/air_project/rope.o
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		python3 ${srcdir}/rope_lut.py --output-format xclbin \
+		$(PYTHON) ${srcdir}/rope_lut.py --output-format xclbin \
 		--seq-len 65536 --embed-dim 64 --herd-x 8
 	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin \
 		-R 65536 -D 64
@@ -72,7 +73,7 @@ run_llama: compile-kernel build-test-exe
 	@echo "  Prefill RoPE K: 16384 rows x 64, herd=[8,1]"
 	@echo "============================================"
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-		python3 ${srcdir}/rope_lut.py --output-format xclbin \
+		$(PYTHON) ${srcdir}/rope_lut.py --output-format xclbin \
 		--seq-len 16384 --embed-dim 64 --herd-x 8
 	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin \
 		-R 16384 -D 64

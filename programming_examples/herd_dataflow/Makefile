@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -13,7 +15,7 @@ endif
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__ -mllvm -aie-disable-fold-imm
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
@@ -58,12 +60,12 @@ check_sizes:
 
 print:
 	$(MAKE) -f $(srcdir)/Makefile check_sizes
-	${powershell} python3 ${srcdir}/run.py $(OUTPUT_FORMAT_FLAG) --m-size $(M_SIZE) --n-size $(N_SIZE) -p --mlir-source $(MLIR_SOURCE)
+	${powershell} $(PYTHON) ${srcdir}/run.py $(OUTPUT_FORMAT_FLAG) --m-size $(M_SIZE) --n-size $(N_SIZE) -p --mlir-source $(MLIR_SOURCE)
 
 run: compile-kernel
 	$(MAKE) -f $(srcdir)/Makefile check_sizes
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py $(OUTPUT_FORMAT_FLAG) --m-size $(M_SIZE) --n-size $(N_SIZE) --mlir-source $(MLIR_SOURCE)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py $(OUTPUT_FORMAT_FLAG) --m-size $(M_SIZE) --n-size $(N_SIZE) --mlir-source $(MLIR_SOURCE)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)

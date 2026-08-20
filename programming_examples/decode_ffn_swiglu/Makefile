@@ -4,6 +4,8 @@
 # Single-token GEMV with fused weighted RMSNorm input and SwiGLU output.
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
 else
@@ -25,14 +27,14 @@ N_CASCADE ?= 4
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/matvec_swiglu_rms.py $(OUTPUT_FORMAT_FLAG) -p \
+	${powershell} $(PYTHON) ${srcdir}/matvec_swiglu_rms.py $(OUTPUT_FORMAT_FLAG) -p \
 		--m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) \
 		--herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
 
 run:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  ${powershell} python3 ${srcdir}/matvec_swiglu_rms.py $(OUTPUT_FORMAT_FLAG) \
+	  ${powershell} $(PYTHON) ${srcdir}/matvec_swiglu_rms.py $(OUTPUT_FORMAT_FLAG) \
 		--m $(M) --k $(K) --tile-m $(TILE_M) --m-input $(M_INPUT) \
 		--herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE)
 
@@ -43,7 +45,7 @@ INT4_M_TILE  ?= 8
 INT4_K_CHUNK ?= 2048
 INT4_GS      ?= 128
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf \
 	-Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body \
 	-DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
@@ -61,7 +63,7 @@ compile-kernel-int4:
 run_int4: compile-kernel-int4
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && \
-	  ${powershell} python3 ${srcdir}/matvec_int4_swiglu_rms.py $(OUTPUT_FORMAT_FLAG) \
+	  ${powershell} $(PYTHON) ${srcdir}/matvec_int4_swiglu_rms.py $(OUTPUT_FORMAT_FLAG) \
 		--m $(M) --k $(K) --gs $(INT4_GS) \
 		--m-tile $(INT4_M_TILE) --k-chunk $(INT4_K_CHUNK)
 

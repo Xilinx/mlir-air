@@ -10,6 +10,8 @@
 #   false = direct-codegen bf16 (per-L2-tile bf16 truncation; faster, lower precision).
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 TILE_M ?= 64
 TILE_K_L2 ?= 256
 TILE_K_L1 ?= 32
@@ -37,7 +39,7 @@ else
   BUILD_DIR := build_chess
 endif
 
-AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
@@ -56,7 +58,7 @@ compile-kernel:
 	fi
 
 run: compile-kernel
-	cd $(BUILD_DIR) && python3 ${srcdir}/run.py --arch $(AIE_TARGET) \
+	cd $(BUILD_DIR) && $(PYTHON) ${srcdir}/run.py --arch $(AIE_TARGET) \
 		--high-precision $(HIGH_PRECISION) --method $(METHOD) \
 		--m $(M) --k $(K) --n $(N) \
 		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) \

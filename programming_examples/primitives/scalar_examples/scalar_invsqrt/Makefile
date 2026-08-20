@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -12,11 +14,11 @@ endif
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/scalar_invsqrt.py -p
+	${powershell} $(PYTHON) ${srcdir}/scalar_invsqrt.py -p
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/scalar_invsqrt.py
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/scalar_invsqrt.py
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
