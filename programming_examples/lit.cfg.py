@@ -130,11 +130,17 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
         if any(k in out_lc for k in npu2_models):
             config.available_features.add("ryzen_ai")
             config.available_features.add("ryzen_ai_npu2")
+            # Resolved once here so the ~230 test processes in a suite run do not
+            # each re-run xrt-smi examine. That probe has a 10 s timeout and
+            # intermittently exceeds it under load; on timeout the backend falls
+            # back to npu1 and silently builds a 4-column design for an 8-column part.
+            config.environment["AIR_TARGET_DEVICE"] = "npu2"
             run_on_npu2 = run_on_npu
             print("Running tests on NPU2 with command line: ", run_on_npu2 or "(none)")
         elif any(k in out_lc for k in npu1_models):
             config.available_features.add("ryzen_ai")
             config.available_features.add("ryzen_ai_npu1")
+            config.environment["AIR_TARGET_DEVICE"] = "npu1"
             run_on_npu1 = run_on_npu
             print("Running tests on NPU1 with command line: ", run_on_npu or "(none)")
         else:

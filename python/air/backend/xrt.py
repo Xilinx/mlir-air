@@ -70,7 +70,24 @@ def detect_target_device(verbose=False, default="npu1"):
     installed is not diagnosed anywhere downstream -- an aie.device(npu1) binary
     loads on npu2 without error and computes nothing -- so guessing is worse
     than asking.
+
+    AIR_TARGET_DEVICE short-circuits the probe. It exists for callers that
+    already know the answer and would otherwise pay for it once per process:
+    the lit configs resolve the generation when the suite is configured and
+    pass it down, rather than having every test shell out to xrt-smi again.
+    An explicit target_device= argument still takes precedence over both.
     """
+    override = os.environ.get("AIR_TARGET_DEVICE", "").strip()
+    if override:
+        if override not in NPU_MODELS:
+            raise ValueError(
+                f"AIR_TARGET_DEVICE={override!r} is not a known NPU "
+                f"generation; expected one of {sorted(NPU_MODELS)}"
+            )
+        if verbose:
+            print(f"Target device from AIR_TARGET_DEVICE: {override}")
+        return override
+
     try:
         xrtsmi = shutil.which("xrt-smi") or _xrt_smi_fallback()
         result = subprocess.run(
