@@ -85,12 +85,11 @@ def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with="vm.
                     a_l3_l2.get(l2_a)
                     b_l3_l2.get(l2_b)
 
-                    # One put of the whole staged buffer per K tile; the core
-                    # takes a tile_k slice of it per trip.
-                    for _i in air.sequential(0, k // tile_k):
-                        a_l2_l1.put(l2_a)
-                    for _i in air.sequential(0, k // tile_k):
-                        b_l2_l1.put(l2_b)
+                    # One put each. A channel is a stream, so the single
+                    # [k] put feeds all k/tile_k gets of [tile_k] the core
+                    # makes, and likewise for b.
+                    a_l2_l1.put(l2_a)
+                    b_l2_l1.put(l2_b)
 
                     with air.herd([range(1)], name="herd_0", shape=(1,)) as h:
 
