@@ -42,6 +42,11 @@ REM Only needed to run the example test suites (section 6.5)
 winget install -e --id ezwinports.make
 ```
 
+`winget` installs Visual Studio without any workload, so open the Visual Studio
+Installer afterwards and add the components in
+[section 1.1](#11-visual-studio-components) — otherwise there is no C++ compiler
+and [section 6.3](#63-configure-and-build) stops with a message saying so.
+
 `ezwinports.make` is a standalone GNU make with no other dependencies; it picks
 up Git's `sh.exe` as its shell, which is what the Makefile recipes expect. `make`
 from MSYS2 or Chocolatey works equally well.
@@ -214,7 +219,15 @@ mkdir my_install
 cd my_install
 pip download mlir==<version printed above> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
 python -c "import zipfile,glob;zipfile.ZipFile(glob.glob('mlir-*.whl')[0]).extractall('.')"
+cd ..
+python utils\fixup-llvm-diaguids.py my_install\mlir
 ```
+
+That last step repoints one absolute path the wheel carries from the machine
+that built it — `diaguids.lib`, the DIA SDK import library
+`LLVMDebugInfoPDB` links against. Skipping it surfaces much later, as a link
+failure naming a Visual Studio directory you do not have. The script is
+idempotent, so re-running it after a re-extract is harmless.
 
 (If you do have Git Bash handy, `bash utils\clone-llvm.sh --get-wheel-version` prints the same string.)
 
@@ -223,13 +236,21 @@ If you already staged this wheel for a MLIR-AIE source build, check whether the 
 ### 6.3 Configure and build
 
 Invoke CMake directly, as MLIR-AIR's own Windows CI does. Save this as
-`configure.cmd` and adjust the paths; `vswhere` locates Visual Studio regardless
-of which edition and version is installed:
+`configure.cmd` and adjust the paths. `vswhere` finds Visual Studio whatever its
+edition, version or location: `-products *` is needed because the default filter
+covers Community/Professional/Enterprise but silently omits Build Tools, and
+`-requires` rejects an install that has no C++ toolset, which is what a bare
+`winget install` leaves you with.
 
 ```bat
 @echo off
-for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VSPATH=%%i"
-call "%VSPATH%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul 2>&1
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+if not defined VSPATH (
+  echo No Visual Studio with the C++ toolset found -- see section 1.1.
+  exit /b 1
+)
+call "%VSPATH%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul 2>&1 || exit /b 1
 call "C:\dev\mlir-aie\iron_env.cmd" || exit /b 1
 
 set "AIR_SRC=C:/dev/mlir-air"
