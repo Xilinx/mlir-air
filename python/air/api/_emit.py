@@ -61,11 +61,9 @@ _INT_OPS = {
 def emit_elementwise(dst, expr):
     """Emit ``dst[:] = expr`` as a loop nest over ``dst``'s shape."""
     leaves = expr.leaves()
-    if not leaves:
-        raise ValueError(
-            "elementwise assignment needs at least one buffer on the "
-            "right-hand side; assigning a bare scalar is not supported yet"
-        )
+    # A bare scalar on the right-hand side is a fill (`acc[:] = 0.0`), which is
+    # how an accumulator is zeroed before a K loop. It needs no leaves: the
+    # destination supplies the shape.
     for leaf in leaves:
         if leaf.shape != dst.shape:
             raise ValueError(
@@ -84,9 +82,11 @@ def emit_elementwise(dst, expr):
             )
 
     shape = dst.shape
-    inner = shape[-1]
+    # A rank-0 buffer is a single scalar -- the accumulator linalg.dot writes
+    # into. There is no innermost dimension to vectorise, and the loop nest is
+    # empty, so the scalar path handles it with no induction variables at all.
     width = dst.vector_width
-    vectorized = width > 0 and inner % width == 0
+    vectorized = bool(shape) and width > 0 and shape[-1] % width == 0
 
     ops = _FLOAT_OPS if dst.dtype.is_float else _INT_OPS
     if vectorized:
@@ -175,6 +175,12 @@ def _eval(node, ivs, ops, ety, vectorized, vec_ty=None, minor=None, pad=None):
 
     if node.kind == "scalar":
         value = node.scalar
+        if ops is _FLOAT_OPS and isinstance(value, int) and not isinstance(value, bool):
+            # arith.constant of a float type with a Python int does not raise --
+            # it fails an assertion inside cast<IntegerType> and aborts the
+            # process, taking the traceback with it. `x[:] + 1` on an f32 buffer
+            # is ordinary Python, so widen rather than reject.
+            value = float(value)
         if ops is _INT_OPS and isinstance(value, float):
             # arith.constant of an integer type rejects a Python float with
             # "expected floating point type", which says nothing about which

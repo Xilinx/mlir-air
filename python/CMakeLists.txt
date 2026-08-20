@@ -48,7 +48,10 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
       api/__init__.py
       api/_compile.py
       api/_emit.py
+      api/_extern.py
       api/_index.py
+      api/_loop.py
+      api/_pack.py
       api/_trace.py
       api/_value.py
       api/ops.py

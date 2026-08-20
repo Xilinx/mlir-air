@@ -20,7 +20,7 @@ Three rules shape this module:
 
 from ._index import coerce_index
 
-__all__ = ["Token", "Tensor", "TensorSlice", "Buffer", "BufferExpr"]
+__all__ = ["Token", "Tensor", "TensorSlice", "Buffer", "BufferSlice", "BufferExpr"]
 
 
 class Token:
@@ -139,50 +139,180 @@ class TensorSlice:
 
 
 class Buffer:
-    """A tile allocated in a hardware scope (L1 today)."""
+    """A tile allocated in a hardware scope: L1 (a core) or L2 (a memtile).
 
-    def __init__(self, shape, dtype, scope=None, vector_width=None, value=None):
+    A subscript designates a *region* of the buffer, and what that means depends
+    on where it is used -- the same rule the API proposal's examples assume. A
+    whole-tile subscript (``buf[:]``) in an expression is an elementwise read; a
+    partial subscript (``buf[tx, 0:tm, :]``) is an access pattern for a DMA, and
+    only ``ops.load``/``ops.store`` accept one.
+    """
+
+    def __init__(
+        self,
+        shape,
+        dtype,
+        scope=None,
+        vector_width=None,
+        value=None,
+        space="L1",
+        pack=None,
+    ):
         self.shape = tuple(int(s) for s in shape)
         self.dtype = dtype
         self.scope = scope
+        # A PackedShape when this tile is laid out in micro-tile order for the
+        # AIE2 matmul intrinsic, else None. It does not change the memref -- the
+        # buffer is contiguous either way -- but it tells ops.load/store how to
+        # walk the flat side. See _pack.py.
+        self.pack = pack
+        # "L1" (core-local) or "L2" (memtile). Recorded rather than derived from
+        # `scope` so that _value.py stays independent of the tracer.
+        self.space = space
         self.vector_width = (
             dtype.default_vector_width if vector_width is None else int(vector_width)
         )
         # The memref SSA value produced by memref.alloc.
         self.value = value
+        self.strides = _row_major_strides(self.shape)
 
-    # -- reading: builds a lazy expression, emits nothing -------------------
+    # -- reading: whole tile is a lazy expression, a region is a DMA slice ---
 
     def __getitem__(self, key):
-        self._require_whole(key, "read")
-        return BufferExpr.leaf(self)
+        if self._is_whole(key):
+            self._require_compute("read")
+            return BufferExpr.leaf(self)
+        if self.pack is not None:
+            return self._packed_slice(key)
+        key = _normalize_key(key, len(self.shape), "buffer")
+        offsets, sizes = [], []
+        for dim, (sub, extent) in enumerate(zip(key, self.shape)):
+            offset, size = _resolve_subscript(sub, extent, dim)
+            offsets.append(offset)
+            sizes.append(size)
+        return BufferSlice(self, offsets, sizes, list(self.strides))
+
+    def _packed_slice(self, key):
+        """Subscript a micro-tiled buffer in *logical* coordinates.
+
+        The whole point of a packed layout is that the program keeps thinking in
+        ``[M, N]`` while the memref is ``[N/n, M/m, m, n]``, so the subscript is
+        the logical one: ``l1_c[tx, ty, :, :]`` on a herd-shared accumulator
+        names one core's ``tile_m x tile_n`` slab. The rank-6 access pattern is
+        derived from it -- see ``_pack.pack_pattern``.
+        """
+        from ._pack import pack_pattern
+
+        logical = self.pack.lead + self.pack.logical
+        key = _normalize_key(key, len(logical), "packed buffer")
+        offsets, sizes = [], []
+        for dim, (sub, extent) in enumerate(zip(key, logical)):
+            offset, size = _resolve_subscript(sub, extent, dim)
+            offsets.append(offset)
+            sizes.append(size)
+        pat_offsets, pat_sizes, pat_strides = pack_pattern(
+            self.pack, sizes, self.strides, offsets
+        )
+        return BufferSlice(
+            self, pat_offsets, pat_sizes, pat_strides, logical_sizes=sizes
+        )
 
     # -- writing: this is what triggers emission ----------------------------
 
     def __setitem__(self, key, value):
-        self._require_whole(key, "write")
+        if not self._is_whole(key):
+            raise NotImplementedError(
+                "partial assignment into a buffer is not supported yet; a "
+                "partial subscript names a DMA region, so use "
+                "air.api.ops.load(dst, src[...]) to fill one. air.api handles "
+                "whole-tile elementwise assignment (buf[:] = ...) only"
+            )
+        self._require_compute("write")
+        if self.pack is not None:
+            return self._packed_fill(value)
         from ._emit import emit_elementwise
 
         emit_elementwise(self, BufferExpr.coerce(value))
 
-    def _require_whole(self, key, what):
-        """v1 only supports whole-tile elementwise access (``buf[:]``)."""
+    def _packed_fill(self, value):
+        """``acc[:] = 0.0`` on a micro-tiled buffer, as one ``linalg.fill``.
+
+        The generic emitter would build a loop nest over the *packed* shape --
+        six nested loops and a scalar store per element, tens of thousands of
+        them for a real tile, which is the documented cause of NPU timeouts.
+        Zeroing an accumulator has no elementwise structure worth preserving, so
+        it goes out as the single op the reference uses.
+        """
+        from air.dialects.arith import ConstantOp
+        from air.dialects.linalg import fill
+
+        from . import ops as _ops
+
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise NotImplementedError(
+                "only a scalar fill is supported on a micro-tiled buffer "
+                f"(got {value!r}): its elements are not in row-major order, so "
+                "an elementwise expression over it would not mean what it reads "
+                "like. Compute into it with air.api.ops.dot instead."
+            )
+        scalar = float(value) if self.dtype.is_float else int(value)
+        cst = ConstantOp(self.dtype.mlir(), scalar)
+        return fill(cst, outs=[_ops.accumulator_subview(self)])
+
+    @staticmethod
+    def _is_whole(key):
         key = key if isinstance(key, tuple) else (key,)
-        whole = all(
+        return all(
             isinstance(k, slice)
             and k.start is None
             and k.stop is None
             and k.step is None
             for k in key
         )
-        if not whole:
-            raise NotImplementedError(
-                f"partial {what} of an L1 buffer is not supported yet; "
-                "air.api v1 handles whole-tile elementwise access (buf[:]) only"
+
+    def _require_compute(self, what):
+        """Elementwise access needs a core, and a memtile does not have one."""
+        if self.space != "L1":
+            raise TypeError(
+                f"cannot {what} an {self.space} buffer elementwise: {self.space} "
+                "is a memtile, which has DMA engines but no compute core. Stage "
+                "the tile into an L1 buffer with air.api.ops.load first, and "
+                "compute on that."
             )
 
     def __repr__(self):
-        return f"Buffer(shape={self.shape}, dtype={self.dtype})"
+        return f"Buffer(shape={self.shape}, dtype={self.dtype}, space={self.space})"
+
+
+class BufferSlice:
+    """An access pattern into a :class:`Buffer`, for use as a DMA endpoint."""
+
+    __slots__ = ("buffer", "offsets", "sizes", "strides", "logical_sizes")
+
+    def __init__(self, buffer, offsets, sizes, strides, logical_sizes=None):
+        self.buffer = buffer
+        self.offsets = offsets
+        self.sizes = sizes
+        self.strides = strides
+        # For a micro-tiled buffer the access pattern's rank and the region's
+        # rank differ -- a [1, 1, 32, 32] logical region is walked as a
+        # [1, 1, 8, 4, 8, 4] pattern. Transfers are shape-checked against the
+        # logical view, which is the one the two endpoints have in common.
+        self.logical_sizes = list(sizes if logical_sizes is None else logical_sizes)
+
+    @property
+    def dtype(self):
+        return self.buffer.dtype
+
+    @property
+    def value(self):
+        return self.buffer.value
+
+    def materialize_offsets(self):
+        return [o.materialize() for o in self.offsets]
+
+    def __repr__(self):
+        return f"BufferSlice({self.buffer!r}, sizes={self.sizes})"
 
 
 class BufferExpr:
@@ -213,6 +343,13 @@ class BufferExpr:
             return BufferExpr.leaf(value)
         if isinstance(value, (int, float)):
             return BufferExpr("scalar", scalar=value)
+        if isinstance(value, BufferSlice):
+            raise TypeError(
+                f"cannot use {value!r} in an elementwise expression: a partial "
+                "subscript names a DMA region, not a value. Move the region into "
+                "an L1 buffer with air.api.ops.load(dst, src[...]) and compute on "
+                "that buffer"
+            )
         raise TypeError(
             f"cannot use {value!r} ({type(value).__name__}) in an elementwise "
             "expression; expected a buffer slice or a numeric scalar"

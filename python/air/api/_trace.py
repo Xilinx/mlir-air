@@ -33,18 +33,22 @@ import itertools
 import re
 
 from ._index import IndexExpr
+from ._pack import PackedShape
 from ._value import Buffer, Tensor, Token
 
 __all__ = [
     "Symbol",
     "HerdContext",
+    "SegmentContext",
     "Scope",
     "herd",
+    "segment",
     "alloc",
     "tensor",
     "symbol",
     "wait",
     "current_herd",
+    "current_segment",
 ]
 
 
@@ -59,6 +63,7 @@ PENDING_SYMBOLS = []
 
 # The herd currently being traced, and the launch currently being traced.
 _CURRENT_HERD = None
+_CURRENT_SEGMENT = None
 _ACTIVE_TRACE = None
 
 # The device being traced for. A herd resolves its physical shape when it is
@@ -89,12 +94,19 @@ NO_DEVICE_TARGET = "npu2"
 # L1 (tile-local) memory per compute tile. Same on AIE2 and AIE2p.
 L1_BYTES = 65536
 
+# L2 (memtile) memory per segment. The figure the hand-written staging examples
+# assert against, e.g. matrix_vector_multiplication/bf16/matvec.py.
+L2_BYTES = 512 * 1024
+
 
 class Trace:
     """Per-build state: the tensors bound to the function being traced."""
 
-    def __init__(self, tensors):
+    def __init__(self, tensors, module=None):
         self.tensors = tensors
+        # The enclosing builtin.module, so that air.extern can place its private
+        # func.func declarations at module scope from deep inside a herd body.
+        self.module = module
         # Peak declared L1 bytes across the trace, used to explain an
         # out-of-memory failure from the AIE placer in DSL terms.
         self.l1_peak = 0
@@ -153,6 +165,14 @@ def current_herd():
             "this operation must be used inside a herd body (@herd.body)"
         )
     return _CURRENT_HERD
+
+
+def current_segment(required=True):
+    if _CURRENT_SEGMENT is None and required:
+        raise RuntimeError(
+            "this operation must be used inside a segment body (@segment.body)"
+        )
+    return _CURRENT_SEGMENT
 
 
 def infer_name(fallback, depth=2):
@@ -344,7 +364,18 @@ def _dim_from_values(values):
         raise ValueError("empty iteration range")
     _reject_nonzero_start(values[0], f"{list(values[:4])}...")
     if len(values) == 1:
-        return _Dim(1, 1)
+        # itertools.product materialises its inputs, so a one-element axis
+        # arrives as `(0,)` and its step is simply gone -- range(0, 32, 32) and
+        # range(0, 32, 1)[:1] are indistinguishable here. Guessing 1 is what the
+        # tile size then becomes, and the kernel quietly computes on 1x1 tiles.
+        raise ValueError(
+            "air.herd cannot recover the tile size of a single-tile axis from "
+            "an itertools.product: product materialises its inputs, so "
+            "range(0, N, N) reaches the DSL as just (0,) with no step. Pass the "
+            "grid as a list of ranges instead -- air.herd([range(0, M, tm), "
+            "range(0, N, tn)]) -- which keeps the steps, or use a 1-D "
+            "air.herd(range(...)) if the other axis is trivial."
+        )
     step = values[1] - values[0]
     for a, b in zip(values, values[1:]):
         if b - a != step:
@@ -400,6 +431,156 @@ def _positional_arity(fn):
 
 
 # ---------------------------------------------------------------------------
+# Segment
+# ---------------------------------------------------------------------------
+
+
+class SegmentContext:
+    """A device segment: memtile (L2) scope, with herds nested inside it.
+
+    A segment stages data between L3 and L1 so that a herd's cores read their
+    operands from a memtile rather than each streaming from L3 over its own shim
+    channel. That is what the hand-written matmul examples all do, and it is the
+    reason a wide herd is worth having.
+
+    ``air.launch``, ``air.segment`` and ``air.herd`` are independent ops, and a
+    kernel that does not need staging keeps the plain ``func`` + ``air.herd``
+    shape. A segment, though, is emitted **inside an ``air.launch``**, because
+    the pipeline will not supply one: ``air-insert-launch-around-herd`` wraps a
+    *bare* herd in a launch and a segment, and skips a herd that is already
+    inside a segment. A segment with no launch above it compiles, and silently
+    computes zeros for anything beyond a plain copy -- verified on npu1, and the
+    reason every hand-written staging example in the tree nests the two.
+    """
+
+    def __init__(self, grid=None, name=None):
+        # A grid here is the *launch* iteration space: one segment instance per
+        # point, which is how the reference matmul tiles M and N. It cannot be
+        # the herd's job, because the L2 staging buffers are re-filled per point
+        # -- the outer tiling has to sit where the L3->L2 transfers are.
+        self.dims = parse_grid(grid) if grid is not None else ()
+        if len(self.dims) > 2:
+            raise NotImplementedError(
+                f"air.launch is 2-D, so a segment grid is 1-D or 2-D; got "
+                f"{len(self.dims)}-D"
+            )
+        self.grid = tuple(d.count for d in self.dims)
+        self.tile_sizes = tuple(d.step for d in self.dims)
+        self.name = name or "segment_0"
+        self._buffers = []
+        self._registered = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def private(self):
+        """L2 (memtile) scope, shared by every core in the segment."""
+        return Scope("private", self)
+
+    def shared(self):
+        """L1 scope, but allocated *here* rather than in the herd body.
+
+        A buffer in a herd body lives and dies with one entry into the herd. An
+        accumulator cannot: it is zeroed once, added into across every trip of a
+        reduction loop that sits at segment scope -- so the herd is entered once
+        per trip -- and drained at the end. Allocating it here gives it the
+        lifetime of the segment, and the nested herd receives it as an operand
+        like any other segment buffer.
+
+        It is still L1, so it is still charged against the 64 KB core budget, and
+        each core addresses its own slab of it -- which is why such a buffer is
+        allocated with leading herd dimensions and subscripted by tile
+        coordinate.
+        """
+        return Scope("shared", self)
+
+    def register_buffer(self, buf):
+        self._buffers.append(buf)
+
+    @property
+    def body(self):
+        def decorator(fn):
+            if self._registered:
+                raise RuntimeError("segment body registered twice")
+            self._registered = True
+            self._emit(fn)
+            return fn
+
+        return decorator
+
+    def _emit(self, fn):
+        global _CURRENT_SEGMENT
+
+        trace = active_trace()
+        n_expected = len(self.dims)
+        if _positional_arity(fn) != n_expected:
+            raise TypeError(
+                f"segment body takes {_positional_arity(fn)} coordinate "
+                f"argument(s) but the launch iteration space is "
+                f"{n_expected}-D"
+                + (
+                    "; a segment with no grid is a single instance and its body "
+                    "takes no arguments"
+                    if n_expected == 0
+                    else ""
+                )
+            )
+
+        from air.dialects.air import launch as launch_region
+        from air.dialects.air import segment as segment_region
+        from air.dialects.memref import DeallocOp
+
+        tensors = trace.tensors
+        segment_self = self
+
+        # air.launch is always 2-D; an absent or 1-D grid pads with 1. Its block
+        # arguments are sizes*2 + operands, so the operands start at index 4.
+        counts = list(self.grid) + [1] * (2 - len(self.grid))
+
+        @launch_region(sizes=counts, operands=[t.value for t in tensors])
+        def launch_body(*largs):
+            # The launch induction variables become segment operands, ahead of
+            # the tensors -- air.segment is IsolatedFromAbove, so a coordinate
+            # cannot simply be referenced from inside it.
+            ivs = list(largs[: len(segment_self.dims)])
+            outer = ivs + list(largs[4:])
+
+            # sizes=[] on the segment means its block arguments are exactly the
+            # operands.
+            @segment_region(name=segment_self.name, operands=outer)
+            def segment_body(*args):
+                global _CURRENT_SEGMENT
+
+                coords = [
+                    IndexExpr.leaf(v, f"s{axis}")
+                    for axis, v in enumerate(args[: len(ivs)])
+                ]
+                bound = args[len(ivs) :]
+                saved = [t.value for t in tensors]
+                for t, v in zip(tensors, bound):
+                    t.value = v
+                previous, _CURRENT_SEGMENT = _CURRENT_SEGMENT, segment_self
+                try:
+                    fn(*coords)
+                    # Freed here, inside the region the allocs were emitted into.
+                    for buf in segment_self._buffers:
+                        DeallocOp(buf.value)
+                finally:
+                    segment_self._buffers.clear()
+                    for t, v in zip(tensors, saved):
+                        t.value = v
+                    _CURRENT_SEGMENT = previous
+
+
+def segment(grid=None, name=None):
+    """A device segment with L2 scope; nest herds inside its body."""
+    return SegmentContext(grid=grid, name=name)
+
+
+# ---------------------------------------------------------------------------
 # Herd
 # ---------------------------------------------------------------------------
 
@@ -421,6 +602,26 @@ class HerdContext:
         self.repeats = tuple(g // p for g, p in zip(self.grid, self.physical))
         self._buffers = []
         self._registered = False
+        # Object files required by air.extern calls in this herd's body.
+        self._objects = {}
+        # The core's position in the herd, bound while the body is traced.
+        self._coords = []
+
+    def require_object(self, obj, kernel):
+        """Record that this herd calls ``kernel`` from ``obj``.
+
+        aircc links one object per herd -- link_with is a single string -- so a
+        body that reaches into two of them cannot be built.
+        """
+        if self._objects and obj not in self._objects:
+            other, other_kernel = next(iter(self._objects.items()))
+            raise ValueError(
+                f"herd '{self.name}' calls {kernel} from {obj!r} and "
+                f"{other_kernel} from {other!r}, but a herd links against a "
+                "single object file. Compile both kernels into one object, or "
+                "put them in separate herds."
+            )
+        self._objects[obj] = kernel
 
     def _resolve_physical(self, shape):
         by_rank = PHYSICAL_HERD[self.target]
@@ -461,7 +662,12 @@ class HerdContext:
 
     def shared(self):
         raise NotImplementedError(
-            "shared L1 scope is not exposed by air.api yet; use herd.private()"
+            "air.api has no <herd>.shared(): a buffer allocated in a herd body "
+            "is core-local, and it dies when the body ends. For a buffer the "
+            "herd's cores share -- an accumulator carried across a reduction "
+            "loop at segment scope, say -- use <segment>.shared(), which "
+            "allocates L1 with the segment's lifetime and passes it into the "
+            "herd as an operand."
         )
 
     @property
@@ -494,8 +700,19 @@ class HerdContext:
         from air.dialects.memref import DeallocOp
         from air.dialects.scf import for_ as range_, yield_
 
+        from ._loop import aborted_loops, enter_body, exit_body
+
+        aborted_before = aborted_loops()
+
         tensors = trace.tensors
-        operands = [t.value for t in tensors]
+        # air.herd is IsolatedFromAbove, so an L2 buffer allocated in the
+        # enclosing segment has to be passed in explicitly. Every live one is
+        # passed, referenced or not -- the same policy already applied to
+        # tensors, and the tracer cannot know what the body will touch until it
+        # has run it.
+        enclosing = current_segment(required=False)
+        staged = list(enclosing._buffers) if enclosing is not None else []
+        operands = [t.value for t in tensors] + [b.value for b in staged]
         # air.herd is always 2-D. A 1-D grid is laid out along x -- [P, 1], the
         # orientation the hand-written eltwise_add kernel uses for its 8-core
         # npu2 config. [1, P] does not place.
@@ -509,15 +726,26 @@ class HerdContext:
             global _CURRENT_HERD
 
             coords = list(args[:2])
-            inner_tensors = args[4:]
+            inner = args[4:]
 
-            # Inside the herd, tensors resolve to the herd's block arguments.
+            # Inside the herd, tensors and staged L2 buffers resolve to the
+            # herd's block arguments, in the order they were passed as operands.
             saved = [t.value for t in tensors]
-            for t, v in zip(tensors, inner_tensors):
+            saved_staged = [b.value for b in staged]
+            for t, v in zip(tensors, inner[: len(tensors)]):
                 t.value = v
+            for b, v in zip(staged, inner[len(tensors) :]):
+                b.value = v
             previous, _CURRENT_HERD = _CURRENT_HERD, herd_self
 
             phys_coords = coords if two_d else coords[:1]
+            # The core's own position in the herd, as opposed to the logical
+            # tile id the body is handed (which folds in strip-mining). A
+            # herd-shared buffer is indexed by this: it has one slab per core,
+            # not one per logical tile.
+            herd_self._coords = [
+                IndexExpr.leaf(c, f"c{axis}") for axis, c in enumerate(phys_coords)
+            ]
 
             def run(strip_ivs):
                 tile_ids = []
@@ -534,13 +762,34 @@ class HerdContext:
                     DeallocOp(buf.value)
                 herd_self._buffers.clear()
 
+            outer_depth = enter_body()
             try:
                 run_strip_mined(run, herd_self.repeats, range_, yield_)
             finally:
+                exit_body(outer_depth)
                 herd_self._buffers.clear()
                 for t, v in zip(tensors, saved):
                     t.value = v
+                for b, v in zip(staged, saved_staged):
+                    b.value = v
                 _CURRENT_HERD = previous
+
+        # aircc compiles the object named here alongside the herd's cores.
+        if herd_self._objects:
+            from air.ir import StringAttr
+
+            herd_body.attributes["link_with"] = StringAttr.get(
+                next(iter(herd_self._objects))
+            )
+
+        if aborted_loops() != aborted_before:
+            raise RuntimeError(
+                "a body left an air.sequential loop early (break, return, or a "
+                "swallowed exception). An air.sequential body is traced once and "
+                "stands for every trip, so an early exit does not shorten the "
+                "loop -- it truncates the body of all of them, and the kernel "
+                "computes a partial result. Restructure the loop bounds instead."
+            )
 
 
 def run_strip_mined(run, repeats, range_, yield_):
@@ -579,18 +828,75 @@ def tensor(shape, dtype, name=None):
 
 
 def alloc(shape, dtype, scope=None, vector=None):
-    """Allocate an L1 tile inside a herd body."""
+    """Allocate a tile: L1 in a herd body, or L2 in a segment body."""
     from air.ir import IntegerAttr, MemRefType
     from air.dialects.air import MemorySpace
     from air.dialects.memref import AllocOp
     from air.extras import types as T
 
-    h = current_herd()
+    from ._loop import loop_depth
+
     if scope is None:
-        raise ValueError("air.alloc requires scope=<herd>.private()")
-    if not isinstance(scope, Scope) or scope.kind != "private":
+        raise ValueError(
+            "air.alloc requires scope=<herd>.private() (L1) or "
+            "scope=<segment>.private() (L2)"
+        )
+    if not isinstance(scope, Scope) or scope.kind not in ("private", "shared"):
         raise NotImplementedError(
-            f"air.api can only allocate in a herd's private (L1) scope, got {scope!r}"
+            f"air.api can only allocate in a private or shared scope, got {scope!r}"
+        )
+
+    owner = scope.owner
+    if isinstance(owner, HerdContext):
+        if scope.kind != "private":
+            raise NotImplementedError(
+                "air.api has no <herd>.shared(); a buffer allocated in a herd "
+                "body is core-local. For a buffer the herd's cores share, use "
+                "<segment>.shared(), which allocates it at segment scope."
+            )
+        space, memory_space, capacity, where = "L1", MemorySpace.L1, L1_BYTES, "a herd"
+        holder = current_herd()
+    elif isinstance(owner, SegmentContext):
+        # private() is the memtile; shared() is core L1 with segment lifetime.
+        if scope.kind == "shared":
+            space, memory_space, capacity = "L1", MemorySpace.L1, L1_BYTES
+            if not isinstance(shape, PackedShape):
+                # The L1 budget for a shared buffer is per *core*, so the
+                # accounting has to know which leading dimensions are the herd.
+                # A PackedShape records them; a plain list does not, and
+                # guessing would either overcharge (rejecting a design that
+                # fits) or undercharge (passing one that does not).
+                raise NotImplementedError(
+                    "<segment>.shared() currently requires a micro-tiled shape "
+                    "from air.micro_tile(...), because the per-core L1 charge "
+                    "depends on knowing which leading dimensions are the herd. "
+                    f"Got a plain shape {list(shape)}. Either allocate it with "
+                    "mm.c(...)/mm.a(...)/mm.b(...), or, if the buffer does not "
+                    "have to outlive one entry into the herd, allocate it "
+                    "per-core in the herd body with <herd>.private()."
+                )
+        else:
+            space, memory_space, capacity = "L2", MemorySpace.L2, L2_BYTES
+        where = "a segment"
+        holder = current_segment()
+    else:
+        raise NotImplementedError(
+            f"air.api cannot allocate in {scope!r}; use <herd>.private() for L1 "
+            "or <segment>.private() for L2"
+        )
+    if holder is not owner:
+        raise RuntimeError(
+            f"air.alloc(scope=...) names {where} that is not the one currently "
+            "being traced; allocate inside the body of the scope you are asking "
+            "for"
+        )
+    if space == "L1" and loop_depth():
+        raise NotImplementedError(
+            "air.alloc inside an air.sequential body is not supported: the herd "
+            "frees its buffers once the body is finished, which is outside the "
+            "loop, so the dealloc would not be dominated by its alloc. Hoist the "
+            "allocation above the loop -- the buffer is reused across trips, "
+            "which is what a loop is for."
         )
     # 0 is meaningful -- it selects the scalar path. Negative is not, and it
     # would otherwise pass a caller's own `tile % width` guard unnoticed, since
@@ -604,34 +910,60 @@ def alloc(shape, dtype, scope=None, vector=None):
     memref_ty = MemRefType.get(
         [int(s) for s in shape],
         dtype.mlir(),
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
+        memory_space=IntegerAttr.get(T.i32(), memory_space),
     )
-    # Reject what is certainly impossible before the AIE placer has to. A
-    # single tile's declared buffers cannot exceed L1; note that the pipeline
-    # may additionally ping-pong these, so fitting here is necessary but not
-    # sufficient (see the hint attached to placement failures).
+    # Reject what is certainly impossible before the AIE placer has to. Note
+    # that for L1 the pipeline may additionally ping-pong these, so fitting here
+    # is necessary but not sufficient (see the hint on placement failures).
     nbytes = 1
     for extent in shape:
         nbytes *= int(extent)
     nbytes *= dtype.itemsize
-    live = sum(_buffer_bytes(b) for b in h._buffers) + nbytes
-    if nbytes > L1_BYTES:
+    if scope.kind == "shared":
+        # A herd-shared buffer is declared once with leading herd dimensions,
+        # and each core addresses exactly one slab of it. Charging the whole
+        # thing against one core's 64 KB would reject configurations that fit
+        # comfortably -- a 4x4 herd of 16 KB slabs is 256 KB in total and 16 KB
+        # per core. The leading dimensions are the herd shape by construction:
+        # that is what makes the per-core subview well defined.
+        per_core = nbytes
+        for extent in shape.lead:
+            per_core //= int(extent)
+        nbytes = per_core
+    # A segment holds L2 memtile buffers and herd-shared L1 buffers at once, so
+    # each budget only counts its own space.
+    live = sum(_buffer_bytes(b) for b in holder._buffers if b.space == space) + nbytes
+    unit = "a compute tile" if space == "L1" else "a memtile"
+    if nbytes > capacity:
         raise ValueError(
-            f"air.alloc({list(shape)}, {dtype}) needs {nbytes / 1024:.1f} KB but a "
-            f"compute tile has {L1_BYTES / 1024:.0f} KB of L1; use a smaller tile"
+            f"air.alloc({list(shape)}, {dtype}) needs {nbytes / 1024:.1f} KB but "
+            f"{unit} has {capacity / 1024:.0f} KB of {space}; use a smaller tile"
         )
-    if live > L1_BYTES:
+    if live > capacity:
         raise ValueError(
-            f"L1 budget exceeded: this herd body has {live / 1024:.1f} KB of live "
-            f"buffers but a compute tile has {L1_BYTES / 1024:.0f} KB; use a "
-            "smaller tile"
+            f"{space} budget exceeded: this {where.split()[-1]} body has "
+            f"{live / 1024:.1f} KB of live buffers but {unit} has "
+            f"{capacity / 1024:.0f} KB; use a smaller tile"
         )
 
     op = AllocOp(memref_ty, [], [])
-    buf = Buffer(shape, dtype, scope=scope, vector_width=vector, value=op.result)
-    h.register_buffer(buf)
-    trace = active_trace()
-    trace.l1_peak = max(trace.l1_peak, live)
+    buf = Buffer(
+        shape,
+        dtype,
+        scope=scope,
+        vector_width=vector,
+        value=op.result,
+        space=space,
+        # A PackedShape is an ordinary tuple as far as the memref is concerned --
+        # the packing is not a layout, it is just this shape. Carrying the
+        # descriptor onto the buffer is what lets ops.load/store derive the
+        # micro-tiled access pattern without the call site restating it.
+        pack=shape if isinstance(shape, PackedShape) else None,
+    )
+    holder.register_buffer(buf)
+    if space == "L1":
+        trace = active_trace()
+        trace.l1_peak = max(trace.l1_peak, live)
     return buf
 
 
@@ -639,6 +971,12 @@ def _buffer_bytes(buf):
     n = buf.dtype.itemsize
     for extent in buf.shape:
         n *= extent
+    # Mirror the per-core charge applied when a herd-shared buffer was
+    # allocated, so the running total and the new allocation are on the same
+    # footing.
+    if getattr(buf.scope, "kind", None) == "shared" and buf.pack is not None:
+        for extent in buf.pack.lead:
+            n //= int(extent)
     return n
 
 
