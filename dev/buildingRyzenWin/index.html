@@ -653,17 +653,6 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#contents" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Contents
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#1-install-the-windows-development-environment" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -828,10 +817,49 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="6.5 Testing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#running-the-examples-on-hardware" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running the examples on hardware
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-xrt-end-to-end-suites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The xrt end-to-end suites
+      
+    </span>
+  </a>
+  
 </li>
         
       </ul>
     </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-powershell" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. PowerShell
+      
+    </span>
+  </a>
   
 </li>
       
@@ -1507,17 +1535,6 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#contents" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Contents
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#1-install-the-windows-development-environment" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1682,10 +1699,49 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="6.5 Testing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#running-the-examples-on-hardware" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running the examples on hardware
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-xrt-end-to-end-suites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The xrt end-to-end suites
+      
+    </span>
+  </a>
+  
 </li>
         
       </ul>
     </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-powershell" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. PowerShell
+      
+    </span>
+  </a>
   
 </li>
       
@@ -1711,28 +1767,20 @@
 
 <h1 id="getting-started-and-running-on-windows-ryzentm-ai">Getting Started and Running on Windows Ryzen™ AI<a class="headerlink" href="#getting-started-and-running-on-windows-ryzentm-ai" title="Permanent link">&para;</a></h1>
 <p>This guide covers the <strong>native Windows</strong> setup for MLIR-AIR. It supports compiling AIR designs and running them on a Ryzen™ AI NPU entirely within Windows, without a POSIX environment. Users who prefer POSIX-style development can instead run WSL2 and follow the <a href="../buildingRyzenLin/">Linux guide</a>.</p>
-<p>Use an <strong>x64 Native Tools Command Prompt for Visual Studio</strong> (<code>cmd.exe</code>) for the commands in this guide. It provides MSVC, the linker, and the Windows SDK in one configured environment. Visual Studio and Visual Studio Build Tools both install that prompt and add a Start menu shortcut. PowerShell is also supported; the equivalent commands are collected in <a href="#addendum-a-powershell">Addendum A</a>.</p>
+<p>Use an <strong>x64 Native Tools Command Prompt for Visual Studio</strong> (<code>cmd.exe</code>) for the commands in this guide. It provides MSVC, the linker, and the Windows SDK in one configured environment. Visual Studio and Visual Studio Build Tools both install that prompt and add a Start menu shortcut. PowerShell is also supported; the equivalent commands are collected in <a href="#7-powershell">section 7</a>.</p>
 <p>MLIR-AIR builds on <a href="https://github.com/Xilinx/mlir-aie">MLIR-AIE</a>, and the two share the same Windows host requirements. Where this guide and <a href="https://github.com/Xilinx/mlir-aie/blob/main/docs/buildHostWinNative.md">mlir-aie's native Windows guide</a> overlap, they are intended to agree; sections 1–3 below are the common host setup.</p>
 <blockquote>
-<p><strong>Python note:</strong> The Windows XRT SDK supplies <code>pyxrt</code> bindings for <strong>CPython 3.13</strong>. Use Python 3.13. Another Python version requires an XRT distribution with matching bindings. The whole stack will build and then fail at the final <code>import pyxrt</code> if the minor version does not match.</p>
+<p><strong>Python note:</strong> <code>pyxrt</code> is a compiled extension module, so your Python has to be the exact CPython minor version the XRT SDK built it against — <strong>3.13</strong> at the time of writing. Any other minor version installs and builds the whole stack, then fails at <code>import pyxrt</code>. <a href="#3-install-the-windows-xrt-sdk">Section 3</a> reads the required version straight out of <code>pyxrt.pyd</code>; that check is authoritative if a newer SDK has moved on and this note has not.</p>
 </blockquote>
-<h2 id="contents">Contents<a class="headerlink" href="#contents" title="Permanent link">&para;</a></h2>
-<ol>
-<li><a href="#1-install-the-windows-development-environment">Install the Windows development environment</a></li>
-<li><a href="#2-update-and-verify-the-npu-driver">Update and verify the NPU driver</a></li>
-<li><a href="#3-install-the-windows-xrt-sdk">Install the Windows XRT SDK</a></li>
-<li><a href="#4-install-prebuilt-wheels-recommended">Install prebuilt wheels (recommended)</a></li>
-<li><a href="#5-running-a-quick-example">Running a quick example</a></li>
-<li><a href="#6-build-from-source">Build from source</a></li>
-<li><a href="#addendum-a-powershell">Addendum A: PowerShell</a></li>
-<li><a href="#addendum-b-windows-differences-and-limitations">Addendum B: Windows differences and limitations</a></li>
-</ol>
 <h2 id="1-install-the-windows-development-environment">1. Install the Windows development environment<a class="headerlink" href="#1-install-the-windows-development-environment" title="Permanent link">&para;</a></h2>
 <ul>
 <li>A Windows 11 system with a supported Ryzen™ AI / XDNA™ NPU.</li>
 <li><strong>Visual Studio 2026</strong> (preferred) or <strong>Visual Studio 2022</strong> — the full IDE or the matching <strong>Build Tools</strong> package. Only needed for the source build in section 6; the wheel path in section 4 does not require a compiler.</li>
-<li><strong>Python 3.13</strong> (see the note above).</li>
+<li><strong>Python</strong>, at the minor version the note above names.</li>
 <li><strong>Git for Windows</strong>.</li>
+<li><strong>GNU make</strong>, only if you intend to run the example test suites in
+  <a href="#65-testing">section 6.5</a> — most of those tests shell out to it. Running an
+  individual example does not need it.</li>
 </ul>
 <h3 id="11-visual-studio-components">1.1 Visual Studio components<a class="headerlink" href="#11-visual-studio-components" title="Permanent link">&para;</a></h3>
 <p>Select <strong>Desktop development with C++</strong>, and confirm these individual components:</p>
@@ -1747,75 +1795,80 @@
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>winget install -e --id Microsoft.VisualStudio.Community
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1">REM winget install -e --id Microsoft.VisualStudio.BuildTools</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>winget install -e --id Python.Python.3.13
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>winget install -e --id Git.Git
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1">REM The package id carries the minor version; match the Python note above</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>winget install -e --id Python.Python.3.13
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>winget install -e --id Git.Git
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="c1">REM Only needed to run the example test suites (section 6.5)</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>winget install -e --id ezwinports.make
 </code></pre></div>
+<p><code>winget</code> installs Visual Studio without any workload, so open the Visual Studio
+Installer afterwards and add the components in
+<a href="#11-visual-studio-components">section 1.1</a> — otherwise there is no C++ compiler
+and <a href="#63-configure-and-build">section 6.3</a> stops with a message saying so.</p>
+<p><code>ezwinports.make</code> is a standalone GNU make with no other dependencies; it picks
+up Git's <code>sh.exe</code> as its shell, which is what the Makefile recipes expect. <code>make</code>
+from MSYS2 or Chocolatey works equally well.</p>
 <p>CMake and Ninja do <strong>not</strong> need a system-wide install; both are pulled into the Python environment in sections 4 and 6.</p>
+<p>A dedicated Conda or Miniforge environment works too, as long as it is on that same minor version. Activate it before running MLIR-AIE's <code>iron_setup.py</code> in <a href="#61-prerequisites">section 6.1</a>, which creates <code>ironenv</code> from the active interpreter.</p>
 <h2 id="2-update-and-verify-the-npu-driver">2. Update and verify the NPU driver<a class="headerlink" href="#2-update-and-verify-the-npu-driver" title="Permanent link">&para;</a></h2>
 <p>Install the latest Ryzen™ AI / XDNA™ driver, then verify the NPU is visible:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="s2">"C:\Windows\System32\AMD\xrt-smi.exe"</span> examine
 </code></pre></div>
-<p>NPU driver <strong>32.0.20101.3760</strong> (XRT <strong>2.21.0</strong>) is the minimum supported on Windows.</p>
-<p>Two things worth knowing when checking a driver version:</p>
-<ul>
-<li>AMD publishes two version series that are not comparable — <code>32.0.203.x</code> (Ryzen AI direct) and <code>32.0.201xx.xxxx</code> (WHQL/OEM). <strong>Compare the XRT version instead</strong>; it is a single monotonic series and is what actually matters here.</li>
-<li>The driver version reported by <code>xrt-smi</code> can be confirmed independently through PnP, which is useful when an installer claims success but changed nothing:</li>
-</ul>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">Get-CimInstance</span> <span class="n">Win32_PnPSignedDriver</span> <span class="p">|</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  <span class="nb">Where-Object</span> <span class="p">{</span> <span class="nv">$_</span><span class="p">.</span><span class="n">DeviceName</span> <span class="o">-match</span> <span class="s1">'NPU'</span> <span class="p">}</span> <span class="p">|</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  <span class="nb">Select-Object</span> <span class="n">DeviceName</span><span class="p">,</span> <span class="n">DriverVersion</span><span class="p">,</span> <span class="n">DriverDate</span>
-</code></pre></div>
+<p>MLIR-AIR adds no driver requirement of its own; the supported floor is whatever
+<a href="https://github.com/Xilinx/mlir-aie/blob/main/docs/buildHostWinNative.md">mlir-aie's native Windows guide</a>
+states, since that is the host setup both repositories share.</p>
 <h2 id="3-install-the-windows-xrt-sdk">3. Install the Windows XRT SDK<a class="headerlink" href="#3-install-the-windows-xrt-sdk" title="Permanent link">&para;</a></h2>
-<p>The XRT SDK provides the headers, import libraries, tools, and <code>pyxrt</code> bindings. Pair the SDK with the <strong>driver's</strong> XRT version, so install the driver first.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>https://github.com/Xilinx/XRT/releases/download/2.21.75/xrt_windows_sdk.zip
-</code></pre></div>
-<p>Extract the archive so that its <code>xrt_sdk\xrt</code> directory becomes:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>C:\Xilinx\XRT
+<p>The XRT SDK provides the headers, import libraries, tools, and <code>pyxrt</code> bindings. Its version has to match the <strong>driver's</strong> XRT version, which <code>xrt-smi examine</code> reports — so install the driver first, then pick the SDK to match.</p>
+<p>Download that release's <code>xrt_windows_sdk.zip</code> from the <a href="https://github.com/Xilinx/XRT/releases">XRT releases page</a> and extract it so that its <code>xrt_sdk\xrt</code> directory becomes:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>C:\Xilinx\XRT
 </code></pre></div>
 <p><code>C:\Xilinx\XRT\python\pyxrt.pyd</code> should now exist. <code>C:\Xilinx\XRT</code> is the canonical location; a different path works as long as the environment variables in the following sections point at it.</p>
-<p>To confirm which CPython ABI the bindings were built against, read the binary rather than trusting a label:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>python -c <span class="s2">"import re,pathlib;print(re.search(rb'python(\d)(\d{2})\.dll',pathlib.Path(r'C:\Xilinx\XRT\python\pyxrt.pyd').read_bytes(),re.I).groups())"</span>
+<p>Read the CPython ABI out of the bindings rather than trusting a label, and check it against the Python you installed in section 1:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>python -c <span class="s2">"import re,pathlib;print(re.search(rb'python(\d)(\d{2})\.dll',pathlib.Path(r'C:\Xilinx\XRT\python\pyxrt.pyd').read_bytes(),re.I).groups())"</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>python -c <span class="s2">"import sys;print(sys.version_info[:2])"</span>
 </code></pre></div>
+<p>Both must print the same major and minor. If they differ, this SDK wants a different Python than the one you have; install that version and use it for the virtual environment in section 4. This check, not the note at the top of the guide, is the authority.</p>
 <h2 id="4-install-prebuilt-wheels-recommended">4. Install prebuilt wheels (recommended)<a class="headerlink" href="#4-install-prebuilt-wheels-recommended" title="Permanent link">&para;</a></h2>
 <p>This is the fastest path and needs no compiler, no CMake, and no LLVM clone. Use it unless you intend to modify MLIR-AIR itself.</p>
 <p>MLIR-AIR publishes <strong>Windows AMD64</strong> wheels. Backend dependencies are exposed as pip <strong>extras</strong>; for the AIE backend use the <code>[aie]</code> extra, which pins the exact <code>mlir_aie</code> version this AIR wheel was tested against and pulls <code>llvm-aie</code> (the Peano backend compiler).</p>
 <ol>
-<li><strong>Create a virtual environment</strong> with Python 3.13:</li>
+<li><strong>Create a virtual environment</strong> with that Python:</li>
 </ol>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>python -m venv airenv
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>airenv\Scripts\activate.bat
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>python -m pip install --upgrade pip
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>python -m venv airenv
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>airenv\Scripts\activate.bat
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>python -m pip install --upgrade pip
 </code></pre></div>
 <ol>
 <li><strong>Install MLIR-AIR with the AIE backend:</strong></li>
 </ol>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>pip install <span class="s2">"mlir_air[aie]"</span> <span class="se">^</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="se"> </span> -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels <span class="se">^</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="se"> </span> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4 <span class="se">^</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="se"> </span> -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>pip install <span class="s2">"mlir_air[aie]"</span> <span class="se">^</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="se"> </span> -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels <span class="se">^</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="se"> </span> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4 <span class="se">^</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="se"> </span> -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 </code></pre></div>
 <ol>
 <li><strong>Set up the environment.</strong> Save this as <code>air_env.cmd</code> next to your venv and <code>call</code> it in each new prompt:</li>
 </ol>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="p">@</span><span class="k">echo</span> off
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="k">call</span> <span class="s2">"</span><span class="nv">%~dp0</span><span class="s2">airenv\Scripts\activate.bat"</span> <span class="p">||</span> <span class="k">exit</span> /b 1
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">set</span> <span class="s2">"SP=</span><span class="nv">%VIRTUAL_ENV%</span><span class="s2">\Lib\site-packages"</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="k">set</span> <span class="s2">"MLIR_AIR_INSTALL_DIR=</span><span class="nv">%SP%</span><span class="s2">\mlir_air"</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="k">set</span> <span class="s2">"MLIR_AIE_INSTALL_DIR=</span><span class="nv">%SP%</span><span class="s2">\mlir_aie"</span>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="k">set</span> <span class="s2">"PEANO_INSTALL_DIR=</span><span class="nv">%SP%</span><span class="s2">\llvm-aie"</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="k">set</span> <span class="s2">"XRT_ROOT=C:\Xilinx\XRT"</span>
-<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="k">set</span> <span class="s2">"PATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\bin;</span><span class="nv">%MLIR_AIE_INSTALL_DIR%</span><span class="s2">\bin;</span><span class="nv">%XRT_ROOT%</span><span class="s2">;</span><span class="nv">%XRT_ROOT%</span><span class="s2">\lib;C:\Windows\System32\AMD;</span><span class="nv">%PATH%</span><span class="s2">"</span>
-<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="k">set</span> <span class="s2">"PYTHONPATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\python;</span><span class="nv">%MLIR_AIE_INSTALL_DIR%</span><span class="s2">\python;</span><span class="nv">%XRT_ROOT%</span><span class="s2">\python"</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">@</span><span class="k">echo</span> off
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">call</span> <span class="s2">"</span><span class="nv">%~dp0</span><span class="s2">airenv\Scripts\activate.bat"</span> <span class="p">||</span> <span class="k">exit</span> /b 1
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="k">set</span> <span class="s2">"SP=</span><span class="nv">%VIRTUAL_ENV%</span><span class="s2">\Lib\site-packages"</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="k">set</span> <span class="s2">"MLIR_AIR_INSTALL_DIR=</span><span class="nv">%SP%</span><span class="s2">\mlir_air"</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="k">set</span> <span class="s2">"MLIR_AIE_INSTALL_DIR=</span><span class="nv">%SP%</span><span class="s2">\mlir_aie"</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="k">set</span> <span class="s2">"PEANO_INSTALL_DIR=</span><span class="nv">%SP%</span><span class="s2">\llvm-aie"</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="k">set</span> <span class="s2">"XRT_ROOT=C:\Xilinx\XRT"</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="k">set</span> <span class="s2">"PATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\bin;</span><span class="nv">%MLIR_AIE_INSTALL_DIR%</span><span class="s2">\bin;</span><span class="nv">%XRT_ROOT%</span><span class="s2">;</span><span class="nv">%XRT_ROOT%</span><span class="s2">\lib;C:\Windows\System32\AMD;</span><span class="nv">%PATH%</span><span class="s2">"</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="k">set</span> <span class="s2">"PYTHONPATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\python;</span><span class="nv">%MLIR_AIE_INSTALL_DIR%</span><span class="s2">\python;</span><span class="nv">%XRT_ROOT%</span><span class="s2">\python"</span>
 </code></pre></div>
 <blockquote>
-<p><strong><code>C:\Windows\System32\AMD</code> on <code>PATH</code> is not optional.</strong> MLIR-AIR selects the target device by running <code>xrt-smi examine</code> and matching the reported NPU model. If <code>xrt-smi</code> cannot be found the lookup fails silently and falls back to <strong>npu1</strong>, so an npu2 part (Strix, Strix Halo, Krackan) is compiled for the wrong target. Alternatively, pass <code>target_device="npu2"</code> explicitly to <code>XRTBackend</code> / <code>XRTRunner</code>.</p>
+<p><code>C:\Windows\System32\AMD</code> is on <code>PATH</code> so that MLIR-AIR can find <code>xrt-smi</code> and select the target device from the NPU model it reports. Passing <code>target_device="npu2"</code> to <code>XRTBackend</code> / <code>XRTRunner</code> selects it explicitly instead.</p>
 </blockquote>
 <ol>
 <li><strong>Verify the install:</strong></li>
 </ol>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">call</span> air_env.cmd
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>air-opt --version
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>python -c <span class="s2">"import air, pyxrt; print('ok')"</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">call</span> air_env.cmd
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>air-opt --version
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>python -c <span class="s2">"import air, pyxrt; print('ok')"</span>
 </code></pre></div>
 <h3 id="choosing-a-wheel-release">Choosing a wheel release<a class="headerlink" href="#choosing-a-wheel-release" title="Permanent link">&para;</a></h3>
 <p>Both RTTI and no-RTTI variants are published so downstream projects can match their LLVM build configuration.</p>
@@ -1844,122 +1897,174 @@
 <p>When mixing wheels, all three (<code>mlir</code>, <code>mlir_aie</code>, <code>mlir_air</code>) must agree on RTTI.</p>
 <h2 id="5-running-a-quick-example">5. Running a quick example<a class="headerlink" href="#5-running-a-quick-example" title="Permanent link">&para;</a></h2>
 <p>The element-wise add example stages data L3 → L2 → L1 across a two-core herd and checks the result against a NumPy reference. It exercises the whole toolchain: the Python builder, <code>aircc</code>, Peano, xclbin packaging, and XRT dispatch.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">call</span> air_env.cmd
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">cd</span> programming_examples\eltwise_add_with_l2
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="k">mkdir</span> build_peano
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="k">cd</span> build_peano
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>python ..\eltwise_add.py --output-format xclbin
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">call</span> air_env.cmd
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="k">cd</span> programming_examples\eltwise_add_with_l2
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">mkdir</span> build_peano
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="k">cd</span> build_peano
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>python ..\eltwise_add.py --output-format xclbin
 </code></pre></div>
 <p>A final <code>PASS!</code> confirms the toolchain, XRT installation, and NPU are working together.</p>
 <p>On npu2 parts you can also exercise the full-ELF output path, which is npu2-only:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="k">cd</span> programming_examples\matrix_scalar_add\single_core_dma
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="k">mkdir</span> build_peano
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="k">cd</span> build_peano
-<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>python ..\single_core_dma.py --output-format elf
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">cd</span> programming_examples\matrix_scalar_add\single_core_dma
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="k">mkdir</span> build_peano
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="k">cd</span> build_peano
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>python ..\single_core_dma.py --output-format elf
 </code></pre></div>
-<blockquote>
-<p><strong>Most examples ship a <code>Makefile</code>, and Windows has no <code>make</code>.</strong> The Makefiles are thin wrappers — the <code>run</code> target is a <code>mkdir</code> plus the <code>python</code> invocation shown above, so it is easy to run by hand. <code>make</code> from MSYS2 or Chocolatey also works if you prefer. See <a href="#addendum-b-windows-differences-and-limitations">Addendum B</a>.</p>
-</blockquote>
+<p>Most examples also ship a <code>Makefile</code> whose <code>run</code> target does the same thing, so
+<code>make run</code> works too once GNU make is installed (<a href="#12-install-the-tools">section 1.2</a>).</p>
 <p>Explore <code>programming_examples\</code> for many more designs: GEMM, element-wise operations, softmax, RMSNorm, RoPE, FlashAttention, and end-to-end LLM examples.</p>
 <h2 id="6-build-from-source">6. Build from source<a class="headerlink" href="#6-build-from-source" title="Permanent link">&para;</a></h2>
 <p>Build from source only to modify MLIR-AIR itself. LLVM/MLIR and MLIR-AIE come from prebuilt wheels, so this compiles MLIR-AIR alone — a few minutes on a modern laptop, not an LLVM-sized build.</p>
 <h3 id="61-prerequisites">6.1 Prerequisites<a class="headerlink" href="#61-prerequisites" title="Permanent link">&para;</a></h3>
 <p>Sections 1–3 above, plus a <strong>native Windows MLIR-AIE setup</strong>, which supplies three things the build needs: the <code>ironenv</code> Python environment, the <code>cmake\modulesXilinx</code> CMake modules, and the <code>mlir_aie</code> package that <code>AIE_DIR</code> points at. Follow <a href="https://github.com/Xilinx/mlir-aie/blob/main/docs/buildHostWinNative.md">mlir-aie's native Windows guide</a>, which reduces to:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>git clone --recurse-submodules https://github.com/Xilinx/mlir-aie.git C:\dev\mlir-aie
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="k">cd</span> C:\dev\mlir-aie
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>python utils\iron_setup.py --dev
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="k">call</span> .\iron_env.cmd
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>git clone --recurse-submodules https://github.com/Xilinx/mlir-aie.git C:\dev\mlir-aie
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">cd</span> C:\dev\mlir-aie
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>python utils\iron_setup.py --dev
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="k">call</span> .\iron_env.cmd
 </code></pre></div>
 <p><code>--dev</code> installs the pinned CMake, Ninja, and lit into <code>ironenv</code>. Reusing that environment keeps MLIR-AIR's tool versions aligned with MLIR-AIE's.</p>
 <p>If you would rather not clone MLIR-AIE, you need the CMake modules and the <code>mlir_aie</code> wheel separately:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>git clone --depth 1 https://github.com/Xilinx/cmakeModules.git C:\dev\cmakeModules
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>pip install cmake ninja lit nanobind numpy
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>git clone --depth 1 https://github.com/Xilinx/cmakeModules.git C:\dev\cmakeModules
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>pip install cmake ninja lit nanobind numpy
 </code></pre></div>
 <h3 id="62-stage-llvmmlir">6.2 Stage LLVM/MLIR<a class="headerlink" href="#62-stage-llvmmlir" title="Permanent link">&para;</a></h3>
 <p>MLIR-AIR consumes LLVM/MLIR as a prebuilt "distro wheel" rather than building it. Download the exact pinned version and unpack it:</p>
 <p>The pinned version lives in <code>utils\clone-llvm.sh</code>, as a <code>WHEEL_VERSION</code> built from the <code>commithash</code> and <code>DATETIME</code> lines above it. Read it without a shell:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">cd</span> C:\dev\mlir-air
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>python -c <span class="s2">"import re;s=open('utils/clone-llvm.sh').read();g=lambda p:re.search(p,s).group(1);print(g(r'WHEEL_VERSION=(\S+)').replace('$DATETIME',g(r'DATETIME=(\d+)')).replace('${commithash:0:8}',g(r'commithash=(\w+)')[:8]))"</span>
-<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="c1">REM e.g. 24.0.0.2026080106+56bcc187</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="k">cd</span> C:\dev\mlir-air
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>python -c <span class="s2">"import re;s=open('utils/clone-llvm.sh').read();g=lambda p:re.search(p,s).group(1);print(g(r'WHEEL_VERSION=(\S+)').replace('$DATETIME',g(r'DATETIME=(\d+)')).replace('${commithash:0:8}',g(r'commithash=(\w+)')[:8]))"</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="c1">REM e.g. 24.0.0.2026080106+56bcc187</span>
 </code></pre></div>
 <p>Then download and unpack it:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="k">mkdir</span> my_install
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="k">cd</span> my_install
-<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>pip download mlir==<span class="p">&lt;</span>version printed above<span class="p">&gt;</span> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
-<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>python -c <span class="s2">"import zipfile,glob;zipfile.ZipFile(glob.glob('mlir-*.whl')[0]).extractall('.')"</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="k">mkdir</span> my_install
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="k">cd</span> my_install
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>pip download mlir==<span class="p">&lt;</span>version printed above<span class="p">&gt;</span> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>python -c <span class="s2">"import zipfile,glob;zipfile.ZipFile(glob.glob('mlir-*.whl')[0]).extractall('.')"</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="k">cd</span> ..
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>python utils\fixup-llvm-diaguids.py my_install\mlir
 </code></pre></div>
+<p>That last step repoints one absolute path the wheel carries from the machine
+that built it — <code>diaguids.lib</code>, the DIA SDK import library
+<code>LLVMDebugInfoPDB</code> links against. Skipping it surfaces much later, as a link
+failure naming a Visual Studio directory you do not have. The script is
+idempotent, so re-running it after a re-extract is harmless.</p>
 <p>(If you do have Git Bash handy, <code>bash utils\clone-llvm.sh --get-wheel-version</code> prints the same string.)</p>
 <p>If you already staged this wheel for a MLIR-AIE source build, check whether the version matches (<code>utils\clone-llvm.sh --get-wheel-version</code> in each repo) and reuse that tree rather than downloading 1 GB again.</p>
-<p>See <a href="#addendum-b-windows-differences-and-limitations">Addendum B</a> for two post-extraction fixups that may be needed.</p>
 <h3 id="63-configure-and-build">6.3 Configure and build<a class="headerlink" href="#63-configure-and-build" title="Permanent link">&para;</a></h3>
-<p><strong>Do not use <code>utils\build-mlir-air-using-wheels.sh</code> or <code>utils\build-mlir-air-xrt.sh</code> on Windows.</strong> Both auto-detect a linker with <code>if [ -x "$(command -v lld)" ]; then CMAKE_ARGS="$CMAKE_ARGS -DLLVM_USE_LINKER=lld"</code>. Peano and the Visual Studio Clang components both put <code>lld</code> on <code>PATH</code>, LLVM then probes the GCC/Clang-style <code>-fuse-ld=lld</code> flag, and MSVC rejects it with a configure-time fatal error. Invoke CMake directly instead, as MLIR-AIR's own Windows CI does.</p>
-<p>Save this as <code>configure.cmd</code> and adjust the paths:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="p">@</span><span class="k">echo</span> off
-<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="k">call</span> <span class="s2">"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"</span> -arch=x64 -host_arch=x64 <span class="p">&gt;</span>nul <span class="mi">2</span><span class="p">&gt;&amp;</span><span class="mi">1</span>
-<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="k">call</span> <span class="s2">"C:\dev\mlir-aie\iron_env.cmd"</span> <span class="p">||</span> <span class="k">exit</span> /b 1
-<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>
-<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="k">set</span> <span class="s2">"AIR_SRC=C:/dev/mlir-air"</span>
-<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="k">set</span> <span class="s2">"MLIR_DISTRO=C:/dev/mlir-air/my_install/mlir"</span>
-<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="k">set</span> <span class="s2">"AIE_PKG=C:/dev/mlir-aie/ironenv/Lib/site-packages/mlir_aie"</span>
-<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>
-<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="k">if</span> <span class="k">not</span> <span class="k">exist</span> <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">/build"</span> <span class="k">mkdir</span> <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">\build"</span>
-<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a><span class="k">cd</span> /d <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">\build"</span>
-<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>
-<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>cmake <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">"</span> <span class="se">^</span>
-<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a><span class="se"> </span> -G Ninja <span class="se">^</span>
-<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a><span class="se"> </span> -DCMAKE_BUILD_TYPE=Release <span class="se">^</span>
-<a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a><span class="se"> </span> -DCMAKE_MODULE_PATH=C:/dev/mlir-aie/cmake/modulesXilinx <span class="se">^</span>
-<a id="__codelineno-16-16" name="__codelineno-16-16" href="#__codelineno-16-16"></a><span class="se"> </span> -DMLIR_DIR=<span class="nv">%MLIR_DISTRO%</span>/lib/cmake/mlir <span class="se">^</span>
-<a id="__codelineno-16-17" name="__codelineno-16-17" href="#__codelineno-16-17"></a><span class="se"> </span> -DLLVM_DIR=<span class="nv">%MLIR_DISTRO%</span>/lib/cmake/llvm <span class="se">^</span>
-<a id="__codelineno-16-18" name="__codelineno-16-18" href="#__codelineno-16-18"></a><span class="se"> </span> -DAIE_DIR=<span class="nv">%AIE_PKG%</span>/lib/cmake/aie <span class="se">^</span>
-<a id="__codelineno-16-19" name="__codelineno-16-19" href="#__codelineno-16-19"></a><span class="se"> </span> -DPEANO_INSTALL_DIR=C:/dev/mlir-aie/ironenv/Lib/site-packages/llvm-aie <span class="se">^</span>
-<a id="__codelineno-16-20" name="__codelineno-16-20" href="#__codelineno-16-20"></a><span class="se"> </span> -DXRT_ROOT=C:/Xilinx/XRT <span class="se">^</span>
-<a id="__codelineno-16-21" name="__codelineno-16-21" href="#__codelineno-16-21"></a><span class="se"> </span> -DLLVM_EXTERNAL_LIT=C:/dev/mlir-aie/ironenv/Scripts/lit.exe <span class="se">^</span>
-<a id="__codelineno-16-22" name="__codelineno-16-22" href="#__codelineno-16-22"></a><span class="se"> </span> -DPython3_EXECUTABLE=C:/dev/mlir-aie/ironenv/Scripts/python.exe <span class="se">^</span>
-<a id="__codelineno-16-23" name="__codelineno-16-23" href="#__codelineno-16-23"></a><span class="se"> </span> -DCMAKE_INSTALL_PREFIX=<span class="nv">%AIR_SRC%</span>/install
+<p>Invoke CMake directly, as MLIR-AIR's own Windows CI does. Save this as
+<code>configure.cmd</code> and adjust the paths. <code>vswhere</code> finds Visual Studio whatever its
+edition, version or location: <code>-products *</code> is needed because the default filter
+covers Community/Professional/Enterprise but silently omits Build Tools, and
+<code>-requires</code> rejects an install that has no C++ toolset, which is what a bare
+<code>winget install</code> leaves you with.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="p">@</span><span class="k">echo</span> off
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="k">set</span> <span class="s2">"VSWHERE=</span><span class="nv">%ProgramFiles(x86)%</span><span class="s2">\Microsoft Visual Studio\Installer\vswhere.exe"</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="k">for</span> <span class="k">/f</span> <span class="s2">"usebackq tokens=*"</span> <span class="se">%%</span>i <span class="k">in</span> <span class="p">(</span><span class="sb">`"</span><span class="nv">%VSWHERE%</span><span class="sb">" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`</span><span class="p">)</span> <span class="k">do</span> <span class="k">set</span> <span class="s2">"VSPATH=</span><span class="se">%%</span><span class="s2">i"</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="k">if</span> <span class="k">not</span> <span class="k">defined</span> <span class="nv">VSPATH</span> <span class="p">(</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>  <span class="k">echo</span> No Visual Studio with the C++ toolset found -- see section 1.1.
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>  <span class="k">exit</span> /b 1
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="p">)</span>
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="k">call</span> <span class="s2">"</span><span class="nv">%VSPATH%</span><span class="s2">\Common7\Tools\VsDevCmd.bat"</span> -arch=x64 -host_arch=x64 <span class="p">&gt;</span>nul <span class="mi">2</span><span class="p">&gt;&amp;</span><span class="mi">1</span> <span class="p">||</span> <span class="k">exit</span> /b 1
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="k">call</span> <span class="s2">"C:\dev\mlir-aie\iron_env.cmd"</span> <span class="p">||</span> <span class="k">exit</span> /b 1
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="k">set</span> <span class="s2">"AIR_SRC=C:/dev/mlir-air"</span>
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a><span class="k">set</span> <span class="s2">"MLIR_DISTRO=C:/dev/mlir-air/my_install/mlir"</span>
+<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a><span class="k">set</span> <span class="s2">"AIE_PKG=C:/dev/mlir-aie/ironenv/Lib/site-packages/mlir_aie"</span>
+<a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a>
+<a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a><span class="k">if</span> <span class="k">not</span> <span class="k">exist</span> <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">/build"</span> <span class="k">mkdir</span> <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">\build"</span>
+<a id="__codelineno-14-16" name="__codelineno-14-16" href="#__codelineno-14-16"></a><span class="k">cd</span> /d <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">\build"</span>
+<a id="__codelineno-14-17" name="__codelineno-14-17" href="#__codelineno-14-17"></a>
+<a id="__codelineno-14-18" name="__codelineno-14-18" href="#__codelineno-14-18"></a>cmake <span class="s2">"</span><span class="nv">%AIR_SRC%</span><span class="s2">"</span> <span class="se">^</span>
+<a id="__codelineno-14-19" name="__codelineno-14-19" href="#__codelineno-14-19"></a><span class="se"> </span> -G Ninja <span class="se">^</span>
+<a id="__codelineno-14-20" name="__codelineno-14-20" href="#__codelineno-14-20"></a><span class="se"> </span> -DCMAKE_BUILD_TYPE=Release <span class="se">^</span>
+<a id="__codelineno-14-21" name="__codelineno-14-21" href="#__codelineno-14-21"></a><span class="se"> </span> -DCMAKE_MODULE_PATH=C:/dev/mlir-aie/cmake/modulesXilinx <span class="se">^</span>
+<a id="__codelineno-14-22" name="__codelineno-14-22" href="#__codelineno-14-22"></a><span class="se"> </span> -DMLIR_DIR=<span class="nv">%MLIR_DISTRO%</span>/lib/cmake/mlir <span class="se">^</span>
+<a id="__codelineno-14-23" name="__codelineno-14-23" href="#__codelineno-14-23"></a><span class="se"> </span> -DLLVM_DIR=<span class="nv">%MLIR_DISTRO%</span>/lib/cmake/llvm <span class="se">^</span>
+<a id="__codelineno-14-24" name="__codelineno-14-24" href="#__codelineno-14-24"></a><span class="se"> </span> -DAIE_DIR=<span class="nv">%AIE_PKG%</span>/lib/cmake/aie <span class="se">^</span>
+<a id="__codelineno-14-25" name="__codelineno-14-25" href="#__codelineno-14-25"></a><span class="se"> </span> -DPEANO_INSTALL_DIR=C:/dev/mlir-aie/ironenv/Lib/site-packages/llvm-aie <span class="se">^</span>
+<a id="__codelineno-14-26" name="__codelineno-14-26" href="#__codelineno-14-26"></a><span class="se"> </span> -DXRT_ROOT=C:/Xilinx/XRT <span class="se">^</span>
+<a id="__codelineno-14-27" name="__codelineno-14-27" href="#__codelineno-14-27"></a><span class="se"> </span> -DLLVM_EXTERNAL_LIT=C:/dev/mlir-aie/ironenv/Scripts/lit.exe <span class="se">^</span>
+<a id="__codelineno-14-28" name="__codelineno-14-28" href="#__codelineno-14-28"></a><span class="se"> </span> -DPython3_EXECUTABLE=C:/dev/mlir-aie/ironenv/Scripts/python.exe <span class="se">^</span>
+<a id="__codelineno-14-29" name="__codelineno-14-29" href="#__codelineno-14-29"></a><span class="se"> </span> -DENABLE_RUN_XRT_TESTS=ON <span class="se">^</span>
+<a id="__codelineno-14-30" name="__codelineno-14-30" href="#__codelineno-14-30"></a><span class="se"> </span> -DCMAKE_INSTALL_PREFIX=<span class="nv">%AIR_SRC%</span>/install
 </code></pre></div>
-<p>Every path handed to CMake uses forward slashes. Three configure lines are worth checking before building:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>-- Found xrt_coreutil
-<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>-- Using AIEConfig.cmake in: .../mlir_aie/lib/cmake/aie
-<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>-- Skipping e2e tests on Windows (runtime libraries not built)
+<p><code>-DENABLE_RUN_XRT_TESTS=ON</code> defaults to OFF and is what lets the test suites in
+<a href="#65-testing">section 6.5</a> dispatch to the NPU. Every path handed to CMake uses
+forward slashes.</p>
+<p>Three configure lines are worth checking before building:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>-- Found xrt_coreutil
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>-- Using AIEConfig.cmake in: .../mlir_aie/lib/cmake/aie
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>-- Skipping e2e tests on Windows (runtime libraries not built)
 </code></pre></div>
-<p>The third is expected — see <a href="#addendum-b-windows-differences-and-limitations">Addendum B</a>. Reports that Vitis, <code>xchesscc</code>, AIETools, and LibXAIE were not found are also expected and harmless: Windows uses Peano exclusively.</p>
+<p>The third is expected: the <code>airhost</code> / <code>aircpu</code> host runtimes need POSIX APIs
+(<code>dlopen</code>, <code>mmap</code>, <code>ioctl</code>) and the Linux <code>amdair</code> kernel driver, so CMake skips
+them, and with them the <code>test/</code> tree. Reports that Vitis, <code>xchesscc</code>, AIETools,
+and LibXAIE were not found are also expected and harmless: Windows uses Peano
+exclusively, and Chess-gated tests report <em>unsupported</em> rather than failing.</p>
 <p>Then build and install:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="k">cd</span> C:\dev\mlir-air\build
-<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>ninja install
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="k">cd</span> C:\dev\mlir-air\build
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>ninja install
 </code></pre></div>
 <h3 id="64-set-up-the-environment">6.4 Set up the environment<a class="headerlink" href="#64-set-up-the-environment" title="Permanent link">&para;</a></h3>
 <p>Layer the freshly built install on top of the MLIR-AIE environment. Save as <code>air_env.cmd</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="p">@</span><span class="k">echo</span> off
-<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="k">call</span> <span class="s2">"C:\dev\mlir-aie\iron_env.cmd"</span> <span class="p">||</span> <span class="k">exit</span> /b 1
-<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="k">set</span> <span class="s2">"MLIR_AIR_INSTALL_DIR=C:\dev\mlir-air\install"</span>
-<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="k">set</span> <span class="s2">"PATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\bin;</span><span class="nv">%PATH%</span><span class="s2">"</span>
-<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="k">set</span> <span class="s2">"PYTHONPATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\python;</span><span class="nv">%PYTHONPATH%</span><span class="s2">"</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="p">@</span><span class="k">echo</span> off
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="k">call</span> <span class="s2">"C:\dev\mlir-aie\iron_env.cmd"</span> <span class="p">||</span> <span class="k">exit</span> /b 1
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="k">set</span> <span class="s2">"MLIR_AIR_INSTALL_DIR=C:\dev\mlir-air\install"</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="k">set</span> <span class="s2">"PATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\bin;</span><span class="nv">%PATH%</span><span class="s2">"</span>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="k">set</span> <span class="s2">"PYTHONPATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\python;</span><span class="nv">%PYTHONPATH%</span><span class="s2">"</span>
 </code></pre></div>
 <p><code>iron_env.cmd</code> already adds XRT, <code>pyxrt</code> on <code>PYTHONPATH</code>, and <code>C:\Windows\System32\AMD</code>, so device detection works. Section 5's examples now run against your build.</p>
 <blockquote>
 <p>Because <code>iron_env.cmd</code> points <code>MLIR_AIE_INSTALL_DIR</code> at the <strong>wheel</strong>, <code>PYTHONPATH</code> order decides which MLIR-AIR you get. Prepending your install directory, as above, ensures a source build shadows any <code>mlir_air</code> wheel that happens to be installed in the same environment.</p>
 </blockquote>
 <h3 id="65-testing">6.5 Testing<a class="headerlink" href="#65-testing" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="k">cd</span> C:\dev\mlir-air\build
-<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>ninja check-air-cpp
-<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>ninja check-air-mlir
-<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>ninja check-air-python
+<p>The compile-only suites need nothing beyond the build environment:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="k">cd</span> C:\dev\mlir-air\build
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>ninja check-air-cpp
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>ninja check-air-mlir
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>ninja check-air-python
 </code></pre></div>
-<p><code>check-air-cpp</code> and <code>check-air-python</code> pass on Windows. <code>check-air-mlir</code> currently has known failures confined to the <code>Util/Runner</code> and <code>Util/Channel</code> suites; see <a href="#addendum-b-windows-differences-and-limitations">Addendum B</a>.</p>
-<p>The hardware end-to-end suites (<code>check-air-e2e*</code>) are <strong>not available on Windows</strong> — they depend on the host runtime libraries, which are not built. Run designs under <code>programming_examples\</code> instead.</p>
-<hr />
-<p><a id="addendum-a-powershell"></a></p>
-<details>
-<summary><strong>Addendum A: PowerShell</strong></summary>
-
-Visual Studio installs a **Developer PowerShell for VS** shortcut providing the same compiler environment as the Native Tools `cmd.exe` prompt. PowerShell can also be started from an existing Native Tools prompt with `pwsh`, inheriting the compiler environment.
-
-The toolchain is identical; only shell syntax differs. `cmd.exe` uses `%NAME%` and `call`; PowerShell uses `$env:NAME` and `&`, dot-sourcing (`. .\script.ps1`) to keep changes in the current scope.
-
-**Wheel install (section 4):**
-
+<h4 id="running-the-examples-on-hardware">Running the examples on hardware<a class="headerlink" href="#running-the-examples-on-hardware" title="Permanent link">&para;</a></h4>
+<p><code>check-programming-examples-peano</code> dispatches to the NPU, so it needs the
+<strong>runtime</strong> environment of <a href="#64-set-up-the-environment">section 6.4</a> rather than
+the build environment, plus GNU make on <code>PATH</code> — most example tests shell out to
+it. A wrapper that layers both:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="p">@</span><span class="k">echo</span> off
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="k">call</span> C:\dev\mlir-aie\iron_env.cmd <span class="p">||</span> <span class="k">exit</span> /b 1
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="k">set</span> <span class="s2">"MLIR_AIR_INSTALL_DIR=C:\dev\mlir-air\install"</span>
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="k">set</span> <span class="s2">"PATH=</span><span class="nv">%MLIR_AIR_INSTALL_DIR%</span><span class="s2">\bin;</span><span class="nv">%PATH%</span><span class="s2">"</span>
+<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a>
+<a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a><span class="c1">REM GNU make, plus Git's usr\bin for the sh.exe make uses as its shell. Both</span>
+<a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a><span class="c1">REM install per-user or machine-wide depending on how they were installed, so</span>
+<a id="__codelineno-19-8" name="__codelineno-19-8" href="#__codelineno-19-8"></a><span class="c1">REM probe rather than assume; add your own directories if either came from</span>
+<a id="__codelineno-19-9" name="__codelineno-19-9" href="#__codelineno-19-9"></a><span class="c1">REM MSYS2 or Chocolatey instead.</span>
+<a id="__codelineno-19-10" name="__codelineno-19-10" href="#__codelineno-19-10"></a><span class="k">if</span> <span class="k">exist</span> <span class="s2">"</span><span class="nv">%LOCALAPPDATA%</span><span class="s2">\Microsoft\WinGet\Links\make.exe"</span> <span class="k">set</span> <span class="s2">"PATH=</span><span class="nv">%LOCALAPPDATA%</span><span class="s2">\Microsoft\WinGet\Links;</span><span class="nv">%PATH%</span><span class="s2">"</span>
+<a id="__codelineno-19-11" name="__codelineno-19-11" href="#__codelineno-19-11"></a><span class="k">if</span> <span class="k">exist</span> <span class="s2">"</span><span class="nv">%ProgramFiles%</span><span class="s2">\Git\usr\bin\sh.exe"</span> <span class="k">set</span> <span class="s2">"PATH=</span><span class="nv">%ProgramFiles%</span><span class="s2">\Git\usr\bin;</span><span class="nv">%PATH%</span><span class="s2">"</span>
+<a id="__codelineno-19-12" name="__codelineno-19-12" href="#__codelineno-19-12"></a><span class="k">if</span> <span class="k">exist</span> <span class="s2">"</span><span class="nv">%LOCALAPPDATA%</span><span class="s2">\Programs\Git\usr\bin\sh.exe"</span> <span class="k">set</span> <span class="s2">"PATH=</span><span class="nv">%LOCALAPPDATA%</span><span class="s2">\Programs\Git\usr\bin;</span><span class="nv">%PATH%</span><span class="s2">"</span>
+<a id="__codelineno-19-13" name="__codelineno-19-13" href="#__codelineno-19-13"></a>
+<a id="__codelineno-19-14" name="__codelineno-19-14" href="#__codelineno-19-14"></a>where make <span class="p">&gt;</span>nul <span class="mi">2</span><span class="p">&gt;&amp;</span><span class="mi">1</span> <span class="p">||</span> <span class="p">(</span><span class="k">echo</span> GNU make not found -- see section 1.2. <span class="p">&amp;</span> <span class="k">exit</span> /b 1<span class="p">)</span>
+<a id="__codelineno-19-15" name="__codelineno-19-15" href="#__codelineno-19-15"></a>where sh   <span class="p">&gt;</span>nul <span class="mi">2</span><span class="p">&gt;&amp;</span><span class="mi">1</span> <span class="p">||</span> <span class="p">(</span><span class="k">echo</span> sh.exe not found; is Git for Windows installed? <span class="p">&amp;</span> <span class="k">exit</span> /b 1<span class="p">)</span>
+<a id="__codelineno-19-16" name="__codelineno-19-16" href="#__codelineno-19-16"></a>
+<a id="__codelineno-19-17" name="__codelineno-19-17" href="#__codelineno-19-17"></a><span class="k">cd</span> /d C:\dev\mlir-air\build
+<a id="__codelineno-19-18" name="__codelineno-19-18" href="#__codelineno-19-18"></a>ninja check-programming-examples-peano
+</code></pre></div>
+<p><code>iron_env.cmd</code> supplies XRT — which provides <code>aiebu-asm.exe</code>, needed to package a
+full ELF — and <code>C:\Windows\System32\AMD</code> for <code>xrt-smi.exe</code>. The full suite takes
+roughly 20 minutes on a Krackan Point NPU2.</p>
+<p>Use <code>lit</code> directly, in the same environment, to run one example:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>lit -sv -j1 --filter <span class="s2">"eltwise_add_with_l2.*peano"</span> C:/dev/mlir-air/build/programming_examples
+</code></pre></div>
+<h4 id="the-xrt-end-to-end-suites">The xrt end-to-end suites<a class="headerlink" href="#the-xrt-end-to-end-suites" title="Permanent link">&para;</a></h4>
+<p><code>check-air-e2e*</code> and <code>check-air-runner</code> do not exist in a Windows build: the
+<code>test/</code> tree is skipped along with the host runtimes it needs
+(<a href="#63-configure-and-build">section 6.3</a>). Even with that guard lifted, much of
+<code>test/xrt</code> builds a Linux host binary (<code>g++-13</code>, boost, <code>-luuid -lrt</code>) or wraps
+execution in <code>flock</code>. Use <code>programming_examples\</code> as the end-to-end path on
+Windows.</p>
+<h2 id="7-powershell">7. PowerShell<a class="headerlink" href="#7-powershell" title="Permanent link">&para;</a></h2>
+<p>Visual Studio installs a <strong>Developer PowerShell for VS</strong> shortcut providing the same compiler environment as the Native Tools <code>cmd.exe</code> prompt. PowerShell can also be started from an existing Native Tools prompt with <code>pwsh</code>, inheriting the compiler environment.</p>
+<p>The toolchain is identical; only shell syntax differs. <code>cmd.exe</code> uses <code>%NAME%</code> and <code>call</code>; PowerShell uses <code>$env:NAME</code> and <code>&amp;</code>, dot-sourcing (<code>. .\script.ps1</code>) to keep changes in the current scope.</p>
+<p><strong>Wheel install (section 4):</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="n">python</span> <span class="n">-m</span> <span class="n">venv</span> <span class="n">airenv</span>
 <a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="p">.\</span><span class="n">airenv</span><span class="p">\</span><span class="n">Scripts</span><span class="p">\</span><span class="n">Activate</span><span class="p">.</span><span class="n">ps1</span>
 <a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="n">python</span> <span class="n">-m</span> <span class="n">pip</span> <span class="n">install</span> <span class="p">-</span><span class="n">-upgrade</span> <span class="n">pip</span>
@@ -1968,9 +2073,7 @@ The toolchain is identical; only shell syntax differs. `cmd.exe` uses `%NAME%` a
 <a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>  <span class="o">-f</span> <span class="n">https</span><span class="p">://</span><span class="n">github</span><span class="p">.</span><span class="n">com</span><span class="p">/</span><span class="n">Xilinx</span><span class="p">/</span><span class="n">mlir-aie</span><span class="p">/</span><span class="n">releases</span><span class="p">/</span><span class="n">expanded_assets</span><span class="p">/</span><span class="n">latest-wheels</span><span class="p">-</span><span class="n">4</span> <span class="p">`</span>
 <a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>  <span class="o">-f</span> <span class="n">https</span><span class="p">://</span><span class="n">github</span><span class="p">.</span><span class="n">com</span><span class="p">/</span><span class="n">Xilinx</span><span class="p">/</span><span class="n">llvm-aie</span><span class="p">/</span><span class="n">releases</span><span class="p">/</span><span class="n">expanded_assets</span><span class="p">/</span><span class="n">nightly</span>
 </code></pre></div>
-
-**Environment (section 4 step 3), as `air_env.ps1` — dot-source it, the leading dot is required:**
-
+<p><strong>Environment (section 4 step 3), as <code>air_env.ps1</code> — dot-source it, the leading dot is required:</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="p">.</span> <span class="p">.\</span><span class="n">airenv</span><span class="p">\</span><span class="n">Scripts</span><span class="p">\</span><span class="n">Activate</span><span class="p">.</span><span class="n">ps1</span>
 <a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="nv">$SP</span> <span class="p">=</span> <span class="nb">Join-Path</span> <span class="nv">$env:VIRTUAL_ENV</span> <span class="s1">'Lib\site-packages'</span>
 <a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="nv">$env:MLIR_AIR_INSTALL_DIR</span> <span class="p">=</span> <span class="nb">Join-Path</span> <span class="nv">$SP</span> <span class="s1">'mlir_air'</span>
@@ -1981,9 +2084,7 @@ The toolchain is identical; only shell syntax differs. `cmd.exe` uses `%NAME%` a
 <a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a>            <span class="s2">"$env:XRT_ROOT;$env:XRT_ROOT\lib;C:\Windows\System32\AMD;$env:PATH"</span>
 <a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a><span class="nv">$env:PYTHONPATH</span> <span class="p">=</span> <span class="s2">"$env:MLIR_AIR_INSTALL_DIR\python;$env:MLIR_AIE_INSTALL_DIR\python;$env:XRT_ROOT\python"</span>
 </code></pre></div>
-
-**Source build (section 6):** dot-source MLIR-AIE's `iron_env.ps1` instead of `iron_env.cmd`, and use backticks for line continuation in the `cmake` invocation:
-
+<p><strong>Source build (section 6):</strong> dot-source MLIR-AIE's <code>iron_env.ps1</code> instead of <code>iron_env.cmd</code>, and use backticks for line continuation in the <code>cmake</code> invocation:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="p">.</span> <span class="n">C</span><span class="p">:\</span><span class="n">dev</span><span class="p">\</span><span class="n">mlir-aie</span><span class="p">\</span><span class="n">iron_env</span><span class="p">.</span><span class="n">ps1</span>
 <a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="n">cmake</span> <span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-air</span> <span class="p">`</span>
 <a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>  <span class="n">-G</span> <span class="n">Ninja</span> <span class="p">`</span>
@@ -1998,69 +2099,7 @@ The toolchain is identical; only shell syntax differs. `cmd.exe` uses `%NAME%` a
 <a id="__codelineno-23-12" name="__codelineno-23-12" href="#__codelineno-23-12"></a>  <span class="n">-DPython3_EXECUTABLE</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-aie</span><span class="p">/</span><span class="n">ironenv</span><span class="p">/</span><span class="n">Scripts</span><span class="p">/</span><span class="n">python</span><span class="p">.</span><span class="n">exe</span> <span class="p">`</span>
 <a id="__codelineno-23-13" name="__codelineno-23-13" href="#__codelineno-23-13"></a>  <span class="n">-DCMAKE_INSTALL_PREFIX</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">dev</span><span class="p">/</span><span class="n">mlir-air</span><span class="p">/</span><span class="n">install</span>
 </code></pre></div>
-
-The MSVC environment must still be present — start from a Developer PowerShell, or run `VsDevCmd.bat` in a `cmd.exe` prompt and launch `pwsh` from it.
-
-### Conda or Miniforge Python
-
-A dedicated Conda or Miniforge environment works with the SDK when it uses Python 3.13. Activate it before running MLIR-AIE's `iron_setup.py`, which uses the active interpreter when creating `ironenv`.
-
-</details>
-
-<p><a id="addendum-b-windows-differences-and-limitations"></a></p>
-<details>
-<summary><strong>Addendum B: Windows differences and limitations</strong></summary>
-
-### Not built on Windows
-
-`runtime_lib` (the `airhost` / `aircpu` host runtimes) depends on POSIX APIs — `dlopen`, `mmap`, `ioctl` — and on the Linux `amdair` kernel driver, so CMake skips it on Windows. Consequently:
-
-- The `check-air-e2e*` targets and the `test/xrt` suite do not exist in a Windows build. `programming_examples\` is the end-to-end path.
-- `Util/Channel` tests in `check-air-mlir` fail because they link a host executable against that runtime.
-
-### Peano only, no Chess
-
-Vitis and `xchesscc` are unavailable on Windows, so Peano is the only core compiler. CMake reporting `Unable to find xchesscc` / `Could NOT find Vitis` / `Could NOT find AIETools` is expected. Chess-gated LIT tests report *unsupported* rather than failing, and examples should be run with `PEANO_INSTALL_DIR` set.
-
-### `check-air-mlir` failures
-
-`Util/Runner` (the `air-runner` performance simulator) currently produces different output on Windows than the tests expect, and a handful of its tests use the `|&` shell operator, which lit's internal shell does not parse on Windows. These are open issues, not setup problems — the rest of the suite passes.
-
-### No `make`
-
-Most `programming_examples` ship Makefiles, and Windows has no `make`. The recipes are thin: `run` is a `mkdir` plus a `python` invocation. Read the Makefile and run the `python` line directly, or install `make` from MSYS2 or Chocolatey. Examples that compile an AIE kernel first (the GEMM examples, for instance) additionally invoke Peano's `clang++` with `--target=aie2p-none-unknown-elf` — that command is also in the Makefile and can be run as-is.
-
-LIT tests driven by Makefiles are skipped automatically on Windows.
-
-### Wrong device auto-detected
-
-`XRTBackend` runs `xrt-smi examine` and matches the reported model name against its device table. If `xrt-smi` is not on `PATH`, detection fails **silently** and falls back to `npu1`. Keep `C:\Windows\System32\AMD` on `PATH`, or pass `target_device="npu2"` explicitly. A design compiled for the wrong target typically shows up as a runtime timeout rather than a clear error.
-
-### Staged LLVM wheel fixups
-
-Two problems can appear after extracting the MLIR distro wheel (section 6.2):
-
-- **Hardcoded DIA SDK path.** `LLVMExports.cmake` inside the wheel can carry an absolute `diaguids.lib` path from the machine that built it. If CMake fails importing LLVM targets over a missing `diaguids.lib`, MLIR-AIE ships a fixup that rewrites it to your Visual Studio installation:
-
-  <div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>python -c <span class="s2">"import sys;sys.path.insert(0,r'C:\dev\mlir-aie\utils\mlir_aie_wheels\scripts');from pathlib import Path;import download_mlir;download_mlir._fixup_llvm_diaguids(Path(r'C:\dev\mlir-air\my_install\mlir'))"</span>
-</code></pre></div>
-
-- **Future-dated timestamps.** Files extracted from these wheels can carry mtimes in the future, which makes Ninja re-run configuration indefinitely. The symptom is a hang, not an error. Stamp them into the past:
-
-  <div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>python -c <span class="s2">"import os;[os.utime(os.path.join(r,f),(315600000,315600000)) for r,_,fs in os.walk(r'C:\dev\mlir-air\my_install\mlir') for f in fs]"</span>
-</code></pre></div>
-
-Both are avoided by reusing a tree that a MLIR-AIE build already staged and patched.
-
-### Endpoint security
-
-Endpoint protection has been observed quarantining individual executables out of the extracted LLVM wheel, which surfaces later as a confusing CMake error. A quick assertion after extraction:
-
-<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="k">if</span> <span class="k">not</span> <span class="k">exist</span> my_install\mlir\bin\llvm-debuginfod.exe <span class="k">echo</span> POSSIBLE AV QUARANTINE
-</code></pre></div>
-
-</details>
-
+<p>The MSVC environment must still be present — start from a Developer PowerShell, or run <code>VsDevCmd.bat</code> in a <code>cmd.exe</code> prompt and launch <code>pwsh</code> from it.</p>
 <hr />
 <p align="center">Copyright&copy; 2026 Advanced Micro Devices, Inc.</p>
 
