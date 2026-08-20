@@ -99,9 +99,11 @@ def build_module(
     B = air.tensor([k, n], dt_in)
     C = air.tensor([m, n], dt_out)
 
-    # `target` is left to resolve against the installed part rather than being
-    # pinned from --arch: a binary built for the other generation loads without
-    # an XRT error and writes nothing.
+    # Unlike the elementwise conversions, the target is *pinned* from --arch by
+    # the caller (see launch.build below). It has to be: --arch already selects
+    # the micro-tile, so the module is architecture-specific before the herd is
+    # even sized, and letting the two disagree would build for one generation
+    # while shaped for the other.
     with air.launch(name="matmul_bf16") as launch:
 
         @launch.body
