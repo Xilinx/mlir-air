@@ -229,7 +229,11 @@ class FusedDecode8B:
         # embed_norm_lmhead()'s tied third return is deliberately not used.
         embed = qm.bf16("model.embed_tokens.weight")
         final_norm = qm.bf16("model.norm.weight")
-        self.embed = np.asarray(embed, np.float32).reshape(self.VOCAB_SIZE, self.K)
+        # Kept in bf16, not promoted to f32 as the 1B/3B-lineage drivers do: the
+        # only use is a per-token row lookup that is cast back to bf16 for the
+        # device input, so f32 would just double a 1 GiB table for nothing. The
+        # qwen3_8b sibling does the same.
+        self.embed = np.asarray(embed, bfloat16).reshape(self.VOCAB_SIZE, self.K)
         final_norm = np.asarray(final_norm, bfloat16)
 
         import decode_dynseq as _dyn
