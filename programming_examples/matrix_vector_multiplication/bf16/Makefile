@@ -19,11 +19,19 @@ OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
 AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
+PEANOWRAP2_FLAGS  = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include -D__AIE_API_AIE_ADF_HPP__
 
-# AIE_TARGET: aie2p (default for NPU2/Strix)
+# AIE_TARGET: aie2p (NPU2/Strix, the default) or aie2 (NPU1/Phoenix).
+# mv.o is architecture-specific, so this has to match the device the xclbin
+# will run on -- which is why each generation gets its own .lit rather than
+# one REQUIRES: ryzen_ai covering both.
 AIE_TARGET ?= aie2p
-PEANO_FLAGS = ${PEANOWRAP2P_FLAGS}
+ifeq ($(AIE_TARGET),aie2)
+  PEANO_FLAGS = ${PEANOWRAP2_FLAGS}
+else
+  PEANO_FLAGS = ${PEANOWRAP2P_FLAGS}
+endif
 
 # GEMV dimensions: C[M] = A[M,K] @ B[K]
 # Note: herd_m * TILE_M * K * 2 must fit in MemTile L2 (~512KB).
