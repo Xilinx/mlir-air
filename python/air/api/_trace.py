@@ -860,6 +860,21 @@ def alloc(shape, dtype, scope=None, vector=None):
         # private() is the memtile; shared() is core L1 with segment lifetime.
         if scope.kind == "shared":
             space, memory_space, capacity = "L1", MemorySpace.L1, L1_BYTES
+            if not isinstance(shape, PackedShape):
+                # The L1 budget for a shared buffer is per *core*, so the
+                # accounting has to know which leading dimensions are the herd.
+                # A PackedShape records them; a plain list does not, and
+                # guessing would either overcharge (rejecting a design that
+                # fits) or undercharge (passing one that does not).
+                raise NotImplementedError(
+                    "<segment>.shared() currently requires a micro-tiled shape "
+                    "from air.micro_tile(...), because the per-core L1 charge "
+                    "depends on knowing which leading dimensions are the herd. "
+                    f"Got a plain shape {list(shape)}. Either allocate it with "
+                    "mm.c(...)/mm.a(...)/mm.b(...), or, if the buffer does not "
+                    "have to outlive one entry into the herd, allocate it "
+                    "per-core in the herd body with <herd>.private()."
+                )
         else:
             space, memory_space, capacity = "L2", MemorySpace.L2, L2_BYTES
         where = "a segment"
@@ -912,7 +927,7 @@ def alloc(shape, dtype, scope=None, vector=None):
         # per core. The leading dimensions are the herd shape by construction:
         # that is what makes the per-core subview well defined.
         per_core = nbytes
-        for extent in getattr(shape, "lead", ()):
+        for extent in shape.lead:
             per_core //= int(extent)
         nbytes = per_core
     # A segment holds L2 memtile buffers and herd-shared L1 buffers at once, so

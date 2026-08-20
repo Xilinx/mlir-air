@@ -571,6 +571,17 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None):
                 f"air.api.ops.dot expects {name} to be an L1 buffer from "
                 f"air.alloc(), got {type(buf).__name__}"
             )
+        if buf.space != "L1":
+            # A contraction runs on a core, and only L1 is core-local. An L2
+            # buffer reaching here would emit a contraction over memtile memory,
+            # which has DMA engines and no compute -- the same rule that makes
+            # an elementwise read of an L2 buffer an error.
+            raise TypeError(
+                f"air.api.ops.dot expects {name} to be an L1 buffer, but it is "
+                f"in {buf.space}: a memtile has DMA engines and no compute "
+                "core, so it cannot be contracted over. Stage the tile into L1 "
+                "with air.api.ops.load first."
+            )
         if buf.value is None:
             raise RuntimeError(f"air.api.ops.dot: {name} used before allocation")
 

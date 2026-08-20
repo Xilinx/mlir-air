@@ -384,8 +384,6 @@ def _():
 
     _trace(body, grid=(512, 512, 256), shape=(2, 2))
 
-    _trace(body, grid=(512, 512, 256), shape=(2, 2))
-
 
 # A caller's own "tile must be a multiple of the vector width" guard does not
 # catch this: Python's modulo is 0 for any divisor of the tile, sign included,
@@ -787,3 +785,29 @@ def _():
         air.alloc([32, 32], bf16, scope=h.shared())
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: dot_on_an_l2_buffer
+# A contraction runs on a core; a memtile has DMA engines and none. The
+# operand check said "L1 buffer" long before it checked for one.
+# CHECK: TypeError: air.api.ops.dot expects a to be an L1 buffer, but it is in L2
+@expect(TypeError, "dot_on_an_l2_buffer")
+def _():
+    def body(seg, A, C):
+        staged = air.alloc([32, 32], bf16, scope=seg.private())
+        ops.dot(staged, staged, acc=staged)
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: shared_alloc_needs_a_packed_shape
+# The per-core L1 charge depends on knowing which leading dimensions are the
+# herd; a plain shape does not say, and guessing either way misreports the
+# budget.
+# CHECK: NotImplementedError: <segment>.shared() currently requires a micro-tiled shape
+@expect(NotImplementedError, "shared_alloc_needs_a_packed_shape")
+def _():
+    def body(seg, A, C):
+        air.alloc([1, 1, 32, 32], bf16, scope=seg.shared())
+
+    _staged(body)
