@@ -960,3 +960,17 @@ def _():
         ch.get([1, 2, 3])
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: coord_scalar_into_float
+# A herd coordinate broadcasts into an integer expression with an index_cast.
+# Into a float one it would need a conversion as well, which nothing has
+# required, so it raises rather than guessing a rounding mode.
+# CHECK: NotImplementedError: a herd coordinate or loop variable can be broadcast into an integer elementwise expression but not a floating-point one
+@expect(NotImplementedError, "coord_scalar_into_float")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        a[:] = a[:] + ty
+
+    _trace(body)

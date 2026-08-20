@@ -175,6 +175,24 @@ def _eval(node, ivs, ops, ety, vectorized, vec_ty=None, minor=None, pad=None):
 
     if node.kind == "scalar":
         value = node.scalar
+        from ._index import IndexExpr
+
+        if isinstance(value, IndexExpr):
+            # Materialise first: a constant expression folds back to a Python
+            # int and takes the ordinary constant path below, so only a genuine
+            # coordinate costs an index_cast.
+            value = value.materialize()
+            if not isinstance(value, int):
+                if ops is not _INT_OPS:
+                    raise NotImplementedError(
+                        "a herd coordinate or loop variable can be broadcast "
+                        "into an integer elementwise expression but not a "
+                        f"floating-point one ({ety} here): it would need an "
+                        "index_cast followed by a conversion to float, which "
+                        "nothing has required yet"
+                    )
+                scalar = _result(arith.index_cast(ety, value))
+                return _result(broadcast(vec_ty, scalar)) if vectorized else scalar
         if ops is _FLOAT_OPS and isinstance(value, int) and not isinstance(value, bool):
             # arith.constant of a float type with a Python int does not raise --
             # it fails an assertion inside cast<IntegerType> and aborts the

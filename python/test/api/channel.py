@@ -167,6 +167,14 @@ def channel_array():
 # CHECK: air.channel @Bcast [1, 1] {broadcast_shape = [1 : index, 3 : index]}
 # CHECK: air.channel.put @Bcast[] (%{{.*}}[] [] []) : (memref<64xi32>)
 # CHECK: air.channel.get @Bcast[%{{.*}}, %{{.*}}] (%{{.*}}[] [] []) : (memref<64xi32, 2 : i32>)
+#
+# Each core adds its own coordinate, so the fan-out is observable rather than
+# merely asserted. A herd coordinate broadcast into an elementwise expression
+# materialises as an affine.apply and an index_cast to the buffer's element
+# type -- which is what the hand-written broadcast example spells by hand.
+# CHECK: affine.apply
+# CHECK: arith.index_cast %{{.*}} : index to i32
+# CHECK: arith.addi
 @run
 def channel_broadcast():
     A = air.tensor([64], i32)
@@ -188,8 +196,10 @@ def channel_broadcast():
                         @h.body
                         def _(tx, ty):
                             buf = air.alloc([64], i32, scope=h.private())
+                            out = air.alloc([64], i32, scope=h.private(), vector=0)
                             bcast.get(buf, indices=[tx, ty])
-                            back.put(buf)
+                            out[:] = buf[:] + ty
+                            back.put(out)
 
                     back.get(B)
 

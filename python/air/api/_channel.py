@@ -134,22 +134,22 @@ class Channel:
         from ._trace import active_trace
 
         trace = active_trace()
-        # Before the func rather than at the top of the module: the func already
-        # exists by the time a body runs, so this lands each new channel after
-        # the ones already declared. at_block_begin would reverse them.
-        anchor = next(
-            (
-                op
-                for op in trace.module.body.operations
-                if op.operation.name != "air.channel"
-            ),
-            None,
+        # Immediately after the last channel already declared, so several read
+        # in declaration order; at_block_begin alone would reverse them. The
+        # anchor is the last *channel* rather than the first non-channel,
+        # because air.extern prepends its private func.func decls at block
+        # begin -- anchoring on "the first thing that is not a channel" would
+        # start inserting above them once a kernel had been called.
+        ops = list(trace.module.body.operations)
+        last = max(
+            (i for i, op in enumerate(ops) if op.operation.name == "air.channel"),
+            default=None,
         )
-        ip = (
-            InsertionPoint(anchor)
-            if anchor is not None
-            else InsertionPoint(trace.module.body)
-        )
+        if last is None:
+            ip = InsertionPoint.at_block_begin(trace.module.body)
+        else:
+            # The enclosing func always follows, so there is a next sibling.
+            ip = InsertionPoint(ops[last + 1])
         with ip:
             ChannelOp(
                 self.name,
