@@ -310,3 +310,16 @@ def _():
         air.alloc([256, 256], bf16, scope=h.private())
 
     _trace(body, grid=(512, 512, 256), shape=(2, 2))
+
+
+# A caller's own "tile must be a multiple of the vector width" guard does not
+# catch this: Python's modulo is 0 for any divisor of the tile, sign included,
+# so -4 passes it and then quietly selects the scalar path.
+# CHECK-LABEL: TEST: negative_vector_width
+# CHECK: ValueError: air.alloc vector width must be >= 0, got -4
+@expect(ValueError, "negative_vector_width")
+def _():
+    def body(h, tx, ty, A, B, C):
+        air.alloc([64, 64], bf16, scope=h.private(), vector=-4)
+
+    _trace(body)

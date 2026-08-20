@@ -14,18 +14,33 @@ real asynchronous dependency graph from program order in the ``air-dependency``
 pass, so a v1 token carries no SSA value -- it exists so that ``dependency=``
 can be type-checked instead of silently ignored.
 
-Elementwise compute ops (``maximum``, ``minimum``, ``relu``) build lazy
-expression nodes instead, and return a :class:`~air.api._value.BufferExpr`.
+Elementwise compute ops (``maximum``, ``minimum``, ``relu``, ``tanh``, and the
+``sigmoid``/``silu``/``gelu`` compositions built on them) build lazy expression
+nodes instead, and return a :class:`~air.api._value.BufferExpr`.
 
-The remaining compute ops from the wider API proposal (``dot``, ``reduce``,
-``exp``, ``stack``, ``dequant``, ``atomic_add``) are not implemented. They raise
-rather than returning a plausible-looking placeholder: a DSL that accepts an op
-it cannot lower produces a kernel that runs and is silently wrong.
+The remaining compute ops from the wider API proposal (``dot``, ``exp``,
+``reduce``, ``stack``, ``dequant``, ``atomic_add``) are not implemented. They
+raise rather than returning a plausible-looking placeholder: a DSL that accepts
+an op it cannot lower produces a kernel that runs and is silently wrong.
+``exp`` is on that list by choice rather than by oversight -- the activations
+here are composed from ``tanh``, which has a checked lowering, so nothing has
+needed a vector ``exp`` yet.
 """
 
 from ._value import Buffer, BufferExpr, TensorSlice, Token
 
-__all__ = ["load", "store", "copy", "maximum", "minimum", "relu"]
+__all__ = [
+    "load",
+    "store",
+    "copy",
+    "maximum",
+    "minimum",
+    "relu",
+    "tanh",
+    "sigmoid",
+    "silu",
+    "gelu",
+]
 
 
 def _check_dependency(dependency):
@@ -172,6 +187,52 @@ def relu(x):
     return maximum(expr, 0.0 if leaves[0].dtype.is_float else 0)
 
 
+def _unary(name, x):
+    if not isinstance(x, (Buffer, BufferExpr)):
+        raise TypeError(
+            f"air.api.ops.{name} expects a buffer slice, got {type(x).__name__}"
+        )
+    expr = BufferExpr.coerce(x)
+    if not expr.leaves():
+        raise ValueError(f"air.api.ops.{name} needs a buffer operand, got a scalar")
+    return BufferExpr("unary", op=name, args=(expr,))
+
+
+def tanh(x):
+    """Elementwise hyperbolic tangent. Lowers to math.tanh. Float only."""
+    return _unary("tanh", x)
+
+
+# The three activations below are compositions, not new primitives. Each is
+# written the way the hand-written kernel it replaces wrote it -- in particular
+# via tanh rather than exp, which keeps them clear of two AIE2 limitations at
+# once: there is no vector division on bf16, and exp would need one.
+
+
+def sigmoid(x):
+    """0.5 * (tanh(x/2) + 1), the logistic function without a division."""
+    return 0.5 * (tanh(0.5 * BufferExpr.coerce(x)) + 1.0)
+
+
+def silu(x):
+    """x * sigmoid(x), also known as swish."""
+    expr = BufferExpr.coerce(x)
+    return expr * sigmoid(expr)
+
+
+# tanh approximation of the Gaussian error linear unit: the constants are
+# sqrt(2/pi) and the 0.044715 cubic term from Hendrycks & Gimpel.
+GELU_SQRT_2_OVER_PI = 0.7978845608
+GELU_BETA = 0.044715
+
+
+def gelu(x):
+    """0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x**3)))."""
+    expr = BufferExpr.coerce(x)
+    inner = GELU_SQRT_2_OVER_PI * (expr + GELU_BETA * (expr * expr * expr))
+    return 0.5 * expr * (tanh(inner) + 1.0)
+
+
 def _unimplemented(name, needs):
     def stub(*args, **kwargs):
         raise NotImplementedError(
@@ -185,8 +246,10 @@ def _unimplemented(name, needs):
 # Named so that a program using them fails loudly at the call site rather than
 # at compile time with a confusing IR error.
 dot = _unimplemented("dot", "linalg/vector.contract lowering")
+# math.exp exists in the bindings, but nothing needs it yet and it has not
+# been checked for an aievec lowering -- untested surface is worse than none.
+exp = _unimplemented("exp", "a checked aievec lowering; use ops.tanh, which has one")
 reduce = _unimplemented("reduce", "a reduction emitter")
-exp = _unimplemented("exp", "math dialect lowering")
 stack = _unimplemented("stack", "multi-buffer concatenation")
 dequant = _unimplemented("dequant", "BlockType support")
 atomic_add = _unimplemented("atomic_add", "CacheDomain support")
