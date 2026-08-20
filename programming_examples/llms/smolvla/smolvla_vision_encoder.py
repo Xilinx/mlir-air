@@ -81,6 +81,13 @@ def _gelu_backend():
         "output_format": "elf",
         "instance_name": "gelu",
         "runtime_loop_tiling_sizes": [4, 4],
+        # Pinned, because the air.api builder pins the module it hands over and
+        # the two must agree. They do not agree by default: XRTBackend's
+        # detect_target_device falls back to npu1 when xrt-smi cannot answer,
+        # while air.api's falls back to npu2, so a build host without a device
+        # would compile an npu2 module for npu1 -- which loads and computes
+        # nothing rather than failing.
+        "target_device": "npu2",
     }
 
 
@@ -381,7 +388,7 @@ def compile_all_kernels(
     from shared.infra.external_kernels import compile_gemm_mm
     from matrix_multiplication.bf16_in_bf16_out.run import build_module as build_gemm
     from layer_norm.layer_norm import build_module as build_layer_norm
-    from gelu.gelu import build_module as build_gelu
+    from gelu.gelu import build_gelu
     from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
         build_module as build_attn,
     )
@@ -446,7 +453,11 @@ def compile_all_kernels(
     # --- 3. GELU-tanh (1D, N = seq_len * hidden_dim) ---
     gelu_n = seq_len * hidden_dim
     print(f"  Compiling gelu: N={gelu_n} (tile_n=4096, herd 8x2)")
-    gelu_mod = build_gelu(gelu_n, 4096, bfloat16, herd_x=8, herd_y=2)
+    # air.api builder: returns a launch, and .build() resolves the herd for the
+    # target. Pinned to npu2 -- this encoder is npu2-only (see the lit's
+    # REQUIRES) and the herd width depends on the generation, so leaving it to
+    # autodetect would make the compiled shape depend on the build host.
+    gelu_mod = build_gelu(gelu_n, 4096, herd_shape=(8, 2)).build(target="npu2")
     cache.compile_and_cache(
         "gelu", gelu_mod, {"verbose": cache.verbose, **_gelu_backend()}
     )
