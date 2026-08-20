@@ -1,0 +1,43 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// LLAMA-3.1-8B Q4NX decode throughput vs context length, into
+// llama31_8b_q4nx.sweep.json (collected by the nightly LLM benchmark).
+//
+// Complements run_npu2_profile.lit rather than repeating it: that test profiles
+// the real prefill+decode path at the profile prompt's ~6 tokens of context.
+// Decode tok/s is dominated by KV streaming and falls steeply
+// between 1k and 128k on this design, so a single near-zero-context point
+// cannot see a KV-path regression.
+//
+// Decode-only and synthetic (latency, never correctness -- run_npu2_verify.lit
+// is the correctness gate), so unlike the profile test this needs no HF weights
+// and no hf_token: the context is set by sizing the KV cache, not by prefilling
+// a real prompt of that length. llvm_link_pre23 is still required because the
+// build goes through fused_decode's inline-attn merge.
+//
+// DECODE_WGROUP / DECODE_STACK are passed rather than left to the Makefile's
+// defaults because they reach two places that have to agree: the device build
+// (how many weight args the signature carries) and the host BO split. Passing
+// them here sends one value to both.
+//
+// 64k and 128k are swept but allowed to fail. Whether a model reaches them
+// depends on how much host memory XRT will pin for its KV BO, which differs
+// between machines. This model carries 4.38 GiB of weights before a byte of KV,
+// second only to qwen3-8b's 4.41 GiB, and its KV at 128k is the same 16 GiB as
+// the other 8-kv-head DH=128 Llamas. The point is recorded with its status
+// either way rather than reddening CI on a property of the host.
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23
+//
+// RUN: mkdir -p test_peano_sweep
+// RUN: cd test_peano_sweep
+// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name llama31_8b_q4nx --makefile %S/Makefile --template-dir %S --bench-model llama-3.1-8b --vocab-chunk-i2 16 --n-layers 32 --builder-env DECODE_WGROUP=8 --builder-env DECODE_STACK=8064 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --peano-dir %PEANO_INSTALL_DIR --xrt-dir %XRT_DIR --out llama31_8b_q4nx.sweep.json
+// RUN: FileCheck %s < llama31_8b_q4nx.sweep.json
+// CHECK: "model": "llama31_8b_q4nx"
+// CHECK: "axis": "context_len"
+// A parsed number at the reference context, not just a well-formed file: if the
+// bench line format drifts out of sweep_decode.py's regex every point goes null
+// and the published curve silently empties while the test stays green.
+// CHECK: "context_len": 2048
+// CHECK-NEXT: "decode_tokens_per_sec": {{[0-9]}}

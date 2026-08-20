@@ -43,17 +43,28 @@ _CHECK_W_ELEMS = [
     ("llama-3.2-3b", "9", 28, 1004666880),
     ("gemma3-4b", "5", 34, 1213644800),
 ]
-# The one split model. Its parts summing to w_elems checks the part that can
+# The split models. Their parts summing to w_elems checks the part that can
 # actually be wrong: that the per-group `min(G, UNI_DEC - g*G)` covers exactly
 # UNI_DEC layers, with no gap and no overlap. The head term is shared by both
-# routes, so it is the grouping arithmetic that is under test here.
-_CHECK_SPLIT = (
-    "qwen3-8b",
-    "8",
-    36,
-    dict(DECODE_STACK="6144", DECODE_WGROUP="9"),
-    [542638080, 542638080, 542638080, 542638080, 199229440],
-)
+# routes, so it is the grouping arithmetic that is under test here. Both cases
+# are kept because they divide differently -- 36 into 9 is exact, 32 into 8 is
+# exact at a different group count -- and a gap/overlap bug need not hit both.
+_CHECK_SPLITS = [
+    (
+        "qwen3-8b",
+        "8",
+        36,
+        dict(DECODE_STACK="6144", DECODE_WGROUP="9"),
+        [542638080, 542638080, 542638080, 542638080, 199229440],
+    ),
+    (
+        "llama-3.1-8b",
+        "16",
+        32,
+        dict(DECODE_STACK="8064", DECODE_WGROUP="8"),
+        [545259520, 545259520, 545259520, 545259520, 167772160],
+    ),
+]
 _CHECK_WANT = dict(
     k=2048,
     w_elems=386662400,
@@ -218,10 +229,10 @@ def main():
             got = geometry(model, i2, 2048, n_layers=nl)["w_elems"]
             if got != want:
                 bad[f"w_elems[{model}]"] = (want, got)
-        model, i2, nl, extra, want = _CHECK_SPLIT
-        got = geometry(model, i2, 2048, n_layers=nl, env_extra=extra).get("w_parts")
-        if got != want:
-            bad[f"w_parts[{model}]"] = (want, got)
+        for model, i2, nl, extra, want in _CHECK_SPLITS:
+            got = geometry(model, i2, 2048, n_layers=nl, env_extra=extra).get("w_parts")
+            if got != want:
+                bad[f"w_parts[{model}]"] = (want, got)
         print("SELF-CHECK", "PASS" if not bad else f"FAIL {bad}")
         return 0 if not bad else 1
 
