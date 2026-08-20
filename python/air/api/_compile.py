@@ -113,7 +113,7 @@ class LaunchContext:
                 def _kernel(*args):
                     for t, v in zip(self.tensors, args):
                         t.value = v
-                    trace = Trace(self.tensors)
+                    trace = Trace(self.tensors, module=module)
                     previous = set_active_trace(trace)
                     previous_target = set_target(self.target)
                     try:

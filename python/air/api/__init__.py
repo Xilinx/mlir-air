@@ -28,16 +28,70 @@ package re-exports, so one import reaches the whole DSL::
                     air.ops.load(a, A[...])
                     ...
 
-Scope of this version: elementwise kernels over a 1-D or 2-D herd -- tensors,
-L1 allocation, DMA in and out, and elementwise arithmetic on whole tiles.
-Everything outside that raises ``NotImplementedError`` at the point of use.
-Nothing degrades quietly into a kernel that runs and returns wrong numbers.
+Scope of this version: kernels over a 1-D or 2-D herd -- tensors, allocation in
+L1 (a core) and L2 (a memtile, via ``air.segment``), DMA between any two levels,
+elementwise arithmetic on whole L1 tiles, an ``air.sequential`` loop, and
+``ops.dot``, a contraction that dispatches on operand rank onto ``linalg.dot`` /
+``vecmat`` / ``matvec`` / ``matmul``. Everything outside that raises
+``NotImplementedError`` at the point of use. Nothing degrades quietly into a
+kernel that runs and returns wrong numbers.
+
+``launch``, ``segment`` and ``herd`` are independent levels: a kernel that needs
+no staging writes a herd on its own, and one that does wraps it in a segment.
+Giving ``air.segment`` an iteration space makes it the *launch* grid, one segment
+instance per point -- which is where outer tiling has to go, because the L2
+staging buffers are refilled per point. Indexing a buffer with a partial
+subscript (``staged[tx, 0:n, :]``) names a DMA region for
+``ops.load``/``ops.store``; ``buf[:]`` in an expression is an elementwise read,
+and is rejected on L2, which has no compute core.
+
+For the AIE2 matmul intrinsic a tile has to be laid out in micro-tile order.
+``air.micro_tile(m, k, n)`` builds those shapes, and the packing is *not* a
+memref layout -- the buffer stays contiguous and the reordering lives in the DMA
+access pattern, which is derived rather than spelled out::
+
+    mm = air.micro_tile(m=4, k=8, n=4)
+    a  = air.alloc(mm.a(tile_m, tile_k), bf16, scope=h.private())
+    acc = air.alloc(mm.c(tile_m, tile_n, lead=herd_shape), bf16,
+                    scope=seg.shared())
+    ops.load(a, l2_a[tx, 0, :, k : k + tile_k])   # the DMA performs the pack
+    ops.dot(a, b, acc=acc)                        # rank 6: block_matmul
+
+A packed buffer is subscripted in *logical* coordinates, so the program keeps
+thinking in ``[M, N]``. ``<segment>.shared()`` allocates L1 with the segment's
+lifetime, for an accumulator carried across a reduction loop at segment scope.
+
+``air.sequential`` is named for what ``scf.for`` guarantees -- its trips are
+ordered in time on one core -- as against the herd's grid, which is spatial.
+``air.parallel`` is its unordered counterpart (``scf.parallel``); it is declared
+below and raises, because nothing emits it yet.
+
+One hardware caveat that the DSL cannot see and so cannot raise on: an
+*unstaged* K reduction on a 2-D herd is wrong past a single trip. Both operands
+are then broadcast, and the resulting packet flows share one shim channel whose
+coalesced buffer descriptors do not line up with the per-trip ring on the
+receiving tile. Staging through ``air.segment`` avoids it entirely, which is what
+every hand-written matmul in the tree does; a 1-D herd is also unaffected.
 """
 
 from . import ops
 from ._compile import CompiledKernel, LaunchContext, compile, launch
-from ._trace import HerdContext, Scope, Symbol, alloc, herd, symbol, tensor, wait
-from ._value import Buffer, Tensor, TensorSlice, Token
+from ._extern import ExternKernel, extern
+from ._loop import sequential
+from ._pack import MicroTile, PackedShape, micro_tile
+from ._trace import (
+    HerdContext,
+    Scope,
+    SegmentContext,
+    Symbol,
+    alloc,
+    herd,
+    segment,
+    symbol,
+    tensor,
+    wait,
+)
+from ._value import Buffer, BufferSlice, Tensor, TensorSlice, Token
 from .types import DType, bf16, f16, f32, i8, i16, i32
 
 __all__ = [
@@ -45,13 +99,20 @@ __all__ = [
     "ops",
     # launch hierarchy
     "launch",
+    "segment",
     "herd",
     # declarations
     "tensor",
     "alloc",
     "symbol",
+    "extern",
     # control flow
+    "sequential",
     "wait",
+    # micro-tiled (packed) layouts
+    "micro_tile",
+    "MicroTile",
+    "PackedShape",
     # compilation
     "compile",
     # types
@@ -64,9 +125,12 @@ __all__ = [
     "i32",
     # objects surfaced for isinstance checks and typing
     "LaunchContext",
+    "SegmentContext",
     "HerdContext",
+    "ExternKernel",
     "CompiledKernel",
     "Buffer",
+    "BufferSlice",
     "Tensor",
     "TensorSlice",
     "Token",
@@ -88,7 +152,15 @@ def _unimplemented(name, needs):
 # Names from the wider API proposal that this version does not lower. They are
 # present, and they raise -- an accepted-but-ignored capability gate is worse
 # than an absent one, because the kernel still compiles and still runs.
-segment = _unimplemented("segment", "air.segment emission and L2 allocation")
+# The unordered counterpart of air.sequential: an scf.parallel inside a herd
+# body, whose trips carry no ordering guarantee. Named here so that reaching for
+# it fails at the call site with this explanation rather than as an
+# AttributeError, and so the name cannot later be attached to the herd grid --
+# air.herd emits air.herd directly, and an scf.parallel reaches the spatial
+# hierarchy only when a conversion pass selects it, which in general it does not.
+parallel = _unimplemented(
+    "parallel", "scf.parallel emission; use air.sequential for an ordered loop"
+)
 BlockType = _unimplemented("BlockType", "block floating-point types")
 Field = _unimplemented("Field", "block floating-point types")
 Scratchpad = _unimplemented("Scratchpad", "fabric property gating")

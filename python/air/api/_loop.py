@@ -1,0 +1,125 @@
+# ./python/air/api/_loop.py -*- Python -*-
+#
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
+"""A sequential loop inside a herd body.
+
+    for k in air.sequential(0, K, tile_k):
+        air.ops.load(a_buf, A[row : row + tm, k : k + tile_k])
+        air.ops.dot(a_buf, b_buf, acc=acc)
+
+This emits one ``scf.for`` and hands the body an induction *variable*. The
+distinction from a plain Python ``for k in range(...)`` is the whole point:
+Python's loop runs at trace time and unrolls, emitting one straight-line copy of
+the body per trip against the same L1 buffers. The AIE core that comes out has no
+loop in it, so the objectFifo acquire/release pairs that the pipeline would place
+inside the loop end up stranded between the unrolled copies, and the kernel
+computes with stale operands. A reduction that reuses a buffer across trips --
+which is to say, every reduction -- has to reach the compiler as a loop.
+
+Bounds must be Python integers. A dynamic trip count would need the bound to be
+an SSA value, and nothing in the DSL produces one; accepting an ``IndexExpr``
+here would only defer the failure into the IR.
+"""
+
+from ._index import IndexExpr
+
+__all__ = ["sequential", "loop_depth", "aborted_loops"]
+
+# Loops whose body exited early (break / return / an exception the caller
+# swallowed). Emission still closes the region so the IR stays well formed, but
+# the body is short of trips and the herd would compute a partial reduction, so
+# the count is checked once the herd body is finished. See `aborted_loops`.
+_ABORTED = 0
+
+# How many air.sequential bodies are currently open. air.alloc consults this: an
+# allocation inside a loop is freed by the herd after the loop closes, and the
+# dealloc would not be dominated by its alloc.
+_DEPTH = 0
+
+
+def loop_depth():
+    return _DEPTH
+
+
+def enter_body():
+    """Start a fresh loop-depth frame, returning the one to restore.
+
+    Depth exists to catch an ``air.alloc`` nested inside a loop *in the same
+    body*, where the dealloc would be emitted after the loop and so would not be
+    dominated by its alloc. A loop further out is a different matter entirely: a
+    herd inside a segment-scope reduction is re-entered once per trip, and its
+    body's allocs and deallocs are both inside that trip. Counting the outer loop
+    would reject the shape every staged matmul in the tree uses.
+    """
+    global _DEPTH
+    previous, _DEPTH = _DEPTH, 0
+    return previous
+
+
+def exit_body(previous):
+    global _DEPTH
+    _DEPTH = previous
+
+
+def aborted_loops():
+    return _ABORTED
+
+
+def sequential(start, stop=None, step=None, name=None):
+    """A sequential ``scf.for`` over ``[start, stop)`` in strides of ``step``.
+
+    Yields the induction variable as an :class:`IndexExpr`, so it composes with
+    tile coordinates and tensor slices exactly like a herd coordinate does.
+    """
+    global _ABORTED, _DEPTH
+
+    if stop is None:
+        start, stop = 0, start
+    if step is None:
+        step = 1
+
+    lo, hi, st = (
+        _as_bound(v, n) for v, n in ((start, "start"), (stop, "stop"), (step, "step"))
+    )
+    if st <= 0:
+        raise ValueError(f"air.sequential needs a positive step, got {st}")
+    if hi < lo:
+        raise ValueError(
+            f"air.sequential({lo}, {hi}) counts backwards; stop must be >= start"
+        )
+    if (hi - lo) % st:
+        raise ValueError(
+            f"air.sequential({lo}, {hi}, {st}) does not tile its extent exactly: "
+            f"{(hi - lo) // st} steps of {st} span {((hi - lo) // st) * st}, past "
+            f"the extent of {hi - lo}. air.api has no partial trips, so the last "
+            "one would run off the end of whatever it indexes."
+        )
+
+    from air.dialects.scf import for_ as scf_for, yield_
+
+    for iv in scf_for(lo, hi, st):
+        _DEPTH += 1
+        completed = False
+        try:
+            yield IndexExpr.leaf(iv, name or "k")
+            completed = True
+        finally:
+            _DEPTH -= 1
+            if not completed:
+                _ABORTED += 1
+            # Terminate the region either way: leaving a block without a
+            # terminator turns a diagnosable "you broke out of a loop" into an
+            # MLIR verifier crash somewhere else entirely.
+            yield_([])
+
+
+def _as_bound(value, which):
+    if isinstance(value, bool) or not hasattr(value, "__index__"):
+        raise TypeError(
+            f"air.sequential({which}=...) takes a Python integer (or an air.symbol), "
+            f"got {type(value).__name__} {value!r}. Loop bounds are resolved at "
+            "trace time; a bound computed from a tile coordinate is not supported."
+        )
+    return int(value)

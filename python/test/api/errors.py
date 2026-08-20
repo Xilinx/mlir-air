@@ -15,6 +15,7 @@ replaces: there, an unsupported construct was absorbed and the program still
 from itertools import product
 
 from air import api as air
+from air.api import ops  # noqa: F401
 from air.api.types import bf16, f32
 
 
@@ -90,7 +91,7 @@ def _():
 
 
 # CHECK-LABEL: TEST: partial_buffer_write
-# CHECK: NotImplementedError: partial write of an L1 buffer
+# CHECK: NotImplementedError: partial assignment into a buffer is not supported
 @expect(NotImplementedError, "partial_buffer_write")
 def _():
     def body(h, tx, ty, A, B, C):
@@ -167,9 +168,10 @@ def _():
     launch.mlir()
 
 
-# CHECK-LABEL: TEST: alloc_outside_herd
-# CHECK: RuntimeError: this operation must be used inside a herd body
-@expect(RuntimeError, "alloc_outside_herd")
+# CHECK-LABEL: TEST: alloc_without_scope
+# air.alloc has two scopes to choose between now, so the message names both.
+# CHECK: ValueError: air.alloc requires scope=<herd>.private() (L1) or scope=<segment>.private() (L2)
+@expect(ValueError, "alloc_without_scope")
 def _():
     air.alloc([8, 8], bf16, scope=None)
 
@@ -195,18 +197,90 @@ def _():
     _trace(body, shape=(3, 2))
 
 
+def _dot_shapes(a_shape, b_shape, acc_shape):
+    """Allocate three L1 tiles with the given shapes and call ops.dot on them."""
+    from air.api.types import bf16, f32
+
+    t = air.tensor([64], bf16)
+    with air.launch(name="dotchk") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(0, 64, 16), shape=(4,)) as h:
+
+                @h.body
+                def _(tx):
+                    a = air.alloc(a_shape, bf16, scope=h.private())
+                    b = air.alloc(b_shape, bf16, scope=h.private())
+                    acc = air.alloc(acc_shape, f32, scope=h.private())
+                    air.ops.dot(a, b, acc=acc)
+
+    launch.mlir()
+
+
 # CHECK-LABEL: TEST: unimplemented_op
-# CHECK: NotImplementedError: air.api.ops.dot is not implemented yet
+# CHECK: NotImplementedError: air.api.ops.reduce is not implemented yet
 @expect(NotImplementedError, "unimplemented_op")
+def _():
+    air.ops.reduce(None, 0, "add")
+
+
+# ops.dot is implemented, but it is a statement over three L1 buffers, so a
+# missing or non-buffer operand is a user error rather than something to default.
+# CHECK-LABEL: TEST: dot_requires_buffers
+# CHECK: TypeError: air.api.ops.dot requires a=
+@expect(TypeError, "dot_requires_buffers")
 def _():
     air.ops.dot(None, None)
 
 
-# CHECK-LABEL: TEST: unimplemented_segment
-# CHECK: NotImplementedError: air.api.segment is not implemented yet
-@expect(NotImplementedError, "unimplemented_segment")
+# CHECK-LABEL: TEST: dot_rank_too_high
+# There is no named linalg op past one batch dimension, and a batch axis belongs
+# in the herd grid or in air.sequential, not hidden inside the contraction.
+# CHECK: NotImplementedError: air.api.ops.dot contracts 1-D and 2-D tiles; got ranks (3, 3)
+@expect(NotImplementedError, "dot_rank_too_high")
 def _():
-    air.segment(range(2))
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([2, 8, 8], bf16, scope=h.private())
+        acc = air.alloc([2, 8, 8], f32, scope=h.private())
+        ops.dot(a, a, acc=acc)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dot_vecmat_acc_shape
+# The rank rule is uniform: a's last axis contracts against b's first, and acc
+# keeps what is left of each -- here (k,) @ (k,n) leaves (n,).
+# CHECK: ValueError: air.api.ops.dot shape mismatch for (k,) @ (k, n) -> (n,)
+@expect(ValueError, "dot_vecmat_acc_shape")
+def _():
+    def body(h, tx, ty, A, B, C):
+        v = air.alloc([64], bf16, scope=h.private())
+        m = air.alloc([64, 32], bf16, scope=h.private())
+        acc = air.alloc([64], f32, scope=h.private())  # should be [32]
+        ops.dot(v, m, acc=acc)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dot_transpose_b_on_a_vector
+# CHECK: ValueError: air.api.ops.dot(transpose_b=True) is meaningless for (m, k) @ (k,) -> (m,)
+@expect(ValueError, "dot_transpose_b_on_a_vector")
+def _():
+    def body(h, tx, ty, A, B, C):
+        m = air.alloc([32, 64], bf16, scope=h.private())
+        v = air.alloc([64], bf16, scope=h.private())
+        acc = air.alloc([32], f32, scope=h.private())
+        ops.dot(m, v, acc=acc, transpose_b=True)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dot_shape_mismatch
+# CHECK: ValueError: air.api.ops.dot shape mismatch
+@expect(ValueError, "dot_shape_mismatch")
+def _():
+    _dot_shapes((16, 32), (64, 16), (16, 16))
 
 
 # CHECK-LABEL: TEST: nonaffine_index
@@ -310,6 +384,8 @@ def _():
 
     _trace(body, grid=(512, 512, 256), shape=(2, 2))
 
+    _trace(body, grid=(512, 512, 256), shape=(2, 2))
+
 
 # A caller's own "tile must be a multiple of the vector width" guard does not
 # catch this: Python's modulo is 0 for any divisor of the tile, sign included,
@@ -320,5 +396,394 @@ def _():
 def _():
     def body(h, tx, ty, A, B, C):
         air.alloc([64, 64], bf16, scope=h.private(), vector=-4)
+
+    _trace(body)
+
+
+# ---------------------------------------------------------------------------
+# air.sequential and the K reduction
+# ---------------------------------------------------------------------------
+
+
+# CHECK-LABEL: TEST: product_single_tile_axis
+# itertools.product materialises its inputs, so a one-tile axis arrives as (0,)
+# with its step gone. Guessing 1 would silently compute on 1x1 tiles.
+# CHECK: ValueError: air.herd cannot recover the tile size of a single-tile axis
+@expect(ValueError, "product_single_tile_axis")
+def _():
+    air.herd(product(range(0, 64, 64), range(0, 128, 32)))
+
+
+# CHECK-LABEL: TEST: sequential_partial_trip
+# CHECK: ValueError: air.sequential(0, 100, 32) does not tile its extent exactly
+@expect(ValueError, "sequential_partial_trip")
+def _():
+    def body(h, tx, ty, A, B, C):
+        for _ in air.sequential(0, 100, 32):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: sequential_negative_step
+# CHECK: ValueError: air.sequential needs a positive step, got -1
+@expect(ValueError, "sequential_negative_step")
+def _():
+    def body(h, tx, ty, A, B, C):
+        for _ in air.sequential(0, 64, -1):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: sequential_non_integer_bound
+# CHECK: TypeError: air.sequential(stop=...) takes a Python integer
+@expect(TypeError, "sequential_non_integer_bound")
+def _():
+    def body(h, tx, ty, A, B, C):
+        for _ in air.sequential(0, 64.0, 32):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: sequential_bound_from_tile_coordinate
+# A loop bound is resolved at trace time; a tile coordinate is an SSA value and
+# cannot be one.
+# CHECK: TypeError: air.sequential(stop=...) takes a Python integer
+@expect(TypeError, "sequential_bound_from_tile_coordinate")
+def _():
+    def body(h, tx, ty, A, B, C):
+        for _ in air.sequential(0, tx, 1):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: alloc_inside_sequential
+# The herd frees its buffers after the body, which is outside the loop, so the
+# dealloc would not be dominated by its alloc.
+# CHECK: NotImplementedError: air.alloc inside an air.sequential body is not supported
+@expect(NotImplementedError, "alloc_inside_sequential")
+def _():
+    def body(h, tx, ty, A, B, C):
+        for _ in air.sequential(0, 64, 32):
+            air.alloc([32, 32], bf16, scope=h.private())
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: break_out_of_sequential
+# An air.sequential body is traced once and stands for every trip, so breaking out
+# truncates all of them rather than shortening the loop.
+# CHECK: RuntimeError: a body left an air.sequential loop early
+@expect(RuntimeError, "break_out_of_sequential")
+def _():
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([32, 32], bf16, scope=h.private())
+        for _ in air.sequential(0, 64, 32):
+            buf[:] = buf[:] + 1.0
+            break
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dot_alpha_unimplemented
+# CHECK: NotImplementedError: air.api.ops.dot(alpha=...) is not implemented
+@expect(NotImplementedError, "dot_alpha_unimplemented")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([32, 32], bf16, scope=h.private())
+        b = air.alloc([32, 32], bf16, scope=h.private())
+        acc = air.alloc([32, 32], f32, scope=h.private())
+        ops.dot(a, b, acc=acc, alpha=2.0)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: parallel_unimplemented
+# The unordered counterpart of air.sequential. Declared so that reaching for it
+# says what it would be, rather than raising AttributeError.
+# CHECK: NotImplementedError: air.api.parallel is not implemented yet
+@expect(NotImplementedError, "parallel_unimplemented")
+def _():
+    air.parallel(0, 64, 16)
+
+
+# ---------------------------------------------------------------------------
+# air.segment and L2 staging
+# ---------------------------------------------------------------------------
+
+
+def _staged(body, l2_shape=(64, 64), dtype=bf16):
+    """Build a launch whose *segment* body is ``body(seg, A, C)``."""
+    A = air.tensor(list(l2_shape), dtype)
+    C = air.tensor(list(l2_shape), dtype)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    body(seg, A, C)
+
+    return launch.mlir()
+
+
+# CHECK-LABEL: TEST: elementwise_on_l2
+# A memtile has DMA engines but no compute core, so an L2 buffer can only be a
+# transfer endpoint.
+# CHECK: TypeError: cannot read an L2 buffer elementwise
+@expect(TypeError, "elementwise_on_l2")
+def _():
+    def body(seg, A, C):
+        staged = air.alloc([64, 64], bf16, scope=seg.private())
+        staged[:] = staged[:] + 1.0
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: l2_alloc_outside_segment
+# CHECK: RuntimeError: this operation must be used inside a segment body
+@expect(RuntimeError, "l2_alloc_outside_segment")
+def _():
+    seg = air.segment(name="detached")
+
+    def body(h, tx, ty, A, B, C):
+        air.alloc([32, 32], bf16, scope=seg.private())
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: l1_alloc_outside_herd
+# CHECK: RuntimeError: this operation must be used inside a herd body
+@expect(RuntimeError, "l1_alloc_outside_herd")
+def _():
+    def body(seg, A, C):
+        h = air.herd(range(0, 64, 32), shape=(2,))
+        air.alloc([32, 32], bf16, scope=h.private())
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: l2_budget_exceeded
+# 512 KB per memtile, the figure the hand-written staging examples assert.
+# CHECK: ValueError: air.alloc([1024, 1024], air.api.bf16) needs 2048.0 KB
+@expect(ValueError, "l2_budget_exceeded")
+def _():
+    def body(seg, A, C):
+        air.alloc([1024, 1024], bf16, scope=seg.private())
+
+    _staged(body)
+
+
+# A segment grid is the launch iteration space, and air.launch is 2-D.
+# CHECK-LABEL: TEST: segment_grid_too_deep
+# CHECK: NotImplementedError: air.launch is 2-D, so a segment grid is 1-D or 2-D
+@expect(NotImplementedError, "segment_grid_too_deep")
+def _():
+    air.segment(product(range(0, 128, 64), range(0, 128, 64), range(0, 128, 64)))
+
+
+# CHECK-LABEL: TEST: segment_body_takes_no_args
+# CHECK: TypeError: segment body takes 1 coordinate argument(s) but the launch iteration space is 0-D
+@expect(TypeError, "segment_body_takes_no_args")
+def _():
+    air.tensor([64, 64], bf16)
+    air.tensor([64, 64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _(sx):
+                    pass
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: buffer_slice_in_expression
+# A partial subscript names a DMA region, not a value.
+# CHECK: TypeError: cannot use BufferSlice
+@expect(TypeError, "buffer_slice_in_expression")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([32, 32], bf16, scope=h.private())
+        b = air.alloc([32, 32], bf16, scope=h.private())
+        b[:] = a[0:16, :]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: partial_assignment_into_buffer
+# CHECK: NotImplementedError: partial assignment into a buffer is not supported
+@expect(NotImplementedError, "partial_assignment_into_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([32, 32], bf16, scope=h.private())
+        a[0:16, :] = 1.0
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: staged_transfer_shape_mismatch
+# Only *leading* unit dimensions are squeezed, so a genuine mismatch still
+# fails rather than being reshaped into something plausible.
+# CHECK: ValueError: transfer shape mismatch in air.api.ops.load
+@expect(ValueError, "staged_transfer_shape_mismatch")
+def _():
+    def body(seg, A, C):
+        staged = air.alloc([64, 64], bf16, scope=seg.private())
+
+        with air.herd(range(0, 2, 1), shape=(2,)) as h:
+
+            @h.body
+            def _(tx):
+                l1 = air.alloc([16], bf16, scope=h.private())
+                ops.load(l1, staged[tx, 0:32])
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: load_first_argument_must_be_a_buffer
+# CHECK: TypeError: air.api.ops.load fills a buffer
+@expect(TypeError, "load_first_argument_must_be_a_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([32, 32], bf16, scope=h.private())
+        ops.load(A[0:32, 0:32], a)
+
+    _trace(body)
+
+
+# ---------------------------------------------------------------------------
+# Micro-tiled (packed) layouts
+#
+# Every one of these is a case where guessing would produce a kernel that runs
+# and is silently wrong -- a mismatched micro-tile contracts the wrong elements,
+# and a whole-buffer drain copies a tile still in micro-tile order.
+# ---------------------------------------------------------------------------
+
+
+def _mm():
+    return air.micro_tile(m=4, k=8, n=4)
+
+
+# CHECK-LABEL: TEST: micro_tile_does_not_divide
+# CHECK: ValueError: operand A's M extent 30 is not a multiple of the micro-tile m=4
+@expect(ValueError, "micro_tile_does_not_divide")
+def _():
+    _mm().a(30, 32)
+
+
+# CHECK-LABEL: TEST: packed_buffer_no_whole_drain
+# A whole-buffer store emits `[] [] []`, a contiguous read, which would copy the
+# tile still micro-tiled. The unpack *is* the access pattern.
+# CHECK: TypeError: air.api.ops.store cannot drain a micro-tiled buffer whole
+@expect(TypeError, "packed_buffer_no_whole_drain")
+def _():
+    def body(seg, A, C):
+        mm = _mm()
+        l2 = air.alloc([1, 1, 32, 32], bf16, scope=seg.private())
+        acc = air.alloc(mm.c(32, 32), bf16, scope=seg.shared())
+        ops.store(acc, l2[0, 0, :, :])
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: packed_load_needs_a_region
+# CHECK: TypeError: air.api.ops.load into a micro-tiled buffer needs a source *region*
+@expect(TypeError, "packed_load_needs_a_region")
+def _():
+    def body(h, tx, ty, A, B, C):
+        l1 = air.alloc(_mm().a(32, 16), bf16, scope=h.private())
+        other = air.alloc([1, 1, 32, 32], bf16, scope=h.private())
+        ops.load(l1, other)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: packed_operands_must_share_a_micro_tile
+# CHECK: ValueError: air.api.ops.dot needs one micro-tile across all three operands
+@expect(ValueError, "packed_operands_must_share_a_micro_tile")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc(air.micro_tile(4, 8, 4).a(32, 16), bf16, scope=h.private())
+        b = air.alloc(air.micro_tile(4, 8, 8).b(16, 32), bf16, scope=h.private())
+        c = air.alloc(air.micro_tile(4, 8, 4).c(32, 32), bf16, scope=h.private())
+        ops.dot(a, b, acc=c)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: packed_operand_roles_must_match
+# CHECK: ValueError: air.api.ops.dot expects b to be a micro-tiled B operand
+@expect(ValueError, "packed_operand_roles_must_match")
+def _():
+    def body(h, tx, ty, A, B, C):
+        mm = _mm()
+        a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
+        b = air.alloc(mm.a(32, 16), bf16, scope=h.private())
+        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
+        ops.dot(a, b, acc=c)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: packed_contraction_extents_must_agree
+# CHECK: ValueError: air.api.ops.dot shape mismatch: a is 32x16 and b is 32x32
+@expect(ValueError, "packed_contraction_extents_must_agree")
+def _():
+    def body(h, tx, ty, A, B, C):
+        mm = _mm()
+        a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
+        b = air.alloc(mm.b(32, 32), bf16, scope=h.private())
+        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
+        ops.dot(a, b, acc=c)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: unpacked_operand_in_packed_dot
+# CHECK: TypeError: air.api.ops.dot got rank-6 operands
+@expect(TypeError, "unpacked_operand_in_packed_dot")
+def _():
+    def body(h, tx, ty, A, B, C):
+        mm = _mm()
+        a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
+        b = air.alloc([1, 1, 8, 2, 8, 4], bf16, scope=h.private())
+        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
+        ops.dot(a, b, acc=c)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: no_elementwise_expression_on_packed
+# The elements are not in row-major order, so an elementwise expression over a
+# packed buffer would not mean what it reads like.
+# CHECK: NotImplementedError: only a scalar fill is supported on a micro-tiled buffer
+@expect(NotImplementedError, "no_elementwise_expression_on_packed")
+def _():
+    def body(h, tx, ty, A, B, C):
+        mm = _mm()
+        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
+        d = air.alloc(mm.c(32, 32), bf16, scope=h.private())
+        c[:] = d[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: no_herd_shared_scope
+# CHECK: NotImplementedError: air.api has no <herd>.shared()
+@expect(NotImplementedError, "no_herd_shared_scope")
+def _():
+    def body(h, tx, ty, A, B, C):
+        air.alloc([32, 32], bf16, scope=h.shared())
 
     _trace(body)
