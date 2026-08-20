@@ -8,9 +8,9 @@ Computes out = max(x, 0) over a 1-D [N] vector.
 The DSL emits the herd, the L1 allocations, the affine tile offsets, the DMAs,
 and the vectorised compute loop; the compute itself is one line:
 
-    out_buf[:] = ops.relu(x_buf[:])
+    out_buf[:] = air.ops.relu(x_buf[:])
 
-`ops.relu` is `ops.maximum(x, 0.0)`, which lowers to the same `arith.maximumf`
+`air.ops.relu` is `air.ops.maximum(x, 0.0)`, which lowers to the same `arith.maximumf`
 against a broadcast zero that the raw-bindings implementation built by hand.
 
 f32 runs scalar, and that is not a tuning choice: mlir-aie's
@@ -34,7 +34,6 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from air import api as air
-from air.api import ops
 from air.api.types import bf16, f32
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
@@ -90,7 +89,7 @@ def build_relu(n, tile_n, dtype=bf16, herd_shape=None, vector=None):
 
                     air.ops.load(x_buf, x[window])
 
-                    out_buf[:] = ops.relu(x_buf[:])
+                    out_buf[:] = air.ops.relu(x_buf[:])
 
                     air.ops.store(out_buf, out[window])
 

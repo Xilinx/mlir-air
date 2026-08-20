@@ -17,7 +17,6 @@ avoids a division that bf16 cannot vectorise.
 """
 
 from air import api as air
-from air.api import ops
 from air.api.types import bf16
 
 
@@ -57,7 +56,7 @@ def run(f):
 # CHECK: vector.transfer_write {{.*}} vector<16xbf16>
 @run
 def tanh_unary():
-    print(build(65536, 1024, lambda b: ops.tanh(b[:]), herd_shape=(4,)).mlir())
+    print(build(65536, 1024, lambda b: air.ops.tanh(b[:]), herd_shape=(4,)).mlir())
 
 
 # CHECK-LABEL: TEST: sigmoid_is_tanh_based
@@ -70,7 +69,7 @@ def tanh_unary():
 # CHECK: arith.mulf {{.*}} : vector<16xbf16>
 @run
 def sigmoid_is_tanh_based():
-    print(build(65536, 1024, lambda b: ops.sigmoid(b[:]), herd_shape=(4,)).mlir())
+    print(build(65536, 1024, lambda b: air.ops.sigmoid(b[:]), herd_shape=(4,)).mlir())
 
 
 # CHECK-LABEL: TEST: silu_multiplies_by_x
@@ -82,7 +81,7 @@ def sigmoid_is_tanh_based():
 # CHECK: arith.mulf {{.*}} : vector<16xbf16>
 @run
 def silu_multiplies_by_x():
-    print(build(65536, 1024, lambda b: ops.silu(b[:]), herd_shape=(4,)).mlir())
+    print(build(65536, 1024, lambda b: air.ops.silu(b[:]), herd_shape=(4,)).mlir())
 
 
 # CHECK-LABEL: TEST: gelu_cubic_then_tanh
@@ -94,7 +93,7 @@ def silu_multiplies_by_x():
 # CHECK: arith.addf {{.*}} : vector<16xbf16>
 @run
 def gelu_cubic_then_tanh():
-    print(build(65536, 1024, lambda b: ops.gelu(b[:]), herd_shape=(4,)).mlir())
+    print(build(65536, 1024, lambda b: air.ops.gelu(b[:]), herd_shape=(4,)).mlir())
 
 
 # CHECK-LABEL: TEST: scalar_fallback_is_emitted_but_will_not_compile
@@ -114,4 +113,4 @@ def gelu_cubic_then_tanh():
 # CHECK: memref.store
 @run
 def scalar_fallback_is_emitted_but_will_not_compile():
-    print(build(48, 12, lambda b: ops.tanh(b[:]), herd_shape=(4,)).mlir())
+    print(build(48, 12, lambda b: air.ops.tanh(b[:]), herd_shape=(4,)).mlir())

@@ -15,7 +15,6 @@ replaces: there, an unsupported construct was absorbed and the program still
 from itertools import product
 
 from air import api as air
-from air.api import ops  # noqa: F401
 from air.api.types import bf16, f32
 
 

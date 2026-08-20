@@ -7,9 +7,9 @@ Computes out = x * sigmoid(x), also known as swish over a 1-D [N] bf16 vector.
 
 The whole compute body is one line:
 
-    out_buf[:] = ops.silu(x_buf[:])
+    out_buf[:] = air.ops.silu(x_buf[:])
 
-`ops.silu` is a composition over `ops.tanh`, written the same way the
+`air.ops.silu` is a composition over `air.ops.tanh`, written the same way the
 raw-bindings kernel it replaces wrote it -- via tanh rather than exp, which avoids a
 division that bf16 cannot vectorise. Operand order differs in
 places, but only where multiplication is commutative, which is exact in IEEE --
@@ -37,7 +37,6 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from air import api as air
-from air.api import ops
 from air.api.types import bf16
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
@@ -107,7 +106,7 @@ def build_silu(n, tile_n, herd_shape=None, vector=None):
 
                     air.ops.load(x_buf, x[window])
 
-                    out_buf[:] = ops.silu(x_buf[:])
+                    out_buf[:] = air.ops.silu(x_buf[:])
 
                     air.ops.store(out_buf, out[window])
 

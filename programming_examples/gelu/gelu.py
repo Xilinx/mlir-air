@@ -7,9 +7,9 @@ Computes out = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))) over a 1-
 
 The whole compute body is one line:
 
-    out_buf[:] = ops.gelu(x_buf[:])
+    out_buf[:] = air.ops.gelu(x_buf[:])
 
-`ops.gelu` is a composition over `ops.tanh`, written the same way the
+`air.ops.gelu` is a composition over `air.ops.tanh`, written the same way the
 raw-bindings kernel it replaces wrote it. Operand order differs in
 places, but only where multiplication is commutative, which is exact in IEEE --
 so the emitted arithmetic is the predecessor's, op for op.
@@ -36,7 +36,6 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from air import api as air
-from air.api import ops
 from air.api.types import bf16
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
@@ -59,7 +58,12 @@ def gelu_reference(x):
     return (
         0.5
         * xf
-        * (1.0 + np.tanh(ops.GELU_SQRT_2_OVER_PI * (xf + ops.GELU_BETA * xf * xf * xf)))
+        * (
+            1.0
+            + np.tanh(
+                air.ops.GELU_SQRT_2_OVER_PI * (xf + air.ops.GELU_BETA * xf * xf * xf)
+            )
+        )
     ).astype(x.dtype)
 
 
@@ -110,7 +114,7 @@ def build_gelu(n, tile_n, herd_shape=None, vector=None):
 
                     air.ops.load(x_buf, x[window])
 
-                    out_buf[:] = ops.gelu(x_buf[:])
+                    out_buf[:] = air.ops.gelu(x_buf[:])
 
                     air.ops.store(out_buf, out[window])
 
