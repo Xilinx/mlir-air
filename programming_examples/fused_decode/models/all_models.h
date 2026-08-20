@@ -25,12 +25,14 @@
 #define LLAMA_3_2_3B 3
 #define PHI4_4B 4
 #define QWEN3_8B 5
+#define LLAMA_3_1_8B 6
 
 #ifndef MODEL_TYPE
 #define MODEL_TYPE LLAMA_3_2_1B
 #endif
 
 #include "../models/gemma3-4b.h"
+#include "../models/llama3.1-8b.h"
 #include "../models/llama3.2-1b.h"
 #include "../models/llama3.2-3b.h"
 #include "../models/phi4-4b.h"

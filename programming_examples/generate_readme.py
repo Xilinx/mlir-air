@@ -519,6 +519,7 @@ _VERIFY_EMOJI = {"pass": "\U0001f7e2", "fail": "\U0001f534", "skip": "⚪"}
 # programming_examples/llms/hf_models.txt.
 LLM_HF_MODELS = {
     "gemma3_4b_q4nx": "FastFlowLM/Gemma3-4B-NPU2",
+    "llama31_8b_q4nx": "FastFlowLM/Llama-3.1-8B-NPU2",
     "llama32_1b": "meta-llama/Llama-3.2-1B",
     "llama32_1b_int4": "amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead",
     "llama32_1b_q4nx": "FastFlowLM/Llama-3.2-1B-NPU2",

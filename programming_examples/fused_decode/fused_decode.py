@@ -320,6 +320,39 @@ _MODELS = {
         # The driver MUST set VOCAB_CHUNK_I2=8 (env) to match this UNI_LM.
         UNI_LM=19,  # vocab chunks per LM head (VOCAB_CHUNK_I2=8)
     ),
+    # Llama-3.1-8B: same attention topology as 1B/3B (2x4x1, 8 kv heads, DH=128),
+    # so the per-CU KV geometry is unchanged; only the proj/FFN widths grow. Like
+    # qwen3-8b this needs DECODE_WGROUP (32 layers of K=4096 weights are 3.6 GiB
+    # of layer slabs, and the lm-head pushes the total past the 4 GiB one-BO
+    # ceiling) and a lowered DECODE_STACK. Unlike qwen3-8b there is no QK-norm,
+    # and the LM head is NOT tied to the embedding -- a weight-loader concern
+    # only, the device sequence is identical.
+    #   I2P = [M, D, 2*INTER, D]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS) = [6,4,28,4]
+    #   J2P = [K, K, K, INTER]/(2*COL_BLOCK)                   = [8,8,8,28]
+    "llama-3.1-8b": dict(
+        K=4096,
+        M=6144,  # DQ+DK+DV = 4096+1024+1024
+        DH_A=128,
+        KV_PER_CU=2,  # 8 kv / 4 CU
+        N_ATTN_CU=4,
+        NPH=4,
+        I2P=[6, 4, 28, 4],
+        J2P=[8, 8, 8, 28],
+        DEST=["rope", "rms", "glu", "rms"],
+        GQA_SEG=4,  # ATTN_IMPL_2x4x1
+        PAIR_ROWS=2,
+        N_NORMS=2,  # standard pre-norm (input, post_attention)
+        VOCAB_SIZE=128256,
+        UNI_DEC=32,  # 32 decoder layers
+        # LM-head vocab chunking (same rule as the other entries):
+        # VOCAB_SIZE_PADDED_FULL = ceil(128256/4096)*4096 = 131072 -> 4096
+        # rowblocks, so UNI_LM*VOCAB_CHUNK_I2 = 4096/32 = 128. K/PAYLOAD =
+        # 4096/512 = 8 must divide VOCAB_RNDS = VOCAB_I2*PAIR_ROWS, so VOCAB_I2
+        # must be a multiple of 4: {4,8,16,32}. The tested 2*VOCAB_I2 <= 63
+        # envelope rules out 32, so 16 is the largest -> 8 waves.
+        # The driver MUST set VOCAB_CHUNK_I2=16 (env) to match this UNI_LM.
+        UNI_LM=8,  # vocab chunks per LM head (VOCAB_CHUNK_I2=16)
+    ),
 }
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = _MODELS[MODEL_NAME]

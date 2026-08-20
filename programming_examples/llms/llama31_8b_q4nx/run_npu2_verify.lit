@@ -1,0 +1,24 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Llama-3.1-8B Q4NX verify gate: top-k token-level inclusion check, NPU q4nx vs
+// HF bf16, 2 prompts × 32 greedy tokens, k=5 (use `make verify-full` for the
+// full sweep locally). Exercises the full production prefill + decode path
+// through the verify subsystem (verify/verify_runner.py); NPU weights come from
+// the FastFlowLM model.q4nx bundle, the reference from the HF bf16 checkpoint.
+//
+// Skips cleanly when HF_TOKEN is unset (reference + tokenizer downloads need it).
+//
+// `make compile-decode` is mandatory here, not an optimization: every model emits
+// the same decode_L<N>.* names into the shared fused_decode dir, so without it this
+// test would consume whichever model's templates ran last (llama31_8b_q4nx sorts
+// first). It is idempotent per MODEL_TYPE, hence llvm_link_pre23 below.
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_nousresearch_meta_llama_3_1_8b_instruct, hfweights_fastflowlm_llama_3_1_8b_npu2
+//
+// RUN: mkdir -p test_peano_verify
+// RUN: cd test_peano_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-decode PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: [verify] PASS
