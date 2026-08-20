@@ -125,7 +125,7 @@ MLIR-AIR publishes **Windows AMD64** wheels. Backend dependencies are exposed as
    set "PYTHONPATH=%MLIR_AIR_INSTALL_DIR%\python;%MLIR_AIE_INSTALL_DIR%\python;%XRT_ROOT%\python"
    ```
 
-   > `C:\Windows\System32\AMD` is on `PATH` so that MLIR-AIR can find `xrt-smi` and select the target device from the NPU model it reports. Passing `target_device="npu2"` to `XRTBackend` / `XRTRunner` selects it explicitly instead.
+   > `C:\Windows\System32\AMD` is on `PATH` so that MLIR-AIR can find `xrt-smi` and select the target device from the NPU model it reports. Passing `target_device="npu1"` or `target_device="npu2"` to `XRTBackend` / `XRTRunner` selects it explicitly instead.
 
 4. **Verify the install:**
 
@@ -161,7 +161,23 @@ python ..\eltwise_add.py --output-format xclbin
 
 A final `PASS!` confirms the toolchain, XRT installation, and NPU are working together.
 
-On npu2 parts you can also exercise the full-ELF output path, which is npu2-only:
+Both NPU generations are supported. What differs between them:
+
+| | npu1 (Phoenix) | npu2 (Strix, Strix Halo, Krackan) |
+|---|---|---|
+| Core architecture | `aie2` (default) | `aie2p` |
+| `num_device_cols` | 0 (whole device) or 1–3 | 0 (whole device) or 1–7 |
+| `--output-format xclbin` / `pdi` | yes | yes |
+| `--output-format elf` (full ELF) | no | yes |
+
+Full ELF needs an `aiebu-asm` configuration that targets AIE2P. Asking for it on npu1 is rejected at compile time rather than failing on the device:
+
+```text
+output_format='elf' is not supported for npu1 target. ELF output format is
+only supported on npu2 and later devices.
+```
+
+On npu2 parts you can exercise that path:
 
 ```bat
 cd programming_examples\matrix_scalar_add\single_core_dma
@@ -197,8 +213,14 @@ If you would rather not clone MLIR-AIE, you need the CMake modules and the `mlir
 ```bat
 git clone --depth 1 https://github.com/Xilinx/cmakeModules.git C:\dev\cmakeModules
 pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
-pip install cmake ninja lit nanobind numpy
+pip install -r utils\requirements_dev.txt
 ```
+
+`utils\requirements_dev.txt` is MLIR-AIR's own build-dependency list, so it stays
+in step with the build rather than with this page. Its constraints mirror
+mlir-aie's, which matters most for `nanobind`: it ABI-couples to the MLIR distro
+wheel staged in [section 6.2](#62-stage-llvmmlir), and an unpinned install
+resolves to a version that wheel was not built against.
 
 ### 6.2 Stage LLVM/MLIR
 
