@@ -505,7 +505,11 @@ jobs:
         # Only from a FULL run. A suite-narrowed dispatch produces a perf.json
         # that is partial by construction, and history.ndjson is append-only --
         # a short row set there is indistinguishable from models disappearing.
-        if: always() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep')
+        # !cancelled(), not always(): always() fires on cancellation too, and a
+        # run cancelled mid-profile appended rows with null metrics but
+        # verify_status "pass". A *failed* run must still publish -- its other
+        # models' rows are good.
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -572,11 +576,16 @@ jobs:
                         f"{m['ttft_ms']} | {m['decode_tokens_per_sec']} |")
           PY
 
+      # The artifact NAME decides whether this run can reach the page:
+      # generateDocs.yml consumes the first `perf-<run id>` it finds. A partial
+      # run uploads under another name -- downloadable, but not publishable.
+      # Gating the dispatch below is not enough, and was the bug: generateDocs
+      # also runs on every push to main and fetches the artifact itself.
       - name: Upload perf artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: perf-${{ github.run_id }}
+          name: ${{ (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') && format('perf-{0}', github.run_id) || format('perf-partial-{0}', github.run_id) }}
           path: |
             perf.json
             sweep.json
@@ -592,10 +601,10 @@ jobs:
       # and the page only ever refreshed on an unrelated push to main. Best-
       # effort: never fails the benchmark job if the dispatch call errors.
       - name: Refresh docs page
-        # Full runs only, same reason: generateDocs picks the newest nightly
-        # artifact, so publishing a narrowed run would blank most of the
-        # dashboard until the next scheduled run repaired it.
-        if: always() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep')
+        # Full, non-cancelled runs only -- same reasoning as the history append.
+        # Note this gate alone never protected the page: the artifact naming
+        # above is what actually decides, because generateDocs runs on push too.
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

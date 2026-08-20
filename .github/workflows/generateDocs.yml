@@ -127,16 +127,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # --branch main, and skip an empty perf.json: it renders a table with
+          # no rows instead of falling through to the last good run, which is
+          # how the page went blank (a branch's suite-narrowed dispatch uploaded
+          # a 0-model perf.json and every later push to main rebuilt from it).
           for RID in $(gh run list --repo ${{ github.repository }} \
-              --workflow nightlyPerfBenchmark.yml -L 8 \
+              --workflow nightlyPerfBenchmark.yml --branch main -L 8 \
               --json databaseId --jq '.[].databaseId'); do
             echo "Trying perf artifact from nightly run $RID..."
             rm -rf /tmp/llmperf
             gh run download "$RID" --repo ${{ github.repository }} \
               --name "perf-$RID" --dir /tmp/llmperf 2>/dev/null || true
             if [ -f /tmp/llmperf/perf.json ]; then
-              echo "Using perf.json from run $RID"
-              break
+              n=$(python3 -c "import json,sys;print(len(json.load(open('/tmp/llmperf/perf.json'))))" 2>/dev/null || echo 0)
+              if [ "$n" -gt 0 ]; then
+                echo "Using perf.json from run $RID ($n models)"
+                break
+              fi
+              echo "  run $RID has an empty perf.json; skipping"
+              rm -rf /tmp/llmperf
             fi
           done
           test -f /tmp/llmperf/perf.json \

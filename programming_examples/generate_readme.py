@@ -667,7 +667,16 @@ def render_llm_benchmark(
     # Models with a sweep are published in the sweep table below instead; a
     # single near-zero-context point next to a curve invites reading the two as
     # comparable numbers, and they are not.
-    swept = {s.get("model") for s in (sweep_recs or ())}
+    # Only a sweep that measured something displaces the scalar row; otherwise a
+    # model whose every context failed appears in neither table.
+    swept = {
+        s.get("model")
+        for s in (sweep_recs or ())
+        if any(
+            p.get("decode_tokens_per_sec") is not None
+            for p in s.get("points", []) or ()
+        )
+    }
 
     rows = []
     for d in sorted(recs, key=lambda r: r.get("model", "")):
