@@ -2114,7 +2114,8 @@ insertSegment is set to true.</p>
 <h3 id="-air-linalg-to-func"><code>-air-linalg-to-func</code><a class="headerlink" href="#-air-linalg-to-func" title="Permanent link">&para;</a></h3>
 <p><em>Convert the operations from the linalg dialect into the function calls</em></p>
 <h4 id="options_1">Options<a class="headerlink" href="#options_1" title="Permanent link">&para;</a></h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>-link-with : Path to the object file containing the functions that will be called in place of the linalg operations.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>-link-with           : Path to the object file containing the functions that will be called in place of the linalg operations.
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>-derive-library-call : Derive a callee name from the operation and its operand types when the op does not carry one, instead of emitting MLIR's "op_has_no_registered_library_name" placeholder. Only ops with no library_call attribute are affected. Off by default: the placeholder is the symbol every hand-written kernel in this tree currently exports, so turning this on requires renaming them to match.
 </code></pre></div>
 <h3 id="-air-par-to-herd"><code>-air-par-to-herd</code><a class="headerlink" href="#-air-par-to-herd" title="Permanent link">&para;</a></h3>
 <p><em>Convert parallel loops to air.herd</em></p>
