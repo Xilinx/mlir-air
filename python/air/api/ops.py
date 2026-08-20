@@ -5,9 +5,11 @@
 
 """Imperative memory operations.
 
-Import as::
+Re-exported by :mod:`air.api`, so importing the package is enough::
 
-    import air.api.ops
+    from air import api as air
+
+    air.ops.load(buf, A[window])
 
 Every implemented op returns a :class:`~air.api._value.Token`. AIR builds its
 real asynchronous dependency graph from program order in the ``air-dependency``

@@ -10,7 +10,6 @@
 from itertools import product
 
 from air import api as air
-from air.api import ops  # noqa: F401
 from air.api.types import bf16, f32
 
 

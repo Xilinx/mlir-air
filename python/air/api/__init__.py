@@ -8,10 +8,10 @@
 ``air.api`` sits above ``air.dialects`` and emits ordinary AIR IR: the module a
 traced program produces is the same kind of module ``@module_builder`` builds by
 hand, and it takes the same ``XRTBackend`` pipeline. Structural declarations live
-here; imperative memory operations live in ``air.api.ops``::
+here; memory transfers and elementwise compute live in ``ops``, which this
+package re-exports, so one import reaches the whole DSL::
 
     from air import api as air
-    import air.api.ops
     from air.api.types import bf16
 
     A = air.tensor([M, N], bf16)
@@ -25,6 +25,7 @@ here; imperative memory operations live in ``air.api.ops``::
                 @h.body
                 def _(tx, ty):
                     a = air.alloc([tm, tn], bf16, scope=h.private())
+                    air.ops.load(a, A[...])
                     ...
 
 Scope of this version: elementwise kernels over a 1-D or 2-D herd -- tensors,
@@ -33,12 +34,15 @@ Everything outside that raises ``NotImplementedError`` at the point of use.
 Nothing degrades quietly into a kernel that runs and returns wrong numbers.
 """
 
+from . import ops
 from ._compile import CompiledKernel, LaunchContext, compile, launch
 from ._trace import HerdContext, Scope, Symbol, alloc, herd, symbol, tensor, wait
 from ._value import Buffer, Tensor, TensorSlice, Token
 from .types import DType, bf16, f16, f32, i8, i16, i32
 
 __all__ = [
+    # operations
+    "ops",
     # launch hierarchy
     "launch",
     "herd",
