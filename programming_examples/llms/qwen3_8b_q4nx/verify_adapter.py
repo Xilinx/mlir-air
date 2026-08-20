@@ -38,21 +38,24 @@ for _p in (str(_LLMS_DIR), str(_VERIFY), str(_THIS_DIR)):
 
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
-# Qwen3-8B (text) geometry, from qwen3_8b_q4nx_weights. Only the four fields
-# the shared HfRunner reads are needed; this example has no LlamaConfig-style
-# container of its own to reuse.
-_N_LAYERS = 36
+# Qwen3-8B geometry. Taken from qwen3_8b_q4nx_weights rather than restated, so
+# it cannot drift from the loader (and so a clone of this file for another model
+# fails loudly instead of silently describing the wrong one). The shared runner
+# reads only n_layers today; the rest are here for diagnosis/probing.
+import qwen3_8b_q4nx_weights as _w  # noqa: E402
+
+_N_LAYERS = _w.NUM_LAYERS
 
 
 @dataclass
 class Qwen3Config:
     n_layers: int = _N_LAYERS
-    emb_dim: int = 2560
-    n_heads: int = 8
-    head_dim: int = 256
-    n_kv_heads: int = 4
-    hidden_dim: int = 10240
-    vocab_size: int = 262208
+    emb_dim: int = _w.D
+    n_heads: int = _w.N_Q_HEADS
+    head_dim: int = _w.DH
+    n_kv_heads: int = _w.N_KV_HEADS
+    hidden_dim: int = _w.INTER
+    vocab_size: int = _w.VOCAB
 
 
 # Qwen3-8B ships instruction-tuned only; there is no -pt variant in scope here.

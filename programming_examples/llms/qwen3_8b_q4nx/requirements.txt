@@ -1,4 +1,4 @@
-# Additional Python packages for the GEMMA3-4B Q4NX example.
+# Additional Python packages for the QWEN3-8B Q4NX example.
 #
 # These are *on top of* the mlir-air base environment (which already provides
 # numpy, ml_dtypes, filelock, pyxrt, etc.). Install with:
@@ -10,7 +10,7 @@
 # Download the model.q4nx weight bundle from the Hub (Q4NX_MODEL_SOURCE).
 huggingface_hub
 
-# Tokenizer for `make ask` and for detokenizing generated ids. The FastFlowLM
-# Q4NX repo ships tokenizer.json/tokenizer_config.json, so no separate
-# (gated) google/gemma-3-4b checkpoint is needed.
+# Tokenizer for `make ask` / `make chat` and for detokenizing generated ids.
+# The FastFlowLM Q4NX repo ships tokenizer.json/tokenizer_config.json, so the
+# bf16 reference checkpoint is only needed by `make verify`.
 transformers

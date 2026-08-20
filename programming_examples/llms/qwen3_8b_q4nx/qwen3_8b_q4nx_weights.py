@@ -89,7 +89,8 @@ class Q4nxModel:
     caller. llama32_1b_q4nx_weights.Q4nxModel now handles that header too, plus
     the older Q4NX one; the codec half of this class duplicates it and could
     fold in. Kept separate here because the accessors below are Qwen3-specific:
-    the 4-norm (1+w) fold, qk-norm weights, dual-theta rope LUT, embed scale."""
+    a 2-norm pre-norm layer with plain (un-folded) weights, per-head qk-norm, a
+    single-theta rope LUT, and an untied Q4NX lm_head."""
 
     def __init__(self, model):
         import json
