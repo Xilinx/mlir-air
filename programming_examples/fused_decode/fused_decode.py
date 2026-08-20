@@ -292,6 +292,34 @@ _MODELS = {
         # The driver MUST set VOCAB_CHUNK_I2=18 (env) to match this UNI_LM.
         UNI_LM=11,  # vocab chunks per LM head (VOCAB_CHUNK_I2=18)
     ),
+    # Qwen3-8B: same paired-egress topology as the llama entries (ATTN_IMPL_2x4x1,
+    # DH=128, PAIR_ROWS=2), plus Qwen3's per-head QK-norm. Only the dims grow.
+    #   I2P = [M, D, 2*INTER, D]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS) = [6,4,24,4]
+    #   J2P = [K, K, K, INTER]/(2*COL_BLOCK)                   = [8,8,8,24]
+    "qwen3-8b": dict(
+        K=4096,
+        M=6144,  # DQ+DK+DV = 4096+1024+1024
+        DH_A=128,
+        KV_PER_CU=2,  # 8 kv / 4 CU
+        N_ATTN_CU=4,
+        NPH=4,
+        I2P=[6, 4, 24, 4],
+        J2P=[8, 8, 8, 24],
+        DEST=["rope", "rms", "glu", "rms"],
+        GQA_SEG=4,  # ATTN_IMPL_2x4x1
+        PAIR_ROWS=2,
+        N_NORMS=2,  # standard pre-norm (input, post_attention)
+        HAS_QK_NORM=True,  # Qwen3: rope_w = [cos/sin(DH), q_norm(DH), k_norm(DH)]
+        VOCAB_SIZE=151936,
+        UNI_DEC=36,  # 36 decoder layers
+        # LM-head vocab chunking: VOCAB_SIZE_PADDED_FULL = ceil(151936/4096)*4096 =
+        # 155648 -> 4864 rowblocks, so UNI_LM*VOCAB_CHUNK_I2 = 4864/32 = 152 = 8*19.
+        # K/PAYLOAD = 4096/512 = 8 must divide VOCAB_RNDS = VOCAB_I2*PAIR_ROWS, so
+        # VOCAB_I2 must be a multiple of 4: {4,8,76,152}. 8 is the largest at or
+        # below the 18-chunk ceiling -> 19 waves, 256 rowblocks/chunk.
+        # The driver MUST set VOCAB_CHUNK_I2=8 (env) to match this UNI_LM.
+        UNI_LM=19,  # vocab chunks per LM head (VOCAB_CHUNK_I2=8)
+    ),
 }
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = _MODELS[MODEL_NAME]
@@ -519,6 +547,9 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
+# Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
+# under 8 KiB, so that geometry lowers it; every other model keeps 10240.
+STACK_SIZE = int(_os.environ.get("DECODE_STACK", "10240"))
 # DECODE_KV_SPLIT=1: decouple the attention K and V memtile rings (mirror the reference mem_3_1:
 # separate k_mem_buffer / v_mem_buffer, filled by SEPARATE S2MM = inKV_K / inKV_V, so
 # the qk core's K supply is NOT lock-chained to the kv core's V drain). Default off
@@ -721,6 +752,22 @@ UNI_WAVES = UNI_DEC + UNI_LM
 UNI_WAVE_LO = int(_os.environ.get("UNI_WAVE_LO", "0"))
 UNI_WAVE_HI = int(_os.environ.get("UNI_WAVE_HI", str(UNI_WAVES)))
 
+# Weight-buffer grouping: G decode layers per weight BO. A shim BD's byte offset
+# is a uint32 (aiex.npu.address_patch $arg_plus -> uint32_t in AIETargetNPU), so
+# ONE buffer can only be addressed over a 4 GiB span; qwen3-8b's 36 layers are
+# 4.04 GiB of layer weights alone and wrap. G splits the weights over
+# ceil(UNI_DEC/G) buffers plus a dedicated lm-head buffer, each addressed from
+# its own base -- the same layer-invariance FLM gets by binding one BO per layer,
+# except we keep ONE dispatch (our runtime sequence is unrolled, so each wave's
+# BDs can name a different arg). G<=0 or G>=UNI_DEC => single buffer, and the
+# emitted IR is byte-identical to before this knob existed.
+W_GROUP = int(_os.environ.get("DECODE_WGROUP", "0"))
+W_SPLIT = 0 < W_GROUP < UNI_DEC
+N_WGRP = ((UNI_DEC + W_GROUP - 1) // W_GROUP) if W_SPLIT else 1
+# The split keys off the wave induction variable, which only exists in the fused
+# single-launch form.
+assert not W_SPLIT or UNIFIED, "DECODE_WGROUP needs the unified wave loop"
+
 ROUNDS_PER_PH = [I2P[p] * PAIR_ROWS for p in range(NPH)]  # y0,y1 per v1 -> 2*I2
 N_ROUNDS = sum(ROUNDS_PER_PH)  # total egress rounds (phase0 6 + phase1 4 = 10)
 # id-demux egress: the main MT MM2S emits each round's assembled packet carrying
@@ -844,6 +891,21 @@ def build_module():
         w_l3 = MemRefType.get(
             [_w_blocks * BLOCK_BF16], bf16
         )  # packed q4k weights (all phases concatenated), NLAYERS slabs
+        # W_SPLIT: w_l3 above stays arg1 and holds GROUP 0; the remaining groups and
+        # the lm-head slab are APPENDED after the existing args so every current host
+        # binding position (x/w/rms/y/kvc) is unchanged.
+        _wgrp_len = [
+            min(W_GROUP, UNI_DEC - g * W_GROUP) * W_LAYER for g in range(N_WGRP)
+        ]
+        _wvoc_len = UNI_LM * VOCAB_W_BLOCKS * BLOCK_BF16
+        if W_SPLIT:
+            w_l3 = MemRefType.get([_wgrp_len[0]], bf16)
+        _w_extra = (
+            [MemRefType.get([n], bf16) for n in _wgrp_len[1:]]
+            + [MemRefType.get([_wvoc_len], bf16)]
+            if W_SPLIT
+            else []
+        )
         # rms weight (K). MULTIBLK appends the rope region AFTER all UNI_DEC rms slabs so
         # the score-path test gets a KNOWN q (q_roped = proj_q) WITHOUT corrupting
         # rms_w[0:K] (which proj_q depends on). Llama: ONE shared per-position LUT
@@ -1240,8 +1302,13 @@ def build_module():
         _fn_args = (
             [x_l3, w_l3, rms_l3, y_l3]
             + ([kvc_l3] if MULTIBLK else [])
+            + _w_extra
             + ([i32] if DYNSEQ else [])
         )
+        # arg index of each weight group's buffer: group 0 is the original arg1;
+        # groups 1.. and the lm-head follow the base args. Index into _la is +4.
+        _w_base_n = 4 + (1 if MULTIBLK else 0)
+        WARG = [1] + [_w_base_n + i for i in range(len(_w_extra))]
 
         @FuncOp.from_py_func(*_fn_args)
         def q4nx_decode(*_fa):
@@ -1254,6 +1321,13 @@ def build_module():
             # into per-channel (channel-major) BDs.
             def launch_body(*_la):
                 X, W, RMS, Y = _la[4], _la[5], _la[6], _la[7]
+                # W_SPLIT: every weight buffer, in group order, lm-head last. Which
+                # one a weight feed names is decided per-wave inside _feed_wcol; see
+                # _wsel below.
+                _WBUFS = [_la[4 + a] for a in WARG] if W_SPLIT else [W]
+                # None => the caller is on the statically-known lm-head buffer; a
+                # Value => a runtime group index into _WBUFS[0:N_WGRP].
+                _wsel = [None]
                 KVC = _la[8] if MULTIBLK else None
                 # The dispatch-time context length (DYNSEQ). Last operand before
                 # the multi-layer induction variable.
@@ -1331,7 +1405,7 @@ def build_module():
                 blk = BLOCK_BF16
                 wstep = NCY * blk  # 10240 = one fan get
 
-                def _feed_wcol(_cx, _cbase, nsteps):
+                def _feed_wcol(_cx, _cbase, nsteps, Wb):
                     """One proj column's weight slab for one phase.
 
                     Single-channel (default): TWO contiguous puts on @inW so the
@@ -1361,7 +1435,7 @@ def build_module():
                         ix = [idx(0)] if W_DUAL_CHAN else [_cx]
                         ChannelPut(
                             ch,
-                            W,
+                            Wb,
                             indices=ix,
                             offsets=[base],
                             sizes=[half],
@@ -1369,7 +1443,7 @@ def build_module():
                         )
                         ChannelPut(
                             ch,
-                            W,
+                            Wb,
                             indices=ix,
                             offsets=[arith.addi(base, idx(half))],
                             sizes=[span - half],
@@ -1384,28 +1458,81 @@ def build_module():
                     bundle index must be an scf.parallel IV (canonical form; a
                     temporal scf.for over a bundle index is a verifier error), and
                     air-to-aie spatially unrolls it to the same per-column feeds.
+
+                    W_SPLIT wraps the WHOLE fan -- not each column -- in the weight-arg
+                    select, because AIRRtToNpuPass's cross-channel phase barrier opens
+                    a new phase group at every block boundary. A per-column switch puts
+                    each column in its own block, which shrinks the phase group from
+                    2*NCX channels to 2 and deadlocks the dispatch.
                     """
-                    if W_DUAL_CHAN:
-                        for _cxi in range(NCX):
-                            _cbase = (
-                                _wcol0 + _cxi * _colspan
-                                if isinstance(_wcol0, int)
-                                else arith.addi(_wcol0, idx(_cxi * _colspan))
+
+                    def _fan(Wb):
+                        if W_DUAL_CHAN:
+                            for _cxi in range(NCX):
+                                _cbase = (
+                                    _wcol0 + _cxi * _colspan
+                                    if isinstance(_wcol0, int)
+                                    else arith.addi(_wcol0, idx(_cxi * _colspan))
+                                )
+                                if isinstance(_cbase, int):
+                                    _cbase = idx(_cbase)
+                                _feed_wcol(_cxi, _cbase, nsteps, Wb)
+                            return
+                        _w0 = idx(_wcol0) if isinstance(_wcol0, int) else _wcol0
+                        for _cx in parallel_(NCX):
+                            _feed_wcol(
+                                _cx,
+                                arith.addi(_w0, arith.muli(_cx, idx(_colspan))),
+                                nsteps,
+                                Wb,
                             )
-                            if isinstance(_cbase, int):
-                                _cbase = idx(_cbase)
-                            _feed_wcol(_cxi, _cbase, nsteps)
-                        return
-                    _w0 = idx(_wcol0) if isinstance(_wcol0, int) else _wcol0
-                    for _cx in parallel_(NCX):
-                        _feed_wcol(
-                            _cx,
-                            arith.addi(_w0, arith.muli(_cx, idx(_colspan))),
-                            nsteps,
+
+                    if not W_SPLIT:
+                        _fan(W)
+                    elif _wsel[0] is None:
+                        # vocab waves: the lm-head buffer is a compile-time choice.
+                        _fan(_WBUFS[N_WGRP])
+                    else:
+                        # Decode waves: one arm per weight group, differing ONLY in
+                        # which arg the puts name (_wcol0 is already group-relative).
+                        # The wave loop is unrolled before BD assignment, so the
+                        # selector is constant by then and the switch folds to its
+                        # single taken arm; the arms exist purely so each wave's BDs
+                        # can name a different arg.
+                        def _arm(g):
+                            _fan(_WBUFS[g])
+                            yield_([])
+
+                        index_switch(
+                            [],
+                            _wsel[0],
+                            list(range(N_WGRP - 1)),
+                            case_body_builder=lambda op, i, cv: _arm(cv),
+                            default_body_builder=lambda op: _arm(N_WGRP - 1),
                         )
 
                 for _layer in range(NLAYERS if a_iv is None else 1):
                     _wbase = _lb(W_LAYER)  # weights slab for this layer
+                    _wgi = None  # which weight buffer this decode wave reads
+                    if W_SPLIT and a_iv is not None:
+                        # Group index and group base, as nested selects over the group
+                        # boundaries. iv/G and iv%G would be the obvious spelling, but
+                        # airrt-to-npu's post-unroll fold set (AIRRtToNpuPass.cpp,
+                        # "Fold constant-condition launch-scope scf.index_switch")
+                        # carries cmpi/select/addi/subi/muli and NOT divui/remui -- so
+                        # those would leave the switch unfolded, and an index_switch
+                        # cannot parent aiex.dma_configure_task_for.
+                        _wgi = idx(N_WGRP - 1)
+                        _goff = idx((N_WGRP - 1) * W_GROUP)
+                        for _g in range(N_WGRP - 2, -1, -1):
+                            _gc = arith.cmpi(
+                                arith.CmpIPredicate.slt, a_iv, idx((_g + 1) * W_GROUP)
+                            )
+                            _wgi = arith.select(_gc, idx(_g), _wgi)
+                            _goff = arith.select(_gc, idx(_g * W_GROUP), _goff)
+                        # Offsets are relative to THIS group's buffer, so the span per
+                        # buffer is G*W_LAYER instead of UNI_DEC*W_LAYER.
+                        _wbase = arith.muli(arith.subi(a_iv, _goff), idx(W_LAYER))
                     _rbase = _lb(RMS_LAYER)  # rms weights slab for this layer
                     _kbase = _lb(KV_LAYER)  # KV cache slab for this layer
                     _ybase = _lb(Y_LAYER)  # Y (host-drain) region for this layer
@@ -1422,13 +1549,25 @@ def build_module():
                         _uarm_i = arith.index_cast(idx_t, _uarm)
 
                         def _uni_voc():
-                            _vwb = arith.addi(
-                                idx(UNI_DEC * W_LAYER),
-                                arith.muli(
+                            _wsel[0] = None  # lm-head buffer, statically known
+                            # W_SPLIT gives the lm-head its own buffer, so its slabs
+                            # start at 0 instead of after all UNI_DEC layer slabs.
+                            # The non-split expression is kept verbatim (constants
+                            # materialize in the same order) so the IR stays
+                            # byte-identical when the knob is off.
+                            if W_SPLIT:
+                                _vwb = arith.muli(
                                     arith.subi(a_iv, idx(UNI_DEC)),
                                     idx(VOCAB_W_BLOCKS * BLOCK_BF16),
-                                ),
-                            )
+                                )
+                            else:
+                                _vwb = arith.addi(
+                                    idx(UNI_DEC * W_LAYER),
+                                    arith.muli(
+                                        arith.subi(a_iv, idx(UNI_DEC)),
+                                        idx(VOCAB_W_BLOCKS * BLOCK_BF16),
+                                    ),
+                                )
                             _vyb = arith.addi(
                                 idx((HOST_ROUNDS + LAYER_RNDS) * PAYLOAD),
                                 arith.muli(
@@ -1532,6 +1671,7 @@ def build_module():
                             yield_([])
 
                         def _uni_dec():
+                            _wsel[0] = _wgi  # runtime group index (None if unsplit)
                             # raw X (@xy) + rms weight (@rmsin) to the rms producer core; the
                             # on-chip rms normalizes + re-feeds X (see refeed()). X is
                             # in-place (offset 0 every layer -- the chained hidden state).
@@ -3682,13 +3822,23 @@ def build_module():
             # in as the last launch operand so the per-layer DDR offsets are
             # loop-carried. The device inside the launch is identical either way --
             # only the runtime sequence (insts) grows.
-            for _iv in for_(idx(UNI_WAVE_LO), idx(UNI_WAVE_HI), idx(1)):
-                launch(
-                    sizes=[1, 1],
-                    operands=list(_fa) + [_iv],
-                    attributes={"air.preserve_shim_dma_order": UnitAttr.get()},
-                )(launch_body)
-                yield_([])
+            def _emit_wave_loop(lo, hi):
+                if lo >= hi:
+                    return
+                for _iv in for_(idx(lo), idx(hi), idx(1)):
+                    launch(
+                        sizes=[1, 1],
+                        operands=list(_fa) + [_iv],
+                        attributes={"air.preserve_shim_dma_order": UnitAttr.get()},
+                    )(launch_body)
+                    yield_([])
+
+            # ONE rolled loop, split or not. Peeling it per weight group was tried and
+            # abandoned: each peeled launch carries its own segment, which multiplies
+            # the device-level resources (segment symbols, locks, and packet ids --
+            # the 5-bit dma_bd Packet ID field caps that at ~4 launches). The split
+            # instead lives entirely in _feed_wcol's per-group index_switch.
+            _emit_wave_loop(UNI_WAVE_LO, UNI_WAVE_HI)
 
     return build()
 
@@ -3713,7 +3863,7 @@ def run():
         omit_while_true_loop=False,
         output_format="xclbin",
         kernel_name="MLIR_AIE",
-        stack_size=10240,
+        stack_size=STACK_SIZE,
         use_lock_race_condition_fix_v2=True,
         coalesce_shim_dma=bool(COALESCE),
         # DYNSEQ: the runtime sequence now holds a scalar, so the stream is built

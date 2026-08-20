@@ -47,6 +47,13 @@ HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 FastFlowLM/Gemma3-4B-NPU2
 unsloth/gemma-3-4b-it
 
+# Same Q4NX packaging of Qwen3-8B. Used by llms/qwen3_8b_q4nx (NPU weights),
+# plus the bf16 reference `make verify` compares against. The FLM card declares
+# `base_model: Qwen/Qwen3-8B`, and Qwen3 unifies base + instruct in one
+# checkpoint, so that single repo is the reference.
+FastFlowLM/Qwen3-8B-NPU2
+Qwen/Qwen3-8B
+
 # Same Q4NX packaging of Phi-4-mini-instruct. Used by llms/phi4_mini_q4nx (the
 # fused decode loads weights from this repo), plus the bf16 reference `make
 # verify` compares against -- microsoft/Phi-4-mini-instruct is ungated, and is

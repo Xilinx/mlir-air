@@ -36,14 +36,22 @@ env:
   DEBIAN_FRONTEND: noninteractive
   XILINXD_LICENSE_FILE: /opt/xilinx/Xilinx.lic
   VITIS: /opt/ryzen_ai-1.3.0.1/vitis_aie_essentials
-  # The lit/ninja targets run every llms/*/run_npu2_{verify,profile} model. The
-  # 3B/4B models used to OOM-kill this ~32GB runner (their verify held the HF
-  # bf16 reference + NPU host weights simultaneously). They now fit: the runtime
-  # weight preload shares prefill activation-scratch BOs across layers and drops
-  # the host numpy weight duplicates once resident in BOs, and verify runs the
-  # NPU-capture and HF-compare phases as separate subprocesses so the reference
-  # never coexists with the NPU peak. Measured verify peaks: llama32_3b ~24GB,
-  # qwen25_3b ~25GB, qwen3_4b ~27GB. No LIT_FILTER_OUT needed.
+  # The lit/ninja targets run every llms/*/run_npu2_{verify,profile} model, and
+  # verify is the memory-hungry half: it holds an HF bf16 reference as well as the
+  # NPU host weights. The runner has 64GB. Measured verify peaks: llama32_3b
+  # ~24GB, qwen25_3b ~25GB, qwen3_4b ~27GB. No LIT_FILTER_OUT needed.
+  #
+  # Two mechanisms keep those peaks where they are -- do not undo either without
+  # re-measuring: the runtime weight preload shares prefill activation-scratch BOs
+  # across layers and frees the host numpy weights once they are resident in BOs,
+  # and verify runs its NPU-capture and HF-compare phases as separate subprocesses
+  # so the reference never coexists with the NPU peak.
+  #
+  # qwen3_8b's peak has NOT been measured here. Bound: the HF-compare phase holds
+  # the ~16GB bf16 reference, the NPU phase ~6GB of dequantized Q4NX weights plus
+  # five decode weight BOs (4x1.01GB + 0.37GB, see llms/qwen3_8b_q4nx). Separate
+  # subprocesses, so the peak is the larger, not the sum. Confirm against a
+  # nightly rather than assuming.
 
 jobs:
   benchmark:

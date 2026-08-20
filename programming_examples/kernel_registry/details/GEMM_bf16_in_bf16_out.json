@@ -1781,6 +1781,110 @@
       "best": {
         "high": "fused-cast"
       }
+    },
+    {
+      "M": 2048,
+      "K": 4096,
+      "N": 1024,
+      "used_by": "Qwen3-8B K/V proj (emb=4096, kv_dim=8*128=1024)",
+      "_note": "Narrow-N GQA projection. tile_k_l2 256 vs 512 at tn=128 are within 0.5% (7092 vs 7060 GFLOPS); 256 taken as best. best.high=fused-cast(tile_k_l2=256).",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7092,
+          "mean_rel_L1": 0.00987,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 4096,
+      "N": 4096,
+      "used_by": "Qwen3-8B Q proj AND O proj (emb=4096, q_dim=32*128=4096 -> square o_proj, unlike Qwen3-4B's decoupled 4096->2560)",
+      "_note": "Square attention GEMM: one registry row serves both Q and O. Swept tile_k_l2 256 vs 512 at tn=128: 512 is faster (8236 vs 7979 GFLOPS), both high-precision tier. Stride tile_k_l2*N=512*4096=2097152 exceeds [1:1048576] only for the f32-out B-tile of wide-N shapes; at N=4096 the fused-cast path places fine. best.high=fused-cast(tile_k_l2=512).",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8236,
+          "mean_rel_L1": 0.00986,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 4096,
+      "N": 12288,
+      "used_by": "Qwen3-8B Gate/Up proj (emb=4096, ffn=12288)",
+      "_note": "Wide-N: the f32-out B-tile DMA stride tile_k_l2*N must stay in [1:1048576], so fused-cast is legal ONLY at tile_k_l2=64 (64*12288=786432; 128*12288=1572864 exceeds). Same constraint the Qwen3-4B N=9728 sibling hit. High-precision fused-cast at tk_l2=64 (6059 @ 9.87e-3) beats the low-prec direct path (4469 @ 1.54e-2) on BOTH speed and accuracy. Direct at tile_k_l2=256/tn=64 FAILS aiecc: 'Too many simultaneously active buffer descriptors on tile (1,0)' (>16) -- BD-pool placement is non-monotonic. best.high=fused-cast(tile_k_l2=64), best.low=direct.",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6059,
+          "mean_rel_L1": 0.00987,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4469,
+          "mean_rel_L1": 0.01543,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 12288,
+      "N": 4096,
+      "used_by": "Qwen3-8B Down proj (ffn=12288, emb=4096)",
+      "_note": "Deep-K, narrow-N: the fastest of the four Qwen3-8B prefill shapes. tile_k_l2 256 vs 512 at tn=128: 512 marginally faster (9578 vs 9495 GFLOPS). best.high=fused-cast(tile_k_l2=512).",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 9578,
+          "mean_rel_L1": 0.00986,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
     }
   ]
 }
