@@ -423,7 +423,15 @@ jobs:
 
           recs = []
           for f in sorted(glob.glob("build_assert/test/llms/**/*.perf.json", recursive=True)):
-              d = json.load(open(f))
+              # A timeout or cancel truncates one model's file mid-write. That
+              # used to raise here and kill the step, so nothing published at
+              # all. Skip the file instead; the vstatus loop below gives the
+              # model a null row if verify ran for it.
+              try:
+                  d = json.load(open(f))
+              except (json.JSONDecodeError, OSError) as e:
+                  print(f"WARNING: {f} unreadable ({e}); recording as failed", file=sys.stderr)
+                  continue
               d["runner"] = "amdryzenai5pro340"
               d["toolchain"] = {
                   "mlir_air_sha": air_sha,
@@ -505,7 +513,11 @@ jobs:
         # Only from a FULL run. A suite-narrowed dispatch produces a perf.json
         # that is partial by construction, and history.ndjson is append-only --
         # a short row set there is indistinguishable from models disappearing.
-        if: always() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep')
+        # !cancelled(), not always(): always() fires on cancellation too, and a
+        # run cancelled mid-profile appended rows with null metrics but
+        # verify_status "pass". A *failed* run must still publish -- its other
+        # models' rows are good.
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -572,11 +584,32 @@ jobs:
                         f"{m['ttft_ms']} | {m['decode_tokens_per_sec']} |")
           PY
 
+      # The artifact NAME decides whether this run can reach the page:
+      # generateDocs.yml consumes the first `perf-<run id>` it finds. Gating the
+      # dispatch below is not enough, and was the bug: generateDocs also runs on
+      # every push to main and fetches the artifact itself.
+      #
+      # Two steps rather than one with a computed name, because cancellation has
+      # to be part of the condition and the status functions are only defined
+      # for `if:`. A cancelled full run is partial at an arbitrary point, so it
+      # must land under the non-publishable name like a narrowed run does.
       - name: Upload perf artifact
-        if: always()
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
         uses: actions/upload-artifact@v4
         with:
           name: perf-${{ github.run_id }}
+          path: |
+            perf.json
+            sweep.json
+            perf_out/
+            verify.xml
+
+      # Same payload, name the publisher ignores: still there to download.
+      - name: Upload perf artifact (partial run)
+        if: ${{ cancelled() || !(github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-partial-${{ github.run_id }}
           path: |
             perf.json
             sweep.json
@@ -592,10 +625,10 @@ jobs:
       # and the page only ever refreshed on an unrelated push to main. Best-
       # effort: never fails the benchmark job if the dispatch call errors.
       - name: Refresh docs page
-        # Full runs only, same reason: generateDocs picks the newest nightly
-        # artifact, so publishing a narrowed run would blank most of the
-        # dashboard until the next scheduled run repaired it.
-        if: always() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep')
+        # Full, non-cancelled runs only -- same reasoning as the history append.
+        # Note this gate alone never protected the page: the artifact naming
+        # above is what actually decides, because generateDocs runs on push too.
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
