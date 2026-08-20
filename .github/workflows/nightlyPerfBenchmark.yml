@@ -23,6 +23,16 @@ on:
   schedule:
     - cron: '17 4 * * *'  # Daily at 04:17 (off-:00 to avoid CI fleet pile-up)
   workflow_dispatch:
+    inputs:
+      suites:
+        description: >-
+          Comma-separated lit suites to run: verify, profile, sweep. Defaults to
+          all three, which is what the schedule runs. Narrow it to iterate on one
+          suite without paying for the others -- a full run is ~4h, sweep alone is
+          ~25 min. A narrowed run does NOT publish (see below), because its
+          perf.json is partial by construction.
+        default: verify,profile,sweep
+        type: string
 
 defaults:
   run:
@@ -323,19 +333,29 @@ jobs:
 
           rc=0
           pushd build_assert
-          # Correctness gate (strict): red if any model's verify fails.
-          LIT_OPTS="--timeout 1800 --xunit-xml-output $OLDPWD/verify.xml" \
-            ninja check-programming-examples-llms-verify || rc=1
-          # Perf capture: writes <model>.perf.json under test/llms/<model>/.
-          LIT_OPTS="--timeout 1800" \
-            ninja check-programming-examples-llms-profile || rc=1
+          SUITES="${{ github.event.inputs.suites || 'verify,profile,sweep' }}"
+          echo "running suites: $SUITES"
+          want() { case ",$SUITES," in *",$1,"*) return 0;; *) return 1;; esac; }
+
+          if want verify; then
+            # Correctness gate (strict): red if any model's verify fails.
+            LIT_OPTS="--timeout 1800 --xunit-xml-output $OLDPWD/verify.xml" \
+              ninja check-programming-examples-llms-verify || rc=1
+          fi
+          if want profile; then
+            # Perf capture: writes <model>.perf.json under test/llms/<model>/.
+            LIT_OPTS="--timeout 1800" \
+              ninja check-programming-examples-llms-profile || rc=1
+          fi
           # Decode tok/s vs context, for the four fused-decode models: writes
           # <model>.sweep.json alongside. The profile capture above measures one
           # point at the profile prompt's ~6 tokens of context, which is the
           # flattering end of a ~12x range and cannot see a KV-path regression.
           # Each sweep is ~4-5 min (a template build per context).
-          LIT_OPTS="--timeout 3600" \
-            ninja check-programming-examples-llms-sweep || rc=1
+          if want sweep; then
+            LIT_OPTS="--timeout 3600" \
+              ninja check-programming-examples-llms-sweep || rc=1
+          fi
           popd
           exit $rc
 
@@ -465,7 +485,10 @@ jobs:
       # Best-effort: never reds the benchmark job. The nightly concurrency group
       # serializes runs, so there is no push race on the branch.
       - name: Append perf history
-        if: always() && hashFiles('perf.json') != ''
+        # Only from a FULL run. A suite-narrowed dispatch produces a perf.json
+        # that is partial by construction, and history.ndjson is append-only --
+        # a short row set there is indistinguishable from models disappearing.
+        if: always() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep')
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -552,7 +575,10 @@ jobs:
       # and the page only ever refreshed on an unrelated push to main. Best-
       # effort: never fails the benchmark job if the dispatch call errors.
       - name: Refresh docs page
-        if: always() && hashFiles('perf.json') != ''
+        # Full runs only, same reason: generateDocs picks the newest nightly
+        # artifact, so publishing a narrowed run would blank most of the
+        # dashboard until the next scheduled run repaired it.
+        if: always() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep')
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
