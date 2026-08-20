@@ -74,6 +74,16 @@ def _run(cmd, cwd=None, timeout=5400, env=None):
     )
 
 
+BUILDER_ENV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
+
+
+def _builder_env(args):
+    """--builder-env as a dict, or None. Assumed already validated by main()."""
+    return (
+        dict(BUILDER_ENV_RE.match(kv).groups() for kv in args.builder_env or ()) or None
+    )
+
+
 def _make_vars(args):
     """Overrides to hand `make`, in the same form the other lits use.
 
@@ -146,7 +156,7 @@ def bench_decode(workdir, ctx, args):
         ctx,
         args.w_elems,
         args.n_layers,
-        dict(kv.split("=", 1) for kv in args.builder_env) if args.builder_env else None,
+        _builder_env(args),
     )
     cmd = (
         f"{BENCH_EXE} --dir . --base-l {ctx} --ref-l {ctx - 1} --l {ctx} "
@@ -238,6 +248,12 @@ def main():
     a = p.parse_args()
 
     sys.path.insert(0, str(HERE))
+    # Validate before anything uses it. These are spliced onto a make command
+    # line, where a token without `=` is not an ignored malformed variable but a
+    # TARGET -- `--builder-env clean` would run `make clean` on the model dir.
+    for kv in a.builder_env or ():
+        if not BUILDER_ENV_RE.match(kv):
+            p.error(f"--builder-env expects NAME=value, got {kv!r}")
     contexts = [int(c) for c in a.contexts.split(",") if c.strip()]
     expect_fail = {int(c) for c in a.expect_fail.split(",") if c.strip()}
 

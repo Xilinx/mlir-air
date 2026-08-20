@@ -33,10 +33,6 @@ from pathlib import Path
 
 FUSED_DECODE = Path(__file__).resolve().parents[2] / "fused_decode"
 
-# proj_qmm_pack's packing granularity: one 32x256 q4 block packs to BLOCK_BF16
-# int16 (2048 for the nibbles + 512 for the per-group scales and mins).
-ROW_BLOCK, COL_BLOCK, BLOCK_BF16 = 32, 256, 2560
-
 # bench_decode.cpp's built-in defaults, i.e. llama-3.2-1B at ATTN_MAXL=2048.
 # VOCAB_CHUNK_I2=18 and w_elems are that model's, from its lit/Makefile.
 _CHECK_MODEL = dict(model="llama-3.2-1b", i2="18", ctx=2048, w_elems=386662400)
@@ -47,9 +43,10 @@ _CHECK_W_ELEMS = [
     ("llama-3.2-3b", "9", 28, 1004666880),
     ("gemma3-4b", "5", 34, 1213644800),
 ]
-# The one split model. Its parts summing to the independently derived w_elems is
-# a real cross-check: the split comes from W_LAYER per group, the total from the
-# packed-block count, and the two routes have to agree.
+# The one split model. Its parts summing to w_elems checks the part that can
+# actually be wrong: that the per-group `min(G, UNI_DEC - g*G)` covers exactly
+# UNI_DEC layers, with no gap and no overlap. The head term is shared by both
+# routes, so it is the grouping arithmetic that is under test here.
 _CHECK_SPLIT = (
     "qwen3-8b",
     "8",
@@ -74,13 +71,20 @@ _CHECK_WANT = dict(
 _EXTRA_SET = set()
 
 
+def _head_elems(fd):
+    """Packed elements in the LM head slab, as the builder sizes it (`_wvoc_len`)."""
+    return fd.UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16
+
+
 def derive_w_elems(fd, n_layers):
     """Total packed decode weight elements: N layers plus the LM head.
 
-    proj_qmm_pack.pack_q4k_cascade returns `nbi*nbj*BLOCK_BF16` int16 for an
-    [M, K] matrix, i.e. (M/ROW_BLOCK)*(K/COL_BLOCK) blocks of BLOCK_BF16. The
-    builder already sums that over one layer's matrices as W_LAYER, so the whole
-    array is N_LAYERS of those plus the head, [VOCAB_SIZE_PADDED_FULL, MODEL_DIM].
+    Both terms are read off the builder rather than recomputed from the packing
+    geometry: W_LAYER already sums pack_q4k_cascade's per-matrix
+    `nbi*nbj*BLOCK_BF16` over one layer's matrices, and VOCAB_W_BLOCKS is the
+    head's block count. Re-deriving either from ROW_BLOCK/COL_BLOCK would
+    reintroduce a floor division that silently undercounts if the blocking or the
+    vocab padding ever changes.
 
     Derived rather than passed in: the value used to be a per-model constant with
     no source of truth in the tree -- bench_decode.cpp hard-codes llama-3.2-1B's
@@ -89,8 +93,7 @@ def derive_w_elems(fd, n_layers):
     number. Reproduces all three previously hand-carried values exactly
     (see _CHECK_W_ELEMS).
     """
-    per_matrix = lambda m, k: (m // ROW_BLOCK) * (k // COL_BLOCK) * BLOCK_BF16
-    return n_layers * fd.W_LAYER + per_matrix(fd.VOCAB_SIZE_PADDED_FULL, fd.MODEL_DIM)
+    return n_layers * fd.W_LAYER + _head_elems(fd)
 
 
 def derive_w_parts(fd):
@@ -108,7 +111,7 @@ def derive_w_parts(fd):
     return [
         min(fd.W_GROUP, fd.UNI_DEC - g * fd.W_GROUP) * fd.W_LAYER
         for g in range(fd.N_WGRP)
-    ] + [fd.UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16]
+    ] + [_head_elems(fd)]
 
 
 def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=None):
@@ -146,14 +149,20 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
     fd = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fd)
 
-    derived = derive_w_elems(fd, n_layers) if n_layers else None
-    if w_elems and derived and w_elems != derived:
+    # `is not None`, not truthiness: 0 is a wrong answer to "how many layers",
+    # not an absent one, and silently falling back to a head-only weight BO
+    # would size the dispatch wrongly rather than say so.
+    derived = derive_w_elems(fd, n_layers) if n_layers is not None else None
+    if w_elems is not None and derived is not None and w_elems != derived:
         raise SystemExit(
             f"w_elems mismatch for {model}: passed {w_elems}, builder says {derived}"
         )
-    w_elems = w_elems or derived
+    w_elems = w_elems if w_elems is not None else derived
+    # Catches both "neither was given" and a degenerate 0 from either route.
     if not w_elems:
-        raise SystemExit("need --w-elems or --n-layers to size the weight BO")
+        raise SystemExit(
+            "need a positive --w-elems or --n-layers to size the weight BO"
+        )
 
     w_parts = derive_w_parts(fd)
     if w_parts and sum(w_parts) != w_elems:
