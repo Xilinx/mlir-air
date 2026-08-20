@@ -2434,10 +2434,7 @@ void air::ShimDMAAllocator::spreadCollapsedPacketChannels(
       Operation *tileOp = key.first;
       auto &used = usedChansPerTile[tileOp];
 
-      // Movable decls on this chain, in a deterministic order. The decl that
-      // got here first keeps the channel; later ones are the candidates, so a
-      // chain of N flows spreads to min(N, free+1) channels without shuffling
-      // the flow that was already placed.
+      // Decls on this chain, in a deterministic order.
       SmallVector<Operation *> order;
       llvm::SmallPtrSet<Operation *, 8> seen;
       bool unkeyed = false;
@@ -2457,7 +2454,25 @@ void air::ShimDMAAllocator::spreadCollapsedPacketChannels(
       if (unkeyed || order.size() < 2)
         continue;
 
-      for (size_t oi = 1; oi < order.size(); oi++) {
+      // Which decl KEEPS the channel? An immovable one has to, so if the chain
+      // carries any, the first of them is the keeper and every other decl --
+      // including those allocated BEFORE it -- becomes a candidate. Keeping
+      // order[0] unconditionally instead would strand the chain whenever every
+      // decl after the first is immovable: nothing would be eligible to move
+      // and the collapse would survive with a free channel sitting idle.
+      // Otherwise the decl that got here first keeps the channel, so a chain of
+      // N flows spreads to min(N, free+1) channels without shuffling the flow
+      // that was already placed.
+      size_t keepIdx = 0;
+      for (size_t i = 0; i < order.size(); i++)
+        if (isImmovable(order[i])) {
+          keepIdx = i;
+          break;
+        }
+
+      for (size_t oi = 0; oi < order.size(); oi++) {
+        if (oi == keepIdx)
+          continue;
         Operation *moveDecl = order[oi];
         if (isImmovable(moveDecl))
           continue;
