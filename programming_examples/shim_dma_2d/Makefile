@@ -16,7 +16,24 @@ else
   DEVICE := npu1_1col
 endif
 
-MLIR_AIE_INSTALL_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
+# Windows sets OS itself, but lit sanitizes the environment, so fall back to
+# uname -- Git Bash, which make uses as its shell here, reports MINGW*.
+ifeq ($(OS),Windows_NT)
+  WINDOWS := 1
+else ifneq (,$(filter MINGW% MSYS% CYGWIN%,$(shell uname -s 2>/dev/null)))
+  WINDOWS := 1
+endif
+
+# Prefer the environment (utils/env_setup.sh on Linux, mlir-aie's iron_env.cmd
+# on Windows) over probing PATH, and normalize separators: make's shell strips
+# backslashes, and realpath under Git Bash emits an MSYS path that native
+# Windows tools cannot open.
+MLIR_AIE_INSTALL_DIR := $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
+
+# XRT's own setup.sh exports XILINX_XRT; the Windows SDK is pointed at by
+# XRT_ROOT instead (iron_env.cmd deliberately clears XILINX_XRT).
+XRT_DIR := $(subst \,/,$(if $(XILINX_XRT),$(XILINX_XRT),$(XRT_ROOT)))
+TEST_LIB_DIR := $(MLIR_AIE_INSTALL_DIR)/runtime_lib/x86_64/test_lib
 
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
@@ -45,6 +62,39 @@ $(BUILD_DIR)/final.py.xclbin: $(BUILD_DIR)/air.mlir
 	mkdir -p ${@D}
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && $(PYTHON) build.py $(OUTPUT_FORMAT_FLAG) air.mlir
 
+ifdef WINDOWS
+
+# MSVC build of the same host program. Flags are spelled with a leading dash,
+# which cl accepts as a synonym for a slash: make's shell here is Git Bash,
+# and MSYS rewrites anything that looks like a POSIX path, turning /nologo
+# into C:/.../Git/nologo. Two of them are load-bearing:
+#   -Zc:__cplusplus  - without it cl reports __cplusplus as 199711L, so XRT's
+#                      detail/any.h takes its pre-C++17 branch and demands
+#                      boost/any.hpp, which the Windows SDK does not ship.
+#   -MD              - test_utils.lib in the mlir_aie wheel is built against
+#                      the dynamic CRT, while cl defaults to /MT (LNK2038).
+# uuid/rt/stdc++ have no Windows equivalent and are not needed.
+${targetname}.exe: ${srcdir}/test.cpp
+	@if ! command -v cl >/dev/null 2>&1; then \
+		echo "Error: cl.exe not found. Run from an x64 Native Tools Command Prompt for Visual Studio."; \
+		exit 1; \
+	fi; \
+	if [ -z "$(XRT_DIR)" ]; then \
+		echo "Error: neither XRT_ROOT nor XILINX_XRT is set. Point one at your XRT install."; \
+		exit 1; \
+	fi; \
+	if [ -z "$(MLIR_AIE_INSTALL_DIR)" ]; then \
+		echo "Error: MLIR_AIE_INSTALL_DIR could not be determined. Please make sure aie-opt is in your PATH."; \
+		exit 1; \
+	fi; \
+	mkdir -p $(BUILD_DIR); \
+	cd $(BUILD_DIR) && cl -nologo -EHsc -MD -std:c++20 -Zc:__cplusplus \
+		${srcdir}/test.cpp -Fe:${targetname}.exe \
+		-I"$(XRT_DIR)/include" -I"$(TEST_LIB_DIR)/include" \
+		-link "$(XRT_DIR)/lib/xrt_coreutil.lib" "$(TEST_LIB_DIR)/lib/test_utils.lib"
+
+else
+
 ${targetname}.exe: ${srcdir}/test.cpp
 	@GPP=$$( \
 		for bin in /usr/bin/g++-*; do \
@@ -58,7 +108,7 @@ ${targetname}.exe: ${srcdir}/test.cpp
 		echo "Error: No g++ version >= 13 found in /usr/bin."; \
 		exit 1; \
 	fi; \
-	if [ -z "$$XILINX_XRT" ]; then \
+	if [ -z "$(XRT_DIR)" ]; then \
 		echo "Error: XILINX_XRT environment variable not set. Please make sure to have sourced xrt/setup.sh."; \
 		exit 1; \
 	fi; \
@@ -69,10 +119,12 @@ ${targetname}.exe: ${srcdir}/test.cpp
 	echo "Using compiler: $$GPP"; \
 	mkdir -p $(BUILD_DIR); \
 	cd $(BUILD_DIR) && $$GPP ${srcdir}/test.cpp -o ${targetname}.exe -std=c++23 -Wall \
-		-I$$XILINX_XRT/include -L$$XILINX_XRT/lib \
-		-I$(MLIR_AIE_INSTALL_DIR)/runtime_lib/x86_64/test_lib/include \
-		-L$(MLIR_AIE_INSTALL_DIR)/runtime_lib/x86_64/test_lib/lib \
+		-I$(XRT_DIR)/include -L$(XRT_DIR)/lib \
+		-I$(TEST_LIB_DIR)/include \
+		-L$(TEST_LIB_DIR)/lib \
 		-luuid -lxrt_coreutil -lrt -lstdc++ -ltest_utils
+
+endif
 
 run: ${targetname}.exe $(BUILD_DIR)/final.xclbin $(BUILD_DIR)/final.insts.bin 
 	${powershell} $(BUILD_DIR)/${targetname}.exe -x $(BUILD_DIR)/final.xclbin -i $(BUILD_DIR)/final.insts.bin -k MLIR_AIE

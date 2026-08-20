@@ -49,6 +49,12 @@ config.environment["MLIR_AIE_INSTALL_DIR"] = os.environ.get(
 # build was configured with, not whichever one PATH happens to resolve first.
 config.environment["PYTHON"] = config.python_executable
 
+# Examples that build a host program need the XRT this build was configured
+# against. On Linux that arrives via run_on_npu.sh sourcing setup.sh, which
+# exports XILINX_XRT; there is no such script on Windows, so pass the
+# configured path down directly. XILINX_XRT still wins where it is set.
+config.environment["XRT_ROOT"] = os.environ.get("XRT_ROOT", config.xrt_dir)
+
 # suffixes: A list of file extensions to treat as test files.
 config.suffixes = [".lit"]
 
