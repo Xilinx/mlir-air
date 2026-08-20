@@ -1,22 +1,21 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// Llama-3.1-8B Q4NX DECODE compile-only smoke test: builds the fused_decode
-// superkernel at the 8B geometry (MODEL_TYPE=LLAMA_3_1_8B) through the
-// AIR -> AIE -> aiecc -> Peano pipeline. No NPU dispatch, no weight download.
+// Llama-3.1-8B Q4NX PREFILL compile-only smoke test: builds every prefill
+// kernel ELF through the AIR -> AIE -> aiecc -> Peano pipeline. No NPU dispatch,
+// no weight download (the kernels are weight-free; Q4NX only changes the host
+// weight source).
 //
-// LBUILD=16 builds a tiny attention window: this gates that the 8B geometry
-// lowers -- the split weight BOs (DECODE_WGROUP), the trimmed core stack
-// (DECODE_STACK), and the vocab chunking -- not that it is fast. The production
-// 2048 window is built by run_npu2_verify.lit / run_npu2_profile.lit.
+// The decode templates are gated separately by run_npu2_compile_decode.lit,
+// which needs an llvm-link from LLVM <23 and so cannot share this cheap REQUIRES.
 //
 // Collected by `check-programming-examples-llms-compile`, which filters on the path
 // `llms/.*/run_npu2_compile` (not on a "peano" filename), like every other model.
 //
-// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23
+// REQUIRES: ryzen_ai_npu2, peano
 //
-// RUN: mkdir -p test_npu2_compile
-// RUN: cd test_npu2_compile
+// RUN: mkdir -p test_peano_compile
+// RUN: cd test_peano_compile
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile compile-decode LBUILD=16 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
-// CHECK: 8B decode build complete
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: Compilation passed.
