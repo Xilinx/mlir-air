@@ -8,7 +8,7 @@
 """air.api lowers air.ops.maximum / air.ops.minimum / air.ops.relu.
 
 These are the first compute ops that are not Python operators, so they enter the
-expression tree through `air.api.ops` rather than through `__add__` and friends,
+expression tree through `air.ops` rather than through `__add__` and friends,
 and they must compose with the arithmetic operators in the same tree.
 """
 

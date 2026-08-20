@@ -3,7 +3,7 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Imperative memory operations.
+"""Memory transfers and elementwise compute.
 
 Re-exported by :mod:`air.api`, so importing the package is enough::
 
@@ -11,10 +11,10 @@ Re-exported by :mod:`air.api`, so importing the package is enough::
 
     air.ops.load(buf, A[window])
 
-Every implemented op returns a :class:`~air.api._value.Token`. AIR builds its
-real asynchronous dependency graph from program order in the ``air-dependency``
-pass, so a v1 token carries no SSA value -- it exists so that ``dependency=``
-can be type-checked instead of silently ignored.
+The transfer ops (``load``, ``store``) return a :class:`~air.api._value.Token`.
+AIR builds its real asynchronous dependency graph from program order in the
+``air-dependency`` pass, so a v1 token carries no SSA value -- it exists so that
+``dependency=`` can be type-checked instead of silently ignored.
 
 Elementwise compute ops (``maximum``, ``minimum``, ``relu``, ``tanh``, and the
 ``sigmoid``/``silu``/``gelu`` compositions built on them) build lazy expression
