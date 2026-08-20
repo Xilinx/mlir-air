@@ -162,7 +162,7 @@ add_lit_testsuite(check-programming-examples-llms-profile
 )
 set_target_properties(check-programming-examples-llms-profile PROPERTIES FOLDER "Tests")
 
-# LLM decode-throughput sweep: tok/s against context length, for the four
+# LLM decode-throughput sweep: tok/s against context length, for the
 # fused-decode models only (the others have no bench_decode path). The profile
 # suite above captures one point, at the profile prompt's ~6 tokens of context;
 # decode throughput is dominated by KV streaming and falls ~12x from 1k to 128k,

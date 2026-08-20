@@ -75,14 +75,22 @@ def _run(cmd, cwd=None, timeout=5400, env=None):
 
 
 def _make_vars(args):
-    """Toolchain overrides to hand `make`, in the same form the other lits use.
+    """Overrides to hand `make`, in the same form the other lits use.
 
-    lit supplies these as substitutions rather than in the environment, and the
-    runner shells out to make itself, so without forwarding them every build
-    fails at preflight-peano. The profile/verify lits pass PEANO_INSTALL_DIR on
-    each make line for exactly this reason.
+    lit supplies the toolchain as substitutions rather than in the environment,
+    and the runner shells out to make itself, so without forwarding them every
+    build fails at preflight-peano. The profile/verify lits pass
+    PEANO_INSTALL_DIR on each make line for exactly this reason.
+
+    --builder-env goes to make too, not only to the geometry import. The split-
+    weight models take DECODE_WGROUP, which decides both how the device build
+    partitions the weight args and how the host has to slice them; if the two
+    disagree the dispatch still runs and reports a plausible number. Forwarding
+    the same value to both makes that impossible. The model Makefiles declare
+    these with `?=`, so a command-line assignment wins.
     """
-    return [f"PEANO_INSTALL_DIR={args.peano_dir}"] if args.peano_dir else []
+    v = [f"PEANO_INSTALL_DIR={args.peano_dir}"] if args.peano_dir else []
+    return v + list(args.builder_env or [])
 
 
 def build_templates(makefile, ctx, workdir, template_dir, log, args):
@@ -132,7 +140,14 @@ def build_templates(makefile, ctx, workdir, template_dir, log, args):
 def bench_decode(workdir, ctx, args):
     from decode_geometry import as_flags, geometry
 
-    geom = geometry(args.bench_model, args.vocab_chunk_i2, ctx, args.w_elems)
+    geom = geometry(
+        args.bench_model,
+        args.vocab_chunk_i2,
+        ctx,
+        args.w_elems,
+        args.n_layers,
+        dict(kv.split("=", 1) for kv in args.builder_env) if args.builder_env else None,
+    )
     cmd = (
         f"{BENCH_EXE} --dir . --base-l {ctx} --ref-l {ctx - 1} --l {ctx} "
         f"--iters {args.iters} --warmup {args.warmup} {as_flags(geom)}"
@@ -186,8 +201,23 @@ def main():
     )
     p.add_argument("--bench-model", help="DECODE_MODEL for bench_decode geometry")
     p.add_argument("--vocab-chunk-i2", help="VOCAB_CHUNK_I2 for bench_decode geometry")
-    p.add_argument("--w-elems", type=int, help="weight element count")
-    p.add_argument("--n-layers", type=int, default=36, help="bench_qwen only")
+    p.add_argument(
+        "--w-elems", type=int, help="override; normally derived from the builder"
+    )
+    p.add_argument(
+        "--n-layers",
+        type=int,
+        help="decoder layers: sizes the weight BO for bench_decode, and the "
+        "layer count for bench_qwen (default 36)",
+    )
+    p.add_argument(
+        "--builder-env",
+        action="append",
+        metavar="K=V",
+        help="extra builder knobs (repeatable), e.g. DECODE_WGROUP=9. Passed "
+        "both to the geometry import and to make, so the device build and the "
+        "host BO split cannot drift apart.",
+    )
     p.add_argument("--iters", type=int, default=20)
     p.add_argument("--warmup", type=int, default=6)
     p.add_argument(
@@ -230,9 +260,17 @@ def main():
                     file=sys.stderr,
                 )
                 return 2
-        for f in ("bench_model", "vocab_chunk_i2", "w_elems"):
+        for f in ("bench_model", "vocab_chunk_i2"):
             if getattr(a, f) is None:
                 p.error(f"--driver bench_decode needs --{f.replace('_', '-')}")
+        # No default layer count here. The weight BO is sized from it, and a
+        # wrong size does not fail -- it benches a differently shaped dispatch
+        # and reports a plausible number, so a lit that omits it must not
+        # silently inherit some other model's depth.
+        if a.n_layers is None and a.w_elems is None:
+            p.error("--driver bench_decode needs --n-layers (or --w-elems)")
+    elif a.n_layers is None:
+        a.n_layers = 36  # bench_qwen's model, qwen2.5-3B
 
     # Absolute: bench_qwen runs with cwd=fused_decode and bench_decode with
     # cwd=workdir, so a relative path resolves differently for the two drivers.

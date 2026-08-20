@@ -583,7 +583,7 @@ def load_llm_sweeps(sweep_path):
 def render_llm_sweep(recs, base_url=""):
     """Render decode tok/s against context length, one row per model.
 
-    These four models are published here instead of in the single-point table:
+    Models with a sweep are published here instead of in the single-point table:
     decode throughput is dominated by KV streaming and falls by more than 10x
     across this axis, so one number cannot represent them. A blank cell is a
     context this runner did not reach, which at 64k/128k means XRT would not pin
