@@ -526,7 +526,7 @@ def _check_packed_operands(a, b, acc):
         )
 
 
-def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None):
+def dot(a, b, acc=None, alpha=1.0, transpose_b=False, kernel=None, dependency=None):
     """``acc += a @ b`` over L1 tiles. Returns a :class:`Token`.
 
     This is a *statement*, not an expression, and the accumulator is a buffer
@@ -559,6 +559,18 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None):
 
     One rule covers all four: ``a``'s last axis contracts against ``b``'s first,
     and ``acc`` keeps what is left of each.
+
+    ``kernel=`` names the external function this contraction should lower to
+    under ``lower_linalg_to_func``, by setting linalg's ``library_call``
+    attribute. Without it a micro-tiled contraction lowers to
+    ``op_has_no_registered_library_name`` -- MLIR's placeholder for an op with no
+    registered name, which the OpDSL emitter never overrides and which every
+    hand-written kernel here therefore exports. Sharing one symbol means a
+    kernel compiled for the wrong tile dimensions still links and computes
+    silently wrong results, and two differently shaped contractions cannot
+    coexist in one core. Naming the kernel makes both of those link errors::
+
+        ops.dot(a, b, acc=acc, kernel="matmul_bf16_bf16_m32k16n32")
     """
     from air.dialects import linalg
 
@@ -600,6 +612,7 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None):
             )
         _check_packed_operands(a, b, acc)
         op = _block_matmul_op()(a.value, b.value, outs=[accumulator_subview(acc)])
+        _set_library_call(kernel)
         return Token(op)
 
     if ranks not in _CONTRACTIONS:
@@ -639,7 +652,32 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None):
         )
 
     op = getattr(linalg, op_name)(a.value, b.value, outs=[acc.value])
+    _set_library_call(kernel)
     return Token(op)
+
+
+def _set_library_call(kernel):
+    """Stamp ``library_call`` on the contraction just emitted.
+
+    The OpDSL emitter hardcodes ``library_call=None`` (a standing TODO in
+    upstream ``linalg/opdsl/lang/emitter.py``) and returns the op's *results*,
+    which is an empty list for memref semantics -- so there is no handle to set
+    the attribute on. The op is the last one written into the current block,
+    which is where this reaches for it.
+    """
+    if kernel is None:
+        return
+    if not isinstance(kernel, str) or not kernel:
+        raise TypeError(
+            f"air.api.ops.dot(kernel=...) takes the external function's symbol "
+            f"name, got {type(kernel).__name__}"
+        )
+    from air.ir import InsertionPoint, StringAttr
+
+    block = InsertionPoint.current.block
+    block.operations[len(block.operations) - 1].attributes["library_call"] = (
+        StringAttr.get(kernel)
+    )
 
 
 def _unimplemented(name, needs):

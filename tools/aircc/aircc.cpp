@@ -200,6 +200,14 @@ static cl::opt<std::string>
                                "given object file"),
                       cl::init(""), cl::cat(airCompilerOptions));
 
+static cl::opt<bool> deriveLibraryCall(
+    "derive-library-call",
+    cl::desc("With --lower-linalg-to-func, name the callee after the operation "
+             "and its operand types instead of MLIR's "
+             "\"op_has_no_registered_library_name\" placeholder. Requires the "
+             "kernel object to export the derived name."),
+    cl::init(false), cl::cat(airCompilerOptions));
+
 static cl::opt<bool>
     airLoopFusion("air-loop-fusion",
                   cl::desc("Add air-loop-fusion pass to the pipeline"),
@@ -971,8 +979,10 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
 
   // Linalg lowering
   if (!lowerLinalgToFunc.empty()) {
-    os << ",air-linalg-to-func{link-with=" << lowerLinalgToFunc.getValue()
-       << "}";
+    os << ",air-linalg-to-func{link-with=" << lowerLinalgToFunc.getValue();
+    if (deriveLibraryCall)
+      os << " derive-library-call=true";
+    os << "}";
   } else {
     os << ",func.func(convert-linalg-to-loops)";
   }

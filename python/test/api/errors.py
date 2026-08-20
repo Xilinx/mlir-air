@@ -811,3 +811,15 @@ def _():
         air.alloc([1, 1, 32, 32], bf16, scope=seg.shared())
 
     _staged(body)
+
+
+# CHECK-LABEL: TEST: dot_kernel_must_be_a_name
+# CHECK: TypeError: air.api.ops.dot(kernel=...) takes the external function's symbol name
+@expect(TypeError, "dot_kernel_must_be_a_name")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([32, 32], bf16, scope=h.private())
+        acc = air.alloc([32, 32], f32, scope=h.private())
+        ops.dot(a, a, acc=acc, kernel=42)
+
+    _trace(body)
