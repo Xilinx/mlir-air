@@ -380,6 +380,33 @@ public:
   FailureOr<air::allocation_info_t>
   foundFlowReuseOpportunity(std::vector<MemcpyBundleAsFlow> memcpy_flows,
                             air::allocation_info_t alloc, bool isMM2S);
+
+  // Undo packet-flow collapse that the allocator applied while the shim tile
+  // still had a free channel in that direction.
+  //
+  // Packet multiplexing exists to let a tile carry MORE flows than it has
+  // physical channels. The allocator applies it as a FIRST choice instead: the
+  // packet-reuse branch in allocNewDmaChannel reuses any existing packet
+  // channel in the bucket before the free-channel search below it ever runs.
+  // So a shim can end up with four flows queued on MM2S 0 and MM2S 1 idle --
+  // no capacity was gained, and the flows are needlessly squeezed through one
+  // switchbox slave port, which costs the pathfinder the port diversity it
+  // needs to route same-id convergent groups elsewhere on the column.
+  //
+  // This runs after allocation, in the spirit of TileDMAAllocator::
+  // repairS2MMChains: leave the streaming allocator's order-independent
+  // decisions alone, then redistribute. Flows are peeled off over-subscribed
+  // channels onto free ones, lowest free channel first, until each channel
+  // holds one logical flow or the tile runs out. Collapse that is LOAD-BEARING
+  // is never undone: sub-channels of one bundled decl are a single logical
+  // transfer, broadcasts rely on fan-out from one port, and pinned or
+  // dedicated flows already state where they belong.
+  //
+  // `memcpy_flows` is updated in lockstep -- the bundles carry their own copy
+  // of the allocation and the flows are connected from that copy, so leaving
+  // it behind would route packets to the channel the BDs just left.
+  void
+  spreadCollapsedPacketChannels(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 };
 
 class MemTileDMAAllocator : public DMAAllocator {

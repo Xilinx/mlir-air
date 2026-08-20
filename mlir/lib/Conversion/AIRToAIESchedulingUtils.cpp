@@ -2384,6 +2384,144 @@ air::ShimDMAAllocator::foundFlowReuseOpportunity(
   return failure();
 }
 
+void air::ShimDMAAllocator::spreadCollapsedPacketChannels(
+    std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
+  auto declOf = [](Operation *o) -> Operation * {
+    auto chan = dyn_cast_if_present<air::ChannelInterface>(o);
+    if (!chan)
+      return nullptr;
+    auto decl = air::getChannelDeclarationThroughSymbol(chan);
+    return decl ? decl.getOperation() : nullptr;
+  };
+  // A decl whose collapse is load-bearing, or whose channel the front end has
+  // already chosen. Broadcasts fan out from ONE port by construction, and a
+  // pinned or dedicated flow states where it belongs; neither is ours to move.
+  // `air.tile_dma_channel` is deliberately NOT consulted: it pins a COMPUTE
+  // TILE's DMA channel and says nothing about which shim port the flow leaves
+  // from. Treating it as immovable here is what made this pass pick the wrong
+  // flow on llama-1b and phi4-mini -- air-annotate-packet-ids derives that pin
+  // on @rmsW for those two, so the peel fell through to the rope LUT, the one
+  // flow on the chain whose destination differs from the rest, and the column
+  // lost the port diversity an unrelated convergent group needed.
+  auto isImmovable = [](Operation *decl) {
+    return decl->hasAttr("broadcast_shape") ||
+           decl->hasAttr(air::attrs::DedicatedDmaChannel);
+  };
+
+  for (auto *allocs : {&mm2s_allocs, &s2mm_allocs}) {
+    if (allocs->empty())
+      continue;
+    AIE::DMAChannelDir dir = allocs->front().dma_channel.direction;
+
+    // Chains are keyed exactly as the emitter groups them: one per
+    // (tile, channel), over every allocation mapped to it.
+    llvm::MapVector<std::pair<Operation *, int>, SmallVector<size_t>> chains;
+    llvm::DenseMap<Operation *, llvm::SmallDenseSet<int>> usedChansPerTile;
+    for (auto [i, alloc] : llvm::enumerate(*allocs)) {
+      if (!alloc.dma_tile)
+        continue;
+      // Shim only: a LogicalTileOp that is not a ShimNOC tile, or a physical
+      // tile of another kind, belongs to a different allocator.
+      auto lt = dyn_cast<AIE::LogicalTileOp>(alloc.dma_tile.getOperation());
+      if (lt && lt.getTileType() != AIE::AIETileType::ShimNOCTile)
+        continue;
+      Operation *t = alloc.dma_tile.getOperation();
+      chains[{t, alloc.dma_channel.channel}].push_back(i);
+      usedChansPerTile[t].insert(alloc.dma_channel.channel);
+    }
+
+    for (auto &[key, allocIdxs] : chains) {
+      Operation *tileOp = key.first;
+      auto &used = usedChansPerTile[tileOp];
+
+      // Movable decls on this chain, in a deterministic order. The decl that
+      // got here first keeps the channel; later ones are the candidates, so a
+      // chain of N flows spreads to min(N, free+1) channels without shuffling
+      // the flow that was already placed.
+      SmallVector<Operation *> order;
+      llvm::SmallPtrSet<Operation *, 8> seen;
+      bool unkeyed = false;
+      for (size_t i : allocIdxs) {
+        for (auto *o : (*allocs)[i].memcpyOps) {
+          auto *d = declOf(o);
+          if (!d) {
+            unkeyed = true; // not attributable to a flow: leave the chain alone
+            break;
+          }
+          if (seen.insert(d).second)
+            order.push_back(d);
+        }
+        if (unkeyed)
+          break;
+      }
+      if (unkeyed || order.size() < 2)
+        continue;
+
+      for (size_t oi = 1; oi < order.size(); oi++) {
+        Operation *moveDecl = order[oi];
+        if (isImmovable(moveDecl))
+          continue;
+        // Lowest free channel in this direction on this tile.
+        int freeChan = -1;
+        for (int c = 0; c < shim_dma_channels; c++)
+          if (!used.count(c)) {
+            freeChan = c;
+            break;
+          }
+        if (freeChan < 0)
+          break; // fully subscribed: the remaining flows keep multiplexing
+
+        // Retarget an allocation whose transfers all move; split the rest.
+        SmallVector<allocation_info_t> splits;
+        for (size_t i : allocIdxs) {
+          std::vector<Operation *> keepOps, moveOps;
+          for (auto *o : (*allocs)[i].memcpyOps)
+            (declOf(o) == moveDecl ? moveOps : keepOps).push_back(o);
+          if (moveOps.empty())
+            continue;
+          (*allocs)[i].packet_flow_id = -1; // reassigned on flow connection
+          if (keepOps.empty()) {
+            (*allocs)[i].dma_channel = {dir, freeChan};
+            (*allocs)[i].tile_channel = freeChan;
+            continue;
+          }
+          allocation_info_t split = (*allocs)[i];
+          split.dma_channel = {dir, freeChan};
+          split.tile_channel = freeChan;
+          split.memcpyOps = moveOps;
+          (*allocs)[i].memcpyOps = keepOps;
+          splits.push_back(split);
+        }
+        llvm::append_range(*allocs, splits);
+        used.insert(freeChan);
+
+        // The bundles hold their own copy of the allocation and the flows are
+        // connected from that copy.
+        for (auto &f : memcpy_flows) {
+          if (f.air_flow_op != moveDecl)
+            continue;
+          for (auto *side : {&f.MM2S_alloc, &f.S2MM_alloc})
+            for (auto &fa : *side) {
+              if (!fa.dma_tile || fa.dma_tile.getOperation() != tileOp)
+                continue;
+              if (fa.dma_channel.direction != dir ||
+                  fa.dma_channel.channel != key.second)
+                continue;
+              fa.dma_channel.channel = freeChan;
+              fa.tile_channel = freeChan;
+              fa.packet_flow_id = -1;
+            }
+        }
+        LLVM_DEBUG(llvm::dbgs()
+                   << "spreadCollapsedPacketChannels: moved @"
+                   << cast<air::ChannelOp>(moveDecl).getSymName() << " to "
+                   << (dir == AIE::DMAChannelDir::MM2S ? "MM2S" : "S2MM") << " "
+                   << freeChan << "\n");
+      }
+    }
+  }
+}
+
 } // namespace xilinx
 
 // MemTileDMAAllocator impl.
