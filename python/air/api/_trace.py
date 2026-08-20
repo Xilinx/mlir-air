@@ -94,9 +94,22 @@ NO_DEVICE_TARGET = "npu2"
 # L1 (tile-local) memory per compute tile. Same on AIE2 and AIE2p.
 L1_BYTES = 65536
 
-# L2 (memtile) memory per segment. The figure the hand-written staging examples
-# assert against, e.g. matrix_vector_multiplication/bf16/matvec.py.
-L2_BYTES = 512 * 1024
+# L2 memory per *memtile*, and how many memtiles a segment can reach. There is
+# one memtile per column and a segment spans several, so its budget is a
+# multiple of this figure -- not this figure.
+#
+# Charging everything to one memtile is wrong in the harmful direction: it
+# rejects designs that run. matrix_multiplication/bf16 at herd 4x4 with an f32
+# output stages 608 KB across four memtiles, a configuration CI exercises on
+# npu2, and a 512 KB cap refuses it.
+#
+# The herds do not exist when the L2 allocs run -- the allocs come first -- so
+# the column span is not yet known and the check uses the whole device's L2.
+# That makes it a test for "certainly impossible" rather than a placement
+# prediction, which is all it was ever able to be: the AIE placer owns the real
+# answer and reports it accurately.
+L2_BYTES_PER_MEMTILE = 512 * 1024
+DEVICE_COLUMNS = {"npu1": 4, "npu2": 8}
 
 
 class Trace:
@@ -876,7 +889,11 @@ def alloc(shape, dtype, scope=None, vector=None):
                     "per-core in the herd body with <herd>.private()."
                 )
         else:
-            space, memory_space, capacity = "L2", MemorySpace.L2, L2_BYTES
+            space, memory_space, capacity = (
+                "L2",
+                MemorySpace.L2,
+                L2_BYTES_PER_MEMTILE * DEVICE_COLUMNS[current_target()],
+            )
         where = "a segment"
         holder = current_segment()
     else:
@@ -933,16 +950,21 @@ def alloc(shape, dtype, scope=None, vector=None):
     # A segment holds L2 memtile buffers and herd-shared L1 buffers at once, so
     # each budget only counts its own space.
     live = sum(_buffer_bytes(b) for b in holder._buffers if b.space == space) + nbytes
-    unit = "a compute tile" if space == "L1" else "a memtile"
+    if space == "L1":
+        unit, verb = "a compute tile", "has"
+    else:
+        cols = DEVICE_COLUMNS[current_target()]
+        unit, verb = f"this device's {cols} memtiles", "have"
     if nbytes > capacity:
         raise ValueError(
             f"air.alloc({list(shape)}, {dtype}) needs {nbytes / 1024:.1f} KB but "
-            f"{unit} has {capacity / 1024:.0f} KB of {space}; use a smaller tile"
+            f"{unit} {verb} {capacity / 1024:.0f} KB of {space}; use a smaller "
+            "tile"
         )
     if live > capacity:
         raise ValueError(
             f"{space} budget exceeded: this {where.split()[-1]} body has "
-            f"{live / 1024:.1f} KB of live buffers but {unit} has "
+            f"{live / 1024:.1f} KB of live buffers but {unit} {verb} "
             f"{capacity / 1024:.0f} KB; use a smaller tile"
         )
 

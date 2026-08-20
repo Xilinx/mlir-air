@@ -9,4 +9,15 @@
 // Updated post-#1659: ping-pong restored for K-tiled L1 fills dispatched via
 // mutually-exclusive affine.if broadcast branches (only one branch fires per
 // outer iter, so multi-fill of the same alloc is safe).
-// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 423.808us
+// Updated with the air.api port of matrix_multiplication/bf16: 423.808 ->
+// 423.824us, +0.016us on a 16-iteration estimate, i.e. about one cycle per
+// iteration. The port stages L2 flat -- each buffer is exactly the L3 region it
+// holds -- where the predecessor used a [herd_m, herd_n, tile_m, tile_n] grid.
+// For A the two are byte-identical, for B and C they differ, and this is that
+// difference as the simulator models it.
+//
+// Checked before touching the number, at this test's own configuration: the
+// output is bit-identical on npu1 (mean_rel_L1=4.011e-03, rel_err max=9.627e+02,
+// abs_err max=1.953e-03 for both), and the lowered design has identical
+// resource counts -- 16 aie.core, 196 aie.dma_bd, 424 aie.use_lock, 60 flows.
+// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 423.824us

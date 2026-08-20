@@ -567,13 +567,24 @@ def _():
     _staged(body)
 
 
+# 512 KB per memtile and one memtile per column, so the budget is the whole
+# device's L2 -- 2 MB on npu1, 4 MB on npu2. Deliberately a "certainly
+# impossible" test, not a placement prediction: the herds do not exist when the
+# L2 allocs run, so the number of columns the segment will span is not yet
+# known. A per-memtile cap would refuse matrix_multiplication at herd 4x4 with
+# an f32 output, which stages 608 KB across four memtiles and runs.
+#
+# The allocation has to exceed the *largest* device budget, not just npu1's.
+# This test has no explicit target, so it resolves against whatever part is
+# installed; at exactly 4 MB it raises on npu1 and passes silently on npu2,
+# which would leave the case untested on half the CI fleet. The CHECK likewise
+# stops before the capacity, which is device-dependent.
 # CHECK-LABEL: TEST: l2_budget_exceeded
-# 512 KB per memtile, the figure the hand-written staging examples assert.
-# CHECK: ValueError: air.alloc([1024, 1024], air.api.bf16) needs 2048.0 KB
+# CHECK: ValueError: air.alloc([4096, 1024], air.api.bf16) needs 8192.0 KB
 @expect(ValueError, "l2_budget_exceeded")
 def _():
     def body(seg, A, C):
-        air.alloc([1024, 1024], bf16, scope=seg.private())
+        air.alloc([4096, 1024], bf16, scope=seg.private())
 
     _staged(body)
 
