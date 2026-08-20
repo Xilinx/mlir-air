@@ -47,16 +47,6 @@ HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 FastFlowLM/Gemma3-4B-NPU2
 unsloth/gemma-3-4b-it
 
-# Same Q4NX packaging of Llama-3.1-8B. Used by llms/llama31_8b_q4nx (the fused
-# decode loads weights from this repo), plus the bf16 reference `make verify`
-# compares against. FastFlowLM/Llama-3.1-8B-NPU2's model card declares
-# `base_model: meta-llama/Llama-3.1-8B-Instruct`; NousResearch mirrors that
-# checkpoint without Meta's manual license gate, so CI needs no license grant.
-# Its config matches the FLM bundle's exactly, including the 3-way eos_token_id.
-FastFlowLM/Llama-3.1-8B-NPU2
-NousResearch/Meta-Llama-3.1-8B-Instruct
-NousResearch/Meta-Llama-3.1-8B
-
 # Same Q4NX packaging of Phi-4-mini-instruct. Used by llms/phi4_mini_q4nx (the
 # fused decode loads weights from this repo), plus the bf16 reference `make
 # verify` compares against -- microsoft/Phi-4-mini-instruct is ungated, and is

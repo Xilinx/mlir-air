@@ -59,8 +59,8 @@ cosine check below splits the HF side to compare like with like; that it lands a
 | cosine | 0.99709 | 0.99670 | 0.99699 | 0.99761 | 0.99826 | 0.99821 | 0.99810 |
 
 Worst 0.99670. `cosine(bundle lm_head, embed_tokens) = 0.99958` confirms the LM
-head really is tied, so the lossless bf16 embedding is used for it (the opposite
-of the `llama31_8b_q4nx` sibling, which is untied at cosine 0.017).
+head really is tied, so the lossless bf16 embedding is used for it rather than
+the bundle's separate quantized copy.
 
 ## Quick start
 

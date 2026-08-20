@@ -259,49 +259,6 @@ _MODELS = {
         # VOCAB_CHUNK_I2=9 (env) to match this UNI_LM.
         UNI_LM=14,  # vocab chunks per LM head (VOCAB_CHUNK_I2=9)
     ),
-    # Llama-3.1-8B: same attention topology as 1B/3B (2x4x1, 8 kv heads, DH=128);
-    # only the proj/FFN widths grow, so the per-CU KV geometry is unchanged. The
-    # LM head is NOT tied to the embedding here (config tie_word_embeddings=false),
-    # which is a weight-loader concern only -- the device sequence is identical.
-    #   I2P = [M, D, 2*INTER, D]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS) = [6,4,28,4]
-    #   J2P = [K, K, K, INTER]/(2*COL_BLOCK)                   = [8,8,8,28]
-    "llama-3.1-8b": dict(
-        K=4096,
-        M=6144,  # DQ+DK+DV = 4096+1024+1024
-        DH_A=128,
-        KV_PER_CU=2,  # 8 kv / 4 CU
-        N_ATTN_CU=4,
-        NPH=4,
-        I2P=[6, 4, 28, 4],
-        J2P=[8, 8, 8, 28],
-        DEST=["rope", "rms", "glu", "rms"],
-        GQA_SEG=4,  # ATTN_IMPL_2x4x1
-        PAIR_ROWS=2,
-        N_NORMS=2,
-        HAS_QK_NORM=False,
-        VOCAB_SIZE=128256,
-        UNI_DEC=32,
-        # LM-head vocab chunking (same rule as the 3B entry): K/PAYLOAD = 8 must
-        # divide VOCAB_RNDS = VOCAB_I2*PAIR_ROWS, so VOCAB_I2 must be a multiple
-        # of 4. VOCAB_SIZE_PADDED_FULL = ceil(128256/4096)*4096 = 131072 -> 4096
-        # full rowblocks, and VOCAB_I2 must divide 128 (= 4096/(NCX*NCY*PAIR_ROWS)).
-        # Legal set {4,8,16} (the tested 2*VOCAB_I2 <= 63 envelope rules out 32);
-        # 16 is the largest, giving the fewest host-armed waves: 128/16 = 8.
-        # The driver MUST set VOCAB_CHUNK_I2=16 (env) to match this UNI_LM.
-        UNI_LM=8,  # vocab chunks per LM head (VOCAB_CHUNK_I2=16)
-        # The rms/residual core holds 7 K-sized bf16 buffers. At K=4096 that is
-        # 7*8192 = 56 KB of the 64 KB L1, so the default 10240 stack does not fit
-        # (57344+10240 = 67584) and buffer allocation fails outright at build time.
-        # 8192 would fit the buffers exactly (8192+7*8192 = 65536) but leaves no
-        # room for the 4-byte per-herd __air_herd_rtp_* that every core also needs,
-        # so trim to 8064: bank0 = stack + 1 buffer = 16256 (+RTP in the remaining
-        # 128 B), banks 1-3 = 2 buffers each. Measured worst-case frame across the
-        # decode kernels is 2112 B (proj_qmm_pass256 / attn_kv_fin; rms_residual
-        # 1728), so this still leaves >2x headroom on the deepest call chain.
-        # NOTE: near-exact fit -- another K-sized buffer on the rms core would need
-        # a real change here, not another stack trim.
-        STACK=8064,
-    ),
     # Phi-4-mini-instruct. Attention topology and per-phase block counts are
     # IDENTICAL to llama-3.2-3b (K=3072, M=5120, 8 kv heads, 2x4x1, DH=128), so
     # I2P/J2P carry over unchanged. Two things differ:
@@ -338,9 +295,6 @@ _MODELS = {
 }
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = _MODELS[MODEL_NAME]
-# Per-core stack. 10240 everywhere except where L1 pressure forces a trim (see the
-# llama-3.1-8b entry); models that do not set it are byte-identical to before.
-STACK = int(_os.environ.get("DECODE_STACK", MODEL.get("STACK", 10240)))
 
 # Derived model geometry (attention head layout). All values are byte-identical to
 # the original hardcoded Llama literals; used to migrate the raw 64/512 attention
@@ -3759,7 +3713,7 @@ def run():
         omit_while_true_loop=False,
         output_format="xclbin",
         kernel_name="MLIR_AIE",
-        stack_size=STACK,
+        stack_size=10240,
         use_lock_race_condition_fix_v2=True,
         coalesce_shim_dma=bool(COALESCE),
         # DYNSEQ: the runtime sequence now holds a scalar, so the stream is built

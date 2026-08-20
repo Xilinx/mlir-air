@@ -17,7 +17,7 @@
 #   2. TIED LM HEAD. config tie_word_embeddings=true and the HF checkpoint has
 #      no `lm_head.weight` at all, so the LM head IS the bf16 embedding (the
 #      bundle's separate quantized lm_head is redundant and lossier). This is
-#      the same convention as Llama-3.2-1B/3B, and the OPPOSITE of Llama-3.1-8B.
+#      the same convention as Llama-3.2-1B/3B.
 #
 #   3. PARTIAL ROTARY + LongRoPE. partial_rotary_factor=0.75 -> RoPE covers only
 #      the leading 96 of 128 head dims, so there are 48 frequencies, and the
