@@ -1,0 +1,16 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Phi-4-mini Q4NX fused-decode compile gate: Peano kernels at
+// MODEL_TYPE=PHI4_4B (partial rotary via ROPE_DIM) plus the two ATTN_MAXL
+// templates. Weight-free. Separate from run_npu2_compile.lit because the
+// inline-attn merge needs an llvm-link from LLVM <23, so this one is skippable
+// on a runner without it while the prefill gate above stays unconditional.
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23
+//
+// RUN: mkdir -p test_peano_compile_decode
+// RUN: cd test_peano_compile_decode
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-decode PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: Phi-4-mini decode build complete

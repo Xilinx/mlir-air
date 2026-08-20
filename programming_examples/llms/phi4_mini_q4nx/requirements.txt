@@ -1,0 +1,21 @@
+# Additional Python packages for the PHI-4-MINI Q4NX example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, filelock, pyxrt, etc.).
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# NPU weights come from FastFlowLM's model.q4nx bundle (default HF repo
+# FastFlowLM/Phi4-mini-Instruct-NPU2, override with MODEL_SOURCE / Q4NX_MODEL_SOURCE).
+# The tokenizer + the `make verify` bf16 reference come from
+# microsoft/Phi-4-mini-instruct, which is ungated (no HF login needed) and is the
+# same repo FastFlowLM's own reference generator uses (models_simple/verify_phi4.py).
+
+# Weight loading (Q4NX bundle + bf16 reference)
+safetensors
+huggingface_hub
+
+# Tokenizer (chat template) and HuggingFace bf16 reference model (used by `make verify`)
+transformers
+torch

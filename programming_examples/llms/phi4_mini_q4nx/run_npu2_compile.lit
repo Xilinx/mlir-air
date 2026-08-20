@@ -1,0 +1,24 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Phi-4-mini Q4NX prefill compile-only smoke test: builds the prefill ELFs
+// (rms_gemms_rope with the partial-rotary rope_partial leaf, flash_attn, o_ffn,
+// and the 13-partition lm_head GEMV) through the AIR -> AIE -> aiecc -> Peano
+// pipeline. No NPU dispatch, no weight download (the kernels are weight-free;
+// Q4NX only changes the host weight source).
+//
+// Deliberately does NOT require llvm_link_pre23: the prefill has no inline-attn
+// merge, so this gate stays unconditional. The decode templates, which do need
+// that llvm-link, are gated separately by run_npu2_compile_decode.lit -- same
+// split as qwen25_3b_q4.
+//
+// Collected by `check-programming-examples-llms-compile`, which filters on the path
+// `llms/.*/run_npu2_compile` (not on a "peano" filename), like every other model.
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_peano_compile
+// RUN: cd test_peano_compile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: Compilation passed.
