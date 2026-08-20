@@ -14,6 +14,7 @@ import air.compiler.util
 # This was previously done as a side effect of importing aircc.main.
 from air.dialects import air as _air_dialect  # noqa: F401
 
+import functools
 import numpy as np
 import os
 import shutil
@@ -30,6 +31,58 @@ NPU_MODELS = {
     "npu1": ["npu1", "Phoenix"],
     "npu2": ["npu4", "Strix", "npu5", "Strix Halo", "npu6", "Krackan"],
 }
+
+
+def detect_target_device(verbose=False, default="npu1"):
+    """Return the NPU generation xrt-smi reports, or `default` if it can't tell.
+
+    Callers that have to size a design before handing it to the backend need the
+    same answer compile() reaches, so this is the one place that maps xrt-smi
+    output onto NPU_MODELS. Compiling for a generation that is not the one
+    installed is not diagnosed anywhere downstream -- an aie.device(npu1) binary
+    loads on npu2 without error and computes nothing -- so guessing is worse
+    than asking.
+    """
+    try:
+        xrtsmi = shutil.which("xrt-smi") or "/opt/xilinx/xrt/bin/xrt-smi"
+        result = subprocess.run(
+            [xrtsmi, "examine"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+    except Exception as e:
+        if verbose:
+            print("Failed to run xrt-smi, using default target device")
+            print(e)
+        return default
+
+    if result.returncode != 0:
+        if verbose:
+            print(
+                f"xrt-smi exited with code {result.returncode}, "
+                f"using default target device"
+            )
+            stderr = result.stderr.decode("utf-8").strip()
+            if stderr:
+                print(f"xrt-smi stderr: {stderr}")
+        return default
+
+    # Case-insensitive substring matching against NPU_MODELS, aligned with
+    # mlir-aie's hostruntime.py approach.
+    output_lc = result.stdout.decode("utf-8").lower()
+    for version, keywords in NPU_MODELS.items():
+        if any(kw.lower() in output_lc for kw in keywords):
+            if verbose:
+                print(f"Detected NPU device: {version}")
+            return version
+
+    print(
+        f"WARNING: xrt-smi did not report a recognized NPU model. "
+        f"Supported: {dict(NPU_MODELS)}. "
+        f"Falling back to '{default}'."
+    )
+    return default
 
 
 def _find_peano_install_dir():
@@ -89,6 +142,39 @@ class XRTCompileArtifact:
         self.kernel = kernel
         self.insts = insts
         self.txn_header = txn_header
+
+
+@functools.lru_cache(maxsize=1)
+def _ert_completed_state():
+    """The `ERT_CMD_STATE_COMPLETED` enumerator, or None if unavailable.
+
+    pyxrt is imported lazily -- it is needed for load(), not for compile() -- so
+    this cannot be resolved at module scope. Cached because `_check_run_state`
+    runs inside the timed region of a perf-iteration loop.
+    """
+    try:
+        import pyxrt
+
+        return getattr(pyxrt.ert_cmd_state, "ERT_CMD_STATE_COMPLETED", None)
+    except ImportError:
+        return None
+
+
+def _check_run_state(state):
+    """Raise unless the kernel run completed.
+
+    `wait2()` and `wait()` return an ert_cmd_state rather than raising, so a run
+    the driver timed out or aborted is otherwise indistinguishable from a
+    successful one: the output BOs get synced back and returned, and the caller
+    sees a partially written buffer with no indication anything went wrong. A
+    device-side deadlock then reads as a numerical failure (Xilinx/mlir-air#1822).
+    """
+    # Older bindings return None from wait(); treat an unavailable status as "no
+    # status" rather than inventing a failure.
+    completed = _ert_completed_state()
+    if state is None or completed is None or state == completed:
+        return
+    raise AirBackendError(f"NPU kernel run did not complete: {state}")
 
 
 class XRTBackend(AirBackend):
@@ -243,47 +329,7 @@ class XRTBackend(AirBackend):
             if self.verbose:
                 print(f"Using explicitly specified target device: {target_device}")
         else:
-            # Try to auto-detect device via xrt-smi
-            target_device = "npu1"  # Default fallback
-            try:
-                xrtsmi = shutil.which("xrt-smi") or "/opt/xilinx/xrt/bin/xrt-smi"
-                result = subprocess.run(
-                    [xrtsmi, "examine"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=10,
-                )
-                if result.returncode != 0:
-                    if self.verbose:
-                        print(
-                            f"xrt-smi exited with code {result.returncode}, "
-                            f"using default target device"
-                        )
-                        stderr = result.stderr.decode("utf-8").strip()
-                        if stderr:
-                            print(f"xrt-smi stderr: {stderr}")
-                else:
-                    output_lc = result.stdout.decode("utf-8").lower()
-                    # Use case-insensitive substring matching against NPU_MODELS,
-                    # aligned with mlir-aie's hostruntime.py approach.
-                    detected = False
-                    for version, keywords in NPU_MODELS.items():
-                        if any(kw.lower() in output_lc for kw in keywords):
-                            target_device = version
-                            detected = True
-                            if self.verbose:
-                                print(f"Detected NPU device: {version}")
-                            break
-                    if not detected:
-                        print(
-                            f"WARNING: xrt-smi did not report a recognized NPU model. "
-                            f"Supported: {dict(NPU_MODELS)}. "
-                            f"Falling back to '{target_device}'."
-                        )
-            except Exception as e:
-                if self.verbose:
-                    print("Failed to run xrt-smi, using default target device")
-                    print(e)
+            target_device = detect_target_device(verbose=self.verbose)
 
         # Validate output_format compatibility with target device.
         # Full ELF requires aiebu-asm aie2_config which targets npu2/AIE2P only.
@@ -678,16 +724,16 @@ class XRTBackend(AirBackend):
                     # after n_warmup_iters warmup runs (buffer sync excluded).
                     for _ in range(self.n_warmup_iters):
                         run.start()
-                        run.wait2()
+                        _check_run_state(run.wait2())
                     t0 = time.perf_counter()
                     for _ in range(self.n_perf_iters):
                         run.start()
-                        run.wait2()
+                        _check_run_state(run.wait2())
                     t1 = time.perf_counter()
                     self.last_latency_us = (t1 - t0) / self.n_perf_iters * 1e6
                 else:
                     run.start()
-                    run.wait2()
+                    _check_run_state(run.wait2())
 
                 for i in range(len(args)):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
@@ -777,15 +823,23 @@ class XRTBackend(AirBackend):
                     # n_perf_iters after n_warmup_iters warmup runs (buffer sync
                     # excluded — matches the C++ test-harness timing range).
                     for _ in range(self.n_warmup_iters):
-                        self.kernel(3, self.bo_instr, len(self.instr_v), *bos).wait()
+                        _check_run_state(
+                            self.kernel(
+                                3, self.bo_instr, len(self.instr_v), *bos
+                            ).wait()
+                        )
                     t0 = time.perf_counter()
                     for _ in range(self.n_perf_iters):
-                        self.kernel(3, self.bo_instr, len(self.instr_v), *bos).wait()
+                        _check_run_state(
+                            self.kernel(
+                                3, self.bo_instr, len(self.instr_v), *bos
+                            ).wait()
+                        )
                     t1 = time.perf_counter()
                     self.last_latency_us = (t1 - t0) / self.n_perf_iters * 1e6
                 else:
                     h = self.kernel(3, self.bo_instr, len(self.instr_v), *bos)
-                    h.wait()
+                    _check_run_state(h.wait())
 
                 for i in range(len(args)):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
@@ -816,11 +870,14 @@ class XRTBackend(AirBackend):
 
     def unload(self):
         """Unload any loaded module and shutdown the air runtime."""
+        # Release in reverse dependency order: every BO is allocated against
+        # the device, so dropping the device first leaves bo_instr holding a
+        # dangling handle. Linux XRT tolerates that; Windows XRT faults.
+        self.bo_instr = None
+        self.instr_v = None
         self.kernel = None
         self.context = None
         self.xclbin = None
         self.elf = None
         self.device = None
-        self.bo_instr = None
-        self.instr_v = None
         self.currently_loaded = False

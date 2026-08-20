@@ -11,8 +11,8 @@ import air._mlir_libs._air.runner as runner
 from air._mlir_libs._air import run_transform as run_transform
 
 import json
+import pathlib
 import tempfile
-import os
 
 __all__ = ["CostModel", "LINALG_TENSOR_TO_MEMREF_PIPELINE", "run_transform"]
 
@@ -44,14 +44,22 @@ class CostModel:
     def op_stats(self, module):
         """Return operation count information as JSON"""
         air_module = _convert_module(module)
+        # Close the handle before the pass writes to the path and before the
+        # unlink. Only POSIX lets you unlink a file that is still open; on
+        # Windows both the write and the unlink fail with a sharing violation.
         with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
             name = tmpfile.name
+        try:
             with air_module.context:
                 pipeline = f"builtin.module(air-linalg-op-stats{{outputfile={name}}})"
                 pm = air.passmanager.PassManager.parse(pipeline)
                 pm.run(air_module.operation)
-            stats = open(name).read()
-            os.unlink(name)
+            with open(name) as f:
+                stats = f.read()
+        finally:
+            # missing_ok: if the pass raised before writing the file, a
+            # FileNotFoundError here would replace the failure worth reporting.
+            pathlib.Path(name).unlink(missing_ok=True)
         return stats
 
 
@@ -76,7 +84,11 @@ class Runner:
         trace_tmpfile = None
         trace_filename = self.trace_filename
         if trace_filename is None:
+            # Close it immediately: the runner below writes to this path, and
+            # Windows refuses both that write and the later unlink while our
+            # own handle is still open.
             trace_tmpfile = tempfile.NamedTemporaryFile(delete=False)
+            trace_tmpfile.close()
             trace_filename = trace_tmpfile.name
 
         # the json model can be:
@@ -95,23 +107,27 @@ class Runner:
         json_tmpfile.write(str.encode(json.dumps(json_model)))
         json_tmpfile.close()
 
-        runner.run(
-            air_module,
-            json_tmpfile.name,
-            trace_filename,
-            function,
-            self.sim_granularity,
-            self.launch_iterations,
-            self.verbose,
-        )
-
-        os.unlink(json_tmpfile.name)
-
-        # return the trace and remove the temporary file
-        # if the user didn't provide an output filename
         return_trace = None
-        if trace_tmpfile:
-            return_trace = open(trace_tmpfile.name).read()
-            os.unlink(trace_tmpfile.name)
+        try:
+            runner.run(
+                air_module,
+                json_tmpfile.name,
+                trace_filename,
+                function,
+                self.sim_granularity,
+                self.launch_iterations,
+                self.verbose,
+            )
+
+            # return the trace if the user didn't provide an output filename
+            if trace_tmpfile:
+                with open(trace_tmpfile.name) as f:
+                    return_trace = f.read()
+        finally:
+            # Clean up on the failure paths too, and missing_ok throughout: a
+            # cleanup error must not replace the failure worth reporting.
+            pathlib.Path(json_tmpfile.name).unlink(missing_ok=True)
+            if trace_tmpfile:
+                pathlib.Path(trace_tmpfile.name).unlink(missing_ok=True)
 
         return return_trace

@@ -53,3 +53,10 @@ unsloth/gemma-3-4b-it
 # checkpoint, so that single repo is the reference.
 FastFlowLM/Qwen3-8B-NPU2
 Qwen/Qwen3-8B
+
+# Same Q4NX packaging of Phi-4-mini-instruct. Used by llms/phi4_mini_q4nx (the
+# fused decode loads weights from this repo), plus the bf16 reference `make
+# verify` compares against -- microsoft/Phi-4-mini-instruct is ungated, and is
+# the same repo FastFlowLM's own reference generator uses.
+FastFlowLM/Phi4-mini-Instruct-NPU2
+microsoft/Phi-4-mini-instruct

@@ -80,7 +80,7 @@ def use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
     return supports(seq_len, n_heads, n_kv_heads, head_dim)
 
 
-def compile_all_kernels(cache, config, seq_len, cpu_attn=False):
+def compile_all_kernels(cache, config, seq_len, cpu_attn=False, rope_dim=None):
     """Pre-compile all unique kernel configs to cache.
 
     Mirrors llama32_1b.compile_all_kernels but compiles the HEAD-FIRST FA ELF
@@ -112,7 +112,15 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False):
     cache.compile_and_cache(
         "rms_gemms_rope",
         build_rms_gemms_rope_module(
-            seq_len, emb_dim, kv_dim, n_heads, n_kv_heads, head_dim
+            seq_len,
+            emb_dim,
+            kv_dim,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            # None = full rotary (every Llama/Qwen/Gemma). Phi-4 passes 96: RoPE
+            # covers 96 of 128 head dims and the tail passes through.
+            rope_dim=rope_dim,
         ),
         {"verbose": cache.verbose, **_rms_gemms_rope_run_backend()},
     )

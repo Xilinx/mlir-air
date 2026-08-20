@@ -9,6 +9,28 @@
 
 constexpr int Q_HEADS_PER_GROUP = NUM_ATTN_HEADS / NUM_KV_HEADS;
 
+// Rotary width. Every Llama/Qwen/Gemma here ropes the whole head, so ROPE_DIM
+// defaults to DH. Phi-4 ropes only the leading 3/4 (config
+// partial_rotary_factor=0.75 -> 96 of 128) and passes the tail through; its
+// model header sets ROPE_DIM and the rope kernel takes the partial path.
+#ifdef PARTIAL_ROPE_DIM
+constexpr int ROPE_DIM = PARTIAL_ROPE_DIM;
+#else
+constexpr int ROPE_DIM = DH;
+#endif
+static_assert(ROPE_DIM % 32 == 0 && ROPE_DIM <= DH,
+              "ROPE_DIM must be a multiple of 32 (half must vectorize by 16) "
+              "and cannot exceed the head dim");
+// The qk-norm / qkv-bias slabs are addressed at rope_w+DH, which only coincides
+// with "just past the cos/sin LUT" while the LUT is DH wide. No model needs
+// both today; this fires if one ever does, instead of silently reading the LUT.
+#if defined(HAS_QK_NORM) || defined(HAS_QKV_BIAS)
+static_assert(
+    ROPE_DIM == DH,
+    "partial rotary + qk-norm/qkv-bias: the rope_w+DH slab offsets "
+    "assume a DH-wide cos/sin LUT; make them ROPE_DIM-relative first");
+#endif
+
 constexpr int DQ = NUM_ATTN_HEADS * DH;
 constexpr int DK = NUM_KV_HEADS * DH;
 constexpr int DV = DK;

@@ -39,6 +39,22 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
       tools.py
   )
 
+  # High-level Python DSL (air.api). Pure Python on top of the dialect
+  # bindings, so it only needs to be copied into the package tree.
+  declare_mlir_python_sources(AirPythonSources.API
+    ADD_TO_PARENT AirPythonSources
+    ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
+    SOURCES
+      api/__init__.py
+      api/_compile.py
+      api/_emit.py
+      api/_index.py
+      api/_trace.py
+      api/_value.py
+      api/ops.py
+      api/types.py
+  )
+
   declare_mlir_python_sources(AirPythonExtensions)
 
   declare_mlir_python_sources(AirPythonSources.Dialects

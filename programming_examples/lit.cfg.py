@@ -26,10 +26,12 @@ from lit.llvm.subst import FindTool
 config.name = "AIR_PROGRAMMING_EXAMPLES"
 
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
-config.environment["PYTHONPATH"] = "{}:{}:{}".format(
-    os.path.join(config.air_obj_root, "python"),
-    os.path.join(config.aie_obj_root, "python"),
-    os.path.join(config.xrt_dir, "python"),
+config.environment["PYTHONPATH"] = os.pathsep.join(
+    [
+        os.path.join(config.air_obj_root, "python"),
+        os.path.join(config.aie_obj_root, "python"),
+        os.path.join(config.xrt_dir, "python"),
+    ]
 )
 
 # os.environ['PYTHONPATH']
@@ -80,6 +82,10 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
 
     try:
         xrtsmi = os.path.join(config.xrt_bin_dir, "xrt-smi")
+        # Windows ships xrt-smi.exe with the NPU driver (System32\AMD, on PATH)
+        # rather than under the XRT SDK, and it needs the .exe suffix. which()
+        # covers both; on Linux the path above already resolves and is used.
+        xrtsmi = shutil.which(xrtsmi) or shutil.which("xrt-smi") or xrtsmi
         result = subprocess.run(
             [xrtsmi, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
@@ -91,17 +97,28 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
         # parts (Strix Halo, Krackan) that the old strict regex missed.
         npu2_models = ["npu4", "strix", "npu5", "strix halo", "npu6", "krackan"]
         npu1_models = ["npu1", "phoenix"]
-        run_on_npu = f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
+        # Serializing through flock and run_on_npu.sh is POSIX-only: flock is
+        # util-linux, and the script is bash that sources
+        # /opt/xilinx/xrt/setup.sh. Now that xrt-smi is found on Windows too,
+        # reusing it there would let the suite configure and then fail to launch
+        # every test carrying this substitution. Run the command directly
+        # instead -- the environment is already set up by whoever invoked lit.
+        if os.name == "nt":
+            run_on_npu = ""
+        else:
+            run_on_npu = (
+                f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
+            )
         if any(k in out_lc for k in npu2_models):
             config.available_features.add("ryzen_ai")
             config.available_features.add("ryzen_ai_npu2")
             run_on_npu2 = run_on_npu
-            print("Running tests on NPU2 with command line: ", run_on_npu2)
+            print("Running tests on NPU2 with command line: ", run_on_npu2 or "(none)")
         elif any(k in out_lc for k in npu1_models):
             config.available_features.add("ryzen_ai")
             config.available_features.add("ryzen_ai_npu1")
             run_on_npu1 = run_on_npu
-            print("Running tests on NPU1 with command line: ", run_on_npu)
+            print("Running tests on NPU1 with command line: ", run_on_npu or "(none)")
         else:
             # No recognized model: dump xrt-smi output so the cause (format
             # change, or a driver error such as an mmap/memlock failure) is
