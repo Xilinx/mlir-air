@@ -162,4 +162,19 @@ add_lit_testsuite(check-programming-examples-llms-profile
 )
 set_target_properties(check-programming-examples-llms-profile PROPERTIES FOLDER "Tests")
 
+# LLM decode-throughput sweep: tok/s against context length, for the four
+# fused-decode models only (the others have no bench_decode path). The profile
+# suite above captures one point, at the profile prompt's ~6 tokens of context;
+# decode throughput is dominated by KV streaming and falls ~12x from 1k to 128k,
+# so that point cannot see a KV-path regression. This walks the axis.
+# Decode-only and synthetic — latency, never correctness. Sequential (-j1) for
+# the same NPU-OOM reason; driven by the nightly perf workflow.
+add_lit_testsuite(check-programming-examples-llms-sweep
+  "Running LLM decode tok/s-vs-context sweeps (fused-decode models, sequential)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --filter "llms/.*/run_npu2_sweep"
+)
+set_target_properties(check-programming-examples-llms-sweep PROPERTIES FOLDER "Tests")
+
 add_dependencies(check-all check-programming-examples)

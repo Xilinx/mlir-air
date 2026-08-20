@@ -554,7 +554,93 @@ def _llm_model_cell(model, base_url):
     return name_link
 
 
-def render_llm_benchmark(perf_path, base_url="", perf_history_link="perf-history.html"):
+def _ctx_label(n):
+    """1024 -> '1k', 131072 -> '128k'."""
+    return f"{n // 1024}k" if n and n % 1024 == 0 else str(n)
+
+
+def load_llm_sweeps(sweep_path):
+    """Read sweep.json (list of per-model tok/s-vs-context curves), or []."""
+    if not sweep_path:
+        return []
+    p = Path(sweep_path)
+    if not p.is_file():
+        return []
+    try:
+        recs = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    # The combined artifact is a list of per-model records. A single per-model
+    # <model>.sweep.json is a dict and is an easy thing to point this at by
+    # mistake; iterating one yields its keys as strings and blows up further
+    # down, so reject the shape here and just drop the table.
+    if not isinstance(recs, list):
+        print(f"warning: {p} is not a list of sweep records; ignoring it")
+        return []
+    return [r for r in recs if isinstance(r, dict)]
+
+
+def render_llm_sweep(recs, base_url=""):
+    """Render decode tok/s against context length, one row per model.
+
+    These four models are published here instead of in the single-point table:
+    decode throughput is dominated by KV streaming and falls by more than 10x
+    across this axis, so one number cannot represent them. A blank cell is a
+    context this runner did not reach, which at 64k/128k means XRT would not pin
+    enough host memory for the KV BO -- a property of the machine rather than of
+    the design, and worth showing rather than hiding.
+    """
+    if not recs:
+        return ""
+
+    ctxs = sorted(
+        {
+            pt.get("context_len")
+            for d in recs
+            for pt in d.get("points", []) or []
+            if pt.get("context_len")
+        }
+    )
+    if not ctxs:
+        return ""
+
+    head = "| Model | " + " | ".join(_ctx_label(c) for c in ctxs) + " | Verify |"
+    sep = "|:------|" + "".join("------:|" for _ in ctxs) + ":------:|"
+
+    rows = []
+    for d in sorted(recs, key=lambda r: r.get("model", "")):
+        by_ctx = {pt.get("context_len"): pt for pt in d.get("points", []) or []}
+        cells = []
+        for c in ctxs:
+            pt = by_ctx.get(c) or {}
+            tps = pt.get("decode_tokens_per_sec")
+            cells.append(f"{tps:.2f}" if isinstance(tps, (int, float)) else "—")
+        verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
+        rows.append(
+            f'| {_llm_model_cell(d.get("model", ""), base_url)} | '
+            + " | ".join(cells)
+            + f" | {verify} |"
+        )
+
+    return f"""
+
+### Decode throughput vs context (tok/s)
+
+Steady-state decode, measured against KV-cache depth rather than at a single
+context. Decode-only and synthetic: latency, not correctness (correctness is the
+Verify column, which comes from the same nightly's `make verify`).
+
+{head}
+{sep}
+{chr(10).join(rows)}
+
+— context not reached on this runner (XRT would not pin enough host memory for the KV cache; the limit is the machine's, not the design's)
+"""
+
+
+def render_llm_benchmark(
+    perf_path, base_url="", perf_history_link="perf-history.html", sweep_recs=()
+):
     """Render the nightly LLM benchmark section from a perf.json file.
 
     `perf_path` is the JSON produced by nightlyPerfBenchmark.yml (a list of
@@ -577,8 +663,15 @@ def render_llm_benchmark(perf_path, base_url="", perf_history_link="perf-history
     def _fmt(v):
         return "—" if v is None else v
 
+    # Models with a sweep are published in the sweep table below instead; a
+    # single near-zero-context point next to a curve invites reading the two as
+    # comparable numbers, and they are not.
+    swept = {s.get("model") for s in (sweep_recs or ())}
+
     rows = []
     for d in sorted(recs, key=lambda r: r.get("model", "")):
+        if d.get("model") in swept:
+            continue
         m = d.get("metrics", {})
         verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
         rows.append(
@@ -616,6 +709,7 @@ def render_llm_benchmark(perf_path, base_url="", perf_history_link="perf-history
         if s
     )
 
+    _sweep_table = render_llm_sweep(sweep_recs, base_url=base_url)
     table = "\n".join(rows)
     return f"""\
 
@@ -629,6 +723,7 @@ End-to-end LLM inference performance on the AMD Ryzen AI (Krackan Point, NPU2) b
 
 \U0001f7e2 verify passed &nbsp; \U0001f534 verify failed &nbsp; ⚪ verify skipped &nbsp; — metric not captured (e.g. the model's profile run failed)
 
+{_sweep_table}
 \U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
 _{provenance}_
@@ -686,7 +781,9 @@ python3 run.py --print-module-only  # print IR only
 """
 
 
-def generate_readme(base_url="", llm_perf_path=None, section="full"):
+def generate_readme(
+    base_url="", llm_perf_path=None, section="full", llm_sweep_path=None
+):
     """Generate dashboard content.
 
     section:
@@ -702,7 +799,10 @@ def generate_readme(base_url="", llm_perf_path=None, section="full"):
 
     if section == "llm":
         llm_section = render_llm_benchmark(
-            llm_perf_path, base_url=base_url, perf_history_link="perf-history.md"
+            llm_perf_path,
+            base_url=base_url,
+            perf_history_link="perf-history.md",
+            sweep_recs=load_llm_sweeps(llm_sweep_path),
         )
         return f"""\
 <!-- This file is auto-generated by generate_readme.py. Do not edit manually. -->
@@ -713,7 +813,9 @@ End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped t
 {llm_section}"""
 
     # section == "full" (legacy single-page dashboard)
-    llm_section = render_llm_benchmark(llm_perf_path, base_url=base_url)
+    llm_section = render_llm_benchmark(
+        llm_perf_path, base_url=base_url, sweep_recs=load_llm_sweeps(llm_sweep_path)
+    )
     return (
         _operator_dashboard(base_url=base_url) + llm_section + _getting_started_footer()
     )
@@ -741,6 +843,13 @@ if __name__ == "__main__":
         "absent or missing, the LLM benchmark section is omitted.",
     )
     parser.add_argument(
+        "--llm-sweep",
+        default=None,
+        help="Path to the nightly sweep.json (decode tok/s vs context). Models "
+        "present here are rendered as a curve and dropped from the single-point "
+        "table. Omitted when absent.",
+    )
+    parser.add_argument(
         "--section",
         choices=["full", "operators", "llm"],
         default="full",
@@ -750,7 +859,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     content = generate_readme(
-        base_url=args.base_url, llm_perf_path=args.llm_perf, section=args.section
+        base_url=args.base_url,
+        llm_perf_path=args.llm_perf,
+        section=args.section,
+        llm_sweep_path=args.llm_sweep,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(content)
