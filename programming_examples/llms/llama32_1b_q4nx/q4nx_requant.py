@@ -50,11 +50,18 @@ def _interleave512(up_t, gate_t, glu_chunk):
     return tuple(il(up_t[i], gate_t[i]) for i in range(3))
 
 
-def build_requant_cache(model, fd, cache_path, n_layers=16, verbose=True):
+def build_requant_cache(
+    model, fd, cache_path, n_layers=16, verbose=True, tie_lm_head=True
+):
     """Re-quantize + cascade-pack the model.q4nx weights into the decode's .npz.
 
     `model` = HF repo id / local dir/file for model.q4nx; `fd` = the loaded
-    fused_decode module (supplies the cascade geometry + pack_q4k_cascade)."""
+    fused_decode module (supplies the cascade geometry + pack_q4k_cascade).
+
+    `tie_lm_head` follows the model's config tie_word_embeddings. It is TRUE for
+    Llama-3.2-1B/3B and Gemma3, whose LM head IS the embedding matrix, and FALSE
+    for Llama-3.1-8B, which ships a real quantized lm_head -- there, taking the
+    embedding would be a silently wrong LM head rather than a build error."""
     from llama32_1b_q4nx_weights import Q4nxModel
 
     qm_model = Q4nxModel(model)
@@ -117,9 +124,14 @@ def build_requant_cache(model, fd, cache_path, n_layers=16, verbose=True):
         assert W_all[-1].size == W_LAYER, (W_all[-1].size, W_LAYER)
         if verbose:
             print(f"[q4nx_requant] layer {k} requantized", flush=True)
-    # lm_head is tied to embed (config tie_word_embeddings=true): use the
-    # full-precision embed matrix, not the bundle's separate Q4NX lm_head tensor.
-    lm = qm_model.bf16("model.embed_tokens.weight")
+    if tie_lm_head:
+        # lm_head is tied to embed (config tie_word_embeddings=true): use the
+        # full-precision embed matrix, not the bundle's separate Q4NX lm_head tensor.
+        lm = qm_model.bf16("model.embed_tokens.weight")
+    else:
+        # Untied: the bundle's own quantized lm_head is the LM head. Its I8 header
+        # does not carry the logical shape, so pass (VOCAB, K) from the config.
+        lm = qm_model.dequant("lm_head.weight", VOCAB, K)
     lm_pad = np.zeros((VPF, K), np.float32)
     lm_pad[:VOCAB] = lm[:VOCAB]
     lq, ls, lm_ = _requant_q4k(lm_pad, G)

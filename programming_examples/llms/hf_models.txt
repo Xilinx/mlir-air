@@ -60,3 +60,12 @@ Qwen/Qwen3-8B
 # the same repo FastFlowLM's own reference generator uses.
 FastFlowLM/Phi4-mini-Instruct-NPU2
 microsoft/Phi-4-mini-instruct
+# Same Q4NX packaging of Llama-3.1-8B. Used by llms/llama31_8b_q4nx (the fused
+# decode loads weights from this repo), plus the bf16 reference `make verify`
+# compares against. FastFlowLM/Llama-3.1-8B-NPU2's model card declares
+# `base_model: meta-llama/Llama-3.1-8B-Instruct`; NousResearch mirrors that
+# checkpoint without Meta's manual license gate, so CI needs no license grant.
+# Its config matches the FLM bundle's exactly, including the 3-way eos_token_id.
+FastFlowLM/Llama-3.1-8B-NPU2
+NousResearch/Meta-Llama-3.1-8B-Instruct
+NousResearch/Meta-Llama-3.1-8B
