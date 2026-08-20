@@ -38,7 +38,6 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from air import api as air
-from air.api import ops
 from air.api.types import bf16, f32
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
@@ -92,9 +91,9 @@ def build_leaky_relu(n, tile_n, alpha, dtype=bf16, herd_shape=None, vector=None)
                     air.ops.load(x_buf, x[window])
 
                     # max(x, 0) + alpha * min(x, 0) -- see the module docstring.
-                    out_buf[:] = ops.maximum(x_buf[:], 0.0) + alpha * ops.minimum(
+                    out_buf[:] = air.ops.maximum(
                         x_buf[:], 0.0
-                    )
+                    ) + alpha * air.ops.minimum(x_buf[:], 0.0)
 
                     air.ops.store(out_buf, out[window])
 

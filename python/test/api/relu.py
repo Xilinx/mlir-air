@@ -5,7 +5,7 @@
 
 # RUN: %PYTHON %s | FileCheck %s
 
-"""air.api lowers ops.maximum / ops.minimum / ops.relu.
+"""air.api lowers air.ops.maximum / air.ops.minimum / air.ops.relu.
 
 These are the first compute ops that are not Python operators, so they enter the
 expression tree through `air.api.ops` rather than through `__add__` and friends,
@@ -13,7 +13,6 @@ and they must compose with the arithmetic operators in the same tree.
 """
 
 from air import api as air
-from air.api import ops
 from air.api.types import bf16, f32, i32
 
 
@@ -47,7 +46,7 @@ def run(f):
 
 
 # CHECK-LABEL: TEST: relu_vectorized
-# ops.relu is max(x, 0): a broadcast zero and a single arith.maximumf, which is
+# air.ops.relu is max(x, 0): a broadcast zero and a single arith.maximumf, which is
 # exactly what the hand-written kernel emitted.
 # CHECK: func.func @relu(%{{.*}}: memref<65536xbf16>, %{{.*}}: memref<65536xbf16>)
 # CHECK: air.herd @herd_0 tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%c4{{.*}}, %{{.*}}=%c1
@@ -57,7 +56,7 @@ def run(f):
 # CHECK: vector.transfer_write {{.*}} vector<16xbf16>
 @run
 def relu_vectorized():
-    print(build(65536, 1024, lambda b: ops.relu(b[:]), herd_shape=(4,)).mlir())
+    print(build(65536, 1024, lambda b: air.ops.relu(b[:]), herd_shape=(4,)).mlir())
 
 
 # CHECK-LABEL: TEST: clamp_composes
@@ -72,7 +71,7 @@ def clamp_composes():
         build(
             65536,
             1024,
-            lambda b: ops.minimum(ops.maximum(b[:], 0.0), 6.0) * 2.0,
+            lambda b: air.ops.minimum(air.ops.maximum(b[:], 0.0), 6.0) * 2.0,
             herd_shape=(4,),
         ).mlir()
     )
@@ -91,13 +90,18 @@ def clamp_composes():
 def relu_f32_scalar():
     print(
         build(
-            65536, 1024, lambda b: ops.relu(b[:]), herd_shape=(4,), dtype=f32, vector=0
+            65536,
+            1024,
+            lambda b: air.ops.relu(b[:]),
+            herd_shape=(4,),
+            dtype=f32,
+            vector=0,
         ).mlir()
     )
 
 
 # CHECK-LABEL: TEST: relu_integer
-# ops.relu takes the Python type of its zero from the operand's dtype. An
+# air.ops.relu takes the Python type of its zero from the operand's dtype. An
 # integer buffer lowers through arith.maxsi, and building an integer
 # arith.constant from a Python float fails with "expected floating point type".
 # CHECK: memref.alloc() : memref<512xi32, 2 : i32>
@@ -105,4 +109,8 @@ def relu_f32_scalar():
 # CHECK: arith.maxsi
 @run
 def relu_integer():
-    print(build(4096, 512, lambda b: ops.relu(b[:]), herd_shape=(4,), dtype=i32).mlir())
+    print(
+        build(
+            4096, 512, lambda b: air.ops.relu(b[:]), herd_shape=(4,), dtype=i32
+        ).mlir()
+    )

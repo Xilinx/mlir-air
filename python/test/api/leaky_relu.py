@@ -14,7 +14,6 @@ in one loop over the tile.
 """
 
 from air import api as air
-from air.api import ops
 from air.api.types import bf16, f32
 
 
@@ -35,7 +34,7 @@ def build(N, tile, alpha, herd_shape=None, dtype=bf16, vector=None):
                     x_buf = air.alloc([tn], dtype, scope=h.private(), vector=vector)
                     o_buf = air.alloc([tn], dtype, scope=h.private(), vector=vector)
                     air.ops.load(x_buf, x[col : col + tn])
-                    o_buf[:] = ops.maximum(x_buf[:], 0.0) + alpha * ops.minimum(
+                    o_buf[:] = air.ops.maximum(x_buf[:], 0.0) + alpha * air.ops.minimum(
                         x_buf[:], 0.0
                     )
                     air.ops.store(o_buf, out[col : col + tn])
