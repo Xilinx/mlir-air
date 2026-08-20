@@ -93,7 +93,16 @@ def build_templates(makefile, ctx, workdir, template_dir, log):
         err = re.search(
             r"error: .{0,90}|Killed|Cannot allocate|out of memory", r.stdout + r.stderr
         )
-        return None, f"build_fail: {err.group(0) if err else 'see build log'}"
+        if err:
+            return None, f"build_fail: {err.group(0)}"
+        # No recognised pattern: carry the tail of the output, because build.log
+        # stays in the lit working directory and never reaches the artifact.
+        tail = " / ".join(
+            l.strip()
+            for l in (r.stdout + r.stderr).strip().splitlines()[-3:]
+            if l.strip()
+        )
+        return None, f"build_fail: {tail[:300] or 'no output'}"
 
     for l in (ctx, ref):
         for ext in ("xclbin", "insts.bin"):
@@ -165,7 +174,15 @@ def main():
     p.add_argument("--n-layers", type=int, default=36, help="bench_qwen only")
     p.add_argument("--iters", type=int, default=20)
     p.add_argument("--warmup", type=int, default=6)
-    p.add_argument("--workdir", type=Path, default=Path("sweep_out"))
+    p.add_argument(
+        "--workdir", type=Path, default=Path("sweep_out"), help="per-context scratch"
+    )
+    p.add_argument(
+        "--xrt-dir",
+        default="",
+        help="XRT install (lit's %XRT_DIR). bench_decode.exe's build rule needs "
+        "XILINX_XRT set, and the lit environment does not export it.",
+    )
     p.add_argument("--out", required=True, type=Path)
     a = p.parse_args()
 
@@ -178,7 +195,13 @@ def main():
             # `make clean` in any model dir removes this; rebuild rather than
             # letting every cell fail with a shell "No such file" that reads
             # like a device fault.
-            r = _run(["make", "-f", str(FUSED_DECODE / "Makefile"), "bench-decode-exe"])
+            env = dict(os.environ)
+            if not env.get("XILINX_XRT") and a.xrt_dir:
+                env["XILINX_XRT"] = a.xrt_dir
+            r = _run(
+                ["make", "-f", str(FUSED_DECODE / "Makefile"), "bench-decode-exe"],
+                env=env,
+            )
             if not BENCH_EXE.exists():
                 print(
                     f"FATAL: cannot build {BENCH_EXE}\n{r.stdout}{r.stderr}",
@@ -189,6 +212,9 @@ def main():
             if getattr(a, f) is None:
                 p.error(f"--driver bench_decode needs --{f.replace('_', '-')}")
 
+    # Absolute: bench_qwen runs with cwd=fused_decode and bench_decode with
+    # cwd=workdir, so a relative path resolves differently for the two drivers.
+    a.workdir = a.workdir.resolve()
     a.workdir.mkdir(parents=True, exist_ok=True)
     points, seen_md5, hard_fail = [], {}, False
 

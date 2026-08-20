@@ -26,7 +26,7 @@
 //
 // RUN: mkdir -p test_peano_sweep
 // RUN: cd test_peano_sweep
-// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name llama32_1b_q4nx --makefile %S/../../fused_decode/Makefile --template-dir %S/../../fused_decode --bench-model llama-3.2-1b --vocab-chunk-i2 18 --w-elems 386662400 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --out llama32_1b_q4nx.sweep.json
+// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name llama32_1b_q4nx --makefile %S/../../fused_decode/Makefile --template-dir %S/../../fused_decode --bench-model llama-3.2-1b --vocab-chunk-i2 18 --w-elems 386662400 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --xrt-dir %XRT_DIR --out llama32_1b_q4nx.sweep.json
 // RUN: FileCheck %s < llama32_1b_q4nx.sweep.json
 // CHECK: "model": "llama32_1b_q4nx"
 // CHECK: "axis": "context_len"

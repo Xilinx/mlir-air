@@ -25,7 +25,7 @@
 //
 // RUN: mkdir -p test_peano_sweep
 // RUN: cd test_peano_sweep
-// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name gemma3_4b_q4nx --makefile %S/Makefile --template-dir %S --bench-model gemma3-4b --vocab-chunk-i2 5 --w-elems 1213644800 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --out gemma3_4b_q4nx.sweep.json
+// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name gemma3_4b_q4nx --makefile %S/Makefile --template-dir %S --bench-model gemma3-4b --vocab-chunk-i2 5 --w-elems 1213644800 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --xrt-dir %XRT_DIR --out gemma3_4b_q4nx.sweep.json
 // RUN: FileCheck %s < gemma3_4b_q4nx.sweep.json
 // CHECK: "model": "gemma3_4b_q4nx"
 // CHECK: "axis": "context_len"
