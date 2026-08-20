@@ -88,7 +88,12 @@ def build_module(
     matvec = air.extern(
         "matvec_vectorized_bf16_bf16", object=link_with, scalars=[i32, i32, i32]
     )
-    fill = air.extern("linalg_fill_bf16", object=link_with, scalars=[dt_out])
+    # No scalar: mv.cc defines `void linalg_fill_bf16(bfloat16 *c_out)`, which
+    # takes the buffer alone and gets its extent from -DDIM_M_OUTPUT. The
+    # raw-bindings predecessor declared it `(bf16, memref)` and passed a zero
+    # constant the callee never read -- harmless, since the C ABI drops the
+    # extra leading argument, but the declaration did not describe the symbol.
+    fill = air.extern("linalg_fill_bf16", object=link_with)
 
     A = air.tensor([m, k], dt_in)
     B = air.tensor([k], dt_in)
@@ -124,7 +129,7 @@ def build_module(
                             l1_b = air.alloc([k], dt_in, scope=h.private())
                             l1_c = air.alloc([tile_m], dt_out, scope=h.private())
 
-                            fill(0.0, l1_c)
+                            fill(l1_c)
 
                             base = tx * tile_m
                             for j in air.sequential(0, tile_m, m_input):
