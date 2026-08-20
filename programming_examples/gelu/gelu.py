@@ -98,25 +98,63 @@ def build_gelu(n, tile_n, herd_shape=None, vector=None):
 
     tile = air.symbol(hint=tile_n, name="tile_n")
 
+    # A 2-D herd_shape asks for a rectangular herd rather than a row of cores.
+    # It matters: a 1-D herd is emitted as sizes=[P, 1], so it is bounded by the
+    # column count -- 8 on npu2 -- while (8, 2) fills 16. SmolVLA's vision
+    # encoder wants the latter, so the shape is honoured rather than flattened.
+    grid_2d = herd_shape is not None and len(herd_shape) == 2
+
+    def compute(h, base, tn):
+        """One tile: stage in, apply gelu, stage out."""
+        window = slice(base, base + tn)
+        x_buf = air.alloc([tn], bf16, scope=h.private(), vector=vector)
+        out_buf = air.alloc([tn], bf16, scope=h.private(), vector=vector)
+        air.ops.load(x_buf, x[window])
+        out_buf[:] = air.ops.gelu(x_buf[:])
+        air.ops.store(out_buf, out[window])
+
     with air.launch(name="gelu") as launch:
 
         @launch.body
         def _():
-            with air.herd(range(0, n, tile), shape=herd_shape) as h:
+            if grid_2d:
+                cols, rows = int(herd_shape[0]), int(herd_shape[1])
+                cores = cols * rows
+                if n % (tile_n * cores):
+                    raise ValueError(
+                        f"n ({n}) must be divisible by tile_n * cores "
+                        f"({tile_n} * {cores}); every core takes the same number "
+                        "of tiles and air.api has no partial trips"
+                    )
 
-                @h.body
-                def _(tx):
-                    tn = h.tile_sizes[0]
-                    window = slice(tx * tn, tx * tn + tn)
+                with air.herd([range(cols), range(rows)], shape=(cols, rows)) as h:
 
-                    x_buf = air.alloc([tn], bf16, scope=h.private(), vector=vector)
-                    out_buf = air.alloc([tn], bf16, scope=h.private(), vector=vector)
+                    @h.body
+                    def _(tx, ty):
+                        # Each core owns every cores'th tile, as the predecessor
+                        # did: linear index tx*rows + ty, stepped by the whole
+                        # herd. Allocations sit above the loop so the herd's
+                        # deallocs still dominate them.
+                        lin = tx * rows + ty
+                        x_buf = air.alloc(
+                            [tile_n], bf16, scope=h.private(), vector=vector
+                        )
+                        out_buf = air.alloc(
+                            [tile_n], bf16, scope=h.private(), vector=vector
+                        )
+                        for iv in air.sequential(0, n, tile_n * cores):
+                            base = iv + lin * tile_n
+                            window = slice(base, base + tile_n)
+                            air.ops.load(x_buf, x[window])
+                            out_buf[:] = air.ops.gelu(x_buf[:])
+                            air.ops.store(out_buf, out[window])
 
-                    air.ops.load(x_buf, x[window])
+            else:
+                with air.herd(range(0, n, tile), shape=herd_shape) as h:
 
-                    out_buf[:] = air.ops.gelu(x_buf[:])
-
-                    air.ops.store(out_buf, out[window])
+                    @h.body
+                    def _(tx):
+                        compute(h, tx * h.tile_sizes[0], h.tile_sizes[0])
 
     return launch
 
