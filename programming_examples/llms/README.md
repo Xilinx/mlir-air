@@ -22,7 +22,7 @@ multi-launch ELFs and gates correctness against a Hugging Face bf16 reference.
 | **Llama-3.2-3B** | `meta-llama/Llama-3.2-3B` | 28 | 3072 / 128 / 8192 | GQA 24Q/8KV | pure Llama, hd=128 | prefill + decode |
 | **Llama-3.2-3B Q4NX** | `FastFlowLM/Llama-3.2-3B-NPU2` | 28 | 3072 / 128 / 8192 | GQA 24Q/8KV | q4nx 4-bit weights | prefill + decode |
 | **Gemma3-4B** | `FastFlowLM/Gemma3-4B-NPU2` | 34 | 2560 / 256 / 10240 | GQA 8Q/4KV | q4nx, QK-norm, GELU-tanh, 4 norms/layer, 1024 sliding window, dual-theta RoPE, hd=256 | prefill + decode |
-| **Phi-4-mini Q4NX** | `FastFlowLM/Phi4-mini-Instruct-NPU2` | 32 | 3072 / 128 / 8192 | GQA 24Q/8KV | q4nx, **partial rotary (96/128)**, LongRoPE, vocab 200064 | decode |
+| **Phi-4-mini Q4NX** | `FastFlowLM/Phi4-mini-Instruct-NPU2` | 32 | 3072 / 128 / 8192 | GQA 24Q/8KV | q4nx, **partial rotary (96/128)**, LongRoPE, vocab 200064 | prefill + decode |
 
 All are decoder-only with RMSNorm + SwiGLU FFN + RoPE. The architecture axes that
 shape each deployment's dataflow:

@@ -19,8 +19,8 @@
 #   make run            — Run inference: 32 layers + LM head on-device, per token
 #   make verify         — Top-k token-set inclusion gate: NPU q4nx vs HF bf16
 #
-# Config: 32 layers, emb=4096, 32 heads / 8 KV heads, head_dim=128,
-#         hidden=14336, vocab=128256 (NPU2, AMD Strix).
+# Config: 32 layers, emb=3072, 24 heads / 8 KV heads, head_dim=128,
+#         hidden=8192, vocab=200064, partial rotary 96/128 (NPU2, AMD Strix).
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
@@ -69,9 +69,9 @@ PEANO_KBASE := -std=c++20 --target=aie2p-none-unknown-elf \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 
 # Phi-4-mini decode env: 32 layers, vocab chunked at VOCAB_CHUNK_I2=18. That value is NOT
-# free -- the vocab relay drains whole-K blocks, so (K/PAYLOAD)=8 must divide
-# VOCAB_I2*PAIR_ROWS=32, and it must match the model entry's UNI_LM=8. The legal
-# set here is {4,8,16}; 16 is the largest, i.e. the fewest host-armed waves. The
+# free -- the vocab relay drains whole-K blocks, so (K/PAYLOAD)=6 must divide
+# VOCAB_I2*PAIR_ROWS=36, and it must match the model entry's UNI_LM=11. The legal
+# set here is {3,6,9,18}; 18 is the largest, i.e. the fewest host-armed waves. The
 # 1B default (14) is not even a divisor and would deadlock the Phi-4-mini vocab wave.
 DECODE_ENV := DECODE_MODEL=phi4-mini VOCAB_CHUNK_I2=18 UNIFIED=1 LM_HEAD=0 \
               NLAYERS=1 DECODE_GOLDEN=1
@@ -223,6 +223,7 @@ profile:
 
 ## Interactive chat REPL
 chat:
+	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(DRIVER) \
 		--run-only --interactive --n-tokens $(N_TOKENS) --model $(MODEL)
 
@@ -259,7 +260,7 @@ ask:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(DRIVER) --run-only --prompt "$(PROMPT)" --model $(MODEL) --n-tokens $(N_TOKENS)
 
-## Paris gate: greedy-decode "The capital of France is"; first token must be 12366.
+## Paris gate: greedy-decode "The capital of France is"; first token must be 12650.
 gen:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(DRIVER) --run-only --model base --n-tokens 12 \

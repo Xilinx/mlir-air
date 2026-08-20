@@ -5,6 +5,11 @@ A full **prefill + decode** MLIR-AIR inference for `microsoft/Phi-4-mini-instruc
 NPU2 (AIE2P). The decoder layer runs **entirely on the AIE array** — attention
 included, over a device-resident KV cache — the same mapping FastFlowLM uses.
 
+- **Prefill** (`phi4_mini_q4nx_prefill.py`) — op-by-op bf16 GEMM / RMSNorm /
+  partial RoPE (`rope_partial`) / SwiGLU / head-first causal-GQA flash attention
+  on the NPU with resident weight BOs; on-device 13-partition LM-head GEMV. Its
+  per-layer roped-K / raw-V seed the decode's device KV cache, so a long prompt
+  is not replayed token-wise.
 - **Autoregressive decode** (`q4nx_decode_phi4.py`) — one dispatch per token
   through the [`fused_decode`](../../fused_decode) superkernel at
   `MODEL_TYPE=PHI4_4B`: proj → RoPE → flash attention over the on-device KV → O →
@@ -65,8 +70,10 @@ the bundle's separate quantized copy.
 ## Quick start
 
 ```bash
+make compile          # prefill ELFs (~4 min, one-time; no weights)
 make compile-decode   # fused decode templates into this dir (~15 min; no weights)
-make run              # 32 layers + LM head on-device, one dispatch per token
+make run              # prefill + 32 layers/LM head on-device, one dispatch per token
+make chat             # interactive chat REPL (streaming)
 make verify           # top-k token-set gate: NPU q4nx vs HF bf16
 ```
 

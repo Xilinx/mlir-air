@@ -17,7 +17,7 @@
 # warm KV cache (see q4nx_decode_3b.FusedDecode3B.seed_kv) -- prompt tokens then
 # cost one batched prefill instead of one full decode dispatch each.
 #
-# Gate: first prompt token argmax 12366 (" Paris") for "The capital of France is".
+# Gate: first prompt token argmax 12650 (" Paris") for "The capital of France is".
 #
 # Weight source (env-overridable):
 #   Q4NX_MODEL_SOURCE : the model.q4nx bundle -- HF repo id or a local dir/file.
@@ -45,7 +45,9 @@ from shared.infra.cache import KernelCache  # noqa: E402
 
 # Default weight source: the self-contained model.q4nx bundle on the Hub. May be
 # overridden with --model / Q4NX_MODEL_SOURCE (an HF repo id, or a local dir/file).
-MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Phi-4-mini-NPU2")
+MODEL_DEFAULT = os.environ.get(
+    "Q4NX_MODEL_SOURCE", "FastFlowLM/Phi4-mini-Instruct-NPU2"
+)
 
 VOCAB = 200064
 PROMPT = [976, 9029, 328, 10128, 382]  # "The capital of France is"

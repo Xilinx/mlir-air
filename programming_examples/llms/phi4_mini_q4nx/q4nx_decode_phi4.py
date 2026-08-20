@@ -55,7 +55,7 @@ def phi4_rope(n_pos, model_source):
 
 
 # fused_decode model key + vocab chunking. VOCAB_CHUNK_I2 must satisfy
-# (K/PAYLOAD) | VOCAB_I2*PAIR_ROWS -- 8 | 32 here -- or the vocab wave deadlocks;
+# (K/PAYLOAD) | VOCAB_I2*PAIR_ROWS -- 6 | 36 here -- or the vocab wave deadlocks;
 # it also has to match the model entry's UNI_LM (see fused_decode.py).
 DECODE_MODEL = "phi4-mini"
 VOCAB_CHUNK_I2 = "18"
