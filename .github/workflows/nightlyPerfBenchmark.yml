@@ -356,6 +356,20 @@ jobs:
           # flattering end of a ~12x range and cannot see a KV-path regression.
           # Each sweep is ~4-5 min (a template build per context).
           if want sweep; then
+            # Build the shared bench binary BEFORE any timed work. Every model's
+            # `make clean` recurses into fused_decode's, which deletes it, so
+            # verify/profile above always leave it missing and the first model
+            # lit picks it up lazily -- a different model each night, since lit
+            # runs --order=random. Measured once locally on llama31-8b: a sweep
+            # that rebuilt the binary at its start read 11.24/11.77/10.67 tok/s
+            # at 1k/2k/4k, while the same sweep with the binary already present
+            # read 13.11/12.44/11.32, matching two quiet re-measures to 0.3%.
+            # The 8B models are the first big enough to show it. The mechanism
+            # is NOT understood -- the effect outlasts the process that caused
+            # it -- so this removes the condition rather than claiming a fix;
+            # if a head-of-curve dip recurs, this was not the cause.
+            make -C ../programming_examples/fused_decode bench-decode-exe \
+              XILINX_XRT="$XILINX_XRT" || rc=1
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-sweep || rc=1
           fi
