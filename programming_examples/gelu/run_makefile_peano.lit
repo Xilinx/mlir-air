@@ -14,4 +14,12 @@
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR N=131072 TILE_N=2048 | FileCheck %s
+//
+// A 2-D herd, which is a separate code path: a 1-D herd is emitted as
+// sizes=[P, 1] and so is bounded by the column count, where (8, 2) fills 16
+// cores. SmolVLA's vision encoder is the consumer, and its own tests run only
+// in the nightly -- which is how the port that dropped this path reached main
+// unnoticed. Exercised here so PR CI covers it.
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR N=262144 TILE_N=4096 HERD_SHAPE="8 2" | FileCheck %s
 // CHECK: PASS!

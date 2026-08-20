@@ -81,6 +81,13 @@ def _gelu_backend():
         "output_format": "elf",
         "instance_name": "gelu",
         "runtime_loop_tiling_sizes": [4, 4],
+        # Pinned, because the air.api builder pins the module it hands over and
+        # the two must agree. They do not agree by default: XRTBackend's
+        # detect_target_device falls back to npu1 when xrt-smi cannot answer,
+        # while air.api's falls back to npu2, so a build host without a device
+        # would compile an npu2 module for npu1 -- which loads and computes
+        # nothing rather than failing.
+        "target_device": "npu2",
     }
 
 

@@ -119,6 +119,10 @@ def build_gelu(n, tile_n, herd_shape=None, vector=None):
         def _():
             if grid_2d:
                 cols, rows = int(herd_shape[0]), int(herd_shape[1])
+                if cols <= 0 or rows <= 0:
+                    raise ValueError(
+                        f"herd_shape extents must be positive, got " f"({cols}, {rows})"
+                    )
                 cores = cols * rows
                 if n % (tile_n * cores):
                     raise ValueError(
