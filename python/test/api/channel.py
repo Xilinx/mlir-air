@@ -204,3 +204,31 @@ def channel_broadcast():
                     back.get(B)
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: whole_tensor_transfer
+# Channels take a bare tensor, and they share ops._endpoint with load/store, so
+# load/store take one too: `ops.load(buf, A)` is the whole of A. Pinned here
+# because it is a widening of those two, not only of the channel ops -- the
+# shape check still applies (errors.py) and store still marks its tensor an
+# output, which is what fixes the kernel's calling convention.
+# CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<4x64xi32, 2 : i32>, memref<4x64xi32>)
+# CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<4x64xi32>, memref<4x64xi32, 2 : i32>)
+@run
+def whole_tensor_transfer():
+    A = air.tensor([4, 64], i32)
+    B = air.tensor([4, 64], i32)
+
+    with air.launch(name="whole") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    buf = air.alloc([4, 64], i32, scope=h.private())
+                    air.ops.load(buf, A)
+                    air.ops.store(buf, B)
+
+    print(launch.mlir())

@@ -130,6 +130,13 @@ def _endpoint(obj, direction, role):
         # `ChannelPut("ChanIn", a)` is the commonest line in the hand-written
         # channel examples. There is no access pattern: the transfer is the
         # whole memref, which the op prints as [] [] [].
+        #
+        # This also widens load/store, which share this function: `ops.load(buf,
+        # A)` is now the whole of A rather than an error. That is deliberate --
+        # it is the same transfer as `ops.load(buf, A[:, :])` and reads better
+        # -- and it stays safe because _check_pair still requires the shapes to
+        # agree, and store still marks the tensor an output through
+        # `_Endpoint.tensor` below.
         if obj.value is None:
             raise RuntimeError(
                 "tensor used before the function was traced; air.tensor(...) "
@@ -195,7 +202,8 @@ def load(dst, src, pad_before=None, pad_after=None, dependency=None):
 
     ``load(l1, A[i:i+n])`` is L3 to L1; ``load(l1, staged[tx, 0:n, :])`` is L2 to
     L1; ``load(l2, A[i:i+n])`` is L3 to L2. The destination is always the buffer
-    being filled.
+    being filled. A bare tensor means the whole of it, so ``load(l2, A)`` and
+    ``load(l2, A[:, :])`` are the same transfer.
     """
     _check_dependency(dependency)
     _check_padding(pad_before, pad_after)
@@ -275,7 +283,7 @@ def store(src, dst, pad_before=None, pad_after=None, dependency=None):
 
     ``store(l1, C[i:i+n])`` is L1 to L3; ``store(l1, staged[tx, :])`` is L1 to
     L2; ``store(l2, C[i:i+n])`` is L2 to L3. The source is always the buffer
-    being drained.
+    being drained. A bare tensor destination means the whole of it.
     """
     _check_dependency(dependency)
     _check_padding(pad_before, pad_after)

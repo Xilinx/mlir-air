@@ -974,3 +974,15 @@ def _():
         a[:] = a[:] + ty
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: whole_tensor_shape_checked
+# The bare-tensor spelling is a convenience, not an escape from the shape check.
+# CHECK: ValueError: transfer shape mismatch in air.api.ops.load
+@expect(ValueError, "whole_tensor_shape_checked")
+def _():
+    def body(h, tx, ty, A, B, C):
+        small = air.alloc([2, 8], bf16, scope=h.private())
+        ops.load(small, A)
+
+    _trace(body)
