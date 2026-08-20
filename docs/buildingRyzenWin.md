@@ -216,12 +216,6 @@ pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_ass
 pip install -r utils\requirements_dev.txt
 ```
 
-`utils\requirements_dev.txt` is MLIR-AIR's own build-dependency list, so it stays
-in step with the build rather than with this page. Its constraints mirror
-mlir-aie's, which matters most for `nanobind`: it ABI-couples to the MLIR distro
-wheel staged in [section 6.2](#62-stage-llvmmlir), and an unpinned install
-resolves to a version that wheel was not built against.
-
 ### 6.2 Stage LLVM/MLIR
 
 MLIR-AIR consumes LLVM/MLIR as a prebuilt "distro wheel" rather than building it. Download the exact pinned version and unpack it:

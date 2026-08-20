@@ -1,15 +1,8 @@
-# Build-time Python dependencies. Constraints mirror mlir-aie's
-# python/requirements_dev.txt: both projects build against the same prebuilt
-# MLIR distro wheel, and on Windows they share one environment. Keep the two
-# lists in step when either side moves.
+# Constraints mirror mlir-aie's python/requirements_dev.txt; keep them in step.
 cmake>=4.4.2, <5.0
 ninja!=1.13.0
 pybind11>=3.0.4
-# nanobind ABI-couples to the distro wheel, which is built against one specific
-# version. A mismatch is a runtime failure rather than a build one -- Value
-# subclasses stop being recognised while the build and the lit suites still
-# pass -- so a floor like >=2.9 is not enough: it resolves to the newest
-# release. 2.13.0 rejects passing an OpResult where a Value is declared.
+# Pinned, not a floor: nanobind ABI-couples to the MLIR distro wheel.
 nanobind==2.12.0
 lit
 # lit requires psutil to set timeouts
