@@ -58,7 +58,7 @@ range_ = for_
 
 
 @module_builder
-def _build_rope_2d(outer_rows, outer_cols, embed_dim, np_dtype, herd_x):
+def _build_rope_2d(outer_rows, outer_cols, embed_dim, np_dtype, herd_x, rope_dim=None):
     """Build a RoPE launch with 2D in/out args (for GEMM type compatibility).
 
     The outer 2D shape (outer_rows, outer_cols) matches the GEMM output type.
@@ -73,6 +73,11 @@ def _build_rope_2d(outer_rows, outer_cols, embed_dim, np_dtype, herd_x):
         outer_cols: 2D func arg cols (e.g. emb_dim=2048 or kv_dim=512)
         embed_dim:  RoPE column width per row (head_dim=64)
         herd_x:     Number of tiles for row-parallel
+        rope_dim:   Rotated width; None/==embed_dim -> full rotary (calls `rope`).
+                    Less than embed_dim -> PARTIAL rotary (Phi-4: 96 of 128), which
+                    calls `rope_partial` and passes the tail through. The LUT row
+                    stays embed_dim wide -- [cos|sin|unused] -- so every DMA shape
+                    and row offset below is identical either way.
     """
     from air.dialects.memref import collapse_shape as memref_collapse_shape
 
@@ -94,8 +99,17 @@ def _build_rope_2d(outer_rows, outer_cols, embed_dim, np_dtype, herd_x):
         shape=[embed_dim], element_type=xrt_dtype, memory_space=l1_mem_space
     )
 
+    _partial = rope_dim is not None and rope_dim != embed_dim
+    if _partial:
+        assert 0 < rope_dim < embed_dim and rope_dim % 32 == 0, (
+            f"rope_dim {rope_dim} must be a positive multiple of 32 below "
+            f"embed_dim {embed_dim} (each half must vectorize by 16)"
+        )
+    _rope_args = [l1RowTy, l1RowTy, l1RowTy, T.i32()] + ([T.i32()] if _partial else [])
     rope_func = FuncOp(
-        "rope", ([l1RowTy, l1RowTy, l1RowTy, T.i32()], []), visibility="private"
+        "rope_partial" if _partial else "rope",
+        (_rope_args, []),
+        visibility="private",
     )
     rope_func.attributes["link_with"] = StringAttr.get("rope.o")
     rope_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
@@ -146,6 +160,7 @@ def _build_rope_2d(outer_rows, outer_cols, embed_dim, np_dtype, herd_x):
                     l1_out = AllocOp(l1RowTy, [], [])
 
                     dim_i32 = ConstantOp(T.i32(), embed_dim)
+                    rope_i32 = ConstantOp(T.i32(), rope_dim) if _partial else None
 
                     for local_row in range_(rows_per_tile):
                         row_offset = affine_apply(row_offset_map, [local_row, _tx, _ty])
@@ -165,7 +180,11 @@ def _build_rope_2d(outer_rows, outer_cols, embed_dim, np_dtype, herd_x):
                             src_strides=[1],
                         )
 
-                        CallOp(rope_func, [l1_in, l1_lut, l1_out, dim_i32])
+                        CallOp(
+                            rope_func,
+                            [l1_in, l1_lut, l1_out, dim_i32]
+                            + ([rope_i32] if _partial else []),
+                        )
 
                         dma_memcpy_nd(
                             h_out,
@@ -199,6 +218,7 @@ def build_rms_gemms_rope_module(
     herd_n=4,
     # RoPE config
     rope_herd_x=8,
+    rope_dim=None,  # partial rotary width (Phi-4: 96); None = full head_dim
     print_kernels=False,
 ):
     """Build 6-launch module: RMSNorm + Q/K/V GEMMs + RoPE Q + RoPE K.
@@ -315,12 +335,21 @@ def build_rms_gemms_rope_module(
     print(
         f"  [5/6] RoPE Q (outer={seq_len}x{emb_dim}, embed_dim={head_dim}, herd_x={rope_herd_x})..."
     )
-    rope_q_ir = str(_build_rope_2d(seq_len, emb_dim, head_dim, bfloat16, rope_herd_x))
+    _rope_sym = "@rope_partial" if (rope_dim and rope_dim != head_dim) else "@rope"
+    rope_q_ir = str(
+        _build_rope_2d(
+            seq_len, emb_dim, head_dim, bfloat16, rope_herd_x, rope_dim=rope_dim
+        )
+    )
 
     print(
         f"  [6/6] RoPE K (outer={seq_len}x{kv_dim}, embed_dim={head_dim}, herd_x={rope_herd_x})..."
     )
-    rope_k_ir = str(_build_rope_2d(seq_len, kv_dim, head_dim, bfloat16, rope_herd_x))
+    rope_k_ir = str(
+        _build_rope_2d(
+            seq_len, kv_dim, head_dim, bfloat16, rope_herd_x, rope_dim=rope_dim
+        )
+    )
 
     if print_kernels:
         for name, ir in [
@@ -408,8 +437,10 @@ def build_rms_gemms_rope_module(
             _gemm_arg_map(2, 7, 8, scratch_for[2]),
             extern_syms={"@matmul_bf16"} | _gemm_externs(v_spec),
         ),
-        KernelSlice(rope_q_ir, "rq", {0: 4, 1: 9, 2: 11}, extern_syms={"@rope"}),
-        KernelSlice(rope_k_ir, "rk", {0: 6, 1: 10, 2: 12}, extern_syms={"@rope"}),
+        # The rope leaf symbol must not be prefix-renamed; partial rotary calls a
+        # different one (@rope_partial), so the pin has to follow rope_dim.
+        KernelSlice(rope_q_ir, "rq", {0: 4, 1: 9, 2: 11}, extern_syms={_rope_sym}),
+        KernelSlice(rope_k_ir, "rk", {0: 6, 1: 10, 2: 12}, extern_syms={_rope_sym}),
     ]
 
     module = stitch_elf(
