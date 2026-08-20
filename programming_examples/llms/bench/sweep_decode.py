@@ -72,7 +72,18 @@ def _run(cmd, cwd=None, timeout=5400, env=None):
     )
 
 
-def build_templates(makefile, ctx, workdir, template_dir, log):
+def _make_vars(args):
+    """Toolchain overrides to hand `make`, in the same form the other lits use.
+
+    lit supplies these as substitutions rather than in the environment, and the
+    runner shells out to make itself, so without forwarding them every build
+    fails at preflight-peano. The profile/verify lits pass PEANO_INSTALL_DIR on
+    each make line for exactly this reason.
+    """
+    return [f"PEANO_INSTALL_DIR={args.peano_dir}"] if args.peano_dir else []
+
+
+def build_templates(makefile, ctx, workdir, template_dir, log, args):
     """Build the decode_L{ctx} / decode_L{ctx-1} pair and stage it in workdir.
 
     Uses _compile_decode_build, not compile-decode: the latter is idempotent on
@@ -87,7 +98,10 @@ def build_templates(makefile, ctx, workdir, template_dir, log):
                 (d / f"decode_L{l}.{ext}").unlink(missing_ok=True)
     shutil.rmtree(FUSED_DECODE / "air_project", ignore_errors=True)
 
-    r = _run(["make", "-f", str(makefile), "_compile_decode_build", f"LBUILD={ctx}"])
+    r = _run(
+        ["make", "-f", str(makefile), "_compile_decode_build", f"LBUILD={ctx}"]
+        + _make_vars(args)
+    )
     log.write_text(r.stdout + r.stderr)
     if r.returncode != 0:
         err = re.search(
@@ -178,6 +192,11 @@ def main():
         "--workdir", type=Path, default=Path("sweep_out"), help="per-context scratch"
     )
     p.add_argument(
+        "--peano-dir",
+        default="",
+        help="Peano install (lit's %PEANO_INSTALL_DIR), forwarded to make.",
+    )
+    p.add_argument(
         "--xrt-dir",
         default="",
         help="XRT install (lit's %XRT_DIR). bench_decode.exe's build rule needs "
@@ -199,7 +218,8 @@ def main():
             if not env.get("XILINX_XRT") and a.xrt_dir:
                 env["XILINX_XRT"] = a.xrt_dir
             r = _run(
-                ["make", "-f", str(FUSED_DECODE / "Makefile"), "bench-decode-exe"],
+                ["make", "-f", str(FUSED_DECODE / "Makefile"), "bench-decode-exe"]
+                + _make_vars(a),
                 env=env,
             )
             if not BENCH_EXE.exists():
@@ -229,7 +249,7 @@ def main():
         }
 
         xclbin, err = build_templates(
-            a.makefile, ctx, wd, a.template_dir, wd / "build.log"
+            a.makefile, ctx, wd, a.template_dir, wd / "build.log", a
         )
         if err:
             rec.update(status=err.split(":")[0], detail=err)
