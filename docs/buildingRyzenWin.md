@@ -213,7 +213,7 @@ If you would rather not clone MLIR-AIE, you need the CMake modules and the `mlir
 ```bat
 git clone --depth 1 https://github.com/Xilinx/cmakeModules.git C:\dev\cmakeModules
 pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
-pip install -r utils\requirements_dev.txt
+pip install -r C:\dev\mlir-air\utils\requirements_dev.txt
 ```
 
 ### 6.2 Stage LLVM/MLIR
