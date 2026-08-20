@@ -367,3 +367,36 @@ class FusedDecode3B:
             self.y_bo.map(), dtype=bfloat16, count=voc_n, offset=self.decode_y * 2
         ).astype(np.float32)
         return yv[: self.VOCAB_SIZE]
+
+    # Kernels, insts states and BOs are all created against self.dev, but
+    # self.dev is assigned first and CPython clears an instance __dict__ in
+    # insertion order, so the device is released before the objects that
+    # depend on it. Linux XRT tolerates that; Windows XRT faults with an
+    # access violation while the decoder is collected. `ib` and `_st` alias
+    # into `_ist`, so they have to be dropped ahead of it or they keep that
+    # state (and its cacheable BO) alive past the device.
+    _XRT_RELEASE_ORDER = (
+        "ib",
+        "_st",
+        "_ist",
+        "kvc",
+        "y_bo",
+        "r_bo",
+        "w_bo",
+        "x_bo",
+        "kern",
+        "_kern",
+        "dev",
+    )
+
+    def close(self):
+        """Release the XRT objects in reverse dependency order."""
+        for name in self._XRT_RELEASE_ORDER:
+            if name in self.__dict__:
+                self.__dict__[name] = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass

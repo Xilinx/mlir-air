@@ -195,10 +195,14 @@ class QwenFusedDecoder:
                 f"model.layers.{k}.post_attention_layernorm.weight"
             ).astype(bfloat16)
 
-        dev = xrt.device(0)
-        xb = xrt.xclbin(xclbin)
+        # Held on the instance rather than left as locals: the BOs and kernel
+        # below outlive this frame, so the device has to be reachable for as
+        # long as they are, and its release has to be ordered after theirs
+        # (see close()).
+        dev = self._dev = xrt.device(0)
+        xb = self._xb = xrt.xclbin(xclbin)
         dev.register_xclbin(xb)
-        hwc = xrt.hw_context(dev, xb.get_uuid())
+        hwc = self._hwc = xrt.hw_context(dev, xb.get_uuid())
         self.kern = xrt.kernel(
             hwc,
             [q for q in xb.get_kernels() if "MLIR_AIE" in q.get_name()][0].get_name(),
@@ -305,6 +309,34 @@ class QwenFusedDecoder:
             np.float32
         )[m.XO_RMSIN : m.XO_RMSIN + m.K]
         return self._logits(h)
+
+    # Every BO, the insts state and the kernel are created against self._dev,
+    # so the device must be released after all of them. Linux XRT tolerates
+    # the reverse; Windows XRT faults with an access violation as the decoder
+    # is collected.
+    _XRT_RELEASE_ORDER = (
+        "_st",
+        "y_bo",
+        "kv_bo",
+        "w_bo",
+        "x_bo",
+        "kern",
+        "_hwc",
+        "_xb",
+        "_dev",
+    )
+
+    def close(self):
+        """Release the XRT objects in reverse dependency order."""
+        for name in self._XRT_RELEASE_ORDER:
+            if name in self.__dict__:
+                self.__dict__[name] = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def main():
