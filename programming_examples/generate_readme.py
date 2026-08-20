@@ -586,9 +586,9 @@ def render_llm_sweep(recs, base_url=""):
     These four models are published here instead of in the single-point table:
     decode throughput is dominated by KV streaming and falls by more than 10x
     across this axis, so one number cannot represent them. A blank cell is a
-    context the model does not reach -- at 64k/128k the larger KV caches exceed
-    what XRT will pin as host memory -- which is a real ceiling worth showing
-    rather than a gap to hide.
+    context this runner did not reach, which at 64k/128k means XRT would not pin
+    enough host memory for the KV BO -- a property of the machine rather than of
+    the design, and worth showing rather than hiding.
     """
     if not recs:
         return ""
@@ -634,7 +634,7 @@ Verify column, which comes from the same nightly's `make verify`).
 {sep}
 {chr(10).join(rows)}
 
-— context not reached on this runner (the KV cache exceeds what XRT will pin as host memory)
+— context not reached on this runner (XRT would not pin enough host memory for the KV cache; the limit is the machine's, not the design's)
 """
 
 

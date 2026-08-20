@@ -21,9 +21,11 @@ table.
 
 Per context the run is: build the decode template pair at that ATTN_MAXL, guard
 that the build actually produced a *new* xclbin, then dispatch. Contexts listed
-in --expect-fail may fail without failing the run: at 64k/128k the larger models
-legitimately exhaust the XRT host-memory KV BO, and that ceiling is worth
-recording rather than hiding.
+in --expect-fail may fail without failing the run: whether a model reaches
+64k/128k depends on how much host memory XRT will pin for its KV BO, which has
+been observed to differ between two otherwise similar Krackan boxes. That makes
+it a property of the machine, not of the design, so the point is recorded with
+its status rather than either hidden or allowed to red the job.
 """
 
 import argparse
