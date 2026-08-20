@@ -378,17 +378,12 @@ class FusedDecoder:
         return yv[: self.VOCAB_SIZE]
 
 
-def _prefill_npu(prompt, model, seq_len=None):
-    """Batched AIR prefill on the NPU -> (Kc, Vc, first_token, ttft_s).
+def _build_prefiller(model, seq_len=None):
+    """Construct the AIR prefill engine and load its resident weight BOs.
 
-    Kc/Vc are [NUM_LAYERS, P, DK] roped-K / raw-V, the layout FusedDecoder.seed_kv
-    consumes. The prefill runs at a fixed padded seq_len (the GEMM registry carries
-    the Qwen3-8B shapes at M=2048), so its cost is ~constant in prompt length.
-
-    ttft_s times the prefill dispatch only. Building the engine (ELF cache) and
-    load_weights (Q4NX host dequant of ~6 GB + the one-time write of every weight
-    into its resident BO) are model-load costs paid once per process, and are
-    reported separately."""
+    This is the model-load cost -- the ELF cache plus the Q4NX host dequant of
+    ~6 GB and the one-time write of every weight into its BO. Split out from the
+    per-turn prefill so an interactive session pays it once."""
     import os
     import time
 
@@ -405,6 +400,18 @@ def _prefill_npu(prompt, model, seq_len=None):
         f"{time.perf_counter() - t_load:.1f}s",
         flush=True,
     )
+    return pf
+
+
+def _prefill_turn(pf, prompt):
+    """One batched AIR prefill dispatch -> (Kc, Vc, first_token, ttft_s).
+
+    Kc/Vc are [NUM_LAYERS, P, DK] roped-K / raw-V, the layout FusedDecoder.seed_kv
+    consumes. The prefill runs at a fixed padded seq_len (the GEMM registry carries
+    the Qwen3-8B shapes at M=2048), so its cost is ~constant in prompt length.
+    ttft_s times this dispatch only; the model load is reported separately."""
+    import time
+
     t0 = time.perf_counter()
     logits = pf.prefill(prompt)
     ttft = time.perf_counter() - t0
@@ -412,7 +419,46 @@ def _prefill_npu(prompt, model, seq_len=None):
     return Kc, Vc, int(logits.argmax()), ttft
 
 
-def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True, numpy_prefill=False):
+def _prefill_npu(prompt, model, seq_len=None):
+    """Load the prefill engine and run one prompt through it (the one-shot path)."""
+    return _prefill_turn(_build_prefiller(model, seq_len), prompt)
+
+
+def _decode_loop(dec, prompt, first, n_tokens, Kc, Vc, on_token=None, stop_on_eos=True):
+    """Seed the KV cache and run the fused per-token decode -> (gen_ids, seconds).
+
+    gen_ids[0] is `first` (the prefill's own token), so n_generated is len-1.
+    `on_token` is called with each newly decoded id, for streaming."""
+    import time
+
+    P = Kc.shape[1]
+    dec.seed_kv(Kc, Vc, P)
+    tokens = list(prompt) + [first]
+    gen_ids = [first]
+    n_eff = min(n_tokens, dec.ATTN_MAXL - P)
+    t_dec0 = time.perf_counter()
+    for p in range(P, P + n_eff):
+        lg = dec.dispatch(tokens[p], p)
+        pred = int(lg.argmax())
+        if pred in EOS_IDS and stop_on_eos:
+            print(f"[inference] pos{p} L={p+1} -> EOS ({pred}), stop", flush=True)
+            break
+        gen_ids.append(pred)
+        if on_token:
+            on_token(pred)
+        if p + 1 >= len(tokens):
+            tokens.append(pred)
+    return gen_ids, time.perf_counter() - t_dec0
+
+
+def generate(
+    prompt,
+    n_tokens,
+    model=MODEL_DEFAULT,
+    greedy=True,
+    numpy_prefill=False,
+    stop_on_eos=True,
+):
     import numpy as np, time
     import qwen3_8b_q4nx_weights as gw
 
@@ -442,24 +488,12 @@ def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True, numpy_prefill=F
         max_L=P + n_tokens,
         staircase=os.environ.get("DECODE_STAIRCASE") == "1",
     )
-    n_eff = min(n_tokens, dec.ATTN_MAXL - P)
-    if n_eff <= 0:
+    if P >= dec.ATTN_MAXL:
         print(f"[inference] P={P} >= ATTN_MAXL={dec.ATTN_MAXL}; abort")
         return [first]
-    dec.seed_kv(Kc, Vc, P)
-    tokens = list(prompt) + [first]
-    gen_ids = [first]
-    t_dec0 = time.perf_counter()
-    for p in range(P, P + n_eff):
-        lg = dec.dispatch(tokens[p], p)
-        pred = int(lg.argmax())
-        if pred in EOS_IDS:
-            print(f"[inference] pos{p} L={p+1} -> EOS ({pred}), stop", flush=True)
-            break
-        gen_ids.append(pred)
-        if p + 1 >= len(tokens):
-            tokens.append(pred)
-    t_dec = time.perf_counter() - t_dec0
+    gen_ids, t_dec = _decode_loop(
+        dec, prompt, first, n_tokens, Kc, Vc, stop_on_eos=stop_on_eos
+    )
     n_gen = len(gen_ids) - 1
     if n_gen > 0:
         print(
@@ -514,6 +548,82 @@ def _detok(ids, model=MODEL_DEFAULT):
         return f"(no detok: {e}) ids={ids}"
 
 
+def _format_prompt(tokenizer, text):
+    """Chat-template one turn -> a flat list of ids.
+
+    Two template kwargs, each needed and each optional depending on the tokenizer:
+    `enable_thinking=False` because Qwen3 is a hybrid reasoning model and its
+    template otherwise opens a <think> block that eats a short generation budget,
+    and `user_system_prompt` because the FastFlowLM bundle's template references
+    that variable unguarded and raises without it. Degrades to raw encoding."""
+    msg = [{"role": "user", "content": text}]
+    out = None
+    for kw in ({"enable_thinking": False, "user_system_prompt": ""}, {}):
+        try:
+            out = tokenizer.apply_chat_template(
+                msg, tokenize=True, add_generation_prompt=True, **kw
+            )
+            break
+        except Exception:
+            continue
+    if out is None:
+        out = tokenizer(text)["input_ids"]
+    # tokenize=True returns a BatchEncoding on current transformers and a plain
+    # list on older ones; either may be batched.
+    ids = out["input_ids"] if hasattr(out, "keys") else out
+    if len(ids) and isinstance(ids[0], (list, tuple)):
+        ids = ids[0]
+    return [int(t) for t in ids]
+
+
+def repl(model=MODEL_DEFAULT, n_tokens=64):
+    """Interactive chat. The prefill engine and the decode templates are built once
+    and held across turns, so only the first turn pays the model load."""
+    import os
+
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(model)
+    pf = _build_prefiller(model)
+    dec = FusedDecoder(model=model, staircase=os.environ.get("DECODE_STAIRCASE") == "1")
+    print(
+        f"\nInteractive chat (Ctrl-D or 'exit' to quit). "
+        f"{n_tokens} tokens/turn, context <= {dec.ATTN_MAXL}."
+    )
+    while True:
+        try:
+            line = input("\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not line or line in ("exit", "quit"):
+            break
+        ids = _format_prompt(tokenizer, line)
+        if len(ids) >= dec.ATTN_MAXL:
+            print(f"[prompt is {len(ids)} tokens, limit {dec.ATTN_MAXL}]")
+            continue
+        # prefill() APPENDS to the prefiller's KV (the causal_lm contract the verify
+        # runner needs), so without this turn 2 reports a context of turn1+turn2 for
+        # a turn-2-length prompt. Turns are independent: the decode's cache is seeded
+        # from this turn's prefill alone, so carrying history would mean re-prefilling
+        # the whole conversation as one prompt. Same single-turn shape as the llama
+        # examples' REPL.
+        pf.clear_context()
+        Kc, Vc, first, ttft = _prefill_turn(pf, ids)
+        out = [first]
+        print(tokenizer.decode(out), end="", flush=True)
+
+        def _emit(tok, _out=out):
+            prev = tokenizer.decode(_out)
+            _out.append(tok)
+            print(tokenizer.decode(_out)[len(prev) :], end="", flush=True)
+
+        gen_ids, t_dec = _decode_loop(dec, ids, first, n_tokens, Kc, Vc, on_token=_emit)
+        n_gen = len(gen_ids) - 1
+        rate = f"{n_gen / t_dec:.2f} tok/s" if n_gen and t_dec else "-"
+        print(f"\n[{len(ids)} prompt tok, TTFT {ttft:.2f}s | {n_gen} gen, {rate}]")
+
+
 def main():
     ap = argparse.ArgumentParser(description="qwen3_8b_q4nx full inference (decode)")
     ap.add_argument("--prompt", type=str, default=None, help="prompt text")
@@ -528,20 +638,43 @@ def main():
         help="seed the KV cache with the numpy reference forward instead of the "
         "AIR NPU prefill (the oracle it is checked against; tens of seconds)",
     )
+    ap.add_argument(
+        "--no-eos-stop",
+        action="store_true",
+        help="keep generating past EOS, so the decode rate is measured over the "
+        "full --n-tokens (what `make profile` wants)",
+    )
+    ap.add_argument(
+        "--interactive",
+        action="store_true",
+        help="chat REPL: build the engine once and hold it across turns",
+    )
     args = ap.parse_args()
+
+    if args.interactive:
+        if args.numpy_prefill:
+            ap.error("--interactive cannot be combined with --numpy-prefill")
+        repl(model=args.model, n_tokens=args.n_tokens)
+        return
 
     if args.prompt_ids:
         prompt = [int(x) for x in args.prompt_ids.split(",")]
     elif args.prompt:
         from transformers import AutoTokenizer
 
-        prompt = AutoTokenizer.from_pretrained(args.model).encode(args.prompt)
+        # Chat-templated, same as the REPL: raw-encoding an instruction gives a
+        # continuation rather than an answer. --prompt-ids stays literal.
+        prompt = _format_prompt(AutoTokenizer.from_pretrained(args.model), args.prompt)
     else:
         prompt = PARIS_PROMPT
     print(f"[inference] prompt = {len(prompt)} tokens: {prompt}", flush=True)
 
     gen_ids = generate(
-        prompt, args.n_tokens, model=args.model, numpy_prefill=args.numpy_prefill
+        prompt,
+        args.n_tokens,
+        model=args.model,
+        numpy_prefill=args.numpy_prefill,
+        stop_on_eos=not args.no_eos_stop,
     )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")

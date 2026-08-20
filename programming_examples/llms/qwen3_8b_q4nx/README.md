@@ -92,6 +92,10 @@ make prefill      # or: make verify-paris
 # A single Q&A turn on your own prompt.
 make ask PROMPT="What is the capital of France?" N_TOKENS=32
 
+# Interactive chat, streaming. The engine is built once and held across turns,
+# so only the first turn pays the model load. Turns are independent.
+make chat N_TOKENS=64
+
 # Decode throughput over N_TOKENS tokens (needs the production templates).
 make profile N_TOKENS=64
 

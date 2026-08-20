@@ -74,6 +74,9 @@ N_TOKENS ?= $(if $(NTOK),$(NTOK),64)
 # the only prompt the *** PARIS *** gate is defined for.
 PROMPT   ?=
 PROMPT_ARG := $(if $(PROMPT),--prompt "$(PROMPT)",)
+# `profile` publishes context_len to the nightly dashboard, so it measures a real
+# prompt rather than the 5-token Paris gate one. PROMPT overrides it.
+PROFILE_PROMPT := $(if $(PROMPT),$(PROMPT),What is the capital of France?)
 
 # Weight source: HF repo id (model.q4nx bundle) or a local dir/file. Read by the
 # driver as Q4NX_MODEL_SOURCE.
@@ -96,7 +99,7 @@ MODEL_CHOICE   ?= instruct
 MAX_PROMPTS    ?= 2
 
 .PHONY: help compile compile-prefill compile-decode compile-decode-dynseq compile-decode-windows _compile_decode_build prefill \
-        run ask verify verify-full verify-paris diagnosis profile profile-prefill gen clean
+        run ask chat verify verify-full verify-paris diagnosis profile profile-prefill gen clean
 
 help:
 	@echo "============================================================"
@@ -109,6 +112,7 @@ help:
 	@echo "  make compile-decode      Decode templates only (weight-free)"
 	@echo "  make run                 Decode 'The capital of France is' -> Paris gate"
 	@echo "  make ask PROMPT=\"...\"    Single Q&A turn"
+	@echo "  make chat                Interactive chat REPL (streaming output)"
 	@echo "  make verify              Top-k token-set gate vs HF bf16 (2 prompts x 32 tokens, k=5)"
 	@echo "  make verify-full         Same over every prompt in the shared prompt file"
 	@echo "  make verify-paris        Fast prefill-only weight-integrity gate"
@@ -234,6 +238,12 @@ ask:
 	@cd $(srcdir) && python3 qwen3_8b_q4nx_inference.py \
 		--n-tokens $(N_TOKENS) $(PROMPT_ARG)
 
+## Interactive chat REPL (streaming). The prefill engine and decode templates are
+## built once and held across turns, so only the first turn pays the model load.
+chat:
+	@cd $(srcdir) && python3 qwen3_8b_q4nx_inference.py \
+		--interactive --n-tokens $(N_TOKENS)
+
 ## Top-k token-set inclusion gate (NPU q4nx vs HF bf16, 2 prompts x 32 tokens,
 ## k=5) -- the same gate, through the same shared verify/ subsystem, as the other
 ## quantized examples.
@@ -278,7 +288,8 @@ profile-prefill:
 ## Tokens/second lines the nightly LLM benchmark extracts). Needs production
 ## templates: make compile.
 profile:
-	@cd $(srcdir) && python3 qwen3_8b_q4nx_inference.py --n-tokens $(N_TOKENS)
+	@cd $(srcdir) && python3 qwen3_8b_q4nx_inference.py \
+		--n-tokens $(N_TOKENS) --no-eos-stop --prompt "$(PROFILE_PROMPT)"
 
 ## Back-compat alias for the Paris gate.
 gen: run
