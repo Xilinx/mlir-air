@@ -1,43 +1,69 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Tiled int16 matrix multiplication on air.api.
+
+The schedule is unchanged from the raw-bindings version this replaces, because
+it is the schedule the AIE2 matmul intrinsic and the transform script both
+expect:
+
+    air.launch (m/tile_m/herd_m, n/tile_n/herd_n)   one segment per output tile
+      air.segment
+        L2: flat staging buffers, each exactly the L3 region it holds
+        L1: an accumulator shared by the herd, micro-tiled -- seg.shared()
+        herd            zero the accumulator
+        for k2 in air.sequential(0, k, tile_k_l2)
+            L3 -> L2 for A and B
+            herd
+                L1: micro-tiled A and B tiles
+                for k1 in air.sequential(0, tile_k_l2, tile_k_l1)
+                    L2 -> L1, then acc += a @ b
+        herd            drain the accumulator to L2
+        L2 -> L3
+
+One layout does the work, and it is not a memref layout attribute -- it is
+carried by the *shape*, with the reordering derived into the DMA access pattern:
+
+  * ``air.micro_tile(m, k, n)`` gives the L1 tiles their micro-blocked shape,
+    ``[1, 1, K/k, M/m, m, k]`` and friends. This is what makes the contraction
+    expressible as the 6-D ``block_matmul`` the intrinsic wants, and what
+    ``mm.cc`` was compiled against (``-DDIM_M``/``-DDIM_K``/``-DDIM_N``).
+  * The L2 staging buffers are *flat* -- each is exactly the L3 region it
+    holds. Filling and draining them are then plain shape-matching transfers,
+    and a core slices its own sub-region out with ordinary arithmetic on its
+    tile coordinate.
+
+Both lowering routes are supported, exactly as before and chosen by the same
+flag. ``--direct-codegen`` runs the transform script below on the built module,
+vectorising the contraction in place; without it, ``lower_linalg_to_func`` swaps
+the contraction for a call into ``mm.o``. The DSL needs no special support for
+either: ``launch.build()`` hands back the module for the script to rewrite, and
+the backend kwargs reach ``XRTBackend`` untouched.
+"""
+
 import argparse
 import os
 import sys
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.linalg import fill
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.ir import Module
+from air.backend.xrt_runner import XRTRunner
 from air.backend.xrt import XRTBackend
-from air.extras import types as extrasT
-from air.dialects.linalg.opdsl.lang import *
-import air.dialects.linalg.opdsl.lang as linalg_lang
+from air.compiler.util import run_transform
+
+from air import api as air
+from air.api import i16
 
 import numpy as np
 
 np.random.seed(42)
 
-range_ = for_
+# The AIE2 matmul intrinsic's operand shape, per architecture. The int16 MAC is
+# 4x4x4 on aie2 and 8x2x8 on aie2p.
+MMUL_MKN = {"aie2": (4, 4, 4), "aie2p": (8, 2, 8)}
+
+# air.api dtypes, keyed by the numpy dtype the harness works in.
+DTYPE = {np.int16: i16}
 
 
-@linalg_structured_op()
-def block_matmul(
-    A=TensorDef(linalg_lang.TV.T1, S.a, S.c, S.f, S.d, S.g, S.i),
-    B=TensorDef(linalg_lang.TV.T2, S.b, S.c, S.e, S.f, S.i, S.h),
-    C=TensorDef(linalg_lang.TV.U, S.b, S.a, S.e, S.d, S.g, S.h, output=True),
-):
-    domain(D.a, D.b, D.c, D.d, D.e, D.f, D.g, D.h, D.i)
-    C[D.b, D.a, D.e, D.d, D.g, D.h] += (
-        TypeFn.cast_signed(linalg_lang.TV.U, A[D.a, D.c, D.f, D.d, D.g, D.i])
-    ) * (TypeFn.cast_signed(linalg_lang.TV.U, B[D.b, D.c, D.e, D.f, D.i, D.h]))
-
-
-@module_builder
 def build_module(
     m,
     k,
@@ -52,394 +78,122 @@ def build_module(
     np_dtype_out,
     arch="aie2",
 ):
-    assert m % tile_m == 0
+    assert m % (tile_m * herd_m) == 0
+    assert n % (tile_n * herd_n) == 0
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
-    assert n % tile_n == 0
-    a_size = [m, k]
-    b_size = [k, n]
-    c_size = [m, n]
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    xrt_dtype_out = type_mapper(np_dtype_out)
 
-    # Architecture-specific matrix multiplication dimensions
-    if arch == "aie2p":
-        mmul_mkn = [8, 2, 8]
-    else:  # aie2
-        mmul_mkn = [4, 4, 4]
+    dt_in, dt_out = DTYPE[np_dtype_in], DTYPE[np_dtype_out]
+    mm = air.micro_tile(*MMUL_MKN[arch])
 
-    # L3 MemRefTypes
-    memrefTyA = MemRefType.get(a_size, xrt_dtype_in)
-    memrefTyB = MemRefType.get(b_size, xrt_dtype_in)
-    memrefTyOut = MemRefType.get(c_size, xrt_dtype_out)
+    # One segment covers herd_m x herd_n output tiles; the launch grid covers
+    # the rest of M and N. The outer tiling has to sit here rather than in the
+    # herd because the L2 staging buffers are refilled per launch point.
+    seg_m, seg_n = tile_m * herd_m, tile_n * herd_n
 
-    # L1 MemRefTypes
-    l1_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L1)
-    a_l1_size = [
-        1,
-        1,
-        tile_k_l1 // mmul_mkn[1],
-        tile_m // mmul_mkn[0],
-        mmul_mkn[0],
-        mmul_mkn[1],
-    ]
-    b_l1_size = [
-        1,
-        1,
-        tile_n // mmul_mkn[2],
-        tile_k_l1 // mmul_mkn[1],
-        mmul_mkn[1],
-        mmul_mkn[2],
-    ]
-    c_l1_size = [
-        1,
-        1,
-        tile_n // mmul_mkn[2],
-        tile_m // mmul_mkn[0],
-        mmul_mkn[0],
-        mmul_mkn[2],
-    ]
-    c_herd_l1_size = [
-        herd_m,
-        herd_n,
-        tile_n // mmul_mkn[2],
-        tile_m // mmul_mkn[0],
-        mmul_mkn[0],
-        mmul_mkn[2],
-    ]
-    l1MemrefTyA = MemRefType.get(
-        shape=a_l1_size,
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
-    l1MemrefTyB = MemRefType.get(
-        shape=b_l1_size,
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
-    # Each core's result buffer is a subview of the global result buffer
-    layout = StridedLayoutAttr.get(
-        ShapedType.get_dynamic_size(),
-        [
-            tile_m * tile_n * herd_n,
-            tile_m * tile_n,
-            tile_m * mmul_mkn[2],
-            mmul_mkn[0] * mmul_mkn[2],
-            mmul_mkn[2],
-            1,
-        ],
-    )
-    l1MemrefTyC = MemRefType.get(
-        shape=c_l1_size,
-        element_type=xrt_dtype_out,
-        memory_space=l1_mem_space,
-        layout=layout,
-    )
-    l1MemrefTyCHerd = MemRefType.get(
-        shape=c_herd_l1_size,
-        element_type=xrt_dtype_out,
-        memory_space=l1_mem_space,
-    )
+    A = air.tensor([m, k], dt_in)
+    B = air.tensor([k, n], dt_in)
+    C = air.tensor([m, n], dt_out)
 
-    @FuncOp.from_py_func(memrefTyA, memrefTyB, memrefTyOut)
-    def matmul_bf16(arg0, arg1, arg2):
+    # Unlike the elementwise conversions, the target is *pinned* from --arch by
+    # the caller (see launch.build below). It has to be: --arch already selects
+    # the micro-tile, so the module is architecture-specific before the herd is
+    # even sized, and letting the two disagree would build for one generation
+    # while shaped for the other.
+    with air.launch(name="matmul_i16") as launch:
 
-        launch_size = [m // tile_m // herd_m, n // tile_n // herd_n]
+        @launch.body
+        def _():
+            with air.segment(
+                [range(0, m, seg_m), range(0, n, seg_n)], name="matmul_seg"
+            ) as seg:
 
-        @launch(operands=[arg0, arg1, arg2], sizes=launch_size)
-        def launch_body(
-            launch_ivx,
-            launch_ivy,
-            launch_sizex,
-            launch_sizey,
-            l3_a_data,
-            l3_b_data,
-            l3_c_data,
-        ):
-            @segment(
-                name="matmul_seg",
-                operands=[launch_ivx, launch_ivy, l3_a_data, l3_b_data, l3_c_data],
-            )
-            def segment_body(
-                launch_ivx_s,
-                launch_ivy_s,
-                l3_a_data_s,
-                l3_b_data_s,
-                l3_c_data_s,
-            ):
-                # L2 MemRefTypes
-                a_size_l2 = [herd_m, 1, tile_m, tile_k_l2]
-                b_size_l2 = [1, herd_n, tile_k_l2, tile_n]
-                c_size_l2 = [herd_m, herd_n, tile_m, tile_n]
-                l2_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L2)
-                l2MemrefTyA = MemRefType.get(
-                    shape=a_size_l2,
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
-                l2MemrefTyB = MemRefType.get(
-                    shape=b_size_l2,
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
-                l2MemrefTyC = MemRefType.get(
-                    shape=c_size_l2,
-                    element_type=xrt_dtype_out,
-                    memory_space=l2_mem_space,
-                )
-                # L2 memref allocs
-                l2_a_data = AllocOp(l2MemrefTyA, [], [])
-                l2_b_data = AllocOp(l2MemrefTyB, [], [])
-                l2_c_data = AllocOp(l2MemrefTyC, [], [])
-                # L1 memref allocs
-                # l1_a and l1_b are allocated inside the compute herd (the
-                # only herd that uses them) so they have unambiguous per-PE
-                # semantics.
-                l1_c_data = AllocOp(l1MemrefTyCHerd, [], [])
+                @seg.body
+                def _(si, sj):
+                    row, col = si * seg_m, sj * seg_n
 
-                # Affine map for launch iv
-                launch_ix_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_m * herd_m),
-                        )
-                    ],
-                )
-                launch_iy_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_n * herd_n),
-                        )
-                    ],
-                )
-                launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
-                launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
-
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_m, herd_n],
-                    operands=[l1_c_data],
-                )
-                def herd_body(
-                    _tx,
-                    _ty,
-                    _sx,
-                    _sy,
-                    _l1_c,
-                ):
-
-                    l1_c_subview = subview(
-                        _l1_c,
-                        offsets=[_tx, _ty, 0, 0, 0, 0],
-                        sizes=[
-                            1,
-                            1,
-                            tile_n // mmul_mkn[2],
-                            tile_m // mmul_mkn[0],
-                            mmul_mkn[0],
-                            mmul_mkn[2],
-                        ],
-                        strides=[1, 1, 1, 1, 1, 1],
-                    )
-                    zero_const = ConstantOp(IntegerAttr.get(xrt_dtype_out, 0), None)
-                    zero_fill = fill(zero_const, outs=[l1_c_subview])
-
-                for i in range_(0, k // tile_k_l2):
-                    # Affine map for k (l2) loop iv
-                    reduction_l2_iv_map = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(tile_k_l2),
-                            )
-                        ],
-                    )
-                    reduction_offset = affine_apply(reduction_l2_iv_map, [i])
-                    dma_memcpy_nd(
-                        l2_a_data,
-                        l3_a_data_s,
-                        src_offsets=[0, 0, launch_offset_x, reduction_offset],
-                        src_sizes=[herd_m, 1, tile_m, tile_k_l2],
-                        src_strides=[k * tile_m, tile_k_l2, k, 1],
-                    )
-                    dma_memcpy_nd(
-                        l2_b_data,
-                        l3_b_data_s,
-                        src_offsets=[0, 0, reduction_offset, launch_offset_y],
-                        src_sizes=[1, herd_n, tile_k_l2, tile_n],
-                        src_strides=[n * tile_k_l2, tile_n, n, 1],
+                    # L2 staging is flat: each buffer is exactly the region of
+                    # L3 it holds, so filling and draining it are plain
+                    # shape-matching transfers and each core slices its own
+                    # sub-region out. For A this is also byte-identical to the
+                    # predecessor's [herd_m, 1, tile_m, tile_k_l2] -- row-major
+                    # [a, 1, b, c] and [a*b, c] are the same buffer.
+                    l2_a = air.alloc([seg_m, tile_k_l2], dt_in, scope=seg.private())
+                    l2_b = air.alloc([tile_k_l2, seg_n], dt_in, scope=seg.private())
+                    l2_c = air.alloc([seg_m, seg_n], dt_out, scope=seg.private())
+                    # The accumulator outlives each entry into the compute herd,
+                    # because the k2 reduction is at segment scope, so it is
+                    # allocated here and carries one slab per core.
+                    acc = air.alloc(
+                        mm.c(tile_m, tile_n, lead=(herd_m, herd_n)),
+                        dt_out,
+                        scope=seg.shared(),
                     )
 
-                    @herd(
+                    with air.herd(
+                        [range(herd_m), range(herd_n)],
                         name="herd_0",
-                        sizes=[herd_m, herd_n],
-                        operands=[
-                            l1_c_data,
-                            l2_a_data,
-                            l2_b_data,
-                        ],
-                    )
-                    def herd_body(
-                        _tx,
-                        _ty,
-                        _sx,
-                        _sy,
-                        _l1_c,
-                        _l2_a,
-                        _l2_b,
-                    ):
-                        # L1 A/B allocated inside compute herd: unambiguous per-PE buffers
-                        _l1_a = AllocOp(l1MemrefTyA, [], [])
-                        _l1_b = AllocOp(l1MemrefTyB, [], [])
-                        for j in range_(0, tile_k_l2 // tile_k_l1):
-                            # Affine map for k (l1) loop iv
-                            reduction_l1_iv_map = AffineMap.get(
-                                0,
-                                1,
-                                [
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(0),
-                                        AffineConstantExpr.get(tile_k_l1),
+                        shape=(herd_m, herd_n),
+                    ) as zero_herd:
+
+                        @zero_herd.body
+                        def _(tx, ty):
+                            acc[:] = 0
+
+                    for k2 in air.sequential(0, k, tile_k_l2):
+                        air.ops.load(l2_a, A[row : row + seg_m, k2 : k2 + tile_k_l2])
+                        air.ops.load(l2_b, B[k2 : k2 + tile_k_l2, col : col + seg_n])
+
+                        with air.herd(
+                            [range(herd_m), range(herd_n)],
+                            name="herd_0",
+                            shape=(herd_m, herd_n),
+                        ) as h:
+
+                            @h.body
+                            def _(tx, ty):
+                                l1_a = air.alloc(
+                                    mm.a(tile_m, tile_k_l1), dt_in, scope=h.private()
+                                )
+                                l1_b = air.alloc(
+                                    mm.b(tile_k_l1, tile_n), dt_in, scope=h.private()
+                                )
+                                for k1 in air.sequential(0, tile_k_l2, tile_k_l1):
+                                    air.ops.load(
+                                        l1_a,
+                                        l2_a[
+                                            tx * tile_m : tx * tile_m + tile_m,
+                                            k1 : k1 + tile_k_l1,
+                                        ],
                                     )
+                                    air.ops.load(
+                                        l1_b,
+                                        l2_b[
+                                            k1 : k1 + tile_k_l1,
+                                            ty * tile_n : ty * tile_n + tile_n,
+                                        ],
+                                    )
+                                    air.ops.dot(l1_a, l1_b, acc=acc)
+
+                    with air.herd(
+                        [range(herd_m), range(herd_n)],
+                        name="herd_0",
+                        shape=(herd_m, herd_n),
+                    ) as drain_herd:
+
+                        @drain_herd.body
+                        def _(tx, ty):
+                            air.ops.store(
+                                acc[tx, ty, :, :],
+                                l2_c[
+                                    tx * tile_m : tx * tile_m + tile_m,
+                                    ty * tile_n : ty * tile_n + tile_n,
                                 ],
                             )
-                            reduction_l1_offset = affine_apply(reduction_l1_iv_map, [j])
-                            dma_memcpy_nd(
-                                _l1_a,
-                                _l2_a,
-                                src_offsets=[_tx, 0, 0, 0, 0, reduction_l1_offset],
-                                src_sizes=[
-                                    1,
-                                    1,
-                                    tile_k_l1 // mmul_mkn[1],
-                                    tile_m // mmul_mkn[0],
-                                    mmul_mkn[0],
-                                    mmul_mkn[1],
-                                ],
-                                src_strides=[
-                                    tile_m * tile_k_l2,
-                                    tile_m * tile_k_l2,
-                                    mmul_mkn[1],
-                                    tile_k_l2 * mmul_mkn[0],
-                                    tile_k_l2,
-                                    1,
-                                ],
-                            )
-                            dma_memcpy_nd(
-                                _l1_b,
-                                _l2_b,
-                                src_offsets=[0, _ty, 0, 0, reduction_l1_offset, 0],
-                                src_sizes=[
-                                    1,
-                                    1,
-                                    tile_n // mmul_mkn[2],
-                                    tile_k_l1 // mmul_mkn[1],
-                                    mmul_mkn[1],
-                                    mmul_mkn[2],
-                                ],
-                                src_strides=[
-                                    herd_n * tile_n * tile_k_l2,
-                                    tile_n * tile_k_l2,
-                                    mmul_mkn[2],
-                                    tile_n * mmul_mkn[1],
-                                    tile_n,
-                                    1,
-                                ],
-                            )
-                            l1_c_subview = subview(
-                                _l1_c,
-                                offsets=[_tx, _ty, 0, 0, 0, 0],
-                                sizes=[
-                                    1,
-                                    1,
-                                    tile_n // mmul_mkn[2],
-                                    tile_m // mmul_mkn[0],
-                                    mmul_mkn[0],
-                                    mmul_mkn[2],
-                                ],
-                                strides=[1, 1, 1, 1, 1, 1],
-                            )
-                            matmul = block_matmul(_l1_a, _l1_b, outs=[l1_c_subview])
-                            yield_([])
 
-                        DeallocOp(_l1_a)
-                        DeallocOp(_l1_b)
+                    air.ops.store(l2_c, C[row : row + seg_m, col : col + seg_n])
 
-                    yield_([])
-
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_m, herd_n],
-                    operands=[
-                        l1_c_data,
-                        l2_a_data,
-                        l2_b_data,
-                        l2_c_data,
-                    ],
-                )
-                def herd_body(
-                    _tx,
-                    _ty,
-                    _sx,
-                    _sy,
-                    _l1_c,
-                    _l2_a,
-                    _l2_b,
-                    _l2_c,
-                ):
-                    dma_memcpy_nd(
-                        _l2_c,
-                        _l1_c,
-                        dst_offsets=[_tx, _ty, 0, 0],
-                        dst_sizes=[1, 1, tile_m, tile_n],
-                        dst_strides=[
-                            herd_n * tile_m * tile_n,
-                            tile_m * tile_n,
-                            tile_n,
-                            1,
-                        ],
-                        src_offsets=[_tx, _ty, 0, 0, 0, 0],
-                        src_sizes=[
-                            1,
-                            1,
-                            tile_m // mmul_mkn[0],
-                            mmul_mkn[0],
-                            tile_n // mmul_mkn[2],
-                            mmul_mkn[2],
-                        ],
-                        src_strides=[
-                            herd_n * tile_m * tile_n,
-                            tile_m * tile_n,
-                            mmul_mkn[2] * mmul_mkn[0],
-                            mmul_mkn[2],
-                            tile_m * mmul_mkn[2],
-                            1,
-                        ],
-                    )
-
-                dma_memcpy_nd(
-                    l3_c_data_s,
-                    l2_c_data,
-                    dst_offsets=[launch_offset_x, launch_offset_y],
-                    dst_sizes=[herd_m * tile_m, herd_n * tile_n],
-                    dst_strides=[n, 1],
-                    src_offsets=[0, 0, 0, 0],
-                    src_sizes=[herd_m, tile_m, herd_n, tile_n],
-                    src_strides=[tile_m * herd_n * tile_n, tile_n, tile_m * tile_n, 1],
-                )
-
-                DeallocOp(l2_a_data)
-                DeallocOp(l2_b_data)
-                DeallocOp(l2_c_data)
-                DeallocOp(l1_c_data)
+    return launch
 
 
 if __name__ == "__main__":
@@ -532,6 +286,14 @@ if __name__ == "__main__":
         default="aie2",
         help="Target AIE architecture (aie2 or aie2p)",
     )
+    parser.add_argument(
+        "--perf-iters",
+        type=int,
+        default=0,
+        dest="perf_iters",
+        help="If >0, time the kernel over this many iters (after 10 warmup) and "
+        "print Latency (us) in addition to the correctness check",
+    )
     args = parser.parse_args()
 
     # Check for PEANO_INSTALL_DIR if direct codegen is enabled
@@ -544,7 +306,7 @@ if __name__ == "__main__":
             print("Peano is needed for direct code generation mode.", file=sys.stderr)
             sys.exit(1)
 
-    mlir_module = build_module(
+    launch = build_module(
         args.m,
         args.k,
         args.n,
@@ -558,6 +320,11 @@ if __name__ == "__main__":
         OUTPUT_DATATYPE,
         args.arch,
     )
+
+    # --arch already fixes the micro-tile, so the module is architecture-specific
+    # either way; pinning the target here keeps the herd sized for the part it
+    # will be compiled for.
+    mlir_module = launch.build(target="npu2" if args.arch == "aie2p" else "npu1")
 
     # Vectorization - only run if direct codegen mode is enabled
     if args.direct_codegen:
@@ -584,22 +351,22 @@ if __name__ == "__main__":
                 %matmul = transform.structured.match ops{{["linalg.generic"]}} in %arg1  : (!transform.any_op) -> !transform.any_op
                 %inner_most_matmul, %vec_loops:3 =
                   transform.structured.tile_using_for %matmul tile_sizes [2, 2, 1, 0, 0, 0]
-                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)  
+                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
                 %inner_most_matmul_to_unroll, %vec_loops_to_unroll:2 =
                   transform.structured.tile_using_for %inner_most_matmul tile_sizes [1, 1, 0, 0, 0, 0]
-                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)  
+                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
                 transform.loop.unroll %vec_loops_to_unroll#1 {{factor = 2}} : !transform.any_op
                 transform.loop.unroll %vec_loops_to_unroll#0 {{factor = 2}} : !transform.any_op
 
                 %linalg_fills = transform.structured.match ops{{["linalg.fill"]}} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %inner_most_fills, %vec_fill_loops:2 =
                   transform.structured.tile_using_for %linalg_fills tile_sizes [0, 0, 1, 1]
-                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)  
+                  : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
 
                 %herds = transform.structured.match ops{{["air.herd"]}} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %vectorized_herds = transform.air.herd_vectorize %herds : (!transform.any_op) -> !transform.any_op
-                
+
                 %herd1, %herd2, %herd3 = transform.split_handle %vectorized_herds : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
                 %scf_fors = transform.structured.match ops{{["scf.for"]}} in %herd2 : (!transform.any_op) -> !transform.any_op
 
@@ -616,17 +383,17 @@ if __name__ == "__main__":
                 // Eliminate redundant vector.transfer_read operations
                 %func1_rematch = transform.structured.match ops{{["func.func"]}} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1_rematch : (!transform.any_op) -> !transform.any_op
-                
+
                 // Hoist loop-invariant vector transfers out of innermost loop
                 %herds_1 = transform.structured.match ops{{["air.herd"]}} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                
+
                 %scf_fors_1 = transform.structured.match ops{{["scf.for"]}} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {{overflow_result = 1}} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-                
+
                 %vector_contracts = transform.structured.match ops{{["vector.contract"]}} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %result11 = transform.air.vector_type_cast %vector_contracts {{target_element_type = {vector_acc_type}, input_indices = [2], output_indices = [0]}} : (!transform.any_op) -> !transform.any_op
-                
+
                 // Hoist all accumulator transfer pairs from the innermost loop
                 %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
                 %innermost_for_updated_4 = transform.air.flatten_for_iter_args %innermost_for_updated_3 : (!transform.any_op) -> !transform.any_op
@@ -638,13 +405,13 @@ if __name__ == "__main__":
                 // Hoist the 4 extsi/trunci pairs from the innermost loop
                 %all_extsi_loop = transform.structured.match ops{{["arith.extsi"]}} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
                 %all_trunci_loop = transform.structured.match ops{{["arith.trunci"]}} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
-                
+
                 // Split to get individual operations
                 %extsi_i16_1, %extsi_i16_2, %extsi_i16_3, %extsi_i16_4 = transform.split_handle %all_extsi_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                
+
                 // The 4 trunci ops correspond to the 4 vector.contract results
                 %trunci_1, %trunci_2, %trunci_3, %trunci_4 = transform.split_handle %all_trunci_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                
+
                 // Hoist first pair (arg29 - index 2)
                 %for1_1_hoisted_1 = transform.air.hoist_cast_pair %extsi_i16_1, %trunci_1, %innermost_for1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
                 %all_extsi_loop_2 = transform.structured.match ops{{["arith.extsi"]}} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
@@ -652,14 +419,14 @@ if __name__ == "__main__":
                 %extsi_i16_2_new, %e2_5, %e2_6 = transform.split_handle %all_extsi_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
                 %trunci_2_1, %trunci_2_2, %trunci_2_3 = transform.split_handle %all_trunci_loop_2 {{num_result_handles = 3}} : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
                 %for1_1_hoisted_2 = transform.air.hoist_cast_pair %extsi_i16_2_new, %trunci_2_1, %for1_1_hoisted_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
+
                 // Re-match and hoist third pair
                 %all_extsi_loop_3 = transform.structured.match ops{{["arith.extsi"]}} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
                 %all_trunci_loop_3 = transform.structured.match ops{{["arith.trunci"]}} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
                 %extsi_i16_3_new, %e3_7 = transform.split_handle %all_extsi_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
                 %trunci_3_1, %trunci_3_2 = transform.split_handle %all_trunci_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
                 %for1_1_hoisted_3 = transform.air.hoist_cast_pair %extsi_i16_3_new, %trunci_3_1, %for1_1_hoisted_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
+
                 // Re-match and hoist fourth pair
                 %all_extsi_loop_4 = transform.structured.match ops{{["arith.extsi"]}} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
                 %all_trunci_loop_4 = transform.structured.match ops{{["arith.trunci"]}} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
@@ -691,54 +458,35 @@ if __name__ == "__main__":
     input_b = input_b.astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
-
-        # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
-        num_samples = 100
-        sampled_indices = np.vstack(
-            [
-                np.random.randint(0, args.m, num_samples),  # i indices
-                np.random.randint(0, args.n, num_samples),  # j indices
-            ]
-        )
-
-        # Compute reference results for sampled indices
-        sampled_values = np.array(
-            [
-                np.sum(
-                    (
-                        input_a[i, :].astype(OUTPUT_DATATYPE)
-                        * input_b[:, j].astype(OUTPUT_DATATYPE)
-                    ),
-                    dtype=OUTPUT_DATATYPE,
-                )
-                for i, j in zip(*sampled_indices)
-            ],
-            dtype=OUTPUT_DATATYPE,
-        )
-
-        # Store as a dictionary
-        sampled_data = {
-            "shape": (args.m, args.n),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
+        # Full reference, every element. The predecessor sampled 100 (i, j) pairs
+        # and summed each in OUTPUT_DATATYPE; a whole-array matmul in the same
+        # dtype wraps identically -- verified element-for-element against the
+        # sampled reference on every shape the Makefile builds -- so widening the
+        # check to the whole output does not change what counts as correct.
+        reference = input_a.astype(OUTPUT_DATATYPE) @ input_b.astype(OUTPUT_DATATYPE)
 
         ###### Compile and test
+        # No tolerance is passed, and none applies: XRTRunner compares integer
+        # outputs with np.array_equal, so the gate is bit-exact equality. That is
+        # the same bar the predecessor's stochastic check ran under -- it took
+        # the same exact-equality branch -- now over the whole output instead of
+        # 100 sampled points of it.
         runner_kwargs = {
             "verbose": args.verbose,
             "omit_while_true_loop": False,
             "runtime_loop_tiling_sizes": [2, 2],
+            "n_perf_iters": args.perf_iters,
         }
         # Only use external kernel library if NOT in direct codegen mode
         if not args.direct_codegen:
             runner_kwargs["lower_linalg_to_func"] = "mm.o"
 
-        runner = XRTRunner(**runner_kwargs, instance_name="matmul_bf16")
+        runner = XRTRunner(**runner_kwargs, instance_name="matmul_i16")
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_a, input_b],
-                stochastic_expected_outputs=[sampled_data],
+                expected_outputs=[reference],
             )
         )
 
