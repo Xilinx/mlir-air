@@ -339,16 +339,25 @@ it. A wrapper that layers both:
 call C:\dev\mlir-aie\iron_env.cmd || exit /b 1
 set "MLIR_AIR_INSTALL_DIR=C:\dev\mlir-air\install"
 set "PATH=%MLIR_AIR_INSTALL_DIR%\bin;%PATH%"
-set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
-set "PATH=%LOCALAPPDATA%\Programs\Git\usr\bin;%PATH%"
+
+REM GNU make, plus Git's usr\bin for the sh.exe make uses as its shell. Both
+REM install per-user or machine-wide depending on how they were installed, so
+REM probe rather than assume; add your own directories if either came from
+REM MSYS2 or Chocolatey instead.
+if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links\make.exe" set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
+if exist "%ProgramFiles%\Git\usr\bin\sh.exe" set "PATH=%ProgramFiles%\Git\usr\bin;%PATH%"
+if exist "%LOCALAPPDATA%\Programs\Git\usr\bin\sh.exe" set "PATH=%LOCALAPPDATA%\Programs\Git\usr\bin;%PATH%"
+
+where make >nul 2>&1 || (echo GNU make not found -- see section 1.2. & exit /b 1)
+where sh   >nul 2>&1 || (echo sh.exe not found; is Git for Windows installed? & exit /b 1)
+
 cd /d C:\dev\mlir-air\build
 ninja check-programming-examples-peano
 ```
 
 `iron_env.cmd` supplies XRT — which provides `aiebu-asm.exe`, needed to package a
-full ELF — and `C:\Windows\System32\AMD` for `xrt-smi.exe`. The two added `PATH`
-entries are GNU make and Git's `usr\bin`, which make picks up as its shell. The
-full suite takes roughly 20 minutes on a Krackan Point NPU2.
+full ELF — and `C:\Windows\System32\AMD` for `xrt-smi.exe`. The full suite takes
+roughly 20 minutes on a Krackan Point NPU2.
 
 Use `lit` directly, in the same environment, to run one example:
 
