@@ -187,6 +187,7 @@ jobs:
             --output docs/programming_examples/index.md
           python3 programming_examples/generate_readme.py \
             --section llm --base-url "$BASE" \
+            --llm-history /tmp/llmperf_history/history.ndjson \
             --llm-perf /tmp/llmperf/perf.json \
             --llm-sweep /tmp/llmperf/sweep.json \
             --output docs/llms/index.md

@@ -423,7 +423,15 @@ jobs:
 
           recs = []
           for f in sorted(glob.glob("build_assert/test/llms/**/*.perf.json", recursive=True)):
-              d = json.load(open(f))
+              # A timeout or cancel truncates one model's file mid-write. That
+              # used to raise here and kill the step, so nothing published at
+              # all. Skip the file instead; the vstatus loop below gives the
+              # model a null row if verify ran for it.
+              try:
+                  d = json.load(open(f))
+              except (json.JSONDecodeError, OSError) as e:
+                  print(f"WARNING: {f} unreadable ({e}); recording as failed", file=sys.stderr)
+                  continue
               d["runner"] = "amdryzenai5pro340"
               d["toolchain"] = {
                   "mlir_air_sha": air_sha,
