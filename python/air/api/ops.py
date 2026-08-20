@@ -232,11 +232,17 @@ def _repack_source(dst, src, src_ep):
             "derived; index the source, e.g. l2_a[tx, 0, :, k : k + tile_k]"
         )
     offsets, sizes, strides = src_ep.raw
-    if len(sizes) != len(dst.pack.lead) + 2:
+    nlead = len(dst.pack.lead)
+    # A rank-2 region is padded by pack_pattern when the destination's leading
+    # dimensions are all 1 -- they are structural, required by block_matmul's
+    # 6-D operands, and a flat staging buffer has no such axes to slice.
+    flat_ok = len(sizes) == 2 and all(e == 1 for e in dst.pack.lead)
+    if len(sizes) != nlead + 2 and not flat_ok:
         raise ValueError(
             f"air.api.ops.load into a micro-tiled {dst.pack.role} buffer needs a "
-            f"source region of rank {len(dst.pack.lead) + 2}, with the two "
-            f"logical axes last; got rank {len(sizes)}, {tuple(sizes)}"
+            f"source region of rank {nlead + 2} (or rank 2 when its leading "
+            f"dimensions are all 1), with the two logical axes last; got rank "
+            f"{len(sizes)}, {tuple(sizes)}"
         )
     p_off, p_sizes, p_strides = pack_pattern(dst.pack, sizes, strides, offsets)
     src_ep.pattern = ([o.materialize() for o in p_off], p_sizes, p_strides)
