@@ -1,6 +1,9 @@
-cmake>=3.30
-pybind11
-nanobind>=2.9
+# Constraints mirror mlir-aie's python/requirements_dev.txt; keep them in step.
+cmake>=4.4.2, <5.0
+ninja!=1.13.0
+pybind11>=3.0.4
+# Pinned, not a floor: nanobind ABI-couples to the MLIR distro wheel.
+nanobind==2.12.0
 lit
 # lit requires psutil to set timeouts
 psutil

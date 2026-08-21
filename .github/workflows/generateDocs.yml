@@ -127,21 +127,36 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # --branch main, and skip an empty perf.json: it renders a table with
+          # no rows instead of falling through to the last good run, which is
+          # how the page went blank (a branch's suite-narrowed dispatch uploaded
+          # a 0-model perf.json and every later push to main rebuilt from it).
           for RID in $(gh run list --repo ${{ github.repository }} \
-              --workflow nightlyPerfBenchmark.yml -L 8 \
+              --workflow nightlyPerfBenchmark.yml --branch main -L 8 \
               --json databaseId --jq '.[].databaseId'); do
             echo "Trying perf artifact from nightly run $RID..."
             rm -rf /tmp/llmperf
             gh run download "$RID" --repo ${{ github.repository }} \
               --name "perf-$RID" --dir /tmp/llmperf 2>/dev/null || true
             if [ -f /tmp/llmperf/perf.json ]; then
-              echo "Using perf.json from run $RID"
-              break
+              n=$(python3 -c "import json,sys;print(len(json.load(open('/tmp/llmperf/perf.json'))))" 2>/dev/null || echo 0)
+              if [ "$n" -gt 0 ]; then
+                echo "Using perf.json from run $RID ($n models)"
+                break
+              fi
+              echo "  run $RID has an empty perf.json; skipping"
+              rm -rf /tmp/llmperf
             fi
           done
           test -f /tmp/llmperf/perf.json \
             && echo "perf.json fetched" \
             || echo "no nightly perf artifact with perf.json available"
+          # sweep.json rides in the same artifact but is younger than perf.json,
+          # so an older nightly may have one and not the other. Its absence just
+          # drops the tok/s-vs-context table; the rest of the page still builds.
+          test -f /tmp/llmperf/sweep.json \
+            && echo "sweep.json fetched" \
+            || echo "no sweep.json in that artifact; context table omitted"
 
       # Pull the append-only time series from the durable `perf-history` branch
       # (accumulated by nightlyPerfBenchmark.yml). Best-effort: if the branch
@@ -155,6 +170,9 @@ jobs:
             git show FETCH_HEAD:history.ndjson > /tmp/llmperf_history/history.ndjson \
               && echo "history.ndjson fetched" \
               || echo "perf-history branch has no history.ndjson; empty-state page"
+            git show FETCH_HEAD:sweep_history.ndjson > /tmp/llmperf_history/sweep_history.ndjson \
+              && echo "sweep_history.ndjson fetched" \
+              || echo "perf-history branch has no sweep_history.ndjson"
           else
             echo "no perf-history branch yet; empty-state page"
           fi
@@ -172,7 +190,10 @@ jobs:
             --output docs/programming_examples/index.md
           python3 programming_examples/generate_readme.py \
             --section llm --base-url "$BASE" \
+            --llm-history /tmp/llmperf_history/history.ndjson \
+            --llm-sweep-history /tmp/llmperf_history/sweep_history.ndjson \
             --llm-perf /tmp/llmperf/perf.json \
+            --llm-sweep /tmp/llmperf/sweep.json \
             --output docs/llms/index.md
           python3 programming_examples/generate_perf_history.py \
             --embed --history /tmp/llmperf_history/history.ndjson \

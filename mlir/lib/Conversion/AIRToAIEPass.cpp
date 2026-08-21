@@ -4974,6 +4974,14 @@ public:
     if (failed(tile_dma_alloc.verifyMM2SChains()))
       return failure();
 
+    // Step 3d: packet multiplexing exists to exceed a tile's channel count,
+    // but the allocator applies it before it ever looks for a free channel, so
+    // a shim can carry four flows on MM2S 0 with MM2S 1 idle. Redistribute
+    // onto the free channels now that every allocation is known; collapse that
+    // is load-bearing (bundled sub-channels, broadcasts, pinned/dedicated
+    // flows) is left alone.
+    shim_dma_alloc.spreadCollapsedPacketChannels(memcpy_flows);
+
     // Step 4: Connect flows.
     //
     // Packet flows are assigned pkt_ids in two passes so that within one
@@ -8364,14 +8372,40 @@ public:
 class AIRLinalgOpToLibraryCallRewrite
     : public OpInterfaceRewritePattern<linalg::LinalgOp> {
 public:
-  AIRLinalgOpToLibraryCallRewrite(MLIRContext *ctx, std::string &linkWith)
-      : OpInterfaceRewritePattern(ctx), linkWith(linkWith) {}
+  AIRLinalgOpToLibraryCallRewrite(MLIRContext *ctx, std::string &linkWith,
+                                  bool deriveLibraryCall)
+      : OpInterfaceRewritePattern(ctx), linkWith(linkWith),
+        deriveLibraryCall(deriveLibraryCall) {}
 
   LogicalResult matchAndRewrite(linalg::LinalgOp op,
                                 PatternRewriter &rewriter) const override {
     auto fnName = op.getLibraryCallName();
     if (fnName.empty())
       return failure();
+
+    // linalg.generic returns MLIR's "op_has_no_registered_library_name"
+    // placeholder unless it carries a library_call attribute, and the OpDSL
+    // emitter never sets one -- so every OpDSL-defined contraction in the tree
+    // resolves to that single symbol. Two consequences: a kernel compiled for
+    // different tile dimensions still links, and computes silently wrong
+    // results; and two differently shaped contractions cannot coexist in one
+    // core, which callers work around by renaming symbols in the object file.
+    //
+    // Deriving the name from the operation and its operand types fixes both:
+    // the mangling encodes shapes, element types and memory spaces, so a
+    // mismatch becomes a link error. generateLibraryCallName is MLIR's own
+    // routine, the one that gives linalg.fill its
+    // "linalg_fill_bf16_view1x1x8x8x4x4xbf16as2", so the derived names match
+    // house style rather than inventing a second convention.
+    //
+    // Off unless asked for: that placeholder is the symbol every hand-written
+    // kernel here exports today.
+    if (deriveLibraryCall && fnName == "op_has_no_registered_library_name") {
+      auto derived = linalg::generateLibraryCallName(op);
+      if (derived.empty())
+        return failure();
+      fnName = derived;
+    }
 
     // Function to get operands of the library call that will
     // replace the given linalg op.
@@ -8434,6 +8468,7 @@ public:
 
 private:
   std::string &linkWith;
+  bool deriveLibraryCall;
 };
 
 struct AIRLinalgToFuncPass
@@ -8450,7 +8485,8 @@ void AIRLinalgToFuncPass::runOnOperation() {
                          cf::ControlFlowDialect, ub::UBDialect>();
   target.addLegalOp<ModuleOp, func::FuncOp, func::ReturnOp>();
   RewritePatternSet patterns(&getContext());
-  patterns.insert<AIRLinalgOpToLibraryCallRewrite>(&getContext(), clLinkWith);
+  patterns.insert<AIRLinalgOpToLibraryCallRewrite>(&getContext(), clLinkWith,
+                                                   clDeriveLibraryCall);
   if (failed(applyFullConversion(module, target, std::move(patterns))))
     signalPassFailure();
 }

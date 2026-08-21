@@ -70,7 +70,24 @@ def detect_target_device(verbose=False, default="npu1"):
     installed is not diagnosed anywhere downstream -- an aie.device(npu1) binary
     loads on npu2 without error and computes nothing -- so guessing is worse
     than asking.
+
+    AIR_TARGET_DEVICE short-circuits the probe. It exists for callers that
+    already know the answer and would otherwise pay for it once per process:
+    the lit configs resolve the generation when the suite is configured and
+    pass it down, rather than having every test shell out to xrt-smi again.
+    An explicit target_device= argument still takes precedence over both.
     """
+    override = os.environ.get("AIR_TARGET_DEVICE", "").strip()
+    if override:
+        if override not in NPU_MODELS:
+            raise ValueError(
+                f"AIR_TARGET_DEVICE={override!r} is not a known NPU "
+                f"generation; expected one of {sorted(NPU_MODELS)}"
+            )
+        if verbose:
+            print(f"Target device from AIR_TARGET_DEVICE: {override}")
+        return override
+
     try:
         xrtsmi = shutil.which("xrt-smi") or _xrt_smi_fallback()
         result = subprocess.run(
@@ -211,6 +228,7 @@ class XRTBackend(AirBackend):
         omit_while_true_loop: bool = False,
         omit_pingpong: str = "",
         lower_linalg_to_func: str = None,
+        derive_library_call: bool = False,
         air_loop_fusion: bool = False,
         runtime_loop_tiling_sizes: list[int] = [],
         omit_auto_broadcast: bool = False,
@@ -241,6 +259,7 @@ class XRTBackend(AirBackend):
             omit_while_true_loop: configure aircc to omit the while true loop it traditionally emits.
             omit_pingpong: configure aircc to omit the generation of ping-pong buffering for specific memory levels. Supported values: "", "L1", "L2", "all". Empty string means no omission (default).
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
+            derive_library_call: with lower_linalg_to_func, name the callee after the op and its operand types rather than MLIR's "op_has_no_registered_library_name" placeholder. The kernel object must export the derived name.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
             runtime_loop_tiling_sizes: tile sizes forwarded to aircc as --air-runtime-loop-tiling-sizes, which the shim DMA BD optimization pass (air-opt-shim-dma-bds) consumes as shim-dma-tile-sizes. Omit or pass an empty list to skip tiling.
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
@@ -284,6 +303,7 @@ class XRTBackend(AirBackend):
         else:
             self.omit_pingpong = omit_pingpong
         self.lower_linalg_to_func = lower_linalg_to_func
+        self.derive_library_call = derive_library_call
         self.air_loop_fusion = air_loop_fusion
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
@@ -459,6 +479,8 @@ class XRTBackend(AirBackend):
             if self.lower_linalg_to_func:
                 aircc_options += ["--lower-linalg-to-func"]
                 aircc_options += [self.lower_linalg_to_func]
+                if self.derive_library_call:
+                    aircc_options += ["--derive-library-call"]
 
             if self.air_loop_fusion:
                 aircc_options += ["--air-loop-fusion"]

@@ -1,34 +1,61 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-#
-# Matrix-vector multiplication (GEMV): C[M] = A[M,K] @ B[K]
-# BF16 input/output, accfloat accumulation in the kernel.
-#
-# L2 (MemTile) staging for A and C; B goes L3→L1 directly.
-# Multi-column support: herd_m AIE columns process independent row chunks
-# in parallel. Each column handles tile_m output rows per launch.
-# The outer M tiling is handled by `launch` (each launch instance handles
-# herd_m * tile_m output rows). The inner m_input loop is inside the herd.
+"""Matrix-vector multiplication (GEMV) on air.api: C[M] = A[M,K] @ B[K].
+
+BF16 input/output, accfloat accumulation inside the kernel.
+
+The schedule is unchanged from the raw-bindings version this replaces:
+
+    air.launch (m / (tile_m * herd_m))    one segment per chunk of output rows
+      air.segment
+        L2: A panel and C panel for the whole chunk
+        herd [herd_m, 1]                  one AIE column per row sub-chunk
+            zero C
+            for j in air.sequential(0, tile_m, m_input)
+                L3 -> L1 for B, L2 -> L1 for A, then the kernel
+            L1 -> L2 for C
+        L2 -> L3 for C
+
+Two things about it are worth stating, because both look like omissions:
+
+* **B skips L2.** It is loaded L3 -> L1 from inside the herd loop, so that
+  ``air-dma-to-channel`` can hoist it into a channel with a repeat count. The
+  whole vector is the same for every core and every iteration; staging it in a
+  memtile would buy nothing and cost a copy.
+* **The compute is an external kernel, not ``ops.dot``.** ``mv.cc``'s
+  ``matvec_vectorized_bf16_bf16`` takes three ``i32`` scalars before its
+  buffers -- rows, K, and the row offset within the tile -- so it is reached
+  through ``air.extern`` rather than through a contraction. A bare
+  ``ops.dot`` would emit ``linalg.matvec``, which lowers through
+  ``convert-linalg-to-loops`` and comes out scalar; and the
+  ``lower_linalg_to_func`` route cannot pass the three scalars. The zero fill
+  is the same kernel object for the same reason.
+
+The L2 buffers are flat here -- ``[herd_m * tile_m, k]`` rather than
+``[herd_m, tile_m, k]``. Row-major, those are the same bytes; keeping it flat
+makes the fill a plain shape-matching transfer and lets a core slice its own
+window out with arithmetic on its column index.
+"""
 
 import argparse
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 from air.backend.xrt import XRTBackend
 
-range_ = for_
+from air import api as air
+from air.api import bf16, i32
+
+# L2 (MemTile) capacity the A and C panels have to fit inside. air.api applies
+# its own device-wide bound as well; this one is per-memtile and is the figure
+# the kernel registry documents as the binding constraint on tile_m.
+L2_CAPACITY = 512 * 1024
+
+# air.api dtypes, keyed by the numpy dtype the harness works in.
+DTYPE = {bfloat16: bf16}
 
 
-@module_builder
 def build_module(
     m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out, link_with="mv.o"
 ):
@@ -41,236 +68,85 @@ def build_module(
     assert k % 64 == 0, f"K ({k}) must be divisible by 64 (vector width)"
 
     # Guard MemTile/L2 capacity for staged A and C tiles.
-    bytes_per_elem_in = np.dtype(np_dtype_in).itemsize
-    bytes_per_elem_out = np.dtype(np_dtype_out).itemsize
-    a_l2_bytes = herd_m * tile_m * k * bytes_per_elem_in
-    c_l2_bytes = herd_m * tile_m * bytes_per_elem_out
-    L2_CAPACITY = 512 * 1024  # 512 KiB per MemTile
+    a_l2_bytes = herd_m * tile_m * k * np.dtype(np_dtype_in).itemsize
+    c_l2_bytes = herd_m * tile_m * np.dtype(np_dtype_out).itemsize
     assert a_l2_bytes + c_l2_bytes <= L2_CAPACITY, (
         f"L2 capacity exceeded: A={a_l2_bytes}B + C={c_l2_bytes}B = "
         f"{a_l2_bytes + c_l2_bytes}B > {L2_CAPACITY}B. "
         f"Reduce herd_m ({herd_m}), tile_m ({tile_m}), or k ({k})."
     )
 
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    xrt_dtype_out = type_mapper(np_dtype_out)
+    dt_in, dt_out = DTYPE[np_dtype_in], DTYPE[np_dtype_out]
 
-    # L3 MemRefTypes
-    memrefTyA = MemRefType.get([m, k], xrt_dtype_in)
-    memrefTyB = MemRefType.get([k], xrt_dtype_in)
-    memrefTyC = MemRefType.get([m], xrt_dtype_out)
+    # Each launch instance owns herd_m * tile_m output rows.
+    seg_m = tile_m * herd_m
 
-    # L2 MemRefTypes
-    l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
-    l2MemrefTyA = MemRefType.get(
-        shape=[herd_m, tile_m, k],
-        element_type=xrt_dtype_in,
-        memory_space=l2_mem_space,
+    # The kernel and the fill live in the same object file and are linked into
+    # the herd by air.extern. The three leading i32s are rows, K and the row
+    # offset within the C tile; the last of those is a loop variable, which
+    # air.extern index_casts.
+    matvec = air.extern(
+        "matvec_vectorized_bf16_bf16", object=link_with, scalars=[i32, i32, i32]
     )
-    l2MemrefTyC = MemRefType.get(
-        shape=[herd_m, tile_m],
-        element_type=xrt_dtype_out,
-        memory_space=l2_mem_space,
-    )
+    # No scalar: mv.cc defines `void linalg_fill_bf16(bfloat16 *c_out)`, which
+    # takes the buffer alone and gets its extent from -DDIM_M_OUTPUT. The
+    # raw-bindings predecessor declared it `(bf16, memref)` and passed a zero
+    # constant the callee never read -- harmless, since the C ABI drops the
+    # extra leading argument, but the declaration did not describe the symbol.
+    fill = air.extern("linalg_fill_bf16", object=link_with)
 
-    # L1 MemRefTypes
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1MemrefTyA = MemRefType.get(
-        shape=[m_input, k], element_type=xrt_dtype_in, memory_space=l1_mem_space
-    )
-    l1MemrefTyB = MemRefType.get(
-        shape=[k], element_type=xrt_dtype_in, memory_space=l1_mem_space
-    )
-    l1MemrefTyC = MemRefType.get(
-        shape=[tile_m],
-        element_type=xrt_dtype_out,
-        memory_space=l1_mem_space,
-    )
+    A = air.tensor([m, k], dt_in)
+    B = air.tensor([k], dt_in)
+    C = air.tensor([m], dt_out)
 
-    # External kernel declarations
-    matvec_func = FuncOp(
-        "matvec_vectorized_bf16_bf16",
-        ([T.i32(), T.i32(), T.i32(), l1MemrefTyA, l1MemrefTyB, l1MemrefTyC], []),
-        visibility="private",
-    )
-    linalg_fill_func = FuncOp(
-        "linalg_fill_bf16",
-        ([xrt_dtype_out, l1MemrefTyC], []),
-        visibility="private",
-    )
-    for func in [matvec_func, linalg_fill_func]:
-        func.attributes["link_with"] = StringAttr.get(link_with)
-        func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+    with air.launch(name="matvec_bf16") as launch:
 
-    @FuncOp.from_py_func(memrefTyA, memrefTyB, memrefTyC)
-    def matvec_bf16(arg0, arg1, arg2):
+        @launch.body
+        def _():
+            with air.segment([range(0, m, seg_m)], name="matvec_bf16_0") as seg:
 
-        # Each launch handles herd_m * tile_m output rows.
-        launch_size = [m // tile_m // herd_m, 1]
+                @seg.body
+                def _(si):
+                    row = si * seg_m
 
-        @launch(operands=[arg0, arg1, arg2], sizes=launch_size)
-        def launch_body(
-            launch_ivx,
-            launch_ivy,
-            launch_sizex,
-            launch_sizey,
-            l3_a_data,
-            l3_b_data,
-            l3_c_data,
-        ):
+                    # L3 -> L2: the A panel for this chunk, and the C panel it
+                    # will drain into. Flat, so each is exactly the L3 region it
+                    # holds; a core takes its own window with tx * tile_m.
+                    l2_a = air.alloc([seg_m, k], dt_in, scope=seg.private())
+                    l2_c = air.alloc([seg_m], dt_out, scope=seg.private())
 
-            @segment(
-                name="matvec_bf16_0",
-                operands=[launch_ivx, l3_a_data, l3_b_data, l3_c_data],
-            )
-            def segment_body(
-                launch_ivx_s,
-                l3_a_data_s,
-                l3_b_data_s,
-                l3_c_data_s,
-            ):
-                # Affine map: row offset = launch_ivx * tile_m * herd_m
-                launch_ivx_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_m * herd_m),
-                        )
-                    ],
-                )
-                launch_offset_m = affine_apply(launch_ivx_map, [launch_ivx_s])
+                    air.ops.load(l2_a, A[row : row + seg_m, :])
 
-                # Alloc L2 (A and C; B skips L2) and L1
-                l2_a_data = AllocOp(l2MemrefTyA, [], [])
-                l2_c_data = AllocOp(l2MemrefTyC, [], [])
-                l1_a_data = AllocOp(l1MemrefTyA, [], [])
-                l1_b_data = AllocOp(l1MemrefTyB, [], [])
-                l1_c_data = AllocOp(l1MemrefTyC, [], [])
+                    # shape=(herd_m,) rather than letting air.api pick: an
+                    # herd_m wider than the part has columns should fail in the
+                    # placer, as it did before, not silently strip-mine onto
+                    # fewer cores and run at a fraction of the speed.
+                    with air.herd([range(herd_m)], name="herd_0", shape=(herd_m,)) as h:
 
-                # L3→L2: A (all herd_m * tile_m rows)
-                dma_memcpy_nd(
-                    l2_a_data,
-                    l3_a_data_s,
-                    src_offsets=[0, launch_offset_m, 0],
-                    src_sizes=[herd_m, tile_m, k],
-                    src_strides=[tile_m * k, k, 1],
-                )
+                        @h.body
+                        def _(tx):
+                            l1_a = air.alloc([m_input, k], dt_in, scope=h.private())
+                            l1_b = air.alloc([k], dt_in, scope=h.private())
+                            l1_c = air.alloc([tile_m], dt_out, scope=h.private())
 
-                # Single compute herd: zero-fill + loop(A L2→L1 + B L3→L1, kernel) + C L1→L2
-                # B skips L2 — loaded directly L3→L1 inside loop for channel hoisting
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_m, 1],
-                    operands=[
-                        l1_a_data,
-                        l1_b_data,
-                        l1_c_data,
-                        l2_a_data,
-                        l3_b_data_s,
-                        l2_c_data,
-                    ],
-                )
-                def herd_body(
-                    _tx,
-                    _ty,
-                    _sx,
-                    _sy,
-                    _l1_a,
-                    _l1_b,
-                    _l1_c,
-                    _l2_a,
-                    _l3_b,
-                    _l2_c,
-                ):
-                    # Zero-fill C
-                    zero = ConstantOp(FloatAttr.get(xrt_dtype_out, 0), None)
-                    CallOp(linalg_fill_func, [zero, _l1_c])
+                            fill(l1_c)
 
-                    for j_m in range_(0, tile_m // m_input):
-                        j_m_map = AffineMap.get(
-                            0,
-                            1,
-                            [
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(0),
-                                    AffineConstantExpr.get(m_input),
+                            base = tx * tile_m
+                            for j in air.sequential(0, tile_m, m_input):
+                                # B is the same vector for every core and every
+                                # trip; loading it here is what lets
+                                # air-dma-to-channel give it a repeat count.
+                                air.ops.load(l1_b, B[:])
+                                air.ops.load(
+                                    l1_a, l2_a[base + j : base + j + m_input, :]
                                 )
-                            ],
-                        )
-                        j_m_offset = affine_apply(j_m_map, [j_m])
+                                matvec(m_input, k, j, l1_a, l1_b, l1_c)
 
-                        # L3→L1: B directly (inside loop so the compiler's
-                        # air-dma-to-channel pass can hoist it into a channel
-                        # with repeat_count, avoiding extra L2 staging for B).
-                        dma_memcpy_nd(
-                            _l1_b,
-                            _l3_b,
-                            src_offsets=[],
-                            src_sizes=[k],
-                            src_strides=[1],
-                        )
+                            air.ops.store(l1_c, l2_c[base : base + tile_m])
 
-                        # L2→L1: A[_tx, j_m*m_input:, :]
-                        dma_memcpy_nd(
-                            _l1_a,
-                            _l2_a,
-                            src_offsets=[_tx, j_m_offset, 0],
-                            src_sizes=[1, m_input, k],
-                            src_strides=[tile_m * k, k, 1],
-                        )
+                    air.ops.store(l2_c, C[row : row + seg_m])
 
-                        # Kernel
-                        row_offset_i32 = arith.index_cast(T.i32(), j_m_offset)
-                        m_const = ConstantOp(IntegerAttr.get(T.i32(), m_input), None)
-                        k_const = ConstantOp(IntegerAttr.get(T.i32(), k), None)
-
-                        CallOp(
-                            matvec_func,
-                            [
-                                m_const,
-                                k_const,
-                                row_offset_i32,
-                                _l1_a,
-                                _l1_b,
-                                _l1_c,
-                            ],
-                        )
-
-                        yield_([])
-
-                    # L1→L2: C writeback (per-column offset on L2 side)
-                    dma_memcpy_nd(
-                        _l2_c,
-                        _l1_c,
-                        dst_offsets=[_tx, 0],
-                        dst_sizes=[1, tile_m],
-                        dst_strides=[tile_m, 1],
-                        src_offsets=[],
-                        src_sizes=[tile_m],
-                        src_strides=[1],
-                    )
-
-                herd_body.attributes["link_with"] = StringAttr.get(link_with)
-
-                # L2→L3: C
-                dma_memcpy_nd(
-                    l3_c_data_s,
-                    l2_c_data,
-                    dst_offsets=[launch_offset_m],
-                    dst_sizes=[herd_m * tile_m],
-                    dst_strides=[1],
-                    src_offsets=[0, 0],
-                    src_sizes=[herd_m, tile_m],
-                    src_strides=[tile_m, 1],
-                )
-
-                DeallocOp(l2_a_data)
-                DeallocOp(l2_c_data)
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_b_data)
-                DeallocOp(l1_c_data)
+    return launch
 
 
 if __name__ == "__main__":
@@ -359,13 +235,20 @@ if __name__ == "__main__":
         help="If >0, time the kernel over this many iters (after 10 warmup) and "
         "print Latency + GFLOPs in addition to the correctness check",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
     if args.perf_iters < 0:
         parser.error("--perf-iters must be >= 0")
 
-    mlir_module = build_module(
+    launch = build_module(
         args.m,
         args.k,
         args.tile_m,
@@ -374,6 +257,7 @@ if __name__ == "__main__":
         INPUT_DATATYPE,
         OUTPUT_DATATYPE,
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)

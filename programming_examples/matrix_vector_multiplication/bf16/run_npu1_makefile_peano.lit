@@ -1,0 +1,35 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu1, peano
+//
+// The NPU1 twin of run_npu2_makefile_peano.lit. It is a separate file, rather
+// than one generation-agnostic gate, because mv.o is architecture-specific:
+// the Makefile has to be told which target to build the microkernel for, and
+// a lit cannot ask the device. (Do not write the name of that agnostic feature
+// here -- lit scans the whole file for directives and would parse the sentence
+// as a second one.)
+//
+// RUN: mkdir -p test_npu1_peano
+// RUN: cd test_npu1_peano
+// RUN: make -f %S/Makefile clean
+//
+// Correctness: M=2048, K=8192, 4 columns
+// RUN: make -f %S/Makefile run M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_M=4 AIE_TARGET=aie2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN1
+// RUN1: PASS!
+//
+// Correctness: M=8192, K=2048, 4 columns
+// RUN: make -f %S/Makefile run M=8192 K=2048 TILE_M=16 M_INPUT=4 HERD_M=4 AIE_TARGET=aie2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN2
+// RUN2: PASS!
+//
+// Correctness: M=2048, K=8192, single column (backward compat)
+// RUN: make -f %S/Makefile run M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_M=1 AIE_TARGET=aie2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN3
+// RUN3: PASS!
+//
+// Profiling: M=2048, K=8192, 4 columns
+// RUN: make -f %S/Makefile profile M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_M=4 AIE_TARGET=aie2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR XILINX_XRT=%XRT_DIR | FileCheck %s --check-prefix=PROFILE1
+// PROFILE1: Avg NPU GEMV time
+//
+// Profiling: M=8192, K=2048, 4 columns
+// RUN: make -f %S/Makefile profile M=8192 K=2048 TILE_M=16 M_INPUT=4 HERD_M=4 AIE_TARGET=aie2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR XILINX_XRT=%XRT_DIR | FileCheck %s --check-prefix=PROFILE2
+// PROFILE2: Avg NPU GEMV time

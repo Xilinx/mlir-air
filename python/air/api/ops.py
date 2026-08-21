@@ -34,7 +34,7 @@ from ``tanh``, which has a checked lowering, so nothing has needed a vector
 ``exp`` yet.
 """
 
-from ._value import Buffer, BufferExpr, BufferSlice, TensorSlice, Token
+from ._value import Buffer, BufferExpr, BufferSlice, Tensor, TensorSlice, Token
 
 __all__ = [
     "load",
@@ -125,6 +125,26 @@ def _endpoint(obj, direction, role):
             what="tensor slice",
             raw=(list(obj.offsets), list(obj.sizes), list(obj.strides)),
         )
+    if isinstance(obj, Tensor):
+        # A whole tensor, which channel put/get take routinely --
+        # `ChannelPut("ChanIn", a)` is the commonest line in the hand-written
+        # channel examples. There is no access pattern: the transfer is the
+        # whole memref, which the op prints as [] [] [].
+        #
+        # This also widens load/store, which share this function: `ops.load(buf,
+        # A)` is now the whole of A rather than an error. That is deliberate --
+        # it is the same transfer as `ops.load(buf, A[:, :])` and reads better
+        # -- and it stays safe because _check_pair still requires the shapes to
+        # agree, and store still marks the tensor an output through
+        # `_Endpoint.tensor` below.
+        if obj.value is None:
+            raise RuntimeError(
+                "tensor used before the function was traced; air.tensor(...) "
+                "declares an argument, and it is bound when the launch body runs"
+            )
+        return _Endpoint(
+            obj.value, obj.dtype, obj.shape, None, tensor=obj, what="tensor"
+        )
     raise TypeError(
         f"air.api.ops.{direction} expects its {role} to be a buffer from "
         f"air.alloc(), a region of one such as staged[tx, 0:n, :], or a tensor "
@@ -182,7 +202,8 @@ def load(dst, src, pad_before=None, pad_after=None, dependency=None):
 
     ``load(l1, A[i:i+n])`` is L3 to L1; ``load(l1, staged[tx, 0:n, :])`` is L2 to
     L1; ``load(l2, A[i:i+n])`` is L3 to L2. The destination is always the buffer
-    being filled.
+    being filled. A bare tensor means the whole of it, so ``load(l2, A)`` and
+    ``load(l2, A[:, :])`` are the same transfer.
     """
     _check_dependency(dependency)
     _check_padding(pad_before, pad_after)
@@ -232,11 +253,17 @@ def _repack_source(dst, src, src_ep):
             "derived; index the source, e.g. l2_a[tx, 0, :, k : k + tile_k]"
         )
     offsets, sizes, strides = src_ep.raw
-    if len(sizes) != len(dst.pack.lead) + 2:
+    nlead = len(dst.pack.lead)
+    # A rank-2 region is padded by pack_pattern when the destination's leading
+    # dimensions are all 1 -- they are structural, required by block_matmul's
+    # 6-D operands, and a flat staging buffer has no such axes to slice.
+    flat_ok = len(sizes) == 2 and all(e == 1 for e in dst.pack.lead)
+    if len(sizes) != nlead + 2 and not flat_ok:
         raise ValueError(
             f"air.api.ops.load into a micro-tiled {dst.pack.role} buffer needs a "
-            f"source region of rank {len(dst.pack.lead) + 2}, with the two "
-            f"logical axes last; got rank {len(sizes)}, {tuple(sizes)}"
+            f"source region of rank {nlead + 2} (or rank 2 when its leading "
+            f"dimensions are all 1), with the two logical axes last; got rank "
+            f"{len(sizes)}, {tuple(sizes)}"
         )
     p_off, p_sizes, p_strides = pack_pattern(dst.pack, sizes, strides, offsets)
     src_ep.pattern = ([o.materialize() for o in p_off], p_sizes, p_strides)
@@ -256,7 +283,7 @@ def store(src, dst, pad_before=None, pad_after=None, dependency=None):
 
     ``store(l1, C[i:i+n])`` is L1 to L3; ``store(l1, staged[tx, :])`` is L1 to
     L2; ``store(l2, C[i:i+n])`` is L2 to L3. The source is always the buffer
-    being drained.
+    being drained. A bare tensor destination means the whole of it.
     """
     _check_dependency(dependency)
     _check_padding(pad_before, pad_after)
@@ -526,7 +553,7 @@ def _check_packed_operands(a, b, acc):
         )
 
 
-def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None):
+def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel=None):
     """``acc += a @ b`` over L1 tiles. Returns a :class:`Token`.
 
     This is a *statement*, not an expression, and the accumulator is a buffer
@@ -559,6 +586,21 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None):
 
     One rule covers all four: ``a``'s last axis contracts against ``b``'s first,
     and ``acc`` keeps what is left of each.
+
+    ``kernel=`` is keyword-only, and sits after ``dependency`` so that every
+    existing positional binding is unchanged: inserting it earlier would have
+    silently rebound a positionally-passed ``dependency`` to it. It names the
+    external function this contraction should lower to
+    under ``lower_linalg_to_func``, by setting linalg's ``library_call``
+    attribute. Without it a micro-tiled contraction lowers to
+    ``op_has_no_registered_library_name`` -- MLIR's placeholder for an op with no
+    registered name, which the OpDSL emitter never overrides and which every
+    hand-written kernel here therefore exports. Sharing one symbol means a
+    kernel compiled for the wrong tile dimensions still links and computes
+    silently wrong results, and two differently shaped contractions cannot
+    coexist in one core. Naming the kernel makes both of those link errors::
+
+        ops.dot(a, b, acc=acc, kernel="matmul_bf16_bf16_m32k16n32")
     """
     from air.dialects import linalg
 
@@ -600,6 +642,7 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None):
             )
         _check_packed_operands(a, b, acc)
         op = _block_matmul_op()(a.value, b.value, outs=[accumulator_subview(acc)])
+        _set_library_call(kernel)
         return Token(op)
 
     if ranks not in _CONTRACTIONS:
@@ -639,7 +682,32 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None):
         )
 
     op = getattr(linalg, op_name)(a.value, b.value, outs=[acc.value])
+    _set_library_call(kernel)
     return Token(op)
+
+
+def _set_library_call(kernel):
+    """Stamp ``library_call`` on the contraction just emitted.
+
+    The OpDSL emitter hardcodes ``library_call=None`` (a standing TODO in
+    upstream ``linalg/opdsl/lang/emitter.py``) and returns the op's *results*,
+    which is an empty list for memref semantics -- so there is no handle to set
+    the attribute on. The op is the last one written into the current block,
+    which is where this reaches for it.
+    """
+    if kernel is None:
+        return
+    if not isinstance(kernel, str) or not kernel:
+        raise TypeError(
+            f"air.api.ops.dot(kernel=...) takes the external function's symbol "
+            f"name, got {type(kernel).__name__}"
+        )
+    from air.ir import InsertionPoint, StringAttr
+
+    block = InsertionPoint.current.block
+    block.operations[len(block.operations) - 1].attributes["library_call"] = (
+        StringAttr.get(kernel)
+    )
 
 
 def _unimplemented(name, needs):

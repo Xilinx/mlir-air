@@ -21,10 +21,15 @@
 programming_examples/matrix_vector_multiplication/bf16/matvec.py
   build_module(m, k,
                tile_m, m_input, herd_m,
-               np_dtype_in, np_dtype_out)
+               np_dtype_in, np_dtype_out,
+               link_with="mv.o")          -> LaunchContext; .build(target=...) gives the Module
 ```
 
 Driven by `matvec.py`'s CLI; the example also has a `Makefile`. Unlike GEMM, GEMV has a **single code-generation path**: the compute kernel is a hand-written vector microkernel `mv.cc` → `mv.o`, linked into the herd via `link_with`. There is no direct-codegen variant and the output dtype is always **bf16**.
+
+The builder is written against the `air.api` DSL, and reaches `mv.o` through `air.extern` rather than through a contraction: `matvec_vectorized_bf16_bf16` takes three `i32` scalars (rows, K, row offset) ahead of its buffers, which neither a bare `ops.dot` nor the `lower_linalg_to_func` route can supply.
+
+> **History.** This builder was ported from the raw `air.dialects` bindings to `air.api`; the figures below were measured with the raw-bindings version. The two emit the same five `air.dma_memcpy_nd` transfers over the same elements (the L2 panels are flat, `[herd_m*tile_m, k]`, where the predecessor shaped them `[herd_m, tile_m, k]` — the same bytes row-major) and lower to identical `aie.tile`/`aie.core`/`aie.buffer`/`aie.lock`/`aie.dma_bd`/`aie.use_lock`/`aie.flow` counts. They were A/B'd on one box in a single session before the swap, alternating 6 reps per arm on the `test.cpp` harness, and came out at parity — within ~1% on `Avg NPU GEMV time` at both profile shapes. Caveats on reproducing: that A/B ran on **NPU1 at `herd_m=4`** in `Default` power mode, whereas the table below is NPU2 at `herd_m=8` in turbo, so its absolute numbers are not comparable to these — only the two arms to each other. Precision was identical between arms on all three lit shapes, including the `mean_rel_L1 = 2.7e-8` / `abs_err max = 1.25e-1` of the 8192×2048 row.
 
 The herd is **1-D** — `sizes=[herd_m, 1]` — because the output is a length-`M` vector, not a 2-D tile. The `herd_m` AIE columns each own an independent chunk of the `M` output rows; there is no `herd_n` (N = 1).
 

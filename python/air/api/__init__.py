@@ -75,6 +75,7 @@ every hand-written matmul in the tree does; a 1-D herd is also unaffected.
 """
 
 from . import ops
+from ._channel import Channel, channel
 from ._compile import CompiledKernel, LaunchContext, compile, launch
 from ._extern import ExternKernel, extern
 from ._loop import sequential
@@ -106,6 +107,7 @@ __all__ = [
     "alloc",
     "symbol",
     "extern",
+    "channel",
     # control flow
     "sequential",
     "wait",
@@ -128,6 +130,7 @@ __all__ = [
     "SegmentContext",
     "HerdContext",
     "ExternKernel",
+    "Channel",
     "CompiledKernel",
     "Buffer",
     "BufferSlice",
@@ -166,7 +169,14 @@ Field = _unimplemented("Field", "block floating-point types")
 Scratchpad = _unimplemented("Scratchpad", "fabric property gating")
 Cascade = _unimplemented("Cascade", "cascade interconnect support")
 Adjacency = _unimplemented("Adjacency", "placement constraints")
-Broadcast = _unimplemented("Broadcast", "broadcast channel support")
+# Broadcasting is a property of the channel, not a free-standing capability:
+# air.channel(size=[...], broadcast_shape=[...]) is the spelling, matching the
+# broadcast_shape attribute on air.channel itself.
+Broadcast = _unimplemented(
+    "Broadcast",
+    "a standalone broadcast capability; pass broadcast_shape= to air.channel() "
+    "instead",
+)
 CacheDomain = _unimplemented("CacheDomain", "GPU/XCD cache domains")
 Disjoint = _unimplemented("Disjoint", "placement constraints")
 Fabric = _unimplemented("Fabric", "fabric descriptors")

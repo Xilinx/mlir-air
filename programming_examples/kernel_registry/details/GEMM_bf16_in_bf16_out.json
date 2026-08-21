@@ -1888,6 +1888,64 @@
     },
     {
       "M": 2048,
+      "K": 4096,
+      "N": 14336,
+      "used_by": "Llama-3.1-8B Gate/Up proj (emb=4096, ffn=14336)",
+      "_note": "Wide-N. The Qwen3-8B N=12288 sibling concluded fused-cast is legal ONLY at tile_k_l2=64, because the f32-out B-tile DMA stride tile_k_l2*N must stay in [1:1048576]. That bound does NOT decide it here: at N=14336, tile_k_l2=128 (stride 1835008) places, runs and is 8% faster than 64 (6574 vs 6097 GFLOPS) at identical accuracy, so the stride is evidently not the binding constraint on this shape. tile_k_l2=256 was NOT characterized -- aiecc ran >1h without finishing and was abandoned, so a faster point may exist above 128. High-precision fused-cast beats the low-prec direct path (4441 @ 1.54e-2) on both speed and accuracy. best.high=fused-cast(tile_k_l2=128), best.low=direct.",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6574,
+          "mean_rel_L1": 0.00987,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4441,
+          "mean_rel_L1": 0.01542,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 2048,
+      "K": 14336,
+      "N": 4096,
+      "used_by": "Llama-3.1-8B Down proj (ffn=14336, emb=4096)",
+      "_note": "Deep-K, narrow-N: the fastest of the Llama-3.1-8B prefill shapes, and the same picture as the Qwen3-8B K=12288 sibling. tile_k_l2 512 vs 256 at tn=128: 512 marginally faster (9570 vs 9534 GFLOPS), identical accuracy. K=14336=512*28 so both divide. best.high=fused-cast(tile_k_l2=512).",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 9570,
+          "mean_rel_L1": 0.00989,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 2048,
       "K": 3584,
       "N": 3584,
       "used_by": "Qwen2.5-7B Q/O proj (emb=3584, q_dim=28*128=3584 -> square o_proj)",

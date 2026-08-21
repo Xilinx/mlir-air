@@ -14,6 +14,12 @@
 // dominant get in the herd), packets landed in the wrong BD chain →
 // wrong-buffer data or core deadlock.
 //
+// What matters here is the ORDER of the shim_dma_allocation list, not which
+// physical MM2S each flow lands on -- the index is wildcarded below so this
+// test does not re-break every time the channel-assignment policy changes
+// (e.g. ShimDMAAllocator::spreadCollapsedPacketChannels filling both MM2S
+// before multiplexing).
+//
 // air-to-aie must reorder packet shim flows by their receiver-side
 // first-use position so that pkt_id assignment, shim alloc list order,
 // the L3 launch puts' IR positions, and the receiver mem BD chain all
@@ -38,8 +44,8 @@
 // Shim alloc list order reflects the sort: chan_sib must appear BEFORE
 // chan_loop. This drives downstream BD ordering on the same physical
 // MM2S channel.
-// CHECK:     aie.shim_dma_allocation @air_chan_sib(%{{.*}}, MM2S, 0)
-// CHECK:     aie.shim_dma_allocation @air_chan_loop(%{{.*}}, MM2S, 0)
+// CHECK:     aie.shim_dma_allocation @air_chan_sib(%{{.*}}, MM2S, {{[0-9]+}})
+// CHECK:     aie.shim_dma_allocation @air_chan_loop(%{{.*}}, MM2S, {{[0-9]+}})
 
 // The launch puts must be physically reordered so chan_sib's put appears
 // FIRST in the IR (this drives AIRRtToNpuPass's dma_start_task dispatch
@@ -114,9 +120,9 @@ module {
 // CHECK-DAG: aie.packet_flow(1)
 // CHECK-DAG: aie.packet_flow(2)
 
-// CHECK:     aie.shim_dma_allocation @air_chan_b(%{{.*}}, MM2S, 0)
-// CHECK:     aie.shim_dma_allocation @air_chan_c(%{{.*}}, MM2S, 0)
-// CHECK:     aie.shim_dma_allocation @air_chan_a(%{{.*}}, MM2S, 0)
+// CHECK:     aie.shim_dma_allocation @air_chan_b(%{{.*}}, MM2S, {{[0-9]+}})
+// CHECK:     aie.shim_dma_allocation @air_chan_c(%{{.*}}, MM2S, {{[0-9]+}})
+// CHECK:     aie.shim_dma_allocation @air_chan_a(%{{.*}}, MM2S, {{[0-9]+}})
 
 // CHECK-LABEL: func.func @case2_three_flows
 // CHECK:       air.channel.put{{.*}}@chan_b{{.*}}pkt_id = 0
@@ -187,8 +193,8 @@ module {
 // CHECK-DAG: aie.packet_flow(0)
 // CHECK-DAG: aie.packet_flow(1)
 
-// CHECK:     aie.shim_dma_allocation @air_chan_sib2(%{{.*}}, MM2S, 0)
-// CHECK:     aie.shim_dma_allocation @air_chan_loop2(%{{.*}}, MM2S, 0)
+// CHECK:     aie.shim_dma_allocation @air_chan_sib2(%{{.*}}, MM2S, {{[0-9]+}})
+// CHECK:     aie.shim_dma_allocation @air_chan_loop2(%{{.*}}, MM2S, {{[0-9]+}})
 
 // CHECK-LABEL: func.func @case3_scf_for_pattern
 // CHECK:       air.channel.put{{.*}}@chan_sib2{{.*}}pkt_id = 0
@@ -256,8 +262,8 @@ module {
 // CHECK-LABEL: aie.device(npu2) @seg
 // CHECK-DAG: aie.packet_flow(0)
 // CHECK-DAG: aie.packet_flow(1)
-// CHECK:     aie.shim_dma_allocation @air_in1(%{{.*}}, MM2S, 0)
-// CHECK:     aie.shim_dma_allocation @air_in0(%{{.*}}, MM2S, 0)
+// CHECK:     aie.shim_dma_allocation @air_in1(%{{.*}}, MM2S, {{[0-9]+}})
+// CHECK:     aie.shim_dma_allocation @air_in0(%{{.*}}, MM2S, {{[0-9]+}})
 
 // in1 must precede in0 in the launch; the unrelated out0 / out1 gets are
 // not constrained but must continue to coexist with the puts.
@@ -333,8 +339,8 @@ module {
 // CHECK-LABEL: aie.device(npu2) @dual_seg
 // CHECK-DAG: aie.packet_flow(0)
 // CHECK-DAG: aie.packet_flow(1)
-// CHECK:     aie.shim_dma_allocation @air_in_a(%{{.*}}, MM2S, 0)
-// CHECK:     aie.shim_dma_allocation @air_in_b(%{{.*}}, MM2S, 0)
+// CHECK:     aie.shim_dma_allocation @air_in_a(%{{.*}}, MM2S, {{[0-9]+}})
+// CHECK:     aie.shim_dma_allocation @air_in_b(%{{.*}}, MM2S, {{[0-9]+}})
 
 // Launch puts must retain their original declaration order -- no reorder.
 // CHECK-LABEL: func.func @case5_dual_herd_independent

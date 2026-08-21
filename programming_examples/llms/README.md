@@ -23,6 +23,7 @@ multi-launch ELFs and gates correctness against a Hugging Face bf16 reference.
 | **Llama-3.2-3B Q4NX** | `FastFlowLM/Llama-3.2-3B-NPU2` | 28 | 3072 / 128 / 8192 | GQA 24Q/8KV | q4nx 4-bit weights | prefill + decode |
 | **Gemma3-4B** | `FastFlowLM/Gemma3-4B-NPU2` | 34 | 2560 / 256 / 10240 | GQA 8Q/4KV | q4nx, QK-norm, GELU-tanh, 4 norms/layer, 1024 sliding window, dual-theta RoPE, hd=256 | prefill + decode |
 | **Phi-4-mini Q4NX** | `FastFlowLM/Phi4-mini-Instruct-NPU2` | 32 | 3072 / 128 / 8192 | GQA 24Q/8KV | q4nx, **partial rotary (96/128)**, LongRoPE, vocab 200064 | prefill + decode |
+| **Llama-3.1-8B Q4NX** | `FastFlowLM/Llama-3.1-8B-NPU2` | 32 | 4096 / 128 / 14336 | GQA 32Q/8KV | q4nx, **untied LM head**, llama3 rope factor 8.0, split weight BOs | prefill + decode |
 
 All are decoder-only with RMSNorm + SwiGLU FFN + RoPE. The architecture axes that
 shape each deployment's dataflow:
@@ -89,6 +90,7 @@ top of quantization error:
 | `llama32_1b_q4nx` / `llama32_3b_q4nx` | `FastFlowLM/Llama-3.2-{1,3}B-NPU2` | `meta-llama/Llama-3.2-{1,3}B-Instruct` |
 | `gemma3_4b_q4nx` | `FastFlowLM/Gemma3-4B-NPU2` | `unsloth/gemma-3-4b-it` |
 | `qwen3_8b_q4nx` | `FastFlowLM/Qwen3-8B-NPU2` | `Qwen/Qwen3-8B` |
+| `llama31_8b_q4nx` | `FastFlowLM/Llama-3.1-8B-NPU2` | `NousResearch/Meta-Llama-3.1-8B-Instruct` |
 | `qwen25_3b_q4` | Q4_0, quantized on the host from the reference | `Qwen/Qwen2.5-3B-Instruct` |
 | `qwen25_7b_q4nx` | Q4NX, quantized on load from the reference | `Qwen/Qwen2.5-7B-Instruct` |
 
@@ -108,6 +110,7 @@ llms/
 ├── llama32_1b_q4nx/    # Q4NX 4-bit Llama-3.2-1B (fused decode superkernel)
 ├── llama32_3b/         # bf16 Llama-3.2-3B (pure Llama, head_dim=128)
 ├── llama32_3b_q4nx/    # Q4NX 4-bit Llama-3.2-3B (reuses the bf16 3B runner)
+├── llama31_8b_q4nx/    # Q4NX 4-bit Llama-3.1-8B (fused decode, split weight BOs)
 ├── gemma3_4b_q4nx/     # Q4NX 4-bit Gemma3-4B (fused decode + batched prefill)
 ├── smollm2_1_7b/       # bf16 SmolLM2-1.7B (MHA)
 ├── qwen25_0_5b/        # Qwen2.5-0.5B  (QKV bias, head_dim=64)

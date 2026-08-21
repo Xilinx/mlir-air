@@ -12,15 +12,18 @@
 // RUN: air-opt %s -air-to-aie='row-offset=2 col-offset=0 device=npu1_1col' | FileCheck %s
 
 // Three packet-flow L3-to-L2 input channels sharing one shim tile (col 0).
-// With 2 physical MM2S channels, the third must share via packet-flow reuse.
-// All three should get packet_flow ops with unique IDs and shim_dma_allocation
-// ops sharing the same MM2S channel.
+// Multiplexing is an OVERFLOW mechanism, not the first choice: the two physical
+// MM2S channels are filled first (pkt_in_0 -> 0, pkt_in_1 -> 1, spread out of
+// the allocator's collapse by ShimDMAAllocator::spreadCollapsedPacketChannels),
+// and only the third channel, which has nowhere else to go, shares. All three
+// still get packet_flow ops with unique IDs, which is what lets the shim carry
+// more flows than it has channels.
 // CHECK: aie.packet_flow(0)
 // CHECK: aie.packet_flow(1)
 // CHECK: aie.packet_flow(2)
 // CHECK: aie.shim_dma_allocation @air_out({{.*}}, S2MM, 0)
 // CHECK: aie.shim_dma_allocation @air_pkt_in_0({{.*}}, MM2S, 0)
-// CHECK: aie.shim_dma_allocation @air_pkt_in_1({{.*}}, MM2S, 0)
+// CHECK: aie.shim_dma_allocation @air_pkt_in_1({{.*}}, MM2S, 1)
 // CHECK: aie.shim_dma_allocation @air_pkt_in_2({{.*}}, MM2S, 0)
 
 module {

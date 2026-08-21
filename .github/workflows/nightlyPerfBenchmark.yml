@@ -23,6 +23,16 @@ on:
   schedule:
     - cron: '17 4 * * *'  # Daily at 04:17 (off-:00 to avoid CI fleet pile-up)
   workflow_dispatch:
+    inputs:
+      suites:
+        description: >-
+          Comma-separated lit suites to run: verify, profile, sweep. Defaults to
+          all three, which is what the schedule runs. Narrow it to iterate on one
+          suite without paying for the others -- a full run is ~4h, sweep alone
+          well under an hour. A narrowed run does NOT publish (see below), because its
+          perf.json is partial by construction.
+        default: verify,profile,sweep
+        type: string
 
 defaults:
   run:
@@ -47,21 +57,22 @@ env:
   # and verify runs its NPU-capture and HF-compare phases as separate subprocesses
   # so the reference never coexists with the NPU peak.
   #
-  # qwen3_8b's peak has NOT been measured here. Bound: the HF-compare phase holds
-  # the ~16GB bf16 reference, the NPU phase ~6GB of dequantized Q4NX weights plus
-  # five decode weight BOs (4x1.01GB + 0.37GB, see llms/qwen3_8b_q4nx). Separate
-  # subprocesses, so the peak is the larger, not the sum. Confirm against a
-  # nightly rather than assuming.
+  # The two 8B models' peaks have NOT been measured here. Bound for each: the
+  # HF-compare phase holds a ~16GB bf16 reference, the NPU phase ~6GB (qwen3_8b) /
+  # ~13GB (llama31_8b, its prefill preloads all 32 layers into resident BOs) of
+  # dequantized Q4NX weights plus the split decode weight BOs (qwen3_8b
+  # 4x1.01GB + 0.37GB; llama31_8b 4x1.02GB + 0.31GB). Separate subprocesses, so
+  # each model's peak is the larger of its two phases, not the sum, and the LLM
+  # lit targets are -j1 (programming_examples/CMakeLists.txt) so no two models'
+  # verifies overlap either. Confirm against a nightly rather than assuming.
   #
-  # qwen25_7b_q4nx runs off Qwen/Qwen2.5-7B-Instruct directly (quantized on load --
-  # FastFlowLM publishes no Q4NX bundle for it). Its NPU phase peaks at ~33GB RSS,
-  # MEASURED (32.6GB for prefill alone on a 96GB dev box): the bf16 checkpoint, the
-  # Q4NX host dequant and the five resident decode weight BOs (4x0.95GB + 0.32GB)
-  # are all live across the load. That is the largest peak of any model here and
-  # over half this 64GB runner, so it must not run concurrently with another model
-  # -- the -j1 in the lit suites is what guarantees that. The compare phase holds
-  # the ~15GB bf16 reference in a separate subprocess, so it is not additive.
-  # Re-measure this if the weight preload's lifetime changes.
+  # qwen25_7b_q4nx is the largest peak here and IS measured: ~33GB RSS in the NPU
+  # phase (32.6GB for prefill alone on a 96GB dev box). It runs off
+  # Qwen/Qwen2.5-7B-Instruct directly -- FastFlowLM publishes no Q4NX bundle for
+  # it -- so the bf16 checkpoint, the Q4NX host dequant and the five resident
+  # decode weight BOs (4x0.95GB + 0.32GB) are all live across the load. That is
+  # over half this 64GB runner; the -j1 above is what keeps it from overlapping
+  # another model. Re-measure if the weight preload's lifetime changes.
 
 jobs:
   benchmark:
@@ -333,12 +344,43 @@ jobs:
 
           rc=0
           pushd build_assert
-          # Correctness gate (strict): red if any model's verify fails.
-          LIT_OPTS="--timeout 1800 --xunit-xml-output $OLDPWD/verify.xml" \
-            ninja check-programming-examples-llms-verify || rc=1
-          # Perf capture: writes <model>.perf.json under test/llms/<model>/.
-          LIT_OPTS="--timeout 1800" \
-            ninja check-programming-examples-llms-profile || rc=1
+          SUITES="${{ github.event.inputs.suites || 'verify,profile,sweep' }}"
+          echo "running suites: $SUITES"
+          want() { case ",$SUITES," in *",$1,"*) return 0;; *) return 1;; esac; }
+
+          if want verify; then
+            # Correctness gate (strict): red if any model's verify fails.
+            LIT_OPTS="--timeout 1800 --xunit-xml-output $OLDPWD/verify.xml" \
+              ninja check-programming-examples-llms-verify || rc=1
+          fi
+          if want profile; then
+            # Perf capture: writes <model>.perf.json under test/llms/<model>/.
+            LIT_OPTS="--timeout 1800" \
+              ninja check-programming-examples-llms-profile || rc=1
+          fi
+          # Decode tok/s vs context, for the fused-decode models: writes
+          # <model>.sweep.json alongside. The profile capture above measures one
+          # point at the profile prompt's ~6 tokens of context, which is the
+          # flattering end of a ~12x range and cannot see a KV-path regression.
+          # Each sweep is ~4-5 min (a template build per context).
+          if want sweep; then
+            # Build the shared bench binary BEFORE any timed work. Every model's
+            # `make clean` recurses into fused_decode's, which deletes it, so
+            # verify/profile above always leave it missing and the first model
+            # lit picks it up lazily -- a different model each night, since lit
+            # runs --order=random. Measured once locally on llama31-8b: a sweep
+            # that rebuilt the binary at its start read 11.24/11.77/10.67 tok/s
+            # at 1k/2k/4k, while the same sweep with the binary already present
+            # read 13.11/12.44/11.32, matching two quiet re-measures to 0.3%.
+            # The 8B models are the first big enough to show it. The mechanism
+            # is NOT understood -- the effect outlasts the process that caused
+            # it -- so this removes the condition rather than claiming a fix;
+            # if a head-of-curve dip recurs, this was not the cause.
+            make -C ../programming_examples/fused_decode bench-decode-exe \
+              XILINX_XRT="$XILINX_XRT" || rc=1
+            LIT_OPTS="--timeout 3600" \
+              ninja check-programming-examples-llms-sweep || rc=1
+          fi
           popd
           exit $rc
 
@@ -389,7 +431,15 @@ jobs:
 
           recs = []
           for f in sorted(glob.glob("build_assert/test/llms/**/*.perf.json", recursive=True)):
-              d = json.load(open(f))
+              # A timeout or cancel truncates one model's file mid-write. That
+              # used to raise here and kill the step, so nothing published at
+              # all. Skip the file instead; the vstatus loop below gives the
+              # model a null row if verify ran for it.
+              try:
+                  d = json.load(open(f))
+              except (json.JSONDecodeError, OSError) as e:
+                  print(f"WARNING: {f} unreadable ({e}); recording as failed", file=sys.stderr)
+                  continue
               d["runner"] = "amdryzenai5pro340"
               d["toolchain"] = {
                   "mlir_air_sha": air_sha,
@@ -438,6 +488,27 @@ jobs:
           recs.sort(key=lambda r: r["model"])
           json.dump(recs, open("perf.json", "w"), indent=2)
           print(json.dumps(recs, indent=2))
+
+          # Decode tok/s-vs-context sweeps, kept in their own file rather than
+          # folded into perf.json: a sweep is a curve, not a scalar, and
+          # history.ndjson's one-row-per-model shape cannot hold one. The
+          # models that have a sweep are published from this file instead of the
+          # perf.json table (generate_readme.py drops them from the latter).
+          sweeps = []
+          for f in sorted(glob.glob("build_assert/test/llms/**/*.sweep.json", recursive=True)):
+              d = json.load(open(f))
+              d["runner"] = "amdryzenai5pro340"
+              d["toolchain"] = {
+                  "mlir_air_sha": air_sha,
+                  "mlir_aie_hash": aie_hash,
+                  "llvm_aie_version": peano_ver,
+              }
+              d["verify_status"] = vstatus.get(d["model"], "")
+              sweeps.append(d)
+          sweeps.sort(key=lambda r: r["model"])
+          json.dump(sweeps, open("sweep.json", "w"), indent=2)
+          print(f"{len(sweeps)} sweep(s):",
+                ", ".join(f"{s['model']}({len(s['points'])} pts)" for s in sweeps))
           PY
 
       # Append this run's datapoints to the durable `perf-history` branch so the
@@ -447,7 +518,14 @@ jobs:
       # Best-effort: never reds the benchmark job. The nightly concurrency group
       # serializes runs, so there is no push race on the branch.
       - name: Append perf history
-        if: always() && hashFiles('perf.json') != ''
+        # Only from a FULL run. A suite-narrowed dispatch produces a perf.json
+        # that is partial by construction, and history.ndjson is append-only --
+        # a short row set there is indistinguishable from models disappearing.
+        # !cancelled(), not always(): always() fires on cancellation too, and a
+        # run cancelled mid-profile appended rows with null metrics but
+        # verify_status "pass". A *failed* run must still publish -- its other
+        # models' rows are good.
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -472,9 +550,21 @@ jobs:
             --perf perf.json \
             --history "$workdir/history.ndjson" \
             --run-id "${{ github.run_id }}"
+          # Sweeps go to their own series. Kept separate from history.ndjson so
+          # the existing one-row-per-model time series keeps its shape and its
+          # continuity -- every row in it predates the sweep and was taken at
+          # ~6 tokens of context, so folding curve points in would silently
+          # change what the plotted number means.
+          if [ -f sweep.json ]; then
+            python3 programming_examples/llms/bench/append_history.py \
+              --sweep sweep.json \
+              --history "$workdir/sweep_history.ndjson" \
+              --run-id "${{ github.run_id }}"
+          fi
           pushd "$workdir"
           if [ -n "$(git status --porcelain)" ]; then
             git add history.ndjson
+            [ -f sweep_history.ndjson ] && git add sweep_history.ndjson
             git commit -m "perf-history: nightly ${{ github.sha }} run ${{ github.run_id }}"
             git push origin HEAD:perf-history
           else
@@ -502,13 +592,35 @@ jobs:
                         f"{m['ttft_ms']} | {m['decode_tokens_per_sec']} |")
           PY
 
+      # The artifact NAME decides whether this run can reach the page:
+      # generateDocs.yml consumes the first `perf-<run id>` it finds. Gating the
+      # dispatch below is not enough, and was the bug: generateDocs also runs on
+      # every push to main and fetches the artifact itself.
+      #
+      # Two steps rather than one with a computed name, because cancellation has
+      # to be part of the condition and the status functions are only defined
+      # for `if:`. A cancelled full run is partial at an arbitrary point, so it
+      # must land under the non-publishable name like a narrowed run does.
       - name: Upload perf artifact
-        if: always()
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
         uses: actions/upload-artifact@v4
         with:
           name: perf-${{ github.run_id }}
           path: |
             perf.json
+            sweep.json
+            perf_out/
+            verify.xml
+
+      # Same payload, name the publisher ignores: still there to download.
+      - name: Upload perf artifact (partial run)
+        if: ${{ cancelled() || !(github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-partial-${{ github.run_id }}
+          path: |
+            perf.json
+            sweep.json
             perf_out/
             verify.xml
 
@@ -521,7 +633,10 @@ jobs:
       # and the page only ever refreshed on an unrelated push to main. Best-
       # effort: never fails the benchmark job if the dispatch call errors.
       - name: Refresh docs page
-        if: always() && hashFiles('perf.json') != ''
+        # Full, non-cancelled runs only -- same reasoning as the history append.
+        # Note this gate alone never protected the page: the artifact naming
+        # above is what actually decides, because generateDocs runs on push too.
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

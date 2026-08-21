@@ -159,7 +159,15 @@ def AIRLinalgToFunc : Pass<"air-linalg-to-func", "ModuleOp"> {
     Option<"clLinkWith", "link-with", "std::string",
           /*default=*/"\"\"",
            "Path to the object file containing the functions that will be "
-           "called in place of the linalg operations.">
+           "called in place of the linalg operations.">,
+    Option<"clDeriveLibraryCall", "derive-library-call", "bool",
+          /*default=*/"false",
+           "Derive a callee name from the operation and its operand types when "
+           "the op does not carry one, instead of emitting MLIR's "
+           "\"op_has_no_registered_library_name\" placeholder. Only ops with no "
+           "library_call attribute are affected. Off by default: the placeholder "
+           "is the symbol every hand-written kernel in this tree currently "
+           "exports, so turning this on requires renaming them to match.">
   ];
 }
 

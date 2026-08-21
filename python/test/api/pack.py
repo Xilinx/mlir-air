@@ -147,3 +147,59 @@ def build():
 
 
 print(build().build(target="npu1"))
+
+
+# ---------------------------------------------------------------------------
+# ops.dot(kernel=...): naming the external function.
+#
+# Without it a micro-tiled contraction lowers to MLIR's
+# "op_has_no_registered_library_name" placeholder -- the OpDSL emitter hardcodes
+# library_call=None -- so every such contraction in the tree resolves to one
+# symbol. A kernel compiled for the wrong tile dimensions then links anyway and
+# computes silently wrong results.
+# ---------------------------------------------------------------------------
+
+
+def build_named_kernel():
+    mm = air.micro_tile(m=4, k=8, n=4)
+    A = air.tensor([32, 32], bf16)
+    C = air.tensor([32, 32], bf16)
+
+    with air.launch(name="named", target="npu1") as launch:
+
+        @launch.body
+        def _():
+            with air.segment([range(0, 32, 32)], name="seg") as seg:
+
+                @seg.body
+                def _(si):
+                    acc = air.alloc(mm.c(32, 32), bf16, scope=seg.shared())
+                    l2 = air.alloc([32, 32], bf16, scope=seg.private())
+                    air.ops.load(l2, A[0:32, 0:32])
+
+                    with air.herd([range(1), range(1)], name="mm") as h:
+
+                        @h.body
+                        def _(tx, ty):
+                            a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
+                            b = air.alloc(mm.b(16, 32), bf16, scope=h.private())
+                            air.ops.dot(a, b, acc=acc, kernel="matmul_bf16_m32k16n32")
+
+                    with air.herd([range(1), range(1)], name="drain") as h2:
+
+                        @h2.body
+                        def _(tx, ty):
+                            air.ops.store(acc[tx, ty, :, :], l2[0:32, 0:32])
+
+                    air.ops.store(l2, C[0:32, 0:32])
+
+    return launch
+
+
+# The name rides on the contraction as linalg's own attribute, so
+# air-linalg-to-func picks it up without any air-specific plumbing.
+# CHECK-LABEL: func.func @named
+# CHECK: linalg.generic
+# CHECK-SAME: library_call = "matmul_bf16_m32k16n32"
+
+print(build_named_kernel().build(target="npu1"))

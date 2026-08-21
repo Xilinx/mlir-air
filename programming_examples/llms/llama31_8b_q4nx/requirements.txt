@@ -1,0 +1,24 @@
+# Additional Python packages for the LLAMA-3.1-8B Q4NX example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, filelock, pyxrt, etc.).
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# NPU weights come from FastFlowLM's model.q4nx bundle (default HF repo
+# FastFlowLM/Llama-3.1-8B-NPU2, override with MODEL_SOURCE / Q4NX_MODEL_SOURCE).
+# The tokenizer + the `make verify` bf16 reference come from
+# NousResearch/Meta-Llama-3.1-8B-Instruct, a faithful ungated re-upload of
+# meta-llama/Llama-3.1-8B-Instruct (which FastFlowLM's bundle names as its
+# base_model, but which is license-gated). Its config matches the FLM bundle's
+# exactly, including the 3-way eos_token_id list, so no license grant is needed.
+# Point MODEL_CHOICES at meta-llama instead if you have accepted Meta's license.
+
+# Weight loading (Q4NX bundle + bf16 reference)
+safetensors
+huggingface_hub
+
+# Tokenizer (chat template) and HuggingFace bf16 reference model (used by `make verify`)
+transformers
+torch

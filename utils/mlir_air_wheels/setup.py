@@ -313,7 +313,14 @@ def get_extras_require():
     # so we can inject the build-time mlir_aie pin into the [aie] extra.
     extras = {
         # Mirrors utils/requirements_dev.txt; keep in sync.
-        "dev": ["cmake>=3.30", "pybind11", "nanobind>=2.9", "lit", "psutil"],
+        "dev": [
+            "cmake>=4.4.2, <5.0",
+            "ninja!=1.13.0",
+            "pybind11>=3.0.4",
+            "nanobind==2.12.0",
+            "lit",
+            "psutil",
+        ],
     }
     # AIR supports multiple backends (AIE, GPU, VCK5000), so backend
     # dependencies live under per-backend extras rather than as hard

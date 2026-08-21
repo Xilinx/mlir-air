@@ -203,6 +203,21 @@ def pack_pattern(packed, sizes, strides, offsets):
       from the caller -- the four inner strides come from the packed shape.
     """
     nlead = len(packed.lead)
+    if len(sizes) == 2 and all(e == 1 for e in packed.lead):
+        # The leading dimensions of an A/B tile are structural -- block_matmul's
+        # operands are 6-D, so mm.a/mm.b carry a (1, 1) lead whether or not the
+        # program has anything to put there. A flat staging buffer has no such
+        # dimensions to slice, so pad the region with unit extents rather than
+        # making the caller write `l2_a[0, 0, ...]` against a 2-D buffer.
+        #
+        # A size-1 dimension is never stepped, so its stride is arbitrary; using
+        # the extent of the region below it reproduces what the hand-written
+        # examples put there.
+        pad = list(sizes)[0] * list(strides)[0]
+        zero = coerce_index(0)
+        sizes = [1] * nlead + list(sizes)
+        strides = [pad] * nlead + list(strides)
+        offsets = [zero] * nlead + list(offsets)
     if len(sizes) != nlead + 2:
         raise ValueError(
             f"a packed {packed.role} operand needs a region of rank "

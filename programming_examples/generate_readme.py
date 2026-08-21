@@ -519,6 +519,7 @@ _VERIFY_EMOJI = {"pass": "\U0001f7e2", "fail": "\U0001f534", "skip": "⚪"}
 # programming_examples/llms/hf_models.txt.
 LLM_HF_MODELS = {
     "gemma3_4b_q4nx": "FastFlowLM/Gemma3-4B-NPU2",
+    "llama31_8b_q4nx": "FastFlowLM/Llama-3.1-8B-NPU2",
     "llama32_1b": "meta-llama/Llama-3.2-1B",
     "llama32_1b_int4": "amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead",
     "llama32_1b_q4nx": "FastFlowLM/Llama-3.2-1B-NPU2",
@@ -558,31 +559,224 @@ def _llm_model_cell(model, base_url):
     return name_link
 
 
-def render_llm_benchmark(perf_path, base_url="", perf_history_link="perf-history.html"):
-    """Render the nightly LLM benchmark section from a perf.json file.
+def _ctx_label(n):
+    """1024 -> '1k', 131072 -> '128k'."""
+    return f"{n // 1024}k" if n and n % 1024 == 0 else str(n)
 
-    `perf_path` is the JSON produced by nightlyPerfBenchmark.yml (a list of
-    per-model records). Returns an empty string when the file is absent or
-    empty, so the section is simply omitted (e.g. on local runs or before the
-    first nightly has published an artifact).
+
+def load_llm_sweep_history(path):
+    """Newest point per (model, context) from sweep_history.ndjson, as curves.
+
+    Same reason as load_llm_history: a snapshot makes publishing destructive, so
+    a run that swept nothing would empty the curve table.
     """
-    if not perf_path:
-        return ""
-    p = Path(perf_path)
+    if not path or not Path(path).is_file():
+        return []
+    newest = {}
+    for line in Path(path).read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        model, ctx = r.get("model"), r.get("context_len")
+        if not model or ctx is None:
+            continue
+        ts = r.get("timestamp_utc") or r.get("date") or ""
+        cur = newest.get((model, ctx))
+        # A measured point outranks a failed one at the same context, so a bad
+        # run leaves the last real number rather than punching a hole.
+        better = r.get("decode_tokens_per_sec") is not None
+        if cur is None or (better, ts) >= (cur[0], cur[1]):
+            newest[(model, ctx)] = (better, ts, r)
+    curves = {}
+    for (model, ctx), (_, _, r) in sorted(newest.items()):
+        curves.setdefault(model, {"model": model, "points": []})["points"].append(
+            {
+                "context_len": ctx,
+                "decode_tokens_per_sec": r.get("decode_tokens_per_sec"),
+                "ms_per_token": r.get("ms_per_token"),
+                "status": r.get("status", ""),
+            }
+        )
+    return [curves[m] for m in sorted(curves)]
+
+
+def load_llm_sweeps(sweep_path):
+    """Read sweep.json (list of per-model tok/s-vs-context curves), or []."""
+    if not sweep_path:
+        return []
+    p = Path(sweep_path)
     if not p.is_file():
-        return ""
+        return []
     try:
         recs = json.loads(p.read_text())
     except (json.JSONDecodeError, OSError):
+        return []
+    # The combined artifact is a list of per-model records. A single per-model
+    # <model>.sweep.json is a dict and is an easy thing to point this at by
+    # mistake; iterating one yields its keys as strings and blows up further
+    # down, so reject the shape here and just drop the table.
+    if not isinstance(recs, list):
+        print(f"warning: {p} is not a list of sweep records; ignoring it")
+        return []
+    return [r for r in recs if isinstance(r, dict)]
+
+
+def render_llm_sweep(recs, base_url=""):
+    """Render decode tok/s against context length, one row per model.
+
+    Models with a sweep are published here instead of in the single-point table:
+    decode throughput is dominated by KV streaming and falls by more than 10x
+    across this axis, so one number cannot represent them. A blank cell is a
+    context this runner did not reach, which at 64k/128k means XRT would not pin
+    enough host memory for the KV BO -- a property of the machine rather than of
+    the design, and worth showing rather than hiding.
+    """
+    if not recs:
         return ""
+
+    ctxs = sorted(
+        {
+            pt.get("context_len")
+            for d in recs
+            for pt in d.get("points", []) or []
+            if pt.get("context_len")
+        }
+    )
+    if not ctxs:
+        return ""
+
+    head = "| Model | " + " | ".join(_ctx_label(c) for c in ctxs) + " | Verify |"
+    sep = "|:------|" + "".join("------:|" for _ in ctxs) + ":------:|"
+
+    rows = []
+    for d in sorted(recs, key=lambda r: r.get("model", "")):
+        by_ctx = {pt.get("context_len"): pt for pt in d.get("points", []) or []}
+        cells = []
+        for c in ctxs:
+            pt = by_ctx.get(c) or {}
+            tps = pt.get("decode_tokens_per_sec")
+            cells.append(f"{tps:.2f}" if isinstance(tps, (int, float)) else "—")
+        verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
+        rows.append(
+            f'| {_llm_model_cell(d.get("model", ""), base_url)} | '
+            + " | ".join(cells)
+            + f" | {verify} |"
+        )
+
+    return f"""
+
+### Decode throughput vs context (tok/s)
+
+Steady-state decode, measured against KV-cache depth rather than at a single
+context. Decode-only and synthetic: latency, not correctness (correctness is the
+Verify column, which comes from the same nightly's `make verify`).
+
+{head}
+{sep}
+{chr(10).join(rows)}
+
+— context not reached on this runner (XRT would not pin enough host memory for the KV cache; the limit is the machine's, not the design's)
+"""
+
+
+def load_llm_history(path):
+    """Newest row per model from the append-only history, in perf.json shape.
+
+    The table is a MERGE, not a snapshot. Rendering it from one run's perf.json
+    made every publish destructive: a run that measured nothing replaced the
+    whole table with nothing. Keyed per model, a run simply contributes the
+    models it measured and leaves the rest at their last known value, dated.
+    """
+    if not path or not Path(path).is_file():
+        return []
+    newest, measured = {}, {}
+    for line in Path(path).read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        model = r.get("model")
+        if not model:
+            continue
+        ts = r.get("timestamp_utc") or r.get("date") or ""
+        if model not in newest or ts >= newest[model][0]:
+            newest[model] = (ts, r)
+        # A row with no metrics records that a run failed; it should not erase
+        # the last numbers we have. Prefer the newest row that measured
+        # something -- its older Measured date is the staleness signal.
+        if r.get("decode_tokens_per_sec") is not None or r.get("ttft_ms") is not None:
+            if model not in measured or ts >= measured[model][0]:
+                measured[model] = (ts, r)
+    newest.update(measured)
+    return [
+        {
+            "model": model,
+            "timestamp_utc": r.get("timestamp_utc"),
+            "runner": r.get("runner", ""),
+            "verify_status": r.get("verify_status", ""),
+            "metrics": {
+                "ttft_ms": r.get("ttft_ms"),
+                "decode_tokens_per_sec": r.get("decode_tokens_per_sec"),
+                "context_len": r.get("context_len"),
+            },
+            "toolchain": {
+                "mlir_air_sha": r.get("air_sha", ""),
+                "mlir_aie_hash": r.get("aie_hash", ""),
+                "llvm_aie_version": r.get("peano", ""),
+            },
+        }
+        for model, (_, r) in sorted(newest.items())
+    ]
+
+
+def render_llm_benchmark(
+    perf_path,
+    base_url="",
+    perf_history_link="perf-history.html",
+    sweep_recs=(),
+    history_path=None,
+):
+    """Render the nightly LLM benchmark section.
+
+    Prefers the append-only history (newest row per model) over a single run's
+    perf.json, so publishing cannot delete a model the latest run did not
+    measure. perf.json is the fallback for the first run and for local use.
+    """
+    recs = load_llm_history(history_path)
+    if not recs and perf_path and Path(perf_path).is_file():
+        try:
+            recs = json.loads(Path(perf_path).read_text())
+        except (json.JSONDecodeError, OSError):
+            recs = []
     if not recs:
         return ""
 
     def _fmt(v):
         return "—" if v is None else v
 
+    # Models with a sweep are published in the sweep table below instead; a
+    # single near-zero-context point next to a curve invites reading the two as
+    # comparable numbers, and they are not.
+    # Only a sweep that measured something displaces the scalar row; otherwise a
+    # model whose every context failed appears in neither table.
+    swept = {
+        s.get("model")
+        for s in (sweep_recs or ())
+        if any(
+            p.get("decode_tokens_per_sec") is not None
+            for p in s.get("points", []) or ()
+        )
+    }
+
     rows = []
     for d in sorted(recs, key=lambda r: r.get("model", "")):
+        if d.get("model") in swept:
+            continue
         m = d.get("metrics", {})
         verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
         rows.append(
@@ -590,13 +784,12 @@ def render_llm_benchmark(perf_path, base_url="", perf_history_link="perf-history
             f'| {_fmt(m.get("context_len"))} '
             f'| {_fmt(m.get("ttft_ms"))} '
             f'| {_fmt(m.get("decode_tokens_per_sec"))} '
+            f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
             f"| {verify} |"
         )
 
-    # Provenance: all rows in a run share one toolchain/date, but a partially
-    # written artifact may leave some rows' fields blank. Take the date from the
-    # newest timestamp present, and the toolchain/runner from the newest record
-    # that actually carries toolchain info (fall back to the first record).
+    # Provenance describes the NEWEST row; rows carry their own Measured date
+    # because a merged table can hold models from different runs.
     prov = max(
         (r for r in recs if (r.get("toolchain") or {}).get("mlir_air_sha")),
         key=lambda r: r.get("timestamp_utc") or "",
@@ -620,6 +813,7 @@ def render_llm_benchmark(perf_path, base_url="", perf_history_link="perf-history
         if s
     )
 
+    _sweep_table = render_llm_sweep(sweep_recs, base_url=base_url)
     table = "\n".join(rows)
     return f"""\
 
@@ -627,12 +821,13 @@ def render_llm_benchmark(perf_path, base_url="", perf_history_link="perf-history
 
 End-to-end LLM inference performance on the AMD Ryzen AI (Krackan Point, NPU2) benchmark runner, refreshed nightly. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
 
-| Model | Context | TTFT (ms) | Decode (tok/s) | Verify |
-|:------|--------:|----------:|---------------:|:------:|
+| Model | Context | TTFT (ms) | Decode (tok/s) | Measured | Verify |
+|:------|--------:|----------:|---------------:|:---------|:------:|
 {table}
 
 \U0001f7e2 verify passed &nbsp; \U0001f534 verify failed &nbsp; ⚪ verify skipped &nbsp; — metric not captured (e.g. the model's profile run failed)
 
+{_sweep_table}
 \U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
 _{provenance}_
@@ -690,7 +885,14 @@ python3 run.py --print-module-only  # print IR only
 """
 
 
-def generate_readme(base_url="", llm_perf_path=None, section="full"):
+def generate_readme(
+    base_url="",
+    llm_perf_path=None,
+    section="full",
+    llm_sweep_path=None,
+    llm_history_path=None,
+    llm_sweep_history_path=None,
+):
     """Generate dashboard content.
 
     section:
@@ -706,7 +908,12 @@ def generate_readme(base_url="", llm_perf_path=None, section="full"):
 
     if section == "llm":
         llm_section = render_llm_benchmark(
-            llm_perf_path, base_url=base_url, perf_history_link="perf-history.md"
+            llm_perf_path,
+            base_url=base_url,
+            perf_history_link="perf-history.md",
+            sweep_recs=load_llm_sweep_history(llm_sweep_history_path)
+            or load_llm_sweeps(llm_sweep_path),
+            history_path=llm_history_path,
         )
         return f"""\
 <!-- This file is auto-generated by generate_readme.py. Do not edit manually. -->
@@ -717,7 +924,13 @@ End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped t
 {llm_section}"""
 
     # section == "full" (legacy single-page dashboard)
-    llm_section = render_llm_benchmark(llm_perf_path, base_url=base_url)
+    llm_section = render_llm_benchmark(
+        llm_perf_path,
+        base_url=base_url,
+        sweep_recs=load_llm_sweep_history(llm_sweep_history_path)
+        or load_llm_sweeps(llm_sweep_path),
+        history_path=llm_history_path,
+    )
     return (
         _operator_dashboard(base_url=base_url) + llm_section + _getting_started_footer()
     )
@@ -745,6 +958,26 @@ if __name__ == "__main__":
         "absent or missing, the LLM benchmark section is omitted.",
     )
     parser.add_argument(
+        "--llm-sweep",
+        default=None,
+        help="Path to the nightly sweep.json (decode tok/s vs context). Models "
+        "present here are rendered as a curve and dropped from the single-point "
+        "table. Omitted when absent.",
+    )
+    parser.add_argument(
+        "--llm-history",
+        default=None,
+        help="Path to history.ndjson. Preferred over --llm-perf for the "
+        "benchmark table: newest row per model, so a run that did not measure "
+        "a model leaves its previous value in place instead of erasing it.",
+    )
+    parser.add_argument(
+        "--llm-sweep-history",
+        default=None,
+        help="Path to sweep_history.ndjson. Preferred over --llm-sweep, same "
+        "reason as --llm-history.",
+    )
+    parser.add_argument(
         "--section",
         choices=["full", "operators", "llm"],
         default="full",
@@ -754,7 +987,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     content = generate_readme(
-        base_url=args.base_url, llm_perf_path=args.llm_perf, section=args.section
+        base_url=args.base_url,
+        llm_perf_path=args.llm_perf,
+        section=args.section,
+        llm_sweep_path=args.llm_sweep,
+        llm_history_path=args.llm_history,
+        llm_sweep_history_path=args.llm_sweep_history,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(content)

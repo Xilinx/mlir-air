@@ -34,14 +34,17 @@
 // RUN: air-opt %s -air-to-aie='row-offset=2 col-offset=0 device=npu1' | FileCheck %s
 
 // CHECK-LABEL: aie.device(npu1)
-// All three packet channels share ONE shim LTO at MM2S 0 (packet
-// time-multiplex). Pre-fix the direct-to-core channel got its own shim
-// LTO because its bucket key (col=0) didn't match the memtile-routed
-// channels' bucket key (Op*=memtile LTO).
+// All three packet channels share ONE shim LTO. Pre-fix the direct-to-core
+// channel got its own shim LTO because its bucket key (col=0) didn't match
+// the memtile-routed channels' bucket key (Op*=memtile LTO) -- ONE LTO is
+// what this test guards, and the channel indices below are incidental to it.
+// They spread over the shim's two MM2S first and only pkt_c time-multiplexes,
+// because multiplexing is an overflow mechanism (see
+// ShimDMAAllocator::spreadCollapsedPacketChannels).
 // CHECK:        %[[shim:.*]] = aie.logical_tile<ShimNOCTile>(?, ?)
 // CHECK-NOT:    aie.logical_tile<ShimNOCTile>
 // CHECK-DAG:    aie.shim_dma_allocation @air_pkt_a(%[[shim]], MM2S, 0)
-// CHECK-DAG:    aie.shim_dma_allocation @air_pkt_b(%[[shim]], MM2S, 0)
+// CHECK-DAG:    aie.shim_dma_allocation @air_pkt_b(%[[shim]], MM2S, 1)
 // CHECK-DAG:    aie.shim_dma_allocation @air_pkt_c(%[[shim]], MM2S, 0)
 
 module {
