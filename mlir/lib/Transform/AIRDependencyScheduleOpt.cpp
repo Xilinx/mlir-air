@@ -4320,13 +4320,21 @@ public:
 
   void runOnFunction(func::FuncOp f, std::vector<air::ChannelOp> channelOps) {
     init_options();
+    // The index is a pass member, so drop anything left from a previous
+    // function on this pass instance rather than trusting the scope guard.
+    invalidateChannelIndex();
     if (channelOps.empty())
       return;
     // Rename symbols
     // TODO: make this greedy
+    // Captures `this` to invalidate the channel index: this rewrites chan_name
+    // attributes, which are that index's KEYS, so any cached name -> ops bucket
+    // is stale afterwards. Invalidating inside the lambda covers every call
+    // site (including a later runOnFunction on the same pass instance) rather
+    // than relying on each one to remember.
     auto renameSymbols =
-        [](std::vector<air::ChannelOp> &channelOps,
-           std::map<air::ChannelOp, air::ChannelOp> chan_merge_map) {
+        [this](std::vector<air::ChannelOp> &channelOps,
+               std::map<air::ChannelOp, air::ChannelOp> chan_merge_map) {
           for (unsigned i = 0; i < channelOps.size(); i++) {
             for (auto chanKey : channelOps) {
               if (!chan_merge_map.count(chanKey))
@@ -4339,6 +4347,7 @@ public:
               (void)error;
             }
           }
+          invalidateChannelIndex();
         };
     std::map<air::ChannelOp, air::ChannelOp> chan_merge_map;
     std::vector<std::pair<air::ChannelOp, air::ChannelOp>> nfl_merge_pairs;
