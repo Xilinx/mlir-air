@@ -34,17 +34,18 @@ def build():
     B = air.tensor([K, N], bf16)
     C = air.tensor([M, N], bf16)
 
-    with air.launch(name="matmul", target="npu1") as launch:
+    with air.launch(
+        [range(0, M, TILE_M * HERD_M), range(0, N, TILE_N * HERD_N)],
+        name="matmul",
+        target="npu1",
+    ) as launch:
 
         @launch.body
-        def _():
-            with air.segment(
-                [range(0, M, TILE_M * HERD_M), range(0, N, TILE_N * HERD_N)],
-                name="matmul_seg",
-            ) as seg:
+        def _(ss, st):
+            with air.segment(name="matmul_seg") as seg:
 
                 @seg.body
-                def _(ss, st):
+                def _():
                     row, col = ss * TILE_M * HERD_M, st * TILE_N * HERD_N
 
                     l2_a = air.alloc(
@@ -165,14 +166,14 @@ def build_named_kernel():
     A = air.tensor([32, 32], bf16)
     C = air.tensor([32, 32], bf16)
 
-    with air.launch(name="named", target="npu1") as launch:
+    with air.launch([range(0, 32, 32)], name="named", target="npu1") as launch:
 
         @launch.body
-        def _():
-            with air.segment([range(0, 32, 32)], name="seg") as seg:
+        def _(si):
+            with air.segment(name="seg") as seg:
 
                 @seg.body
-                def _(si):
+                def _():
                     acc = air.alloc(mm.c(32, 32), bf16, scope=seg.shared())
                     l2 = air.alloc([32, 32], bf16, scope=seg.private())
                     air.ops.load(l2, A[0:32, 0:32])

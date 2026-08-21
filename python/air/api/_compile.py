@@ -25,9 +25,14 @@ from ._trace import (
     DEFAULT_TARGET,
     PENDING_SYMBOLS,
     PENDING_TENSORS,
+    LaunchState,
     Trace,
+    _positional_arity,
+    open_launch_region,
+    parse_grid,
     resolve_target,
     set_active_trace,
+    set_launch,
     set_target,
 )
 
@@ -37,7 +42,18 @@ __all__ = ["LaunchContext", "CompiledKernel", "launch", "compile"]
 class LaunchContext:
     """A traced kernel: an interface, a body, and a compiler entry point."""
 
-    def __init__(self, name="kernel", target=None):
+    def __init__(self, grid=None, name="kernel", target=None):
+        # This launch's own iteration space -- air.launch's `sizes`. One point
+        # is one replay of everything inside, so outer tiling belongs here:
+        # a segment's L2 staging is refilled per point. air.segment and
+        # air.herd each own a separate one; see LaunchState.
+        self.dims = parse_grid(grid) if grid is not None else ()
+        if len(self.dims) > 2:
+            raise NotImplementedError(
+                f"air.launch is 1-D or 2-D; got {len(self.dims)}-D"
+            )
+        self.grid = tuple(d.count for d in self.dims)
+        self.tile_sizes = tuple(d.step for d in self.dims)
         self.name = name
         self.target = target or DEFAULT_TARGET
         self.tensors = list(PENDING_TENSORS)
@@ -116,9 +132,12 @@ class LaunchContext:
                     trace = Trace(self.tensors, module=module)
                     previous = set_active_trace(trace)
                     previous_target = set_target(self.target)
+                    state = LaunchState(self)
+                    previous_launch = set_launch(state)
                     try:
-                        self._body()
+                        self._run_body(state)
                     finally:
+                        set_launch(previous_launch)
                         self._l1_peak = trace.l1_peak
                         set_target(previous_target)
                         set_active_trace(previous)
@@ -128,6 +147,35 @@ class LaunchContext:
         self._module = module
         self._check_interface()
         return module
+
+    def _run_body(self, state):
+        """Run the launch body, opening air.launch first if this launch has a grid.
+
+        With no grid there is nothing for air.launch to say, so nothing is
+        emitted until a segment needs a launch to sit inside -- which keeps a
+        kernel that stages nothing at the plain `func` + `air.herd` shape its
+        hand-written predecessor had.
+        """
+        n_expected = len(self.dims)
+        if _positional_arity(self._body) != n_expected:
+            raise TypeError(
+                f"launch body takes {_positional_arity(self._body)} coordinate "
+                f"argument(s) but the launch iteration space is {n_expected}-D"
+                + (
+                    "; a launch with no grid runs once and its body takes no "
+                    "arguments"
+                    if n_expected == 0
+                    else ""
+                )
+            )
+        if not self.dims:
+            self._body()
+            return
+        # air.launch is always 2-D; a 1-D grid pads with 1.
+        counts = list(self.grid) + [1] * (2 - len(self.grid))
+        open_launch_region(
+            state, self.tensors, counts, lambda: self._body(*state.coords)
+        )
 
     def _check_interface(self):
         outputs = self.outputs
@@ -256,12 +304,16 @@ class CompiledKernel:
         self.backend.unload()
 
 
-def launch(name="kernel", target=None):
+def launch(grid=None, name="kernel", target=None):
     """Open a launch; claims every tensor declared since the last launch.
+
+    `grid` is the launch's own iteration space -- one point is one replay of
+    everything inside, with a segment's L2 staging refilled each time, so outer
+    tiling goes here. `air.segment` and `air.herd` each take their own.
 
     `target` names an NPU generation, or "auto"/None to use the installed one.
     """
-    return LaunchContext(name=name, target=target)
+    return LaunchContext(grid=grid, name=name, target=target)
 
 
 def compile(launch_ctx, **kwargs):

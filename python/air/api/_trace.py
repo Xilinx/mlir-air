@@ -32,7 +32,7 @@ import inspect
 import itertools
 import re
 
-from ._index import IndexExpr
+from ._index import IndexExpr, Leaf
 from ._pack import PackedShape
 from ._value import Buffer, Tensor, Token
 
@@ -49,6 +49,10 @@ __all__ = [
     "wait",
     "current_herd",
     "current_segment",
+    "current_launch",
+    "set_launch",
+    "LaunchState",
+    "open_launch_region",
 ]
 
 
@@ -64,6 +68,7 @@ PENDING_SYMBOLS = []
 # The herd currently being traced, and the launch currently being traced.
 _CURRENT_HERD = None
 _CURRENT_SEGMENT = None
+_CURRENT_LAUNCH = None
 _ACTIVE_TRACE = None
 
 # The device being traced for. A herd resolves its physical shape when it is
@@ -186,6 +191,84 @@ def current_segment(required=True):
             "this operation must be used inside a segment body (@segment.body)"
         )
     return _CURRENT_SEGMENT
+
+
+class LaunchState:
+    """The air.launch region being emitted, and whether it is open yet.
+
+    air.launch, air.segment and air.herd each own an iteration space, and each
+    is written on the op that has it. A launch with a grid opens its region
+    itself, before the body runs. A launch without one opens nothing until a
+    segment needs somewhere to sit -- which keeps a kernel that stages nothing
+    at the plain `func` + `air.herd` shape its hand-written predecessors have.
+    """
+
+    __slots__ = ("ctx", "opened", "coords", "leaves")
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+        self.opened = False
+        # This launch's coordinates, as expressions handed to the body, plus the
+        # leaves behind them. A nested IsolatedFromAbove region rebinds each
+        # leaf's .value to its own block argument.
+        self.coords = []
+        self.leaves = []
+
+
+def set_launch(state):
+    global _CURRENT_LAUNCH
+    previous, _CURRENT_LAUNCH = _CURRENT_LAUNCH, state
+    return previous
+
+
+def current_launch():
+    if _CURRENT_LAUNCH is None:
+        raise RuntimeError(
+            "this operation must be used inside a launch body (@launch.body)"
+        )
+    return _CURRENT_LAUNCH
+
+
+def open_launch_region(launch, tensors, counts, body):
+    """Emit air.launch with ``counts`` as its sizes and run ``body`` inside.
+
+    Block arguments are ids + sizes + operands; air.launch is 2-D, so the
+    operands start at index 4.
+    """
+    from air.dialects.air import launch as launch_region
+
+    @launch_region(sizes=counts, operands=[t.value for t in tensors])
+    def launch_body(*largs):
+        launch.opened = True
+        launch.leaves = [
+            Leaf(largs[axis], f"l{axis}") for axis in range(len(launch.ctx.grid))
+        ]
+        launch.coords = [IndexExpr({leaf: 1}, 0) for leaf in launch.leaves]
+        saved = [t.value for t in tensors]
+        for t, v in zip(tensors, largs[4:]):
+            t.value = v
+        try:
+            body()
+        finally:
+            for t, v in zip(tensors, saved):
+                t.value = v
+
+
+def infer_name(fallback, depth=2):
+    """Recover ``tile_m`` from the source line ``tile_m = air.symbol()``.
+
+    Cosmetic only: it affects how ``launch.search_space`` and error messages
+    read back, never what is emitted.
+    """
+    try:
+        frame = inspect.stack()[depth]
+        line = (frame.code_context or [""])[0]
+        match = re.match(r"\s*([A-Za-z_]\w*)\s*=", line)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return fallback
 
 
 def infer_name(fallback, depth=2):
@@ -467,15 +550,30 @@ class SegmentContext:
     """
 
     def __init__(self, grid=None, name=None):
-        # A grid here is the *launch* iteration space: one segment instance per
-        # point, which is how the reference matmul tiles M and N. It cannot be
-        # the herd's job, because the L2 staging buffers are re-filled per point
-        # -- the outer tiling has to sit where the L3->L2 transfers are.
+        # A grid here is this segment's *own* iteration space -- air.segment's
+        # `sizes`, which the dialect prints as `unroll(...)`. air.launch,
+        # air.segment and air.herd each carry one and they are not the same
+        # thing: a launch point is a repetition of the whole segment, while a
+        # segment point is a spatial copy of the segment body, which air-to-aie
+        # lays out across columns or devices. Writing a grid here used to set
+        # the *launch's* sizes, which conflated the two and made air.segment's
+        # own iteration space unreachable.
         self.dims = parse_grid(grid) if grid is not None else ()
         if len(self.dims) > 2:
             raise NotImplementedError(
-                f"air.launch is 2-D, so a segment grid is 1-D or 2-D; got "
+                f"an air.segment iteration space is 1-D or 2-D; got "
                 f"{len(self.dims)}-D"
+            )
+        if self.dims:
+            raise NotImplementedError(
+                "air.segment(<grid>) is the segment's own iteration space -- "
+                "air.segment's `sizes`, which unrolls the segment body into one "
+                "spatial copy per point (see programming_examples/segment_unroll"
+                "). air.api does not emit that yet.\n\n"
+                "If you meant the outer tiling -- one segment instance per "
+                "point, L2 staging refilled each time -- that is the *launch's* "
+                "iteration space: write air.launch(<grid>) and take the "
+                "coordinates in the launch body."
             )
         self.grid = tuple(d.count for d in self.dims)
         self.tile_sizes = tuple(d.step for d in self.dims)
@@ -525,67 +623,82 @@ class SegmentContext:
         return decorator
 
     def _emit(self, fn):
-        global _CURRENT_SEGMENT
-
         trace = active_trace()
         n_expected = len(self.dims)
         if _positional_arity(fn) != n_expected:
             raise TypeError(
                 f"segment body takes {_positional_arity(fn)} coordinate "
-                f"argument(s) but the launch iteration space is "
+                f"argument(s) but the segment iteration space is "
                 f"{n_expected}-D"
                 + (
                     "; a segment with no grid is a single instance and its body "
-                    "takes no arguments"
+                    "takes no arguments. Outer tiling belongs on air.launch, "
+                    "whose coordinates arrive in the launch body"
                     if n_expected == 0
                     else ""
                 )
             )
 
-        from air.dialects.air import launch as launch_region
+        launch = current_launch()
+        if launch.opened:
+            # air.launch is already open -- either because it carries a grid, or
+            # because an earlier segment opened it.
+            self._emit_segment(fn, trace)
+        else:
+            # A gridless launch still has to exist for a segment to sit in:
+            # air-insert-launch-around-herd only wraps a *bare* herd, and skips
+            # one already inside a segment, so a segment with no launch above it
+            # compiles and silently computes zeros. One point, 2-D as air.launch
+            # requires.
+            open_launch_region(
+                launch, trace.tensors, [1, 1], lambda: self._emit_segment(fn, trace)
+            )
+
+    def _emit_segment(self, fn, trace):
+        """Emit air.segment inside the already-open air.launch."""
+        global _CURRENT_SEGMENT
+
         from air.dialects.air import segment as segment_region
         from air.dialects.memref import DeallocOp
 
         tensors = trace.tensors
         segment_self = self
+        launch = current_launch()
 
-        # air.launch is always 2-D; an absent or 1-D grid pads with 1. Its block
-        # arguments are sizes*2 + operands, so the operands start at index 4.
-        counts = list(self.grid) + [1] * (2 - len(self.grid))
+        # air.segment is IsolatedFromAbove, so a launch coordinate used in this
+        # body cannot simply be referenced -- it is threaded in as an operand
+        # ahead of the tensors, and rebound to the block argument inside.
+        outer_leaves = launch.leaves
+        operands = [leaf.value for leaf in outer_leaves] + [t.value for t in tensors]
+        sizes = list(self.grid) + [1] * (2 - len(self.grid)) if self.grid else []
 
-        @launch_region(sizes=counts, operands=[t.value for t in tensors])
-        def launch_body(*largs):
-            # The launch induction variables become segment operands, ahead of
-            # the tensors -- air.segment is IsolatedFromAbove, so a coordinate
-            # cannot simply be referenced from inside it.
-            ivs = list(largs[: len(segment_self.dims)])
-            outer = ivs + list(largs[4:])
+        @segment_region(name=self.name, operands=operands, sizes=sizes)
+        def segment_body(*args):
+            global _CURRENT_SEGMENT
 
-            # sizes=[] on the segment means its block arguments are exactly the
-            # operands.
-            @segment_region(name=segment_self.name, operands=outer)
-            def segment_body(*args):
-                global _CURRENT_SEGMENT
-
-                coords = [
-                    IndexExpr.leaf(v, f"s{axis}")
-                    for axis, v in enumerate(args[: len(ivs)])
-                ]
-                bound = args[len(ivs) :]
-                saved = [t.value for t in tensors]
-                for t, v in zip(tensors, bound):
+            # Block arguments are ids + sizes + operands, so a segment with an
+            # iteration space of its own offsets the operands by 2 * its rank.
+            n = len(sizes)
+            coords = [IndexExpr.leaf(v, f"u{axis}") for axis, v in enumerate(args[:n])]
+            bound = args[2 * n :]
+            saved_outer = [leaf.value for leaf in outer_leaves]
+            for leaf, v in zip(outer_leaves, bound[: len(outer_leaves)]):
+                leaf.value = v
+            saved = [t.value for t in tensors]
+            for t, v in zip(tensors, bound[len(outer_leaves) :]):
+                t.value = v
+            previous, _CURRENT_SEGMENT = _CURRENT_SEGMENT, segment_self
+            try:
+                fn(*coords)
+                for buf in segment_self._buffers:
+                    DeallocOp(buf.value)
+            finally:
+                segment_self._buffers.clear()
+                for t, v in zip(tensors, saved):
                     t.value = v
-                previous, _CURRENT_SEGMENT = _CURRENT_SEGMENT, segment_self
-                try:
-                    fn(*coords)
-                    # Freed here, inside the region the allocs were emitted into.
-                    for buf in segment_self._buffers:
-                        DeallocOp(buf.value)
-                finally:
-                    segment_self._buffers.clear()
-                    for t, v in zip(tensors, saved):
-                        t.value = v
-                    _CURRENT_SEGMENT = previous
+                for leaf, v in zip(outer_leaves, saved_outer):
+                    leaf.value = v
+                _CURRENT_SEGMENT = previous
 
 
 def segment(grid=None, name=None):
