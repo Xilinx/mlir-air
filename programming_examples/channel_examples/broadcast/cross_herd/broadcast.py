@@ -1,127 +1,78 @@
-# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-#
-# Cross-herd broadcast: Herd A [1,1] puts data to a broadcast channel,
-# Herd B [N,1] gets the same data on all tiles.
-#
-# This exercises the pattern needed for RMSNorm[1,1] → GEMV[N,1] broadcast:
-# - Channel("bcast", size=[1, 1], broadcast_shape=[N, 1])
-# - Herd A [1,1]: ChannelPut("bcast", buf)           — single put, no indices
-# - Herd B [N,1]: ChannelGet("bcast", buf, [tx, ty]) — N gets via broadcast
-#
-# Test: Herd A reads input, adds 1, broadcasts.
-#       Herd B receives broadcast, each tile writes to its section of output.
-#       Output = N copies of (input + 1).
+"""A broadcast that crosses herds, on air.api.
+
+    air.channel @bcast [1, 1] {broadcast_shape = [4, 1]}
+
+One producer herd computes a vector and puts it once; a second herd of four
+cores each get the same data and write it to its own slice of the output. So
+this is the third shape of the same attribute: ``broadcast/single_herd`` fans
+out to the cores of one herd, ``broadcast/multi_herd`` to three separate 1x1
+herds, and this one from a herd to the cores of *another* herd. The producer
+and the consumer share no buffer and no operand -- only the symbol.
+
+Unchanged from the raw-bindings version this replaces, except that the
+producer's "add one" is written ``l1_out[:] = l1_in[:] + 1.0`` rather than as a
+hand-rolled loop over ``memref.subview`` + ``vector.transfer_read`` /
+``arith.addf`` / ``vector.transfer_write``. bf16 vectorises at 16 lanes, which
+is what the predecessor's ``VEC_SIZE`` picked by hand, and the DSL picks the
+same width for a 64-element buffer.
+"""
 
 import argparse
-import numpy as np
 from ml_dtypes import bfloat16
+import numpy as np
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.func import FuncOp
-from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import bf16
 
 VECTOR_LEN = 64  # Length of vector to broadcast (like head_dim or K)
 HERD_N = 4  # Number of consumer tiles (like HERD_M in GEMV)
-VEC_SIZE = 16  # SIMD width for bf16
 DTYPE = bfloat16
 
 
-def _make_mul_map(factor):
-    return AffineMap.get(
-        0,
-        1,
-        [AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(factor))],
-    )
-
-
-@module_builder
 def build_module():
-    xrt = type_mapper(DTYPE)
-    vecTy = VectorType.get([VEC_SIZE], xrt)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+    A = air.tensor([VECTOR_LEN], bf16)
+    B = air.tensor([HERD_N * VECTOR_LEN], bf16)
 
-    # L3 types
-    in_ty = MemRefType.get([VECTOR_LEN], xrt)
-    out_ty = MemRefType.get([HERD_N * VECTOR_LEN], xrt)
+    bcast = air.channel("bcast", size=[1, 1], broadcast_shape=[HERD_N, 1])
 
-    # Memory spaces
-    l1s = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    with air.launch(name="cross_herd_broadcast") as launch:
 
-    # L1 types
-    l1_vec_ty = MemRefType.get([VECTOR_LEN], xrt, memory_space=l1s)
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-    # Cross-herd broadcast channel: 1 put from herd A, HERD_N gets in herd B
-    Channel("bcast", size=[1, 1], broadcast_shape=[HERD_N, 1])
+                @seg.body
+                def _():
 
-    @FuncOp.from_py_func(in_ty, out_ty)
-    def cross_herd_broadcast(data_in, data_out):
+                    with air.herd([range(1)], name="producer", shape=(1,)) as p:
 
-        @launch(operands=[data_in, data_out])
-        def launch_body(l_in, l_out):
+                        @p.body
+                        def _(tx):
+                            l1_in = air.alloc([VECTOR_LEN], bf16, scope=p.private())
+                            l1_out = air.alloc([VECTOR_LEN], bf16, scope=p.private())
 
-            @segment(name="seg", operands=[l_in, l_out])
-            def seg(s_in, s_out):
+                            air.ops.load(l1_in, A)
+                            l1_out[:] = l1_in[:] + 1.0
+                            bcast.put(l1_out)
 
-                # === Herd A [1,1]: producer — read, transform, broadcast ===
-                @herd(name="producer", sizes=[1, 1], operands=[s_in])
-                def producer(_tx, _ty, _sx, _sy, h_in):
-                    l1_in = AllocOp(l1_vec_ty, [], [])
-                    l1_out = AllocOp(l1_vec_ty, [], [])
+                    with air.herd(
+                        [range(HERD_N), range(1)], name="consumer", shape=(HERD_N, 1)
+                    ) as c:
 
-                    # Load from L3
-                    dma_memcpy_nd(l1_in, h_in)
+                        @c.body
+                        def _(tx, ty):
+                            l1_buf = air.alloc([VECTOR_LEN], bf16, scope=c.private())
 
-                    # Add 1 to each element (vectorized)
-                    c0 = ConstantOp(T.index(), 0)
-                    cst0 = ConstantOp(xrt, 0.0)
-                    one_scalar = ConstantOp(xrt, 1.0)
-                    v_one = BroadcastOp(vecTy, one_scalar)
-                    for j in range_(0, VECTOR_LEN, VEC_SIZE):
-                        sv_in = subview(l1_in.result, [j], [VEC_SIZE], [1])
-                        sv_out = subview(l1_out.result, [j], [VEC_SIZE], [1])
-                        v = transfer_read(
-                            vecTy, sv_in, [c0], identity_map, cst0, [True]
-                        )
-                        v_plus = arith.addf(v, v_one)
-                        transfer_write(None, v_plus, sv_out, [c0], identity_map, [True])
-                        yield_([])
+                            bcast.get(l1_buf, indices=[tx, ty])
 
-                    # Broadcast to all consumer tiles
-                    ChannelPut("bcast", l1_out)
+                            off = tx * VECTOR_LEN
+                            air.ops.store(l1_buf, B[off : off + VECTOR_LEN])
 
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_out)
-
-                # === Herd B [HERD_N, 1]: consumer — receive broadcast, write output ===
-                @herd(name="consumer", sizes=[HERD_N, 1], operands=[s_out])
-                def consumer(_tx, _ty, _sx, _sy, h_out):
-                    l1_buf = AllocOp(l1_vec_ty, [], [])
-
-                    # Get broadcast data (each tile gets the same data)
-                    ChannelGet("bcast", l1_buf, indices=[_tx, _ty])
-
-                    # Write to output at tile-specific offset
-                    mul_map = _make_mul_map(VECTOR_LEN)
-                    out_off = affine_apply(mul_map, [_tx])
-                    dma_memcpy_nd(
-                        h_out,
-                        l1_buf,
-                        dst_offsets=[out_off],
-                        dst_sizes=[VECTOR_LEN],
-                        dst_strides=[1],
-                    )
-
-                    DeallocOp(l1_buf)
+    return launch
 
 
 if __name__ == "__main__":
@@ -138,9 +89,18 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
+
     args = parser.parse_args()
 
-    mlir_module = build_module()
+    launch = build_module()
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
