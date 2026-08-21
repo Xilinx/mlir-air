@@ -57,8 +57,25 @@ DTYPE = {bfloat16: bf16}
 
 
 def build_module(
-    m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out, link_with="mv.o"
+    m,
+    k,
+    tile_m,
+    m_input,
+    herd_m,
+    np_dtype_in,
+    np_dtype_out,
+    link_with="mv.o",
+    target="auto",
 ):
+    """Build the GEMV module. Returns an ``air.ir.Module``.
+
+    Returning a *module* rather than the air.api ``LaunchContext`` is part of
+    this function's contract, not an implementation detail: ten call sites in
+    ``programming_examples/llms/`` do ``str(build_gemv(...))`` and parse the
+    result as MLIR text. Returning the context stringified it as
+    ``<air.api._compile.LaunchContext object at 0x...>``, which those parsers
+    accepted silently and then failed on with an unrelated TypeError.
+    """
     assert (
         m % (tile_m * herd_m) == 0
     ), f"M ({m}) must be divisible by tile_m * herd_m ({tile_m * herd_m})"
@@ -146,7 +163,7 @@ def build_module(
 
                     air.ops.store(l2_c, C[row : row + seg_m])
 
-    return launch
+    return launch.build(target=target)
 
 
 if __name__ == "__main__":
@@ -248,7 +265,7 @@ if __name__ == "__main__":
     if args.perf_iters < 0:
         parser.error("--perf-iters must be >= 0")
 
-    launch = build_module(
+    mlir_module = build_module(
         args.m,
         args.k,
         args.tile_m,
@@ -256,8 +273,8 @@ if __name__ == "__main__":
         args.herd_m,
         INPUT_DATATYPE,
         OUTPUT_DATATYPE,
+        target=args.target,
     )
-    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
