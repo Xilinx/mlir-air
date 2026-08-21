@@ -1453,6 +1453,10 @@ static LogicalResult runAieCompilation() {
     // aiecc's default, which has flipped before (mlir-aie 1ba5b5c).
     aieccCmd.push_back("-j");
     aieccCmd.push_back((xchesscc || xbridge) ? "1" : "0");
+    // Lower each device's cores once instead of once per core; every core still
+    // links its own ELF from the shared object. Peano only -- the Chess object
+    // path is untested here.
+    aieccCmd.push_back((xchesscc || xbridge) ? "--no-unified" : "--unified");
 
     // bf16 emulation
     if (bf16Emulation)
