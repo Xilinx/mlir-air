@@ -185,8 +185,8 @@ if __name__ == "__main__":
     np.random.seed(42)
 
     parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        prog="single_core.py",
+        description="Builds, runs, and tests the block-quantized int8 vector-matrix multiplication example",
     )
     parser.add_argument(
         "-v",

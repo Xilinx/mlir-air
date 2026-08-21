@@ -265,7 +265,7 @@ class Channel:
         if not isinstance(pack, PackedShape):
             raise TypeError(
                 f"air.channel.{direction}(pack=...) takes a packed shape from "
-                "air.micro_tile(...).a/.b/.c, e.g. "
+                "air.micro_tile(...).a or .b, e.g. "
                 "pack=air.micro_tile(1, 16, 8).b(tile_k, tile_n); got "
                 f"{type(pack).__name__}"
             )
