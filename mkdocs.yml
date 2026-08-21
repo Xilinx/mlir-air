@@ -119,7 +119,11 @@ nav:
     - GEMM Case Study: GEMMCaseStudy.md
   - Programming Examples: programming_examples/index.md
   - LLMs on NPU:
-    - llms/index.md
+    # Labelled, like every other entry here. generate_readme.py leads the page
+    # with its "auto-generated, do not edit" comment, and a leading HTML comment
+    # stops MkDocs extracting the title from the first H1 -- so an unlabelled
+    # entry falls back to the filename and this one published as "Index".
+    - Overview: llms/index.md
     - Performance History: llms/perf-history.md
   - Official AI Skills: ai_skills.md
   - MLIR Reference:
