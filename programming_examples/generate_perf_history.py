@@ -65,7 +65,7 @@ def load_history(history_path):
     if not p or not p.is_file():
         return []
     rows = []
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -169,10 +169,9 @@ HTML_TEMPLATE = """\
 <body>
 <p><a href="index.html">&larr; Back to Programming Examples dashboard</a></p>
 <h1>LLM Performance History (NPU2)</h1>
-<p class="sub">Per-nightly end-to-end inference performance on the AMD Ryzen AI (Krackan Point, NPU2)
-benchmark runner. Each point is one nightly build, labeled by date; hover to see the commit SHA and
-verify status. A <span style="color:{fail_color}; font-weight:700;">red &#10007; marker</span> flags a nightly
-whose correctness verify failed (the marker shape, not just its color, signals the failure).</p>
+<p class="sub">Per-nightly TTFT and decode throughput. Each point is one nightly, labeled by date;
+hover for the commit and verify status. A
+<span style="color:{fail_color}; font-weight:700;">red &#10007;</span> marks a nightly whose verify failed.</p>
 <p class="legend-note">Click a model in a legend to toggle its line.{window_note}</p>
 
 <div class="chart-box"><canvas id="ttft"></canvas></div>
@@ -240,8 +239,7 @@ EMPTY_TEMPLATE = """\
 <body>
 <p><a href="index.html">&larr; Back to Programming Examples dashboard</a></p>
 <h1>LLM Performance History (NPU2)</h1>
-<p class="sub">No nightly performance history has been recorded yet. Charts will appear here once the
-nightly LLM benchmark has published its first datapoints.</p>
+<p class="sub">No nightly data recorded yet.</p>
 </body>
 </html>
 """
@@ -287,12 +285,7 @@ def generate_embed_md(rows, window=DEFAULT_WINDOW):
     theme chrome instead of restyling the whole page.
     """
     if not rows:
-        return (
-            "# LLM Performance History\n\n"
-            "No nightly performance history has been recorded yet. Charts will "
-            "appear here once the nightly LLM benchmark has published its first "
-            "datapoints.\n"
-        )
+        return "# LLM Performance History (NPU2)\n\nNo nightly data recorded yet.\n"
     import re
 
     html = generate_html(rows, window)
@@ -301,7 +294,7 @@ def generate_embed_md(rows, window=DEFAULT_WINDOW):
     if not cdn_m or not body_m:
         # Template shape changed unexpectedly; fall back to the standalone page
         # rather than raising, so the docs build never breaks on this page.
-        return "# LLM Performance History\n\n" + html
+        return "# LLM Performance History (NPU2)\n\n" + html
     body = body_m.group(1)
     body = re.sub(r'<p><a href="index.html">.*?</a></p>\s*', "", body, flags=re.S)
     body = re.sub(r"<h1>.*?</h1>\s*", "", body, count=1, flags=re.S)
@@ -309,7 +302,7 @@ def generate_embed_md(rows, window=DEFAULT_WINDOW):
     # <style> is deliberately NOT reused — its `body`/`h1`/`a` global selectors
     # would restyle the surrounding Material page chrome.
     style = "<style>.chart-box { position: relative; height: 380px; margin: 32px 0; }</style>"
-    return f"# LLM Performance History\n\n{cdn_m.group(0)}\n{style}\n{body}\n"
+    return f"# LLM Performance History (NPU2)\n\n{cdn_m.group(0)}\n{style}\n{body}\n"
 
 
 def main():
@@ -341,9 +334,12 @@ def main():
     # Always write a page (empty-state when there are no rows) so the site's
     # link to this page is stable and never 404s.
     args.output.write_text(
-        generate_embed_md(rows, args.window)
-        if args.embed
-        else generate_html(rows, args.window)
+        (
+            generate_embed_md(rows, args.window)
+            if args.embed
+            else generate_html(rows, args.window)
+        ),
+        encoding="utf-8",
     )
     print(f"Generated {args.output} ({len(rows)} rows)")
     return 0

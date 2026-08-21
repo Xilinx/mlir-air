@@ -42,6 +42,7 @@ def _flat_rows(recs, run_id):
             "aie_hash": tc.get("mlir_aie_hash", ""),
             "peano": tc.get("llvm_aie_version", ""),
             "model": d.get("model", ""),
+            "runner": d.get("runner", ""),
             "ttft_ms": m.get("ttft_ms"),
             "decode_tokens_per_sec": m.get("decode_tokens_per_sec"),
             "context_len": m.get("context_len"),
@@ -55,6 +56,11 @@ def _flat_sweep_rows(recs, run_id):
     Points that did not produce a number are still emitted, with a null metric
     and their status, so a context that starts failing is visible in the series
     rather than the curve just getting shorter.
+
+    `status` is the point's own outcome (did this context produce a number);
+    `verify_status` is the model's `make verify` result for the whole run, which
+    is what the published Verify column reports. They are different things, and
+    both are per-row here because the docs build reads only this file.
     """
     for d in recs:
         tc = d.get("toolchain", {}) or {}
@@ -68,10 +74,12 @@ def _flat_sweep_rows(recs, run_id):
                 "aie_hash": tc.get("mlir_aie_hash", ""),
                 "peano": tc.get("llvm_aie_version", ""),
                 "model": d.get("model", ""),
+                "runner": d.get("runner", ""),
                 "context_len": pt.get("context_len"),
                 "decode_tokens_per_sec": pt.get("decode_tokens_per_sec"),
                 "ms_per_token": pt.get("ms_per_token"),
                 "status": pt.get("status", ""),
+                "verify_status": d.get("verify_status", ""),
             }
 
 
@@ -84,7 +92,7 @@ def _existing_run_ids(history_path):
     p = Path(history_path)
     if not p.is_file():
         return ids
-    with p.open() as f:
+    with p.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -122,7 +130,7 @@ def main():
         print(f"no {src_path.name}; nothing to append")
         return 0
     try:
-        recs = json.loads(src_path.read_text())
+        recs = json.loads(src_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         # Best-effort: a missing/corrupt/partial input should not crash the CI
         # step (which is itself continue-on-error), just skip this run.
@@ -139,7 +147,7 @@ def main():
     rows = list(flatten(recs, run_id))
     hist = Path(args.history)
     hist.parent.mkdir(parents=True, exist_ok=True)
-    with hist.open("a") as f:
+    with hist.open("a", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row) + "\n")
     print(f"appended {len(rows)} rows for run {run_id} to {hist}")

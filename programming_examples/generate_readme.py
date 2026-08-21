@@ -434,7 +434,7 @@ def parse_lit_file(filepath):
     """Extract REQUIRES tags and XFAIL presence from a .lit file."""
     requires_tags = set()
     has_xfail = False
-    with open(filepath, "r") as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         for line in f:
             m = re.search(r"//\s*REQUIRES:\s*(.+)", line)
             if m:
@@ -573,7 +573,8 @@ def load_llm_sweep_history(path):
     if not path or not Path(path).is_file():
         return []
     newest = {}
-    for line in Path(path).read_text().splitlines():
+    verify = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -590,9 +591,22 @@ def load_llm_sweep_history(path):
         better = r.get("decode_tokens_per_sec") is not None
         if cur is None or (better, ts) >= (cur[0], cur[1]):
             newest[(model, ctx)] = (better, ts, r)
+        # Verify is a per-model property of the whole run, so it is tracked
+        # across the model's rows rather than taken from whichever point won
+        # above -- a stale-but-measured point must not drag a stale verify
+        # badge along with it. Strictly newest, with no preference for a
+        # non-empty value: unlike a throughput number, a correctness badge that
+        # silently goes stale is worse than one that is blank, and this table
+        # has no per-row date to reveal the staleness. Blank until the next
+        # nightly appends the field is the intended transition.
+        if model not in verify or ts >= verify[model][0]:
+            verify[model] = (ts, r.get("verify_status", ""))
     curves = {}
     for (model, ctx), (_, _, r) in sorted(newest.items()):
-        curves.setdefault(model, {"model": model, "points": []})["points"].append(
+        curves.setdefault(
+            model,
+            {"model": model, "points": [], "verify_status": verify[model][1]},
+        )["points"].append(
             {
                 "context_len": ctx,
                 "decode_tokens_per_sec": r.get("decode_tokens_per_sec"),
@@ -611,7 +625,7 @@ def load_llm_sweeps(sweep_path):
     if not p.is_file():
         return []
     try:
-        recs = json.loads(p.read_text())
+        recs = json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
     # The combined artifact is a list of per-model records. A single per-model
@@ -624,15 +638,22 @@ def load_llm_sweeps(sweep_path):
     return [r for r in recs if isinstance(r, dict)]
 
 
+def _sweep_cell(pt):
+    """The point's tok/s, or a marker: ✗ for a failure, — otherwise."""
+    tps = pt.get("decode_tokens_per_sec")
+    if isinstance(tps, (int, float)):
+        return f"{tps:.2f}"
+    return "—" if pt.get("status", "") in ("", "ok", "expected_fail") else "✗"
+
+
 def render_llm_sweep(recs, base_url=""):
     """Render decode tok/s against context length, one row per model.
 
     Models with a sweep are published here instead of in the single-point table:
     decode throughput is dominated by KV streaming and falls by more than 10x
-    across this axis, so one number cannot represent them. A blank cell is a
-    context this runner did not reach, which at 64k/128k means XRT would not pin
-    enough host memory for the KV BO -- a property of the machine rather than of
-    the design, and worth showing rather than hiding.
+    across this axis, so one number cannot represent them. Cells without a
+    number carry a marker for why (see _sweep_cell), and only the markers that
+    actually appear are explained below the table.
     """
     if not recs:
         return ""
@@ -651,14 +672,15 @@ def render_llm_sweep(recs, base_url=""):
     head = "| Model | " + " | ".join(_ctx_label(c) for c in ctxs) + " | Verify |"
     sep = "|:------|" + "".join("------:|" for _ in ctxs) + ":------:|"
 
-    rows = []
+    rows, markers = [], set()
     for d in sorted(recs, key=lambda r: r.get("model", "")):
         by_ctx = {pt.get("context_len"): pt for pt in d.get("points", []) or []}
         cells = []
         for c in ctxs:
-            pt = by_ctx.get(c) or {}
-            tps = pt.get("decode_tokens_per_sec")
-            cells.append(f"{tps:.2f}" if isinstance(tps, (int, float)) else "—")
+            cell = _sweep_cell(by_ctx.get(c) or {})
+            if cell in ("—", "✗"):
+                markers.add(cell)
+            cells.append(cell)
         verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
         rows.append(
             f'| {_llm_model_cell(d.get("model", ""), base_url)} | '
@@ -666,19 +688,28 @@ def render_llm_sweep(recs, base_url=""):
             + f" | {verify} |"
         )
 
+    # Only explain the markers that are actually on the table. A legend for a
+    # symbol no cell uses reads as a caveat about the numbers above it.
+    legend = "\n\n".join(
+        note
+        for marker, note in (
+            ("—", "— expected failure."),
+            ("✗", "✗ unexpected failure."),
+        )
+        if marker in markers
+    )
+
     return f"""
 
 ### Decode throughput vs context (tok/s)
 
-Steady-state decode, measured against KV-cache depth rather than at a single
-context. Decode-only and synthetic: latency, not correctness (correctness is the
-Verify column, which comes from the same nightly's `make verify`).
+Steady-state decode throughput at increasing KV-cache depth.
 
 {head}
 {sep}
 {chr(10).join(rows)}
 
-— context not reached on this runner (XRT would not pin enough host memory for the KV cache; the limit is the machine's, not the design's)
+{legend}
 """
 
 
@@ -693,7 +724,7 @@ def load_llm_history(path):
     if not path or not Path(path).is_file():
         return []
     newest, measured = {}, {}
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -750,7 +781,7 @@ def render_llm_benchmark(
     recs = load_llm_history(history_path)
     if not recs and perf_path and Path(perf_path).is_file():
         try:
-            recs = json.loads(Path(perf_path).read_text())
+            recs = json.loads(Path(perf_path).read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             recs = []
     if not recs:
@@ -797,7 +828,6 @@ def render_llm_benchmark(
     )
     tc = prov.get("toolchain", {})
     date = max((r.get("timestamp_utc") or "" for r in recs), default="")[:10]
-    runner = prov.get("runner", "")
     air = (tc.get("mlir_air_sha") or "")[:7]
     aie = (tc.get("mlir_aie_hash") or "")[:7]
     peano = tc.get("llvm_aie_version") or ""
@@ -805,7 +835,6 @@ def render_llm_benchmark(
         s
         for s in [
             f"Last updated {date}" if date else "",
-            f"runner {runner}" if runner else "",
             f"mlir-air {air}" if air else "",
             f"mlir-aie {aie}" if aie else "",
             f"llvm-aie {peano}" if peano else "",
@@ -819,13 +848,13 @@ def render_llm_benchmark(
 
 ## Nightly LLM Benchmark (NPU2)
 
-End-to-end LLM inference performance on the AMD Ryzen AI (Krackan Point, NPU2) benchmark runner, refreshed nightly. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
+End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Point, NPU2) benchmark runner — 2×32 GB DDR5-5600 SODIMM — refreshed nightly. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
 
 | Model | Context | TTFT (ms) | Decode (tok/s) | Measured | Verify |
 |:------|--------:|----------:|---------------:|:---------|:------:|
 {table}
 
-\U0001f7e2 verify passed &nbsp; \U0001f534 verify failed &nbsp; ⚪ verify skipped &nbsp; — metric not captured (e.g. the model's profile run failed)
+Verify: \U0001f7e2 pass &nbsp; \U0001f534 fail &nbsp; ⚪ skipped. &nbsp; — not measured.
 
 {_sweep_table}
 \U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
@@ -920,7 +949,7 @@ def generate_readme(
 
 # LLMs on NPU
 
-End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped to the AMD NPU2 in bf16 via MLIR-AIR. Model coverage and performance below are refreshed nightly by CI (correctness **verify** plus **TTFT**/**decode** capture). For per-model architecture details and source, see the [`programming_examples/llms/`]({base_url}llms/) directory.
+End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped to the AMD NPU2 in bf16 via MLIR-AIR. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
 {llm_section}"""
 
     # section == "full" (legacy single-page dashboard)
@@ -995,5 +1024,7 @@ if __name__ == "__main__":
         llm_sweep_history_path=args.llm_sweep_history,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(content)
+    # Explicit encoding: the tables carry the verify/status emoji, and on a
+    # Windows checkout the default (cp1252) raises UnicodeEncodeError on them.
+    args.output.write_text(content, encoding="utf-8")
     print(f"Generated {args.output}")
