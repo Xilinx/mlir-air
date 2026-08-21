@@ -705,6 +705,10 @@ def render_llm_sweep(recs, base_url=""):
 
 Steady-state decode throughput at increasing KV-cache depth.
 
+The models below reimplement AMD NPU LLM designs originally developed by the
+[FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level
+abstractions of the MLIR-AIR dialect.
+
 {head}
 {sep}
 {chr(10).join(rows)}

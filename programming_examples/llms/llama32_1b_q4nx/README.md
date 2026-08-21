@@ -1,5 +1,9 @@
 # LLAMA-3.2-1B Q4NX chatbot on AMD NPU2
 
+This implementation reimplements the corresponding AMD NPU LLM design,
+originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM)
+team, using the higher-level abstractions of the MLIR-AIR dialect.
+
 A full **prefill + decode** MLIR-AIR inference for Llama-3.2-1B using **Q4NX**
 weights (per-block 4-bit affine quantization, `w = q*scale + min`), exposed as an
 interactive chatbot on NPU2 (AIE2P):
