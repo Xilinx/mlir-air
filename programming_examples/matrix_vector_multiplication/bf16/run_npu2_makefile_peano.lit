@@ -15,6 +15,15 @@
 // RUN: make -f %S/Makefile run M=8192 K=2048 TILE_M=16 M_INPUT=4 HERD_M=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN2
 // RUN2: PASS!
 //
+// Correctness: M=16384, K=2048, 8 columns. This is the shape the LLM lm_head
+// GEMV builder asks for (llms/shared/builders/lm_head_gemv_multi.py), and the
+// only one nine callers under llms/ use -- but until #1849 this file stopped at
+// HERD_M=4, so a port that got herd_m=8 wrong shipped green and took every LLM
+// with it. Eight columns is also where air-split-l2-memref starts partitioning
+// the A panel, so this is the first case that exercises the split at all.
+// RUN: make -f %S/Makefile run M=16384 K=2048 TILE_M=8 M_INPUT=4 HERD_M=8 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN8COL
+// RUN8COL: PASS!
+//
 // Correctness: M=2048, K=8192, single column (backward compat)
 // RUN: make -f %S/Makefile run M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_M=1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN3
 // RUN3: PASS!

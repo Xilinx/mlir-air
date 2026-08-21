@@ -2418,6 +2418,49 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
         rootStrideFactor = *getConstantIntValue(forOp.getStep());
       return rootStrideFactor;
     };
+    // How many slices of the split dimension one trip of the enclosing
+    // scf.for advances the offset by. The loop's step is not that number: the
+    // offset is usually an affine.apply, either scaling the induction
+    // variable (`s0 * 4` over a unit-step loop) or folding it in beside a herd
+    // coordinate (`s0 * 8 + s1` over a loop that steps by the tile height).
+    // Evaluate the map at iv = 0 and iv = step with every other operand pinned
+    // to 0 and subtract; std::nullopt when the induction variable does not
+    // reach the map directly, which leaves the caller on its old behaviour.
+    auto getSplitDimAdvancePerTrip =
+        [&](air::ChannelInterface ci, int offsetDim) -> std::optional<int64_t> {
+      auto forOp = getScfForFromVal(air::getOffsetsAsValues(ci)[offsetDim]);
+      if (!forOp)
+        return std::nullopt;
+      auto step = getConstantIntValue(forOp.getStep());
+      if (!step)
+        return std::nullopt;
+      auto apply = getAffineMapOnMemrefSplitDim(ci, offsetDim);
+      if (!apply)
+        return *step; // The offset is the induction variable itself.
+      AffineMap map = apply.getAffineMap();
+      SmallVector<std::optional<int64_t>> symsLo(map.getNumSymbols(),
+                                                 int64_t{0}),
+          dimsLo(map.getNumDims(), int64_t{0});
+      auto symsHi = symsLo, dimsHi = dimsLo;
+      bool found = false;
+      for (auto [pos, oper] : llvm::enumerate(apply.getSymbolOperands()))
+        if (oper == forOp.getInductionVar()) {
+          symsHi[pos] = *step;
+          found = true;
+        }
+      for (auto [pos, oper] : llvm::enumerate(apply.getDimOperands()))
+        if (oper == forOp.getInductionVar()) {
+          dimsHi[pos] = *step;
+          found = true;
+        }
+      if (!found)
+        return std::nullopt;
+      auto lo = air::evaluateConstantsInMap(map, symsLo, dimsLo, ctx);
+      auto hi = air::evaluateConstantsInMap(map, symsHi, dimsHi, ctx);
+      if (!lo || !hi)
+        return std::nullopt;
+      return *hi - *lo;
+    };
 
     for (unsigned i = 0; i < putgets.size(); i++) {
       // Infer the size at splitDim for both overlapping and non-overlapping
@@ -2443,7 +2486,24 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       auto rootStrideFactor =
           getRootStrideFactor(air::getOffsetsAsValues(ci)[*offsetDimOpt],
                               air::getStridesAsValues(ci)[*offsetDimOpt]);
-      if (rootStrideFactor && air::getOffsetsAsValues(ci).size() > 1) {
+      // ... unless the loop is strip-mining a contiguous run rather than
+      // distributing: when each trip advances by exactly the slices it takes,
+      // the trips abut and the split dimension is already contiguous. Spread
+      // it anyway and the L3 side gathers every step-th slice while the loop
+      // bound is rewritten as if a trip took one slice, so the partition ends
+      // up holding the wrong rows -- the bf16 GEMV at herd_m=8, m_input=4 got
+      // 3 of every 4 outputs wrong that way. Only the step, not the advance,
+      // distinguishes the two, and a strip-mining loop written as
+      // `for j in range(0, tile_m, m_input)` carries the tile height in its
+      // step while one written as `for jj in range(tile_m / m_input)` carries
+      // it in an affine.apply -- the same access pattern, so neither may
+      // decide this on its own.
+      auto advance = getSplitDimAdvancePerTrip(ci, *offsetDimOpt);
+      auto accessSize =
+          getConstantIntValue(air::getSizesAsValues(ci)[*offsetDimOpt]);
+      bool contiguousWalk = advance && accessSize && *advance == *accessSize;
+      if (rootStrideFactor && air::getOffsetsAsValues(ci).size() > 1 &&
+          !contiguousWalk) {
         splitDimStrideFactor = *rootStrideFactor;
         // Cancel out the non-unit step size on the for loop, to get contiguous
         // access pattern on memrefs after split.
