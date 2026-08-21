@@ -851,6 +851,63 @@ int64_t air::getRefeedCount(air::ChannelInterface op) {
   return getRefeedCount(getChannelDeclarationThroughSymbol(op).getOperation());
 }
 
+// --- air::ChannelIndex --------------------------------------------------
+// One walk of `scope`, bucketing every channel put/get by its symbol name.
+// Same traversal order as getChannel{Put,Get}OpThroughSymbol so puts[0]/gets[0]
+// agree between the two.
+void air::ChannelIndex::rebuild(Operation *scope) {
+  clear();
+  if (!scope)
+    return;
+  scope->walk<WalkOrder::PreOrder>([&](Operation *op) {
+    if (auto put = dyn_cast<air::ChannelPutOp>(op))
+      puts[put.getChanName()].push_back(put);
+    else if (auto get = dyn_cast<air::ChannelGetOp>(op))
+      gets[get.getChanName()].push_back(get);
+  });
+  builtScope = scope;
+}
+
+void air::ChannelIndex::clear() {
+  puts.clear();
+  gets.clear();
+  builtScope = nullptr;
+}
+
+ArrayRef<air::ChannelPutOp>
+air::ChannelIndex::getPuts(StringRef channelName) const {
+  auto it = puts.find(channelName);
+  if (it == puts.end())
+    return {};
+  return it->second;
+}
+
+ArrayRef<air::ChannelGetOp>
+air::ChannelIndex::getGets(StringRef channelName) const {
+  auto it = gets.find(channelName);
+  if (it == gets.end())
+    return {};
+  return it->second;
+}
+
+ArrayRef<air::ChannelPutOp>
+air::ChannelIndex::getPuts(air::ChannelOp channel) const {
+  if (!channel)
+    return {};
+  return getPuts(
+      channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+          .getValue());
+}
+
+ArrayRef<air::ChannelGetOp>
+air::ChannelIndex::getGets(air::ChannelOp channel) const {
+  if (!channel)
+    return {};
+  return getGets(
+      channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+          .getValue());
+}
+
 // Get ChannelPutOp through ChannelOp
 std::vector<air::ChannelPutOp>
 air::getChannelPutOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
@@ -863,14 +920,15 @@ air::getChannelPutOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
   auto attr =
       channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
   std::vector<ChannelPutOp> channelPuts;
-  scope->walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
-      [&](air::ChannelPutOp put) {
-        if (put.getChanName() == attr) {
-          channelPuts.push_back(put);
-          WalkResult::advance();
-        }
-        WalkResult::advance();
-      });
+  // Plain pre-order walk: collecting puts by symbol name does not depend on
+  // dominance order, and ForwardDominanceIterator makes each walk cost orders
+  // of magnitude more than the traversal itself. For structured control flow
+  // (single-block regions) the visit order is unchanged; callers that index
+  // puts[0] therefore see the same op.
+  scope->walk<WalkOrder::PreOrder>([&](air::ChannelPutOp put) {
+    if (put.getChanName() == attr)
+      channelPuts.push_back(put);
+  });
 
   return channelPuts;
 }
@@ -887,14 +945,11 @@ air::getChannelGetOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
   auto attr =
       channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
   std::vector<ChannelGetOp> channelGets;
-  scope->walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
-      [&](air::ChannelGetOp get) {
-        if (get.getChanName() == attr) {
-          channelGets.push_back(get);
-          WalkResult::advance();
-        }
-        WalkResult::advance();
-      });
+  // See getChannelPutOpThroughSymbol: dominance ordering is not needed here.
+  scope->walk<WalkOrder::PreOrder>([&](air::ChannelGetOp get) {
+    if (get.getChanName() == attr)
+      channelGets.push_back(get);
+  });
 
   return channelGets;
 }
