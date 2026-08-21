@@ -703,9 +703,7 @@ def render_llm_sweep(recs, base_url=""):
 
 ### Decode throughput vs context (tok/s)
 
-Steady-state decode, measured against KV-cache depth rather than at a single
-context. Decode-only and synthetic: latency, not correctness (correctness is the
-Verify column, which comes from the same nightly's `make verify`).
+Steady-state decode throughput at increasing KV-cache depth.
 
 {head}
 {sep}
@@ -830,7 +828,6 @@ def render_llm_benchmark(
     )
     tc = prov.get("toolchain", {})
     date = max((r.get("timestamp_utc") or "" for r in recs), default="")[:10]
-    runner = prov.get("runner", "")
     air = (tc.get("mlir_air_sha") or "")[:7]
     aie = (tc.get("mlir_aie_hash") or "")[:7]
     peano = tc.get("llvm_aie_version") or ""
@@ -838,7 +835,6 @@ def render_llm_benchmark(
         s
         for s in [
             f"Last updated {date}" if date else "",
-            f"runner {runner}" if runner else "",
             f"mlir-air {air}" if air else "",
             f"mlir-aie {aie}" if aie else "",
             f"llvm-aie {peano}" if peano else "",
@@ -953,7 +949,7 @@ def generate_readme(
 
 # LLMs on NPU
 
-End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped to the AMD NPU2 in bf16 via MLIR-AIR. Model coverage and performance below are refreshed nightly by CI (correctness **verify** plus **TTFT**/**decode** capture). For per-model architecture details and source, see the [`programming_examples/llms/`]({base_url}llms/) directory.
+End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped to the AMD NPU2 in bf16 via MLIR-AIR. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
 {llm_section}"""
 
     # section == "full" (legacy single-page dashboard)

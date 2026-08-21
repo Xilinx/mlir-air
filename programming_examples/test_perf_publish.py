@@ -173,7 +173,7 @@ def main():
             None, sweep_recs=curves, history_path=hist  # no perf.json at all
         )
         check(bool(page), "an absent perf.json does not blank the section")
-        check(f"runner {RUNNER}" in page, "provenance names the runner")
+        check(RUNNER not in page, "the CI runner label stays off the page")
         check("| 🟢 |" in page, "scalar table renders a verify badge")
 
         sweep_md = render_llm_sweep(curves)
