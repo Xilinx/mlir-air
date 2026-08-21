@@ -1,401 +1,178 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Block-quantized vector-matrix multiplication on air.api.
+
+``C[N] = sum_g (A_i8[g] @ B_i8[g,N]) * a_scale[g] * b_scale[g,N]``: the operands
+are int8, accumulated in int32, and rescaled to f32 once per block of ``bs``
+elements along K. So every operand travels as a *pair* -- the quantized data and
+its per-block scale -- and the pair shares a channel:
+
+    A:  L3 --aL3ToL2--> L2 --aL2ToL1--> L1     (data, then scale)
+    B:  L3 --bL3ToL2--> L2 --bL2ToL1--> L1     (data, then scale)
+    C:  L1 --cL1ToL2--> L2 --cL2ToL3--> L3
+
+Two puts into one channel and two gets out of it, in the same order. That is
+ordinary channel semantics rather than a trick: a channel is a stream, each get
+takes the next chunk, and nothing requires the chunks to be the same shape --
+which is what lets ``[k]`` of data and ``[k/bs]`` of scale share ``aL3ToL2``.
+
+The B side is micro-tiled for the AIE2 int8 vecmat intrinsic (``m x k`` by
+``k x n``, here ``(1, 16, 8)``), so it reaches L1 as ``[N/8, K/16, 16, 8]``
+rather than row-major. The DMA does the pack, by walking the flat L2 buffer out
+of order, and ``pack=`` names that walk::
+
+    b_l2_l1.put(l2_b[kk : kk + tile_k, :], pack=mm.b(tile_k, tile_n, lead=()))
+
+The B *scale* is packed the same way but with one scale per block instead of
+per element, which is exactly a micro-tile of ``k=1`` -- so it reuses the same
+derivation with a different micro-tile rather than a special case.
+
+Unchanged from the raw-bindings version this replaces, except for three things
+the DSL requires and one it fixes:
+
+* The L3-side puts and gets sit inside the segment. Reaching L3 needs a shim DMA
+  allocation, and outside a segment there is none to link to.
+* The L1 tiles are allocated above the K loop and reused across trips, rather
+  than a fresh set per trip.
+* ``linalg_fill_i32_view16x8xi32as2`` is declared with the signature ``vm.cc``
+  actually defines -- ``void linalg_fill_i32_view16x8xi32as2(float *)``, the
+  buffer alone. The predecessor declared it ``(f32, memref)`` and passed a zero
+  the callee never reads; harmless, since the C ABI drops the extra argument,
+  but untrue.
+"""
+
 import argparse
-
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-
 import numpy as np
 
-np.random.seed(42)
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import f32, i8
+
+# air.api dtypes, keyed by the numpy dtype the harness works in.
+DTYPE = {np.int8: i8, np.float32: f32}
+
+# The AIE2 int8 vecmat intrinsic's operand shape: m x k by k x n.
+MMUL_MKN = (1, 16, 8)
 
 
-@module_builder
-def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_acc, np_dtype_out):
+def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with="vm.o"):
     assert k % tile_k == 0
     assert n % tile_n == 0
-    a_size = [k]
-    a_s_size = [k // bs]
-    b_size = [k, n]
-    b_s_size = [k // bs, n]
-    c_size = [n]
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    xrt_dtype_acc = type_mapper(np_dtype_acc)
-    xrt_dtype_out = type_mapper(np_dtype_out)
+    assert tile_k % bs == 0
 
-    mmul_mkn = [1, 16, 8]
+    dt_in = DTYPE[np_dtype_in]
+    dt_out = DTYPE[np_dtype_out]
 
-    # L3 MemRefTypes
-    memrefTyA = MemRefType.get(a_size, xrt_dtype_in)
-    memrefTyAS = MemRefType.get(a_s_size, xrt_dtype_out)
-    memrefTyB = MemRefType.get(b_size, xrt_dtype_in)
-    memrefTyBS = MemRefType.get(b_s_size, xrt_dtype_out)
-    memrefTyOut = MemRefType.get(c_size, xrt_dtype_out)
+    m_u, k_u, n_u = MMUL_MKN
+    mm = air.micro_tile(m_u, k_u, n_u)
+    # One scale per block of bs elements along K, laid out in the same
+    # micro-tile order as the data it scales -- a k=1 micro-tile.
+    mm_scale = air.micro_tile(m_u, 1, n_u)
 
-    Channel("aL3ToL2")
-    Channel("bL3ToL2")
-    Channel("aL2ToL1")
-    Channel("bL2ToL1")
-    Channel("cL1ToL2")
-    Channel("cL2ToL3")
+    A = air.tensor([k], dt_in)
+    A_s = air.tensor([k // bs], dt_out)
+    B = air.tensor([k, n], dt_in)
+    B_s = air.tensor([k // bs, n], dt_out)
+    C = air.tensor([n], dt_out)
 
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    a_l3_l2 = air.channel("aL3ToL2")
+    b_l3_l2 = air.channel("bL3ToL2")
+    a_l2_l1 = air.channel("aL2ToL1")
+    b_l2_l1 = air.channel("bL2ToL1")
+    c_l1_l2 = air.channel("cL1ToL2")
+    c_l2_l3 = air.channel("cL2ToL3")
 
-    a_l1_size = [tile_k // mmul_mkn[1], mmul_mkn[1]]
-    a_s_l1_size = [tile_k // bs]
-    b_l1_size = [tile_n // mmul_mkn[2], tile_k // mmul_mkn[1], mmul_mkn[1], mmul_mkn[2]]
-    b_s_l1_size = [tile_n // mmul_mkn[2], tile_k // bs, mmul_mkn[2]]
-    l1MemrefTyA = MemRefType.get(
-        shape=a_l1_size,
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
-    l1MemrefTyAS = MemRefType.get(
-        shape=a_s_l1_size,
-        element_type=xrt_dtype_out,
-        memory_space=l1_mem_space,
-    )
-    l1MemrefTyB = MemRefType.get(
-        shape=b_l1_size,
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
-    l1MemrefTyBS = MemRefType.get(
-        shape=b_s_l1_size,
-        element_type=xrt_dtype_out,
-        memory_space=l1_mem_space,
-    )
-    c_l1_size = [tile_n // mmul_mkn[2], mmul_mkn[2]]
-    l1MemrefTyC = MemRefType.get(
-        shape=c_l1_size,
-        element_type=xrt_dtype_out,
-        memory_space=l1_mem_space,
-    )
-    linalg_fill_func = FuncOp(
-        "linalg_fill_i32_view16x8xi32as2",
-        ([xrt_dtype_out, l1MemrefTyC], []),
-        visibility="private",
-    )
-    vecmat_func = FuncOp(
-        "vecmat_i8_f32_i32_32",
-        ([l1MemrefTyA, l1MemrefTyAS, l1MemrefTyB, l1MemrefTyBS, l1MemrefTyC], []),
-        visibility="private",
-    )
-    for func in [linalg_fill_func, vecmat_func]:
-        func.attributes["link_with"] = StringAttr.get("vm.o")
-        func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+    vecmat = air.extern(f"vecmat_i8_f32_i32_{bs}", object=link_with)
+    fill = air.extern("linalg_fill_i32_view16x8xi32as2", object=link_with)
 
-    @FuncOp.from_py_func(memrefTyA, memrefTyAS, memrefTyB, memrefTyBS, memrefTyOut)
-    def vecmat_i8(arg0, arg1, arg2, arg3, arg4):
+    with air.launch(name="vecmat_i8") as launch:
 
-        launch_size = [1, n // tile_n]
+        @launch.body
+        def _():
+            with air.segment([range(0, n, tile_n)], name="vecmat_i8_0") as seg:
 
-        @launch(operands=[arg0, arg1, arg2, arg3, arg4], sizes=launch_size)
-        def launch_body(
-            launch_ivx,
-            launch_ivy,
-            launch_sizex,
-            launch_sizey,
-            l3_a_data,
-            l3_a_scale,
-            l3_b_data,
-            l3_b_scale,
-            l3_c_data,
-        ):
-            ChannelPut(
-                "aL3ToL2",
-                l3_a_data,
-                offsets=[],
-                sizes=[],
-                strides=[],
-            )
-            ChannelPut(
-                "aL3ToL2",
-                l3_a_scale,
-                offsets=[],
-                sizes=[],
-                strides=[],
-            )
+                @seg.body
+                def _(sj):
+                    col = sj * tile_n
 
-            # Affine map for launch iv
-            launch_ivy_map = AffineMap.get(
-                0,
-                1,
-                [
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(tile_n),
-                    )
-                ],
-            )
-            launch_offset_y = affine_apply(launch_ivy_map, [launch_ivy])
-            ChannelPut(
-                "bL3ToL2",
-                l3_b_data,
-                offsets=[0, launch_offset_y],
-                sizes=[k, tile_n],
-                strides=[n, 1],
-            )
-            ChannelPut(
-                "bL3ToL2",
-                l3_b_scale,
-                offsets=[0, launch_offset_y],
-                sizes=[k // bs, tile_n],
-                strides=[n, 1],
-            )
+                    l2_a = air.alloc([k], dt_in, scope=seg.private())
+                    l2_a_s = air.alloc([k // bs], dt_out, scope=seg.private())
+                    l2_b = air.alloc([k, tile_n], dt_in, scope=seg.private())
+                    l2_b_s = air.alloc([k // bs, tile_n], dt_out, scope=seg.private())
+                    l2_c = air.alloc([tile_n], dt_out, scope=seg.private())
 
-            @segment(name="vecmat_i8_0")
-            def segment_body():
-                # L2 MemRefTypes
-                a_size_l2 = [k]
-                a_s_size_l2 = [k // bs]
-                b_size_l2 = [k, tile_n]
-                b_s_size_l2 = [k // bs, tile_n]
-                c_size_l2 = [tile_n]
-                l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
-                l2MemrefTyA = MemRefType.get(
-                    shape=a_size_l2,
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
-                l2MemrefTyAS = MemRefType.get(
-                    shape=a_s_size_l2,
-                    element_type=xrt_dtype_out,
-                    memory_space=l2_mem_space,
-                )
-                l2MemrefTyB = MemRefType.get(
-                    shape=b_size_l2,
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
-                l2MemrefTyBS = MemRefType.get(
-                    shape=b_s_size_l2,
-                    element_type=xrt_dtype_out,
-                    memory_space=l2_mem_space,
-                )
-                l2MemrefTyC = MemRefType.get(
-                    shape=c_size_l2,
-                    element_type=xrt_dtype_out,
-                    memory_space=l2_mem_space,
-                )
-                l2_a_data = AllocOp(l2MemrefTyA, [], [])
-                l2_a_scale = AllocOp(l2MemrefTyAS, [], [])
+                    a_l3_l2.put(A)
+                    a_l3_l2.put(A_s)
+                    b_l3_l2.put(B[0:k, col : col + tile_n])
+                    b_l3_l2.put(B_s[0 : k // bs, col : col + tile_n])
+                    a_l3_l2.get(l2_a)
+                    a_l3_l2.get(l2_a_s)
+                    b_l3_l2.get(l2_b)
+                    b_l3_l2.get(l2_b_s)
 
-                ChannelGet(
-                    "aL3ToL2",
-                    l2_a_data,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
-                ChannelGet(
-                    "aL3ToL2",
-                    l2_a_scale,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
+                    # One slice per K tile, data then scale, on both sides.
+                    for i in air.sequential(0, k // tile_k):
+                        kk = i * tile_k
+                        ks = i * (tile_k // bs)
+                        a_l2_l1.put(l2_a[kk : kk + tile_k])
+                        a_l2_l1.put(l2_a_s[ks : ks + tile_k // bs])
 
-                l2_b_data = AllocOp(l2MemrefTyB, [], [])
-                l2_b_scale = AllocOp(l2MemrefTyBS, [], [])
-
-                ChannelGet(
-                    "bL3ToL2",
-                    l2_b_data,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
-                ChannelGet(
-                    "bL3ToL2",
-                    l2_b_scale,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
-
-                # L2 to L1 data packing and unpacking, using offsets, sizes and strides
-                a_l2l1_pack_size = [tile_k]
-                a_l2l1_pack_stride = [1]
-                a_s_l2l1_pack_size = [tile_k // bs]
-                a_s_l2l1_pack_stride = [1]
-                b_l2l1_pack_size = [tile_n // mmul_mkn[2], tile_k, mmul_mkn[2]]
-                b_l2l1_pack_stride = [mmul_mkn[2], tile_n, 1]
-                b_s_l2l1_pack_size = [tile_n // mmul_mkn[2], tile_k // bs, mmul_mkn[2]]
-                b_s_l2l1_pack_stride = [mmul_mkn[2], tile_n, 1]
-
-                for_iv_map_data = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_k),
+                    for i in air.sequential(0, k // tile_k):
+                        kk = i * tile_k
+                        ks = i * (tile_k // bs)
+                        b_l2_l1.put(
+                            l2_b[kk : kk + tile_k, 0:tile_n],
+                            pack=mm.b(tile_k, tile_n, lead=()),
                         )
-                    ],
-                )
-                for_iv_map_scale = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_k // bs),
-                        )
-                    ],
-                )
-
-                for i in range_(0, k // tile_k):
-                    for_iv_data_offset = affine_apply(for_iv_map_data, [i])
-                    a_l2l1_pack_offset = [for_iv_data_offset]
-                    ChannelPut(
-                        "aL2ToL1",
-                        l2_a_data,
-                        offsets=a_l2l1_pack_offset,
-                        sizes=a_l2l1_pack_size,
-                        strides=a_l2l1_pack_stride,
-                    )
-                    for_iv_scale_offset = affine_apply(for_iv_map_scale, [i])
-                    a_s_l2l1_pack_offset = [for_iv_scale_offset]
-                    ChannelPut(
-                        "aL2ToL1",
-                        l2_a_scale,
-                        offsets=a_s_l2l1_pack_offset,
-                        sizes=a_s_l2l1_pack_size,
-                        strides=a_s_l2l1_pack_stride,
-                    )
-                    yield_([])
-
-                for i in range_(0, k // tile_k):
-                    for_iv_data_offset = affine_apply(for_iv_map_data, [i])
-                    b_l2l1_pack_offset = [0, for_iv_data_offset, 0]
-                    ChannelPut(
-                        "bL2ToL1",
-                        l2_b_data,
-                        offsets=b_l2l1_pack_offset,
-                        sizes=b_l2l1_pack_size,
-                        strides=b_l2l1_pack_stride,
-                    )
-                    for_iv_scale_offset = affine_apply(for_iv_map_scale, [i])
-                    b_s_l2l1_pack_offset = [0, for_iv_scale_offset, 0]
-                    ChannelPut(
-                        "bL2ToL1",
-                        l2_b_scale,
-                        offsets=b_s_l2l1_pack_offset,
-                        sizes=b_s_l2l1_pack_size,
-                        strides=b_s_l2l1_pack_stride,
-                    )
-                    yield_([])
-
-                @herd(name="herd_0", sizes=[1, 1])
-                def herd_body(_tx, _ty, _sx, _sy):
-
-                    l1_c_data = AllocOp(l1MemrefTyC, [], [])
-                    zero_const = ConstantOp(FloatAttr.get(xrt_dtype_out, 0.0), None)
-                    zero_fill = CallOp(linalg_fill_func, [zero_const, l1_c_data])
-
-                    for i in range_(0, k, tile_k):
-                        l1_a_data = AllocOp(l1MemrefTyA, [], [])
-                        l1_a_scale = AllocOp(l1MemrefTyAS, [], [])
-
-                        ChannelGet(
-                            "aL2ToL1",
-                            l1_a_data,
-                            offsets=[],
-                            sizes=[],
-                            strides=[],
-                        )
-                        ChannelGet(
-                            "aL2ToL1",
-                            l1_a_scale,
-                            offsets=[],
-                            sizes=[],
-                            strides=[],
+                        b_l2_l1.put(
+                            l2_b_s[ks : ks + tile_k // bs, 0:tile_n],
+                            pack=mm_scale.b(tile_k // bs, tile_n, lead=()),
                         )
 
-                        l1_b_data = AllocOp(l1MemrefTyB, [], [])
-                        l1_b_scale = AllocOp(l1MemrefTyBS, [], [])
+                    with air.herd([range(1)], name="herd_0", shape=(1,)) as h:
 
-                        ChannelGet(
-                            "bL2ToL1",
-                            l1_b_data,
-                            offsets=[],
-                            sizes=[],
-                            strides=[],
-                        )
-                        ChannelGet(
-                            "bL2ToL1",
-                            l1_b_scale,
-                            offsets=[],
-                            sizes=[],
-                            strides=[],
-                        )
+                        @h.body
+                        def _(tx):
+                            l1_a = air.alloc(
+                                [tile_k // k_u, k_u], dt_in, scope=h.private()
+                            )
+                            l1_a_s = air.alloc(
+                                [tile_k // bs], dt_out, scope=h.private()
+                            )
+                            l1_b = air.alloc(
+                                [tile_n // n_u, tile_k // k_u, k_u, n_u],
+                                dt_in,
+                                scope=h.private(),
+                            )
+                            l1_b_s = air.alloc(
+                                [tile_n // n_u, tile_k // bs, n_u],
+                                dt_out,
+                                scope=h.private(),
+                            )
+                            l1_c = air.alloc(
+                                [tile_n // n_u, n_u], dt_out, scope=h.private()
+                            )
 
-                        vecmat = CallOp(
-                            vecmat_func,
-                            [l1_a_data, l1_a_scale, l1_b_data, l1_b_scale, l1_c_data],
-                        )
+                            fill(l1_c)
+                            for _j in air.sequential(0, k, tile_k):
+                                a_l2_l1.get(l1_a)
+                                a_l2_l1.get(l1_a_s)
+                                b_l2_l1.get(l1_b)
+                                b_l2_l1.get(l1_b_s)
+                                vecmat(l1_a, l1_a_s, l1_b, l1_b_s, l1_c)
 
-                        DeallocOp(l1_a_data)
-                        DeallocOp(l1_a_scale)
-                        DeallocOp(l1_b_data)
-                        DeallocOp(l1_b_scale)
+                            c_l1_l2.put(l1_c)
 
-                        yield_([])
+                    c_l1_l2.get(l2_c)
+                    c_l2_l3.put(l2_c)
+                    c_l2_l3.get(C[col : col + tile_n])
 
-                    ChannelPut(
-                        "cL1ToL2",
-                        l1_c_data,
-                        offsets=[],
-                        sizes=[],
-                        strides=[],
-                    )
-                    DeallocOp(l1_c_data)
-
-                herd_body.attributes["link_with"] = StringAttr.get("vm.o")
-
-                l2_c_data = AllocOp(l2MemrefTyC, [], [])
-                ChannelGet(
-                    "cL1ToL2",
-                    l2_c_data,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
-
-                ChannelPut(
-                    "cL2ToL3",
-                    l2_c_data,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
-                DeallocOp(l2_a_data)
-                DeallocOp(l2_a_scale)
-                DeallocOp(l2_b_data)
-                DeallocOp(l2_b_scale)
-                DeallocOp(l2_c_data)
-
-            ChannelGet(
-                "cL2ToL3",
-                l3_c_data,
-                offsets=[launch_offset_y],
-                sizes=[tile_n],
-                strides=[1],
-            )
+    return launch
 
 
 if __name__ == "__main__":
     # Default values.
-    M = 1
     K = 288
     N = 48
     BS = 32
@@ -404,6 +181,8 @@ if __name__ == "__main__":
     INPUT_DATATYPE = np.int8
     ACC_DATATYPE = np.int32
     OUTPUT_DATATYPE = np.float32
+
+    np.random.seed(42)
 
     parser = argparse.ArgumentParser(
         prog="run.py",
@@ -448,19 +227,26 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(
+    launch = build_module(
         args.k,
         args.n,
         args.bs,
         args.tile_k,
         args.tile_n,
         INPUT_DATATYPE,
-        ACC_DATATYPE,
         OUTPUT_DATATYPE,
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
