@@ -1741,6 +1741,7 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
     SmallVector<size_t> allocIdxs;
     SmallVector<Operation *> order;
     llvm::SmallPtrSet<Operation *, 4> packetDecls;
+    std::vector<Operation *> ops;
     bool unkeyed = false;
   };
 
@@ -1762,6 +1763,7 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
             chains[{alloc.dma_tile.getOperation(), alloc.dma_channel.channel}];
         c.allocIdxs.push_back(i);
         for (auto *o : alloc.memcpyOps) {
+          c.ops.push_back(o);
           auto *d = declOf(o);
           if (!d) {
             c.unkeyed = true; // not attributable to a flow: leave it alone
@@ -1842,28 +1844,41 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
     // Is sharing this ring a hazard, or merely a choice? Collapse is not free
     // to undo -- several flows on one channel is how the emitter folds a
     // repeating chain into a single BD with a repeat count -- so it is only
-    // worth breaking where the sharing is unsound.
+    // worth breaking where the sharing is unsound. Two things make it so, and
+    // both are decided by rules already in this file rather than guessed at
+    // here.
     //
-    // The test is a hardware fact, not a preference: a DMA channel's port is
-    // either statically connected or packet-switched, never both. A packet flow
-    // queued behind a circuit flow has its header ignored and is delivered to
-    // the circuit's destination -- the router usually refuses the placement,
-    // and where it does not the design is silently misrouted.
-    //
-    // Deliberately NOT tested here: whether the flows on a ring come from
-    // independent producers, which is the case diagnoseBDChain calls out and
-    // declines to check ("convergent flows are trusted to be time-disjoint").
-    // It is tempting, and it is what several of the hand-written pins are
-    // really guarding, but "two source tiles" does not imply "unordered": every
-    // AIR matmul feeds a core one A tile and one B tile per iteration from two
-    // memtiles, onto a ring that repeats in lockstep with them. Splitting those
-    // would spend both S2MM channels of every compute tile in the project to
-    // fix a hazard they do not have. Separating a genuinely unordered pair
-    // needs evidence this pass does not have; until then those stay pinned by
-    // hand.
+    // Deliberately NOT a criterion: that the flows come from independent
+    // producers. diagnoseBDChain names it as the thing it does not check, and
+    // it is what some of the remaining hand-written pins guard, but "two source
+    // tiles" does not imply "unordered": every AIR matmul feeds a core one A
+    // tile and one B tile per iteration from two memtiles, onto a ring that
+    // repeats in lockstep with them. Splitting on source count alone was tried
+    // and spends both S2MM channels of every compute tile in the project.
     auto isHazard = [&](const Chain &chain) {
-      return !chain.packetDecls.empty() &&
-             chain.packetDecls.size() != chain.order.size();
+      // 1. An MM2S port has ONE outgoing connection, and it is either static or
+      //    packet-switched. A packet flow leaving behind a circuit flow is
+      //    carried by the circuit connection and delivered to its destination,
+      //    header unread. Only MM2S: a DESTINATION port is fed by a switchbox
+      //    arbiter and takes both kinds happily, which the shipped qwen rms
+      //    tile relies on (one packet BD and two circuit BDs on S2MM 0).
+      if (isMM2S && !chain.packetDecls.empty() &&
+          chain.packetDecls.size() != chain.order.size())
+        return true;
+      // 2. The ring cannot stay in step with the transfers crossing it. Not a
+      //    new judgement: diagnoseBDChain is the BD emitter's own foldability
+      //    test, and this pass's neighbours already call it on both directions
+      //    -- to repair on S2MM, and on MM2S only to REFUSE the design. Being
+      //    refused is what made a front end name a channel by hand; a tile with
+      //    a channel to spare can be handed the answer instead.
+      //
+      //    `emptyPathsOk` splits the directions exactly as those two callers
+      //    do: a consumer that skips an arrival still receives it and the ring
+      //    slips, whereas a producer that issues nothing on some arm simply
+      //    leaves the ring where it was.
+      Operation *stopAt = chain.ops.front()->getParentOfType<air::HerdOp>();
+      return !diagnoseBDChain(chain.ops, stopAt, /*emptyPathsOk=*/isMM2S)
+                  .empty();
     };
 
     // Which decl KEEPS the channel, and which have to leave? A pinned decl has
@@ -1882,10 +1897,44 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
     };
     auto evicteesOf = [&](const Chain &chain) {
       SmallVector<Operation *> out;
-      bool keepPkt = chain.packetDecls.contains(keeperOf(chain));
-      for (auto *d : chain.order)
-        if (chain.packetDecls.contains(d) != keepPkt && !isImmovable(d))
-          out.push_back(d);
+      // Mixed kinds: what leaves is determined, not chosen -- the flows whose
+      // kind differs from the keeper's are exactly the ones making the port
+      // both statically connected and packet-switched. Evicting anything else
+      // would move a flow that was not part of the problem and leave the
+      // problem behind.
+      if (isMM2S && !chain.packetDecls.empty() &&
+          chain.packetDecls.size() != chain.order.size()) {
+        bool keepPkt = chain.packetDecls.contains(keeperOf(chain));
+        for (auto *d : chain.order)
+          if (chain.packetDecls.contains(d) != keepPkt && !isImmovable(d))
+            out.push_back(d);
+        return out;
+      }
+      // A ring out of step: peel the one flow whose removal leaves BOTH halves
+      // in step, exactly as repairS2MMChains chooses. A half carrying a single
+      // flow is out of scope for the same reason the whole chain would be -- it
+      // has no other flow's BD to land on.
+      Operation *stopAt = chain.ops.front()->getParentOfType<air::HerdOp>();
+      auto halfInStep = [&](ArrayRef<Operation *> half) {
+        llvm::SetVector<Operation *> hd;
+        for (auto *o : half)
+          hd.insert(declOf(o));
+        return hd.size() < 2 ||
+               diagnoseBDChain(half, stopAt, /*emptyPathsOk=*/isMM2S).empty();
+      };
+      for (auto *d : chain.order) {
+        if (isImmovable(d))
+          continue;
+        std::vector<Operation *> m, r;
+        for (auto *o : chain.ops)
+          (declOf(o) == d ? m : r).push_back(o);
+        if (m.empty() || r.empty())
+          continue;
+        if (!halfInStep(m) || !halfInStep(r))
+          continue;
+        out.push_back(d);
+        break; // one peel is what fixes it; taking more would be gratuitous
+      }
       return out;
     };
 

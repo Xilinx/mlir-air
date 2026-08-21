@@ -1235,17 +1235,14 @@ def build_module():
         # stale-rebroadcast deadlock). Two separate feed loops (the prior bug)
         # lowered to two repeat_count tasks. Packet (npu_dma_packet) so the two
         # producers (rms core L1 + down_buffer L2, time-disjoint, same id) converge.
-        _xn = channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
-        if KV_APPEND:
-            # Pin the rms core's two outputs (xnorm o-proj-X feedback -> mem_2_1 on
-            # MM2S1; layerOut -> shim on MM2S0) to their known-good split. Adding the
-            # append channels otherwise perturbs the global placer into packing BOTH
-            # onto rms MM2S0 (dual-fan packet), which flips layerOut circuit->packet
-            # and deadlocks. Only the rms core is a compute-tile endpoint of these
-            # channels (consumers are memtile/shim), so the pin is local to it.
-            _xn.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                T.i32(), 1
-            )
+        # The rms core's two outputs (this xnorm o-proj-X feedback -> mem_2_1, and
+        # layerOut -> shim) used to be pinned to a known-good split, because
+        # adding the append channels packed BOTH onto rms MM2S0 and deadlocked.
+        # AIRToAIE reaches the same split by itself now: that packing is a ring
+        # its own diagnoseBDChain calls out of step, and rather than only
+        # refusing it, spreadCollapsedPacketChannels peels one flow onto the
+        # channel that was sitting idle.
+        channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
         # (FAITHFUL ph2): no toBufP2 / buf_ph2 channel -- the rms core emits ph2 X
         # = rmsnorm(x+oproj) directly on @xnorm. Every re-feed on this channel is
         # written as an n-trip loop around the put (see refeed()); the counts are
