@@ -46,6 +46,7 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
     ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
     SOURCES
       api/__init__.py
+      api/_channel.py
       api/_compile.py
       api/_emit.py
       api/_extern.py

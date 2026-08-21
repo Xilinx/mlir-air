@@ -1,16 +1,32 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""One image broadcast to every core of a herd, on air.api.
+
+    air.channel @ChanIn  [1, 1] {broadcast_shape = [1, 3]}
+    air.channel @ChanOut [1, 3]
+
+``ChanIn`` is declared once and read three times: ``broadcast_shape`` says the
+single source fans out to a 1x3 grid of destinations, and each core names its
+own with ``indices=[tx, ty]``. ``ChanOut`` is an ordinary channel *array* of the
+same shape -- three independent channels, one per core -- which is why the three
+gets on the L3 side each carry a constant index.
+
+The schedule is unchanged from the raw-bindings version this replaces. The only
+structural difference is that the L3 put and gets sit inside the segment rather
+than beside it: reaching L3 needs a shim DMA allocation, and outside a segment
+there is none to link to.
+
+Each core adds its own column index plus one, so the three outputs differ, which
+is what makes the broadcast observable rather than merely asserted.
+"""
+
 import argparse
 import numpy as np
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i32
 
 IMAGE_WIDTH = 8
 IMAGE_HEIGHT = 6
@@ -18,67 +34,54 @@ IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
 INOUT_DATATYPE = np.int32
 
+CORES = 3
 
-@module_builder
+
 def build_module():
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
+    A = air.tensor(IMAGE_SIZE, i32)
+    outs = [air.tensor(IMAGE_SIZE, i32) for _ in range(CORES)]
 
-    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    image_type_l1 = MemRefType.get(
-        shape=IMAGE_SIZE,
-        element_type=xrt_dtype,
-        memory_space=mem_space_l1,
-    )
+    chan_in = air.channel("ChanIn", size=[1, 1], broadcast_shape=[1, CORES])
+    chan_out = air.channel("ChanOut", size=[1, CORES])
 
-    Channel("ChanIn", size=[1, 1], broadcast_shape=[1, 3])
-    Channel("ChanOut", size=[1, 3])
+    with air.launch(name="copy") as launch:
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut, memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1, arg2, arg3):
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-        # The arguments are the input and output
-        @launch(operands=[arg0, arg1, arg2, arg3])
-        def launch_body(a, b, c, d):
+                @seg.body
+                def _():
+                    chan_in.put(A)
 
-            ChannelPut("ChanIn", a)
+                    with air.herd(
+                        [range(1), range(CORES)], name="broadcastherd", shape=(1, CORES)
+                    ) as h:
 
-            @segment(name="seg")
-            def segment_body():
+                        @h.body
+                        def _(tx, ty):
+                            image_in = air.alloc(IMAGE_SIZE, i32, scope=h.private())
+                            # vector=0 keeps the add scalar, as the predecessor
+                            # wrote it. The image is 8 i32 wide, and a
+                            # <8 x i32> add is 256-bit, which does not legalize:
+                            # "unable to legalize instruction: <8 x s32> G_ADD".
+                            # Nothing here is wide enough to vectorise usefully
+                            # anyway.
+                            image_out = air.alloc(
+                                IMAGE_SIZE, i32, scope=h.private(), vector=0
+                            )
 
-                @herd(name="broadcastherd", sizes=[1, 3])
-                def herd_body(tx, ty, _sx, _sy):
+                            chan_in.get(image_in, indices=[tx, ty])
+                            # ty is the core's own column, broadcast into the
+                            # expression as an index_cast -- so each core writes
+                            # a different image and the fan-out is observable.
+                            image_out[:] = image_in[:] + ty + 1
+                            chan_out.put(image_out, indices=[tx, ty])
 
-                    # We must allocate a buffer of image size for the input/output
-                    image_in = AllocOp(image_type_l1, [], [])
-                    image_out = AllocOp(image_type_l1, [], [])
+                    for i, out in enumerate(outs):
+                        chan_out.get(out, indices=[0, i])
 
-                    ChannelGet("ChanIn", image_in, indices=[tx, ty])
-
-                    # Access every value in the image
-                    for i in range_(IMAGE_HEIGHT):
-                        for j in range_(IMAGE_WIDTH):
-                            # Load the input value
-                            val_in = load(image_in, [i, j])
-
-                            # Calculate the output value
-                            val_out = arith.addi(val_in, arith.index_cast(T.i32(), ty))
-                            val_out = arith.addi(val_out, arith.ConstantOp(T.i32(), 1))
-
-                            # Store the output value
-                            store(val_out, image_out, [i, j])
-                            yield_([])
-                        yield_([])
-
-                    ChannelPut("ChanOut", image_out, indices=[tx, ty])
-
-                    DeallocOp(image_in)
-                    DeallocOp(image_out)
-
-            ChannelGet("ChanOut", b, indices=[0, 0])
-            ChannelGet("ChanOut", c, indices=[0, 1])
-            ChannelGet("ChanOut", d, indices=[0, 2])
+    return launch
 
 
 if __name__ == "__main__":
@@ -104,24 +107,27 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module()
+    launch = build_module()
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
     input_a = np.arange(np.prod(IMAGE_SIZE), dtype=INOUT_DATATYPE).reshape(IMAGE_SIZE)
-    output_b = np.arange(1, np.prod(IMAGE_SIZE) + 1, dtype=INOUT_DATATYPE).reshape(
-        IMAGE_SIZE
-    )
-    output_c = np.arange(2, np.prod(IMAGE_SIZE) + 2, dtype=INOUT_DATATYPE).reshape(
-        IMAGE_SIZE
-    )
-    output_d = np.arange(3, np.prod(IMAGE_SIZE) + 3, dtype=INOUT_DATATYPE).reshape(
-        IMAGE_SIZE
-    )
+    expected = [
+        np.arange(n, np.prod(IMAGE_SIZE) + n, dtype=INOUT_DATATYPE).reshape(IMAGE_SIZE)
+        for n in range(1, CORES + 1)
+    ]
 
     runner = XRTRunner(
         verbose=args.verbose,
@@ -133,6 +139,6 @@ if __name__ == "__main__":
         runner.run_test(
             mlir_module,
             inputs=[input_a],
-            expected_outputs=[output_b, output_c, output_d],
+            expected_outputs=expected,
         )
     )

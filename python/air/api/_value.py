@@ -343,6 +343,15 @@ class BufferExpr:
             return BufferExpr.leaf(value)
         if isinstance(value, (int, float)):
             return BufferExpr("scalar", scalar=value)
+        from ._index import IndexExpr
+
+        if isinstance(value, IndexExpr):
+            # A herd coordinate or loop variable used as a broadcast scalar:
+            # `out[:] = in[:] + ty`. It folds to a Python int when constant and
+            # otherwise materialises as an index Value the emitter casts to the
+            # buffer's element type -- which is what the hand-written channel
+            # examples spell as arith.index_cast(T.i32(), ty).
+            return BufferExpr("scalar", scalar=value)
         if isinstance(value, BufferSlice):
             raise TypeError(
                 f"cannot use {value!r} in an elementwise expression: a partial "

@@ -1,18 +1,32 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""A channel *array* -- one channel per worker -- on air.api.
+
+    air.channel @ChanIn  [2, 3]
+    air.channel @ChanOut [2, 3]
+
+``size=`` makes a channel an array rather than a single connection, and
+``indices=`` picks one of its members. There is no fan-out here and no sharing:
+the 2x3 grid of channels is matched one-for-one with the 2x3 herd, so each core
+has a private pair and the index is just its own tile coordinate.
+
+The L3 side puts one tile per channel, subscripted out of the image with the
+ordinary slice syntax -- ``A[h * TILE_H : ..., w * TILE_W : ...]`` -- and the
+offsets, sizes and strides that produces land on the channel op unchanged. The
+loops around it are plain Python: they run at trace time and emit one put per
+channel, which is what the predecessor does too.
+
+Unchanged from the raw-bindings version except that the L3 puts and gets sit
+inside the segment, which is where reaching L3 needs them to be.
+"""
+
 import argparse
 import numpy as np
 
-np.random.seed(42)
+from air.backend.xrt_runner import XRTRunner
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-
-range_ = for_
+from air import api as air
+from air.api import i32
 
 IMAGE_WIDTH = 48
 IMAGE_HEIGHT = 16
@@ -27,99 +41,59 @@ assert IMAGE_WIDTH % TILE_WIDTH == 0
 
 INOUT_DATATYPE = np.int32
 
+ROWS = IMAGE_HEIGHT // TILE_HEIGHT
+COLS = IMAGE_WIDTH // TILE_WIDTH
 
-@module_builder
+
 def build_module():
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
+    A = air.tensor(IMAGE_SIZE, i32)
+    B = air.tensor(IMAGE_SIZE, i32)
 
-    # Create an input/output channel pair per worker
-    Channel("ChanIn", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
-    Channel("ChanOut", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
+    # One input/output channel per worker.
+    chan_in = air.channel("ChanIn", size=[ROWS, COLS])
+    chan_out = air.channel("ChanOut", size=[ROWS, COLS])
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+    def tile(t, h, w):
+        return t[
+            h * TILE_HEIGHT : (h + 1) * TILE_HEIGHT,
+            w * TILE_WIDTH : (w + 1) * TILE_WIDTH,
+        ]
 
-        # The arguments are the input and output
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
+    with air.launch(name="copy") as launch:
 
-            # Transfer one tile of data per worker
-            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
-                for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = TILE_HEIGHT * h
-                    offset1 = TILE_WIDTH * w
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-                    # Put data into the channel tile by tile
-                    ChannelPut(
-                        "ChanIn",
-                        a,
-                        indices=[h, w],
-                        offsets=[offset0, offset1],
-                        sizes=TILE_SIZE,
-                        strides=[IMAGE_WIDTH, 1],
-                    )
+                @seg.body
+                def _():
+                    for h in range(ROWS):
+                        for w in range(COLS):
+                            chan_in.put(tile(A, h, w), indices=[h, w])
 
-            # The arguments are still the input and the output
-            @segment(name="seg")
-            def segment_body():
-                @herd(
-                    name="xaddherd",
-                    sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
-                )
-                def herd_body(th, tw, _sx, _sy):
+                    with air.herd(
+                        [range(ROWS), range(COLS)], name="xaddherd", shape=(ROWS, COLS)
+                    ) as herd:
 
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                        @herd.body
+                        def _(th, tw):
+                            tile_in = air.alloc(TILE_SIZE, i32, scope=herd.private())
+                            # vector=0: the tile is 16 i32 wide, and a 256-bit
+                            # <8 x i32> operation does not legalize on AIE2.
+                            # The predecessor's copy was scalar too.
+                            tile_out = air.alloc(
+                                TILE_SIZE, i32, scope=herd.private(), vector=0
+                            )
 
-                    # This is the type definition of the tile
-                    tile_type = MemRefType.get(
-                        shape=TILE_SIZE,
-                        element_type=xrt_dtype,
-                        memory_space=mem_space,
-                    )
+                            chan_in.get(tile_in, indices=[th, tw])
+                            tile_out[:] = tile_in[:]
+                            chan_out.put(tile_out, indices=[th, tw])
 
-                    # We must allocate a buffer of tile size for the input/output
-                    tile_in = AllocOp(tile_type, [], [])
-                    tile_out = AllocOp(tile_type, [], [])
+                    for h in range(ROWS):
+                        for w in range(COLS):
+                            chan_out.get(tile(B, h, w), indices=[h, w])
 
-                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                    ChannelGet("ChanIn", tile_in, indices=[th, tw])
-
-                    # Access every value in the tile
-                    for i in range_(TILE_HEIGHT):
-                        for j in range_(TILE_WIDTH):
-                            # Load the input value from tile_in
-                            val = load(tile_in, [i, j])
-
-                            # Store the output value in tile_out
-                            store(val, tile_out, [i, j])
-                            yield_([])
-                        yield_([])
-
-                    # Copy the output tile into the output
-                    ChannelPut("ChanOut", tile_out, indices=[th, tw])
-
-                    # Deallocate our L1 buffers
-                    DeallocOp(tile_in)
-                    DeallocOp(tile_out)
-
-            # Transfer one tile of data per worker
-            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
-                for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = TILE_HEIGHT * h
-                    offset1 = TILE_WIDTH * w
-
-                    # Write data back out to the channel tile by tile
-                    ChannelGet(
-                        "ChanOut",
-                        b,
-                        indices=[h, w],
-                        offsets=[offset0, offset1],
-                        sizes=TILE_SIZE,
-                        strides=[IMAGE_WIDTH, 1],
-                    )
+    return launch
 
 
 if __name__ == "__main__":
@@ -145,10 +119,18 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module()
+    launch = build_module()
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)

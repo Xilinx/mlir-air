@@ -1,78 +1,90 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Passthrough over a pair of channels, on air.api.
+
+The vector goes L3 -> channel -> L1, is copied core-side, and comes back
+L1 -> channel -> L3. The schedule is unchanged from the raw-bindings version
+this replaces, and it is the smallest program that shows what a channel is for:
+
+    air.channel @ChanIn                    declared at module scope
+    air.channel @ChanOut
+      air.segment
+        ChanIn.put(A)                      the whole [n] vector, once
+        herd
+          for _ in air.sequential(subvectors)
+              ChanIn.get(tile_in)          one [n/subvectors] chunk per trip
+              tile_out[:] = tile_in[:]
+              ChanOut.put(tile_out)
+        ChanOut.get(B)
+
+Two things about channels are on display here, and both are why this is not
+just ``ops.load``/``ops.store``:
+
+* **The herd carries no channel operand.** ``air.herd`` is ``IsolatedFromAbove``
+  and the DSL threads staged L2 buffers in explicitly, but a channel is a
+  module-level symbol: the herd's ``get`` finds what the segment's ``put`` sent
+  by name alone.
+* **Put and get sizes differ, deliberately.** One put of the whole vector feeds
+  ``subvectors`` gets of a chunk each -- a channel is a stream, and each get
+  takes the next piece. A transfer would have to match shapes; a channel must
+  not.
+
+The put and get on the L3 side sit in the segment rather than beside it. That is
+load-bearing: reaching L3 needs a shim DMA allocation, and hoisting them out to
+function scope fails in air-to-aie with "failed to link to any shim dma
+allocation" -- measured on npu1 against this very example. air.api raises at the
+call site rather than letting that through.
+"""
+
 import argparse
 import numpy as np
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i8
 
 INOUT_DATATYPE = np.uint8
 
 
-@module_builder
 def build_module(vector_size, num_subvectors):
     assert vector_size % num_subvectors == 0
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    chunk = vector_size // num_subvectors
 
-    # Type and method of input/output
-    memrefTyInOut = T.memref(vector_size, xrt_dtype)
-    Channel("ChanIn")
-    Channel("ChanOut")
+    A = air.tensor([vector_size], i8)
+    B = air.tensor([vector_size], i8)
 
-    # The compute core splits input into subvectors for processing
-    lineWidthInBytes = vector_size // num_subvectors
+    chan_in = air.channel("ChanIn")
+    chan_out = air.channel("ChanOut")
 
-    # Memref type definition used by the compute core and external function
-    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    tensor_type = MemRefType.get(
-        shape=[lineWidthInBytes],
-        element_type=xrt_dtype,
-        memory_space=mem_space,
-    )
+    with air.launch(name="copy") as launch:
 
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
-            ChannelPut("ChanIn", a)
+                @seg.body
+                def _():
+                    chan_in.put(A)
 
-            @segment(name="seg")
-            def segment_body():
+                    with air.herd([range(1)], name="copyherd", shape=(1,)) as h:
 
-                @herd(name="copyherd", sizes=[1, 1])
-                def herd_body(_tx, _ty, _sx, _sy):
+                        @h.body
+                        def _(tx):
+                            # Hoisted above the loop and reused across trips,
+                            # which is what the loop is for; the predecessor
+                            # allocated a fresh pair per trip.
+                            tile_in = air.alloc([chunk], i8, scope=h.private())
+                            tile_out = air.alloc([chunk], i8, scope=h.private())
 
-                    # Process each subvector individually
-                    for _i in range_(num_subvectors):
-                        # We must allocate a buffer of image size for the input/output
-                        tensor_in = AllocOp(tensor_type, [], [])
-                        tensor_out = AllocOp(tensor_type, [], [])
+                            for _i in air.sequential(0, num_subvectors):
+                                chan_in.get(tile_in)
+                                tile_out[:] = tile_in[:]
+                                chan_out.put(tile_out)
 
-                        ChannelGet("ChanIn", tensor_in)
+                    chan_out.get(B)
 
-                        for j in range_(lineWidthInBytes):
-                            # Load the input value
-                            val = load(tensor_in, [j])
-
-                            # Store the output value
-                            store(val, tensor_out, [j])
-                            yield_([])
-
-                        ChannelPut("ChanOut", tensor_out)
-
-                        # Deallocate our L1 buffers
-                        DeallocOp(tensor_in)
-                        DeallocOp(tensor_out)
-                        yield_([])
-
-            ChannelGet("ChanOut", b)
+    return launch
 
 
 if __name__ == "__main__":
@@ -111,10 +123,18 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(args.vector_size, args.subvector_size)
+    launch = build_module(args.vector_size, args.subvector_size)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
