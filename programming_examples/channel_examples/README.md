@@ -28,11 +28,9 @@ This example ([worker_to_self/worker_to_self.py](worker_to_self/worker_to_self.p
 
 WARNING: This example currently fails for unknown reasons.
 
-#### WIP: ```worker-to-worker```:
+#### ```worker-to-worker```:
 
-This example ([worker_to_worker/worker_to_worker.py](worker_to_worker/worker_to_worker.py)) is a work-in-progress data passthrough example using the same tiling structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) examples, only the each worker trades a tile of input data to another worker in the herd by sending it via channel.
-
-WARNING: This example currently fails for unknown reasons.
+This example ([worker_to_worker/worker_to_worker.py](worker_to_worker/worker_to_worker.py)) uses the same tiling structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) examples, only each worker trades its tile of data to another worker in the herd by sending it via channel. A worker stamps its own tile number on its tile before handing it on, so the output records the permutation rather than only the copy.
 
 #### ```broadcast```:
 

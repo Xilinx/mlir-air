@@ -294,6 +294,75 @@ def _():
     _trace(body)
 
 
+# CHECK-LABEL: TEST: nonaffine_divisor
+# `x // k` and `x % k` are affine for a constant k, and only for a constant k:
+# affine.floordiv and affine.mod both require a literal right-hand side. A
+# coordinate divisor has to say so, rather than reporting the operation itself
+# as unsupported -- it is the divisor that is the problem.
+# CHECK: TypeError: non-affine index expression: cannot take floordiv of {{.*}} by {{.*}} (the divisor must be a constant, not a tile coordinate)
+@expect(TypeError, "nonaffine_divisor")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 64], bf16, scope=h.private())
+        row = tx // ty
+        air.ops.load(a, A[row : row + 64, 0:64])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: nonpositive_divisor
+# CHECK: ValueError: index mod by 0: the divisor must be a positive constant
+@expect(ValueError, "nonpositive_divisor")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 64], bf16, scope=h.private())
+        row = tx % 0
+        air.ops.load(a, A[row : row + 64, 0:64])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: use_after_dealloc
+# air.dealloc ends a buffer's life, so a later read is a use of something the
+# program has said is gone. It is reported when the body finishes rather than
+# at the air.dealloc call: whether a later use exists is not knowable until the
+# rest of the body has been traced.
+# CHECK: ValueError: air.dealloc released this buffer before its last use
+@expect(ValueError, "use_after_dealloc")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 64], bf16, scope=h.private())
+        b = air.alloc([64, 64], bf16, scope=h.private())
+        air.ops.load(a, A[0:64, 0:64])
+        air.dealloc(a)
+        b[:] = a[:] + 1.0
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: double_dealloc
+# CHECK: ValueError: air.dealloc: this buffer has already been released
+@expect(ValueError, "double_dealloc")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 64], bf16, scope=h.private())
+        air.ops.load(a, A[0:64, 0:64])
+        air.dealloc(a)
+        air.dealloc(a)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dealloc_not_a_buffer
+# CHECK: TypeError: air.dealloc takes a buffer from air.alloc, got Tensor
+@expect(TypeError, "dealloc_not_a_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        air.dealloc(A)
+
+    _trace(body)
+
+
 # CHECK-LABEL: TEST: bad_grid_type
 # CHECK: TypeError: cannot use list as a herd iteration space
 @expect(TypeError, "bad_grid_type")

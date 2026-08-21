@@ -108,9 +108,15 @@ def run(f):
 # L1 -> L2 writeback into the same window, then L2 -> L3 once, after the herd.
 # CHECK: air.dma_memcpy_nd (%{{.*}}[%{{.*}}, 0] [1, 64] [64, 1], %{{.*}}[] [] []) : (memref<4x64xi32, 1 : i32>, memref<64xi32, 2 : i32>)
 # CHECK: memref.dealloc {{.*}} : memref<64xi32, 2 : i32>
-# CHECK: air.dma_memcpy_nd (%{{.*}}[0, 0] [4, 64] [64, 1], %{{.*}}[] [] []) : (memref<4x64xi32>, memref<4x64xi32, 1 : i32>)
-# CHECK: memref.dealloc {{.*}} : memref<4x64xi32, 1 : i32>
-# CHECK: memref.dealloc {{.*}} : memref<4x64xi32, 1 : i32>
+#
+# Each buffer is freed after its own last use, not all of them together at the
+# end of the body. The input staging buffer is dead once the herd has run, so
+# it is freed there; the output one stays live across the L2 -> L3 write that
+# reads it. Holding both to the end would tell the compiler two values are
+# still needed when only one is.
+# CHECK: memref.dealloc %[[IN:.*]] : memref<4x64xi32, 1 : i32>
+# CHECK: air.dma_memcpy_nd (%{{.*}}[0, 0] [4, 64] [64, 1], %[[OUT:.*]][] [] []) : (memref<4x64xi32>, memref<4x64xi32, 1 : i32>)
+# CHECK: memref.dealloc %[[OUT]] : memref<4x64xi32, 1 : i32>
 @run
 def staged_passthrough():
     print(build().mlir())
