@@ -90,6 +90,7 @@ top of quantization error:
 | `gemma3_4b_q4nx` | `FastFlowLM/Gemma3-4B-NPU2` | `unsloth/gemma-3-4b-it` |
 | `qwen3_8b_q4nx` | `FastFlowLM/Qwen3-8B-NPU2` | `Qwen/Qwen3-8B` |
 | `qwen25_3b_q4` | Q4_0, quantized on the host from the reference | `Qwen/Qwen2.5-3B-Instruct` |
+| `qwen25_7b_q4nx` | Q4NX, quantized on load from the reference | `Qwen/Qwen2.5-7B-Instruct` |
 
 Two cheaper lenses sit beside the gate, and neither is a substitute for it:
 `make verify-paris` is a prefill-only first-token smoke that needs no decode
@@ -113,6 +114,7 @@ llms/
 ├── qwen25_1_5b/        # Qwen2.5-1.5B  (QKV bias, head_dim=128)
 ├── qwen25_3b/          # Qwen2.5-3B    (QKV bias, head_dim=128)
 ├── qwen25_3b_q4/       # Q4_0 4-bit Qwen2.5-3B (prefill + fused NPU decode)
+├── qwen25_7b_q4nx/     # Q4NX 4-bit Qwen2.5-7B (fused decode, QKV bias)
 ├── qwen3_0_6b/         # Qwen3-0.6B    (QK-norm, head_dim=128)
 ├── qwen3_1_7b/         # Qwen3-1.7B    (QK-norm, head_dim=128)
 ├── qwen3_4b/           # Qwen3-4B      (QK-norm, decoupled q_dim=4096)

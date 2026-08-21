@@ -36,7 +36,8 @@ the instruction stream for any `L`, byte-identical to a native per-L build.
 
 ### Why Qwen has its own builder
 
-`fused_decode.py` covers Llama-3.2-1B/3B and Gemma3-4B, selected by
+`fused_decode.py` covers Llama-3.2-1B/3B, Gemma3-4B, Phi-4-mini, Qwen3-8B and
+Qwen2.5-7B, selected by
 `DECODE_MODEL`. Qwen2.5-3B is a separate file because its **on-device weight
 format differs**, not because its weights are packaged differently:
 

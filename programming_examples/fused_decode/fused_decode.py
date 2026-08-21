@@ -121,22 +121,38 @@ from air.dialects import arith
 from air.dialects.scf import for_, yield_, index_switch, ParallelOp, ReduceOp, IfOp
 from air.backend.xrt import XRTBackend
 
+# An AIE2/AIE2P lock counter is 6 bits (AIETargetModel getMaxLockValue() == 0x3F),
+# and the refeed count below becomes a lock init that nothing range-checks -- a
+# larger one truncates on the device and the re-broadcast deadlocks.
+MAX_REFEED = 0x3F
+
 
 def refeed(n, emit):
     """Re-send ONE resident buffer n times: an n-trip scf.for around a single
     air.channel.put. The body holds nothing but the put and no operand depends
     on the induction variable, so this is a re-broadcast, not n productions --
     air-annotate-refeed recognizes the shape, collapses the loop, and derives
-    the count for the lock init. n <= 1 emits the bare put."""
+    the count for the lock init. n <= 1 emits the bare put.
+
+    n > MAX_REFEED is split into equal lock-legal groups: the consumer still sees
+    n puts, but no single collapsed loop asks for a lock the hardware cannot hold.
+    One group (n <= 63) is every model shipped so far, and emits the same IR as
+    before this split existed."""
     if n <= 1:
         emit()
         return
-    c0 = arith.ConstantOp(IndexType.get(), 0).result
-    cn = arith.ConstantOp(IndexType.get(), n).result
-    c1 = arith.ConstantOp(IndexType.get(), 1).result
-    for _rf in for_(c0, cn, c1):
-        emit()
-        yield_([])
+    ngrp = -(-n // MAX_REFEED)
+    for g in range(ngrp):
+        cnt = n // ngrp + (1 if g < n % ngrp else 0)
+        if cnt <= 1:
+            emit()
+            continue
+        c0 = arith.ConstantOp(IndexType.get(), 0).result
+        cn = arith.ConstantOp(IndexType.get(), cnt).result
+        c1 = arith.ConstantOp(IndexType.get(), 1).result
+        for _rf in for_(c0, cn, c1):
+            emit()
+            yield_([])
 
 
 def parallel_(n):
@@ -320,6 +336,40 @@ _MODELS = {
         # The driver MUST set VOCAB_CHUNK_I2=8 (env) to match this UNI_LM.
         UNI_LM=19,  # vocab chunks per LM head (VOCAB_CHUNK_I2=8)
     ),
+    # Qwen2.5-7B-Instruct: the first HAS_QKV_BIAS model on this engine (q/k/v_proj
+    # carry a bias, added in-place before RoPE from a slab at rope_w+DH -- see
+    # ROPE_W_LEN). D=3584 is 7 col-blocks wide, which is odd in units of the paired
+    # egress, so PAIR_ROWS=1 (gemma-style non-paired) is forced: PAIR_ROWS=2 gives
+    # I2P[0] = 4608/1024 = 4.5. 28 q heads / 4 kv is 7 per group, padded to 8 by
+    # GQA_SEG (ATTN_IMPL_1x8x1), same padding gemma uses for 3 -> 4.
+    #   I2P = [M, D, 2*INTER, D]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS) = [9,7,74,7]
+    #   J2P = [K, DQ, K, INTER]/(2*COL_BLOCK)                  = [7,7,7,37]
+    "qwen2.5-7b": dict(
+        K=3584,
+        M=4608,  # DQ+DK+DV = 3584+512+512
+        DH_A=128,
+        KV_PER_CU=1,  # 4 kv / 4 CU
+        N_ATTN_CU=4,
+        NPH=4,
+        I2P=[9, 7, 74, 7],  # blocks/tile per phase (non-paired)
+        J2P=[7, 7, 7, 37],  # col-block pairs per phase
+        DEST=["rope", "rms", "glu", "rms"],
+        GQA_SEG=8,  # ATTN_IMPL_1x8x1
+        PAIR_ROWS=1,  # NON-PAIRED egress (D=3584 is odd in paired units)
+        N_NORMS=2,  # standard pre-norm (input, post_attention)
+        HAS_QKV_BIAS=True,  # rope_w = [cos/sin(DH), q_bias|k_bias|v_bias(M)]
+        VOCAB_SIZE=152064,
+        UNI_DEC=28,  # 28 decoder layers
+        # LM-head vocab chunking: VOCAB_SIZE_PADDED_FULL = ceil(152064/3584)*3584 =
+        # 154112 -> 4816 rowblocks. VOCAB_ROWBLKS = 16*VOCAB_I2 (PAIR_ROWS=1) must
+        # divide 4816 -> UNI_LM*VOCAB_I2 = 301 = 7*43, so VOCAB_I2 in {1,7,43,301}.
+        # K/PAYLOAD = 3584/512 = 7 must divide VOCAB_RNDS = VOCAB_I2*PAIR_ROWS,
+        # dropping 1; the 2*VOCAB_I2 <= 63 envelope drops 43 and 301. VOCAB_I2=7 is
+        # therefore the ONLY legal chunk (RNDS=7 = exactly one relay round, as in
+        # gemma) -> 43 waves, 112 rowblocks/chunk.
+        # The driver MUST set VOCAB_CHUNK_I2=7 (env) to match this UNI_LM.
+        UNI_LM=43,  # vocab chunks per LM head (VOCAB_CHUNK_I2=7)
+    ),
 }
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = _MODELS[MODEL_NAME]
@@ -337,7 +387,20 @@ HAS_QK_NORM = MODEL.get("HAS_QK_NORM", False)
 # Must agree with PARTIAL_ROPE_DIM in the model's C++ header -- the kernel reads
 # sin at rope_w + ROPE_DIM/2. Partial rotary + qk-norm is rejected there.
 ROPE_DIM = MODEL.get("ROPE_DIM", DH)
-ROPE_W_LEN = (3 * DH) if HAS_QK_NORM else ROPE_DIM  # 64 / 768 / 96
+# Qwen2.5 has q/k/v_proj biases; the kernel adds them in-place before RoPE from a
+# [q(DQ)|k(DK)|v(DV)] slab it reads at rope_w+DH (rope.cc add_q_k_v_bias), so the
+# rope weight buffer carries the DH cos/sin LUT plus M = DQ+DK+DV bias elements.
+HAS_QKV_BIAS = MODEL.get("HAS_QKV_BIAS", False)
+ROPE_W_LEN = (
+    (DH + MODEL["M"]) if HAS_QKV_BIAS else (3 * DH) if HAS_QK_NORM else ROPE_DIM
+)  # 64 / 768 / 96 / 4736
+# Does rope_w DIFFER PER LAYER? Llama's is a single per-position cos/sin LUT shared
+# by every layer, so one slab suffices; qk-norm (gemma/qwen3) and q/k/v-bias
+# (qwen2.5) both append per-layer weights, so the RMS BO needs UNI_DEC slabs and
+# the feed has to index the current wave's. Getting this wrong DEADLOCKS: the host
+# writes UNI_DEC slabs and puts final_norm after them, so a device that sized the
+# region for one slab reads final_norm from inside the rope region.
+ROPE_W_PER_LAYER = HAS_QK_NORM or HAS_QKV_BIAS
 NUM_KV_HEADS = MODEL["N_ATTN_CU"] * MODEL["KV_PER_CU"]  # 8 / 4
 NUM_Q_HEADS = (MODEL["M"] - 2 * NUM_KV_HEADS * DH) // DH  # 32 / 8
 Q_HEADS_PER_CU = NUM_Q_HEADS // MODEL["N_ATTN_CU"]  # 8 / 2
@@ -838,10 +901,18 @@ GLU_DEST = DEST[GLU_PHASE] if GLU_PHASE >= 0 else -1
 FULL4 = NPH == 4 and DOWN_PHASE == 3 and DEST[1] == DEST[3] and NDEST == 3
 RMS_DEST = DEST[DOWN_PHASE] if FULL4 else -1
 HOST_DRAIN = [p for p in range(NDEST) if p != GLU_DEST and p != RMS_DEST]
-GLU_CHUNK = PAYLOAD  # 512 (gate-up packs up/gate interleaved in 512-row chunks)
-GLU_SLICE = 2 * PAYLOAD  # 1024 = [up 512 | gate 512] (TWO demux packets/BD)
-GLU_HID = PAYLOAD  # 512 out per 1024 slice
-NGLU = ROUNDS_PER_DEST[GLU_DEST] // 2 if GLU_DEST >= 0 else 0  # 16 slices (2 rnd/slice)
+# A slice pair is one rotation of the GLU BD ring, and the core's slot sequence is
+# statically unrolled and restarts every layer while the ring's rotation carries
+# over -- an ODD slice count leaves the two a slot apart and every other layer reads
+# a stale slice. Two demux packets per slice is the reference granularity, but when
+# that gives an odd count (qwen2.5-7b: INTERMEDIATE/512 = 37) drop to one packet per
+# slice: same 512-row interleave stride, half the slice, an even count, and the same
+# total. The kernel is generic in the slice length (pseduo_glu<GLU_SLICE>).
+GLU_PKTS = 2 if (ROUNDS_PER_DEST[GLU_DEST] // 2) % 2 == 0 else 1
+GLU_CHUNK = GLU_PKTS * PAYLOAD // 2  # gate-up interleaves up/gate in chunks this tall
+GLU_SLICE = GLU_PKTS * PAYLOAD  # 1024 = [up 512 | gate 512] (GLU_PKTS demux packets/BD)
+GLU_HID = GLU_SLICE // 2  # 512 out per 1024 slice
+NGLU = ROUNDS_PER_DEST[GLU_DEST] // GLU_PKTS if GLU_DEST >= 0 else 0  # 16 slices
 GLU_OUT = NGLU * GLU_HID  # 8192 (INTERMEDIATE) = down_buffer size = down K
 GLU_PCOL = 5  # GLU compute tile + down memtile column (reference: tile_5_x + mem_5_1;
 # moved 4->5 to free col4 for 4-CU attention, matching the reference layout)
@@ -909,12 +980,12 @@ def build_module():
         # rms weight (K). MULTIBLK appends the rope region AFTER all UNI_DEC rms slabs so
         # the score-path test gets a KNOWN q (q_roped = proj_q) WITHOUT corrupting
         # rms_w[0:K] (which proj_q depends on). Llama: ONE shared per-position LUT
-        # (ROPE_W_LEN=64). Gemma (HAS_QK_NORM): UNI_DEC per-layer rope_w slabs
+        # (ROPE_W_LEN=64). Per-layer models (ROPE_W_PER_LAYER): UNI_DEC rope_w slabs
         # (dual-theta + per-layer q/k-norm). L=1 ABI unchanged.
         rms_l3 = MemRefType.get(
             [
                 UNI_DEC * RMS_LAYER
-                + ((UNI_DEC if HAS_QK_NORM else 1) * ROPE_W_LEN if MULTIBLK else 0)
+                + ((UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN if MULTIBLK else 0)
                 + K  # dedicated final-norm slot for real lm_head (vocab)
             ],
             bf16,
@@ -1589,10 +1660,10 @@ def build_module():
                             # vocab rmsnorm uses the true final norm -- NOT layer-0's in_LN
                             # (mirrors decoding_layer's separate final_rms_weight).
                             # final norm sits AFTER the rope region: llama has ONE shared
-                            # rope LUT (ROPE_W_LEN), gemma has UNI_DEC per-layer rope_w slabs.
+                            # rope LUT (ROPE_W_LEN), per-layer models have UNI_DEC slabs.
                             _final_norm_off = (
                                 UNI_DEC * RMS_LAYER
-                                + (UNI_DEC if HAS_QK_NORM else 1) * ROPE_W_LEN
+                                + (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN
                             )
                             if N_NORMS >= 4:
                                 # Gemma: rmsW/rmsW2 are 2K (two norms packed). Put final_norm
@@ -1714,15 +1785,15 @@ def build_module():
                                     )
                             # rope LUT: sits after all UNI_DEC rms slabs in arg2. Llama:
                             # ONE per-position LUT SHARED across layers (single theta) at a
-                            # layer-independent offset. Gemma (HAS_QK_NORM): the rope_w
-                            # (dual-theta cos/sin + per-layer q/k-norm) DIFFERS PER LAYER, so
+                            # layer-independent offset. ROPE_W_PER_LAYER (gemma/qwen3
+                            # qk-norm, qwen2.5 q/k/v bias): rope_w DIFFERS PER LAYER, so
                             # index a per-wave slab (UNI_DEC contiguous rope_w slabs, offset
                             # _lut_off + a_iv*ROPE_W_LEN). UNIFIED sizes arg2 for UNI_DEC decode
                             # waves (module-gen forces NLAYERS=1, which would misplace it).
                             _lut_off = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
                             _rope_off = (
                                 _lo(_lb(ROPE_W_LEN), _lut_off)
-                                if (HAS_QK_NORM and MULTIBLK)
+                                if (ROPE_W_PER_LAYER and MULTIBLK)
                                 else _lut_off
                             )
                             ChannelPut(
@@ -3040,6 +3111,14 @@ def build_module():
                                     DeallocOp(gx)
                                     DeallocOp(gh)
 
+                                # An odd slice count desyncs that ring: the core's
+                                # slot sequence restarts every layer while the ring's
+                                # rotation carries over, so every other layer reads a
+                                # stale slice. GLU_PKTS keeps the count even.
+                                assert NGLU % 2 == 0, (
+                                    f"odd NGLU={NGLU} desyncs the GLU BD ring "
+                                    f"(GLU_PKTS={GLU_PKTS})"
+                                )
                                 for _s in for_(idx(0), idx(NGLU // 2), idx(1)):
                                     _slice()  # ping
                                     _slice()  # pong

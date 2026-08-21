@@ -52,6 +52,12 @@ env:
   # five decode weight BOs (4x1.01GB + 0.37GB, see llms/qwen3_8b_q4nx). Separate
   # subprocesses, so the peak is the larger, not the sum. Confirm against a
   # nightly rather than assuming.
+  #
+  # qwen25_7b_q4nx runs off Qwen/Qwen2.5-7B-Instruct directly (quantized on load --
+  # FastFlowLM publishes no Q4NX bundle for it), so it is the same shape as qwen3_8b
+  # above and its peak is likewise unmeasured here. Bound: ~15GB bf16 reference in
+  # the compare phase, ~6GB dequantized Q4NX weights plus five decode weight BOs
+  # (4x0.95GB + 0.32GB, see llms/qwen25_7b_q4nx) in the NPU phase.
 
 jobs:
   benchmark:

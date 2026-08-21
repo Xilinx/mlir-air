@@ -534,6 +534,10 @@ LLM_HF_MODELS = {
     # Instruct variant -- the example's own default (MODEL_DEFAULT in
     # qwen25_3b_q4_prefill.py) -- not the base repo the qwen25_3b row above uses.
     "qwen25_3b_q4": "Qwen/Qwen2.5-3B-Instruct",
+    # Q4NX, but FastFlowLM has not published a Qwen2.5-7B NPU2 bundle, so the
+    # weights are quantized on load from the Instruct checkpoint -- which is
+    # also the verify reference, as in the qwen25_3b_q4 row.
+    "qwen25_7b_q4nx": "Qwen/Qwen2.5-7B-Instruct",
     "qwen3_0_6b": "Qwen/Qwen3-0.6B",
     "qwen3_1_7b": "Qwen/Qwen3-1.7B",
     "qwen3_4b": "Qwen/Qwen3-4B",
